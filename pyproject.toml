@@ -1,0 +1,80 @@
+[project]
+name = "zeler-platform"
+version = "0.0.0"
+description = "Zeler Platform — unified Mercado Libre integration platform"
+requires-python = ">=3.11"
+
+[dependency-groups]
+dev = [
+  "commitizen>=3.29.0",
+  "fastapi>=0.110,<1",
+  "httpx>=0.27.0",
+  "mypy>=1.11.0",
+  "pre-commit>=3.8.0",
+  "pytest>=8.3.0",
+  "ruff>=0.6.0",
+]
+
+[tool.uv.workspace]
+members = [
+  "gateway",
+  "core",
+  "modules/*",
+  "bootstrap",
+]
+
+[tool.uv.sources]
+zeler_platform_core = { workspace = true }
+
+[tool.uv]
+package = false
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["gateway/src", "core/src", "modules/*/src", "bootstrap/src"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "N", "S", "BLE", "RET", "SIM"]
+
+[tool.ruff.lint.per-file-ignores]
+"**/tests/**" = ["S101"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+warn_return_any = true
+warn_unused_ignores = true
+explicit_package_bases = true
+mypy_path = [
+  "$MYPY_CONFIG_FILE_DIR/gateway/src",
+  "$MYPY_CONFIG_FILE_DIR/core/src",
+  "$MYPY_CONFIG_FILE_DIR/modules/repricer/src",
+  "$MYPY_CONFIG_FILE_DIR/modules/sheets/src",
+  "$MYPY_CONFIG_FILE_DIR/modules/publicador/src",
+  "$MYPY_CONFIG_FILE_DIR/modules/autoreply/src",
+  "$MYPY_CONFIG_FILE_DIR/modules/fulldock/src",
+  "$MYPY_CONFIG_FILE_DIR/bootstrap/src",
+]
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+addopts = "-ra -q --strict-markers --strict-config --import-mode=importlib"
+testpaths = [
+  "gateway/tests",
+  "core/tests",
+  "modules/*/tests",
+  "bootstrap/tests",
+  "tests",
+]
+pythonpath = [
+  ".",
+  "gateway/src",
+  "core/src",
+  "modules/repricer/src",
+  "modules/sheets/src",
+  "modules/publicador/src",
+  "modules/autoreply/src",
+  "modules/fulldock/src",
+  "bootstrap/src",
+]

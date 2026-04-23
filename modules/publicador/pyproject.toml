@@ -1,0 +1,16 @@
+[project]
+name = "zeler-publicador"
+version = "0.0.0"
+description = "Publicador module package"
+requires-python = ">=3.11"
+dependencies = ["zeler_platform_core"]
+
+[build-system]
+requires = ["hatchling>=1.24.0"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/zeler_publicador"]
+
+[tool.uv.sources]
+zeler_platform_core = { workspace = true }

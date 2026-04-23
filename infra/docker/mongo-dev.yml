@@ -1,0 +1,12 @@
+services:
+  mongo:
+    image: mongo:7.0
+    container_name: zeler-mongo-dev
+    ports:
+      - "27017:27017"
+    volumes:
+      - zeler-mongo-data:/data/db
+    restart: unless-stopped
+
+volumes:
+  zeler-mongo-data:

@@ -1,0 +1,1 @@
+"""Domain model namespace placeholder."""
