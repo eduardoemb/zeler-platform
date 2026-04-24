@@ -24,5 +24,8 @@ jobs:
       - name: Ruff
         run: uv run ruff check .
 
+      - name: Direct Meli URL lint
+        run: uv run python -m infra.lint.check_direct_meli .
+
       - name: Mypy
         run: uv run mypy .

@@ -402,19 +402,19 @@ P6 ─→ P7
 
 ### Checklist
 
-- [ ] **P4.1** — Implement module manifest spec + validation
+- [x] **P4.1** — Implement module manifest spec + validation
   `core/src/zeler_platform_core/runtime/manifest.py`: `ModuleManifest` Pydantic v2 model (name, version, subscribed_events: list[str], owned_collections: list[str], health_endpoint: str). `validate_manifest(path) → ModuleManifest` (raises on missing fields). Load at module startup.
   *Ref*: spec §5 R5.1, design §4.11. *TDD*: `test_valid_manifest_loads`, `test_missing_name_raises`, `test_manifest_rejects_gateway_owned_collection`. *Effort*: S
 
-- [ ] **P4.2** — Implement `module_registry` registration + `module_registry` collection
+- [x] **P4.2** — Implement `module_registry` registration + `module_registry` collection
   `core/src/zeler_platform_core/runtime/registration.py`: `register_module(manifest, mongo_client)` — upsert `module_registry` doc (`_id=module_id`). `infra/atlas/module_registry.json`: validator + `{status:1}` index. On startup, module calls `register_module`; on collision with gateway-owned collection → raises `CollectionOwnershipError` and aborts startup.
   *Ref*: spec §5 R5.1, design §4.11. *TDD*: `test_registration_upserts_doc`, `test_gateway_owned_collection_raises`. *Effort*: S
 
-- [ ] **P4.3** — Implement module health endpoint base
+- [x] **P4.3** — Implement module health endpoint base
   `core/src/zeler_platform_core/runtime/health.py`: `build_health_router(module_id, checks: list[HealthCheck])`. Returns FastAPI router with `GET /health` that runs each check (RabbitMQ consumer alive, DB reachable, last event timestamp within threshold). Response: `{ready: bool, checks: {name: {ok, detail}}}`.
   *Ref*: spec §5 R5.3. *TDD*: `test_all_checks_pass_returns_ready_true`, `test_consumer_stalled_returns_ready_false`. *Effort*: S
 
-- [ ] **P4.4** — Implement AST linter: forbid direct Meli calls in module packages
+- [x] **P4.4** — Implement AST linter: forbid direct Meli calls in module packages
   `infra/lint/check_direct_meli.py`: AST walker that finds string literals or URL constants containing `api.mercadolibre.com` or `auth.mercadolibre.com` in any Python file under `modules/`. Wire as a separate CI job (runs after ruff, before tests). Fails build with file+line reference.
   *Ref*: spec §6 R6.3. *TDD*: `test_linter_flags_mercadolibre_url`, `test_linter_passes_on_clean_module`. *Effort*: S
 
@@ -426,11 +426,11 @@ P6 ─→ P7
   `infra/atlas/repricer_rules.json`, `infra/atlas/repricer_history.json`. Rules indexes: `{seller_id:1, active:1}`, `{item_id:1}` unique partial (active). History indexes: `{item_id:1, applied_at:-1}`, `{seller_id:1, applied_at:-1}`. TTL on history `{applied_at:1}` 365 days. Apply to dev.
   *Ref*: design §4.12. *TDD*: Validators reject docs missing required fields. *Effort*: S
 
-- [ ] **P4.7** — [RED] Write failing rules engine tests
+- [x] **P4.7** — [RED] Write failing rules engine tests
   Tests (pure, no I/O): `test_track_buybox_sets_price_to_buybox_bounded_by_ceiling`, `test_below_floor_returns_no_action`, `test_maximize_returns_ceiling`, `test_min_price_returns_floor_when_below`, `test_engine_is_deterministic`.
   *Ref*: spec §6 R6.2 scenarios. *TDD*: all FAIL. *Effort*: S
 
-- [ ] **P4.8** — Implement repricer rules engine (pure, no I/O)
+- [x] **P4.8** — Implement repricer rules engine (pure, no I/O)
   `modules/repricer/src/zeler_repricer/engine.py`: `evaluate_rule(rule: RepricerRule, current_price: Decimal, buybox_price: Decimal | None) → Decision`. `Decision` = `SetPrice(new_price)` or `NoAction(reason)`. Fully pure — no DB, no HTTP. Strategies: `min_price`, `competitive` (track_buybox), `maximize`.
   *Ref*: spec §6 R6.2. *TDD*: P4.7 tests now GREEN. *Effort*: M
 

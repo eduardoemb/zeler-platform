@@ -1,0 +1,86 @@
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Any
+
+import yaml
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+GATEWAY_OWNED_COLLECTIONS = frozenset(
+    {
+        "meli_accounts",
+        "users",
+        "items",
+        "orders",
+        "questions",
+        "messages",
+        "shipments",
+        "claims",
+        "events",
+        "webhook_events",
+        "audit_log",
+        "bootstrap_jobs",
+        "module_registry",
+        "processed_events",
+        "rate_limit_counters",
+        "competition_snapshots",
+        "stock_locations",
+    }
+)
+
+
+class ManifestConflictError(ValueError):
+    """Raised when a module manifest violates platform ownership boundaries."""
+
+
+class ModuleManifest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1)
+    version: str = Field(min_length=1)
+    subscribed_events: list[str] = Field(min_length=1)
+    owned_collections: list[str] = Field(min_length=1)
+    allowed_meli_scopes: list[str] = Field(min_length=1)
+    health_endpoint: str = Field(min_length=1)
+
+    def __init__(self, **data: Any) -> None:
+        super().__init__(**data)
+        self._raise_for_owned_collection_collisions()
+
+    @property
+    def module_id(self) -> str:
+        return self.name
+
+    @property
+    def routing_keys(self) -> list[str]:
+        return self.subscribed_events
+
+    @field_validator("health_endpoint")
+    @classmethod
+    def _health_endpoint_must_be_absolute_path(cls, value: str) -> str:
+        if not value.startswith("/"):
+            raise ValueError("health_endpoint must start with /")
+        return value
+
+    @field_validator("subscribed_events", "owned_collections", "allowed_meli_scopes")
+    @classmethod
+    def _list_values_must_be_non_blank(cls, value: list[str]) -> list[str]:
+        if any(not item.strip() for item in value):
+            raise ValueError("manifest list values must be non-blank strings")
+        return value
+
+    def _raise_for_owned_collection_collisions(self) -> None:
+        collisions = sorted(set(self.owned_collections) & GATEWAY_OWNED_COLLECTIONS)
+        if collisions:
+            joined = ", ".join(collisions)
+            raise ManifestConflictError(
+                f"owned_collections collide with platform-owned collections: {joined}"
+            )
+
+
+def validate_manifest(path: str | Path) -> ModuleManifest:
+    manifest_path = Path(path)
+    raw = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
+    if not isinstance(raw, dict):
+        raise ValueError("module manifest must be a mapping")
+    return ModuleManifest.model_validate(raw)
