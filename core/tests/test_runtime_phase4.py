@@ -44,7 +44,7 @@ name: repricer
 version: 0.1.0
 subscribed_events:
   - items.*
-  - items_prices.*
+  - items.price_updated
 owned_collections:
   - repricer_rules
   - repricer_history
@@ -60,7 +60,7 @@ health_endpoint: /health
 
     assert manifest.name == "repricer"
     assert manifest.allowed_meli_scopes == ["PUT /items/*", "GET /items/*"]
-    assert manifest.routing_keys == ["items.*", "items_prices.*"]
+    assert manifest.routing_keys == ["items.*", "items.price_updated"]
 
 
 def test_manifest_missing_allowed_meli_scopes_raises(tmp_path: Path) -> None:
@@ -100,7 +100,7 @@ async def test_registration_upserts_module_registry_doc() -> None:
     manifest = ModuleManifest(
         name="repricer",
         version="0.1.0",
-        subscribed_events=["items.*", "items_prices.*"],
+        subscribed_events=["items.*", "items.price_updated"],
         owned_collections=["repricer_rules", "repricer_history"],
         allowed_meli_scopes=["PUT /items/*", "GET /items/*"],
         health_endpoint="/health",
@@ -112,7 +112,7 @@ async def test_registration_upserts_module_registry_doc() -> None:
         "_id": "repricer",
         "version": "0.1.0",
         "allowed_meli_scopes": ["PUT /items/*", "GET /items/*"],
-        "routing_keys": ["items.*", "items_prices.*"],
+        "routing_keys": ["items.*", "items.price_updated"],
         "owned_collections": ["repricer_rules", "repricer_history"],
         "health_endpoint": "/health",
         "status": "enabled",

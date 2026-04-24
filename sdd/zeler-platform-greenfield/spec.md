@@ -212,10 +212,10 @@ The gateway MUST verify each inbound webhook. If Meli provides an HMAC signature
 - AND no event is published
 
 #### Requirement 3.3: At-Least-Once Fan-Out via RabbitMQ Topic Exchange
-The gateway MUST publish each valid webhook to a **topic exchange** `meli.events` with a routing key shaped as `{topic}.{action}` (e.g. `items.updated`, `orders_v2.created`). Modules bind their own queues with routing patterns. Delivery MUST be at-least-once; consumers MUST be idempotent (see 3.4).
+The gateway MUST publish each valid webhook to a **topic exchange** `meli.events` with canonical domain routing keys (e.g. `items.updated`, `orders.updated`, `items.price_updated`). Modules bind their own queues with routing patterns. Delivery MUST be at-least-once; consumers MUST be idempotent (see 3.4).
 
 ##### Scenario: Module consumes events it subscribed to
-- GIVEN `repricer-module` declares subscription to `items.*` and `items_prices.*`
+- GIVEN `repricer-module` declares subscription to `items.*` and `items.price_updated`
 - WHEN an `items.updated` event is published
 - THEN repricer-module's queue receives it
 - AND a non-subscribing module's queue does not
@@ -352,11 +352,11 @@ A module MUST NOT read or write another module's collections. Shared reads MUST 
 ### Requirements
 
 #### Requirement 6.1: Event Subscriptions
-Repricer-module MUST subscribe to `items.*` and `items_prices.*` routing keys on the `meli.events` exchange. It MUST be idempotent by `idempotency_key`.
+Repricer-module MUST subscribe to `items.*` and `items.price_updated` routing keys on the `meli.events` exchange. It MUST be idempotent by `idempotency_key`.
 
 ##### Scenario: Price-changed event arrives
 - GIVEN a rule exists for SKU `X` on account `A`
-- WHEN `items_prices.updated` arrives for item `X`
+- WHEN `items.price_updated` arrives for item `X`
 - THEN repricer-module evaluates the rule and, if applicable, schedules a price update
 
 #### Requirement 6.2: Rules Engine (Greenfield)

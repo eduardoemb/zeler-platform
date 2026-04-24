@@ -2,7 +2,7 @@ name: repricer
 version: 0.1.0
 subscribed_events:
   - items.*
-  - items_prices.*
+  - items.price_updated
 owned_collections:
   - repricer_rules
   - repricer_history

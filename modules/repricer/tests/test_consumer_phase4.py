@@ -97,7 +97,7 @@ async def test_price_changed_event_triggers_rule_eval_and_gateway_update() -> No
     result = await handler.handle(
         RepricerEvent(
             event_id="event-1",
-            event_type="items_prices.updated",
+            event_type="items.price_updated",
             seller_id=123456789,
             resource="/items/MLA123/prices",
             idempotency_key="idem-1",
@@ -121,7 +121,7 @@ async def test_idempotent_event_skipped() -> None:
     result = await handler.handle(
         RepricerEvent(
             event_id="event-1",
-            event_type="items_prices.updated",
+            event_type="items.price_updated",
             seller_id=123456789,
             resource="/items/MLA123/prices",
             idempotency_key="idem-1",
@@ -147,7 +147,7 @@ async def test_history_written_for_every_decision() -> None:
     result = await handler.handle(
         RepricerEvent(
             event_id="event-2",
-            event_type="items_prices.updated",
+            event_type="items.price_updated",
             seller_id=123456789,
             resource="/items/MLA123/prices",
             idempotency_key="idem-2",
@@ -177,7 +177,7 @@ async def test_gateway_429_requests_backoff_without_marking_processed() -> None:
         await handler.handle(
             RepricerEvent(
                 event_id="event-3",
-                event_type="items_prices.updated",
+                event_type="items.price_updated",
                 seller_id=123456789,
                 resource="/items/MLA123/prices",
                 idempotency_key="idem-3",

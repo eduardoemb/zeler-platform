@@ -398,7 +398,7 @@ P6 ─→ P7
 **Exit criteria**:
 - A module with invalid manifest fails to start with clear error.
 - Gateway rejects proxy call from unregistered module.
-- Repricer subscribes to `items.*` and `items_prices.*`, evaluates rules, calls gateway proxy, writes history.
+- Repricer subscribes to `items.*` and `items.price_updated`, evaluates rules, calls gateway proxy, writes history.
 - E2E test: webhook → AMQP → repricer → gateway proxy → mock Meli.
 - CI AST check rejects any module file containing `api.mercadolibre.com`.
 
@@ -447,7 +447,7 @@ P6 ─→ P7
   *Ref*: spec §6 R6.2. *TDD*: P4.7 tests now GREEN. *Effort*: M
 
 - [x] **P4.9** — Implement repricer AMQP consumer + event handler
-  `modules/repricer/src/zeler_repricer/consumer.py`: `aio-pika` consumer binding to `zeler.repricer.items` queue. Routing keys: `items.*`, `items_prices.*`. Handler: check idempotency → load item from `ItemsRepo` → load rules for item from `repricer_rules` → run engine → on `SetPrice`: call gateway proxy `PUT /proxy/meli/items/{item_id}` → write `repricer_history` doc. Ack after successful write.
+  `modules/repricer/src/zeler_repricer/consumer.py`: `aio-pika` consumer binding to `zeler.repricer.items` queue. Routing keys: `items.*`, `items.price_updated`. Handler: check idempotency → load item from `ItemsRepo` → load rules for item from `repricer_rules` → run engine → on `SetPrice`: call gateway proxy `PUT /proxy/meli/items/{item_id}` → write `repricer_history` doc. Ack after successful write.
   *Ref*: spec §6 R6.1–R6.4. *TDD*: `test_price_changed_event_triggers_rule_eval`, `test_idempotent_event_skipped`, `test_set_price_calls_gateway_proxy`, `test_history_written_for_every_decision`. *Effort*: L
 
 - [x] **P4.10** — Implement repricer FastAPI admin API
@@ -455,11 +455,11 @@ P6 ─→ P7
   *Ref*: spec §6 R6.4. *TDD*: `test_create_rule_returns_201`, `test_below_floor_validation_error`, `test_only_module_jwt_accepted`. *Effort*: M
 
 - [x] **P4.11** — Repricer manifest + registration + health
-  `modules/repricer/manifest.yaml`: name=repricer, version=0.1.0, subscribed_events=[items.*, items_prices.*], owned_collections=[repricer_rules, repricer_history], health_endpoint=/health. Wire `register_module(manifest)` on startup and `build_health_router` with RabbitMQ + Mongo checks.
+  `modules/repricer/manifest.yaml`: name=repricer, version=0.1.0, subscribed_events=[items.*, items.price_updated], owned_collections=[repricer_rules, repricer_history], health_endpoint=/health. Wire `register_module(manifest)` on startup and `build_health_router` with RabbitMQ + Mongo checks.
   *Ref*: spec §5 R5.1–R5.3. *TDD*: Startup registers doc in `module_registry`; health returns ready=true. *Effort*: S
 
 - [x] **P4.12** — [RED + GREEN] E2E test: webhook → AMQP → repricer → gateway proxy → mock Meli
-  `tests/e2e/test_repricer_flow.py`: POST to `/webhooks/meli` with `items_prices` topic → verify AMQP message in repricer queue → repricer handler fires → verify gateway proxy called (mock Meli) → verify `repricer_history` doc written. Runs against local Docker Compose (gateway + repricer + RabbitMQ + mongo). Must be GREEN.
+  `tests/e2e/test_repricer_flow.py`: POST to `/webhooks/meli` with `items_prices` topic emitted as `items.price_updated` → verify AMQP message in repricer queue → repricer handler fires → verify gateway proxy called (mock Meli) → verify `repricer_history` doc written. Runs against local Docker Compose (gateway + repricer + RabbitMQ + mongo). Must be GREEN.
   *Ref*: spec §6 R6.1–R6.4, design §8.1. *TDD*: Write test (RED), implement glue (GREEN). *Effort*: L
 
 ---
@@ -474,7 +474,7 @@ P6 ─→ P7
 **Quality gates**: `uv run pytest` ✅ · `uv run ruff check .` ✅ · `uv run ruff format --check .` ✅ · `uv run mypy .` ✅ · `uv run python -m infra.lint.check_direct_meli .` ✅
 **Verify report reference**: Engram #2291 (PASS WITH WARNINGS, CRITICAL=0, WARNING=4, SUGGESTION=3)
 **Tasks completed**: P4.1–P4.12 (12/12)
-**Carry-forward warnings**: no concrete repricer `aio-pika` consumer loop/binding yet; P4.12 E2E is deterministic in-process rather than live Docker Compose RabbitMQ/Mongo; routing-key mismatch risk remains between `items_prices.*` manifest subscription and `items.price_updated` classifier/topology binding; live Mongo validator/index application remains an ops release task.
+**Carry-forward warnings**: no concrete repricer `aio-pika` consumer loop/binding yet; P4.12 E2E is deterministic in-process rather than live Docker Compose RabbitMQ/Mongo; live Mongo validator/index application remains an ops release task.
 **Tasks deferred**: none for P4; historical P1.17 deferral was resolved later by commit `8d5f3cd` and the P1.17 archive/reconciliation marker.
 
 ---
