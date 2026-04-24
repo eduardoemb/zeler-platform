@@ -522,6 +522,23 @@ P6 ─→ P7
 
 ---
 
+### Phase 5 — Archive Markers
+
+**Archive type**: Phase milestone (change remains open for Phase 6+; P1.17 remains deferred)
+**Archive date**: 2026-04-24
+**Final zeler-platform HEAD SHA**: `3d968bf324fcb222831ee7a5a55ffce683713fee`
+**Final zeler-app HEAD SHA**: `d9a841e786a306357f69e31ba947176428fbbc00`
+**Platform commits**: `915fa35` (`docs(sdd): complete phase 5 app audit`) · `71d0d79` (`docs(sdd): record zeler-app baseline unblock`) · `7c3cb24` (`feat(gateway): add accounts read endpoint`) · `7849c1e` (`feat(platform): add bootstrap and repricer read screens support`) · `3d968bf` (`docs(sdd): record phase 5 verify fixes`)
+**App commits**: `82e7eb8` (`test: add app test harness`) · `ad104ef` (`feat(accounts): add platform MercadoLibre account flow`) · `4a0f6cb` (`feat(app): add bootstrap and repricer platform screens`) · `d9a841e` (`fix(repricer): wire rule mutations`)
+**Test count**: zeler-platform `184 passed` · zeler-app `19 passed` · zeler-app e2e runner `2 passed`
+**Quality gates**: zeler-platform `uv run pytest` ✅ · `uv run ruff check .` ✅ · `uv run ruff format --check .` ✅ · `uv run mypy .` ✅ · zeler-app `npm test` ✅ · `npm run lint` ✅ · `npm run e2e` ✅
+**Verify report reference**: Engram #2312 (PASS WITH WARNINGS, CRITICAL=0, WARNING=2, SUGGESTION=2)
+**Tasks completed**: P5.1–P5.6 (6/6)
+**Carry-forward warnings**: Playwright coverage is static/browser-free contract coverage, not true browser E2E; repricer mutations use `REPRICER_API_URL` + `REPRICER_API_TOKEN`, not gateway user-session token exchange; live RabbitMQ/Mongo validation and repricer routing-key follow-up remain.
+**Tasks deferred**: P1.17 — metrics SDK + `/metrics` endpoint remains deferred from Phase 1.
+
+---
+
 ## Phase 6: Remaining Modules
 
 **Goal**: Implement Sheets, Publicador, Autoreply, FullDock as platform modules. Can be built in parallel by different team members.
