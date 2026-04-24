@@ -740,6 +740,13 @@ P6 ─→ P7
 
 ### Checklist
 
+> **Phase 7 safety note (2026-04-24)**: Destructive operations are intentionally not automated.
+> Added non-destructive planning artifacts in `docs/legacy-decommission-runbook.md`,
+> `docs/migration-postmortem.md`, and `infra/decommission/*`, covered by
+> `tests/test_decommission_audit.py`. P7.1-P7.5 remain unchecked until an operator gives
+> explicit approval and executes each irreversible action with verified credentials/environment.
+> P7.6 remains a draft until real execution evidence is recorded.
+
 - [ ] **P7.1** — Freeze 5 legacy repos on GitHub
   Set each repo to read-only (archive) via GitHub settings. Add `README.md` deprecation notice at top: "This repo is archived. The capability is now part of [zeler-platform](link). Re-link your account at [URL]."
   *Ref*: proposal §3, §9. *TDD*: N/A. *Effort*: XS
