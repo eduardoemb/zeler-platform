@@ -1,0 +1,14 @@
+name: sheets
+version: 0.1.0
+subscribed_events:
+  - items.*
+  - orders.*
+  - shipments.*
+owned_collections:
+  - sheets_exports
+  - sheets_sync_jobs
+allowed_meli_scopes:
+  - GET /items/*
+  - GET /orders/*
+  - GET /shipments/*
+health_endpoint: /health

@@ -566,15 +566,18 @@ P6 ─→ P7
 
 #### 6A: sheets-module (ex-SheetSeller)
 
-- [ ] **P6A.1** — Define sheets manifest + owned collections (`sheets_exports`, `sheets_sync_jobs`)
+- [x] **P6A.1** — Define sheets manifest + owned collections (`sheets_exports`, `sheets_sync_jobs`)
   *Events subscribed*: `items.*`, `orders.*`, `shipments.*`. *Scope*: read-only Meli (`GET /items/*`, `GET /orders/*`, `GET /shipments/*`).
+  *Result*: Added `modules/sheets/manifest.yaml` with read-only gateway scopes, module-owned collections, startup registration, and `/health` readiness wiring.
   *TDD*: Manifest validates, no gateway-owned collections declared. *Effort*: S
 
-- [ ] **P6A.2** — Create `sheets_exports` + `sheets_sync_jobs` collections + validators
+- [x] **P6A.2** — Create `sheets_exports` + `sheets_sync_jobs` collections + validators
+  *Result*: Added strict Mongo validators plus indexes for seller-enabled export lookup, spreadsheet lookup, and sync-job state listing.
   *TDD*: Validators reject missing required fields. *Effort*: S
 
-- [ ] **P6A.3** — Implement AMQP consumers for items/orders/shipments events
+- [x] **P6A.3** — Implement AMQP consumers for items/orders/shipments events
   Handler: receive event → fetch full resource via gateway proxy → format Google Sheets row → append to configured spreadsheet (Google Sheets API). Idempotent by event `event_id`.
+  *Result*: Added deterministic `SheetsEventHandler` contract: de-dupes by idempotency key, loads seller export config, fetches the full resource through an injected gateway client, formats a row, and appends through an injected Google Sheets client. Real Google Sheets credentials/API and live AMQP loop remain deployment wiring for later validation; tests use mocks/contracts only.
   *TDD*: `test_item_event_triggers_sheets_append`, `test_duplicate_event_skipped`. *Effort*: L
 
 - [ ] **P6A.4** — Admin API + zeler-app screen for sheets configuration

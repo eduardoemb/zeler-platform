@@ -1,0 +1,63 @@
+{
+  "$jsonSchema": {
+    "bsonType": "object",
+    "properties": {
+      "_id": {
+        "bsonType": [
+          "objectId",
+          "string"
+        ]
+      },
+      "completed_at": {
+        "bsonType": [
+          "date",
+          "null"
+        ]
+      },
+      "error": {
+        "bsonType": [
+          "string",
+          "null"
+        ]
+      },
+      "requested_at": {
+        "bsonType": "date"
+      },
+      "schema_version": {
+        "bsonType": "int"
+      },
+      "seller_id": {
+        "bsonType": [
+          "string",
+          "long",
+          "int"
+        ]
+      },
+      "spreadsheet_id": {
+        "bsonType": "string"
+      },
+      "state": {
+        "enum": [
+          "pending",
+          "running",
+          "succeeded",
+          "failed"
+        ]
+      },
+      "updated_at": {
+        "bsonType": "date"
+      }
+    },
+    "required": [
+      "_id",
+      "seller_id",
+      "spreadsheet_id",
+      "state",
+      "requested_at",
+      "updated_at",
+      "schema_version"
+    ]
+  },
+  "validationAction": "error",
+  "validationLevel": "strict"
+}

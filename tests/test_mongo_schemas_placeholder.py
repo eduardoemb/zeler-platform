@@ -27,6 +27,9 @@ EXPECTED_FILES = {
     # Repricer module-owned
     "repricer_rules.json",
     "repricer_history.json",
+    # Sheets module-owned
+    "sheets_exports.json",
+    "sheets_sync_jobs.json",
     # FullDock module-owned (from topic stock-locations)
     "stock_locations.json",
     # Catalog competition tracking (SheetSeller + FullDock + Repricer)
@@ -47,6 +50,8 @@ ACTIVE_NON_PLACEHOLDER_SCHEMAS = {
     "questions.json",
     "repricer_history.json",
     "repricer_rules.json",
+    "sheets_exports.json",
+    "sheets_sync_jobs.json",
     "shipments.json",
     "users.json",
     "webhook_events.json",

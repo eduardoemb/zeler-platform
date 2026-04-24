@@ -1,0 +1,50 @@
+{
+  "$jsonSchema": {
+    "bsonType": "object",
+    "properties": {
+      "_id": {
+        "bsonType": [
+          "objectId",
+          "string"
+        ]
+      },
+      "created_at": {
+        "bsonType": "date"
+      },
+      "enabled": {
+        "bsonType": "bool"
+      },
+      "schema_version": {
+        "bsonType": "int"
+      },
+      "seller_id": {
+        "bsonType": [
+          "string",
+          "long",
+          "int"
+        ]
+      },
+      "spreadsheet_id": {
+        "bsonType": "string"
+      },
+      "updated_at": {
+        "bsonType": "date"
+      },
+      "worksheet_name": {
+        "bsonType": "string"
+      }
+    },
+    "required": [
+      "_id",
+      "seller_id",
+      "spreadsheet_id",
+      "worksheet_name",
+      "enabled",
+      "created_at",
+      "updated_at",
+      "schema_version"
+    ]
+  },
+  "validationAction": "error",
+  "validationLevel": "strict"
+}
