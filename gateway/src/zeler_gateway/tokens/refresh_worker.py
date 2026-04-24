@@ -12,6 +12,7 @@ from pymongo import ReturnDocument
 
 from zeler_gateway.config import Settings
 from zeler_gateway.oauth.events import emit_accounts_revoked
+from zeler_gateway.observability.metrics import get_metrics_registry
 from zeler_gateway.tokens.encryption import EncryptedToken, decrypt_token, encrypt_token
 
 logger = structlog.get_logger(__name__)
@@ -148,6 +149,9 @@ async def refresh_once(
                 platform_user_id=cast(str, locked["platform_user_id"]),
             )
             stats = stats.with_revoked()
+            metrics_registry = get_metrics_registry()
+            metrics_registry.increment_refresh_failure()
+            metrics_registry.increment_invalid_grant()
             continue
         except (
             httpx.HTTPError,
@@ -169,6 +173,7 @@ async def refresh_once(
                 },
             )
             stats = stats.with_failed()
+            get_metrics_registry().increment_refresh_failure()
             continue
 
         access_enc = encrypt_token(
@@ -199,6 +204,7 @@ async def refresh_once(
             },
         )
         stats = stats.with_succeeded()
+        get_metrics_registry().increment_refresh_success()
 
     logger.info("refresh.run", **asdict(stats))
     return stats

@@ -15,6 +15,11 @@ from fastapi.responses import JSONResponse, Response
 from pymongo.errors import PyMongoError
 
 from zeler_gateway.config import Settings
+from zeler_gateway.observability.metrics import (
+    get_metrics_registry,
+    record_latency,
+    record_rate_limit_hit,
+)
 from zeler_gateway.proxy.rate_limit import RateLimitCounter, RateLimitExceeded
 from zeler_gateway.proxy.retry import send_with_retry
 from zeler_gateway.tokens.encryption import EncryptedToken, decrypt_token
@@ -108,6 +113,8 @@ async def proxy_meli(request: Request, full_path: str) -> Response:
             module_id=claims.module_id,
             seller_id=claims.seller_id,
         )
+        record_rate_limit_hit(module_id=claims.module_id, endpoint=upstream_path)
+        record_latency(module_id=claims.module_id, endpoint=upstream_path, started=started)
         return _json_error(
             429,
             "rate_limit_exceeded",
@@ -147,6 +154,17 @@ async def proxy_meli(request: Request, full_path: str) -> Response:
         path=upstream_path,
         upstream_status=upstream_response.status_code,
         duration_ms=duration_ms,
+    )
+    metrics_registry = get_metrics_registry()
+    metrics_registry.increment_call_count(
+        module_id=claims.module_id,
+        endpoint=upstream_path,
+        status_code=upstream_response.status_code,
+    )
+    metrics_registry.observe_latency_ms(
+        module_id=claims.module_id,
+        endpoint=upstream_path,
+        value_ms=duration_ms,
     )
 
     return Response(

@@ -193,7 +193,7 @@ P6 ─→ P7
   `infra/atlas/audit_log.json`. TTL index `{at:1}` 365 days. Indexes `{module_id:1, at:-1}`, `{seller_id:1, at:-1}`. Verify gateway proxy writes one doc per proxied call (integration test).
   *Ref*: design §9, §10. *TDD*: Integration test asserts `audit_log` doc written after proxied call. *Effort*: XS
 
-- [ ] **P1.17** — Implement metrics SDK + /metrics endpoint for spec R1.6
+- [x] **P1.17** — Implement metrics SDK + /metrics endpoint for spec R1.6
   `gateway/src/zeler_gateway/observability/metrics.py`: opentelemetry-sdk metrics API with OTLP or Prometheus exporter. Expose counters (call_count, rate_limit_hits, refresh_success, refresh_failure, invalid_grant), histograms (latency_ms), each labeled by `account_id`, `module_id`, `endpoint`. Add `GET /metrics` FastAPI endpoint (Prometheus text format) gated by `OTEL_METRICS_ENABLED` env flag. Update middleware to record per-request timings. Update proxy/router.py and refresh_worker.py to emit counter increments.
   *Ref*: spec §1 R1.6 (metrics clause + operator-query scenario). *TDD*: `test_metrics_endpoint_returns_prometheus_format`, `test_rate_limit_hit_increments_counter`, `test_latency_histogram_records_request_duration`. *Effort*: M
   *Note*: deferred from P1.14 (which only implemented logs + traces). Documented in verify report #2243.

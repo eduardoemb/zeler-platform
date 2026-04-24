@@ -14,6 +14,7 @@ class Settings(BaseSettings):
         default="production", alias="ENVIRONMENT"
     )
     otel_enabled: bool = Field(default=True, alias="OTEL_ENABLED")
+    otel_metrics_enabled: bool = Field(default=False, alias="OTEL_METRICS_ENABLED")
     gcp_project_id: str = Field(default="zeler-platform-dev", alias="GCP_PROJECT_ID")
     mongo_uri: str = Field(
         default="mongodb://changeme_local_only:changeme_local_only@127.0.0.1:27017/zeler_platform_dev?authSource=admin",
