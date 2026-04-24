@@ -194,9 +194,7 @@ async def _run_oauth_callback(
             respx_mock.post("https://api.mercadolibre.com/oauth/token").mock(
                 return_value=token_response
             )
-            return await client.get(
-                "/oauth/callback", params={"code": code, "state": state}
-            )
+            return await client.get("/oauth/callback", params={"code": code, "state": state})
 
 
 @pytest.mark.asyncio
