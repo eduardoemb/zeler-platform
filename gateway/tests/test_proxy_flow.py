@@ -20,15 +20,10 @@ from pymongo import MongoClient
 from pymongo.errors import PyMongoError
 
 from zeler_gateway.app import app
+from zeler_gateway.proxy.router import router as proxy_router
 from zeler_gateway.tokens.encryption import encrypt_token, reset_dek_cache, set_kms_client
 from zeler_platform_core.auth.jwt import mint_module_jwt
 from zeler_platform_core.auth.jwt import set_kms_client as set_jwt_kms_client
-
-proxy_router_module = pytest.importorskip(
-    "zeler_gateway.proxy.router",
-    reason="P1.11 proxy router implementation is intentionally out of sub-batch 4a scope",
-)
-proxy_router = proxy_router_module.router
 
 ROOT = Path(__file__).resolve().parents[2]
 SCHEMAS_DIR = ROOT / "infra" / "mongo" / "schemas"
@@ -209,7 +204,7 @@ async def test_proxy_call_during_refresh_waits_or_503(
     _seed_account(
         database,
         status="refresh_pending",
-        lock_held_until=datetime(2026, 4, 24, 12, 2, tzinfo=UTC),
+        lock_held_until=datetime.now(UTC) + timedelta(seconds=120),
     )
 
     with respx.mock(assert_all_called=False) as respx_mock:
