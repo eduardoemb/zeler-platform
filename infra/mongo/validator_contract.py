@@ -9,6 +9,8 @@ CANONICAL_VALIDATOR_FILES = {
     "bootstrap_jobs.json",
     "claims.json",
     "events.json",
+    "fulldock_history.json",
+    "fulldock_inventory_rules.json",
     "items.json",
     "meli_accounts.json",
     "messages.json",

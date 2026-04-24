@@ -36,6 +36,9 @@ EXPECTED_FILES = {
     # Autoreply module-owned
     "autoreply_templates.json",
     "autoreply_history.json",
+    # FullDock module-owned
+    "fulldock_inventory_rules.json",
+    "fulldock_history.json",
     # FullDock module-owned (from topic stock-locations)
     "stock_locations.json",
     # Catalog competition tracking (SheetSeller + FullDock + Repricer)
@@ -66,6 +69,8 @@ ACTIVE_NON_PLACEHOLDER_SCHEMAS = {
     "publicador_history.json",
     "autoreply_templates.json",
     "autoreply_history.json",
+    "fulldock_inventory_rules.json",
+    "fulldock_history.json",
 }
 
 

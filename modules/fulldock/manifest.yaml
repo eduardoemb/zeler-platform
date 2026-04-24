@@ -1,0 +1,13 @@
+name: fulldock
+version: 0.1.0
+subscribed_events:
+  - items.*
+  - shipments.*
+owned_collections:
+  - fulldock_inventory_rules
+  - fulldock_history
+allowed_meli_scopes:
+  - GET /items/*
+  - GET /shipments/*
+  - PUT /items/*/stock_locations
+health_endpoint: /health

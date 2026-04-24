@@ -1,0 +1,37 @@
+{
+  "$jsonSchema": {
+    "bsonType": "object",
+    "properties": {
+      "_id": {"bsonType": ["objectId", "string"]},
+      "created_at": {"bsonType": "date"},
+      "enabled": {"bsonType": "bool"},
+      "item_id": {"bsonType": "string"},
+      "schema_version": {"bsonType": "int"},
+      "seller_id": {"bsonType": ["string", "long", "int"]},
+      "stock_locations": {
+        "bsonType": "array",
+        "items": {
+          "bsonType": "object",
+          "properties": {
+            "location_id": {"bsonType": "string"},
+            "quantity": {"bsonType": "int", "minimum": 0}
+          },
+          "required": ["location_id", "quantity"]
+        }
+      },
+      "updated_at": {"bsonType": "date"}
+    },
+    "required": [
+      "_id",
+      "seller_id",
+      "item_id",
+      "enabled",
+      "stock_locations",
+      "created_at",
+      "updated_at",
+      "schema_version"
+    ]
+  },
+  "validationAction": "error",
+  "validationLevel": "strict"
+}

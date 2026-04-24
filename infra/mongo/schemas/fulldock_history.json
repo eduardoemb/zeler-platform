@@ -1,0 +1,31 @@
+{
+  "$jsonSchema": {
+    "bsonType": "object",
+    "properties": {
+      "_id": {"bsonType": ["objectId", "string"]},
+      "created_at": {"bsonType": "date"},
+      "event_id": {"bsonType": "string"},
+      "event_type": {"bsonType": "string"},
+      "idempotency_key": {"bsonType": "string"},
+      "item_id": {"bsonType": "string"},
+      "outcome": {"enum": ["updated", "no_rule", "failed"]},
+      "rule_id": {"bsonType": ["string", "null"]},
+      "schema_version": {"bsonType": "int"},
+      "seller_id": {"bsonType": ["string", "long", "int"]},
+      "stock_locations": {"bsonType": "array"}
+    },
+    "required": [
+      "_id",
+      "seller_id",
+      "event_id",
+      "idempotency_key",
+      "event_type",
+      "item_id",
+      "outcome",
+      "created_at",
+      "schema_version"
+    ]
+  },
+  "validationAction": "error",
+  "validationLevel": "strict"
+}

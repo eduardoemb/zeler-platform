@@ -672,19 +672,23 @@ P6 ─→ P7
 
 #### 6D: fulldock-module (ex-FullDock)
 
-- [ ] **P6D.1** — Define fulldock manifest + owned collections (`fulldock_inventory_rules`, `fulldock_history`)
+- [x] **P6D.1** — Define fulldock manifest + owned collections (`fulldock_inventory_rules`, `fulldock_history`)
   *Events subscribed*: `items.*`, `shipments.*`. *Scope*: `GET /items/*`, `GET /shipments/*`, `PUT /items/*/stock_locations`.
+  *Result*: Added `modules/fulldock/manifest.yaml`, module startup registration, `/health`, and scope contract coverage. Confirmed the stock-location grant is represented in design §8.2 and enforced in the manifest.
   *TDD*: Manifest validates. Confirm `PUT /items/*/stock_locations` in Meli grant before implementing P6D.3. *Effort*: S
 
-- [ ] **P6D.2** — Create `fulldock_inventory_rules` + `fulldock_history` collections + validators
+- [x] **P6D.2** — Create `fulldock_inventory_rules` + `fulldock_history` collections + validators
+  *Result*: Added strict Mongo validators and indexes for FullDock rules/history; included both files in canonical validator contracts and placeholder inventory tests.
   *TDD*: Validators strict. *Effort*: S
 
-- [ ] **P6D.3** — Implement stock location update consumer
+- [x] **P6D.3** — Implement stock location update consumer
   `items.*` + `shipments.*` events → evaluate inventory rules → update stock locations via gateway proxy `PUT /items/{id}/stock_locations`. Write `fulldock_history`.
+  *Result*: Added deterministic `FulldockEventHandler` using injected gateway/idempotency fakes. It fetches item/shipment resources through the gateway, resolves item IDs, applies enabled seller/item rules, sends stock-location updates via gateway proxy only, writes history, and skips duplicate events.
   *TDD*: `test_shipment_triggers_stock_update`, `test_no_rule_skips_update`. *Effort*: L
 
-- [ ] **P6D.4** — Admin API + zeler-app screen
+- [x] **P6D.4** — Admin API + zeler-app screen
   Configure inventory rules per seller/item. View history.
+  *Result*: Added Fulldock admin API for listing/creating/updating inventory rules with history context; added zeler-app `/fulldock/rules` route, API helpers, server actions, rule management panel, and module catalog routing.
   *TDD*: Component test: create rule, view history. *Effort*: M
 
 ---

@@ -1,0 +1,4 @@
+[
+  {"keys":{"seller_id":1,"item_id":1},"options":{"name":"idx_fulldock_rules_seller_item","unique":true}},
+  {"keys":{"seller_id":1,"enabled":1,"updated_at":-1},"options":{"name":"idx_fulldock_rules_seller_enabled_updated"}}
+]

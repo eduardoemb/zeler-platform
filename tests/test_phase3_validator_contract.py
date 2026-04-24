@@ -29,6 +29,8 @@ def test_canonical_validator_contract_covers_phase3_collections() -> None:
         "shipments.json",
         "claims.json",
         "events.json",
+        "fulldock_history.json",
+        "fulldock_inventory_rules.json",
         "webhook_events.json",
         "bootstrap_jobs.json",
         "module_registry.json",
