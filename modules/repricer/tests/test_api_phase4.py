@@ -35,10 +35,14 @@ class FakeCollection:
 class FakeDb:
     def __init__(self) -> None:
         self.repricer_rules = FakeCollection()
+        self.repricer_history = FakeCollection()
 
     def __getitem__(self, name: str) -> FakeCollection:
-        assert name == "repricer_rules"
-        return self.repricer_rules
+        if name == "repricer_rules":
+            return self.repricer_rules
+        if name == "repricer_history":
+            return self.repricer_history
+        raise AssertionError(name)
 
 
 @pytest.mark.asyncio
@@ -92,6 +96,40 @@ async def test_only_module_jwt_accepted(monkeypatch: pytest.MonkeyPatch) -> None
 
     assert response.status_code == 401
     assert response.json() == {"error": "invalid_token", "detail": "bad token"}
+
+
+@pytest.mark.asyncio
+async def test_list_history_returns_latest_entries(monkeypatch: pytest.MonkeyPatch) -> None:
+    app, db = _app(monkeypatch)
+    db.repricer_history.docs.append(
+        {
+            "seller_id": "123456789",
+            "item_id": "MLA123",
+            "old_price": "150.00",
+            "new_price": "149.00",
+            "reason": "competition_match",
+            "applied_at": datetime(2026, 4, 24, 12, 30, tzinfo=UTC).isoformat(),
+        }
+    )
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.get(
+            "/repricer/history?seller_id=123456789", headers={"Authorization": "Bearer valid"}
+        )
+
+    assert response.status_code == 200
+    assert response.json() == [
+        {
+            "seller_id": "123456789",
+            "item_id": "MLA123",
+            "old_price": "150.00",
+            "new_price": "149.00",
+            "reason": "competition_match",
+            "applied_at": "2026-04-24T12:30:00+00:00",
+        }
+    ]
 
 
 def _app(

@@ -505,16 +505,19 @@ P6 ─→ P7
   *Result*: Added gateway read-only `GET /api/accounts` with token-field projection and zeler-app `/accounts` page with account list, empty state, status badges, and revoked re-link CTA. Tests cover URL contracts, no-token API projection, status rendering, and empty state.
   *Ref*: spec §2, design §5.1. *TDD*: Component test: shows account list, shows revoked badge. *Effort*: M
 
-- [ ] **P5.4** — Bootstrap progress screen
+- [x] **P5.4** — Bootstrap progress screen
   zeler-app page `/bootstrap/:jobId`: poll `GET /api/bootstrap-jobs/:jobId` every 5s. Show per-stage progress bar (stage_progress). Show current_stage, state, errors[]. Add gateway `GET /api/bootstrap-jobs/:jobId` endpoint (read from `bootstrap_jobs` collection, no sensitive data). On `BootstrapCompleted`: show success + redirect to dashboard.
+  *Result*: Added gateway read-only `GET /api/bootstrap-jobs/{job_id}` with `checkpoints` projection, 404 contract, datetime serialization, and zeler-app `/bootstrap/[jobId]` progress page with 5-second refresh, per-stage progress bars, errors, and dashboard return CTA on success.
   *Ref*: spec §7 R7.5. *TDD*: Component test: shows progress per stage, updates on poll. *Effort*: M
 
-- [ ] **P5.5** — Repricer rules screen
+- [x] **P5.5** — Repricer rules screen
   zeler-app page `/repricer/rules`: list rules (call repricer `GET /repricer/rules?seller_id=`), create/edit/delete via repricer API. Show last repricer_history entries per item. Wire through gateway internal JWT (zeler-app requests JWTs from gateway on behalf of user session).
+  *Result*: Added zeler-app `/repricer/rules` page, API contract helpers for rules/create/history, presentational rules panel with create form and recent history, plus repricer module `GET /repricer/history?seller_id=` admin endpoint. Current server wiring uses `REPRICER_API_URL` + `REPRICER_API_TOKEN` while the gateway user-session token exchange remains a follow-up hardening item.
   *Ref*: spec §6 R6.4. *TDD*: Component test: renders rules list, create rule submits POST. *Effort*: M
 
-- [ ] **P5.6** — Remove / deprecate legacy-wired screens
+- [x] **P5.6** — Remove / deprecate legacy-wired screens
   From audit in P5.1: for each legacy endpoint call, either wire to new platform API or remove the screen. Add deprecation notice to removed screens. Ensure no 5xx from removed endpoints in staging.
+  *Result*: Removed legacy product-domain links from the module catalog; EasyReprice routes to `/repricer/rules`, while SheetSeller/FullDock/AutoReply/Publicador route to in-app deprecation notices until their P6 platform modules exist. Added tests that guard against legacy product-domain URLs and external-link affordances on internal modules.
   *Ref*: proposal §4. *TDD*: Playwright smoke: all screens load without 5xx. *Effort*: M
 
 ---

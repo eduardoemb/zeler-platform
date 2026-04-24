@@ -43,6 +43,18 @@ def build_router() -> APIRouter:
         )
         return JSONResponse(docs)
 
+    @router.get("/history")
+    async def list_history(request: Request, seller_id: str) -> JSONResponse:
+        auth = _authorize(request)
+        if auth is not None:
+            return auth
+        docs = await (
+            request.app.state.mongo_db["repricer_history"]
+            .find({"seller_id": seller_id})
+            .to_list(length=20)
+        )
+        return JSONResponse(docs)
+
     @router.post("/rules", status_code=201)
     async def create_rule(request: Request, payload: RulePayload) -> JSONResponse:
         auth = _authorize(request)
