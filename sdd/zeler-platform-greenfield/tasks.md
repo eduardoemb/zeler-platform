@@ -495,12 +495,14 @@ P6 ─→ P7
   *Baseline update 2026-04-24*: zeler-app lint/test-runner blocker resolved on `staging`; `npm run lint` and `npm test` are green. P5.2-P5.6 remain incomplete and should now proceed strict-TDD.
   *Ref*: proposal §4. *TDD*: N/A (discovery). *Effort*: S
 
-- [ ] **P5.2** — Implement platform auth flow in zeler-app
+- [x] **P5.2** — Implement platform auth flow in zeler-app
   Add "Connect MercadoLibre" button → `GET /oauth/authorize?platform_user_id=<id>`. Handle callback redirect → show success toast. Store platform session (JWT cookie or server session). Auth provider: gateway `/internal/tokens/issue` (platform user context, not Meli token — gate behind platform user login).
+  *Result*: zeler-app dashboard now renders a Connect MercadoLibre CTA backed by `ZELER_GATEWAY_URL` / `NEXT_PUBLIC_ZELER_GATEWAY_URL`, uses the NextAuth session user id as `platform_user_id`, and adds `/accounts/linked` success/error callback messaging. Existing gateway `/oauth/authorize` and `/internal/tokens/issue` contracts are used; no e2e dependency was installed.
   *Ref*: design §5.1. *TDD*: Playwright E2E: button → mock OAuth → success redirect. *Effort*: M
 
-- [ ] **P5.3** — Accounts management screen
+- [x] **P5.3** — Accounts management screen
   zeler-app page `/accounts`: list linked Meli accounts (status, nickname, connected_at, last_refreshed_at). Call gateway `GET /api/accounts?user_id=<id>`. Add gateway `GET /api/accounts` endpoint returning account list (read-only, no tokens). Show status badge (active/revoked/error). "Re-link" CTA for revoked.
+  *Result*: Added gateway read-only `GET /api/accounts` with token-field projection and zeler-app `/accounts` page with account list, empty state, status badges, and revoked re-link CTA. Tests cover URL contracts, no-token API projection, status rendering, and empty state.
   *Ref*: spec §2, design §5.1. *TDD*: Component test: shows account list, shows revoked badge. *Effort*: M
 
 - [ ] **P5.4** — Bootstrap progress screen

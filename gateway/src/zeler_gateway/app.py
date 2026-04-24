@@ -8,6 +8,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler  # type: ignore[impo
 from fastapi import FastAPI
 from motor.motor_asyncio import AsyncIOMotorClient
 
+from zeler_gateway.accounts.router import router as accounts_router
 from zeler_gateway.auth.router import router as auth_router
 from zeler_gateway.config import get_settings
 from zeler_gateway.internal.router import router as internal_router
@@ -68,6 +69,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 
 app = FastAPI(title="zeler-meli-gateway", lifespan=lifespan)
+app.include_router(accounts_router)
 app.include_router(auth_router)
 app.include_router(internal_router)
 app.include_router(oauth_router)
