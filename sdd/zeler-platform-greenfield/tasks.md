@@ -691,6 +691,29 @@ P6 ─→ P7
   *Result*: Added Fulldock admin API for listing/creating/updating inventory rules with history context; added zeler-app `/fulldock/rules` route, API helpers, server actions, rule management panel, and module catalog routing.
   *TDD*: Component test: create rule, view history. *Effort*: M
 
+##### 6D — Archive Marker
+
+**Archive type**: Phase 6 subphase milestone (completes Phase 6; change remains open for Phase 7)  
+**Archive date**: 2026-04-24  
+**Verified HEADs**: zeler-platform `c3e4f17`; zeler-app `db5033d`  
+**Verify report reference**: Engram #2349 + `sdd/zeler-platform-greenfield/verify-report-phase-6d-fulldock` (`PASS_WITH_WARNINGS`, CRITICAL=0)  
+**Tasks completed**: P6D.1–P6D.4 (4/4)  
+**Quality gates**: zeler-platform `uv run pytest` ✅ · `uv run ruff check .` ✅ · `uv run ruff format --check .` ✅ · `uv run mypy .` ✅ · `uv run python -m infra.lint.check_direct_meli .` ✅ · zeler-app `npm test` ✅ · `npm run lint` ✅ · `npm run e2e` ✅  
+**Warnings carried forward**:
+- `spec.md` has no explicit FullDock module requirement/scenario section; verification used P6D tasks plus global module/gateway/design rules.
+- Live RabbitMQ consumer loop and live Meli `PUT /items/*/stock_locations` behavior were not locally executed; local verification used deterministic handler/API contracts and direct-Meli linting.
+- zeler-app e2e remains broad platform smoke coverage, not a FullDock-specific CRUD browser flow.
+- Sandbox/live validation of RabbitMQ + gateway proxy + Meli stock-location grant is required before production rollout.
+
+##### Phase 6 — Completion Marker
+
+**Archive type**: Phase milestone (Sheets, Publicador, Autoreply, and FullDock modules complete; change remains open for Phase 7)  
+**Archive date**: 2026-04-24  
+**Verified subphases**: P6A Sheets ✅ · P6B Publicador ✅ · P6C Autoreply ✅ · P6D FullDock ✅  
+**Tasks completed**: P6A.1–P6A.4, P6B.1–P6B.5, P6C.1–P6C.4, P6D.1–P6D.4 (17/17)  
+**Verify reports**: P6A Engram #2321 · P6B Engram #2329 · P6C Engram #2342 · P6D Engram #2349 — all `PASS_WITH_WARNINGS`, CRITICAL=0  
+**Phase 7 readiness**: Phase 6 parity prerequisite satisfied locally; proceed to legacy decommission planning/execution while carrying subphase live-environment warnings into sandbox/deployment validation.
+
 ---
 
 ## Phase 7: Legacy Decommission
