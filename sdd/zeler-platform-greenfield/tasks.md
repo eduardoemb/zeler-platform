@@ -497,7 +497,7 @@ P6 ─→ P7
 
 - [x] **P5.2** — Implement platform auth flow in zeler-app
   Add "Connect MercadoLibre" button → `GET /oauth/authorize?platform_user_id=<id>`. Handle callback redirect → show success toast. Store platform session (JWT cookie or server session). Auth provider: gateway `/internal/tokens/issue` (platform user context, not Meli token — gate behind platform user login).
-  *Result*: zeler-app dashboard now renders a Connect MercadoLibre CTA backed by `ZELER_GATEWAY_URL` / `NEXT_PUBLIC_ZELER_GATEWAY_URL`, uses the NextAuth session user id as `platform_user_id`, and adds `/accounts/linked` success/error callback messaging. Existing gateway `/oauth/authorize` and `/internal/tokens/issue` contracts are used; no e2e dependency was installed.
+  *Result*: zeler-app dashboard now renders a Connect MercadoLibre CTA backed by `ZELER_GATEWAY_URL` / `NEXT_PUBLIC_ZELER_GATEWAY_URL`, uses the NextAuth session user id as `platform_user_id`, and adds `/accounts/linked` success/error callback messaging. Existing gateway `/oauth/authorize` and `/internal/tokens/issue` contracts are used. Follow-up verify #2307 added minimal Playwright runner coverage for the OAuth CTA/authorize route contract.
   *Ref*: design §5.1. *TDD*: Playwright E2E: button → mock OAuth → success redirect. *Effort*: M
 
 - [x] **P5.3** — Accounts management screen
@@ -512,12 +512,12 @@ P6 ─→ P7
 
 - [x] **P5.5** — Repricer rules screen
   zeler-app page `/repricer/rules`: list rules (call repricer `GET /repricer/rules?seller_id=`), create/edit/delete via repricer API. Show last repricer_history entries per item. Wire through gateway internal JWT (zeler-app requests JWTs from gateway on behalf of user session).
-  *Result*: Added zeler-app `/repricer/rules` page, API contract helpers for rules/create/history, presentational rules panel with create form and recent history, plus repricer module `GET /repricer/history?seller_id=` admin endpoint. Current server wiring uses `REPRICER_API_URL` + `REPRICER_API_TOKEN` while the gateway user-session token exchange remains a follow-up hardening item.
+  *Result*: Added zeler-app `/repricer/rules` page, API contract helpers for rules/create/update/delete/history, server actions wired to form submissions, edit and deactivate controls, mutation error representation, and recent history. Repricer module already exposes `POST /repricer/rules`, `PATCH /repricer/rules/{rule_id}`, `DELETE /repricer/rules/{rule_id}`, and `GET /repricer/history?seller_id=` admin endpoints. Current server wiring uses `REPRICER_API_URL` + `REPRICER_API_TOKEN` while the gateway user-session token exchange remains a follow-up hardening item.
   *Ref*: spec §6 R6.4. *TDD*: Component test: renders rules list, create rule submits POST. *Effort*: M
 
 - [x] **P5.6** — Remove / deprecate legacy-wired screens
   From audit in P5.1: for each legacy endpoint call, either wire to new platform API or remove the screen. Add deprecation notice to removed screens. Ensure no 5xx from removed endpoints in staging.
-  *Result*: Removed legacy product-domain links from the module catalog; EasyReprice routes to `/repricer/rules`, while SheetSeller/FullDock/AutoReply/Publicador route to in-app deprecation notices until their P6 platform modules exist. Added tests that guard against legacy product-domain URLs and external-link affordances on internal modules.
+  *Result*: Removed legacy product-domain links from the module catalog; EasyReprice routes to `/repricer/rules`, while SheetSeller/FullDock/AutoReply/Publicador route to in-app deprecation notices until their P6 platform modules exist. Added unit tests and minimal Playwright coverage that guard against legacy product-domain URLs and external-link affordances on internal modules.
   *Ref*: proposal §4. *TDD*: Playwright smoke: all screens load without 5xx. *Effort*: M
 
 ---
