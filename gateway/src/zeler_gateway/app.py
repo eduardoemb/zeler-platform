@@ -3,12 +3,16 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
+import structlog
 from apscheduler.schedulers.asyncio import AsyncIOScheduler  # type: ignore[import-untyped]
 from fastapi import FastAPI
 from motor.motor_asyncio import AsyncIOMotorClient
 
 from zeler_gateway.config import get_settings
 from zeler_gateway.oauth.router import router as oauth_router
+from zeler_gateway.tokens.refresh_worker import refresh_once
+
+logger = structlog.get_logger(__name__)
 
 
 @asynccontextmanager
@@ -23,6 +27,22 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     )
     app.state.mongo_db = app.state.mongo_client[settings.mongo_db]
     app.state.scheduler = AsyncIOScheduler()
+
+    async def _scheduled_refresh() -> None:
+        try:
+            await refresh_once(app.state.mongo_db)
+        except Exception:
+            logger.exception("refresh worker pass failed")
+
+    app.state.scheduler.add_job(
+        _scheduled_refresh,
+        "interval",
+        minutes=5,
+        id="meli-token-refresh",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
     app.state.scheduler.start()
 
     try:
