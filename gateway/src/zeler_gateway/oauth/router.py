@@ -55,8 +55,22 @@ async def callback(
     access_enc = encrypt_token(str(token_payload["access_token"]), account_id=str(seller_id))
     refresh_enc = encrypt_token(str(token_payload["refresh_token"]), account_id=str(seller_id))
 
+    meli_accounts = request.app.state.mongo_db["meli_accounts"]
+    account_filter = {"seller_id": seller_id, "app_id": APP_ID}
+
+    # Spec §1 R1.1: `connected_at` semantics differ by existing account state:
+    #   - first connect (no existing doc)     → connected_at = now (via $setOnInsert)
+    #   - duplicate connect while active      → preserve existing connected_at
+    #   - re-link from revoked/invalid        → connected_at = now (a new connection)
+    existing = await meli_accounts.find_one(account_filter)
+    is_relink_after_revocation = existing is not None and existing.get("status") in {
+        "revoked",
+        "invalid",
+        "invalid_grant",
+    }
+
     # TODO(P1.x): fetch real nickname from GET /users/{user_id} once we have a settings toggle.
-    doc_set = {
+    doc_set: dict[str, Any] = {
         "seller_id": seller_id,
         "nickname": f"seller_{seller_id}",
         "app_id": APP_ID,
@@ -72,12 +86,19 @@ async def callback(
         "expires_at": now + timedelta(seconds=expires_in),
         "kms_key_version": access_enc.kms_key_version,
         "updated_at": now,
-        "connected_at": now,
         "last_refreshed_at": now,
     }
-    await request.app.state.mongo_db["meli_accounts"].update_one(
-        {"seller_id": seller_id, "app_id": APP_ID},
-        {"$set": doc_set, "$setOnInsert": {"created_at": now}},
+    doc_set_on_insert: dict[str, Any] = {
+        "created_at": now,
+        "connected_at": now,
+    }
+    if is_relink_after_revocation:
+        # A re-link materially creates a new connection; bump connected_at.
+        doc_set["connected_at"] = now
+
+    await meli_accounts.update_one(
+        account_filter,
+        {"$set": doc_set, "$setOnInsert": doc_set_on_insert},
         upsert=True,
     )
     await emit_accounts_linked(seller_id=seller_id, platform_user_id=claims.platform_user_id)

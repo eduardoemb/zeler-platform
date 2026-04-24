@@ -179,3 +179,95 @@ async def test_oauth_callback_invalid_grant_returns_400(fake_mongo_db: FakeAsync
 
     assert response.status_code == 400
     assert fake_mongo_db["meli_accounts"].documents == {}
+
+
+async def _run_oauth_callback(
+    token_response: httpx.Response, *, code: str = "valid-code"
+) -> httpx.Response:
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://gateway.test") as client:
+        authorize_response = await client.get(
+            "/oauth/authorize", params={"platform_user_id": "platform-user-123"}
+        )
+        state = parse_qs(urlparse(authorize_response.headers["location"]).query)["state"][0]
+        with respx.mock(assert_all_called=True) as respx_mock:
+            respx_mock.post("https://api.mercadolibre.com/oauth/token").mock(
+                return_value=token_response
+            )
+            return await client.get(
+                "/oauth/callback", params={"code": code, "state": state}
+            )
+
+
+@pytest.mark.asyncio
+async def test_duplicate_connect_preserves_connected_at(
+    fake_mongo_db: FakeAsyncDatabase,
+) -> None:
+    """Spec §1 R1.1: duplicate connect while active preserves connected_at."""
+    token_response = httpx.Response(
+        200,
+        json={
+            "access_token": "access-token-plain",
+            "refresh_token": "refresh-token-plain",
+            "user_id": 123456789,
+            "expires_in": 21600,
+            "scope": "read write",
+        },
+    )
+
+    first = await _run_oauth_callback(token_response)
+    assert first.status_code == 302
+    first_doc = await fake_mongo_db["meli_accounts"].find_one(
+        {"seller_id": 123456789, "app_id": "zeler-platform"}
+    )
+    assert first_doc is not None
+    first_connected_at = first_doc["connected_at"]
+
+    # Second connect while status is still 'active' → connected_at must stick.
+    second = await _run_oauth_callback(token_response)
+    assert second.status_code == 302
+    second_doc = await fake_mongo_db["meli_accounts"].find_one(
+        {"seller_id": 123456789, "app_id": "zeler-platform"}
+    )
+    assert second_doc is not None
+    assert second_doc["connected_at"] == first_connected_at
+    # But last_refreshed_at must be updated on each call.
+    assert second_doc["last_refreshed_at"] >= first_doc["last_refreshed_at"]
+
+
+@pytest.mark.asyncio
+async def test_relink_after_revoked_updates_connected_at(
+    fake_mongo_db: FakeAsyncDatabase,
+) -> None:
+    """Spec §1 R1.1 line 185: re-link from revoked bumps connected_at."""
+    token_response = httpx.Response(
+        200,
+        json={
+            "access_token": "access-token-plain",
+            "refresh_token": "refresh-token-plain",
+            "user_id": 123456789,
+            "expires_in": 21600,
+            "scope": "read write",
+        },
+    )
+
+    first = await _run_oauth_callback(token_response)
+    assert first.status_code == 302
+    first_doc = await fake_mongo_db["meli_accounts"].find_one(
+        {"seller_id": 123456789, "app_id": "zeler-platform"}
+    )
+    assert first_doc is not None
+    first_connected_at = first_doc["connected_at"]
+
+    # Flip the stored doc to 'revoked' to simulate an invalid_grant path.
+    fake_mongo_db["meli_accounts"].documents[(123456789, "zeler-platform")]["status"] = "revoked"
+
+    # Re-link should mint a new connected_at, strictly greater.
+    relink = await _run_oauth_callback(token_response, code="new-code")
+    assert relink.status_code == 302
+    relinked_doc = await fake_mongo_db["meli_accounts"].find_one(
+        {"seller_id": 123456789, "app_id": "zeler-platform"}
+    )
+    assert relinked_doc is not None
+    assert relinked_doc["status"] == "active"
+    assert relinked_doc["connected_at"] > first_connected_at
