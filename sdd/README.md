@@ -1,7 +1,7 @@
 # SDD pointer
 
-The active SDD artifacts for `zeler-platform` currently live in the sibling repository:
+The active SDD artifacts for `zeler-platform` live in this repository:
 
-- `../zeler-core/sdd/zeler-platform-greenfield/`
+- `sdd/zeler-platform-greenfield/`
 
-Until the monorepo owns its own `sdd/` directory, treat that location as the source of truth.
+Treat that location as the canonical source of truth for the greenfield platform SDD artifacts.

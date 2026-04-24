@@ -17,4 +17,4 @@ Python 3.11 + uv + FastAPI + MongoDB + RabbitMQ + Cloud Run
 
 ## SDD design
 
-See `../zeler-core/sdd/zeler-platform-greenfield/design.md`.
+See `sdd/zeler-platform-greenfield/design.md`.
