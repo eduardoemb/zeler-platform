@@ -1,0 +1,14 @@
+[
+  {
+    "keys": { "received_at": 1 },
+    "options": { "expireAfterSeconds": 3888000, "name": "ttl_received_at_45d" }
+  },
+  {
+    "keys": { "topic": 1, "received_at": -1 },
+    "options": { "name": "topic_received_at_desc" }
+  },
+  {
+    "keys": { "user_id": 1, "received_at": -1 },
+    "options": { "name": "user_id_received_at_desc" }
+  }
+]

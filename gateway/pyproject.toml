@@ -4,6 +4,7 @@ version = "0.0.0"
 description = "Gateway service for zeler-platform"
 requires-python = ">=3.11"
 dependencies = [
+  "aio-pika>=9.4.0",
   "apscheduler>=3.11.2",
   "cachetools>=7.0.6",
   "cryptography>=46.0.7",

@@ -1,0 +1,10 @@
+[
+  {
+    "keys": { "expires_at": 1 },
+    "options": { "expireAfterSeconds": 0, "name": "ttl_expires_at" }
+  },
+  {
+    "keys": { "module_id": 1, "processed_at": -1 },
+    "options": { "name": "module_id_processed_at_desc" }
+  }
+]

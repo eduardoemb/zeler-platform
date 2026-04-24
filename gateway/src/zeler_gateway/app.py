@@ -15,6 +15,7 @@ from zeler_gateway.observability.logging import configure_logging
 from zeler_gateway.observability.tracing import configure_tracing
 from zeler_gateway.proxy.router import router as proxy_router
 from zeler_gateway.tokens.refresh_worker import refresh_once
+from zeler_gateway.webhooks.router import router as webhooks_router
 
 logger = structlog.get_logger(__name__)
 
@@ -69,6 +70,7 @@ app = FastAPI(title="zeler-meli-gateway", lifespan=lifespan)
 app.include_router(auth_router)
 app.include_router(oauth_router)
 app.include_router(proxy_router, prefix="/proxy/meli")
+app.include_router(webhooks_router)
 
 
 @app.get("/health")

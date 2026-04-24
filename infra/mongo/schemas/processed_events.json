@@ -1,0 +1,14 @@
+{
+  "$jsonSchema": {
+    "bsonType": "object",
+    "required": ["_id", "module_id", "processed_at", "expires_at"],
+    "properties": {
+      "_id": { "bsonType": "string" },
+      "module_id": { "bsonType": "string" },
+      "processed_at": { "bsonType": "date" },
+      "expires_at": { "bsonType": "date" },
+      "schema_version": { "bsonType": ["int", "long"] }
+    },
+    "additionalProperties": true
+  }
+}

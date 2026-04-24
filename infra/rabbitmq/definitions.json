@@ -1,0 +1,353 @@
+{
+  "exchanges": [
+    {
+      "name": "meli.events",
+      "type": "topic",
+      "durable": true
+    },
+    {
+      "name": "zeler.repricer.items.dlx",
+      "type": "direct",
+      "durable": true
+    },
+    {
+      "name": "zeler.repricer.items_prices.dlx",
+      "type": "direct",
+      "durable": true
+    },
+    {
+      "name": "zeler.sheets.orders.dlx",
+      "type": "direct",
+      "durable": true
+    },
+    {
+      "name": "zeler.publicador.questions.dlx",
+      "type": "direct",
+      "durable": true
+    },
+    {
+      "name": "zeler.publicador.messages.dlx",
+      "type": "direct",
+      "durable": true
+    }
+  ],
+  "queues": [
+    {
+      "name": "zeler.repricer.items.dlq",
+      "durable": true,
+      "arguments": {}
+    },
+    {
+      "name": "zeler.repricer.items",
+      "durable": true,
+      "arguments": {
+        "x-dead-letter-exchange": "zeler.repricer.items.dlx",
+        "x-delivery-limit": 5
+      }
+    },
+    {
+      "name": "zeler.repricer.items.retry.1s",
+      "durable": true,
+      "arguments": {
+        "x-message-ttl": 1000,
+        "x-dead-letter-exchange": "meli.events"
+      }
+    },
+    {
+      "name": "zeler.repricer.items.retry.5s",
+      "durable": true,
+      "arguments": {
+        "x-message-ttl": 5000,
+        "x-dead-letter-exchange": "meli.events"
+      }
+    },
+    {
+      "name": "zeler.repricer.items.retry.30s",
+      "durable": true,
+      "arguments": {
+        "x-message-ttl": 30000,
+        "x-dead-letter-exchange": "meli.events"
+      }
+    },
+    {
+      "name": "zeler.repricer.items.retry.2m",
+      "durable": true,
+      "arguments": {
+        "x-message-ttl": 120000,
+        "x-dead-letter-exchange": "meli.events"
+      }
+    },
+    {
+      "name": "zeler.repricer.items.retry.10m",
+      "durable": true,
+      "arguments": {
+        "x-message-ttl": 600000,
+        "x-dead-letter-exchange": "meli.events"
+      }
+    },
+    {
+      "name": "zeler.repricer.items_prices.dlq",
+      "durable": true,
+      "arguments": {}
+    },
+    {
+      "name": "zeler.repricer.items_prices",
+      "durable": true,
+      "arguments": {
+        "x-dead-letter-exchange": "zeler.repricer.items_prices.dlx",
+        "x-delivery-limit": 5
+      }
+    },
+    {
+      "name": "zeler.repricer.items_prices.retry.1s",
+      "durable": true,
+      "arguments": {
+        "x-message-ttl": 1000,
+        "x-dead-letter-exchange": "meli.events"
+      }
+    },
+    {
+      "name": "zeler.repricer.items_prices.retry.5s",
+      "durable": true,
+      "arguments": {
+        "x-message-ttl": 5000,
+        "x-dead-letter-exchange": "meli.events"
+      }
+    },
+    {
+      "name": "zeler.repricer.items_prices.retry.30s",
+      "durable": true,
+      "arguments": {
+        "x-message-ttl": 30000,
+        "x-dead-letter-exchange": "meli.events"
+      }
+    },
+    {
+      "name": "zeler.repricer.items_prices.retry.2m",
+      "durable": true,
+      "arguments": {
+        "x-message-ttl": 120000,
+        "x-dead-letter-exchange": "meli.events"
+      }
+    },
+    {
+      "name": "zeler.repricer.items_prices.retry.10m",
+      "durable": true,
+      "arguments": {
+        "x-message-ttl": 600000,
+        "x-dead-letter-exchange": "meli.events"
+      }
+    },
+    {
+      "name": "zeler.sheets.orders.dlq",
+      "durable": true,
+      "arguments": {}
+    },
+    {
+      "name": "zeler.sheets.orders",
+      "durable": true,
+      "arguments": {
+        "x-dead-letter-exchange": "zeler.sheets.orders.dlx",
+        "x-delivery-limit": 5
+      }
+    },
+    {
+      "name": "zeler.sheets.orders.retry.1s",
+      "durable": true,
+      "arguments": {
+        "x-message-ttl": 1000,
+        "x-dead-letter-exchange": "meli.events"
+      }
+    },
+    {
+      "name": "zeler.sheets.orders.retry.5s",
+      "durable": true,
+      "arguments": {
+        "x-message-ttl": 5000,
+        "x-dead-letter-exchange": "meli.events"
+      }
+    },
+    {
+      "name": "zeler.sheets.orders.retry.30s",
+      "durable": true,
+      "arguments": {
+        "x-message-ttl": 30000,
+        "x-dead-letter-exchange": "meli.events"
+      }
+    },
+    {
+      "name": "zeler.sheets.orders.retry.2m",
+      "durable": true,
+      "arguments": {
+        "x-message-ttl": 120000,
+        "x-dead-letter-exchange": "meli.events"
+      }
+    },
+    {
+      "name": "zeler.sheets.orders.retry.10m",
+      "durable": true,
+      "arguments": {
+        "x-message-ttl": 600000,
+        "x-dead-letter-exchange": "meli.events"
+      }
+    },
+    {
+      "name": "zeler.publicador.questions.dlq",
+      "durable": true,
+      "arguments": {}
+    },
+    {
+      "name": "zeler.publicador.questions",
+      "durable": true,
+      "arguments": {
+        "x-dead-letter-exchange": "zeler.publicador.questions.dlx",
+        "x-delivery-limit": 5
+      }
+    },
+    {
+      "name": "zeler.publicador.questions.retry.1s",
+      "durable": true,
+      "arguments": {
+        "x-message-ttl": 1000,
+        "x-dead-letter-exchange": "meli.events"
+      }
+    },
+    {
+      "name": "zeler.publicador.questions.retry.5s",
+      "durable": true,
+      "arguments": {
+        "x-message-ttl": 5000,
+        "x-dead-letter-exchange": "meli.events"
+      }
+    },
+    {
+      "name": "zeler.publicador.questions.retry.30s",
+      "durable": true,
+      "arguments": {
+        "x-message-ttl": 30000,
+        "x-dead-letter-exchange": "meli.events"
+      }
+    },
+    {
+      "name": "zeler.publicador.questions.retry.2m",
+      "durable": true,
+      "arguments": {
+        "x-message-ttl": 120000,
+        "x-dead-letter-exchange": "meli.events"
+      }
+    },
+    {
+      "name": "zeler.publicador.questions.retry.10m",
+      "durable": true,
+      "arguments": {
+        "x-message-ttl": 600000,
+        "x-dead-letter-exchange": "meli.events"
+      }
+    },
+    {
+      "name": "zeler.publicador.messages.dlq",
+      "durable": true,
+      "arguments": {}
+    },
+    {
+      "name": "zeler.publicador.messages",
+      "durable": true,
+      "arguments": {
+        "x-dead-letter-exchange": "zeler.publicador.messages.dlx",
+        "x-delivery-limit": 5
+      }
+    },
+    {
+      "name": "zeler.publicador.messages.retry.1s",
+      "durable": true,
+      "arguments": {
+        "x-message-ttl": 1000,
+        "x-dead-letter-exchange": "meli.events"
+      }
+    },
+    {
+      "name": "zeler.publicador.messages.retry.5s",
+      "durable": true,
+      "arguments": {
+        "x-message-ttl": 5000,
+        "x-dead-letter-exchange": "meli.events"
+      }
+    },
+    {
+      "name": "zeler.publicador.messages.retry.30s",
+      "durable": true,
+      "arguments": {
+        "x-message-ttl": 30000,
+        "x-dead-letter-exchange": "meli.events"
+      }
+    },
+    {
+      "name": "zeler.publicador.messages.retry.2m",
+      "durable": true,
+      "arguments": {
+        "x-message-ttl": 120000,
+        "x-dead-letter-exchange": "meli.events"
+      }
+    },
+    {
+      "name": "zeler.publicador.messages.retry.10m",
+      "durable": true,
+      "arguments": {
+        "x-message-ttl": 600000,
+        "x-dead-letter-exchange": "meli.events"
+      }
+    }
+  ],
+  "bindings": [
+    {
+      "source": "zeler.repricer.items.dlx",
+      "destination": "zeler.repricer.items.dlq",
+      "routing_key": "zeler.repricer.items"
+    },
+    {
+      "source": "meli.events",
+      "destination": "zeler.repricer.items",
+      "routing_key": "items.*"
+    },
+    {
+      "source": "zeler.repricer.items_prices.dlx",
+      "destination": "zeler.repricer.items_prices.dlq",
+      "routing_key": "zeler.repricer.items_prices"
+    },
+    {
+      "source": "meli.events",
+      "destination": "zeler.repricer.items_prices",
+      "routing_key": "items.price_updated"
+    },
+    {
+      "source": "zeler.sheets.orders.dlx",
+      "destination": "zeler.sheets.orders.dlq",
+      "routing_key": "zeler.sheets.orders"
+    },
+    {
+      "source": "meli.events",
+      "destination": "zeler.sheets.orders",
+      "routing_key": "orders.*"
+    },
+    {
+      "source": "zeler.publicador.questions.dlx",
+      "destination": "zeler.publicador.questions.dlq",
+      "routing_key": "zeler.publicador.questions"
+    },
+    {
+      "source": "meli.events",
+      "destination": "zeler.publicador.questions",
+      "routing_key": "questions.*"
+    },
+    {
+      "source": "zeler.publicador.messages.dlx",
+      "destination": "zeler.publicador.messages.dlq",
+      "routing_key": "zeler.publicador.messages"
+    },
+    {
+      "source": "meli.events",
+      "destination": "zeler.publicador.messages",
+      "routing_key": "messages.*"
+    }
+  ]
+}

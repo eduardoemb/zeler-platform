@@ -1,3 +1,27 @@
 {
-  "$comment": "TODO: populated in Phase 3 alongside the Pydantic model for this collection. See sdd/zeler-platform-greenfield/tasks P3.*"
+  "$jsonSchema": {
+    "bsonType": "object",
+    "required": [
+      "_id",
+      "topic",
+      "user_id",
+      "resource",
+      "received_at",
+      "raw_body",
+      "source_ip"
+    ],
+    "properties": {
+      "_id": { "bsonType": "string" },
+      "topic": { "bsonType": "string" },
+      "user_id": { "bsonType": ["long", "int", "string"] },
+      "resource": { "bsonType": "string" },
+      "received_at": { "bsonType": "date" },
+      "published_at": { "bsonType": ["date", "null"] },
+      "classification": { "bsonType": ["string", "null"] },
+      "raw_body": { "bsonType": "object" },
+      "source_ip": { "bsonType": "string" },
+      "schema_version": { "bsonType": ["int", "long"] }
+    },
+    "additionalProperties": true
+  }
 }

@@ -40,6 +40,12 @@ class Settings(BaseSettings):
     kms_meli_tokens_key: str = Field(default="meli-tokens", alias="KMS_MELI_TOKENS_KEY")
     kms_platform_jwt_key: str = Field(default="platform-jwt", alias="KMS_PLATFORM_JWT_KEY")
     use_secret_manager: bool = Field(default=False, alias="USE_SECRET_MANAGER")
+    meli_allowed_ips: str = Field(default="", alias="MELI_ALLOWED_IPS")
+    meli_webhook_hmac_secret: SecretStr = Field(
+        default=SecretStr(""), alias="MELI_WEBHOOK_HMAC_SECRET"
+    )
+    rabbitmq_url: str = Field(default="", alias="RABBITMQ_URL")
+    rabbitmq_events_exchange: str = Field(default="meli.events", alias="RABBITMQ_EVENTS_EXCHANGE")
 
     @field_validator("meli_client_id", "meli_redirect_uri")
     @classmethod
