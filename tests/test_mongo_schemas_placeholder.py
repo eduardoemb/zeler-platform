@@ -31,6 +31,7 @@ EXPECTED_FILES = {
     # from topic catalog_item_competition_status
     "competition_snapshots.json",
 }
+ACTIVE_PHASE_ONE_SCHEMAS = {"meli_accounts.json"}
 
 
 def test_placeholder_schema_files_exist_and_reference_phase_three() -> None:
@@ -39,7 +40,7 @@ def test_placeholder_schema_files_exist_and_reference_phase_three() -> None:
     actual_files = {path.name for path in SCHEMAS_DIR.glob("*.json")}
     assert actual_files == EXPECTED_FILES
 
-    for file_name in sorted(EXPECTED_FILES):
+    for file_name in sorted(EXPECTED_FILES - ACTIVE_PHASE_ONE_SCHEMAS):
         payload = json.loads((SCHEMAS_DIR / file_name).read_text(encoding="utf-8"))
         assert isinstance(payload, dict)
         assert "P3" in payload.get("$comment", "")

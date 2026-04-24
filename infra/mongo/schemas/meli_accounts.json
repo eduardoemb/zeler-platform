@@ -1,3 +1,101 @@
 {
-  "$comment": "TODO: populated in Phase 3 alongside the Pydantic model for this collection. See sdd/zeler-platform-greenfield/tasks P3.*"
+  "$jsonSchema": {
+    "bsonType": "object",
+    "required": [
+      "seller_id",
+      "app_id",
+      "platform_user_id",
+      "access_token_ciphertext",
+      "access_token_dek_wrapped",
+      "refresh_token_ciphertext",
+      "refresh_token_dek_wrapped",
+      "token_nonce",
+      "scopes",
+      "status",
+      "expires_at",
+      "created_at",
+      "updated_at",
+      "kms_key_version"
+    ],
+    "properties": {
+      "_id": {
+        "bsonType": "objectId"
+      },
+      "seller_id": {
+        "bsonType": "long"
+      },
+      "app_id": {
+        "bsonType": "string"
+      },
+      "platform_user_id": {
+        "bsonType": "string"
+      },
+      "nickname": {
+        "bsonType": "string"
+      },
+      "access_token_ciphertext": {
+        "bsonType": ["binData", "string"]
+      },
+      "access_token_dek_wrapped": {
+        "bsonType": ["binData", "string"]
+      },
+      "refresh_token_ciphertext": {
+        "bsonType": ["binData", "string"]
+      },
+      "refresh_token_dek_wrapped": {
+        "bsonType": ["binData", "string"]
+      },
+      "token_nonce": {
+        "bsonType": ["binData", "string"]
+      },
+      "scopes": {
+        "bsonType": "array",
+        "items": {
+          "bsonType": "string"
+        }
+      },
+      "status": {
+        "enum": ["active", "revoked", "invalid_grant", "pending"]
+      },
+      "expires_at": {
+        "bsonType": "date"
+      },
+      "created_at": {
+        "bsonType": "date"
+      },
+      "updated_at": {
+        "bsonType": "date"
+      },
+      "connected_at": {
+        "bsonType": "date"
+      },
+      "last_refresh_at": {
+        "bsonType": "date"
+      },
+      "last_refreshed_at": {
+        "bsonType": "date"
+      },
+      "last_error": {
+        "bsonType": "string"
+      },
+      "refresh_token_expires_at": {
+        "bsonType": ["date", "null"]
+      },
+      "lock_held_until": {
+        "bsonType": ["date", "null"]
+      },
+      "nickname": {
+        "bsonType": "string"
+      },
+      "sync_status": {
+        "bsonType": "object"
+      },
+      "kms_key_version": {
+        "bsonType": "string"
+      },
+      "schema_version": {
+        "bsonType": "int"
+      }
+    }
+  }
 }

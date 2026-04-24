@@ -1,0 +1,30 @@
+[
+  {
+    "keys": {
+      "seller_id": 1,
+      "app_id": 1
+    },
+    "options": {
+      "name": "uniq_meli_accounts_seller_app",
+      "unique": true
+    }
+  },
+  {
+    "keys": {
+      "status": 1,
+      "expires_at": 1
+    },
+    "options": {
+      "name": "idx_meli_accounts_status_expires_at"
+    }
+  },
+  {
+    "keys": {
+      "lock_held_until": 1
+    },
+    "options": {
+      "name": "idx_meli_accounts_lock_held_until_sparse",
+      "sparse": true
+    }
+  }
+]

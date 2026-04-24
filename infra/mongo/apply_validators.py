@@ -10,6 +10,7 @@ from pymongo.database import Database
 
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_SCHEMAS_DIR = ROOT / "infra" / "mongo" / "schemas"
+DEFAULT_INDEXES_DIR = ROOT / "infra" / "mongo" / "indexes"
 DEFAULT_MONGO_URI = (
     "mongodb://changeme_local_only:changeme_local_only@127.0.0.1:27017/"
     "zeler_platform_dev?authSource=admin"
@@ -27,6 +28,36 @@ def _load_schema(schema_path: Path) -> dict[str, Any]:
         raise ValueError(msg)
 
     return loaded
+
+
+def _load_indexes(index_path: Path) -> list[dict[str, Any]]:
+    import json
+
+    with index_path.open("r", encoding="utf-8") as handle:
+        loaded = json.load(handle)
+
+    if not isinstance(loaded, list):
+        msg = f"Index file must contain a JSON array: {index_path}"
+        raise ValueError(msg)
+
+    for index_definition in loaded:
+        if not isinstance(index_definition, dict):
+            msg = f"Index definition must be a JSON object: {index_path}"
+            raise ValueError(msg)
+
+    return loaded
+
+
+def _schema_document(schema: dict[str, Any]) -> dict[str, Any]:
+    json_schema = schema.get("$jsonSchema")
+    if json_schema is None:
+        return schema
+
+    if not isinstance(json_schema, dict):
+        msg = "$jsonSchema must contain a JSON object"
+        raise ValueError(msg)
+
+    return json_schema
 
 
 # JSON Schema keywords MongoDB $jsonSchema actually parses.
@@ -67,14 +98,42 @@ def _is_active_schema(schema: dict[str, Any]) -> bool:
     Placeholder schemas (e.g. {"$comment": "TODO"}) are inactive: they are
     versioned in the repo but have no validator effect until P3 fills them in.
     """
-    return any(key in _CANONICAL_JSON_SCHEMA_KEYS for key in schema)
+    schema_document = _schema_document(schema)
+    return any(key in _CANONICAL_JSON_SCHEMA_KEYS for key in schema_document)
 
 
 def _desired_validator(schema: dict[str, Any]) -> dict[str, Any]:
     if not _is_active_schema(schema):
         return {}
 
+    if "$jsonSchema" in schema:
+        return schema
+
     return {"$jsonSchema": schema}
+
+
+def _apply_indexes(database: Database[Mapping[str, Any]], indexes_dir: Path) -> dict[str, str]:
+    if not indexes_dir.exists():
+        return {}
+
+    results: dict[str, str] = {}
+    for index_path in sorted(indexes_dir.glob("*.json")):
+        collection_name = index_path.stem
+        for index_definition in _load_indexes(index_path):
+            keys = index_definition.get("keys")
+            options = index_definition.get("options", {})
+
+            if not isinstance(keys, dict):
+                msg = f"Index definition requires object keys: {index_path}"
+                raise ValueError(msg)
+            if not isinstance(options, dict):
+                msg = f"Index definition options must be an object: {index_path}"
+                raise ValueError(msg)
+
+            database[collection_name].create_index(list(keys.items()), **options)
+        results[collection_name] = "applied"
+
+    return results
 
 
 def _current_validator(
@@ -133,6 +192,9 @@ def apply_validators(mongo_uri: str, schemas_dir: Path) -> dict[str, str]:
             database.command("collMod", collection_name, validator=desired_validator)
             results[collection_name] = "applied"
 
+        index_results = _apply_indexes(database, schemas_dir.parent / "indexes")
+        for collection_name, result in index_results.items():
+            results[f"{collection_name}.indexes"] = result
         return results
     finally:
         client.close()
