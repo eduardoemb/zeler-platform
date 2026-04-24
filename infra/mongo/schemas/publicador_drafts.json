@@ -1,0 +1,27 @@
+{
+  "$jsonSchema": {
+    "bsonType": "object",
+    "properties": {
+      "_id": {"bsonType": ["objectId", "string"]},
+      "created_at": {"bsonType": "date"},
+      "generated_listing": {"bsonType": "object"},
+      "schema_version": {"bsonType": "int"},
+      "seller_id": {"bsonType": ["string", "long", "int"]},
+      "source_product": {"bsonType": "object"},
+      "status": {"enum": ["draft", "generated", "validation_failed", "published", "failed"]},
+      "updated_at": {"bsonType": "date"}
+    },
+    "required": [
+      "_id",
+      "seller_id",
+      "source_product",
+      "generated_listing",
+      "status",
+      "created_at",
+      "updated_at",
+      "schema_version"
+    ]
+  },
+  "validationAction": "error",
+  "validationLevel": "strict"
+}

@@ -599,23 +599,28 @@ P6 ─→ P7
 
 #### 6B: publicador-module (ex-PublicadorMeli)
 
-- [ ] **P6B.1** — Define publicador manifest + owned collections (`publicador_drafts`, `publicador_history`)
+- [x] **P6B.1** — Define publicador manifest + owned collections (`publicador_drafts`, `publicador_history`)
   *Events subscribed*: none (user-triggered). *Scope*: `POST /items`, `PUT /items/*`, `GET /categories/*`, `POST /items/validate`.
+  *Result*: Added `modules/publicador/manifest.yaml` with empty user-triggered subscriptions, gateway write/validation/category scopes, owned collections, startup registration, and `/health` readiness wiring. Runtime manifests now allow empty `subscribed_events` for modules that do not consume AMQP.
   *TDD*: Manifest validates. *Effort*: S
 
-- [ ] **P6B.2** — Create `publicador_drafts` + `publicador_history` collections + validators
+- [x] **P6B.2** — Create `publicador_drafts` + `publicador_history` collections + validators
+  *Result*: Added strict Mongo validators and indexes for seller/status draft listing and seller/draft history lookup.
   *TDD*: Validators strict. *Effort*: S
 
-- [ ] **P6B.3** — Implement LLM/Perplexity listing generation
+- [x] **P6B.3** — Implement LLM/Perplexity listing generation
   Port the LLM generation pattern from legacy PublicadorMeli. Input: product info. Output: title + description + attributes. Use env-injected API key from Secret Manager. No direct Meli calls (AST linter enforces).
+  *Result*: Added deterministic `ListingGenerator` behind an injected LLM protocol. Tests mock the LLM response and validate generated listing shape; no real LLM/Perplexity call is made.
   *TDD*: `test_generates_listing_from_product_info` (mock LLM API). *Effort*: M
 
-- [ ] **P6B.4** — Implement listing publish flow via gateway proxy
+- [x] **P6B.4** — Implement listing publish flow via gateway proxy
   Draft saved → validated → `POST /proxy/meli/items` via gateway. Result persisted in `publicador_history`.
+  *Result*: Added `PublicadorPublisher` that loads a draft, validates through the injected gateway client (`/items/validate`), publishes through the injected gateway client (`/items`), updates draft status, and records success/validation failure in `publicador_history`. Tests use a fake gateway client only; no Meli/RabbitMQ calls.
   *TDD*: `test_publish_calls_gateway_proxy`, `test_history_records_outcome`. *Effort*: M
 
-- [ ] **P6B.5** — Admin API + zeler-app screen for publicador
+- [x] **P6B.5** — Admin API + zeler-app screen for publicador
   Create draft, generate with LLM, preview, publish. View history.
+  *Result*: Added Publicador admin API endpoints for listing drafts with history, creating drafts, generating LLM listings, and publishing via the gateway flow. Added zeler-app Publicador route `/publicador/drafts`, API helpers, server actions, and a create/generate/preview/publish/history panel; module catalog now routes Publicador in-app.
   *TDD*: Component test: create draft → LLM generate → publish button. *Effort*: M
 
 #### 6C: autoreply-module (ex-Autoreplyia)

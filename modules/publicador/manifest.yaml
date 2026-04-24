@@ -1,0 +1,12 @@
+name: publicador
+version: 0.1.0
+subscribed_events: []
+owned_collections:
+  - publicador_drafts
+  - publicador_history
+allowed_meli_scopes:
+  - POST /items
+  - PUT /items/*
+  - GET /categories/*
+  - POST /items/validate
+health_endpoint: /health

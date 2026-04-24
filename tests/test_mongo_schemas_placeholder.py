@@ -30,6 +30,9 @@ EXPECTED_FILES = {
     # Sheets module-owned
     "sheets_exports.json",
     "sheets_sync_jobs.json",
+    # Publicador module-owned
+    "publicador_drafts.json",
+    "publicador_history.json",
     # FullDock module-owned (from topic stock-locations)
     "stock_locations.json",
     # Catalog competition tracking (SheetSeller + FullDock + Repricer)
@@ -56,6 +59,8 @@ ACTIVE_NON_PLACEHOLDER_SCHEMAS = {
     "users.json",
     "webhook_events.json",
     "processed_events.json",
+    "publicador_drafts.json",
+    "publicador_history.json",
 }
 
 

@@ -1,0 +1,28 @@
+{
+  "$jsonSchema": {
+    "bsonType": "object",
+    "properties": {
+      "_id": {"bsonType": ["objectId", "string"]},
+      "action": {"enum": ["generate", "validate", "publish"]},
+      "created_at": {"bsonType": "date"},
+      "draft_id": {"bsonType": ["objectId", "string"]},
+      "error": {"bsonType": ["null", "string"]},
+      "gateway_response": {"bsonType": ["null", "object"]},
+      "meli_item_id": {"bsonType": ["null", "string"]},
+      "outcome": {"enum": ["generated", "validated", "published", "validation_failed", "failed"]},
+      "schema_version": {"bsonType": "int"},
+      "seller_id": {"bsonType": ["string", "long", "int"]}
+    },
+    "required": [
+      "_id",
+      "seller_id",
+      "draft_id",
+      "action",
+      "outcome",
+      "created_at",
+      "schema_version"
+    ]
+  },
+  "validationAction": "error",
+  "validationLevel": "strict"
+}

@@ -38,7 +38,7 @@ class ModuleManifest(BaseModel):
 
     name: str = Field(min_length=1)
     version: str = Field(min_length=1)
-    subscribed_events: list[str] = Field(min_length=1)
+    subscribed_events: list[str] = Field(default_factory=list)
     owned_collections: list[str] = Field(min_length=1)
     allowed_meli_scopes: list[str] = Field(min_length=1)
     health_endpoint: str = Field(min_length=1)
