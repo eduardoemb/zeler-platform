@@ -452,6 +452,21 @@ P6 ─→ P7
 
 ---
 
+### Phase 4 — Archive Markers
+
+**Archive type**: Phase milestone (change remains open for Phase 5+)
+**Archive date**: 2026-04-24
+**Final HEAD SHA**: `f0f256c15a1b1ed03c56e7fbcc1c6e58852caaec`
+**Commits**: `38e8c90` (`feat(core): add module runtime foundation`) · `f0f256c` (`feat(repricer): complete phase 4 runtime flow`)
+**Test count**: 180 passed / 0 failed / 0 skipped
+**Quality gates**: `uv run pytest` ✅ · `uv run ruff check .` ✅ · `uv run ruff format --check .` ✅ · `uv run mypy .` ✅ · `uv run python -m infra.lint.check_direct_meli .` ✅
+**Verify report reference**: Engram #2291 (PASS WITH WARNINGS, CRITICAL=0, WARNING=4, SUGGESTION=3)
+**Tasks completed**: P4.1–P4.12 (12/12)
+**Carry-forward warnings**: no concrete repricer `aio-pika` consumer loop/binding yet; P4.12 E2E is deterministic in-process rather than live Docker Compose RabbitMQ/Mongo; routing-key mismatch risk remains between `items_prices.*` manifest subscription and `items.price_updated` classifier/topology binding; live Mongo validator/index application remains an ops release task.
+**Tasks deferred**: P1.17 — metrics SDK + `/metrics` endpoint remains deferred from Phase 1.
+
+---
+
 ## Phase 5: zeler-app Integration
 
 **Goal**: Wire existing Next.js 15 app to the new platform gateway for auth + data. Deprecate any legacy-wired screens.
