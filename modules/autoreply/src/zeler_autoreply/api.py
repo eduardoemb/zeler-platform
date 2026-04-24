@@ -110,6 +110,11 @@ def build_router(*, clock: Callable[[], datetime] | None = None) -> APIRouter:
         auth = _authorize(request)
         if auth is not None:
             return auth
+        current = await request.app.state.mongo_db["autoreply_templates"].find_one(
+            {"_id": template_id}
+        )
+        if current is None:
+            return JSONResponse(status_code=404, content={"error": "autoreply_template_not_found"})
         await request.app.state.mongo_db["autoreply_templates"].delete_one({"_id": template_id})
         return JSONResponse(status_code=204, content=None)
 

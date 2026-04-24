@@ -151,6 +151,58 @@ async def test_update_template_replaces_existing(monkeypatch: pytest.MonkeyPatch
 
 
 @pytest.mark.asyncio
+async def test_delete_template_removes_existing_template(monkeypatch: pytest.MonkeyPatch) -> None:
+    app, db = _app(monkeypatch)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.delete(
+            "/autoreply/templates/template-1",
+            headers={"Authorization": "Bearer valid"},
+        )
+
+    assert response.status_code == 204
+    assert db.autoreply_templates.docs == []
+
+
+@pytest.mark.asyncio
+async def test_delete_template_returns_404_when_missing(monkeypatch: pytest.MonkeyPatch) -> None:
+    app, db = _app(monkeypatch)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.delete(
+            "/autoreply/templates/missing-template",
+            headers={"Authorization": "Bearer valid"},
+        )
+
+    assert response.status_code == 404
+    assert response.json() == {"error": "autoreply_template_not_found"}
+    assert len(db.autoreply_templates.docs) == 1
+
+
+@pytest.mark.asyncio
+async def test_delete_template_requires_module_jwt(monkeypatch: pytest.MonkeyPatch) -> None:
+    from zeler_platform_core.auth.jwt import InvalidJWTError
+
+    app, db = _app(monkeypatch, jwt_error=InvalidJWTError("bad token"))
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.delete(
+            "/autoreply/templates/template-1",
+            headers={"Authorization": "Bearer invalid"},
+        )
+
+    assert response.status_code == 401
+    assert response.json() == {"error": "invalid_token", "detail": "bad token"}
+    assert len(db.autoreply_templates.docs) == 1
+
+
+@pytest.mark.asyncio
 async def test_preview_template_returns_match_decision(monkeypatch: pytest.MonkeyPatch) -> None:
     app, _db = _app(monkeypatch)
 

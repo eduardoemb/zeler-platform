@@ -653,8 +653,8 @@ P6 ─→ P7
 
 - [x] **P6C.4** — Template management API + zeler-app screen
   CRUD for templates per seller. Pattern matching (keyword or regex). Preview.
-  *Result*: Added Autoreply admin API for listing/creating/updating/deleting templates and previewing match decisions; added zeler-app `/autoreply/templates` route, API helpers, server actions, template management panel, preview form, and module catalog route.
-  *TDD*: Component test: create template, test preview. *Effort*: M
+  *Result*: Added Autoreply admin API for listing/creating/updating/deleting templates and previewing match decisions; added zeler-app `/autoreply/templates` route, API helpers, server actions, template management panel, visible delete flow, preview form, and module catalog route. Follow-up verify gap fixed with explicit backend delete success/not-found/auth coverage plus app delete helper/action/button coverage.
+  *TDD*: Component/helper tests: create, update, delete, preview; backend API delete behavior. *Effort*: M
 
 #### 6D: fulldock-module (ex-FullDock)
 
