@@ -364,6 +364,21 @@ P6 ─→ P7
 
 ---
 
+### Phase 3 — Archive Markers
+
+**Archive type**: Phase milestone (change remains open for Phase 4+)
+**Archive date**: 2026-04-24
+**Final HEAD SHA**: `b9d121c5df3a968a6f985862bddfa4c8d8f69aa7`
+**Commits**: `e0c3127` (`feat(core): add phase 3 platform foundation`) · `f94e69a` (`docs(sdd): add phase 3 verification report`) · `b9d121c` (`feat(core): complete phase 3 platform bootstrap`)
+**Test count**: 152 passed / 0 failed / 0 skipped
+**Quality gates**: `uv run pytest` ✅ · `uv run ruff check .` ✅ · `uv run ruff format --check .` ✅ · `uv run mypy .` ✅ · schema export drift check ✅
+**Verify report reference**: Engram #2281 (PASS WITH WARNINGS, CRITICAL=0, WARNING=5, SUGGESTION=4)
+**Tasks completed**: P3.1–P3.13 (13/13)
+**Carry-forward warnings**: manual schema registry may drift from Pydantic models; production Cloud Run bootstrap needs real runtime client construction; Gateway 429/Retry-After backpressure is not directly tested in bootstrap stages; progress semantics are checkpoint/cursor oriented, not explicit `stage_progress`; live/prod validator application remains an ops deployment step.
+**Tasks deferred**: P1.17 — metrics SDK + `/metrics` endpoint remains deferred from Phase 1.
+
+---
+
 ## Phase 4: Module Runtime + Repricer
 
 **Goal**: Module lifecycle conventions, manifest validation, ownership enforcement, CI AST linter. Repricer as the reference module — fully working against new stack.
