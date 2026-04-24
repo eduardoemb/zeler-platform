@@ -492,6 +492,7 @@ P6 ─→ P7
 - [x] **P5.1** — Audit zeler-app for all legacy API call sites
   Grep for any calls to legacy domain names / endpoints. Produce a list of screens + API calls to migrate. Create migration checklist as a GitHub issue. No code yet.
   *Result*: Audit completed against `/Users/eduardoramirez/Documents/repositorios/zeler-app`; migration checklist issue created: https://github.com/eduardoemb/zeler-app/issues/1. App implementation work is blocked until the pre-existing app lint/test-runner gap is resolved.
+  *Baseline update 2026-04-24*: zeler-app lint/test-runner blocker resolved on `staging`; `npm run lint` and `npm test` are green. P5.2-P5.6 remain incomplete and should now proceed strict-TDD.
   *Ref*: proposal §4. *TDD*: N/A (discovery). *Effort*: S
 
 - [ ] **P5.2** — Implement platform auth flow in zeler-app
