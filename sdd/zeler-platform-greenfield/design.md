@@ -73,7 +73,7 @@ Flow summary:
 | Containers | Docker + Cloud Run (services + jobs) | — | Gateway, modules' API, bootstrap as Cloud Run Jobs. |
 | Long-running consumers | Cloud Run Jobs (for bounded runs) OR GCE VMs w/ Docker for always-on AMQP consumers | — | AMQP consumers pin to VM Docker (consistent with Repricer/SheetSeller pattern); HTTP surfaces go Cloud Run. |
 | Frontend | Next.js (existing `zeler-app`) | 15 + App Router | Already in place; no Python UI. |
-| Observability | `structlog` JSON + OpenTelemetry SDK + GCP Cloud Trace + Prometheus via OTel collector | — | Stdlib `logging` alone lacks structured fields; structlog cheap; OTel is the stack standard. |
+| Observability | `structlog` JSON + OpenTelemetry SDK for tracing + GCP Cloud Trace + bounded Prometheus text metrics | — | Stdlib `logging` alone lacks structured fields; structlog is cheap; P1.17 uses a lightweight in-process Prometheus collector gated by `OTEL_METRICS_ENABLED`, while external Prometheus/PromQL handles p95/error-rate rollups. |
 | CI/CD | GitHub Actions | — | Same as existing repos; per-package matrix build. |
 
 ---
@@ -498,6 +498,8 @@ Gateway:
 6. Writes one `audit_log` event: `{ module_id, seller_id, method, path, status, duration_ms, trace_id }`.
 7. Returns Meli response verbatim (status + body). Streams for large responses.
 
+Metrics emitted by the gateway are intentionally low-cardinality. The proxy records call counts, latency histograms, and rate-limit hits by bounded dimensions such as `module_id`, endpoint, and status; it does **not** emit raw `seller_id`/`account_id` metric labels by default. Account-level investigation uses the `audit_log`, structured logs, and traces, or a future controlled sampling/allowlist mechanism if per-account metrics become operationally necessary.
+
 For **high-frequency Repricer workers**, add `POST /internal/tokens/issue { seller_id, scopes: [...], ttl_s: 300 }` that returns a short-lived access_token directly to the worker. Module can then call Meli directly for 5 minutes without per-call proxy overhead. Audit is lost for that window — acceptable trade because (a) the issuance is logged, (b) scopes are narrow, (c) ttl is short. This is the Repricer "high-throughput escape hatch."
 
 ---
@@ -775,6 +777,13 @@ Tier sizing justification: M30 clears the 2-vCPU serverless-aware workload (Clou
 **Chosen**: APScheduler embedded in gateway replica (with Mongo distributed lock).
 **Rationale**: No new infra dependency (Celery needs Redis/RabbitMQ broker + beat); lock makes multi-replica safe.
 **Consequences**: Lose Celery's task retry infra — fine because refresh has its own retry semantics anyway.
+
+### D13. Bounded Prometheus metrics collector for gateway metrics
+
+**Context**: P1.17 needed gateway call/latency/rate-limit/refresh metrics exposed through `/metrics`, but raw account labels would create high-cardinality series and a full OTel metrics exporter was heavier than the current Cloud Run endpoint needs.
+**Chosen**: A lightweight in-process Prometheus text collector gated by `OTEL_METRICS_ENABLED`. External Prometheus/PromQL computes p95 latency and error-rate rollups from counters and histogram buckets.
+**Rationale**: Keeps the runtime dependency surface small, preserves the Prometheus scrape contract, and avoids unbounded `account_id`/seller label cardinality.
+**Consequences**: Metrics are per-process/per-instance until scraped and aggregated externally, and account-level drilldown must use structured logs/traces or a future controlled sampling/allowlist design rather than default metric labels.
 
 ---
 

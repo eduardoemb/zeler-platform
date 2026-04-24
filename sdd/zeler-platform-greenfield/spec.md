@@ -132,12 +132,12 @@ For transient Meli failures (5xx, network timeout), the gateway MUST retry with 
 - AND records both attempts in the gateway call log
 
 #### Requirement 1.6: Structured Logging & Metrics
-The gateway MUST emit structured logs (JSON) and metrics for: call count, latency p50/p95, error rate, rate-limit exhaustion, refresh success/failure, `invalid_grant` events — each labeled by `account_id`, `module`, `endpoint`.
+The gateway MUST emit structured logs (JSON) and bounded-cardinality Prometheus metrics for: call count, latency histograms, rate-limit exhaustion, refresh success/failure, and `invalid_grant` events. Metrics MUST be exposed as Prometheus text from `GET /metrics` only when `OTEL_METRICS_ENABLED` is enabled. Metric labels MUST include low-cardinality dimensions such as `module_id`, `endpoint`, and status where applicable; raw `account_id`/seller labels MUST NOT be emitted by default to avoid high-cardinality series. Account-level drilldown is handled through structured logs/traces, or by a future controlled sampling/allowlist design.
 
 ##### Scenario: Operator queries metrics for a module
 - GIVEN a running gateway
-- WHEN an operator queries the metrics endpoint for `module=repricer`
-- THEN they see call count, latency p95, error rate, rate-limit hits, all over the last 5m window
+- WHEN Prometheus scrapes the gated `/metrics` endpoint and an operator queries PromQL for `module_id="repricer"`
+- THEN they can derive call count, latency p95, error rate, and rate-limit hits over the last 5m window from counters and histogram buckets
 
 ---
 

@@ -193,10 +193,22 @@ P6 ─→ P7
   `infra/atlas/audit_log.json`. TTL index `{at:1}` 365 days. Indexes `{module_id:1, at:-1}`, `{seller_id:1, at:-1}`. Verify gateway proxy writes one doc per proxied call (integration test).
   *Ref*: design §9, §10. *TDD*: Integration test asserts `audit_log` doc written after proxied call. *Effort*: XS
 
-- [x] **P1.17** — Implement metrics SDK + /metrics endpoint for spec R1.6
-  `gateway/src/zeler_gateway/observability/metrics.py`: opentelemetry-sdk metrics API with OTLP or Prometheus exporter. Expose counters (call_count, rate_limit_hits, refresh_success, refresh_failure, invalid_grant), histograms (latency_ms), each labeled by `account_id`, `module_id`, `endpoint`. Add `GET /metrics` FastAPI endpoint (Prometheus text format) gated by `OTEL_METRICS_ENABLED` env flag. Update middleware to record per-request timings. Update proxy/router.py and refresh_worker.py to emit counter increments.
+- [x] **P1.17** — Implement bounded Prometheus metrics collector + `/metrics` endpoint for spec R1.6
+  `gateway/src/zeler_gateway/observability/metrics.py`: lightweight in-process Prometheus text collector gated by `OTEL_METRICS_ENABLED`. Expose counters (call_count, rate_limit_hits, refresh_success, refresh_failure, invalid_grant), histograms (latency_ms), and middleware timings by bounded labels such as `module_id`, `endpoint`, and status where applicable. External Prometheus/PromQL derives p95 latency and error-rate rollups over windows such as 5m. Raw `account_id`/seller labels are intentionally omitted by default to avoid high-cardinality series; account drilldown uses logs/traces or a future controlled sampling/allowlist design. Update proxy/router.py and refresh_worker.py to emit counter increments.
   *Ref*: spec §1 R1.6 (metrics clause + operator-query scenario). *TDD*: `test_metrics_endpoint_returns_prometheus_format`, `test_rate_limit_hit_increments_counter`, `test_latency_histogram_records_request_duration`. *Effort*: M
-  *Note*: deferred from P1.14 (which only implemented logs + traces). Documented in verify report #2243.
+  *Note*: deferred from P1.14 (which only implemented logs + traces), then implemented in commit `8d5f3cd` and reconciled here as the accepted bounded Prometheus design.
+
+#### P1.17 — Archive/Reconciliation Marker
+
+**Archive type**: Deferred Phase 1 task reconciliation (change remains open for Phase 7)  
+**Archive date**: 2026-04-24  
+**Verified commit**: `8d5f3cd` (`feat(gateway): add Prometheus metrics endpoint`)  
+**Verify report reference**: Engram #2363 `sdd/zeler-platform-greenfield/verify-report-p1-17-metrics` (`PASS_WITH_WARNINGS`, CRITICAL=0)  
+**Accepted design**: bounded in-process Prometheus text collector gated by `OTEL_METRICS_ENABLED`; external Prometheus/PromQL computes p95/error-rate rollups; no raw `account_id` metric label by default.  
+**Quality gates cited**: `uv run pytest` ✅ (`261 passed`) · `uv run ruff check .` ✅ · `uv run ruff format --check .` ✅ · `uv run mypy .` ✅ · `uv run python -m infra.lint.check_direct_meli .` ✅  
+**Carry-forward warnings**:
+- Add focused proxy/refresh-worker behavioral metric integration tests when expanding observability coverage; current archive accepts static implementation evidence plus endpoint/helper tests.
+- Metrics are per-process/per-instance until scraped and aggregated externally; account-level drilldown remains logs/traces or a future controlled sampling/allowlist mechanism.
 
 ---
 
@@ -209,8 +221,8 @@ P6 ─→ P7
 **Test count**: 84 passed / 0 failed / 0 skipped
 **Quality gates**: `uv run ruff check .` ✅ · `uv run ruff format --check .` ✅ · `uv run mypy .` ✅
 **Verify report reference**: Engram #2249 (PASS WITH WARNINGS, CRITICAL=0, WARNING=6, SUGGESTION=3)
-**Tasks completed**: P1.1–P1.16 (16/17)
-**Tasks deferred**: P1.17 — metrics SDK + `/metrics` endpoint (Engram #2245)
+**Tasks completed**: P1.1–P1.16 at original Phase 1 archive; P1.17 later completed/reconciled via the P1.17 archive marker above.
+**Tasks deferred**: none after P1.17 reconciliation; original deferral was resolved by commit `8d5f3cd` and Engram verify #2363.
 
 ---
 
@@ -283,7 +295,7 @@ P6 ─→ P7
 **Tasks completed**: P2.1–P2.8 (8/8)
 **Canonical exchange**: `meli.events` (older prefixed exchange-name references reconciled in Phase 2 archive)
 **Carry-forward warnings**: live RabbitMQ topology not applied during verify; publish-failure recovery is manual; P2.7 task text names a monitor script but implementation verified routing/config/runbook alert policy; optional HMAC lacks direct behavioral test.
-**Tasks deferred**: P1.17 — metrics SDK + `/metrics` endpoint remains deferred from Phase 1.
+**Tasks deferred**: none for P2; historical P1.17 deferral was resolved later by commit `8d5f3cd` and the P1.17 archive/reconciliation marker.
 
 ---
 
@@ -375,7 +387,7 @@ P6 ─→ P7
 **Verify report reference**: Engram #2281 (PASS WITH WARNINGS, CRITICAL=0, WARNING=5, SUGGESTION=4)
 **Tasks completed**: P3.1–P3.13 (13/13)
 **Carry-forward warnings**: manual schema registry may drift from Pydantic models; production Cloud Run bootstrap needs real runtime client construction; Gateway 429/Retry-After backpressure is not directly tested in bootstrap stages; progress semantics are checkpoint/cursor oriented, not explicit `stage_progress`; live/prod validator application remains an ops deployment step.
-**Tasks deferred**: P1.17 — metrics SDK + `/metrics` endpoint remains deferred from Phase 1.
+**Tasks deferred**: none for P3; historical P1.17 deferral was resolved later by commit `8d5f3cd` and the P1.17 archive/reconciliation marker.
 
 ---
 
@@ -463,7 +475,7 @@ P6 ─→ P7
 **Verify report reference**: Engram #2291 (PASS WITH WARNINGS, CRITICAL=0, WARNING=4, SUGGESTION=3)
 **Tasks completed**: P4.1–P4.12 (12/12)
 **Carry-forward warnings**: no concrete repricer `aio-pika` consumer loop/binding yet; P4.12 E2E is deterministic in-process rather than live Docker Compose RabbitMQ/Mongo; routing-key mismatch risk remains between `items_prices.*` manifest subscription and `items.price_updated` classifier/topology binding; live Mongo validator/index application remains an ops release task.
-**Tasks deferred**: P1.17 — metrics SDK + `/metrics` endpoint remains deferred from Phase 1.
+**Tasks deferred**: none for P4; historical P1.17 deferral was resolved later by commit `8d5f3cd` and the P1.17 archive/reconciliation marker.
 
 ---
 
@@ -524,7 +536,7 @@ P6 ─→ P7
 
 ### Phase 5 — Archive Markers
 
-**Archive type**: Phase milestone (change remains open for Phase 6+; P1.17 remains deferred)
+**Archive type**: Phase milestone (change remains open for Phase 6+; historical P1.17 deferral resolved later by commit `8d5f3cd`)
 **Archive date**: 2026-04-24
 **Final zeler-platform HEAD SHA**: `3d968bf324fcb222831ee7a5a55ffce683713fee`
 **Final zeler-app HEAD SHA**: `d9a841e786a306357f69e31ba947176428fbbc00`
@@ -535,7 +547,7 @@ P6 ─→ P7
 **Verify report reference**: Engram #2312 (PASS WITH WARNINGS, CRITICAL=0, WARNING=2, SUGGESTION=2)
 **Tasks completed**: P5.1–P5.6 (6/6)
 **Carry-forward warnings**: Playwright coverage is static/browser-free contract coverage, not true browser E2E; repricer mutations use `REPRICER_API_URL` + `REPRICER_API_TOKEN`, not gateway user-session token exchange; live RabbitMQ/Mongo validation and repricer routing-key follow-up remain.
-**Tasks deferred**: P1.17 — metrics SDK + `/metrics` endpoint remains deferred from Phase 1.
+**Tasks deferred**: none for P5; historical P1.17 deferral was resolved later by commit `8d5f3cd` and the P1.17 archive/reconciliation marker.
 
 ---
 
