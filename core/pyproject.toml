@@ -3,7 +3,12 @@ name = "zeler-platform-core"
 version = "0.0.0"
 description = "Shared core package for zeler-platform"
 requires-python = ">=3.11"
-dependencies = []
+dependencies = [
+  "cachetools>=7.0.6",
+  "cryptography>=46.0.7",
+  "google-cloud-kms>=3.12.0",
+  "pydantic>=2.6",
+]
 
 [build-system]
 requires = ["hatchling>=1.24.0"]
