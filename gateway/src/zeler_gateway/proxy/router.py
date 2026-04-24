@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-import math
 import time
-from collections import OrderedDict, deque
 from collections.abc import Callable
 from datetime import UTC, datetime
 from fnmatch import fnmatchcase
@@ -16,6 +14,7 @@ from fastapi.responses import JSONResponse, Response
 from pymongo.errors import PyMongoError
 
 from zeler_gateway.config import Settings
+from zeler_gateway.proxy.rate_limit import RateLimitCounter, RateLimitExceeded
 from zeler_gateway.proxy.retry import send_with_retry
 from zeler_gateway.tokens.encryption import EncryptedToken, decrypt_token
 from zeler_platform_core.auth.jwt import (
@@ -25,14 +24,9 @@ from zeler_platform_core.auth.jwt import (
     verify_module_jwt,
 )
 
-# P1.11 stub: this in-memory sliding window is intentionally local-process only.
-# P1.13 replaces it with a Mongo-backed rate-limit governor/middleware.
-
 logger = structlog.get_logger(__name__)
 router = APIRouter(tags=["proxy"])
 
-DEFAULT_RATE_LIMIT = 60
-RATE_LIMIT_WINDOW_SECONDS = 60
 MELI_API_BASE = "https://api.mercadolibre.com"
 REFRESH_RETRY_AFTER_SECONDS = 5
 HOP_BY_HOP_HEADERS = {
@@ -48,8 +42,6 @@ HOP_BY_HOP_HEADERS = {
 }
 
 HttpClientFactory = Callable[[], httpx.AsyncClient]
-RateLimitKey = tuple[int, str, int]
-_RATE_LIMIT_WINDOWS: OrderedDict[RateLimitKey, deque[float]] = OrderedDict()
 
 
 @router.api_route("/{full_path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
@@ -92,10 +84,10 @@ async def proxy_meli(request: Request, full_path: str) -> Response:
     if account_status != "active":
         return _json_error(412, "account_not_active")
 
-    retry_after = _check_rate_limit(
-        db_id=id(db), module_id=claims.module_id, seller_id=claims.seller_id
-    )
-    if retry_after is not None:
+    counter = RateLimitCounter(db)
+    try:
+        await counter.check_and_increment(module_id=claims.module_id, seller_id=claims.seller_id)
+    except RateLimitExceeded as exc:
         logger.info(
             "rate_limit_exceeded",
             module_id=claims.module_id,
@@ -104,7 +96,7 @@ async def proxy_meli(request: Request, full_path: str) -> Response:
         return _json_error(
             429,
             "rate_limit_exceeded",
-            headers={"Retry-After": str(retry_after)},
+            headers={"Retry-After": str(int(exc.retry_after_s))},
         )
 
     access_token = await decrypt_token(
@@ -195,23 +187,6 @@ def _lock_is_held(lock_held_until: Any) -> bool:
     if lock_held_until.tzinfo is None:
         lock_deadline = lock_held_until.replace(tzinfo=UTC)
     return lock_deadline > datetime.now(UTC)
-
-
-def _check_rate_limit(*, db_id: int, module_id: str, seller_id: int) -> int | None:
-    now = time.monotonic()
-    oldest_allowed = now - RATE_LIMIT_WINDOW_SECONDS
-    key = (db_id, module_id, seller_id)
-    window = _RATE_LIMIT_WINDOWS.setdefault(key, deque())
-    while window and window[0] <= oldest_allowed:
-        window.popleft()
-
-    if len(window) >= DEFAULT_RATE_LIMIT:
-        retry_after = RATE_LIMIT_WINDOW_SECONDS - (now - window[0])
-        return max(1, math.ceil(retry_after))
-
-    window.append(now)
-    _RATE_LIMIT_WINDOWS.move_to_end(key)
-    return None
 
 
 async def _forward_to_meli(

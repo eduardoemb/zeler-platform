@@ -1,0 +1,15 @@
+{
+  "$jsonSchema": {
+    "bsonType": "object",
+    "required": ["_id", "module_id", "seller_id", "window_start", "count", "updated_at"],
+    "additionalProperties": false,
+    "properties": {
+      "_id": {"bsonType": "string"},
+      "module_id": {"bsonType": "string"},
+      "seller_id": {"bsonType": "long"},
+      "window_start": {"bsonType": "date"},
+      "count": {"bsonType": "int", "minimum": 0},
+      "updated_at": {"bsonType": "date"}
+    }
+  }
+}

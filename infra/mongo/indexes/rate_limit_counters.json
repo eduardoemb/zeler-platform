@@ -1,0 +1,9 @@
+[
+  {
+    "keys": {"updated_at": 1},
+    "options": {
+      "name": "ttl_rate_limit_updated_at_120s",
+      "expireAfterSeconds": 120
+    }
+  }
+]

@@ -105,6 +105,7 @@ def proxy_db() -> Iterator[Any]:
     database.drop_collection("meli_accounts")
     database.drop_collection("module_registry")
     database.drop_collection("audit_log")
+    database.drop_collection("rate_limit_counters")
     apply_validators(mongo_uri, SCHEMAS_DIR)
     database.module_registry.insert_one(
         {
@@ -124,6 +125,7 @@ def proxy_db() -> Iterator[Any]:
     database.drop_collection("meli_accounts")
     database.drop_collection("module_registry")
     database.drop_collection("audit_log")
+    database.drop_collection("rate_limit_counters")
     async_client.close()
     client.close()
     set_jwt_kms_client(None)
@@ -295,14 +297,25 @@ async def test_rate_limit_exceeded_returns_429(
 ) -> None:
     _, database = proxy_db
     _seed_account(database)
+    now = datetime.now(UTC)
+    window_start = datetime.fromtimestamp(
+        int(now.timestamp()) - (int(now.timestamp()) % 60), tz=UTC
+    )
+    database.rate_limit_counters.insert_one(
+        {
+            "_id": "repricer:123456789",
+            "module_id": "repricer",
+            "seller_id": Int64(123456789),
+            "window_start": window_start,
+            "count": 60,
+            "updated_at": now,
+        }
+    )
 
     with respx.mock(assert_all_called=False) as respx_mock:
         upstream = respx_mock.get("https://api.mercadolibre.com/items/MLA123")
-        responses = [
-            await proxy_client.get("/proxy/meli/items/MLA123", headers=_auth_header())
-            for _ in range(61)
-        ]
+        response = await proxy_client.get("/proxy/meli/items/MLA123", headers=_auth_header())
 
-    assert responses[-1].status_code == 429
-    assert "Retry-After" in responses[-1].headers
-    assert upstream.call_count == 60
+    assert response.status_code == 429
+    assert "Retry-After" in response.headers
+    assert upstream.call_count == 0

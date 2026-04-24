@@ -19,6 +19,7 @@ EXPECTED_FILES = {
     # Webhook ingestion + audit
     "webhook_events.json",
     "audit_log.json",
+    "rate_limit_counters.json",
     # Bootstrap + module runtime
     "bootstrap_jobs.json",
     "module_registry.json",
@@ -31,7 +32,12 @@ EXPECTED_FILES = {
     # from topic catalog_item_competition_status
     "competition_snapshots.json",
 }
-ACTIVE_PHASE_ONE_SCHEMAS = {"audit_log.json", "meli_accounts.json", "users.json"}
+ACTIVE_PHASE_ONE_SCHEMAS = {
+    "audit_log.json",
+    "meli_accounts.json",
+    "rate_limit_counters.json",
+    "users.json",
+}
 
 
 def test_placeholder_schema_files_exist_and_reference_phase_three() -> None:
