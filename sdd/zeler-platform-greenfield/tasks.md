@@ -623,6 +623,17 @@ P6 ─→ P7
   *Result*: Added Publicador admin API endpoints for listing drafts with history, creating drafts, generating LLM listings, and publishing via the gateway flow. Added zeler-app Publicador route `/publicador/drafts`, API helpers, server actions, and a create/generate/preview/publish/history panel; module catalog now routes Publicador in-app.
   *TDD*: Component test: create draft → LLM generate → publish button. *Effort*: M
 
+##### 6B — Archive Marker
+
+**Archive type**: Phase 6 subphase milestone (change remains open for Phase 6C–6D and Phase 7)  
+**Archive date**: 2026-04-24  
+**Verified HEADs**: zeler-platform `31248eda9e80b50365c590f7035a3be27c965d42`; zeler-app `25734613d090651d765746e75a8812ebc48610be`  
+**Verify report reference**: Engram #2329 + `sdd/zeler-platform-greenfield/verify-report-phase-6b-publicador` (`PASS_WITH_WARNINGS`, CRITICAL=0)  
+**Tasks completed**: P6B.1–P6B.5 (5/5)  
+**Warnings carried forward**:
+- Live LLM/Perplexity, live Meli publish, live Secret Manager API key injection, and live RabbitMQ were not locally exercised; validate them in deployment/integration environments.
+- No Publicador-specific browser smoke was run; app coverage is unit/RSC/API-helper plus broader app smoke tests, not a browser-level create/generate/publish flow.
+
 #### 6C: autoreply-module (ex-Autoreplyia)
 
 - [ ] **P6C.1** — Define autoreply manifest + owned collections (`autoreply_templates`, `autoreply_history`)
