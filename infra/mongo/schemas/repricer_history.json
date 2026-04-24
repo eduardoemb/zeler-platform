@@ -1,3 +1,1 @@
-{
-  "$comment": "TODO: populated in Phase 3 alongside the Pydantic model for this collection. See sdd/zeler-platform-greenfield/tasks P3.*"
-}
+{"$jsonSchema":{"bsonType":"object","required":["_id","seller_id","item_id","old_price","new_price","reason","applied_at","schema_version"],"properties":{"_id":{"bsonType":["objectId","string"]},"seller_id":{"bsonType":["string","long","int"]},"item_id":{"bsonType":"string"},"old_price":{"bsonType":["decimal","double","int","long"]},"new_price":{"bsonType":["decimal","double","int","long"]},"reason":{"bsonType":"string"},"applied_at":{"bsonType":"date"},"schema_version":{"bsonType":"int"}}}}

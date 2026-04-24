@@ -1,0 +1,4 @@
+[
+  {"keys":{"seller_id":1,"status":1,"last_updated":-1},"options":{"name":"idx_shipments_seller_status_last_updated"}},
+  {"keys":{"order_id":1},"options":{"name":"idx_shipments_order_id"}}
+]

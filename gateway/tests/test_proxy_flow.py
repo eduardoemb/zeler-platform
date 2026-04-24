@@ -112,7 +112,9 @@ def proxy_db() -> Iterator[Any]:
             "_id": "repricer",
             "version": "0.1.0",
             "allowed_meli_scopes": ["GET /items/*"],
+            "routing_keys": ["items.*"],
             "status": "enabled",
+            "schema_version": 1,
         }
     )
     async_client: AsyncIOMotorClient[dict[str, Any]] = AsyncIOMotorClient(
@@ -171,6 +173,7 @@ def _seed_account(
             "created_at": now - timedelta(days=1),
             "updated_at": now - timedelta(days=1),
             "kms_key_version": access_enc.kms_key_version,
+            "schema_version": 1,
         }
     )
 

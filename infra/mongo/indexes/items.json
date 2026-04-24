@@ -1,0 +1,5 @@
+[
+  {"keys":{"seller_id":1,"status":1,"last_updated":-1},"options":{"name":"idx_items_seller_status_last_updated"}},
+  {"keys":{"seller_id":1,"category_id":1},"options":{"name":"idx_items_seller_category"}},
+  {"keys":{"last_meli_sync_at":1},"options":{"name":"idx_items_last_meli_sync_at"}}
+]

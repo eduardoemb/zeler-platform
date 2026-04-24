@@ -45,7 +45,10 @@ def _valid_audit_log_doc() -> dict[str, Any]:
         "method": "GET",
         "path": "/items/MLA123",
         "upstream_status": 200,
+        "status": 200,
         "duration_ms": 12,
+        "trace_id": "trace-1",
+        "schema_version": 1,
     }
 
 

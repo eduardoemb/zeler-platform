@@ -48,6 +48,7 @@ def _valid_user_doc(email: str = "operator@example.com") -> dict[str, Any]:
         "meli_account_ids": [Int64(123456789)],
         "roles": ["user"],
         "status": "active",
+        "schema_version": 1,
     }
 
 

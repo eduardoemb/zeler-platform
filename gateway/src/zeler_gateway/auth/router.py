@@ -45,6 +45,7 @@ async def register_user(payload: RegisterRequest, request: Request) -> RegisterR
         "status": "active",
         "meli_account_ids": [],
         "roles": ["user"],
+        "schema_version": 1,
     }
 
     try:

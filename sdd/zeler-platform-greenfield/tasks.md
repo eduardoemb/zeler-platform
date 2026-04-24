@@ -310,11 +310,11 @@ P6 ─→ P7
 
 ### Checklist
 
-- [ ] **P3.1** — [RED] Write failing model tests for all canonical entities
+- [x] **P3.1** — [RED] Write failing model tests for all canonical entities
   Tests for each model: valid construction, invalid enum rejected, naive datetime rejected, meli_id numeric coerced to string. Cover: `MeliAccount`, `User`, `Item`, `Order`, `Question`, `Message`, `Shipment`, `Claim`, `Event`, `BootstrapJob`, `ModuleRegistry`, `WebhookEvent`.
   *Ref*: spec §4 R4.1–R4.4. *TDD*: all FAIL. *Effort*: M
 
-- [ ] **P3.2** — Implement Pydantic v2 canonical models
+- [x] **P3.2** — Implement Pydantic v2 canonical models
   `core/src/zeler_platform_core/models/`: one file per entity. Each model: `schema_version: int = 1`, UTC datetime validators (`model_validator` that checks `tzinfo is not None`), `meli_id` fields coerced to `str` via `field_validator`. Status fields as `Literal` or `StrEnum`. Reexport all from `core.models.__init__`.
   *Ref*: design §4, spec §4 R4.1–R4.4. *TDD*: P3.1 tests now GREEN. *Effort*: L
 
@@ -322,23 +322,23 @@ P6 ─→ P7
   `core/src/zeler_platform_core/cli/export_schemas.py`: for each model, `model.model_json_schema()` → write to `infra/atlas/<collection>.json`. Add `$jsonSchema` wrapper with `validationLevel: "strict"`, `validationAction: "error"`. Wire to CI: schema export runs, output compared to committed files (diff fails build if models changed but schemas not regenerated).
   *Ref*: spec §4 R4.2, design §8 D8. *TDD*: Schema for `MeliAccount` rejects raw insert missing `seller_id` via Atlas validator. *Effort*: M
 
-- [ ] **P3.4** — Implement event contracts (domain event models)
+- [x] **P3.4** — Implement event contracts (domain event models)
   `core/src/zeler_platform_core/events/contracts.py`: Pydantic v2 models for `ItemUpdated`, `ItemPriceChanged`, `OrderCreated`, `QuestionReceived`, `MessageReceived`, `MeliAccountRevoked`, `MeliAccountReconnected`, `BootstrapCompleted`. Each carries `event_id: UUID`, `account_id`, `occurred_at: datetime`, `schema_version: int`.
   *Ref*: spec §4 R4.5. *TDD*: `test_event_serializes_deserializes_stably` (producer/consumer roundtrip via model_dump/model_validate). *Effort*: S
 
-- [ ] **P3.5** — Implement Core read-only repository library
+- [x] **P3.5** — Implement Core read-only repository library
   `core/src/zeler_platform_core/repos/`: `ItemsRepo`, `OrdersRepo`, `QuestionsRepo`, `MessagesRepo`, `ShipmentsRepo`, `ClaimsRepo`. Each: `by_seller(seller_id, **filters) → list[Model]`, typed return. Mongo client injected. `seller_id` filter ALWAYS applied (never exposes raw collection). No write methods exported from core repos.
   *Ref*: design §8.3, spec §5 R5.4. *TDD*: `test_items_repo_by_seller_applies_seller_filter`, `test_items_repo_no_write_methods_exported`. *Effort*: M
 
-- [ ] **P3.6** — Create `bootstrap_jobs` collection + Atlas validator + indexes
+- [x] **P3.6** — Create `bootstrap_jobs` collection + Atlas validator + indexes
   `infra/atlas/bootstrap_jobs.json`: full $jsonSchema (design §4.10). Indexes `{seller_id:1, state:1}`, `{state:1, started_at:-1}`. Apply to dev.
   *Ref*: design §4.10, spec §7 R7.1. *TDD*: Validator rejects doc missing `state`. *Effort*: XS
 
-- [ ] **P3.7** — [RED] Write failing bootstrap state machine tests
+- [x] **P3.7** — [RED] Write failing bootstrap state machine tests
   Tests: `test_pending_to_running_transition`, `test_running_to_succeeded`, `test_invalid_state_transition_rejected`, `test_pause_mid_stage_records_cursor`, `test_resume_continues_from_cursor`, `test_completed_stage_not_re-run`.
   *Ref*: spec §7 R7.1–R7.4. *TDD*: all FAIL. *Effort*: S
 
-- [ ] **P3.8** — Implement `bootstrap_jobs` state machine
+- [x] **P3.8** — Implement `bootstrap_jobs` state machine
   `bootstrap/src/zeler_bootstrap/state_machine.py`: `BootstrapStateMachine(job_id)` with `transition(new_state)` (atomic `findOneAndUpdate` with allowed-transition guard), `update_cursor(stage, cursor_data)`, `mark_stage_done(stage)`. Forbidden transitions raise `InvalidTransitionError`.
   *Ref*: spec §7 R7.1. *TDD*: P3.7 state machine tests now GREEN. *Effort*: M
 
@@ -354,7 +354,7 @@ P6 ─→ P7
   `stages/orders.py`, `stages/questions.py`, `stages/messages.py`, `stages/shipments.py`, `stages/claims.py`. Orders: date-bounded last 90 days, paginated, upsert `Order`. Questions: open first (all), then closed (last 30 days). Messages: per pack_id from orders. Shipments: from `shipment_id` in each order. Claims: from `order_id`. All upsert by canonical Meli id.
   *Ref*: design §7.1, spec §7 R7.2–R7.3. *TDD*: P3.9 remaining stage tests GREEN. *Effort*: L
 
-- [ ] **P3.12** — Implement Cloud Run Job entrypoint + deploy config
+- [x] **P3.12** — Implement Cloud Run Job entrypoint + deploy config
   `bootstrap/src/zeler_bootstrap/__main__.py`: CLI accepting `--seller-id` + `--job-id`. Dockerfile for bootstrap. `infra/terraform/cloudrun_jobs.tf`: Cloud Run Job definition with VPC connector, Secret Manager env injection, `max-retries=3`. On completion: emit `BootstrapCompleted` event.
   *Ref*: design §7, spec §7 R7.5. *TDD*: P3.9 `test_bootstrap_completed_event_emitted` GREEN. *Effort*: M
 

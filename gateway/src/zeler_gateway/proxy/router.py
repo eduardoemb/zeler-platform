@@ -175,8 +175,10 @@ async def _write_audit_log(
                 "seller_id": Int64(seller_id),
                 "method": method,
                 "path": path,
+                "status": upstream_status,
                 "upstream_status": upstream_status,
                 "duration_ms": duration_ms,
+                "schema_version": 1,
             }
         )
     except PyMongoError as exc:

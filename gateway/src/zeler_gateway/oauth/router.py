@@ -84,6 +84,7 @@ async def callback(
         "status": "active",
         "expires_at": now + timedelta(seconds=expires_in),
         "kms_key_version": access_enc.kms_key_version,
+        "schema_version": 1,
         "updated_at": now,
         "last_refreshed_at": now,
     }

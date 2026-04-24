@@ -58,6 +58,7 @@ def _valid_meli_account_doc() -> dict[str, Any]:
             "projects/zeler-platform-dev/locations/us-central1/keyRings/zeler-platform/"
             "cryptoKeys/meli-tokens/cryptoKeyVersions/1"
         ),
+        "schema_version": 1,
     }
 
 

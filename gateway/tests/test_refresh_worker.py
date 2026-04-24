@@ -111,6 +111,7 @@ def _seed_refreshable_account(
         "created_at": fixed_now - timedelta(days=1),
         "updated_at": fixed_now - timedelta(days=1),
         "kms_key_version": access_enc.kms_key_version,
+        "schema_version": 1,
     }
     database.meli_accounts.insert_one(doc)
     return doc

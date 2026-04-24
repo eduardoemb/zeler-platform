@@ -1,0 +1,5 @@
+[
+  {"keys":{"applied_at":1},"options":{"name":"idx_repricer_history_applied_at_ttl","expireAfterSeconds":31536000}},
+  {"keys":{"item_id":1,"applied_at":-1},"options":{"name":"idx_repricer_history_item_applied_at"}},
+  {"keys":{"seller_id":1,"applied_at":-1},"options":{"name":"idx_repricer_history_seller_applied_at"}}
+]

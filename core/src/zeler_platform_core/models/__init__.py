@@ -1,1 +1,48 @@
-"""Domain model namespace placeholder."""
+from zeler_platform_core.models.entities import Claim, Item, Message, Order, Question, Shipment
+from zeler_platform_core.models.events import (
+    BootstrapCompleted,
+    DomainEvent,
+    ItemPriceChanged,
+    ItemUpdated,
+    MeliAccountReconnected,
+    MeliAccountRevoked,
+    MessageReceived,
+    OrderCreated,
+    QuestionReceived,
+)
+from zeler_platform_core.models.meli_accounts import MeliAccount
+from zeler_platform_core.models.operational import (
+    AuditLog,
+    BootstrapJob,
+    ModuleRegistry,
+    RepricerHistory,
+    RepricerRule,
+    WebhookEvent,
+)
+from zeler_platform_core.models.users import User
+
+__all__ = [
+    "AuditLog",
+    "BootstrapCompleted",
+    "BootstrapJob",
+    "Claim",
+    "DomainEvent",
+    "Item",
+    "ItemPriceChanged",
+    "ItemUpdated",
+    "MeliAccount",
+    "MeliAccountReconnected",
+    "MeliAccountRevoked",
+    "Message",
+    "MessageReceived",
+    "ModuleRegistry",
+    "Order",
+    "OrderCreated",
+    "Question",
+    "QuestionReceived",
+    "RepricerHistory",
+    "RepricerRule",
+    "Shipment",
+    "User",
+    "WebhookEvent",
+]

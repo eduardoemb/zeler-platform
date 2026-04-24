@@ -17,7 +17,8 @@
       "expires_at",
       "created_at",
       "updated_at",
-      "kms_key_version"
+      "kms_key_version",
+      "schema_version"
     ],
     "properties": {
       "_id": {
