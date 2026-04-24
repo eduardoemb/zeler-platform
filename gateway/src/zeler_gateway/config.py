@@ -50,6 +50,15 @@ def load_secret(secret_id: str, *, project_id: str) -> str:
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
+    """Cached settings singleton for long-running paths (lifespan, background jobs).
+
+    NOTE: Request handlers that may observe freshly-monkeypatched env vars
+    (typically OAuth endpoints exercised under `pytest` + `monkeypatch.setenv`)
+    MUST instantiate `Settings()` directly instead of calling this function.
+    The cache is intentionally bypassed in those hot paths so per-request env
+    reads remain honest. Do NOT reintroduce `get_settings()` into endpoint
+    code without also moving the lru_cache behind a test-aware flag.
+    """
     settings = Settings()
     if not settings.use_secret_manager:
         return settings
@@ -59,6 +68,9 @@ def get_settings() -> Settings:
             "meli_client_id": load_secret("meli-client-id", project_id=settings.kms_project_id),
             "meli_client_secret": SecretStr(
                 load_secret("meli-client-secret", project_id=settings.kms_project_id)
+            ),
+            "state_signing_secret": SecretStr(
+                load_secret("state-signing-secret", project_id=settings.kms_project_id)
             ),
         }
     )
