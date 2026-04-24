@@ -25,8 +25,21 @@ def test_mongo_dev_compose_contract() -> None:
     assert isinstance(image, str)
     assert image == "mongo:7" or image.startswith("mongo:7.")
 
+    # Host port is configurable via MONGO_HOST_PORT env var (default 27017).
+    # This avoids collisions with legacy Mongo instances on the same machine.
     ports = mongo.get("ports")
-    assert ports == ["127.0.0.1:27017:27017"]
+    assert isinstance(ports, list) and len(ports) == 1
+    port_mapping = ports[0]
+    assert port_mapping.startswith("127.0.0.1:"), (
+        f"Mongo MUST bind to localhost only, got {port_mapping!r}"
+    )
+    assert port_mapping.endswith(":27017"), (
+        f"Container port MUST be 27017 (Mongo default), got {port_mapping!r}"
+    )
+    assert "${MONGO_HOST_PORT:-27017}" in port_mapping, (
+        "Host port MUST be configurable via MONGO_HOST_PORT env var "
+        "(default 27017) to avoid conflicts with legacy Mongo instances"
+    )
 
     environment = mongo.get("environment")
     assert isinstance(environment, dict)
