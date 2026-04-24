@@ -29,8 +29,49 @@ def _load_schema(schema_path: Path) -> dict[str, Any]:
     return loaded
 
 
+# JSON Schema keywords MongoDB $jsonSchema actually parses.
+# Source: https://www.mongodb.com/docs/manual/reference/operator/query/jsonSchema/
+# A schema with NONE of these is treated as inactive (placeholder, no validator).
+# This avoids "Unknown $jsonSchema keyword: $comment" errors on P3 placeholders.
+_CANONICAL_JSON_SCHEMA_KEYS = frozenset(
+    {
+        "bsonType",
+        "type",
+        "properties",
+        "required",
+        "items",
+        "enum",
+        "oneOf",
+        "anyOf",
+        "allOf",
+        "not",
+        "additionalProperties",
+        "patternProperties",
+        "minimum",
+        "maximum",
+        "minLength",
+        "maxLength",
+        "minItems",
+        "maxItems",
+        "pattern",
+        "uniqueItems",
+        "minProperties",
+        "maxProperties",
+    }
+)
+
+
+def _is_active_schema(schema: dict[str, Any]) -> bool:
+    """Return True only if schema has at least one canonical JSON Schema keyword.
+
+    Placeholder schemas (e.g. {"$comment": "TODO"}) are inactive: they are
+    versioned in the repo but have no validator effect until P3 fills them in.
+    """
+    return any(key in _CANONICAL_JSON_SCHEMA_KEYS for key in schema)
+
+
 def _desired_validator(schema: dict[str, Any]) -> dict[str, Any]:
-    if not schema:
+    if not _is_active_schema(schema):
         return {}
 
     return {"$jsonSchema": schema}

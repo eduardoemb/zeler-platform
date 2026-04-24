@@ -141,6 +141,50 @@ def test_apply_validators_updates_changed_schema(
     assert database.collmod_calls == [("items", {"$jsonSchema": new_schema})]
 
 
+def test_apply_validators_treats_placeholder_schema_as_inactive(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    apply_validators_module: ModuleType,
+) -> None:
+    """Regression: P3 placeholder schemas use $comment to mark TODOs.
+
+    Mongo $jsonSchema rejects unknown keywords like $comment with
+    'Unknown $jsonSchema keyword'. A schema that lacks ANY canonical
+    JSON Schema keyword (bsonType, type, properties, required, items,
+    enum, oneOf, anyOf, allOf, not, additionalProperties, patternProperties)
+    must be treated as inactive: no validator applied.
+    """
+    schemas_dir = tmp_path / "schemas"
+    schemas_dir.mkdir()
+
+    placeholder = {"$comment": "TODO: populated in Phase 3"}
+    (schemas_dir / "users.json").write_text(json.dumps(placeholder), encoding="utf-8")
+
+    database = FakeDatabase()
+    fake_client = FakeClient(database)
+
+    monkeypatch.setattr(apply_validators_module, "MongoClient", lambda _uri: fake_client)
+
+    result = apply_validators_module.apply_validators(
+        "mongodb://example.test/zeler_platform",
+        schemas_dir,
+    )
+
+    assert result == {"users": "created"}
+    # Critical: validator must be empty {}, NOT {"$jsonSchema": {"$comment": ...}}
+    assert database.collections["users"] == {}, (
+        "Placeholder schema (no canonical JSON Schema keywords) "
+        "must produce empty validator, NOT a $jsonSchema with $comment"
+    )
+
+    # Idempotent: second call sees no validator + placeholder still inactive
+    result_second = apply_validators_module.apply_validators(
+        "mongodb://example.test/zeler_platform",
+        schemas_dir,
+    )
+    assert result_second == {"users": "unchanged"}
+
+
 def test_apply_validators_main_reads_env_vars_and_default_schema_dir(
     monkeypatch: pytest.MonkeyPatch,
     apply_validators_module: ModuleType,
