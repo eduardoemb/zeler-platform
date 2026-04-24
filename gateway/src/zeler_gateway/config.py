@@ -19,6 +19,13 @@ class Settings(BaseSettings):
     meli_redirect_uri: str = Field(
         default="http://localhost:8000/oauth/callback", alias="MELI_REDIRECT_URI"
     )
+    oauth_success_url: str = Field(
+        default="https://app.zeler.local/accounts/linked", alias="OAUTH_SUCCESS_URL"
+    )
+    state_signing_secret: SecretStr = Field(
+        default=SecretStr("dev-only-insecure-secret-change-me"), alias="STATE_SIGNING_SECRET"
+    )
+    state_ttl_seconds: int = Field(default=600, alias="STATE_TTL_SECONDS")
     kms_project_id: str = Field(default="zeler-platform-dev", alias="KMS_PROJECT_ID")
     kms_location: str = Field(default="us-central1", alias="KMS_LOCATION")
     kms_keyring: str = Field(default="zeler-platform", alias="KMS_KEYRING")
