@@ -33,6 +33,9 @@ EXPECTED_FILES = {
     # Publicador module-owned
     "publicador_drafts.json",
     "publicador_history.json",
+    # Autoreply module-owned
+    "autoreply_templates.json",
+    "autoreply_history.json",
     # FullDock module-owned (from topic stock-locations)
     "stock_locations.json",
     # Catalog competition tracking (SheetSeller + FullDock + Repricer)
@@ -61,6 +64,8 @@ ACTIVE_NON_PLACEHOLDER_SCHEMAS = {
     "processed_events.json",
     "publicador_drafts.json",
     "publicador_history.json",
+    "autoreply_templates.json",
+    "autoreply_history.json",
 }
 
 

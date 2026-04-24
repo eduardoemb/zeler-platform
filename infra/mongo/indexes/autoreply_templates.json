@@ -1,0 +1,4 @@
+[
+  {"keys":{"seller_id":1,"template_name":1},"options":{"name":"idx_autoreply_templates_seller_name","unique":true}},
+  {"keys":{"seller_id":1,"enabled":1,"updated_at":-1},"options":{"name":"idx_autoreply_templates_seller_enabled_updated"}}
+]

@@ -636,20 +636,24 @@ P6 ─→ P7
 
 #### 6C: autoreply-module (ex-Autoreplyia)
 
-- [ ] **P6C.1** — Define autoreply manifest + owned collections (`autoreply_templates`, `autoreply_history`)
+- [x] **P6C.1** — Define autoreply manifest + owned collections (`autoreply_templates`, `autoreply_history`)
   *Events subscribed*: `questions.new`, `messages.new`. *Scope*: `POST /answers`, `GET /questions/*`, `GET /messages/*`.
+  *Result*: Added `modules/autoreply/manifest.yaml` with question/message subscriptions, gateway answer/question/message scopes, owned collections, startup registration, and `/health` readiness wiring.
   *TDD*: Manifest validates. *Effort*: S
 
-- [ ] **P6C.2** — Create `autoreply_templates` + `autoreply_history` collections + validators
+- [x] **P6C.2** — Create `autoreply_templates` + `autoreply_history` collections + validators
   No per-nickname collections (enforced by design). `seller_id` field on all docs.
+  *Result*: Added strict Mongo validators and indexes, including unique `(seller_id, template_name)` and idempotent history by `idempotency_key`; schema inventory now treats Autoreply schemas as active non-placeholder validators.
   *TDD*: Validators strict, unique index on (seller_id, template_name). *Effort*: S
 
-- [ ] **P6C.3** — Implement question auto-reply consumer
+- [x] **P6C.3** — Implement question auto-reply consumer
   `questions.new` event → fetch question via gateway proxy `GET /questions/{id}` → match template → if match: `POST /answers` via gateway proxy → write `autoreply_history`. Idempotent by event `idempotency_key`.
+  *Result*: Added deterministic `AutoreplyEventHandler` using injected gateway and idempotency contracts. It fetches questions/messages through the gateway, supports keyword/regex template matching, posts answers via the gateway only, records history, and suppresses duplicate events. Tests use fakes only; no live Meli/RabbitMQ calls.
   *TDD*: `test_matched_template_triggers_answer`, `test_no_match_skips`, `test_duplicate_event_skipped`. *Effort*: L
 
-- [ ] **P6C.4** — Template management API + zeler-app screen
+- [x] **P6C.4** — Template management API + zeler-app screen
   CRUD for templates per seller. Pattern matching (keyword or regex). Preview.
+  *Result*: Added Autoreply admin API for listing/creating/updating/deleting templates and previewing match decisions; added zeler-app `/autoreply/templates` route, API helpers, server actions, template management panel, preview form, and module catalog route.
   *TDD*: Component test: create template, test preview. *Effort*: M
 
 #### 6D: fulldock-module (ex-FullDock)

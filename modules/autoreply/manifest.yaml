@@ -1,0 +1,13 @@
+name: autoreply
+version: 0.1.0
+subscribed_events:
+  - questions.new
+  - messages.new
+owned_collections:
+  - autoreply_templates
+  - autoreply_history
+allowed_meli_scopes:
+  - POST /answers
+  - GET /questions/*
+  - GET /messages/*
+health_endpoint: /health

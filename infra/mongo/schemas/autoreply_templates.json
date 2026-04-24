@@ -1,0 +1,31 @@
+{
+  "$jsonSchema": {
+    "bsonType": "object",
+    "properties": {
+      "_id": {"bsonType": ["objectId", "string"]},
+      "answer_text": {"bsonType": "string"},
+      "created_at": {"bsonType": "date"},
+      "enabled": {"bsonType": "bool"},
+      "match_type": {"enum": ["keyword", "regex"]},
+      "pattern": {"bsonType": "string"},
+      "schema_version": {"bsonType": "int"},
+      "seller_id": {"bsonType": ["string", "long", "int"]},
+      "template_name": {"bsonType": "string"},
+      "updated_at": {"bsonType": "date"}
+    },
+    "required": [
+      "_id",
+      "seller_id",
+      "template_name",
+      "match_type",
+      "pattern",
+      "answer_text",
+      "enabled",
+      "created_at",
+      "updated_at",
+      "schema_version"
+    ]
+  },
+  "validationAction": "error",
+  "validationLevel": "strict"
+}
