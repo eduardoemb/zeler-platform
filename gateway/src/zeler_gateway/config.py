@@ -28,6 +28,8 @@ class Settings(BaseSettings):
     oauth_success_url: str = Field(
         default="https://app.zeler.local/accounts/linked", alias="OAUTH_SUCCESS_URL"
     )
+    # Deprecated/unused: OAuth state JWTs are now KMS-signed ES256 via core.auth.jwt.
+    # Kept temporarily so existing environments with STATE_SIGNING_SECRET keep validating.
     state_signing_secret: SecretStr = Field(
         default=SecretStr("dev-only-insecure-secret-change-me"), alias="STATE_SIGNING_SECRET"
     )
@@ -74,9 +76,6 @@ def get_settings() -> Settings:
             "meli_client_id": load_secret("meli-client-id", project_id=settings.kms_project_id),
             "meli_client_secret": SecretStr(
                 load_secret("meli-client-secret", project_id=settings.kms_project_id)
-            ),
-            "state_signing_secret": SecretStr(
-                load_secret("state-signing-secret", project_id=settings.kms_project_id)
             ),
         }
     )

@@ -7,9 +7,12 @@ from urllib.parse import parse_qs, urlparse
 import httpx
 import pytest
 import respx
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import ec, utils
 
 from zeler_gateway.app import app
 from zeler_gateway.tokens.encryption import reset_dek_cache, set_kms_client
+from zeler_platform_core.auth.jwt import set_kms_client as set_jwt_kms_client
 
 
 class FakeKmsResponse:
@@ -39,6 +42,37 @@ class FakeKmsClient:
         ciphertext = request["ciphertext"]
         assert isinstance(ciphertext, bytes)
         return FakeKmsResponse(plaintext=self.wrapped_to_plaintext[ciphertext])
+
+
+class FakeJwtKmsSignResponse:
+    def __init__(self, signature: bytes) -> None:
+        self.signature = signature
+
+
+class FakeJwtKmsPublicKeyResponse:
+    def __init__(self, pem: str) -> None:
+        self.pem = pem
+
+
+class FakeJwtKmsClient:
+    def __init__(self) -> None:
+        self.private_key = ec.generate_private_key(ec.SECP256R1())
+
+    def asymmetric_sign(self, request: dict[str, Any]) -> FakeJwtKmsSignResponse:
+        digest = request["digest"]
+        sha256_digest = digest["sha256"]
+        signature = self.private_key.sign(
+            sha256_digest,
+            ec.ECDSA(utils.Prehashed(hashes.SHA256())),
+        )
+        return FakeJwtKmsSignResponse(signature)
+
+    def get_public_key(self, request: dict[str, str]) -> FakeJwtKmsPublicKeyResponse:
+        pem = self.private_key.public_key().public_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PublicFormat.SubjectPublicKeyInfo,
+        )
+        return FakeJwtKmsPublicKeyResponse(pem.decode("ascii"))
 
 
 class FakeUpdateResult:
@@ -76,15 +110,17 @@ class FakeAsyncDatabase:
 
 
 @pytest.fixture
-def fake_mongo_db(monkeypatch: pytest.MonkeyPatch) -> FakeAsyncDatabase:
+def fake_mongo_db(monkeypatch: pytest.MonkeyPatch) -> Any:
     database = FakeAsyncDatabase()
     app.state.mongo_db = database
     reset_dek_cache()
     set_kms_client(FakeKmsClient())
+    set_jwt_kms_client(FakeJwtKmsClient())
     monkeypatch.setenv("MELI_CLIENT_ID", "meli-client-id-test")
     monkeypatch.setenv("MELI_CLIENT_SECRET", "meli-client-secret-test")
     monkeypatch.setenv("MELI_REDIRECT_URI", "https://gateway.test/oauth/callback")
-    return database
+    yield database
+    set_jwt_kms_client(None)
 
 
 @pytest.mark.asyncio

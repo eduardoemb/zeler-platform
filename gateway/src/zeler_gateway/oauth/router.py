@@ -5,14 +5,13 @@ from typing import Any, cast
 from urllib.parse import urlencode
 
 import httpx
-import jwt
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import RedirectResponse
 
 from zeler_gateway.config import Settings
 from zeler_gateway.oauth.events import emit_accounts_linked
-from zeler_gateway.oauth.state import mint_state_jwt, verify_state_jwt
 from zeler_gateway.tokens.encryption import encrypt_token
+from zeler_platform_core.auth.jwt import InvalidJWTError, mint_state_jwt, verify_state_jwt
 
 router = APIRouter(prefix="/oauth", tags=["oauth"])
 
@@ -24,7 +23,7 @@ APP_ID = "zeler-platform"
 @router.get("/authorize")
 async def authorize(platform_user_id: str = Query(...)) -> RedirectResponse:
     settings = Settings()
-    state = mint_state_jwt(platform_user_id, settings=settings)
+    state = mint_state_jwt(platform_user_id, ttl_s=settings.state_ttl_seconds)
     params = {
         "client_id": settings.meli_client_id,
         "redirect_uri": settings.meli_redirect_uri,
@@ -42,8 +41,8 @@ async def callback(
 ) -> RedirectResponse:
     settings = Settings()
     try:
-        claims = verify_state_jwt(state, settings=settings)
-    except jwt.PyJWTError as exc:
+        claims = verify_state_jwt(state)
+    except InvalidJWTError as exc:
         raise HTTPException(status_code=400, detail="invalid OAuth state") from exc
 
     token_payload = await _exchange_authorization_code(code, settings=settings)

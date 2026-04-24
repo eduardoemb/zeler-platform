@@ -16,9 +16,11 @@ from zeler_platform_core.auth.jwt import (
     WrongAudienceError,
     der_to_jose_es256,
     mint_module_jwt,
+    mint_state_jwt,
     reset_jwt_cache,
     set_kms_client,
     verify_module_jwt,
+    verify_state_jwt,
 )
 
 
@@ -96,6 +98,22 @@ def test_wrong_aud_raises() -> None:
 
     with pytest.raises(WrongAudienceError):
         verify_module_jwt(token)
+
+
+def test_mint_verify_state_jwt_roundtrip() -> None:
+    token = mint_state_jwt("platform-user-123", ttl_s=600)
+
+    claims = verify_state_jwt(token)
+
+    assert claims.platform_user_id == "platform-user-123"
+    assert claims.exp - claims.iat == 600
+
+
+def test_state_jwt_rejects_module_audience() -> None:
+    token = mint_module_jwt("repricer", seller_id=123456789, ttl_s=60)
+
+    with pytest.raises(WrongAudienceError):
+        verify_state_jwt(token)
 
 
 def _mint_raw_token(payload: dict[str, Any]) -> str:

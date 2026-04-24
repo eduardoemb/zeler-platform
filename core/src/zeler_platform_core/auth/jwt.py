@@ -25,6 +25,7 @@ PLATFORM_JWT_KEY_VERSION = (
 )
 JWT_HEADER = {"alg": "ES256", "kid": "platform-jwt:1", "typ": "JWT"}
 JWT_AUDIENCE: Literal["gateway"] = "gateway"
+STATE_JWT_AUDIENCE: Literal["oauth-state"] = "oauth-state"
 ES256_COORDINATE_SIZE = 32
 
 
@@ -46,6 +47,13 @@ class ModuleClaims:
     seller_id: int
     iss: str
     aud: Literal["gateway"]
+    iat: int
+    exp: int
+
+
+@dataclass(frozen=True)
+class StateClaims:
+    platform_user_id: str
     iat: int
     exp: int
 
@@ -88,25 +96,23 @@ def mint_module_jwt(module_id: str, seller_id: int, ttl_s: int = 60) -> str:
         "iat": now,
         "exp": now + ttl_s,
     }
-    signing_input = _signing_input(JWT_HEADER, payload)
-    digest = hashlib.sha256(signing_input).digest()
-    response = _kms_client().asymmetric_sign(
-        request={"name": PLATFORM_JWT_KEY_VERSION, "digest": {"sha256": digest}}
-    )
-    jose_signature = der_to_jose_es256(cast(bytes, response.signature))
-    return b".".join([signing_input, _b64url_encode(jose_signature)]).decode("ascii")
+    return _mint_es256_jwt(payload)
+
+
+def mint_state_jwt(platform_user_id: str, *, ttl_s: int = 600) -> str:
+    now = int(time.time())
+    payload = {
+        "aud": STATE_JWT_AUDIENCE,
+        "platform_user_id": platform_user_id,
+        "iat": now,
+        "exp": now + ttl_s,
+    }
+    return _mint_es256_jwt(payload)
 
 
 def verify_module_jwt(token: str) -> ModuleClaims:
-    signing_input, payload, signature = _parse_token(token)
-    _verify_signature(signing_input, signature)
-
-    if payload.get("aud") != JWT_AUDIENCE:
-        raise WrongAudienceError("JWT audience must be gateway")
-
+    payload = _verify_es256_jwt(token, expected_aud=JWT_AUDIENCE)
     exp = _int_claim(payload, "exp")
-    if exp <= int(time.time()):
-        raise ExpiredJWTError("JWT has expired")
 
     iss = _str_claim(payload, "iss")
     if not iss.startswith("module:") or len(iss) == len("module:"):
@@ -121,6 +127,38 @@ def verify_module_jwt(token: str) -> ModuleClaims:
         iat=_int_claim(payload, "iat"),
         exp=exp,
     )
+
+
+def verify_state_jwt(token: str) -> StateClaims:
+    payload = _verify_es256_jwt(token, expected_aud=STATE_JWT_AUDIENCE)
+    return StateClaims(
+        platform_user_id=_str_claim(payload, "platform_user_id"),
+        iat=_int_claim(payload, "iat"),
+        exp=_int_claim(payload, "exp"),
+    )
+
+
+def _mint_es256_jwt(payload: dict[str, Any]) -> str:
+    signing_input = _signing_input(JWT_HEADER, payload)
+    digest = hashlib.sha256(signing_input).digest()
+    response = _kms_client().asymmetric_sign(
+        request={"name": PLATFORM_JWT_KEY_VERSION, "digest": {"sha256": digest}}
+    )
+    jose_signature = der_to_jose_es256(cast(bytes, response.signature))
+    return b".".join([signing_input, _b64url_encode(jose_signature)]).decode("ascii")
+
+
+def _verify_es256_jwt(token: str, *, expected_aud: str) -> dict[str, Any]:
+    signing_input, payload, signature = _parse_token(token)
+    _verify_signature(signing_input, signature)
+
+    if payload.get("aud") != expected_aud:
+        raise WrongAudienceError(f"JWT audience must be {expected_aud}")
+
+    exp = _int_claim(payload, "exp")
+    if exp <= int(time.time()):
+        raise ExpiredJWTError("JWT has expired")
+    return payload
 
 
 def der_to_jose_es256(der_signature: bytes) -> bytes:
