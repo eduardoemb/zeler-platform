@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import time
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from fnmatch import fnmatchcase
 from typing import Any, cast
@@ -42,6 +43,8 @@ HOP_BY_HOP_HEADERS = {
 }
 
 HttpClientFactory = Callable[[], httpx.AsyncClient]
+NowFn = Callable[[], datetime]
+SleepFn = Callable[[float], Awaitable[None]]
 
 
 @router.api_route("/{full_path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
@@ -75,12 +78,24 @@ async def proxy_meli(request: Request, full_path: str) -> Response:
         return _json_error(412, "account_not_active")
 
     account_status = account.get("status")
-    if account_status == "refresh_pending" and _lock_is_held(account.get("lock_held_until")):
-        return _json_error(
-            503,
-            "token_refresh_in_progress",
-            headers={"Retry-After": str(REFRESH_RETRY_AFTER_SECONDS)},
+    now_fn = _proxy_wait_now(request)
+    if account_status == "refresh_pending" and _lock_is_held(
+        account.get("lock_held_until"), now_fn=now_fn
+    ):
+        refreshed_account = await _wait_for_active_account(
+            db,
+            claims.seller_id,
+            now_fn=now_fn,
+            sleep_fn=_proxy_wait_sleep(request),
         )
+        if refreshed_account is None:
+            return _json_error(
+                503,
+                "token_refresh_timeout",
+                headers={"Retry-After": str(REFRESH_RETRY_AFTER_SECONDS)},
+            )
+        account = refreshed_account
+        account_status = account.get("status")
     if account_status != "active":
         return _json_error(412, "account_not_active")
 
@@ -180,13 +195,55 @@ def _scope_matches(*, method: str, path: str, allowed_scopes: list[str]) -> bool
     return any(fnmatchcase(requested, scope) for scope in allowed_scopes)
 
 
-def _lock_is_held(lock_held_until: Any) -> bool:
+async def _wait_for_active_account(
+    db: Any,
+    seller_id: int,
+    *,
+    timeout_s: float = 5.0,
+    poll_interval_s: float = 0.2,
+    now_fn: NowFn | None = None,
+    sleep_fn: SleepFn = asyncio.sleep,
+) -> dict[str, Any] | None:
+    current_time = now_fn or _utcnow
+    deadline = current_time().timestamp() + timeout_s
+    while current_time().timestamp() < deadline:
+        await sleep_fn(poll_interval_s)
+        account = await db["meli_accounts"].find_one({"seller_id": seller_id})
+        if account is None:
+            return None
+        if account.get("status") == "active" and not _lock_is_held(
+            account.get("lock_held_until"), now_fn=current_time
+        ):
+            return cast(dict[str, Any], account)
+    return None
+
+
+def _lock_is_held(lock_held_until: Any, *, now_fn: NowFn | None = None) -> bool:
     if not isinstance(lock_held_until, datetime):
         return False
     lock_deadline = lock_held_until
     if lock_held_until.tzinfo is None:
         lock_deadline = lock_held_until.replace(tzinfo=UTC)
-    return lock_deadline > datetime.now(UTC)
+    current_time = now_fn or _utcnow
+    return lock_deadline > current_time()
+
+
+def _utcnow() -> datetime:
+    return datetime.now(UTC)
+
+
+def _proxy_wait_now(request: Request) -> NowFn:
+    now_fn = getattr(request.app.state, "proxy_wait_now", None)
+    if now_fn is not None:
+        return cast(NowFn, now_fn)
+    return _utcnow
+
+
+def _proxy_wait_sleep(request: Request) -> SleepFn:
+    sleep_fn = getattr(request.app.state, "proxy_wait_sleep", None)
+    if sleep_fn is not None:
+        return cast(SleepFn, sleep_fn)
+    return asyncio.sleep
 
 
 async def _forward_to_meli(

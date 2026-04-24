@@ -238,14 +238,25 @@ async def test_proxy_retries_transient_upstream_502(
 
 
 @pytest.mark.asyncio
-async def test_proxy_call_during_refresh_waits_or_503(
+async def test_proxy_call_during_refresh_returns_503_after_timeout(
     proxy_client: httpx.AsyncClient, proxy_db: Any
 ) -> None:
     _, database = proxy_db
+    fake_now = datetime.now(UTC)
+
+    def now_fn() -> datetime:
+        return fake_now
+
+    async def sleep_fn(delay_s: float) -> None:
+        nonlocal fake_now
+        fake_now += timedelta(seconds=delay_s)
+
+    app.state.proxy_wait_now = now_fn
+    app.state.proxy_wait_sleep = sleep_fn
     _seed_account(
         database,
         status="refresh_pending",
-        lock_held_until=datetime.now(UTC) + timedelta(seconds=120),
+        lock_held_until=fake_now + timedelta(seconds=120),
     )
 
     with respx.mock(assert_all_called=False) as respx_mock:
@@ -253,8 +264,68 @@ async def test_proxy_call_during_refresh_waits_or_503(
         response = await proxy_client.get("/proxy/meli/items/MLA123", headers=_auth_header())
 
     assert response.status_code == 503
-    assert "Retry-After" in response.headers
+    assert response.json() == {"error": "token_refresh_timeout"}
+    assert response.headers["Retry-After"] == "5"
     assert upstream.call_count == 0
+    del app.state.proxy_wait_now
+    del app.state.proxy_wait_sleep
+
+
+@pytest.mark.asyncio
+async def test_proxy_call_waits_for_refresh_then_forwards(
+    proxy_client: httpx.AsyncClient, proxy_db: Any
+) -> None:
+    _, database = proxy_db
+    fake_now = datetime.now(UTC)
+    refresh_completed = False
+
+    def now_fn() -> datetime:
+        return fake_now
+
+    async def sleep_fn(delay_s: float) -> None:
+        nonlocal fake_now, refresh_completed
+        fake_now += timedelta(seconds=delay_s)
+        if refresh_completed:
+            return
+        refresh_completed = True
+        access_enc = encrypt_token("fresh-meli-access-token", account_id="123456789")
+        refresh_enc = encrypt_token("fresh-meli-refresh-token", account_id="123456789")
+        database.meli_accounts.update_one(
+            {"seller_id": 123456789},
+            {
+                "$set": {
+                    "status": "active",
+                    "access_token_ciphertext": access_enc.ciphertext,
+                    "access_token_dek_wrapped": access_enc.dek_wrapped,
+                    "refresh_token_ciphertext": refresh_enc.ciphertext,
+                    "refresh_token_dek_wrapped": refresh_enc.dek_wrapped,
+                    "token_nonce": access_enc.nonce,
+                    "refresh_token_nonce": refresh_enc.nonce,
+                    "lock_held_until": None,
+                    "updated_at": fake_now,
+                }
+            },
+        )
+
+    app.state.proxy_wait_now = now_fn
+    app.state.proxy_wait_sleep = sleep_fn
+    _seed_account(
+        database,
+        status="refresh_pending",
+        lock_held_until=fake_now + timedelta(seconds=120),
+    )
+
+    with respx.mock(assert_all_called=True) as respx_mock:
+        upstream = respx_mock.get("https://api.mercadolibre.com/items/MLA123").mock(
+            return_value=httpx.Response(200, json={"id": "MLA123"})
+        )
+        response = await proxy_client.get("/proxy/meli/items/MLA123", headers=_auth_header())
+
+    assert response.status_code == 200
+    assert response.json() == {"id": "MLA123"}
+    assert upstream.calls.last.request.headers["Authorization"] == "Bearer fresh-meli-access-token"
+    del app.state.proxy_wait_now
+    del app.state.proxy_wait_sleep
 
 
 @pytest.mark.asyncio
