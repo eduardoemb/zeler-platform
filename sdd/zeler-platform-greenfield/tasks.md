@@ -489,8 +489,9 @@ P6 ─→ P7
 
 ### Checklist
 
-- [ ] **P5.1** — Audit zeler-app for all legacy API call sites
+- [x] **P5.1** — Audit zeler-app for all legacy API call sites
   Grep for any calls to legacy domain names / endpoints. Produce a list of screens + API calls to migrate. Create migration checklist as a GitHub issue. No code yet.
+  *Result*: Audit completed against `/Users/eduardoramirez/Documents/repositorios/zeler-app`; migration checklist issue created: https://github.com/eduardoemb/zeler-app/issues/1. App implementation work is blocked until the pre-existing app lint/test-runner gap is resolved.
   *Ref*: proposal §4. *TDD*: N/A (discovery). *Effort*: S
 
 - [ ] **P5.2** — Implement platform auth flow in zeler-app
