@@ -580,8 +580,9 @@ P6 ─→ P7
   *Result*: Added deterministic `SheetsEventHandler` contract: de-dupes by idempotency key, loads seller export config, fetches the full resource through an injected gateway client, formats a row, and appends through an injected Google Sheets client. Real Google Sheets credentials/API and live AMQP loop remain deployment wiring for later validation; tests use mocks/contracts only.
   *TDD*: `test_item_event_triggers_sheets_append`, `test_duplicate_event_skipped`. *Effort*: L
 
-- [ ] **P6A.4** — Admin API + zeler-app screen for sheets configuration
+- [x] **P6A.4** — Admin API + zeler-app screen for sheets configuration
   Configure spreadsheet ID per seller. Trigger manual sync. View last sync status.
+  *Result*: Added Sheets module admin API for listing/upserting export configuration, creating manual sync jobs, and surfacing last sync state; added zeler-app SheetSeller configuration route with API helpers, server actions, form, sync trigger, and module catalog route.
   *TDD*: Component test: configure form submits, sync job created. *Effort*: M
 
 #### 6B: publicador-module (ex-PublicadorMeli)

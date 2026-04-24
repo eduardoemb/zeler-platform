@@ -8,6 +8,7 @@ from fastapi import FastAPI
 from zeler_platform_core.runtime.health import HealthCheck, build_health_router
 from zeler_platform_core.runtime.manifest import validate_manifest
 from zeler_platform_core.runtime.registration import register_module
+from zeler_sheets.api import build_router
 
 
 def build_app(*, mongo_db: object, rabbitmq_ready: Callable[[], bool]) -> FastAPI:
@@ -21,6 +22,7 @@ def build_app(*, mongo_db: object, rabbitmq_ready: Callable[[], bool]) -> FastAP
     async def rabbitmq_check() -> tuple[bool, str]:
         return (True, "connected") if rabbitmq_ready() else (False, "consumer_stalled")
 
+    app.include_router(build_router())
     app.include_router(
         build_health_router(
             manifest.name,
