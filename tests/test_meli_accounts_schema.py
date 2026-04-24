@@ -40,6 +40,7 @@ def _valid_meli_account_doc() -> dict[str, Any]:
     return {
         "_id": ObjectId(),
         "seller_id": Int64(123456789),
+        "nickname": "TEST_SELLER",
         "app_id": "zeler-platform",
         "platform_user_id": "platform-user-123",
         "access_token_ciphertext": "access-ciphertext-base64",
@@ -53,7 +54,7 @@ def _valid_meli_account_doc() -> dict[str, Any]:
         "created_at": now,
         "updated_at": now,
         "kms_key_version": (
-            "projects/zeler-platform-dev/locations/us-central1/keyRings/zeler/"
+            "projects/zeler-platform-dev/locations/us-central1/keyRings/zeler-platform/"
             "cryptoKeys/meli-tokens/cryptoKeyVersions/1"
         ),
     }

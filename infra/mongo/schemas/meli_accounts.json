@@ -3,6 +3,7 @@
     "bsonType": "object",
     "required": [
       "seller_id",
+      "nickname",
       "app_id",
       "platform_user_id",
       "access_token_ciphertext",
@@ -55,7 +56,7 @@
         }
       },
       "status": {
-        "enum": ["active", "revoked", "invalid_grant", "pending"]
+        "enum": ["active", "pending", "refresh_pending", "revoked", "invalid_grant", "error"]
       },
       "expires_at": {
         "bsonType": "date"
