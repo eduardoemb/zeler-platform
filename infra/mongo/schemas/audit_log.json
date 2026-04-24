@@ -1,3 +1,52 @@
 {
-  "$comment": "TODO: populated in Phase 3 alongside the Pydantic model for this collection. See sdd/zeler-platform-greenfield/tasks P3.*"
+  "$jsonSchema": {
+    "bsonType": "object",
+    "required": [
+      "_id",
+      "at",
+      "module_id",
+      "seller_id",
+      "method",
+      "path",
+      "upstream_status",
+      "duration_ms"
+    ],
+    "additionalProperties": false,
+    "properties": {
+      "_id": {
+        "bsonType": "objectId"
+      },
+      "at": {
+        "bsonType": "date"
+      },
+      "module_id": {
+        "bsonType": "string"
+      },
+      "seller_id": {
+        "bsonType": "long"
+      },
+      "method": {
+        "enum": ["GET", "POST", "PUT", "DELETE", "PATCH"]
+      },
+      "path": {
+        "bsonType": "string"
+      },
+      "upstream_status": {
+        "bsonType": "int"
+      },
+      "duration_ms": {
+        "bsonType": "int",
+        "minimum": 0
+      },
+      "trace_id": {
+        "bsonType": "string"
+      },
+      "error": {
+        "bsonType": "string"
+      },
+      "request_id": {
+        "bsonType": "string"
+      }
+    }
+  }
 }

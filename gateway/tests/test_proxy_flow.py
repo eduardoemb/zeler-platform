@@ -194,6 +194,45 @@ async def test_proxy_call_injects_token_and_forwards(
     assert response.status_code == 200
     assert response.json() == {"id": "MLA123"}
     assert upstream.calls.last.request.headers["Authorization"] == "Bearer meli-access-token"
+    audit_doc = database.audit_log.find_one(
+        {
+            "module_id": "repricer",
+            "seller_id": 123456789,
+            "method": "GET",
+            "path": "/items/MLA123",
+        }
+    )
+    assert audit_doc is not None
+    assert audit_doc["upstream_status"] == 200
+    assert isinstance(audit_doc["duration_ms"], int)
+
+
+@pytest.mark.asyncio
+async def test_proxy_retries_transient_upstream_502(
+    proxy_client: httpx.AsyncClient, proxy_db: Any
+) -> None:
+    _, database = proxy_db
+    _seed_account(database)
+
+    async def fast_sleep(_delay_s: float) -> None:
+        return None
+
+    app.state.proxy_retry_sleep = fast_sleep
+
+    with respx.mock(assert_all_called=True) as respx_mock:
+        upstream = respx_mock.get("https://api.mercadolibre.com/items/MLA123").mock(
+            side_effect=[
+                httpx.Response(502),
+                httpx.Response(200, json={"id": "MLA123"}),
+            ]
+        )
+
+        response = await proxy_client.get("/proxy/meli/items/MLA123", headers=_auth_header())
+
+    assert response.status_code == 200
+    assert response.json() == {"id": "MLA123"}
+    assert upstream.call_count == 2
+    del app.state.proxy_retry_sleep
 
 
 @pytest.mark.asyncio

@@ -31,7 +31,7 @@ EXPECTED_FILES = {
     # from topic catalog_item_competition_status
     "competition_snapshots.json",
 }
-ACTIVE_PHASE_ONE_SCHEMAS = {"meli_accounts.json"}
+ACTIVE_PHASE_ONE_SCHEMAS = {"audit_log.json", "meli_accounts.json", "users.json"}
 
 
 def test_placeholder_schema_files_exist_and_reference_phase_three() -> None:

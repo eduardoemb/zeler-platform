@@ -10,10 +10,13 @@ from typing import Any, cast
 
 import httpx
 import structlog
+from bson import Int64
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, Response
+from pymongo.errors import PyMongoError
 
 from zeler_gateway.config import Settings
+from zeler_gateway.proxy.retry import send_with_retry
 from zeler_gateway.tokens.encryption import EncryptedToken, decrypt_token
 from zeler_platform_core.auth.jwt import (
     ExpiredJWTError,
@@ -120,7 +123,15 @@ async def proxy_meli(request: Request, full_path: str) -> Response:
         access_token=access_token,
     )
     duration_ms = int((time.perf_counter() - started) * 1000)
-    # TODO P1.16: write one append-only audit_log document after validator/collection exist.
+    await _write_audit_log(
+        request=request,
+        module_id=claims.module_id,
+        seller_id=claims.seller_id,
+        method=request.method,
+        path=upstream_path,
+        upstream_status=upstream_response.status_code,
+        duration_ms=duration_ms,
+    )
     logger.info(
         "proxy.call",
         module_id=claims.module_id,
@@ -137,6 +148,39 @@ async def proxy_meli(request: Request, full_path: str) -> Response:
         headers=_response_headers(upstream_response),
         media_type=upstream_response.headers.get("content-type"),
     )
+
+
+async def _write_audit_log(
+    *,
+    request: Request,
+    module_id: str,
+    seller_id: int,
+    method: str,
+    path: str,
+    upstream_status: int,
+    duration_ms: int,
+) -> None:
+    try:
+        await request.app.state.mongo_db["audit_log"].insert_one(
+            {
+                "at": datetime.now(UTC),
+                "module_id": module_id,
+                "seller_id": Int64(seller_id),
+                "method": method,
+                "path": path,
+                "upstream_status": upstream_status,
+                "duration_ms": duration_ms,
+            }
+        )
+    except PyMongoError as exc:
+        logger.warning(
+            "audit_log.write_failed",
+            module_id=module_id,
+            seller_id=seller_id,
+            method=method,
+            path=path,
+            error=str(exc),
+        )
 
 
 def _scope_matches(*, method: str, path: str, allowed_scopes: list[str]) -> bool:
@@ -180,13 +224,17 @@ async def _forward_to_meli(
     headers = _upstream_headers(request, access_token=access_token)
     factory = _http_client_factory(request)
     async with factory() as client:
-        return await client.request(
+        upstream_request = client.build_request(
             request.method,
             url,
             content=body,
             params=list(request.query_params.multi_items()),
             headers=headers,
         )
+        sleep_fn = getattr(request.app.state, "proxy_retry_sleep", None)
+        if sleep_fn is None:
+            return await send_with_retry(client, upstream_request)
+        return await send_with_retry(client, upstream_request, sleep_fn=cast(Any, sleep_fn))
 
 
 def _http_client_factory(request: Request) -> HttpClientFactory:

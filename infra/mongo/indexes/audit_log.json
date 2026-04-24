@@ -1,0 +1,29 @@
+[
+  {
+    "keys": {
+      "at": 1
+    },
+    "options": {
+      "name": "ttl_audit_log_at_365d",
+      "expireAfterSeconds": 31536000
+    }
+  },
+  {
+    "keys": {
+      "module_id": 1,
+      "at": -1
+    },
+    "options": {
+      "name": "idx_audit_log_module_at"
+    }
+  },
+  {
+    "keys": {
+      "seller_id": 1,
+      "at": -1
+    },
+    "options": {
+      "name": "idx_audit_log_seller_at"
+    }
+  }
+]
