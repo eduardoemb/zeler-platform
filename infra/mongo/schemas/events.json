@@ -1,1 +1,35 @@
-{"$jsonSchema":{"bsonType":"object","required":["_id","event_type","account_id","occurred_at","payload","schema_version"],"properties":{"_id":{"bsonType":"string"},"event_type":{"bsonType":"string"},"account_id":{"bsonType":"string"},"occurred_at":{"bsonType":"date"},"payload":{"bsonType":"object"},"schema_version":{"bsonType":"int"}}}}
+{
+  "$jsonSchema": {
+    "bsonType": "object",
+    "properties": {
+      "account_id": {
+        "bsonType": "string"
+      },
+      "event_id": {
+        "bsonType": "string"
+      },
+      "event_type": {
+        "bsonType": "string"
+      },
+      "occurred_at": {
+        "bsonType": "date"
+      },
+      "payload": {
+        "bsonType": "object"
+      },
+      "schema_version": {
+        "bsonType": "int"
+      }
+    },
+    "required": [
+      "event_id",
+      "event_type",
+      "account_id",
+      "occurred_at",
+      "payload",
+      "schema_version"
+    ]
+  },
+  "validationAction": "error",
+  "validationLevel": "strict"
+}

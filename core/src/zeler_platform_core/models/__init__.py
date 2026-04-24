@@ -1,3 +1,4 @@
+from zeler_platform_core.models.base import current_schema_version
 from zeler_platform_core.models.entities import Claim, Item, Message, Order, Question, Shipment
 from zeler_platform_core.models.events import (
     BootstrapCompleted,
@@ -26,6 +27,7 @@ __all__ = [
     "BootstrapCompleted",
     "BootstrapJob",
     "Claim",
+    "current_schema_version",
     "DomainEvent",
     "Item",
     "ItemPriceChanged",

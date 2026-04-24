@@ -1,1 +1,69 @@
-{"$jsonSchema":{"bsonType":"object","required":["_id","at","module_id","seller_id","method","path","upstream_status","duration_ms","schema_version"],"properties":{"_id":{"bsonType":["objectId","string"]},"at":{"bsonType":"date"},"module_id":{"bsonType":"string"},"seller_id":{"bsonType":["long","int","string"]},"method":{"enum":["GET","POST","PUT","DELETE","PATCH"]},"path":{"bsonType":"string"},"status":{"bsonType":["int","long"]},"upstream_status":{"bsonType":["int","long"]},"duration_ms":{"bsonType":["int","long"],"minimum":0},"trace_id":{"bsonType":["string","null"]},"error":{"bsonType":"string"},"request_id":{"bsonType":"string"},"schema_version":{"bsonType":"int"}},"additionalProperties":false}}
+{
+  "$jsonSchema": {
+    "bsonType": "object",
+    "properties": {
+      "_id": {
+        "bsonType": [
+          "objectId",
+          "string"
+        ]
+      },
+      "at": {
+        "bsonType": "date"
+      },
+      "duration_ms": {
+        "bsonType": [
+          "int",
+          "long"
+        ]
+      },
+      "method": {
+        "bsonType": "string"
+      },
+      "module_id": {
+        "bsonType": "string"
+      },
+      "path": {
+        "bsonType": "string"
+      },
+      "schema_version": {
+        "bsonType": "int"
+      },
+      "seller_id": {
+        "bsonType": [
+          "string",
+          "long",
+          "int"
+        ]
+      },
+      "status": {
+        "bsonType": "int"
+      },
+      "trace_id": {
+        "bsonType": [
+          "string",
+          "null"
+        ]
+      },
+      "upstream_status": {
+        "bsonType": [
+          "int",
+          "null"
+        ]
+      }
+    },
+    "required": [
+      "_id",
+      "seller_id",
+      "at",
+      "module_id",
+      "method",
+      "path",
+      "status",
+      "duration_ms",
+      "schema_version"
+    ]
+  },
+  "validationAction": "error",
+  "validationLevel": "strict"
+}

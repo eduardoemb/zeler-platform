@@ -13,13 +13,26 @@ from zeler_platform_core.models.base import (
     _coerce_str,
 )
 
+ItemStatus = Literal["active", "paused", "closed", "under_review", "inactive"]
+OrderStatus = Literal["paid", "confirmed", "payment_required", "payment_in_process", "cancelled"]
+MessageStatus = Literal["available", "blocked", "moderated", "deleted"]
+ShipmentStatus = Literal[
+    "pending", "handling", "ready_to_ship", "shipped", "delivered", "cancelled"
+]
+ShipmentLogisticType = Literal[
+    "fulfillment", "cross_docking", "self_service", "drop_off", "xd_drop_off"
+]
+ClaimStatus = Literal["opened", "closed", "mediating", "resolved"]
+ClaimStage = Literal["claim", "dispute", "recontact", "none"]
+ClaimType = Literal["mediations", "returns", "fulfillment", "cancel_purchase"]
+
 
 class Item(UtcDatetimeMixin, PriceMixin, SellerScopedDocument):
     title: str
     price: Decimal
     base_price: Decimal
     available_quantity: int
-    status: str
+    status: ItemStatus
     category_id: str
     variations: list[dict[str, Any]] = Field(default_factory=list)
     attributes: list[dict[str, Any]] = Field(default_factory=list)
@@ -43,7 +56,7 @@ class OrderItem(PriceMixin):
 
 class Order(UtcDatetimeMixin, PriceMixin, SellerScopedDocument):
     buyer_id: str
-    status: str
+    status: OrderStatus
     date_created: datetime
     date_closed: datetime | None = None
     total_amount: Decimal
@@ -84,7 +97,7 @@ class Message(UtcDatetimeMixin, SellerScopedDocument):
     from_user_id: str
     to_user_id: str
     text: str
-    status: str
+    status: MessageStatus
     date_created: datetime
     read_at: datetime | None = None
 
@@ -96,12 +109,10 @@ class Message(UtcDatetimeMixin, SellerScopedDocument):
 
 class Shipment(UtcDatetimeMixin, SellerScopedDocument):
     order_id: str
-    status: str
+    status: ShipmentStatus
     substatus: str | None = None
     tracking_number: str | None = None
-    logistic_type: (
-        Literal["fulfillment", "cross_docking", "self_service", "drop_off", "xd_drop_off"] | str
-    )
+    logistic_type: ShipmentLogisticType
     date_created: datetime
     last_updated: datetime
 
@@ -114,9 +125,9 @@ class Shipment(UtcDatetimeMixin, SellerScopedDocument):
 class Claim(UtcDatetimeMixin, SellerScopedDocument):
     buyer_id: str | None = None
     order_id: str
-    status: str
-    stage: str
-    type: str
+    status: ClaimStatus
+    stage: ClaimStage
+    type: ClaimType
     date_created: datetime
     resolution: dict[str, Any] | None = None
 

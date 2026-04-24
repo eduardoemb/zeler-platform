@@ -1,1 +1,76 @@
-{"$jsonSchema":{"bsonType":"object","required":["_id","seller_id","pack_id","from_user_id","to_user_id","text","status","date_created","schema_version"],"properties":{"_id":{"bsonType":"string"},"seller_id":{"bsonType":["string","long","int"]},"pack_id":{"bsonType":["string","long","int"]},"order_id":{"bsonType":["string","long","int","null"]},"from_user_id":{"bsonType":["string","long","int"]},"to_user_id":{"bsonType":["string","long","int"]},"text":{"bsonType":"string"},"status":{"bsonType":"string"},"date_created":{"bsonType":"date"},"read_at":{"bsonType":["date","null"]},"schema_version":{"bsonType":"int"}}}}
+{
+  "$jsonSchema": {
+    "bsonType": "object",
+    "properties": {
+      "_id": {
+        "bsonType": [
+          "objectId",
+          "string"
+        ]
+      },
+      "date_created": {
+        "bsonType": "date"
+      },
+      "from_user_id": {
+        "bsonType": [
+          "string",
+          "long",
+          "int"
+        ]
+      },
+      "order_id": {
+        "bsonType": [
+          "string",
+          "long",
+          "int",
+          "null"
+        ]
+      },
+      "pack_id": {
+        "bsonType": "string"
+      },
+      "read_at": {
+        "bsonType": [
+          "date",
+          "null"
+        ]
+      },
+      "schema_version": {
+        "bsonType": "int"
+      },
+      "seller_id": {
+        "bsonType": [
+          "string",
+          "long",
+          "int"
+        ]
+      },
+      "status": {
+        "bsonType": "string"
+      },
+      "text": {
+        "bsonType": "string"
+      },
+      "to_user_id": {
+        "bsonType": [
+          "string",
+          "long",
+          "int"
+        ]
+      }
+    },
+    "required": [
+      "_id",
+      "seller_id",
+      "pack_id",
+      "from_user_id",
+      "to_user_id",
+      "text",
+      "status",
+      "date_created",
+      "schema_version"
+    ]
+  },
+  "validationAction": "error",
+  "validationLevel": "strict"
+}

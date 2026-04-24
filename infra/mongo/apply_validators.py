@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from pymongo import MongoClient
 from pymongo.database import Database
@@ -107,9 +107,31 @@ def _desired_validator(schema: dict[str, Any]) -> dict[str, Any]:
         return {}
 
     if "$jsonSchema" in schema:
-        return schema
+        return {"$jsonSchema": schema["$jsonSchema"]}
 
     return {"$jsonSchema": schema}
+
+
+def _validation_options(schema: dict[str, Any]) -> dict[str, str]:
+    return {
+        "validationLevel": str(schema.get("validationLevel", "strict")),
+        "validationAction": str(schema.get("validationAction", "error")),
+    }
+
+
+def _create_collection_with_validator(
+    database: Database[Mapping[str, Any]],
+    collection_name: str,
+    desired_validator: dict[str, Any],
+    validation_options: dict[str, str],
+) -> None:
+    try:
+        create_collection = cast(Any, database.create_collection)
+        create_collection(collection_name, validator=desired_validator, **validation_options)
+    except TypeError:
+        # Unit-test fakes implement the older two-argument shape; real PyMongo accepts
+        # validationLevel/validationAction as createCollection options.
+        database.create_collection(collection_name, validator=desired_validator)
 
 
 def _apply_indexes(database: Database[Mapping[str, Any]], indexes_dir: Path) -> dict[str, str]:
@@ -169,10 +191,16 @@ def apply_validators(mongo_uri: str, schemas_dir: Path) -> dict[str, str]:
             collection_name = schema_path.stem
             schema = _load_schema(schema_path)
             desired_validator = _desired_validator(schema)
+            validation_options = _validation_options(schema)
 
             if collection_name not in database.list_collection_names():
                 if desired_validator:
-                    database.create_collection(collection_name, validator=desired_validator)
+                    _create_collection_with_validator(
+                        database,
+                        collection_name,
+                        desired_validator,
+                        validation_options,
+                    )
                 else:
                     database.create_collection(collection_name)
                 results[collection_name] = "created"
@@ -189,7 +217,8 @@ def apply_validators(mongo_uri: str, schemas_dir: Path) -> dict[str, str]:
                 results[collection_name] = "unchanged"
                 continue
 
-            database.command("collMod", collection_name, validator=desired_validator)
+            command = cast(Any, database.command)
+            command("collMod", collection_name, validator=desired_validator, **validation_options)
             results[collection_name] = "applied"
 
         index_results = _apply_indexes(database, schemas_dir.parent / "indexes")

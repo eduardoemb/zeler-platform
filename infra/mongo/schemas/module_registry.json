@@ -1,1 +1,54 @@
-{"$jsonSchema":{"bsonType":"object","required":["_id","version","allowed_meli_scopes","routing_keys","status","schema_version"],"properties":{"_id":{"bsonType":"string"},"version":{"bsonType":"string"},"allowed_meli_scopes":{"bsonType":"array","items":{"bsonType":"string"}},"routing_keys":{"bsonType":"array","items":{"bsonType":"string"}},"status":{"enum":["enabled","disabled","degraded"]},"last_heartbeat_at":{"bsonType":["date","null"]},"health":{"bsonType":["object","null"]},"schema_version":{"bsonType":"int"}}}}
+{
+  "$jsonSchema": {
+    "bsonType": "object",
+    "properties": {
+      "_id": {
+        "bsonType": [
+          "objectId",
+          "string"
+        ]
+      },
+      "allowed_meli_scopes": {
+        "bsonType": "array"
+      },
+      "health": {
+        "bsonType": [
+          "object",
+          "null"
+        ]
+      },
+      "last_heartbeat_at": {
+        "bsonType": [
+          "date",
+          "null"
+        ]
+      },
+      "routing_keys": {
+        "bsonType": "array"
+      },
+      "schema_version": {
+        "bsonType": "int"
+      },
+      "status": {
+        "enum": [
+          "enabled",
+          "disabled",
+          "degraded"
+        ]
+      },
+      "version": {
+        "bsonType": "string"
+      }
+    },
+    "required": [
+      "_id",
+      "version",
+      "allowed_meli_scopes",
+      "routing_keys",
+      "status",
+      "schema_version"
+    ]
+  },
+  "validationAction": "error",
+  "validationLevel": "strict"
+}

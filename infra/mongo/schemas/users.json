@@ -1,1 +1,63 @@
-{"$jsonSchema":{"bsonType":"object","required":["_id","email","name","auth_provider","created_at","updated_at","schema_version"],"additionalProperties":false,"properties":{"_id":{"bsonType":"objectId"},"email":{"bsonType":"string"},"name":{"bsonType":"string"},"auth_provider":{"enum":["local","google","meli","internal"]},"created_at":{"bsonType":"date"},"updated_at":{"bsonType":"date"},"meli_account_ids":{"bsonType":"array","items":{"bsonType":["long","int","string"]}},"module_permissions":{"bsonType":"object"},"roles":{"bsonType":"array","items":{"bsonType":"string"}},"status":{"enum":["active","suspended","deleted"]},"schema_version":{"bsonType":"int"}}}}
+{
+  "$jsonSchema": {
+    "bsonType": "object",
+    "properties": {
+      "_id": {
+        "bsonType": [
+          "objectId",
+          "string"
+        ]
+      },
+      "auth_provider": {
+        "enum": [
+          "local",
+          "google",
+          "meli",
+          "internal"
+        ]
+      },
+      "created_at": {
+        "bsonType": "date"
+      },
+      "email": {
+        "bsonType": "string"
+      },
+      "meli_account_ids": {
+        "bsonType": "array"
+      },
+      "module_permissions": {
+        "bsonType": "object"
+      },
+      "name": {
+        "bsonType": "string"
+      },
+      "roles": {
+        "bsonType": "array"
+      },
+      "schema_version": {
+        "bsonType": "int"
+      },
+      "status": {
+        "enum": [
+          "active",
+          "suspended",
+          "deleted"
+        ]
+      },
+      "updated_at": {
+        "bsonType": "date"
+      }
+    },
+    "required": [
+      "_id",
+      "email",
+      "name",
+      "auth_provider",
+      "created_at",
+      "updated_at",
+      "schema_version"
+    ]
+  },
+  "validationAction": "error",
+  "validationLevel": "strict"
+}

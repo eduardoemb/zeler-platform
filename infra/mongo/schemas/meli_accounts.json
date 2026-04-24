@@ -1,7 +1,133 @@
 {
   "$jsonSchema": {
     "bsonType": "object",
+    "properties": {
+      "_id": {
+        "bsonType": [
+          "objectId",
+          "string"
+        ]
+      },
+      "access_token_ciphertext": {
+        "bsonType": [
+          "binData",
+          "string"
+        ]
+      },
+      "access_token_dek_wrapped": {
+        "bsonType": [
+          "binData",
+          "string"
+        ]
+      },
+      "app_id": {
+        "bsonType": "string"
+      },
+      "connected_at": {
+        "bsonType": [
+          "date",
+          "null"
+        ]
+      },
+      "created_at": {
+        "bsonType": "date"
+      },
+      "expires_at": {
+        "bsonType": "date"
+      },
+      "kms_key_version": {
+        "bsonType": "string"
+      },
+      "last_error": {
+        "bsonType": [
+          "string",
+          "null"
+        ]
+      },
+      "last_refresh_at": {
+        "bsonType": [
+          "date",
+          "null"
+        ]
+      },
+      "lock_held_until": {
+        "bsonType": [
+          "date",
+          "null"
+        ]
+      },
+      "nickname": {
+        "bsonType": "string"
+      },
+      "platform_user_id": {
+        "bsonType": "string"
+      },
+      "refresh_token_ciphertext": {
+        "bsonType": [
+          "binData",
+          "string"
+        ]
+      },
+      "refresh_token_dek_wrapped": {
+        "bsonType": [
+          "binData",
+          "string"
+        ]
+      },
+      "refresh_token_expires_at": {
+        "bsonType": [
+          "date",
+          "null"
+        ]
+      },
+      "refresh_token_nonce": {
+        "bsonType": [
+          "binData",
+          "string"
+        ]
+      },
+      "schema_version": {
+        "bsonType": "int"
+      },
+      "scopes": {
+        "bsonType": "array"
+      },
+      "seller_id": {
+        "bsonType": [
+          "string",
+          "long",
+          "int"
+        ]
+      },
+      "status": {
+        "enum": [
+          "active",
+          "pending",
+          "refresh_pending",
+          "revoked",
+          "invalid_grant",
+          "error",
+          "invalid"
+        ]
+      },
+      "sync_status": {
+        "bsonType": [
+          "object",
+          "null"
+        ]
+      },
+      "token_nonce": {
+        "bsonType": [
+          "binData",
+          "string"
+        ]
+      },
+      "updated_at": {
+        "bsonType": "date"
+      }
+    },
     "required": [
+      "_id",
       "seller_id",
       "nickname",
       "app_id",
@@ -15,93 +141,12 @@
       "scopes",
       "status",
       "expires_at",
+      "kms_key_version",
       "created_at",
       "updated_at",
-      "kms_key_version",
       "schema_version"
-    ],
-    "properties": {
-      "_id": {
-        "bsonType": "objectId"
-      },
-      "seller_id": {
-        "bsonType": "long"
-      },
-      "app_id": {
-        "bsonType": "string"
-      },
-      "platform_user_id": {
-        "bsonType": "string"
-      },
-      "nickname": {
-        "bsonType": "string"
-      },
-      "access_token_ciphertext": {
-        "bsonType": ["binData", "string"]
-      },
-      "access_token_dek_wrapped": {
-        "bsonType": ["binData", "string"]
-      },
-      "refresh_token_ciphertext": {
-        "bsonType": ["binData", "string"]
-      },
-      "refresh_token_dek_wrapped": {
-        "bsonType": ["binData", "string"]
-      },
-      "token_nonce": {
-        "bsonType": ["binData", "string"]
-      },
-      "refresh_token_nonce": {
-        "bsonType": ["binData", "string"]
-      },
-      "scopes": {
-        "bsonType": "array",
-        "items": {
-          "bsonType": "string"
-        }
-      },
-      "status": {
-        "enum": ["active", "pending", "refresh_pending", "revoked", "invalid_grant", "error"]
-      },
-      "expires_at": {
-        "bsonType": "date"
-      },
-      "created_at": {
-        "bsonType": "date"
-      },
-      "updated_at": {
-        "bsonType": "date"
-      },
-      "connected_at": {
-        "bsonType": "date"
-      },
-      "last_refresh_at": {
-        "bsonType": "date"
-      },
-      "last_refreshed_at": {
-        "bsonType": "date"
-      },
-      "last_error": {
-        "bsonType": "string"
-      },
-      "refresh_token_expires_at": {
-        "bsonType": ["date", "null"]
-      },
-      "lock_held_until": {
-        "bsonType": ["date", "null"]
-      },
-      "nickname": {
-        "bsonType": "string"
-      },
-      "sync_status": {
-        "bsonType": "object"
-      },
-      "kms_key_version": {
-        "bsonType": "string"
-      },
-      "schema_version": {
-        "bsonType": "int"
-      }
-    }
-  }
+    ]
+  },
+  "validationAction": "error",
+  "validationLevel": "strict"
 }

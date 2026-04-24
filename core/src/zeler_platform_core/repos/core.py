@@ -71,7 +71,8 @@ class MeliAccountRepo:
     def save(self, _: Mapping[str, Any]) -> object:
         """Core repositories are intentionally read-only."""
 
-        return NotImplemented
+        msg = "core repositories are read-only"
+        raise NotImplementedError(msg)
 
 
 class ItemRepo(ReadOnlyRepo[Item]):

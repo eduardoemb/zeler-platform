@@ -1,1 +1,82 @@
-{"$jsonSchema":{"bsonType":"object","required":["_id","seller_id","buyer_id","status","date_created","total_amount","schema_version"],"properties":{"_id":{"bsonType":["string","long","int"]},"seller_id":{"bsonType":["string","long","int"]},"buyer_id":{"bsonType":["string","long","int"]},"status":{"bsonType":"string"},"date_created":{"bsonType":"date"},"date_closed":{"bsonType":["date","null"]},"total_amount":{"bsonType":["decimal","double","int","long"]},"items":{"bsonType":"array"},"shipment_id":{"bsonType":["string","long","int","null"]},"tags":{"bsonType":"array"},"feedback":{"bsonType":["object","null"]},"schema_version":{"bsonType":"int"}}}}
+{
+  "$jsonSchema": {
+    "bsonType": "object",
+    "properties": {
+      "_id": {
+        "bsonType": [
+          "string",
+          "long",
+          "int"
+        ]
+      },
+      "buyer_id": {
+        "bsonType": [
+          "string",
+          "long",
+          "int"
+        ]
+      },
+      "date_closed": {
+        "bsonType": [
+          "date",
+          "null"
+        ]
+      },
+      "date_created": {
+        "bsonType": "date"
+      },
+      "feedback": {
+        "bsonType": [
+          "object",
+          "null"
+        ]
+      },
+      "items": {
+        "bsonType": "array"
+      },
+      "schema_version": {
+        "bsonType": "int"
+      },
+      "seller_id": {
+        "bsonType": [
+          "string",
+          "long",
+          "int"
+        ]
+      },
+      "shipment_id": {
+        "bsonType": [
+          "string",
+          "long",
+          "int",
+          "null"
+        ]
+      },
+      "status": {
+        "bsonType": "string"
+      },
+      "tags": {
+        "bsonType": "array"
+      },
+      "total_amount": {
+        "bsonType": [
+          "decimal",
+          "double",
+          "int",
+          "long"
+        ]
+      }
+    },
+    "required": [
+      "_id",
+      "seller_id",
+      "buyer_id",
+      "status",
+      "date_created",
+      "total_amount",
+      "schema_version"
+    ]
+  },
+  "validationAction": "error",
+  "validationLevel": "strict"
+}

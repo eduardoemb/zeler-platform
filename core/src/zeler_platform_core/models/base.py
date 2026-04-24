@@ -116,3 +116,33 @@ class UtcDatetimeMixin(BaseModel):
 
 
 JsonDict = dict[str, Any]
+
+
+CURRENT_SCHEMA_VERSIONS: dict[str, int] = {
+    "audit_log": 1,
+    "bootstrap_jobs": 1,
+    "claims": 1,
+    "events": 1,
+    "items": 1,
+    "meli_accounts": 1,
+    "messages": 1,
+    "module_registry": 1,
+    "orders": 1,
+    "questions": 1,
+    "repricer_history": 1,
+    "repricer_rules": 1,
+    "shipments": 1,
+    "users": 1,
+    "webhook_events": 1,
+}
+
+
+def current_schema_version(entity: str) -> int:
+    """Return the current schema version for a canonical collection/entity."""
+
+    normalized = entity.lower()
+    try:
+        return CURRENT_SCHEMA_VERSIONS[normalized]
+    except KeyError as exc:
+        msg = f"unknown canonical entity: {entity}"
+        raise KeyError(msg) from exc

@@ -1,1 +1,99 @@
-{"$jsonSchema":{"bsonType":"object","required":["_id","seller_id","title","price","base_price","available_quantity","status","category_id","last_meli_sync_at","date_created","last_updated","schema_version"],"properties":{"_id":{"bsonType":"string"},"seller_id":{"bsonType":["string","long","int"]},"title":{"bsonType":"string"},"price":{"bsonType":["decimal","double","int","long"]},"base_price":{"bsonType":["decimal","double","int","long"]},"available_quantity":{"bsonType":["int","long"]},"status":{"bsonType":"string"},"category_id":{"bsonType":"string"},"variations":{"bsonType":"array"},"attributes":{"bsonType":"array"},"shipping":{"bsonType":["object","null"]},"health":{"bsonType":["double","int","long","null"]},"last_meli_sync_at":{"bsonType":"date"},"date_created":{"bsonType":"date"},"last_updated":{"bsonType":"date"},"schema_version":{"bsonType":"int"}}}}
+{
+  "$jsonSchema": {
+    "bsonType": "object",
+    "properties": {
+      "_id": {
+        "bsonType": [
+          "objectId",
+          "string"
+        ]
+      },
+      "attributes": {
+        "bsonType": "array"
+      },
+      "available_quantity": {
+        "bsonType": [
+          "int",
+          "long"
+        ]
+      },
+      "base_price": {
+        "bsonType": [
+          "decimal",
+          "double",
+          "int",
+          "long"
+        ]
+      },
+      "category_id": {
+        "bsonType": "string"
+      },
+      "date_created": {
+        "bsonType": "date"
+      },
+      "health": {
+        "bsonType": [
+          "double",
+          "int",
+          "long",
+          "null"
+        ]
+      },
+      "last_meli_sync_at": {
+        "bsonType": "date"
+      },
+      "last_updated": {
+        "bsonType": "date"
+      },
+      "price": {
+        "bsonType": [
+          "decimal",
+          "double",
+          "int",
+          "long"
+        ]
+      },
+      "schema_version": {
+        "bsonType": "int"
+      },
+      "seller_id": {
+        "bsonType": [
+          "string",
+          "long",
+          "int"
+        ]
+      },
+      "shipping": {
+        "bsonType": [
+          "object",
+          "null"
+        ]
+      },
+      "status": {
+        "bsonType": "string"
+      },
+      "title": {
+        "bsonType": "string"
+      },
+      "variations": {
+        "bsonType": "array"
+      }
+    },
+    "required": [
+      "_id",
+      "seller_id",
+      "title",
+      "price",
+      "base_price",
+      "available_quantity",
+      "status",
+      "category_id",
+      "last_meli_sync_at",
+      "date_created",
+      "last_updated",
+      "schema_version"
+    ]
+  },
+  "validationAction": "error",
+  "validationLevel": "strict"
+}

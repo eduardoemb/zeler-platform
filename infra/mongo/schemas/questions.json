@@ -1,1 +1,66 @@
-{"$jsonSchema":{"bsonType":"object","required":["_id","seller_id","item_id","text","status","from_user_id","date_created","schema_version"],"properties":{"_id":{"bsonType":["string","long","int"]},"seller_id":{"bsonType":["string","long","int"]},"item_id":{"bsonType":"string"},"text":{"bsonType":"string"},"status":{"enum":["UNANSWERED","ANSWERED","DELETED","BANNED"]},"answer":{"bsonType":["object","null"]},"from_user_id":{"bsonType":["string","long","int"]},"date_created":{"bsonType":"date"},"schema_version":{"bsonType":"int"}}}}
+{
+  "$jsonSchema": {
+    "bsonType": "object",
+    "properties": {
+      "_id": {
+        "bsonType": [
+          "string",
+          "long",
+          "int"
+        ]
+      },
+      "answer": {
+        "bsonType": [
+          "object",
+          "null"
+        ]
+      },
+      "date_created": {
+        "bsonType": "date"
+      },
+      "from_user_id": {
+        "bsonType": [
+          "string",
+          "long",
+          "int"
+        ]
+      },
+      "item_id": {
+        "bsonType": "string"
+      },
+      "schema_version": {
+        "bsonType": "int"
+      },
+      "seller_id": {
+        "bsonType": [
+          "string",
+          "long",
+          "int"
+        ]
+      },
+      "status": {
+        "enum": [
+          "UNANSWERED",
+          "ANSWERED",
+          "DELETED",
+          "BANNED"
+        ]
+      },
+      "text": {
+        "bsonType": "string"
+      }
+    },
+    "required": [
+      "_id",
+      "seller_id",
+      "item_id",
+      "text",
+      "status",
+      "from_user_id",
+      "date_created",
+      "schema_version"
+    ]
+  },
+  "validationAction": "error",
+  "validationLevel": "strict"
+}

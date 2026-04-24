@@ -318,7 +318,7 @@ P6 ─→ P7
   `core/src/zeler_platform_core/models/`: one file per entity. Each model: `schema_version: int = 1`, UTC datetime validators (`model_validator` that checks `tzinfo is not None`), `meli_id` fields coerced to `str` via `field_validator`. Status fields as `Literal` or `StrEnum`. Reexport all from `core.models.__init__`.
   *Ref*: design §4, spec §4 R4.1–R4.4. *TDD*: P3.1 tests now GREEN. *Effort*: L
 
-- [ ] **P3.3** — Implement JSON Schema export + CI integration
+- [x] **P3.3** — Implement JSON Schema export + CI integration
   `core/src/zeler_platform_core/cli/export_schemas.py`: for each model, `model.model_json_schema()` → write to `infra/atlas/<collection>.json`. Add `$jsonSchema` wrapper with `validationLevel: "strict"`, `validationAction: "error"`. Wire to CI: schema export runs, output compared to committed files (diff fails build if models changed but schemas not regenerated).
   *Ref*: spec §4 R4.2, design §8 D8. *TDD*: Schema for `MeliAccount` rejects raw insert missing `seller_id` via Atlas validator. *Effort*: M
 
@@ -342,15 +342,15 @@ P6 ─→ P7
   `bootstrap/src/zeler_bootstrap/state_machine.py`: `BootstrapStateMachine(job_id)` with `transition(new_state)` (atomic `findOneAndUpdate` with allowed-transition guard), `update_cursor(stage, cursor_data)`, `mark_stage_done(stage)`. Forbidden transitions raise `InvalidTransitionError`.
   *Ref*: spec §7 R7.1. *TDD*: P3.7 state machine tests now GREEN. *Effort*: M
 
-- [ ] **P3.9** — [RED] Write failing bootstrap runner tests (integration)
+- [x] **P3.9** — [RED] Write failing bootstrap runner tests (integration)
   Tests against test seller + mock gateway proxy: `test_accounts_stage_fetches_metadata`, `test_items_stage_paginates_and_upserts`, `test_orders_stage_respects_90_day_window`, `test_crash_mid_items_resume_from_cursor`, `test_resync_produces_no_duplicates`, `test_bootstrap_completed_event_emitted`.
   *Ref*: spec §7 R7.2–R7.5. *TDD*: all FAIL. *Effort*: M
 
-- [ ] **P3.10** — Implement bootstrap runner — accounts + items stages
+- [x] **P3.10** — Implement bootstrap runner — accounts + items stages
   `bootstrap/src/zeler_bootstrap/runner.py` + `stages/accounts.py`, `stages/items.py`. DAG runner reads `bootstrap_jobs.dag` and `checkpoints`. Accounts stage: `GET /users/{seller_id}` via gateway proxy. Items stage: paginated `GET /users/{seller_id}/items/search` + `/items/{ids}:multiget` via gateway proxy; upsert `Item` models; persist `scroll_id` cursor after each page. Backpressure on 429 (Retry-After).
   *Ref*: design §7, spec §7 R7.2–R7.4. *TDD*: P3.9 accounts + items tests GREEN. *Effort*: L
 
-- [ ] **P3.11** — Implement bootstrap runner — orders, questions, messages, shipments, claims stages
+- [x] **P3.11** — Implement bootstrap runner — orders, questions, messages, shipments, claims stages
   `stages/orders.py`, `stages/questions.py`, `stages/messages.py`, `stages/shipments.py`, `stages/claims.py`. Orders: date-bounded last 90 days, paginated, upsert `Order`. Questions: open first (all), then closed (last 30 days). Messages: per pack_id from orders. Shipments: from `shipment_id` in each order. Claims: from `order_id`. All upsert by canonical Meli id.
   *Ref*: design §7.1, spec §7 R7.2–R7.3. *TDD*: P3.9 remaining stage tests GREEN. *Effort*: L
 
@@ -358,7 +358,7 @@ P6 ─→ P7
   `bootstrap/src/zeler_bootstrap/__main__.py`: CLI accepting `--seller-id` + `--job-id`. Dockerfile for bootstrap. `infra/terraform/cloudrun_jobs.tf`: Cloud Run Job definition with VPC connector, Secret Manager env injection, `max-retries=3`. On completion: emit `BootstrapCompleted` event.
   *Ref*: design §7, spec §7 R7.5. *TDD*: P3.9 `test_bootstrap_completed_event_emitted` GREEN. *Effort*: M
 
-- [ ] **P3.13** — Apply all canonical collection validators (P3.2 schemas) to Atlas
+- [x] **P3.13** — Apply all canonical collection validators (P3.2 schemas) to Atlas
   Run `infra/atlas/apply_validators.py` with the generated full schemas from P3.3 for `items`, `orders`, `questions`, `messages`, `shipments`, `claims`, `webhook_events`, `bootstrap_jobs`. Verify strict rejection of invalid docs.
   *Ref*: design §10, spec §4 R4.2. *TDD*: Atlas rejects raw `insertOne` missing required field for each collection. *Effort*: S
 

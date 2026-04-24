@@ -1,1 +1,87 @@
-{"$jsonSchema":{"bsonType":"object","required":["_id","seller_id","state","dag","checkpoints","created_at","updated_at","schema_version"],"properties":{"_id":{"bsonType":["objectId","string"]},"seller_id":{"bsonType":["string","long","int"]},"state":{"enum":["pending","running","paused","succeeded","failed","cancelled"]},"dag":{"bsonType":"object"},"checkpoints":{"bsonType":"object"},"current_stage":{"bsonType":["string","null"]},"stage_progress":{"bsonType":"object"},"started_at":{"bsonType":["date","null"]},"finished_at":{"bsonType":["date","null"]},"error":{"bsonType":["string","null"]},"errors":{"bsonType":"array"},"created_at":{"bsonType":"date"},"updated_at":{"bsonType":"date"},"schema_version":{"bsonType":"int"}}}}
+{
+  "$jsonSchema": {
+    "bsonType": "object",
+    "properties": {
+      "_id": {
+        "bsonType": [
+          "objectId",
+          "string"
+        ]
+      },
+      "checkpoints": {
+        "bsonType": "object"
+      },
+      "created_at": {
+        "bsonType": "date"
+      },
+      "current_stage": {
+        "bsonType": [
+          "string",
+          "null"
+        ]
+      },
+      "dag": {
+        "bsonType": "object"
+      },
+      "error": {
+        "bsonType": [
+          "string",
+          "null"
+        ]
+      },
+      "errors": {
+        "bsonType": "array"
+      },
+      "finished_at": {
+        "bsonType": [
+          "date",
+          "null"
+        ]
+      },
+      "schema_version": {
+        "bsonType": "int"
+      },
+      "seller_id": {
+        "bsonType": [
+          "string",
+          "long",
+          "int"
+        ]
+      },
+      "stage_progress": {
+        "bsonType": "object"
+      },
+      "started_at": {
+        "bsonType": [
+          "date",
+          "null"
+        ]
+      },
+      "state": {
+        "enum": [
+          "pending",
+          "running",
+          "paused",
+          "succeeded",
+          "failed",
+          "cancelled"
+        ]
+      },
+      "updated_at": {
+        "bsonType": "date"
+      }
+    },
+    "required": [
+      "_id",
+      "seller_id",
+      "state",
+      "dag",
+      "checkpoints",
+      "created_at",
+      "updated_at",
+      "schema_version"
+    ]
+  },
+  "validationAction": "error",
+  "validationLevel": "strict"
+}

@@ -190,6 +190,89 @@ def test_entity_models_coerce_meli_ids_and_reject_naive_datetimes(
         )
 
 
+@pytest.mark.parametrize(
+    ("model_cls", "payload", "bad_field"),
+    [
+        (
+            Item,
+            {
+                "id": "MLM123",
+                "seller_id": 123,
+                "title": "Item",
+                "price": Decimal("10.50"),
+                "base_price": Decimal("12.00"),
+                "available_quantity": 5,
+                "status": "active",
+                "category_id": "MLM-CAT",
+                "last_meli_sync_at": NOW,
+                "date_created": NOW,
+                "last_updated": NOW,
+            },
+            "status",
+        ),
+        (
+            Order,
+            {
+                "id": 987654,
+                "seller_id": 123,
+                "buyer_id": 456,
+                "status": "paid",
+                "date_created": NOW,
+                "total_amount": Decimal("100.00"),
+            },
+            "status",
+        ),
+        (
+            Message,
+            {
+                "id": 222,
+                "seller_id": 123,
+                "pack_id": 333,
+                "from_user_id": 456,
+                "to_user_id": 123,
+                "text": "Hello",
+                "status": "available",
+                "date_created": NOW,
+            },
+            "status",
+        ),
+        (
+            Shipment,
+            {
+                "id": 555,
+                "seller_id": 123,
+                "order_id": 987654,
+                "status": "ready_to_ship",
+                "logistic_type": "fulfillment",
+                "date_created": NOW,
+                "last_updated": NOW,
+            },
+            "status",
+        ),
+        (
+            Claim,
+            {
+                "id": 777,
+                "seller_id": 123,
+                "order_id": 987654,
+                "status": "opened",
+                "stage": "claim",
+                "type": "mediations",
+                "date_created": NOW,
+            },
+            "type",
+        ),
+    ],
+)
+def test_entity_models_reject_invalid_status_like_fields(
+    model_cls: type[Item | Order | Message | Shipment | Claim],
+    payload: dict[str, object],
+    bad_field: str,
+) -> None:
+    with pytest.raises(ValidationError):
+        model_cls.model_validate({**payload, bad_field: "not-a-real-status"})
+
+
 def test_operational_models_validate_statuses_ttl_fields_and_uuid_events() -> None:
     webhook_event = WebhookEvent(
         id="notif-1",

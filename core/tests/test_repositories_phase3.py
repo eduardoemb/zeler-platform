@@ -121,7 +121,25 @@ async def test_meli_account_repo_get_by_user_id_is_read_only_and_filters_platfor
     assert account.platform_user_id == "platform-user-1"
     assert database["meli_accounts"].filters == [{"platform_user_id": "platform-user-1"}]
     assert not hasattr(repo, "insert")
-    assert repo.save(_account_doc()) is NotImplemented
+
+
+@pytest.mark.asyncio
+async def test_meli_account_repo_get_by_user_id_returns_none_when_missing() -> None:
+    database = FakeDatabase({"meli_accounts": FakeCollection([_account_doc()])})
+    repo = MeliAccountRepo(FakeClient(database))
+
+    account = await repo.get_by_user_id("missing-platform-user")
+
+    assert account is None
+    assert database["meli_accounts"].filters == [{"platform_user_id": "missing-platform-user"}]
+
+
+def test_meli_account_repo_write_path_raises_not_implemented() -> None:
+    database = FakeDatabase({"meli_accounts": FakeCollection([_account_doc()])})
+    repo = MeliAccountRepo(FakeClient(database))
+
+    with pytest.raises(NotImplementedError):
+        repo.save(_account_doc())
 
 
 @pytest.mark.asyncio

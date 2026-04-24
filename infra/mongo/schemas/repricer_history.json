@@ -1,1 +1,60 @@
-{"$jsonSchema":{"bsonType":"object","required":["_id","seller_id","item_id","old_price","new_price","reason","applied_at","schema_version"],"properties":{"_id":{"bsonType":["objectId","string"]},"seller_id":{"bsonType":["string","long","int"]},"item_id":{"bsonType":"string"},"old_price":{"bsonType":["decimal","double","int","long"]},"new_price":{"bsonType":["decimal","double","int","long"]},"reason":{"bsonType":"string"},"applied_at":{"bsonType":"date"},"schema_version":{"bsonType":"int"}}}}
+{
+  "$jsonSchema": {
+    "bsonType": "object",
+    "properties": {
+      "_id": {
+        "bsonType": [
+          "objectId",
+          "string"
+        ]
+      },
+      "applied_at": {
+        "bsonType": "date"
+      },
+      "item_id": {
+        "bsonType": "string"
+      },
+      "new_price": {
+        "bsonType": [
+          "decimal",
+          "double",
+          "int",
+          "long"
+        ]
+      },
+      "old_price": {
+        "bsonType": [
+          "decimal",
+          "double",
+          "int",
+          "long"
+        ]
+      },
+      "reason": {
+        "bsonType": "string"
+      },
+      "schema_version": {
+        "bsonType": "int"
+      },
+      "seller_id": {
+        "bsonType": [
+          "string",
+          "long",
+          "int"
+        ]
+      }
+    },
+    "required": [
+      "_id",
+      "seller_id",
+      "item_id",
+      "old_price",
+      "new_price",
+      "reason",
+      "applied_at",
+      "schema_version"
+    ]
+  },
+  "validationAction": "error",
+  "validationLevel": "strict"
+}

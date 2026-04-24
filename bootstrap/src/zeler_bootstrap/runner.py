@@ -2,6 +2,19 @@ from __future__ import annotations
 
 from typing import Any, Protocol
 
+from zeler_bootstrap.stages import (
+    AccountsStage,
+    BootstrapDatabase,
+    BootstrapGatewayClient,
+    BootstrapPublisher,
+    ClaimsStage,
+    InMemoryPublisher,
+    ItemsStage,
+    MessagesStage,
+    OrdersStage,
+    QuestionsStage,
+    ShipmentsStage,
+)
 from zeler_bootstrap.state_machine import BootstrapStateMachine
 
 
@@ -23,9 +36,16 @@ DEFAULT_STAGE_ORDER = [
 
 
 class BootstrapDagRunner:
-    def __init__(self, state_machine: BootstrapStateMachine, stages: list[BootstrapStage]) -> None:
+    def __init__(
+        self,
+        state_machine: BootstrapStateMachine,
+        stages: list[BootstrapStage],
+        *,
+        publisher: BootstrapPublisher | None = None,
+    ) -> None:
         self.state_machine = state_machine
         self.stages = stages
+        self.publisher = publisher or InMemoryPublisher()
 
     async def run(self) -> dict[str, Any]:
         job = await self.state_machine.load()
@@ -39,4 +59,20 @@ class BootstrapDagRunner:
             await stage.run(job, self.state_machine)
             job = await self.state_machine.mark_stage_done(stage.name)
 
-        return await self.state_machine.transition("succeeded")
+        completed = await self.state_machine.transition("succeeded")
+        await self.publisher.publish_bootstrap_completed(completed)
+        return completed
+
+
+def build_default_stages(
+    gateway: BootstrapGatewayClient, database: BootstrapDatabase
+) -> list[BootstrapStage]:
+    return [
+        AccountsStage(gateway, database),
+        ItemsStage(gateway, database),
+        OrdersStage(gateway, database),
+        QuestionsStage(gateway, database),
+        MessagesStage(gateway, database),
+        ShipmentsStage(gateway, database),
+        ClaimsStage(gateway, database),
+    ]

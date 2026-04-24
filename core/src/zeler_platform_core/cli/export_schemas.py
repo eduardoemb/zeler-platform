@@ -2,8 +2,100 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any
 
-ENTITY_SCHEMAS: dict[str, dict[str, object]] = {
+SCHEMA_VERSION = {"schema_version": {"bsonType": "int"}}
+ID_STRING = {"_id": {"bsonType": "string"}}
+ID_OBJECT_OR_STRING = {"_id": {"bsonType": ["objectId", "string"]}}
+ID_FLEX = {"_id": {"bsonType": ["string", "long", "int"]}}
+SELLER = {"seller_id": {"bsonType": ["string", "long", "int"]}}
+DATE = {"bsonType": "date"}
+NULLABLE_DATE = {"bsonType": ["date", "null"]}
+MONEY = {"bsonType": ["decimal", "double", "int", "long"]}
+
+ENTITY_SCHEMAS: dict[str, dict[str, Any]] = {
+    "meli_accounts": {
+        "required": [
+            "_id",
+            "seller_id",
+            "nickname",
+            "app_id",
+            "platform_user_id",
+            "access_token_ciphertext",
+            "access_token_dek_wrapped",
+            "refresh_token_ciphertext",
+            "refresh_token_dek_wrapped",
+            "token_nonce",
+            "refresh_token_nonce",
+            "scopes",
+            "status",
+            "expires_at",
+            "kms_key_version",
+            "created_at",
+            "updated_at",
+            "schema_version",
+        ],
+        "properties": {
+            **ID_OBJECT_OR_STRING,
+            **SELLER,
+            "nickname": {"bsonType": "string"},
+            "app_id": {"bsonType": "string"},
+            "platform_user_id": {"bsonType": "string"},
+            "access_token_ciphertext": {"bsonType": ["binData", "string"]},
+            "access_token_dek_wrapped": {"bsonType": ["binData", "string"]},
+            "refresh_token_ciphertext": {"bsonType": ["binData", "string"]},
+            "refresh_token_dek_wrapped": {"bsonType": ["binData", "string"]},
+            "token_nonce": {"bsonType": ["binData", "string"]},
+            "refresh_token_nonce": {"bsonType": ["binData", "string"]},
+            "scopes": {"bsonType": "array"},
+            "status": {
+                "enum": [
+                    "active",
+                    "pending",
+                    "refresh_pending",
+                    "revoked",
+                    "invalid_grant",
+                    "error",
+                    "invalid",
+                ]
+            },
+            "expires_at": DATE,
+            "refresh_token_expires_at": NULLABLE_DATE,
+            "lock_held_until": NULLABLE_DATE,
+            "last_refresh_at": NULLABLE_DATE,
+            "connected_at": NULLABLE_DATE,
+            "kms_key_version": {"bsonType": "string"},
+            "last_error": {"bsonType": ["string", "null"]},
+            "sync_status": {"bsonType": ["object", "null"]},
+            "created_at": DATE,
+            "updated_at": DATE,
+            **SCHEMA_VERSION,
+        },
+    },
+    "users": {
+        "required": [
+            "_id",
+            "email",
+            "name",
+            "auth_provider",
+            "created_at",
+            "updated_at",
+            "schema_version",
+        ],
+        "properties": {
+            **ID_OBJECT_OR_STRING,
+            "email": {"bsonType": "string"},
+            "name": {"bsonType": "string"},
+            "auth_provider": {"enum": ["local", "google", "meli", "internal"]},
+            "meli_account_ids": {"bsonType": "array"},
+            "module_permissions": {"bsonType": "object"},
+            "roles": {"bsonType": "array"},
+            "status": {"enum": ["active", "suspended", "deleted"]},
+            "created_at": DATE,
+            "updated_at": DATE,
+            **SCHEMA_VERSION,
+        },
+    },
     "items": {
         "required": [
             "_id",
@@ -20,30 +112,348 @@ ENTITY_SCHEMAS: dict[str, dict[str, object]] = {
             "schema_version",
         ],
         "properties": {
-            "_id": {"bsonType": "string"},
-            "seller_id": {"bsonType": ["string", "long", "int"]},
+            **ID_OBJECT_OR_STRING,
+            **SELLER,
             "title": {"bsonType": "string"},
-            "schema_version": {"bsonType": "int"},
+            "price": MONEY,
+            "base_price": MONEY,
+            "available_quantity": {"bsonType": ["int", "long"]},
+            "status": {"bsonType": "string"},
+            "category_id": {"bsonType": "string"},
+            "variations": {"bsonType": "array"},
+            "attributes": {"bsonType": "array"},
+            "shipping": {"bsonType": ["object", "null"]},
+            "health": {"bsonType": ["double", "int", "long", "null"]},
+            "last_meli_sync_at": DATE,
+            "date_created": DATE,
+            "last_updated": DATE,
+            **SCHEMA_VERSION,
+        },
+    },
+    "orders": {
+        "required": [
+            "_id",
+            "seller_id",
+            "buyer_id",
+            "status",
+            "date_created",
+            "total_amount",
+            "schema_version",
+        ],
+        "properties": {
+            **ID_FLEX,
+            **SELLER,
+            "buyer_id": {"bsonType": ["string", "long", "int"]},
+            "status": {"bsonType": "string"},
+            "date_created": DATE,
+            "date_closed": NULLABLE_DATE,
+            "total_amount": MONEY,
+            "items": {"bsonType": "array"},
+            "shipment_id": {"bsonType": ["string", "long", "int", "null"]},
+            "tags": {"bsonType": "array"},
+            "feedback": {"bsonType": ["object", "null"]},
+            **SCHEMA_VERSION,
+        },
+    },
+    "questions": {
+        "required": [
+            "_id",
+            "seller_id",
+            "item_id",
+            "text",
+            "status",
+            "from_user_id",
+            "date_created",
+            "schema_version",
+        ],
+        "properties": {
+            **ID_FLEX,
+            **SELLER,
+            "item_id": {"bsonType": "string"},
+            "text": {"bsonType": "string"},
+            "status": {"enum": ["UNANSWERED", "ANSWERED", "DELETED", "BANNED"]},
+            "answer": {"bsonType": ["object", "null"]},
+            "from_user_id": {"bsonType": ["string", "long", "int"]},
+            "date_created": DATE,
+            **SCHEMA_VERSION,
+        },
+    },
+    "messages": {
+        "required": [
+            "_id",
+            "seller_id",
+            "pack_id",
+            "from_user_id",
+            "to_user_id",
+            "text",
+            "status",
+            "date_created",
+            "schema_version",
+        ],
+        "properties": {
+            **ID_OBJECT_OR_STRING,
+            **SELLER,
+            "pack_id": {"bsonType": "string"},
+            "order_id": {"bsonType": ["string", "long", "int", "null"]},
+            "from_user_id": {"bsonType": ["string", "long", "int"]},
+            "to_user_id": {"bsonType": ["string", "long", "int"]},
+            "text": {"bsonType": "string"},
+            "status": {"bsonType": "string"},
+            "date_created": DATE,
+            "read_at": NULLABLE_DATE,
+            **SCHEMA_VERSION,
+        },
+    },
+    "shipments": {
+        "required": [
+            "_id",
+            "seller_id",
+            "order_id",
+            "status",
+            "logistic_type",
+            "date_created",
+            "last_updated",
+            "schema_version",
+        ],
+        "properties": {
+            **ID_FLEX,
+            **SELLER,
+            "order_id": {"bsonType": ["string", "long", "int"]},
+            "status": {"bsonType": "string"},
+            "substatus": {"bsonType": ["string", "null"]},
+            "tracking_number": {"bsonType": ["string", "null"]},
+            "logistic_type": {"bsonType": "string"},
+            "date_created": DATE,
+            "last_updated": DATE,
+            **SCHEMA_VERSION,
+        },
+    },
+    "claims": {
+        "required": [
+            "_id",
+            "seller_id",
+            "order_id",
+            "status",
+            "stage",
+            "type",
+            "date_created",
+            "schema_version",
+        ],
+        "properties": {
+            **ID_FLEX,
+            **SELLER,
+            "buyer_id": {"bsonType": ["string", "long", "int", "null"]},
+            "order_id": {"bsonType": ["string", "long", "int"]},
+            "status": {"bsonType": "string"},
+            "stage": {"bsonType": "string"},
+            "type": {"bsonType": "string"},
+            "date_created": DATE,
+            "resolution": {"bsonType": ["object", "null"]},
+            **SCHEMA_VERSION,
+        },
+    },
+    "events": {
+        "required": [
+            "event_id",
+            "event_type",
+            "account_id",
+            "occurred_at",
+            "payload",
+            "schema_version",
+        ],
+        "properties": {
+            "event_id": {"bsonType": "string"},
+            "event_type": {"bsonType": "string"},
+            "account_id": {"bsonType": "string"},
+            "occurred_at": DATE,
+            "payload": {"bsonType": "object"},
+            **SCHEMA_VERSION,
+        },
+    },
+    "webhook_events": {
+        "required": [
+            "_id",
+            "topic",
+            "user_id",
+            "resource",
+            "received_at",
+            "raw_body",
+            "source_ip",
+            "schema_version",
+        ],
+        "properties": {
+            **ID_OBJECT_OR_STRING,
+            "topic": {"bsonType": "string"},
+            "user_id": {"bsonType": ["string", "long", "int"]},
+            "resource": {"bsonType": "string"},
+            "received_at": DATE,
+            "published_at": NULLABLE_DATE,
+            "classification": {"bsonType": ["string", "null"]},
+            "raw_body": {"bsonType": "object"},
+            "source_ip": {"bsonType": "string"},
+            **SCHEMA_VERSION,
+        },
+    },
+    "bootstrap_jobs": {
+        "required": [
+            "_id",
+            "seller_id",
+            "state",
+            "dag",
+            "checkpoints",
+            "created_at",
+            "updated_at",
+            "schema_version",
+        ],
+        "properties": {
+            **ID_OBJECT_OR_STRING,
+            **SELLER,
+            "state": {"enum": ["pending", "running", "paused", "succeeded", "failed", "cancelled"]},
+            "dag": {"bsonType": "object"},
+            "checkpoints": {"bsonType": "object"},
+            "current_stage": {"bsonType": ["string", "null"]},
+            "stage_progress": {"bsonType": "object"},
+            "started_at": NULLABLE_DATE,
+            "finished_at": NULLABLE_DATE,
+            "error": {"bsonType": ["string", "null"]},
+            "errors": {"bsonType": "array"},
+            "created_at": DATE,
+            "updated_at": DATE,
+            **SCHEMA_VERSION,
+        },
+    },
+    "module_registry": {
+        "required": [
+            "_id",
+            "version",
+            "allowed_meli_scopes",
+            "routing_keys",
+            "status",
+            "schema_version",
+        ],
+        "properties": {
+            **ID_OBJECT_OR_STRING,
+            "version": {"bsonType": "string"},
+            "allowed_meli_scopes": {"bsonType": "array"},
+            "routing_keys": {"bsonType": "array"},
+            "status": {"enum": ["enabled", "disabled", "degraded"]},
+            "last_heartbeat_at": NULLABLE_DATE,
+            "health": {"bsonType": ["object", "null"]},
+            **SCHEMA_VERSION,
+        },
+    },
+    "repricer_rules": {
+        "required": [
+            "_id",
+            "seller_id",
+            "item_id",
+            "strategy",
+            "min_price",
+            "max_price",
+            "active",
+            "updated_at",
+            "schema_version",
+        ],
+        "properties": {
+            **ID_OBJECT_OR_STRING,
+            **SELLER,
+            "item_id": {"bsonType": "string"},
+            "strategy": {"enum": ["min_price", "competitive", "maximize"]},
+            "min_price": MONEY,
+            "max_price": MONEY,
+            "active": {"bsonType": "bool"},
+            "updated_at": DATE,
+            **SCHEMA_VERSION,
+        },
+    },
+    "repricer_history": {
+        "required": [
+            "_id",
+            "seller_id",
+            "item_id",
+            "old_price",
+            "new_price",
+            "reason",
+            "applied_at",
+            "schema_version",
+        ],
+        "properties": {
+            **ID_OBJECT_OR_STRING,
+            **SELLER,
+            "item_id": {"bsonType": "string"},
+            "old_price": MONEY,
+            "new_price": MONEY,
+            "reason": {"bsonType": "string"},
+            "applied_at": DATE,
+            **SCHEMA_VERSION,
+        },
+    },
+    "audit_log": {
+        "required": [
+            "_id",
+            "seller_id",
+            "at",
+            "module_id",
+            "method",
+            "path",
+            "status",
+            "duration_ms",
+            "schema_version",
+        ],
+        "properties": {
+            **ID_OBJECT_OR_STRING,
+            **SELLER,
+            "at": DATE,
+            "module_id": {"bsonType": "string"},
+            "method": {"bsonType": "string"},
+            "path": {"bsonType": "string"},
+            "status": {"bsonType": "int"},
+            "upstream_status": {"bsonType": ["int", "null"]},
+            "duration_ms": {"bsonType": ["int", "long"]},
+            "trace_id": {"bsonType": ["string", "null"]},
+            **SCHEMA_VERSION,
+        },
+    },
+}
+
+CANONICAL_SCHEMA_FILES = {f"{collection}.json" for collection in ENTITY_SCHEMAS}
+
+
+def _validator_payload(schema: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "validationAction": "error",
+        "validationLevel": "strict",
+        "$jsonSchema": {
+            "bsonType": "object",
+            "required": schema["required"],
+            "properties": schema["properties"],
         },
     }
-}
+
+
+def _payload_text(collection: str) -> str:
+    return (
+        json.dumps(_validator_payload(ENTITY_SCHEMAS[collection]), indent=2, sort_keys=True) + "\n"
+    )
 
 
 def export_schemas(output_dir: Path) -> list[str]:
     output_dir.mkdir(parents=True, exist_ok=True)
     written: list[str] = []
-    for collection, partial_schema in ENTITY_SCHEMAS.items():
-        payload = {
-            "$jsonSchema": {
-                "bsonType": "object",
-                "required": partial_schema["required"],
-                "properties": partial_schema["properties"],
-            }
-        }
+    for collection in sorted(ENTITY_SCHEMAS):
         path = output_dir / f"{collection}.json"
-        path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        path.write_text(_payload_text(collection), encoding="utf-8")
         written.append(path.name)
     return written
+
+
+def validate_export_drift(committed_dir: Path) -> list[str]:
+    drifted: list[str] = []
+    for collection in sorted(ENTITY_SCHEMAS):
+        path = committed_dir / f"{collection}.json"
+        if not path.exists() or path.read_text(encoding="utf-8") != _payload_text(collection):
+            drifted.append(path.name)
+    return drifted
 
 
 def main() -> None:
@@ -53,7 +463,17 @@ def main() -> None:
         description="Export Mongo $jsonSchema validators from core models"
     )
     parser.add_argument("output_dir", type=Path)
+    parser.add_argument(
+        "--check",
+        action="store_true",
+        help="Fail when committed schemas differ from generated output",
+    )
     args = parser.parse_args()
+    if args.check:
+        drift = validate_export_drift(args.output_dir)
+        if drift:
+            raise SystemExit(f"schema export drift detected: {', '.join(drift)}")
+        return
     export_schemas(args.output_dir)
 
 
