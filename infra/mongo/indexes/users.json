@@ -1,0 +1,19 @@
+[
+  {
+    "keys": {
+      "email": 1
+    },
+    "options": {
+      "name": "uniq_users_email",
+      "unique": true
+    }
+  },
+  {
+    "keys": {
+      "meli_account_ids": 1
+    },
+    "options": {
+      "name": "idx_users_meli_account_ids"
+    }
+  }
+]

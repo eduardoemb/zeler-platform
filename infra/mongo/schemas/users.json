@@ -1,3 +1,42 @@
 {
-  "$comment": "TODO: populated in Phase 3 alongside the Pydantic model for this collection. See sdd/zeler-platform-greenfield/tasks P3.*"
+  "$jsonSchema": {
+    "bsonType": "object",
+    "required": ["_id", "email", "name", "auth_provider", "created_at", "updated_at"],
+    "additionalProperties": false,
+    "properties": {
+      "_id": {
+        "bsonType": "objectId"
+      },
+      "email": {
+        "bsonType": "string"
+      },
+      "name": {
+        "bsonType": "string"
+      },
+      "auth_provider": {
+        "enum": ["local", "google", "meli", "internal"]
+      },
+      "created_at": {
+        "bsonType": "date"
+      },
+      "updated_at": {
+        "bsonType": "date"
+      },
+      "meli_account_ids": {
+        "bsonType": "array",
+        "items": {
+          "bsonType": "long"
+        }
+      },
+      "roles": {
+        "bsonType": "array",
+        "items": {
+          "bsonType": "string"
+        }
+      },
+      "status": {
+        "enum": ["active", "suspended", "deleted"]
+      }
+    }
+  }
 }
