@@ -168,8 +168,8 @@ async def test_oauth_callback_invalid_grant_returns_400(fake_mongo_db: FakeAsync
         )
         state = parse_qs(urlparse(authorize_response.headers["location"]).query)["state"][0]
 
-        with respx.mock(assert_all_called=True):
-            respx.post("https://api.mercadolibre.com/oauth/token").mock(
+        with respx.mock(assert_all_called=True) as respx_mock:
+            respx_mock.post("https://api.mercadolibre.com/oauth/token").mock(
                 return_value=httpx.Response(400, json={"error": "invalid_grant"})
             )
 
