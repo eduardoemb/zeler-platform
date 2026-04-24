@@ -656,6 +656,20 @@ P6 ─→ P7
   *Result*: Added Autoreply admin API for listing/creating/updating/deleting templates and previewing match decisions; added zeler-app `/autoreply/templates` route, API helpers, server actions, template management panel, visible delete flow, preview form, and module catalog route. Follow-up verify gap fixed with explicit backend delete success/not-found/auth coverage plus app delete helper/action/button coverage.
   *TDD*: Component/helper tests: create, update, delete, preview; backend API delete behavior. *Effort*: M
 
+##### 6C — Archive Marker
+
+**Archive type**: Phase 6 subphase milestone (change remains open for Phase 6D and Phase 7)  
+**Archive date**: 2026-04-24  
+**Verified HEADs**: zeler-platform `9a9adb66a3c363acb2cdde5f2846e860ac8e9d18`; zeler-app `f9983f6a081c44199470e5cfaf2f50006a3e40c9`  
+**Verify report reference**: Engram #2342 + `sdd/zeler-platform-greenfield/verify-report-phase-6c-autoreply-final` (`PASS_WITH_WARNINGS`, CRITICAL=0)  
+**Tasks completed**: P6C.1–P6C.4 (4/4)  
+**Quality gates**: zeler-platform `uv run pytest` ✅ · `uv run ruff check .` ✅ · `uv run ruff format --check .` ✅ · `uv run mypy .` ✅ · `uv run python -m infra.lint.check_direct_meli .` ✅ · zeler-app `npm test` ✅ · `npm run lint` ✅ · `npm run e2e` ✅  
+**Warnings carried forward**:
+- Live RabbitMQ consumer loop and live Meli question/message/answer calls were not locally exercised; verification used deterministic handler/API contract coverage with gateway fakes and the direct-Meli linter.
+- No Autoreply-specific Playwright CRUD flow exists yet; app e2e remains broader P5 smoke coverage rather than browser-level Autoreply create/update/delete/preview coverage.
+- Preview backend returns the match decision, but the zeler-app UI currently revalidates without displaying that match result.
+- Invalid seller-authored regex handling still needs hardening before broad exposure.
+
 #### 6D: fulldock-module (ex-FullDock)
 
 - [ ] **P6D.1** — Define fulldock manifest + owned collections (`fulldock_inventory_rules`, `fulldock_history`)
