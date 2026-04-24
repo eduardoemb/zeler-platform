@@ -33,6 +33,21 @@ class UnknownWebhookTopicError(ValueError):
         self.dlq_routing_key = "webhooks.unknown.dlq"
 
 
+@dataclass(frozen=True)
+class WebhookTopicClassification:
+    routing_key: str
+
+    def idempotency_key(self, notification_id: str) -> str:
+        return f"{self.routing_key}:{notification_id}"
+
+
+def classify_webhook_topic(topic: str, _resource: str) -> WebhookTopicClassification:
+    routing_key = TOPIC_ROUTING_KEYS.get(topic)
+    if routing_key is None:
+        raise UnknownWebhookTopicError(topic)
+    return WebhookTopicClassification(routing_key=routing_key)
+
+
 def _event_id(event: dict[str, Any]) -> str:
     value = event.get("_id") or event.get("notification_id") or event.get("id")
     if value is None:

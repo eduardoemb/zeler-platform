@@ -15,6 +15,21 @@ uv run ruff check .
 uv run mypy .
 ```
 
+## Module-to-Meli boundary
+
+Modules must call Meli through the gateway proxy by default. The only sanctioned
+escape hatch is `POST /internal/tokens/issue`, which is reserved for high-throughput
+workers such as Repricer.
+
+Rules for `/internal/tokens/issue`:
+
+- callers must present a valid internal module JWT;
+- requested scopes must be a subset of the module's `module_registry.allowed_meli_scopes`;
+- `ttl_s` must be short-lived (`<= 300` seconds);
+- the gateway writes one `audit_log` issuance event;
+- modules must still avoid hardcoded `api.mercadolibre.com` URLs in source code so the
+  direct-Meli linter remains the merge gate.
+
 ## Strict TDD mandate
 
 This repository follows **Strict TDD**.
@@ -50,8 +65,11 @@ Use `type/short-description`, for example:
 
 ## SDD references
 
-For now, the design, proposal, and tasks for this repo live in the sibling repository:
+The design, proposal, and tasks for this repo live locally at:
 
-- `../zeler-core/sdd/zeler-platform-greenfield/`
+- `sdd/zeler-platform-greenfield/`
+
+Legacy references may still mention `../zeler-core/sdd/zeler-platform-greenfield/`, but
+that sibling path is not canonical for this repository.
 
 Read those artifacts before implementing changes.

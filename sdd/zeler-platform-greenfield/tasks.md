@@ -418,11 +418,11 @@ P6 ─→ P7
   `infra/lint/check_direct_meli.py`: AST walker that finds string literals or URL constants containing `api.mercadolibre.com` or `auth.mercadolibre.com` in any Python file under `modules/`. Wire as a separate CI job (runs after ruff, before tests). Fails build with file+line reference.
   *Ref*: spec §6 R6.3. *TDD*: `test_linter_flags_mercadolibre_url`, `test_linter_passes_on_clean_module`. *Effort*: S
 
-- [ ] **P4.5** — Implement `/internal/tokens/issue` endpoint (high-throughput escape hatch)
+- [x] **P4.5** — Implement `/internal/tokens/issue` endpoint (high-throughput escape hatch)
   `gateway/src/zeler_gateway/internal/router.py`: `POST /internal/tokens/issue {seller_id, scopes: list[str], ttl_s: int ≤ 300}`. Authenticated by valid internal module JWT. Decrypts access_token → returns plaintext for short-lived window. Writes one `audit_log` doc (issuance event). Documents scope narrowness + TTL in `CONTRIBUTING.md`.
   *Ref*: design §5.4 (escape hatch). *TDD*: `test_issue_returns_token`, `test_issue_requires_valid_jwt`, `test_issue_scope_narrowed_to_allowed_scopes`. *Effort*: M
 
-- [ ] **P4.6** — Create `repricer_rules` + `repricer_history` collections + Atlas validators
+- [x] **P4.6** — Create `repricer_rules` + `repricer_history` collections + Atlas validators
   `infra/atlas/repricer_rules.json`, `infra/atlas/repricer_history.json`. Rules indexes: `{seller_id:1, active:1}`, `{item_id:1}` unique partial (active). History indexes: `{item_id:1, applied_at:-1}`, `{seller_id:1, applied_at:-1}`. TTL on history `{applied_at:1}` 365 days. Apply to dev.
   *Ref*: design §4.12. *TDD*: Validators reject docs missing required fields. *Effort*: S
 
@@ -434,19 +434,19 @@ P6 ─→ P7
   `modules/repricer/src/zeler_repricer/engine.py`: `evaluate_rule(rule: RepricerRule, current_price: Decimal, buybox_price: Decimal | None) → Decision`. `Decision` = `SetPrice(new_price)` or `NoAction(reason)`. Fully pure — no DB, no HTTP. Strategies: `min_price`, `competitive` (track_buybox), `maximize`.
   *Ref*: spec §6 R6.2. *TDD*: P4.7 tests now GREEN. *Effort*: M
 
-- [ ] **P4.9** — Implement repricer AMQP consumer + event handler
+- [x] **P4.9** — Implement repricer AMQP consumer + event handler
   `modules/repricer/src/zeler_repricer/consumer.py`: `aio-pika` consumer binding to `zeler.repricer.items` queue. Routing keys: `items.*`, `items_prices.*`. Handler: check idempotency → load item from `ItemsRepo` → load rules for item from `repricer_rules` → run engine → on `SetPrice`: call gateway proxy `PUT /proxy/meli/items/{item_id}` → write `repricer_history` doc. Ack after successful write.
   *Ref*: spec §6 R6.1–R6.4. *TDD*: `test_price_changed_event_triggers_rule_eval`, `test_idempotent_event_skipped`, `test_set_price_calls_gateway_proxy`, `test_history_written_for_every_decision`. *Effort*: L
 
-- [ ] **P4.10** — Implement repricer FastAPI admin API
+- [x] **P4.10** — Implement repricer FastAPI admin API
   `modules/repricer/src/zeler_repricer/api.py`: `GET /repricer/rules?seller_id=`, `POST /repricer/rules`, `PATCH /repricer/rules/{id}`, `DELETE /repricer/rules/{id}`. Internal JWT auth. `POST` validates rule fields via `RepricerRule` Pydantic model, upserts with unique partial index check.
   *Ref*: spec §6 R6.4. *TDD*: `test_create_rule_returns_201`, `test_below_floor_validation_error`, `test_only_module_jwt_accepted`. *Effort*: M
 
-- [ ] **P4.11** — Repricer manifest + registration + health
+- [x] **P4.11** — Repricer manifest + registration + health
   `modules/repricer/manifest.yaml`: name=repricer, version=0.1.0, subscribed_events=[items.*, items_prices.*], owned_collections=[repricer_rules, repricer_history], health_endpoint=/health. Wire `register_module(manifest)` on startup and `build_health_router` with RabbitMQ + Mongo checks.
   *Ref*: spec §5 R5.1–R5.3. *TDD*: Startup registers doc in `module_registry`; health returns ready=true. *Effort*: S
 
-- [ ] **P4.12** — [RED + GREEN] E2E test: webhook → AMQP → repricer → gateway proxy → mock Meli
+- [x] **P4.12** — [RED + GREEN] E2E test: webhook → AMQP → repricer → gateway proxy → mock Meli
   `tests/e2e/test_repricer_flow.py`: POST to `/webhooks/meli` with `items_prices` topic → verify AMQP message in repricer queue → repricer handler fires → verify gateway proxy called (mock Meli) → verify `repricer_history` doc written. Runs against local Docker Compose (gateway + repricer + RabbitMQ + mongo). Must be GREEN.
   *Ref*: spec §6 R6.1–R6.4, design §8.1. *TDD*: Write test (RED), implement glue (GREEN). *Effort*: L
 

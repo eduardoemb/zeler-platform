@@ -10,6 +10,7 @@ from motor.motor_asyncio import AsyncIOMotorClient
 
 from zeler_gateway.auth.router import router as auth_router
 from zeler_gateway.config import get_settings
+from zeler_gateway.internal.router import router as internal_router
 from zeler_gateway.oauth.router import router as oauth_router
 from zeler_gateway.observability.logging import configure_logging
 from zeler_gateway.observability.tracing import configure_tracing
@@ -68,6 +69,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 app = FastAPI(title="zeler-meli-gateway", lifespan=lifespan)
 app.include_router(auth_router)
+app.include_router(internal_router)
 app.include_router(oauth_router)
 app.include_router(proxy_router, prefix="/proxy/meli")
 app.include_router(webhooks_router)
