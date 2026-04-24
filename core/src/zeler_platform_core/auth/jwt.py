@@ -63,6 +63,7 @@ _PUBLIC_KEY_CACHE: TTLCache[str, EllipticCurvePublicKey] = TTLCache(maxsize=1, t
 def set_kms_client(client: KmsSigningClient | None) -> None:
     global _KMS_CLIENT
     _KMS_CLIENT = client
+    reset_jwt_cache()
 
 
 def reset_jwt_cache() -> None:
