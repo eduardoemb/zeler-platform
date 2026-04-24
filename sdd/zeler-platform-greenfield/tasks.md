@@ -585,6 +585,18 @@ P6 ─→ P7
   *Result*: Added Sheets module admin API for listing/upserting export configuration, creating manual sync jobs, and surfacing last sync state; added zeler-app SheetSeller configuration route with API helpers, server actions, form, sync trigger, and module catalog route.
   *TDD*: Component test: configure form submits, sync job created. *Effort*: M
 
+##### 6A — Archive Marker
+
+**Archive type**: Phase 6 subphase milestone (change remains open for Phase 6B–6D and Phase 7)  
+**Archive date**: 2026-04-24  
+**Verified HEADs**: zeler-platform `7a0ed4f85d649f2a7a3875e811a8fe34bc565a2f`; zeler-app `b64948149a4ea8ec6d4c8a613556a57a573cee25`  
+**Verify report reference**: Engram #2321 + `sdd/zeler-platform-greenfield/verify-report-phase-6a-sheets.md` (`PASS_WITH_WARNINGS`, CRITICAL=0)  
+**Tasks completed**: P6A.1–P6A.4 (4/4)  
+**Warnings carried forward**:
+- Live Google Sheets credentials/API append execution was not locally verified; validate with sandbox spreadsheet/credentials during deployment or integration.
+- Live AMQP worker/consumer loop was not locally executed; manifest subscriptions and deterministic handler contract were verified only through local tests.
+- P6A.3 covers item append and duplicate skip; add explicit order/shipment event variant coverage when expanding integration/triangulation.
+
 #### 6B: publicador-module (ex-PublicadorMeli)
 
 - [ ] **P6B.1** — Define publicador manifest + owned collections (`publicador_drafts`, `publicador_history`)
