@@ -11,6 +11,7 @@
       "refresh_token_ciphertext",
       "refresh_token_dek_wrapped",
       "token_nonce",
+      "refresh_token_nonce",
       "scopes",
       "status",
       "expires_at",
@@ -47,6 +48,9 @@
         "bsonType": ["binData", "string"]
       },
       "token_nonce": {
+        "bsonType": ["binData", "string"]
+      },
+      "refresh_token_nonce": {
         "bsonType": ["binData", "string"]
       },
       "scopes": {

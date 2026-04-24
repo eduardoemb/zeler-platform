@@ -48,6 +48,7 @@ def _valid_meli_account_doc() -> dict[str, Any]:
         "refresh_token_ciphertext": "refresh-ciphertext-base64",
         "refresh_token_dek_wrapped": "refresh-dek-wrapped-base64",
         "token_nonce": "nonce-base64",
+        "refresh_token_nonce": "refresh-nonce-base64",
         "scopes": ["read", "write"],
         "status": "active",
         "expires_at": now,
