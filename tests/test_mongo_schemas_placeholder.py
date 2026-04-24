@@ -6,6 +6,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 SCHEMAS_DIR = ROOT / "infra" / "mongo" / "schemas"
 EXPECTED_FILES = {
+    # Source-of-truth canon (gateway-owned, from spec section 4)
     "users.json",
     "meli_accounts.json",
     "items.json",
@@ -14,12 +15,21 @@ EXPECTED_FILES = {
     "messages.json",
     "shipments.json",
     "claims.json",
+    "events.json",
+    # Webhook ingestion + audit
     "webhook_events.json",
+    "audit_log.json",
+    # Bootstrap + module runtime
     "bootstrap_jobs.json",
     "module_registry.json",
+    # Repricer module-owned
     "repricer_rules.json",
     "repricer_history.json",
-    "audit_log.json",
+    # FullDock module-owned (from topic stock-locations)
+    "stock_locations.json",
+    # Catalog competition tracking (SheetSeller + FullDock + Repricer)
+    # from topic catalog_item_competition_status
+    "competition_snapshots.json",
 }
 
 
