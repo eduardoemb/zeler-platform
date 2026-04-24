@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from functools import lru_cache
+from typing import Literal
 
 from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -9,6 +10,11 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
+    environment: Literal["production", "test", "development"] = Field(
+        default="production", alias="ENVIRONMENT"
+    )
+    otel_enabled: bool = Field(default=True, alias="OTEL_ENABLED")
+    gcp_project_id: str = Field(default="zeler-platform-dev", alias="GCP_PROJECT_ID")
     mongo_uri: str = Field(
         default="mongodb://changeme_local_only:changeme_local_only@127.0.0.1:27017/zeler_platform_dev?authSource=admin",
         alias="MONGO_URI",
