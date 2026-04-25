@@ -1,0 +1,35 @@
+services:
+  mongo:
+    image: mongo:7.0
+    container_name: zeler-mongo-prod
+    command:
+      - mongod
+      - --replSet
+      - rs0
+      - --auth
+      - --keyFile
+      - /etc/mongo/keyfile/rs0.key
+      - --bind_ip_all
+    ports:
+      - "127.0.0.1:27019:27017"
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_PROD_ROOT_USER}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_PROD_ROOT_PASSWORD}
+    volumes:
+      - zeler-mongo-prod-data:/data/db
+      - ./mongo-keyfiles:/etc/mongo/keyfile:ro
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand({ping:1}).ok"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    restart: unless-stopped
+    networks:
+      - zeler-platform-prod
+
+volumes:
+  zeler-mongo-prod-data:
+
+networks:
+  zeler-platform-prod:

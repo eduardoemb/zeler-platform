@@ -22,6 +22,10 @@ uv.lock
 .env.*
 !.env.example
 
+# Mongo prod replica-set keyfile (generated locally, never committed)
+infra/docker/mongo-keyfiles/
+.env.prod
+
 # Editors / IDEs
 .idea/
 .vscode/
