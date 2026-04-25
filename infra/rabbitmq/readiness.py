@@ -46,6 +46,8 @@ def _exchange_key(exchange: dict[str, Any]) -> tuple[str, str, bool]:
 
 def _queue_key(queue: dict[str, Any]) -> tuple[str, bool, str]:
     arguments = queue.get("arguments", {})
+    if isinstance(arguments, dict) and arguments.get("x-queue-type") == "classic":
+        arguments = {key: value for key, value in arguments.items() if key != "x-queue-type"}
     return (
         str(queue.get("name", "")),
         bool(queue.get("durable", False)),

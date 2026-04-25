@@ -34,3 +34,10 @@ def test_topology_bindings_include_supported_module_routing_keys() -> None:
     assert ("zeler.sheets.orders", "orders.*") in bindings
     assert ("zeler.publicador.questions", "questions.*") in bindings
     assert ("zeler.publicador.messages", "messages.*") in bindings
+
+
+def test_topology_uses_classic_queue_compatible_arguments() -> None:
+    topology = build_topology_definitions()
+
+    for queue in topology["queues"]:
+        assert "x-delivery-limit" not in queue.get("arguments", {})

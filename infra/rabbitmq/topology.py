@@ -41,7 +41,6 @@ def build_topology_definitions() -> dict[str, Any]:
                 queue_name,
                 {
                     "x-dead-letter-exchange": dlx,
-                    "x-delivery-limit": 5,
                 },
             )
         )

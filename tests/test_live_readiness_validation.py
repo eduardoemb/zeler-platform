@@ -56,6 +56,35 @@ def test_rabbitmq_readiness_detects_missing_binding_from_management_export(tmp_p
     assert "messages.*" in report.findings[0].resource_name
 
 
+def test_rabbitmq_readiness_accepts_management_default_classic_queue_type(
+    tmp_path: Path,
+) -> None:
+    definitions = json.loads((ROOT / "infra" / "rabbitmq" / "definitions.json").read_text())
+    export = {
+        "exchanges": definitions["exchanges"],
+        "queues": [
+            {
+                **queue,
+                "arguments": {
+                    **queue.get("arguments", {}),
+                    "x-queue-type": "classic",
+                },
+            }
+            for queue in definitions["queues"]
+        ],
+        "bindings": definitions["bindings"],
+    }
+    export_path = tmp_path / "management-export.json"
+    export_path.write_text(json.dumps(export), encoding="utf-8")
+
+    report = build_rabbitmq_readiness_report(
+        definitions_path=ROOT / "infra" / "rabbitmq" / "definitions.json",
+        management_export_path=export_path,
+    )
+
+    assert report.summary["missing_queues"] == 0
+
+
 def test_mongo_readiness_offline_default_validates_schema_and_index_files() -> None:
     report = build_mongo_readiness_report(
         schemas_dir=ROOT / "infra" / "mongo" / "schemas",

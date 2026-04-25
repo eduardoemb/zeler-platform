@@ -41,8 +41,7 @@
       "name": "zeler.repricer.items",
       "durable": true,
       "arguments": {
-        "x-dead-letter-exchange": "zeler.repricer.items.dlx",
-        "x-delivery-limit": 5
+        "x-dead-letter-exchange": "zeler.repricer.items.dlx"
       }
     },
     {
@@ -94,8 +93,7 @@
       "name": "zeler.repricer.items_prices",
       "durable": true,
       "arguments": {
-        "x-dead-letter-exchange": "zeler.repricer.items_prices.dlx",
-        "x-delivery-limit": 5
+        "x-dead-letter-exchange": "zeler.repricer.items_prices.dlx"
       }
     },
     {
@@ -147,8 +145,7 @@
       "name": "zeler.sheets.orders",
       "durable": true,
       "arguments": {
-        "x-dead-letter-exchange": "zeler.sheets.orders.dlx",
-        "x-delivery-limit": 5
+        "x-dead-letter-exchange": "zeler.sheets.orders.dlx"
       }
     },
     {
@@ -200,8 +197,7 @@
       "name": "zeler.publicador.questions",
       "durable": true,
       "arguments": {
-        "x-dead-letter-exchange": "zeler.publicador.questions.dlx",
-        "x-delivery-limit": 5
+        "x-dead-letter-exchange": "zeler.publicador.questions.dlx"
       }
     },
     {
@@ -253,8 +249,7 @@
       "name": "zeler.publicador.messages",
       "durable": true,
       "arguments": {
-        "x-dead-letter-exchange": "zeler.publicador.messages.dlx",
-        "x-delivery-limit": 5
+        "x-dead-letter-exchange": "zeler.publicador.messages.dlx"
       }
     },
     {
