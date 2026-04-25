@@ -3,7 +3,12 @@ name = "zeler-bootstrap"
 version = "0.0.0"
 description = "Bootstrap jobs package for zeler-platform"
 requires-python = ">=3.11"
-dependencies = ["zeler_platform_core"]
+dependencies = [
+  "aio-pika>=9.4.0",
+  "httpx>=0.28.1",
+  "motor>=3.7.1",
+  "zeler_platform_core",
+]
 
 [build-system]
 requires = ["hatchling>=1.24.0"]

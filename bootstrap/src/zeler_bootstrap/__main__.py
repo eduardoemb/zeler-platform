@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 from collections.abc import Callable, Sequence
 from datetime import datetime
 from typing import Any
 
 from zeler_bootstrap.runner import BootstrapDagRunner, build_default_stages
+from zeler_bootstrap.runtime import BootstrapRuntimeSettings, build_runtime_dependencies
 from zeler_bootstrap.stages import BootstrapDatabase, BootstrapGatewayClient, BootstrapPublisher
 from zeler_bootstrap.state_machine import BootstrapJobsCollection, BootstrapStateMachine
 
@@ -47,8 +49,17 @@ def main(argv: Sequence[str] | None = None) -> None:
     args = parse_args(argv)
     if args.dry_run:
         return
-    msg = "runtime bootstrap wiring requires Mongo/gateway clients from deployment configuration"
-    raise NotImplementedError(msg)
+    dependencies = build_runtime_dependencies(BootstrapRuntimeSettings.from_env())
+    asyncio.run(
+        run_bootstrap_job(
+            seller_id=args.seller_id,
+            job_id=args.job_id,
+            jobs_collection=dependencies.jobs_collection,
+            database=dependencies.database,
+            gateway=dependencies.gateway,
+            publisher=dependencies.publisher,
+        )
+    )
 
 
 if __name__ == "__main__":
