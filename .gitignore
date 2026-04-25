@@ -26,6 +26,8 @@ uv.lock
 # Mongo prod replica-set keyfile (generated locally, never committed)
 infra/docker/mongo-keyfiles/
 .env.prod
+infra/docker/PROD_BRINGUP_EVIDENCE_*.md
+!infra/docker/PROD_BRINGUP_EVIDENCE.template.md
 
 # Editors / IDEs
 .idea/
