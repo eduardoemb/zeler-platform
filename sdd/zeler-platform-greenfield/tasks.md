@@ -765,6 +765,10 @@ P6 ─→ P7
   `infra/mongo/readiness.py` validates local `infra/mongo/seeds/module_registry.admin_clients.json` as a read-only JSON contract and can compare expected admin clients against a separately exported `module_registry` JSON file via `--module-registry-export`. `docs/live-readiness-validation.md` separates readiness validation from the explicit manual/deployment seed apply step.
   *TDD*: `tests/test_live_readiness_validation.py::test_mongo_readiness_validates_zeler_app_admin_seed_scope`, `test_mongo_readiness_reports_wrong_zeler_app_admin_seed_scope`, and `test_mongo_readiness_reports_missing_zeler_app_admin_seed_from_export` RED → GREEN.
 
+- [x] **H5** — Add deployment preflight checklist/tooling
+  `infra/deploy/preflight.py` checks gcloud project/account/access-token availability non-interactively, required env-var groups for Mongo/RabbitMQ/GCP/Cloud Run deploy readiness, and required repo files (Cloud Build config, Dockerfile, readiness tools, topology, schemas/indexes, seeds). Output renders only present/missing or sanitized status, never secret values, and exits non-zero while required prerequisites are missing.
+  *TDD*: `tests/test_deployment_preflight.py` RED → GREEN for no-secret output, gcloud non-interactive behavior, repo-file remediation, and runbook command documentation.
+
 ---
 
 ## Phase 7: Legacy Decommission

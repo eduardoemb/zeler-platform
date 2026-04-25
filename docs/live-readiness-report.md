@@ -27,6 +27,7 @@
 | Mongo apply tooling | `infra/mongo/apply_validators.py` can create collections, apply validators, and create indexes from `infra/mongo/schemas` + `infra/mongo/indexes`. | Mutating Mongo apply is available, but skipped because no target-confirmed `MONGO_URI` is present. |
 | Mongo readiness tooling | `infra/mongo/readiness.py` supports offline and read-only live metadata validation. | Offline validation passed; live validation skipped without `MONGO_URI`. |
 | RabbitMQ topology tooling | `infra/rabbitmq/amqp_setup.py` generates `infra/rabbitmq/definitions.json`; `infra/runbooks/amqp-setup.md` documents import via `rabbitmqadmin import`. | Topology generation/import path exists, but no live RabbitMQ URL/export is present. |
+| Deployment preflight | `infra/deploy/preflight.py` checks gcloud, required env-var groups, and required repo files without printing secret values. | Run before any Cloud Run deploy or live apply; it exits non-zero while auth/env/binding blockers remain. |
 | Secrets docs/config | No deploy-time Secret Manager binding script/config was found. | Deploy remains blocked until secret names/env contract are specified for each service/job. |
 
 ## Local environment and CLI target detection
@@ -130,6 +131,16 @@ None. The configured project name is correct for dev (`zeler-platform-dev`), but
 ## Next operator commands
 
 Run these after confirming the target is the new `zeler-platform` dev/sandbox environment, not legacy.
+
+### 0. Deployment preflight
+
+The deployment preflight prints only present/missing status and sanitized gcloud availability; it never prints secret values.
+
+```bash
+uv run python -m infra.deploy.preflight
+```
+
+Expected current result: non-zero until gcloud auth, Mongo/RabbitMQ/GCP env vars, RabbitMQ/module-registry exports, and Cloud Run Secret Manager/env binding export are present.
 
 ### 1. Reauthenticate gcloud
 
