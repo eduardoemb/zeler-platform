@@ -1,4 +1,11 @@
-"""Idempotent replica-set bootstrap for the production MongoDB container."""
+"""Idempotent replica-set bootstrap for the production MongoDB container.
+
+Exit codes from ``main()``:
+    0 — success (or idempotent no-op).
+    1 — mongod did not become reachable within the timeout.
+    2 — required env var missing (``MONGO_ADMIN_USER`` / ``MONGO_ADMIN_PASSWORD``).
+    3 — unhandled ``OperationFailure`` from ``replSetInitiate`` or ``createUser``.
+"""
 
 from __future__ import annotations
 
@@ -15,6 +22,8 @@ LOGGER = logging.getLogger(__name__)
 ALREADY_INITIALIZED = 23
 USER_ALREADY_EXISTS = 51003
 DEFAULT_INIT_URI = "mongodb://127.0.0.1:27019/?directConnection=true"
+DEFAULT_MEMBER_HOST = "127.0.0.1:27019"
+DEFAULT_TIMEOUT_S = 30.0
 MISSING_CREDENTIALS_MESSAGE = "error: MONGO_ADMIN_USER and MONGO_ADMIN_PASSWORD required"
 
 
@@ -43,7 +52,7 @@ def ensure_admin_user(
 def initiate_replica_set(
     client: Any,
     rs_name: str = "rs0",
-    host: str = "localhost:27017",
+    host: str = DEFAULT_MEMBER_HOST,
 ) -> None:
     """Initialize a single-node replica set."""
     try:
@@ -64,7 +73,7 @@ def initiate_replica_set(
 
 def wait_for_mongod(
     client: Any,
-    timeout_s: float = 30,
+    timeout_s: float = DEFAULT_TIMEOUT_S,
 ) -> None:
     """Poll ``client`` until mongod responds to ping, or raise ``TimeoutError``."""
     deadline = time.monotonic() + timeout_s
@@ -88,10 +97,27 @@ def main() -> None:
         print(MISSING_CREDENTIALS_MESSAGE, file=sys.stderr)
         sys.exit(2)
 
-    client: MongoClient[Any] = MongoClient(os.environ.get("MONGO_INIT_URI", DEFAULT_INIT_URI))
-    wait_for_mongod(client)
-    initiate_replica_set(client)
-    ensure_admin_user(client, username, password)
+    init_uri = os.environ.get("MONGO_INIT_URI", DEFAULT_INIT_URI)
+    member_host = os.environ.get("MONGO_RS_MEMBER_HOST", DEFAULT_MEMBER_HOST)
+    timeout_s = float(os.environ.get("MONGO_INIT_TIMEOUT_S", DEFAULT_TIMEOUT_S))
+
+    client: MongoClient[Any] = MongoClient(init_uri)
+    try:
+        wait_for_mongod(client, timeout_s=timeout_s)
+    except TimeoutError as exc:
+        print(
+            f"error: mongod timeout — target {member_host} did not respond "
+            f"within {timeout_s}s ({exc})",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    try:
+        initiate_replica_set(client, host=member_host)
+        ensure_admin_user(client, username, password)
+    except OperationFailure as exc:
+        print(f"error: unhandled mongod operation failure: {exc}", file=sys.stderr)
+        sys.exit(3)
 
 
 if __name__ == "__main__":

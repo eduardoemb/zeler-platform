@@ -229,7 +229,7 @@ def apply_validators(mongo_uri: str, schemas_dir: Path) -> dict[str, str]:
 def main() -> None:
     mongo_uri = os.environ.get("MONGO_URI")
     if not mongo_uri:
-        print("error: MONGO_URI must be set explicitly (no default)", file=sys.stderr)
+        print("error: MONGO_URI is required", file=sys.stderr)
         sys.exit(2)
 
     schemas_dir = Path(os.environ.get("SCHEMAS_DIR", str(DEFAULT_SCHEMAS_DIR)))

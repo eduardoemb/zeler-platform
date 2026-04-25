@@ -43,11 +43,16 @@ Follow this sequence exactly on a clean prod host:
    export MONGO_ADMIN_PASSWORD=<strong-password>
    ```
 
-3. Bring up the prod Mongo container:
+3. Bring up the prod Mongo container, feeding it the admin credentials via `--env-file`:
 
    ```bash
-   docker compose -f infra/docker/mongo-prod.yml up -d
+   docker compose -f infra/docker/mongo-prod.yml --env-file .env.prod up -d
    ```
+
+   The compose file forwards `MONGO_ADMIN_USER` / `MONGO_ADMIN_PASSWORD` from
+   `.env.prod` into the container's `MONGO_INITDB_ROOT_*` env vars. The
+   names match what `init_replica_set.py` will read in the next step, so a
+   single `.env.prod` is the only source of credentials.
 
 4. Wait until the container is healthy:
 
@@ -114,3 +119,52 @@ Warnings:
   ```bash
   docker compose -f infra/docker/mongo-prod.yml down -v
   ```
+
+## Rollback and recovery
+
+### Full rollback (clean slate)
+
+If the prod Mongo bring-up went sideways and you need to start over from a known-good
+git state, use this sequence in order:
+
+1. Stop and wipe the container plus its data volume:
+
+   ```bash
+   docker compose -f infra/docker/mongo-prod.yml down -v
+   ```
+
+2. Remove the locally-generated keyfile so the next bring-up regenerates it:
+
+   ```bash
+   rm -f infra/docker/mongo-keyfiles/rs0.key
+   ```
+
+3. Revert the change that introduced the broken state. Replace `<sha>` with the
+   bad commit (use `git log --oneline infra/docker/ infra/mongo/ | head` to find it):
+
+   ```bash
+   git revert <sha>
+   ```
+
+4. Re-run the first-time setup runbook from step 1.
+
+### Recovery: replica set initialized with the wrong member host
+
+If `init_replica_set.py` ran with a stale `MONGO_RS_MEMBER_HOST` (e.g. `localhost:27017`
+instead of `127.0.0.1:27019`), the RS will be technically alive but the driver may
+fail to connect because the advertised member host does not match the URI.
+
+Reconfigure the RS in place without losing data:
+
+```bash
+docker exec -it zeler-mongo-prod mongosh \
+  -u "$MONGO_ADMIN_USER" -p "$MONGO_ADMIN_PASSWORD" --authenticationDatabase admin \
+  --eval '
+    cfg = rs.conf();
+    cfg.members[0].host = "127.0.0.1:27019";
+    rs.reconfig(cfg, { force: true });
+    rs.status().myState
+  '
+```
+
+The final line prints `1` when the node is back to PRIMARY with the corrected host.

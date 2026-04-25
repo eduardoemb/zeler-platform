@@ -23,7 +23,7 @@ def test_main_exits_2_when_mongo_uri_unset(
         apply_validators.main()
 
     assert exc_info.value.code == 2
-    assert capsys.readouterr().err == "error: MONGO_URI must be set explicitly (no default)\n"
+    assert capsys.readouterr().err == "error: MONGO_URI is required\n"
     assert calls == []
 
 
@@ -44,5 +44,5 @@ def test_main_exits_2_when_mongo_uri_is_empty(
         apply_validators.main()
 
     assert exc_info.value.code == 2
-    assert capsys.readouterr().err == "error: MONGO_URI must be set explicitly (no default)\n"
+    assert capsys.readouterr().err == "error: MONGO_URI is required\n"
     assert calls == []

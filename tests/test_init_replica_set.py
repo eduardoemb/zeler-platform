@@ -54,7 +54,7 @@ def test_wait_for_mongod_succeeds_after_retry(monkeypatch: pytest.MonkeyPatch) -
     assert client.admin.commands == [("ping", (), {}), ("ping", (), {}), ("ping", (), {})]
 
 
-def test_initiate_replica_set_fresh_node_uses_single_member_payload() -> None:
+def test_initiate_replica_set_fresh_node_uses_prod_member_host_by_default() -> None:
     client = FakeMongoClient([])
 
     initiate_replica_set(client)
@@ -64,7 +64,7 @@ def test_initiate_replica_set_fresh_node_uses_single_member_payload() -> None:
             {
                 "replSetInitiate": {
                     "_id": "rs0",
-                    "members": [{"_id": 0, "host": "localhost:27017"}],
+                    "members": [{"_id": 0, "host": "127.0.0.1:27019"}],
                 }
             },
             (),
@@ -76,14 +76,14 @@ def test_initiate_replica_set_fresh_node_uses_single_member_payload() -> None:
 def test_initiate_replica_set_honors_custom_replica_set_name_and_host() -> None:
     client = FakeMongoClient([])
 
-    initiate_replica_set(client, rs_name="prod-rs", host="127.0.0.1:27019")
+    initiate_replica_set(client, rs_name="prod-rs", host="10.0.0.5:27019")
 
     assert client.admin.commands == [
         (
             {
                 "replSetInitiate": {
                     "_id": "prod-rs",
-                    "members": [{"_id": 0, "host": "127.0.0.1:27019"}],
+                    "members": [{"_id": 0, "host": "10.0.0.5:27019"}],
                 }
             },
             (),
@@ -178,7 +178,7 @@ def test_main_uses_init_uri_and_runs_bootstrap_steps_in_order(
             {
                 "replSetInitiate": {
                     "_id": "rs0",
-                    "members": [{"_id": 0, "host": "localhost:27017"}],
+                    "members": [{"_id": 0, "host": "127.0.0.1:27019"}],
                 }
             },
             (),
@@ -194,3 +194,65 @@ def test_main_uses_init_uri_and_runs_bootstrap_steps_in_order(
             {},
         ),
     ]
+
+
+def test_main_exits_1_when_mongod_never_responds_within_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    client = FakeMongoClient([ServerSelectionTimeoutError("offline")] * 5)
+
+    monkeypatch.setattr("infra.mongo.init_replica_set.MongoClient", lambda _uri: client)
+    monkeypatch.setattr("infra.mongo.init_replica_set.time.sleep", lambda _seconds: None)
+    monkeypatch.setenv("MONGO_ADMIN_USER", "admin")
+    monkeypatch.setenv("MONGO_ADMIN_PASSWORD", "s3cret")
+    monkeypatch.setenv("MONGO_INIT_URI", "mongodb://127.0.0.1:27019/?directConnection=true")
+    monkeypatch.setenv("MONGO_INIT_TIMEOUT_S", "0")
+
+    with pytest.raises(SystemExit) as exc_info:
+        main()
+
+    assert exc_info.value.code == 1
+    err = capsys.readouterr().err
+    assert "timeout" in err.lower()
+    assert "127.0.0.1:27019" in err
+
+
+def test_main_exits_3_on_unexpected_operation_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    client = FakeMongoClient([None, OperationFailure("not authorized", code=13)])
+
+    monkeypatch.setattr("infra.mongo.init_replica_set.MongoClient", lambda _uri: client)
+    monkeypatch.setenv("MONGO_ADMIN_USER", "admin")
+    monkeypatch.setenv("MONGO_ADMIN_PASSWORD", "s3cret")
+    monkeypatch.setenv("MONGO_INIT_URI", "mongodb://127.0.0.1:27019/?directConnection=true")
+
+    with pytest.raises(SystemExit) as exc_info:
+        main()
+
+    assert exc_info.value.code == 3
+    assert "not authorized" in capsys.readouterr().err
+
+
+def test_main_uses_member_host_env_override(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = FakeMongoClient([])
+
+    monkeypatch.setattr("infra.mongo.init_replica_set.MongoClient", lambda _uri: client)
+    monkeypatch.setenv("MONGO_ADMIN_USER", "admin")
+    monkeypatch.setenv("MONGO_ADMIN_PASSWORD", "s3cret")
+    monkeypatch.setenv("MONGO_INIT_URI", "mongodb://127.0.0.1:27019/?directConnection=true")
+    monkeypatch.setenv("MONGO_RS_MEMBER_HOST", "10.0.0.5:27019")
+
+    main()
+
+    initiate_call = client.admin.commands[1]
+    assert initiate_call[0] == {
+        "replSetInitiate": {
+            "_id": "rs0",
+            "members": [{"_id": 0, "host": "10.0.0.5:27019"}],
+        }
+    }

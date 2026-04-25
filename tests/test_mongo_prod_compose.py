@@ -71,11 +71,19 @@ def test_named_volume_for_data() -> None:
     assert "zeler-mongo-prod-data" in declared_volumes
 
 
-def test_environment_uses_prod_root_credentials() -> None:
+def test_environment_uses_admin_credentials_consistent_with_init_script() -> None:
+    """Compose env vars must match the names used by init_replica_set.py and .env.prod.example.
+
+    The init script reads `MONGO_ADMIN_USER` / `MONGO_ADMIN_PASSWORD` from env.
+    The `.env.prod.example` template documents the same names. The compose file
+    MUST reference those same names so a single `--env-file .env.prod` invocation
+    feeds both the container's `MONGO_INITDB_ROOT_*` first-boot bootstrap AND
+    the init script's createUser path.
+    """
     environment = _mongo_service().get("environment")
     assert environment == {
-        "MONGO_INITDB_ROOT_USERNAME": "${MONGO_PROD_ROOT_USER}",
-        "MONGO_INITDB_ROOT_PASSWORD": "${MONGO_PROD_ROOT_PASSWORD}",
+        "MONGO_INITDB_ROOT_USERNAME": "${MONGO_ADMIN_USER}",
+        "MONGO_INITDB_ROOT_PASSWORD": "${MONGO_ADMIN_PASSWORD}",
     }
 
 

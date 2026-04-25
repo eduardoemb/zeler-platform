@@ -111,7 +111,7 @@ def apply_seeds(mongo_uri: str, seeds_dir: Path) -> dict[str, str]:
 def main() -> None:
     mongo_uri = os.environ.get("MONGO_URI")
     if not mongo_uri:
-        print("error: MONGO_URI must be set explicitly (no default)", file=sys.stderr)
+        print("error: MONGO_URI is required", file=sys.stderr)
         sys.exit(2)
 
     seeds_dir = Path(os.environ.get("SEEDS_DIR", str(DEFAULT_SEEDS_DIR)))

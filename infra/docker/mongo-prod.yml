@@ -13,8 +13,8 @@ services:
     ports:
       - "127.0.0.1:27019:27017"
     environment:
-      MONGO_INITDB_ROOT_USERNAME: ${MONGO_PROD_ROOT_USER}
-      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_PROD_ROOT_PASSWORD}
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_ADMIN_USER}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ADMIN_PASSWORD}
     volumes:
       - zeler-mongo-prod-data:/data/db
       - ./mongo-keyfiles:/etc/mongo/keyfile:ro
