@@ -7,7 +7,7 @@ from typing import Any
 import pytest
 from bson import Int64, ObjectId
 from dotenv import load_dotenv
-from infra.mongo.apply_validators import DEFAULT_MONGO_URI, apply_validators
+from infra.mongo.apply_validators import apply_validators
 from pymongo import MongoClient
 from pymongo.errors import PyMongoError, WriteError
 
@@ -17,10 +17,8 @@ load_dotenv(ROOT / ".env")
 
 
 @pytest.fixture
-def meli_accounts_collection() -> Any:
-    import os
-
-    mongo_uri = os.environ.get("MONGO_URI", DEFAULT_MONGO_URI)
+def meli_accounts_collection(default_mongo_uri: str) -> Any:
+    mongo_uri = default_mongo_uri
     client: MongoClient[dict[str, Any]] = MongoClient(mongo_uri, serverSelectionTimeoutMS=1000)
     try:
         client.admin.command("ping")

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import sys
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, cast
@@ -11,10 +12,6 @@ from pymongo.database import Database
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_SCHEMAS_DIR = ROOT / "infra" / "mongo" / "schemas"
 DEFAULT_INDEXES_DIR = ROOT / "infra" / "mongo" / "indexes"
-DEFAULT_MONGO_URI = (
-    "mongodb://changeme_local_only:changeme_local_only@127.0.0.1:27017/"
-    "zeler_platform_dev?authSource=admin"
-)
 
 
 def _load_schema(schema_path: Path) -> dict[str, Any]:
@@ -230,7 +227,11 @@ def apply_validators(mongo_uri: str, schemas_dir: Path) -> dict[str, str]:
 
 
 def main() -> None:
-    mongo_uri = os.environ.get("MONGO_URI", DEFAULT_MONGO_URI)
+    mongo_uri = os.environ.get("MONGO_URI")
+    if not mongo_uri:
+        print("error: MONGO_URI must be set explicitly (no default)", file=sys.stderr)
+        sys.exit(2)
+
     schemas_dir = Path(os.environ.get("SCHEMAS_DIR", str(DEFAULT_SCHEMAS_DIR)))
     apply_validators(mongo_uri, schemas_dir)
 

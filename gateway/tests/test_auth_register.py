@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
 from typing import Any
@@ -9,7 +8,7 @@ import httpx
 import pytest
 import pytest_asyncio
 from dotenv import load_dotenv
-from infra.mongo.apply_validators import DEFAULT_MONGO_URI, apply_validators
+from infra.mongo.apply_validators import apply_validators
 from motor.motor_asyncio import AsyncIOMotorClient
 from pymongo import MongoClient
 from pymongo.errors import PyMongoError
@@ -22,8 +21,8 @@ load_dotenv(ROOT / ".env")
 
 
 @pytest.fixture
-def auth_db() -> Iterator[Any]:
-    mongo_uri = os.environ.get("MONGO_URI", DEFAULT_MONGO_URI)
+def auth_db(default_mongo_uri: str) -> Iterator[Any]:
+    mongo_uri = default_mongo_uri
     client: MongoClient[dict[str, Any]] = MongoClient(
         mongo_uri, serverSelectionTimeoutMS=1000, tz_aware=True
     )

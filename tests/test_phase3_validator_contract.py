@@ -1,12 +1,11 @@
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 
 import pytest
 from dotenv import load_dotenv
-from infra.mongo.apply_validators import DEFAULT_MONGO_URI, apply_validators
+from infra.mongo.apply_validators import apply_validators
 from infra.mongo.validator_contract import (
     canonical_validator_files,
     validate_document_against_schema,
@@ -54,8 +53,10 @@ def test_canonical_validators_reject_documents_missing_required_fields(schema_fi
     assert result.missing_required_fields
 
 
-def test_live_dev_mongo_canonical_validators_reject_invalid_documents() -> None:
-    mongo_uri = os.environ.get("MONGO_URI", DEFAULT_MONGO_URI)
+def test_live_dev_mongo_canonical_validators_reject_invalid_documents(
+    default_mongo_uri: str,
+) -> None:
+    mongo_uri = default_mongo_uri
     client: MongoClient[dict[str, object]] = MongoClient(mongo_uri, serverSelectionTimeoutMS=1000)
     try:
         client.admin.command("ping")

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -9,7 +8,7 @@ from typing import Any
 import pytest
 from bson import Int64
 from dotenv import load_dotenv
-from infra.mongo.apply_validators import DEFAULT_MONGO_URI, apply_validators
+from infra.mongo.apply_validators import apply_validators
 from motor.motor_asyncio import AsyncIOMotorClient
 from pymongo import MongoClient
 from pymongo.errors import PyMongoError
@@ -22,8 +21,8 @@ load_dotenv(ROOT / ".env")
 
 
 @pytest.fixture
-def rate_limit_db() -> Iterator[Any]:
-    mongo_uri = os.environ.get("MONGO_URI", DEFAULT_MONGO_URI)
+def rate_limit_db(default_mongo_uri: str) -> Iterator[Any]:
+    mongo_uri = default_mongo_uri
     sync_client: MongoClient[dict[str, Any]] = MongoClient(
         mongo_uri, serverSelectionTimeoutMS=1000, tz_aware=True
     )

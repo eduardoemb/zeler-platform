@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -29,10 +30,6 @@ from pymongo import MongoClient
 
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_SEEDS_DIR = ROOT / "infra" / "mongo" / "seeds"
-DEFAULT_MONGO_URI = (
-    "mongodb://changeme_local_only:changeme_local_only@127.0.0.1:27017/"
-    "zeler_platform_dev?authSource=admin"
-)
 
 
 def _load_seed(seed_path: Path) -> dict[str, Any]:
@@ -112,7 +109,11 @@ def apply_seeds(mongo_uri: str, seeds_dir: Path) -> dict[str, str]:
 
 
 def main() -> None:
-    mongo_uri = os.environ.get("MONGO_URI", DEFAULT_MONGO_URI)
+    mongo_uri = os.environ.get("MONGO_URI")
+    if not mongo_uri:
+        print("error: MONGO_URI must be set explicitly (no default)", file=sys.stderr)
+        sys.exit(2)
+
     seeds_dir = Path(os.environ.get("SEEDS_DIR", str(DEFAULT_SEEDS_DIR)))
     apply_seeds(mongo_uri, seeds_dir)
 
