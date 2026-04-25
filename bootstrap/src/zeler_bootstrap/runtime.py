@@ -5,6 +5,7 @@ import os
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any, Protocol, Self, cast
+from urllib.parse import urlsplit
 
 
 class RuntimeConfigError(ValueError):
@@ -42,6 +43,15 @@ class BootstrapRuntimeSettings:
     rabbitmq_exchange: str = "meli.events"
     gateway_path_prefix: str = "/proxy/meli"
     http_timeout_seconds: float = 30.0
+
+    def __post_init__(self) -> None:
+        if not self.mongo_db:
+            return
+
+        uri_path = urlsplit(self.mongo_uri).path.lstrip("/")
+        if uri_path and uri_path != self.mongo_db:
+            msg = f"MONGO_URI path '{uri_path}' does not match MONGO_DB '{self.mongo_db}'"
+            raise RuntimeConfigError(msg)
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> Self:

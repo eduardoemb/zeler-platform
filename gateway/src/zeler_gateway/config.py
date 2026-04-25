@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 from functools import lru_cache
-from typing import Literal
+from typing import Literal, Self
+from urllib.parse import urlsplit
 
-from pydantic import Field, SecretStr, field_validator
+from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -52,6 +53,18 @@ class Settings(BaseSettings):
     @classmethod
     def _load_secret_reference(cls, value: str) -> str:
         return value
+
+    @model_validator(mode="after")
+    def _validate_mongo_uri_path_matches_mongo_db(self) -> Self:
+        if not self.mongo_db or "mongo_db" not in self.model_fields_set:
+            return self
+
+        uri_path = urlsplit(self.mongo_uri).path.lstrip("/")
+        if uri_path and uri_path != self.mongo_db:
+            msg = f"MONGO_URI path '{uri_path}' does not match MONGO_DB '{self.mongo_db}'"
+            raise ValueError(msg)
+
+        return self
 
 
 def load_secret(secret_id: str, *, project_id: str) -> str:
