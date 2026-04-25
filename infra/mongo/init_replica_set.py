@@ -23,6 +23,7 @@ ALREADY_INITIALIZED = 23
 USER_ALREADY_EXISTS = 51003
 DEFAULT_INIT_URI = "mongodb://127.0.0.1:27019/?directConnection=true"
 DEFAULT_MEMBER_HOST = "127.0.0.1:27019"
+_DEFAULT_RS_NAME = "rs0"
 DEFAULT_TIMEOUT_S = 30.0
 MISSING_CREDENTIALS_MESSAGE = "error: MONGO_ADMIN_USER and MONGO_ADMIN_PASSWORD required"
 
@@ -51,7 +52,7 @@ def ensure_admin_user(
 
 def initiate_replica_set(
     client: Any,
-    rs_name: str = "rs0",
+    rs_name: str = _DEFAULT_RS_NAME,
     host: str = DEFAULT_MEMBER_HOST,
 ) -> None:
     """Initialize a single-node replica set."""
@@ -99,6 +100,7 @@ def main() -> None:
 
     init_uri = os.environ.get("MONGO_INIT_URI", DEFAULT_INIT_URI)
     member_host = os.environ.get("MONGO_RS_MEMBER_HOST", DEFAULT_MEMBER_HOST)
+    rs_name = os.environ.get("MONGO_RS_NAME", _DEFAULT_RS_NAME)
     timeout_s = float(os.environ.get("MONGO_INIT_TIMEOUT_S", DEFAULT_TIMEOUT_S))
 
     client: MongoClient[Any] = MongoClient(init_uri)
@@ -113,7 +115,7 @@ def main() -> None:
         sys.exit(1)
 
     try:
-        initiate_replica_set(client, host=member_host)
+        initiate_replica_set(client, rs_name=rs_name, host=member_host)
         ensure_admin_user(client, username, password)
     except OperationFailure as exc:
         print(f"error: unhandled mongod operation failure: {exc}", file=sys.stderr)

@@ -9,7 +9,12 @@ services:
       MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_PASSWORD}
     volumes:
       - zeler-mongo-data:/data/db
-    command: ["mongod", "--auth"]
+    command: ["mongod", "--replSet", "rs0-dev", "--bind_ip_all", "--auth"]
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
     restart: unless-stopped
     networks:
       - zeler-platform-dev

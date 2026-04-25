@@ -256,3 +256,48 @@ def test_main_uses_member_host_env_override(
             "members": [{"_id": 0, "host": "10.0.0.5:27019"}],
         }
     }
+
+
+def test_main_uses_rs_name_env_override(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = FakeMongoClient([])
+
+    monkeypatch.setattr("infra.mongo.init_replica_set.MongoClient", lambda _uri: client)
+    monkeypatch.setenv("MONGO_ADMIN_USER", "admin")
+    monkeypatch.setenv("MONGO_ADMIN_PASSWORD", "s3cret")
+    monkeypatch.setenv("MONGO_INIT_URI", "mongodb://127.0.0.1:27017/?directConnection=true")
+    monkeypatch.setenv("MONGO_RS_MEMBER_HOST", "127.0.0.1:27017")
+    monkeypatch.setenv("MONGO_RS_NAME", "rs0-dev")
+
+    main()
+
+    initiate_call = client.admin.commands[1]
+    assert initiate_call[0] == {
+        "replSetInitiate": {
+            "_id": "rs0-dev",
+            "members": [{"_id": 0, "host": "127.0.0.1:27017"}],
+        }
+    }
+
+
+def test_main_default_rs_name_is_rs0(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = FakeMongoClient([])
+
+    monkeypatch.setattr("infra.mongo.init_replica_set.MongoClient", lambda _uri: client)
+    monkeypatch.setenv("MONGO_ADMIN_USER", "admin")
+    monkeypatch.setenv("MONGO_ADMIN_PASSWORD", "s3cret")
+    monkeypatch.setenv("MONGO_INIT_URI", "mongodb://127.0.0.1:27019/?directConnection=true")
+    monkeypatch.delenv("MONGO_RS_NAME", raising=False)
+
+    main()
+
+    initiate_call = client.admin.commands[1]
+    assert initiate_call[0] == {
+        "replSetInitiate": {
+            "_id": "rs0",
+            "members": [{"_id": 0, "host": "127.0.0.1:27019"}],
+        }
+    }

@@ -26,6 +26,64 @@ Mongo data is stored in the named volume `zeler-mongo-data`, so data survives co
 TLS is intentionally disabled in local development.
 The container binds only to `127.0.0.1`, and TLS becomes mandatory for the on-prem deployment path defined in D11.
 
+## Dev Mongo replica-set bootstrap
+
+Use this runbook when creating or resetting the local dev MongoDB replica set.
+The dev replica-set name is `rs0-dev`, runs on `127.0.0.1:${MONGO_HOST_PORT:-27017}`, and intentionally uses Option B: `--replSet rs0-dev --bind_ip_all --auth` without a keyfile.
+
+Prerequisites:
+
+- Export `MONGO_ROOT_USER` and `MONGO_ROOT_PASSWORD` with the same values used by `infra/docker/mongo-dev.yml`.
+- Preserve data with `mongodump` before the wipe if the current dev volume contains anything you need.
+
+1. Stop the dev container and wipe the old standalone volume:
+
+   ```bash
+   docker compose -f infra/docker/mongo-dev.yml down -v
+   ```
+
+2. Bring the replica-set-armed dev container up:
+
+   ```bash
+   docker compose -f infra/docker/mongo-dev.yml up -d
+   ```
+
+3. Initialize the single-node replica set and admin user:
+
+   ```bash
+   MONGO_RS_NAME=rs0-dev \
+   MONGO_INIT_URI=mongodb://127.0.0.1:27017/?directConnection=true \
+   MONGO_RS_MEMBER_HOST=127.0.0.1:27017 \
+   MONGO_ADMIN_USER=$MONGO_ROOT_USER \
+   MONGO_ADMIN_PASSWORD=$MONGO_ROOT_PASSWORD \
+   uv run python -m infra.mongo.init_replica_set
+   ```
+
+4. Smoke-check the node is PRIMARY. The command prints `1` when the node is ready:
+
+   ```bash
+   mongosh "mongodb://$MONGO_ROOT_USER:$MONGO_ROOT_PASSWORD@127.0.0.1:27017/zeler_platform_dev?replicaSet=rs0-dev&directConnection=true&authSource=admin" \
+     --eval 'rs.status().myState'
+   ```
+
+5. If rollback is needed, revert the compose change, wipe the dev volume, and restart:
+
+   ```bash
+   git revert <sha>
+   docker compose -f infra/docker/mongo-dev.yml down -v
+   docker compose -f infra/docker/mongo-dev.yml up -d
+   ```
+
+Failure-mode decision tree:
+
+| Symptom | Likely cause | Action |
+| --- | --- | --- |
+| `AlreadyInitialized=23` from `replSetInitiate` | Init script was re-run after success | No-op; `init_replica_set.py` treats this as idempotent success. |
+| `UserAlreadyExists=51003` from `createUser` | Admin user already exists | No-op; `init_replica_set.py` treats this as idempotent success. |
+| Auth required | `MONGO_ADMIN_USER` / `MONGO_ADMIN_PASSWORD` were not exported or do not match the container root credentials | Export both from `MONGO_ROOT_USER` / `MONGO_ROOT_PASSWORD`, then retry the init step. |
+| Cannot connect or port collision | Container is down, unhealthy, or another Mongo owns `27017` | Check `docker compose -f infra/docker/mongo-dev.yml ps` and `lsof -i :27017`; override `MONGO_HOST_PORT` if needed. |
+| mongod rejects `--replSet --auth` without a keyfile | This local mongod build does not accept Option B | Use Option A fallback: run `bash infra/docker/gen_mongo_keyfile.sh`, add `--keyFile /etc/mongo-keyfiles/dev-keyfile`, mount `./dev-keyfiles:/etc/mongo-keyfiles:ro`, and keep generated dev keyfiles out of git. |
+
 ## First-time prod Mongo setup (one-time runbook)
 
 Follow this sequence exactly on a clean prod host:

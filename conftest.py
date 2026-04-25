@@ -29,7 +29,7 @@ if _ROOT_STR not in sys.path:
 # requiring every dev to export MONGO_URI by hand.
 _DEV_FALLBACK_MONGO_URI = (
     "mongodb://changeme_local_only:changeme_local_only@127.0.0.1:27017/"
-    "zeler_platform_dev?authSource=admin"
+    "zeler_platform_dev?replicaSet=rs0-dev&directConnection=true&authSource=admin"
 )
 
 
