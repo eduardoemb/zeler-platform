@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
+import aio_pika
 import structlog
 from apscheduler.schedulers.asyncio import AsyncIOScheduler  # type: ignore[import-untyped]
 from fastapi import FastAPI
@@ -19,6 +20,7 @@ from zeler_gateway.observability.metrics import metrics_middleware
 from zeler_gateway.observability.metrics import router as metrics_router
 from zeler_gateway.observability.tracing import configure_tracing
 from zeler_gateway.proxy.router import router as proxy_router
+from zeler_gateway.routes.health import router as health_router
 from zeler_gateway.tokens.refresh_worker import refresh_once
 from zeler_gateway.webhooks.router import router as webhooks_router
 
@@ -45,6 +47,16 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         socketTimeoutMS=30000,
     )
     app.state.mongo_db = app.state.mongo_client[settings.mongo_db]
+    app.state.rabbit = None
+    app.state.ready = False
+    if settings.rabbitmq_url:
+        try:
+            app.state.rabbit = await aio_pika.connect_robust(settings.rabbitmq_url, heartbeat=60)
+            app.state.ready = True
+        except (TimeoutError, RuntimeError, aio_pika.exceptions.AMQPException):
+            logger.warning("rabbitmq connection unavailable during startup")
+    else:
+        logger.warning("rabbitmq connection unavailable during startup")
     app.state.scheduler = AsyncIOScheduler()
 
     async def _scheduled_refresh() -> None:
@@ -67,6 +79,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     try:
         yield
     finally:
+        if app.state.rabbit is not None:
+            await app.state.rabbit.close()
         app.state.scheduler.shutdown(wait=False)
         app.state.mongo_client.close()
 
@@ -76,13 +90,9 @@ app.middleware("http")(metrics_middleware)
 app.include_router(accounts_router)
 app.include_router(auth_router)
 app.include_router(bootstrap_jobs_router)
+app.include_router(health_router)
 app.include_router(internal_router)
 app.include_router(metrics_router)
 app.include_router(oauth_router)
 app.include_router(proxy_router, prefix="/proxy/meli")
 app.include_router(webhooks_router)
-
-
-@app.get("/health")
-def health() -> dict[str, str]:
-    return {"status": "ok"}

@@ -48,6 +48,8 @@ class Settings(BaseSettings):
     )
     rabbitmq_url: str = Field(default="", alias="RABBITMQ_URL")
     rabbitmq_events_exchange: str = Field(default="meli.events", alias="RABBITMQ_EVENTS_EXCHANGE")
+    ready_mongo_timeout_s: float = Field(default=2.0, alias="READY_MONGO_TIMEOUT_S")
+    ready_rabbitmq_timeout_s: float = Field(default=2.0, alias="READY_RABBITMQ_TIMEOUT_S")
 
     @field_validator("meli_client_id", "meli_redirect_uri")
     @classmethod
