@@ -1,0 +1,17 @@
+{
+  "collection": "module_registry",
+  "documents": [
+    {
+      "_id": "zeler-app",
+      "version": "0.1.0",
+      "allowed_meli_scopes": [
+        "admin:repricer"
+      ],
+      "routing_keys": [],
+      "owned_collections": [],
+      "health_endpoint": "/health",
+      "status": "enabled",
+      "schema_version": 1
+    }
+  ]
+}

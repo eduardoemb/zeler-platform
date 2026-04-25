@@ -1,11 +1,21 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import httpx
 import pytest
 from fastapi import FastAPI
+
+ADMIN_CLIENT_SEED_PATH = (
+    Path(__file__).resolve().parents[2]
+    / "infra"
+    / "mongo"
+    / "seeds"
+    / "module_registry.admin_clients.json"
+)
 
 
 class FakeAsyncCollection:
@@ -260,3 +270,100 @@ async def test_issue_module_admin_token_requires_target_module_id(
 
     assert response.status_code == 422
     assert response.json() == {"error": "target_module_id_required"}
+
+
+def test_admin_client_seed_contains_zeler_app_repricer_scope() -> None:
+    seed = json.loads(ADMIN_CLIENT_SEED_PATH.read_text(encoding="utf-8"))
+
+    assert seed["collection"] == "module_registry"
+    assert seed["documents"] == [
+        {
+            "_id": "zeler-app",
+            "version": "0.1.0",
+            "allowed_meli_scopes": ["admin:repricer"],
+            "routing_keys": [],
+            "owned_collections": [],
+            "health_endpoint": "/health",
+            "status": "enabled",
+            "schema_version": 1,
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_zeler_app_seed_allows_repricer_admin_token_exchange(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import zeler_gateway.internal.router as internal_router
+    from zeler_gateway.internal.router import router
+
+    seed = json.loads(ADMIN_CLIENT_SEED_PATH.read_text(encoding="utf-8"))
+    app = FastAPI()
+    app.state.mongo_db = FakeAsyncDb()
+    app.state.mongo_db["module_registry"].documents.extend(seed["documents"])
+    app.include_router(router)
+    monkeypatch.setattr(
+        internal_router,
+        "verify_module_jwt",
+        lambda token: FakeClaims(module_id="zeler-app"),
+    )
+    monkeypatch.setattr(
+        internal_router,
+        "mint_module_jwt",
+        lambda module_id, seller_id, ttl_s: f"jwt:{module_id}:{seller_id}:{ttl_s}",
+    )
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.post(
+            "/internal/tokens/issue",
+            headers={"Authorization": "Bearer zeler-app-gateway-token"},
+            json={
+                "seller_id": 123456789,
+                "scopes": ["admin:repricer"],
+                "ttl_s": 120,
+                "token_kind": "module_admin",
+                "target_module_id": "repricer",
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.json()["access_token"] == "jwt:repricer:123456789:120"  # noqa: S105
+
+
+@pytest.mark.asyncio
+async def test_zeler_app_seed_rejects_non_repricer_admin_scope(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import zeler_gateway.internal.router as internal_router
+    from zeler_gateway.internal.router import router
+
+    seed = json.loads(ADMIN_CLIENT_SEED_PATH.read_text(encoding="utf-8"))
+    app = FastAPI()
+    app.state.mongo_db = FakeAsyncDb()
+    app.state.mongo_db["module_registry"].documents.extend(seed["documents"])
+    app.include_router(router)
+    monkeypatch.setattr(
+        internal_router,
+        "verify_module_jwt",
+        lambda token: FakeClaims(module_id="zeler-app"),
+    )
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.post(
+            "/internal/tokens/issue",
+            headers={"Authorization": "Bearer zeler-app-gateway-token"},
+            json={
+                "seller_id": 123456789,
+                "scopes": ["admin:publicador"],
+                "ttl_s": 120,
+                "token_kind": "module_admin",
+                "target_module_id": "publicador",
+            },
+        )
+
+    assert response.status_code == 403
+    assert response.json() == {"error": "out_of_scope"}

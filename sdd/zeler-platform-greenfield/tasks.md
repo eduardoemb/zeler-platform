@@ -557,6 +557,13 @@ P6 ─→ P7
 **TDD evidence**: Added focused RED-first platform tests for `module_admin` issuance/validation and app tests proving no `REPRICER_API_TOKEN` fallback.  
 **Design note**: This remains a safe abstraction until real zeler-app session auth is bound to the exchange; the public/static repricer token is no longer required by mutations.
 
+#### Phase 5 hardening marker — zeler-app admin client seed
+
+**Archive type**: Deployment contract hardening follow-up  
+**Archive date**: 2026-04-24  
+**Result**: Added deterministic local module-registry seed `infra/mongo/seeds/module_registry.admin_clients.json` containing admin client `zeler-app` with only `admin:repricer` in `allowed_meli_scopes`, so live/bootstrap operators have a concrete registry fixture for `/internal/tokens/issue` `module_admin` exchanges.  
+**TDD evidence**: Added RED-first gateway contract tests proving the seed exists, allows `zeler-app` to request a repricer admin token, and rejects a non-repricer admin scope via the existing `out_of_scope` path.
+
 ---
 
 ## Phase 6: Remaining Modules
