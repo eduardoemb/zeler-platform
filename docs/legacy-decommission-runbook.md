@@ -1,7 +1,7 @@
 # Legacy Decommission Runbook
 
-**Status**: Non-destructive planning artifact for SDD Phase 7.  
-**Change**: `zeler-platform-greenfield`  
+**Status**: Non-destructive planning artifact for SDD Phase 7.
+**Change**: `zeler-platform-greenfield`
 **Safety gate**: destructive actions require explicit human approval and verified credentials/environment.
 
 ## Hard stops

@@ -1,9 +1,9 @@
 # Verification Report — Phase 4 Module Runtime + Repricer
 
-**Change**: `zeler-platform-greenfield`  
-**Scope**: Phase 4 — Module Runtime + Repricer  
-**Mode**: Strict TDD  
-**HEAD**: `f0f256c15a1b1ed03c56e7fbcc1c6e58852caaec`  
+**Change**: `zeler-platform-greenfield`
+**Scope**: Phase 4 — Module Runtime + Repricer
+**Mode**: Strict TDD
+**HEAD**: `f0f256c15a1b1ed03c56e7fbcc1c6e58852caaec`
 **Verdict**: PASS_WITH_WARNINGS
 
 ## Executive Summary

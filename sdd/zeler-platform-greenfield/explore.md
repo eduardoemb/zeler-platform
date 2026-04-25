@@ -1,9 +1,9 @@
 # Exploration: Zeler Platform Greenfield
 
-**Change**: `zeler-platform-greenfield`  
-**Date**: 2026-04-23  
-**Status**: completed  
-**Model**: anthropic/claude-sonnet-4-6  
+**Change**: `zeler-platform-greenfield`
+**Date**: 2026-04-23
+**Status**: completed
+**Model**: anthropic/claude-sonnet-4-6
 
 ---
 
@@ -56,7 +56,7 @@
 **Direct Meli API calls** (via `meli_service.py`):
 - `POST /oauth/token` — token exchange + immediate refresh
 - `GET /users/me` — get user profile/nickname
-- `GET /users/{user_id}/shipping_preferences` 
+- `GET /users/{user_id}/shipping_preferences`
 - `GET /users/{user_id}/following/search?type=brands&status=eligible`
 - `GET /items/{item_id}` — fetch existing publication
 - `POST /items` — CREATE new publication (THIS is the platform's core value)

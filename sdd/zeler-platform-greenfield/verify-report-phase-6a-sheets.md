@@ -1,9 +1,9 @@
 ## Verification Report — Phase 6A Sheets
 
-**Change**: `zeler-platform-greenfield`  
-**Scope**: Phase 6A — Sheets module (`P6A.1`–`P6A.4`)  
-**Mode**: Strict TDD verify  
-**Artifact store**: hybrid/local-files + Engram trace  
+**Change**: `zeler-platform-greenfield`
+**Scope**: Phase 6A — Sheets module (`P6A.1`–`P6A.4`)
+**Mode**: Strict TDD verify
+**Artifact store**: hybrid/local-files + Engram trace
 **Date**: 2026-04-24
 
 ---

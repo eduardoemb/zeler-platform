@@ -1,7 +1,7 @@
 # Migration Post-Mortem
 
-**Status**: DRAFT — not a completion record.  
-**Change**: `zeler-platform-greenfield`  
+**Status**: DRAFT — not a completion record.
+**Change**: `zeler-platform-greenfield`
 **Phase**: 7 — Legacy Decommission
 
 ## Timeline

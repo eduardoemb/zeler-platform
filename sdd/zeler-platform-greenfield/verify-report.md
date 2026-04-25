@@ -1,9 +1,9 @@
 # Verification Report — Phase 3 Core Models + Repositories + Bootstrap
 
-**Change**: `zeler-platform-greenfield`  
-**Scope**: Phase 3  
-**Mode**: Strict TDD  
-**HEAD**: `e0c3127044bbc809bb5475ce1f210d4a6cf154df`  
+**Change**: `zeler-platform-greenfield`
+**Scope**: Phase 3
+**Mode**: Strict TDD
+**HEAD**: `e0c3127044bbc809bb5475ce1f210d4a6cf154df`
 **Verdict**: PARTIAL
 
 ## Executive Summary

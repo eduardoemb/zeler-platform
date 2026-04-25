@@ -200,12 +200,12 @@ P6 ─→ P7
 
 #### P1.17 — Archive/Reconciliation Marker
 
-**Archive type**: Deferred Phase 1 task reconciliation (change remains open for Phase 7)  
-**Archive date**: 2026-04-24  
-**Verified commit**: `8d5f3cd` (`feat(gateway): add Prometheus metrics endpoint`)  
-**Verify report reference**: Engram #2363 `sdd/zeler-platform-greenfield/verify-report-p1-17-metrics` (`PASS_WITH_WARNINGS`, CRITICAL=0)  
-**Accepted design**: bounded in-process Prometheus text collector gated by `OTEL_METRICS_ENABLED`; external Prometheus/PromQL computes p95/error-rate rollups; no raw `account_id` metric label by default.  
-**Quality gates cited**: `uv run pytest` ✅ (`261 passed`) · `uv run ruff check .` ✅ · `uv run ruff format --check .` ✅ · `uv run mypy .` ✅ · `uv run python -m infra.lint.check_direct_meli .` ✅  
+**Archive type**: Deferred Phase 1 task reconciliation (change remains open for Phase 7)
+**Archive date**: 2026-04-24
+**Verified commit**: `8d5f3cd` (`feat(gateway): add Prometheus metrics endpoint`)
+**Verify report reference**: Engram #2363 `sdd/zeler-platform-greenfield/verify-report-p1-17-metrics` (`PASS_WITH_WARNINGS`, CRITICAL=0)
+**Accepted design**: bounded in-process Prometheus text collector gated by `OTEL_METRICS_ENABLED`; external Prometheus/PromQL computes p95/error-rate rollups; no raw `account_id` metric label by default.
+**Quality gates cited**: `uv run pytest` ✅ (`261 passed`) · `uv run ruff check .` ✅ · `uv run ruff format --check .` ✅ · `uv run mypy .` ✅ · `uv run python -m infra.lint.check_direct_meli .` ✅
 **Carry-forward warnings**:
 - Add focused proxy/refresh-worker behavioral metric integration tests when expanding observability coverage; current archive accepts static implementation evidence plus endpoint/helper tests.
 - Metrics are per-process/per-instance until scraped and aggregated externally; account-level drilldown remains logs/traces or a future controlled sampling/allowlist mechanism.
@@ -551,17 +551,17 @@ P6 ─→ P7
 
 #### Phase 5 hardening marker — Repricer admin token exchange
 
-**Archive type**: Phase 5 hardening follow-up  
-**Archive date**: 2026-04-24  
-**Result**: Replaced zeler-app repricer mutation dependence on `REPRICER_API_TOKEN` with a server-side `getPlatformAdminToken()` abstraction that exchanges a gateway credential through `/internal/tokens/issue` for a short-lived `module_admin` JWT scoped as `admin:repricer`. Gateway token issuance now supports the `module_admin` token kind while preserving the existing `meli_access` behavior for high-throughput Meli-token escape hatch callers.  
-**TDD evidence**: Added focused RED-first platform tests for `module_admin` issuance/validation and app tests proving no `REPRICER_API_TOKEN` fallback.  
+**Archive type**: Phase 5 hardening follow-up
+**Archive date**: 2026-04-24
+**Result**: Replaced zeler-app repricer mutation dependence on `REPRICER_API_TOKEN` with a server-side `getPlatformAdminToken()` abstraction that exchanges a gateway credential through `/internal/tokens/issue` for a short-lived `module_admin` JWT scoped as `admin:repricer`. Gateway token issuance now supports the `module_admin` token kind while preserving the existing `meli_access` behavior for high-throughput Meli-token escape hatch callers.
+**TDD evidence**: Added focused RED-first platform tests for `module_admin` issuance/validation and app tests proving no `REPRICER_API_TOKEN` fallback.
 **Design note**: This remains a safe abstraction until real zeler-app session auth is bound to the exchange; the public/static repricer token is no longer required by mutations.
 
 #### Phase 5 hardening marker — zeler-app admin client seed
 
-**Archive type**: Deployment contract hardening follow-up  
-**Archive date**: 2026-04-24  
-**Result**: Added deterministic local module-registry seed `infra/mongo/seeds/module_registry.admin_clients.json` containing admin client `zeler-app` with only `admin:repricer` in `allowed_meli_scopes`, so live/bootstrap operators have a concrete registry fixture for `/internal/tokens/issue` `module_admin` exchanges.  
+**Archive type**: Deployment contract hardening follow-up
+**Archive date**: 2026-04-24
+**Result**: Added deterministic local module-registry seed `infra/mongo/seeds/module_registry.admin_clients.json` containing admin client `zeler-app` with only `admin:repricer` in `allowed_meli_scopes`, so live/bootstrap operators have a concrete registry fixture for `/internal/tokens/issue` `module_admin` exchanges.
 **TDD evidence**: Added RED-first gateway contract tests proving the seed exists, allows `zeler-app` to request a repricer admin token, and rejects a non-repricer admin scope via the existing `out_of_scope` path.
 
 ---
@@ -614,11 +614,11 @@ P6 ─→ P7
 
 ##### 6A — Archive Marker
 
-**Archive type**: Phase 6 subphase milestone (change remains open for Phase 6B–6D and Phase 7)  
-**Archive date**: 2026-04-24  
-**Verified HEADs**: zeler-platform `7a0ed4f85d649f2a7a3875e811a8fe34bc565a2f`; zeler-app `b64948149a4ea8ec6d4c8a613556a57a573cee25`  
-**Verify report reference**: Engram #2321 + `sdd/zeler-platform-greenfield/verify-report-phase-6a-sheets.md` (`PASS_WITH_WARNINGS`, CRITICAL=0)  
-**Tasks completed**: P6A.1–P6A.4 (4/4)  
+**Archive type**: Phase 6 subphase milestone (change remains open for Phase 6B–6D and Phase 7)
+**Archive date**: 2026-04-24
+**Verified HEADs**: zeler-platform `7a0ed4f85d649f2a7a3875e811a8fe34bc565a2f`; zeler-app `b64948149a4ea8ec6d4c8a613556a57a573cee25`
+**Verify report reference**: Engram #2321 + `sdd/zeler-platform-greenfield/verify-report-phase-6a-sheets.md` (`PASS_WITH_WARNINGS`, CRITICAL=0)
+**Tasks completed**: P6A.1–P6A.4 (4/4)
 **Warnings carried forward**:
 - Live Google Sheets credentials/API append execution was not locally verified; validate with sandbox spreadsheet/credentials during deployment or integration.
 - Live AMQP worker/consumer loop was not locally executed; manifest subscriptions and deterministic handler contract were verified only through local tests.
@@ -652,11 +652,11 @@ P6 ─→ P7
 
 ##### 6B — Archive Marker
 
-**Archive type**: Phase 6 subphase milestone (change remains open for Phase 6C–6D and Phase 7)  
-**Archive date**: 2026-04-24  
-**Verified HEADs**: zeler-platform `31248eda9e80b50365c590f7035a3be27c965d42`; zeler-app `25734613d090651d765746e75a8812ebc48610be`  
-**Verify report reference**: Engram #2329 + `sdd/zeler-platform-greenfield/verify-report-phase-6b-publicador` (`PASS_WITH_WARNINGS`, CRITICAL=0)  
-**Tasks completed**: P6B.1–P6B.5 (5/5)  
+**Archive type**: Phase 6 subphase milestone (change remains open for Phase 6C–6D and Phase 7)
+**Archive date**: 2026-04-24
+**Verified HEADs**: zeler-platform `31248eda9e80b50365c590f7035a3be27c965d42`; zeler-app `25734613d090651d765746e75a8812ebc48610be`
+**Verify report reference**: Engram #2329 + `sdd/zeler-platform-greenfield/verify-report-phase-6b-publicador` (`PASS_WITH_WARNINGS`, CRITICAL=0)
+**Tasks completed**: P6B.1–P6B.5 (5/5)
 **Warnings carried forward**:
 - Live LLM/Perplexity, live Meli publish, live Secret Manager API key injection, and live RabbitMQ were not locally exercised; validate them in deployment/integration environments.
 - No Publicador-specific browser smoke was run; app coverage is unit/RSC/API-helper plus broader app smoke tests, not a browser-level create/generate/publish flow.
@@ -685,12 +685,12 @@ P6 ─→ P7
 
 ##### 6C — Archive Marker
 
-**Archive type**: Phase 6 subphase milestone (change remains open for Phase 6D and Phase 7)  
-**Archive date**: 2026-04-24  
-**Verified HEADs**: zeler-platform `9a9adb66a3c363acb2cdde5f2846e860ac8e9d18`; zeler-app `f9983f6a081c44199470e5cfaf2f50006a3e40c9`  
-**Verify report reference**: Engram #2342 + `sdd/zeler-platform-greenfield/verify-report-phase-6c-autoreply-final` (`PASS_WITH_WARNINGS`, CRITICAL=0)  
-**Tasks completed**: P6C.1–P6C.4 (4/4)  
-**Quality gates**: zeler-platform `uv run pytest` ✅ · `uv run ruff check .` ✅ · `uv run ruff format --check .` ✅ · `uv run mypy .` ✅ · `uv run python -m infra.lint.check_direct_meli .` ✅ · zeler-app `npm test` ✅ · `npm run lint` ✅ · `npm run e2e` ✅  
+**Archive type**: Phase 6 subphase milestone (change remains open for Phase 6D and Phase 7)
+**Archive date**: 2026-04-24
+**Verified HEADs**: zeler-platform `9a9adb66a3c363acb2cdde5f2846e860ac8e9d18`; zeler-app `f9983f6a081c44199470e5cfaf2f50006a3e40c9`
+**Verify report reference**: Engram #2342 + `sdd/zeler-platform-greenfield/verify-report-phase-6c-autoreply-final` (`PASS_WITH_WARNINGS`, CRITICAL=0)
+**Tasks completed**: P6C.1–P6C.4 (4/4)
+**Quality gates**: zeler-platform `uv run pytest` ✅ · `uv run ruff check .` ✅ · `uv run ruff format --check .` ✅ · `uv run mypy .` ✅ · `uv run python -m infra.lint.check_direct_meli .` ✅ · zeler-app `npm test` ✅ · `npm run lint` ✅ · `npm run e2e` ✅
 **Warnings carried forward**:
 - Live RabbitMQ consumer loop and live Meli question/message/answer calls were not locally exercised; verification used deterministic handler/API contract coverage with gateway fakes and the direct-Meli linter.
 - No Autoreply-specific Playwright CRUD flow exists yet; app e2e remains broader P5 smoke coverage rather than browser-level Autoreply create/update/delete/preview coverage.
@@ -720,12 +720,12 @@ P6 ─→ P7
 
 ##### 6D — Archive Marker
 
-**Archive type**: Phase 6 subphase milestone (completes Phase 6; change remains open for Phase 7)  
-**Archive date**: 2026-04-24  
-**Verified HEADs**: zeler-platform `c3e4f17`; zeler-app `db5033d`  
-**Verify report reference**: Engram #2349 + `sdd/zeler-platform-greenfield/verify-report-phase-6d-fulldock` (`PASS_WITH_WARNINGS`, CRITICAL=0)  
-**Tasks completed**: P6D.1–P6D.4 (4/4)  
-**Quality gates**: zeler-platform `uv run pytest` ✅ · `uv run ruff check .` ✅ · `uv run ruff format --check .` ✅ · `uv run mypy .` ✅ · `uv run python -m infra.lint.check_direct_meli .` ✅ · zeler-app `npm test` ✅ · `npm run lint` ✅ · `npm run e2e` ✅  
+**Archive type**: Phase 6 subphase milestone (completes Phase 6; change remains open for Phase 7)
+**Archive date**: 2026-04-24
+**Verified HEADs**: zeler-platform `c3e4f17`; zeler-app `db5033d`
+**Verify report reference**: Engram #2349 + `sdd/zeler-platform-greenfield/verify-report-phase-6d-fulldock` (`PASS_WITH_WARNINGS`, CRITICAL=0)
+**Tasks completed**: P6D.1–P6D.4 (4/4)
+**Quality gates**: zeler-platform `uv run pytest` ✅ · `uv run ruff check .` ✅ · `uv run ruff format --check .` ✅ · `uv run mypy .` ✅ · `uv run python -m infra.lint.check_direct_meli .` ✅ · zeler-app `npm test` ✅ · `npm run lint` ✅ · `npm run e2e` ✅
 **Warnings carried forward**:
 - `spec.md` has no explicit FullDock module requirement/scenario section; verification used P6D tasks plus global module/gateway/design rules.
 - Live RabbitMQ consumer loop and live Meli `PUT /items/*/stock_locations` behavior were not locally executed; local verification used deterministic handler/API contracts and direct-Meli linting.
@@ -734,11 +734,11 @@ P6 ─→ P7
 
 ##### Phase 6 — Completion Marker
 
-**Archive type**: Phase milestone (Sheets, Publicador, Autoreply, and FullDock modules complete; change remains open for Phase 7)  
-**Archive date**: 2026-04-24  
-**Verified subphases**: P6A Sheets ✅ · P6B Publicador ✅ · P6C Autoreply ✅ · P6D FullDock ✅  
-**Tasks completed**: P6A.1–P6A.4, P6B.1–P6B.5, P6C.1–P6C.4, P6D.1–P6D.4 (17/17)  
-**Verify reports**: P6A Engram #2321 · P6B Engram #2329 · P6C Engram #2342 · P6D Engram #2349 — all `PASS_WITH_WARNINGS`, CRITICAL=0  
+**Archive type**: Phase milestone (Sheets, Publicador, Autoreply, and FullDock modules complete; change remains open for Phase 7)
+**Archive date**: 2026-04-24
+**Verified subphases**: P6A Sheets ✅ · P6B Publicador ✅ · P6C Autoreply ✅ · P6D FullDock ✅
+**Tasks completed**: P6A.1–P6A.4, P6B.1–P6B.5, P6C.1–P6C.4, P6D.1–P6D.4 (17/17)
+**Verify reports**: P6A Engram #2321 · P6B Engram #2329 · P6C Engram #2342 · P6D Engram #2349 — all `PASS_WITH_WARNINGS`, CRITICAL=0
 **Phase 7 readiness**: Phase 6 parity prerequisite satisfied locally; proceed to legacy decommission planning/execution while carrying subphase live-environment warnings into sandbox/deployment validation.
 
 ---
