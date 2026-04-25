@@ -16,6 +16,7 @@ This script is intentionally separate from ``apply_validators.py``.  Validators
 define the *shape* of collections; seeds supply *initial content*.  Running
 both is idempotent and order-independent.
 """
+
 from __future__ import annotations
 
 import json

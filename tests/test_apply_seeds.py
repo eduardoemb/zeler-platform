@@ -3,6 +3,7 @@
 All tests use a FakeDatabase/FakeClient pair (same pattern as test_apply_validators.py)
 so no real MongoDB connection is required.
 """
+
 from __future__ import annotations
 
 import importlib

@@ -42,7 +42,7 @@ def test_gateway_dockerfile_runs_uvicorn_with_zeler_gateway_app() -> None:
     text = _dockerfile_text()
     assert "uvicorn zeler_gateway.app:app" in text
     assert "--host 0.0.0.0" in text
-    assert ("${PORT" in text or "$PORT" in text)
+    assert "${PORT" in text or "$PORT" in text
 
 
 def test_gateway_dockerfile_runs_as_non_root_user() -> None:
@@ -53,7 +53,7 @@ def test_gateway_dockerfile_runs_as_non_root_user() -> None:
     non_root = [line for line in user_lines if line != "USER root"]
     assert non_root, "Dockerfile must switch to a non-root USER"
     # Must also create that user
-    assert ("useradd" in text or "adduser" in text), (
+    assert "useradd" in text or "adduser" in text, (
         "Dockerfile must create a non-root user with useradd or adduser"
     )
 
@@ -103,6 +103,6 @@ def test_root_pyproject_dev_group_does_not_declare_uvicorn() -> None:
     root_pyproject = ROOT / "pyproject.toml"
     data = tomllib.loads(root_pyproject.read_text(encoding="utf-8"))
     dev_deps: list[str] = data.get("dependency-groups", {}).get("dev", [])
-    assert not any(
-        isinstance(d, str) and d.startswith("uvicorn") for d in dev_deps
-    ), "Root pyproject.toml [dependency-groups.dev] must NOT declare uvicorn"
+    assert not any(isinstance(d, str) and d.startswith("uvicorn") for d in dev_deps), (
+        "Root pyproject.toml [dependency-groups.dev] must NOT declare uvicorn"
+    )
