@@ -60,6 +60,7 @@ def test_mongo_readiness_offline_default_validates_schema_and_index_files() -> N
     report = build_mongo_readiness_report(
         schemas_dir=ROOT / "infra" / "mongo" / "schemas",
         indexes_dir=ROOT / "infra" / "mongo" / "indexes",
+        seeds_dir=ROOT / "infra" / "mongo" / "seeds",
         mongo_uri=None,
     )
 
@@ -72,11 +73,90 @@ def test_mongo_readiness_offline_default_validates_schema_and_index_files() -> N
     assert report.summary["index_files"] >= 17
     assert report.summary["schema_file_errors"] == 0
     assert report.summary["index_file_errors"] == 0
+    assert report.summary["seed_files"] >= 1
+    assert report.summary["seed_file_errors"] == 0
+    assert report.summary["module_registry_admin_clients"] >= 1
 
     markdown = render_mongo_markdown(report)
     assert "safe_to_execute: true" in markdown
     assert "read_only: true" in markdown
     assert "No collMod, createIndex, drop, or import operations are attempted" in markdown
+    assert (
+        "Seed files are local JSON contracts only; readiness does not "
+        "insert or upsert seed documents." in markdown
+    )
+
+
+def test_mongo_readiness_validates_zeler_app_admin_seed_scope() -> None:
+    report = build_mongo_readiness_report(
+        schemas_dir=ROOT / "infra" / "mongo" / "schemas",
+        indexes_dir=ROOT / "infra" / "mongo" / "indexes",
+        seeds_dir=ROOT / "infra" / "mongo" / "seeds",
+        mongo_uri=None,
+    )
+
+    assert report.summary["module_registry_admin_clients"] >= 1
+    assert report.summary["module_registry_scope_mismatches"] == 0
+    assert not [
+        finding
+        for finding in report.findings
+        if finding.resource_type == "seed" and finding.resource_name == "zeler-app"
+    ]
+
+
+def test_mongo_readiness_reports_wrong_zeler_app_admin_seed_scope(tmp_path: Path) -> None:
+    seeds_dir = tmp_path / "seeds"
+    seeds_dir.mkdir()
+    wrong_seed = {
+        "collection": "module_registry",
+        "documents": [
+            {
+                "_id": "zeler-app",
+                "version": "0.1.0",
+                "allowed_meli_scopes": ["admin:orders"],
+                "routing_keys": [],
+                "owned_collections": [],
+                "health_endpoint": "/health",
+                "status": "enabled",
+                "schema_version": 1,
+            }
+        ],
+    }
+    (seeds_dir / "module_registry.admin_clients.json").write_text(
+        json.dumps(wrong_seed), encoding="utf-8"
+    )
+
+    report = build_mongo_readiness_report(
+        schemas_dir=ROOT / "infra" / "mongo" / "schemas",
+        indexes_dir=ROOT / "infra" / "mongo" / "indexes",
+        seeds_dir=seeds_dir,
+        mongo_uri=None,
+    )
+
+    assert report.summary["module_registry_scope_mismatches"] == 1
+    assert report.findings[0].severity == "fail"
+    assert report.findings[0].resource_type == "seed"
+    assert report.findings[0].resource_name == "zeler-app"
+    assert "admin:repricer" in report.findings[0].detail
+
+
+def test_mongo_readiness_reports_missing_zeler_app_admin_seed_from_export(tmp_path: Path) -> None:
+    export_path = tmp_path / "module-registry-export.json"
+    export_path.write_text(json.dumps({"documents": []}), encoding="utf-8")
+
+    report = build_mongo_readiness_report(
+        schemas_dir=ROOT / "infra" / "mongo" / "schemas",
+        indexes_dir=ROOT / "infra" / "mongo" / "indexes",
+        seeds_dir=ROOT / "infra" / "mongo" / "seeds",
+        module_registry_export_path=export_path,
+        mongo_uri=None,
+    )
+
+    assert report.summary["module_registry_missing_admin_clients"] == 1
+    assert report.summary["module_registry_export_docs_checked"] == 0
+    assert report.findings[0].severity == "fail"
+    assert report.findings[0].resource_type == "module_registry_doc"
+    assert report.findings[0].resource_name == "zeler-app"
 
 
 class FakeIndexCursor:
@@ -152,6 +232,7 @@ def test_mongo_readiness_live_check_is_read_only_and_reports_missing_collections
     report = build_mongo_readiness_report(
         schemas_dir=ROOT / "infra" / "mongo" / "schemas",
         indexes_dir=ROOT / "infra" / "mongo" / "indexes",
+        seeds_dir=ROOT / "infra" / "mongo" / "seeds",
         mongo_uri="mongodb://example.test/zeler_platform",
     )
 
@@ -174,7 +255,12 @@ def test_live_readiness_runbook_documents_sandbox_sequence_and_env_vars() -> Non
     assert "read_only" in runbook
     assert "RabbitMQ_MANAGEMENT_EXPORT" in runbook
     assert "MONGO_URI" in runbook
+    assert "MODULE_REGISTRY_EXPORT" in runbook
     assert "python -m infra.rabbitmq.readiness" in runbook
     assert "python -m infra.mongo.readiness" in runbook
+    assert "--module-registry-export" in runbook
+    assert "module_registry.admin_clients.json" in runbook
+    assert "readiness command is read-only" in runbook
     assert "Do not run `infra/mongo/apply_validators.py`" in runbook
+    assert "Do not apply module_registry seeds" in runbook
     assert "Do not import RabbitMQ definitions" in runbook

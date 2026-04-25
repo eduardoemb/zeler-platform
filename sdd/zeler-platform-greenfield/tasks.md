@@ -761,6 +761,10 @@ P6 ─→ P7
   `docs/live-readiness-validation.md` documents the sandbox sequence, optional env vars (`RabbitMQ_MANAGEMENT_EXPORT`, `MONGO_URI`), safety model, and explicitly forbids `apply_validators.py` / RabbitMQ import during readiness validation.
   *TDD*: `tests/test_live_readiness_validation.py::test_live_readiness_runbook_documents_sandbox_sequence_and_env_vars` RED → GREEN.
 
+- [x] **H4** — Validate module registry admin-client seed readiness
+  `infra/mongo/readiness.py` validates local `infra/mongo/seeds/module_registry.admin_clients.json` as a read-only JSON contract and can compare expected admin clients against a separately exported `module_registry` JSON file via `--module-registry-export`. `docs/live-readiness-validation.md` separates readiness validation from the explicit manual/deployment seed apply step.
+  *TDD*: `tests/test_live_readiness_validation.py::test_mongo_readiness_validates_zeler_app_admin_seed_scope`, `test_mongo_readiness_reports_wrong_zeler_app_admin_seed_scope`, and `test_mongo_readiness_reports_missing_zeler_app_admin_seed_from_export` RED → GREEN.
+
 ---
 
 ## Phase 7: Legacy Decommission
