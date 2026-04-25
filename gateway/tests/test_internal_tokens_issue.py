@@ -171,3 +171,92 @@ async def test_issue_rejects_ttl_over_five_minutes(monkeypatch: pytest.MonkeyPat
 
     assert response.status_code == 422
     assert response.json()["detail"][0]["loc"] == ["body", "ttl_s"]
+
+
+@pytest.mark.asyncio
+async def test_issue_can_return_short_lived_module_admin_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import zeler_gateway.internal.router as internal_router
+    from zeler_gateway.internal.router import router
+
+    app = FastAPI()
+    app.state.mongo_db = FakeAsyncDb()
+    app.state.mongo_db["module_registry"].documents.append(
+        {"_id": "zeler-app", "status": "enabled", "allowed_meli_scopes": ["admin:repricer"]}
+    )
+    app.include_router(router)
+    monkeypatch.setattr(
+        internal_router,
+        "verify_module_jwt",
+        lambda token: FakeClaims(module_id="zeler-app"),
+    )
+    monkeypatch.setattr(
+        internal_router,
+        "mint_module_jwt",
+        lambda module_id, seller_id, ttl_s: f"jwt:{module_id}:{seller_id}:{ttl_s}",
+    )
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.post(
+            "/internal/tokens/issue",
+            headers={"Authorization": "Bearer app-gateway-token"},
+            json={
+                "seller_id": 123456789,
+                "scopes": ["admin:repricer"],
+                "ttl_s": 120,
+                "token_kind": "module_admin",
+                "target_module_id": "repricer",
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "access_token": "jwt:repricer:123456789:120",
+        "token_type": "Bearer",
+        "expires_in": 120,
+        "scopes": ["admin:repricer"],
+    }
+    audit_doc = app.state.mongo_db["audit_log"].documents[0]
+    assert audit_doc["module_id"] == "zeler-app"
+    assert audit_doc["target_module_id"] == "repricer"
+    assert audit_doc["token_kind"] == "module_admin"  # noqa: S105 - token type discriminator
+
+
+@pytest.mark.asyncio
+async def test_issue_module_admin_token_requires_target_module_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import zeler_gateway.internal.router as internal_router
+    from zeler_gateway.internal.router import router
+
+    app = FastAPI()
+    app.state.mongo_db = FakeAsyncDb()
+    app.state.mongo_db["module_registry"].documents.append(
+        {"_id": "zeler-app", "status": "enabled", "allowed_meli_scopes": ["admin:repricer"]}
+    )
+    app.include_router(router)
+    monkeypatch.setattr(
+        internal_router,
+        "verify_module_jwt",
+        lambda token: FakeClaims(module_id="zeler-app"),
+    )
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.post(
+            "/internal/tokens/issue",
+            headers={"Authorization": "Bearer app-gateway-token"},
+            json={
+                "seller_id": 123456789,
+                "scopes": ["admin:repricer"],
+                "ttl_s": 120,
+                "token_kind": "module_admin",
+            },
+        )
+
+    assert response.status_code == 422
+    assert response.json() == {"error": "target_module_id_required"}

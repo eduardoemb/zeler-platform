@@ -546,8 +546,16 @@ P6 ─→ P7
 **Quality gates**: zeler-platform `uv run pytest` ✅ · `uv run ruff check .` ✅ · `uv run ruff format --check .` ✅ · `uv run mypy .` ✅ · zeler-app `npm test` ✅ · `npm run lint` ✅ · `npm run e2e` ✅
 **Verify report reference**: Engram #2312 (PASS WITH WARNINGS, CRITICAL=0, WARNING=2, SUGGESTION=2)
 **Tasks completed**: P5.1–P5.6 (6/6)
-**Carry-forward warnings**: Playwright coverage is static/browser-free contract coverage, not true browser E2E; repricer mutations use `REPRICER_API_URL` + `REPRICER_API_TOKEN`, not gateway user-session token exchange; live RabbitMQ/Mongo validation and repricer routing-key follow-up remain.
+**Carry-forward warnings**: Playwright coverage is static/browser-free contract coverage, not true browser E2E; ~~repricer mutations use `REPRICER_API_URL` + `REPRICER_API_TOKEN`, not gateway user-session token exchange~~ resolved by hardening marker below; live RabbitMQ/Mongo validation and repricer routing-key follow-up remain.
 **Tasks deferred**: none for P5; historical P1.17 deferral was resolved later by commit `8d5f3cd` and the P1.17 archive/reconciliation marker.
+
+#### Phase 5 hardening marker — Repricer admin token exchange
+
+**Archive type**: Phase 5 hardening follow-up  
+**Archive date**: 2026-04-24  
+**Result**: Replaced zeler-app repricer mutation dependence on `REPRICER_API_TOKEN` with a server-side `getPlatformAdminToken()` abstraction that exchanges a gateway credential through `/internal/tokens/issue` for a short-lived `module_admin` JWT scoped as `admin:repricer`. Gateway token issuance now supports the `module_admin` token kind while preserving the existing `meli_access` behavior for high-throughput Meli-token escape hatch callers.  
+**TDD evidence**: Added focused RED-first platform tests for `module_admin` issuance/validation and app tests proving no `REPRICER_API_TOKEN` fallback.  
+**Design note**: This remains a safe abstraction until real zeler-app session auth is bound to the exchange; the public/static repricer token is no longer required by mutations.
 
 ---
 

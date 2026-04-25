@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from fnmatch import fnmatchcase
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 from bson import Int64
 from fastapi import APIRouter, Request
@@ -14,6 +14,7 @@ from zeler_platform_core.auth.jwt import (
     ExpiredJWTError,
     InvalidJWTError,
     WrongAudienceError,
+    mint_module_jwt,
     verify_module_jwt,
 )
 
@@ -24,6 +25,8 @@ class TokenIssueRequest(BaseModel):
     seller_id: int
     scopes: list[str] = Field(min_length=1)
     ttl_s: int = Field(gt=0, le=300)
+    token_kind: Literal["meli_access", "module_admin"] = "meli_access"  # noqa: S105 - token type discriminator, not a secret
+    target_module_id: str | None = None
 
 
 @router.post("/tokens/issue")
@@ -48,6 +51,30 @@ async def issue_token(request: Request, payload: TokenIssueRequest) -> JSONRespo
     if not all(_scope_allowed(scope, allowed_scopes) for scope in payload.scopes):
         return _json_error(403, "out_of_scope")
 
+    if payload.token_kind == "module_admin":  # noqa: S105 - token type discriminator, not a secret
+        if payload.target_module_id is None or not payload.target_module_id.strip():
+            return _json_error(422, "target_module_id_required")
+        admin_token = mint_module_jwt(
+            payload.target_module_id.strip(), seller_id=payload.seller_id, ttl_s=payload.ttl_s
+        )
+        await _insert_issue_audit(
+            db=db,
+            module_id=claims.module_id,
+            seller_id=payload.seller_id,
+            scopes=payload.scopes,
+            ttl_s=payload.ttl_s,
+            token_kind=payload.token_kind,
+            target_module_id=payload.target_module_id.strip(),
+        )
+        return JSONResponse(
+            {
+                "access_token": admin_token,
+                "token_type": "Bearer",
+                "expires_in": payload.ttl_s,
+                "scopes": payload.scopes,
+            }
+        )
+
     account = await db["meli_accounts"].find_one(
         {"seller_id": payload.seller_id, "status": "active"}
     )
@@ -63,19 +90,14 @@ async def issue_token(request: Request, payload: TokenIssueRequest) -> JSONRespo
         ),
         account_id=str(payload.seller_id),
     )
-    await db["audit_log"].insert_one(
-        {
-            "at": datetime.now(UTC),
-            "module_id": claims.module_id,
-            "seller_id": Int64(payload.seller_id),
-            "method": "POST",
-            "path": "/internal/tokens/issue",
-            "status": 200,
-            "duration_ms": 0,
-            "scopes": payload.scopes,
-            "ttl_s": payload.ttl_s,
-            "schema_version": 1,
-        }
+    await _insert_issue_audit(
+        db=db,
+        module_id=claims.module_id,
+        seller_id=payload.seller_id,
+        scopes=payload.scopes,
+        ttl_s=payload.ttl_s,
+        token_kind=payload.token_kind,
+        target_module_id=None,
     )
     return JSONResponse(
         {
@@ -89,6 +111,34 @@ async def issue_token(request: Request, payload: TokenIssueRequest) -> JSONRespo
 
 def _scope_allowed(requested_scope: str, allowed_scopes: list[str]) -> bool:
     return any(fnmatchcase(requested_scope, allowed_scope) for allowed_scope in allowed_scopes)
+
+
+async def _insert_issue_audit(
+    *,
+    db: Any,
+    module_id: str,
+    seller_id: int,
+    scopes: list[str],
+    ttl_s: int,
+    token_kind: str,
+    target_module_id: str | None,
+) -> None:
+    document: dict[str, Any] = {
+        "at": datetime.now(UTC),
+        "module_id": module_id,
+        "seller_id": Int64(seller_id),
+        "method": "POST",
+        "path": "/internal/tokens/issue",
+        "status": 200,
+        "duration_ms": 0,
+        "scopes": scopes,
+        "ttl_s": ttl_s,
+        "token_kind": token_kind,
+        "schema_version": 1,
+    }
+    if target_module_id is not None:
+        document["target_module_id"] = target_module_id
+    await db["audit_log"].insert_one(document)
 
 
 def _json_error(status_code: int, error: str, *, detail: str | None = None) -> JSONResponse:
