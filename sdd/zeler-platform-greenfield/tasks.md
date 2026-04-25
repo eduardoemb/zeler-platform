@@ -728,6 +728,26 @@ P6 ─→ P7
 
 ---
 
+## Cross-Phase Hardening: Live Readiness Validation
+
+**Goal**: Give operators non-destructive tooling and a runbook to validate RabbitMQ topology plus Mongo validator/index readiness in sandbox/live environments before Phase 7 production decommission actions.
+
+### Checklist
+
+- [x] **H1** — Add RabbitMQ topology readiness CLI
+  `infra/rabbitmq/readiness.py` validates `infra/rabbitmq/definitions.json` offline and can compare against a RabbitMQ management export JSON without importing definitions or mutating the broker. Output includes `safe_to_execute`, `read_only`, and `mutations_attempted`.
+  *TDD*: `tests/test_live_readiness_validation.py::test_rabbitmq_readiness_*` RED → GREEN.
+
+- [x] **H2** — Add Mongo schema/index readiness CLI
+  `infra/mongo/readiness.py` validates local schema/index JSON offline and can optionally check a target `MONGO_URI` using read-only metadata calls only (`listCollections`, `listIndexes`). It never calls `collMod`, `createIndex`, `drop`, or import operations.
+  *TDD*: `tests/test_live_readiness_validation.py::test_mongo_readiness_*` RED → GREEN.
+
+- [x] **H3** — Add sandbox/live validation runbook
+  `docs/live-readiness-validation.md` documents the sandbox sequence, optional env vars (`RabbitMQ_MANAGEMENT_EXPORT`, `MONGO_URI`), safety model, and explicitly forbids `apply_validators.py` / RabbitMQ import during readiness validation.
+  *TDD*: `tests/test_live_readiness_validation.py::test_live_readiness_runbook_documents_sandbox_sequence_and_env_vars` RED → GREEN.
+
+---
+
 ## Phase 7: Legacy Decommission
 
 **Goal**: Freeze legacy repos, archive zeler-core, drop legacy databases, revoke legacy OAuth apps, shut down legacy services.
