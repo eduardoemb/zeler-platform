@@ -474,7 +474,7 @@ P6 ─→ P7
 **Quality gates**: `uv run pytest` ✅ · `uv run ruff check .` ✅ · `uv run ruff format --check .` ✅ · `uv run mypy .` ✅ · `uv run python -m infra.lint.check_direct_meli .` ✅
 **Verify report reference**: Engram #2291 (PASS WITH WARNINGS, CRITICAL=0, WARNING=4, SUGGESTION=3)
 **Tasks completed**: P4.1–P4.12 (12/12)
-**Carry-forward warnings**: no concrete repricer `aio-pika` consumer loop/binding yet; P4.12 E2E is deterministic in-process rather than live Docker Compose RabbitMQ/Mongo; live Mongo validator/index application remains an ops release task.
+**Carry-forward warnings**: ~~no concrete repricer `aio-pika` consumer loop/binding yet~~ resolved by hardening commit adding `RepricerAmqpConsumerRunner` with fake-broker tests; P4.12 E2E is deterministic in-process rather than live Docker Compose RabbitMQ/Mongo; live Mongo validator/index application remains an ops release task.
 **Tasks deferred**: none for P4; historical P1.17 deferral was resolved later by commit `8d5f3cd` and the P1.17 archive/reconciliation marker.
 
 ---

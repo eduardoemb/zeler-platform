@@ -91,14 +91,14 @@ None.
 
 ### WARNING
 
-1. **No concrete repricer `aio-pika` consumer loop/binding is implemented.** Evidence: grep under `modules/repricer` finds no `aio_pika`, `connect_robust`, queue consume, or message ack/nack code; `consumer.py` is a deterministic handler. This is acceptable as deployment hardening for archive only if the team agrees RabbitMQ transport validation is a live/ops follow-up.
+1. ~~**No concrete repricer `aio-pika` consumer loop/binding is implemented.**~~ **Resolved in hardening**: `RepricerAmqpConsumerRunner` connects with `aio-pika`, declares/binds `zeler.repricer.items`, and tests ack/retry/DLQ behavior with fakes.
 2. **P4.12 is deterministic, not a real Docker Compose RabbitMQ/Mongo E2E.** Evidence: `tests/e2e/test_repricer_flow.py` calls `classify_webhook_topic()` and `RepricerEventHandler` directly with fakes. It proves semantics, not broker wiring.
 3. ~~**Routing-key naming is inconsistent across artifacts.** `modules/repricer/manifest.yaml` declares `items_prices.*` per local task/spec text, while classifier/topology emit/bind `items.price_updated`. If future runtime binding uses manifest `routing_keys`, price events can be missed unless normalized.~~ **Resolved in hardening**: Repricer now declares `items.price_updated`, matching classifier/topology.
 4. **Live Mongo validator/index application was not executed.** Deterministic schema/index contract coverage passes; applying to dev/prod Mongo remains manual/live ops.
 
 ### SUGGESTION
 
-1. Add a small `aio-pika` transport wrapper around `RepricerEventHandler` with ack-after-history and retry/nack behavior, even if deployment remains separate.
+1. ~~Add a small `aio-pika` transport wrapper around `RepricerEventHandler` with ack-after-history and retry/nack behavior, even if deployment remains separate.~~ Resolved in hardening.
 2. Add direct tests for admin API list/update/delete behavior, not only create/validation/auth.
 3. ~~Add a routing-key contract test tying manifest subscriptions to classifier/topology keys.~~ Resolved in hardening.
 
@@ -128,7 +128,7 @@ None.
 ## Risks
 
 - ~~Runtime price-event delivery can break if manifest-driven binding uses `items_prices.*` while publisher emits `items.price_updated`.~~ Resolved in hardening; keep live topology validation as an ops gate.
-- Lack of concrete AMQP consumer runner means production readiness still depends on a deployment hardening step.
+- ~~Lack of concrete AMQP consumer runner means production readiness still depends on a deployment hardening step.~~ Resolved in hardening; live broker validation remains separate.
 - Live Mongo/RabbitMQ topology validation remains manual; not a code correctness blocker, but it is an ops release risk.
 
 ## Next Recommended
