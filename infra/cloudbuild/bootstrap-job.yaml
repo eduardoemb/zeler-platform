@@ -23,7 +23,7 @@ steps:
       - --region=us-central1
       - --tasks=1
       - --max-retries=3
-      - --set-env-vars=ZELER_ENV=prod
+      - --update-env-vars=ZELER_ENV=prod
 
 images:
   - us-central1-docker.pkg.dev/$PROJECT_ID/zeler-platform/bootstrap:$SHORT_SHA

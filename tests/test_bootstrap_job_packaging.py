@@ -22,7 +22,10 @@ def test_bootstrap_cloud_run_job_packaging_files_exist() -> None:
     assert entrypoint.exists()
 
     assert "zeler_bootstrap" in dockerfile.read_text(encoding="utf-8")
-    assert "gcloud run jobs deploy zeler-bootstrap" in cloudbuild.read_text(encoding="utf-8")
+    cloudbuild_text = cloudbuild.read_text(encoding="utf-8")
+    assert "gcloud run jobs deploy zeler-bootstrap" in cloudbuild_text
+    assert "--update-env-vars=ZELER_ENV=prod" in cloudbuild_text
+    assert "--set-env-vars" not in cloudbuild_text
 
 
 def test_bootstrap_entrypoint_parses_runnable_job_arguments() -> None:
