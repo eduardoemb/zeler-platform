@@ -12,7 +12,6 @@ import respx
 from bson import Int64, ObjectId
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec, utils
-from dotenv import load_dotenv
 from infra.mongo.apply_validators import apply_validators
 from motor.motor_asyncio import AsyncIOMotorClient
 from pymongo import MongoClient
@@ -26,7 +25,6 @@ from zeler_platform_core.auth.jwt import set_kms_client as set_jwt_kms_client
 
 ROOT = Path(__file__).resolve().parents[2]
 SCHEMAS_DIR = ROOT / "infra" / "mongo" / "schemas"
-load_dotenv(ROOT / ".env")
 
 
 class FakeEnvelopeKmsResponse:

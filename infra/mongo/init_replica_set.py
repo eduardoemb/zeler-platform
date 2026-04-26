@@ -37,6 +37,9 @@ _DEFAULT_RS_NAME = "rs0"
 DEFAULT_TIMEOUT_S = 30.0
 PRIMARY_ELECTION_TIMEOUT_S = 15.0
 MISSING_CREDENTIALS_MESSAGE = "error: MONGO_ADMIN_USER and MONGO_ADMIN_PASSWORD required"
+MISSING_DB_FOR_SERVICE_USER_MESSAGE = (
+    "error: MONGO_DB required when MONGO_SERVICE_USER/MONGO_SERVICE_PASSWORD set"
+)
 
 
 def ensure_admin_user(
@@ -57,6 +60,29 @@ def ensure_admin_user(
     except OperationFailure as exc:
         if exc.code == USER_ALREADY_EXISTS:
             LOGGER.info("admin user already exists")
+            return
+        raise
+
+
+def ensure_service_user(
+    client: Any,
+    username: str,
+    password: str,
+    db_name: str,
+    roles: tuple[str, ...] = ("readWrite",),
+) -> None:
+    """Create the runtime service user with roles scoped to ``db_name``."""
+    try:
+        client.admin.command(
+            {
+                "createUser": username,
+                "pwd": password,
+                "roles": [{"role": role, "db": db_name} for role in roles],
+            }
+        )
+    except OperationFailure as exc:
+        if exc.code == USER_ALREADY_EXISTS:
+            LOGGER.info("service user already exists")
             return
         raise
 
@@ -158,6 +184,14 @@ def main() -> None:
         # 51003 (already exists) is the EXPECTED path when MONGO_INITDB_ROOT_*
         # created admin during container first boot.
         ensure_admin_user(client, username, password)
+        service_username = os.environ.get("MONGO_SERVICE_USER")
+        service_password = os.environ.get("MONGO_SERVICE_PASSWORD")
+        db_name = os.environ.get("MONGO_DB")
+        if service_username and service_password:
+            if not db_name:
+                print(MISSING_DB_FOR_SERVICE_USER_MESSAGE, file=sys.stderr)
+                sys.exit(2)
+            ensure_service_user(client, service_username, service_password, db_name)
     except TimeoutError as exc:
         print(f"error: replica set primary election timeout: {exc}", file=sys.stderr)
         sys.exit(1)

@@ -4,7 +4,9 @@ from typing import Any, ClassVar
 
 import pytest
 from infra.mongo.init_replica_set import (
+    MISSING_DB_FOR_SERVICE_USER_MESSAGE,
     ensure_admin_user,
+    ensure_service_user,
     initiate_replica_set,
     main,
     wait_for_mongod,
@@ -200,6 +202,39 @@ def test_ensure_admin_user_reraises_unexpected_operation_failure() -> None:
         ensure_admin_user(client, "admin", "s3cret")
 
 
+def test_ensure_service_user_creates_user_with_readwrite_on_db() -> None:
+    client = FakeMongoClient([])
+
+    ensure_service_user(client, "zeler_app", "pass", "mydb")
+
+    assert client.admin.commands == [
+        (
+            {
+                "createUser": "zeler_app",
+                "pwd": "pass",
+                "roles": [{"role": "readWrite", "db": "mydb"}],
+            },
+            (),
+            {},
+        )
+    ]
+
+
+def test_ensure_service_user_is_idempotent_on_51003() -> None:
+    client = FakeMongoClient([OperationFailure("user exists", code=51003)])
+
+    ensure_service_user(client, "zeler_app", "pass", "mydb")
+
+    assert len(client.admin.commands) == 1
+
+
+def test_ensure_service_user_propagates_other_operation_failures() -> None:
+    client = FakeMongoClient([OperationFailure("not authorized", code=13)])
+
+    with pytest.raises(OperationFailure, match="not authorized"):
+        ensure_service_user(client, "zeler_app", "pass", "mydb")
+
+
 def test_main_exits_2_with_clear_stderr_when_admin_credentials_missing(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
@@ -247,6 +282,8 @@ def test_main_uses_init_uri_and_runs_bootstrap_steps_in_order(
     monkeypatch.setenv("MONGO_ADMIN_USER", "admin")
     monkeypatch.setenv("MONGO_ADMIN_PASSWORD", "s3cret")
     monkeypatch.setenv("MONGO_INIT_URI", "mongodb://127.0.0.1:27019/?directConnection=true")
+    monkeypatch.delenv("MONGO_RS_MEMBER_HOST", raising=False)
+    monkeypatch.delenv("MONGO_RS_NAME", raising=False)
 
     main()
 
@@ -276,6 +313,176 @@ def test_main_uses_init_uri_and_runs_bootstrap_steps_in_order(
     ]
 
 
+def test_main_provisions_service_user_when_all_three_env_vars_set(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = FakeMongoClient([])
+
+    monkeypatch.setattr(
+        "infra.mongo.init_replica_set.MongoClient",
+        lambda *_args, **_kwargs: client,
+    )
+    monkeypatch.setenv("MONGO_ADMIN_USER", "admin")
+    monkeypatch.setenv("MONGO_ADMIN_PASSWORD", "s3cret")
+    monkeypatch.setenv("MONGO_SERVICE_USER", "zeler_app")
+    monkeypatch.setenv("MONGO_SERVICE_PASSWORD", "pass")
+    monkeypatch.setenv("MONGO_DB", "mydb")
+    monkeypatch.delenv("MONGO_RS_MEMBER_HOST", raising=False)
+    monkeypatch.delenv("MONGO_RS_NAME", raising=False)
+
+    main()
+
+    assert client.admin.commands[-1] == (
+        {
+            "createUser": "zeler_app",
+            "pwd": "pass",
+            "roles": [{"role": "readWrite", "db": "mydb"}],
+        },
+        (),
+        {},
+    )
+
+
+def test_main_skips_service_user_when_service_env_vars_unset(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = FakeMongoClient([])
+
+    monkeypatch.setattr(
+        "infra.mongo.init_replica_set.MongoClient",
+        lambda *_args, **_kwargs: client,
+    )
+    monkeypatch.setenv("MONGO_ADMIN_USER", "admin")
+    monkeypatch.setenv("MONGO_ADMIN_PASSWORD", "s3cret")
+    monkeypatch.delenv("MONGO_SERVICE_USER", raising=False)
+    monkeypatch.delenv("MONGO_SERVICE_PASSWORD", raising=False)
+    monkeypatch.delenv("MONGO_DB", raising=False)
+    monkeypatch.delenv("MONGO_RS_MEMBER_HOST", raising=False)
+    monkeypatch.delenv("MONGO_RS_NAME", raising=False)
+
+    main()
+
+    assert client.admin.commands == [
+        ("ping", (), {}),
+        (
+            {
+                "replSetInitiate": {
+                    "_id": "rs0",
+                    "members": [{"_id": 0, "host": "localhost:27017"}],
+                }
+            },
+            (),
+            {},
+        ),
+        ("hello", (), {}),
+        (
+            {
+                "createUser": "admin",
+                "pwd": "s3cret",
+                "roles": [{"role": "root", "db": "admin"}],
+            },
+            (),
+            {},
+        ),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("service_user", "service_password"),
+    [("zeler_app", None), (None, "pass")],
+)
+def test_main_skips_service_user_when_only_one_service_credential_set(
+    monkeypatch: pytest.MonkeyPatch,
+    service_user: str | None,
+    service_password: str | None,
+) -> None:
+    client = FakeMongoClient([])
+
+    monkeypatch.setattr(
+        "infra.mongo.init_replica_set.MongoClient",
+        lambda *_args, **_kwargs: client,
+    )
+    monkeypatch.setenv("MONGO_ADMIN_USER", "admin")
+    monkeypatch.setenv("MONGO_ADMIN_PASSWORD", "s3cret")
+    monkeypatch.setenv("MONGO_DB", "mydb")
+    if service_user is None:
+        monkeypatch.delenv("MONGO_SERVICE_USER", raising=False)
+    else:
+        monkeypatch.setenv("MONGO_SERVICE_USER", service_user)
+    if service_password is None:
+        monkeypatch.delenv("MONGO_SERVICE_PASSWORD", raising=False)
+    else:
+        monkeypatch.setenv("MONGO_SERVICE_PASSWORD", service_password)
+    monkeypatch.delenv("MONGO_RS_MEMBER_HOST", raising=False)
+    monkeypatch.delenv("MONGO_RS_NAME", raising=False)
+
+    main()
+
+    assert [command for command, _args, _kwargs in client.admin.commands] == [
+        "ping",
+        {
+            "replSetInitiate": {
+                "_id": "rs0",
+                "members": [{"_id": 0, "host": "localhost:27017"}],
+            }
+        },
+        "hello",
+        {
+            "createUser": "admin",
+            "pwd": "s3cret",
+            "roles": [{"role": "root", "db": "admin"}],
+        },
+    ]
+
+
+def test_main_exits_2_with_stderr_when_service_user_and_password_set_but_db_unset(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    client = FakeMongoClient([])
+
+    monkeypatch.setattr(
+        "infra.mongo.init_replica_set.MongoClient",
+        lambda *_args, **_kwargs: client,
+    )
+    monkeypatch.setenv("MONGO_ADMIN_USER", "admin")
+    monkeypatch.setenv("MONGO_ADMIN_PASSWORD", "s3cret")
+    monkeypatch.setenv("MONGO_SERVICE_USER", "zeler_app")
+    monkeypatch.setenv("MONGO_SERVICE_PASSWORD", "pass")
+    monkeypatch.delenv("MONGO_DB", raising=False)
+
+    with pytest.raises(SystemExit) as exc_info:
+        main()
+
+    assert exc_info.value.code == 2
+    assert MISSING_DB_FOR_SERVICE_USER_MESSAGE in capsys.readouterr().err
+
+
+def test_ensure_service_user_propagates_code_13_from_main(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    client = FakeMongoClient(
+        [None, None, {"ok": 1, "ismaster": True}, OperationFailure("not authorized", code=13)]
+    )
+
+    monkeypatch.setattr(
+        "infra.mongo.init_replica_set.MongoClient",
+        lambda *_args, **_kwargs: client,
+    )
+    monkeypatch.setenv("MONGO_ADMIN_USER", "admin")
+    monkeypatch.setenv("MONGO_ADMIN_PASSWORD", "s3cret")
+    monkeypatch.setenv("MONGO_SERVICE_USER", "zeler_app")
+    monkeypatch.setenv("MONGO_SERVICE_PASSWORD", "pass")
+    monkeypatch.setenv("MONGO_DB", "mydb")
+
+    with pytest.raises(SystemExit) as exc_info:
+        main()
+
+    assert exc_info.value.code == 3
+    assert "not authorized" in capsys.readouterr().err
+
+
 def test_main_exits_1_when_mongod_never_responds_within_timeout(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
@@ -292,6 +499,7 @@ def test_main_exits_1_when_mongod_never_responds_within_timeout(
     monkeypatch.setenv("MONGO_ADMIN_PASSWORD", "s3cret")
     monkeypatch.setenv("MONGO_INIT_URI", "mongodb://127.0.0.1:27019/?directConnection=true")
     monkeypatch.setenv("MONGO_INIT_TIMEOUT_S", "0")
+    monkeypatch.delenv("MONGO_RS_MEMBER_HOST", raising=False)
 
     with pytest.raises(SystemExit) as exc_info:
         main()
@@ -403,6 +611,7 @@ def test_main_uses_member_host_env_override(
     monkeypatch.setenv("MONGO_ADMIN_PASSWORD", "s3cret")
     monkeypatch.setenv("MONGO_INIT_URI", "mongodb://127.0.0.1:27019/?directConnection=true")
     monkeypatch.setenv("MONGO_RS_MEMBER_HOST", "10.0.0.5:27019")
+    monkeypatch.delenv("MONGO_RS_NAME", raising=False)
 
     main()
 
@@ -426,6 +635,8 @@ def test_main_calls_wait_for_primary_after_initiate(
     )
     monkeypatch.setenv("MONGO_ADMIN_USER", "admin")
     monkeypatch.setenv("MONGO_ADMIN_PASSWORD", "s3cret")
+    monkeypatch.delenv("MONGO_RS_MEMBER_HOST", raising=False)
+    monkeypatch.delenv("MONGO_RS_NAME", raising=False)
 
     main()
 
@@ -485,6 +696,8 @@ def test_main_already_initialized_still_waits_before_create_user(
     )
     monkeypatch.setenv("MONGO_ADMIN_USER", "admin")
     monkeypatch.setenv("MONGO_ADMIN_PASSWORD", "s3cret")
+    monkeypatch.delenv("MONGO_RS_MEMBER_HOST", raising=False)
+    monkeypatch.delenv("MONGO_RS_NAME", raising=False)
 
     main()
 
@@ -542,6 +755,7 @@ def test_main_default_member_host_is_localhost_27017(
     monkeypatch.setenv("MONGO_ADMIN_PASSWORD", "s3cret")
     monkeypatch.setenv("MONGO_INIT_URI", "mongodb://127.0.0.1:27019/?directConnection=true")
     monkeypatch.delenv("MONGO_RS_MEMBER_HOST", raising=False)
+    monkeypatch.delenv("MONGO_RS_NAME", raising=False)
 
     main()
 
@@ -594,6 +808,7 @@ def test_main_default_rs_name_is_rs0(
     monkeypatch.setenv("MONGO_ADMIN_USER", "admin")
     monkeypatch.setenv("MONGO_ADMIN_PASSWORD", "s3cret")
     monkeypatch.setenv("MONGO_INIT_URI", "mongodb://127.0.0.1:27019/?directConnection=true")
+    monkeypatch.delenv("MONGO_RS_MEMBER_HOST", raising=False)
     monkeypatch.delenv("MONGO_RS_NAME", raising=False)
 
     main()

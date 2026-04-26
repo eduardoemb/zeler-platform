@@ -6,14 +6,12 @@ from typing import Any
 
 import pytest
 from bson import Int64, ObjectId
-from dotenv import load_dotenv
 from infra.mongo.apply_validators import apply_validators
 from pymongo import MongoClient
 from pymongo.errors import PyMongoError, WriteError
 
 ROOT = Path(__file__).resolve().parents[1]
 SCHEMAS_DIR = ROOT / "infra" / "mongo" / "schemas"
-load_dotenv(ROOT / ".env")
 
 
 @pytest.fixture

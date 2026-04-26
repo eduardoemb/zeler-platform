@@ -7,7 +7,6 @@ from typing import Any
 import httpx
 import pytest
 import pytest_asyncio
-from dotenv import load_dotenv
 from infra.mongo.apply_validators import apply_validators
 from motor.motor_asyncio import AsyncIOMotorClient
 from pymongo import MongoClient
@@ -17,7 +16,6 @@ from zeler_gateway.app import app
 
 ROOT = Path(__file__).resolve().parents[2]
 SCHEMAS_DIR = ROOT / "infra" / "mongo" / "schemas"
-load_dotenv(ROOT / ".env")
 
 
 @pytest.fixture

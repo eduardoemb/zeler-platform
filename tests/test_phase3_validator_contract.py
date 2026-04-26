@@ -4,7 +4,6 @@ import json
 from pathlib import Path
 
 import pytest
-from dotenv import load_dotenv
 from infra.mongo.apply_validators import apply_validators
 from infra.mongo.validator_contract import (
     canonical_validator_files,
@@ -14,7 +13,6 @@ from pymongo import MongoClient
 from pymongo.errors import PyMongoError, WriteError
 
 ROOT = Path(__file__).resolve().parents[1]
-load_dotenv(ROOT / ".env")
 
 
 def test_canonical_validator_contract_covers_phase3_collections() -> None:

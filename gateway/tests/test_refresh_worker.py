@@ -8,7 +8,6 @@ import httpx
 import pytest
 import respx
 from bson import Int64, ObjectId
-from dotenv import load_dotenv
 from infra.mongo.apply_validators import apply_validators
 from motor.motor_asyncio import AsyncIOMotorClient
 from pymongo import MongoClient
@@ -25,7 +24,6 @@ from zeler_gateway.tokens.refresh_worker import refresh_once
 
 ROOT = Path(__file__).resolve().parents[2]
 SCHEMAS_DIR = ROOT / "infra" / "mongo" / "schemas"
-load_dotenv(ROOT / ".env")
 
 
 class FakeKmsResponse:

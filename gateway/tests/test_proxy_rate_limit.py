@@ -7,7 +7,6 @@ from typing import Any
 
 import pytest
 from bson import Int64
-from dotenv import load_dotenv
 from infra.mongo.apply_validators import apply_validators
 from motor.motor_asyncio import AsyncIOMotorClient
 from pymongo import MongoClient
@@ -17,7 +16,6 @@ from zeler_gateway.proxy.rate_limit import RateLimitCounter, RateLimitExceeded
 
 ROOT = Path(__file__).resolve().parents[2]
 SCHEMAS_DIR = ROOT / "infra" / "mongo" / "schemas"
-load_dotenv(ROOT / ".env")
 
 
 @pytest.fixture
