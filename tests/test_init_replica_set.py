@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, ClassVar
 
 import pytest
 from infra.mongo.init_replica_set import (
@@ -29,6 +29,25 @@ class FakeAdmin:
 class FakeMongoClient:
     def __init__(self, responses: list[object]) -> None:
         self.admin = FakeAdmin(responses)
+
+
+class RecordingMongoClient:
+    instances: ClassVar[list[RecordingMongoClient]] = []
+
+    def __init__(
+        self,
+        uri: str,
+        *,
+        username: str | None = None,
+        password: str | None = None,
+        **_kwargs: Any,
+    ) -> None:
+        self.uri = uri
+        self.username = username
+        self.password = password
+        self.auth_source = _kwargs.get("authSource")
+        self.admin = FakeAdmin([])
+        self.instances.append(self)
 
 
 def test_wait_for_mongod_times_out_when_client_never_responds() -> None:
@@ -154,13 +173,32 @@ def test_main_exits_2_with_clear_stderr_when_admin_credentials_missing(
     assert "MONGO_ADMIN_USER and MONGO_ADMIN_PASSWORD required" in capsys.readouterr().err
 
 
+def test_main_constructs_authenticated_client(monkeypatch: pytest.MonkeyPatch) -> None:
+    expected = "value-from-env"
+    RecordingMongoClient.instances = []
+    monkeypatch.setattr("infra.mongo.init_replica_set.MongoClient", RecordingMongoClient)
+    monkeypatch.setenv("MONGO_ADMIN_USER", "alice")
+    monkeypatch.setenv("MONGO_ADMIN_PASSWORD", expected)
+    monkeypatch.setenv("MONGO_INIT_URI", "mongodb://127.0.0.1:27019/?directConnection=true")
+
+    main()
+
+    assert len(RecordingMongoClient.instances) == 1
+    recorder = RecordingMongoClient.instances[0]
+    assert recorder.uri == "mongodb://127.0.0.1:27019/?directConnection=true"
+    assert recorder.username == "alice"
+    assert recorder.password == expected
+    assert recorder.auth_source == "admin"
+
+
 def test_main_uses_init_uri_and_runs_bootstrap_steps_in_order(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     client = FakeMongoClient([])
     observed_uris: list[str] = []
 
-    def mongo_client(uri: str) -> FakeMongoClient:
+    # widened to tolerate auth kwargs from GREEN step.
+    def mongo_client(uri: str, **_kwargs: Any) -> FakeMongoClient:
         observed_uris.append(uri)
         return client
 
@@ -202,7 +240,11 @@ def test_main_exits_1_when_mongod_never_responds_within_timeout(
 ) -> None:
     client = FakeMongoClient([ServerSelectionTimeoutError("offline")] * 5)
 
-    monkeypatch.setattr("infra.mongo.init_replica_set.MongoClient", lambda _uri: client)
+    # widened to tolerate auth kwargs from GREEN step.
+    monkeypatch.setattr(
+        "infra.mongo.init_replica_set.MongoClient",
+        lambda *_args, **_kwargs: client,
+    )
     monkeypatch.setattr("infra.mongo.init_replica_set.time.sleep", lambda _seconds: None)
     monkeypatch.setenv("MONGO_ADMIN_USER", "admin")
     monkeypatch.setenv("MONGO_ADMIN_PASSWORD", "s3cret")
@@ -224,7 +266,11 @@ def test_main_exits_3_on_unexpected_operation_failure(
 ) -> None:
     client = FakeMongoClient([None, OperationFailure("not authorized", code=13)])
 
-    monkeypatch.setattr("infra.mongo.init_replica_set.MongoClient", lambda _uri: client)
+    # widened to tolerate auth kwargs from GREEN step.
+    monkeypatch.setattr(
+        "infra.mongo.init_replica_set.MongoClient",
+        lambda *_args, **_kwargs: client,
+    )
     monkeypatch.setenv("MONGO_ADMIN_USER", "admin")
     monkeypatch.setenv("MONGO_ADMIN_PASSWORD", "s3cret")
     monkeypatch.setenv("MONGO_INIT_URI", "mongodb://127.0.0.1:27019/?directConnection=true")
@@ -236,12 +282,79 @@ def test_main_exits_3_on_unexpected_operation_failure(
     assert "not authorized" in capsys.readouterr().err
 
 
+def test_replset_initiate_unauthorized_exits_3(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    client = FakeMongoClient(
+        [None, OperationFailure("Command replSetInitiate requires authentication", code=13)]
+    )
+
+    monkeypatch.setattr(
+        "infra.mongo.init_replica_set.MongoClient",
+        lambda *_args, **_kwargs: client,
+    )
+    monkeypatch.setenv("MONGO_ADMIN_USER", "admin")
+    monkeypatch.setenv("MONGO_ADMIN_PASSWORD", "s3cret")
+    monkeypatch.setenv("MONGO_INIT_URI", "mongodb://127.0.0.1:27019/?directConnection=true")
+
+    with pytest.raises(SystemExit) as exc_info:
+        main()
+
+    assert exc_info.value.code == 3
+    err = capsys.readouterr().err
+    assert "error: unhandled mongod operation failure" in err
+    assert "requires authentication" in err
+
+
+def test_main_idempotent_rerun_succeeds_silently(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    clients = [
+        FakeMongoClient(
+            [
+                None,
+                OperationFailure("already initialized", code=23),
+                OperationFailure("user exists", code=51003),
+            ]
+        ),
+        FakeMongoClient(
+            [
+                None,
+                OperationFailure("already initialized", code=23),
+                OperationFailure("user exists", code=51003),
+            ]
+        ),
+    ]
+
+    monkeypatch.setattr(
+        "infra.mongo.init_replica_set.MongoClient",
+        lambda *_args, **_kwargs: clients.pop(0),
+    )
+    monkeypatch.setenv("MONGO_ADMIN_USER", "admin")
+    monkeypatch.setenv("MONGO_ADMIN_PASSWORD", "s3cret")
+    monkeypatch.setenv("MONGO_INIT_URI", "mongodb://127.0.0.1:27019/?directConnection=true")
+
+    main()
+    first_run = capsys.readouterr()
+    main()
+    second_run = capsys.readouterr()
+
+    assert first_run.err == ""
+    assert second_run.err == ""
+
+
 def test_main_uses_member_host_env_override(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     client = FakeMongoClient([])
 
-    monkeypatch.setattr("infra.mongo.init_replica_set.MongoClient", lambda _uri: client)
+    # widened to tolerate auth kwargs from GREEN step.
+    monkeypatch.setattr(
+        "infra.mongo.init_replica_set.MongoClient",
+        lambda *_args, **_kwargs: client,
+    )
     monkeypatch.setenv("MONGO_ADMIN_USER", "admin")
     monkeypatch.setenv("MONGO_ADMIN_PASSWORD", "s3cret")
     monkeypatch.setenv("MONGO_INIT_URI", "mongodb://127.0.0.1:27019/?directConnection=true")
@@ -263,7 +376,11 @@ def test_main_uses_rs_name_env_override(
 ) -> None:
     client = FakeMongoClient([])
 
-    monkeypatch.setattr("infra.mongo.init_replica_set.MongoClient", lambda _uri: client)
+    # widened to tolerate auth kwargs from GREEN step.
+    monkeypatch.setattr(
+        "infra.mongo.init_replica_set.MongoClient",
+        lambda *_args, **_kwargs: client,
+    )
     monkeypatch.setenv("MONGO_ADMIN_USER", "admin")
     monkeypatch.setenv("MONGO_ADMIN_PASSWORD", "s3cret")
     monkeypatch.setenv("MONGO_INIT_URI", "mongodb://127.0.0.1:27017/?directConnection=true")
@@ -286,7 +403,11 @@ def test_main_default_rs_name_is_rs0(
 ) -> None:
     client = FakeMongoClient([])
 
-    monkeypatch.setattr("infra.mongo.init_replica_set.MongoClient", lambda _uri: client)
+    # widened to tolerate auth kwargs from GREEN step.
+    monkeypatch.setattr(
+        "infra.mongo.init_replica_set.MongoClient",
+        lambda *_args, **_kwargs: client,
+    )
     monkeypatch.setenv("MONGO_ADMIN_USER", "admin")
     monkeypatch.setenv("MONGO_ADMIN_PASSWORD", "s3cret")
     monkeypatch.setenv("MONGO_INIT_URI", "mongodb://127.0.0.1:27019/?directConnection=true")

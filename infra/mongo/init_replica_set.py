@@ -1,5 +1,9 @@
 """Idempotent replica-set bootstrap for the production MongoDB container.
 
+The script ALWAYS authenticates via ``MONGO_ADMIN_USER`` / ``MONGO_ADMIN_PASSWORD``.
+The admin user is expected to already exist, created by the container during
+first boot via ``MONGO_INITDB_ROOT_*``.
+
 Exit codes from ``main()``:
     0 — success (or idempotent no-op).
     1 — mongod did not become reachable within the timeout.
@@ -103,7 +107,12 @@ def main() -> None:
     rs_name = os.environ.get("MONGO_RS_NAME", _DEFAULT_RS_NAME)
     timeout_s = float(os.environ.get("MONGO_INIT_TIMEOUT_S", DEFAULT_TIMEOUT_S))
 
-    client: MongoClient[Any] = MongoClient(init_uri)
+    client: MongoClient[Any] = MongoClient(
+        init_uri,
+        username=username,
+        password=password,
+        authSource="admin",
+    )
     try:
         wait_for_mongod(client, timeout_s=timeout_s)
     except TimeoutError as exc:
@@ -116,6 +125,8 @@ def main() -> None:
 
     try:
         initiate_replica_set(client, rs_name=rs_name, host=member_host)
+        # 51003 (already exists) is the EXPECTED path when MONGO_INITDB_ROOT_*
+        # created admin during container first boot.
         ensure_admin_user(client, username, password)
     except OperationFailure as exc:
         print(f"error: unhandled mongod operation failure: {exc}", file=sys.stderr)
