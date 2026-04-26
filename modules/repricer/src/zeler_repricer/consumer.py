@@ -1,14 +1,22 @@
 from __future__ import annotations
 
+import asyncio
 import json
+import os
+import signal
+import sys
+import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Protocol, cast
 
 import aio_pika
+import httpx
+from motor.motor_asyncio import AsyncIOMotorClient
 
+from zeler_platform_core.events.idempotency import IdempotencyStore as CoreIdempotencyStore
 from zeler_platform_core.models import Item, RepricerRule
 from zeler_platform_core.runtime.manifest import validate_manifest
 from zeler_repricer.engine import SetPrice, evaluate_rule
@@ -18,6 +26,9 @@ REPRICER_ITEMS_QUEUE = "zeler.repricer.items"
 REPRICER_ITEMS_DLX = "zeler.repricer.items.dlx"
 REPRICER_DELIVERY_LIMIT = 5
 DEFAULT_PREFETCH_COUNT = 10
+MISSING_RABBITMQ_URL_MESSAGE = "error: RABBITMQ_URL is required"
+MISSING_MONGO_URI_MESSAGE = "error: MONGO_URI is required"
+MISSING_MONGO_DB_MESSAGE = "error: MONGO_DB is required"
 
 
 @dataclass(frozen=True)
@@ -36,10 +47,61 @@ class GatewayPriceClient(Protocol):
     ) -> tuple[int, int]: ...
 
 
+class RepricerGatewayClient:
+    def __init__(
+        self,
+        *,
+        base_url: str,
+        token: str,
+        transport: httpx.AsyncBaseTransport | None = None,
+    ) -> None:
+        self._base_url = base_url.rstrip("/")
+        self._token = token
+        self._transport = transport
+
+    async def update_price(
+        self, *, seller_id: int, item_id: str, new_price: Decimal, idempotency_key: str
+    ) -> tuple[int, int]:
+        started = time.perf_counter()
+        try:
+            async with httpx.AsyncClient(transport=self._transport) as client:
+                response = await client.post(
+                    f"{self._base_url}/items/{item_id}/prices",
+                    headers={
+                        "Authorization": f"Bearer {self._token}",
+                        "X-Seller-Id": str(seller_id),
+                        "Idempotency-Key": idempotency_key,
+                    },
+                    json={"price": str(new_price)},
+                )
+        except httpx.TimeoutException as exc:
+            msg = "gateway request timed out"
+            raise RuntimeError(msg) from exc
+        latency_ms = int((time.perf_counter() - started) * 1000)
+        return response.status_code, latency_ms
+
+
 class IdempotencyStoreLike(Protocol):
     async def is_duplicate(self, key: str) -> bool: ...
 
     async def mark_processed(self, key: str) -> None: ...
+
+
+class CoreIdempotencyStoreLike(Protocol):
+    async def is_duplicate(self, key: str) -> bool: ...
+
+    async def mark_processed(self, key: str, *, module_id: str) -> bool: ...
+
+
+class _RepricerIdempotencyAdapter:
+    def __init__(self, store: CoreIdempotencyStoreLike) -> None:
+        self._store = store
+
+    async def is_duplicate(self, key: str) -> bool:
+        return await self._store.is_duplicate(key)
+
+    async def mark_processed(self, key: str) -> None:
+        await self._store.mark_processed(key, module_id="repricer")
 
 
 class RepricerEventHandlerLike(Protocol):
@@ -261,3 +323,56 @@ def _idempotency_key(message: Any, payload: dict[str, Any]) -> str:
     if payload_value is not None:
         return str(payload_value)
     return str(payload["event_id"])
+
+
+async def run() -> None:
+    rabbitmq_url = os.environ.get("RABBITMQ_URL")
+    mongo_uri = os.environ.get("MONGO_URI")
+    mongo_db = os.environ.get("MONGO_DB")
+    for value, message in (
+        (rabbitmq_url, MISSING_RABBITMQ_URL_MESSAGE),
+        (mongo_uri, MISSING_MONGO_URI_MESSAGE),
+        (mongo_db, MISSING_MONGO_DB_MESSAGE),
+    ):
+        if not value:
+            print(message, file=sys.stderr)
+            sys.exit(2)
+    if rabbitmq_url is None or mongo_uri is None or mongo_db is None:
+        raise RuntimeError("environment validation failed")
+
+    mongo_client: AsyncIOMotorClient[Any] = AsyncIOMotorClient(
+        mongo_uri,
+        serverSelectionTimeoutMS=5000,
+        connectTimeoutMS=5000,
+        socketTimeoutMS=30000,
+    )
+    db = mongo_client[mongo_db]
+    manifest_path = Path(__file__).resolve().parents[2] / "manifest.yaml"
+    gateway_client = RepricerGatewayClient(
+        base_url=os.environ.get("GATEWAY_BASE_URL", "http://gateway"),
+        token=os.environ.get("GATEWAY_TOKEN", ""),
+    )
+    idempotency_store = _RepricerIdempotencyAdapter(
+        CoreIdempotencyStore(cast(Any, db["processed_events"]))
+    )
+    handler = RepricerEventHandler(
+        db=db,
+        gateway_client=gateway_client,
+        idempotency_store=idempotency_store,
+    )
+    runner = RepricerAmqpConsumerRunner(
+        rabbitmq_url=rabbitmq_url,
+        handler=handler,
+        manifest_path=manifest_path,
+    )
+    shutdown_event = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        loop.add_signal_handler(sig, shutdown_event.set)
+
+    await runner.start()
+    try:
+        await shutdown_event.wait()
+    finally:
+        await runner.close()
+        mongo_client.close()
