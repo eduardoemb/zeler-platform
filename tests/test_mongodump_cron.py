@@ -32,3 +32,14 @@ def test_mongodump_cron_contract() -> None:
         or "Deleting aged object" in content
     )
     assert re.search(r"OBJECT_PATH=.*gs://\$\{GCS_BUCKET\}/mongo/", content)
+
+
+def test_mongodump_cron_rejects_uri_without_replica_set() -> None:
+    content = SCRIPT_PATH.read_text(encoding="utf-8")
+
+    assert re.search(
+        r"if\s+\[\[\s+\"?\$\{?MONGO_URI\}?\"?\s+!=\s+\*\"replicaSet=\"\*\s+\]\]",
+        content,
+    )
+    assert "replicaSet=" in content
+    assert re.search(r"exit\s+1", content)

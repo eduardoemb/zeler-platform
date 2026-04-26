@@ -6,6 +6,11 @@ set -euo pipefail
 # See infra/mongo/backup/README.md for install instructions.
 
 : "${MONGO_URI:?MONGO_URI is required}"
+if [[ "${MONGO_URI}" != *"replicaSet="* ]]; then
+  echo "[mongodump_cron] ERROR: MONGO_URI must include 'replicaSet=' (e.g. ?replicaSet=rs0&directConnection=true)" >&2
+  exit 1
+fi
+
 : "${GCS_BUCKET:?GCS_BUCKET is required}"
 RETENTION_DAYS="${BACKUP_RETENTION_DAYS:-30}"
 

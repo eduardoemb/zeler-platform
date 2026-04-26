@@ -18,7 +18,7 @@ This directory contains the D13 backup pipeline for the on-prem `zeler-platform`
 
 Required environment variables:
 
-- `MONGO_URI`
+- `MONGO_URI` — must include `?replicaSet=rs0&directConnection=true`; script will exit 1 if `replicaSet=` is absent.
 - `GCS_BUCKET`
 
 Optional environment variables:
