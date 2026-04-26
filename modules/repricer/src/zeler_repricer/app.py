@@ -38,3 +38,20 @@ def build_app(*, mongo_db: object, rabbitmq_ready: Callable[[], bool]) -> FastAP
 
     app.router.on_startup.append(register_startup)
     return app
+
+
+def make_app() -> FastAPI:
+    """No-arg factory for uvicorn --factory; resolves deps at call time."""
+    import os
+
+    from motor.motor_asyncio import AsyncIOMotorClient
+
+    mongo_uri = os.environ.get("MONGO_URI")
+    mongo_db_name = os.environ.get("MONGO_DB")
+    if not mongo_uri:
+        raise RuntimeError("MONGO_URI is required for API mode")
+    if not mongo_db_name:
+        raise RuntimeError("MONGO_DB is required for API mode")
+
+    mongo_db: object = AsyncIOMotorClient(mongo_uri)[mongo_db_name]
+    return build_app(mongo_db=mongo_db, rabbitmq_ready=lambda: True)
