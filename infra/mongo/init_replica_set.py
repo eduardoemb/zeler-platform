@@ -4,9 +4,15 @@ The script ALWAYS authenticates via ``MONGO_ADMIN_USER`` / ``MONGO_ADMIN_PASSWOR
 The admin user is expected to already exist, created by the container during
 first boot via ``MONGO_INITDB_ROOT_*``.
 
+``MONGO_RS_MEMBER_HOST`` defaults to ``localhost:27017`` because the replica-set
+member address must be valid from mongod's container-internal perspective, not
+the host-side published port. The default works for both prod and dev single-host
+loopback layouts; override it only for multi-host or non-loopback deployments.
+
 Exit codes from ``main()``:
     0 — success (or idempotent no-op).
-    1 — mongod did not become reachable within the timeout.
+    1 — mongod did not become reachable or PRIMARY election did not finish
+        within the timeout.
     2 — required env var missing (``MONGO_ADMIN_USER`` / ``MONGO_ADMIN_PASSWORD``).
     3 — unhandled ``OperationFailure`` from ``replSetInitiate`` or ``createUser``.
 """
@@ -26,9 +32,10 @@ LOGGER = logging.getLogger(__name__)
 ALREADY_INITIALIZED = 23
 USER_ALREADY_EXISTS = 51003
 DEFAULT_INIT_URI = "mongodb://127.0.0.1:27019/?directConnection=true"
-DEFAULT_MEMBER_HOST = "127.0.0.1:27019"
+DEFAULT_MEMBER_HOST = "localhost:27017"
 _DEFAULT_RS_NAME = "rs0"
 DEFAULT_TIMEOUT_S = 30.0
+PRIMARY_ELECTION_TIMEOUT_S = 15.0
 MISSING_CREDENTIALS_MESSAGE = "error: MONGO_ADMIN_USER and MONGO_ADMIN_PASSWORD required"
 
 
@@ -93,6 +100,25 @@ def wait_for_mongod(
             time.sleep(1)
 
 
+def wait_for_primary(
+    client: Any,
+    timeout_s: float = PRIMARY_ELECTION_TIMEOUT_S,
+) -> None:
+    """Poll ``hello`` until mongod reports PRIMARY, or raise ``TimeoutError``."""
+    deadline = time.monotonic() + timeout_s
+    while True:
+        try:
+            result = client.admin.command("hello")
+            if result.get("isWritablePrimary") or result.get("ismaster"):
+                return
+        except PyMongoError:
+            pass
+        if time.monotonic() >= deadline:
+            msg = "primary election did not complete before timeout"
+            raise TimeoutError(msg)
+        time.sleep(0.5)
+
+
 def main() -> None:
     """Initialize the prod Mongo replica set and admin user from environment."""
     logging.basicConfig(level=logging.INFO)
@@ -106,6 +132,9 @@ def main() -> None:
     member_host = os.environ.get("MONGO_RS_MEMBER_HOST", DEFAULT_MEMBER_HOST)
     rs_name = os.environ.get("MONGO_RS_NAME", _DEFAULT_RS_NAME)
     timeout_s = float(os.environ.get("MONGO_INIT_TIMEOUT_S", DEFAULT_TIMEOUT_S))
+    primary_timeout_s = float(
+        os.environ.get("MONGO_PRIMARY_ELECTION_TIMEOUT_S", PRIMARY_ELECTION_TIMEOUT_S)
+    )
 
     client: MongoClient[Any] = MongoClient(
         init_uri,
@@ -125,9 +154,13 @@ def main() -> None:
 
     try:
         initiate_replica_set(client, rs_name=rs_name, host=member_host)
+        wait_for_primary(client, timeout_s=primary_timeout_s)
         # 51003 (already exists) is the EXPECTED path when MONGO_INITDB_ROOT_*
         # created admin during container first boot.
         ensure_admin_user(client, username, password)
+    except TimeoutError as exc:
+        print(f"error: replica set primary election timeout: {exc}", file=sys.stderr)
+        sys.exit(1)
     except OperationFailure as exc:
         print(f"error: unhandled mongod operation failure: {exc}", file=sys.stderr)
         sys.exit(3)

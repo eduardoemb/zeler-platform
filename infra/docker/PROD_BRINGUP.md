@@ -6,6 +6,7 @@ Use this runbook for day-1 validation of the production single-node MongoDB repl
 
 - Confirm the deployment commit range you are validating.
 - Populate `.env.prod` from `.env.prod.example` with `MONGO_ADMIN_USER`, `MONGO_ADMIN_PASSWORD`, and any required overrides.
+- Do not set `MONGO_RS_MEMBER_HOST` for the standard single-host loopback layout; `init_replica_set.py` defaults it to `localhost:27017`. Override it only for multi-host or non-loopback deployments.
 - Confirm port `127.0.0.1:27019` is available on the target host.
 - Generate the MongoDB keyfile if the host does not already have one.
 

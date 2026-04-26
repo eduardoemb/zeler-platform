@@ -8,8 +8,9 @@ from infra.mongo.init_replica_set import (
     initiate_replica_set,
     main,
     wait_for_mongod,
+    wait_for_primary,
 )
-from pymongo.errors import OperationFailure, ServerSelectionTimeoutError
+from pymongo.errors import OperationFailure, PyMongoError, ServerSelectionTimeoutError
 
 
 class FakeAdmin:
@@ -17,12 +18,16 @@ class FakeAdmin:
         self._responses = responses
         self.commands: list[tuple[object, tuple[Any, ...], dict[str, Any]]] = []
 
-    def command(self, command: object, *args: Any, **kwargs: Any) -> dict[str, int]:
+    def command(self, command: object, *args: Any, **kwargs: Any) -> dict[str, object]:
         self.commands.append((command, args, kwargs))
         if self._responses:
             response = self._responses.pop(0)
             if isinstance(response, Exception):
                 raise response
+            if isinstance(response, dict):
+                return response
+        if command == "hello":
+            return {"ok": 1, "isWritablePrimary": True}
         return {"ok": 1}
 
 
@@ -73,6 +78,42 @@ def test_wait_for_mongod_succeeds_after_retry(monkeypatch: pytest.MonkeyPatch) -
     assert client.admin.commands == [("ping", (), {}), ("ping", (), {}), ("ping", (), {})]
 
 
+def test_wait_for_primary_succeeds_after_eventual_primary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = FakeMongoClient(
+        [
+            {"ok": 1, "isWritablePrimary": False},
+            {"ok": 1, "ismaster": False},
+            {"ok": 1, "isWritablePrimary": False},
+            {"ok": 1, "isWritablePrimary": True},
+        ]
+    )
+    monkeypatch.setattr("infra.mongo.init_replica_set.time.sleep", lambda _seconds: None)
+
+    wait_for_primary(client, timeout_s=15)
+
+    assert client.admin.commands == [("hello", (), {})] * 4
+
+
+def test_wait_for_primary_times_out_when_hello_never_reports_primary() -> None:
+    client = FakeMongoClient([{"ok": 1, "isWritablePrimary": False}])
+
+    with pytest.raises(TimeoutError, match="primary election did not complete"):
+        wait_for_primary(client, timeout_s=0)
+
+    assert client.admin.commands == [("hello", (), {})]
+
+
+def test_wait_for_primary_retries_pymongo_errors_until_timeout() -> None:
+    client = FakeMongoClient([PyMongoError("election in progress")])
+
+    with pytest.raises(TimeoutError, match="primary election did not complete"):
+        wait_for_primary(client, timeout_s=0)
+
+    assert client.admin.commands == [("hello", (), {})]
+
+
 def test_initiate_replica_set_fresh_node_uses_prod_member_host_by_default() -> None:
     client = FakeMongoClient([])
 
@@ -83,7 +124,7 @@ def test_initiate_replica_set_fresh_node_uses_prod_member_host_by_default() -> N
             {
                 "replSetInitiate": {
                     "_id": "rs0",
-                    "members": [{"_id": 0, "host": "127.0.0.1:27019"}],
+                    "members": [{"_id": 0, "host": "localhost:27017"}],
                 }
             },
             (),
@@ -216,12 +257,13 @@ def test_main_uses_init_uri_and_runs_bootstrap_steps_in_order(
             {
                 "replSetInitiate": {
                     "_id": "rs0",
-                    "members": [{"_id": 0, "host": "127.0.0.1:27019"}],
+                    "members": [{"_id": 0, "host": "localhost:27017"}],
                 }
             },
             (),
             {},
         ),
+        ("hello", (), {}),
         (
             {
                 "createUser": "admin",
@@ -257,7 +299,7 @@ def test_main_exits_1_when_mongod_never_responds_within_timeout(
     assert exc_info.value.code == 1
     err = capsys.readouterr().err
     assert "timeout" in err.lower()
-    assert "127.0.0.1:27019" in err
+    assert "localhost:27017" in err
 
 
 def test_main_exits_3_on_unexpected_operation_failure(
@@ -316,6 +358,7 @@ def test_main_idempotent_rerun_succeeds_silently(
             [
                 None,
                 OperationFailure("already initialized", code=23),
+                {"ok": 1, "ismaster": True},
                 OperationFailure("user exists", code=51003),
             ]
         ),
@@ -323,6 +366,7 @@ def test_main_idempotent_rerun_succeeds_silently(
             [
                 None,
                 OperationFailure("already initialized", code=23),
+                {"ok": 1, "ismaster": True},
                 OperationFailure("user exists", code=51003),
             ]
         ),
@@ -367,6 +411,145 @@ def test_main_uses_member_host_env_override(
         "replSetInitiate": {
             "_id": "rs0",
             "members": [{"_id": 0, "host": "10.0.0.5:27019"}],
+        }
+    }
+
+
+def test_main_calls_wait_for_primary_after_initiate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = FakeMongoClient([])
+
+    monkeypatch.setattr(
+        "infra.mongo.init_replica_set.MongoClient",
+        lambda *_args, **_kwargs: client,
+    )
+    monkeypatch.setenv("MONGO_ADMIN_USER", "admin")
+    monkeypatch.setenv("MONGO_ADMIN_PASSWORD", "s3cret")
+
+    main()
+
+    assert [command for command, _args, _kwargs in client.admin.commands] == [
+        "ping",
+        {
+            "replSetInitiate": {
+                "_id": "rs0",
+                "members": [{"_id": 0, "host": "localhost:27017"}],
+            }
+        },
+        "hello",
+        {
+            "createUser": "admin",
+            "pwd": "s3cret",
+            "roles": [{"role": "root", "db": "admin"}],
+        },
+    ]
+
+
+def test_main_primary_election_timeout_exits_1(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    client = FakeMongoClient([None, None, {"ok": 1, "isWritablePrimary": False}])
+
+    monkeypatch.setattr(
+        "infra.mongo.init_replica_set.MongoClient",
+        lambda *_args, **_kwargs: client,
+    )
+    monkeypatch.setenv("MONGO_ADMIN_USER", "admin")
+    monkeypatch.setenv("MONGO_ADMIN_PASSWORD", "s3cret")
+    monkeypatch.setenv("MONGO_PRIMARY_ELECTION_TIMEOUT_S", "0")
+
+    with pytest.raises(SystemExit) as exc_info:
+        main()
+
+    assert exc_info.value.code == 1
+    assert "error: replica set primary election timeout" in capsys.readouterr().err
+
+
+def test_main_already_initialized_still_waits_before_create_user(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = FakeMongoClient(
+        [
+            None,
+            OperationFailure("already initialized", code=23),
+            {"ok": 1, "ismaster": True},
+            OperationFailure("user exists", code=51003),
+        ]
+    )
+
+    monkeypatch.setattr(
+        "infra.mongo.init_replica_set.MongoClient",
+        lambda *_args, **_kwargs: client,
+    )
+    monkeypatch.setenv("MONGO_ADMIN_USER", "admin")
+    monkeypatch.setenv("MONGO_ADMIN_PASSWORD", "s3cret")
+
+    main()
+
+    assert [command for command, _args, _kwargs in client.admin.commands] == [
+        "ping",
+        {
+            "replSetInitiate": {
+                "_id": "rs0",
+                "members": [{"_id": 0, "host": "localhost:27017"}],
+            }
+        },
+        "hello",
+        {
+            "createUser": "admin",
+            "pwd": "s3cret",
+            "roles": [{"role": "root", "db": "admin"}],
+        },
+    ]
+
+
+def test_main_uses_primary_election_timeout_env_override(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = FakeMongoClient([])
+    observed_timeout: list[float] = []
+
+    def record_wait_for_primary(_client: FakeMongoClient, timeout_s: float) -> None:
+        observed_timeout.append(timeout_s)
+        _client.admin.command("hello")
+
+    monkeypatch.setattr(
+        "infra.mongo.init_replica_set.MongoClient",
+        lambda *_args, **_kwargs: client,
+    )
+    monkeypatch.setattr("infra.mongo.init_replica_set.wait_for_primary", record_wait_for_primary)
+    monkeypatch.setenv("MONGO_ADMIN_USER", "admin")
+    monkeypatch.setenv("MONGO_ADMIN_PASSWORD", "s3cret")
+    monkeypatch.setenv("MONGO_PRIMARY_ELECTION_TIMEOUT_S", "2.5")
+
+    main()
+
+    assert observed_timeout == [2.5]
+
+
+def test_main_default_member_host_is_localhost_27017(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = FakeMongoClient([])
+
+    monkeypatch.setattr(
+        "infra.mongo.init_replica_set.MongoClient",
+        lambda *_args, **_kwargs: client,
+    )
+    monkeypatch.setenv("MONGO_ADMIN_USER", "admin")
+    monkeypatch.setenv("MONGO_ADMIN_PASSWORD", "s3cret")
+    monkeypatch.setenv("MONGO_INIT_URI", "mongodb://127.0.0.1:27019/?directConnection=true")
+    monkeypatch.delenv("MONGO_RS_MEMBER_HOST", raising=False)
+
+    main()
+
+    initiate_call = client.admin.commands[1]
+    assert initiate_call[0] == {
+        "replSetInitiate": {
+            "_id": "rs0",
+            "members": [{"_id": 0, "host": "localhost:27017"}],
         }
     }
 
@@ -419,6 +602,6 @@ def test_main_default_rs_name_is_rs0(
     assert initiate_call[0] == {
         "replSetInitiate": {
             "_id": "rs0",
-            "members": [{"_id": 0, "host": "127.0.0.1:27019"}],
+            "members": [{"_id": 0, "host": "localhost:27017"}],
         }
     }

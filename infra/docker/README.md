@@ -29,7 +29,10 @@ The container binds only to `127.0.0.1`, and TLS becomes mandatory for the on-pr
 ## Dev Mongo replica-set bootstrap
 
 Use this runbook when creating or resetting the local dev MongoDB replica set.
-The dev replica-set name is `rs0-dev`, runs on `127.0.0.1:${MONGO_HOST_PORT:-27017}`, and intentionally uses Option B: `--replSet rs0-dev --bind_ip_all --auth` without a keyfile.
+The dev replica-set name is `rs0-dev`, runs on `127.0.0.1:${MONGO_HOST_PORT:-27017}`, and uses Option A: `--replSet rs0-dev --bind_ip_all --auth --keyFile /etc/mongo/keyfile/rs0.key`.
+Option B (auth + replica set without a keyfile) is rejected by mongod 7.0+ with `BadValue: security.keyFile is required`.
+The init script defaults `MONGO_RS_MEMBER_HOST` to `localhost:27017`, so the standard single-host loopback layout does not need a member-host override.
+Do not add the old `MONGO_RS_MEMBER_HOST=127.0.0.1:27017` override unless you are intentionally testing a non-standard member address.
 
 Prerequisites:
 
@@ -51,12 +54,11 @@ Prerequisites:
 3. Initialize the single-node replica set and admin user:
 
    ```bash
-   MONGO_RS_NAME=rs0-dev \
-   MONGO_INIT_URI=mongodb://127.0.0.1:27017/?directConnection=true \
-   MONGO_RS_MEMBER_HOST=127.0.0.1:27017 \
-   MONGO_ADMIN_USER=$MONGO_ROOT_USER \
-   MONGO_ADMIN_PASSWORD=$MONGO_ROOT_PASSWORD \
-   uv run python -m infra.mongo.init_replica_set
+    MONGO_RS_NAME=rs0-dev \
+    MONGO_INIT_URI=mongodb://127.0.0.1:27017/?directConnection=true \
+    MONGO_ADMIN_USER=$MONGO_ROOT_USER \
+    MONGO_ADMIN_PASSWORD=$MONGO_ROOT_PASSWORD \
+    uv run python -m infra.mongo.init_replica_set
    ```
 
 4. Smoke-check the node is PRIMARY. The command prints `1` when the node is ready:
@@ -82,7 +84,7 @@ Failure-mode decision tree:
 | `UserAlreadyExists=51003` from `createUser` | Admin user already exists | No-op; `init_replica_set.py` treats this as idempotent success. |
 | Auth required | `MONGO_ADMIN_USER` / `MONGO_ADMIN_PASSWORD` were not exported or do not match the container root credentials | Export both from `MONGO_ROOT_USER` / `MONGO_ROOT_PASSWORD`, then retry the init step. |
 | Cannot connect or port collision | Container is down, unhealthy, or another Mongo owns `27017` | Check `docker compose -f infra/docker/mongo-dev.yml ps` and `lsof -i :27017`; override `MONGO_HOST_PORT` if needed. |
-| mongod rejects `--replSet --auth` without a keyfile | This local mongod build does not accept Option B | Use Option A fallback: run `bash infra/docker/gen_mongo_keyfile.sh`, add `--keyFile /etc/mongo-keyfiles/dev-keyfile`, mount `./dev-keyfiles:/etc/mongo-keyfiles:ro`, and keep generated dev keyfiles out of git. |
+| mongod rejects `--replSet --auth` without a keyfile | The compose file is stale and still using rejected Option B | Use the current `mongo-dev.yml`, which mounts `./mongo-keyfiles:/etc/mongo/keyfile:ro` and passes `--keyFile /etc/mongo/keyfile/rs0.key`. |
 
 ## First-time prod Mongo setup (one-time runbook)
 
@@ -159,6 +161,7 @@ Warnings:
 
 - The bootstrap `MONGO_ADMIN_*` credentials are SEPARATE from the runtime service-user credentials embedded in `MONGO_URI`. Keep them distinct from each other.
 - `MONGO_INIT_URI` defaults to `mongodb://127.0.0.1:27019/?directConnection=true` and rarely needs to be overridden.
+- `MONGO_RS_MEMBER_HOST` defaults to `localhost:27017` and should not be set for the standard single-host loopback layout. Override it only for multi-host or non-loopback deployments.
 - `infra/docker/mongo-keyfiles/` is gitignored — DO NOT commit the keyfile.
 - Prod admin credentials MUST differ from dev admin credentials.
 
@@ -208,8 +211,8 @@ git state, use this sequence in order:
 
 ### Recovery: replica set initialized with the wrong member host
 
-If `init_replica_set.py` ran with a stale `MONGO_RS_MEMBER_HOST` (e.g. `localhost:27017`
-instead of `127.0.0.1:27019`), the RS will be technically alive but the driver may
+If `init_replica_set.py` ran with a stale `MONGO_RS_MEMBER_HOST` (e.g. `127.0.0.1:27019`
+instead of the default `localhost:27017`), the RS will be technically alive but the driver may
 fail to connect because the advertised member host does not match the URI.
 
 Reconfigure the RS in place without losing data:
@@ -219,7 +222,7 @@ docker exec -it zeler-mongo-prod mongosh \
   -u "$MONGO_ADMIN_USER" -p "$MONGO_ADMIN_PASSWORD" --authenticationDatabase admin \
   --eval '
     cfg = rs.conf();
-    cfg.members[0].host = "127.0.0.1:27019";
+    cfg.members[0].host = "localhost:27017";
     rs.reconfig(cfg, { force: true });
     rs.status().myState
   '

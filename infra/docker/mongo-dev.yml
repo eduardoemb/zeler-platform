@@ -1,3 +1,5 @@
+name: zeler-mongo-dev
+
 services:
   mongo:
     image: mongo:7.0
@@ -9,12 +11,21 @@ services:
       MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_PASSWORD}
     volumes:
       - zeler-mongo-data:/data/db
-    command: ["mongod", "--replSet", "rs0-dev", "--bind_ip_all", "--auth"]
+      - ./mongo-keyfiles:/etc/mongo/keyfile:ro
+    command:
+      - mongod
+      - --replSet
+      - rs0-dev
+      - --bind_ip_all
+      - --auth
+      - --keyFile
+      - /etc/mongo/keyfile/rs0.key
     healthcheck:
-      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand({ping:1}).ok"]
       interval: 10s
       timeout: 5s
       retries: 5
+      start_period: 20s
     restart: unless-stopped
     networks:
       - zeler-platform-dev

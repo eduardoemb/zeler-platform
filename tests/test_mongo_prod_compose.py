@@ -32,6 +32,10 @@ def test_image_is_mongo_7() -> None:
     assert re.fullmatch(r"mongo:7(?:\..*)?", image)
 
 
+def test_compose_project_name_is_zeler_mongo_prod() -> None:
+    assert _document().get("name") == "zeler-mongo-prod"
+
+
 def test_container_name_is_zeler_mongo_prod() -> None:
     assert _mongo_service().get("container_name") == "zeler-mongo-prod"
 

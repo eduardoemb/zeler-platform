@@ -37,6 +37,10 @@ def test_mongo_dev_uses_mongo_7_image() -> None:
     assert image == "mongo:7" or image.startswith("mongo:7.")
 
 
+def test_mongo_dev_compose_project_name_is_zeler_mongo_dev() -> None:
+    assert _load_compose().get("name") == "zeler-mongo-dev"
+
+
 def test_mongo_dev_preserves_localhost_port_mapping() -> None:
     mongo = _mongo_service(_load_compose())
 
@@ -55,12 +59,22 @@ def test_mongo_dev_has_root_credentials_env_contract() -> None:
     assert environment[password_key] == password_env_ref
 
 
-def test_mongo_dev_uses_single_node_replica_set_command_option_b() -> None:
+def test_mongo_dev_uses_single_node_replica_set_command_with_keyfile() -> None:
     mongo = _mongo_service(_load_compose())
 
     command = mongo.get("command")
-    assert command == ["mongod", "--replSet", "rs0-dev", "--bind_ip_all", "--auth"]
-    assert "--keyFile" not in command
+    assert command == [
+        "mongod",
+        "--replSet",
+        "rs0-dev",
+        "--bind_ip_all",
+        "--auth",
+        "--keyFile",
+        "/etc/mongo/keyfile/rs0.key",
+    ]
+    # Option B rejected by mongod 7.0+ (BadValue). Consciously replaced per spec scenario 1.3.
+    assert "--keyFile" in command
+    assert command[command.index("--keyFile") + 1] == "/etc/mongo/keyfile/rs0.key"
 
 
 def test_mongo_dev_keeps_named_volume() -> None:
@@ -68,11 +82,20 @@ def test_mongo_dev_keeps_named_volume() -> None:
     mongo = _mongo_service(document)
 
     volumes = mongo.get("volumes")
-    assert volumes == ["zeler-mongo-data:/data/db"]
+    assert isinstance(volumes, list)
+    assert "zeler-mongo-data:/data/db" in volumes
 
     declared_volumes = document.get("volumes")
     assert isinstance(declared_volumes, dict)
     assert "zeler-mongo-data" in declared_volumes
+
+
+def test_mongo_dev_mounts_shared_keyfile_readonly() -> None:
+    mongo = _mongo_service(_load_compose())
+
+    volumes = mongo.get("volumes")
+    assert isinstance(volumes, list)
+    assert "./mongo-keyfiles:/etc/mongo/keyfile:ro" in volumes
 
 
 def test_mongo_dev_has_healthcheck_ping_contract() -> None:
@@ -80,10 +103,17 @@ def test_mongo_dev_has_healthcheck_ping_contract() -> None:
 
     healthcheck = mongo.get("healthcheck")
     assert isinstance(healthcheck, dict)
-    assert healthcheck["test"] == ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+    assert healthcheck["test"] == [
+        "CMD",
+        "mongosh",
+        "--quiet",
+        "--eval",
+        "db.adminCommand({ping:1}).ok",
+    ]
     assert healthcheck["interval"] == "10s"
     assert healthcheck["timeout"] == "5s"
     assert healthcheck["retries"] == 5
+    assert healthcheck["start_period"] == "20s"
 
 
 def test_mongo_dev_uses_declared_network_and_restart_policy() -> None:
