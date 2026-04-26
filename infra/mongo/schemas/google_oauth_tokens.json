@@ -1,0 +1,45 @@
+{
+  "$jsonSchema": {
+    "bsonType": "object",
+    "properties": {
+      "_id": {"bsonType": "string"},
+      "seller_id": {"bsonType": "string"},
+      "access_token_ciphertext": {"bsonType": ["binData", "string"]},
+      "access_token_dek_wrapped": {"bsonType": ["binData", "string"]},
+      "refresh_token_ciphertext": {"bsonType": ["binData", "string"]},
+      "refresh_token_dek_wrapped": {"bsonType": ["binData", "string"]},
+      "token_nonce": {"bsonType": ["binData", "string"]},
+      "refresh_token_nonce": {"bsonType": ["binData", "string"]},
+      "kms_key_version": {"bsonType": "string"},
+      "scopes": {"bsonType": "array"},
+      "expires_at": {"bsonType": "date"},
+      "status": {"enum": ["active", "refresh_pending", "revoked", "error"]},
+      "lock_held_until": {"bsonType": ["date", "null"]},
+      "last_error": {"bsonType": ["string", "null"]},
+      "connected_at": {"bsonType": "date"},
+      "created_at": {"bsonType": "date"},
+      "updated_at": {"bsonType": "date"},
+      "schema_version": {"bsonType": "int"}
+    },
+    "required": [
+      "_id",
+      "seller_id",
+      "access_token_ciphertext",
+      "access_token_dek_wrapped",
+      "refresh_token_ciphertext",
+      "refresh_token_dek_wrapped",
+      "token_nonce",
+      "refresh_token_nonce",
+      "scopes",
+      "status",
+      "expires_at",
+      "kms_key_version",
+      "connected_at",
+      "created_at",
+      "updated_at",
+      "schema_version"
+    ]
+  },
+  "validationAction": "error",
+  "validationLevel": "strict"
+}

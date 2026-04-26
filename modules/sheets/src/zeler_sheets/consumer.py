@@ -15,6 +15,8 @@ from motor.motor_asyncio import AsyncIOMotorClient
 
 from zeler_platform_core.events.idempotency import IdempotencyStore as CoreIdempotencyStore
 from zeler_platform_core.runtime.manifest import validate_manifest
+from zeler_sheets.google_sheets_client import make_sheets_client
+from zeler_sheets.sheets_config import SheetsSettings
 
 MELI_EVENTS_EXCHANGE = "meli.events"
 SHEETS_EVENTS_QUEUE = "zeler.sheets.events"
@@ -73,6 +75,7 @@ class GoogleSheetsClient(Protocol):
     async def append_row(
         self,
         *,
+        seller_id: str,
         spreadsheet_id: str,
         worksheet_name: str,
         row: list[str],
@@ -254,6 +257,7 @@ class SheetsEventHandler:
         )
         row = format_resource_row(event.event_type, resource)
         await self._sheets_client.append_row(
+            seller_id=str(event.seller_id),
             spreadsheet_id=str(export_config["spreadsheet_id"]),
             worksheet_name=str(export_config.get("worksheet_name", "Events")),
             row=row,
@@ -281,12 +285,7 @@ def _first_string(resource: dict[str, Any], *keys: str) -> str:
 
 
 async def run() -> None:
-    """Boot the sheets AMQP worker.
-
-    Google Sheets delivery is intentionally wired with `_NotImplementedSheetsClient`;
-    the worker boots and binds queues, but first append attempt raises until a real
-    Sheets client is introduced by a follow-up change.
-    """
+    """Boot the sheets AMQP worker with the real Google Sheets client."""
     rabbitmq_url = os.environ.get("RABBITMQ_URL")
     mongo_uri = os.environ.get("MONGO_URI")
     mongo_db = os.environ.get("MONGO_DB")
@@ -308,6 +307,10 @@ async def run() -> None:
         socketTimeoutMS=30000,
     )
     db = mongo_client[mongo_db]
+    from google.cloud import kms
+
+    sheets_settings = SheetsSettings()  # type: ignore[call-arg]
+    kms_client = kms.KeyManagementServiceClient()
     manifest_path = Path(__file__).resolve().parents[2] / "manifest.yaml"
     handler = SheetsEventHandler(
         db=db,
@@ -315,7 +318,7 @@ async def run() -> None:
             base_url=os.environ.get("GATEWAY_BASE_URL", "http://gateway"),
             token=os.environ.get("GATEWAY_TOKEN", ""),
         ),
-        sheets_client=_NotImplementedSheetsClient(),
+        sheets_client=make_sheets_client(db, kms_client, sheets_settings),
         idempotency_store=_SheetsIdempotencyAdapter(
             CoreIdempotencyStore(cast(Any, db["processed_events"]))
         ),

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 from datetime import UTC, datetime
 from typing import Any
 
@@ -60,17 +61,18 @@ class FakeGatewayClient:
 
 class FakeSheetsClient:
     def __init__(self) -> None:
-        self.rows: list[tuple[str, str, list[str], str]] = []
+        self.rows: list[tuple[str, str, str, list[str], str]] = []
 
     async def append_row(
         self,
         *,
+        seller_id: str,
         spreadsheet_id: str,
         worksheet_name: str,
         row: list[str],
         idempotency_key: str,
     ) -> None:
-        self.rows.append((spreadsheet_id, worksheet_name, row, idempotency_key))
+        self.rows.append((seller_id, spreadsheet_id, worksheet_name, row, idempotency_key))
 
 
 class FakeIdempotency:
@@ -83,6 +85,17 @@ class FakeIdempotency:
 
     async def mark_processed(self, key: str) -> None:
         self.marked.append(key)
+
+
+@pytest.mark.asyncio
+async def test_google_sheets_client_protocol_requires_seller_id_kwarg() -> None:
+    from zeler_sheets.consumer import GoogleSheetsClient
+
+    signature = inspect.signature(GoogleSheetsClient.append_row)
+
+    assert "seller_id" in signature.parameters
+    assert signature.parameters["seller_id"].kind is inspect.Parameter.KEYWORD_ONLY
+    assert signature.parameters["seller_id"].annotation == "str"
 
 
 @pytest.mark.asyncio
@@ -111,6 +124,7 @@ async def test_item_event_triggers_sheets_append() -> None:
     assert gateway.calls == [(123456789, "/items/MLA123")]
     assert sheets.rows == [
         (
+            "123456789",
             "sheet-123",
             "Items",
             ["items.updated", "MLA123", "Premium widget", "active", "149.99", "7"],

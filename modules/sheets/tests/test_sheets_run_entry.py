@@ -108,6 +108,7 @@ async def test_not_implemented_sheets_client_raises_on_append_row() -> None:
 
     with pytest.raises(NotImplementedError, match="GoogleSheetsClient not implemented"):
         await client.append_row(
+            seller_id="seller-1",
             spreadsheet_id="sheet-1",
             worksheet_name="Events",
             row=["items.updated", "MLA1"],
@@ -255,6 +256,10 @@ async def _exercise_run(monkeypatch: pytest.MonkeyPatch) -> _RunState:
     monkeypatch.setenv("MONGO_DB", "zeler")
     monkeypatch.setenv("GATEWAY_BASE_URL", "https://gateway.test")
     monkeypatch.setenv("GATEWAY_TOKEN", "token")
+    monkeypatch.setenv("GOOGLE_OAUTH_CLIENT_ID", "google-client-id")
+    monkeypatch.setenv("GOOGLE_OAUTH_CLIENT_SECRET", "google-client-secret")
+    monkeypatch.setenv("GOOGLE_OAUTH_REDIRECT_URI", "https://sheets.test/oauth/google/callback")
+    monkeypatch.setenv("KMS_PROJECT_ID", "zeler-dev")
 
     class FakeMongoClient:
         def __init__(self, uri: str, **kwargs: Any) -> None:
@@ -271,9 +276,7 @@ async def _exercise_run(monkeypatch: pytest.MonkeyPatch) -> _RunState:
         def __init__(self, **kwargs: Any) -> None:
             assert kwargs["rabbitmq_url"] == "amqp://unit-test"
             assert Path(kwargs["manifest_path"]).name == "manifest.yaml"
-            assert (
-                kwargs["handler"]._sheets_client.__class__.__name__ == "_NotImplementedSheetsClient"
-            )
+            assert kwargs["handler"]._sheets_client.__class__.__name__ == "GoogleSheetsClient"
 
         async def start(self) -> None:
             state.runner_started = True
@@ -283,6 +286,7 @@ async def _exercise_run(monkeypatch: pytest.MonkeyPatch) -> _RunState:
 
     monkeypatch.setattr("zeler_sheets.consumer.AsyncIOMotorClient", FakeMongoClient)
     monkeypatch.setattr("zeler_sheets.consumer.SheetsAmqpConsumerRunner", FakeRunner)
+    monkeypatch.setattr("google.cloud.kms.KeyManagementServiceClient", lambda: object())
     monkeypatch.setattr("zeler_sheets.consumer.asyncio.get_running_loop", lambda: _FakeLoop(state))
     monkeypatch.setattr("zeler_sheets.consumer.asyncio.Event", lambda: _FakeShutdownEvent(state))
 

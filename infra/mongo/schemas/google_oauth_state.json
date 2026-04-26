@@ -1,0 +1,14 @@
+{
+  "$jsonSchema": {
+    "bsonType": "object",
+    "properties": {
+      "_id": {"bsonType": "string"},
+      "seller_id": {"bsonType": "string"},
+      "code_verifier": {"bsonType": "string"},
+      "created_at": {"bsonType": "date"}
+    },
+    "required": ["_id", "seller_id", "code_verifier", "created_at"]
+  },
+  "validationAction": "error",
+  "validationLevel": "strict"
+}
