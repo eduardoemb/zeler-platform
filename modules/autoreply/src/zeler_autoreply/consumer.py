@@ -142,7 +142,6 @@ class AutoreplyAmqpConsumerRunner:
             durable=True,
             arguments={
                 "x-dead-letter-exchange": self.config.dead_letter_exchange,
-                "x-delivery-limit": self.config.delivery_limit,
             },
         )
         for routing_key in self.config.routing_keys:
@@ -155,6 +154,12 @@ class AutoreplyAmqpConsumerRunner:
             self._connection = None
 
     async def handle_message(self, message: Any) -> None:
+        death_history = message.headers.get("x-death", []) if message.headers else []
+        death_count = death_history[0].get("count", 0) if death_history else 0
+        if death_count >= self.config.delivery_limit:
+            await message.nack(requeue=False)
+            return
+
         try:
             event = _autoreply_event_from_message(message)
             await self._handler.handle(event)

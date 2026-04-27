@@ -93,6 +93,21 @@ async def test_register_duplicate_email_returns_409(auth_client: httpx.AsyncClie
 
 
 @pytest.mark.asyncio
+async def test_register_rejects_invalid_email_format(auth_client: httpx.AsyncClient) -> None:
+    response = await auth_client.post(
+        "/auth/register",
+        json={
+            "email": "not-an-email",
+            "name": "Operator One",
+            "auth_provider": "local",
+        },
+    )
+
+    assert response.status_code == 422
+    assert "email" in response.json()["detail"][0]["loc"]
+
+
+@pytest.mark.asyncio
 async def test_register_invalid_auth_provider_returns_422(auth_client: httpx.AsyncClient) -> None:
     response = await auth_client.post(
         "/auth/register",

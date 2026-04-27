@@ -9,7 +9,7 @@ class FakeMessage:
         self,
         body: dict[str, Any] | bytes,
         *,
-        headers: dict[str, str] | None = None,
+        headers: dict[str, object] | None = None,
     ) -> None:
         self.body = json.dumps(body).encode("utf-8") if isinstance(body, dict) else body
         self.headers = headers or {}

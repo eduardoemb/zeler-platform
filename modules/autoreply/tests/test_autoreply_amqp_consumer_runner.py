@@ -63,9 +63,10 @@ async def test_autoreply_runner_declares_queue_with_dlx_and_binds_manifest_routi
         (
             "zeler.autoreply.events",
             True,
-            {"x-dead-letter-exchange": "zeler.autoreply.events.dlx", "x-delivery-limit": 5},
+            {"x-dead-letter-exchange": "zeler.autoreply.events.dlx"},
         )
     ]
+    assert "x-delivery-limit" not in channel.declared_queues[0][2]
     assert [routing_key for _, routing_key in channel.queue.bindings] == [
         "questions.new",
         "messages.new",
@@ -107,6 +108,22 @@ async def test_autoreply_runner_nacks_with_requeue_on_runtime_error() -> None:
 
     assert message.acked is False
     assert message.nacks == [True]
+
+
+@pytest.mark.asyncio
+async def test_autoreply_runner_nacks_poison_message_without_requeue() -> None:
+    handler = FakeHandler()
+    runner = AutoreplyAmqpConsumerRunner(rabbitmq_url="amqp://unit-test", handler=handler)
+    message = FakeMessage(
+        _valid_payload(),
+        headers={"idempotency_key": "idem-1", "x-death": [{"count": 5}]},
+    )
+
+    await runner.handle_message(message)
+
+    assert message.acked is False
+    assert message.nacks == [False]
+    assert handler.events == []
 
 
 @pytest.mark.asyncio

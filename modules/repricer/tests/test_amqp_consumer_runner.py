@@ -26,7 +26,7 @@ class FakeMessage:
         self,
         body: dict[str, Any] | bytes,
         *,
-        headers: dict[str, str] | None = None,
+        headers: dict[str, object] | None = None,
     ) -> None:
         self.body = json.dumps(body).encode("utf-8") if isinstance(body, dict) else body
         self.headers = headers or {}
@@ -122,9 +122,10 @@ async def test_runner_declares_queue_and_binds_manifest_routing_keys(
         (
             "zeler.repricer.items",
             True,
-            {"x-dead-letter-exchange": "zeler.repricer.items.dlx", "x-delivery-limit": 5},
+            {"x-dead-letter-exchange": "zeler.repricer.items.dlx"},
         )
     ]
+    assert "x-delivery-limit" not in channel.declared_queues[0][2]
     assert [routing_key for _, routing_key in channel.queue.bindings] == [
         "items.*",
         "items.price_updated",
@@ -176,6 +177,22 @@ async def test_runner_requeues_retryable_handler_failures() -> None:
 
     assert message.acked is False
     assert message.nacks == [True]
+
+
+@pytest.mark.asyncio
+async def test_handle_message_nacks_poison_message_without_requeue() -> None:
+    handler = FakeHandler()
+    runner = RepricerAmqpConsumerRunner(rabbitmq_url="amqp://unit-test", handler=handler)
+    message = FakeMessage(
+        _valid_payload(),
+        headers={"idempotency_key": "idem-1", "x-death": [{"count": 5}]},
+    )
+
+    await runner.handle_message(message)
+
+    assert message.acked is False
+    assert message.nacks == [False]
+    assert handler.events == []
 
 
 @pytest.mark.asyncio
