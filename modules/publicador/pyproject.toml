@@ -3,7 +3,7 @@ name = "zeler-publicador"
 version = "0.0.0"
 description = "Publicador module package"
 requires-python = ">=3.11"
-dependencies = ["zeler_platform_core"]
+dependencies = ["zeler_platform_core", "fastapi>=0.110,<1", "uvicorn[standard]>=0.30.0"]
 
 [build-system]
 requires = ["hatchling>=1.24.0"]

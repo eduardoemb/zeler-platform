@@ -2477,14 +2477,18 @@ version = "0.0.0"
 source = { editable = "modules/autoreply" }
 dependencies = [
     { name = "aio-pika" },
+    { name = "fastapi" },
     { name = "httpx" },
+    { name = "uvicorn", extra = ["standard"] },
     { name = "zeler-platform-core" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "aio-pika", specifier = ">=9.4.0" },
+    { name = "fastapi", specifier = ">=0.110,<1" },
     { name = "httpx", specifier = ">=0.27.0" },
+    { name = "uvicorn", extras = ["standard"], specifier = ">=0.30.0" },
     { name = "zeler-platform-core", editable = "core" },
 ]
 
@@ -2513,14 +2517,18 @@ version = "0.0.0"
 source = { editable = "modules/fulldock" }
 dependencies = [
     { name = "aio-pika" },
+    { name = "fastapi" },
     { name = "httpx" },
+    { name = "uvicorn", extra = ["standard"] },
     { name = "zeler-platform-core" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "aio-pika", specifier = ">=9.4.0" },
+    { name = "fastapi", specifier = ">=0.110,<1" },
     { name = "httpx", specifier = ">=0.27.0" },
+    { name = "uvicorn", extras = ["standard"], specifier = ">=0.30.0" },
     { name = "zeler-platform-core", editable = "core" },
 ]
 
@@ -2659,11 +2667,17 @@ name = "zeler-publicador"
 version = "0.0.0"
 source = { editable = "modules/publicador" }
 dependencies = [
+    { name = "fastapi" },
+    { name = "uvicorn", extra = ["standard"] },
     { name = "zeler-platform-core" },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "zeler-platform-core", editable = "core" }]
+requires-dist = [
+    { name = "fastapi", specifier = ">=0.110,<1" },
+    { name = "uvicorn", extras = ["standard"], specifier = ">=0.30.0" },
+    { name = "zeler-platform-core", editable = "core" },
+]
 
 [[package]]
 name = "zeler-repricer"
@@ -2673,6 +2687,7 @@ dependencies = [
     { name = "aio-pika" },
     { name = "fastapi" },
     { name = "httpx" },
+    { name = "uvicorn", extra = ["standard"] },
     { name = "zeler-platform-core" },
 ]
 
@@ -2681,6 +2696,7 @@ requires-dist = [
     { name = "aio-pika", specifier = ">=9.4.0" },
     { name = "fastapi", specifier = ">=0.110,<1" },
     { name = "httpx", specifier = ">=0.27.0" },
+    { name = "uvicorn", extras = ["standard"], specifier = ">=0.30.0" },
     { name = "zeler-platform-core", editable = "core" },
 ]
 
@@ -2695,6 +2711,7 @@ dependencies = [
     { name = "google-cloud-kms" },
     { name = "httpx" },
     { name = "pydantic-settings" },
+    { name = "uvicorn", extra = ["standard"] },
     { name = "zeler-platform-core" },
 ]
 
@@ -2706,6 +2723,7 @@ requires-dist = [
     { name = "google-cloud-kms", specifier = ">=3.12.0" },
     { name = "httpx", specifier = ">=0.27.0" },
     { name = "pydantic-settings", specifier = ">=2.14.0" },
+    { name = "uvicorn", extras = ["standard"], specifier = ">=0.30.0" },
     { name = "zeler-platform-core", editable = "core" },
 ]
 
