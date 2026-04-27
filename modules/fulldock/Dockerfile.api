@@ -15,6 +15,7 @@ COPY modules/fulldock ./modules/fulldock
 RUN uv sync --frozen --package zeler-fulldock --no-dev
 
 RUN useradd --system --create-home --uid 1001 appuser
+RUN chown -R appuser:appuser /app
 USER appuser
 
 CMD ["sh", "-c", "uv run uvicorn zeler_fulldock.app:make_app --factory --host 0.0.0.0 --port ${PORT:-8080}"]

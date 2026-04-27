@@ -38,7 +38,7 @@ GOOGLE_CLIENT_ID=$(s google-oauth-client-id)
 GOOGLE_CLIENT_SECRET=$(s google-oauth-client-secret)
 MONGO_ADMIN_USER=$(s mongo-admin-user)
 MONGO_ADMIN_PASSWORD=$(s mongo-admin-password)
-GATEWAY_INTERNAL_TOKEN=$(s gateway-internal-token)
+GATEWAY_INTERNAL_TOKEN=$(s platform-gateway-token)
 
 echo "All secrets fetched."
 

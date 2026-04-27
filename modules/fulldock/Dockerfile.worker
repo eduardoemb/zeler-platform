@@ -14,6 +14,7 @@ COPY modules/fulldock ./modules/fulldock
 RUN uv sync --frozen --package zeler-fulldock --no-dev
 
 RUN useradd --system --create-home --uid 1001 appuser
+RUN chown -R appuser:appuser /app
 USER appuser
 
 CMD ["sh", "-c", "uv run python -m zeler_fulldock"]

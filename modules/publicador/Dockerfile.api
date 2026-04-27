@@ -15,6 +15,7 @@ COPY modules/publicador ./modules/publicador
 RUN uv sync --frozen --package zeler-publicador --no-dev
 
 RUN useradd --system --create-home --uid 1001 appuser
+RUN chown -R appuser:appuser /app
 USER appuser
 
 CMD ["sh", "-c", "uv run uvicorn zeler_publicador.app:make_app --factory --host 0.0.0.0 --port ${PORT:-8080}"]
