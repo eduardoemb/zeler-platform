@@ -1,0 +1,44 @@
+{
+	email ops@zeler.ai
+	servers {
+		protocols h1 h2
+	}
+}
+
+(common) {
+	encode zstd gzip
+	log {
+		output stdout
+		format json
+	}
+}
+
+gateway.zeler.ai {
+	import common
+	reverse_proxy gateway:8080
+}
+
+sheets.zeler.ai {
+	import common
+	reverse_proxy sheets-api:8080
+}
+
+repricer.zeler.ai {
+	import common
+	reverse_proxy repricer-api:8080
+}
+
+publicador.zeler.ai {
+	import common
+	reverse_proxy publicador-api:8080
+}
+
+autoreply.zeler.ai {
+	import common
+	reverse_proxy autoreply-api:8080
+}
+
+fulldock.zeler.ai {
+	import common
+	reverse_proxy fulldock-api:8080
+}

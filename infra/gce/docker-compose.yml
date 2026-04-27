@@ -1,0 +1,182 @@
+name: zeler-platform
+
+networks:
+  platform_default:
+
+volumes:
+  caddy_data:
+  caddy_config:
+
+x-img: &img us-central1-docker.pkg.dev/zeler-platform-dev/zeler-platform
+
+x-restart: &restart
+  restart: unless-stopped
+
+services:
+  # --------------------------------------------------------------------------
+  # MongoDB — single-node replica set rs0
+  # Internal-only: NO host ports published (reachable via Docker DNS mongo:27017)
+  # Data stored on persistent disk mounted at /var/lib/zeler-mongo
+  # --------------------------------------------------------------------------
+  mongo:
+    <<: *restart
+    image: mongo:7.0
+    command:
+      - mongod
+      - "--replSet"
+      - rs0
+      - "--auth"
+      - "--keyFile"
+      - /etc/mongo/keyfile/rs0.key
+      - "--bind_ip_all"
+    networks:
+      - platform_default
+    volumes:
+      - /var/lib/zeler-mongo:/data/db
+      - /opt/zeler-platform/mongo-keyfiles:/etc/mongo/keyfile:ro
+    env_file: /opt/zeler-platform/env/mongo.env
+    healthcheck:
+      test:
+        - CMD
+        - mongosh
+        - "--quiet"
+        - "--eval"
+        - "db.adminCommand({ping:1}).ok"
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  # --------------------------------------------------------------------------
+  # Caddy — reverse proxy + auto-TLS via Let's Encrypt HTTP-01
+  # Only service that publishes ports 80 and 443
+  # --------------------------------------------------------------------------
+  caddy:
+    <<: *restart
+    image: caddy:2-alpine
+    ports:
+      - "80:80"
+      - "443:443"
+    networks:
+      - platform_default
+    volumes:
+      - /opt/zeler-platform/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    env_file: /opt/zeler-platform/env/caddy.env
+    depends_on:
+      - gateway
+      - sheets-api
+      - repricer-api
+      - publicador-api
+      - autoreply-api
+      - fulldock-api
+
+  # --------------------------------------------------------------------------
+  # Gateway — public API + Meli OAuth + internal proxy
+  # --------------------------------------------------------------------------
+  gateway:
+    <<: *restart
+    image: us-central1-docker.pkg.dev/zeler-platform-dev/zeler-platform/gateway:rollout-v1
+    networks:
+      - platform_default
+    env_file: /opt/zeler-platform/env/gateway.env
+    depends_on:
+      mongo:
+        condition: service_healthy
+
+  # --------------------------------------------------------------------------
+  # Module APIs
+  # --------------------------------------------------------------------------
+  repricer-api:
+    <<: *restart
+    image: us-central1-docker.pkg.dev/zeler-platform-dev/zeler-platform/repricer-api:rollout-v1
+    networks:
+      - platform_default
+    env_file: /opt/zeler-platform/env/repricer-api.env
+    depends_on:
+      mongo:
+        condition: service_healthy
+
+  sheets-api:
+    <<: *restart
+    image: us-central1-docker.pkg.dev/zeler-platform-dev/zeler-platform/sheets-api:rollout-v1
+    networks:
+      - platform_default
+    env_file: /opt/zeler-platform/env/sheets-api.env
+    depends_on:
+      mongo:
+        condition: service_healthy
+
+  publicador-api:
+    <<: *restart
+    image: us-central1-docker.pkg.dev/zeler-platform-dev/zeler-platform/publicador-api:rollout-v1
+    networks:
+      - platform_default
+    env_file: /opt/zeler-platform/env/publicador-api.env
+    depends_on:
+      mongo:
+        condition: service_healthy
+
+  autoreply-api:
+    <<: *restart
+    image: us-central1-docker.pkg.dev/zeler-platform-dev/zeler-platform/autoreply-api:rollout-v1
+    networks:
+      - platform_default
+    env_file: /opt/zeler-platform/env/autoreply-api.env
+    depends_on:
+      mongo:
+        condition: service_healthy
+
+  fulldock-api:
+    <<: *restart
+    image: us-central1-docker.pkg.dev/zeler-platform-dev/zeler-platform/fulldock-api:rollout-v1
+    networks:
+      - platform_default
+    env_file: /opt/zeler-platform/env/fulldock-api.env
+    depends_on:
+      mongo:
+        condition: service_healthy
+
+  # --------------------------------------------------------------------------
+  # Workers
+  # --------------------------------------------------------------------------
+  repricer-worker:
+    <<: *restart
+    image: us-central1-docker.pkg.dev/zeler-platform-dev/zeler-platform/repricer-worker:rollout-v1
+    networks:
+      - platform_default
+    env_file: /opt/zeler-platform/env/repricer-worker.env
+    depends_on:
+      mongo:
+        condition: service_healthy
+
+  sheets-worker:
+    <<: *restart
+    image: us-central1-docker.pkg.dev/zeler-platform-dev/zeler-platform/sheets-worker:rollout-v1
+    networks:
+      - platform_default
+    env_file: /opt/zeler-platform/env/sheets-worker.env
+    depends_on:
+      mongo:
+        condition: service_healthy
+
+  autoreply-worker:
+    <<: *restart
+    image: us-central1-docker.pkg.dev/zeler-platform-dev/zeler-platform/autoreply-worker:rollout-v1
+    networks:
+      - platform_default
+    env_file: /opt/zeler-platform/env/autoreply-worker.env
+    depends_on:
+      mongo:
+        condition: service_healthy
+
+  fulldock-worker:
+    <<: *restart
+    image: us-central1-docker.pkg.dev/zeler-platform-dev/zeler-platform/fulldock-worker:rollout-v1
+    networks:
+      - platform_default
+    env_file: /opt/zeler-platform/env/fulldock-worker.env
+    depends_on:
+      mongo:
+        condition: service_healthy
