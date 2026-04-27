@@ -77,7 +77,7 @@ services:
   # --------------------------------------------------------------------------
   gateway:
     <<: *restart
-    image: us-central1-docker.pkg.dev/zeler-platform-dev/zeler-platform/gateway:rollout-v4
+    image: us-central1-docker.pkg.dev/zeler-platform-dev/zeler-platform/gateway:rollout-v5
     networks:
       - platform_default
     env_file: /opt/zeler-platform/env/gateway.env
@@ -90,7 +90,7 @@ services:
   # --------------------------------------------------------------------------
   repricer-api:
     <<: *restart
-    image: us-central1-docker.pkg.dev/zeler-platform-dev/zeler-platform/repricer-api:rollout-v4
+    image: us-central1-docker.pkg.dev/zeler-platform-dev/zeler-platform/repricer-api:rollout-v5
     networks:
       - platform_default
     env_file: /opt/zeler-platform/env/repricer-api.env
@@ -100,7 +100,7 @@ services:
 
   sheets-api:
     <<: *restart
-    image: us-central1-docker.pkg.dev/zeler-platform-dev/zeler-platform/sheets-api:rollout-v4
+    image: us-central1-docker.pkg.dev/zeler-platform-dev/zeler-platform/sheets-api:rollout-v5
     networks:
       - platform_default
     env_file: /opt/zeler-platform/env/sheets-api.env
@@ -110,7 +110,7 @@ services:
 
   publicador-api:
     <<: *restart
-    image: us-central1-docker.pkg.dev/zeler-platform-dev/zeler-platform/publicador-api:rollout-v4
+    image: us-central1-docker.pkg.dev/zeler-platform-dev/zeler-platform/publicador-api:rollout-v5
     networks:
       - platform_default
     env_file: /opt/zeler-platform/env/publicador-api.env
@@ -120,7 +120,7 @@ services:
 
   autoreply-api:
     <<: *restart
-    image: us-central1-docker.pkg.dev/zeler-platform-dev/zeler-platform/autoreply-api:rollout-v4
+    image: us-central1-docker.pkg.dev/zeler-platform-dev/zeler-platform/autoreply-api:rollout-v5
     networks:
       - platform_default
     env_file: /opt/zeler-platform/env/autoreply-api.env
@@ -130,7 +130,7 @@ services:
 
   fulldock-api:
     <<: *restart
-    image: us-central1-docker.pkg.dev/zeler-platform-dev/zeler-platform/fulldock-api:rollout-v4
+    image: us-central1-docker.pkg.dev/zeler-platform-dev/zeler-platform/fulldock-api:rollout-v5
     networks:
       - platform_default
     env_file: /opt/zeler-platform/env/fulldock-api.env
@@ -143,7 +143,7 @@ services:
   # --------------------------------------------------------------------------
   repricer-worker:
     <<: *restart
-    image: us-central1-docker.pkg.dev/zeler-platform-dev/zeler-platform/repricer-worker:rollout-v4
+    image: us-central1-docker.pkg.dev/zeler-platform-dev/zeler-platform/repricer-worker:rollout-v5
     networks:
       - platform_default
     env_file: /opt/zeler-platform/env/repricer-worker.env
@@ -153,7 +153,7 @@ services:
 
   sheets-worker:
     <<: *restart
-    image: us-central1-docker.pkg.dev/zeler-platform-dev/zeler-platform/sheets-worker:rollout-v4
+    image: us-central1-docker.pkg.dev/zeler-platform-dev/zeler-platform/sheets-worker:rollout-v5
     networks:
       - platform_default
     env_file: /opt/zeler-platform/env/sheets-worker.env
@@ -163,7 +163,7 @@ services:
 
   autoreply-worker:
     <<: *restart
-    image: us-central1-docker.pkg.dev/zeler-platform-dev/zeler-platform/autoreply-worker:rollout-v4
+    image: us-central1-docker.pkg.dev/zeler-platform-dev/zeler-platform/autoreply-worker:rollout-v5
     networks:
       - platform_default
     env_file: /opt/zeler-platform/env/autoreply-worker.env
@@ -173,7 +173,7 @@ services:
 
   fulldock-worker:
     <<: *restart
-    image: us-central1-docker.pkg.dev/zeler-platform-dev/zeler-platform/fulldock-worker:rollout-v4
+    image: us-central1-docker.pkg.dev/zeler-platform-dev/zeler-platform/fulldock-worker:rollout-v5
     networks:
       - platform_default
     env_file: /opt/zeler-platform/env/fulldock-worker.env
