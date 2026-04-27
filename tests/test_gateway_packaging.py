@@ -40,6 +40,8 @@ def test_gateway_dockerfile_syncs_gateway_package() -> None:
 
 def test_gateway_dockerfile_runs_uvicorn_with_zeler_gateway_app() -> None:
     text = _dockerfile_text()
+    assert "uv run" not in text
+    assert ".venv/bin/uvicorn zeler_gateway.app:app" in text
     assert "uvicorn zeler_gateway.app:app" in text
     assert "--host 0.0.0.0" in text
     assert "${PORT" in text or "$PORT" in text

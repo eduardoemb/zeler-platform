@@ -13,8 +13,10 @@ COPY modules/repricer ./modules/repricer
 
 RUN uv sync --frozen --package zeler-repricer --no-dev
 
+RUN test -f .venv/bin/python
+
 RUN useradd --system --create-home --uid 1001 appuser
 RUN chown -R appuser:appuser /app
 USER appuser
 
-CMD ["sh", "-c", "uv run python -m zeler_repricer"]
+CMD ["sh", "-c", ".venv/bin/python -m zeler_repricer"]

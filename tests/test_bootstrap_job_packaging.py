@@ -21,7 +21,10 @@ def test_bootstrap_cloud_run_job_packaging_files_exist() -> None:
     assert cloudbuild.exists()
     assert entrypoint.exists()
 
-    assert "zeler_bootstrap" in dockerfile.read_text(encoding="utf-8")
+    dockerfile_text = dockerfile.read_text(encoding="utf-8")
+    assert "uv run" not in dockerfile_text
+    assert 'ENTRYPOINT [".venv/bin/python", "-m", "zeler_bootstrap"]' in dockerfile_text
+    assert "zeler_bootstrap" in dockerfile_text
     cloudbuild_text = cloudbuild.read_text(encoding="utf-8")
     assert "gcloud run jobs deploy zeler-bootstrap" in cloudbuild_text
     assert "--update-env-vars=ZELER_ENV=prod" in cloudbuild_text

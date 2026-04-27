@@ -74,8 +74,9 @@ def test_api_dockerfile_contains_required_stanzas_in_order(module_name: str) -> 
 def test_api_dockerfile_cmd_matches_contract(module_name: str) -> None:
     text = dockerfile_path(module_name, "api").read_text()
 
+    assert "uv run" not in text
     assert (
-        f'CMD ["sh", "-c", "uv run uvicorn zeler_{module_name}.app:make_app '
+        f'CMD ["sh", "-c", ".venv/bin/uvicorn zeler_{module_name}.app:make_app '
         '--factory --host 0.0.0.0 --port ${PORT:-8080}"]'
     ) in text
 
@@ -107,4 +108,5 @@ def test_worker_dockerfile_contains_required_stanzas_in_order(
 def test_worker_dockerfile_cmd_matches_contract(module_name: str) -> None:
     text = dockerfile_path(module_name, "worker").read_text()
 
-    assert f'CMD ["sh", "-c", "uv run python -m zeler_{module_name}"]' in text
+    assert "uv run" not in text
+    assert f'CMD ["sh", "-c", ".venv/bin/python -m zeler_{module_name}"]' in text

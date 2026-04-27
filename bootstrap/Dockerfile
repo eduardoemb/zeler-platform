@@ -13,4 +13,6 @@ COPY bootstrap ./bootstrap
 
 RUN uv sync --frozen --package zeler-bootstrap --no-dev
 
-ENTRYPOINT ["uv", "run", "python", "-m", "zeler_bootstrap"]
+RUN test -f .venv/bin/python
+
+ENTRYPOINT [".venv/bin/python", "-m", "zeler_bootstrap"]

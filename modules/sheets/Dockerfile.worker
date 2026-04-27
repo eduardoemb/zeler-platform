@@ -13,8 +13,10 @@ COPY modules/sheets ./modules/sheets
 
 RUN uv sync --frozen --package zeler-sheets --no-dev
 
+RUN test -f .venv/bin/python
+
 RUN useradd --system --create-home --uid 1001 appuser
 RUN chown -R appuser:appuser /app
 USER appuser
 
-CMD ["sh", "-c", "uv run python -m zeler_sheets"]
+CMD ["sh", "-c", ".venv/bin/python -m zeler_sheets"]

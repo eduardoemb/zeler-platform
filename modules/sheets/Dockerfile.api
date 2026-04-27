@@ -14,8 +14,10 @@ COPY modules/sheets ./modules/sheets
 
 RUN uv sync --frozen --package zeler-sheets --no-dev
 
+RUN test -f .venv/bin/uvicorn
+
 RUN useradd --system --create-home --uid 1001 appuser
 RUN chown -R appuser:appuser /app
 USER appuser
 
-CMD ["sh", "-c", "uv run uvicorn zeler_sheets.app:make_app --factory --host 0.0.0.0 --port ${PORT:-8080}"]
+CMD ["sh", "-c", ".venv/bin/uvicorn zeler_sheets.app:make_app --factory --host 0.0.0.0 --port ${PORT:-8080}"]

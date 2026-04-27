@@ -14,8 +14,10 @@ COPY gateway ./gateway
 
 RUN uv sync --frozen --package zeler-gateway --no-dev
 
+RUN test -f .venv/bin/uvicorn
+
 RUN useradd --system --create-home --uid 1001 appuser
 RUN chown -R appuser:appuser /app
 USER appuser
 
-CMD ["sh", "-c", "uv run uvicorn zeler_gateway.app:app --host 0.0.0.0 --port ${PORT:-8080}"]
+CMD ["sh", "-c", ".venv/bin/uvicorn zeler_gateway.app:app --host 0.0.0.0 --port ${PORT:-8080}"]
