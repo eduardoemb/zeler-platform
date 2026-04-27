@@ -3,7 +3,7 @@ name = "zeler-fulldock"
 version = "0.0.0"
 description = "FullDock module package"
 requires-python = ">=3.11"
-dependencies = ["zeler_platform_core", "aio-pika>=9.4.0", "fastapi>=0.110,<1", "httpx>=0.27.0", "uvicorn[standard]>=0.30.0"]
+dependencies = ["zeler_platform_core", "aio-pika>=9.4.0", "fastapi>=0.110,<1", "httpx>=0.27.0", "uvicorn[standard]>=0.30.0", "motor>=3.7.1"]
 
 [build-system]
 requires = ["hatchling>=1.24.0"]
