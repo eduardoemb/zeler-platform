@@ -14,9 +14,6 @@ __pycache__/
 .coverage
 htmlcov/
 
-# uv
-uv.lock
-
 # Environments
 .env
 .env.*
