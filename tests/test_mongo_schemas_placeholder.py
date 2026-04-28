@@ -32,6 +32,7 @@ EXPECTED_FILES = {
     "sheets_sync_jobs.json",
     "google_oauth_tokens.json",
     "google_oauth_state.json",
+    "meli_oauth_state.json",
     # Publicador module-owned
     "publicador_drafts.json",
     "publicador_history.json",
@@ -65,6 +66,7 @@ ACTIVE_NON_PLACEHOLDER_SCHEMAS = {
     "sheets_sync_jobs.json",
     "google_oauth_tokens.json",
     "google_oauth_state.json",
+    "meli_oauth_state.json",
     "shipments.json",
     "users.json",
     "webhook_events.json",

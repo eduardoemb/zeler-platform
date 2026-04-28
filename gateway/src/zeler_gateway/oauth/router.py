@@ -1,17 +1,19 @@
 from __future__ import annotations
 
+import base64
+import hashlib
+import secrets
 from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 from urllib.parse import urlencode
 
 import httpx
 from fastapi import APIRouter, HTTPException, Query, Request
-from fastapi.responses import RedirectResponse
+from fastapi.responses import JSONResponse, RedirectResponse, Response
 
 from zeler_gateway.config import Settings
 from zeler_gateway.oauth.events import emit_accounts_linked
 from zeler_gateway.tokens.encryption import encrypt_token
-from zeler_platform_core.auth.jwt import InvalidJWTError, mint_state_jwt, verify_state_jwt
 
 router = APIRouter(prefix="/oauth", tags=["oauth"])
 
@@ -21,16 +23,36 @@ APP_ID = "zeler-platform"
 
 
 @router.get("/authorize")
-async def authorize(platform_user_id: str = Query(...)) -> RedirectResponse:
+async def authorize(request: Request, platform_user_id: str = Query(...)) -> RedirectResponse:
     settings = Settings()
-    state = mint_state_jwt(platform_user_id, ttl_s=settings.state_ttl_seconds)
+    normalized_platform_user_id = platform_user_id.strip()
+    if not normalized_platform_user_id:
+        raise HTTPException(status_code=400, detail="platform_user_id is required")
+
+    state = secrets.token_urlsafe(32)
+    code_verifier = secrets.token_urlsafe(64)
+    await request.app.state.mongo_db["meli_oauth_state"].insert_one(
+        {
+            "_id": state,
+            "platform_user_id": normalized_platform_user_id,
+            "code_verifier": code_verifier,
+            "created_at": datetime.now(UTC),
+        }
+    )
     params = {
         "client_id": settings.meli_client_id,
         "redirect_uri": settings.meli_redirect_uri,
         "response_type": "code",
+        "code_challenge": _pkce_challenge(code_verifier),
+        "code_challenge_method": "S256",
         "state": state,
     }
     return RedirectResponse(url=f"{MELI_AUTHORIZE_URL}?{urlencode(params)}", status_code=302)
+
+
+def _pkce_challenge(code_verifier: str) -> str:
+    digest = hashlib.sha256(code_verifier.encode("ascii")).digest()
+    return base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
 
 
 @router.get("/callback")
@@ -38,14 +60,21 @@ async def callback(
     request: Request,
     code: str = Query(...),
     state: str = Query(...),
-) -> RedirectResponse:
+) -> Response:
     settings = Settings()
-    try:
-        claims = verify_state_jwt(state)
-    except InvalidJWTError as exc:
-        raise HTTPException(status_code=400, detail="invalid OAuth state") from exc
+    state_doc = await request.app.state.mongo_db["meli_oauth_state"].find_one_and_delete(
+        {"_id": state}
+    )
+    if state_doc is None:
+        return JSONResponse(status_code=400, content={"error": "invalid_state"})
 
-    token_payload = await _exchange_authorization_code(code, settings=settings)
+    code_verifier = str(state_doc["code_verifier"])
+    platform_user_id = str(state_doc["platform_user_id"])
+    token_payload = await _exchange_authorization_code(
+        code,
+        code_verifier=code_verifier,
+        settings=settings,
+    )
     seller_id = int(token_payload["user_id"])
     now = datetime.now(UTC)
     expires_in = int(token_payload["expires_in"])
@@ -73,7 +102,7 @@ async def callback(
         "seller_id": seller_id,
         "nickname": f"seller_{seller_id}",
         "app_id": APP_ID,
-        "platform_user_id": claims.platform_user_id,
+        "platform_user_id": platform_user_id,
         "access_token_ciphertext": access_enc.ciphertext,
         "access_token_dek_wrapped": access_enc.dek_wrapped,
         "refresh_token_ciphertext": refresh_enc.ciphertext,
@@ -101,11 +130,13 @@ async def callback(
         {"$set": doc_set, "$setOnInsert": doc_set_on_insert},
         upsert=True,
     )
-    await emit_accounts_linked(seller_id=seller_id, platform_user_id=claims.platform_user_id)
+    await emit_accounts_linked(seller_id=seller_id, platform_user_id=platform_user_id)
     return RedirectResponse(url=settings.oauth_success_url, status_code=302)
 
 
-async def _exchange_authorization_code(code: str, *, settings: Settings) -> dict[str, Any]:
+async def _exchange_authorization_code(
+    code: str, *, code_verifier: str, settings: Settings
+) -> dict[str, Any]:
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
             response = await client.post(
@@ -115,6 +146,7 @@ async def _exchange_authorization_code(code: str, *, settings: Settings) -> dict
                     "client_id": settings.meli_client_id,
                     "client_secret": settings.meli_client_secret.get_secret_value(),
                     "code": code,
+                    "code_verifier": code_verifier,
                     "redirect_uri": settings.meli_redirect_uri,
                 },
             )

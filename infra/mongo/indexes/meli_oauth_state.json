@@ -1,0 +1,6 @@
+[
+  {
+    "keys": {"created_at": 1},
+    "options": {"name": "ttl_meli_oauth_state_created_at", "expireAfterSeconds": 600}
+  }
+]
