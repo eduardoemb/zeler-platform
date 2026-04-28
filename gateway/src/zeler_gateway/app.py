@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
@@ -12,7 +13,7 @@ from motor.motor_asyncio import AsyncIOMotorClient
 from zeler_gateway.accounts.router import router as accounts_router
 from zeler_gateway.auth.router import router as auth_router
 from zeler_gateway.bootstrap_jobs.router import router as bootstrap_jobs_router
-from zeler_gateway.config import get_settings
+from zeler_gateway.config import Settings, get_settings
 from zeler_gateway.internal.router import router as internal_router
 from zeler_gateway.oauth.router import router as oauth_router
 from zeler_gateway.observability.logging import configure_logging
@@ -27,11 +28,47 @@ from zeler_gateway.webhooks.router import router as webhooks_router
 logger = structlog.get_logger(__name__)
 
 
+def _log_hmac_policy(settings: Settings) -> None:
+    require_signature = settings.meli_webhook_require_signature
+    secret = settings.meli_webhook_hmac_secret.get_secret_value()
+    policy_logger = structlog.wrap_logger(logging.getLogger(__name__))
+
+    if require_signature and secret:
+        policy_logger.info(
+            "webhook.hmac_policy.required",
+            message="HMAC validation enforced",
+        )
+        return
+
+    if require_signature:
+        policy_logger.error(
+            "webhook.hmac_policy.required_but_missing_secret",
+            message="HMAC validation required but secret not configured",
+        )
+        return
+
+    if secret:
+        policy_logger.warning(
+            "webhook.hmac_policy.secret_set_but_skipped",
+            message=(
+                "HMAC secret is set but MELI_WEBHOOK_REQUIRE_SIGNATURE=False — "
+                "signature will NOT be verified"
+            ),
+        )
+        return
+
+    policy_logger.info(
+        "webhook.hmac_policy.skipped",
+        message="HMAC validation disabled by config",
+    )
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     get_settings.cache_clear()
     settings = get_settings()
     configure_logging(environment=settings.environment)
+    _log_hmac_policy(settings)
     if settings.otel_enabled and settings.environment != "test":
         configure_tracing(
             app,

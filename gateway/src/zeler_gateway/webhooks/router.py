@@ -40,8 +40,7 @@ def is_allowed_source_ip(source_ip: str, allowlist: str) -> bool:
 
 
 def verify_hmac_signature(body: bytes, signature: str | None, secret: str) -> bool:
-    if not secret:
-        return True
+    """Validate HMAC SHA-256. Precondition: secret is non-empty."""
     if not signature:
         return False
     expected = "sha256=" + hmac.new(secret.encode("utf-8"), body, sha256).hexdigest()
@@ -106,10 +105,18 @@ async def receive_meli_webhook(
         logger.warning("webhook.invalid_source_ip", source_ip=source_ip, path=str(request.url.path))
         raise HTTPException(status_code=401, detail="invalid webhook source")
 
-    secret = settings.meli_webhook_hmac_secret.get_secret_value()
-    if not verify_hmac_signature(body, x_meli_signature, secret):
-        logger.warning("webhook.invalid_signature", source_ip=source_ip, path=str(request.url.path))
-        raise HTTPException(status_code=401, detail="invalid webhook signature")
+    if settings.meli_webhook_require_signature:
+        secret = settings.meli_webhook_hmac_secret.get_secret_value()
+        if not secret:
+            logger.error("webhook.hmac_required_but_secret_missing", path=str(request.url.path))
+            raise HTTPException(
+                status_code=503, detail="HMAC validation required but secret not configured"
+            )
+        if not verify_hmac_signature(body, x_meli_signature, secret):
+            logger.warning(
+                "webhook.invalid_signature", source_ip=source_ip, path=str(request.url.path)
+            )
+            raise HTTPException(status_code=401, detail="invalid webhook signature")
 
     payload = await request.json()
     event_id = _event_id(payload)

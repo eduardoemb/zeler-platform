@@ -41,6 +41,9 @@ class Settings(BaseSettings):
     meli_webhook_hmac_secret: SecretStr = Field(
         default=SecretStr(""), alias="MELI_WEBHOOK_HMAC_SECRET"
     )
+    meli_webhook_require_signature: bool = Field(
+        default=False, alias="MELI_WEBHOOK_REQUIRE_SIGNATURE"
+    )
     rabbitmq_url: str = Field(default="", alias="RABBITMQ_URL")
     rabbitmq_events_exchange: str = Field(default="meli.events", alias="RABBITMQ_EVENTS_EXCHANGE")
     ready_mongo_timeout_s: float = Field(default=2.0, alias="READY_MONGO_TIMEOUT_S")
