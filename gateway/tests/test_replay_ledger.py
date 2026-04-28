@@ -48,9 +48,7 @@ class FakeWebhookEvents:
         self.update_result = update_result
         self.update_calls: list[tuple[dict[str, Any], dict[str, Any]]] = []
 
-    def find(
-        self, query: dict[str, Any], _projection: dict[str, int] | None = None
-    ) -> FakeCursor:
+    def find(self, query: dict[str, Any], _projection: dict[str, int] | None = None) -> FakeCursor:
         return FakeCursor(
             [
                 document
@@ -71,9 +69,7 @@ class FakeDatabase:
     def __init__(
         self, documents: list[dict[str, Any]], update_result: UpdateResult | None = None
     ) -> None:
-        self.webhook_events = FakeWebhookEvents(
-            documents, update_result or UpdateResult()
-        )
+        self.webhook_events = FakeWebhookEvents(documents, update_result or UpdateResult())
 
     def __getitem__(self, collection_name: str) -> FakeWebhookEvents:
         assert collection_name == "webhook_events"
@@ -123,16 +119,7 @@ def _healthy_gate_state() -> list[QueueSnapshot]:
             dlq_ready=0,
             routing_keys=("price_suggestion.updated",),
             healthy=True,
-        ),
-        QueueSnapshot(
-            name="zeler.repricer.price_suggestion",
-            ready=0,
-            unacked=0,
-            consumers=1,
-            dlq_ready=0,
-            routing_keys=("price_suggestion.updated",),
-            healthy=True,
-        ),
+        )
     ]
 
 

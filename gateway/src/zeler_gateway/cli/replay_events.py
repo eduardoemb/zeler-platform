@@ -39,18 +39,20 @@ WEBHOOK_EVENTS_PROJECTION = {
     "schema_version": 1,
 }
 DEFAULT_MAX_TIME_MS = 5000
-TOPIC_GATE_QUEUES = {
-    "price_suggestion": (
-        "zeler.repricer.items",
-        "zeler.repricer.price_suggestion",
-    ),
-    "stock-locations": (
-        "zeler.fulldock.events",
-    ),
+TOPIC_REQUIRED_GATE_QUEUES = {
+    "price_suggestion": ("zeler.repricer.items",),
+    "stock-locations": ("zeler.fulldock.events",),
+}
+TOPIC_NO_GO_REASONS = {
     "user-products-families": (
-        "zeler.sheets.events",
-        "zeler.sheets.user_products",
+        "Sheets user_products.* handler/consumer behavior is not defined; "
+        "there is no active Sheets consumer path for user_products.*; "
+        "approval flags do not define functional safety."
     ),
+}
+LEGACY_REMEDIATION_QUEUES = {
+    "price_suggestion": ("zeler.repricer.price_suggestion",),
+    "stock-locations": ("zeler.fulldock.stock_locations",),
 }
 TOPIC_ROUTING_KEYS = {
     "price_suggestion": "price_suggestion.updated",
@@ -178,6 +180,50 @@ class GateDecision:
     detail: str = ""
 
 
+@dataclass(frozen=True)
+class QueueRemediationItem:
+    topic: str
+    queue: str
+    ready: int | None
+    unacked: int | None
+    consumers: int | None
+    dlq_ready: int | None
+    remediation_only: bool = True
+    approval_required: bool = True
+    recommendation: str = (
+        "Inspect/report first only. Capture a sanitized Rabbit export, verify the "
+        "active queue is healthy, then seek explicit operator approval before any "
+        "purge/delete/requeue/bind/unbind/publish/replay/deploy/build action."
+    )
+
+    def to_sanitized_dict(self) -> dict[str, Any]:
+        return {
+            "topic": self.topic,
+            "queue": self.queue,
+            "ready": self.ready,
+            "unacked": self.unacked,
+            "consumers": self.consumers,
+            "dlq_ready": self.dlq_ready,
+            "remediation_only": self.remediation_only,
+            "approval_required": self.approval_required,
+            "recommendation": self.recommendation,
+        }
+
+
+@dataclass(frozen=True)
+class RabbitRemediationReport:
+    legacy_queues: tuple[QueueRemediationItem, ...] = ()
+
+    def to_sanitized_dict(self) -> dict[str, Any]:
+        return {
+            "legacy_queues": [item.to_sanitized_dict() for item in self.legacy_queues],
+            "non_actions": (
+                "No automated purge/delete/requeue/bind/unbind/publish/replay/"
+                "deploy/build is performed by replay gate evaluation."
+            ),
+        }
+
+
 RabbitGateProvider = Callable[[], Sequence[QueueSnapshot]]
 
 
@@ -196,6 +242,28 @@ def _routing_key_matches(binding_key: str, routing_key: str) -> bool:
         if binding_part != routing_parts[index]:
             return False
     return len(binding_parts) == len(routing_parts)
+
+
+def build_rabbit_remediation_report(
+    snapshots: Sequence[QueueSnapshot], topics: Sequence[str]
+) -> RabbitRemediationReport:
+    by_name = {snapshot.name: snapshot for snapshot in snapshots}
+    items: list[QueueRemediationItem] = []
+    for topic in topics:
+        _validate_topic_allowed(topic)
+        for queue_name in LEGACY_REMEDIATION_QUEUES.get(topic, ()):
+            snapshot = by_name.get(queue_name)
+            items.append(
+                QueueRemediationItem(
+                    topic=topic,
+                    queue=queue_name,
+                    ready=snapshot.ready if snapshot is not None else None,
+                    unacked=snapshot.unacked if snapshot is not None else None,
+                    consumers=snapshot.consumers if snapshot is not None else None,
+                    dlq_ready=snapshot.dlq_ready if snapshot is not None else None,
+                )
+            )
+    return RabbitRemediationReport(legacy_queues=tuple(items))
 
 
 def _parse_topics(raw_topics: str) -> tuple[str, ...]:
@@ -266,13 +334,10 @@ def parse_replay_args(argv: list[str] | None = None) -> CliOptions:
     if args.max_publish_attempts < 1:
         raise ReplayConfigError("--max-publish-attempts must be positive")
     gate_source_count = sum(
-        source is not None
-        for source in (args.rabbit_management_export, args.rabbit_management_url)
+        source is not None for source in (args.rabbit_management_export, args.rabbit_management_url)
     )
     if args.execute and gate_source_count == 0:
-        raise ReplayConfigError(
-            "Rabbit management gate source is required when --execute is set"
-        )
+        raise ReplayConfigError("Rabbit management gate source is required when --execute is set")
     if args.execute and gate_source_count > 1:
         raise ReplayConfigError(
             "provide only one Rabbit management gate source: "
@@ -383,15 +448,14 @@ async def build_replay_plan(db: Any, options: PlanOptions) -> ReplayPlan:
 
     for topic in options.topics:
         topic_events = [
-            _planned_event(event)
-            for event in await _load_topic_events(collection, topic, options)
+            _planned_event(event) for event in await _load_topic_events(collection, topic, options)
         ]
         topic_selected: list[PlannedEvent]
         topic_skipped: list[PlannedEvent]
-        if topic == "user-products-families" and not options.allow_user_products_families:
+        if topic in TOPIC_NO_GO_REASONS:
             topic_selected = []
             topic_skipped = [
-                PlannedEvent(**{**event.__dict__, "skip_reason": "consumer_not_ready"})
+                PlannedEvent(**{**event.__dict__, "skip_reason": "topic_no_go"})
                 for event in topic_events
             ]
         elif options.dedupe_policy == "latest-per-resource" and topic in COALESCED_TOPICS:
@@ -475,8 +539,15 @@ async def _run_from_options(options: CliOptions) -> ReplayPlan:
         client.close()
 
 
-def _format_output(plan: ReplayPlan, output_format: Literal["json", "markdown"]) -> str:
+def format_replay_output(
+    plan: ReplayPlan,
+    output_format: Literal["json", "markdown"],
+    *,
+    remediation_report: RabbitRemediationReport | None = None,
+) -> str:
     sanitized = plan.to_sanitized_dict()
+    if remediation_report is not None:
+        sanitized["rabbit_remediation"] = remediation_report.to_sanitized_dict()
     if output_format == "json":
         return json.dumps(sanitized, indent=2)
     lines = [
@@ -487,13 +558,40 @@ def _format_output(plan: ReplayPlan, output_format: Literal["json", "markdown"])
     ]
     for topic, count in plan.topic_counts.items():
         lines.append(f"| `{topic}` | {count.total} | {count.selected} | {count.skipped} |")
+    if remediation_report is not None and remediation_report.legacy_queues:
+        lines.extend(
+            [
+                "",
+                "## Rabbit remediation-only queues",
+                "",
+                "| Topic | Queue | Ready | Unacked | Consumers | DLQ | Recommendation |",
+                "|---|---|---:|---:|---:|---:|---|",
+            ]
+        )
+        for item in remediation_report.legacy_queues:
+            lines.append(
+                "| "
+                f"`{item.topic}` | `{item.queue}` | {item.ready} | {item.unacked} | "
+                f"{item.consumers} | {item.dlq_ready} | remediation-only; "
+                f"{item.recommendation} |"
+            )
+        lines.extend(["", remediation_report.to_sanitized_dict()["non_actions"]])
     return "\n".join(lines)
+
+
+def _format_output(plan: ReplayPlan, output_format: Literal["json", "markdown"]) -> str:
+    return format_replay_output(plan, output_format)
 
 
 def main(argv: list[str] | None = None) -> None:
     options = parse_replay_args(argv)
     plan = asyncio.run(_run_from_options(options))
-    print(_format_output(plan, options.output_format))
+    remediation_report = None
+    if options.rabbit_management_export is not None or options.rabbit_management_url is not None:
+        remediation_report = build_rabbit_remediation_report(
+            _rabbit_gate_provider_from_options(options)(), options.topics
+        )
+    print(format_replay_output(plan, options.output_format, remediation_report=remediation_report))
 
 
 class FailureLedger(Protocol):
@@ -603,9 +701,7 @@ def _ensure_execute_gate_source(
         for source in (options.rabbit_management_export, options.rabbit_management_url)
     )
     if gate_source_count == 0 and gate_provider is None:
-        raise ReplayConfigError(
-            "Rabbit management gate source is required when --execute is set"
-        )
+        raise ReplayConfigError("Rabbit management gate source is required when --execute is set")
     if gate_source_count > 1:
         raise ReplayConfigError(
             "provide only one Rabbit management gate source: "
@@ -633,17 +729,20 @@ def evaluate_rabbit_gates(
     by_name = {snapshot.name: snapshot for snapshot in snapshots}
     for topic in topics:
         _validate_topic_allowed(topic)
+        if topic in TOPIC_NO_GO_REASONS:
+            return GateDecision(False, "topic_no_go", TOPIC_NO_GO_REASONS[topic])
         required_routing_key = TOPIC_ROUTING_KEYS[topic]
-        for queue_name in TOPIC_GATE_QUEUES[topic]:
+        for queue_name in TOPIC_REQUIRED_GATE_QUEUES.get(topic, ()):
             snapshot = by_name.get(queue_name)
+            detail = f"active consumer path {queue_name}"
             if snapshot is None:
-                return GateDecision(False, "missing_consumer", queue_name)
+                return GateDecision(False, "missing_consumer", detail)
             if snapshot.ready > options.max_queue_ready:
-                return GateDecision(False, "queue_cap_exceeded", queue_name)
+                return GateDecision(False, "queue_cap_exceeded", detail)
             if snapshot.dlq_ready > options.max_dlq_delta:
-                return GateDecision(False, "dlq_delta_exceeded", queue_name)
+                return GateDecision(False, "dlq_delta_exceeded", detail)
             if options.require_consumer_health and snapshot.consumers < 1:
-                return GateDecision(False, "missing_consumer", queue_name)
+                return GateDecision(False, "missing_consumer", detail)
             if options.require_consumer_health and (
                 not snapshot.healthy
                 or any(
@@ -651,12 +750,12 @@ def evaluate_rabbit_gates(
                     for marker in ("worker.message.requeued", "worker.message.dlq")
                 )
             ):
-                return GateDecision(False, "consumer_health_failed", queue_name)
+                return GateDecision(False, "consumer_health_failed", detail)
             if snapshot.routing_keys and not any(
                 _routing_key_matches(binding_key, required_routing_key)
                 for binding_key in snapshot.routing_keys
             ):
-                return GateDecision(False, "wrong_routing", queue_name)
+                return GateDecision(False, "wrong_routing", detail)
     return GateDecision(True, "ok")
 
 
@@ -665,7 +764,8 @@ def _enforce_rabbit_gate(
 ) -> None:
     gate_decision = evaluate_rabbit_gates(snapshots, topics, options)
     if not gate_decision.allowed:
-        raise ReplayAbortError(f"Rabbit gate failed: {gate_decision.reason}")
+        detail = f": {gate_decision.detail}" if gate_decision.detail else ""
+        raise ReplayAbortError(f"Rabbit gate failed: {gate_decision.reason}{detail}")
 
 
 async def execute_replay_plan(
@@ -773,9 +873,10 @@ async def execute_replay_plan(
                 }
             },
         )
-        if getattr(update_result, "matched_count", 0) != 1 or getattr(
-            update_result, "modified_count", 0
-        ) != 1:
+        if (
+            getattr(update_result, "matched_count", 0) != 1
+            or getattr(update_result, "modified_count", 0) != 1
+        ):
             _write_ledger(
                 resolved_ledger,
                 _ledger_row(

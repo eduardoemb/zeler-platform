@@ -7,7 +7,6 @@ from typing import Any
 
 import pytest
 
-import zeler_gateway.cli.replay_events as replay_events_module
 from zeler_gateway.cli.replay_events import (
     CliOptions,
     PlannedEvent,
@@ -51,9 +50,9 @@ def _healthy_price_state() -> list[QueueSnapshot]:
         ),
         QueueSnapshot(
             name="zeler.repricer.price_suggestion",
-            ready=0,
+            ready=42,
             unacked=0,
-            consumers=1,
+            consumers=0,
             dlq_ready=0,
             routing_keys=("price_suggestion.updated",),
             healthy=True,
@@ -134,7 +133,7 @@ def _planned_event(event_id: str, *, topic: str = "price_suggestion") -> Planned
         "user-products-families": "user_products.families_updated",
     }[topic]
     resource = f"/resource/{event_id}"
-    event = {
+    event: dict[str, Any] = {
         "_id": event_id,
         "topic": topic,
         "resource": resource,
@@ -201,18 +200,18 @@ def test_execute_cli_requires_rabbit_gate_source_unless_url_or_export(tmp_path: 
 
 
 @pytest.mark.asyncio
-async def test_user_products_families_execute_requires_consumer_gate_evidence() -> None:
+async def test_user_products_families_execute_aborts_no_go_before_publish_or_mark() -> None:
     database = FakeDatabase()
     publisher = RecordingPublisher()
     options = _options(topics=("user-products-families",), allow_user_products_families=True)
 
-    with pytest.raises(ReplayAbortError, match="missing_consumer"):
+    with pytest.raises(ReplayAbortError, match="topic_no_go"):
         await execute_replay_plan(
             database,
             _plan(_planned_event("families-1", topic="user-products-families")),
             publisher=publisher,
             options=options,
-            gate_provider=lambda: _healthy_family_state(consumers=0),
+            gate_provider=lambda: _healthy_family_state(consumers=1),
         )
 
     assert publisher.calls == []
@@ -226,7 +225,7 @@ async def test_execute_rechecks_rabbit_gate_before_each_message_and_aborts_on_fl
     async def no_sleep(_seconds: float) -> None:
         return None
 
-    monkeypatch.setattr(replay_events_module.asyncio, "sleep", no_sleep)
+    monkeypatch.setattr("zeler_gateway.cli.replay_events.asyncio.sleep", no_sleep)
     database = FakeDatabase()
     publisher = RecordingPublisher()
     unhealthy_after_first = _healthy_price_state()
@@ -264,19 +263,20 @@ def test_rabbit_gates_stop_on_queue_cap_dlq_and_missing_consumer() -> None:
 
     missing_consumer = _healthy_price_state()
     missing_consumer[0] = QueueSnapshot(**{**missing_consumer[0].__dict__, "consumers": 0})
-    assert evaluate_rabbit_gates(
-        missing_consumer, ("price_suggestion",), _options()
-    ).reason == "missing_consumer"
+    assert (
+        evaluate_rabbit_gates(missing_consumer, ("price_suggestion",), _options()).reason
+        == "missing_consumer"
+    )
 
 
-def test_rabbit_gates_stop_on_wrong_routing_health_log_failure_and_abort_file(tmp_path) -> None:
+def test_rabbit_gates_stop_on_wrong_routing_health_log_failure_and_abort_file(
+    tmp_path: Path,
+) -> None:
     wildcard_routing = _healthy_price_state()
     wildcard_routing[0] = QueueSnapshot(
         **{**wildcard_routing[0].__dict__, "routing_keys": ("price_suggestion.*",)}
     )
-    assert evaluate_rabbit_gates(
-        wildcard_routing, ("price_suggestion",), _options()
-    ).reason == "ok"
+    assert evaluate_rabbit_gates(wildcard_routing, ("price_suggestion",), _options()).reason == "ok"
 
     wrong_routing = _healthy_price_state()
     wrong_routing[0] = QueueSnapshot(
@@ -302,12 +302,15 @@ def test_rabbit_gates_stop_on_wrong_routing_health_log_failure_and_abort_file(tm
 
     abort_file = tmp_path / "abort-replay"
     abort_file.write_text("stop", encoding="utf-8")
-    assert evaluate_rabbit_gates(
-        _healthy_price_state(), ("price_suggestion",), _options(abort_file=abort_file)
-    ).reason == "operator_abort"
+    assert (
+        evaluate_rabbit_gates(
+            _healthy_price_state(), ("price_suggestion",), _options(abort_file=abort_file)
+        ).reason
+        == "operator_abort"
+    )
 
 
-def test_rabbit_gate_state_loads_sanitized_management_export(tmp_path) -> None:
+def test_rabbit_gate_state_loads_sanitized_management_export(tmp_path: Path) -> None:
     export_path = tmp_path / "rabbit-export.json"
     export_path.write_text(
         json.dumps(

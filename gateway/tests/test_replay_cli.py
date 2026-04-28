@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -10,8 +11,12 @@ from zeler_gateway.cli.replay_events import (
     PlanOptions,
     QueueSnapshot,
     ReplayConfigError,
+    ReplayPlan,
+    TopicPlanCount,
+    build_rabbit_remediation_report,
     build_replay_plan,
     evaluate_rabbit_gates,
+    format_replay_output,
     parse_replay_args,
 )
 
@@ -52,9 +57,7 @@ class FakeWebhookEvents:
         self.update_calls: list[tuple[dict[str, Any], dict[str, Any]]] = []
         self.recorder: dict[str, Any] = {}
 
-    def find(
-        self, query: dict[str, Any], projection: dict[str, int] | None = None
-    ) -> FakeCursor:
+    def find(self, query: dict[str, Any], projection: dict[str, int] | None = None) -> FakeCursor:
         self.find_calls.append({"query": query, "projection": projection})
         filtered = [
             document
@@ -73,9 +76,7 @@ class FakeWebhookEvents:
             and document.get("published_at") is query.get("published_at")
         )
 
-    async def update_one(
-        self, filter_: dict[str, Any], update: dict[str, Any]
-    ) -> object:
+    async def update_one(self, filter_: dict[str, Any], update: dict[str, Any]) -> object:
         self.update_calls.append((filter_, update))
         raise AssertionError("dry-run planning must not write to MongoDB")
 
@@ -238,6 +239,102 @@ def test_stock_locations_replay_gate_requires_only_active_fulldock_consumer() ->
     assert decision.reason == "ok"
 
 
+def test_price_suggestion_gate_uses_active_items_queue_and_reports_legacy_remediation() -> None:
+    options = parse_replay_args(["--topics", "price_suggestion"])
+    snapshots = [
+        QueueSnapshot(
+            name="zeler.repricer.items",
+            ready=0,
+            unacked=0,
+            consumers=2,
+            dlq_ready=0,
+            routing_keys=("price_suggestion.*",),
+        ),
+        QueueSnapshot(
+            name="zeler.repricer.price_suggestion",
+            ready=42,
+            unacked=0,
+            consumers=0,
+            dlq_ready=0,
+            routing_keys=("price_suggestion.updated",),
+        ),
+    ]
+
+    decision = evaluate_rabbit_gates(snapshots, ("price_suggestion",), options)
+    report = build_rabbit_remediation_report(snapshots, ("price_suggestion",))
+
+    assert decision.allowed is True
+    assert decision.reason == "ok"
+    assert report.to_sanitized_dict()["legacy_queues"] == [
+        {
+            "topic": "price_suggestion",
+            "queue": "zeler.repricer.price_suggestion",
+            "ready": 42,
+            "unacked": 0,
+            "consumers": 0,
+            "dlq_ready": 0,
+            "remediation_only": True,
+            "approval_required": True,
+            "recommendation": (
+                "Inspect/report first only. Capture a sanitized Rabbit export, verify the "
+                "active queue is healthy, then seek explicit operator approval before any "
+                "purge/delete/requeue/bind/unbind/publish/replay/deploy/build action."
+            ),
+        }
+    ]
+
+
+@pytest.mark.parametrize(
+    ("active_snapshot", "expected_reason"),
+    [
+        (
+            QueueSnapshot(
+                name="zeler.repricer.items",
+                ready=0,
+                unacked=0,
+                consumers=0,
+                dlq_ready=0,
+                routing_keys=("price_suggestion.*",),
+            ),
+            "missing_consumer",
+        ),
+        (
+            QueueSnapshot(
+                name="zeler.repricer.items",
+                ready=0,
+                unacked=0,
+                consumers=1,
+                dlq_ready=0,
+                routing_keys=("items.updated",),
+            ),
+            "wrong_routing",
+        ),
+    ],
+)
+def test_price_suggestion_gate_blocks_when_active_items_path_is_unhealthy(
+    active_snapshot: QueueSnapshot, expected_reason: str
+) -> None:
+    decision = evaluate_rabbit_gates(
+        [
+            active_snapshot,
+            QueueSnapshot(
+                name="zeler.repricer.price_suggestion",
+                ready=0,
+                unacked=0,
+                consumers=1,
+                dlq_ready=0,
+                routing_keys=("price_suggestion.updated",),
+            ),
+        ],
+        ("price_suggestion",),
+        parse_replay_args(["--topics", "price_suggestion"]),
+    )
+
+    assert decision.allowed is False
+    assert decision.reason == expected_reason
+    assert decision.detail == "active consumer path zeler.repricer.items"
+
+
 @pytest.mark.asyncio
 async def test_safety_dry_run_plan_reads_only_and_omits_raw_fields() -> None:
     database = FakeDatabase([_event("newer", minutes=2), _event("older", minutes=1)])
@@ -331,11 +428,11 @@ async def test_coalescing_selects_live_targets_and_gates_user_products_families(
     skipped_family_reasons = {
         event.skip_reason for event in plan.skipped if event.topic == "user-products-families"
     }
-    assert skipped_family_reasons == {"consumer_not_ready"}
+    assert skipped_family_reasons == {"topic_no_go"}
 
 
 @pytest.mark.asyncio
-async def test_user_products_families_selects_when_consumer_is_explicitly_allowed() -> None:
+async def test_user_products_families_remains_no_go_when_consumer_is_explicitly_allowed() -> None:
     database = FakeDatabase(
         [
             _event(
@@ -358,11 +455,122 @@ async def test_user_products_families_selects_when_consumer_is_explicitly_allowe
         ),
     )
 
-    assert [event.id for event in plan.selected] == [
+    assert plan.selected == ()
+    assert [event.id for event in plan.skipped] == [
         "families-0",
         "families-1",
         "families-2",
         "families-3",
         "families-4",
     ]
-    assert plan.skipped == ()
+    assert {event.skip_reason for event in plan.skipped} == {"topic_no_go"}
+
+
+@pytest.mark.asyncio
+async def test_user_products_families_gate_is_no_go_and_explains_missing_behavior() -> None:
+    database = FakeDatabase(
+        [
+            _event(
+                "families-1",
+                topic="user-products-families",
+                resource="/sites/MLM/user-products-families/1",
+            )
+        ]
+    )
+
+    decision = evaluate_rabbit_gates(
+        [
+            QueueSnapshot(
+                name="zeler.sheets.events",
+                ready=0,
+                unacked=0,
+                consumers=1,
+                dlq_ready=0,
+                routing_keys=("items.updated",),
+            )
+        ],
+        ("user-products-families",),
+        parse_replay_args(["--topics", "user-products-families"]),
+    )
+    plan = await build_replay_plan(
+        database,
+        PlanOptions(
+            run_id="dry-run-families",
+            topics=("user-products-families",),
+            expected_counts={"user-products-families": 1},
+        ),
+    )
+
+    assert decision.allowed is False
+    assert decision.reason == "topic_no_go"
+    assert "Sheets user_products.* handler/consumer behavior is not defined" in decision.detail
+    assert plan.selected == ()
+    assert [event.skip_reason for event in plan.skipped] == ["topic_no_go"]
+
+
+def test_allow_user_products_families_flag_cannot_define_functional_safety() -> None:
+    options = parse_replay_args(
+        ["--topics", "user-products-families", "--allow-user-products-families"]
+    )
+
+    decision = evaluate_rabbit_gates([], ("user-products-families",), options)
+
+    assert decision.allowed is False
+    assert decision.reason == "topic_no_go"
+    assert "approval flags do not define functional safety" in decision.detail
+
+
+def test_legacy_dead_end_queues_are_reported_in_json_and_markdown_without_actions() -> None:
+    snapshots = [
+        QueueSnapshot(
+            name="zeler.fulldock.stock_locations",
+            ready=7,
+            unacked=1,
+            consumers=0,
+            dlq_ready=0,
+            routing_keys=("stock_locations.updated",),
+        ),
+        QueueSnapshot(
+            name="zeler.repricer.price_suggestion",
+            ready=42,
+            unacked=0,
+            consumers=0,
+            dlq_ready=0,
+            routing_keys=("price_suggestion.updated",),
+        ),
+    ]
+    report = build_rabbit_remediation_report(snapshots, ("stock-locations", "price_suggestion"))
+    plan = ReplayPlan(
+        run_id="dry-run-report",
+        selected=(),
+        skipped=(),
+        topic_counts={
+            "stock-locations": TopicPlanCount(total=0, selected=0, skipped=0),
+            "price_suggestion": TopicPlanCount(total=0, selected=0, skipped=0),
+        },
+        created_at=datetime(2026, 4, 28, 12, 0, tzinfo=UTC),
+    )
+
+    json_output = format_replay_output(plan, "json", remediation_report=report)
+    markdown_output = format_replay_output(plan, "markdown", remediation_report=report)
+
+    payload = json.loads(json_output)
+    assert payload["rabbit_remediation"]["legacy_queues"][0]["queue"] == (
+        "zeler.fulldock.stock_locations"
+    )
+    assert payload["rabbit_remediation"]["legacy_queues"][0]["remediation_only"] is True
+    assert payload["rabbit_remediation"]["legacy_queues"][0]["approval_required"] is True
+    assert "zeler.repricer.price_suggestion" in json_output
+    for forbidden_action in (
+        "purge",
+        "delete",
+        "requeue",
+        "bind/unbind",
+        "publish",
+        "replay",
+        "deploy",
+        "build",
+    ):
+        assert forbidden_action in json_output
+        assert forbidden_action in markdown_output
+    assert "remediation-only" in markdown_output

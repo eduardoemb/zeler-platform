@@ -15,8 +15,13 @@ mark MongoDB documents unless the business owner explicitly approves a specific
   `user-products-families`.
 - Default dedupe is `latest-per-resource`, which coalesces `price_suggestion` and
   `stock-locations` to the newest event per `(topic, user_id, resource)`.
-- `user-products-families` remains skipped unless `--allow-user-products-families`
-  is provided after confirming an active `user_products.*` consumer path.
+- Active RabbitMQ gates are topic-specific: `price_suggestion` gates only on
+  `zeler.repricer.items`; `stock-locations` gates only on
+  `zeler.fulldock.events`. Legacy dedicated queues are remediation-only and do
+  not block replay when the active path is healthy.
+- `user-products-families` is a no-go. There is no defined Sheets
+  `user_products.*` handler/consumer path, and `--allow-user-products-families`
+  cannot convert undefined behavior into functional replay safety.
 - Concurrency is fixed at `1`; rate must be `<= 1` message/second.
 - RabbitMQ gates are evaluated before execution and re-checked before each
   message; if a gate flips unhealthy, replay aborts before the next publish.
@@ -51,12 +56,26 @@ VM deployment. Do not deploy, restart, or rebuild as part of replay planning.
    `53 stock-locations`, `5 user-products-families`.
 2. Recount corrupt required fields and duplicates. Expected corrupt count is `0`.
 3. Export RabbitMQ queue state for active and fanout queues plus DLQs:
-   - `zeler.repricer.items`, `zeler.repricer.price_suggestion`
-   - `zeler.fulldock.events`, `zeler.fulldock.stock_locations`
-   - `zeler.sheets.events`, `zeler.sheets.user_products`
-4. Confirm required consumers, routing keys, and recent logs have no
-   `worker.message.requeued`, `worker.message.dlq`, 429, or 5xx spikes.
+    - `zeler.repricer.items`, `zeler.repricer.price_suggestion`
+    - `zeler.fulldock.events`, `zeler.fulldock.stock_locations`
+    - `zeler.sheets.events`, `zeler.sheets.user_products`
+4. Confirm required active consumers, routing keys, and recent logs have no
+    `worker.message.requeued`, `worker.message.dlq`, 429, or 5xx spikes.
 5. Keep all preflight commands read-only. Do not purge queues.
+
+### Price-suggestion replay readiness gate
+
+`price_suggestion` replays through the active repricer queue
+`zeler.repricer.items`, which must have a `price_suggestion.*` or
+`price_suggestion.updated` binding and at least one healthy consumer. The older
+dedicated queue `zeler.repricer.price_suggestion` may still appear in RabbitMQ
+exports; if it has ready messages and `0` consumers, treat it as an
+inspect/report-first remediation item only.
+
+Do not purge, delete, requeue, bind, unbind, publish, replay, deploy, build, or
+otherwise mutate RabbitMQ/topology from the gate report. Capture a sanitized
+export, verify `zeler.repricer.items` is healthy, and get explicit operator
+approval for the exact follow-up remediation command.
 
 ### Fulldock stock-location queue note
 
@@ -70,10 +89,19 @@ item, not as replay capacity.
 handling requires explicit approval for the inspect/drain/purge/rebind decision,
 not automatic replay gating.
 
-Do not purge, requeue, move, or delete that queue during dry-run planning. Before
-any approved cleanup, capture a sanitized management export, confirm the active
+Do not purge, delete, requeue, bind, unbind, publish, replay, deploy, build,
+move, or otherwise mutate that queue during dry-run planning. Before any
+approved cleanup, capture a sanitized management export, confirm the active
 `zeler.fulldock.events` consumer is healthy, confirm DLQs are bound, and get
 explicit approval for the exact queue operation/run ID.
+
+### User-products-families no-go
+
+`user-products-families` remains blocked even if an operator passes
+`--allow-user-products-families`. The Sheets worker has no defined
+`user_products.*` behavior or active consumer path, so replay cannot be made safe
+by approval flags alone. Keep these events skipped in plans and abort forged
+execution plans before any publish or Mongo mark.
 
 ### Stock-location replay readiness gate
 
