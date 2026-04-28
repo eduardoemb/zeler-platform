@@ -181,6 +181,23 @@ class GateDecision:
 RabbitGateProvider = Callable[[], Sequence[QueueSnapshot]]
 
 
+def _routing_key_matches(binding_key: str, routing_key: str) -> bool:
+    if binding_key == routing_key:
+        return True
+    binding_parts = binding_key.split(".")
+    routing_parts = routing_key.split(".")
+    for index, binding_part in enumerate(binding_parts):
+        if binding_part == "#":
+            return True
+        if index >= len(routing_parts):
+            return False
+        if binding_part == "*":
+            continue
+        if binding_part != routing_parts[index]:
+            return False
+    return len(binding_parts) == len(routing_parts)
+
+
 def _parse_topics(raw_topics: str) -> tuple[str, ...]:
     topics = tuple(topic.strip() for topic in raw_topics.split(",") if topic.strip())
     if not topics:
@@ -635,7 +652,10 @@ def evaluate_rabbit_gates(
                 )
             ):
                 return GateDecision(False, "consumer_health_failed", queue_name)
-            if snapshot.routing_keys and required_routing_key not in snapshot.routing_keys:
+            if snapshot.routing_keys and not any(
+                _routing_key_matches(binding_key, required_routing_key)
+                for binding_key in snapshot.routing_keys
+            ):
                 return GateDecision(False, "wrong_routing", queue_name)
     return GateDecision(True, "ok")
 

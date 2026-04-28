@@ -270,6 +270,14 @@ def test_rabbit_gates_stop_on_queue_cap_dlq_and_missing_consumer() -> None:
 
 
 def test_rabbit_gates_stop_on_wrong_routing_health_log_failure_and_abort_file(tmp_path) -> None:
+    wildcard_routing = _healthy_price_state()
+    wildcard_routing[0] = QueueSnapshot(
+        **{**wildcard_routing[0].__dict__, "routing_keys": ("price_suggestion.*",)}
+    )
+    assert evaluate_rabbit_gates(
+        wildcard_routing, ("price_suggestion",), _options()
+    ).reason == "ok"
+
     wrong_routing = _healthy_price_state()
     wrong_routing[0] = QueueSnapshot(
         **{**wrong_routing[0].__dict__, "routing_keys": ("items.updated",)}
