@@ -14,10 +14,12 @@ from pathlib import Path
 import pytest
 import yaml
 
-INFRA_GCE = Path(__file__).parent.parent / "infra" / "gce"
+PROJECT_ROOT = Path(__file__).parent.parent
+INFRA_GCE = PROJECT_ROOT / "infra" / "gce"
 COMPOSE_FILE = INFRA_GCE / "docker-compose.yml"
 CADDYFILE = INFRA_GCE / "Caddyfile"
 ENV_TEMPLATES_DIR = INFRA_GCE / "env-templates"
+SECRETS_SCRIPT = INFRA_GCE / "zeler-platform-secrets.sh"
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -46,6 +48,26 @@ EXPECTED_SUBDOMAINS = {
     "autoreply.zeler.ai",
     "fulldock.zeler.ai",
 }
+
+SCOPED_GATEWAY_TOKEN_ENV_TEMPLATES = (
+    "gateway",
+    "repricer-api",
+    "sheets-api",
+    "publicador-api",
+    "autoreply-api",
+    "fulldock-api",
+    "repricer-worker",
+    "sheets-worker",
+    "autoreply-worker",
+    "fulldock-worker",
+)
+
+WORKER_RUN_ENTRY_TESTS = (
+    PROJECT_ROOT / "modules" / "repricer" / "tests" / "test_repricer_run_entry.py",
+    PROJECT_ROOT / "modules" / "sheets" / "tests" / "test_sheets_run_entry.py",
+    PROJECT_ROOT / "modules" / "autoreply" / "tests" / "test_autoreply_run_entry.py",
+    PROJECT_ROOT / "modules" / "fulldock" / "tests" / "test_fulldock_run_entry.py",
+)
 
 # Design §7 — required keys per service (beyond BASE where applicable).
 # BASE = MONGO_URI, MONGO_DB, RABBITMQ_URL, GOOGLE_CLOUD_PROJECT,
@@ -88,10 +110,11 @@ SERVICE_REQUIRED_KEYS: dict[str, set[str]] = {
         "GOOGLE_OAUTH_CLIENT_SECRET",
         "GOOGLE_OAUTH_REDIRECT_URI",
         "KMS_GOOGLE_TOKENS_KEY",
+        "GATEWAY_BASE_URL",
     },
-    "repricer-worker": BASE_KEYS | {"GATEWAY_BASE_URL", "GATEWAY_TOKEN"},
-    "autoreply-worker": BASE_KEYS | {"GATEWAY_BASE_URL", "GATEWAY_TOKEN"},
-    "fulldock-worker": BASE_KEYS | {"GATEWAY_BASE_URL", "GATEWAY_TOKEN"},
+    "repricer-worker": BASE_KEYS | {"GATEWAY_BASE_URL"},
+    "autoreply-worker": BASE_KEYS | {"GATEWAY_BASE_URL"},
+    "fulldock-worker": BASE_KEYS | {"GATEWAY_BASE_URL"},
 }
 
 
@@ -272,19 +295,33 @@ class TestEnvTemplateContract:
         missing = required - keys
         assert not missing, f"Template {service}.env.template missing keys: {sorted(missing)}"
 
-    def test_gateway_template_has_gateway_token(self) -> None:
-        """Gateway validates the internal token — it must be in its template."""
-        keys = load_template_keys("gateway")
-        assert "GATEWAY_TOKEN" in keys, (
-            "gateway.env.template must include GATEWAY_TOKEN "
-            "(gateway validates bearer on proxy calls)"
+    @pytest.mark.parametrize("service", SCOPED_GATEWAY_TOKEN_ENV_TEMPLATES)
+    def test_scoped_env_templates_do_not_declare_gateway_token(self, service: str) -> None:
+        keys = load_template_keys(service)
+        assert "GATEWAY_TOKEN" not in keys, (
+            f"{service}.env.template must not declare deprecated GATEWAY_TOKEN; "
+            "scoped services use minted JWT/KMS gateway auth"
         )
 
-    def test_worker_templates_have_gateway_token(self) -> None:
-        workers = ["repricer-worker", "autoreply-worker", "fulldock-worker"]
-        for worker in workers:
-            keys = load_template_keys(worker)
-            assert "GATEWAY_TOKEN" in keys, f"{worker}.env.template missing GATEWAY_TOKEN"
+    @pytest.mark.parametrize(
+        "forbidden",
+        ("platform-gateway-token", "GATEWAY_INTERNAL_TOKEN", "GATEWAY_TOKEN="),
+    )
+    def test_secrets_script_does_not_emit_deprecated_gateway_token(
+        self, forbidden: str
+    ) -> None:
+        text = SECRETS_SCRIPT.read_text()
+        assert forbidden not in text, (
+            f"{SECRETS_SCRIPT.name} must not contain deprecated scoped gateway token "
+            f"pattern {forbidden!r}"
+        )
+
+    @pytest.mark.parametrize("path", WORKER_RUN_ENTRY_TESTS)
+    def test_worker_run_entry_tests_do_not_set_gateway_token(self, path: Path) -> None:
+        text = path.read_text()
+        assert 'setenv("GATEWAY_TOKEN"' not in text, (
+            f"{path.relative_to(PROJECT_ROOT)} must not set deprecated GATEWAY_TOKEN"
+        )
 
     def test_sheets_templates_have_google_oauth_keys(self) -> None:
         google_keys = (

@@ -255,7 +255,6 @@ async def _exercise_run(monkeypatch: pytest.MonkeyPatch) -> _RunState:
     monkeypatch.setenv("MONGO_URI", "mongodb://unit-test")
     monkeypatch.setenv("MONGO_DB", "zeler")
     monkeypatch.setenv("GATEWAY_BASE_URL", "https://gateway.test/proxy/meli")
-    monkeypatch.setenv("GATEWAY_TOKEN", "token")
     monkeypatch.setenv("GOOGLE_OAUTH_CLIENT_ID", "google-client-id")
     monkeypatch.setenv("GOOGLE_OAUTH_CLIENT_SECRET", "google-client-secret")
     monkeypatch.setenv("GOOGLE_OAUTH_REDIRECT_URI", "https://sheets.test/oauth/google/callback")

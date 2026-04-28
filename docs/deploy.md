@@ -473,7 +473,7 @@ gcloud compute ssh platform-vm --tunnel-through-iap --zone=$ZONE --project=$PROJ
 | `curl https://<sub>.zeler.ai` → connection refused | DNS not propagated OR caddy not running | `dig +short <sub>.zeler.ai`; `sudo docker ps \| grep caddy` |
 | Caddy TLS error / self-signed cert | Port 80 blocked (HTTP-01 challenge fails) | Check `allow-platform-http` firewall rule exists; check caddy logs `sudo docker logs caddy` |
 | Mongo not healthy | UID permission error on `/var/lib/zeler-mongo` | `sudo ls -la /var/lib/zeler-mongo`; `sudo chown -R 999:999 /var/lib/zeler-mongo`; restart mongo |
-| Worker logs show auth error calling gateway | `GATEWAY_TOKEN` mismatch | Re-run `sudo systemctl restart zeler-platform-secrets.service`; check token in gateway env |
+| Worker logs show auth error calling gateway | Minted JWT/KMS auth failure or wrong `GATEWAY_BASE_URL` | Check worker KMS env (`KMS_PROJECT_ID`, `KMS_LOCATION`, `KMS_KEYRING`, JWT key), gateway logs for JWT validation errors, and the worker `GATEWAY_BASE_URL` |
 | Sheets OAuth returns 503 | Pass-1 placeholder creds still active | Complete §4 pass-2 steps |
 | Sheets OAuth returns 500 | Real creds set but redirect URI mismatch | Verify `https://sheets.zeler.ai/oauth/google/callback` in GCP OAuth client |
 | VM unreachable via SSH | IAP firewall rule missing or VM not RUNNING | Check firewall `allow-platform-ssh`; `gcloud compute instances describe platform-vm` |

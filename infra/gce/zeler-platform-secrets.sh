@@ -2,7 +2,7 @@
 # zeler-platform-secrets.sh — installed at /opt/zeler-platform/zeler-platform-secrets.sh
 #
 # Systemd oneshot (Before=docker.service):
-#   Fetches 9 secrets from Secret Manager via the VM-attached SA (metadata-server token)
+#   Fetches 8 secrets from Secret Manager via the VM-attached SA (metadata-server token)
 #   and writes per-service env files under /opt/zeler-platform/env/<service>.env
 #   with mode 0600, owner root.
 #
@@ -38,7 +38,6 @@ GOOGLE_CLIENT_ID=$(s google-oauth-client-id)
 GOOGLE_CLIENT_SECRET=$(s google-oauth-client-secret)
 MONGO_ADMIN_USER=$(s mongo-admin-user)
 MONGO_ADMIN_PASSWORD=$(s mongo-admin-password)
-GATEWAY_INTERNAL_TOKEN=$(s platform-gateway-token)
 
 echo "All secrets fetched."
 
@@ -88,7 +87,7 @@ write caddy \
   "# Caddy has no runtime secrets — this file is a placeholder"
 
 # ---------------------------------------------------------------------------
-# gateway — BASE + Meli OAuth + KMS keys + internal gateway token
+# gateway — BASE + Meli OAuth + KMS keys + proxy policy
 # ---------------------------------------------------------------------------
 write gateway \
   "${BASE[@]}" \
@@ -96,17 +95,15 @@ write gateway \
   "MELI_CLIENT_SECRET=$MELI_CLIENT_SECRET" \
   "MELI_REDIRECT_URI=https://gateway.zeler.ai/oauth/callback" \
   "KMS_MELI_TOKENS_KEY=meli-tokens" \
-  "KMS_PLATFORM_JWT_KEY=platform-jwt" \
-  "GATEWAY_TOKEN=$GATEWAY_INTERNAL_TOKEN"
+  "KMS_PLATFORM_JWT_KEY=platform-jwt"
 
 # ---------------------------------------------------------------------------
-# Module APIs that only need BASE (+ gateway token for proxy calls)
+# Module APIs that only need BASE plus the gateway endpoint
 # ---------------------------------------------------------------------------
 for svc in repricer-api publicador-api autoreply-api fulldock-api; do
   write "$svc" \
     "${BASE[@]}" \
-    "GATEWAY_BASE_URL=http://gateway:8080" \
-    "GATEWAY_TOKEN=$GATEWAY_INTERNAL_TOKEN"
+    "GATEWAY_BASE_URL=http://gateway:8080"
 done
 
 # ---------------------------------------------------------------------------
@@ -119,18 +116,16 @@ for svc in sheets-api sheets-worker; do
     "GOOGLE_OAUTH_CLIENT_SECRET=$GOOGLE_CLIENT_SECRET" \
     "GOOGLE_OAUTH_REDIRECT_URI=https://sheets.zeler.ai/oauth/google/callback" \
     "KMS_GOOGLE_TOKENS_KEY=google-tokens" \
-    "GATEWAY_BASE_URL=http://gateway:8080" \
-    "GATEWAY_TOKEN=$GATEWAY_INTERNAL_TOKEN"
+    "GATEWAY_BASE_URL=http://gateway:8080"
 done
 
 # ---------------------------------------------------------------------------
-# Workers that call gateway proxy
+# Workers that call gateway proxy with minted JWT/KMS auth
 # ---------------------------------------------------------------------------
 for svc in repricer-worker autoreply-worker fulldock-worker; do
   write "$svc" \
     "${BASE[@]}" \
-    "GATEWAY_BASE_URL=http://gateway:8080" \
-    "GATEWAY_TOKEN=$GATEWAY_INTERNAL_TOKEN"
+    "GATEWAY_BASE_URL=http://gateway:8080"
 done
 
 echo "All env files written to $ENV_DIR"
