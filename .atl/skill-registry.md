@@ -2,9 +2,9 @@
 
 **Delegator use only.** Any agent that launches sub-agents reads this registry to resolve compact rules, then injects them directly into sub-agent prompts. Sub-agents do NOT read this registry or individual SKILL.md files.
 
-> **Note**: The canonical skill registry for this project is maintained at
-> `/Users/eduardoramirez/Documents/repositorios/zeler-core/.atl/skill-registry.md`
-> per `AGENTS.md`. This file mirrors it for local reference.
+> **Note**: The canonical skill registry for this project is maintained in this
+> repository at `/Users/eduardoramirez/Documents/repositorios/zeler-platform/.atl/skill-registry.md`
+> per `AGENTS.md`.
 
 ## User Skills
 
@@ -24,7 +24,6 @@
 | MongoDB data modeling, embed vs reference, migrations, validation, or schema review | mongodb-schema-design | /Users/eduardoramirez/.config/opencode/skills/mongodb-schema-design/SKILL.md |
 | Atlas Search, Vector Search, hybrid search, substring search, or multi-field search use cases | mongodb-search-and-ai | /Users/eduardoramirez/.config/opencode/skills/mongodb-search-and-ai/SKILL.md |
 | Creating new AI skills, agent instructions, or reusable AI workflows | skill-creator | /Users/eduardoramirez/.config/opencode/skills/skill-creator/SKILL.md |
-| Deploying, updating, or restarting any Zeler product service on GCP | zeler-gcp-deploy | /Users/eduardoramirez/.config/opencode/skills/zeler-gcp-deploy/SKILL.md |
 
 ## Compact Rules
 
@@ -128,23 +127,16 @@
 - Keep examples minimal, focus on critical patterns, and avoid duplicating existing docs.
 - Register the new skill in `AGENTS.md` after creation.
 
-### zeler-gcp-deploy
-- Never build Docker images locally on Mac for Zeler deploys; always use Cloud Build.
-- Never use `--set-env-vars` on Cloud Run; always use `--update-env-vars`.
-- Before replacing a VM container, inspect and preserve ALL existing env vars.
-- When restarting VM containers, include `--network desarollo_default` if they talk to RabbitMQ or peer containers.
-- Never stop or delete the operational VMs; verify deployment with service/container inspection and logs.
-
 ## Project Conventions
 
 | File | Path | Notes |
 |------|------|-------|
-| AGENTS.md | /Users/eduardoramirez/Documents/repositorios/zeler-platform/AGENTS.md | Project rules: strict TDD, conventional commits, no AI attribution, never commit without being asked. Stack: Python 3.11 + uv + FastAPI + MongoDB + RabbitMQ + Cloud Run. SDD design at ../zeler-core/sdd/zeler-platform-greenfield/design.md |
+| AGENTS.md | /Users/eduardoramirez/Documents/repositorios/zeler-platform/AGENTS.md | Project rules: strict TDD, conventional commits, no AI attribution, never commit without being asked, do not mutate `../zeler-core` unless explicitly requested. Stack: Python 3.11 + uv workspace + FastAPI + MongoDB + RabbitMQ/CloudAMQP + GCP. SDD design at `sdd/zeler-platform-greenfield/design.md`. |
 
-## SDD Cross-Repo References
+## SDD Local References
 
 | Artifact | Path |
 |----------|------|
-| SDD Home | `/Users/eduardoramirez/Documents/repositorios/zeler-core/sdd/zeler-platform-greenfield/` |
-| Canonical Skill Registry | `/Users/eduardoramirez/Documents/repositorios/zeler-core/.atl/skill-registry.md` |
-| Engram Legacy Trail | project: `zeler-core` → key topic_keys: `sdd/zeler-platform-greenfield/apply-progress`, `sdd/zeler-platform-greenfield/legacy-topic-usage-verification`, `sdd/zeler-platform-greenfield/discovery-collection-gap`, `sdd/zeler-platform-greenfield/meli-oauth-scopes`, `sdd/zeler-platform-greenfield/meli-oauth-topics`, `sdd/zeler-platform-greenfield/gcp-dev-infra` |
+| SDD Home | `/Users/eduardoramirez/Documents/repositorios/zeler-platform/sdd/zeler-platform-greenfield/` |
+| Canonical Skill Registry | `/Users/eduardoramirez/Documents/repositorios/zeler-platform/.atl/skill-registry.md` |
+| Legacy Context Only | `zeler-core` references may appear in migration/decommission docs, but they are not canonical for active platform work. |

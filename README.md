@@ -21,8 +21,8 @@ uv run mypy .
 
 ## SDD artifacts
 
-The authoritative SDD artifacts currently live in:
+The authoritative SDD artifacts currently live in this repository:
 
-- `../zeler-core/sdd/zeler-platform-greenfield/`
+- `sdd/zeler-platform-greenfield/`
 
 See `docs/README.md` and `sdd/README.md` for pointers.
