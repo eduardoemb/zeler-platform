@@ -4,8 +4,10 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 
+import httpx
 import pytest
 
+from zeler_platform_core.clients.meli_gateway_client import GatewayRateLimitError
 from zeler_platform_core.models import RepricerRule
 from zeler_repricer.consumer import GatewayPriceClient, RepricerEvent, RepricerEventHandler
 
@@ -76,14 +78,17 @@ class FakeIdempotency:
 
 
 class FakeGatewayClient(GatewayPriceClient):
-    def __init__(self, *, status_code: int = 200) -> None:
+    def __init__(self, *, status_code: int = 200, error: Exception | None = None) -> None:
         self.calls: list[tuple[int, str, Decimal, str]] = []
         self.status_code = status_code
+        self.error = error
 
     async def update_price(
         self, *, seller_id: int, item_id: str, new_price: Decimal, idempotency_key: str
     ) -> tuple[int, int]:
         self.calls.append((seller_id, item_id, new_price, idempotency_key))
+        if self.error is not None:
+            raise self.error
         return self.status_code, 17
 
 
@@ -170,10 +175,12 @@ async def test_gateway_429_requests_backoff_without_marking_processed() -> None:
     db = FakeDb()
     idempotency = FakeIdempotency()
     handler = RepricerEventHandler(
-        db=db, gateway_client=FakeGatewayClient(status_code=429), idempotency_store=idempotency
+        db=db,
+        gateway_client=FakeGatewayClient(error=_rate_limit_error(retry_after_seconds=5)),
+        idempotency_store=idempotency,
     )
 
-    with pytest.raises(RuntimeError, match="gateway_backpressure"):
+    with pytest.raises(GatewayRateLimitError):
         await handler.handle(
             RepricerEvent(
                 event_id="event-3",
@@ -186,6 +193,12 @@ async def test_gateway_429_requests_backoff_without_marking_processed() -> None:
         )
 
     assert idempotency.marked == []
+
+
+def _rate_limit_error(*, retry_after_seconds: int) -> GatewayRateLimitError:
+    request = httpx.Request("POST", "http://gateway:8080/proxy/meli/items/MLA123/prices")
+    response = httpx.Response(429, request=request)
+    return GatewayRateLimitError(retry_after_seconds=retry_after_seconds, response=response)
 
 
 def _rule(*, min_price: str = "100", max_price: str = "200") -> RepricerRule:

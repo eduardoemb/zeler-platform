@@ -268,7 +268,7 @@ async def _exercise_run(monkeypatch: pytest.MonkeyPatch) -> _RunState:
     monkeypatch.setenv("RABBITMQ_URL", "amqp://unit-test")
     monkeypatch.setenv("MONGO_URI", "mongodb://unit-test")
     monkeypatch.setenv("MONGO_DB", "zeler")
-    monkeypatch.setenv("GATEWAY_BASE_URL", "https://gateway.test")
+    monkeypatch.setenv("GATEWAY_BASE_URL", "https://gateway.test/proxy/meli")
     monkeypatch.setenv("GATEWAY_TOKEN", "token")
 
     class FakeMongoClient:

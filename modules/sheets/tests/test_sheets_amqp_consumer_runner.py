@@ -99,7 +99,7 @@ async def test_sheets_runner_acks_message_on_successful_handler_return() -> None
 
 
 @pytest.mark.asyncio
-async def test_sheets_runner_nacks_with_requeue_on_runtime_error() -> None:
+async def test_sheets_runner_nacks_without_requeue_on_runtime_error() -> None:
     runner = SheetsAmqpConsumerRunner(
         rabbitmq_url="amqp://unit-test",
         handler=FakeHandler(error=RuntimeError("gateway_backpressure")),
@@ -109,7 +109,7 @@ async def test_sheets_runner_nacks_with_requeue_on_runtime_error() -> None:
     await runner.handle_message(message)
 
     assert message.acked is False
-    assert message.nacks == [True]
+    assert message.nacks == [False]
 
 
 @pytest.mark.asyncio

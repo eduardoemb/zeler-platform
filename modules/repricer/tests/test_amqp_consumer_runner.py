@@ -4,8 +4,10 @@ import json
 from decimal import Decimal
 from typing import Any
 
+import httpx
 import pytest
 
+from zeler_platform_core.clients.meli_gateway_client import GatewayRateLimitError
 from zeler_repricer.consumer import RepricerAmqpConsumerRunner, RepricerEvent
 
 
@@ -166,15 +168,24 @@ async def test_runner_passes_message_body_and_idempotency_header_to_handler() ->
 
 
 @pytest.mark.asyncio
-async def test_runner_requeues_retryable_handler_failures() -> None:
+async def test_runner_requeues_gateway_rate_limit_after_backoff(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sleep_calls: list[int] = []
+
+    async def fake_sleep(seconds: int) -> None:
+        sleep_calls.append(seconds)
+
+    monkeypatch.setattr("zeler_repricer.consumer.asyncio.sleep", fake_sleep)
     runner = RepricerAmqpConsumerRunner(
         rabbitmq_url="amqp://unit-test",
-        handler=FakeHandler(error=RuntimeError("gateway_backpressure")),
+        handler=FakeHandler(error=_rate_limit_error(retry_after_seconds=5)),
     )
     message = FakeMessage(_valid_payload(), headers={"idempotency_key": "idem-1"})
 
     await runner.handle_message(message)
 
+    assert sleep_calls == [5]
     assert message.acked is False
     assert message.nacks == [True]
 
@@ -215,3 +226,9 @@ def _valid_payload() -> dict[str, Any]:
         "seller_id": 123456789,
         "resource": "items/MLA123/prices",
     }
+
+
+def _rate_limit_error(*, retry_after_seconds: int) -> GatewayRateLimitError:
+    request = httpx.Request("POST", "http://gateway:8080/proxy/meli/items/MLA123/prices")
+    response = httpx.Response(429, request=request)
+    return GatewayRateLimitError(retry_after_seconds=retry_after_seconds, response=response)

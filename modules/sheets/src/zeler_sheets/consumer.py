@@ -11,8 +11,11 @@ from typing import Any, Protocol, cast
 
 import aio_pika
 import httpx
+import structlog
 from motor.motor_asyncio import AsyncIOMotorClient
 
+from zeler_platform_core.auth.meli_gateway_auth import MeliGatewayAuth
+from zeler_platform_core.clients.meli_gateway_client import GatewayRateLimitError, MeliGatewayClient
 from zeler_platform_core.events.idempotency import IdempotencyStore as CoreIdempotencyStore
 from zeler_platform_core.runtime.manifest import validate_manifest
 from zeler_sheets.google_sheets_client import make_sheets_client
@@ -27,6 +30,15 @@ SHEETS_DEFAULT_ROUTING_KEYS = ("items.*", "orders.*", "shipments.*")
 MISSING_RABBITMQ_URL_MESSAGE = "error: RABBITMQ_URL is required"
 MISSING_MONGO_URI_MESSAGE = "error: MONGO_URI is required"
 MISSING_MONGO_DB_MESSAGE = "error: MONGO_DB is required"
+PERMANENT_HTTP_STATUS_CODES = {401, 403, 404, 422}
+RETRIABLE_HTTP_STATUS_CODES = {408, 429}
+DEFAULT_GATEWAY_BASE_URL = "http://gateway:8080/proxy/meli"
+
+logger = structlog.get_logger(__name__)
+
+
+class RetryLimitExceededError(Exception):
+    """Raised internally to describe exhausted broker retry budget."""
 
 
 @dataclass(frozen=True)
@@ -39,10 +51,11 @@ class SheetsEvent:
 
 
 class GatewayResourceClient(Protocol):
-    async def fetch_resource(self, *, seller_id: int, path: str) -> dict[str, Any]: ...
+    async def fetch_resource(self, *, seller_id: Any, path: str) -> dict[str, Any]: ...
 
 
 class SheetsGatewayClient:
+    # DEPRECATED: see core/clients/meli_gateway_client.py
     def __init__(
         self,
         *,
@@ -69,6 +82,18 @@ class SheetsGatewayClient:
         if not isinstance(payload, dict):
             raise ValueError("gateway resource response must be a JSON object")
         return payload
+
+
+def make_meli_gateway_client(
+    *,
+    module_id: str = "sheets",
+    base_url: str = DEFAULT_GATEWAY_BASE_URL,
+    kms_client: Any,
+) -> MeliGatewayClient:
+    return MeliGatewayClient(
+        base_url,
+        MeliGatewayAuth(module_id, kms_client),
+    )
 
 
 class GoogleSheetsClient(Protocol):
@@ -164,22 +189,135 @@ class SheetsAmqpConsumerRunner:
             self._connection = None
 
     async def handle_message(self, message: Any) -> None:
-        death_history = message.headers.get("x-death", []) if message.headers else []
-        death_count = death_history[0].get("count", 0) if death_history else 0
+        death_count = _x_death_count(message, queue_name=self.config.queue_name)
+        event: SheetsEvent | None = None
         if death_count >= self.config.delivery_limit:
+            event = _event_context_from_message(message)
+            _log_message_dlq(event, death_count, RetryLimitExceededError())
             await message.nack(requeue=False)
             return
 
         try:
             event = _sheets_event_from_message(message)
             await self._handler.handle(event)
-        except RuntimeError:
+        except GatewayRateLimitError as exc:
+            _log_message_requeued(
+                event,
+                death_count + 1,
+                exc,
+                retry_after=exc.retry_after_seconds,
+            )
+            await asyncio.sleep(exc.retry_after_seconds)
             await message.nack(requeue=True)
             return
-        except (KeyError, TypeError, ValueError, json.JSONDecodeError, UnicodeDecodeError):
+        except httpx.HTTPStatusError as exc:
+            status_code = exc.response.status_code
+            if status_code in PERMANENT_HTTP_STATUS_CODES:
+                _log_message_dlq(event, death_count + 1, exc, status_code=status_code)
+                await message.nack(requeue=False)
+                return
+            if status_code >= 500 or status_code in RETRIABLE_HTTP_STATUS_CODES:
+                _log_message_requeued(
+                    event,
+                    death_count + 1,
+                    exc,
+                    status_code=status_code,
+                )
+                await message.nack(requeue=True)
+                return
+            raise
+        except (httpx.ConnectError, httpx.TimeoutException) as exc:
+            _log_message_requeued(event, death_count + 1, exc)
+            await message.nack(requeue=True)
+            return
+        except json.JSONDecodeError as exc:
+            _log_message_dlq(event, death_count + 1, exc)
             await message.nack(requeue=False)
             return
+        except (KeyError, TypeError, ValueError, UnicodeDecodeError) as exc:
+            _log_message_dlq(event, death_count + 1, exc)
+            await message.nack(requeue=False)
+            return
+        except Exception as exc:  # noqa: BLE001 - final AMQP safety net required by spec.
+            _log_message_dlq(event, death_count + 1, exc, exc_info=True)
+            await message.nack(requeue=False)
+            return
+        _log_message_ack(event, death_count + 1)
         await message.ack()
+
+
+def _log_message_dlq(
+    event: SheetsEvent | None,
+    attempts: int,
+    error: BaseException,
+    *,
+    status_code: int | None = None,
+    exc_info: bool = False,
+) -> None:
+    fields: dict[str, Any] = {
+        "event_id": event.event_id if event is not None else None,
+        "seller_id": event.seller_id if event is not None else None,
+        "resource_path": event.resource if event is not None else None,
+        "attempts": attempts,
+        "error_type": type(error).__name__,
+    }
+    if status_code is not None:
+        fields["status_code"] = status_code
+    if exc_info:
+        fields["exc_info"] = True
+    logger.error("worker.message.dlq", **fields)
+
+
+def _log_message_requeued(
+    event: SheetsEvent | None,
+    attempt: int,
+    error: BaseException,
+    *,
+    status_code: int | None = None,
+    retry_after: int | None = None,
+) -> None:
+    fields: dict[str, Any] = {
+        "event_id": event.event_id if event is not None else None,
+        "seller_id": event.seller_id if event is not None else None,
+        "resource_path": event.resource if event is not None else None,
+        "attempt": attempt,
+        "error_type": type(error).__name__,
+    }
+    if status_code is not None:
+        fields["status_code"] = status_code
+    if retry_after is not None:
+        fields["retry_after"] = retry_after
+    logger.warning("worker.message.requeued", **fields)
+
+
+def _log_message_ack(event: SheetsEvent | None, attempt: int) -> None:
+    logger.info(
+        "worker.message.ack",
+        event_id=event.event_id if event is not None else None,
+        seller_id=event.seller_id if event is not None else None,
+        resource_path=event.resource if event is not None else None,
+        attempt=attempt,
+    )
+
+
+def _x_death_count(message: Any, *, queue_name: str) -> int:
+    death_history = message.headers.get("x-death", []) if message.headers else []
+    if not isinstance(death_history, list):
+        return 0
+    for death in death_history:
+        if not isinstance(death, dict):
+            continue
+        if death.get("queue") in (queue_name, None):
+            count = death.get("count", 0)
+            return int(count) if isinstance(count, int) else 0
+    return 0
+
+
+def _event_context_from_message(message: Any) -> SheetsEvent | None:
+    try:
+        return _sheets_event_from_message(message)
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError, UnicodeDecodeError):
+        return None
 
 
 def _sheets_routing_keys_from_manifest(manifest_path: str | Path | None) -> tuple[str, ...]:
@@ -319,9 +457,9 @@ async def run() -> None:
     manifest_path = Path(__file__).resolve().parents[2] / "manifest.yaml"
     handler = SheetsEventHandler(
         db=db,
-        gateway_client=SheetsGatewayClient(
-            base_url=os.environ.get("GATEWAY_BASE_URL", "http://gateway"),
-            token=os.environ.get("GATEWAY_TOKEN", ""),
+        gateway_client=make_meli_gateway_client(
+            base_url=os.environ.get("GATEWAY_BASE_URL", DEFAULT_GATEWAY_BASE_URL),
+            kms_client=kms_client,
         ),
         sheets_client=make_sheets_client(db, kms_client, sheets_settings),
         idempotency_store=_SheetsIdempotencyAdapter(

@@ -6,6 +6,7 @@ import os
 import signal
 import sys
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -14,8 +15,11 @@ from typing import Any, Protocol, cast
 
 import aio_pika
 import httpx
+import structlog
 from motor.motor_asyncio import AsyncIOMotorClient
 
+from zeler_platform_core.auth.meli_gateway_auth import MeliGatewayAuth
+from zeler_platform_core.clients.meli_gateway_client import GatewayRateLimitError, MeliGatewayClient
 from zeler_platform_core.events.idempotency import IdempotencyStore as CoreIdempotencyStore
 from zeler_platform_core.models import Item, RepricerRule
 from zeler_platform_core.runtime.manifest import validate_manifest
@@ -29,6 +33,15 @@ DEFAULT_PREFETCH_COUNT = 10
 MISSING_RABBITMQ_URL_MESSAGE = "error: RABBITMQ_URL is required"
 MISSING_MONGO_URI_MESSAGE = "error: MONGO_URI is required"
 MISSING_MONGO_DB_MESSAGE = "error: MONGO_DB is required"
+DEFAULT_GATEWAY_BASE_URL = "http://gateway:8080/proxy/meli"
+PERMANENT_HTTP_STATUS_CODES = {401, 403, 404, 422}
+RETRIABLE_HTTP_STATUS_CODES = {408, 429}
+
+logger = structlog.get_logger(__name__)
+
+
+class RetryLimitExceededError(Exception):
+    """Raised internally to describe exhausted broker retry budget."""
 
 
 @dataclass(frozen=True)
@@ -48,6 +61,7 @@ class GatewayPriceClient(Protocol):
 
 
 class RepricerGatewayClient:
+    # DEPRECATED: see core/clients/meli_gateway_client.py
     def __init__(
         self,
         *,
@@ -79,6 +93,44 @@ class RepricerGatewayClient:
             raise RuntimeError(msg) from exc
         latency_ms = int((time.perf_counter() - started) * 1000)
         return response.status_code, latency_ms
+
+
+class RepricerMeliGatewayPriceClient:
+    def __init__(
+        self,
+        *,
+        base_url: str,
+        auth: MeliGatewayAuth,
+        http_client: httpx.AsyncClient | None = None,
+        clock: Callable[[], float] = time.perf_counter,
+    ) -> None:
+        self._client = MeliGatewayClient(base_url, auth, http_client=http_client)
+        self._clock = clock
+
+    async def update_price(
+        self, *, seller_id: int, item_id: str, new_price: Decimal, idempotency_key: str
+    ) -> tuple[int, int]:
+        started = self._clock()
+        response = await self._client.request(
+            method="POST",
+            seller_id=seller_id,  # type: ignore[arg-type]
+            path=f"/items/{item_id}/prices",
+            json={"price": str(new_price)},
+        )
+        latency_ms = int((self._clock() - started) * 1000)
+        return response.status_code, latency_ms
+
+
+def make_meli_gateway_price_client(
+    *,
+    module_id: str = "repricer",
+    base_url: str = DEFAULT_GATEWAY_BASE_URL,
+    kms_client: Any,
+) -> RepricerMeliGatewayPriceClient:
+    return RepricerMeliGatewayPriceClient(
+        base_url=base_url,
+        auth=MeliGatewayAuth(module_id, kms_client),
+    )
 
 
 class IdempotencyStoreLike(Protocol):
@@ -146,8 +198,6 @@ class RepricerEventHandler:
                 new_price=decision.new_price,
                 idempotency_key=event.idempotency_key,
             )
-            if gateway_status == 429:
-                raise RuntimeError("gateway_backpressure")
             await self._write_history(
                 event=event,
                 item=item,
@@ -269,22 +319,134 @@ class RepricerAmqpConsumerRunner:
             self._connection = None
 
     async def handle_message(self, message: Any) -> None:
-        death_history = message.headers.get("x-death", []) if message.headers else []
-        death_count = death_history[0].get("count", 0) if death_history else 0
+        death_count = _x_death_count(message, queue_name=self.config.queue_name)
+        event: RepricerEvent | None = None
         if death_count >= self.config.delivery_limit:
+            event = _event_context_from_message(message)
+            _log_message_dlq(event, death_count, RetryLimitExceededError())
             await message.nack(requeue=False)
             return
 
         try:
             event = _event_from_message(message)
             await self._handler.handle(event)
-        except RuntimeError:
+        except GatewayRateLimitError as exc:
+            _log_message_requeued(
+                event,
+                death_count + 1,
+                exc,
+                retry_after=exc.retry_after_seconds,
+            )
+            await asyncio.sleep(exc.retry_after_seconds)
             await message.nack(requeue=True)
             return
-        except (KeyError, TypeError, ValueError, json.JSONDecodeError, UnicodeDecodeError):
+        except httpx.HTTPStatusError as exc:
+            status_code = exc.response.status_code
+            if status_code in PERMANENT_HTTP_STATUS_CODES:
+                _log_message_dlq(event, death_count + 1, exc, status_code=status_code)
+                await message.nack(requeue=False)
+                return
+            if status_code >= 500 or status_code in RETRIABLE_HTTP_STATUS_CODES:
+                _log_message_requeued(event, death_count + 1, exc, status_code=status_code)
+                await message.nack(requeue=True)
+                return
+            raise
+        except (httpx.ConnectError, httpx.TimeoutException) as exc:
+            _log_message_requeued(event, death_count + 1, exc)
+            await message.nack(requeue=True)
+            return
+        except RuntimeError as exc:
+            _log_message_dlq(event, death_count + 1, exc, exc_info=True)
             await message.nack(requeue=False)
             return
+        except json.JSONDecodeError as exc:
+            _log_message_dlq(event, death_count + 1, exc)
+            await message.nack(requeue=False)
+            return
+        except (KeyError, TypeError, ValueError, UnicodeDecodeError) as exc:
+            _log_message_dlq(event, death_count + 1, exc)
+            await message.nack(requeue=False)
+            return
+        except Exception as exc:  # noqa: BLE001 - final AMQP safety net required by spec.
+            _log_message_dlq(event, death_count + 1, exc, exc_info=True)
+            await message.nack(requeue=False)
+            return
+        _log_message_ack(event, death_count + 1)
         await message.ack()
+
+
+def _log_message_dlq(
+    event: RepricerEvent | None,
+    attempts: int,
+    error: BaseException,
+    *,
+    status_code: int | None = None,
+    exc_info: bool = False,
+) -> None:
+    fields: dict[str, Any] = {
+        "event_id": event.event_id if event is not None else None,
+        "seller_id": event.seller_id if event is not None else None,
+        "resource_path": event.resource if event is not None else None,
+        "attempts": attempts,
+        "error_type": type(error).__name__,
+    }
+    if status_code is not None:
+        fields["status_code"] = status_code
+    if exc_info:
+        fields["exc_info"] = True
+    logger.error("worker.message.dlq", **fields)
+
+
+def _log_message_requeued(
+    event: RepricerEvent | None,
+    attempt: int,
+    error: BaseException,
+    *,
+    status_code: int | None = None,
+    retry_after: int | None = None,
+) -> None:
+    fields: dict[str, Any] = {
+        "event_id": event.event_id if event is not None else None,
+        "seller_id": event.seller_id if event is not None else None,
+        "resource_path": event.resource if event is not None else None,
+        "attempt": attempt,
+        "error_type": type(error).__name__,
+    }
+    if status_code is not None:
+        fields["status_code"] = status_code
+    if retry_after is not None:
+        fields["retry_after"] = retry_after
+    logger.warning("worker.message.requeued", **fields)
+
+
+def _log_message_ack(event: RepricerEvent | None, attempt: int) -> None:
+    logger.info(
+        "worker.message.ack",
+        event_id=event.event_id if event is not None else None,
+        seller_id=event.seller_id if event is not None else None,
+        resource_path=event.resource if event is not None else None,
+        attempt=attempt,
+    )
+
+
+def _x_death_count(message: Any, *, queue_name: str) -> int:
+    death_history = message.headers.get("x-death", []) if message.headers else []
+    if not isinstance(death_history, list):
+        return 0
+    for death in death_history:
+        if not isinstance(death, dict):
+            continue
+        if death.get("queue") in (queue_name, None):
+            count = death.get("count", 0)
+            return int(count) if isinstance(count, int) else 0
+    return 0
+
+
+def _event_context_from_message(message: Any) -> RepricerEvent | None:
+    try:
+        return _event_from_message(message)
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError, UnicodeDecodeError):
+        return None
 
 
 def _item_id_from_resource(resource: str) -> str:
@@ -353,9 +515,12 @@ async def run() -> None:
     )
     db = mongo_client[mongo_db]
     manifest_path = Path(__file__).resolve().parents[2] / "manifest.yaml"
-    gateway_client = RepricerGatewayClient(
-        base_url=os.environ.get("GATEWAY_BASE_URL", "http://gateway"),
-        token=os.environ.get("GATEWAY_TOKEN", ""),
+    from google.cloud import kms
+
+    kms_client = kms.KeyManagementServiceClient()
+    gateway_client = make_meli_gateway_price_client(
+        base_url=os.environ.get("GATEWAY_BASE_URL", DEFAULT_GATEWAY_BASE_URL),
+        kms_client=kms_client,
     )
     idempotency_store = _RepricerIdempotencyAdapter(
         CoreIdempotencyStore(cast(Any, db["processed_events"]))

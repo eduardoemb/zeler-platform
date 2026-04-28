@@ -2480,6 +2480,7 @@ dependencies = [
     { name = "fastapi" },
     { name = "httpx" },
     { name = "motor" },
+    { name = "structlog" },
     { name = "uvicorn", extra = ["standard"] },
     { name = "zeler-platform-core" },
 ]
@@ -2490,6 +2491,7 @@ requires-dist = [
     { name = "fastapi", specifier = ">=0.110,<1" },
     { name = "httpx", specifier = ">=0.27.0" },
     { name = "motor", specifier = ">=3.7.1" },
+    { name = "structlog", specifier = ">=24.1.0" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.30.0" },
     { name = "zeler-platform-core", editable = "core" },
 ]
@@ -2522,6 +2524,7 @@ dependencies = [
     { name = "fastapi" },
     { name = "httpx" },
     { name = "motor" },
+    { name = "structlog" },
     { name = "uvicorn", extra = ["standard"] },
     { name = "zeler-platform-core" },
 ]
@@ -2532,6 +2535,7 @@ requires-dist = [
     { name = "fastapi", specifier = ">=0.110,<1" },
     { name = "httpx", specifier = ">=0.27.0" },
     { name = "motor", specifier = ">=3.7.1" },
+    { name = "structlog", specifier = ">=24.1.0" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.30.0" },
     { name = "zeler-platform-core", editable = "core" },
 ]
@@ -2696,6 +2700,7 @@ dependencies = [
     { name = "fastapi" },
     { name = "httpx" },
     { name = "motor" },
+    { name = "structlog" },
     { name = "uvicorn", extra = ["standard"] },
     { name = "zeler-platform-core" },
 ]
@@ -2706,6 +2711,7 @@ requires-dist = [
     { name = "fastapi", specifier = ">=0.110,<1" },
     { name = "httpx", specifier = ">=0.27.0" },
     { name = "motor", specifier = ">=3.7.1" },
+    { name = "structlog", specifier = ">=24.1.0" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.30.0" },
     { name = "zeler-platform-core", editable = "core" },
 ]
@@ -2722,6 +2728,7 @@ dependencies = [
     { name = "httpx" },
     { name = "motor" },
     { name = "pydantic-settings" },
+    { name = "structlog" },
     { name = "uvicorn", extra = ["standard"] },
     { name = "zeler-platform-core" },
 ]
@@ -2735,6 +2742,7 @@ requires-dist = [
     { name = "httpx", specifier = ">=0.27.0" },
     { name = "motor", specifier = ">=3.7.1" },
     { name = "pydantic-settings", specifier = ">=2.14.0" },
+    { name = "structlog", specifier = ">=24.1.0" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.30.0" },
     { name = "zeler-platform-core", editable = "core" },
 ]
