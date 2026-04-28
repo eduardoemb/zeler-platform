@@ -43,6 +43,8 @@ class GoogleTokenStore:
             raise SellerNotConnectedError(f"seller {seller_id} is not connected")
 
         expires_at = cast(datetime, doc["expires_at"])
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=UTC)
         if expires_at < self._now() + self.REFRESH_WINDOW:
             return await self._refresh(seller_id, doc)
 
