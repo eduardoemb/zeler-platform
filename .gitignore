@@ -35,3 +35,16 @@ infra/docker/PROD_BRINGUP_EVIDENCE_*.md
 # OS files
 .DS_Store
 Thumbs.db
+
+# SDD artifacts (engram-only mode — never written to filesystem)
+sdd/*/explore.md
+sdd/*/proposal.md
+sdd/*/spec.md
+sdd/*/design.md
+sdd/*/tasks.md
+sdd/*/apply-progress.md
+sdd/*/verify-report.md
+sdd/*/archive-report.md
+
+# Skill registry (project-local, never committed)
+.atl/
