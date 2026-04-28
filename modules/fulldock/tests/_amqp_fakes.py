@@ -43,6 +43,8 @@ class FakeQueue:
 class FakeChannel:
     def __init__(self) -> None:
         self.qos: list[int] = []
+        self.exchanges_by_name: dict[str, FakeExchange] = {}
+        self.queues_by_name: dict[str, FakeQueue] = {}
         self.exchange = FakeExchange()
         self.queue = FakeQueue()
         self.declared_exchanges: list[tuple[str, Any, bool]] = []
@@ -55,13 +57,19 @@ class FakeChannel:
         self, name: str, exchange_type: Any, *, durable: bool
     ) -> FakeExchange:
         self.declared_exchanges.append((name, exchange_type, durable))
-        return self.exchange
+        exchange = self.exchanges_by_name.setdefault(name, FakeExchange())
+        if name == "meli.events":
+            self.exchange = exchange
+        return exchange
 
     async def declare_queue(
         self, name: str, *, durable: bool, arguments: dict[str, object]
     ) -> FakeQueue:
         self.declared_queues.append((name, durable, arguments))
-        return self.queue
+        queue = self.queues_by_name.setdefault(name, FakeQueue())
+        if name == "zeler.fulldock.events":
+            self.queue = queue
+        return queue
 
 
 class FakeConnection:

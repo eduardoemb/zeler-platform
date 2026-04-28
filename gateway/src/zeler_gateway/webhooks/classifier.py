@@ -10,7 +10,7 @@ TOPIC_ROUTING_KEYS = {
     "items": "items.updated",
     "orders_v2": "orders.updated",
     "shipments": "shipments.updated",
-    "questions": "questions.updated",
+    "questions": "questions.new",
     "messages": "messages.new",
     "claims": "claims.updated",
     "post_purchase": "post_purchase.updated",

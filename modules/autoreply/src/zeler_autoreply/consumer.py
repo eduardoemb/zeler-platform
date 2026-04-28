@@ -24,7 +24,9 @@ from zeler_platform_core.runtime.manifest import validate_manifest
 
 MELI_EVENTS_EXCHANGE = "meli.events"
 AUTOREPLY_EVENTS_QUEUE = "zeler.autoreply.events"
+AUTOREPLY_EVENTS_DLQ = f"{AUTOREPLY_EVENTS_QUEUE}.dlq"
 AUTOREPLY_EVENTS_DLX = "zeler.autoreply.events.dlx"
+AUTOREPLY_EVENTS_DEAD_LETTER_ROUTING_KEY = AUTOREPLY_EVENTS_DLQ
 AUTOREPLY_DELIVERY_LIMIT = 5
 DEFAULT_PREFETCH_COUNT = 10
 AUTOREPLY_DEFAULT_ROUTING_KEYS = ("questions.new", "messages.new")
@@ -143,7 +145,9 @@ class AutoreplyAmqpConsumerConfig:
     rabbitmq_url: str
     exchange_name: str = MELI_EVENTS_EXCHANGE
     queue_name: str = AUTOREPLY_EVENTS_QUEUE
+    dead_letter_queue: str = AUTOREPLY_EVENTS_DLQ
     dead_letter_exchange: str = AUTOREPLY_EVENTS_DLX
+    dead_letter_routing_key: str = AUTOREPLY_EVENTS_DEAD_LETTER_ROUTING_KEY
     delivery_limit: int = AUTOREPLY_DELIVERY_LIMIT
     prefetch_count: int = DEFAULT_PREFETCH_COUNT
     routing_keys: tuple[str, ...] = AUTOREPLY_DEFAULT_ROUTING_KEYS
@@ -159,8 +163,10 @@ class AutoreplyAmqpConsumerRunner:
         handler: AutoreplyEventHandlerLike,
         manifest_path: str | Path | None = None,
         queue_name: str = AUTOREPLY_EVENTS_QUEUE,
+        dead_letter_queue: str = AUTOREPLY_EVENTS_DLQ,
         exchange_name: str = MELI_EVENTS_EXCHANGE,
         dead_letter_exchange: str = AUTOREPLY_EVENTS_DLX,
+        dead_letter_routing_key: str = AUTOREPLY_EVENTS_DEAD_LETTER_ROUTING_KEY,
         delivery_limit: int = AUTOREPLY_DELIVERY_LIMIT,
         prefetch_count: int = DEFAULT_PREFETCH_COUNT,
     ) -> None:
@@ -169,7 +175,9 @@ class AutoreplyAmqpConsumerRunner:
             rabbitmq_url=rabbitmq_url,
             exchange_name=exchange_name,
             queue_name=queue_name,
+            dead_letter_queue=dead_letter_queue,
             dead_letter_exchange=dead_letter_exchange,
+            dead_letter_routing_key=dead_letter_routing_key,
             delivery_limit=delivery_limit,
             prefetch_count=prefetch_count,
             routing_keys=routing_keys,
@@ -187,11 +195,26 @@ class AutoreplyAmqpConsumerRunner:
             aio_pika.ExchangeType.TOPIC,
             durable=True,
         )
+        dead_letter_exchange = await channel.declare_exchange(
+            self.config.dead_letter_exchange,
+            aio_pika.ExchangeType.DIRECT,
+            durable=True,
+        )
+        dead_letter_queue = await channel.declare_queue(
+            self.config.dead_letter_queue,
+            durable=True,
+            arguments={},
+        )
+        await dead_letter_queue.bind(
+            dead_letter_exchange,
+            routing_key=self.config.dead_letter_routing_key,
+        )
         queue = await channel.declare_queue(
             self.config.queue_name,
             durable=True,
             arguments={
                 "x-dead-letter-exchange": self.config.dead_letter_exchange,
+                "x-dead-letter-routing-key": self.config.dead_letter_routing_key,
             },
         )
         for routing_key in self.config.routing_keys:

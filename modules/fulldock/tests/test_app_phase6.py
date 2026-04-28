@@ -32,11 +32,12 @@ def test_fulldock_manifest_validates_owned_collections_and_stock_location_scope(
     manifest = validate_manifest("modules/fulldock/manifest.yaml")
 
     assert manifest.name == "fulldock"
-    assert manifest.routing_keys == ["items.*", "shipments.*"]
+    assert manifest.routing_keys == ["items.*", "shipments.*", "stock_locations.*"]
     assert manifest.owned_collections == ["fulldock_inventory_rules", "fulldock_history"]
     assert manifest.allowed_meli_scopes == [
         "GET /items/*",
         "GET /shipments/*",
+        "GET /user-products/*/stock",
         "PUT /items/*/stock_locations",
     ]
 
@@ -61,9 +62,10 @@ async def test_fulldock_startup_registers_manifest_and_health_ready() -> None:
         "allowed_meli_scopes": [
             "GET /items/*",
             "GET /shipments/*",
+            "GET /user-products/*/stock",
             "PUT /items/*/stock_locations",
         ],
-        "routing_keys": ["items.*", "shipments.*"],
+        "routing_keys": ["items.*", "shipments.*", "stock_locations.*"],
         "owned_collections": ["fulldock_inventory_rules", "fulldock_history"],
         "health_endpoint": "/health",
         "status": "enabled",

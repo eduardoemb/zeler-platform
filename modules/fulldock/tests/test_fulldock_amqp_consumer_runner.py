@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from aio_pika import ExchangeType
 
 from zeler_fulldock.consumer import (
     FulldockAmqpConsumerRunner,
@@ -58,15 +59,30 @@ async def test_fulldock_runner_declares_queue_with_dlx_and_binds_manifest_routin
     assert calls == ["amqp://unit-test"]
     channel = connection.channel_obj
     assert channel.qos == [10]
-    assert channel.declared_exchanges == [("meli.events", runner.exchange_type_topic, True)]
+    assert channel.declared_exchanges == [
+        ("meli.events", runner.exchange_type_topic, True),
+        ("zeler.fulldock.events.dlx", ExchangeType.DIRECT, True),
+    ]
     assert channel.declared_queues == [
+        (
+            "zeler.fulldock.events.dlq",
+            True,
+            {},
+        ),
         (
             "zeler.fulldock.events",
             True,
-            {"x-dead-letter-exchange": "zeler.fulldock.events.dlx"},
+            {
+                "x-dead-letter-exchange": "zeler.fulldock.events.dlx",
+                "x-dead-letter-routing-key": "zeler.fulldock.events.dlq",
+            },
         )
     ]
-    assert "x-delivery-limit" not in channel.declared_queues[0][2]
+    assert "x-delivery-limit" not in channel.declared_queues[1][2]
+    fulldock_dlq = channel.queues_by_name["zeler.fulldock.events.dlq"]
+    assert [routing_key for _, routing_key in fulldock_dlq.bindings] == [
+        "zeler.fulldock.events.dlq",
+    ]
     assert [routing_key for _, routing_key in channel.queue.bindings] == [
         "items.*",
         "shipments.*",

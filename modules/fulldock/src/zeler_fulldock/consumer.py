@@ -23,10 +23,12 @@ from zeler_platform_core.runtime.manifest import validate_manifest
 
 MELI_EVENTS_EXCHANGE = "meli.events"
 FULLDOCK_EVENTS_QUEUE = "zeler.fulldock.events"
+FULLDOCK_EVENTS_DLQ = f"{FULLDOCK_EVENTS_QUEUE}.dlq"
 FULLDOCK_EVENTS_DLX = "zeler.fulldock.events.dlx"
+FULLDOCK_EVENTS_DEAD_LETTER_ROUTING_KEY = FULLDOCK_EVENTS_DLQ
 FULLDOCK_DELIVERY_LIMIT = 5
 DEFAULT_PREFETCH_COUNT = 10
-FULLDOCK_DEFAULT_ROUTING_KEYS = ("items.*", "shipments.*")
+FULLDOCK_DEFAULT_ROUTING_KEYS = ("items.*", "shipments.*", "stock_locations.*")
 MISSING_RABBITMQ_URL_MESSAGE = "error: RABBITMQ_URL is required"
 MISSING_MONGO_URI_MESSAGE = "error: MONGO_URI is required"
 MISSING_MONGO_DB_MESSAGE = "error: MONGO_DB is required"
@@ -142,7 +144,9 @@ class FulldockAmqpConsumerConfig:
     rabbitmq_url: str
     exchange_name: str = MELI_EVENTS_EXCHANGE
     queue_name: str = FULLDOCK_EVENTS_QUEUE
+    dead_letter_queue: str = FULLDOCK_EVENTS_DLQ
     dead_letter_exchange: str = FULLDOCK_EVENTS_DLX
+    dead_letter_routing_key: str = FULLDOCK_EVENTS_DEAD_LETTER_ROUTING_KEY
     delivery_limit: int = FULLDOCK_DELIVERY_LIMIT
     prefetch_count: int = DEFAULT_PREFETCH_COUNT
     routing_keys: tuple[str, ...] = FULLDOCK_DEFAULT_ROUTING_KEYS
@@ -158,8 +162,10 @@ class FulldockAmqpConsumerRunner:
         handler: FulldockEventHandlerLike,
         manifest_path: str | Path | None = None,
         queue_name: str = FULLDOCK_EVENTS_QUEUE,
+        dead_letter_queue: str = FULLDOCK_EVENTS_DLQ,
         exchange_name: str = MELI_EVENTS_EXCHANGE,
         dead_letter_exchange: str = FULLDOCK_EVENTS_DLX,
+        dead_letter_routing_key: str = FULLDOCK_EVENTS_DEAD_LETTER_ROUTING_KEY,
         delivery_limit: int = FULLDOCK_DELIVERY_LIMIT,
         prefetch_count: int = DEFAULT_PREFETCH_COUNT,
     ) -> None:
@@ -168,7 +174,9 @@ class FulldockAmqpConsumerRunner:
             rabbitmq_url=rabbitmq_url,
             exchange_name=exchange_name,
             queue_name=queue_name,
+            dead_letter_queue=dead_letter_queue,
             dead_letter_exchange=dead_letter_exchange,
+            dead_letter_routing_key=dead_letter_routing_key,
             delivery_limit=delivery_limit,
             prefetch_count=prefetch_count,
             routing_keys=routing_keys,
@@ -186,11 +194,26 @@ class FulldockAmqpConsumerRunner:
             aio_pika.ExchangeType.TOPIC,
             durable=True,
         )
+        dead_letter_exchange = await channel.declare_exchange(
+            self.config.dead_letter_exchange,
+            aio_pika.ExchangeType.DIRECT,
+            durable=True,
+        )
+        dead_letter_queue = await channel.declare_queue(
+            self.config.dead_letter_queue,
+            durable=True,
+            arguments={},
+        )
+        await dead_letter_queue.bind(
+            dead_letter_exchange,
+            routing_key=self.config.dead_letter_routing_key,
+        )
         queue = await channel.declare_queue(
             self.config.queue_name,
             durable=True,
             arguments={
                 "x-dead-letter-exchange": self.config.dead_letter_exchange,
+                "x-dead-letter-routing-key": self.config.dead_letter_routing_key,
             },
         )
         for routing_key in self.config.routing_keys:

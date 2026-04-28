@@ -36,6 +36,16 @@
       "durable": true
     },
     {
+      "name": "zeler.fulldock.events.dlx",
+      "type": "direct",
+      "durable": true
+    },
+    {
+      "name": "zeler.autoreply.events.dlx",
+      "type": "direct",
+      "durable": true
+    },
+    {
       "name": "zeler.publicador.questions.dlx",
       "type": "direct",
       "durable": true
@@ -360,6 +370,112 @@
       }
     },
     {
+      "name": "zeler.fulldock.events.dlq",
+      "durable": true,
+      "arguments": {}
+    },
+    {
+      "name": "zeler.fulldock.events",
+      "durable": true,
+      "arguments": {
+        "x-dead-letter-exchange": "zeler.fulldock.events.dlx",
+        "x-dead-letter-routing-key": "zeler.fulldock.events.dlq"
+      }
+    },
+    {
+      "name": "zeler.fulldock.events.retry.1s",
+      "durable": true,
+      "arguments": {
+        "x-message-ttl": 1000,
+        "x-dead-letter-exchange": "meli.events"
+      }
+    },
+    {
+      "name": "zeler.fulldock.events.retry.5s",
+      "durable": true,
+      "arguments": {
+        "x-message-ttl": 5000,
+        "x-dead-letter-exchange": "meli.events"
+      }
+    },
+    {
+      "name": "zeler.fulldock.events.retry.30s",
+      "durable": true,
+      "arguments": {
+        "x-message-ttl": 30000,
+        "x-dead-letter-exchange": "meli.events"
+      }
+    },
+    {
+      "name": "zeler.fulldock.events.retry.2m",
+      "durable": true,
+      "arguments": {
+        "x-message-ttl": 120000,
+        "x-dead-letter-exchange": "meli.events"
+      }
+    },
+    {
+      "name": "zeler.fulldock.events.retry.10m",
+      "durable": true,
+      "arguments": {
+        "x-message-ttl": 600000,
+        "x-dead-letter-exchange": "meli.events"
+      }
+    },
+    {
+      "name": "zeler.autoreply.events.dlq",
+      "durable": true,
+      "arguments": {}
+    },
+    {
+      "name": "zeler.autoreply.events",
+      "durable": true,
+      "arguments": {
+        "x-dead-letter-exchange": "zeler.autoreply.events.dlx",
+        "x-dead-letter-routing-key": "zeler.autoreply.events.dlq"
+      }
+    },
+    {
+      "name": "zeler.autoreply.events.retry.1s",
+      "durable": true,
+      "arguments": {
+        "x-message-ttl": 1000,
+        "x-dead-letter-exchange": "meli.events"
+      }
+    },
+    {
+      "name": "zeler.autoreply.events.retry.5s",
+      "durable": true,
+      "arguments": {
+        "x-message-ttl": 5000,
+        "x-dead-letter-exchange": "meli.events"
+      }
+    },
+    {
+      "name": "zeler.autoreply.events.retry.30s",
+      "durable": true,
+      "arguments": {
+        "x-message-ttl": 30000,
+        "x-dead-letter-exchange": "meli.events"
+      }
+    },
+    {
+      "name": "zeler.autoreply.events.retry.2m",
+      "durable": true,
+      "arguments": {
+        "x-message-ttl": 120000,
+        "x-dead-letter-exchange": "meli.events"
+      }
+    },
+    {
+      "name": "zeler.autoreply.events.retry.10m",
+      "durable": true,
+      "arguments": {
+        "x-message-ttl": 600000,
+        "x-dead-letter-exchange": "meli.events"
+      }
+    },
+    {
       "name": "zeler.publicador.questions.dlq",
       "durable": true,
       "arguments": {}
@@ -529,6 +645,41 @@
       "source": "meli.events",
       "destination": "zeler.fulldock.stock_locations",
       "routing_key": "stock_locations.*"
+    },
+    {
+      "source": "zeler.fulldock.events.dlx",
+      "destination": "zeler.fulldock.events.dlq",
+      "routing_key": "zeler.fulldock.events.dlq"
+    },
+    {
+      "source": "meli.events",
+      "destination": "zeler.fulldock.events",
+      "routing_key": "items.*"
+    },
+    {
+      "source": "meli.events",
+      "destination": "zeler.fulldock.events",
+      "routing_key": "shipments.*"
+    },
+    {
+      "source": "meli.events",
+      "destination": "zeler.fulldock.events",
+      "routing_key": "stock_locations.*"
+    },
+    {
+      "source": "zeler.autoreply.events.dlx",
+      "destination": "zeler.autoreply.events.dlq",
+      "routing_key": "zeler.autoreply.events.dlq"
+    },
+    {
+      "source": "meli.events",
+      "destination": "zeler.autoreply.events",
+      "routing_key": "questions.new"
+    },
+    {
+      "source": "meli.events",
+      "destination": "zeler.autoreply.events",
+      "routing_key": "messages.new"
     },
     {
       "source": "zeler.publicador.questions.dlx",

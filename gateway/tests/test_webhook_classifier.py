@@ -42,6 +42,21 @@ def test_orders_v2_classifies_to_orders_updated() -> None:
     assert classified.idempotency_key == "orders_v2:/orders/42:notif-2"
 
 
+def test_questions_topic_classifies_to_questions_new_for_autoreply_bindings() -> None:
+    event = {
+        "_id": "notif-question",
+        "topic": "questions",
+        "resource": "/questions/9",
+        "user_id": 123456789,
+    }
+
+    classified = classify_webhook_event(event)
+
+    assert classified.routing_key == "questions.new"
+    assert classified.event_type == "questions.new"
+    assert classified.idempotency_key == "questions:/questions/9:notif-question"
+
+
 def test_user_products_families_classifies_to_user_products_families_updated() -> None:
     event = {
         "_id": "notif-user-products-families",
@@ -145,10 +160,10 @@ async def test_publish_uses_meli_events_exchange_contract() -> None:
 
     assert publisher.calls == [
         (
-            "questions.updated",
+            "questions.new",
             {
                 "event_id": "notif-5",
-                "event_type": "questions.updated",
+                "event_type": "questions.new",
                 "occurred_at": publisher.calls[0][1]["occurred_at"],
                 "seller_id": 123456789,
                 "resource": "/questions/9",
