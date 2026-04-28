@@ -75,6 +75,31 @@ any approved cleanup, capture a sanitized management export, confirm the active
 `zeler.fulldock.events` consumer is healthy, confirm DLQs are bound, and get
 explicit approval for the exact queue operation/run ID.
 
+### Stock-location replay readiness gate
+
+stock-locations remains `NO_GO` until all stock-location readiness checks pass.
+The gate is intentionally stricter than the generic RabbitMQ gate because these
+events use `/user-products/{id}/stock` resources and can create wrong writes or
+feedback loops if the Fulldock worker is stale.
+
+Required checks before an operator may approve stock-location replay:
+
+- Focused Fulldock tests for manifest scope, parser, mapping/no-op behavior,
+  drift-only writes, and 403/404/429 handling have passed with `uv run pytest`.
+- The active module registry for `fulldock` includes both
+  `GET /user-products/*/stock` and `PUT /items/*/stock_locations`.
+- Read-only gateway/audit/log review shows no recent gateway `out_of_scope` for
+  `/user-products/{id}/stock` after the registry refresh.
+- Fulldock history/logs show no `malformed_resource`, `missing_mapping`, or `resource_not_found` spike for stock-location traffic.
+- Fulldock logs and RabbitMQ exports show no DLQ growth, 403 stop condition, or
+  429 requeue spikes while the active `zeler.fulldock.events` consumer is bound
+  to `stock_locations.*`.
+- A sanitized dry-run plan still uses `latest-per-resource` coalescing and does
+  not print raw payloads, credentials, or customer data.
+
+If any check fails, keep stock-location replay blocked and name the failed gate
+in the change/incident notes. Do not compensate by replaying a smaller batch.
+
 ## Dry-run plan
 
 Run one topic at a time. Example:
@@ -124,6 +149,9 @@ Stop immediately on any of these:
 - Required consumer is missing or unhealthy.
 - Routing key does not match the expected topic route.
 - Worker logs show requeue/DLQ, 429, or 5xx spikes.
+- Stock-location logs show gateway `out_of_scope`, 403, 429 requeue spikes,
+  unexpected `malformed_resource`, `missing_mapping`, or `resource_not_found`
+  outcomes.
 - Publish confirm fails after bounded retries.
 - Mongo marking is ambiguous (`matched_count`/`modified_count` not exactly `1`).
 - Operator creates the abort file.

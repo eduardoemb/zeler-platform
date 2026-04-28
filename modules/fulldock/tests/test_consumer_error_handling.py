@@ -115,6 +115,42 @@ async def test_permanent_http_4xx_statuses_are_nacked_without_requeue(
 
 
 @pytest.mark.asyncio
+async def test_stock_location_http_403_is_logged_to_dlq_without_type_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    log_spy = LogSpy()
+    monkeypatch.setattr(consumer, "logger", log_spy, raising=False)
+    handler = FakeHandler(error=_http_status_error(403, path="/user-products/UP1/stock"))
+    runner = FulldockAmqpConsumerRunner(rabbitmq_url="amqp://unit-test", handler=handler)
+    message = FakeMessage(
+        {
+            "event_id": "evt-stock-1",
+            "event_type": "stock_locations.updated",
+            "seller_id": 123456789,
+            "resource": "/user-products/UP1/stock",
+        }
+    )
+
+    await runner.handle_message(message)
+
+    assert message.acked is False
+    assert message.nacks == [False]
+    assert log_spy.error_calls == [
+        (
+            "worker.message.dlq",
+            {
+                "event_id": "evt-stock-1",
+                "seller_id": 123456789,
+                "resource_path": "/user-products/UP1/stock",
+                "attempts": 1,
+                "error_type": "HTTPStatusError",
+                "status_code": 403,
+            },
+        )
+    ]
+
+
+@pytest.mark.asyncio
 async def test_http_500_is_nacked_with_requeue_and_logs_next_attempt(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

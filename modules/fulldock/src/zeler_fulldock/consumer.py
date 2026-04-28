@@ -20,6 +20,7 @@ from zeler_platform_core.auth.meli_gateway_auth import MeliGatewayAuth
 from zeler_platform_core.clients.meli_gateway_client import GatewayRateLimitError, MeliGatewayClient
 from zeler_platform_core.events.idempotency import IdempotencyStore as CoreIdempotencyStore
 from zeler_platform_core.runtime.manifest import validate_manifest
+from zeler_platform_core.runtime.registration import register_module
 
 MELI_EVENTS_EXCHANGE = "meli.events"
 FULLDOCK_EVENTS_QUEUE = "zeler.fulldock.events"
@@ -427,6 +428,9 @@ class FulldockEventHandler:
         if await self._idempotency_store.is_duplicate(event.idempotency_key):
             return "duplicate"
 
+        if event.event_type.startswith("stock_locations."):
+            return await self._handle_stock_location_event(event)
+
         seller_id = str(event.seller_id)
         resource = await self._gateway_client.request(
             "GET", event.resource, seller_id=seller_id, json=None
@@ -464,6 +468,91 @@ class FulldockEventHandler:
 
         await self._idempotency_store.mark_processed(event.idempotency_key)
         return "updated"
+
+    async def _handle_stock_location_event(self, event: FulldockEvent) -> str:
+        user_product_id = parse_user_product_stock_resource(event.resource)
+        if user_product_id is None:
+            return await self._record_noop(
+                event=event,
+                item_id="unknown",
+                outcome="malformed_resource",
+            )
+
+        seller_id = str(event.seller_id)
+        try:
+            stock_payload = await self._gateway_client.request(
+                "GET", event.resource, seller_id=seller_id, json=None
+            )
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 404:
+                return await self._record_noop(
+                    event=event,
+                    item_id="unknown",
+                    outcome="resource_not_found",
+                )
+            raise
+
+        item_id, current_locations = stock_item_id_and_locations_from_payload(stock_payload)
+        if item_id is None or current_locations is None:
+            return await self._record_noop(
+                event=event,
+                item_id=item_id or "unknown",
+                outcome="missing_mapping",
+            )
+
+        rules = await self._rules_for_items(seller_id=seller_id, item_ids=[item_id])
+        if not rules:
+            return await self._record_noop(
+                event=event,
+                item_id=item_id,
+                outcome="missing_mapping",
+            )
+
+        rule = rules[0]
+        desired_locations = normalize_stock_locations(rule.get("stock_locations", []))
+        if current_locations == desired_locations:
+            return await self._record_noop(
+                event=event,
+                item_id=item_id,
+                outcome="no_drift",
+                rule_id=str(rule["_id"]),
+                stock_locations=desired_locations,
+            )
+
+        await self._gateway_client.request(
+            "PUT",
+            f"/items/{item_id}/stock_locations",
+            seller_id=seller_id,
+            json={"locations": desired_locations},
+        )
+        await self._record_history(
+            event=event,
+            item_id=item_id,
+            outcome="updated",
+            rule_id=str(rule["_id"]),
+            stock_locations=desired_locations,
+        )
+        await self._idempotency_store.mark_processed(event.idempotency_key)
+        return "updated"
+
+    async def _record_noop(
+        self,
+        *,
+        event: FulldockEvent,
+        item_id: str,
+        outcome: str,
+        rule_id: str | None = None,
+        stock_locations: list[dict[str, Any]] | None = None,
+    ) -> str:
+        await self._record_history(
+            event=event,
+            item_id=item_id,
+            outcome=outcome,
+            rule_id=rule_id,
+            stock_locations=stock_locations or [],
+        )
+        await self._idempotency_store.mark_processed(event.idempotency_key)
+        return outcome
 
     async def _rules_for_items(
         self, *, seller_id: str, item_ids: list[str]
@@ -517,6 +606,52 @@ def item_ids_from_event_resource(
     return [item_id]
 
 
+def parse_user_product_stock_resource(resource_path: str) -> str | None:
+    normalized = resource_path.rstrip("/")
+    parts = normalized.split("/")
+    if len(parts) != 4:
+        return None
+    if parts[0] != "" or parts[1] != "user-products" or parts[3] != "stock":
+        return None
+    user_product_id = parts[2]
+    return user_product_id or None
+
+
+def stock_item_id_and_locations_from_payload(
+    payload: dict[str, Any],
+) -> tuple[str | None, list[dict[str, Any]] | None]:
+    for candidate in _stock_payload_candidates(payload):
+        item_id = _stock_item_id_from_payload(candidate)
+        raw_locations = candidate.get("stock_locations", candidate.get("locations"))
+        if item_id is not None and isinstance(raw_locations, list):
+            current_locations = normalize_proven_stock_locations(raw_locations)
+            if current_locations is None:
+                return item_id, None
+            return item_id, current_locations
+    return None, None
+
+
+def _stock_payload_candidates(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    candidates = [payload]
+    for key in ("items", "results"):
+        nested_items = payload.get(key)
+        if isinstance(nested_items, list):
+            candidates.extend(item for item in nested_items if isinstance(item, dict))
+    return candidates
+
+
+def _stock_item_id_from_payload(payload: dict[str, Any]) -> str | None:
+    value = payload.get("item_id")
+    if value is not None:
+        return str(value)
+    nested_item = payload.get("item")
+    if isinstance(nested_item, dict):
+        value = nested_item.get("id") or nested_item.get("item_id")
+        if value is not None:
+            return str(value)
+    return None
+
+
 def item_id_from_payload(payload: Any) -> str | None:
     if not isinstance(payload, dict):
         return None
@@ -537,14 +672,32 @@ def normalize_stock_locations(raw_locations: Any) -> list[dict[str, Any]]:
         return []
     locations: list[dict[str, Any]] = []
     for location in raw_locations:
-        if isinstance(location, dict):
+        if isinstance(location, dict) and "location_id" in location and "quantity" in location:
             locations.append(
                 {
                     "location_id": str(location["location_id"]),
                     "quantity": int(location["quantity"]),
                 }
             )
-    return locations
+    return sorted(locations, key=lambda location: location["location_id"])
+
+
+def normalize_proven_stock_locations(raw_locations: Any) -> list[dict[str, Any]] | None:
+    if not isinstance(raw_locations, list):
+        return None
+    locations: list[dict[str, Any]] = []
+    for location in raw_locations:
+        if not isinstance(location, dict):
+            return None
+        if "location_id" not in location or "quantity" not in location:
+            return None
+        locations.append(
+            {
+                "location_id": str(location["location_id"]),
+                "quantity": int(location["quantity"]),
+            }
+        )
+    return sorted(locations, key=lambda location: location["location_id"])
 
 
 async def run() -> None:
@@ -570,6 +723,7 @@ async def run() -> None:
     )
     db = mongo_client[mongo_db]
     manifest_path = Path(__file__).resolve().parents[2] / "manifest.yaml"
+    await register_module(validate_manifest(manifest_path), db)
     from google.cloud import kms
 
     kms_client = kms.KeyManagementServiceClient()

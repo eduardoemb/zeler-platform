@@ -21,3 +21,16 @@ def test_fulldock_validators_are_strict_and_require_core_fields() -> None:
         assert {"_id", "seller_id", "schema_version"}.issubset(payload["$jsonSchema"]["required"])
         assert result.valid is False
         assert {"_id", "seller_id"}.issubset(result.missing_required_fields)
+
+
+def test_fulldock_history_accepts_stock_location_noop_outcomes() -> None:
+    payload = json.loads(
+        (ROOT / "infra" / "mongo" / "schemas" / "fulldock_history.json").read_text(encoding="utf-8")
+    )
+
+    assert set(payload["$jsonSchema"]["properties"]["outcome"]["enum"]) >= {
+        "no_drift",
+        "missing_mapping",
+        "malformed_resource",
+        "resource_not_found",
+    }
