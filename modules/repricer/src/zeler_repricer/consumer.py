@@ -451,10 +451,11 @@ def _event_context_from_message(message: Any) -> RepricerEvent | None:
 
 def _item_id_from_resource(resource: str) -> str:
     parts = [part for part in resource.split("/") if part]
-    if len(parts) < 2 or parts[0] != "items":
-        msg = f"unsupported repricer resource: {resource}"
-        raise ValueError(msg)
-    return parts[1]
+    for index, part in enumerate(parts):
+        if part == "items" and index + 1 < len(parts):
+            return parts[index + 1]
+    msg = f"unsupported repricer resource: {resource}"
+    raise ValueError(msg)
 
 
 def _routing_keys_from_manifest(manifest_path: str | Path | None) -> tuple[str, ...]:

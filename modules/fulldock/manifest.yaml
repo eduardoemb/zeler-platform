@@ -3,6 +3,7 @@ version: 0.1.0
 subscribed_events:
   - items.*
   - shipments.*
+  - stock_locations.*
 owned_collections:
   - fulldock_inventory_rules
   - fulldock_history

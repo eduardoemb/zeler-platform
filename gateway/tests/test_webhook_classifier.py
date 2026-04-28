@@ -42,6 +42,48 @@ def test_orders_v2_classifies_to_orders_updated() -> None:
     assert classified.idempotency_key == "orders_v2:/orders/42:notif-2"
 
 
+def test_user_products_families_classifies_to_user_products_families_updated() -> None:
+    event = {
+        "_id": "notif-user-products-families",
+        "topic": "user-products-families",
+        "resource": "/user-products/families/123",
+        "user_id": 123456789,
+    }
+
+    classified = classify_webhook_event(event)
+
+    assert classified.routing_key == "user_products.families_updated"
+    assert classified.event_type == "user_products.families_updated"
+
+
+def test_stock_locations_classifies_to_stock_locations_updated() -> None:
+    event = {
+        "_id": "notif-stock-locations",
+        "topic": "stock-locations",
+        "resource": "/stock-locations/MLA123",
+        "user_id": 123456789,
+    }
+
+    classified = classify_webhook_event(event)
+
+    assert classified.routing_key == "stock_locations.updated"
+    assert classified.event_type == "stock_locations.updated"
+
+
+def test_price_suggestion_classifies_to_price_suggestion_updated() -> None:
+    event = {
+        "_id": "notif-price-suggestion",
+        "topic": "price_suggestion",
+        "resource": "suggestions/items/MLA123/details",
+        "user_id": 123456789,
+    }
+
+    classified = classify_webhook_event(event)
+
+    assert classified.routing_key == "price_suggestion.updated"
+    assert classified.event_type == "price_suggestion.updated"
+
+
 def test_unknown_topic_routes_to_dlq_classification() -> None:
     event = {"_id": "notif-3", "topic": "unknown", "resource": "/unknown/1", "user_id": 123456789}
 
@@ -49,6 +91,20 @@ def test_unknown_topic_routes_to_dlq_classification() -> None:
         classify_webhook_event(event)
 
     assert exc_info.value.dlq_routing_key == "webhooks.unknown.dlq"
+
+
+def test_unknown_topic_error_still_raised_by_classifier() -> None:
+    event = {
+        "_id": "notif-unknown-contract",
+        "topic": "future-topic",
+        "resource": "/future/1",
+        "user_id": 123456789,
+    }
+
+    with pytest.raises(UnknownWebhookTopicError) as exc_info:
+        classify_webhook_event(event)
+
+    assert exc_info.value.topic == "future-topic"
 
 
 def test_event_envelope_excludes_full_raw_body() -> None:

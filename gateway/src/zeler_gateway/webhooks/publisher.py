@@ -1,13 +1,19 @@
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
 from typing import Any, Protocol, cast
+
+import structlog
 
 from zeler_gateway.webhooks.classifier import (
     MELI_EVENTS_EXCHANGE,
+    UnknownWebhookTopicError,
     build_event_envelope,
     classify_webhook_event,
 )
+
+logger = structlog.get_logger(__name__)
 
 
 class WebhookPublisher(Protocol):
@@ -44,13 +50,60 @@ class AioPikaWebhookPublisher:
             await exchange.publish(message, routing_key=routing_key)
 
 
+def _fallback_event_id(event: dict[str, Any]) -> str:
+    return str(event.get("_id") or event.get("notification_id") or event.get("id") or "")
+
+
+def _fallback_occurred_at(event: dict[str, Any]) -> str:
+    received_at = event.get("received_at")
+    timestamp = (
+        received_at.astimezone(UTC) if isinstance(received_at, datetime) else datetime.now(UTC)
+    )
+    return timestamp.isoformat().replace("+00:00", "Z")
+
+
+def _build_unknown_envelope(
+    event: dict[str, Any], *, trace_id: str | None = None
+) -> dict[str, Any]:
+    return {
+        "event_id": _fallback_event_id(event),
+        "event_type": "webhooks.unknown",
+        "occurred_at": _fallback_occurred_at(event),
+        "seller_id": event.get("user_id"),
+        "resource": str(event.get("resource", "")),
+        "trace_id": trace_id or "",
+        "schema_version": 1,
+    }
+
+
 async def publish_webhook_event(
     event: dict[str, Any], *, publisher: WebhookPublisher, trace_id: str | None = None
 ) -> None:
-    classified = classify_webhook_event(event)
-    envelope = build_event_envelope(event, trace_id=trace_id)
-    await publisher.publish(
-        classified.routing_key,
-        envelope,
-        {"idempotency_key": classified.idempotency_key, "exchange": MELI_EVENTS_EXCHANGE},
-    )
+    try:
+        classified = classify_webhook_event(event)
+        envelope = build_event_envelope(event, trace_id=trace_id)
+        await publisher.publish(
+            classified.routing_key,
+            envelope,
+            {"idempotency_key": classified.idempotency_key, "exchange": MELI_EVENTS_EXCHANGE},
+        )
+    except UnknownWebhookTopicError as exc:
+        event_id = _fallback_event_id(event)
+        original_topic = str(event.get("topic", ""))
+        envelope = _build_unknown_envelope(event, trace_id=trace_id)
+        await publisher.publish(
+            exc.dlq_routing_key,
+            envelope,
+            {
+                "idempotency_key": f"unknown:{original_topic}:{event_id}",
+                "exchange": MELI_EVENTS_EXCHANGE,
+                "original_topic": original_topic,
+            },
+        )
+        logger.warning(
+            "webhook.unknown_topic_fallback",
+            topic=exc.topic,
+            original_topic=original_topic,
+            event_id=event_id,
+            seller_id=event.get("user_id"),
+        )

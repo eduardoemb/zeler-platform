@@ -16,6 +16,9 @@ TOPIC_ROUTING_KEYS = {
     "post_purchase": "post_purchase.updated",
     "items_prices": "items.price_updated",
     "catalog_item_competition_status": "catalog_item_competition_status.updated",
+    "user-products-families": "user_products.families_updated",
+    "stock-locations": "stock_locations.updated",
+    "price_suggestion": "price_suggestion.updated",
 }
 
 

@@ -36,6 +36,28 @@ def test_topology_bindings_include_supported_module_routing_keys() -> None:
     assert ("zeler.publicador.messages", "messages.*") in bindings
 
 
+def test_topology_includes_new_queues() -> None:
+    topology = build_topology_definitions()
+
+    queue_names = {queue["name"] for queue in topology["queues"]}
+
+    assert "zeler.repricer.price_suggestion" in queue_names
+    assert "zeler.fulldock.stock_locations" in queue_names
+    assert "zeler.sheets.user_products" in queue_names
+    assert "webhooks.unknown.dlq" in queue_names
+
+
+def test_unknown_dlq_bound_to_meli_events_exchange() -> None:
+    topology = build_topology_definitions()
+
+    bindings = {
+        (binding["source"], binding["destination"], binding["routing_key"])
+        for binding in topology["bindings"]
+    }
+
+    assert ("meli.events", "webhooks.unknown.dlq", "webhooks.unknown.dlq") in bindings
+
+
 def test_topology_uses_classic_queue_compatible_arguments() -> None:
     topology = build_topology_definitions()
 

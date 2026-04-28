@@ -70,6 +70,7 @@ async def test_fulldock_runner_declares_queue_with_dlx_and_binds_manifest_routin
     assert [routing_key for _, routing_key in channel.queue.bindings] == [
         "items.*",
         "shipments.*",
+        "stock_locations.*",
     ]
     assert channel.queue.consumer.__self__ is runner
     assert channel.queue.consumer.__func__ is runner.handle_message.__func__

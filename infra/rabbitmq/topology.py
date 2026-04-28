@@ -9,7 +9,10 @@ EXCHANGE = "meli.events"
 QUEUE_BINDINGS = {
     "zeler.repricer.items": ["items.*"],
     "zeler.repricer.items_prices": ["items.price_updated"],
+    "zeler.repricer.price_suggestion": ["price_suggestion.*"],
     "zeler.sheets.orders": ["orders.*"],
+    "zeler.sheets.user_products": ["user_products.*"],
+    "zeler.fulldock.stock_locations": ["stock_locations.*"],
     "zeler.publicador.questions": ["questions.*"],
     "zeler.publicador.messages": ["messages.*"],
 }
@@ -62,6 +65,14 @@ def build_topology_definitions() -> dict[str, Any]:
             bindings.append(
                 {"source": EXCHANGE, "destination": queue_name, "routing_key": routing_key}
             )
+    queues.append(_queue("webhooks.unknown.dlq"))
+    bindings.append(
+        {
+            "source": EXCHANGE,
+            "destination": "webhooks.unknown.dlq",
+            "routing_key": "webhooks.unknown.dlq",
+        }
+    )
     return {"exchanges": exchanges, "queues": queues, "bindings": bindings}
 
 

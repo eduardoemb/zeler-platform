@@ -33,10 +33,16 @@ def test_rabbitmq_readiness_offline_default_is_non_mutating_and_safe_language() 
 
 def test_rabbitmq_readiness_detects_missing_binding_from_management_export(tmp_path: Path) -> None:
     definitions = json.loads((ROOT / "infra" / "rabbitmq" / "definitions.json").read_text())
+    missing_binding = next(
+        binding
+        for binding in definitions["bindings"]
+        if binding["destination"] == "zeler.publicador.messages"
+        and binding["routing_key"] == "messages.*"
+    )
     export = {
         "exchanges": definitions["exchanges"],
         "queues": definitions["queues"],
-        "bindings": definitions["bindings"][:-1],
+        "bindings": [binding for binding in definitions["bindings"] if binding != missing_binding],
     }
     export_path = tmp_path / "management-export.json"
     export_path.write_text(json.dumps(export), encoding="utf-8")

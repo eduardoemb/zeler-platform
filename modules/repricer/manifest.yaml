@@ -3,6 +3,7 @@ version: 0.1.0
 subscribed_events:
   - items.*
   - items.price_updated
+  - price_suggestion.*
 owned_collections:
   - repricer_rules
   - repricer_history

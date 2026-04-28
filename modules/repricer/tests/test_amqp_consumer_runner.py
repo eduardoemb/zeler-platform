@@ -131,6 +131,7 @@ async def test_runner_declares_queue_and_binds_manifest_routing_keys(
     assert [routing_key for _, routing_key in channel.queue.bindings] == [
         "items.*",
         "items.price_updated",
+        "price_suggestion.*",
     ]
     assert channel.queue.consumer.__self__ is runner
     assert channel.queue.consumer.__func__ is runner.handle_message.__func__

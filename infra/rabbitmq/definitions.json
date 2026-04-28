@@ -16,7 +16,22 @@
       "durable": true
     },
     {
+      "name": "zeler.repricer.price_suggestion.dlx",
+      "type": "direct",
+      "durable": true
+    },
+    {
       "name": "zeler.sheets.orders.dlx",
+      "type": "direct",
+      "durable": true
+    },
+    {
+      "name": "zeler.sheets.user_products.dlx",
+      "type": "direct",
+      "durable": true
+    },
+    {
+      "name": "zeler.fulldock.stock_locations.dlx",
       "type": "direct",
       "durable": true
     },
@@ -137,6 +152,58 @@
       }
     },
     {
+      "name": "zeler.repricer.price_suggestion.dlq",
+      "durable": true,
+      "arguments": {}
+    },
+    {
+      "name": "zeler.repricer.price_suggestion",
+      "durable": true,
+      "arguments": {
+        "x-dead-letter-exchange": "zeler.repricer.price_suggestion.dlx"
+      }
+    },
+    {
+      "name": "zeler.repricer.price_suggestion.retry.1s",
+      "durable": true,
+      "arguments": {
+        "x-message-ttl": 1000,
+        "x-dead-letter-exchange": "meli.events"
+      }
+    },
+    {
+      "name": "zeler.repricer.price_suggestion.retry.5s",
+      "durable": true,
+      "arguments": {
+        "x-message-ttl": 5000,
+        "x-dead-letter-exchange": "meli.events"
+      }
+    },
+    {
+      "name": "zeler.repricer.price_suggestion.retry.30s",
+      "durable": true,
+      "arguments": {
+        "x-message-ttl": 30000,
+        "x-dead-letter-exchange": "meli.events"
+      }
+    },
+    {
+      "name": "zeler.repricer.price_suggestion.retry.2m",
+      "durable": true,
+      "arguments": {
+        "x-message-ttl": 120000,
+        "x-dead-letter-exchange": "meli.events"
+      }
+    },
+    {
+      "name": "zeler.repricer.price_suggestion.retry.10m",
+      "durable": true,
+      "arguments": {
+        "x-message-ttl": 600000,
+        "x-dead-letter-exchange": "meli.events"
+      }
+    },
+    {
       "name": "zeler.sheets.orders.dlq",
       "durable": true,
       "arguments": {}
@@ -182,6 +249,110 @@
     },
     {
       "name": "zeler.sheets.orders.retry.10m",
+      "durable": true,
+      "arguments": {
+        "x-message-ttl": 600000,
+        "x-dead-letter-exchange": "meli.events"
+      }
+    },
+    {
+      "name": "zeler.sheets.user_products.dlq",
+      "durable": true,
+      "arguments": {}
+    },
+    {
+      "name": "zeler.sheets.user_products",
+      "durable": true,
+      "arguments": {
+        "x-dead-letter-exchange": "zeler.sheets.user_products.dlx"
+      }
+    },
+    {
+      "name": "zeler.sheets.user_products.retry.1s",
+      "durable": true,
+      "arguments": {
+        "x-message-ttl": 1000,
+        "x-dead-letter-exchange": "meli.events"
+      }
+    },
+    {
+      "name": "zeler.sheets.user_products.retry.5s",
+      "durable": true,
+      "arguments": {
+        "x-message-ttl": 5000,
+        "x-dead-letter-exchange": "meli.events"
+      }
+    },
+    {
+      "name": "zeler.sheets.user_products.retry.30s",
+      "durable": true,
+      "arguments": {
+        "x-message-ttl": 30000,
+        "x-dead-letter-exchange": "meli.events"
+      }
+    },
+    {
+      "name": "zeler.sheets.user_products.retry.2m",
+      "durable": true,
+      "arguments": {
+        "x-message-ttl": 120000,
+        "x-dead-letter-exchange": "meli.events"
+      }
+    },
+    {
+      "name": "zeler.sheets.user_products.retry.10m",
+      "durable": true,
+      "arguments": {
+        "x-message-ttl": 600000,
+        "x-dead-letter-exchange": "meli.events"
+      }
+    },
+    {
+      "name": "zeler.fulldock.stock_locations.dlq",
+      "durable": true,
+      "arguments": {}
+    },
+    {
+      "name": "zeler.fulldock.stock_locations",
+      "durable": true,
+      "arguments": {
+        "x-dead-letter-exchange": "zeler.fulldock.stock_locations.dlx"
+      }
+    },
+    {
+      "name": "zeler.fulldock.stock_locations.retry.1s",
+      "durable": true,
+      "arguments": {
+        "x-message-ttl": 1000,
+        "x-dead-letter-exchange": "meli.events"
+      }
+    },
+    {
+      "name": "zeler.fulldock.stock_locations.retry.5s",
+      "durable": true,
+      "arguments": {
+        "x-message-ttl": 5000,
+        "x-dead-letter-exchange": "meli.events"
+      }
+    },
+    {
+      "name": "zeler.fulldock.stock_locations.retry.30s",
+      "durable": true,
+      "arguments": {
+        "x-message-ttl": 30000,
+        "x-dead-letter-exchange": "meli.events"
+      }
+    },
+    {
+      "name": "zeler.fulldock.stock_locations.retry.2m",
+      "durable": true,
+      "arguments": {
+        "x-message-ttl": 120000,
+        "x-dead-letter-exchange": "meli.events"
+      }
+    },
+    {
+      "name": "zeler.fulldock.stock_locations.retry.10m",
       "durable": true,
       "arguments": {
         "x-message-ttl": 600000,
@@ -291,6 +462,11 @@
         "x-message-ttl": 600000,
         "x-dead-letter-exchange": "meli.events"
       }
+    },
+    {
+      "name": "webhooks.unknown.dlq",
+      "durable": true,
+      "arguments": {}
     }
   ],
   "bindings": [
@@ -315,6 +491,16 @@
       "routing_key": "items.price_updated"
     },
     {
+      "source": "zeler.repricer.price_suggestion.dlx",
+      "destination": "zeler.repricer.price_suggestion.dlq",
+      "routing_key": "zeler.repricer.price_suggestion"
+    },
+    {
+      "source": "meli.events",
+      "destination": "zeler.repricer.price_suggestion",
+      "routing_key": "price_suggestion.*"
+    },
+    {
       "source": "zeler.sheets.orders.dlx",
       "destination": "zeler.sheets.orders.dlq",
       "routing_key": "zeler.sheets.orders"
@@ -323,6 +509,26 @@
       "source": "meli.events",
       "destination": "zeler.sheets.orders",
       "routing_key": "orders.*"
+    },
+    {
+      "source": "zeler.sheets.user_products.dlx",
+      "destination": "zeler.sheets.user_products.dlq",
+      "routing_key": "zeler.sheets.user_products"
+    },
+    {
+      "source": "meli.events",
+      "destination": "zeler.sheets.user_products",
+      "routing_key": "user_products.*"
+    },
+    {
+      "source": "zeler.fulldock.stock_locations.dlx",
+      "destination": "zeler.fulldock.stock_locations.dlq",
+      "routing_key": "zeler.fulldock.stock_locations"
+    },
+    {
+      "source": "meli.events",
+      "destination": "zeler.fulldock.stock_locations",
+      "routing_key": "stock_locations.*"
     },
     {
       "source": "zeler.publicador.questions.dlx",
@@ -343,6 +549,11 @@
       "source": "meli.events",
       "destination": "zeler.publicador.messages",
       "routing_key": "messages.*"
+    },
+    {
+      "source": "meli.events",
+      "destination": "webhooks.unknown.dlq",
+      "routing_key": "webhooks.unknown.dlq"
     }
   ]
 }
