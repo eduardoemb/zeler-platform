@@ -8,7 +8,7 @@ from bson import Int64
 from motor.motor_asyncio import AsyncIOMotorDatabase
 from pymongo import ReturnDocument
 
-DEFAULT_RATE_LIMIT = 60
+DEFAULT_RATE_LIMIT = 600
 RATE_LIMIT_WINDOW_SECONDS = 60
 RATE_LIMIT_COLLECTION = "rate_limit_counters"
 

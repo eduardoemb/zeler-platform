@@ -45,6 +45,7 @@ HOP_BY_HOP_HEADERS = {
     "transfer-encoding",
     "upgrade",
     "authorization",
+    "host",
 }
 
 HttpClientFactory = Callable[[], httpx.AsyncClient]
@@ -104,7 +105,8 @@ async def proxy_meli(request: Request, full_path: str) -> Response:
     if account_status != "active":
         return _json_error(412, "account_not_active")
 
-    counter = RateLimitCounter(db)
+    settings = Settings()
+    counter = RateLimitCounter(db, default_limit=settings.gateway_proxy_rate_limit)
     try:
         await counter.check_and_increment(module_id=claims.module_id, seller_id=claims.seller_id)
     except RateLimitExceeded as exc:
