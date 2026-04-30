@@ -19,7 +19,7 @@
       "allowed_meli_scopes": [
         "GET /users/*",
         "GET /users/*/items/search",
-        "GET /items/multiget",
+        "GET /items",
         "GET /orders/search",
         "GET /questions/search",
         "GET /messages/packs/*",

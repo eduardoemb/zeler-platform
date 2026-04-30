@@ -85,7 +85,7 @@ class ItemsStage:
             page = await self.gateway.get(f"/users/{seller_id}/items/search", {"scroll_id": cursor})
             item_ids = [str(item_id) for item_id in page.get("results", [])]
             if item_ids:
-                details = await self.gateway.get("/items/multiget", {"ids": ",".join(item_ids)})
+                details = await self.gateway.get("/items", {"ids": ",".join(item_ids)})
                 for raw in details.get("results", []):
                     body = raw.get("body", raw)
                     document = Item.model_validate(

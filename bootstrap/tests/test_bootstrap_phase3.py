@@ -87,7 +87,7 @@ class FakeGateway(BootstrapGatewayClient):
             if cursor is None:
                 return {"results": ["MLM1", "MLM2"], "scroll_id": "p2", "paging": {"total": 3}}
             return {"results": ["MLM3"], "scroll_id": None, "paging": {"total": 3}}
-        if path == "/items/multiget":
+        if path == "/items":
             ids = str((params or {}).get("ids", "")).split(",")
             return {
                 "results": [

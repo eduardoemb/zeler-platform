@@ -20,7 +20,7 @@ def test_bootstrap_module_registry_seed_authorizes_bootstrap_read_paths() -> Non
     assert bootstrap["status"] == "enabled"
     assert _scope_matches(method="GET", path="/users/123", allowed_scopes=scopes)
     assert _scope_matches(method="GET", path="/users/123/items/search", allowed_scopes=scopes)
-    assert _scope_matches(method="GET", path="/items/multiget", allowed_scopes=scopes)
+    assert _scope_matches(method="GET", path="/items", allowed_scopes=scopes)
     assert _scope_matches(method="GET", path="/orders/search", allowed_scopes=scopes)
     assert _scope_matches(method="GET", path="/questions/search", allowed_scopes=scopes)
     assert _scope_matches(method="GET", path="/messages/packs/200", allowed_scopes=scopes)
