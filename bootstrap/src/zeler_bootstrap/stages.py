@@ -99,7 +99,12 @@ class ItemsStage:
                 for raw in detail_results:
                     body = raw.get("body", raw)
                     document = Item.model_validate(
-                        {**body, "seller_id": seller_id, "schema_version": 1}
+                        {
+                            **body,
+                            "seller_id": seller_id,
+                            "last_meli_sync_at": _now(),
+                            "schema_version": 1,
+                        }
                     ).model_dump(by_alias=True, mode="json")
                     await _upsert(self.database["items"], document)
             cursor = page.get("scroll_id")
