@@ -15,7 +15,8 @@ x-restart: &restart
 services:
   # --------------------------------------------------------------------------
   # MongoDB — single-node replica set rs0
-  # Internal-only: NO host ports published (reachable via Docker DNS mongo:27017)
+  # Private-only: publish Mongo on the VM private IP for Cloud Run bootstrap access.
+  # The default bind stays loopback unless MONGO_PRIVATE_BIND_IP is set on the VM.
   # Data stored on persistent disk mounted at /var/lib/zeler-mongo
   # --------------------------------------------------------------------------
   mongo:
@@ -31,6 +32,8 @@ services:
       - "--bind_ip_all"
     networks:
       - platform_default
+    ports:
+      - "${MONGO_PRIVATE_BIND_IP:-127.0.0.1}:27017:27017"
     volumes:
       - /var/lib/zeler-mongo:/data/db
       - /opt/zeler-platform/mongo-keyfiles:/etc/mongo/keyfile:ro

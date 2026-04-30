@@ -1,7 +1,7 @@
 """
 Contract tests for GCE infra artifacts: docker-compose.yml, Caddyfile, env-templates.
 
-Task 1.7: Compose contract (12 services, no :latest, network, mongo no ports, caddy ports).
+Task 1.7: Compose contract (12 services, no :latest, network, private Mongo port, caddy ports).
 Task 1.8: Caddyfile contract (6 site blocks under zeler.ai only).
 Task 1.9: Env-template contract (required keys per service per design §7).
 """
@@ -170,12 +170,10 @@ class TestComposeServices:
             f"Services missing 'platform_default' network: {missing_network}"
         )
 
-    def test_mongo_has_no_host_ports(self) -> None:
+    def test_mongo_publishes_only_private_bind_port(self) -> None:
         data = load_compose()
         mongo_cfg = data["services"]["mongo"]
-        assert "ports" not in mongo_cfg, (
-            f"mongo service MUST NOT publish ports to host (found: {mongo_cfg.get('ports')})"
-        )
+        assert mongo_cfg.get("ports") == ["${MONGO_PRIVATE_BIND_IP:-127.0.0.1}:27017:27017"]
 
     def test_caddy_publishes_only_80_and_443(self) -> None:
         data = load_compose()

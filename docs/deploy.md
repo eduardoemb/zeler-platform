@@ -379,9 +379,12 @@ Rollout checklist:
    and KMS signer/verifier on `platform-jwt`.
 3. Confirm Serverless VPC connector and egress mode. The default is `private-ranges-only`; use
    `all-traffic` only with intentional NAT/private routing.
-4. Confirm `module_registry` contains enabled module `bootstrap` with GET proxy scopes.
-5. Run preflight above, then deploy with Cloud Build.
-6. Execute one dry-run and one controlled seller job before broad use.
+4. Confirm Mongo is published on the VM private IP only (`MONGO_PRIVATE_BIND_IP=<vm-internal-ip>`
+   in `/opt/zeler-platform/.env`) and firewall allows TCP 27017 only from the Serverless VPC
+   Access connector range.
+5. Confirm `module_registry` contains enabled module `bootstrap` with GET proxy scopes.
+6. Run preflight above, then deploy with Cloud Build.
+7. Execute one dry-run and one controlled seller job before broad use.
 
 Rollback: redeploy the previous bootstrap job image/config. If only bindings changed, restore the
 previous `CLOUD_RUN_SECRET_BINDINGS_EXPORT`/substitution values and redeploy the job without
