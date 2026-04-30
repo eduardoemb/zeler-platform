@@ -307,9 +307,7 @@ class TestEnvTemplateContract:
         "forbidden",
         ("platform-gateway-token", "GATEWAY_INTERNAL_TOKEN", "GATEWAY_TOKEN="),
     )
-    def test_secrets_script_does_not_emit_deprecated_gateway_token(
-        self, forbidden: str
-    ) -> None:
+    def test_secrets_script_does_not_emit_deprecated_gateway_token(self, forbidden: str) -> None:
         text = SECRETS_SCRIPT.read_text()
         assert forbidden not in text, (
             f"{SECRETS_SCRIPT.name} must not contain deprecated scoped gateway token "

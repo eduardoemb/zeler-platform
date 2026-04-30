@@ -76,7 +76,7 @@ async def test_autoreply_runner_declares_queue_with_dlx_and_binds_manifest_routi
                 "x-dead-letter-exchange": "zeler.autoreply.events.dlx",
                 "x-dead-letter-routing-key": "zeler.autoreply.events.dlq",
             },
-        )
+        ),
     ]
     assert "x-delivery-limit" not in channel.declared_queues[1][2]
     autoreply_dlq = channel.queues_by_name["zeler.autoreply.events.dlq"]

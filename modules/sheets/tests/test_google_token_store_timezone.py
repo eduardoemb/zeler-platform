@@ -6,7 +6,7 @@ from datetime import UTC, datetime, timedelta
 
 import httpx
 import pytest
-from google_test_fakes import fake_kms_client
+from google_test_fakes import FakeKmsClient, fake_kms_client
 from test_google_token_store import FakeDb, _store, _token_doc
 
 from zeler_sheets.google_token_encryption import decrypt_token
@@ -15,7 +15,9 @@ __all__ = ["fake_kms_client"]
 
 
 @pytest.mark.asyncio
-async def test_get_access_token_handles_naive_expires_at_from_mongo(fake_kms_client) -> None:
+async def test_get_access_token_handles_naive_expires_at_from_mongo(
+    fake_kms_client: FakeKmsClient,
+) -> None:
     now = datetime(2026, 4, 28, 15, 0, tzinfo=UTC)
     db = FakeDb()
     db.google_oauth_tokens.documents["google-token-seller-1"] = _token_doc(

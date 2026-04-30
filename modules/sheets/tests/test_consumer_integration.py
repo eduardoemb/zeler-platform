@@ -113,4 +113,3 @@ def test_sheets_gateway_default_and_env_template_use_proxy_prefix() -> None:
 
     assert consumer.DEFAULT_GATEWAY_BASE_URL == "http://gateway:8080/proxy/meli"
     assert "GATEWAY_BASE_URL=http://gateway:8080/proxy/meli" in content
-    assert "# DEPRECATED — kept for legacy endpoints; remove in next change" in content

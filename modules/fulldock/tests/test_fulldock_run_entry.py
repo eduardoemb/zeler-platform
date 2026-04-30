@@ -242,6 +242,7 @@ async def _exercise_run(monkeypatch: pytest.MonkeyPatch) -> _RunState:
     monkeypatch.setenv("MONGO_URI", "mongodb://unit-test")
     monkeypatch.setenv("MONGO_DB", "zeler")
     monkeypatch.setenv("GATEWAY_BASE_URL", "https://gateway.test/proxy/meli")
+
     class FakeMongoClient:
         def __init__(self, uri: str, **kwargs: Any) -> None:
             self.uri = uri
@@ -278,6 +279,19 @@ async def _exercise_run(monkeypatch: pytest.MonkeyPatch) -> _RunState:
 class _FakeDatabase:
     def __init__(self, name: str) -> None:
         self.name = name
+        self.module_registry = _FakeAsyncCollection()
 
-    def __getitem__(self, collection_name: str) -> dict[str, str]:
+    def __getitem__(self, collection_name: str) -> Any:
+        if collection_name == "module_registry":
+            return self.module_registry
         return {"collection": collection_name}
+
+
+class _FakeAsyncCollection:
+    def __init__(self) -> None:
+        self.replacements: list[tuple[dict[str, Any], dict[str, Any], bool]] = []
+
+    async def replace_one(
+        self, filter_doc: dict[str, Any], replacement: dict[str, Any], *, upsert: bool = False
+    ) -> None:
+        self.replacements.append((filter_doc, replacement, upsert))

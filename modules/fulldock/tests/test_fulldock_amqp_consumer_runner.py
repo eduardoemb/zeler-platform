@@ -76,7 +76,7 @@ async def test_fulldock_runner_declares_queue_with_dlx_and_binds_manifest_routin
                 "x-dead-letter-exchange": "zeler.fulldock.events.dlx",
                 "x-dead-letter-routing-key": "zeler.fulldock.events.dlq",
             },
-        )
+        ),
     ]
     assert "x-delivery-limit" not in channel.declared_queues[1][2]
     fulldock_dlq = channel.queues_by_name["zeler.fulldock.events.dlq"]
