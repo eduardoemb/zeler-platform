@@ -282,7 +282,7 @@ class RuntimeGatewayClient:
         self._token_provider = token_provider
         self.path_prefix = path_prefix.rstrip("/")
 
-    async def get(self, path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+    async def get(self, path: str, params: dict[str, Any] | None = None) -> Any:
         token = await self._token_provider()
         response = await self.http_client.get(
             f"{self.path_prefix}{path}",
@@ -291,8 +291,8 @@ class RuntimeGatewayClient:
         )
         response.raise_for_status()
         payload = response.json()
-        if not isinstance(payload, dict):
-            msg = f"gateway returned non-object JSON for bootstrap path: {path}"
+        if not isinstance(payload, dict | list):
+            msg = f"gateway returned unsupported JSON for bootstrap path: {path}"
             raise ValueError(msg)
         return payload
 

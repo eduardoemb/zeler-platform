@@ -94,27 +94,26 @@ class FakeGateway(BootstrapGatewayClient):
             return {"results": ["MLM3"], "scroll_id": None, "paging": {"total": 3}}
         if path == "/items":
             ids = str((params or {}).get("ids", "")).split(",")
-            return {
-                "results": [
-                    {
-                        "body": {
-                            "id": item_id,
-                            "seller_id": "123",
-                            "title": f"Item {item_id}",
-                            "price": "10.00",
-                            "base_price": "10.00",
-                            "available_quantity": 5,
-                            "status": "active",
-                            "category_id": "MLM-CAT",
-                            "last_meli_sync_at": NOW,
-                            "date_created": NOW,
-                            "last_updated": NOW,
-                        }
-                    }
-                    for item_id in ids
-                    if item_id
-                ]
-            }
+            return [
+                {
+                    "code": 200,
+                    "body": {
+                        "id": item_id,
+                        "seller_id": "123",
+                        "title": f"Item {item_id}",
+                        "price": "10.00",
+                        "base_price": "10.00",
+                        "available_quantity": 5,
+                        "status": "active",
+                        "category_id": "MLM-CAT",
+                        "last_meli_sync_at": NOW,
+                        "date_created": NOW,
+                        "last_updated": NOW,
+                    },
+                }
+                for item_id in ids
+                if item_id
+            ]
         if path == "/orders/search":
             return {
                 "results": [
@@ -315,27 +314,26 @@ async def test_items_stage_chunks_item_detail_requests_to_meli_limit() -> None:
         if path == "/items":
             ids = str((params or {}).get("ids", "")).split(",")
             assert len(ids) <= MELI_ITEMS_BATCH_SIZE
-            return {
-                "results": [
-                    {
-                        "body": {
-                            "id": item_id,
-                            "seller_id": "123",
-                            "title": f"Item {item_id}",
-                            "price": "10.00",
-                            "base_price": "10.00",
-                            "available_quantity": 5,
-                            "status": "active",
-                            "category_id": "MLM-CAT",
-                            "last_meli_sync_at": NOW,
-                            "date_created": NOW,
-                            "last_updated": NOW,
-                        }
-                    }
-                    for item_id in ids
-                    if item_id
-                ]
-            }
+            return [
+                {
+                    "code": 200,
+                    "body": {
+                        "id": item_id,
+                        "seller_id": "123",
+                        "title": f"Item {item_id}",
+                        "price": "10.00",
+                        "base_price": "10.00",
+                        "available_quantity": 5,
+                        "status": "active",
+                        "category_id": "MLM-CAT",
+                        "last_meli_sync_at": NOW,
+                        "date_created": NOW,
+                        "last_updated": NOW,
+                    },
+                }
+                for item_id in ids
+                if item_id
+            ]
         raise AssertionError(path)
 
     gateway.get = get  # type: ignore[method-assign]

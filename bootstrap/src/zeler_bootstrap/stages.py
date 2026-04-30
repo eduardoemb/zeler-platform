@@ -11,7 +11,7 @@ MELI_ITEMS_BATCH_SIZE = 20
 
 
 class BootstrapGatewayClient(Protocol):
-    async def get(self, path: str, params: dict[str, Any] | None = None) -> dict[str, Any]: ...
+    async def get(self, path: str, params: dict[str, Any] | None = None) -> Any: ...
 
 
 class BootstrapCollection(Protocol):
@@ -93,7 +93,10 @@ class ItemsStage:
             item_ids = [str(item_id) for item_id in page.get("results", [])]
             for item_batch in _chunks(item_ids, MELI_ITEMS_BATCH_SIZE):
                 details = await self.gateway.get("/items", {"ids": ",".join(item_batch)})
-                for raw in details.get("results", []):
+                detail_results = (
+                    details if isinstance(details, list) else details.get("results", [])
+                )
+                for raw in detail_results:
                     body = raw.get("body", raw)
                     document = Item.model_validate(
                         {**body, "seller_id": seller_id, "schema_version": 1}
