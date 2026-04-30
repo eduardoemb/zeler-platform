@@ -50,6 +50,23 @@ def _chunks(items: list[str], size: int) -> Iterable[list[str]]:
         yield items[index : index + size]
 
 
+def _normalize_order_items(raw_items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    normalized: list[dict[str, Any]] = []
+    for raw_item in raw_items:
+        if "item_id" in raw_item and "qty" in raw_item:
+            normalized.append(raw_item)
+            continue
+        item = raw_item.get("item") or {}
+        normalized.append(
+            {
+                "item_id": item.get("id") or raw_item.get("item_id"),
+                "qty": raw_item.get("quantity") or raw_item.get("qty"),
+                "unit_price": raw_item.get("unit_price"),
+            }
+        )
+    return normalized
+
+
 def _now() -> datetime:
     return datetime.now(UTC)
 
@@ -149,7 +166,7 @@ class OrdersStage:
                     "date_created": raw["date_created"],
                     "date_closed": raw.get("date_closed"),
                     "total_amount": raw["total_amount"],
-                    "items": raw.get("items") or raw.get("order_items", []),
+                    "items": _normalize_order_items(raw.get("items") or raw.get("order_items", [])),
                     "shipment_id": shipment_id,
                     "schema_version": 1,
                 }

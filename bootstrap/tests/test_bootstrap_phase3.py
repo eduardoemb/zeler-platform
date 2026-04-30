@@ -122,7 +122,9 @@ class FakeGateway(BootstrapGatewayClient):
                         "status": "paid",
                         "date_created": NOW,
                         "total_amount": "20.00",
-                        "order_items": [],
+                        "order_items": [
+                            {"item": {"id": "MLM1"}, "quantity": 2, "unit_price": "10.00"}
+                        ],
                         "shipping": {"id": 654},
                     }
                 ],
@@ -286,6 +288,9 @@ async def test_default_bootstrap_stages_fetch_paginate_upsert_and_emit_completio
         {"_id": "MLM3"},
     ]
     assert database["orders"].upserts[0][0] == {"_id": "987"}
+    assert database["orders"].upserts[0][1]["$set"]["items"] == [
+        {"item_id": "MLM1", "qty": 2, "unit_price": "10.00"}
+    ]
     assert database["questions"].upserts[0][0] == {"_id": "333"}
     assert database["messages"].upserts[0][0] == {"_id": "msg-1"}
     assert database["shipments"].upserts[0][0] == {"_id": "654"}
