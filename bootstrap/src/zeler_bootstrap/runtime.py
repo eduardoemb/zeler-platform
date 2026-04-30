@@ -1,15 +1,30 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import os
-from collections.abc import Mapping
+import random
+import time
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any, Protocol, Self, cast
 from urllib.parse import urlsplit
 
+import structlog
+
 
 class RuntimeConfigError(ValueError):
     pass
+
+
+class BootstrapPublishError(RuntimeError):
+    def __init__(self, *, message_id: str, last_attempt: int, cause: BaseException) -> None:
+        super().__init__(
+            f"bootstrap publish failed after {last_attempt} attempts (message_id={message_id})"
+        )
+        self.message_id = message_id
+        self.last_attempt = last_attempt
+        self.cause = cause
 
 
 class MongoDatabase(Protocol):
@@ -43,6 +58,9 @@ class BootstrapRuntimeSettings:
     rabbitmq_exchange: str = "meli.events"
     gateway_path_prefix: str = "/proxy/meli"
     http_timeout_seconds: float = 30.0
+    max_attempts: int = 3
+    amqp_publish_max_attempts: int = 3
+    amqp_publish_per_attempt_timeout_s: float = 10.0
 
     def __post_init__(self) -> None:
         if not self.mongo_db:
@@ -73,6 +91,9 @@ class BootstrapRuntimeSettings:
         )
         path_prefix = _read_env(source, "BOOTSTRAP_GATEWAY_PATH_PREFIX", ())
         timeout = _read_env(source, "BOOTSTRAP_HTTP_TIMEOUT_SECONDS", ())
+        max_attempts = _read_env(source, "BOOTSTRAP_MAX_ATTEMPTS", ())
+        amqp_publish_max_attempts = _read_env(source, "BOOTSTRAP_AMQP_PUBLISH_MAX_ATTEMPTS", ())
+        amqp_publish_timeout = _read_env(source, "BOOTSTRAP_AMQP_PUBLISH_TIMEOUT_S", ())
 
         return cls(
             mongo_uri=cast(str, values["BOOTSTRAP_MONGO_URI"]),
@@ -83,6 +104,9 @@ class BootstrapRuntimeSettings:
             rabbitmq_exchange=exchange or "meli.events",
             gateway_path_prefix=(path_prefix or "/proxy/meli").rstrip("/"),
             http_timeout_seconds=float(timeout or "30.0"),
+            max_attempts=int(max_attempts or "3"),
+            amqp_publish_max_attempts=int(amqp_publish_max_attempts or "3"),
+            amqp_publish_per_attempt_timeout_s=float(amqp_publish_timeout or "10.0"),
         )
 
 
@@ -92,6 +116,118 @@ def _read_env(source: Mapping[str, str], name: str, aliases: tuple[str, ...]) ->
         if value is not None and value.strip():
             return value.strip()
     return None
+
+
+async def _publish_with_retry(
+    *,
+    publish_fn: Callable[[str], Awaitable[None]],
+    message_id: str,
+    max_attempts: int = 3,
+    base_delay: float = 0.5,
+    factor: float = 2.0,
+    jitter_pct: float = 0.2,
+    per_sleep_cap: float = 5.0,
+    wall_clock_cap: float = 30.0,
+    per_attempt_timeout: float = 10.0,
+    sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+    monotonic: Callable[[], float] = time.monotonic,
+    jitter: Callable[[], float] = random.random,
+) -> None:
+    """Publish with bounded retry for transient AMQP failures.
+
+    Retryable failures are aio-pika AMQP exceptions, stdlib ConnectionError, and
+    asyncio.TimeoutError. Other exceptions are terminal message/programming errors
+    and are wrapped in BootstrapPublishError immediately so callers have one
+    uniform publish-failure contract.
+    """
+    if max_attempts < 1:
+        msg = "max_attempts must be at least 1"
+        raise ValueError(msg)
+
+    started_at = monotonic()
+    last_exception: BaseException | None = None
+    log = structlog.get_logger("zeler_bootstrap")
+    for attempt in range(1, max_attempts + 1):
+        try:
+            await asyncio.wait_for(publish_fn(message_id), timeout=per_attempt_timeout)
+            log.info(
+                "bootstrap.amqp.publish_attempt",
+                attempt=attempt,
+                max_attempts=max_attempts,
+                result="ok",
+                elapsed_ms=int((monotonic() - started_at) * 1000),
+            )
+            return
+        except BaseException as exc:
+            if not _is_retryable_publish_error(exc):
+                raise BootstrapPublishError(
+                    message_id=message_id,
+                    last_attempt=attempt,
+                    cause=exc,
+                ) from exc
+            last_exception = exc
+            log.warning(
+                "bootstrap.amqp.publish_attempt",
+                attempt=attempt,
+                max_attempts=max_attempts,
+                result="error",
+                elapsed_ms=int((monotonic() - started_at) * 1000),
+                error_class=type(exc).__name__,
+            )
+            if attempt >= max_attempts:
+                raise BootstrapPublishError(
+                    message_id=message_id,
+                    last_attempt=attempt,
+                    cause=exc,
+                ) from exc
+
+            elapsed = monotonic() - started_at
+            remaining = wall_clock_cap - elapsed
+            if remaining <= 0:
+                raise BootstrapPublishError(
+                    message_id=message_id,
+                    last_attempt=attempt,
+                    cause=exc,
+                ) from exc
+
+            await sleep(
+                min(
+                    _retry_delay(attempt, base_delay, factor, jitter_pct, per_sleep_cap, jitter),
+                    remaining,
+                )
+            )
+
+    if last_exception is not None:
+        raise BootstrapPublishError(
+            message_id=message_id,
+            last_attempt=max_attempts,
+            cause=last_exception,
+        ) from last_exception
+
+
+def _retry_delay(
+    attempt: int,
+    base_delay: float,
+    factor: float,
+    jitter_pct: float,
+    per_sleep_cap: float,
+    jitter: Callable[[], float],
+) -> float:
+    raw_delay = base_delay * (factor ** (attempt - 1))
+    jitter_multiplier = 1 + ((jitter() * 2) - 1) * jitter_pct
+    return min(raw_delay * jitter_multiplier, per_sleep_cap)
+
+
+def _is_retryable_publish_error(exc: BaseException) -> bool:
+    if isinstance(exc, TimeoutError | ConnectionError):
+        return True
+
+    try:
+        from aio_pika.exceptions import AMQPException
+    except ImportError:
+        return False
+
+    return isinstance(exc, AMQPException)
 
 
 @dataclass(frozen=True)
@@ -118,32 +254,60 @@ class RuntimeGatewayClient:
 
 
 class AioPikaBootstrapPublisher:
-    def __init__(self, *, rabbitmq_url: str, exchange_name: str = "meli.events") -> None:
+    def __init__(
+        self,
+        *,
+        rabbitmq_url: str,
+        exchange_name: str = "meli.events",
+        amqp_publish_max_attempts: int = 3,
+        amqp_publish_per_attempt_timeout_s: float = 10.0,
+    ) -> None:
         self.rabbitmq_url = rabbitmq_url
         self.exchange_name = exchange_name
+        self.amqp_publish_max_attempts = amqp_publish_max_attempts
+        self.amqp_publish_per_attempt_timeout_s = amqp_publish_per_attempt_timeout_s
 
     async def publish_bootstrap_completed(self, job: dict[str, Any]) -> None:
-        import aio_pika
+        if job.get("state") == "failed":
+            structlog.get_logger("zeler_bootstrap").info(
+                "bootstrap.amqp.publish_skipped",
+                job_id=str(job["_id"]),
+                state="failed",
+                reason="job_already_failed",
+            )
+            return
 
         payload = {
             "event_type": "BootstrapCompleted",
             "payload": {"job_id": str(job["_id"]), "seller_id": str(job["seller_id"])},
         }
-        connection = await aio_pika.connect_robust(self.rabbitmq_url)
-        async with connection:
-            channel = await connection.channel(publisher_confirms=True)
-            exchange = await channel.declare_exchange(
-                self.exchange_name,
-                aio_pika.ExchangeType.TOPIC,
-                durable=True,
-            )
-            message = aio_pika.Message(
-                body=json.dumps(payload).encode("utf-8"),
-                content_type="application/json",
-                delivery_mode=aio_pika.DeliveryMode.PERSISTENT,
-                message_id=f"bootstrap-completed-{job['_id']}",
-            )
-            await exchange.publish(message, routing_key="bootstrap.completed")
+        message_id = f"bootstrap-completed-{job['_id']}"
+
+        async def publish_attempt(stable_message_id: str) -> None:
+            import aio_pika
+
+            connection = await aio_pika.connect_robust(self.rabbitmq_url)
+            async with connection:
+                channel = await connection.channel(publisher_confirms=True)
+                exchange = await channel.declare_exchange(
+                    self.exchange_name,
+                    aio_pika.ExchangeType.TOPIC,
+                    durable=True,
+                )
+                message = aio_pika.Message(
+                    body=json.dumps(payload).encode("utf-8"),
+                    content_type="application/json",
+                    delivery_mode=aio_pika.DeliveryMode.PERSISTENT,
+                    message_id=stable_message_id,
+                )
+                await exchange.publish(message, routing_key="bootstrap.completed")
+
+        await _publish_with_retry(
+            publish_fn=publish_attempt,
+            message_id=message_id,
+            max_attempts=self.amqp_publish_max_attempts,
+            per_attempt_timeout=self.amqp_publish_per_attempt_timeout_s,
+        )
 
 
 def build_runtime_dependencies(
@@ -179,6 +343,8 @@ def build_runtime_dependencies(
     publisher = AioPikaBootstrapPublisher(
         rabbitmq_url=settings.rabbitmq_url,
         exchange_name=settings.rabbitmq_exchange,
+        amqp_publish_max_attempts=settings.amqp_publish_max_attempts,
+        amqp_publish_per_attempt_timeout_s=settings.amqp_publish_per_attempt_timeout_s,
     )
     return RuntimeDependencies(
         jobs_collection=database["bootstrap_jobs"],
