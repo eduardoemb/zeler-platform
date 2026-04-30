@@ -42,6 +42,15 @@ MISSING_DB_FOR_SERVICE_USER_MESSAGE = (
 )
 
 
+def _remove_closed_root_stream_handlers() -> None:
+    root_logger = logging.getLogger()
+    for handler in root_logger.handlers[:]:
+        stream = getattr(handler, "stream", None)
+        if getattr(stream, "closed", False):
+            root_logger.removeHandler(handler)
+            handler.close()
+
+
 def ensure_admin_user(
     client: Any,
     username: str,
@@ -147,6 +156,7 @@ def wait_for_primary(
 
 def main() -> None:
     """Initialize the prod Mongo replica set and admin user from environment."""
+    _remove_closed_root_stream_handlers()
     logging.basicConfig(level=logging.INFO)
     username = os.environ.get("MONGO_ADMIN_USER")
     password = os.environ.get("MONGO_ADMIN_PASSWORD")
