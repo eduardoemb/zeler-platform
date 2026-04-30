@@ -6,7 +6,12 @@ from typing import Any
 import pytest
 
 from zeler_bootstrap.runner import BootstrapDagRunner, BootstrapStage, build_default_stages
-from zeler_bootstrap.stages import BootstrapGatewayClient, InMemoryPublisher
+from zeler_bootstrap.stages import (
+    MELI_ITEMS_BATCH_SIZE,
+    BootstrapGatewayClient,
+    InMemoryPublisher,
+    ItemsStage,
+)
 from zeler_bootstrap.state_machine import BootstrapStateMachine, InvalidTransitionError
 
 NOW = datetime(2026, 4, 24, 12, 0, tzinfo=UTC)
@@ -293,3 +298,50 @@ async def test_default_bootstrap_stages_fetch_paginate_upsert_and_emit_completio
             "payload": {"job_id": "job-1", "seller_id": "123"},
         }
     ]
+
+
+@pytest.mark.asyncio
+async def test_items_stage_chunks_item_detail_requests_to_meli_limit() -> None:
+    item_ids = [f"MLM{i}" for i in range((MELI_ITEMS_BATCH_SIZE * 2) + 3)]
+    collection = FakeBootstrapJobs()
+    collection.document["state"] = "running"
+    database = FakeDatabase()
+    gateway = FakeGateway()
+
+    async def get(path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+        gateway.calls.append((path, params))
+        if path == "/users/123/items/search":
+            return {"results": item_ids, "scroll_id": None, "paging": {"total": len(item_ids)}}
+        if path == "/items":
+            ids = str((params or {}).get("ids", "")).split(",")
+            assert len(ids) <= MELI_ITEMS_BATCH_SIZE
+            return {
+                "results": [
+                    {
+                        "body": {
+                            "id": item_id,
+                            "seller_id": "123",
+                            "title": f"Item {item_id}",
+                            "price": "10.00",
+                            "base_price": "10.00",
+                            "available_quantity": 5,
+                            "status": "active",
+                            "category_id": "MLM-CAT",
+                            "last_meli_sync_at": NOW,
+                            "date_created": NOW,
+                            "last_updated": NOW,
+                        }
+                    }
+                    for item_id in ids
+                    if item_id
+                ]
+            }
+        raise AssertionError(path)
+
+    gateway.get = get  # type: ignore[method-assign]
+    machine = BootstrapStateMachine(collection, "job-1", now_fn=lambda: NOW)
+
+    await ItemsStage(gateway, database).run(collection.document, machine)
+
+    item_calls = [params for path, params in gateway.calls if path == "/items"]
+    assert [len(str(params["ids"]).split(",")) for params in item_calls if params] == [20, 20, 3]

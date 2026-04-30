@@ -7,6 +7,8 @@ from typing import Any, Protocol
 from zeler_bootstrap.state_machine import BootstrapStateMachine
 from zeler_platform_core.models import Claim, Item, Message, Order, Question, Shipment
 
+MELI_ITEMS_BATCH_SIZE = 20
+
 
 class BootstrapGatewayClient(Protocol):
     async def get(self, path: str, params: dict[str, Any] | None = None) -> dict[str, Any]: ...
@@ -41,6 +43,11 @@ class InMemoryPublisher:
 
 async def _upsert(collection: BootstrapCollection, document: dict[str, Any]) -> None:
     await collection.update_one({"_id": document["_id"]}, {"$set": document}, upsert=True)
+
+
+def _chunks(items: list[str], size: int) -> Iterable[list[str]]:
+    for index in range(0, len(items), size):
+        yield items[index : index + size]
 
 
 def _now() -> datetime:
@@ -84,8 +91,8 @@ class ItemsStage:
         while True:
             page = await self.gateway.get(f"/users/{seller_id}/items/search", {"scroll_id": cursor})
             item_ids = [str(item_id) for item_id in page.get("results", [])]
-            if item_ids:
-                details = await self.gateway.get("/items", {"ids": ",".join(item_ids)})
+            for item_batch in _chunks(item_ids, MELI_ITEMS_BATCH_SIZE):
+                details = await self.gateway.get("/items", {"ids": ",".join(item_batch)})
                 for raw in details.get("results", []):
                     body = raw.get("body", raw)
                     document = Item.model_validate(
