@@ -12,6 +12,9 @@ from urllib.parse import urlsplit
 
 import structlog
 
+from zeler_platform_core.auth.jwt import KmsSigningClient
+from zeler_platform_core.auth.meli_gateway_auth import MeliGatewayAuth
+
 
 class RuntimeConfigError(ValueError):
     pass
@@ -36,14 +39,17 @@ class MongoClientFactory(Protocol):
 
 
 class HttpClientFactory(Protocol):
-    def __call__(self, *, base_url: str, headers: dict[str, str], timeout: float) -> Any: ...
+    def __call__(self, *, base_url: str, timeout: float) -> Any: ...
+
+
+class KmsClientFactory(Protocol):
+    def __call__(self) -> KmsSigningClient: ...
 
 
 _ENV_ALIASES: dict[str, tuple[str, ...]] = {
     "BOOTSTRAP_MONGO_URI": ("MONGO_URI",),
     "BOOTSTRAP_MONGO_DB": ("MONGO_DB",),
     "BOOTSTRAP_GATEWAY_BASE_URL": ("GATEWAY_BASE_URL",),
-    "BOOTSTRAP_GATEWAY_TOKEN": ("GATEWAY_TOKEN", "INTERNAL_GATEWAY_TOKEN"),
     "BOOTSTRAP_RABBITMQ_URL": ("RABBITMQ_URL",),
 }
 
@@ -53,8 +59,10 @@ class BootstrapRuntimeSettings:
     mongo_uri: str = field(repr=False)
     mongo_db: str
     gateway_base_url: str
-    gateway_token: str = field(repr=False)
     rabbitmq_url: str = field(repr=False)
+    gateway_token: str | None = field(default=None, repr=False)
+    module_id: str = "bootstrap"
+    environment: str = "development"
     rabbitmq_exchange: str = "meli.events"
     gateway_path_prefix: str = "/proxy/meli"
     http_timeout_seconds: float = 30.0
@@ -63,6 +71,12 @@ class BootstrapRuntimeSettings:
     amqp_publish_per_attempt_timeout_s: float = 10.0
 
     def __post_init__(self) -> None:
+        environment = _normalize_environment(self.environment)
+        object.__setattr__(self, "environment", environment)
+        if self.gateway_token and environment == "production":
+            msg = "BOOTSTRAP_GATEWAY_TOKEN is not accepted in production; use KMS-signed JWTs"
+            raise RuntimeConfigError(msg)
+
         if not self.mongo_db:
             return
 
@@ -90,6 +104,13 @@ class BootstrapRuntimeSettings:
             ("RABBITMQ_EVENTS_EXCHANGE",),
         )
         path_prefix = _read_env(source, "BOOTSTRAP_GATEWAY_PATH_PREFIX", ())
+        module_id = _read_env(source, "BOOTSTRAP_MODULE_ID", ())
+        gateway_token = _read_env(
+            source,
+            "BOOTSTRAP_GATEWAY_TOKEN",
+            ("GATEWAY_TOKEN", "INTERNAL_GATEWAY_TOKEN"),
+        )
+        environment = _read_env(source, "ENVIRONMENT", ()) or _read_env(source, "ZELER_ENV", ())
         timeout = _read_env(source, "BOOTSTRAP_HTTP_TIMEOUT_SECONDS", ())
         max_attempts = _read_env(source, "BOOTSTRAP_MAX_ATTEMPTS", ())
         amqp_publish_max_attempts = _read_env(source, "BOOTSTRAP_AMQP_PUBLISH_MAX_ATTEMPTS", ())
@@ -99,8 +120,10 @@ class BootstrapRuntimeSettings:
             mongo_uri=cast(str, values["BOOTSTRAP_MONGO_URI"]),
             mongo_db=cast(str, values["BOOTSTRAP_MONGO_DB"]),
             gateway_base_url=cast(str, values["BOOTSTRAP_GATEWAY_BASE_URL"]).rstrip("/"),
-            gateway_token=cast(str, values["BOOTSTRAP_GATEWAY_TOKEN"]),
+            gateway_token=gateway_token,
             rabbitmq_url=cast(str, values["BOOTSTRAP_RABBITMQ_URL"]),
+            module_id=module_id or "bootstrap",
+            environment=environment or "production",
             rabbitmq_exchange=exchange or "meli.events",
             gateway_path_prefix=(path_prefix or "/proxy/meli").rstrip("/"),
             http_timeout_seconds=float(timeout or "30.0"),
@@ -116,6 +139,15 @@ def _read_env(source: Mapping[str, str], name: str, aliases: tuple[str, ...]) ->
         if value is not None and value.strip():
             return value.strip()
     return None
+
+
+def _normalize_environment(raw: str) -> str:
+    normalized = raw.strip().lower()
+    if normalized in {"prod", "production"}:
+        return "production"
+    if normalized == "test":
+        return "test"
+    return "development"
 
 
 async def _publish_with_retry(
@@ -239,12 +271,24 @@ class RuntimeDependencies:
 
 
 class RuntimeGatewayClient:
-    def __init__(self, http_client: Any, *, path_prefix: str = "/proxy/meli") -> None:
+    def __init__(
+        self,
+        http_client: Any,
+        *,
+        token_provider: Callable[[], Awaitable[str]],
+        path_prefix: str = "/proxy/meli",
+    ) -> None:
         self.http_client = http_client
+        self._token_provider = token_provider
         self.path_prefix = path_prefix.rstrip("/")
 
     async def get(self, path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
-        response = await self.http_client.get(f"{self.path_prefix}{path}", params=params)
+        token = await self._token_provider()
+        response = await self.http_client.get(
+            f"{self.path_prefix}{path}",
+            params=params,
+            headers={"Authorization": f"Bearer {token}"},
+        )
         response.raise_for_status()
         payload = response.json()
         if not isinstance(payload, dict):
@@ -313,8 +357,10 @@ class AioPikaBootstrapPublisher:
 def build_runtime_dependencies(
     settings: BootstrapRuntimeSettings,
     *,
+    seller_id: str,
     mongo_client_factory: MongoClientFactory | None = None,
     http_client_factory: HttpClientFactory | None = None,
+    kms_client_factory: KmsClientFactory | None = None,
 ) -> RuntimeDependencies:
     if mongo_client_factory is None:
         from motor.motor_asyncio import AsyncIOMotorClient
@@ -336,10 +382,18 @@ def build_runtime_dependencies(
     database = mongo_client[settings.mongo_db]
     http_client = resolved_http_client_factory(
         base_url=settings.gateway_base_url,
-        headers={"Authorization": f"Bearer {settings.gateway_token}"},
         timeout=settings.http_timeout_seconds,
     )
-    gateway = RuntimeGatewayClient(http_client, path_prefix=settings.gateway_path_prefix)
+    token_provider = _build_gateway_token_provider(
+        settings=settings,
+        seller_id=seller_id,
+        kms_client_factory=kms_client_factory,
+    )
+    gateway = RuntimeGatewayClient(
+        http_client,
+        token_provider=token_provider,
+        path_prefix=settings.gateway_path_prefix,
+    )
     publisher = AioPikaBootstrapPublisher(
         rabbitmq_url=settings.rabbitmq_url,
         exchange_name=settings.rabbitmq_exchange,
@@ -352,3 +406,32 @@ def build_runtime_dependencies(
         gateway=gateway,
         publisher=publisher,
     )
+
+
+def _build_gateway_token_provider(
+    *,
+    settings: BootstrapRuntimeSettings,
+    seller_id: str,
+    kms_client_factory: KmsClientFactory | None,
+) -> Callable[[], Awaitable[str]]:
+    if settings.gateway_token is not None:
+
+        async def static_token_provider() -> str:
+            return cast(str, settings.gateway_token)
+
+        return static_token_provider
+
+    seller_id_int = int(seller_id)
+    if kms_client_factory is None:
+        from google.cloud import kms
+
+        resolved_kms_client_factory: KmsClientFactory = kms.KeyManagementServiceClient
+    else:
+        resolved_kms_client_factory = kms_client_factory
+
+    auth = MeliGatewayAuth(settings.module_id, resolved_kms_client_factory())
+
+    async def jwt_token_provider() -> str:
+        return await auth.get_token_for_seller(seller_id_int)
+
+    return jwt_token_provider

@@ -49,6 +49,14 @@
 
 Deployment preflight command: `uv run python -m infra.deploy.preflight`. It prints only present/missing status and sanitized gcloud availability; it never prints secret values.
 
+Current bootstrap binding contract expected by preflight is structured JSON under
+`jobs.zeler-bootstrap`. It must include Secret Manager references for `BOOTSTRAP_MONGO_URI` and
+`BOOTSTRAP_RABBITMQ_URL`, non-secret env vars for `BOOTSTRAP_MONGO_DB`,
+`BOOTSTRAP_GATEWAY_BASE_URL`, `BOOTSTRAP_GATEWAY_PATH_PREFIX`, `BOOTSTRAP_MODULE_ID`, and
+`BOOTSTRAP_RABBITMQ_EXCHANGE`, explicit `vpc_connector`, `vpc_egress` (`private-ranges-only` by
+default), runtime service account `zeler-bootstrap-runtime@...`, and IAM prerequisites including
+`roles/secretmanager.secretAccessor`, `roles/vpcaccess.user`, and `roles/cloudkms.signerVerifier`.
+
 ### Before inference
 
 - `ok`: false

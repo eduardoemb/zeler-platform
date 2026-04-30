@@ -276,18 +276,17 @@ def test_admin_client_seed_contains_zeler_app_repricer_scope() -> None:
     seed = json.loads(ADMIN_CLIENT_SEED_PATH.read_text(encoding="utf-8"))
 
     assert seed["collection"] == "module_registry"
-    assert seed["documents"] == [
-        {
-            "_id": "zeler-app",
-            "version": "0.1.0",
-            "allowed_meli_scopes": ["admin:repricer"],
-            "routing_keys": [],
-            "owned_collections": [],
-            "health_endpoint": "/health",
-            "status": "enabled",
-            "schema_version": 1,
-        }
-    ]
+    zeler_app = next(doc for doc in seed["documents"] if doc["_id"] == "zeler-app")
+    assert zeler_app == {
+        "_id": "zeler-app",
+        "version": "0.1.0",
+        "allowed_meli_scopes": ["admin:repricer"],
+        "routing_keys": [],
+        "owned_collections": [],
+        "health_endpoint": "/health",
+        "status": "enabled",
+        "schema_version": 1,
+    }
 
 
 @pytest.mark.asyncio

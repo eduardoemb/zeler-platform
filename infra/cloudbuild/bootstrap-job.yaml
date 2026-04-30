@@ -1,3 +1,12 @@
+substitutions:
+  _REGION: us-central1
+  _BOOTSTRAP_VPC_CONNECTOR: zeler-platform-serverless
+  _BOOTSTRAP_VPC_EGRESS: private-ranges-only
+  _BOOTSTRAP_RUNTIME_SERVICE_ACCOUNT: zeler-bootstrap-runtime@$PROJECT_ID.iam.gserviceaccount.com
+  _BOOTSTRAP_MONGO_URI_SECRET: mongo-uri-prod
+  _BOOTSTRAP_RABBITMQ_URL_SECRET: cloudamqp-url
+  _BOOTSTRAP_GATEWAY_BASE_URL: https://gateway.zeler.ai
+
 steps:
   # Equivalent CLI: gcloud run jobs deploy zeler-bootstrap
   - name: gcr.io/cloud-builders/docker
@@ -20,10 +29,14 @@ steps:
       - deploy
       - zeler-bootstrap
       - --image=us-central1-docker.pkg.dev/$PROJECT_ID/zeler-platform/bootstrap:$SHORT_SHA
-      - --region=us-central1
+      - --region=${_REGION}
       - --tasks=1
       - --max-retries=3
-      - --update-env-vars=ZELER_ENV=prod
+      - --service-account=${_BOOTSTRAP_RUNTIME_SERVICE_ACCOUNT}
+      - --vpc-connector=${_BOOTSTRAP_VPC_CONNECTOR}
+      - --vpc-egress=${_BOOTSTRAP_VPC_EGRESS}
+      - --set-secrets=BOOTSTRAP_MONGO_URI=${_BOOTSTRAP_MONGO_URI_SECRET}:latest,BOOTSTRAP_RABBITMQ_URL=${_BOOTSTRAP_RABBITMQ_URL_SECRET}:latest
+      - --update-env-vars=ZELER_ENV=prod,BOOTSTRAP_MONGO_DB=zeler_platform,BOOTSTRAP_GATEWAY_BASE_URL=${_BOOTSTRAP_GATEWAY_BASE_URL},BOOTSTRAP_GATEWAY_PATH_PREFIX=/proxy/meli,BOOTSTRAP_MODULE_ID=bootstrap,BOOTSTRAP_RABBITMQ_EXCHANGE=meli.events
 
 images:
   - us-central1-docker.pkg.dev/$PROJECT_ID/zeler-platform/bootstrap:$SHORT_SHA

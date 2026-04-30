@@ -12,6 +12,25 @@
       "health_endpoint": "/health",
       "status": "enabled",
       "schema_version": 1
+    },
+    {
+      "_id": "bootstrap",
+      "version": "0.1.0",
+      "allowed_meli_scopes": [
+        "GET /users/*",
+        "GET /users/*/items/search",
+        "GET /items/multiget",
+        "GET /orders/search",
+        "GET /questions/search",
+        "GET /messages/packs/*",
+        "GET /shipments/*",
+        "GET /claims/search"
+      ],
+      "routing_keys": [],
+      "owned_collections": [],
+      "health_endpoint": "/health",
+      "status": "enabled",
+      "schema_version": 1
     }
   ]
 }

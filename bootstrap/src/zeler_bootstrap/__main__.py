@@ -67,7 +67,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     if args.dry_run:
         return
     settings = BootstrapRuntimeSettings.from_env()
-    dependencies = build_runtime_dependencies(settings)
+    dependencies = build_runtime_dependencies(settings, seller_id=args.seller_id)
     asyncio.run(
         run_bootstrap_job(
             seller_id=args.seller_id,

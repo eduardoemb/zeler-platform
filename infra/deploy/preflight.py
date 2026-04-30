@@ -7,10 +7,10 @@ import subprocess
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal, cast
 
 CheckStatus = Literal["pass", "fail"]
-CheckCategory = Literal["gcloud", "env", "repo"]
+CheckCategory = Literal["gcloud", "env", "repo", "binding"]
 
 
 @dataclass(frozen=True)
@@ -74,6 +74,29 @@ ENV_GROUPS: tuple[tuple[str, tuple[str, ...], str], ...] = (
         "Export Cloud Run service/job env + Secret Manager bindings to JSON and set this path.",
     ),
 )
+
+BOOTSTRAP_JOB_NAME = "zeler-bootstrap"
+REQUIRED_BOOTSTRAP_ENV: frozenset[str] = frozenset(
+    {
+        "ZELER_ENV",
+        "BOOTSTRAP_MONGO_DB",
+        "BOOTSTRAP_GATEWAY_BASE_URL",
+        "BOOTSTRAP_GATEWAY_PATH_PREFIX",
+        "BOOTSTRAP_MODULE_ID",
+        "BOOTSTRAP_RABBITMQ_EXCHANGE",
+    }
+)
+REQUIRED_BOOTSTRAP_SECRETS: frozenset[str] = frozenset(
+    {"BOOTSTRAP_MONGO_URI", "BOOTSTRAP_RABBITMQ_URL"}
+)
+REQUIRED_BOOTSTRAP_IAM: frozenset[str] = frozenset(
+    {
+        "roles/secretmanager.secretAccessor",
+        "roles/vpcaccess.user",
+        "roles/cloudkms.signerVerifier",
+    }
+)
+ALLOWED_BOOTSTRAP_EGRESS: frozenset[str] = frozenset({"private-ranges-only", "all-traffic"})
 
 REQUIRED_REPO_PATHS: tuple[tuple[str, str], ...] = (
     (
@@ -142,6 +165,154 @@ def _repo_checks(root: Path) -> list[PreflightCheck]:
             )
         )
     return checks
+
+
+def _bootstrap_binding_checks(env: Mapping[str, str], *, root: Path) -> list[PreflightCheck]:
+    export_value = env.get("CLOUD_RUN_SECRET_BINDINGS_EXPORT")
+    if export_value is None or not export_value.strip():
+        return []
+
+    export_result = _load_binding_export(export_value.strip(), root=root)
+    if isinstance(export_result, PreflightCheck):
+        return [export_result]
+
+    missing = _missing_bootstrap_binding_keys(export_result)
+    if missing:
+        return [
+            PreflightCheck(
+                category="binding",
+                name="bootstrap bindings",
+                status="fail",
+                detail="bootstrap bindings: missing " + ", ".join(missing),
+                remediation=(
+                    "Export complete jobs.zeler-bootstrap env, secrets, VPC, service_account, "
+                    "and iam_prerequisites bindings before deploy."
+                ),
+            )
+        ]
+
+    jobs = cast(dict[str, Any], export_result["jobs"])
+    job = cast(dict[str, Any], jobs[BOOTSTRAP_JOB_NAME])
+    secret_refs = _secret_ref_summary(cast(Mapping[object, object], job["secrets"]))
+    return [
+        PreflightCheck(
+            category="binding",
+            name="bootstrap bindings",
+            status="pass",
+            detail=(
+                "bootstrap bindings: valid; secrets="
+                f"{secret_refs}; vpc_egress={job['vpc_egress']}; "
+                f"service_account={job['service_account']}"
+            ),
+            remediation="",
+        )
+    ]
+
+
+def _load_binding_export(raw_value: str, *, root: Path) -> dict[str, object] | PreflightCheck:
+    if raw_value.lstrip().startswith("{"):
+        payload = raw_value
+    else:
+        path = Path(raw_value)
+        if not path.is_absolute():
+            path = root / path
+        try:
+            payload = path.read_text(encoding="utf-8")
+        except OSError:
+            return PreflightCheck(
+                category="binding",
+                name="bootstrap bindings",
+                status="fail",
+                detail="bootstrap bindings: export file unavailable",
+                remediation=(
+                    "Write CLOUD_RUN_SECRET_BINDINGS_EXPORT to a readable JSON file or JSON value."
+                ),
+            )
+
+    try:
+        parsed = json.loads(payload)
+    except json.JSONDecodeError:
+        return PreflightCheck(
+            category="binding",
+            name="bootstrap bindings",
+            status="fail",
+            detail="bootstrap bindings: malformed JSON",
+            remediation="Provide valid JSON for CLOUD_RUN_SECRET_BINDINGS_EXPORT.",
+        )
+    if not isinstance(parsed, dict):
+        return PreflightCheck(
+            category="binding",
+            name="bootstrap bindings",
+            status="fail",
+            detail="bootstrap bindings: JSON root must be an object",
+            remediation="Use the documented {'jobs': {'zeler-bootstrap': ...}} export shape.",
+        )
+    return parsed
+
+
+def _missing_bootstrap_binding_keys(export: dict[str, object]) -> list[str]:
+    missing: list[str] = []
+    jobs = export.get("jobs")
+    if not isinstance(jobs, dict):
+        return ["jobs"]
+
+    job = jobs.get(BOOTSTRAP_JOB_NAME)
+    if not isinstance(job, dict):
+        return [f"jobs.{BOOTSTRAP_JOB_NAME}"]
+
+    env = job.get("env")
+    if not isinstance(env, dict):
+        missing.append(f"jobs.{BOOTSTRAP_JOB_NAME}.env")
+        env = {}
+    secrets = job.get("secrets")
+    if not isinstance(secrets, dict):
+        missing.append(f"jobs.{BOOTSTRAP_JOB_NAME}.secrets")
+        secrets = {}
+    iam = job.get("iam_prerequisites")
+    if not isinstance(iam, list):
+        missing.append(f"jobs.{BOOTSTRAP_JOB_NAME}.iam_prerequisites")
+        iam = []
+
+    for key in sorted(REQUIRED_BOOTSTRAP_ENV):
+        if key not in env or not isinstance(env[key], str) or not env[key].strip():
+            missing.append(f"jobs.{BOOTSTRAP_JOB_NAME}.env.{key}")
+    if "BOOTSTRAP_GATEWAY_TOKEN" in env:
+        missing.append(f"jobs.{BOOTSTRAP_JOB_NAME}.env must not include BOOTSTRAP_GATEWAY_TOKEN")
+
+    for key in sorted(REQUIRED_BOOTSTRAP_SECRETS):
+        value = secrets.get(key)
+        if not isinstance(value, str) or not value.strip() or _looks_like_secret_payload(value):
+            missing.append(f"jobs.{BOOTSTRAP_JOB_NAME}.secrets.{key}")
+
+    for key in ("vpc_connector", "vpc_egress", "service_account"):
+        value = job.get(key)
+        if not isinstance(value, str) or not value.strip():
+            missing.append(f"jobs.{BOOTSTRAP_JOB_NAME}.{key}")
+    vpc_egress = job.get("vpc_egress")
+    if isinstance(vpc_egress, str) and vpc_egress not in ALLOWED_BOOTSTRAP_EGRESS:
+        missing.append(f"jobs.{BOOTSTRAP_JOB_NAME}.vpc_egress")
+
+    iam_set = {item for item in iam if isinstance(item, str)}
+    for role in sorted(REQUIRED_BOOTSTRAP_IAM):
+        if role not in iam_set:
+            missing.append(role)
+    return missing
+
+
+def _looks_like_secret_payload(value: str) -> bool:
+    lowered = value.lower()
+    return any(
+        marker in lowered for marker in ("mongodb://", "mongodb+srv://", "amqp://", "amqps://")
+    )
+
+
+def _secret_ref_summary(secrets: Mapping[object, object]) -> str:
+    parts = []
+    for key in sorted(REQUIRED_BOOTSTRAP_SECRETS):
+        value = secrets.get(key)
+        if isinstance(value, str):
+            parts.append(f"{key}->{value}")
+    return ",".join(parts)
 
 
 def _gcloud_check(
@@ -229,7 +400,12 @@ def build_deployment_preflight_report(
     selected_env = os.environ if env is None else env
     runner = _default_command_runner if command_runner is None else command_runner
 
-    checks = [*_gcloud_checks(runner), *_env_checks(selected_env), *_repo_checks(root)]
+    checks = [
+        *_gcloud_checks(runner),
+        *_env_checks(selected_env),
+        *_bootstrap_binding_checks(selected_env, root=root),
+        *_repo_checks(root),
+    ]
     missing_env_groups = sum(
         1 for check in checks if check.category == "env" and check.status == "fail"
     )

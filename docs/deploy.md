@@ -337,6 +337,58 @@ gcloud compute ssh platform-vm --tunnel-through-iap --zone=$ZONE --project=$PROJ
 
 ---
 
+## 5b. Bootstrap Cloud Run Job rollout
+
+`zeler-bootstrap` is deployed by Cloud Build from `infra/cloudbuild/bootstrap-job.yaml`. Before
+submitting the build, export a sanitized binding contract for preflight:
+
+```bash
+export CLOUD_RUN_SECRET_BINDINGS_EXPORT='{
+  "jobs": {
+    "zeler-bootstrap": {
+      "env": {
+        "ZELER_ENV": "prod",
+        "BOOTSTRAP_MONGO_DB": "zeler_platform",
+        "BOOTSTRAP_GATEWAY_BASE_URL": "https://gateway.zeler.ai",
+        "BOOTSTRAP_GATEWAY_PATH_PREFIX": "/proxy/meli",
+        "BOOTSTRAP_MODULE_ID": "bootstrap",
+        "BOOTSTRAP_RABBITMQ_EXCHANGE": "meli.events"
+      },
+      "secrets": {
+        "BOOTSTRAP_MONGO_URI": "mongo-uri-prod:latest",
+        "BOOTSTRAP_RABBITMQ_URL": "cloudamqp-url:latest"
+      },
+      "vpc_connector": "projects/zeler-platform-dev/locations/us-central1/connectors/zeler-platform-serverless",
+      "vpc_egress": "private-ranges-only",
+      "service_account": "zeler-bootstrap-runtime@zeler-platform-dev.iam.gserviceaccount.com",
+      "iam_prerequisites": [
+        "roles/secretmanager.secretAccessor",
+        "roles/vpcaccess.user",
+        "roles/cloudkms.signerVerifier"
+      ]
+    }
+  }
+}'
+uv run python -m infra.deploy.preflight
+```
+
+Rollout checklist:
+
+1. Create/confirm Secret Manager secrets `mongo-uri-prod` and `cloudamqp-url`; do not print values.
+2. Create/confirm `zeler-bootstrap-runtime` and grant Secret Manager accessor, VPC connector use,
+   and KMS signer/verifier on `platform-jwt`.
+3. Confirm Serverless VPC connector and egress mode. The default is `private-ranges-only`; use
+   `all-traffic` only with intentional NAT/private routing.
+4. Confirm `module_registry` contains enabled module `bootstrap` with GET proxy scopes.
+5. Run preflight above, then deploy with Cloud Build.
+6. Execute one dry-run and one controlled seller job before broad use.
+
+Rollback: redeploy the previous bootstrap job image/config. If only bindings changed, restore the
+previous `CLOUD_RUN_SECRET_BINDINGS_EXPORT`/substitution values and redeploy the job without
+running live bootstrap execution.
+
+---
+
 ## 6. Rollback
 
 ### Rollback a bad image
