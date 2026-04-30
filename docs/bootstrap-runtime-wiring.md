@@ -9,7 +9,7 @@ constructing Mongo, gateway, or RabbitMQ clients.
 | Setting | Accepted env vars | Purpose |
 |---|---|---|
 | Mongo URI | `BOOTSTRAP_MONGO_URI` or `MONGO_URI` | MongoDB connection string for `bootstrap_jobs` and canonical collections. |
-| Mongo DB | `BOOTSTRAP_MONGO_DB` or `MONGO_DB` | Database name, normally `zeler_platform`. |
+| Mongo DB | `BOOTSTRAP_MONGO_DB` or `MONGO_DB` | Database name. Production uses `zeler_platform_prod`; local/dev may use `zeler_platform`. |
 | Gateway base URL | `BOOTSTRAP_GATEWAY_BASE_URL` or `GATEWAY_BASE_URL` | Internal gateway base URL. The runtime calls `/proxy/meli/*` under this base. |
 | Gateway module ID | `BOOTSTRAP_MODULE_ID` | Module ID used by `MeliGatewayAuth`; production default is `bootstrap`. |
 | RabbitMQ URL | `BOOTSTRAP_RABBITMQ_URL` or `RABBITMQ_URL` | AMQP URL for publishing bootstrap completion. |
@@ -29,7 +29,7 @@ not plaintext connection strings:
 
 ```bash
 --set-secrets=BOOTSTRAP_MONGO_URI=${_BOOTSTRAP_MONGO_URI_SECRET}:latest,BOOTSTRAP_RABBITMQ_URL=${_BOOTSTRAP_RABBITMQ_URL_SECRET}:latest
---update-env-vars=ZELER_ENV=prod,BOOTSTRAP_MONGO_DB=zeler_platform,BOOTSTRAP_GATEWAY_BASE_URL=${_BOOTSTRAP_GATEWAY_BASE_URL},BOOTSTRAP_GATEWAY_PATH_PREFIX=/proxy/meli,BOOTSTRAP_MODULE_ID=bootstrap,BOOTSTRAP_RABBITMQ_EXCHANGE=meli.events
+--update-env-vars=ZELER_ENV=prod,BOOTSTRAP_MONGO_DB=zeler_platform_prod,BOOTSTRAP_GATEWAY_BASE_URL=${_BOOTSTRAP_GATEWAY_BASE_URL},BOOTSTRAP_GATEWAY_PATH_PREFIX=/proxy/meli,BOOTSTRAP_MODULE_ID=bootstrap,BOOTSTRAP_RABBITMQ_EXCHANGE=meli.events
 --service-account=${_BOOTSTRAP_RUNTIME_SERVICE_ACCOUNT}
 --vpc-connector=${_BOOTSTRAP_VPC_CONNECTOR}
 --vpc-egress=${_BOOTSTRAP_VPC_EGRESS}

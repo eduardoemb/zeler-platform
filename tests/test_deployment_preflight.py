@@ -19,7 +19,7 @@ def _valid_bootstrap_binding_export() -> str:
                 "zeler-bootstrap": {
                     "env": {
                         "ZELER_ENV": "prod",
-                        "BOOTSTRAP_MONGO_DB": "zeler_platform",
+                        "BOOTSTRAP_MONGO_DB": "zeler_platform_prod",
                         "BOOTSTRAP_GATEWAY_BASE_URL": "https://gateway.zeler.ai",
                         "BOOTSTRAP_GATEWAY_PATH_PREFIX": "/proxy/meli",
                         "BOOTSTRAP_MODULE_ID": "bootstrap",

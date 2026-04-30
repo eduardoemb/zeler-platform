@@ -82,15 +82,22 @@ def test_bootstrap_cloud_run_job_uses_secret_bindings_and_non_secret_env_vars() 
 
     assert "BOOTSTRAP_MONGO_URI=${_BOOTSTRAP_MONGO_URI_SECRET}:latest" in secret_bindings
     assert "BOOTSTRAP_RABBITMQ_URL=${_BOOTSTRAP_RABBITMQ_URL_SECRET}:latest" in secret_bindings
-    assert "BOOTSTRAP_MONGO_DB=zeler_platform" in env_vars
+    assert "BOOTSTRAP_MONGO_DB=zeler_platform_prod" in env_vars
     assert "BOOTSTRAP_GATEWAY_BASE_URL=${_BOOTSTRAP_GATEWAY_BASE_URL}" in env_vars
     assert "BOOTSTRAP_GATEWAY_TOKEN" not in manifest_text
 
 
 def test_bootstrap_cloud_run_job_declares_runtime_identity_and_vpc_contract() -> None:
     args = _bootstrap_deploy_args()
+    manifest_text = (ROOT / "infra" / "cloudbuild" / "bootstrap-job.yaml").read_text(
+        encoding="utf-8"
+    )
 
     assert _arg_value(args, "--service-account") == "${_BOOTSTRAP_RUNTIME_SERVICE_ACCOUNT}"
+    assert (
+        "_BOOTSTRAP_RUNTIME_SERVICE_ACCOUNT: "
+        "zeler-bootstrap-runtime@zeler-platform-dev.iam.gserviceaccount.com"
+    ) in manifest_text
     assert _arg_value(args, "--vpc-connector") == "${_BOOTSTRAP_VPC_CONNECTOR}"
     assert _arg_value(args, "--vpc-egress") == "${_BOOTSTRAP_VPC_EGRESS}"
 
