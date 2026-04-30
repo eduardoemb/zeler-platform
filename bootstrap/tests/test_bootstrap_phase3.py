@@ -50,6 +50,12 @@ class FakeBootstrapJobs:
             for part in parts[:-1]:
                 target = target.setdefault(part, {})
             target[parts[-1]] = value
+        for key, value in update.get("$inc", {}).items():
+            target = self.document
+            parts = key.split(".")
+            for part in parts[:-1]:
+                target = target.setdefault(part, {})
+            target[parts[-1]] = target.get(parts[-1], 0) + value
         return self.document.copy()
 
 
@@ -187,6 +193,16 @@ class RecordingStage(BootstrapStage):
         await state_machine.update_cursor(self.name, self.cursor)
 
 
+class RecordingPublisher(InMemoryPublisher):
+    def __init__(self) -> None:
+        super().__init__()
+        self.states_at_publish: list[str] = []
+
+    async def publish_bootstrap_completed(self, job: dict[str, Any]) -> None:
+        self.states_at_publish.append(str(job["state"]))
+        await super().publish_bootstrap_completed(job)
+
+
 @pytest.mark.asyncio
 async def test_bootstrap_state_machine_valid_and_invalid_transitions() -> None:
     collection = FakeBootstrapJobs()
@@ -241,7 +257,7 @@ async def test_default_bootstrap_stages_fetch_paginate_upsert_and_emit_completio
     collection = FakeBootstrapJobs()
     database = FakeDatabase()
     gateway = FakeGateway()
-    publisher = InMemoryPublisher()
+    publisher = RecordingPublisher()
     machine = BootstrapStateMachine(collection, "job-1", now_fn=lambda: NOW)
     runner = BootstrapDagRunner(
         machine, build_default_stages(gateway, database), publisher=publisher
@@ -250,6 +266,7 @@ async def test_default_bootstrap_stages_fetch_paginate_upsert_and_emit_completio
     completed = await runner.run()
 
     assert completed["state"] == "succeeded"
+    assert publisher.states_at_publish == ["running"]
     assert collection.document["dag"] == {
         "accounts": "done",
         "items": "done",

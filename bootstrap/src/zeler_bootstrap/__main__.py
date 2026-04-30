@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import os
 from collections.abc import Callable, Sequence
 from datetime import datetime
 from typing import Any
@@ -10,6 +11,7 @@ from zeler_bootstrap.runner import BootstrapDagRunner, build_default_stages
 from zeler_bootstrap.runtime import BootstrapRuntimeSettings, build_runtime_dependencies
 from zeler_bootstrap.stages import BootstrapDatabase, BootstrapGatewayClient, BootstrapPublisher
 from zeler_bootstrap.state_machine import BootstrapJobsCollection, BootstrapStateMachine
+from zeler_platform_core.observability.logging import Environment, configure_logging
 
 
 async def run_bootstrap_job(
@@ -20,11 +22,15 @@ async def run_bootstrap_job(
     database: BootstrapDatabase,
     gateway: BootstrapGatewayClient,
     publisher: BootstrapPublisher,
+    max_attempts: int = 3,
     now_fn: Callable[[], datetime] | None = None,
 ) -> dict[str, Any]:
     machine = BootstrapStateMachine(jobs_collection, job_id, now_fn=now_fn)
     runner = BootstrapDagRunner(
-        machine, build_default_stages(gateway, database), publisher=publisher
+        machine,
+        build_default_stages(gateway, database),
+        publisher=publisher,
+        max_attempts=max_attempts,
     )
     job = await runner.run()
     if str(job["seller_id"]) != str(seller_id):
@@ -45,11 +51,23 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+def _resolve_env() -> Environment:
+    raw = os.getenv("ENVIRONMENT") or os.getenv("ZELER_ENV") or "production"
+    normalized = raw.strip().lower()
+    if normalized in {"prod", "production"}:
+        return "production"
+    if normalized == "test":
+        return "test"
+    return "development"
+
+
 def main(argv: Sequence[str] | None = None) -> None:
+    configure_logging(_resolve_env())
     args = parse_args(argv)
     if args.dry_run:
         return
-    dependencies = build_runtime_dependencies(BootstrapRuntimeSettings.from_env())
+    settings = BootstrapRuntimeSettings.from_env()
+    dependencies = build_runtime_dependencies(settings)
     asyncio.run(
         run_bootstrap_job(
             seller_id=args.seller_id,
@@ -58,6 +76,7 @@ def main(argv: Sequence[str] | None = None) -> None:
             database=dependencies.database,
             gateway=dependencies.gateway,
             publisher=dependencies.publisher,
+            max_attempts=settings.max_attempts,
         )
     )
 

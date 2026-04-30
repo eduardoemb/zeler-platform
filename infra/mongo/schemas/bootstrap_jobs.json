@@ -8,6 +8,10 @@
           "string"
         ]
       },
+      "attempt_count": {
+        "bsonType": "int",
+        "minimum": 0
+      },
       "checkpoints": {
         "bsonType": "object"
       },
@@ -37,6 +41,19 @@
           "date",
           "null"
         ]
+      },
+      "failed_at": {
+        "bsonType": [
+          "date",
+          "null"
+        ]
+      },
+      "last_error": {
+        "bsonType": [
+          "string",
+          "null"
+        ],
+        "maxLength": 1024
       },
       "schema_version": {
         "bsonType": "int"
