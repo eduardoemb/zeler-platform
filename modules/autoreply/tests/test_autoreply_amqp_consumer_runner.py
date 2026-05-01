@@ -213,6 +213,50 @@ def test_autoreply_event_from_message_decodes_valid_payload_into_autoreply_event
     )
 
 
+def test_autoreply_event_from_message_normalizes_bare_message_resource() -> None:
+    message = FakeMessage(
+        {
+            "event_id": "evt-autoreply-bare-message",
+            "event_type": "messages.new",
+            "seller_id": "82453304",
+            "resource": "bare_hex_id",
+            "idempotency_key": "payload-key-bare-message",
+        }
+    )
+
+    event = _autoreply_event_from_message(message)
+
+    assert event == AutoreplyEvent(
+        event_id="evt-autoreply-bare-message",
+        event_type="messages.new",
+        seller_id=82453304,
+        resource="/messages/bare_hex_id",
+        idempotency_key="payload-key-bare-message",
+    )
+
+
+def test_autoreply_event_from_message_preserves_bare_question_resource() -> None:
+    message = FakeMessage(
+        {
+            "event_id": "evt-autoreply-bare-question",
+            "event_type": "questions.new",
+            "seller_id": "82453304",
+            "resource": "bare_question_id",
+            "idempotency_key": "payload-key-bare-question",
+        }
+    )
+
+    event = _autoreply_event_from_message(message)
+
+    assert event == AutoreplyEvent(
+        event_id="evt-autoreply-bare-question",
+        event_type="questions.new",
+        seller_id=82453304,
+        resource="bare_question_id",
+        idempotency_key="payload-key-bare-question",
+    )
+
+
 def test_autoreply_idempotency_key_falls_back_to_event_id_when_no_header_or_payload_key() -> None:
     assert (
         _autoreply_idempotency_key(

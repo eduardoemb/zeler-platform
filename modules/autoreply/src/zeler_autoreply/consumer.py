@@ -422,13 +422,20 @@ def _autoreply_event_from_message(message: Any) -> AutoreplyEvent:
     payload = json.loads(message.body.decode("utf-8"))
     if not isinstance(payload, dict):
         raise ValueError("autoreply event payload must be a JSON object")
+    event_type = str(payload["event_type"])
     return AutoreplyEvent(
         event_id=str(payload["event_id"]),
-        event_type=str(payload["event_type"]),
+        event_type=event_type,
         seller_id=int(payload["seller_id"]),
-        resource=str(payload["resource"]),
+        resource=_normalize_autoreply_resource(event_type, str(payload["resource"])),
         idempotency_key=_autoreply_idempotency_key(message, payload),
     )
+
+
+def _normalize_autoreply_resource(event_type: str, resource: str) -> str:
+    if event_type.startswith("messages.") and resource.strip() and "/" not in resource:
+        return f"/messages/{resource}"
+    return resource
 
 
 def _autoreply_idempotency_key(message: Any, payload: dict[str, Any]) -> str:
