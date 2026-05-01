@@ -49,6 +49,7 @@ GOOGLE_CLOUD_PROJECT=zeler-platform-dev
 KMS_PROJECT_ID=zeler-platform-dev
 KMS_LOCATION=us-central1
 KMS_KEYRING=zeler-platform
+GATEWAY_PROXY_BASE_URL=http://gateway:8080/proxy/meli
 
 # ---------------------------------------------------------------------------
 # write <service> <KEY=VALUE> …
@@ -103,7 +104,7 @@ write gateway \
 for svc in repricer-api publicador-api autoreply-api fulldock-api; do
   write "$svc" \
     "${BASE[@]}" \
-    "GATEWAY_BASE_URL=http://gateway:8080"
+    "GATEWAY_BASE_URL=$GATEWAY_PROXY_BASE_URL"
 done
 
 # ---------------------------------------------------------------------------
@@ -116,7 +117,7 @@ for svc in sheets-api sheets-worker; do
     "GOOGLE_OAUTH_CLIENT_SECRET=$GOOGLE_CLIENT_SECRET" \
     "GOOGLE_OAUTH_REDIRECT_URI=https://sheets.zeler.ai/oauth/google/callback" \
     "KMS_GOOGLE_TOKENS_KEY=google-tokens" \
-    "GATEWAY_BASE_URL=http://gateway:8080"
+    "GATEWAY_BASE_URL=$GATEWAY_PROXY_BASE_URL"
 done
 
 # ---------------------------------------------------------------------------
@@ -125,7 +126,7 @@ done
 for svc in repricer-worker autoreply-worker fulldock-worker; do
   write "$svc" \
     "${BASE[@]}" \
-    "GATEWAY_BASE_URL=http://gateway:8080"
+    "GATEWAY_BASE_URL=$GATEWAY_PROXY_BASE_URL"
 done
 
 echo "All env files written to $ENV_DIR"

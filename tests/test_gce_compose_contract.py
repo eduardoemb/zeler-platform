@@ -312,6 +312,13 @@ class TestEnvTemplateContract:
             f"pattern {forbidden!r}"
         )
 
+    def test_secrets_script_emits_gateway_proxy_base_url(self) -> None:
+        text = SECRETS_SCRIPT.read_text()
+
+        assert "GATEWAY_PROXY_BASE_URL=http://gateway:8080/proxy/meli" in text
+        assert "GATEWAY_BASE_URL=$GATEWAY_PROXY_BASE_URL" in text
+        assert "GATEWAY_BASE_URL=http://gateway:8080\"" not in text
+
     @pytest.mark.parametrize("path", WORKER_RUN_ENTRY_TESTS)
     def test_worker_run_entry_tests_do_not_set_gateway_token(self, path: Path) -> None:
         text = path.read_text()
