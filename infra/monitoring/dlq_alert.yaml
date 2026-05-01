@@ -4,9 +4,19 @@ enabled: true
 notificationChannels:
   - projects/${GCP_PROJECT}/notificationChannels/${NOTIFICATION_CHANNEL_ID}
 conditions:
-  - displayName: DLQ event count greater than zero
+  - displayName: Cloud Run DLQ event count greater than zero
     conditionThreshold:
-      filter: 'metric.type="logging.googleapis.com/user/dlq_events_total"'
+      filter: 'metric.type="logging.googleapis.com/user/dlq_events_total" AND resource.type="cloud_run_revision"'
+      aggregations:
+        - alignmentPeriod: 60s
+          perSeriesAligner: ALIGN_DELTA
+          crossSeriesReducer: REDUCE_SUM
+      comparison: COMPARISON_GT
+      thresholdValue: 0
+      duration: 60s
+  - displayName: GCE DLQ event count greater than zero
+    conditionThreshold:
+      filter: 'metric.type="logging.googleapis.com/user/dlq_events_total" AND resource.type="gce_instance"'
       aggregations:
         - alignmentPeriod: 60s
           perSeriesAligner: ALIGN_DELTA
