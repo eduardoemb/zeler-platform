@@ -308,6 +308,7 @@ async def test_default_bootstrap_stages_fetch_paginate_upsert_and_emit_completio
     assert database["shipments"].upserts[0][0] == {"_id": "654"}
     assert database["claims"].upserts[0][0] == {"_id": "222"}
     assert database["claims"].upserts[0][1]["$set"]["order_id"] == "987"
+    assert database["claims"].upserts[0][1]["$set"]["date_created"] == NOW
     assert ("/post-purchase/v1/claims/search", {"order_id": "987"}) in gateway.calls
     assert publisher.events == [
         {

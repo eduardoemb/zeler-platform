@@ -343,7 +343,7 @@ class ClaimsStage:
                         "order_id": raw.get("order_id") or raw.get("resource_id") or order_id,
                         "schema_version": 1,
                     }
-                ).model_dump(by_alias=True, mode="json")
+                ).model_dump(by_alias=True, mode="python")
                 await _upsert(self.database["claims"], document)
                 claim_ids.append(str(document["_id"]))
         await state_machine.update_cursor(
