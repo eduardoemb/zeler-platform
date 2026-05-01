@@ -124,6 +124,7 @@ class FakeGateway(BootstrapGatewayClient):
                         "status": "paid",
                         "date_created": NOW,
                         "total_amount": "20.00",
+                        "pack_id": 555,
                         "order_items": [
                             {"item": {"id": "MLM1"}, "quantity": 2, "unit_price": "10.00"}
                         ],
@@ -147,7 +148,7 @@ class FakeGateway(BootstrapGatewayClient):
                 ],
                 "paging": {"total": 1},
             }
-        if path == "/messages/packs/987/sellers/123":
+        if path == "/messages/packs/555/sellers/123":
             return {
                 "messages": [
                     {
@@ -294,11 +295,11 @@ async def test_default_bootstrap_stages_fetch_paginate_upsert_and_emit_completio
     assert database["questions"].upserts[0][0] == {"_id": "333"}
     assert ("/questions/search", {"seller_id": "123", "api_version": "4"}) in gateway.calls
     assert (
-        "/messages/packs/987/sellers/123",
+        "/messages/packs/555/sellers/123",
         {"tag": "post_sale", "mark_as_read": "false"},
     ) in gateway.calls
     assert database["messages"].upserts[0][0] == {"_id": "msg-1"}
-    assert database["messages"].upserts[0][1]["$set"]["pack_id"] == "987"
+    assert database["messages"].upserts[0][1]["$set"]["pack_id"] == "555"
     assert database["messages"].upserts[0][1]["$set"]["order_id"] == "987"
     assert database["messages"].upserts[0][1]["$set"]["from_user_id"] == "1"
     assert database["messages"].upserts[0][1]["$set"]["to_user_id"] == "2"
@@ -361,14 +362,16 @@ async def test_items_stage_chunks_item_detail_requests_to_meli_limit() -> None:
 async def test_messages_stage_skips_missing_pack_conversations() -> None:
     collection = FakeBootstrapJobs()
     collection.document["state"] = "running"
-    collection.document["checkpoints"] = {"orders": {"order_ids": ["987"]}}
+    collection.document["checkpoints"] = {
+        "orders": {"message_targets": [{"pack_id": "555", "order_id": "987"}]}
+    }
     database = FakeDatabase()
     gateway = FakeGateway()
 
     async def get(path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
         gateway.calls.append((path, params))
         request = httpx.Request("GET", f"https://gateway.zeler.ai{path}")
-        response = httpx.Response(404, request=request)
+        response = httpx.Response(400, request=request)
         raise httpx.HTTPStatusError("not found", request=request, response=response)
 
     gateway.get = get  # type: ignore[method-assign]
@@ -377,10 +380,10 @@ async def test_messages_stage_skips_missing_pack_conversations() -> None:
     await MessagesStage(gateway, database).run(collection.document, machine)
 
     assert gateway.calls == [
-        ("/messages/packs/987/sellers/123", {"tag": "post_sale", "mark_as_read": "false"})
+        ("/messages/packs/555/sellers/123", {"tag": "post_sale", "mark_as_read": "false"})
     ]
     assert database["messages"].upserts == []
     assert collection.document["checkpoints"]["messages"] == {
         "message_ids": [],
-        "missing_packs": ["987"],
+        "missing_packs": ["555"],
     }

@@ -174,8 +174,11 @@ class OrdersStage:
         )
         order_ids: list[str] = []
         shipment_ids: list[str] = []
+        message_targets: list[dict[str, str]] = []
         for raw in page.get("results", []):
             shipment_id = raw.get("shipment_id") or raw.get("shipping", {}).get("id")
+            order_id = str(raw["id"])
+            pack_id = raw.get("pack_id") or order_id
             order = Order.model_validate(
                 {
                     "_id": raw["id"],
@@ -193,10 +196,16 @@ class OrdersStage:
             document = order.model_dump(by_alias=True, mode="json")
             await _upsert(self.database["orders"], document)
             order_ids.append(order.id)
+            message_targets.append({"pack_id": str(pack_id), "order_id": order.id})
             if order.shipment_id is not None:
                 shipment_ids.append(order.shipment_id)
         await state_machine.update_cursor(
-            self.name, {"order_ids": order_ids, "shipment_ids": shipment_ids}
+            self.name,
+            {
+                "order_ids": order_ids,
+                "shipment_ids": shipment_ids,
+                "message_targets": message_targets,
+            },
         )
 
 
@@ -240,18 +249,24 @@ class MessagesStage:
 
     async def run(self, job: dict[str, Any], state_machine: BootstrapStateMachine) -> None:
         seller_id = str(job["seller_id"])
-        order_ids = job.get("checkpoints", {}).get("orders", {}).get("order_ids", [])
+        order_checkpoint = job.get("checkpoints", {}).get("orders", {})
+        message_targets = order_checkpoint.get("message_targets") or [
+            {"pack_id": str(order_id), "order_id": str(order_id)}
+            for order_id in order_checkpoint.get("order_ids", [])
+        ]
         message_ids: list[str] = []
         missing_packs: list[str] = []
-        for order_id in order_ids:
+        for target in message_targets:
+            pack_id = str(target["pack_id"])
+            order_id = str(target["order_id"])
             try:
                 page = await self.gateway.get(
-                    f"/messages/packs/{order_id}/sellers/{seller_id}",
+                    f"/messages/packs/{pack_id}/sellers/{seller_id}",
                     {"tag": "post_sale", "mark_as_read": "false"},
                 )
             except httpx.HTTPStatusError as exc:
-                if exc.response.status_code == 404:
-                    missing_packs.append(str(order_id))
+                if exc.response.status_code in {400, 404}:
+                    missing_packs.append(pack_id)
                     continue
                 raise
             for raw in page.get("messages", []):
@@ -260,7 +275,7 @@ class MessagesStage:
                     {
                         "_id": raw["id"],
                         "seller_id": seller_id,
-                        "pack_id": raw.get("pack_id") or order_id,
+                        "pack_id": raw.get("pack_id") or pack_id,
                         "order_id": raw.get("order_id") or order_id,
                         "from_user_id": _message_user_id(raw, "from"),
                         "to_user_id": _message_user_id(raw, "to"),
