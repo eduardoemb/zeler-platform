@@ -9,6 +9,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Protocol
+from urllib.parse import quote, unquote, urlparse
 
 MODULES = ("repricer", "sheets", "publicador", "autoreply", "fulldock")
 DEFAULT_MONGO_URI = "mongodb://localhost:27017/zeler_platform"
@@ -36,7 +37,7 @@ class RabbitPreflightClient(Protocol):
 
 HttpClientFactory = Callable[[str], HealthClient]
 MongoClientFactory = Callable[[str], MongoPreflightClient]
-RabbitClientFactory = Callable[[str], RabbitPreflightClient]
+RabbitClientFactory = Callable[[str, str], RabbitPreflightClient]
 
 
 @dataclass(frozen=True)
@@ -153,7 +154,7 @@ async def _run_from_args(
         module=module,
         seller_id=str(args.seller_id),
         mongo=mongo_factory(str(args.mongo_uri)),
-        rabbitmq=rabbitmq_factory(str(args.rabbitmq_management_url)),
+        rabbitmq=rabbitmq_factory(str(args.rabbitmq_management_url), str(args.rabbitmq_vhost)),
         gateway_http=http_factory(str(args.gateway_url)),
         module_http=http_factory(_module_url(module, str(args.gateway_url))),
     )
@@ -232,8 +233,29 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
         "--rabbitmq-management-url",
         default=os.getenv("RABBITMQ_MANAGEMENT_URL", DEFAULT_RABBITMQ_MANAGEMENT_URL),
     )
+    parser.add_argument("--rabbitmq-vhost", default=_default_rabbitmq_vhost())
     parser.add_argument("--gateway-url", default=os.getenv("GATEWAY_URL", DEFAULT_GATEWAY_URL))
     return parser.parse_args(argv)
+
+
+def _default_rabbitmq_vhost() -> str:
+    explicit_vhost = os.getenv("RABBITMQ_VHOST")
+    if explicit_vhost:
+        return explicit_vhost
+    for env_name in ("RABBITMQ_URL", "CLOUDAMQP_URL"):
+        parsed_vhost = _parse_amqp_vhost(os.getenv(env_name))
+        if parsed_vhost:
+            return parsed_vhost
+    return "/"
+
+
+def _parse_amqp_vhost(amqp_url: str | None) -> str | None:
+    if not amqp_url:
+        return None
+    path = urlparse(amqp_url).path
+    if not path or path == "/":
+        return None
+    return unquote(path.lstrip("/")) or "/"
 
 
 def _module_url(module: str, gateway_url: str) -> str:
@@ -249,8 +271,8 @@ def _real_mongo_factory(uri: str) -> MongoPreflightClient:
     return _PymongoPreflightClient(uri)
 
 
-def _real_rabbitmq_factory(management_url: str) -> RabbitPreflightClient:
-    return _RabbitManagementPreflightClient(management_url)
+def _real_rabbitmq_factory(management_url: str, vhost: str) -> RabbitPreflightClient:
+    return _RabbitManagementPreflightClient(management_url, vhost)
 
 
 class _HttpxHealthClient:
@@ -283,22 +305,27 @@ class _PymongoPreflightClient:
 
 
 class _RabbitManagementPreflightClient:
-    def __init__(self, management_url: str) -> None:
+    def __init__(self, management_url: str, vhost: str = "/") -> None:
         self._management_url = management_url.rstrip("/")
+        self._vhost = vhost or "/"
 
     async def topology_valid(self, module: str) -> bool:
         import httpx
 
         queue = f"{module}.events"
         dlq = f"{module}.events.dlq"
+        encoded_vhost = quote(self._vhost, safe="")
+        encoded_dlq = quote(dlq, safe="")
         async with httpx.AsyncClient(base_url=self._management_url, timeout=5.0) as client:
-            queues_response = await client.get("/api/queues/%2F")
+            queues_response = await client.get(f"/api/queues/{encoded_vhost}")
             if queues_response.status_code != 200:
                 return False
             queue_names = {item.get("name") for item in queues_response.json()}
             if not {queue, dlq}.issubset(queue_names):
                 return False
-            bindings_response = await client.get(f"/api/queues/%2F/{dlq}/bindings")
+            bindings_response = await client.get(
+                f"/api/queues/{encoded_vhost}/{encoded_dlq}/bindings"
+            )
             if bindings_response.status_code != 200:
                 return False
             return any(binding.get("source") for binding in bindings_response.json())
