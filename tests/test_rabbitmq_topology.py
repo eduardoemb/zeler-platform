@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 
 from infra.operations.preflight import RABBITMQ_WORKER_TOPOLOGY
-from infra.rabbitmq.topology import build_topology_definitions
+from infra.rabbitmq.topology import ACTIVE_QUEUE_DEAD_LETTER_ROUTING_KEYS, build_topology_definitions
 from zeler_sheets.consumer import SHEETS_DEFAULT_ROUTING_KEYS, SHEETS_EVENTS_DLX, SHEETS_EVENTS_QUEUE
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -73,10 +73,11 @@ def test_sheets_worker_queue_contract_matches_topology_and_preflight() -> None:
     assert queues[SHEETS_EVENTS_QUEUE]["durable"] is True
     assert queues[SHEETS_EVENTS_QUEUE]["arguments"] == {
         "x-dead-letter-exchange": SHEETS_EVENTS_DLX,
-        "x-dead-letter-routing-key": sheets_topology.dlq,
     }
+    assert "x-dead-letter-routing-key" not in queues[SHEETS_EVENTS_QUEUE]["arguments"]
+    assert SHEETS_EVENTS_QUEUE not in ACTIVE_QUEUE_DEAD_LETTER_ROUTING_KEYS
     assert queues[sheets_topology.dlq]["durable"] is True
-    assert (SHEETS_EVENTS_DLX, sheets_topology.dlq, sheets_topology.dlq) in bindings
+    assert (SHEETS_EVENTS_DLX, sheets_topology.dlq, SHEETS_EVENTS_QUEUE) in bindings
 
     for routing_key in SHEETS_DEFAULT_ROUTING_KEYS:
         assert ("meli.events", SHEETS_EVENTS_QUEUE, routing_key) in bindings

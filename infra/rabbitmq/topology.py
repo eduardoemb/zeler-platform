@@ -21,7 +21,6 @@ QUEUE_BINDINGS = {
 }
 
 ACTIVE_QUEUE_DEAD_LETTER_ROUTING_KEYS = {
-    "zeler.sheets.events": "zeler.sheets.events.dlq",
     "zeler.fulldock.events": "zeler.fulldock.events.dlq",
     "zeler.autoreply.events": "zeler.autoreply.events.dlq",
 }
