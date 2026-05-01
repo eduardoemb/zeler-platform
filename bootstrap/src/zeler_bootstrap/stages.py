@@ -4,6 +4,8 @@ from collections.abc import Iterable
 from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol
 
+import httpx
+
 from zeler_bootstrap.state_machine import BootstrapStateMachine
 from zeler_platform_core.models import Claim, Item, Message, Order, Question, Shipment
 
@@ -65,6 +67,23 @@ def _normalize_order_items(raw_items: list[dict[str, Any]]) -> list[dict[str, An
             }
         )
     return normalized
+
+
+def _message_user_id(raw: dict[str, Any], field: str) -> Any:
+    user = raw.get(field) or {}
+    return raw.get(f"{field}_user_id") or user.get("user_id") or user.get("id")
+
+
+def _message_text(raw: dict[str, Any]) -> str:
+    text = raw.get("text")
+    if isinstance(text, dict):
+        return str(text.get("plain") or "")
+    return str(text or "")
+
+
+def _message_date_created(raw: dict[str, Any]) -> Any:
+    message_date = raw.get("message_date") or {}
+    return raw.get("date_created") or raw.get("date") or message_date.get("created")
 
 
 def _now() -> datetime:
@@ -220,28 +239,43 @@ class MessagesStage:
         self.database = database
 
     async def run(self, job: dict[str, Any], state_machine: BootstrapStateMachine) -> None:
+        seller_id = str(job["seller_id"])
         order_ids = job.get("checkpoints", {}).get("orders", {}).get("order_ids", [])
         message_ids: list[str] = []
+        missing_packs: list[str] = []
         for order_id in order_ids:
-            page = await self.gateway.get(f"/messages/packs/{order_id}")
+            try:
+                page = await self.gateway.get(
+                    f"/messages/packs/{order_id}/sellers/{seller_id}",
+                    {"tag": "post_sale", "mark_as_read": "false"},
+                )
+            except httpx.HTTPStatusError as exc:
+                if exc.response.status_code == 404:
+                    missing_packs.append(str(order_id))
+                    continue
+                raise
             for raw in page.get("messages", []):
+                message_date = raw.get("message_date") or {}
                 document = Message.model_validate(
                     {
                         "_id": raw["id"],
-                        "seller_id": job["seller_id"],
-                        "pack_id": raw["pack_id"],
-                        "order_id": raw.get("order_id"),
-                        "from_user_id": raw.get("from_user_id") or raw.get("from", {}).get("id"),
-                        "to_user_id": raw.get("to_user_id") or raw.get("to", {}).get("id"),
-                        "text": raw["text"],
+                        "seller_id": seller_id,
+                        "pack_id": raw.get("pack_id") or order_id,
+                        "order_id": raw.get("order_id") or order_id,
+                        "from_user_id": _message_user_id(raw, "from"),
+                        "to_user_id": _message_user_id(raw, "to"),
+                        "text": _message_text(raw),
                         "status": raw["status"],
-                        "date_created": raw["date_created"],
+                        "date_created": _message_date_created(raw),
+                        "read_at": raw.get("read_at") or message_date.get("read"),
                         "schema_version": 1,
                     }
                 ).model_dump(by_alias=True, mode="json")
                 await _upsert(self.database["messages"], document)
                 message_ids.append(str(document["_id"]))
-        await state_machine.update_cursor(self.name, {"message_ids": message_ids})
+        await state_machine.update_cursor(
+            self.name, {"message_ids": message_ids, "missing_packs": missing_packs}
+        )
 
 
 class ShipmentsStage:

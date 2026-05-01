@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any
 
+import httpx
 import pytest
 
 from zeler_bootstrap.runner import BootstrapDagRunner, BootstrapStage, build_default_stages
@@ -11,6 +12,7 @@ from zeler_bootstrap.stages import (
     BootstrapGatewayClient,
     InMemoryPublisher,
     ItemsStage,
+    MessagesStage,
 )
 from zeler_bootstrap.state_machine import BootstrapStateMachine, InvalidTransitionError
 
@@ -145,18 +147,16 @@ class FakeGateway(BootstrapGatewayClient):
                 ],
                 "paging": {"total": 1},
             }
-        if path == "/messages/packs/987":
+        if path == "/messages/packs/987/sellers/123":
             return {
                 "messages": [
                     {
                         "id": "msg-1",
-                        "pack_id": "987",
-                        "order_id": 987,
-                        "from": {"id": 1},
-                        "to": {"id": 2},
+                        "from": {"user_id": 1},
+                        "to": {"user_id": 2},
                         "text": "hello",
                         "status": "available",
-                        "date_created": NOW,
+                        "message_date": {"created": NOW, "read": None},
                     }
                 ]
             }
@@ -293,7 +293,15 @@ async def test_default_bootstrap_stages_fetch_paginate_upsert_and_emit_completio
     ]
     assert database["questions"].upserts[0][0] == {"_id": "333"}
     assert ("/questions/search", {"seller_id": "123", "api_version": "4"}) in gateway.calls
+    assert (
+        "/messages/packs/987/sellers/123",
+        {"tag": "post_sale", "mark_as_read": "false"},
+    ) in gateway.calls
     assert database["messages"].upserts[0][0] == {"_id": "msg-1"}
+    assert database["messages"].upserts[0][1]["$set"]["pack_id"] == "987"
+    assert database["messages"].upserts[0][1]["$set"]["order_id"] == "987"
+    assert database["messages"].upserts[0][1]["$set"]["from_user_id"] == "1"
+    assert database["messages"].upserts[0][1]["$set"]["to_user_id"] == "2"
     assert database["shipments"].upserts[0][0] == {"_id": "654"}
     assert database["claims"].upserts[0][0] == {"_id": "222"}
     assert publisher.events == [
@@ -347,3 +355,32 @@ async def test_items_stage_chunks_item_detail_requests_to_meli_limit() -> None:
 
     item_calls = [params for path, params in gateway.calls if path == "/items"]
     assert [len(str(params["ids"]).split(",")) for params in item_calls if params] == [20, 20, 3]
+
+
+@pytest.mark.asyncio
+async def test_messages_stage_skips_missing_pack_conversations() -> None:
+    collection = FakeBootstrapJobs()
+    collection.document["state"] = "running"
+    collection.document["checkpoints"] = {"orders": {"order_ids": ["987"]}}
+    database = FakeDatabase()
+    gateway = FakeGateway()
+
+    async def get(path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+        gateway.calls.append((path, params))
+        request = httpx.Request("GET", f"https://gateway.zeler.ai{path}")
+        response = httpx.Response(404, request=request)
+        raise httpx.HTTPStatusError("not found", request=request, response=response)
+
+    gateway.get = get  # type: ignore[method-assign]
+    machine = BootstrapStateMachine(collection, "job-1", now_fn=lambda: NOW)
+
+    await MessagesStage(gateway, database).run(collection.document, machine)
+
+    assert gateway.calls == [
+        ("/messages/packs/987/sellers/123", {"tag": "post_sale", "mark_as_read": "false"})
+    ]
+    assert database["messages"].upserts == []
+    assert collection.document["checkpoints"]["messages"] == {
+        "message_ids": [],
+        "missing_packs": ["987"],
+    }

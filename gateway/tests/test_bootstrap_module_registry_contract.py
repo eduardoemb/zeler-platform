@@ -23,7 +23,9 @@ def test_bootstrap_module_registry_seed_authorizes_bootstrap_read_paths() -> Non
     assert _scope_matches(method="GET", path="/items", allowed_scopes=scopes)
     assert _scope_matches(method="GET", path="/orders/search", allowed_scopes=scopes)
     assert _scope_matches(method="GET", path="/questions/search", allowed_scopes=scopes)
-    assert _scope_matches(method="GET", path="/messages/packs/200", allowed_scopes=scopes)
+    assert _scope_matches(
+        method="GET", path="/messages/packs/200/sellers/123", allowed_scopes=scopes
+    )
     assert _scope_matches(method="GET", path="/shipments/300", allowed_scopes=scopes)
     assert _scope_matches(method="GET", path="/claims/search", allowed_scopes=scopes)
     assert not _scope_matches(method="POST", path="/items/MLA123", allowed_scopes=scopes)
