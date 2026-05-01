@@ -7,6 +7,7 @@ from typing import Any
 import httpx
 from fastapi import FastAPI
 
+from zeler_platform_core.runtime.checks import mongo_check_factory
 from zeler_platform_core.runtime.health import HealthCheck, build_health_router
 from zeler_platform_core.runtime.manifest import validate_manifest
 from zeler_platform_core.runtime.registration import register_module
@@ -32,8 +33,7 @@ def build_app(
     app.state.http_client_factory = http_client_factory or (lambda: httpx.AsyncClient(timeout=10.0))
     manifest = validate_manifest(Path(__file__).resolve().parents[2] / "manifest.yaml")
 
-    async def mongo_check() -> tuple[bool, str]:
-        return True, "connected"
+    mongo_check = mongo_check_factory(mongo_db)
 
     async def rabbitmq_check() -> tuple[bool, str]:
         return (True, "connected") if rabbitmq_ready() else (False, "consumer_stalled")

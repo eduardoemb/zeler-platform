@@ -143,7 +143,7 @@ async def test_health_ready_false_when_consumer_stalled() -> None:
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         response = await client.get("/health")
 
-    assert response.status_code == 200
+    assert response.status_code == 503
     assert response.json() == {
         "module_id": "repricer",
         "ready": False,

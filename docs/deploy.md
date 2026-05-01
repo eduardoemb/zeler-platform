@@ -275,7 +275,35 @@ db.getMongo().getDBs().databases.forEach(d => {
 # Must produce empty diff
 ```
 
-### Step 10 — Start full stack
+### Step 10 — Apply Mongo validators and check drift
+
+Run validators after the restore and before the traffic flip/startup. The apply step is
+non-destructive for document data; it updates collection validators and idempotent indexes.
+
+```bash
+gcloud compute ssh platform-vm --tunnel-through-iap --zone=$ZONE --project=$PROJECT \
+  --command="cd /opt/zeler-platform && \
+    python -m infra.mongo.apply_validators --mongo-uri=\"$MONGO_URI\" && \
+    python -m infra.mongo.drift_check --mongo-uri=\"$MONGO_URI\""
+```
+
+Expected output: `apply_validators` reports created/applied/unchanged collections, and
+`drift_check` exits 0 with each collection status `applied`. If drift is reported, do not
+start writers; inspect the reported collection and re-run after correcting the schema or live
+validator.
+
+Equivalent local commands when already inside the deployment shell:
+
+```bash
+python -m infra.mongo.apply_validators --mongo-uri="$MONGO_URI"
+python -m infra.mongo.drift_check --mongo-uri="$MONGO_URI"
+```
+
+Rollback: validators do not mutate document data. If a validator must be removed, run a guarded
+`collMod` setting `validator: {}` for the affected collection, then restore the previous schema
+file and re-run the drift check.
+
+### Step 11 — Start full stack
 
 ```bash
 gcloud compute ssh platform-vm --tunnel-through-iap --zone=$ZONE --project=$PROJECT \
@@ -517,6 +545,18 @@ gcloud compute ssh platform-vm --tunnel-through-iap --zone=$ZONE --project=$PROJ
     mongosh --quiet --eval 'rs.status().myState'"
 # Must return 1 (PRIMARY)
 ```
+
+### Mongo validator drift smoke
+
+```bash
+gcloud compute ssh platform-vm --tunnel-through-iap --zone=$ZONE --project=$PROJECT \
+  --command="cd /opt/zeler-platform && \
+    python -m infra.mongo.apply_validators --mongo-uri=\"$MONGO_URI\" && \
+    python -m infra.mongo.drift_check --mongo-uri=\"$MONGO_URI\""
+```
+
+Expected: validator apply is idempotent and drift check exits 0 with `applied` for committed
+schema-backed collections.
 
 ---
 

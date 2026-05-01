@@ -107,7 +107,8 @@
           "revoked",
           "invalid_grant",
           "error",
-          "invalid"
+          "invalid",
+          "paused"
         ]
       },
       "sync_status": {

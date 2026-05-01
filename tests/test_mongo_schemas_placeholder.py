@@ -23,6 +23,7 @@ EXPECTED_FILES = {
     "rate_limit_counters.json",
     # Bootstrap + module runtime
     "bootstrap_jobs.json",
+    "bootstrap_dispatcher_locks.json",
     "module_registry.json",
     # Repricer module-owned
     "repricer_rules.json",
@@ -51,6 +52,7 @@ EXPECTED_FILES = {
 ACTIVE_NON_PLACEHOLDER_SCHEMAS = {
     "audit_log.json",
     "bootstrap_jobs.json",
+    "bootstrap_dispatcher_locks.json",
     "claims.json",
     "events.json",
     "items.json",

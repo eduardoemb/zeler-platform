@@ -1,0 +1,24 @@
+from __future__ import annotations
+
+from typing import Any
+
+import aio_pika
+
+
+class RetryDelayPublisher:
+    def __init__(self, channel: Any, *, exchange_name: str = "meli.events") -> None:
+        self._channel = channel
+        self._exchange_name = exchange_name
+
+    async def publish_delay(self, message_body: bytes, queue_name: str, *, delay_ms: int) -> None:
+        exchange = await self._channel.declare_exchange(
+            self._exchange_name,
+            "topic",
+            durable=True,
+        )
+        message = aio_pika.Message(
+            body=message_body,
+            delivery_mode=aio_pika.DeliveryMode.PERSISTENT,
+            expiration=delay_ms,
+        )
+        await exchange.publish(message, routing_key=f"{queue_name}.delay")

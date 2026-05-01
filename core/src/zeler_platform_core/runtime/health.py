@@ -4,6 +4,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
 from fastapi import APIRouter
+from fastapi.responses import JSONResponse
 
 HealthCheckFn = Callable[[], Awaitable[tuple[bool, str]]]
 
@@ -18,13 +19,16 @@ def build_health_router(module_id: str, checks: list[HealthCheck]) -> APIRouter:
     router = APIRouter(tags=[f"{module_id}-health"])
 
     @router.get("/health")
-    async def health() -> dict[str, object]:
+    async def health() -> JSONResponse:
         results: dict[str, dict[str, object]] = {}
         ready = True
         for health_check in checks:
             ok, detail = await health_check.check()
             ready = ready and ok
             results[health_check.name] = {"ok": ok, "detail": detail}
-        return {"module_id": module_id, "ready": ready, "checks": results}
+        return JSONResponse(
+            status_code=200 if ready else 503,
+            content={"module_id": module_id, "ready": ready, "checks": results},
+        )
 
     return router

@@ -130,7 +130,14 @@ async def callback(
         {"$set": doc_set, "$setOnInsert": doc_set_on_insert},
         upsert=True,
     )
-    await emit_accounts_linked(seller_id=seller_id, platform_user_id=platform_user_id)
+    amqp_publisher = getattr(request.app.state, "amqp_publisher", None)
+    if amqp_publisher is not None:
+        await emit_accounts_linked(
+            str(seller_id),
+            platform_user_id,
+            mongo_db=request.app.state.mongo_db,
+            amqp_publisher=amqp_publisher,
+        )
     return RedirectResponse(url=settings.oauth_success_url, status_code=302)
 
 

@@ -9,6 +9,10 @@ class ListingGenerationError(ValueError):
     """Raised when the LLM returns an unusable listing draft."""
 
 
+class LLMNotConfiguredError(RuntimeError):
+    """Raised when listing generation is requested without a configured LLM."""
+
+
 class ProductInfo(BaseModel):
     model_config = ConfigDict(frozen=True)
 
@@ -28,6 +32,13 @@ class GeneratedListing(BaseModel):
 
 class ListingLLM(Protocol):
     async def generate(self, prompt: dict[str, object]) -> dict[str, object]: ...
+
+
+class Stub503LLM:
+    async def generate(self, prompt: dict[str, object]) -> dict[str, object]:
+        raise LLMNotConfiguredError(
+            "LISTING_LLM=stub; configure an LLM provider to generate listings"
+        )
 
 
 class ListingGenerator:

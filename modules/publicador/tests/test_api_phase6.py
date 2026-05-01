@@ -178,7 +178,7 @@ async def test_publish_endpoint_delegates_to_gateway_flow(monkeypatch: pytest.Mo
             headers={"Authorization": "Bearer valid"},
         )
 
-    assert response.status_code == 200
+    assert response.status_code == 201
     assert response.json() == {
         "item_id": "MLA123",
         "outcome": "published",

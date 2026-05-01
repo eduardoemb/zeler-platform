@@ -8,7 +8,14 @@ from pydantic import field_validator
 from zeler_platform_core.models.base import TimestampedDocument, UtcDatetimeMixin, _coerce_str
 
 MeliAccountStatus = Literal[
-    "active", "pending", "refresh_pending", "revoked", "invalid_grant", "error", "invalid"
+    "active",
+    "pending",
+    "refresh_pending",
+    "revoked",
+    "invalid_grant",
+    "error",
+    "invalid",
+    "paused",
 ]
 
 

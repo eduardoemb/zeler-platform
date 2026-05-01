@@ -1,0 +1,70 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
+
+import httpx
+import pytest
+
+from zeler_platform_core.runtime.worker_health import WorkerHealthSidecar
+
+
+@dataclass
+class FakeConsumer:
+    is_ready: bool
+    last_heartbeat_at: datetime | None
+
+
+@pytest.mark.asyncio
+async def test_sidecar_200_when_ready_and_fresh_heartbeat() -> None:
+    consumer = FakeConsumer(is_ready=True, last_heartbeat_at=datetime.now(UTC))
+    sidecar = WorkerHealthSidecar(consumer, port=0, staleness_seconds=30)
+    await sidecar.start()
+    try:
+        response = await _get_health(sidecar)
+    finally:
+        await sidecar.stop()
+
+    assert response.status_code == 200
+    assert response.json() == {"ready": True, "checks": {"rabbitmq": "ok"}}
+
+
+@pytest.mark.asyncio
+async def test_sidecar_503_when_not_ready() -> None:
+    consumer = FakeConsumer(is_ready=False, last_heartbeat_at=datetime.now(UTC))
+    sidecar = WorkerHealthSidecar(consumer, port=0, staleness_seconds=30)
+    await sidecar.start()
+    try:
+        response = await _get_health(sidecar)
+    finally:
+        await sidecar.stop()
+
+    assert response.status_code == 503
+    assert response.json() == {
+        "ready": False,
+        "checks": {"rabbitmq": "error", "reason": "not_ready"},
+    }
+
+
+@pytest.mark.asyncio
+async def test_sidecar_503_when_heartbeat_stale() -> None:
+    consumer = FakeConsumer(
+        is_ready=True, last_heartbeat_at=datetime.now(UTC) - timedelta(seconds=31)
+    )
+    sidecar = WorkerHealthSidecar(consumer, port=0, staleness_seconds=30)
+    await sidecar.start()
+    try:
+        response = await _get_health(sidecar)
+    finally:
+        await sidecar.stop()
+
+    assert response.status_code == 503
+    assert response.json() == {
+        "ready": False,
+        "checks": {"rabbitmq": "error", "reason": "heartbeat_stale"},
+    }
+
+
+async def _get_health(sidecar: WorkerHealthSidecar) -> httpx.Response:
+    async with httpx.AsyncClient() as client:
+        return await client.get(f"http://127.0.0.1:{sidecar.bound_port}/health")

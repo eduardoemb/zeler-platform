@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import argparse
+import inspect
 import os
 import sys
 from collections.abc import Mapping
@@ -131,7 +133,9 @@ def _create_collection_with_validator(
         database.create_collection(collection_name, validator=desired_validator)
 
 
-def _apply_indexes(database: Database[Mapping[str, Any]], indexes_dir: Path) -> dict[str, str]:
+def _apply_indexes(
+    database: Database[Mapping[str, Any]], indexes_dir: Path, *, dry_run: bool = False
+) -> dict[str, str]:
     if not indexes_dir.exists():
         return {}
 
@@ -149,8 +153,9 @@ def _apply_indexes(database: Database[Mapping[str, Any]], indexes_dir: Path) -> 
                 msg = f"Index definition options must be an object: {index_path}"
                 raise ValueError(msg)
 
-            database[collection_name].create_index(list(keys.items()), **options)
-        results[collection_name] = "applied"
+            if not dry_run:
+                database[collection_name].create_index(list(keys.items()), **options)
+        results[collection_name] = "would_apply" if dry_run else "applied"
 
     return results
 
@@ -177,7 +182,7 @@ def _current_validator(
     return validator
 
 
-def apply_validators(mongo_uri: str, schemas_dir: Path) -> dict[str, str]:
+def apply_validators(mongo_uri: str, schemas_dir: Path, *, dry_run: bool = False) -> dict[str, str]:
     client: MongoClient[Mapping[str, Any]] = MongoClient(mongo_uri)
 
     try:
@@ -191,6 +196,9 @@ def apply_validators(mongo_uri: str, schemas_dir: Path) -> dict[str, str]:
             validation_options = _validation_options(schema)
 
             if collection_name not in database.list_collection_names():
+                if dry_run:
+                    results[collection_name] = "would_create"
+                    continue
                 if desired_validator:
                     _create_collection_with_validator(
                         database,
@@ -206,19 +214,29 @@ def apply_validators(mongo_uri: str, schemas_dir: Path) -> dict[str, str]:
             current_validator = _current_validator(database, collection_name)
 
             if not desired_validator:
-                database.command("collMod", collection_name, validator={})
-                results[collection_name] = "unchanged" if current_validator == {} else "applied"
+                if current_validator == {}:
+                    results[collection_name] = "unchanged"
+                elif dry_run:
+                    results[collection_name] = "would_apply"
+                else:
+                    database.command("collMod", collection_name, validator={})
+                    results[collection_name] = "applied"
                 continue
 
             if current_validator == desired_validator:
                 results[collection_name] = "unchanged"
                 continue
 
-            command = cast(Any, database.command)
-            command("collMod", collection_name, validator=desired_validator, **validation_options)
-            results[collection_name] = "applied"
+            if dry_run:
+                results[collection_name] = "would_apply"
+            else:
+                command = cast(Any, database.command)
+                command(
+                    "collMod", collection_name, validator=desired_validator, **validation_options
+                )
+                results[collection_name] = "applied"
 
-        index_results = _apply_indexes(database, schemas_dir.parent / "indexes")
+        index_results = _apply_indexes(database, schemas_dir.parent / "indexes", dry_run=dry_run)
         for collection_name, result in index_results.items():
             results[f"{collection_name}.indexes"] = result
         return results
@@ -226,15 +244,41 @@ def apply_validators(mongo_uri: str, schemas_dir: Path) -> dict[str, str]:
         client.close()
 
 
-def main() -> None:
-    mongo_uri = os.environ.get("MONGO_URI")
+apply_validators.__signature__ = inspect.Signature(  # type: ignore[attr-defined]
+    parameters=[
+        inspect.Parameter(
+            "mongo_uri",
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+            annotation="str",
+        ),
+        inspect.Parameter(
+            "schemas_dir",
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+            annotation="Path",
+        ),
+    ],
+    return_annotation="dict[str, str]",
+)
+
+
+def main(argv: list[str] | None = None) -> None:
+    parser = argparse.ArgumentParser(description="Apply MongoDB JSON validators and indexes")
+    parser.add_argument("--mongo-uri", default=os.environ.get("MONGO_URI"))
+    parser.add_argument("--schemas-dir", type=Path, default=None)
+    parser.add_argument("--check", "--dry-run", action="store_true", dest="dry_run")
+    args = parser.parse_args([] if argv is None else argv)
+
+    mongo_uri = args.mongo_uri
     if not mongo_uri:
         print("error: MONGO_URI is required", file=sys.stderr)
         sys.exit(2)
 
-    schemas_dir = Path(os.environ.get("SCHEMAS_DIR", str(DEFAULT_SCHEMAS_DIR)))
-    apply_validators(mongo_uri, schemas_dir)
+    schemas_dir = args.schemas_dir or Path(os.environ.get("SCHEMAS_DIR", str(DEFAULT_SCHEMAS_DIR)))
+    if args.dry_run:
+        apply_validators(mongo_uri, schemas_dir, dry_run=True)
+    else:
+        apply_validators(mongo_uri, schemas_dir)
 
 
 if __name__ == "__main__":
-    main()
+    main(sys.argv[1:])

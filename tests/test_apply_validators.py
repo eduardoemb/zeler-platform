@@ -108,7 +108,7 @@ def test_apply_validators_reads_schema_files_and_is_idempotent(
     )
 
     assert result_second == {"audit_log": "unchanged", "users": "unchanged"}
-    assert database.collmod_calls == [("audit_log", {})]
+    assert database.collmod_calls == []
 
 
 def test_apply_validators_updates_changed_schema(

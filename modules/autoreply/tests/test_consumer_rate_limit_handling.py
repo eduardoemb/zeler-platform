@@ -43,6 +43,14 @@ class LogSpy:
         self.warning_calls.append((event, fields))
 
 
+class FakeRetryDelayPublisher:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+
+    async def publish_delay(self, message_body: bytes, queue_name: str, *, delay_ms: int) -> None:
+        self.calls.append({"body": message_body, "queue_name": queue_name, "delay_ms": delay_ms})
+
+
 @pytest.mark.asyncio
 async def test_gateway_rate_limit_sleeps_then_requeues_with_retry_after_log(
     monkeypatch: pytest.MonkeyPatch,
@@ -56,14 +64,20 @@ async def test_gateway_rate_limit_sleeps_then_requeues_with_retry_after_log(
     monkeypatch.setattr(consumer, "logger", log_spy, raising=False)
     monkeypatch.setattr("zeler_autoreply.consumer.asyncio.sleep", fake_sleep)
     handler = FakeHandler(error=_rate_limit_error(retry_after_seconds=5))
-    runner = AutoreplyAmqpConsumerRunner(rabbitmq_url="amqp://unit-test", handler=handler)
+    publisher = FakeRetryDelayPublisher()
+    runner = AutoreplyAmqpConsumerRunner(
+        rabbitmq_url="amqp://unit-test", handler=handler, retry_delay_publisher=publisher
+    )
     message = FakeMessage(_valid_payload(resource="/questions/429"))
 
     await runner.handle_message(message)
 
-    assert sleep_calls == [5]
-    assert message.acked is False
-    assert message.nacks == [True]
+    assert sleep_calls == []
+    assert message.acked is True
+    assert message.nacks == []
+    assert publisher.calls == [
+        {"body": message.body, "queue_name": "zeler.autoreply.events", "delay_ms": 5000}
+    ]
     assert log_spy.warning_calls == [
         (
             "worker.message.requeued",

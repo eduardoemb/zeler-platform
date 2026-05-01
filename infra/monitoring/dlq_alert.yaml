@@ -1,0 +1,21 @@
+displayName: dlq-events-spike
+combiner: OR
+enabled: true
+notificationChannels:
+  - projects/${GCP_PROJECT}/notificationChannels/${NOTIFICATION_CHANNEL_ID}
+conditions:
+  - displayName: DLQ event count greater than zero
+    conditionThreshold:
+      filter: 'metric.type="logging.googleapis.com/user/dlq_events_total"'
+      aggregations:
+        - alignmentPeriod: 60s
+          perSeriesAligner: ALIGN_DELTA
+          crossSeriesReducer: REDUCE_SUM
+      comparison: COMPARISON_GT
+      thresholdValue: 0
+      duration: 60s
+alertStrategy:
+  autoClose: 3600s
+documentation:
+  content: Apply infra/monitoring/notification_channels.yaml first; it declares ${NOTIFICATION_CHANNEL_ID} for ops@zeler.ai.
+  mimeType: text/markdown

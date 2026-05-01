@@ -201,7 +201,7 @@ async def test_http_429_is_nacked_with_requeue_and_logged(
 
     await runner.handle_message(message)
 
-    assert sleep_calls == [5]
+    assert sleep_calls == []
     assert message.acked is False
     assert message.nacks == [True]
     assert log_spy.warning_calls[0][0] == "worker.message.requeued"

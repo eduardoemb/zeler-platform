@@ -1,0 +1,12 @@
+displayName: fulldock-health
+monitoredResource:
+  type: uptime_url
+  labels:
+    host: fulldock.zeler.ai
+httpCheck:
+  path: /health
+  port: 443
+  useSsl: true
+period: 30s
+timeout: 10s
+selectedRegions: [USA, SOUTH_AMERICA]

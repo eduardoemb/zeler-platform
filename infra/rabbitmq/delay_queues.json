@@ -1,0 +1,40 @@
+{
+  "queues": [
+    {
+      "name": "zeler.repricer.items.delay",
+      "durable": true,
+      "arguments": {
+        "x-message-ttl": 30000,
+        "x-dead-letter-exchange": "meli.events",
+        "x-dead-letter-routing-key": "items.price_updated"
+      }
+    },
+    {
+      "name": "zeler.sheets.events.delay",
+      "durable": true,
+      "arguments": {
+        "x-message-ttl": 30000,
+        "x-dead-letter-exchange": "meli.events",
+        "x-dead-letter-routing-key": "items.updated"
+      }
+    },
+    {
+      "name": "zeler.autoreply.events.delay",
+      "durable": true,
+      "arguments": {
+        "x-message-ttl": 30000,
+        "x-dead-letter-exchange": "meli.events",
+        "x-dead-letter-routing-key": "questions.new"
+      }
+    },
+    {
+      "name": "zeler.fulldock.events.delay",
+      "durable": true,
+      "arguments": {
+        "x-message-ttl": 30000,
+        "x-dead-letter-exchange": "meli.events",
+        "x-dead-letter-routing-key": "items.updated"
+      }
+    }
+  ]
+}

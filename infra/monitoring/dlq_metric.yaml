@@ -1,0 +1,13 @@
+name: dlq_events_total
+description: Counts worker messages routed to DLQ after retry exhaustion.
+filter: 'jsonPayload.event="worker.message.dlq" AND severity>=ERROR'
+metricDescriptor:
+  metricKind: DELTA
+  valueType: INT64
+  unit: "1"
+  labels:
+    - key: seller_id
+      valueType: STRING
+      description: Mercado Libre seller id associated with the DLQ event.
+labelExtractors:
+  seller_id: EXTRACT(jsonPayload.seller_id)

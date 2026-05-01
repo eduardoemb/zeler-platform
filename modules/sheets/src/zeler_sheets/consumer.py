@@ -5,7 +5,10 @@ import json
 import os
 import signal
 import sys
+import time
+from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Protocol, cast
 
@@ -18,6 +21,7 @@ from zeler_platform_core.auth.meli_gateway_auth import MeliGatewayAuth
 from zeler_platform_core.clients.meli_gateway_client import GatewayRateLimitError, MeliGatewayClient
 from zeler_platform_core.events.idempotency import IdempotencyStore as CoreIdempotencyStore
 from zeler_platform_core.runtime.manifest import validate_manifest
+from zeler_platform_core.runtime.worker_health import WorkerHealthSidecar
 from zeler_sheets.google_sheets_client import make_sheets_client
 from zeler_sheets.sheets_config import SheetsSettings
 
@@ -123,6 +127,9 @@ class SheetsEventHandlerLike(Protocol):
     async def handle(self, event: SheetsEvent) -> str: ...
 
 
+AccountStatusSource = Callable[[int], Any]
+
+
 @dataclass(frozen=True)
 class SheetsAmqpConsumerConfig:
     rabbitmq_url: str
@@ -148,6 +155,8 @@ class SheetsAmqpConsumerRunner:
         dead_letter_exchange: str = SHEETS_EVENTS_DLX,
         delivery_limit: int = SHEETS_DELIVERY_LIMIT,
         prefetch_count: int = DEFAULT_PREFETCH_COUNT,
+        retry_delay_publisher: Any | None = None,
+        account_status_source: AccountStatusSource | None = None,
     ) -> None:
         routing_keys = _sheets_routing_keys_from_manifest(manifest_path)
         self.config = SheetsAmqpConsumerConfig(
@@ -160,7 +169,12 @@ class SheetsAmqpConsumerRunner:
             routing_keys=routing_keys,
         )
         self._handler = handler
+        self._retry_delay_publisher = retry_delay_publisher
+        self._account_status_source = account_status_source
+        self._account_status_cache: dict[int, tuple[str | None, float]] = {}
         self._connection: Any | None = None
+        self.is_ready = False
+        self.last_heartbeat_at: datetime | None = None
 
     async def start(self) -> None:
         connection = await aio_pika.connect_robust(self.config.rabbitmq_url)
@@ -182,13 +196,16 @@ class SheetsAmqpConsumerRunner:
         for routing_key in self.config.routing_keys:
             await queue.bind(exchange, routing_key=routing_key)
         await queue.consume(self.handle_message)
+        self.is_ready = True
 
     async def close(self) -> None:
         if self._connection is not None:
             await self._connection.close()
             self._connection = None
+        self.is_ready = False
 
     async def handle_message(self, message: Any) -> None:
+        self.last_heartbeat_at = datetime.now(UTC)
         death_count = _x_death_count(message, queue_name=self.config.queue_name)
         event: SheetsEvent | None = None
         if death_count >= self.config.delivery_limit:
@@ -199,6 +216,10 @@ class SheetsAmqpConsumerRunner:
 
         try:
             event = _sheets_event_from_message(message)
+            if await self._account_is_paused(event.seller_id):
+                _log_message_skipped_paused(event)
+                await message.ack()
+                return
             await self._handler.handle(event)
         except GatewayRateLimitError as exc:
             _log_message_requeued(
@@ -207,8 +228,15 @@ class SheetsAmqpConsumerRunner:
                 exc,
                 retry_after=exc.retry_after_seconds,
             )
-            await asyncio.sleep(exc.retry_after_seconds)
-            await message.nack(requeue=True)
+            if self._retry_delay_publisher is None:
+                await message.nack(requeue=True)
+                return
+            await self._retry_delay_publisher.publish_delay(
+                message.body,
+                self.config.queue_name,
+                delay_ms=exc.retry_after_seconds * 1000,
+            )
+            await message.ack()
             return
         except httpx.HTTPStatusError as exc:
             status_code = exc.response.status_code
@@ -244,6 +272,20 @@ class SheetsAmqpConsumerRunner:
             return
         _log_message_ack(event, death_count + 1)
         await message.ack()
+
+    async def _account_is_paused(self, seller_id: int) -> bool:
+        if self._account_status_source is None:
+            return False
+        status, cached_at = self._account_status_cache.get(seller_id, (None, 0.0))
+        now = time.monotonic()
+        if status is not None and now - cached_at <= 30:
+            return status == "paused"
+        maybe_status = self._account_status_source(seller_id)
+        if hasattr(maybe_status, "__await__"):
+            maybe_status = await maybe_status
+        status = str(maybe_status) if maybe_status is not None else None
+        self._account_status_cache[seller_id] = (status, now)
+        return status == "paused"
 
 
 def _log_message_dlq(
@@ -297,6 +339,16 @@ def _log_message_ack(event: SheetsEvent | None, attempt: int) -> None:
         seller_id=event.seller_id if event is not None else None,
         resource_path=event.resource if event is not None else None,
         attempt=attempt,
+    )
+
+
+def _log_message_skipped_paused(event: SheetsEvent) -> None:
+    logger.info(
+        "worker.message.skipped.paused",
+        event_id=event.event_id,
+        seller_id=event.seller_id,
+        resource_path=event.resource,
+        module="sheets",
     )
 
 
@@ -470,15 +522,29 @@ async def run() -> None:
         rabbitmq_url=rabbitmq_url,
         handler=handler,
         manifest_path=manifest_path,
+        account_status_source=_account_status_source_from_db(db),
     )
     shutdown_event = asyncio.Event()
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGTERM, signal.SIGINT):
         loop.add_signal_handler(sig, shutdown_event.set)
 
+    sidecar = WorkerHealthSidecar(runner, port=int(os.environ.get("WORKER_HEALTH_PORT", "8080")))
+    await sidecar.start()
     await runner.start()
     try:
         await shutdown_event.wait()
     finally:
+        await sidecar.stop()
         await runner.close()
         mongo_client.close()
+
+
+def _account_status_source_from_db(db: Any) -> AccountStatusSource:
+    async def source(seller_id: int) -> str | None:
+        doc = await db["meli_accounts"].find_one({"seller_id": str(seller_id)})
+        if doc is None:
+            doc = await db["meli_accounts"].find_one({"seller_id": seller_id})
+        return cast(str | None, doc.get("status") if doc else None)
+
+    return source

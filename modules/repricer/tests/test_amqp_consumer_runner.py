@@ -186,7 +186,7 @@ async def test_runner_requeues_gateway_rate_limit_after_backoff(
 
     await runner.handle_message(message)
 
-    assert sleep_calls == [5]
+    assert sleep_calls == []
     assert message.acked is False
     assert message.nacks == [True]
 

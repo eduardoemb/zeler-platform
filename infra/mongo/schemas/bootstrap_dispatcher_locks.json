@@ -1,0 +1,16 @@
+{
+  "$jsonSchema": {
+    "bsonType": "object",
+    "properties": {
+      "_id": {"bsonType": "string"},
+      "holder_id": {"bsonType": "string"},
+      "count": {"bsonType": "int", "minimum": 0},
+      "acquired_at": {"bsonType": "date"},
+      "expires_at": {"bsonType": "date"},
+      "schema_version": {"bsonType": "int"}
+    },
+    "required": ["_id", "schema_version"]
+  },
+  "validationAction": "error",
+  "validationLevel": "strict"
+}

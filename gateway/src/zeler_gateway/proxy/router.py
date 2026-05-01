@@ -67,9 +67,14 @@ async def proxy_meli(request: Request, full_path: str) -> Response:
         return _json_error(401, "invalid_token", detail=str(exc))
 
     db = request.app.state.mongo_db
-    module = await db["module_registry"].find_one({"_id": claims.module_id, "status": "enabled"})
+    module = await db["module_registry"].find_one({"_id": claims.module_id})
     if module is None:
         return _json_error(401, "unknown_module")
+    if module.get("status") != "enabled":
+        return JSONResponse(
+            status_code=412,
+            content={"code": "module_disabled", "detail": f"module {claims.module_id} is disabled"},
+        )
 
     upstream_path = f"/{full_path}"
     if not _scope_matches(
@@ -84,6 +89,16 @@ async def proxy_meli(request: Request, full_path: str) -> Response:
         return _json_error(412, "account_not_active")
 
     account_status = account.get("status")
+    if account_status == "paused":
+        logger.info(
+            "gateway.proxy.account_paused",
+            seller_id=claims.seller_id,
+            module_id=claims.module_id,
+        )
+        return JSONResponse(
+            status_code=423,
+            content={"code": "seller_paused"},
+        )
     now_fn = _proxy_wait_now(request)
     if account_status == "refresh_pending" and _lock_is_held(
         account.get("lock_held_until"), now_fn=now_fn
