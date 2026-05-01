@@ -5,6 +5,8 @@ import sys
 from types import SimpleNamespace
 from typing import Any
 
+import pytest
+
 from infra.operations import preflight
 
 
@@ -45,6 +47,11 @@ class FakeRabbit:
     async def topology_valid(self, module: str) -> bool:
         assert module == "repricer"
         return self._topology_valid
+
+
+class FailingRabbit:
+    async def topology_valid(self, module: str) -> bool:
+        raise AssertionError(f"rabbit topology should not be checked for {module}")
 
 
 def test_cli_exits_0_when_all_checks_pass(capsys: Any) -> None:
@@ -100,6 +107,14 @@ def test_cli_emits_summary_to_stderr_on_failure(capsys: Any) -> None:
     captured = capsys.readouterr()
     assert exit_code == 1
     assert captured.err == "preflight failed for repricer seller 82453304: rabbitmq\n"
+
+
+def test_publicador_rabbitmq_check_is_not_required() -> None:
+    result = preflight.asyncio.run(
+        preflight._check_rabbitmq(FailingRabbit(), "publicador")  # noqa: SLF001
+    )
+
+    assert result == preflight.CheckResult(True, "rabbitmq topology not_required for publicador")
 
 
 def test_cli_infers_rabbitmq_vhost_from_cloudamqp_url(monkeypatch: Any) -> None:
@@ -183,7 +198,10 @@ def test_rabbitmq_management_client_uses_url_encoded_non_root_vhost(monkeypatch:
                 return SimpleNamespace(status_code=200, json=lambda: [{"source": "meli.events"}])
             return SimpleNamespace(
                 status_code=200,
-                json=lambda: [{"name": "repricer.events"}, {"name": "repricer.events.dlq"}],
+                json=lambda: [
+                    {"name": "zeler.repricer.items"},
+                    {"name": "zeler.repricer.items.dlq"},
+                ],
             )
 
     monkeypatch.setitem(sys.modules, "httpx", SimpleNamespace(AsyncClient=FakeAsyncClient))
@@ -196,7 +214,55 @@ def test_rabbitmq_management_client_uses_url_encoded_non_root_vhost(monkeypatch:
     assert preflight.asyncio.run(client.topology_valid("repricer")) is True
     assert calls == [
         "/api/queues/tenant%2Fprod",
-        "/api/queues/tenant%2Fprod/repricer.events.dlq/bindings",
+        "/api/queues/tenant%2Fprod/zeler.repricer.items.dlq/bindings",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("module", "queue_name", "dlq_name"),
+    [
+        ("repricer", "zeler.repricer.items", "zeler.repricer.items.dlq"),
+        ("sheets", "zeler.sheets.events", "zeler.sheets.events.dlq"),
+        ("autoreply", "zeler.autoreply.events", "zeler.autoreply.events.dlq"),
+        ("fulldock", "zeler.fulldock.events", "zeler.fulldock.events.dlq"),
+    ],
+)
+def test_rabbitmq_management_client_uses_worker_queue_names(
+    monkeypatch: Any,
+    module: str,
+    queue_name: str,
+    dlq_name: str,
+) -> None:
+    calls: list[str] = []
+
+    class FakeAsyncClient:
+        def __init__(self, *, base_url: str, timeout: float) -> None:
+            assert base_url == "http://localhost:15672"
+            assert timeout == 5.0
+
+        async def __aenter__(self) -> FakeAsyncClient:
+            return self
+
+        async def __aexit__(self, *_exc: object) -> None:
+            return None
+
+        async def get(self, path: str) -> Any:
+            calls.append(path)
+            if path.endswith("/bindings"):
+                return SimpleNamespace(status_code=200, json=lambda: [{"source": "meli.events"}])
+            return SimpleNamespace(
+                status_code=200,
+                json=lambda: [{"name": queue_name}, {"name": dlq_name}],
+            )
+
+    monkeypatch.setitem(sys.modules, "httpx", SimpleNamespace(AsyncClient=FakeAsyncClient))
+
+    client = preflight._RabbitManagementPreflightClient("http://localhost:15672", "/")  # noqa: SLF001
+
+    assert preflight.asyncio.run(client.topology_valid(module)) is True
+    assert calls == [
+        "/api/queues/%2F",
+        f"/api/queues/%2F/{dlq_name}/bindings",
     ]
 
 
@@ -220,7 +286,10 @@ def test_rabbitmq_management_client_preserves_root_vhost_encoding(monkeypatch: A
                 return SimpleNamespace(status_code=200, json=lambda: [{"source": "meli.events"}])
             return SimpleNamespace(
                 status_code=200,
-                json=lambda: [{"name": "repricer.events"}, {"name": "repricer.events.dlq"}],
+                json=lambda: [
+                    {"name": "zeler.repricer.items"},
+                    {"name": "zeler.repricer.items.dlq"},
+                ],
             )
 
     monkeypatch.setitem(sys.modules, "httpx", SimpleNamespace(AsyncClient=FakeAsyncClient))
@@ -230,5 +299,5 @@ def test_rabbitmq_management_client_preserves_root_vhost_encoding(monkeypatch: A
     assert preflight.asyncio.run(client.topology_valid("repricer")) is True
     assert calls == [
         "/api/queues/%2F",
-        "/api/queues/%2F/repricer.events.dlq/bindings",
+        "/api/queues/%2F/zeler.repricer.items.dlq/bindings",
     ]

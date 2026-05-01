@@ -17,6 +17,29 @@ DEFAULT_RABBITMQ_MANAGEMENT_URL = "http://localhost:15672"
 DEFAULT_GATEWAY_URL = "http://localhost:8000"
 
 
+@dataclass(frozen=True)
+class RabbitWorkerTopology:
+    queue: str
+    dlq: str
+
+
+RABBITMQ_WORKER_TOPOLOGY: dict[str, RabbitWorkerTopology | None] = {
+    "repricer": RabbitWorkerTopology("zeler.repricer.items", "zeler.repricer.items.dlq"),
+    "sheets": RabbitWorkerTopology("zeler.sheets.events", "zeler.sheets.events.dlq"),
+    "publicador": None,
+    "autoreply": RabbitWorkerTopology("zeler.autoreply.events", "zeler.autoreply.events.dlq"),
+    "fulldock": RabbitWorkerTopology("zeler.fulldock.events", "zeler.fulldock.events.dlq"),
+}
+
+
+def _rabbitmq_worker_topology(module: str) -> RabbitWorkerTopology | None:
+    try:
+        return RABBITMQ_WORKER_TOPOLOGY[module]
+    except KeyError as exc:
+        msg = f"unsupported module {module}"
+        raise ValueError(msg) from exc
+
+
 class HealthResponse(Protocol):
     status_code: int
 
@@ -197,11 +220,17 @@ async def _check_mongo(mongo: MongoPreflightClient) -> CheckResult:
 
 async def _check_rabbitmq(rabbitmq: RabbitPreflightClient, module: str) -> CheckResult:
     try:
+        topology = _rabbitmq_worker_topology(module)
+    except ValueError as exc:
+        return CheckResult(False, str(exc))
+    if topology is None:
+        return CheckResult(True, f"rabbitmq topology not_required for {module}")
+    try:
         if await rabbitmq.topology_valid(module):
-            return CheckResult(True, f"{module}.events and {module}.events.dlq topology ok")
+            return CheckResult(True, f"{topology.queue} and {topology.dlq} topology ok")
     except Exception as exc:  # noqa: BLE001 - CLI must report dependency failures.
         return CheckResult(False, f"rabbitmq topology failed: {type(exc).__name__}")
-    return CheckResult(False, f"missing {module}.events.dlq binding")
+    return CheckResult(False, f"missing {topology.dlq} binding")
 
 
 async def _check_health(client: HealthClient, *, name: str) -> CheckResult:
@@ -312,16 +341,20 @@ class _RabbitManagementPreflightClient:
     async def topology_valid(self, module: str) -> bool:
         import httpx
 
-        queue = f"{module}.events"
-        dlq = f"{module}.events.dlq"
+        try:
+            topology = _rabbitmq_worker_topology(module)
+        except ValueError:
+            return False
+        if topology is None:
+            return True
         encoded_vhost = quote(self._vhost, safe="")
-        encoded_dlq = quote(dlq, safe="")
+        encoded_dlq = quote(topology.dlq, safe="")
         async with httpx.AsyncClient(base_url=self._management_url, timeout=5.0) as client:
             queues_response = await client.get(f"/api/queues/{encoded_vhost}")
             if queues_response.status_code != 200:
                 return False
             queue_names = {item.get("name") for item in queues_response.json()}
-            if not {queue, dlq}.issubset(queue_names):
+            if not {topology.queue, topology.dlq}.issubset(queue_names):
                 return False
             bindings_response = await client.get(
                 f"/api/queues/{encoded_vhost}/{encoded_dlq}/bindings"
