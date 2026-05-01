@@ -322,12 +322,31 @@ class ClaimsStage:
 
     async def run(self, job: dict[str, Any], state_machine: BootstrapStateMachine) -> None:
         order_ids: Iterable[str] = job.get("checkpoints", {}).get("orders", {}).get("order_ids", [])
-        page = await self.gateway.get("/claims/search", {"order_ids": ",".join(order_ids)})
         claim_ids: list[str] = []
-        for raw in page.get("data", []):
-            document = Claim.model_validate(
-                {**raw, "_id": raw["id"], "seller_id": job["seller_id"], "schema_version": 1}
-            ).model_dump(by_alias=True, mode="json")
-            await _upsert(self.database["claims"], document)
-            claim_ids.append(str(document["_id"]))
-        await state_machine.update_cursor(self.name, {"claim_ids": claim_ids})
+        missing_claim_searches: list[str] = []
+        for order_id in order_ids:
+            try:
+                page = await self.gateway.get(
+                    "/post-purchase/v1/claims/search", {"order_id": str(order_id)}
+                )
+            except httpx.HTTPStatusError as exc:
+                if exc.response.status_code == 404:
+                    missing_claim_searches.append(str(order_id))
+                    continue
+                raise
+            for raw in page.get("data", []):
+                document = Claim.model_validate(
+                    {
+                        **raw,
+                        "_id": raw["id"],
+                        "seller_id": job["seller_id"],
+                        "order_id": raw.get("order_id") or raw.get("resource_id") or order_id,
+                        "schema_version": 1,
+                    }
+                ).model_dump(by_alias=True, mode="json")
+                await _upsert(self.database["claims"], document)
+                claim_ids.append(str(document["_id"]))
+        await state_machine.update_cursor(
+            self.name,
+            {"claim_ids": claim_ids, "missing_claim_searches": missing_claim_searches},
+        )

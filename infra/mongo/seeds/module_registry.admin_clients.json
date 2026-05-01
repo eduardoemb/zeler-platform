@@ -24,7 +24,7 @@
         "GET /questions/search",
         "GET /messages/packs/*",
         "GET /shipments/*",
-        "GET /claims/search"
+        "GET /post-purchase/v1/claims/search"
       ],
       "routing_keys": [],
       "owned_collections": [],

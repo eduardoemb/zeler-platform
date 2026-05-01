@@ -10,6 +10,7 @@ from zeler_bootstrap.runner import BootstrapDagRunner, BootstrapStage, build_def
 from zeler_bootstrap.stages import (
     MELI_ITEMS_BATCH_SIZE,
     BootstrapGatewayClient,
+    ClaimsStage,
     InMemoryPublisher,
     ItemsStage,
     MessagesStage,
@@ -170,14 +171,15 @@ class FakeGateway(BootstrapGatewayClient):
                 "date_created": NOW,
                 "last_updated": NOW,
             }
-        if path == "/claims/search":
+        if path == "/post-purchase/v1/claims/search":
             return {
                 "data": [
                     {
                         "id": 222,
                         "seller_id": 123,
                         "buyer_id": 45,
-                        "order_id": 987,
+                        "resource": "order",
+                        "resource_id": 987,
                         "status": "opened",
                         "stage": "claim",
                         "type": "mediations",
@@ -305,6 +307,8 @@ async def test_default_bootstrap_stages_fetch_paginate_upsert_and_emit_completio
     assert database["messages"].upserts[0][1]["$set"]["to_user_id"] == "2"
     assert database["shipments"].upserts[0][0] == {"_id": "654"}
     assert database["claims"].upserts[0][0] == {"_id": "222"}
+    assert database["claims"].upserts[0][1]["$set"]["order_id"] == "987"
+    assert ("/post-purchase/v1/claims/search", {"order_id": "987"}) in gateway.calls
     assert publisher.events == [
         {
             "event_type": "BootstrapCompleted",
@@ -386,4 +390,31 @@ async def test_messages_stage_skips_missing_pack_conversations() -> None:
     assert collection.document["checkpoints"]["messages"] == {
         "message_ids": [],
         "missing_packs": ["555"],
+    }
+
+
+@pytest.mark.asyncio
+async def test_claims_stage_skips_missing_claim_search_results() -> None:
+    collection = FakeBootstrapJobs()
+    collection.document["state"] = "running"
+    collection.document["checkpoints"] = {"orders": {"order_ids": ["987"]}}
+    database = FakeDatabase()
+    gateway = FakeGateway()
+
+    async def get(path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+        gateway.calls.append((path, params))
+        request = httpx.Request("GET", f"https://gateway.zeler.ai{path}")
+        response = httpx.Response(404, request=request)
+        raise httpx.HTTPStatusError("not found", request=request, response=response)
+
+    gateway.get = get  # type: ignore[method-assign]
+    machine = BootstrapStateMachine(collection, "job-1", now_fn=lambda: NOW)
+
+    await ClaimsStage(gateway, database).run(collection.document, machine)
+
+    assert gateway.calls == [("/post-purchase/v1/claims/search", {"order_id": "987"})]
+    assert database["claims"].upserts == []
+    assert collection.document["checkpoints"]["claims"] == {
+        "claim_ids": [],
+        "missing_claim_searches": ["987"],
     }
