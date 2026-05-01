@@ -17,7 +17,13 @@ ItemStatus = Literal["active", "paused", "closed", "under_review", "inactive"]
 OrderStatus = Literal["paid", "confirmed", "payment_required", "payment_in_process", "cancelled"]
 MessageStatus = Literal["available", "blocked", "moderated", "deleted"]
 ShipmentStatus = Literal[
-    "pending", "handling", "ready_to_ship", "shipped", "delivered", "cancelled"
+    "pending",
+    "handling",
+    "ready_to_ship",
+    "shipped",
+    "delivered",
+    "not_delivered",
+    "cancelled",
 ]
 ShipmentLogisticType = Literal[
     "fulfillment", "cross_docking", "self_service", "drop_off", "xd_drop_off"

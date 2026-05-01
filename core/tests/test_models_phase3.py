@@ -80,6 +80,22 @@ def test_user_rejects_naive_datetime_and_invalid_auth_provider() -> None:
         User.model_validate({**valid_user.model_dump(), "auth_provider": "legacy"})
 
 
+def test_shipment_accepts_meli_not_delivered_status() -> None:
+    shipment = Shipment.model_validate(
+        {
+            "id": 555,
+            "seller_id": 123,
+            "order_id": 987654,
+            "status": "not_delivered",
+            "logistic_type": "fulfillment",
+            "date_created": NOW,
+            "last_updated": NOW,
+        }
+    )
+
+    assert shipment.status == "not_delivered"
+
+
 @pytest.mark.parametrize(
     ("model_cls", "payload", "id_field"),
     [
