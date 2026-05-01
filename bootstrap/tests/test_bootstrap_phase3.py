@@ -292,6 +292,7 @@ async def test_default_bootstrap_stages_fetch_paginate_upsert_and_emit_completio
         {"item_id": "MLM1", "qty": 2, "unit_price": "10.00"}
     ]
     assert database["questions"].upserts[0][0] == {"_id": "333"}
+    assert ("/questions/search", {"seller_id": "123", "api_version": "4"}) in gateway.calls
     assert database["messages"].upserts[0][0] == {"_id": "msg-1"}
     assert database["shipments"].upserts[0][0] == {"_id": "654"}
     assert database["claims"].upserts[0][0] == {"_id": "222"}

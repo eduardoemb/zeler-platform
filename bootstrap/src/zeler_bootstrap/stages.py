@@ -191,7 +191,7 @@ class QuestionsStage:
     async def run(self, job: dict[str, Any], state_machine: BootstrapStateMachine) -> None:
         seller_id = str(job["seller_id"])
         page = await self.gateway.get(
-            "/questions/search", {"seller_id": seller_id, "status": "open"}
+            "/questions/search", {"seller_id": seller_id, "api_version": "4"}
         )
         question_ids: list[str] = []
         for raw in page.get("questions", []):
