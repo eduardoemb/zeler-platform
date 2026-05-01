@@ -10,6 +10,7 @@ QUEUE_BINDINGS = {
     "zeler.repricer.items": ["items.*"],
     "zeler.repricer.items_prices": ["items.price_updated"],
     "zeler.repricer.price_suggestion": ["price_suggestion.*"],
+    "zeler.sheets.events": ["items.*", "orders.*", "shipments.*"],
     "zeler.sheets.orders": ["orders.*"],
     "zeler.sheets.user_products": ["user_products.*"],
     "zeler.fulldock.stock_locations": ["stock_locations.*"],
@@ -20,6 +21,7 @@ QUEUE_BINDINGS = {
 }
 
 ACTIVE_QUEUE_DEAD_LETTER_ROUTING_KEYS = {
+    "zeler.sheets.events": "zeler.sheets.events.dlq",
     "zeler.fulldock.events": "zeler.fulldock.events.dlq",
     "zeler.autoreply.events": "zeler.autoreply.events.dlq",
 }

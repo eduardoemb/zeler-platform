@@ -21,6 +21,11 @@
       "durable": true
     },
     {
+      "name": "zeler.sheets.events.dlx",
+      "type": "direct",
+      "durable": true
+    },
+    {
       "name": "zeler.sheets.orders.dlx",
       "type": "direct",
       "durable": true
@@ -207,6 +212,59 @@
     },
     {
       "name": "zeler.repricer.price_suggestion.retry.10m",
+      "durable": true,
+      "arguments": {
+        "x-message-ttl": 600000,
+        "x-dead-letter-exchange": "meli.events"
+      }
+    },
+    {
+      "name": "zeler.sheets.events.dlq",
+      "durable": true,
+      "arguments": {}
+    },
+    {
+      "name": "zeler.sheets.events",
+      "durable": true,
+      "arguments": {
+        "x-dead-letter-exchange": "zeler.sheets.events.dlx",
+        "x-dead-letter-routing-key": "zeler.sheets.events.dlq"
+      }
+    },
+    {
+      "name": "zeler.sheets.events.retry.1s",
+      "durable": true,
+      "arguments": {
+        "x-message-ttl": 1000,
+        "x-dead-letter-exchange": "meli.events"
+      }
+    },
+    {
+      "name": "zeler.sheets.events.retry.5s",
+      "durable": true,
+      "arguments": {
+        "x-message-ttl": 5000,
+        "x-dead-letter-exchange": "meli.events"
+      }
+    },
+    {
+      "name": "zeler.sheets.events.retry.30s",
+      "durable": true,
+      "arguments": {
+        "x-message-ttl": 30000,
+        "x-dead-letter-exchange": "meli.events"
+      }
+    },
+    {
+      "name": "zeler.sheets.events.retry.2m",
+      "durable": true,
+      "arguments": {
+        "x-message-ttl": 120000,
+        "x-dead-letter-exchange": "meli.events"
+      }
+    },
+    {
+      "name": "zeler.sheets.events.retry.10m",
       "durable": true,
       "arguments": {
         "x-message-ttl": 600000,
@@ -615,6 +673,26 @@
       "source": "meli.events",
       "destination": "zeler.repricer.price_suggestion",
       "routing_key": "price_suggestion.*"
+    },
+    {
+      "source": "zeler.sheets.events.dlx",
+      "destination": "zeler.sheets.events.dlq",
+      "routing_key": "zeler.sheets.events.dlq"
+    },
+    {
+      "source": "meli.events",
+      "destination": "zeler.sheets.events",
+      "routing_key": "items.*"
+    },
+    {
+      "source": "meli.events",
+      "destination": "zeler.sheets.events",
+      "routing_key": "orders.*"
+    },
+    {
+      "source": "meli.events",
+      "destination": "zeler.sheets.events",
+      "routing_key": "shipments.*"
     },
     {
       "source": "zeler.sheets.orders.dlx",

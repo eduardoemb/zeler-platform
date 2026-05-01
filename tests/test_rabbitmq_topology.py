@@ -3,7 +3,9 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from infra.operations.preflight import RABBITMQ_WORKER_TOPOLOGY
 from infra.rabbitmq.topology import build_topology_definitions
+from zeler_sheets.consumer import SHEETS_DEFAULT_ROUTING_KEYS, SHEETS_EVENTS_DLX, SHEETS_EVENTS_QUEUE
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -46,6 +48,38 @@ def test_topology_bindings_include_supported_module_routing_keys() -> None:
     assert ("zeler.fulldock.events", "stock_locations.*") in bindings
     assert ("zeler.autoreply.events", "questions.new") in bindings
     assert ("zeler.autoreply.events", "messages.new") in bindings
+
+
+def test_sheets_worker_queue_contract_matches_topology_and_preflight() -> None:
+    topology = build_topology_definitions()
+
+    exchanges = {exchange["name"]: exchange for exchange in topology["exchanges"]}
+    queues = {queue["name"]: queue for queue in topology["queues"]}
+    bindings = {
+        (binding["source"], binding["destination"], binding["routing_key"])
+        for binding in topology["bindings"]
+    }
+
+    sheets_topology = RABBITMQ_WORKER_TOPOLOGY["sheets"]
+    assert sheets_topology is not None
+    assert sheets_topology.queue == SHEETS_EVENTS_QUEUE
+    assert sheets_topology.dlq == f"{SHEETS_EVENTS_QUEUE}.dlq"
+
+    assert exchanges[SHEETS_EVENTS_DLX] == {
+        "name": SHEETS_EVENTS_DLX,
+        "type": "direct",
+        "durable": True,
+    }
+    assert queues[SHEETS_EVENTS_QUEUE]["durable"] is True
+    assert queues[SHEETS_EVENTS_QUEUE]["arguments"] == {
+        "x-dead-letter-exchange": SHEETS_EVENTS_DLX,
+        "x-dead-letter-routing-key": sheets_topology.dlq,
+    }
+    assert queues[sheets_topology.dlq]["durable"] is True
+    assert (SHEETS_EVENTS_DLX, sheets_topology.dlq, sheets_topology.dlq) in bindings
+
+    for routing_key in SHEETS_DEFAULT_ROUTING_KEYS:
+        assert ("meli.events", SHEETS_EVENTS_QUEUE, routing_key) in bindings
 
 
 def test_topology_includes_new_queues() -> None:
