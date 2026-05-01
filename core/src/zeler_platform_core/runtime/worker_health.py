@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-from datetime import UTC, datetime
 from typing import Any
 
 
@@ -50,12 +49,6 @@ class WorkerHealthSidecar:
         if not bool(getattr(self._consumer_ref, "is_ready", False)):
             return False, {"rabbitmq": "error", "reason": "not_ready"}
 
-        heartbeat = getattr(self._consumer_ref, "last_heartbeat_at", None)
-        if heartbeat is None:
-            return False, {"rabbitmq": "error", "reason": "heartbeat_stale"}
-        age = (datetime.now(UTC) - heartbeat).total_seconds()
-        if age > self._staleness_seconds:
-            return False, {"rabbitmq": "error", "reason": "heartbeat_stale"}
         return True, {"rabbitmq": "ok"}
 
     @staticmethod

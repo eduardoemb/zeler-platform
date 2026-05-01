@@ -166,7 +166,7 @@ services:
 
   autoreply-worker:
     <<: *restart
-    image: us-central1-docker.pkg.dev/zeler-platform-dev/zeler-platform/autoreply-worker:rollout-v6
+    image: us-central1-docker.pkg.dev/zeler-platform-dev/zeler-platform/autoreply-worker:rollout-v7-autoreply-message-normalize
     networks:
       - platform_default
     env_file: /opt/zeler-platform/env/autoreply-worker.env
@@ -176,7 +176,7 @@ services:
 
   fulldock-worker:
     <<: *restart
-    image: us-central1-docker.pkg.dev/zeler-platform-dev/zeler-platform/fulldock-worker:rollout-v6
+    image: us-central1-docker.pkg.dev/zeler-platform-dev/zeler-platform/fulldock-worker:replay-readiness-7b54c97
     networks:
       - platform_default
     env_file: /opt/zeler-platform/env/fulldock-worker.env

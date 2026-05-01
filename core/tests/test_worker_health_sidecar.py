@@ -30,6 +30,36 @@ async def test_sidecar_200_when_ready_and_fresh_heartbeat() -> None:
 
 
 @pytest.mark.asyncio
+async def test_sidecar_200_when_ready_idle_without_heartbeat() -> None:
+    consumer = FakeConsumer(is_ready=True, last_heartbeat_at=None)
+    sidecar = WorkerHealthSidecar(consumer, port=0, staleness_seconds=30)
+    await sidecar.start()
+    try:
+        response = await _get_health(sidecar)
+    finally:
+        await sidecar.stop()
+
+    assert response.status_code == 200
+    assert response.json() == {"ready": True, "checks": {"rabbitmq": "ok"}}
+
+
+@pytest.mark.asyncio
+async def test_sidecar_200_when_ready_with_old_message_heartbeat() -> None:
+    consumer = FakeConsumer(
+        is_ready=True, last_heartbeat_at=datetime.now(UTC) - timedelta(seconds=31)
+    )
+    sidecar = WorkerHealthSidecar(consumer, port=0, staleness_seconds=30)
+    await sidecar.start()
+    try:
+        response = await _get_health(sidecar)
+    finally:
+        await sidecar.stop()
+
+    assert response.status_code == 200
+    assert response.json() == {"ready": True, "checks": {"rabbitmq": "ok"}}
+
+
+@pytest.mark.asyncio
 async def test_sidecar_503_when_not_ready() -> None:
     consumer = FakeConsumer(is_ready=False, last_heartbeat_at=datetime.now(UTC))
     sidecar = WorkerHealthSidecar(consumer, port=0, staleness_seconds=30)
@@ -43,25 +73,6 @@ async def test_sidecar_503_when_not_ready() -> None:
     assert response.json() == {
         "ready": False,
         "checks": {"rabbitmq": "error", "reason": "not_ready"},
-    }
-
-
-@pytest.mark.asyncio
-async def test_sidecar_503_when_heartbeat_stale() -> None:
-    consumer = FakeConsumer(
-        is_ready=True, last_heartbeat_at=datetime.now(UTC) - timedelta(seconds=31)
-    )
-    sidecar = WorkerHealthSidecar(consumer, port=0, staleness_seconds=30)
-    await sidecar.start()
-    try:
-        response = await _get_health(sidecar)
-    finally:
-        await sidecar.stop()
-
-    assert response.status_code == 503
-    assert response.json() == {
-        "ready": False,
-        "checks": {"rabbitmq": "error", "reason": "heartbeat_stale"},
     }
 
 
