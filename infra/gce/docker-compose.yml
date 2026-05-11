@@ -133,7 +133,7 @@ services:
 
   fulldock-api:
     <<: *restart
-    image: us-central1-docker.pkg.dev/zeler-platform-dev/zeler-platform/fulldock-api:rollout-v5
+    image: us-central1-docker.pkg.dev/zeler-platform-dev/zeler-platform/fulldock-api:dlq-skip-3bf73ee
     networks:
       - platform_default
     env_file: /opt/zeler-platform/env/fulldock-api.env
