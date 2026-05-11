@@ -14,7 +14,7 @@ QUEUE_BINDINGS = {
     "zeler.sheets.orders": ["orders.*"],
     "zeler.sheets.user_products": ["user_products.*"],
     "zeler.fulldock.stock_locations": ["stock_locations.*"],
-    "zeler.fulldock.events": ["items.*", "shipments.*", "stock_locations.*"],
+    "zeler.fulldock.events": ["shipments.*", "stock_locations.*"],
     "zeler.autoreply.events": ["questions.new", "messages.new"],
     "zeler.publicador.questions": ["questions.*"],
     "zeler.publicador.messages": ["messages.*"],

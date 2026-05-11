@@ -95,6 +95,41 @@ async def test_http_404_is_nacked_without_requeue_and_logged_to_dlq(
 
 
 @pytest.mark.asyncio
+async def test_message_http_404_is_acked_and_logged_as_skipped(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    log_spy = LogSpy()
+    monkeypatch.setattr(consumer, "logger", log_spy, raising=False)
+    handler = FakeHandler(error=_http_status_error(404, path="/messages/msg-404"))
+    runner = AutoreplyAmqpConsumerRunner(rabbitmq_url="amqp://unit-test", handler=handler)
+    message = FakeMessage(
+        _valid_payload(
+            event_type="messages.new",
+            resource="/messages/msg-404",
+        )
+    )
+
+    await runner.handle_message(message)
+
+    assert message.acked is True
+    assert message.nacks == []
+    assert log_spy.warning_calls == []
+    assert log_spy.error_calls == []
+    assert log_spy.info_calls == [
+        (
+            "worker.message.skipped.not_found",
+            {
+                "event_id": "evt-1",
+                "seller_id": 123456789,
+                "resource_path": "/messages/msg-404",
+                "attempt": 1,
+                "status_code": 404,
+            },
+        )
+    ]
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("status_code", [401, 403, 422])
 async def test_permanent_http_4xx_statuses_are_nacked_without_requeue(
     status_code: int,
@@ -401,10 +436,12 @@ def _rate_limit_error(
     return GatewayRateLimitError(retry_after_seconds=retry_after_seconds, response=response)
 
 
-def _valid_payload(*, resource: str = "questions/123") -> dict[str, Any]:
+def _valid_payload(
+    *, event_type: str = "questions.new", resource: str = "questions/123"
+) -> dict[str, Any]:
     return {
         "event_id": "evt-1",
-        "event_type": "questions.new",
+        "event_type": event_type,
         "seller_id": 123456789,
         "resource": resource,
     }

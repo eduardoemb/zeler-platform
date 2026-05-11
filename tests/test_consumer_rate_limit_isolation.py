@@ -96,9 +96,9 @@ class RateLimitThenOkHandler:
             "zeler_fulldock.consumer.FulldockAmqpConsumerRunner",
             {
                 "event_id": "evt-1",
-                "event_type": "items.updated",
+                "event_type": "shipments.updated",
                 "seller_id": 123,
-                "resource": "/items/1",
+                "resource": "/shipments/1",
             },
             "zeler.fulldock.events",
             id="fulldock",

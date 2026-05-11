@@ -731,11 +731,6 @@
     {
       "source": "meli.events",
       "destination": "zeler.fulldock.events",
-      "routing_key": "items.*"
-    },
-    {
-      "source": "meli.events",
-      "destination": "zeler.fulldock.events",
       "routing_key": "shipments.*"
     },
     {

@@ -31,7 +31,7 @@ FULLDOCK_EVENTS_DLX = "zeler.fulldock.events.dlx"
 FULLDOCK_EVENTS_DEAD_LETTER_ROUTING_KEY = FULLDOCK_EVENTS_DLQ
 FULLDOCK_DELIVERY_LIMIT = 5
 DEFAULT_PREFETCH_COUNT = 10
-FULLDOCK_DEFAULT_ROUTING_KEYS = ("items.*", "shipments.*", "stock_locations.*")
+FULLDOCK_DEFAULT_ROUTING_KEYS = ("shipments.*", "stock_locations.*")
 MISSING_RABBITMQ_URL_MESSAGE = "error: RABBITMQ_URL is required"
 MISSING_MONGO_URI_MESSAGE = "error: MONGO_URI is required"
 MISSING_MONGO_DB_MESSAGE = "error: MONGO_DB is required"
@@ -252,6 +252,10 @@ class FulldockAmqpConsumerRunner:
 
         try:
             event = _fulldock_event_from_message(message)
+            if not _is_supported_fulldock_event(event):
+                _log_message_skipped_unsupported(event)
+                await message.ack()
+                return
             if await self._account_is_paused(event.seller_id):
                 _log_message_skipped_paused(event)
                 await message.ack()
@@ -389,6 +393,21 @@ def _log_message_skipped_paused(event: FulldockEvent) -> None:
         resource_path=event.resource,
         module="fulldock",
     )
+
+
+def _log_message_skipped_unsupported(event: FulldockEvent) -> None:
+    logger.info(
+        "worker.message.skipped.unsupported_event",
+        event_id=event.event_id,
+        event_type=event.event_type,
+        seller_id=event.seller_id,
+        resource_path=event.resource,
+        module="fulldock",
+    )
+
+
+def _is_supported_fulldock_event(event: FulldockEvent) -> bool:
+    return event.event_type.startswith(("shipments.", "stock_locations."))
 
 
 def _x_death_count(message: Any, *, queue_name: str) -> int:

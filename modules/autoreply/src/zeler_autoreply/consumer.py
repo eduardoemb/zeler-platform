@@ -276,6 +276,14 @@ class AutoreplyAmqpConsumerRunner:
             return
         except httpx.HTTPStatusError as exc:
             status_code = exc.response.status_code
+            if (
+                status_code == 404
+                and event is not None
+                and event.event_type.startswith("messages.")
+            ):
+                _log_message_skipped_not_found(event, death_count + 1, status_code=status_code)
+                await message.ack()
+                return
             if status_code in PERMANENT_HTTP_STATUS_CODES:
                 _log_message_dlq(event, death_count + 1, exc, status_code=status_code)
                 await message.nack(requeue=False)
@@ -388,6 +396,19 @@ def _log_message_skipped_paused(event: AutoreplyEvent) -> None:
         seller_id=event.seller_id,
         resource_path=event.resource,
         module="autoreply",
+    )
+
+
+def _log_message_skipped_not_found(
+    event: AutoreplyEvent, attempt: int, *, status_code: int
+) -> None:
+    logger.info(
+        "worker.message.skipped.not_found",
+        event_id=event.event_id,
+        seller_id=event.seller_id,
+        resource_path=event.resource,
+        attempt=attempt,
+        status_code=status_code,
     )
 
 

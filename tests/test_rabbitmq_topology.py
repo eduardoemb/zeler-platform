@@ -4,8 +4,16 @@ import json
 from pathlib import Path
 
 from infra.operations.preflight import RABBITMQ_WORKER_TOPOLOGY
-from infra.rabbitmq.topology import ACTIVE_QUEUE_DEAD_LETTER_ROUTING_KEYS, build_topology_definitions
-from zeler_sheets.consumer import SHEETS_DEFAULT_ROUTING_KEYS, SHEETS_EVENTS_DLX, SHEETS_EVENTS_QUEUE
+from infra.rabbitmq.topology import (
+    ACTIVE_QUEUE_DEAD_LETTER_ROUTING_KEYS,
+    build_topology_definitions,
+)
+
+from zeler_sheets.consumer import (
+    SHEETS_DEFAULT_ROUTING_KEYS,
+    SHEETS_EVENTS_DLX,
+    SHEETS_EVENTS_QUEUE,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -43,7 +51,8 @@ def test_topology_bindings_include_supported_module_routing_keys() -> None:
     assert ("zeler.sheets.orders", "orders.*") in bindings
     assert ("zeler.publicador.questions", "questions.*") in bindings
     assert ("zeler.publicador.messages", "messages.*") in bindings
-    assert ("zeler.fulldock.events", "items.*") in bindings
+    assert ("zeler.fulldock.events", "items.*") not in bindings
+    assert ("zeler.fulldock.events", "items.price_updated") not in bindings
     assert ("zeler.fulldock.events", "shipments.*") in bindings
     assert ("zeler.fulldock.events", "stock_locations.*") in bindings
     assert ("zeler.autoreply.events", "questions.new") in bindings

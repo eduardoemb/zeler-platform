@@ -84,7 +84,6 @@ async def test_fulldock_runner_declares_queue_with_dlx_and_binds_manifest_routin
         "zeler.fulldock.events.dlq",
     ]
     assert [routing_key for _, routing_key in channel.queue.bindings] == [
-        "items.*",
         "shipments.*",
         "stock_locations.*",
     ]
@@ -111,6 +110,37 @@ async def test_fulldock_runner_acks_message_on_successful_handler_return() -> No
             idempotency_key="idem-header",
         )
     ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("event_type", "resource"),
+    [
+        ("items.updated", "/items/MLM1400005413"),
+        ("items.price_updated", "/items/MLM3889269870/prices"),
+    ],
+)
+async def test_fulldock_runner_acks_unsupported_item_events_without_handler(
+    event_type: str,
+    resource: str,
+) -> None:
+    handler = FakeHandler()
+    runner = FulldockAmqpConsumerRunner(rabbitmq_url="amqp://unit-test", handler=handler)
+    message = FakeMessage(
+        {
+            "event_id": "evt-unsupported-item",
+            "event_type": event_type,
+            "seller_id": 82453304,
+            "resource": resource,
+        },
+        headers={"idempotency_key": "idem-unsupported-item"},
+    )
+
+    await runner.handle_message(message)
+
+    assert message.acked is True
+    assert message.nacks == []
+    assert handler.events == []
 
 
 @pytest.mark.asyncio
