@@ -47,8 +47,22 @@ class FakeRetryDelayPublisher:
     def __init__(self) -> None:
         self.calls: list[dict[str, object]] = []
 
-    async def publish_delay(self, message_body: bytes, queue_name: str, *, delay_ms: int) -> None:
-        self.calls.append({"body": message_body, "queue_name": queue_name, "delay_ms": delay_ms})
+    async def publish_delay(
+        self,
+        message_body: bytes,
+        queue_name: str,
+        *,
+        delay_ms: int,
+        headers: dict[str, object] | None = None,
+    ) -> None:
+        self.calls.append(
+            {
+                "body": message_body,
+                "queue_name": queue_name,
+                "delay_ms": delay_ms,
+                "headers": headers,
+            }
+        )
 
 
 @pytest.mark.asyncio
@@ -76,7 +90,12 @@ async def test_gateway_rate_limit_sleeps_then_requeues_with_retry_after_log(
     assert message.acked is True
     assert message.nacks == []
     assert publisher.calls == [
-        {"body": message.body, "queue_name": "zeler.sheets.events", "delay_ms": 5000}
+        {
+            "body": message.body,
+            "queue_name": "zeler.sheets.events",
+            "delay_ms": 5000,
+            "headers": {consumer.RETRY_ATTEMPT_HEADER: 1},
+        }
     ]
     assert log_spy.warning_calls == [
         (

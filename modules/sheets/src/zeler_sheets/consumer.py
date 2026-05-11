@@ -15,6 +15,7 @@ from typing import Any, Protocol, cast
 import aio_pika
 import httpx
 import structlog
+from infra.rabbitmq.retry_delay import RetryDelayPublisher
 from motor.motor_asyncio import AsyncIOMotorClient
 
 from zeler_platform_core.auth.meli_gateway_auth import MeliGatewayAuth
@@ -22,6 +23,7 @@ from zeler_platform_core.clients.meli_gateway_client import GatewayRateLimitErro
 from zeler_platform_core.events.idempotency import IdempotencyStore as CoreIdempotencyStore
 from zeler_platform_core.runtime.manifest import validate_manifest
 from zeler_platform_core.runtime.worker_health import WorkerHealthSidecar
+from zeler_sheets.google_errors import RetryableGoogleSheetsApiError
 from zeler_sheets.google_sheets_client import make_sheets_client
 from zeler_sheets.sheets_config import SheetsSettings
 
@@ -31,6 +33,7 @@ SHEETS_EVENTS_DLX = "zeler.sheets.events.dlx"
 SHEETS_DELIVERY_LIMIT = 5
 DEFAULT_PREFETCH_COUNT = 10
 SHEETS_DEFAULT_ROUTING_KEYS = ("items.*", "orders.*", "shipments.*")
+RETRY_ATTEMPT_HEADER = "x-zeler-retry-attempt"
 MISSING_RABBITMQ_URL_MESSAGE = "error: RABBITMQ_URL is required"
 MISSING_MONGO_URI_MESSAGE = "error: MONGO_URI is required"
 MISSING_MONGO_DB_MESSAGE = "error: MONGO_DB is required"
@@ -195,6 +198,8 @@ class SheetsAmqpConsumerRunner:
         )
         for routing_key in self.config.routing_keys:
             await queue.bind(exchange, routing_key=routing_key)
+        if self._retry_delay_publisher is None:
+            self._retry_delay_publisher = RetryDelayPublisher(channel)
         await queue.consume(self.handle_message)
         self.is_ready = True
 
@@ -206,7 +211,7 @@ class SheetsAmqpConsumerRunner:
 
     async def handle_message(self, message: Any) -> None:
         self.last_heartbeat_at = datetime.now(UTC)
-        death_count = _x_death_count(message, queue_name=self.config.queue_name)
+        death_count = _delivery_attempt_count(message, queue_name=self.config.queue_name)
         event: SheetsEvent | None = None
         if death_count >= self.config.delivery_limit:
             event = _event_context_from_message(message)
@@ -235,6 +240,25 @@ class SheetsAmqpConsumerRunner:
                 message.body,
                 self.config.queue_name,
                 delay_ms=exc.retry_after_seconds * 1000,
+                headers=_retry_headers(message, attempt=death_count + 1),
+            )
+            await message.ack()
+            return
+        except RetryableGoogleSheetsApiError as exc:
+            _log_message_requeued(
+                event,
+                death_count + 1,
+                exc,
+                retry_after=exc.retry_after_seconds,
+            )
+            if self._retry_delay_publisher is None:
+                await message.nack(requeue=True)
+                return
+            await self._retry_delay_publisher.publish_delay(
+                message.body,
+                self.config.queue_name,
+                delay_ms=exc.retry_after_seconds * 1000,
+                headers=_retry_headers(message, attempt=death_count + 1),
             )
             await message.ack()
             return
@@ -363,6 +387,36 @@ def _x_death_count(message: Any, *, queue_name: str) -> int:
             count = death.get("count", 0)
             return int(count) if isinstance(count, int) else 0
     return 0
+
+
+def _delivery_attempt_count(message: Any, *, queue_name: str) -> int:
+    return max(
+        _x_death_count(message, queue_name=queue_name),
+        _retry_attempt_header_count(message),
+    )
+
+
+def _retry_attempt_header_count(message: Any) -> int:
+    headers = getattr(message, "headers", None)
+    if not isinstance(headers, dict):
+        return 0
+    value = headers.get(RETRY_ATTEMPT_HEADER)
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str):
+        try:
+            return int(value)
+        except ValueError:
+            return 0
+    return 0
+
+
+def _retry_headers(message: Any, *, attempt: int) -> dict[str, object]:
+    headers = getattr(message, "headers", None)
+    retry_headers: dict[str, object] = dict(headers) if isinstance(headers, dict) else {}
+    retry_headers.pop("x-death", None)
+    retry_headers[RETRY_ATTEMPT_HEADER] = attempt
+    return retry_headers
 
 
 def _event_context_from_message(message: Any) -> SheetsEvent | None:

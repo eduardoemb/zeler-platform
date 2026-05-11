@@ -8,6 +8,7 @@ import pytest
 from zeler_platform_core.clients.meli_gateway_client import GatewayRateLimitError
 from zeler_sheets import consumer
 from zeler_sheets.consumer import SheetsAmqpConsumerRunner, SheetsEvent
+from zeler_sheets.google_errors import GoogleSheetsApiError, RetryableGoogleSheetsApiError
 
 
 class FakeHandler:
@@ -62,6 +63,28 @@ class LogSpy:
 
     def info(self, event: str, **fields: Any) -> None:
         self.info_calls.append((event, fields))
+
+
+class FakeRetryDelayPublisher:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+
+    async def publish_delay(
+        self,
+        message_body: bytes,
+        queue_name: str,
+        *,
+        delay_ms: int,
+        headers: dict[str, object] | None = None,
+    ) -> None:
+        self.calls.append(
+            {
+                "body": message_body,
+                "queue_name": queue_name,
+                "delay_ms": delay_ms,
+                "headers": headers,
+            }
+        )
 
 
 @pytest.mark.asyncio
@@ -171,6 +194,106 @@ async def test_http_429_is_nacked_with_requeue_and_logged(
     assert log_spy.warning_calls[0][0] == "worker.message.requeued"
     assert log_spy.warning_calls[0][1]["error_type"] == "GatewayRateLimitError"
     assert log_spy.warning_calls[0][1]["retry_after"] == 5
+
+
+@pytest.mark.asyncio
+async def test_google_sheets_429_is_delayed_and_acked_without_dlq(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    log_spy = LogSpy()
+    monkeypatch.setattr(consumer, "logger", log_spy, raising=False)
+    handler = FakeHandler(
+        error=RetryableGoogleSheetsApiError(
+            "Google Sheets write quota exceeded", retry_after_seconds=12
+        )
+    )
+    publisher = FakeRetryDelayPublisher()
+    runner = SheetsAmqpConsumerRunner(
+        rabbitmq_url="amqp://unit-test",
+        handler=handler,
+        retry_delay_publisher=publisher,
+    )
+    message = FakeMessage(_valid_payload(resource="/items/MLA-GOOGLE-429"))
+
+    await runner.handle_message(message)
+
+    assert message.acked is True
+    assert message.nacks == []
+    assert publisher.calls == [
+        {
+            "body": message.body,
+            "queue_name": "zeler.sheets.events",
+            "delay_ms": 12000,
+            "headers": {consumer.RETRY_ATTEMPT_HEADER: 1},
+        }
+    ]
+    assert log_spy.warning_calls == [
+        (
+            "worker.message.requeued",
+            {
+                "event_id": "evt-1",
+                "seller_id": 123456789,
+                "resource_path": "/items/MLA-GOOGLE-429",
+                "attempt": 1,
+                "error_type": "RetryableGoogleSheetsApiError",
+                "retry_after": 12,
+            },
+        )
+    ]
+    assert log_spy.error_calls == []
+
+
+@pytest.mark.asyncio
+async def test_google_sheets_retry_attempt_header_exhausts_delivery_limit_without_handler(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    log_spy = LogSpy()
+    monkeypatch.setattr(consumer, "logger", log_spy, raising=False)
+    handler = FakeHandler(
+        error=RetryableGoogleSheetsApiError(
+            "Google Sheets write quota exceeded", retry_after_seconds=12
+        )
+    )
+    publisher = FakeRetryDelayPublisher()
+    runner = SheetsAmqpConsumerRunner(
+        rabbitmq_url="amqp://unit-test",
+        handler=handler,
+        retry_delay_publisher=publisher,
+    )
+    message = FakeMessage(
+        _valid_payload(resource="/items/MLA-GOOGLE-429"),
+        headers={consumer.RETRY_ATTEMPT_HEADER: 5},
+    )
+
+    await runner.handle_message(message)
+
+    assert handler.events == []
+    assert message.acked is False
+    assert message.nacks == [False]
+    assert publisher.calls == []
+    assert log_spy.warning_calls == []
+    assert log_spy.error_calls[0][0] == "worker.message.dlq"
+    assert log_spy.error_calls[0][1]["attempts"] == 5
+    assert log_spy.error_calls[0][1]["error_type"] == "RetryLimitExceededError"
+
+
+@pytest.mark.asyncio
+async def test_non_retryable_google_sheets_api_error_is_nacked_without_requeue(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    log_spy = LogSpy()
+    monkeypatch.setattr(consumer, "logger", log_spy, raising=False)
+    handler = FakeHandler(error=GoogleSheetsApiError("Google Sheets API returned 400"))
+    runner = SheetsAmqpConsumerRunner(rabbitmq_url="amqp://unit-test", handler=handler)
+    message = FakeMessage(_valid_payload(resource="/items/MLA-GOOGLE-400"))
+
+    await runner.handle_message(message)
+
+    assert message.acked is False
+    assert message.nacks == [False]
+    assert log_spy.warning_calls == []
+    assert log_spy.error_calls[0][0] == "worker.message.dlq"
+    assert log_spy.error_calls[0][1]["error_type"] == "GoogleSheetsApiError"
 
 
 @pytest.mark.asyncio

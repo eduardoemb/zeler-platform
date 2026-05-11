@@ -35,3 +35,20 @@ async def test_retry_delay_publisher_publishes_with_expiration_to_delay_queue() 
     assert routing_key == "zeler.repricer.items.delay"
     assert message.body == b'{"event_id":"evt-1"}'
     assert message.expiration == 5000
+
+
+@pytest.mark.asyncio
+async def test_retry_delay_publisher_preserves_retry_headers() -> None:
+    channel = FakeChannel()
+    publisher = RetryDelayPublisher(channel)
+
+    await publisher.publish_delay(
+        b'{"event_id":"evt-1"}',
+        "zeler.sheets.events",
+        delay_ms=9000,
+        headers={"x-zeler-retry-attempt": 2},
+    )
+
+    message, routing_key = channel.exchange.published[0]
+    assert routing_key == "zeler.sheets.events.delay"
+    assert message.headers == {"x-zeler-retry-attempt": 2}

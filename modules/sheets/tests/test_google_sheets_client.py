@@ -9,7 +9,11 @@ import pytest
 from googleapiclient.errors import HttpError  # type: ignore[import-untyped]
 from httplib2 import Response  # type: ignore[import-untyped]
 
-from zeler_sheets.google_errors import SellerNotConnectedError, SellerTokenRevokedError
+from zeler_sheets.google_errors import (
+    RetryableGoogleSheetsApiError,
+    SellerNotConnectedError,
+    SellerTokenRevokedError,
+)
 from zeler_sheets.google_sheets_client import GoogleSheetsClient
 
 
@@ -158,3 +162,27 @@ async def test_append_row_marks_error_on_sheets_401_after_fresh_token(
         )
 
     assert store.marked_errors == [("seller-1", "Google Sheets API returned 401")]
+
+
+@pytest.mark.asyncio
+async def test_append_row_raises_retryable_error_for_sheets_429_with_retry_after(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    response = Response({"status": "429", "reason": "Too Many Requests", "retry-after": "7"})
+    error = HttpError(response, b'{"error":{"status":"RESOURCE_EXHAUSTED"}}')
+    request = FakeExecuteRequest(error=error)
+    service, _values = _build_service(request)
+    store = FakeTokenStore()
+    monkeypatch.setattr("zeler_sheets.google_sheets_client.build", lambda *args, **kwargs: service)
+
+    with pytest.raises(RetryableGoogleSheetsApiError) as exc_info:
+        await GoogleSheetsClient(token_store=store).append_row(
+            seller_id="seller-1",
+            spreadsheet_id="sheet-123",
+            worksheet_name="Items",
+            row=["items.updated"],
+            idempotency_key="idem-1",
+        )
+
+    assert exc_info.value.retry_after_seconds == 7
+    assert store.marked_errors == []

@@ -8,7 +8,12 @@ from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build  # type: ignore[import-untyped]
 from googleapiclient.errors import HttpError  # type: ignore[import-untyped]
 
-from zeler_sheets.google_errors import GoogleSheetsApiError
+from zeler_sheets.google_errors import (
+    GoogleSheetsApiError,
+    RetryableGoogleSheetsApiError,
+    is_retryable_google_sheets_error,
+    retry_after_seconds_from_headers,
+)
 from zeler_sheets.google_token_encryption import KmsClient
 from zeler_sheets.google_token_store import GoogleTokenStore
 from zeler_sheets.sheets_config import SheetsSettings
@@ -52,11 +57,18 @@ class GoogleSheetsClient:
         try:
             await asyncio.to_thread(request.execute)
         except HttpError as exc:
-            if int(getattr(exc.resp, "status", 0)) == 401:
+            status_code = int(getattr(exc.resp, "status", 0))
+            if is_retryable_google_sheets_error(status_code=status_code, content=exc.content):
+                retry_after_seconds = retry_after_seconds_from_headers(exc.resp)
+                raise RetryableGoogleSheetsApiError(
+                    "Google Sheets API rate limit exceeded",
+                    retry_after_seconds=retry_after_seconds,
+                ) from exc
+            if status_code == 401:
                 reason = "Google Sheets API returned 401"
                 await self._token_store.mark_error(str(seller_id), reason=reason)
                 raise GoogleSheetsApiError(reason) from exc
-            raise
+            raise GoogleSheetsApiError(f"Google Sheets API returned {status_code}") from exc
 
 
 def make_sheets_client(

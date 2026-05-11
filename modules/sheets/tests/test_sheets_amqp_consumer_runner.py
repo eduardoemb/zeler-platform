@@ -6,12 +6,14 @@ from typing import Any
 
 import pytest
 
+from zeler_sheets import consumer
 from zeler_sheets.consumer import (
     SheetsAmqpConsumerRunner,
     SheetsEvent,
     _sheets_event_from_message,
     _sheets_idempotency_key,
 )
+from zeler_sheets.google_errors import RetryableGoogleSheetsApiError
 
 _FAKES_SPEC = importlib.util.spec_from_file_location(
     "sheets_amqp_fakes", Path(__file__).with_name("_amqp_fakes.py")
@@ -33,6 +35,28 @@ class FakeHandler:
         if self.error is not None:
             raise self.error
         return "appended"
+
+
+class FakeRetryDelayPublisher:
+    def __init__(self, _channel: object) -> None:
+        self.calls: list[dict[str, object]] = []
+
+    async def publish_delay(
+        self,
+        message_body: bytes,
+        queue_name: str,
+        *,
+        delay_ms: int,
+        headers: dict[str, object] | None = None,
+    ) -> None:
+        self.calls.append(
+            {
+                "body": message_body,
+                "queue_name": queue_name,
+                "delay_ms": delay_ms,
+                "headers": headers,
+            }
+        )
 
 
 @pytest.mark.asyncio
@@ -75,6 +99,40 @@ async def test_sheets_runner_declares_queue_with_dlx_and_binds_manifest_routing_
     ]
     assert channel.queue.consumer.__self__ is runner
     assert channel.queue.consumer.__func__ is runner.handle_message.__func__
+
+
+@pytest.mark.asyncio
+async def test_sheets_runner_start_wires_default_retry_delay_publisher(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    connection = FakeConnection()
+
+    async def fake_connect(_url: str) -> Any:
+        return connection
+
+    monkeypatch.setattr("zeler_sheets.consumer.aio_pika.connect_robust", fake_connect)
+    monkeypatch.setattr(consumer, "RetryDelayPublisher", FakeRetryDelayPublisher, raising=False)
+    runner = SheetsAmqpConsumerRunner(
+        rabbitmq_url="amqp://unit-test",
+        handler=FakeHandler(
+            error=RetryableGoogleSheetsApiError("quota exceeded", retry_after_seconds=9)
+        ),
+    )
+    message = FakeMessage(_valid_payload())
+
+    await runner.start()
+    await runner.handle_message(message)
+
+    assert message.acked is True
+    assert message.nacks == []
+    assert runner._retry_delay_publisher.calls == [  # noqa: SLF001 - asserts runtime wiring
+        {
+            "body": message.body,
+            "queue_name": "zeler.sheets.events",
+            "delay_ms": 9000,
+            "headers": {consumer.RETRY_ATTEMPT_HEADER: 1},
+        }
+    ]
 
 
 @pytest.mark.asyncio

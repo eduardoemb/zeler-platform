@@ -13,8 +13,22 @@ class FakeRetryDelayPublisher:
     def __init__(self) -> None:
         self.calls: list[dict[str, object]] = []
 
-    async def publish_delay(self, message_body: bytes, queue_name: str, *, delay_ms: int) -> None:
-        self.calls.append({"body": message_body, "queue_name": queue_name, "delay_ms": delay_ms})
+    async def publish_delay(
+        self,
+        message_body: bytes,
+        queue_name: str,
+        *,
+        delay_ms: int,
+        headers: dict[str, object] | None = None,
+    ) -> None:
+        self.calls.append(
+            {
+                "body": message_body,
+                "queue_name": queue_name,
+                "delay_ms": delay_ms,
+                "headers": headers,
+            }
+        )
 
 
 class FakeMessage:
@@ -122,7 +136,15 @@ async def test_429_publishes_to_delay_queue_and_acks(
     assert sleep_called is False
     assert message.acked is True
     assert message.nacks == []
-    assert publisher.calls == [{"body": message.body, "queue_name": queue_name, "delay_ms": 7000}]
+    expected_headers = {"x-zeler-retry-attempt": 1} if queue_name == "zeler.sheets.events" else None
+    assert publisher.calls == [
+        {
+            "body": message.body,
+            "queue_name": queue_name,
+            "delay_ms": 7000,
+            "headers": expected_headers,
+        }
+    ]
 
 
 @pytest.mark.asyncio
