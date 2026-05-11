@@ -156,7 +156,7 @@ services:
 
   sheets-worker:
     <<: *restart
-    image: us-central1-docker.pkg.dev/zeler-platform-dev/zeler-platform/sheets-worker:health-d908574
+    image: us-central1-docker.pkg.dev/zeler-platform-dev/zeler-platform/sheets-worker:sheets-429-77e7965
     networks:
       - platform_default
     env_file: /opt/zeler-platform/env/sheets-worker.env
