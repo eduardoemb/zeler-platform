@@ -4,6 +4,7 @@ version = "0.0.0"
 description = "Shared core package for zeler-platform"
 requires-python = ">=3.11"
 dependencies = [
+  "aio-pika>=9.4.0",
   "cachetools>=7.0.6",
   "cryptography>=46.0.7",
   "fastapi>=0.110,<1",

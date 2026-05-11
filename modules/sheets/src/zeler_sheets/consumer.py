@@ -15,13 +15,13 @@ from typing import Any, Protocol, cast
 import aio_pika
 import httpx
 import structlog
-from infra.rabbitmq.retry_delay import RetryDelayPublisher
 from motor.motor_asyncio import AsyncIOMotorClient
 
 from zeler_platform_core.auth.meli_gateway_auth import MeliGatewayAuth
 from zeler_platform_core.clients.meli_gateway_client import GatewayRateLimitError, MeliGatewayClient
 from zeler_platform_core.events.idempotency import IdempotencyStore as CoreIdempotencyStore
 from zeler_platform_core.runtime.manifest import validate_manifest
+from zeler_platform_core.runtime.retry_delay import RETRY_ATTEMPT_HEADER, RetryDelayPublisher
 from zeler_platform_core.runtime.worker_health import WorkerHealthSidecar
 from zeler_sheets.google_errors import RetryableGoogleSheetsApiError
 from zeler_sheets.google_sheets_client import make_sheets_client
@@ -33,7 +33,6 @@ SHEETS_EVENTS_DLX = "zeler.sheets.events.dlx"
 SHEETS_DELIVERY_LIMIT = 5
 DEFAULT_PREFETCH_COUNT = 10
 SHEETS_DEFAULT_ROUTING_KEYS = ("items.*", "orders.*", "shipments.*")
-RETRY_ATTEMPT_HEADER = "x-zeler-retry-attempt"
 MISSING_RABBITMQ_URL_MESSAGE = "error: RABBITMQ_URL is required"
 MISSING_MONGO_URI_MESSAGE = "error: MONGO_URI is required"
 MISSING_MONGO_DB_MESSAGE = "error: MONGO_DB is required"

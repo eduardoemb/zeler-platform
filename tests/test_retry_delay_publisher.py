@@ -3,7 +3,9 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
-from infra.rabbitmq.retry_delay import RetryDelayPublisher
+from infra.rabbitmq.retry_delay import RetryDelayPublisher as InfraRetryDelayPublisher
+
+from zeler_platform_core.runtime.retry_delay import RetryDelayPublisher
 
 
 class FakeExchange:
@@ -22,6 +24,10 @@ class FakeChannel:
     async def declare_exchange(self, name: str, type: str, durable: bool) -> FakeExchange:
         self.declared.append({"exchange": name, "type": type, "durable": durable})
         return self.exchange
+
+
+def test_infra_retry_delay_publisher_is_compatibility_wrapper() -> None:
+    assert InfraRetryDelayPublisher is RetryDelayPublisher
 
 
 @pytest.mark.asyncio
