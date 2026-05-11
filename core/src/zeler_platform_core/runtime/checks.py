@@ -31,7 +31,8 @@ def mongo_check_factory(
             if last_at is not None and last_result is not None and current - last_at < ttl_seconds:
                 return last_result
             try:
-                command_owner = getattr(motor_client, "admin", motor_client)
+                client = getattr(motor_client, "client", motor_client)
+                command_owner = getattr(client, "admin", client)
                 if not hasattr(command_owner, "command"):
                     fallback_result = (True, "connected")
                     last_at = current

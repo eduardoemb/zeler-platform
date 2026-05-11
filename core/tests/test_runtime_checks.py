@@ -25,6 +25,12 @@ class FakeMotorClient:
         self.admin = FakeAdmin(error=error)
 
 
+class FakeMotorDatabase:
+    def __init__(self) -> None:
+        self.client = FakeMotorClient()
+        self.admin = object()
+
+
 @pytest.mark.asyncio
 async def test_mongo_check_ok() -> None:
     client = FakeMotorClient()
@@ -32,6 +38,15 @@ async def test_mongo_check_ok() -> None:
 
     assert await check() == (True, "mongo_ok")
     assert client.admin.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_mongo_check_uses_database_client_admin_for_motor_database() -> None:
+    database = FakeMotorDatabase()
+    check = mongo_check_factory(database, clock=lambda: 100.0)
+
+    assert await check() == (True, "mongo_ok")
+    assert database.client.admin.calls == 1
 
 
 @pytest.mark.asyncio
