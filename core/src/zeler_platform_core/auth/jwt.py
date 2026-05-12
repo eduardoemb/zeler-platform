@@ -49,6 +49,9 @@ class ModuleClaims:
     aud: Literal["gateway"]
     iat: int
     exp: int
+    token_type: str | None = None
+    scopes: list[str] | None = None
+    issued_by: str | None = None
 
 
 @dataclass(frozen=True)
@@ -87,7 +90,15 @@ def _kms_client() -> KmsSigningClient:
     return _KMS_CLIENT
 
 
-def mint_module_jwt(module_id: str, seller_id: int, ttl_s: int = 60) -> str:
+def mint_module_jwt(
+    module_id: str,
+    seller_id: int,
+    ttl_s: int = 60,
+    *,
+    token_type: str | None = None,
+    scopes: list[str] | None = None,
+    issued_by: str | None = None,
+) -> str:
     now = int(time.time())
     payload = {
         "iss": f"module:{module_id}",
@@ -96,6 +107,14 @@ def mint_module_jwt(module_id: str, seller_id: int, ttl_s: int = 60) -> str:
         "iat": now,
         "exp": now + ttl_s,
     }
+    if token_type is not None:
+        payload["token_type"] = token_type
+        payload["module_id"] = module_id
+        payload["seller_id"] = seller_id
+    if scopes is not None:
+        payload["scopes"] = scopes
+    if issued_by is not None:
+        payload["issued_by"] = issued_by
     return _mint_es256_jwt(payload)
 
 
@@ -119,13 +138,21 @@ def verify_module_jwt(token: str) -> ModuleClaims:
         raise InvalidJWTError("JWT issuer must be module:<module_id>")
 
     seller_id = int(_str_claim(payload, "sub"))
+    module_id = iss.removeprefix("module:")
+    if "module_id" in payload and _str_claim(payload, "module_id") != module_id:
+        raise InvalidJWTError("JWT claim module_id must match issuer")
+    if "seller_id" in payload and _int_claim(payload, "seller_id") != seller_id:
+        raise InvalidJWTError("JWT claim seller_id must match subject")
     return ModuleClaims(
-        module_id=iss.removeprefix("module:"),
+        module_id=module_id,
         seller_id=seller_id,
         iss=iss,
         aud="gateway",
         iat=_int_claim(payload, "iat"),
         exp=exp,
+        token_type=_optional_str_claim(payload, "token_type"),
+        scopes=_optional_str_list_claim(payload, "scopes"),
+        issued_by=_optional_str_claim(payload, "issued_by"),
     )
 
 
@@ -236,6 +263,21 @@ def _str_claim(payload: dict[str, Any], key: str) -> str:
     value = payload.get(key)
     if not isinstance(value, str):
         raise InvalidJWTError(f"JWT claim {key} must be a string")
+    return value
+
+
+def _optional_str_claim(payload: dict[str, Any], key: str) -> str | None:
+    if key not in payload:
+        return None
+    return _str_claim(payload, key)
+
+
+def _optional_str_list_claim(payload: dict[str, Any], key: str) -> list[str] | None:
+    if key not in payload:
+        return None
+    value = payload.get(key)
+    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+        raise InvalidJWTError(f"JWT claim {key} must be a string array")
     return value
 
 

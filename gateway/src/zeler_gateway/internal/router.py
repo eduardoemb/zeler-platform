@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import base64
+import hashlib
+import hmac
+import os
 from datetime import UTC, datetime
 from fnmatch import fnmatchcase
 from typing import Any, Literal, cast
@@ -19,6 +23,9 @@ from zeler_platform_core.auth.jwt import (
 )
 
 router = APIRouter(prefix="/internal", tags=["internal"])
+ZELER_APP_CLIENT_ID = "zeler-app"
+ZELER_APP_SIGNATURE_HEADER = "X-Zeler-Signature"
+ZELER_CLIENT_ID_HEADER = "X-Zeler-Client-Id"
 
 
 class TokenIssueRequest(BaseModel):
@@ -31,22 +38,16 @@ class TokenIssueRequest(BaseModel):
 
 @router.post("/tokens/issue")
 async def issue_token(request: Request, payload: TokenIssueRequest) -> JSONResponse:
-    auth_header = request.headers.get("Authorization")
-    if auth_header is None or not auth_header.startswith("Bearer "):
-        return _json_error(401, "invalid_token", detail="missing bearer token")
-
-    try:
-        claims = verify_module_jwt(auth_header.removeprefix("Bearer ").strip())
-    except (InvalidJWTError, ExpiredJWTError, WrongAudienceError) as exc:
-        return _json_error(401, "invalid_token", detail=str(exc))
-
-    if claims.seller_id != payload.seller_id:
-        return _json_error(403, "seller_mismatch")
+    caller = await _authenticate_issue_caller(request, payload)
+    if isinstance(caller, JSONResponse):
+        return caller
 
     db = request.app.state.mongo_db
-    module = await db["module_registry"].find_one({"_id": claims.module_id, "status": "enabled"})
+    module = await db["module_registry"].find_one({"_id": caller["module_id"], "status": "enabled"})
     if module is None:
         return _json_error(401, "unknown_module")
+    if not _seller_allowed(payload.seller_id, cast(list[int] | None, module.get("allowed_seller_ids"))):
+        return _json_error(403, "seller_mismatch")
     allowed_scopes = cast(list[str], module.get("allowed_meli_scopes", []))
     if not all(_scope_allowed(scope, allowed_scopes) for scope in payload.scopes):
         return _json_error(403, "out_of_scope")
@@ -55,11 +56,16 @@ async def issue_token(request: Request, payload: TokenIssueRequest) -> JSONRespo
         if payload.target_module_id is None or not payload.target_module_id.strip():
             return _json_error(422, "target_module_id_required")
         admin_token = mint_module_jwt(
-            payload.target_module_id.strip(), seller_id=payload.seller_id, ttl_s=payload.ttl_s
+            payload.target_module_id.strip(),
+            seller_id=payload.seller_id,
+            ttl_s=payload.ttl_s,
+            token_type="module_admin",
+            scopes=payload.scopes,
+            issued_by=caller["module_id"],
         )
         await _insert_issue_audit(
             db=db,
-            module_id=claims.module_id,
+            module_id=caller["module_id"],
             seller_id=payload.seller_id,
             scopes=payload.scopes,
             ttl_s=payload.ttl_s,
@@ -92,7 +98,7 @@ async def issue_token(request: Request, payload: TokenIssueRequest) -> JSONRespo
     )
     await _insert_issue_audit(
         db=db,
-        module_id=claims.module_id,
+        module_id=caller["module_id"],
         seller_id=payload.seller_id,
         scopes=payload.scopes,
         ttl_s=payload.ttl_s,
@@ -111,6 +117,52 @@ async def issue_token(request: Request, payload: TokenIssueRequest) -> JSONRespo
 
 def _scope_allowed(requested_scope: str, allowed_scopes: list[str]) -> bool:
     return any(fnmatchcase(requested_scope, allowed_scope) for allowed_scope in allowed_scopes)
+
+
+async def _authenticate_issue_caller(
+    request: Request, payload: TokenIssueRequest
+) -> dict[str, str] | JSONResponse:
+    client_id = request.headers.get(ZELER_CLIENT_ID_HEADER)
+    if client_id == ZELER_APP_CLIENT_ID:
+        if payload.token_kind != "module_admin":  # noqa: S105 - token type discriminator
+            return _json_error(403, "out_of_scope")
+        if not await _verify_zeler_app_signature(request):
+            return _json_error(401, "invalid_token", detail="invalid zeler-app signature")
+        return {"module_id": ZELER_APP_CLIENT_ID}
+
+    auth_header = request.headers.get("Authorization")
+    if auth_header is None or not auth_header.startswith("Bearer "):
+        return _json_error(401, "invalid_token", detail="missing bearer token")
+
+    try:
+        claims = verify_module_jwt(auth_header.removeprefix("Bearer ").strip())
+    except (InvalidJWTError, ExpiredJWTError, WrongAudienceError) as exc:
+        return _json_error(401, "invalid_token", detail=str(exc))
+
+    if claims.seller_id != payload.seller_id:
+        return _json_error(403, "seller_mismatch")
+    return {"module_id": claims.module_id}
+
+
+async def _verify_zeler_app_signature(request: Request) -> bool:
+    secret = os.environ.get("ZELER_APP_BROKER_SECRET")
+    if not secret:
+        return False
+    provided_signature = request.headers.get(ZELER_APP_SIGNATURE_HEADER)
+    if provided_signature is None:
+        return False
+    body = await request.body()
+    digest = hmac.new(secret.encode("utf-8"), body, hashlib.sha256).digest()
+    expected_signature = "sha256=" + base64.urlsafe_b64encode(digest).rstrip(b"=").decode(
+        "ascii"
+    )
+    return hmac.compare_digest(provided_signature, expected_signature)
+
+
+def _seller_allowed(seller_id: int, allowed_seller_ids: list[int] | None) -> bool:
+    if allowed_seller_ids is None:
+        return True
+    return seller_id in allowed_seller_ids
 
 
 async def _insert_issue_audit(

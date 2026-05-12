@@ -204,7 +204,7 @@ async def test_issue_can_return_short_lived_module_admin_token(
     monkeypatch.setattr(
         internal_router,
         "mint_module_jwt",
-        lambda module_id, seller_id, ttl_s: f"jwt:{module_id}:{seller_id}:{ttl_s}",
+        lambda module_id, seller_id, ttl_s, **_claims: f"jwt:{module_id}:{seller_id}:{ttl_s}",
     )
 
     async with httpx.AsyncClient(
@@ -272,7 +272,7 @@ async def test_issue_module_admin_token_requires_target_module_id(
     assert response.json() == {"error": "target_module_id_required"}
 
 
-def test_admin_client_seed_contains_zeler_app_repricer_scope() -> None:
+def test_admin_client_seed_contains_zeler_app_all_module_admin_scopes() -> None:
     seed = json.loads(ADMIN_CLIENT_SEED_PATH.read_text(encoding="utf-8"))
 
     assert seed["collection"] == "module_registry"
@@ -280,7 +280,14 @@ def test_admin_client_seed_contains_zeler_app_repricer_scope() -> None:
     assert zeler_app == {
         "_id": "zeler-app",
         "version": "0.1.0",
-        "allowed_meli_scopes": ["admin:repricer"],
+        "allowed_meli_scopes": [
+            "admin:repricer",
+            "admin:sheets",
+            "admin:publicador",
+            "admin:autoreply",
+            "admin:fulldock",
+        ],
+        "allowed_seller_ids": [82453304],
         "routing_keys": [],
         "owned_collections": [],
         "health_endpoint": "/health",
@@ -304,12 +311,12 @@ async def test_zeler_app_seed_allows_repricer_admin_token_exchange(
     monkeypatch.setattr(
         internal_router,
         "verify_module_jwt",
-        lambda token: FakeClaims(module_id="zeler-app"),
+        lambda token: FakeClaims(module_id="zeler-app", seller_id=82453304),
     )
     monkeypatch.setattr(
         internal_router,
         "mint_module_jwt",
-        lambda module_id, seller_id, ttl_s: f"jwt:{module_id}:{seller_id}:{ttl_s}",
+        lambda module_id, seller_id, ttl_s, **_claims: f"jwt:{module_id}:{seller_id}:{ttl_s}",
     )
 
     async with httpx.AsyncClient(
@@ -319,7 +326,7 @@ async def test_zeler_app_seed_allows_repricer_admin_token_exchange(
             "/internal/tokens/issue",
             headers={"Authorization": "Bearer zeler-app-gateway-token"},
             json={
-                "seller_id": 123456789,
+                "seller_id": 82453304,
                 "scopes": ["admin:repricer"],
                 "ttl_s": 120,
                 "token_kind": "module_admin",
@@ -328,11 +335,11 @@ async def test_zeler_app_seed_allows_repricer_admin_token_exchange(
         )
 
     assert response.status_code == 200
-    assert response.json()["access_token"] == "jwt:repricer:123456789:120"  # noqa: S105
+    assert response.json()["access_token"] == "jwt:repricer:82453304:120"  # noqa: S105
 
 
 @pytest.mark.asyncio
-async def test_zeler_app_seed_rejects_non_repricer_admin_scope(
+async def test_zeler_app_seed_allows_all_module_admin_scopes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import zeler_gateway.internal.router as internal_router
@@ -346,7 +353,12 @@ async def test_zeler_app_seed_rejects_non_repricer_admin_scope(
     monkeypatch.setattr(
         internal_router,
         "verify_module_jwt",
-        lambda token: FakeClaims(module_id="zeler-app"),
+        lambda token: FakeClaims(module_id="zeler-app", seller_id=82453304),
+    )
+    monkeypatch.setattr(
+        internal_router,
+        "mint_module_jwt",
+        lambda module_id, seller_id, ttl_s, **_claims: f"jwt:{module_id}:{seller_id}:{ttl_s}",
     )
 
     async with httpx.AsyncClient(
@@ -356,7 +368,7 @@ async def test_zeler_app_seed_rejects_non_repricer_admin_scope(
             "/internal/tokens/issue",
             headers={"Authorization": "Bearer zeler-app-gateway-token"},
             json={
-                "seller_id": 123456789,
+                "seller_id": 82453304,
                 "scopes": ["admin:publicador"],
                 "ttl_s": 120,
                 "token_kind": "module_admin",
@@ -364,5 +376,5 @@ async def test_zeler_app_seed_rejects_non_repricer_admin_scope(
             },
         )
 
-    assert response.status_code == 403
-    assert response.json() == {"error": "out_of_scope"}
+    assert response.status_code == 200
+    assert response.json()["access_token"] == "jwt:publicador:82453304:120"  # noqa: S105

@@ -9,7 +9,15 @@ from typing import Any, Literal, cast
 from pymongo import MongoClient
 
 Severity = Literal["pass", "fail"]
-EXPECTED_ADMIN_CLIENT_SCOPES = {"zeler-app": {"admin:repricer"}}
+EXPECTED_ADMIN_CLIENT_SCOPES = {
+    "zeler-app": {
+        "admin:repricer",
+        "admin:sheets",
+        "admin:publicador",
+        "admin:autoreply",
+        "admin:fulldock",
+    }
+}
 
 
 @dataclass(frozen=True)

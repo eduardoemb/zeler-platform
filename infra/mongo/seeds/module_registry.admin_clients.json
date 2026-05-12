@@ -5,7 +5,14 @@
       "_id": "zeler-app",
       "version": "0.1.0",
       "allowed_meli_scopes": [
-        "admin:repricer"
+        "admin:repricer",
+        "admin:sheets",
+        "admin:publicador",
+        "admin:autoreply",
+        "admin:fulldock"
+      ],
+      "allowed_seller_ids": [
+        82453304
       ],
       "routing_keys": [],
       "owned_collections": [],
