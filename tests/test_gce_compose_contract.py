@@ -92,6 +92,7 @@ SERVICE_REQUIRED_KEYS: dict[str, set[str]] = {
         "MELI_REDIRECT_URI",
         "KMS_MELI_TOKENS_KEY",
         "KMS_PLATFORM_JWT_KEY",
+        "ZELER_APP_BROKER_SECRET",
     },
     "repricer-api": BASE_KEYS,
     "publicador-api": BASE_KEYS,
@@ -318,6 +319,37 @@ class TestEnvTemplateContract:
         assert "GATEWAY_PROXY_BASE_URL=http://gateway:8080/proxy/meli" in text
         assert "GATEWAY_BASE_URL=$GATEWAY_PROXY_BASE_URL" in text
         assert "GATEWAY_BASE_URL=http://gateway:8080\"" not in text
+
+    def test_secrets_script_fetches_zeler_app_broker_secret_for_gateway_only(self) -> None:
+        text = SECRETS_SCRIPT.read_text()
+
+        assert "ZELER_APP_BROKER_SECRET=$(s zeler-app-broker-secret)" in text
+        assert "ZELER_APP_BROKER_SECRET=$ZELER_APP_BROKER_SECRET" in text
+        module_api_section = text.split("# Module APIs", 1)[1]
+        assert "ZELER_APP_BROKER_SECRET" not in module_api_section
+
+    def test_deploy_runbook_documents_zeler_app_live_validation(self) -> None:
+        text = (PROJECT_ROOT / "docs" / "deploy.md").read_text()
+
+        required_snippets = [
+            "## 5c. zeler-app live integration runtime config + VM-only validation",
+            "ZELER_APP_BROKER_SECRET",
+            "zeler-app-broker-secret",
+            "https://gateway.zeler.ai",
+            "https://repricer.zeler.ai",
+            "https://sheets.zeler.ai",
+            "https://publicador.zeler.ai",
+            "https://autoreply.zeler.ai",
+            "https://fulldock.zeler.ai",
+            "platform-vm",
+            "us-central1-a",
+            "zeler-platform-dev",
+            "ensure_zeler_app_admin_client",
+            "Do not print MONGO_URI",
+            "seller `82453304`",
+        ]
+        for snippet in required_snippets:
+            assert snippet in text
 
     @pytest.mark.parametrize("path", WORKER_RUN_ENTRY_TESTS)
     def test_worker_run_entry_tests_do_not_set_gateway_token(self, path: Path) -> None:

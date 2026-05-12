@@ -420,6 +420,138 @@ running live bootstrap execution.
 
 ---
 
+## 5c. zeler-app live integration runtime config + VM-only validation
+
+This checklist connects the existing Vercel `zeler-app` deployment to the live platform APIs for
+seller `82453304`. Do not create another frontend. Do not query production Mongo from local.
+Mongo registry validation and updater execution must happen from GCP project `zeler-platform-dev`,
+VM `platform-vm`, zone `us-central1-a`, using the deployed runtime env files only.
+
+### Runtime env contract
+
+Configure the app runtime with these server env values:
+
+| Runtime | Variable | Value / source |
+|---------|----------|----------------|
+| `zeler-app` | `ZELER_GATEWAY_URL` | `https://gateway.zeler.ai` |
+| `zeler-app` | `REPRICER_API_URL` | `https://repricer.zeler.ai` |
+| `zeler-app` | `SHEETS_API_URL` | `https://sheets.zeler.ai` |
+| `zeler-app` | `PUBLICADOR_API_URL` | `https://publicador.zeler.ai` |
+| `zeler-app` | `AUTOREPLY_API_URL` | `https://autoreply.zeler.ai` |
+| `zeler-app` | `FULLDOCK_API_URL` | `https://fulldock.zeler.ai` |
+| `zeler-app` + `gateway` | `ZELER_APP_BROKER_SECRET` | Secret Manager secret `zeler-app-broker-secret`; values must match exactly. |
+
+`ZELER_APP_BROKER_SECRET` is server-only. Never configure it as `NEXT_PUBLIC_*`, never print it,
+and never paste it into local shells. The gateway receives it through
+`infra/gce/zeler-platform-secrets.sh`; Vercel/hosting receives the same secret through its encrypted
+runtime secret store.
+
+### Create or rotate the broker secret
+
+Run from a local operator shell only to add a secret version; do not echo the value back:
+
+```bash
+PROJECT=zeler-platform-dev
+printf '<new-broker-secret>' | gcloud secrets versions add zeler-app-broker-secret \
+  --data-file=- --project=$PROJECT
+```
+
+Then refresh the gateway env on the VM:
+
+```bash
+ZONE=us-central1-a
+gcloud compute ssh platform-vm --tunnel-through-iap --zone=$ZONE --project=$PROJECT \
+  --command="sudo systemctl restart zeler-platform-secrets.service && \
+    cd /opt/zeler-platform && sudo docker compose up -d --force-recreate gateway"
+```
+
+### VM-only registry updater and validation
+
+Do not print MONGO_URI. Use the gateway runtime env file on the VM and run the idempotent updater
+from `/opt/zeler-platform`:
+
+```bash
+gcloud compute ssh platform-vm --tunnel-through-iap --zone=us-central1-a \
+  --project=zeler-platform-dev --command="cd /opt/zeler-platform && \
+    sudo python3 - <<'PY'
+import os
+
+from infra.mongo.operations.ensure_zeler_app_admin_client import main
+
+with open('/opt/zeler-platform/env/gateway.env', encoding='utf-8') as env_file:
+    for line in env_file:
+        if not line.strip() or line.startswith('#') or '=' not in line:
+            continue
+        key, value = line.rstrip('\n').split('=', 1)
+        os.environ[key] = value
+
+main()
+PY"
+```
+
+Expected output: `zeler-app admin client updated`. The command must not print `MONGO_URI` or any
+secret value.
+
+Validate the registry document shape from the same VM/VPC boundary without exposing secrets:
+
+```bash
+gcloud compute ssh platform-vm --tunnel-through-iap --zone=us-central1-a \
+  --project=zeler-platform-dev --command="cd /opt/zeler-platform && \
+    sudo python3 - <<'PY'
+import os
+import json
+
+from pymongo import MongoClient
+
+with open('/opt/zeler-platform/env/gateway.env', encoding='utf-8') as env_file:
+    for line in env_file:
+        if not line.strip() or line.startswith('#') or '=' not in line:
+            continue
+        key, value = line.rstrip('\n').split('=', 1)
+        os.environ[key] = value
+
+client = MongoClient(os.environ['MONGO_URI'])
+try:
+    doc = client.get_default_database()['module_registry'].find_one({'_id': 'zeler-app'}) or {}
+    print(json.dumps({
+        '_id': doc.get('_id'),
+        'status': doc.get('status'),
+        'allowed_seller_ids': doc.get('allowed_seller_ids'),
+        'allowed_meli_scopes': doc.get('allowed_meli_scopes'),
+    }, sort_keys=True))
+finally:
+    client.close()
+PY"
+```
+
+Expected JSON contains `_id: "zeler-app"`, `status: "enabled"`, `allowed_seller_ids: [82453304]`,
+and exactly `admin:repricer`, `admin:sheets`, `admin:publicador`, `admin:autoreply`,
+`admin:fulldock`.
+
+### Safe smoke sequence for seller `82453304`
+
+1. Public health, read-only:
+   ```bash
+   for s in gateway repricer sheets publicador autoreply fulldock; do
+     curl -fsS "https://${s}.zeler.ai/health" >/dev/null && echo "$s OK"
+   done
+   ```
+2. Open `zeler-app` with a real authenticated app session and the pilot seller selected. If the UI
+   needs manual browser auth, record that blocker rather than inventing a session.
+3. Smoke these routes for seller `82453304`: `/accounts`, `/bootstrap/<known-job-id>`,
+   `/repricer/rules`, `/sheets/config`, `/publicador/drafts`, `/autoreply/templates`,
+   `/fulldock/rules`. Valid results are data, an explicit empty state, or a clearly documented
+   account-linking/data blocker.
+4. Do not run create/update/delete module actions during smoke unless a separate rollout plan
+   explicitly authorizes that mutation.
+5. Check gateway/module logs for 401/403/412 spikes and token issuance audit events. Do not print
+   bearer tokens or broker secrets.
+
+Rollback: disable `_id="zeler-app"` in `module_registry`, rotate/revoke `zeler-app-broker-secret`,
+or restore the previous Vercel runtime env and redeploy the app.
+
+---
+
 ## 6. Rollback
 
 ### Rollback a bad image

@@ -2,7 +2,7 @@
 # zeler-platform-secrets.sh — installed at /opt/zeler-platform/zeler-platform-secrets.sh
 #
 # Systemd oneshot (Before=docker.service):
-#   Fetches 8 secrets from Secret Manager via the VM-attached SA (metadata-server token)
+#   Fetches 9 secrets from Secret Manager via the VM-attached SA (metadata-server token)
 #   and writes per-service env files under /opt/zeler-platform/env/<service>.env
 #   with mode 0600, owner root.
 #
@@ -38,6 +38,7 @@ GOOGLE_CLIENT_ID=$(s google-oauth-client-id)
 GOOGLE_CLIENT_SECRET=$(s google-oauth-client-secret)
 MONGO_ADMIN_USER=$(s mongo-admin-user)
 MONGO_ADMIN_PASSWORD=$(s mongo-admin-password)
+ZELER_APP_BROKER_SECRET=$(s zeler-app-broker-secret)
 
 echo "All secrets fetched."
 
@@ -96,7 +97,8 @@ write gateway \
   "MELI_CLIENT_SECRET=$MELI_CLIENT_SECRET" \
   "MELI_REDIRECT_URI=https://gateway.zeler.ai/oauth/callback" \
   "KMS_MELI_TOKENS_KEY=meli-tokens" \
-  "KMS_PLATFORM_JWT_KEY=platform-jwt"
+  "KMS_PLATFORM_JWT_KEY=platform-jwt" \
+  "ZELER_APP_BROKER_SECRET=$ZELER_APP_BROKER_SECRET"
 
 # ---------------------------------------------------------------------------
 # Module APIs that only need BASE plus the gateway endpoint
