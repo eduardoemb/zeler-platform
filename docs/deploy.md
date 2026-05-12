@@ -439,12 +439,18 @@ Configure the app runtime with these server env values:
 | `zeler-app` | `PUBLICADOR_API_URL` | `https://publicador.zeler.ai` |
 | `zeler-app` | `AUTOREPLY_API_URL` | `https://autoreply.zeler.ai` |
 | `zeler-app` | `FULLDOCK_API_URL` | `https://fulldock.zeler.ai` |
+| `gateway` | `OAUTH_SUCCESS_URL` | `https://app.zeler.ai/accounts/linked` |
 | `zeler-app` + `gateway` | `ZELER_APP_BROKER_SECRET` | Secret Manager secret `zeler-app-broker-secret`; values must match exactly. |
 
 `ZELER_APP_BROKER_SECRET` is server-only. Never configure it as `NEXT_PUBLIC_*`, never print it,
 and never paste it into local shells. The gateway receives it through
 `infra/gce/zeler-platform-secrets.sh`; Vercel/hosting receives the same secret through its encrypted
 runtime secret store.
+
+`OAUTH_SUCCESS_URL` is not secret, but it is runtime-critical: without it, the gateway falls back to
+the local default `https://app.zeler.local/accounts/linked` after a successful MercadoLibre OAuth
+callback. Production gateway env must set it to the live app linked-accounts route above before an
+operator runs the OAuth account-linking smoke.
 
 ### Create or rotate the broker secret
 

@@ -96,6 +96,7 @@ write gateway \
   "MELI_CLIENT_ID=$MELI_CLIENT_ID" \
   "MELI_CLIENT_SECRET=$MELI_CLIENT_SECRET" \
   "MELI_REDIRECT_URI=https://gateway.zeler.ai/oauth/callback" \
+  "OAUTH_SUCCESS_URL=https://app.zeler.ai/accounts/linked" \
   "KMS_MELI_TOKENS_KEY=meli-tokens" \
   "KMS_PLATFORM_JWT_KEY=platform-jwt" \
   "ZELER_APP_BROKER_SECRET=$ZELER_APP_BROKER_SECRET"

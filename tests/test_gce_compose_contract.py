@@ -90,6 +90,7 @@ SERVICE_REQUIRED_KEYS: dict[str, set[str]] = {
         "MELI_CLIENT_ID",
         "MELI_CLIENT_SECRET",
         "MELI_REDIRECT_URI",
+        "OAUTH_SUCCESS_URL",
         "KMS_MELI_TOKENS_KEY",
         "KMS_PLATFORM_JWT_KEY",
         "ZELER_APP_BROKER_SECRET",
@@ -328,6 +329,12 @@ class TestEnvTemplateContract:
         module_api_section = text.split("# Module APIs", 1)[1]
         assert "ZELER_APP_BROKER_SECRET" not in module_api_section
 
+    def test_gateway_oauth_success_url_points_to_live_app_linked_accounts(self) -> None:
+        expected = "OAUTH_SUCCESS_URL=https://app.zeler.ai/accounts/linked"
+
+        assert expected in (ENV_TEMPLATES_DIR / "gateway.env.template").read_text()
+        assert f'"{expected}"' in SECRETS_SCRIPT.read_text()
+
     def test_deploy_runbook_documents_zeler_app_live_validation(self) -> None:
         text = (PROJECT_ROOT / "docs" / "deploy.md").read_text()
 
@@ -335,6 +342,8 @@ class TestEnvTemplateContract:
             "## 5c. zeler-app live integration runtime config + VM-only validation",
             "ZELER_APP_BROKER_SECRET",
             "zeler-app-broker-secret",
+            "OAUTH_SUCCESS_URL",
+            "https://app.zeler.ai/accounts/linked",
             "https://gateway.zeler.ai",
             "https://repricer.zeler.ai",
             "https://sheets.zeler.ai",
