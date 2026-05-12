@@ -9,12 +9,8 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
-from zeler_platform_core.auth.jwt import (
-    ExpiredJWTError,
-    InvalidJWTError,
-    WrongAudienceError,
-    verify_module_jwt,
-)
+from zeler_platform_core.auth.jwt import verify_module_jwt
+from zeler_platform_core.auth.module_admin import authorize_module_admin
 
 
 class ExportConfigPayload(BaseModel):
@@ -33,7 +29,7 @@ def build_router(*, clock: Callable[[], datetime] | None = None) -> APIRouter:
 
     @router.get("/exports")
     async def list_exports(request: Request, seller_id: str) -> JSONResponse:
-        auth = _authorize(request)
+        auth = _authorize(request, seller_id=seller_id)
         if auth is not None:
             return auth
 
@@ -57,7 +53,7 @@ def build_router(*, clock: Callable[[], datetime] | None = None) -> APIRouter:
     async def configure_export(
         request: Request, seller_id: str, payload: ExportConfigPayload
     ) -> JSONResponse:
-        auth = _authorize(request)
+        auth = _authorize(request, seller_id=seller_id)
         if auth is not None:
             return auth
 
@@ -81,7 +77,7 @@ def build_router(*, clock: Callable[[], datetime] | None = None) -> APIRouter:
 
     @router.post("/sync-jobs", status_code=201)
     async def create_sync_job(request: Request, payload: ManualSyncPayload) -> JSONResponse:
-        auth = _authorize(request)
+        auth = _authorize(request, seller_id=payload.seller_id)
         if auth is not None:
             return auth
 
@@ -108,7 +104,7 @@ def build_router(*, clock: Callable[[], datetime] | None = None) -> APIRouter:
 
     @router.get("/sync-jobs")
     async def list_sync_jobs(request: Request, seller_id: str) -> JSONResponse:
-        auth = _authorize(request)
+        auth = _authorize(request, seller_id=seller_id)
         if auth is not None:
             return auth
         docs = (
@@ -121,18 +117,13 @@ def build_router(*, clock: Callable[[], datetime] | None = None) -> APIRouter:
     return router
 
 
-def _authorize(request: Request) -> JSONResponse | None:
-    auth_header = request.headers.get("Authorization")
-    if auth_header is None or not auth_header.startswith("Bearer "):
-        return JSONResponse(
-            status_code=401,
-            content={"error": "invalid_token", "detail": "missing bearer token"},
-        )
-    try:
-        verify_module_jwt(auth_header.removeprefix("Bearer ").strip())
-    except (InvalidJWTError, ExpiredJWTError, WrongAudienceError) as exc:
-        return JSONResponse(status_code=401, content={"error": "invalid_token", "detail": str(exc)})
-    return None
+def _authorize(request: Request, seller_id: str | int | None = None) -> JSONResponse | None:
+    return authorize_module_admin(
+        request,
+        expected_module_id="sheets",
+        seller_id=seller_id,
+        verifier=verify_module_jwt,
+    )
 
 
 def _export_id(seller_id: str) -> str:

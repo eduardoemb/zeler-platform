@@ -181,7 +181,14 @@ def test_publish_returns_200_with_fake_publisher() -> None:
 
 
 def _auth_headers() -> dict[str, str]:
-    return {"Authorization": f"Bearer {mint_module_jwt('publicador', seller_id=123456789)}"}
+    token = mint_module_jwt(
+        "publicador",
+        seller_id=123456789,
+        token_type="module_admin",
+        scopes=["admin:publicador"],
+        issued_by="zeler-app",
+    )
+    return {"Authorization": f"Bearer {token}"}
 
 
 def _matches(doc: dict[str, Any], query: dict[str, Any]) -> bool:

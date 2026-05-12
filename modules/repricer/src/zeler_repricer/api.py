@@ -8,12 +8,8 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
-from zeler_platform_core.auth.jwt import (
-    ExpiredJWTError,
-    InvalidJWTError,
-    WrongAudienceError,
-    verify_module_jwt,
-)
+from zeler_platform_core.auth.jwt import verify_module_jwt
+from zeler_platform_core.auth.module_admin import authorize_module_admin
 from zeler_platform_core.models import RepricerRule
 
 
@@ -33,7 +29,7 @@ def build_router() -> APIRouter:
 
     @router.get("/rules")
     async def list_rules(request: Request, seller_id: str) -> JSONResponse:
-        auth = _authorize(request)
+        auth = _authorize(request, seller_id=seller_id)
         if auth is not None:
             return auth
         docs = await (
@@ -45,7 +41,7 @@ def build_router() -> APIRouter:
 
     @router.get("/history")
     async def list_history(request: Request, seller_id: str) -> JSONResponse:
-        auth = _authorize(request)
+        auth = _authorize(request, seller_id=seller_id)
         if auth is not None:
             return auth
         docs = await (
@@ -57,7 +53,7 @@ def build_router() -> APIRouter:
 
     @router.post("/rules", status_code=201)
     async def create_rule(request: Request, payload: RulePayload) -> JSONResponse:
-        auth = _authorize(request)
+        auth = _authorize(request, seller_id=payload.seller_id)
         if auth is not None:
             return auth
         if payload.min_price > payload.max_price:
@@ -101,15 +97,10 @@ def build_router() -> APIRouter:
     return router
 
 
-def _authorize(request: Request) -> JSONResponse | None:
-    auth_header = request.headers.get("Authorization")
-    if auth_header is None or not auth_header.startswith("Bearer "):
-        return JSONResponse(
-            status_code=401,
-            content={"error": "invalid_token", "detail": "missing bearer token"},
-        )
-    try:
-        verify_module_jwt(auth_header.removeprefix("Bearer ").strip())
-    except (InvalidJWTError, ExpiredJWTError, WrongAudienceError) as exc:
-        return JSONResponse(status_code=401, content={"error": "invalid_token", "detail": str(exc)})
-    return None
+def _authorize(request: Request, seller_id: str | int | None = None) -> JSONResponse | None:
+    return authorize_module_admin(
+        request,
+        expected_module_id="repricer",
+        seller_id=seller_id,
+        verifier=verify_module_jwt,
+    )

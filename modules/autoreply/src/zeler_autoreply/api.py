@@ -10,12 +10,8 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from zeler_autoreply.consumer import template_matches
-from zeler_platform_core.auth.jwt import (
-    ExpiredJWTError,
-    InvalidJWTError,
-    WrongAudienceError,
-    verify_module_jwt,
-)
+from zeler_platform_core.auth.jwt import verify_module_jwt
+from zeler_platform_core.auth.module_admin import authorize_module_admin
 
 
 class TemplatePayload(BaseModel):
@@ -48,7 +44,7 @@ def build_router(*, clock: Callable[[], datetime] | None = None) -> APIRouter:
 
     @router.get("/templates")
     async def list_templates(request: Request, seller_id: str) -> JSONResponse:
-        auth = _authorize(request)
+        auth = _authorize(request, seller_id=seller_id)
         if auth is not None:
             return auth
         templates = (
@@ -67,7 +63,7 @@ def build_router(*, clock: Callable[[], datetime] | None = None) -> APIRouter:
 
     @router.post("/templates", status_code=201)
     async def create_template(request: Request, payload: TemplatePayload) -> JSONResponse:
-        auth = _authorize(request)
+        auth = _authorize(request, seller_id=payload.seller_id)
         if auth is not None:
             return auth
         created_at = now()
@@ -137,18 +133,13 @@ def build_router(*, clock: Callable[[], datetime] | None = None) -> APIRouter:
     return router
 
 
-def _authorize(request: Request) -> JSONResponse | None:
-    auth_header = request.headers.get("Authorization")
-    if auth_header is None or not auth_header.startswith("Bearer "):
-        return JSONResponse(
-            status_code=401,
-            content={"error": "invalid_token", "detail": "missing bearer token"},
-        )
-    try:
-        verify_module_jwt(auth_header.removeprefix("Bearer ").strip())
-    except (InvalidJWTError, ExpiredJWTError, WrongAudienceError) as exc:
-        return JSONResponse(status_code=401, content={"error": "invalid_token", "detail": str(exc)})
-    return None
+def _authorize(request: Request, seller_id: str | int | None = None) -> JSONResponse | None:
+    return authorize_module_admin(
+        request,
+        expected_module_id="autoreply",
+        seller_id=seller_id,
+        verifier=verify_module_jwt,
+    )
 
 
 def _with_recent_history(template: dict[str, Any], history: list[dict[str, Any]]) -> dict[str, Any]:

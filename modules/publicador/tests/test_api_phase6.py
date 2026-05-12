@@ -178,7 +178,7 @@ async def test_publish_endpoint_delegates_to_gateway_flow(monkeypatch: pytest.Mo
             headers={"Authorization": "Bearer valid"},
         )
 
-    assert response.status_code == 201
+    assert response.status_code == 200
     assert response.json() == {
         "item_id": "MLA123",
         "outcome": "published",
@@ -205,8 +205,38 @@ async def test_only_module_jwt_accepted(monkeypatch: pytest.MonkeyPatch) -> None
     assert response.json() == {"error": "invalid_token", "detail": "bad token"}
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "claims_kwargs",
+    [
+        {"token_type": "module"},
+        {"module_id": "sheets", "scopes": ["admin:sheets"]},
+        {"seller_id": 987654321},
+        {"scopes": []},
+    ],
+    ids=["wrong-token-type", "wrong-module", "wrong-seller", "missing-scope"],
+)
+async def test_module_admin_claims_enforced(
+    monkeypatch: pytest.MonkeyPatch, claims_kwargs: dict[str, Any]
+) -> None:
+    app, _db, _publisher = _app(monkeypatch, claims=_claims(**claims_kwargs))
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.get(
+            "/publicador/drafts?seller_id=123456789",
+            headers={"Authorization": "Bearer invalid"},
+        )
+
+    assert response.status_code == 403
+    assert response.json()["error"] == "forbidden"
+
+
 def _app(
-    monkeypatch: pytest.MonkeyPatch, jwt_error: Exception | None = None
+    monkeypatch: pytest.MonkeyPatch,
+    jwt_error: Exception | None = None,
+    claims: object | None = None,
 ) -> tuple[FastAPI, FakeDb, FakePublisher]:
     import zeler_publicador.api as api
     from zeler_publicador.api import build_router
@@ -226,7 +256,25 @@ def _app(
     def fake_verify(_token: str) -> object:
         if jwt_error is not None:
             raise jwt_error
-        return object()
+        return claims or _claims()
 
     monkeypatch.setattr(api, "verify_module_jwt", fake_verify)
     return app, db, publisher
+
+
+def _claims(**overrides: Any) -> object:
+    from zeler_platform_core.auth.jwt import ModuleClaims
+
+    module_id = str(overrides.pop("module_id", "publicador"))
+    seller_id = int(overrides.pop("seller_id", 123456789))
+    return ModuleClaims(
+        module_id=module_id,
+        seller_id=seller_id,
+        iss=f"module:{module_id}",
+        aud="gateway",
+        iat=1,
+        exp=2,
+        token_type=str(overrides.pop("token_type", "module_admin")),
+        scopes=list(overrides.pop("scopes", ["admin:publicador"])),
+        issued_by="zeler-app",
+    )

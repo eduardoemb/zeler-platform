@@ -9,12 +9,8 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
-from zeler_platform_core.auth.jwt import (
-    ExpiredJWTError,
-    InvalidJWTError,
-    WrongAudienceError,
-    verify_module_jwt,
-)
+from zeler_platform_core.auth.jwt import verify_module_jwt
+from zeler_platform_core.auth.module_admin import authorize_module_admin
 from zeler_publicador.generator import ProductInfo
 
 
@@ -54,7 +50,7 @@ def build_router(
 
     @router.get("/drafts")
     async def list_drafts(request: Request, seller_id: str) -> JSONResponse:
-        auth = _authorize(request)
+        auth = _authorize(request, seller_id=seller_id)
         if auth is not None:
             return auth
         drafts = (
@@ -71,7 +67,7 @@ def build_router(
 
     @router.post("/drafts", status_code=201)
     async def create_draft(request: Request, payload: DraftPayload) -> JSONResponse:
-        auth = _authorize(request)
+        auth = _authorize(request, seller_id=payload.seller_id)
         if auth is not None:
             return auth
         created_at = now()
@@ -136,18 +132,13 @@ def build_router(
     return router
 
 
-def _authorize(request: Request) -> JSONResponse | None:
-    auth_header = request.headers.get("Authorization")
-    if auth_header is None or not auth_header.startswith("Bearer "):
-        return JSONResponse(
-            status_code=401,
-            content={"error": "invalid_token", "detail": "missing bearer token"},
-        )
-    try:
-        verify_module_jwt(auth_header.removeprefix("Bearer ").strip())
-    except (InvalidJWTError, ExpiredJWTError, WrongAudienceError) as exc:
-        return JSONResponse(status_code=401, content={"error": "invalid_token", "detail": str(exc)})
-    return None
+def _authorize(request: Request, seller_id: str | int | None = None) -> JSONResponse | None:
+    return authorize_module_admin(
+        request,
+        expected_module_id="publicador",
+        seller_id=seller_id,
+        verifier=verify_module_jwt,
+    )
 
 
 def _seller_id_from_request(request: Request) -> int:
