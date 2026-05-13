@@ -4,6 +4,7 @@ from pathlib import Path
 
 from fastapi import FastAPI
 
+from zeler_autoreply.api import build_router
 from zeler_platform_core.runtime.checks import mongo_check_factory
 from zeler_platform_core.runtime.health import HealthCheck, build_health_router
 from zeler_platform_core.runtime.manifest import validate_manifest
@@ -23,6 +24,7 @@ def build_app(*, mongo_db: object) -> FastAPI:
             checks=[HealthCheck(name="mongo", check=mongo_check)],
         )
     )
+    app.include_router(build_router())
 
     async def register_startup() -> None:
         await register_module(manifest, mongo_db)

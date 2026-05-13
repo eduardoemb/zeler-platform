@@ -75,3 +75,36 @@ async def test_autoreply_startup_registers_manifest_and_health_ready() -> None:
         "ready": True,
         "checks": {"mongo": {"ok": True, "detail": "connected"}},
     }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("method", "path", "json_body"),
+    [
+        ("GET", "/autoreply/templates?seller_id=123456789", None),
+        (
+            "POST",
+            "/autoreply/templates/preview",
+            {
+                "match_type": "keyword",
+                "pattern": "envio",
+                "answer_text": "Hola",
+                "sample_text": "Tienen envio?",
+            },
+        ),
+    ],
+)
+async def test_autoreply_app_mounts_api_routes(
+    method: str, path: str, json_body: dict[str, str] | None
+) -> None:
+    from zeler_autoreply.app import build_app
+
+    app = build_app(mongo_db=FakeDb())
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.request(method, path, json=json_body)
+
+    assert response.status_code == 401
+    assert response.json() == {"error": "invalid_token", "detail": "missing bearer token"}
