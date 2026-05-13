@@ -418,6 +418,9 @@ class FormulaRegistry:
             raise KeyError(name)
         return contract
 
+    def find_required(self, name: str) -> FormulaContract:
+        return self.get(name)
+
 
 def _build_contracts(
     raw_contracts: Sequence[tuple[str, str, str, str, str]],

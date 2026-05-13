@@ -1,0 +1,10 @@
+[
+  {
+    "keys": {"token_id": 1, "seller_id": 1, "formula": 1, "occurred_at": -1},
+    "options": {"name": "idx_sheets_formula_audit_token_seller_formula_time"}
+  },
+  {
+    "keys": {"request_id": 1},
+    "options": {"name": "idx_sheets_formula_audit_request", "sparse": true}
+  }
+]

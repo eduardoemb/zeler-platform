@@ -82,6 +82,13 @@ def test_google_oauth_state_validator_rejects_missing_required_fields() -> None:
 def test_sheets_indexes_match_phase6_contract() -> None:
     exports_indexes = json.loads((ROOT / "infra/mongo/indexes/sheets_exports.json").read_text())
     sync_indexes = json.loads((ROOT / "infra/mongo/indexes/sheets_sync_jobs.json").read_text())
+    audit_indexes = json.loads((ROOT / "infra/mongo/indexes/sheets_formula_audit.json").read_text())
+    sku_index_indexes = json.loads(
+        (ROOT / "infra/mongo/indexes/sheets_item_sku_index.json").read_text()
+    )
+    formula_row_indexes = json.loads(
+        (ROOT / "infra/mongo/indexes/sheets_item_formula_rows.json").read_text()
+    )
 
     assert exports_indexes == [
         {
@@ -99,6 +106,68 @@ def test_sheets_indexes_match_phase6_contract() -> None:
             "options": {"name": "idx_sheets_sync_jobs_seller_state_updated"},
         }
     ]
+    assert audit_indexes == [
+        {
+            "keys": {"token_id": 1, "seller_id": 1, "formula": 1, "occurred_at": -1},
+            "options": {"name": "idx_sheets_formula_audit_token_seller_formula_time"},
+        },
+        {
+            "keys": {"request_id": 1},
+            "options": {"name": "idx_sheets_formula_audit_request", "sparse": True},
+        },
+    ]
+    assert sku_index_indexes == [
+        {
+            "keys": {"seller_id": 1, "normalized_sku": 1, "item_id": 1},
+            "options": {"name": "idx_sheets_item_sku_index_seller_sku_item"},
+        },
+        {
+            "keys": {"seller_id": 1, "item_id": 1},
+            "options": {"name": "idx_sheets_item_sku_index_seller_item"},
+        },
+    ]
+    assert formula_row_indexes == [
+        {
+            "keys": {"seller_id": 1, "normalized_sku": 1, "item_id": 1},
+            "options": {"name": "idx_sheets_item_formula_rows_seller_sku_item"},
+        },
+        {
+            "keys": {"seller_id": 1, "item_id": 1},
+            "options": {"name": "idx_sheets_item_formula_rows_seller_item"},
+        },
+    ]
+
+
+def test_sheets_formula_foundation_validators_reject_missing_required_fields() -> None:
+    expected = {
+        "sheets_formula_audit.json": [
+            "token_id",
+            "seller_id",
+            "formula",
+            "outcome",
+            "occurred_at",
+            "schema_version",
+        ],
+        "sheets_item_sku_index.json": [
+            "seller_id",
+            "normalized_sku",
+            "item_id",
+            "schema_version",
+        ],
+        "sheets_item_formula_rows.json": [
+            "seller_id",
+            "normalized_sku",
+            "item_id",
+            "current",
+            "schema_version",
+        ],
+    }
+
+    for file_name, missing_fields in expected.items():
+        validator = json.loads((ROOT / "infra/mongo/schemas" / file_name).read_text())
+        result = validate_document_against_schema({"_id": "doc-1"}, validator)
+        assert result.valid is False
+        assert result.missing_required_fields == missing_fields
 
 
 def test_google_oauth_indexes_match_contract() -> None:

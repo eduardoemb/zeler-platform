@@ -1,0 +1,20 @@
+{
+  "$jsonSchema": {
+    "bsonType": "object",
+    "required": ["_id", "seller_id", "normalized_sku", "item_id", "schema_version"],
+    "properties": {
+      "_id": {"bsonType": "string"},
+      "seller_id": {"bsonType": "string"},
+      "seller_nickname": {"bsonType": ["string", "null"]},
+      "sku": {"bsonType": ["string", "null"]},
+      "normalized_sku": {"bsonType": "string"},
+      "item_id": {"bsonType": "string"},
+      "variation_id": {"bsonType": ["string", "long", "int", "null"]},
+      "inventory_id": {"bsonType": ["string", "null"]},
+      "updated_at": {"bsonType": ["date", "null"]},
+      "schema_version": {"bsonType": "int"}
+    }
+  },
+  "validationAction": "error",
+  "validationLevel": "strict"
+}

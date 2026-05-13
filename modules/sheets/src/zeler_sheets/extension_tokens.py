@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import inspect
 import secrets
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from typing import Any, Literal, cast
 
@@ -68,8 +69,8 @@ class ExtensionTokenValidationError(Exception):
         self.message = message
 
 
-AuditHook = Callable[[dict[str, Any]], Any]
-RateLimitHook = Callable[[dict[str, Any]], bool]
+AuditHook = Callable[[dict[str, Any]], Any | Awaitable[Any]]
+RateLimitHook = Callable[[dict[str, Any]], bool | Awaitable[bool]]
 TokenFactory = Callable[[], str]
 Clock = Callable[[], datetime]
 
@@ -193,9 +194,9 @@ class ExtensionTokenService:
                 raise ExtensionTokenValidationError(
                     "SELLER_FORBIDDEN", "extension token cannot access seller"
                 )
-            self._enforce_rate_limit(doc, scope, formula=formula, request_id=request_id)
+            await self._enforce_rate_limit(doc, scope, formula=formula, request_id=request_id)
         except ExtensionTokenValidationError as exc:
-            self._audit(
+            await self._audit(
                 doc,
                 scope,
                 formula=formula,
@@ -210,7 +211,7 @@ class ExtensionTokenService:
             {"_id": doc["_id"]},
             {"$set": {"last_used_at": now, "updated_at": now}},
         )
-        self._audit(
+        await self._audit(
             doc,
             scope,
             formula=formula,
@@ -242,7 +243,7 @@ class ExtensionTokenService:
         if expires_at is not None and expires_at <= self._now():
             raise ExtensionTokenValidationError("TOKEN_REVOKED", "extension token expired")
 
-    def _enforce_rate_limit(
+    async def _enforce_rate_limit(
         self,
         doc: dict[str, Any],
         scope: SellerScope,
@@ -261,10 +262,12 @@ class ExtensionTokenService:
                 "request_id": request_id,
             }
         )
+        if inspect.isawaitable(allowed):
+            allowed = await allowed
         if not allowed:
             raise ExtensionTokenValidationError("RATE_LIMITED", "extension token rate limited")
 
-    def _audit(
+    async def _audit(
         self,
         doc: dict[str, Any],
         scope: SellerScope | None,
@@ -276,7 +279,7 @@ class ExtensionTokenService:
     ) -> None:
         if self._audit_hook is None:
             return
-        self._audit_hook(
+        result = self._audit_hook(
             {
                 "token_id": str(doc["_id"]),
                 "seller_id": scope.seller_id if scope else None,
@@ -288,6 +291,8 @@ class ExtensionTokenService:
                 "occurred_at": self._now(),
             }
         )
+        if inspect.isawaitable(result):
+            await result
 
 
 def _token_id(token: str) -> str:
