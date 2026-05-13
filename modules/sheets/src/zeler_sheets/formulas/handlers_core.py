@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
+from datetime import UTC, datetime
 from typing import Any
 
 from zeler_sheets.formulas.dispatcher import (
@@ -15,26 +16,44 @@ CORE_FORMULA_NAMES = frozenset(
         "SHEETSELLER_SKU",
         "SHEETSELLER_ID",
         "SHEETSELLER_STOCK",
+        "SHEETSELLER_TITULO",
+        "SHEETSELLER_URL",
         "SHEETSELLER_PRECIO",
+        "SHEETSELLER_STATUS",
+        "SHEETSELLER_CODIGOML",
+        "SHEETSELLER_DIASPUBLICADA",
     }
 )
 
 
 def build_core_formula_handlers(
     repository: FormulaReadModelRepository,
+    *,
+    now_fn: Callable[[], datetime] | None = None,
 ) -> dict[str, FormulaHandler]:
-    handlers = CoreFormulaHandlers(repository)
+    handlers = CoreFormulaHandlers(repository, now_fn=now_fn)
     return {
         "SHEETSELLER_SKU": handlers.sheetseller_sku,
         "SHEETSELLER_ID": handlers.sheetseller_id,
         "SHEETSELLER_STOCK": handlers.sheetseller_stock,
+        "SHEETSELLER_TITULO": handlers.sheetseller_titulo,
+        "SHEETSELLER_URL": handlers.sheetseller_url,
         "SHEETSELLER_PRECIO": handlers.sheetseller_precio,
+        "SHEETSELLER_STATUS": handlers.sheetseller_status,
+        "SHEETSELLER_CODIGOML": handlers.sheetseller_codigoml,
+        "SHEETSELLER_DIASPUBLICADA": handlers.sheetseller_diaspublicada,
     }
 
 
 class CoreFormulaHandlers:
-    def __init__(self, repository: FormulaReadModelRepository) -> None:
+    def __init__(
+        self,
+        repository: FormulaReadModelRepository,
+        *,
+        now_fn: Callable[[], datetime] | None = None,
+    ) -> None:
         self._repository = repository
+        self._now_fn = now_fn or (lambda: datetime.now(UTC))
 
     async def sheetseller_sku(self, context: FormulaExecutionContext) -> FormulaExecutionResult:
         requested_skus = _normalize_sku_argument(context.args.get("skus", "todos"))
@@ -72,11 +91,55 @@ class CoreFormulaHandlers:
     async def sheetseller_stock(self, context: FormulaExecutionContext) -> FormulaExecutionResult:
         return await self._lookup_current_field(context, field="available_quantity")
 
+    async def sheetseller_titulo(self, context: FormulaExecutionContext) -> FormulaExecutionResult:
+        return await self._lookup_current_field_by_item_id(context, field="title")
+
+    async def sheetseller_url(self, context: FormulaExecutionContext) -> FormulaExecutionResult:
+        return await self._lookup_current_field(context, field="permalink")
+
     async def sheetseller_precio(self, context: FormulaExecutionContext) -> FormulaExecutionResult:
         return await self._lookup_current_field(context, field="base_price")
 
+    async def sheetseller_status(self, context: FormulaExecutionContext) -> FormulaExecutionResult:
+        return await self._lookup_current_field_by_item_id(context, field="status")
+
+    async def sheetseller_codigoml(
+        self, context: FormulaExecutionContext
+    ) -> FormulaExecutionResult:
+        return await self._lookup_current_field(
+            context,
+            field="inventory_id",
+            row_field_fallback="inventory_id",
+        )
+
+    async def sheetseller_diaspublicada(
+        self, context: FormulaExecutionContext
+    ) -> FormulaExecutionResult:
+        item_ids = _normalize_item_id_argument(context.args.get("id_publicaciones"))
+        rows = await self._repository.find_item_formula_rows(
+            seller_id=context.seller_id,
+            item_ids=item_ids,
+        )
+        rows_by_item_id = {str(row.get("item_id", "")).strip(): row for row in rows}
+        today = _as_utc_datetime(self._now_fn()).date()
+        values: list[list[Any]] = []
+        misses = 0
+        for item_id in item_ids:
+            row = rows_by_item_id.get(item_id)
+            published_at = _published_at(row) if row else None
+            if published_at is None:
+                misses += 1
+                values.append([""])
+            else:
+                values.append([max((today - published_at.date()).days, 0)])
+        return FormulaExecutionResult(values=values, meta={"partial_misses": misses})
+
     async def _lookup_current_field(
-        self, context: FormulaExecutionContext, *, field: str
+        self,
+        context: FormulaExecutionContext,
+        *,
+        field: str,
+        row_field_fallback: str | None = None,
     ) -> FormulaExecutionResult:
         pairs = _lookup_pairs(
             skus=context.args.get("skus"),
@@ -95,6 +158,30 @@ class CoreFormulaHandlers:
         misses = 0
         for pair in pairs:
             row = rows_by_pair.get((pair.sku, pair.item_id))
+            current = row.get("current", {}) if row else {}
+            value = current.get(field) if isinstance(current, Mapping) else None
+            if value is None and row_field_fallback is not None and row is not None:
+                value = row.get(row_field_fallback)
+            if value is None:
+                misses += 1
+                values.append([""])
+            else:
+                values.append([value])
+        return FormulaExecutionResult(values=values, meta={"partial_misses": misses})
+
+    async def _lookup_current_field_by_item_id(
+        self, context: FormulaExecutionContext, *, field: str
+    ) -> FormulaExecutionResult:
+        item_ids = _normalize_item_id_argument(context.args.get("id_publicaciones"))
+        rows = await self._repository.find_item_formula_rows(
+            seller_id=context.seller_id,
+            item_ids=item_ids,
+        )
+        rows_by_item_id = {str(row.get("item_id", "")).strip(): row for row in rows}
+        values: list[list[Any]] = []
+        misses = 0
+        for item_id in item_ids:
+            row = rows_by_item_id.get(item_id)
             current = row.get("current", {}) if row else {}
             value = current.get(field) if isinstance(current, Mapping) else None
             if value is None:
@@ -131,6 +218,10 @@ def _normalize_sku_argument(value: Any) -> list[str] | None:
     if isinstance(value, str) and value.strip().casefold() == "todos":
         return None
     return _flatten_sheet_values(value, normalize=normalize_sku)
+
+
+def _normalize_item_id_argument(value: Any) -> list[str]:
+    return _flatten_sheet_values(value, normalize=lambda item_id: str(item_id).strip())
 
 
 def _flatten_sheet_values(value: Any, *, normalize: Any) -> list[str]:
@@ -181,3 +272,28 @@ def _partial_misses(requested_skus: list[str] | None, matched_skus: set[str]) ->
     if requested_skus is None:
         return 0
     return sum(1 for sku in dict.fromkeys(requested_skus) if sku not in matched_skus)
+
+
+def _published_at(row: Mapping[str, Any]) -> datetime | None:
+    current = row.get("current", {})
+    value = current.get("date_created") if isinstance(current, Mapping) else None
+    if value is None:
+        value = row.get("date_created") or row.get("created_at")
+    if value is None:
+        return None
+    try:
+        return _as_utc_datetime(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _as_utc_datetime(value: Any) -> datetime:
+    if isinstance(value, datetime):
+        parsed = value
+    elif isinstance(value, str):
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    else:
+        raise TypeError("expected datetime or ISO datetime string")
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)

@@ -207,6 +207,125 @@ async def test_stock_and_precio_handlers_lookup_scalar_and_range_pairs_with_blan
 
 
 @pytest.mark.asyncio
+async def test_title_status_and_days_handlers_lookup_item_ids_with_blanks_for_misses() -> None:
+    now = datetime(2026, 5, 13, 12, 0, tzinfo=UTC)
+    db = FakeDb()
+    formula_rows = db["sheets_item_formula_rows"]
+    formula_rows.documents = {
+        "seller-1-sku-1-mla1": {
+            "_id": "seller-1-sku-1-mla1",
+            "seller_id": "seller-1",
+            "normalized_sku": "SKU-1",
+            "item_id": "MLA1",
+            "current": {
+                "title": "First listing",
+                "status": "active",
+                "date_created": datetime(2026, 4, 1, 8, 30, tzinfo=UTC),
+            },
+        },
+        "seller-1-sku-2-mla2": {
+            "_id": "seller-1-sku-2-mla2",
+            "seller_id": "seller-1",
+            "normalized_sku": "SKU-2",
+            "item_id": "MLA2",
+            "current": {
+                "title": "Second listing",
+                "status": "paused",
+                "date_created": "2026-05-10T11:00:00+00:00",
+            },
+        },
+        "seller-2-sku-1-mla1": {
+            "_id": "seller-2-sku-1-mla1",
+            "seller_id": "seller-2",
+            "normalized_sku": "SKU-1",
+            "item_id": "MLA1",
+            "current": {
+                "title": "Wrong tenant",
+                "status": "active",
+                "date_created": datetime(2020, 1, 1, tzinfo=UTC),
+            },
+        },
+    }
+    dispatcher = _core_dispatcher(db, now=now)
+
+    scalar_title = await dispatcher.execute(
+        _context("SHEETSELLER_TITULO", {"id_publicaciones": "MLA1"})
+    )
+    range_status = await dispatcher.execute(
+        _context("SHEETSELLER_STATUS", {"id_publicaciones": [["MLA1"], ["MLA2"], ["MLA-X"]]})
+    )
+    range_days = await dispatcher.execute(
+        _context("SHEETSELLER_DIASPUBLICADA", {"id_publicaciones": ["MLA1", "MLA2", "MLA-X"]})
+    )
+
+    assert scalar_title.values == [["First listing"]]
+    assert scalar_title.meta == {"partial_misses": 0}
+    assert range_status.values == [["active"], ["paused"], [""]]
+    assert range_status.meta == {"partial_misses": 1}
+    assert range_days.values == [[42], [3], [""]]
+    assert range_days.meta == {"partial_misses": 1}
+    assert formula_rows.last_find_filter == {
+        "seller_id": "seller-1",
+        "item_id": {"$in": ["MLA1", "MLA2", "MLA-X"]},
+    }
+
+
+@pytest.mark.asyncio
+async def test_url_and_codigo_ml_handlers_lookup_sku_item_pairs_with_blanks_for_misses() -> None:
+    db = FakeDb()
+    formula_rows = db["sheets_item_formula_rows"]
+    formula_rows.documents = {
+        "seller-1-sku-1-mla1": {
+            "_id": "seller-1-sku-1-mla1",
+            "seller_id": "seller-1",
+            "normalized_sku": "SKU-1",
+            "item_id": "MLA1",
+            "inventory_id": "INV-1",
+            "current": {"permalink": "https://meli.example/mla1"},
+        },
+        "seller-1-sku-2-mla2": {
+            "_id": "seller-1-sku-2-mla2",
+            "seller_id": "seller-1",
+            "normalized_sku": "SKU-2",
+            "item_id": "MLA2",
+            "current": {"permalink": "https://meli.example/mla2", "inventory_id": "INV-2"},
+        },
+        "seller-2-sku-1-mla1": {
+            "_id": "seller-2-sku-1-mla1",
+            "seller_id": "seller-2",
+            "normalized_sku": "SKU-1",
+            "item_id": "MLA1",
+            "inventory_id": "WRONG-TENANT",
+            "current": {"permalink": "https://meli.example/wrong"},
+        },
+    }
+    dispatcher = _core_dispatcher(db)
+
+    scalar_url = await dispatcher.execute(
+        _context("SHEETSELLER_URL", {"skus": "sku-1", "id_publicaciones": "MLA1"})
+    )
+    range_codigo = await dispatcher.execute(
+        _context(
+            "SHEETSELLER_CODIGOML",
+            {
+                "skus": [["sku-1"], ["sku-2"], ["missing"]],
+                "id_publicaciones": ["MLA1", "MLA2", "MLA-X"],
+            },
+        )
+    )
+
+    assert scalar_url.values == [["https://meli.example/mla1"]]
+    assert scalar_url.meta == {"partial_misses": 0}
+    assert range_codigo.values == [["INV-1"], ["INV-2"], [""]]
+    assert range_codigo.meta == {"partial_misses": 1}
+    assert formula_rows.last_find_filter == {
+        "seller_id": "seller-1",
+        "normalized_sku": {"$in": ["SKU-1", "SKU-2", "MISSING"]},
+        "item_id": {"$in": ["MLA1", "MLA2", "MLA-X"]},
+    }
+
+
+@pytest.mark.asyncio
 async def test_formula_api_uses_core_handlers_and_keeps_other_formulas_data_unavailable() -> None:
     now = datetime(2026, 5, 13, 17, 0, tzinfo=UTC)
     app, db, token = await _app_with_token(now=now)
@@ -232,7 +351,7 @@ async def test_formula_api_uses_core_handlers_and_keeps_other_formulas_data_unav
                 "args": {"skus": "sku-1", "id_publicaciones": "MLA1"},
             },
         )
-        not_ready = await client.post(
+        title = await client.post(
             "/sheets/formulas:execute",
             headers={"Authorization": f"Bearer {token}"},
             json={
@@ -241,24 +360,39 @@ async def test_formula_api_uses_core_handlers_and_keeps_other_formulas_data_unav
                 "args": {"id_publicaciones": "MLA1"},
             },
         )
+        not_ready = await client.post(
+            "/sheets/formulas:execute",
+            headers={"Authorization": f"Bearer {token}"},
+            json={
+                "formula": "SHEETSELLER_PAUSADAS",
+                "cuenta": "HOPEMOB",
+                "args": {"id_publicaciones": "MLA1"},
+            },
+        )
 
     assert stock.status_code == 200
     assert stock.json() == {"ok": True, "values": [[9]], "meta": {"partial_misses": 0}}
+    assert title.status_code == 200
+    assert title.json() == {"ok": True, "values": [[""]], "meta": {"partial_misses": 1}}
     assert not_ready.status_code == 200
     assert not_ready.json()["error"] == {
         "code": "DATA_UNAVAILABLE",
-        "message": "SHEETSELLER_TITULO data is not available yet",
+        "message": "SHEETSELLER_PAUSADAS data is not available yet",
         "retryable": False,
     }
     assert db["sheets_item_formula_rows"].last_find_filter == {
         "seller_id": "seller-1",
-        "normalized_sku": {"$in": ["SKU-1"]},
         "item_id": {"$in": ["MLA1"]},
     }
 
 
-def _core_dispatcher(db: FakeDb) -> FormulaDispatcher:
-    return FormulaDispatcher(build_core_formula_handlers(FormulaReadModelRepository(db=db)))
+def _core_dispatcher(db: FakeDb, *, now: datetime | None = None) -> FormulaDispatcher:
+    return FormulaDispatcher(
+        build_core_formula_handlers(
+            FormulaReadModelRepository(db=db),
+            now_fn=lambda: now or datetime(2026, 5, 13, 12, 0, tzinfo=UTC),
+        )
+    )
 
 
 def _context(formula: str, args: dict[str, Any]) -> FormulaExecutionContext:

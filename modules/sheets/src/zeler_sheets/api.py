@@ -405,7 +405,7 @@ async def _execute_formula_payload(
         request_id=payload.request_id,
     )
     try:
-        result = await _dispatch_formula(_runtime_dispatcher(request, dispatcher), context)
+        result = await _dispatch_formula(_runtime_dispatcher(request, dispatcher, now=now), context)
     except FormulaDataUnavailableError as exc:
         return _formula_error("DATA_UNAVAILABLE", exc.message, status_code=200)
     except Exception:  # noqa: BLE001 - Apps Script callers require stable error cells.
@@ -434,11 +434,13 @@ async def _dispatch_formula(
 def _runtime_dispatcher(
     request: Request,
     dispatcher: FormulaDispatcher | FormulaDispatchCallable | None,
+    *,
+    now: Callable[[], datetime],
 ) -> FormulaDispatcher | FormulaDispatchCallable:
     if dispatcher is not None:
         return dispatcher
     repository = FormulaReadModelRepository(db=request.app.state.mongo_db)
-    return FormulaDispatcher(build_core_formula_handlers(repository))
+    return FormulaDispatcher(build_core_formula_handlers(repository, now_fn=now))
 
 
 def _bearer_token(request: Request) -> str:
