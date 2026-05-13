@@ -5,6 +5,8 @@ import re
 from pathlib import Path
 from typing import Any, cast
 
+from zeler_sheets.formulas.handlers_core import CORE_FORMULA_NAMES
+
 REPO_ROOT = Path(__file__).parents[3]
 CONTRACT_PATH = REPO_ROOT / "tests" / "sheets" / "fixtures" / "sheetseller_formula_contracts.json"
 ADDON_DIR = REPO_ROOT / "modules" / "sheets" / "apps_script" / "sheetseller"
@@ -149,3 +151,47 @@ def test_private_manual_installation_docs_cover_setup_without_secrets() -> None:
     assert "Marketplace" in docs
     assert "username" not in docs.lower()
     assert "password" not in docs.lower()
+
+
+def test_private_pilot_runbook_locks_deployment_prerequisites_and_token_safety() -> None:
+    docs = _read_addon_file("README.md")
+
+    assert "Pilot seller: `82453304`" in docs
+    assert "Formula API deployed" in docs
+    assert "extension token pepper" in docs
+    assert "zeler-app `/sheets/config` deployed" in docs
+    assert "show-once extension token" in docs
+    assert "Do not paste real tokens into repo/issues/logs" in docs
+    assert "Do not deploy from this checklist" in docs
+    assert "Use only seller `82453304`" in docs
+    assert "private Apps Script project" in docs
+
+
+def test_private_pilot_runbook_lists_current_formula_validation_matrix_and_stable_errors() -> None:
+    docs = _read_addon_file("README.md")
+
+    assert "## Validation matrix for currently implemented wrappers" in docs
+    assert "`cuenta` must be the seller nickname or canonical seller visible to token scope" in docs
+    for formula_name in sorted(CORE_FORMULA_NAMES):
+        assert formula_name in docs
+
+    example_formulas = [
+        '=SHEETSELLER_SKU("cuenta")',
+        '=SHEETSELLER_STOCK("cuenta", "SKU-1", "MLA1")',
+        '=SHEETSELLER_DASHBOARD("cuenta", "todos", "todos", "base", "si")',
+        '=SHEETSELLER_IMAGENES("cuenta", "todos", "todos")',
+    ]
+    for example in example_formulas:
+        assert example in docs
+
+    for error_code in [
+        "DATA_UNAVAILABLE",
+        "TOKEN_MISSING",
+        "TOKEN_REVOKED",
+        "SELLER_FORBIDDEN",
+        "FORMULA_UNKNOWN",
+        "BAD_ARGUMENT",
+        "RATE_LIMITED",
+        "INTERNAL",
+    ]:
+        assert error_code in docs
