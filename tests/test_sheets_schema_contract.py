@@ -135,6 +135,10 @@ def test_sheets_indexes_match_phase6_contract() -> None:
             "keys": {"seller_id": 1, "item_id": 1},
             "options": {"name": "idx_sheets_item_formula_rows_seller_item"},
         },
+        {
+            "keys": {"seller_id": 1, "inventory_id": 1},
+            "options": {"name": "idx_sheets_item_formula_rows_seller_inventory"},
+        },
     ]
 
 

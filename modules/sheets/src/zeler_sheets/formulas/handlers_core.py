@@ -14,13 +14,16 @@ from zeler_sheets.formulas.read_models import FormulaReadModelRepository, normal
 CORE_FORMULA_NAMES = frozenset(
     {
         "SHEETSELLER_SKU",
+        "SHEETSELLER_PUBLICACIONES",
         "SHEETSELLER_ID",
         "SHEETSELLER_STOCK",
         "SHEETSELLER_TITULO",
         "SHEETSELLER_URL",
         "SHEETSELLER_PRECIO",
+        "SHEETSELLER_IDSTOCK",
         "SHEETSELLER_STATUS",
         "SHEETSELLER_CODIGOML",
+        "SHEETSELLER_CODIGOML2SKUID",
         "SHEETSELLER_DIASPUBLICADA",
     }
 )
@@ -34,13 +37,16 @@ def build_core_formula_handlers(
     handlers = CoreFormulaHandlers(repository, now_fn=now_fn)
     return {
         "SHEETSELLER_SKU": handlers.sheetseller_sku,
+        "SHEETSELLER_PUBLICACIONES": handlers.sheetseller_publicaciones,
         "SHEETSELLER_ID": handlers.sheetseller_id,
         "SHEETSELLER_STOCK": handlers.sheetseller_stock,
         "SHEETSELLER_TITULO": handlers.sheetseller_titulo,
         "SHEETSELLER_URL": handlers.sheetseller_url,
         "SHEETSELLER_PRECIO": handlers.sheetseller_precio,
+        "SHEETSELLER_IDSTOCK": handlers.sheetseller_idstock,
         "SHEETSELLER_STATUS": handlers.sheetseller_status,
         "SHEETSELLER_CODIGOML": handlers.sheetseller_codigoml,
+        "SHEETSELLER_CODIGOML2SKUID": handlers.sheetseller_codigoml2skuid,
         "SHEETSELLER_DIASPUBLICADA": handlers.sheetseller_diaspublicada,
     }
 
@@ -75,6 +81,46 @@ class CoreFormulaHandlers:
             meta={"partial_misses": _partial_misses(requested_skus, seen)},
         )
 
+    async def sheetseller_publicaciones(
+        self, context: FormulaExecutionContext
+    ) -> FormulaExecutionResult:
+        requested_skus = _normalize_sku_argument(context.args.get("skus", "todos"))
+        rows = await self._repository.find_item_formula_rows(
+            seller_id=context.seller_id,
+            skus=requested_skus,
+        )
+        ordered_rows = _order_rows_by_requested_skus(rows, requested_skus)
+        values: list[list[Any]] = _header_row(
+            context.args.get("encabezados"),
+            ["SKU", "ID Publicación", "Título", "Status", "Stock", "Precio", "URL"],
+        )
+        matched_skus: set[str] = set()
+        for row in ordered_rows:
+            item_id = row.get("item_id") or ""
+            if not item_id:
+                continue
+            current = row.get("current", {})
+            current_values = current if isinstance(current, Mapping) else {}
+            values.append(
+                [
+                    row.get("sku") or row.get("normalized_sku") or "",
+                    item_id,
+                    current_values.get("title") or "",
+                    current_values.get("status") or "",
+                    _blank_if_none(current_values.get("available_quantity")),
+                    _blank_if_none(current_values.get("base_price")),
+                    current_values.get("permalink") or "",
+                ]
+            )
+            matched_skus.add(normalize_sku(row.get("normalized_sku", "")))
+        return FormulaExecutionResult(
+            values=values,
+            meta={
+                "partial_misses": _partial_misses(requested_skus, matched_skus),
+                "columns": "minimal_current_item",
+            },
+        )
+
     async def sheetseller_id(self, context: FormulaExecutionContext) -> FormulaExecutionResult:
         requested_skus = _normalize_sku_argument(context.args.get("skus", "todos"))
         rows = await self._repository.find_sku_index_rows(
@@ -100,6 +146,31 @@ class CoreFormulaHandlers:
     async def sheetseller_precio(self, context: FormulaExecutionContext) -> FormulaExecutionResult:
         return await self._lookup_current_field(context, field="base_price")
 
+    async def sheetseller_idstock(self, context: FormulaExecutionContext) -> FormulaExecutionResult:
+        requested_skus = _normalize_sku_argument(context.args.get("skus"))
+        rows = await self._repository.find_item_formula_rows(
+            seller_id=context.seller_id,
+            skus=requested_skus,
+        )
+        ordered_rows = _order_rows_by_requested_skus(rows, requested_skus)
+        values: list[list[Any]] = _header_row(
+            context.args.get("encabezados"), ["SKU", "ID Publicación", "Stock"]
+        )
+        matched_skus: set[str] = set()
+        for row in ordered_rows:
+            sku = row.get("sku") or row.get("normalized_sku") or ""
+            item_id = row.get("item_id") or ""
+            if not item_id:
+                continue
+            current = row.get("current", {})
+            stock = current.get("available_quantity") if isinstance(current, Mapping) else None
+            values.append([sku, item_id, "" if stock is None else stock])
+            matched_skus.add(normalize_sku(row.get("normalized_sku", "")))
+        return FormulaExecutionResult(
+            values=values,
+            meta={"partial_misses": _partial_misses(requested_skus, matched_skus)},
+        )
+
     async def sheetseller_status(self, context: FormulaExecutionContext) -> FormulaExecutionResult:
         return await self._lookup_current_field_by_item_id(context, field="status")
 
@@ -110,6 +181,32 @@ class CoreFormulaHandlers:
             context,
             field="inventory_id",
             row_field_fallback="inventory_id",
+        )
+
+    async def sheetseller_codigoml2skuid(
+        self, context: FormulaExecutionContext
+    ) -> FormulaExecutionResult:
+        requested_codes = _normalize_inventory_code_argument(context.args.get("codigo_ml"))
+        rows = await self._repository.find_item_formula_rows(
+            seller_id=context.seller_id,
+            inventory_ids=requested_codes,
+        )
+        ordered_rows = _order_rows_by_requested_inventory_codes(rows, requested_codes)
+        values: list[list[Any]] = _header_row(
+            context.args.get("encabezados"), ["Código ML", "ID Publicación", "SKU"]
+        )
+        matched_codes: set[str] = set()
+        for row in ordered_rows:
+            inventory_id = str(row.get("inventory_id") or "").strip()
+            item_id = row.get("item_id") or ""
+            sku = row.get("sku") or row.get("normalized_sku") or ""
+            if not inventory_id or not item_id:
+                continue
+            values.append([inventory_id, item_id, sku])
+            matched_codes.add(_normalize_inventory_code(inventory_id))
+        return FormulaExecutionResult(
+            values=values,
+            meta={"partial_misses": _partial_misses(requested_codes, matched_codes)},
         )
 
     async def sheetseller_diaspublicada(
@@ -224,6 +321,14 @@ def _normalize_item_id_argument(value: Any) -> list[str]:
     return _flatten_sheet_values(value, normalize=lambda item_id: str(item_id).strip())
 
 
+def _normalize_inventory_code_argument(value: Any) -> list[str]:
+    return _flatten_sheet_values(value, normalize=_normalize_inventory_code)
+
+
+def _normalize_inventory_code(value: Any) -> str:
+    return str(value).strip().upper()
+
+
 def _flatten_sheet_values(value: Any, *, normalize: Any) -> list[str]:
     if value is None:
         return []
@@ -268,10 +373,42 @@ def _order_rows_by_requested_skus(
     return ordered
 
 
+def _order_rows_by_requested_inventory_codes(
+    rows: list[dict[str, Any]], requested_codes: list[str]
+) -> list[dict[str, Any]]:
+    sorted_rows = sorted(
+        rows,
+        key=lambda row: (
+            _normalize_inventory_code(row.get("inventory_id", "")),
+            str(row.get("item_id", "")),
+        ),
+    )
+    rows_by_code: dict[str, list[dict[str, Any]]] = {}
+    for row in sorted_rows:
+        rows_by_code.setdefault(_normalize_inventory_code(row.get("inventory_id", "")), []).append(
+            row
+        )
+
+    ordered: list[dict[str, Any]] = []
+    for code in dict.fromkeys(requested_codes):
+        ordered.extend(rows_by_code.get(code, []))
+    return ordered
+
+
 def _partial_misses(requested_skus: list[str] | None, matched_skus: set[str]) -> int:
     if requested_skus is None:
         return 0
     return sum(1 for sku in dict.fromkeys(requested_skus) if sku not in matched_skus)
+
+
+def _header_row(value: Any, headers: list[str]) -> list[list[Any]]:
+    if str(value or "").strip().casefold() in {"si", "sí", "true", "1", "yes"}:
+        return [headers]
+    return []
+
+
+def _blank_if_none(value: Any) -> Any:
+    return "" if value is None else value
 
 
 def _published_at(row: Mapping[str, Any]) -> datetime | None:

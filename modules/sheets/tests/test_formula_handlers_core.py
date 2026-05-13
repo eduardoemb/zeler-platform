@@ -326,6 +326,208 @@ async def test_url_and_codigo_ml_handlers_lookup_sku_item_pairs_with_blanks_for_
 
 
 @pytest.mark.asyncio
+async def test_idstock_returns_seller_scoped_table_with_optional_headers() -> None:
+    db = FakeDb()
+    formula_rows = db["sheets_item_formula_rows"]
+    formula_rows.documents = {
+        "seller-1-sku-1-mla1": {
+            "_id": "seller-1-sku-1-mla1",
+            "seller_id": "seller-1",
+            "sku": "sku-1",
+            "normalized_sku": "SKU-1",
+            "item_id": "MLA1",
+            "current": {"available_quantity": 7},
+        },
+        "seller-1-sku-1-mla3": {
+            "_id": "seller-1-sku-1-mla3",
+            "seller_id": "seller-1",
+            "sku": "sku-1",
+            "normalized_sku": "SKU-1",
+            "item_id": "MLA3",
+            "current": {"available_quantity": 0},
+        },
+        "seller-1-sku-2-mla2": {
+            "_id": "seller-1-sku-2-mla2",
+            "seller_id": "seller-1",
+            "sku": "sku-2",
+            "normalized_sku": "SKU-2",
+            "item_id": "MLA2",
+            "current": {"available_quantity": 4},
+        },
+        "seller-2-sku-1-mla1": {
+            "_id": "seller-2-sku-1-mla1",
+            "seller_id": "seller-2",
+            "sku": "sku-1",
+            "normalized_sku": "SKU-1",
+            "item_id": "MLB1",
+            "current": {"available_quantity": 99},
+        },
+    }
+    dispatcher = _core_dispatcher(db)
+
+    without_headers = await dispatcher.execute(
+        _context(
+            "SHEETSELLER_IDSTOCK",
+            {"skus": [["sku-1"], ["missing"], ["sku-2"]], "encabezados": ""},
+        )
+    )
+    with_headers = await dispatcher.execute(
+        _context("SHEETSELLER_IDSTOCK", {"skus": "sku-1", "encabezados": "si"})
+    )
+
+    assert without_headers.values == [
+        ["sku-1", "MLA1", 7],
+        ["sku-1", "MLA3", 0],
+        ["sku-2", "MLA2", 4],
+    ]
+    assert without_headers.meta == {"partial_misses": 1}
+    assert with_headers.values == [
+        ["SKU", "ID Publicación", "Stock"],
+        ["sku-1", "MLA1", 7],
+        ["sku-1", "MLA3", 0],
+    ]
+    assert with_headers.meta == {"partial_misses": 0}
+    assert formula_rows.last_find_filter == {
+        "seller_id": "seller-1",
+        "normalized_sku": {"$in": ["SKU-1"]},
+    }
+
+
+@pytest.mark.asyncio
+async def test_codigo_ml_to_sku_id_returns_seller_scoped_table_with_optional_headers() -> None:
+    db = FakeDb()
+    formula_rows = db["sheets_item_formula_rows"]
+    formula_rows.documents = {
+        "seller-1-sku-1-mla1": {
+            "_id": "seller-1-sku-1-mla1",
+            "seller_id": "seller-1",
+            "sku": "sku-1",
+            "normalized_sku": "SKU-1",
+            "item_id": "MLA1",
+            "inventory_id": "INV-1",
+            "current": {},
+        },
+        "seller-1-sku-2-mla2": {
+            "_id": "seller-1-sku-2-mla2",
+            "seller_id": "seller-1",
+            "sku": "sku-2",
+            "normalized_sku": "SKU-2",
+            "item_id": "MLA2",
+            "inventory_id": "INV-2",
+            "current": {},
+        },
+        "seller-2-sku-1-mla1": {
+            "_id": "seller-2-sku-1-mla1",
+            "seller_id": "seller-2",
+            "sku": "sku-1",
+            "normalized_sku": "SKU-1",
+            "item_id": "MLB1",
+            "inventory_id": "INV-1",
+            "current": {},
+        },
+    }
+    dispatcher = _core_dispatcher(db)
+
+    without_headers = await dispatcher.execute(
+        _context(
+            "SHEETSELLER_CODIGOML2SKUID",
+            {"codigo_ml": [[" inv-1 "], ["missing"], ["INV-2"]], "encabezados": ""},
+        )
+    )
+    with_headers = await dispatcher.execute(
+        _context("SHEETSELLER_CODIGOML2SKUID", {"codigo_ml": "INV-1", "encabezados": "sí"})
+    )
+
+    assert without_headers.values == [["INV-1", "MLA1", "sku-1"], ["INV-2", "MLA2", "sku-2"]]
+    assert without_headers.meta == {"partial_misses": 1}
+    assert with_headers.values == [
+        ["Código ML", "ID Publicación", "SKU"],
+        ["INV-1", "MLA1", "sku-1"],
+    ]
+    assert with_headers.meta == {"partial_misses": 0}
+    assert formula_rows.last_find_filter == {
+        "seller_id": "seller-1",
+        "inventory_id": {"$in": ["INV-1"]},
+    }
+
+
+@pytest.mark.asyncio
+async def test_publicaciones_returns_minimal_current_item_table_with_optional_headers() -> None:
+    db = FakeDb()
+    formula_rows = db["sheets_item_formula_rows"]
+    formula_rows.documents = {
+        "seller-1-sku-1-mla1": {
+            "_id": "seller-1-sku-1-mla1",
+            "seller_id": "seller-1",
+            "sku": "sku-1",
+            "normalized_sku": "SKU-1",
+            "item_id": "MLA1",
+            "current": {
+                "title": "First listing",
+                "status": "active",
+                "available_quantity": 7,
+                "base_price": 123.45,
+                "permalink": "https://meli.example/mla1",
+            },
+        },
+        "seller-1-sku-2-mla2": {
+            "_id": "seller-1-sku-2-mla2",
+            "seller_id": "seller-1",
+            "sku": "sku-2",
+            "normalized_sku": "SKU-2",
+            "item_id": "MLA2",
+            "current": {
+                "title": "Second listing",
+                "status": "paused",
+                "available_quantity": 0,
+                "base_price": 10,
+                "permalink": "https://meli.example/mla2",
+            },
+        },
+        "seller-2-sku-1-mla1": {
+            "_id": "seller-2-sku-1-mla1",
+            "seller_id": "seller-2",
+            "sku": "sku-1",
+            "normalized_sku": "SKU-1",
+            "item_id": "MLB1",
+            "current": {
+                "title": "Wrong tenant",
+                "status": "active",
+                "available_quantity": 99,
+                "base_price": 999,
+                "permalink": "https://meli.example/wrong",
+            },
+        },
+    }
+    dispatcher = _core_dispatcher(db)
+
+    with_headers = await dispatcher.execute(
+        _context("SHEETSELLER_PUBLICACIONES", {"skus": "todos", "encabezados": "si"})
+    )
+    without_headers = await dispatcher.execute(
+        _context(
+            "SHEETSELLER_PUBLICACIONES",
+            {"skus": [["sku-2"], ["missing"]], "encabezados": ""},
+        )
+    )
+
+    assert with_headers.values == [
+        ["SKU", "ID Publicación", "Título", "Status", "Stock", "Precio", "URL"],
+        ["sku-1", "MLA1", "First listing", "active", 7, 123.45, "https://meli.example/mla1"],
+        ["sku-2", "MLA2", "Second listing", "paused", 0, 10, "https://meli.example/mla2"],
+    ]
+    assert with_headers.meta == {"partial_misses": 0, "columns": "minimal_current_item"}
+    assert without_headers.values == [
+        ["sku-2", "MLA2", "Second listing", "paused", 0, 10, "https://meli.example/mla2"]
+    ]
+    assert without_headers.meta == {"partial_misses": 1, "columns": "minimal_current_item"}
+    assert formula_rows.last_find_filter == {
+        "seller_id": "seller-1",
+        "normalized_sku": {"$in": ["SKU-2", "MISSING"]},
+    }
+
+
+@pytest.mark.asyncio
 async def test_formula_api_uses_core_handlers_and_keeps_other_formulas_data_unavailable() -> None:
     now = datetime(2026, 5, 13, 17, 0, tzinfo=UTC)
     app, db, token = await _app_with_token(now=now)
