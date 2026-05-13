@@ -528,6 +528,138 @@ async def test_publicaciones_returns_minimal_current_item_table_with_optional_he
 
 
 @pytest.mark.asyncio
+async def test_categorias_returns_category_by_item_id_with_blanks_for_misses() -> None:
+    db = FakeDb()
+    formula_rows = db["sheets_item_formula_rows"]
+    formula_rows.documents = {
+        "seller-1-sku-1-mla1": {
+            "_id": "seller-1-sku-1-mla1",
+            "seller_id": "seller-1",
+            "normalized_sku": "SKU-1",
+            "item_id": "MLA1",
+            "current": {"category_id": "MLA-CELLPHONES"},
+        },
+        "seller-1-sku-2-mla2": {
+            "_id": "seller-1-sku-2-mla2",
+            "seller_id": "seller-1",
+            "normalized_sku": "SKU-2",
+            "item_id": "MLA2",
+            "current": {"category_id": "MLA-ACCESSORIES"},
+        },
+        "seller-2-sku-1-mla1": {
+            "_id": "seller-2-sku-1-mla1",
+            "seller_id": "seller-2",
+            "normalized_sku": "SKU-1",
+            "item_id": "MLA1",
+            "current": {"category_id": "WRONG-TENANT"},
+        },
+    }
+    dispatcher = _core_dispatcher(db)
+
+    scalar_category = await dispatcher.execute(
+        _context("SHEETSELLER_CATEGORIAS", {"id_publicaciones": "MLA1"})
+    )
+    range_category = await dispatcher.execute(
+        _context("SHEETSELLER_CATEGORIAS", {"id_publicaciones": [["MLA1"], ["MLA-X"], ["MLA2"]]})
+    )
+
+    assert scalar_category.values == [["MLA-CELLPHONES"]]
+    assert scalar_category.meta == {"partial_misses": 0}
+    assert range_category.values == [["MLA-CELLPHONES"], [""], ["MLA-ACCESSORIES"]]
+    assert range_category.meta == {"partial_misses": 1}
+    assert formula_rows.last_find_filter == {
+        "seller_id": "seller-1",
+        "item_id": {"$in": ["MLA1", "MLA-X", "MLA2"]},
+    }
+
+
+@pytest.mark.asyncio
+async def test_imagenes_returns_thumbnail_urls_for_item_sku_pairs_and_todos() -> None:
+    db = FakeDb()
+    formula_rows = db["sheets_item_formula_rows"]
+    formula_rows.documents = {
+        "seller-1-sku-1-mla1": {
+            "_id": "seller-1-sku-1-mla1",
+            "seller_id": "seller-1",
+            "sku": "sku-1",
+            "normalized_sku": "SKU-1",
+            "item_id": "MLA1",
+            "current": {"thumbnail": "https://img.example/mla1.jpg"},
+        },
+        "seller-1-sku-2-mla2": {
+            "_id": "seller-1-sku-2-mla2",
+            "seller_id": "seller-1",
+            "sku": "sku-2",
+            "normalized_sku": "SKU-2",
+            "item_id": "MLA2",
+            "current": {"thumbnail": "https://img.example/mla2.jpg"},
+        },
+        "seller-1-sku-3-mla3": {
+            "_id": "seller-1-sku-3-mla3",
+            "seller_id": "seller-1",
+            "sku": "sku-3",
+            "normalized_sku": "SKU-3",
+            "item_id": "MLA3",
+            "current": {"thumbnail": None},
+        },
+        "seller-2-sku-1-mla1": {
+            "_id": "seller-2-sku-1-mla1",
+            "seller_id": "seller-2",
+            "sku": "sku-1",
+            "normalized_sku": "SKU-1",
+            "item_id": "MLA1",
+            "current": {"thumbnail": "https://img.example/wrong.jpg"},
+        },
+    }
+    dispatcher = _core_dispatcher(db)
+
+    scalar_image = await dispatcher.execute(
+        _context("SHEETSELLER_IMAGENES", {"skus": "sku-1", "id_publicaciones": "MLA1"})
+    )
+    range_images = await dispatcher.execute(
+        _context(
+            "SHEETSELLER_IMAGENES",
+            {
+                "skus": [["sku-1"], ["sku-2"], ["missing"]],
+                "id_publicaciones": ["MLA1", "MLA2", "MLA-X"],
+                "imagen": "principal",
+            },
+        )
+    )
+    all_images = await dispatcher.execute(
+        _context("SHEETSELLER_IMAGENES", {"skus": "todos", "id_publicaciones": "todos"})
+    )
+
+    assert scalar_image.values == [["https://img.example/mla1.jpg"]]
+    assert scalar_image.meta == {
+        "partial_misses": 0,
+        "columns": "thumbnail_url",
+        "image_variant": "principal",
+    }
+    assert range_images.values == [
+        ["https://img.example/mla1.jpg"],
+        ["https://img.example/mla2.jpg"],
+        [""],
+    ]
+    assert range_images.meta == {
+        "partial_misses": 1,
+        "columns": "thumbnail_url",
+        "image_variant": "principal",
+    }
+    assert all_images.values == [
+        ["https://img.example/mla1.jpg"],
+        ["https://img.example/mla2.jpg"],
+        [""],
+    ]
+    assert all_images.meta == {
+        "partial_misses": 0,
+        "columns": "thumbnail_url",
+        "image_variant": "principal",
+    }
+    assert formula_rows.last_find_filter == {"seller_id": "seller-1"}
+
+
+@pytest.mark.asyncio
 async def test_formula_api_uses_core_handlers_and_keeps_other_formulas_data_unavailable() -> None:
     now = datetime(2026, 5, 13, 17, 0, tzinfo=UTC)
     app, db, token = await _app_with_token(now=now)

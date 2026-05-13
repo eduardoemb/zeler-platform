@@ -25,6 +25,8 @@ CORE_FORMULA_NAMES = frozenset(
         "SHEETSELLER_CODIGOML",
         "SHEETSELLER_CODIGOML2SKUID",
         "SHEETSELLER_DIASPUBLICADA",
+        "SHEETSELLER_IMAGENES",
+        "SHEETSELLER_CATEGORIAS",
     }
 )
 
@@ -48,6 +50,8 @@ def build_core_formula_handlers(
         "SHEETSELLER_CODIGOML": handlers.sheetseller_codigoml,
         "SHEETSELLER_CODIGOML2SKUID": handlers.sheetseller_codigoml2skuid,
         "SHEETSELLER_DIASPUBLICADA": handlers.sheetseller_diaspublicada,
+        "SHEETSELLER_IMAGENES": handlers.sheetseller_imagenes,
+        "SHEETSELLER_CATEGORIAS": handlers.sheetseller_categorias,
     }
 
 
@@ -231,6 +235,52 @@ class CoreFormulaHandlers:
                 values.append([max((today - published_at.date()).days, 0)])
         return FormulaExecutionResult(values=values, meta={"partial_misses": misses})
 
+    async def sheetseller_imagenes(
+        self, context: FormulaExecutionContext
+    ) -> FormulaExecutionResult:
+        image_variant = _image_variant(context.args.get("imagen"))
+        requested_skus = _normalize_sku_argument(context.args.get("skus", "todos"))
+        requested_item_ids = _normalize_optional_item_ids(
+            context.args.get("id_publicaciones", "todos")
+        )
+
+        if requested_skus is not None and requested_item_ids is not None:
+            return await self._lookup_thumbnail_by_pairs(
+                context,
+                requested_skus=requested_skus,
+                requested_item_ids=requested_item_ids,
+                image_variant=image_variant,
+            )
+
+        rows = await self._repository.find_item_formula_rows(
+            seller_id=context.seller_id,
+            skus=requested_skus,
+            item_ids=requested_item_ids,
+        )
+        ordered_rows = _order_image_rows(
+            rows,
+            requested_skus=requested_skus,
+            requested_item_ids=requested_item_ids,
+        )
+        values = [[_current_value(row, "thumbnail")] for row in ordered_rows]
+        return FormulaExecutionResult(
+            values=values,
+            meta={
+                "partial_misses": _image_partial_misses(
+                    requested_skus=requested_skus,
+                    requested_item_ids=requested_item_ids,
+                    rows=ordered_rows,
+                ),
+                "columns": "thumbnail_url",
+                "image_variant": image_variant,
+            },
+        )
+
+    async def sheetseller_categorias(
+        self, context: FormulaExecutionContext
+    ) -> FormulaExecutionResult:
+        return await self._lookup_current_field_by_item_id(context, field="category_id")
+
     async def _lookup_current_field(
         self,
         context: FormulaExecutionContext,
@@ -288,6 +338,41 @@ class CoreFormulaHandlers:
                 values.append([value])
         return FormulaExecutionResult(values=values, meta={"partial_misses": misses})
 
+    async def _lookup_thumbnail_by_pairs(
+        self,
+        context: FormulaExecutionContext,
+        *,
+        requested_skus: list[str],
+        requested_item_ids: list[str],
+        image_variant: str,
+    ) -> FormulaExecutionResult:
+        pairs = _lookup_pairs(skus=requested_skus, item_ids=requested_item_ids)
+        rows = await self._repository.find_item_formula_rows(
+            seller_id=context.seller_id,
+            skus=[pair.sku for pair in pairs],
+            item_ids=[pair.item_id for pair in pairs],
+        )
+        rows_by_pair = {
+            (normalize_sku(row.get("normalized_sku", "")), str(row.get("item_id", ""))): row
+            for row in rows
+        }
+        values: list[list[Any]] = []
+        misses = 0
+        for pair in pairs:
+            row = rows_by_pair.get((pair.sku, pair.item_id))
+            value = _current_value(row, "thumbnail") if row is not None else ""
+            if value == "":
+                misses += 1
+            values.append([value])
+        return FormulaExecutionResult(
+            values=values,
+            meta={
+                "partial_misses": misses,
+                "columns": "thumbnail_url",
+                "image_variant": image_variant,
+            },
+        )
+
 
 class _LookupPair:
     def __init__(self, *, sku: str, item_id: str) -> None:
@@ -319,6 +404,12 @@ def _normalize_sku_argument(value: Any) -> list[str] | None:
 
 def _normalize_item_id_argument(value: Any) -> list[str]:
     return _flatten_sheet_values(value, normalize=lambda item_id: str(item_id).strip())
+
+
+def _normalize_optional_item_ids(value: Any) -> list[str] | None:
+    if isinstance(value, str) and value.strip().casefold() == "todos":
+        return None
+    return _normalize_item_id_argument(value)
 
 
 def _normalize_inventory_code_argument(value: Any) -> list[str]:
@@ -395,10 +486,55 @@ def _order_rows_by_requested_inventory_codes(
     return ordered
 
 
+def _order_rows_by_requested_item_ids(
+    rows: list[dict[str, Any]], requested_item_ids: list[str]
+) -> list[dict[str, Any]]:
+    sorted_rows = sorted(
+        rows,
+        key=lambda row: (str(row.get("item_id", "")), normalize_sku(row.get("normalized_sku", ""))),
+    )
+    rows_by_item_id: dict[str, list[dict[str, Any]]] = {}
+    for row in sorted_rows:
+        rows_by_item_id.setdefault(str(row.get("item_id", "")).strip(), []).append(row)
+
+    ordered: list[dict[str, Any]] = []
+    for item_id in dict.fromkeys(requested_item_ids):
+        ordered.extend(rows_by_item_id.get(item_id, []))
+    return ordered
+
+
+def _order_image_rows(
+    rows: list[dict[str, Any]],
+    *,
+    requested_skus: list[str] | None,
+    requested_item_ids: list[str] | None,
+) -> list[dict[str, Any]]:
+    if requested_item_ids is not None:
+        return _order_rows_by_requested_item_ids(rows, requested_item_ids)
+    return _order_rows_by_requested_skus(rows, requested_skus)
+
+
 def _partial_misses(requested_skus: list[str] | None, matched_skus: set[str]) -> int:
     if requested_skus is None:
         return 0
     return sum(1 for sku in dict.fromkeys(requested_skus) if sku not in matched_skus)
+
+
+def _image_partial_misses(
+    *,
+    requested_skus: list[str] | None,
+    requested_item_ids: list[str] | None,
+    rows: list[dict[str, Any]],
+) -> int:
+    if requested_item_ids is not None:
+        matched_item_ids = {str(row.get("item_id", "")).strip() for row in rows}
+        return sum(
+            1 for item_id in dict.fromkeys(requested_item_ids) if item_id not in matched_item_ids
+        )
+    if requested_skus is not None:
+        matched_skus = {normalize_sku(row.get("normalized_sku", "")) for row in rows}
+        return _partial_misses(requested_skus, matched_skus)
+    return 0
 
 
 def _header_row(value: Any, headers: list[str]) -> list[list[Any]]:
@@ -409,6 +545,18 @@ def _header_row(value: Any, headers: list[str]) -> list[list[Any]]:
 
 def _blank_if_none(value: Any) -> Any:
     return "" if value is None else value
+
+
+def _current_value(row: Mapping[str, Any], field: str) -> Any:
+    current = row.get("current", {})
+    if not isinstance(current, Mapping):
+        return ""
+    return _blank_if_none(current.get(field))
+
+
+def _image_variant(value: Any) -> str:
+    variant = str(value or "principal").strip().casefold()
+    return variant or "principal"
 
 
 def _published_at(row: Mapping[str, Any]) -> datetime | None:
