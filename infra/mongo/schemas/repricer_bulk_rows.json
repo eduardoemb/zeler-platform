@@ -1,0 +1,34 @@
+{
+  "$jsonSchema": {
+    "bsonType": "object",
+    "properties": {
+      "_id": {"bsonType": ["objectId", "string"]},
+      "seller_id": {"bsonType": ["string", "long", "int"]},
+      "account_id": {"bsonType": ["string", "long", "int"]},
+      "job_id": {"bsonType": "string"},
+      "row_number": {"bsonType": ["int", "long"]},
+      "status": {"enum": ["validated", "queued", "processed", "failed", "skipped"]},
+      "payload": {"bsonType": "object"},
+      "item_id": {"bsonType": "string"},
+      "error_code": {"bsonType": "string"},
+      "error_message": {"bsonType": "string"},
+      "created_at": {"bsonType": "date"},
+      "updated_at": {"bsonType": "date"},
+      "schema_version": {"bsonType": "int"}
+    },
+    "required": [
+      "_id",
+      "seller_id",
+      "account_id",
+      "job_id",
+      "row_number",
+      "status",
+      "payload",
+      "created_at",
+      "updated_at",
+      "schema_version"
+    ]
+  },
+  "validationAction": "error",
+  "validationLevel": "strict"
+}

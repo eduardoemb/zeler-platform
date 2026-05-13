@@ -21,10 +21,16 @@ from motor.motor_asyncio import AsyncIOMotorClient
 from zeler_platform_core.auth.meli_gateway_auth import MeliGatewayAuth
 from zeler_platform_core.clients.meli_gateway_client import GatewayRateLimitError, MeliGatewayClient
 from zeler_platform_core.events.idempotency import IdempotencyStore as CoreIdempotencyStore
-from zeler_platform_core.models import Item, RepricerRule
+from zeler_platform_core.models import (
+    Item,
+    RepricerAllies,
+    RepricerCatalogRule,
+    RepricerLimits,
+    RepricerRule,
+)
 from zeler_platform_core.runtime.manifest import validate_manifest
 from zeler_platform_core.runtime.worker_health import WorkerHealthSidecar
-from zeler_repricer.engine import SetPrice, evaluate_rule
+from zeler_repricer.engine import NoAction, SetPrice, evaluate_catalog_rule, evaluate_rule
 
 MELI_EVENTS_EXCHANGE = "meli.events"
 REPRICER_ITEMS_QUEUE = "zeler.repricer.items"
@@ -53,6 +59,7 @@ class RepricerEvent:
     resource: str
     idempotency_key: str
     buybox_price: Decimal | None = None
+    competitor_account_id: str | None = None
 
 
 class GatewayPriceClient(Protocol):
@@ -171,10 +178,12 @@ class RepricerEventHandler:
         db: Any,
         gateway_client: GatewayPriceClient,
         idempotency_store: IdempotencyStoreLike,
+        clock: Callable[[], datetime] = lambda: datetime.now(UTC),
     ) -> None:
         self._db = db
         self._gateway = gateway_client
         self._idempotency = idempotency_store
+        self._clock = clock
 
     async def handle(self, event: RepricerEvent) -> str:
         if await self._idempotency.is_duplicate(event.idempotency_key):
@@ -187,6 +196,20 @@ class RepricerEventHandler:
         if item_doc is None:
             return "item_missing"
         item = Item.model_validate(item_doc)
+        catalog_rule, allow_legacy_rule_fallback = await self._find_catalog_rule(
+            seller_id=event.seller_id,
+            item_id=item.id,
+        )
+        if catalog_rule is not None:
+            return await self._handle_catalog_rule(
+                event=event,
+                item=item,
+                rule=catalog_rule,
+            )
+
+        if not allow_legacy_rule_fallback:
+            return "rule_missing"
+
         rule_doc = await self._db["repricer_rules"].find_one(
             {"seller_id": str(event.seller_id), "item_id": item.id, "active": True}
         )
@@ -225,6 +248,127 @@ class RepricerEventHandler:
         await self._idempotency.mark_processed(event.idempotency_key)
         return "no_action"
 
+    async def _find_catalog_rule(
+        self,
+        *,
+        seller_id: int,
+        item_id: str,
+    ) -> tuple[RepricerCatalogRule | None, bool]:
+        try:
+            collection = self._db["repricer_catalog_rules"]
+        except KeyError:
+            return None, True
+
+        rule_doc = await collection.find_one(
+            {"seller_id": str(seller_id), "item_id": item_id, "active": True}
+        )
+        if rule_doc is None:
+            return None, False
+        return RepricerCatalogRule.model_validate(rule_doc), False
+
+    async def _handle_catalog_rule(
+        self,
+        *,
+        event: RepricerEvent,
+        item: Item,
+        rule: RepricerCatalogRule,
+    ) -> str:
+        decision = evaluate_catalog_rule(
+            rule,
+            current_price=item.price,
+            buybox_price=event.buybox_price,
+            limits=await self._find_limits(seller_id=event.seller_id, account_id=rule.account_id),
+            allies=await self._find_allies(seller_id=event.seller_id),
+            competitor_account_id=event.competitor_account_id,
+        )
+
+        if isinstance(decision, SetPrice):
+            gateway_status, latency_ms = await self._gateway.update_price(
+                seller_id=event.seller_id,
+                item_id=item.id,
+                new_price=decision.new_price,
+                idempotency_key=event.idempotency_key,
+            )
+            await self._write_history(
+                event=event,
+                item=item,
+                new_price=decision.new_price,
+                reason=decision.reason,
+                gateway_status=gateway_status,
+                latency_ms=latency_ms,
+                catalog_rule=rule,
+            )
+            await self._update_catalog_execution_state(
+                rule=rule,
+                outcome="applied",
+                applied_price=decision.new_price,
+                competitor_account_id=event.competitor_account_id,
+            )
+            await self._idempotency.mark_processed(event.idempotency_key)
+            return "set_price"
+
+        await self._write_history(
+            event=event,
+            item=item,
+            new_price=item.price,
+            reason=decision.reason,
+            gateway_status=None,
+            latency_ms=None,
+            catalog_rule=rule,
+        )
+        await self._update_catalog_execution_state(
+            rule=rule,
+            outcome=_execution_outcome(decision),
+            applied_price=None,
+            competitor_account_id=event.competitor_account_id,
+        )
+        await self._idempotency.mark_processed(event.idempotency_key)
+        return "no_action"
+
+    async def _update_catalog_execution_state(
+        self,
+        *,
+        rule: RepricerCatalogRule,
+        outcome: str,
+        applied_price: Decimal | None,
+        competitor_account_id: str | None,
+    ) -> None:
+        now = self._clock()
+        await self._db["repricer_catalog_rules"].update_one(
+            {"_id": rule.id, "seller_id": rule.seller_id},
+            {
+                "$set": {
+                    "execution_state.last_outcome": outcome,
+                    "execution_state.last_event_at": now,
+                    "execution_state.last_applied_price": applied_price,
+                    "execution_state.last_competitor": _competitor_state(competitor_account_id),
+                    "updated_at": now,
+                }
+            },
+        )
+
+    async def _find_limits(self, *, seller_id: int, account_id: str) -> RepricerLimits | None:
+        try:
+            collection = self._db["repricer_limits"]
+        except KeyError:
+            return None
+        document = await collection.find_one(
+            {"seller_id": str(seller_id), "account_id": str(account_id)}
+        )
+        if document is None:
+            return None
+        return RepricerLimits.model_validate(document)
+
+    async def _find_allies(self, *, seller_id: int) -> RepricerAllies | None:
+        try:
+            collection = self._db["repricer_allies"]
+        except KeyError:
+            return None
+        document = await collection.find_one({"seller_id": str(seller_id)})
+        if document is None:
+            return None
+        return RepricerAllies.model_validate(document)
+
     async def _write_history(
         self,
         *,
@@ -234,21 +378,40 @@ class RepricerEventHandler:
         reason: str,
         gateway_status: int | None,
         latency_ms: int | None,
+        catalog_rule: RepricerCatalogRule | None = None,
     ) -> None:
+        history_doc: dict[str, Any] = {
+            "seller_id": str(event.seller_id),
+            "item_id": item.id,
+            "old_price": item.price,
+            "new_price": new_price,
+            "reason": reason,
+            "applied_at": self._clock(),
+            "gateway_status": gateway_status,
+            "gateway_latency_ms": latency_ms,
+            "event_id": event.event_id,
+            "schema_version": 1,
+        }
+        if catalog_rule is not None:
+            history_doc["account_id"] = catalog_rule.account_id
+            history_doc["rule_id"] = catalog_rule.id
         await self._db["repricer_history"].insert_one(
-            {
-                "seller_id": str(event.seller_id),
-                "item_id": item.id,
-                "old_price": item.price,
-                "new_price": new_price,
-                "reason": reason,
-                "applied_at": datetime.now(UTC),
-                "gateway_status": gateway_status,
-                "gateway_latency_ms": latency_ms,
-                "event_id": event.event_id,
-                "schema_version": 1,
-            }
+            history_doc
         )
+
+
+def _execution_outcome(decision: NoAction) -> str:
+    if decision.reason in {"paused", "competition_paused"}:
+        return "paused"
+    if decision.reason in {"below_floor", "manual_review_required"}:
+        return "guard_blocked"
+    return "no_action"
+
+
+def _competitor_state(competitor_account_id: str | None) -> dict[str, str] | None:
+    if competitor_account_id is None:
+        return None
+    return {"account_id": str(competitor_account_id)}
 
 
 @dataclass(frozen=True)
@@ -259,7 +422,12 @@ class RepricerAmqpConsumerConfig:
     dead_letter_exchange: str = REPRICER_ITEMS_DLX
     delivery_limit: int = REPRICER_DELIVERY_LIMIT
     prefetch_count: int = DEFAULT_PREFETCH_COUNT
-    routing_keys: tuple[str, ...] = ("items.*", "items.price_updated")
+    routing_keys: tuple[str, ...] = (
+        "items.*",
+        "items.price_updated",
+        "price_suggestion.*",
+        "repricer.sweep.requested",
+    )
 
 
 class RepricerAmqpConsumerRunner:
@@ -509,7 +677,12 @@ def _item_id_from_resource(resource: str) -> str:
 
 def _routing_keys_from_manifest(manifest_path: str | Path | None) -> tuple[str, ...]:
     if manifest_path is None:
-        return ("items.*", "items.price_updated")
+        return (
+            "items.*",
+            "items.price_updated",
+            "price_suggestion.*",
+            "repricer.sweep.requested",
+        )
     manifest = validate_manifest(manifest_path)
     return tuple(manifest.routing_keys)
 
@@ -520,6 +693,9 @@ def _event_from_message(message: Any) -> RepricerEvent:
         raise ValueError("repricer event payload must be a JSON object")
     idempotency_key = _idempotency_key(message, payload)
     buybox_price = payload.get("buybox_price")
+    competitor_account_id = payload.get(
+        "competitor_account_id", payload.get("competitor_seller_id")
+    )
     return RepricerEvent(
         event_id=str(payload["event_id"]),
         event_type=str(payload["event_type"]),
@@ -527,6 +703,9 @@ def _event_from_message(message: Any) -> RepricerEvent:
         resource=str(payload["resource"]),
         idempotency_key=idempotency_key,
         buybox_price=Decimal(str(buybox_price)) if buybox_price is not None else None,
+        competitor_account_id=str(competitor_account_id)
+        if competitor_account_id is not None
+        else None,
     )
 
 

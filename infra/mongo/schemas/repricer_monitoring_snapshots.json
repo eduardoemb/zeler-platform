@@ -1,0 +1,29 @@
+{
+  "$jsonSchema": {
+    "bsonType": "object",
+    "properties": {
+      "_id": {"bsonType": ["objectId", "string"]},
+      "seller_id": {"bsonType": ["string", "long", "int"]},
+      "account_id": {"bsonType": ["string", "long", "int"]},
+      "generated_at": {"bsonType": "date"},
+      "worker_heartbeat_at": {"bsonType": ["date", "null"]},
+      "queue_backlog": {"bsonType": "object"},
+      "error_buckets": {"bsonType": "object"},
+      "active_bulk_job_ids": {"bsonType": "array"},
+      "schema_version": {"bsonType": "int"}
+    },
+    "required": [
+      "_id",
+      "seller_id",
+      "account_id",
+      "generated_at",
+      "worker_heartbeat_at",
+      "queue_backlog",
+      "error_buckets",
+      "active_bulk_job_ids",
+      "schema_version"
+    ]
+  },
+  "validationAction": "error",
+  "validationLevel": "strict"
+}

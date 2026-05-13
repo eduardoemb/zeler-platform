@@ -7,6 +7,15 @@ from zeler_platform_core.repos.core import (
     QuestionRepo,
     ShipmentRepo,
 )
+from zeler_platform_core.repos.repricer import (
+    RepricerAlliesRepo,
+    RepricerBulkJobRepo,
+    RepricerBulkRowRepo,
+    RepricerCatalogRuleRepo,
+    RepricerLimitsRepo,
+    RepricerMonitoringSnapshotRepo,
+    RepricerReportRepo,
+)
 
 __all__ = [
     "ClaimRepo",
@@ -15,5 +24,12 @@ __all__ = [
     "MessageRepo",
     "OrderRepo",
     "QuestionRepo",
+    "RepricerAlliesRepo",
+    "RepricerBulkJobRepo",
+    "RepricerBulkRowRepo",
+    "RepricerCatalogRuleRepo",
+    "RepricerLimitsRepo",
+    "RepricerMonitoringSnapshotRepo",
+    "RepricerReportRepo",
     "ShipmentRepo",
 ]

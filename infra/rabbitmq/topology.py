@@ -10,6 +10,7 @@ QUEUE_BINDINGS = {
     "zeler.repricer.items": ["items.*"],
     "zeler.repricer.items_prices": ["items.price_updated"],
     "zeler.repricer.price_suggestion": ["price_suggestion.*"],
+    "zeler.repricer.sweep": ["repricer.sweep.requested"],
     "zeler.sheets.events": ["items.*", "orders.*", "shipments.*"],
     "zeler.sheets.orders": ["orders.*"],
     "zeler.sheets.user_products": ["user_products.*"],

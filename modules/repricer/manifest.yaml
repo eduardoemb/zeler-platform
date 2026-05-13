@@ -4,6 +4,7 @@ subscribed_events:
   - items.*
   - items.price_updated
   - price_suggestion.*
+  - repricer.sweep.requested
 owned_collections:
   - repricer_rules
   - repricer_history

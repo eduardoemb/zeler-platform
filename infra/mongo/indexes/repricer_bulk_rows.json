@@ -1,0 +1,4 @@
+[
+  {"keys":{"job_id":1,"status":1},"options":{"name":"idx_repricer_bulk_rows_job_status"}},
+  {"keys":{"seller_id":1,"account_id":1,"job_id":1,"row_number":1},"options":{"name":"uniq_repricer_bulk_rows_scope_job_row","unique":true}}
+]

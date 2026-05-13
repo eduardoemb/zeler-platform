@@ -132,6 +132,7 @@ async def test_runner_declares_queue_and_binds_manifest_routing_keys(
         "items.*",
         "items.price_updated",
         "price_suggestion.*",
+        "repricer.sweep.requested",
     ]
     assert channel.queue.consumer.__self__ is runner
     assert channel.queue.consumer.__func__ is runner.handle_message.__func__

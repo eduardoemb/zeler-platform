@@ -1,0 +1,35 @@
+{
+  "$jsonSchema": {
+    "bsonType": "object",
+    "properties": {
+      "_id": {"bsonType": ["objectId", "string"]},
+      "seller_id": {"bsonType": ["string", "long", "int"]},
+      "account_id": {"bsonType": ["string", "long", "int"]},
+      "enabled": {"bsonType": "bool"},
+      "min_price_limit": {"bsonType": ["decimal", "double", "int", "long"]},
+      "max_price_limit": {"bsonType": ["decimal", "double", "int", "long"]},
+      "undercut_delta": {"bsonType": ["decimal", "double", "int", "long"]},
+      "pause_competition": {"bsonType": "bool"},
+      "escalate_to_manual_review": {"bsonType": "bool"},
+      "created_at": {"bsonType": "date"},
+      "updated_at": {"bsonType": "date"},
+      "schema_version": {"bsonType": "int"}
+    },
+    "required": [
+      "_id",
+      "seller_id",
+      "account_id",
+      "enabled",
+      "min_price_limit",
+      "max_price_limit",
+      "undercut_delta",
+      "pause_competition",
+      "escalate_to_manual_review",
+      "created_at",
+      "updated_at",
+      "schema_version"
+    ]
+  },
+  "validationAction": "error",
+  "validationLevel": "strict"
+}

@@ -1,0 +1,5 @@
+[
+  {"keys":{"seller_id":1,"account_id":1,"active":1,"item_id":1},"options":{"name":"idx_repricer_catalog_rules_scope_active_item"}},
+  {"keys":{"seller_id":1,"account_id":1,"item_id":1},"options":{"name":"uniq_repricer_catalog_rules_scope_item_active","unique":true,"partialFilterExpression":{"active":true}}},
+  {"keys":{"item_id":"text","sku":"text","title":"text"},"options":{"name":"text_repricer_catalog_rules_lookup"}}
+]

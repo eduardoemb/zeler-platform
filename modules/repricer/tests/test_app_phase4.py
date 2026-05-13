@@ -48,7 +48,12 @@ async def test_repricer_startup_registers_manifest_and_health_ready() -> None:
         "_id": "repricer",
         "version": "0.1.0",
         "allowed_meli_scopes": ["PUT /items/*", "GET /items/*", "GET /items/*/prices"],
-        "routing_keys": ["items.*", "items.price_updated", "price_suggestion.*"],
+        "routing_keys": [
+            "items.*",
+            "items.price_updated",
+            "price_suggestion.*",
+            "repricer.sweep.requested",
+        ],
         "owned_collections": ["repricer_rules", "repricer_history"],
         "health_endpoint": "/health",
         "status": "enabled",

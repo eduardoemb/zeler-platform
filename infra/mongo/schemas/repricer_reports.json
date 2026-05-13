@@ -1,0 +1,35 @@
+{
+  "$jsonSchema": {
+    "bsonType": "object",
+    "properties": {
+      "_id": {"bsonType": ["objectId", "string"]},
+      "seller_id": {"bsonType": ["string", "long", "int"]},
+      "account_id": {"bsonType": ["string", "long", "int"]},
+      "report_type": {"enum": ["rules_export", "history_export", "bulk_errors"]},
+      "format": {"enum": ["csv", "xlsx"]},
+      "status": {"enum": ["pending", "ready", "failed"]},
+      "storage_path": {"bsonType": "string"},
+      "row_count": {"bsonType": ["int", "long"]},
+      "created_at": {"bsonType": "date"},
+      "updated_at": {"bsonType": "date"},
+      "requested_by": {"bsonType": "string"},
+      "schema_version": {"bsonType": "int"}
+    },
+    "required": [
+      "_id",
+      "seller_id",
+      "account_id",
+      "report_type",
+      "format",
+      "status",
+      "storage_path",
+      "row_count",
+      "created_at",
+      "updated_at",
+      "requested_by",
+      "schema_version"
+    ]
+  },
+  "validationAction": "error",
+  "validationLevel": "strict"
+}

@@ -1,0 +1,41 @@
+{
+  "$jsonSchema": {
+    "bsonType": "object",
+    "properties": {
+      "_id": {"bsonType": ["objectId", "string"]},
+      "seller_id": {"bsonType": ["string", "long", "int"]},
+      "account_id": {"bsonType": ["string", "long", "int"]},
+      "item_id": {"bsonType": "string"},
+      "title": {"bsonType": "string"},
+      "sku": {"bsonType": "string"},
+      "strategy": {"enum": ["min_price", "competitive", "maximize"]},
+      "min_price": {"bsonType": ["decimal", "double", "int", "long"]},
+      "max_price": {"bsonType": ["decimal", "double", "int", "long"]},
+      "active": {"bsonType": "bool"},
+      "execution_state": {"bsonType": "object"},
+      "created_at": {"bsonType": "date"},
+      "updated_at": {"bsonType": "date"},
+      "created_by": {"bsonType": "string"},
+      "updated_by": {"bsonType": "string"},
+      "schema_version": {"bsonType": "int"}
+    },
+    "required": [
+      "_id",
+      "seller_id",
+      "account_id",
+      "item_id",
+      "strategy",
+      "min_price",
+      "max_price",
+      "active",
+      "execution_state",
+      "created_at",
+      "updated_at",
+      "created_by",
+      "updated_by",
+      "schema_version"
+    ]
+  },
+  "validationAction": "error",
+  "validationLevel": "strict"
+}

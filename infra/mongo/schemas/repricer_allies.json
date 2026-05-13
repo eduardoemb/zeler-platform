@@ -1,0 +1,16 @@
+{
+  "$jsonSchema": {
+    "bsonType": "object",
+    "properties": {
+      "_id": {"bsonType": ["objectId", "string"]},
+      "seller_id": {"bsonType": ["string", "long", "int"]},
+      "allies": {"bsonType": "array"},
+      "created_at": {"bsonType": "date"},
+      "updated_at": {"bsonType": "date"},
+      "schema_version": {"bsonType": "int"}
+    },
+    "required": ["_id", "seller_id", "allies", "created_at", "updated_at", "schema_version"]
+  },
+  "validationAction": "error",
+  "validationLevel": "strict"
+}

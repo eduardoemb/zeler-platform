@@ -210,3 +210,142 @@ def _rule_payload(*, min_price: str = "100", max_price: str = "200") -> dict[str
         "active": True,
         "updated_at": datetime(2026, 4, 24, 12, 0, tzinfo=UTC).isoformat(),
     }
+
+
+def test_repricer_foundation_models_serialize_api_payloads() -> None:
+    from zeler_platform_core.models import (
+        RepricerAllies,
+        RepricerBulkJob,
+        RepricerBulkRow,
+        RepricerCatalogRule,
+        RepricerLimits,
+        RepricerMonitoringSnapshot,
+        RepricerReport,
+    )
+
+    now = datetime(2026, 5, 13, 18, 0, tzinfo=UTC)
+    catalog_rule = RepricerCatalogRule.model_validate(
+        {
+            "_id": "catalog-1",
+            "seller_id": 123456789,
+            "account_id": "acc-1",
+            "item_id": "MLA123",
+            "title": "Catalog item",
+            "sku": "SKU-1",
+            "strategy": "competitive",
+            "min_price": "100.00",
+            "max_price": "120.00",
+            "active": True,
+            "execution_state": {
+                "last_outcome": "applied",
+                "last_event_at": now,
+                "last_applied_price": "109.90",
+                "last_competitor": {"seller_id": "998", "item_id": "MLA-COMP"},
+                "predominant_variant_id": "VAR-1",
+            },
+            "created_at": now,
+            "updated_at": now,
+            "created_by": "operator-1",
+            "updated_by": "operator-1",
+        }
+    )
+    limits = RepricerLimits.model_validate(
+        {
+            "_id": "limits-1",
+            "seller_id": 123456789,
+            "account_id": "acc-1",
+            "enabled": True,
+            "min_price_limit": "100.00",
+            "max_price_limit": "150.00",
+            "undercut_delta": "1.50",
+            "pause_competition": False,
+            "escalate_to_manual_review": True,
+            "created_at": now,
+            "updated_at": now,
+        }
+    )
+    allies = RepricerAllies.model_validate(
+        {
+            "_id": "allies-1",
+            "seller_id": 123456789,
+            "allies": [{"account_id": "ally-1", "nickname": "ALLY SHOP"}],
+            "created_at": now,
+            "updated_at": now,
+        }
+    )
+    bulk_job = RepricerBulkJob.model_validate(
+        {
+            "_id": "job-1",
+            "seller_id": 123456789,
+            "account_id": "acc-1",
+            "status": "processing",
+            "source_filename": "catalog.xlsx",
+            "total_rows": 10,
+            "processed_rows": 4,
+            "success_rows": 3,
+            "failed_rows": 1,
+            "created_at": now,
+            "updated_at": now,
+            "created_by": "operator-1",
+        }
+    )
+    bulk_row = RepricerBulkRow.model_validate(
+        {
+            "_id": "row-1",
+            "seller_id": 123456789,
+            "account_id": "acc-1",
+            "job_id": "job-1",
+            "row_number": 1,
+            "status": "failed",
+            "payload": {"sku": "SKU-1"},
+            "error_code": "invalid_price",
+            "error_message": "price below limit",
+            "created_at": now,
+            "updated_at": now,
+        }
+    )
+    report = RepricerReport.model_validate(
+        {
+            "_id": "report-1",
+            "seller_id": 123456789,
+            "account_id": "acc-1",
+            "report_type": "rules_export",
+            "format": "csv",
+            "status": "ready",
+            "storage_path": "gs://bucket/report.csv",
+            "row_count": 25,
+            "created_at": now,
+            "updated_at": now,
+            "requested_by": "operator-1",
+        }
+    )
+    snapshot = RepricerMonitoringSnapshot.model_validate(
+        {
+            "_id": "snapshot-1",
+            "seller_id": 123456789,
+            "account_id": "acc-1",
+            "generated_at": now,
+            "worker_heartbeat_at": now,
+            "queue_backlog": {"repricer.sweep.requested": 2},
+            "error_buckets": {"rate_limit": 1},
+            "active_bulk_job_ids": ["job-1"],
+        }
+    )
+
+    payload = {
+        "catalog_rule": catalog_rule.model_dump(mode="json", by_alias=True),
+        "limits": limits.model_dump(mode="json", by_alias=True),
+        "allies": allies.model_dump(mode="json", by_alias=True),
+        "bulk_job": bulk_job.model_dump(mode="json", by_alias=True),
+        "bulk_row": bulk_row.model_dump(mode="json", by_alias=True),
+        "report": report.model_dump(mode="json", by_alias=True),
+        "snapshot": snapshot.model_dump(mode="json", by_alias=True),
+    }
+
+    assert payload["catalog_rule"]["execution_state"]["last_applied_price"] == "109.90"
+    assert payload["limits"]["seller_id"] == "123456789"
+    assert payload["allies"]["allies"][0]["nickname"] == "ALLY SHOP"
+    assert payload["bulk_job"]["status"] == "processing"
+    assert payload["bulk_row"]["error_code"] == "invalid_price"
+    assert payload["report"]["storage_path"] == "gs://bucket/report.csv"
+    assert payload["snapshot"]["queue_backlog"] == {"repricer.sweep.requested": 2}

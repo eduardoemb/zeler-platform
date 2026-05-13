@@ -1,0 +1,37 @@
+{
+  "$jsonSchema": {
+    "bsonType": "object",
+    "properties": {
+      "_id": {"bsonType": ["objectId", "string"]},
+      "seller_id": {"bsonType": ["string", "long", "int"]},
+      "account_id": {"bsonType": ["string", "long", "int"]},
+      "status": {"enum": ["draft", "validated", "processing", "completed", "completed_with_errors", "failed"]},
+      "source_filename": {"bsonType": "string"},
+      "total_rows": {"bsonType": ["int", "long"]},
+      "processed_rows": {"bsonType": ["int", "long"]},
+      "success_rows": {"bsonType": ["int", "long"]},
+      "failed_rows": {"bsonType": ["int", "long"]},
+      "created_at": {"bsonType": "date"},
+      "updated_at": {"bsonType": "date"},
+      "created_by": {"bsonType": "string"},
+      "schema_version": {"bsonType": "int"}
+    },
+    "required": [
+      "_id",
+      "seller_id",
+      "account_id",
+      "status",
+      "source_filename",
+      "total_rows",
+      "processed_rows",
+      "success_rows",
+      "failed_rows",
+      "created_at",
+      "updated_at",
+      "created_by",
+      "schema_version"
+    ]
+  },
+  "validationAction": "error",
+  "validationLevel": "strict"
+}

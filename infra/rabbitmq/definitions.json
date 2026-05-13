@@ -21,6 +21,11 @@
       "durable": true
     },
     {
+      "name": "zeler.repricer.sweep.dlx",
+      "type": "direct",
+      "durable": true
+    },
+    {
       "name": "zeler.sheets.events.dlx",
       "type": "direct",
       "durable": true
@@ -212,6 +217,58 @@
     },
     {
       "name": "zeler.repricer.price_suggestion.retry.10m",
+      "durable": true,
+      "arguments": {
+        "x-message-ttl": 600000,
+        "x-dead-letter-exchange": "meli.events"
+      }
+    },
+    {
+      "name": "zeler.repricer.sweep.dlq",
+      "durable": true,
+      "arguments": {}
+    },
+    {
+      "name": "zeler.repricer.sweep",
+      "durable": true,
+      "arguments": {
+        "x-dead-letter-exchange": "zeler.repricer.sweep.dlx"
+      }
+    },
+    {
+      "name": "zeler.repricer.sweep.retry.1s",
+      "durable": true,
+      "arguments": {
+        "x-message-ttl": 1000,
+        "x-dead-letter-exchange": "meli.events"
+      }
+    },
+    {
+      "name": "zeler.repricer.sweep.retry.5s",
+      "durable": true,
+      "arguments": {
+        "x-message-ttl": 5000,
+        "x-dead-letter-exchange": "meli.events"
+      }
+    },
+    {
+      "name": "zeler.repricer.sweep.retry.30s",
+      "durable": true,
+      "arguments": {
+        "x-message-ttl": 30000,
+        "x-dead-letter-exchange": "meli.events"
+      }
+    },
+    {
+      "name": "zeler.repricer.sweep.retry.2m",
+      "durable": true,
+      "arguments": {
+        "x-message-ttl": 120000,
+        "x-dead-letter-exchange": "meli.events"
+      }
+    },
+    {
+      "name": "zeler.repricer.sweep.retry.10m",
       "durable": true,
       "arguments": {
         "x-message-ttl": 600000,
@@ -672,6 +729,16 @@
       "source": "meli.events",
       "destination": "zeler.repricer.price_suggestion",
       "routing_key": "price_suggestion.*"
+    },
+    {
+      "source": "zeler.repricer.sweep.dlx",
+      "destination": "zeler.repricer.sweep.dlq",
+      "routing_key": "zeler.repricer.sweep"
+    },
+    {
+      "source": "meli.events",
+      "destination": "zeler.repricer.sweep",
+      "routing_key": "repricer.sweep.requested"
     },
     {
       "source": "zeler.sheets.events.dlx",
