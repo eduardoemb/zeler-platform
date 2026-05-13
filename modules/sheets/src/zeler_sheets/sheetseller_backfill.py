@@ -75,17 +75,18 @@ async def run_sheetseller_backfill(
         sku_index_doc = build_sku_index_doc(item, seller_id=seller_id, sku=sku)
         formula_row_doc = build_formula_row_doc(item, seller_id=seller_id, sku=sku)
 
+        sku_index_upserts += 1
+        formula_row_upserts += 1
+
         if dry_run:
             continue
 
         await sku_index_collection.replace_one(
             {"_id": sku_index_doc["_id"]}, sku_index_doc, upsert=True
         )
-        sku_index_upserts += 1
         await formula_rows_collection.replace_one(
             {"_id": formula_row_doc["_id"]}, formula_row_doc, upsert=True
         )
-        formula_row_upserts += 1
 
     return BackfillSummary(
         seller_id=seller_id,

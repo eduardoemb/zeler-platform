@@ -180,8 +180,8 @@ async def test_backfill_dry_run_reads_seller_items_and_reports_counts_without_wr
         items_read=3,
         items_with_sku=2,
         skipped_missing_sku=1,
-        sku_index_upserts=0,
-        formula_row_upserts=0,
+        sku_index_upserts=2,
+        formula_row_upserts=2,
     )
     assert db["items"].find_filters == [{"seller_id": "82453304"}]
     assert db["items"].last_cursor is not None
