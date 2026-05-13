@@ -85,7 +85,9 @@ def test_formula_api_envelopes_are_converted_to_sheets_safe_2d_values() -> None:
 
     assert "function sheetsellerEnvelopeToValues_(envelope)" in client_source
     assert "Array.isArray(envelope.values)" in client_source
-    assert "return envelope.values" in client_source
+    assert "envelope.values.length === 0" in client_source
+    assert 'return [[""]]' in client_source
+    assert "return sheetsellerCoerce2d_(envelope.values)" in client_source
     assert "DATA_UNAVAILABLE" in client_source
     assert "TOKEN_MISSING" in client_source
     assert "return [[message]]" in client_source

@@ -45,7 +45,10 @@ function sheetsellerParseResponse_(response) {
 
 function sheetsellerEnvelopeToValues_(envelope) {
   if (envelope && Array.isArray(envelope.values)) {
-    return envelope.values;
+    if (envelope.values.length === 0) {
+      return [[""]];
+    }
+    return sheetsellerCoerce2d_(envelope.values);
   }
   var code = (envelope && envelope.error && envelope.error.code) || "DATA_UNAVAILABLE";
   var message = code + ": " + ((envelope && envelope.error && envelope.error.message) || "formula data is unavailable");
