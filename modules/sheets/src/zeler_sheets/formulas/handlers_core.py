@@ -25,10 +25,24 @@ CORE_FORMULA_NAMES = frozenset(
         "SHEETSELLER_CODIGOML",
         "SHEETSELLER_CODIGOML2SKUID",
         "SHEETSELLER_DIASPUBLICADA",
+        "SHEETSELLER_DASHBOARD",
+        "SHEETSELLER_DASHBOARDSINCATALOGO",
         "SHEETSELLER_IMAGENES",
         "SHEETSELLER_CATEGORIAS",
     }
 )
+
+DASHBOARD_MVP_HEADERS = [
+    "SKU",
+    "ID Publicación",
+    "Título",
+    "Status",
+    "Stock",
+    "Precio",
+    "URL",
+    "Categoría",
+    "Imagen",
+]
 
 
 def build_core_formula_handlers(
@@ -50,6 +64,8 @@ def build_core_formula_handlers(
         "SHEETSELLER_CODIGOML": handlers.sheetseller_codigoml,
         "SHEETSELLER_CODIGOML2SKUID": handlers.sheetseller_codigoml2skuid,
         "SHEETSELLER_DIASPUBLICADA": handlers.sheetseller_diaspublicada,
+        "SHEETSELLER_DASHBOARD": handlers.sheetseller_dashboard,
+        "SHEETSELLER_DASHBOARDSINCATALOGO": handlers.sheetseller_dashboard_sin_catalogo,
         "SHEETSELLER_IMAGENES": handlers.sheetseller_imagenes,
         "SHEETSELLER_CATEGORIAS": handlers.sheetseller_categorias,
     }
@@ -235,6 +251,16 @@ class CoreFormulaHandlers:
                 values.append([max((today - published_at.date()).days, 0)])
         return FormulaExecutionResult(values=values, meta={"partial_misses": misses})
 
+    async def sheetseller_dashboard(
+        self, context: FormulaExecutionContext
+    ) -> FormulaExecutionResult:
+        return await self._dashboard_table(context, exclude_catalog=False)
+
+    async def sheetseller_dashboard_sin_catalogo(
+        self, context: FormulaExecutionContext
+    ) -> FormulaExecutionResult:
+        return await self._dashboard_table(context, exclude_catalog=True)
+
     async def sheetseller_imagenes(
         self, context: FormulaExecutionContext
     ) -> FormulaExecutionResult:
@@ -372,6 +398,36 @@ class CoreFormulaHandlers:
                 "image_variant": image_variant,
             },
         )
+
+    async def _dashboard_table(
+        self, context: FormulaExecutionContext, *, exclude_catalog: bool
+    ) -> FormulaExecutionResult:
+        requested_skus = _normalize_sku_argument(context.args.get("skus", "todos"))
+        rows = await self._repository.find_item_formula_rows(
+            seller_id=context.seller_id,
+            skus=requested_skus,
+        )
+        ordered_rows = _order_rows_by_requested_skus(rows, requested_skus)
+        visible_rows = [
+            row for row in ordered_rows if not exclude_catalog or not _has_catalog_product(row)
+        ]
+        values: list[list[Any]] = _header_row(
+            context.args.get("encabezados"), DASHBOARD_MVP_HEADERS
+        )
+        for row in visible_rows:
+            item_id = row.get("item_id") or ""
+            if not item_id:
+                continue
+            values.append(_dashboard_row(row))
+
+        matched_skus = {normalize_sku(row.get("normalized_sku", "")) for row in ordered_rows}
+        meta: dict[str, Any] = {
+            "partial_misses": _partial_misses(requested_skus, matched_skus),
+            "columns": "dashboard_mvp_current_item",
+        }
+        if exclude_catalog:
+            meta["excluded_catalog_rows"] = len(ordered_rows) - len(visible_rows)
+        return FormulaExecutionResult(values=values, meta=meta)
 
 
 class _LookupPair:
@@ -538,7 +594,14 @@ def _image_partial_misses(
 
 
 def _header_row(value: Any, headers: list[str]) -> list[list[Any]]:
-    if str(value or "").strip().casefold() in {"si", "sí", "true", "1", "yes"}:
+    if str(value or "").strip().casefold() in {
+        "si",
+        "sí",
+        "verdadero",
+        "true",
+        "1",
+        "yes",
+    }:
         return [headers]
     return []
 
@@ -552,6 +615,26 @@ def _current_value(row: Mapping[str, Any], field: str) -> Any:
     if not isinstance(current, Mapping):
         return ""
     return _blank_if_none(current.get(field))
+
+
+def _dashboard_row(row: Mapping[str, Any]) -> list[Any]:
+    return [
+        row.get("sku") or row.get("normalized_sku") or "",
+        row.get("item_id") or "",
+        _current_value(row, "title"),
+        _current_value(row, "status"),
+        _current_value(row, "available_quantity"),
+        _current_value(row, "base_price"),
+        _current_value(row, "permalink"),
+        _current_value(row, "category_id"),
+        _current_value(row, "thumbnail"),
+    ]
+
+
+def _has_catalog_product(row: Mapping[str, Any]) -> bool:
+    current = row.get("current", {})
+    value = current.get("catalog_product_id") if isinstance(current, Mapping) else None
+    return str(value or "").strip() != ""
 
 
 def _image_variant(value: Any) -> str:

@@ -1,0 +1,66 @@
+{
+  "schema_version": 1,
+  "formulas": {
+    "SHEETSELLER_DASHBOARD": {
+      "legacy_source": "sheetsellerappindividual/addon/Publications.gs:SHEETSELLER_DASHBOARD -> /publications/personalizado",
+      "columns": [
+        {"name": "SKU", "source": "sheets_item_formula_rows.sku | normalized_sku", "status": "mvp"},
+        {"name": "ID Publicación", "source": "sheets_item_formula_rows.item_id", "status": "mvp"},
+        {"name": "Título", "source": "sheets_item_formula_rows.current.title", "status": "mvp"},
+        {"name": "Status", "source": "sheets_item_formula_rows.current.status", "status": "mvp"},
+        {"name": "Stock", "source": "sheets_item_formula_rows.current.available_quantity", "status": "mvp"},
+        {"name": "Precio", "source": "sheets_item_formula_rows.current.base_price", "status": "mvp"},
+        {"name": "URL", "source": "sheets_item_formula_rows.current.permalink", "status": "mvp"},
+        {"name": "Categoría", "source": "sheets_item_formula_rows.current.category_id", "status": "mvp"},
+        {"name": "Imagen", "source": "sheets_item_formula_rows.current.thumbnail", "status": "mvp"},
+        {"name": "LOGISTICA", "legacy_source_note": "legacy /publications/personalizado logistics column", "status": "deferred", "reason": "No logistics/fulfillment field is currently present in sheets_item_formula_rows."},
+        {"name": "TIPO DE PUBLICACION", "legacy_source_note": "legacy /publications/personalizado listing type column", "status": "deferred", "reason": "No listing type field is currently present in sheets_item_formula_rows."},
+        {"name": "CODIGO ML", "source": "sheets_item_formula_rows.inventory_id | current.inventory_id", "status": "deferred", "reason": "Available as a lookup formula, but excluded from the locked dashboard MVP column set."},
+        {"name": "DIAS PAUSADA", "legacy_source_note": "legacy paused-days/historical state column", "status": "deferred", "reason": "Requires historical paused-period read model."},
+        {"name": "VENTAS (7 DIAS)", "legacy_source_note": "legacy recent sales aggregation", "status": "deferred", "reason": "Requires order/sales read model."},
+        {"name": "VENTAS (15 DIAS)", "legacy_source_note": "legacy recent sales aggregation", "status": "deferred", "reason": "Requires order/sales read model."},
+        {"name": "VENTAS (30 DIAS)", "legacy_source_note": "legacy recent sales aggregation", "status": "deferred", "reason": "Requires order/sales read model."},
+        {"name": "VENTAS (60 DIAS)", "legacy_source_note": "legacy recent sales aggregation", "status": "deferred", "reason": "Requires order/sales read model."},
+        {"name": "VENTAS (90 DIAS)", "legacy_source_note": "legacy recent sales aggregation", "status": "deferred", "reason": "Requires order/sales read model."},
+        {"name": "ENVIO A CARGO DE", "legacy_source_note": "legacy shipping payer column", "status": "deferred", "reason": "Requires shipping/cost read model."},
+        {"name": "COSTO DE ENVIO", "legacy_source_note": "legacy shipping cost column", "status": "deferred", "reason": "Requires shipping/cost read model."},
+        {"name": "% COMISION", "legacy_source_note": "legacy commission percentage column", "status": "deferred", "reason": "Requires fee/commission read model."},
+        {"name": "COMISION", "legacy_source_note": "legacy commission amount column", "status": "deferred", "reason": "Requires fee/commission read model."},
+        {"name": "COSTO POR UNIDAD", "legacy_source_note": "legacy unit cost column", "status": "deferred", "reason": "No platform-owned unit-cost source is defined for this formula."},
+        {"name": "TIENE CATALOGO", "source": "sheets_item_formula_rows.current.catalog_product_id", "status": "unsupported_until_defined", "reason": "Current catalog_product_id is safe for exclusion, but exact legacy display semantics are not defined."},
+        {"name": "PRECIO PROMO", "legacy_source_note": "legacy conditional column when tipo_precio='todos'", "status": "unsupported_until_defined", "reason": "No promotional price field is currently present in sheets_item_formula_rows."}
+      ]
+    },
+    "SHEETSELLER_DASHBOARDSINCATALOGO": {
+      "legacy_source": "sheetsellerappindividual/addon/Publications.gs:SHEETSELLER_DASHBOARDSINCATALOGO -> /publications/personalizado_sincat",
+      "compatibility_note": "MVP excludes rows when current.catalog_product_id is present; richer catalog/buybox semantics remain unsupported_until_defined.",
+      "columns": [
+        {"name": "SKU", "source": "sheets_item_formula_rows.sku | normalized_sku", "status": "mvp"},
+        {"name": "ID Publicación", "source": "sheets_item_formula_rows.item_id", "status": "mvp"},
+        {"name": "Título", "source": "sheets_item_formula_rows.current.title", "status": "mvp"},
+        {"name": "Status", "source": "sheets_item_formula_rows.current.status", "status": "mvp"},
+        {"name": "Stock", "source": "sheets_item_formula_rows.current.available_quantity", "status": "mvp"},
+        {"name": "Precio", "source": "sheets_item_formula_rows.current.base_price", "status": "mvp"},
+        {"name": "URL", "source": "sheets_item_formula_rows.current.permalink", "status": "mvp"},
+        {"name": "Categoría", "source": "sheets_item_formula_rows.current.category_id", "status": "mvp"},
+        {"name": "Imagen", "source": "sheets_item_formula_rows.current.thumbnail", "status": "mvp"},
+        {"name": "LOGISTICA", "legacy_source_note": "legacy /publications/personalizado_sincat logistics column", "status": "deferred", "reason": "No logistics/fulfillment field is currently present in sheets_item_formula_rows."},
+        {"name": "TIPO DE PUBLICACION", "legacy_source_note": "legacy /publications/personalizado_sincat listing type column", "status": "deferred", "reason": "No listing type field is currently present in sheets_item_formula_rows."},
+        {"name": "CODIGO ML", "source": "sheets_item_formula_rows.inventory_id | current.inventory_id", "status": "deferred", "reason": "Available as a lookup formula, but excluded from the locked dashboard MVP column set."},
+        {"name": "DIAS PAUSADA", "legacy_source_note": "legacy paused-days/historical state column", "status": "deferred", "reason": "Requires historical paused-period read model."},
+        {"name": "VENTAS (7 DIAS)", "legacy_source_note": "legacy recent sales aggregation", "status": "deferred", "reason": "Requires order/sales read model."},
+        {"name": "VENTAS (15 DIAS)", "legacy_source_note": "legacy recent sales aggregation", "status": "deferred", "reason": "Requires order/sales read model."},
+        {"name": "VENTAS (30 DIAS)", "legacy_source_note": "legacy recent sales aggregation", "status": "deferred", "reason": "Requires order/sales read model."},
+        {"name": "VENTAS (60 DIAS)", "legacy_source_note": "legacy recent sales aggregation", "status": "deferred", "reason": "Requires order/sales read model."},
+        {"name": "VENTAS (90 DIAS)", "legacy_source_note": "legacy recent sales aggregation", "status": "deferred", "reason": "Requires order/sales read model."},
+        {"name": "ENVIO A CARGO DE", "legacy_source_note": "legacy shipping payer column", "status": "deferred", "reason": "Requires shipping/cost read model."},
+        {"name": "COSTO DE ENVIO", "legacy_source_note": "legacy shipping cost column", "status": "deferred", "reason": "Requires shipping/cost read model."},
+        {"name": "% COMISION", "legacy_source_note": "legacy commission percentage column", "status": "deferred", "reason": "Requires fee/commission read model."},
+        {"name": "COMISION", "legacy_source_note": "legacy commission amount column", "status": "deferred", "reason": "Requires fee/commission read model."},
+        {"name": "COSTO POR UNIDAD", "legacy_source_note": "legacy unit cost column", "status": "deferred", "reason": "No platform-owned unit-cost source is defined for this formula."},
+        {"name": "TIENE CATALOGO", "source": "sheets_item_formula_rows.current.catalog_product_id", "status": "unsupported_until_defined", "reason": "Used only as the MVP exclusion predicate; exact legacy display semantics are not defined."},
+        {"name": "PRECIO PROMO", "legacy_source_note": "legacy conditional column when tipo_precio='todos'", "status": "unsupported_until_defined", "reason": "No promotional price field is currently present in sheets_item_formula_rows."}
+      ]
+    }
+  }
+}

@@ -528,6 +528,233 @@ async def test_publicaciones_returns_minimal_current_item_table_with_optional_he
 
 
 @pytest.mark.asyncio
+async def test_dashboard_returns_minimal_current_item_table_with_optional_headers() -> None:
+    db = FakeDb()
+    formula_rows = db["sheets_item_formula_rows"]
+    formula_rows.documents = {
+        "seller-1-sku-1-mla1": {
+            "_id": "seller-1-sku-1-mla1",
+            "seller_id": "seller-1",
+            "sku": "sku-1",
+            "normalized_sku": "SKU-1",
+            "item_id": "MLA1",
+            "current": {
+                "title": "First listing",
+                "status": "active",
+                "available_quantity": 7,
+                "base_price": 123.45,
+                "permalink": "https://meli.example/mla1",
+                "category_id": "MLA-CELLPHONES",
+                "thumbnail": "https://img.example/mla1.jpg",
+            },
+        },
+        "seller-1-sku-2-mla2": {
+            "_id": "seller-1-sku-2-mla2",
+            "seller_id": "seller-1",
+            "sku": "sku-2",
+            "normalized_sku": "SKU-2",
+            "item_id": "MLA2",
+            "current": {
+                "title": "Second listing",
+                "status": "paused",
+                "available_quantity": 0,
+                "base_price": 10,
+                "permalink": "https://meli.example/mla2",
+                "category_id": "MLA-ACCESSORIES",
+                "thumbnail": None,
+            },
+        },
+        "seller-2-sku-1-mla1": {
+            "_id": "seller-2-sku-1-mla1",
+            "seller_id": "seller-2",
+            "sku": "sku-1",
+            "normalized_sku": "SKU-1",
+            "item_id": "MLB1",
+            "current": {
+                "title": "Wrong tenant",
+                "status": "active",
+                "available_quantity": 99,
+                "base_price": 999,
+                "permalink": "https://meli.example/wrong",
+                "category_id": "WRONG-TENANT",
+                "thumbnail": "https://img.example/wrong.jpg",
+            },
+        },
+    }
+    dispatcher = _core_dispatcher(db)
+
+    with_headers = await dispatcher.execute(
+        _context("SHEETSELLER_DASHBOARD", {"skus": "todos", "encabezados": "verdadero"})
+    )
+    without_headers = await dispatcher.execute(
+        _context("SHEETSELLER_DASHBOARD", {"skus": [["sku-2"], ["missing"]]})
+    )
+
+    assert with_headers.values == [
+        [
+            "SKU",
+            "ID Publicación",
+            "Título",
+            "Status",
+            "Stock",
+            "Precio",
+            "URL",
+            "Categoría",
+            "Imagen",
+        ],
+        [
+            "sku-1",
+            "MLA1",
+            "First listing",
+            "active",
+            7,
+            123.45,
+            "https://meli.example/mla1",
+            "MLA-CELLPHONES",
+            "https://img.example/mla1.jpg",
+        ],
+        [
+            "sku-2",
+            "MLA2",
+            "Second listing",
+            "paused",
+            0,
+            10,
+            "https://meli.example/mla2",
+            "MLA-ACCESSORIES",
+            "",
+        ],
+    ]
+    assert with_headers.meta == {"partial_misses": 0, "columns": "dashboard_mvp_current_item"}
+    assert without_headers.values == [
+        [
+            "sku-2",
+            "MLA2",
+            "Second listing",
+            "paused",
+            0,
+            10,
+            "https://meli.example/mla2",
+            "MLA-ACCESSORIES",
+            "",
+        ]
+    ]
+    assert without_headers.meta == {"partial_misses": 1, "columns": "dashboard_mvp_current_item"}
+    assert formula_rows.last_find_filter == {
+        "seller_id": "seller-1",
+        "normalized_sku": {"$in": ["SKU-2", "MISSING"]},
+    }
+
+
+@pytest.mark.asyncio
+async def test_dashboard_sin_catalogo_excludes_rows_with_catalog_product_indicators() -> None:
+    db = FakeDb()
+    formula_rows = db["sheets_item_formula_rows"]
+    formula_rows.documents = {
+        "seller-1-sku-1-mla1": {
+            "_id": "seller-1-sku-1-mla1",
+            "seller_id": "seller-1",
+            "sku": "sku-1",
+            "normalized_sku": "SKU-1",
+            "item_id": "MLA1",
+            "current": {
+                "title": "Classic listing",
+                "status": "active",
+                "available_quantity": 4,
+                "base_price": 20,
+                "permalink": "https://meli.example/mla1",
+                "category_id": "MLA-CELLPHONES",
+                "thumbnail": "https://img.example/mla1.jpg",
+                "catalog_product_id": None,
+            },
+        },
+        "seller-1-sku-2-mla2": {
+            "_id": "seller-1-sku-2-mla2",
+            "seller_id": "seller-1",
+            "sku": "sku-2",
+            "normalized_sku": "SKU-2",
+            "item_id": "MLA2",
+            "current": {
+                "title": "Catalog listing",
+                "status": "active",
+                "available_quantity": 8,
+                "base_price": 30,
+                "permalink": "https://meli.example/mla2",
+                "category_id": "MLA-ACCESSORIES",
+                "thumbnail": "https://img.example/mla2.jpg",
+                "catalog_product_id": "MLA-CATALOG-1",
+            },
+        },
+        "seller-1-sku-3-mla3": {
+            "_id": "seller-1-sku-3-mla3",
+            "seller_id": "seller-1",
+            "sku": "sku-3",
+            "normalized_sku": "SKU-3",
+            "item_id": "MLA3",
+            "current": {
+                "title": "Blank catalog indicator listing",
+                "status": "paused",
+                "available_quantity": 0,
+                "base_price": 5,
+                "permalink": "https://meli.example/mla3",
+                "category_id": "MLA-OTHER",
+                "thumbnail": "https://img.example/mla3.jpg",
+                "catalog_product_id": "",
+            },
+        },
+    }
+    dispatcher = _core_dispatcher(db)
+
+    result = await dispatcher.execute(
+        _context(
+            "SHEETSELLER_DASHBOARDSINCATALOGO",
+            {"skus": "todos", "encabezados": "sí"},
+        )
+    )
+
+    assert result.values == [
+        [
+            "SKU",
+            "ID Publicación",
+            "Título",
+            "Status",
+            "Stock",
+            "Precio",
+            "URL",
+            "Categoría",
+            "Imagen",
+        ],
+        [
+            "sku-1",
+            "MLA1",
+            "Classic listing",
+            "active",
+            4,
+            20,
+            "https://meli.example/mla1",
+            "MLA-CELLPHONES",
+            "https://img.example/mla1.jpg",
+        ],
+        [
+            "sku-3",
+            "MLA3",
+            "Blank catalog indicator listing",
+            "paused",
+            0,
+            5,
+            "https://meli.example/mla3",
+            "MLA-OTHER",
+            "https://img.example/mla3.jpg",
+        ],
+    ]
+    assert result.meta == {
+        "partial_misses": 0,
+        "columns": "dashboard_mvp_current_item",
+        "excluded_catalog_rows": 1,
+    }
+
+
+@pytest.mark.asyncio
 async def test_categorias_returns_category_by_item_id_with_blanks_for_misses() -> None:
     db = FakeDb()
     formula_rows = db["sheets_item_formula_rows"]

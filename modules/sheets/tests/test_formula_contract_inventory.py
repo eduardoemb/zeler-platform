@@ -13,6 +13,13 @@ FIXTURE_PATH = (
     / "fixtures"
     / "sheetseller_formula_contracts.json"
 )
+COLUMN_FIXTURE_PATH = (
+    Path(__file__).parents[3]
+    / "tests"
+    / "sheets"
+    / "fixtures"
+    / "sheetseller_formula_output_columns.json"
+)
 
 EXPECTED_FORMULA_NAMES = [
     "SHEETSELLER_PUBLICACIONES",
@@ -86,6 +93,11 @@ RANGE_INPUT_CASES = ["scalar", "row_range", "column_range", "rectangular_range"]
 
 def _fixture() -> dict[str, Any]:
     loaded = json.loads(FIXTURE_PATH.read_text(encoding="utf-8"))
+    return cast("dict[str, Any]", loaded)
+
+
+def _column_fixture() -> dict[str, Any]:
+    loaded = json.loads(COLUMN_FIXTURE_PATH.read_text(encoding="utf-8"))
     return cast("dict[str, Any]", loaded)
 
 
@@ -179,3 +191,52 @@ def test_unknown_formula_returns_stable_formula_unknown_code() -> None:
 
     assert registry.find("SHEETSELLER_NO_EXISTE") is None
     assert registry.unknown_formula_error_code == "FORMULA_UNKNOWN"
+
+
+def test_dashboard_output_column_fixture_locks_mvp_and_deferred_columns() -> None:
+    fixture = _column_fixture()
+    formulas = fixture["formulas"]
+    expected_mvp = [
+        "SKU",
+        "ID Publicación",
+        "Título",
+        "Status",
+        "Stock",
+        "Precio",
+        "URL",
+        "Categoría",
+        "Imagen",
+    ]
+    expected_legacy_deferred = [
+        "LOGISTICA",
+        "TIPO DE PUBLICACION",
+        "CODIGO ML",
+        "DIAS PAUSADA",
+        "VENTAS (7 DIAS)",
+        "VENTAS (15 DIAS)",
+        "VENTAS (30 DIAS)",
+        "VENTAS (60 DIAS)",
+        "VENTAS (90 DIAS)",
+        "ENVIO A CARGO DE",
+        "COSTO DE ENVIO",
+        "% COMISION",
+        "COMISION",
+        "COSTO POR UNIDAD",
+    ]
+    expected_unsupported_until_defined = ["TIENE CATALOGO", "PRECIO PROMO"]
+
+    for formula in ["SHEETSELLER_DASHBOARD", "SHEETSELLER_DASHBOARDSINCATALOGO"]:
+        columns = formulas[formula]["columns"]
+        assert [column["name"] for column in columns if column["status"] == "mvp"] == expected_mvp
+        assert [
+            column["name"] for column in columns if column["status"] == "deferred"
+        ] == expected_legacy_deferred
+        assert [
+            column["name"] for column in columns if column["status"] == "unsupported_until_defined"
+        ] == expected_unsupported_until_defined
+        assert all("source" in column or "legacy_source_note" in column for column in columns)
+
+    assert formulas["SHEETSELLER_DASHBOARDSINCATALOGO"]["compatibility_note"] == (
+        "MVP excludes rows when current.catalog_product_id is present; richer catalog/buybox "
+        "semantics remain unsupported_until_defined."
+    )
