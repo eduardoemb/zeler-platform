@@ -2,7 +2,7 @@
 # zeler-platform-secrets.sh — installed at /opt/zeler-platform/zeler-platform-secrets.sh
 #
 # Systemd oneshot (Before=docker.service):
-#   Fetches 9 secrets from Secret Manager via the VM-attached SA (metadata-server token)
+#   Fetches 10 secrets from Secret Manager via the VM-attached SA (metadata-server token)
 #   and writes per-service env files under /opt/zeler-platform/env/<service>.env
 #   with mode 0600, owner root.
 #
@@ -39,6 +39,7 @@ GOOGLE_CLIENT_SECRET=$(s google-oauth-client-secret)
 MONGO_ADMIN_USER=$(s mongo-admin-user)
 MONGO_ADMIN_PASSWORD=$(s mongo-admin-password)
 ZELER_APP_BROKER_SECRET=$(s zeler-app-broker-secret)
+EXTENSION_TOKEN_PEPPER=$(s extension-token-pepper)
 
 echo "All secrets fetched."
 
@@ -111,17 +112,27 @@ for svc in repricer-api publicador-api autoreply-api fulldock-api; do
 done
 
 # ---------------------------------------------------------------------------
-# sheets-api + sheets-worker — BASE + Google OAuth + KMS google-tokens
+# sheets-api — BASE + Google OAuth + KMS google-tokens + extension token pepper
 # ---------------------------------------------------------------------------
-for svc in sheets-api sheets-worker; do
-  write "$svc" \
-    "${BASE[@]}" \
-    "GOOGLE_OAUTH_CLIENT_ID=$GOOGLE_CLIENT_ID" \
-    "GOOGLE_OAUTH_CLIENT_SECRET=$GOOGLE_CLIENT_SECRET" \
-    "GOOGLE_OAUTH_REDIRECT_URI=https://sheets.zeler.ai/oauth/google/callback" \
-    "KMS_GOOGLE_TOKENS_KEY=google-tokens" \
-    "GATEWAY_BASE_URL=$GATEWAY_PROXY_BASE_URL"
-done
+write sheets-api \
+  "${BASE[@]}" \
+  "GOOGLE_OAUTH_CLIENT_ID=$GOOGLE_CLIENT_ID" \
+  "GOOGLE_OAUTH_CLIENT_SECRET=$GOOGLE_CLIENT_SECRET" \
+  "GOOGLE_OAUTH_REDIRECT_URI=https://sheets.zeler.ai/oauth/google/callback" \
+  "EXTENSION_TOKEN_PEPPER=$EXTENSION_TOKEN_PEPPER" \
+  "KMS_GOOGLE_TOKENS_KEY=google-tokens" \
+  "GATEWAY_BASE_URL=$GATEWAY_PROXY_BASE_URL"
+
+# ---------------------------------------------------------------------------
+# sheets-worker — BASE + Google OAuth + KMS google-tokens
+# ---------------------------------------------------------------------------
+write sheets-worker \
+  "${BASE[@]}" \
+  "GOOGLE_OAUTH_CLIENT_ID=$GOOGLE_CLIENT_ID" \
+  "GOOGLE_OAUTH_CLIENT_SECRET=$GOOGLE_CLIENT_SECRET" \
+  "GOOGLE_OAUTH_REDIRECT_URI=https://sheets.zeler.ai/oauth/google/callback" \
+  "KMS_GOOGLE_TOKENS_KEY=google-tokens" \
+  "GATEWAY_BASE_URL=$GATEWAY_PROXY_BASE_URL"
 
 # ---------------------------------------------------------------------------
 # Workers that call gateway proxy with minted JWT/KMS auth

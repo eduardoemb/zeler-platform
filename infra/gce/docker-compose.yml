@@ -103,7 +103,7 @@ services:
 
   sheets-api:
     <<: *restart
-    image: us-central1-docker.pkg.dev/zeler-platform-dev/zeler-platform/sheets-api:rollout-v5
+    image: us-central1-docker.pkg.dev/zeler-platform-dev/zeler-platform/sheets-api:sheetseller-extension-parity-3a5c53e
     networks:
       - platform_default
     env_file: /opt/zeler-platform/env/sheets-api.env

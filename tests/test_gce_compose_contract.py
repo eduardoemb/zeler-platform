@@ -104,6 +104,7 @@ SERVICE_REQUIRED_KEYS: dict[str, set[str]] = {
         "GOOGLE_OAUTH_CLIENT_ID",
         "GOOGLE_OAUTH_CLIENT_SECRET",
         "GOOGLE_OAUTH_REDIRECT_URI",
+        "EXTENSION_TOKEN_PEPPER",
         "KMS_GOOGLE_TOKENS_KEY",
     },
     "sheets-worker": BASE_KEYS
@@ -377,6 +378,15 @@ class TestEnvTemplateContract:
             keys = load_template_keys(svc)
             for k in google_keys:
                 assert k in keys, f"{svc}.env.template missing {k}"
+
+    def test_secrets_script_fetches_extension_token_pepper_for_sheets_api_only(self) -> None:
+        text = SECRETS_SCRIPT.read_text()
+
+        assert "EXTENSION_TOKEN_PEPPER=$(s extension-token-pepper)" in text
+        sheets_api_section = text.split("# sheets-api", 1)[1].split("# sheets-worker", 1)[0]
+        assert "EXTENSION_TOKEN_PEPPER=$EXTENSION_TOKEN_PEPPER" in sheets_api_section
+        sheets_worker_section = text.split("# sheets-worker", 1)[1]
+        assert "EXTENSION_TOKEN_PEPPER" not in sheets_worker_section
 
     def test_mongo_template_has_init_credentials(self) -> None:
         keys = load_template_keys("mongo")
