@@ -1,17 +1,32 @@
 from __future__ import annotations
 
-from collections.abc import Callable
+import inspect
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import APIRouter, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from zeler_platform_core.auth.jwt import verify_module_jwt
 from zeler_platform_core.auth.module_admin import authorize_module_admin
-from zeler_sheets.extension_tokens import ExtensionTokenService, SellerScope
+from zeler_sheets.extension_tokens import (
+    AuditHook,
+    ExtensionTokenService,
+    ExtensionTokenValidationError,
+    RateLimitHook,
+    SellerScope,
+)
+from zeler_sheets.formulas.dispatcher import (
+    FormulaDataUnavailableError,
+    FormulaDispatcher,
+    FormulaExecutionContext,
+    FormulaExecutionResult,
+)
+from zeler_sheets.formulas.registry import FormulaRegistry
+from zeler_sheets.formulas.schemas import FormulaContract
 
 
 class ExportConfigPayload(BaseModel):
@@ -31,13 +46,34 @@ class ExtensionTokenPayload(BaseModel):
     expires_at: datetime | None = None
 
 
+class FormulaExecutePayload(BaseModel):
+    formula: str
+    cuenta: str | None = None
+    args: dict[str, Any] = Field(default_factory=dict)
+    request_id: str | None = None
+
+
+class FormulaBatchPayload(BaseModel):
+    requests: list[FormulaExecutePayload]
+
+
+FormulaDispatchCallable = Callable[
+    [FormulaExecutionContext], FormulaExecutionResult | Awaitable[FormulaExecutionResult]
+]
+
+
 def build_router(
     *,
     clock: Callable[[], datetime] | None = None,
     extension_token_pepper: str | None = None,
     extension_token_factory: Callable[[], str] | None = None,
+    formula_audit_hook: AuditHook | None = None,
+    formula_rate_limit_hook: RateLimitHook | None = None,
+    formula_dispatcher: FormulaDispatcher | FormulaDispatchCallable | None = None,
 ) -> APIRouter:
     now = clock or (lambda: datetime.now(UTC))
+    registry = FormulaRegistry.default()
+    dispatcher = formula_dispatcher or FormulaDispatcher()
     router = APIRouter(prefix="/sheets", tags=["sheets"])
 
     @router.get("/exports")
@@ -218,6 +254,53 @@ def build_router(
             return JSONResponse(status_code=404, content={"error": "extension_token_not_found"})
         return JSONResponse(jsonable_encoder(metadata.model_dump(mode="json")))
 
+    @router.get("/formulas/inventory")
+    async def list_formula_inventory() -> JSONResponse:
+        return JSONResponse(
+            jsonable_encoder(
+                {
+                    "formulas": [
+                        contract.to_json_dict() | {"status": "data_unavailable"}
+                        for contract in registry.list_contracts()
+                    ],
+                    "error_codes": list(registry.error_codes),
+                }
+            )
+        )
+
+    @router.post("/formulas:execute")
+    async def execute_formula(request: Request, payload: FormulaExecutePayload) -> JSONResponse:
+        body, status = await _execute_formula_payload(
+            request,
+            payload,
+            registry=registry,
+            dispatcher=dispatcher,
+            now=now,
+            token_pepper=extension_token_pepper,
+            token_factory=extension_token_factory,
+            audit_hook=formula_audit_hook,
+            rate_limit_hook=formula_rate_limit_hook,
+        )
+        return JSONResponse(status_code=status, content=jsonable_encoder(body))
+
+    @router.post("/formulas:batch")
+    async def execute_formula_batch(request: Request, payload: FormulaBatchPayload) -> JSONResponse:
+        results = []
+        for formula_request in payload.requests:
+            body, status = await _execute_formula_payload(
+                request,
+                formula_request,
+                registry=registry,
+                dispatcher=dispatcher,
+                now=now,
+                token_pepper=extension_token_pepper,
+                token_factory=extension_token_factory,
+                audit_hook=formula_audit_hook,
+                rate_limit_hook=formula_rate_limit_hook,
+            )
+            results.append({"status": status, "body": body})
+        return JSONResponse(jsonable_encoder({"ok": True, "results": results}))
+
     return router
 
 
@@ -241,6 +324,8 @@ def _extension_token_service(
     now: Callable[[], datetime],
     token_pepper: str | None,
     token_factory: Callable[[], str] | None,
+    audit_hook: AuditHook | None = None,
+    rate_limit_hook: RateLimitHook | None = None,
 ) -> ExtensionTokenService:
     pepper = token_pepper or getattr(request.app.state, "extension_token_pepper", None)
     if pepper is None and hasattr(request.app.state, "settings"):
@@ -254,7 +339,135 @@ def _extension_token_service(
         token_pepper=str(pepper),
         now_fn=now,
         token_factory=token_factory,
+        audit_hook=audit_hook,
+        rate_limit_hook=rate_limit_hook,
     )
+
+
+async def _execute_formula_payload(
+    request: Request,
+    payload: FormulaExecutePayload,
+    *,
+    registry: FormulaRegistry,
+    dispatcher: FormulaDispatcher | FormulaDispatchCallable,
+    now: Callable[[], datetime],
+    token_pepper: str | None,
+    token_factory: Callable[[], str] | None,
+    audit_hook: AuditHook | None,
+    rate_limit_hook: RateLimitHook | None,
+) -> tuple[dict[str, Any], int]:
+    if not payload.cuenta:
+        return _formula_error("BAD_ARGUMENT", "missing required field cuenta", status_code=400)
+
+    token_service = _extension_token_service(
+        request,
+        now=now,
+        token_pepper=token_pepper,
+        token_factory=token_factory,
+        audit_hook=audit_hook,
+        rate_limit_hook=rate_limit_hook,
+    )
+    try:
+        validation = await token_service.validate_token(
+            _bearer_token(request),
+            cuenta=payload.cuenta,
+            formula=payload.formula,
+            request_id=payload.request_id,
+        )
+    except ExtensionTokenValidationError as exc:
+        return _formula_error(exc.code, exc.message, status_code=_error_status(exc.code))
+
+    contract = registry.find(payload.formula)
+    if contract is None:
+        return _formula_error(
+            "FORMULA_UNKNOWN",
+            f"unknown formula {payload.formula}",
+            status_code=200,
+        )
+
+    missing_argument = _missing_required_argument(contract, payload.args)
+    if missing_argument is not None:
+        return _formula_error(
+            "BAD_ARGUMENT",
+            f"missing required argument {missing_argument}",
+            status_code=400,
+        )
+
+    context = FormulaExecutionContext(
+        contract=contract,
+        cuenta=payload.cuenta,
+        seller_id=validation.seller_id,
+        seller_nickname=validation.seller_nickname,
+        token_id=validation.token_id,
+        args=payload.args,
+        request_id=payload.request_id,
+    )
+    try:
+        result = await _dispatch_formula(dispatcher, context)
+    except FormulaDataUnavailableError as exc:
+        return _formula_error("DATA_UNAVAILABLE", exc.message, status_code=200)
+    except Exception:  # noqa: BLE001 - Apps Script callers require stable error cells.
+        return _formula_error(
+            "INTERNAL",
+            "internal formula error",
+            status_code=500,
+            retryable=True,
+        )
+
+    return {"ok": True, "values": result.values, "meta": result.meta}, 200
+
+
+async def _dispatch_formula(
+    dispatcher: FormulaDispatcher | FormulaDispatchCallable,
+    context: FormulaExecutionContext,
+) -> FormulaExecutionResult:
+    if isinstance(dispatcher, FormulaDispatcher):
+        return await dispatcher.execute(context)
+    result = dispatcher(context)
+    if inspect.isawaitable(result):
+        return await result
+    return result
+
+
+def _bearer_token(request: Request) -> str:
+    auth_header = request.headers.get("Authorization", "")
+    scheme, separator, token = auth_header.partition(" ")
+    if separator and scheme.casefold() == "bearer":
+        return token.strip()
+    return ""
+
+
+def _missing_required_argument(contract: FormulaContract, args: dict[str, Any]) -> str | None:
+    for parameter in contract.parameters:
+        if parameter.name == "cuenta":
+            continue
+        if parameter.required and parameter.name not in args:
+            return parameter.name
+    return None
+
+
+def _formula_error(
+    code: str,
+    message: str,
+    *,
+    status_code: int,
+    retryable: bool = False,
+) -> tuple[dict[str, Any], int]:
+    body = {
+        "ok": False,
+        "error": {"code": code, "message": message, "retryable": retryable},
+        "values": [[f"{code}: {message}"]],
+    }
+    return body, status_code
+
+
+def _error_status(code: str) -> int:
+    return {
+        "TOKEN_MISSING": 401,
+        "TOKEN_REVOKED": 401,
+        "SELLER_FORBIDDEN": 403,
+        "RATE_LIMITED": 429,
+    }.get(code, 400)
 
 
 def _seller_scope_forbidden(
