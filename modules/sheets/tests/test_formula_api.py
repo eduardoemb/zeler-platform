@@ -62,11 +62,14 @@ class FakeCollection:
 
 class FakeDb:
     def __init__(self) -> None:
-        self.sheets_extension_tokens = FakeCollection()
+        self.collections: dict[str, FakeCollection] = {"sheets_extension_tokens": FakeCollection()}
+
+    @property
+    def sheets_extension_tokens(self) -> FakeCollection:
+        return self.collections["sheets_extension_tokens"]
 
     def __getitem__(self, name: str) -> FakeCollection:
-        assert name == "sheets_extension_tokens"
-        return self.sheets_extension_tokens
+        return self.collections.setdefault(name, FakeCollection())
 
 
 def _matches(doc: dict[str, Any], filter_spec: dict[str, Any]) -> bool:
@@ -94,15 +97,7 @@ async def test_execute_known_formula_validates_token_and_cuenta_nickname() -> No
         )
 
     assert response.status_code == 200
-    assert response.json() == {
-        "ok": False,
-        "error": {
-            "code": "DATA_UNAVAILABLE",
-            "message": "SHEETSELLER_STOCK data is not available yet",
-            "retryable": False,
-        },
-        "values": [["DATA_UNAVAILABLE: SHEETSELLER_STOCK data is not available yet"]],
-    }
+    assert response.json() == {"ok": True, "values": [[""]], "meta": {"partial_misses": 1}}
     stored = next(iter(db.sheets_extension_tokens.documents.values()))
     assert stored["last_used_at"] == now
     assert audit_events[-1] == {
@@ -264,10 +259,8 @@ async def test_batch_returns_independent_formula_envelopes() -> None:
     assert response.json()["ok"] is True
     results = response.json()["results"]
     assert [result["status"] for result in results] == [200, 200]
-    assert [result["body"]["error"]["code"] for result in results] == [
-        "DATA_UNAVAILABLE",
-        "FORMULA_UNKNOWN",
-    ]
+    assert results[0]["body"] == {"ok": True, "values": [], "meta": {"partial_misses": 0}}
+    assert results[1]["body"]["error"]["code"] == "FORMULA_UNKNOWN"
 
 
 @pytest.mark.asyncio

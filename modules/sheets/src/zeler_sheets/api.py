@@ -25,6 +25,8 @@ from zeler_sheets.formulas.dispatcher import (
     FormulaExecutionContext,
     FormulaExecutionResult,
 )
+from zeler_sheets.formulas.handlers_core import build_core_formula_handlers
+from zeler_sheets.formulas.read_models import FormulaReadModelRepository
 from zeler_sheets.formulas.registry import FormulaRegistry
 from zeler_sheets.formulas.schemas import FormulaContract
 
@@ -73,7 +75,7 @@ def build_router(
 ) -> APIRouter:
     now = clock or (lambda: datetime.now(UTC))
     registry = FormulaRegistry.default()
-    dispatcher = formula_dispatcher or FormulaDispatcher()
+    dispatcher = formula_dispatcher
     router = APIRouter(prefix="/sheets", tags=["sheets"])
 
     @router.get("/exports")
@@ -349,7 +351,7 @@ async def _execute_formula_payload(
     payload: FormulaExecutePayload,
     *,
     registry: FormulaRegistry,
-    dispatcher: FormulaDispatcher | FormulaDispatchCallable,
+    dispatcher: FormulaDispatcher | FormulaDispatchCallable | None,
     now: Callable[[], datetime],
     token_pepper: str | None,
     token_factory: Callable[[], str] | None,
@@ -403,7 +405,7 @@ async def _execute_formula_payload(
         request_id=payload.request_id,
     )
     try:
-        result = await _dispatch_formula(dispatcher, context)
+        result = await _dispatch_formula(_runtime_dispatcher(request, dispatcher), context)
     except FormulaDataUnavailableError as exc:
         return _formula_error("DATA_UNAVAILABLE", exc.message, status_code=200)
     except Exception:  # noqa: BLE001 - Apps Script callers require stable error cells.
@@ -427,6 +429,16 @@ async def _dispatch_formula(
     if inspect.isawaitable(result):
         return await result
     return result
+
+
+def _runtime_dispatcher(
+    request: Request,
+    dispatcher: FormulaDispatcher | FormulaDispatchCallable | None,
+) -> FormulaDispatcher | FormulaDispatchCallable:
+    if dispatcher is not None:
+        return dispatcher
+    repository = FormulaReadModelRepository(db=request.app.state.mongo_db)
+    return FormulaDispatcher(build_core_formula_handlers(repository))
 
 
 def _bearer_token(request: Request) -> str:
