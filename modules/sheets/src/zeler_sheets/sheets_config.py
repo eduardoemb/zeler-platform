@@ -17,6 +17,7 @@ class SheetsSettings(BaseSettings):
     google_oauth_authorize_url: str = "https://accounts.google.com/o/oauth2/v2/auth"
     google_oauth_token_url: str = "https://oauth2.googleapis.com/token"  # noqa: S105
     google_sheets_scope: str = "https://www.googleapis.com/auth/spreadsheets"
+    extension_token_pepper: SecretStr | None = None
 
     model_config = SettingsConfigDict(env_prefix="", case_sensitive=False)
 

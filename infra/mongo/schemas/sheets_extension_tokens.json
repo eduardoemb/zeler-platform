@@ -1,0 +1,47 @@
+{
+  "$jsonSchema": {
+    "bsonType": "object",
+    "required": [
+      "_id",
+      "token_hash",
+      "token_prefix",
+      "owner_user_id",
+      "label",
+      "seller_scopes",
+      "formula_scopes",
+      "status",
+      "created_at",
+      "updated_at",
+      "schema_version"
+    ],
+    "properties": {
+      "_id": {"bsonType": "string"},
+      "token_hash": {"bsonType": "string"},
+      "token_prefix": {"bsonType": "string"},
+      "owner_user_id": {"bsonType": "string"},
+      "label": {"bsonType": "string"},
+      "seller_scopes": {
+        "bsonType": "array",
+        "items": {
+          "bsonType": "object",
+          "required": ["seller_id", "nickname"],
+          "properties": {
+            "seller_id": {"bsonType": "string"},
+            "nickname": {"bsonType": "string"}
+          }
+        }
+      },
+      "formula_scopes": {"bsonType": "array", "items": {"bsonType": "string"}},
+      "status": {"enum": ["active", "revoked"]},
+      "expires_at": {"bsonType": ["date", "null"]},
+      "created_at": {"bsonType": "date"},
+      "updated_at": {"bsonType": "date"},
+      "rotated_at": {"bsonType": ["date", "null"]},
+      "revoked_at": {"bsonType": ["date", "null"]},
+      "last_used_at": {"bsonType": ["date", "null"]},
+      "schema_version": {"bsonType": "int"}
+    }
+  },
+  "validationAction": "error",
+  "validationLevel": "strict"
+}

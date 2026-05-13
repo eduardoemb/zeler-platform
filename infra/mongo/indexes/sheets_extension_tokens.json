@@ -1,0 +1,18 @@
+[
+  {
+    "keys": {"token_hash": 1},
+    "options": {"name": "uniq_sheets_extension_tokens_hash", "unique": true}
+  },
+  {
+    "keys": {"owner_user_id": 1, "status": 1},
+    "options": {"name": "idx_sheets_extension_tokens_owner_status"}
+  },
+  {
+    "keys": {"seller_scopes.seller_id": 1, "status": 1},
+    "options": {"name": "idx_sheets_extension_tokens_seller_status"}
+  },
+  {
+    "keys": {"expires_at": 1},
+    "options": {"name": "idx_sheets_extension_tokens_expiry", "sparse": true}
+  }
+]

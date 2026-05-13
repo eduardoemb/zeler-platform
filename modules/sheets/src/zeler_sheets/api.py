@@ -11,6 +11,7 @@ from pydantic import BaseModel
 
 from zeler_platform_core.auth.jwt import verify_module_jwt
 from zeler_platform_core.auth.module_admin import authorize_module_admin
+from zeler_sheets.extension_tokens import ExtensionTokenService, SellerScope
 
 
 class ExportConfigPayload(BaseModel):
@@ -23,7 +24,19 @@ class ManualSyncPayload(BaseModel):
     seller_id: str
 
 
-def build_router(*, clock: Callable[[], datetime] | None = None) -> APIRouter:
+class ExtensionTokenPayload(BaseModel):
+    label: str
+    seller_scopes: list[SellerScope]
+    formula_scopes: list[str] | None = None
+    expires_at: datetime | None = None
+
+
+def build_router(
+    *,
+    clock: Callable[[], datetime] | None = None,
+    extension_token_pepper: str | None = None,
+    extension_token_factory: Callable[[], str] | None = None,
+) -> APIRouter:
     now = clock or (lambda: datetime.now(UTC))
     router = APIRouter(prefix="/sheets", tags=["sheets"])
 
@@ -114,6 +127,97 @@ def build_router(*, clock: Callable[[], datetime] | None = None) -> APIRouter:
         )
         return JSONResponse(jsonable_encoder(docs))
 
+    @router.get("/extension-tokens")
+    async def list_extension_tokens(
+        request: Request, owner_user_id: str | None = None
+    ) -> JSONResponse:
+        auth = _authorize(request)
+        if auth is not None:
+            return auth
+        claims = _claims(request)
+        owner = owner_user_id or str(claims.issued_by or claims.seller_id)
+        if owner != str(claims.issued_by or claims.seller_id):
+            return JSONResponse(status_code=403, content={"error": "forbidden"})
+        service = _extension_token_service(
+            request,
+            now=now,
+            token_pepper=extension_token_pepper,
+            token_factory=extension_token_factory,
+        )
+        tokens = await service.list_tokens(owner_user_id=owner)
+        return JSONResponse(jsonable_encoder([token.model_dump(mode="json") for token in tokens]))
+
+    @router.post("/extension-tokens", status_code=201)
+    async def create_extension_token(
+        request: Request, payload: ExtensionTokenPayload
+    ) -> JSONResponse:
+        auth = _authorize(request)
+        if auth is not None:
+            return auth
+        claims = _claims(request)
+        forbidden = _seller_scope_forbidden(payload.seller_scopes, seller_id=str(claims.seller_id))
+        if forbidden is not None:
+            return forbidden
+        owner = str(claims.issued_by or claims.seller_id)
+        service = _extension_token_service(
+            request,
+            now=now,
+            token_pepper=extension_token_pepper,
+            token_factory=extension_token_factory,
+        )
+        issued = await service.create_token(
+            owner_user_id=owner,
+            label=payload.label,
+            seller_scopes=payload.seller_scopes,
+            formula_scopes=payload.formula_scopes,
+            expires_at=payload.expires_at,
+        )
+        body = issued.metadata.model_dump(mode="json") | {"token_once": issued.token_once}
+        return JSONResponse(status_code=201, content=jsonable_encoder(body))
+
+    @router.post("/extension-tokens/{token_id}:rotate")
+    async def rotate_extension_token(request: Request, token_id: str) -> JSONResponse:
+        auth = _authorize(request)
+        if auth is not None:
+            return auth
+        claims = _claims(request)
+        service = _extension_token_service(
+            request,
+            now=now,
+            token_pepper=extension_token_pepper,
+            token_factory=extension_token_factory,
+        )
+        try:
+            issued = await service.rotate_token(
+                token_id,
+                owner_user_id=str(claims.issued_by or claims.seller_id),
+            )
+        except KeyError:
+            return JSONResponse(status_code=404, content={"error": "extension_token_not_found"})
+        body = issued.metadata.model_dump(mode="json") | {"token_once": issued.token_once}
+        return JSONResponse(jsonable_encoder(body))
+
+    @router.post("/extension-tokens/{token_id}:revoke")
+    async def revoke_extension_token(request: Request, token_id: str) -> JSONResponse:
+        auth = _authorize(request)
+        if auth is not None:
+            return auth
+        claims = _claims(request)
+        service = _extension_token_service(
+            request,
+            now=now,
+            token_pepper=extension_token_pepper,
+            token_factory=extension_token_factory,
+        )
+        try:
+            metadata = await service.revoke_token(
+                token_id,
+                owner_user_id=str(claims.issued_by or claims.seller_id),
+            )
+        except KeyError:
+            return JSONResponse(status_code=404, content={"error": "extension_token_not_found"})
+        return JSONResponse(jsonable_encoder(metadata.model_dump(mode="json")))
+
     return router
 
 
@@ -124,6 +228,44 @@ def _authorize(request: Request, seller_id: str | int | None = None) -> JSONResp
         seller_id=seller_id,
         verifier=verify_module_jwt,
     )
+
+
+def _claims(request: Request) -> Any:
+    auth_header = request.headers["Authorization"]
+    return verify_module_jwt(auth_header.removeprefix("Bearer ").strip())
+
+
+def _extension_token_service(
+    request: Request,
+    *,
+    now: Callable[[], datetime],
+    token_pepper: str | None,
+    token_factory: Callable[[], str] | None,
+) -> ExtensionTokenService:
+    pepper = token_pepper or getattr(request.app.state, "extension_token_pepper", None)
+    if pepper is None and hasattr(request.app.state, "settings"):
+        pepper = getattr(request.app.state.settings, "extension_token_pepper", None)
+    if pepper is None:
+        raise RuntimeError("extension token pepper is not configured")
+    if hasattr(pepper, "get_secret_value"):
+        pepper = pepper.get_secret_value()
+    return ExtensionTokenService(
+        db=request.app.state.mongo_db,
+        token_pepper=str(pepper),
+        now_fn=now,
+        token_factory=token_factory,
+    )
+
+
+def _seller_scope_forbidden(
+    seller_scopes: list[SellerScope], *, seller_id: str
+) -> JSONResponse | None:
+    if any(scope.seller_id != seller_id for scope in seller_scopes):
+        return JSONResponse(
+            status_code=403,
+            content={"error": "forbidden", "detail": "seller scopes must match JWT seller_id"},
+        )
+    return None
 
 
 def _export_id(seller_id: str) -> str:
