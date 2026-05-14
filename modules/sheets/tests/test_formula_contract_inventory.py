@@ -240,3 +240,30 @@ def test_dashboard_output_column_fixture_locks_mvp_and_deferred_columns() -> Non
         "MVP excludes rows when current.catalog_product_id is present; richer catalog/buybox "
         "semantics remain unsupported_until_defined."
     )
+
+
+def test_batch_b_output_column_fixture_locks_mvp_and_deferred_columns() -> None:
+    fixture = _column_fixture()
+    formulas = fixture["formulas"]
+
+    assert [column["name"] for column in formulas["SHEETSELLER_VENTASTOTALES"]["columns"]] == [
+        "Total ventas"
+    ]
+    assert formulas["SHEETSELLER_VENTASTOTALES"]["columns"][0]["status"] == "mvp"
+
+    assert [column["name"] for column in formulas["SHEETSELLER_UNIDADESVENDIDAS"]["columns"]] == [
+        "Unidades vendidas"
+    ]
+    assert formulas["SHEETSELLER_UNIDADESVENDIDAS"]["columns"][0]["status"] == "mvp"
+
+    preguntas_kpi_columns = formulas["SHEETSELLER_PREGUNTASKPI"]["columns"]
+    assert [column["name"] for column in preguntas_kpi_columns[:2]] == ["Métrica", "Valor"]
+    assert [column["status"] for column in preguntas_kpi_columns] == [
+        "mvp",
+        "mvp",
+        "deferred",
+        "deferred",
+    ]
+    assert all(
+        "source" in column or "legacy_source_note" in column for column in preguntas_kpi_columns
+    )

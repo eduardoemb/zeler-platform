@@ -61,6 +61,30 @@
         {"name": "TIENE CATALOGO", "source": "sheets_item_formula_rows.current.catalog_product_id", "status": "unsupported_until_defined", "reason": "Used only as the MVP exclusion predicate; exact legacy display semantics are not defined."},
         {"name": "PRECIO PROMO", "legacy_source_note": "legacy conditional column when tipo_precio='todos'", "status": "unsupported_until_defined", "reason": "No promotional price field is currently present in sheets_item_formula_rows."}
       ]
+    },
+    "SHEETSELLER_VENTASTOTALES": {
+      "legacy_source": "sheetsellerappindividual/addon/Orders.gs:SHEETSELLER_VENTASTOTALES",
+      "compatibility_note": "Scalar MVP sourced from canonical orders.total_amount with seller/date/status filters. estado='todos' means no status filter.",
+      "columns": [
+        {"name": "Total ventas", "source": "orders.total_amount", "status": "mvp"}
+      ]
+    },
+    "SHEETSELLER_UNIDADESVENDIDAS": {
+      "legacy_source": "sheetsellerappindividual/addon/Orders.gs:SHEETSELLER_UNIDADESVENDIDAS",
+      "compatibility_note": "Lookup-row MVP sums canonical orders.items quantity by normalized SKU + item_id over an inclusive date range. Missing pairs return 0.",
+      "columns": [
+        {"name": "Unidades vendidas", "source": "orders.items.quantity", "status": "mvp"}
+      ]
+    },
+    "SHEETSELLER_PREGUNTASKPI": {
+      "legacy_source": "sheetsellerappindividual/addon/Questions.gs:SHEETSELLER_PREGUNTASKPI",
+      "compatibility_note": "Exact legacy table columns are not fully proven from current canonical schema; MVP locks a stable two-column KPI table and marks richer legacy columns deferred rather than inventing them.",
+      "columns": [
+        {"name": "Métrica", "source": "derived label", "status": "mvp"},
+        {"name": "Valor", "source": "questions.status + questions.answer.date_created", "status": "mvp"},
+        {"name": "Horario inicial/final breakdown", "legacy_source_note": "Legacy question formula family supports hour filters in SHEETSELLER_PREGUNTAS, not locked for PREGUNTASKPI MVP.", "status": "deferred", "reason": "Current task only covers date-scoped KPI table from canonical questions."},
+        {"name": "Per-item/question detailed rows", "legacy_source_note": "Legacy detailed question rows belong to SHEETSELLER_PREGUNTAS.", "status": "deferred", "reason": "This slice implements KPI aggregation only; detailed question table remains DATA_UNAVAILABLE."}
+      ]
     }
   }
 }

@@ -7,6 +7,8 @@ from zeler_sheets.formulas.schemas import FormulaContract
 
 ITEM_FORMULA_ROWS_COLLECTION = "sheets_item_formula_rows"
 ITEM_SKU_INDEX_COLLECTION = "sheets_item_sku_index"
+ORDERS_COLLECTION = "orders"
+QUESTIONS_COLLECTION = "questions"
 UNBUILT_BATCH_MARKERS = frozenset({"C", "D", "E"})
 
 
@@ -14,6 +16,8 @@ class FormulaReadModelRepository:
     def __init__(self, *, db: Any) -> None:
         self._item_formula_rows = db[ITEM_FORMULA_ROWS_COLLECTION]
         self._item_sku_index = db[ITEM_SKU_INDEX_COLLECTION]
+        self._orders = db[ORDERS_COLLECTION]
+        self._questions = db[QUESTIONS_COLLECTION]
 
     async def find_sku_index_rows(
         self,
@@ -49,6 +53,41 @@ class FormulaReadModelRepository:
         )
         return cast("list[dict[str, Any]]", await cursor.to_list(length=limit))
 
+    async def find_orders(
+        self,
+        *,
+        seller_id: str,
+        date_from: Any,
+        date_to: Any,
+        status: str | None = None,
+        limit: int = 1000,
+    ) -> list[dict[str, Any]]:
+        filter_spec: dict[str, Any] = _seller_date_filter(
+            seller_id=seller_id,
+            date_from=date_from,
+            date_to=date_to,
+        )
+        if status is not None:
+            filter_spec["status"] = status
+        cursor = self._orders.find(filter_spec).sort([("date_created", 1), ("_id", 1)])
+        return cast("list[dict[str, Any]]", await cursor.to_list(length=limit))
+
+    async def find_questions(
+        self,
+        *,
+        seller_id: str,
+        date_from: Any,
+        date_to: Any,
+        limit: int = 1000,
+    ) -> list[dict[str, Any]]:
+        filter_spec = _seller_date_filter(
+            seller_id=seller_id,
+            date_from=date_from,
+            date_to=date_to,
+        )
+        cursor = self._questions.find(filter_spec).sort([("date_created", 1), ("_id", 1)])
+        return cast("list[dict[str, Any]]", await cursor.to_list(length=limit))
+
 
 def require_formula_read_model_available(contract: FormulaContract) -> None:
     batches = set(contract.batch.split("/"))
@@ -78,3 +117,10 @@ def _seller_item_filter(
     if inventory_ids:
         filter_spec["inventory_id"] = {"$in": [str(inventory_id) for inventory_id in inventory_ids]}
     return filter_spec
+
+
+def _seller_date_filter(*, seller_id: str, date_from: Any, date_to: Any) -> dict[str, Any]:
+    return {
+        "seller_id": seller_id,
+        "date_created": {"$gte": date_from, "$lte": date_to},
+    }

@@ -26,6 +26,7 @@ from zeler_sheets.formulas.dispatcher import (
     FormulaExecutionResult,
 )
 from zeler_sheets.formulas.handlers_core import build_core_formula_handlers
+from zeler_sheets.formulas.handlers_orders_questions import build_order_question_formula_handlers
 from zeler_sheets.formulas.read_models import FormulaReadModelRepository
 from zeler_sheets.formulas.registry import FormulaRegistry
 from zeler_sheets.formulas.schemas import FormulaContract
@@ -440,7 +441,10 @@ def _runtime_dispatcher(
     if dispatcher is not None:
         return dispatcher
     repository = FormulaReadModelRepository(db=request.app.state.mongo_db)
-    return FormulaDispatcher(build_core_formula_handlers(repository, now_fn=now))
+    return FormulaDispatcher(
+        build_core_formula_handlers(repository, now_fn=now)
+        | build_order_question_formula_handlers(repository)
+    )
 
 
 def _bearer_token(request: Request) -> str:
