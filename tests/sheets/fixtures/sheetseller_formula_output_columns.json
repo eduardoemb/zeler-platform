@@ -77,9 +77,9 @@
     },
     "SHEETSELLER_ORDENESPORSKU": {
       "legacy_source": "sheetsellerappindividual/addon/Orders.gs:SHEETSELLER_ORDENESPORSKU",
-      "compatibility_note": "MVP filters canonical orders by normalized SKU only when order item lines carry sku/seller_sku/nested item.seller_sku. Orders whose item lines do not expose SKU are deterministically omitted rather than guessed.",
+      "compatibility_note": "MVP filters canonical orders by normalized SKU from order item fields when present, or from seller-scoped sheets_item_sku_index by item_id when the item_id maps to exactly one SKU. Ambiguous item_id mappings are deterministically omitted rather than guessed.",
       "columns": [
-        {"name": "SKU", "source": "orders.items.sku | orders.items.seller_sku | orders.items.item.seller_sku", "status": "mvp"},
+        {"name": "SKU", "source": "orders.items.sku | orders.items.seller_sku | orders.items.item.seller_sku | seller-scoped sheets_item_sku_index.item_id", "status": "mvp"},
         {"name": "ID Orden", "source": "orders._id | orders.id", "status": "mvp"},
         {"name": "Fecha", "source": "orders.date_created", "status": "mvp"},
         {"name": "Estado", "source": "orders.status", "status": "mvp"},
@@ -97,9 +97,46 @@
     },
     "SHEETSELLER_UNIDADESVENDIDAS": {
       "legacy_source": "sheetsellerappindividual/addon/Orders.gs:SHEETSELLER_UNIDADESVENDIDAS",
-      "compatibility_note": "Lookup-row MVP sums canonical orders.items quantity by normalized SKU + item_id over an inclusive date range. Missing pairs return 0.",
+      "compatibility_note": "Lookup-row MVP sums canonical orders.items quantity by normalized SKU + item_id over an inclusive date range. SKU may be enriched from seller-scoped sheets_item_sku_index only when item_id maps to exactly one SKU. Missing or ambiguous pairs return 0.",
       "columns": [
-        {"name": "Unidades vendidas", "source": "orders.items.quantity", "status": "mvp"}
+        {"name": "Unidades vendidas", "source": "orders.items.quantity | orders.items.qty + seller-scoped sheets_item_sku_index", "status": "mvp"}
+      ]
+    },
+    "SHEETSELLER_VENTAPORDIAS": {
+      "legacy_source": "sheetsellerappindividual/addon/Orders.gs:SHEETSELLER_VENTAPORDIAS",
+      "compatibility_note": "Lookup-row MVP sums units for SKU+item_id over the last N calendar days ending at Formula API clock date. SKU enrichment follows the same seller-scoped deterministic item_id rules as UNIDADESVENDIDAS.",
+      "columns": [
+        {"name": "Unidades vendidas", "source": "orders.items.quantity | orders.items.qty + seller-scoped sheets_item_sku_index", "status": "mvp"}
+      ]
+    },
+    "SHEETSELLER_VENTASYSTOCK": {
+      "legacy_source": "sheetsellerappindividual/addon/Orders.gs:SHEETSELLER_VENTASYSTOCK",
+      "compatibility_note": "MVP combines 7/15/30-day unit windows from canonical orders with current stock from sheets_item_formula_rows. It does not include unsupported cost/shipping/commission legacy columns.",
+      "columns": [
+        {"name": "SKU", "source": "formula input normalized SKU", "status": "mvp"},
+        {"name": "ID Publicación", "source": "formula input id_publicaciones", "status": "mvp"},
+        {"name": "Ventas 7 días", "source": "orders.items.quantity | orders.items.qty + seller-scoped sheets_item_sku_index", "status": "mvp"},
+        {"name": "Ventas 15 días", "source": "orders.items.quantity | orders.items.qty + seller-scoped sheets_item_sku_index", "status": "mvp"},
+        {"name": "Ventas 30 días", "source": "orders.items.quantity | orders.items.qty + seller-scoped sheets_item_sku_index", "status": "mvp"},
+        {"name": "Stock", "source": "sheets_item_formula_rows.current.available_quantity", "status": "mvp"}
+      ]
+    },
+    "SHEETSELLER_TOPVENTASUNIDADES": {
+      "legacy_source": "sheetsellerappindividual/addon/Orders.gs:SHEETSELLER_TOPVENTASUNIDADES",
+      "compatibility_note": "MVP ranks seller-scoped SKU+item pairs by summed canonical order item quantity over the inclusive date range. SKU enrichment is deterministic by seller-scoped item_id; ambiguous rows are omitted.",
+      "columns": [
+        {"name": "SKU", "source": "orders.items SKU fields | seller-scoped sheets_item_sku_index", "status": "mvp"},
+        {"name": "ID Publicación", "source": "orders.items.item_id | orders.items.item.id", "status": "mvp"},
+        {"name": "Unidades vendidas", "source": "orders.items.quantity | orders.items.qty", "status": "mvp"}
+      ]
+    },
+    "SHEETSELLER_TOPVENTASDINERO": {
+      "legacy_source": "sheetsellerappindividual/addon/Orders.gs:SHEETSELLER_TOPVENTASDINERO",
+      "compatibility_note": "MVP ranks seller-scoped SKU+item pairs by quantity * orders.items.unit_price over the inclusive date range. Lines without unit_price are skipped rather than allocating order totals.",
+      "columns": [
+        {"name": "SKU", "source": "orders.items SKU fields | seller-scoped sheets_item_sku_index", "status": "mvp"},
+        {"name": "ID Publicación", "source": "orders.items.item_id | orders.items.item.id", "status": "mvp"},
+        {"name": "Ventas", "source": "orders.items.qty * orders.items.unit_price", "status": "mvp"}
       ]
     },
     "SHEETSELLER_PREGUNTAS": {

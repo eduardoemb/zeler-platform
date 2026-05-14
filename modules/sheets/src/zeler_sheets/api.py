@@ -443,7 +443,7 @@ def _runtime_dispatcher(
     repository = FormulaReadModelRepository(db=request.app.state.mongo_db)
     return FormulaDispatcher(
         build_core_formula_handlers(repository, now_fn=now)
-        | build_order_question_formula_handlers(repository)
+        | build_order_question_formula_handlers(repository, now_fn=now)
     )
 
 

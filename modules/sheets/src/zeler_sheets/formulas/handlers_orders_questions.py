@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping, Sequence
-from datetime import UTC, datetime, time
+from collections.abc import Callable, Iterable, Mapping, Sequence
+from datetime import UTC, datetime, time, timedelta
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
@@ -18,6 +18,10 @@ BATCH_B_IMPLEMENTED_FORMULAS = frozenset(
         "SHEETSELLER_VENTASTOTALES",
         "SHEETSELLER_UNIDADESVENDIDAS",
         "SHEETSELLER_ORDENESPORSKU",
+        "SHEETSELLER_VENTAPORDIAS",
+        "SHEETSELLER_VENTASYSTOCK",
+        "SHEETSELLER_TOPVENTASUNIDADES",
+        "SHEETSELLER_TOPVENTASDINERO",
         "SHEETSELLER_PREGUNTAS",
         "SHEETSELLER_PREGUNTASKPI",
     }
@@ -44,25 +48,47 @@ PREGUNTAS_MVP_HEADERS = [
     "Fecha respuesta",
 ]
 PREGUNTAS_KPI_MVP_HEADERS = ["Métrica", "Valor"]
+VENTAS_Y_STOCK_MVP_HEADERS = [
+    "SKU",
+    "ID Publicación",
+    "Ventas 7 días",
+    "Ventas 15 días",
+    "Ventas 30 días",
+    "Stock",
+]
+TOP_VENTAS_UNIDADES_MVP_HEADERS = ["SKU", "ID Publicación", "Unidades vendidas"]
+TOP_VENTAS_DINERO_MVP_HEADERS = ["SKU", "ID Publicación", "Ventas"]
 
 
 def build_order_question_formula_handlers(
     repository: FormulaReadModelRepository,
+    *,
+    now_fn: Callable[[], datetime] | None = None,
 ) -> dict[str, FormulaHandler]:
-    handlers = OrderQuestionFormulaHandlers(repository)
+    handlers = OrderQuestionFormulaHandlers(repository, now_fn=now_fn)
     return {
         "SHEETSELLER_ORDENES": handlers.sheetseller_ordenes,
         "SHEETSELLER_VENTASTOTALES": handlers.sheetseller_ventas_totales,
         "SHEETSELLER_UNIDADESVENDIDAS": handlers.sheetseller_unidades_vendidas,
         "SHEETSELLER_ORDENESPORSKU": handlers.sheetseller_ordenes_por_sku,
+        "SHEETSELLER_VENTAPORDIAS": handlers.sheetseller_venta_por_dias,
+        "SHEETSELLER_VENTASYSTOCK": handlers.sheetseller_ventas_y_stock,
+        "SHEETSELLER_TOPVENTASUNIDADES": handlers.sheetseller_top_ventas_unidades,
+        "SHEETSELLER_TOPVENTASDINERO": handlers.sheetseller_top_ventas_dinero,
         "SHEETSELLER_PREGUNTAS": handlers.sheetseller_preguntas,
         "SHEETSELLER_PREGUNTASKPI": handlers.sheetseller_preguntas_kpi,
     }
 
 
 class OrderQuestionFormulaHandlers:
-    def __init__(self, repository: FormulaReadModelRepository) -> None:
+    def __init__(
+        self,
+        repository: FormulaReadModelRepository,
+        *,
+        now_fn: Callable[[], datetime] | None = None,
+    ) -> None:
         self._repository = repository
+        self._now_fn = now_fn or (lambda: datetime.now(UTC))
 
     async def sheetseller_ordenes(self, context: FormulaExecutionContext) -> FormulaExecutionResult:
         date_range = _date_range(context.args.get("fecha_inicial"), context.args.get("fecha_final"))
@@ -120,7 +146,12 @@ class OrderQuestionFormulaHandlers:
             date_from=date_range.start,
             date_to=date_range.end,
         )
-        totals = _unit_totals_by_pair(orders)
+        sku_resolver = await _sku_resolver_for_orders(
+            repository=self._repository,
+            seller_id=context.seller_id,
+            orders=orders,
+        )
+        totals, enriched_count = _unit_totals_by_pair(orders, sku_resolver=sku_resolver)
         values: list[list[Any]] = []
         misses = 0
         for pair in pairs:
@@ -130,7 +161,10 @@ class OrderQuestionFormulaHandlers:
             values.append([_sheet_number(units)])
         return FormulaExecutionResult(
             values=values,
-            meta={"partial_misses": misses, "orders_count": len(orders)},
+            meta=_with_enrichment_meta(
+                {"partial_misses": misses, "orders_count": len(orders)},
+                enriched_count=enriched_count,
+            ),
         )
 
     async def sheetseller_ordenes_por_sku(
@@ -146,13 +180,22 @@ class OrderQuestionFormulaHandlers:
             date_to=date_range.end,
             status=status_filter,
         )
+        sku_resolver = await _sku_resolver_for_orders(
+            repository=self._repository,
+            seller_id=context.seller_id,
+            orders=orders,
+        )
         filtered_orders = _filter_orders_by_buyers(orders, buyer_filter)
         values: list[list[Any]] = _header_row(
             context.args.get("encabezados"), ORDENES_POR_SKU_MVP_HEADERS
         )
         for requested_sku in dict.fromkeys(requested_skus):
             for order in filtered_orders:
-                matching_items = _items_matching_sku(order, requested_sku)
+                matching_items = _items_matching_sku(
+                    order,
+                    requested_sku,
+                    sku_resolver=sku_resolver,
+                )
                 if not matching_items:
                     continue
                 values.append(
@@ -163,7 +206,7 @@ class OrderQuestionFormulaHandlers:
                         order.get("status") or "",
                         _buyer_id(order),
                         _sheet_number(_decimal(order.get("total_amount"))),
-                        _items_summary(matching_items),
+                        _items_summary(matching_items, sku_resolver=sku_resolver),
                     ]
                 )
         rows_count = len(values) - (1 if _headers_requested(context.args.get("encabezados")) else 0)
@@ -175,6 +218,182 @@ class OrderQuestionFormulaHandlers:
                 "buyer_filter_count": len(buyer_filter),
                 "sku_filter_count": len(dict.fromkeys(requested_skus)),
                 "columns": "orders_by_sku_mvp",
+            },
+        )
+
+    async def sheetseller_venta_por_dias(
+        self, context: FormulaExecutionContext
+    ) -> FormulaExecutionResult:
+        pairs = _lookup_pairs(
+            skus=context.args.get("skus"),
+            item_ids=context.args.get("id_publicaciones"),
+        )
+        range_days = _positive_int(context.args.get("rango_dias"))
+        date_range = _last_days_range(self._now_fn(), range_days)
+        orders = await self._repository.find_orders(
+            seller_id=context.seller_id,
+            date_from=date_range.start,
+            date_to=date_range.end,
+        )
+        sku_resolver = await _sku_resolver_for_orders(
+            repository=self._repository,
+            seller_id=context.seller_id,
+            orders=orders,
+        )
+        totals, enriched_count = _unit_totals_by_pair(orders, sku_resolver=sku_resolver)
+        values: list[list[Any]] = []
+        misses = 0
+        for pair in pairs:
+            units = totals.get((pair.sku, pair.item_id), Decimal("0"))
+            if units == 0:
+                misses += 1
+            values.append([_sheet_number(units)])
+        return FormulaExecutionResult(
+            values=values,
+            meta={
+                "partial_misses": misses,
+                "orders_count": len(orders),
+                "rango_dias": range_days,
+                "sku_enriched_items": enriched_count,
+            },
+        )
+
+    async def sheetseller_ventas_y_stock(
+        self, context: FormulaExecutionContext
+    ) -> FormulaExecutionResult:
+        pairs = _lookup_pairs(
+            skus=context.args.get("skus"),
+            item_ids=context.args.get("id_publicaciones"),
+        )
+        now = _as_utc_datetime(self._now_fn())
+        date_ranges = {days: _last_days_range(now, days) for days in (7, 15, 30)}
+        rows = await self._repository.find_item_formula_rows(
+            seller_id=context.seller_id,
+            skus=[pair.sku for pair in pairs],
+            item_ids=[pair.item_id for pair in pairs],
+        )
+        rows_by_pair = {
+            (normalize_sku(row.get("normalized_sku", "")), str(row.get("item_id", ""))): row
+            for row in rows
+        }
+        orders = await self._repository.find_orders(
+            seller_id=context.seller_id,
+            date_from=date_ranges[30].start,
+            date_to=date_ranges[30].end,
+        )
+        sku_resolver = await _sku_resolver_for_orders(
+            repository=self._repository,
+            seller_id=context.seller_id,
+            orders=orders,
+        )
+        totals_by_window: dict[int, dict[tuple[str, str], Decimal]] = {}
+        enriched_count = 0
+        for days, current_range in date_ranges.items():
+            window_orders = [order for order in orders if _order_in_range(order, current_range)]
+            totals_by_window[days], current_enriched_count = _unit_totals_by_pair(
+                window_orders,
+                sku_resolver=sku_resolver,
+            )
+            enriched_count = max(enriched_count, current_enriched_count)
+
+        values: list[list[Any]] = _header_row(
+            context.args.get("encabezados"), VENTAS_Y_STOCK_MVP_HEADERS
+        )
+        misses = 0
+        for pair in pairs:
+            row = rows_by_pair.get((pair.sku, pair.item_id))
+            stock = _current_value(row, "available_quantity") if row else ""
+            if row is None:
+                misses += 1
+            values.append(
+                [
+                    pair.sku,
+                    pair.item_id,
+                    _sheet_number(totals_by_window[7].get((pair.sku, pair.item_id), Decimal("0"))),
+                    _sheet_number(totals_by_window[15].get((pair.sku, pair.item_id), Decimal("0"))),
+                    _sheet_number(totals_by_window[30].get((pair.sku, pair.item_id), Decimal("0"))),
+                    stock,
+                ]
+            )
+        return FormulaExecutionResult(
+            values=values,
+            meta={
+                "partial_misses": misses,
+                "orders_count": len(orders),
+                "columns": "sales_and_stock_mvp",
+                "sku_enriched_items": enriched_count,
+            },
+        )
+
+    async def sheetseller_top_ventas_unidades(
+        self, context: FormulaExecutionContext
+    ) -> FormulaExecutionResult:
+        date_range = _date_range(context.args.get("fecha_inicial"), context.args.get("fecha_final"))
+        top_count = _positive_int(context.args.get("cantidad_top"))
+        orders = await self._repository.find_orders(
+            seller_id=context.seller_id,
+            date_from=date_range.start,
+            date_to=date_range.end,
+        )
+        sku_resolver = await _sku_resolver_for_orders(
+            repository=self._repository,
+            seller_id=context.seller_id,
+            orders=orders,
+        )
+        totals, enriched_count = _unit_totals_by_pair(orders, sku_resolver=sku_resolver)
+        ranked = sorted(totals.items(), key=lambda entry: (-entry[1], entry[0][0], entry[0][1]))[
+            :top_count
+        ]
+        values: list[list[Any]] = _header_row(
+            context.args.get("encabezados"), TOP_VENTAS_UNIDADES_MVP_HEADERS
+        )
+        values.extend([[sku, item_id, _sheet_number(units)] for (sku, item_id), units in ranked])
+        return FormulaExecutionResult(
+            values=values,
+            meta={
+                "orders_count": len(orders),
+                "rows_count": len(ranked),
+                "columns": "top_sales_units_mvp",
+                "sku_enriched_items": enriched_count,
+            },
+        )
+
+    async def sheetseller_top_ventas_dinero(
+        self, context: FormulaExecutionContext
+    ) -> FormulaExecutionResult:
+        date_range = _date_range(context.args.get("fecha_inicial"), context.args.get("fecha_final"))
+        top_count = _positive_int(context.args.get("cantidad_top"))
+        orders = await self._repository.find_orders(
+            seller_id=context.seller_id,
+            date_from=date_range.start,
+            date_to=date_range.end,
+        )
+        sku_resolver = await _sku_resolver_for_orders(
+            repository=self._repository,
+            seller_id=context.seller_id,
+            orders=orders,
+        )
+        totals, enriched_count, missing_price_count = _revenue_totals_by_pair(
+            orders,
+            sku_resolver=sku_resolver,
+        )
+        ranked = sorted(totals.items(), key=lambda entry: (-entry[1], entry[0][0], entry[0][1]))[
+            :top_count
+        ]
+        values: list[list[Any]] = _header_row(
+            context.args.get("encabezados"), TOP_VENTAS_DINERO_MVP_HEADERS
+        )
+        values.extend(
+            [[sku, item_id, _sheet_number(revenue)] for (sku, item_id), revenue in ranked]
+        )
+        return FormulaExecutionResult(
+            values=values,
+            meta={
+                "orders_count": len(orders),
+                "rows_count": len(ranked),
+                "columns": "top_sales_revenue_mvp",
+                "sku_enriched_items": enriched_count,
+                "items_without_unit_price": missing_price_count,
             },
         )
 
@@ -249,10 +468,76 @@ class _HourRange:
         self.end = end
 
 
+class _SkuResolution:
+    def __init__(self, *, sku: str, enriched: bool) -> None:
+        self.sku = sku
+        self.enriched = enriched
+
+
+class _OrderSkuResolver:
+    def __init__(self, rows: Sequence[Mapping[str, Any]]) -> None:
+        rows_by_item_id: dict[str, list[Mapping[str, Any]]] = {}
+        for row in rows:
+            item_id = str(row.get("item_id") or "").strip()
+            if item_id:
+                rows_by_item_id.setdefault(item_id, []).append(row)
+        self._rows_by_item_id = rows_by_item_id
+
+    def resolve(self, item: Mapping[str, Any]) -> _SkuResolution:
+        direct_sku = _normalize_optional_sku(_item_sku(item))
+        if direct_sku:
+            return _SkuResolution(sku=direct_sku, enriched=False)
+
+        item_id = _item_id(item)
+        if not item_id:
+            return _SkuResolution(sku="", enriched=False)
+
+        rows = self._rows_by_item_id.get(item_id, [])
+        variation_id = _item_variation_id(item)
+        if variation_id:
+            variation_matches = [
+                row
+                for row in rows
+                if _normalize_variation_id(row.get("variation_id")) == variation_id
+            ]
+            sku = _unique_sku(variation_matches)
+            if sku:
+                return _SkuResolution(sku=sku, enriched=True)
+
+        sku = _unique_sku(rows)
+        return _SkuResolution(sku=sku, enriched=bool(sku))
+
+
+class _OrderLine:
+    def __init__(
+        self,
+        *,
+        sku: str,
+        item_id: str,
+        quantity: Decimal,
+        unit_price: Decimal | None,
+        enriched: bool,
+    ) -> None:
+        self.sku = sku
+        self.item_id = item_id
+        self.quantity = quantity
+        self.unit_price = unit_price
+        self.enriched = enriched
+
+
 def _date_range(start_value: Any, end_value: Any) -> _DateRange:
     return _DateRange(
         start=_parse_date_boundary(start_value, end_of_day=False),
         end=_parse_date_boundary(end_value, end_of_day=True),
+    )
+
+
+def _last_days_range(now_value: datetime, days: int) -> _DateRange:
+    now = _as_utc_datetime(now_value)
+    start_date = now.date() - timedelta(days=days - 1)
+    return _DateRange(
+        start=datetime.combine(start_date, time.min, tzinfo=UTC),
+        end=datetime.combine(now.date(), time.max, tzinfo=UTC),
     )
 
 
@@ -274,6 +559,12 @@ def _parse_date_boundary(value: Any, *, end_of_day: bool) -> datetime:
         boundary = time.max if end_of_day else time.min
         return datetime.combine(parsed.date(), boundary, tzinfo=UTC)
     return parsed
+
+
+def _as_utc_datetime(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
 
 
 def _status_filter(value: Any) -> str | None:
@@ -333,6 +624,11 @@ def _lookup_pairs(*, skus: Any, item_ids: Any) -> list[_LookupPair]:
     ]
 
 
+def _positive_int(value: Any) -> int:
+    parsed = int(str(value).strip())
+    return max(parsed, 1)
+
+
 def _flatten_sheet_values(value: Any, *, normalize: Any) -> list[str]:
     if value is None:
         return []
@@ -353,24 +649,83 @@ def _flatten_sheet_values(value: Any, *, normalize: Any) -> list[str]:
     return [normalized] if normalized else []
 
 
-def _unit_totals_by_pair(orders: Sequence[Mapping[str, Any]]) -> dict[tuple[str, str], Decimal]:
+async def _sku_resolver_for_orders(
+    *,
+    repository: FormulaReadModelRepository,
+    seller_id: str,
+    orders: Sequence[Mapping[str, Any]],
+) -> _OrderSkuResolver:
+    item_ids = list(
+        dict.fromkeys(
+            item_id
+            for order in orders
+            for item in _order_items(order)
+            if (item_id := _item_id(item))
+        )
+    )
+    if not item_ids:
+        return _OrderSkuResolver([])
+    rows = await repository.find_sku_index_rows(
+        seller_id=seller_id,
+        item_ids=item_ids,
+        limit=max(500, len(item_ids) * 10),
+    )
+    return _OrderSkuResolver(rows)
+
+
+def _unit_totals_by_pair(
+    orders: Sequence[Mapping[str, Any]], *, sku_resolver: _OrderSkuResolver
+) -> tuple[dict[tuple[str, str], Decimal], int]:
     totals: dict[tuple[str, str], Decimal] = {}
+    enriched_count = 0
     for order in orders:
-        raw_items = order.get("items") or []
-        if not isinstance(raw_items, Iterable) or isinstance(raw_items, (str, bytes)):
+        for line in _order_lines(order, sku_resolver=sku_resolver):
+            if not line.sku or not line.item_id:
+                continue
+            key = (line.sku, line.item_id)
+            totals[key] = totals.get(key, Decimal("0")) + line.quantity
+            if line.enriched:
+                enriched_count += 1
+    return totals, enriched_count
+
+
+def _revenue_totals_by_pair(
+    orders: Sequence[Mapping[str, Any]], *, sku_resolver: _OrderSkuResolver
+) -> tuple[dict[tuple[str, str], Decimal], int, int]:
+    totals: dict[tuple[str, str], Decimal] = {}
+    enriched_count = 0
+    missing_price_count = 0
+    for order in orders:
+        for line in _order_lines(order, sku_resolver=sku_resolver):
+            if not line.sku or not line.item_id:
+                continue
+            if line.enriched:
+                enriched_count += 1
+            if line.unit_price is None:
+                missing_price_count += 1
+                continue
+            key = (line.sku, line.item_id)
+            totals[key] = totals.get(key, Decimal("0")) + (line.quantity * line.unit_price)
+    return totals, enriched_count, missing_price_count
+
+
+def _order_lines(order: Mapping[str, Any], *, sku_resolver: _OrderSkuResolver) -> list[_OrderLine]:
+    lines: list[_OrderLine] = []
+    for item in _order_items(order):
+        resolution = sku_resolver.resolve(item)
+        item_id = _item_id(item)
+        if not resolution.sku or not item_id:
             continue
-        for raw_item in raw_items:
-            if not isinstance(raw_item, Mapping):
-                continue
-            sku = normalize_sku(_item_sku(raw_item))
-            item_id = _item_id(raw_item)
-            if not sku or not item_id:
-                continue
-            key = (sku, item_id)
-            totals[key] = totals.get(key, Decimal("0")) + _decimal(
-                raw_item.get("quantity", raw_item.get("qty", 0))
+        lines.append(
+            _OrderLine(
+                sku=resolution.sku,
+                item_id=item_id,
+                quantity=_item_quantity(item),
+                unit_price=_item_unit_price(item),
+                enriched=resolution.enriched,
             )
-    return totals
+        )
+    return lines
 
 
 def _order_row(order: Mapping[str, Any]) -> list[Any]:
@@ -423,18 +778,26 @@ def _order_items(order: Mapping[str, Any]) -> list[Mapping[str, Any]]:
     return [item for item in raw_items if isinstance(item, Mapping)]
 
 
-def _items_matching_sku(order: Mapping[str, Any], requested_sku: str) -> list[Mapping[str, Any]]:
-    return [item for item in _order_items(order) if normalize_sku(_item_sku(item)) == requested_sku]
+def _items_matching_sku(
+    order: Mapping[str, Any], requested_sku: str, *, sku_resolver: _OrderSkuResolver
+) -> list[Mapping[str, Any]]:
+    return [item for item in _order_items(order) if sku_resolver.resolve(item).sku == requested_sku]
 
 
-def _items_summary(items: Sequence[Mapping[str, Any]]) -> str:
-    return ", ".join(_item_summary(item) for item in items if _item_summary(item))
+def _items_summary(
+    items: Sequence[Mapping[str, Any]], sku_resolver: _OrderSkuResolver | None = None
+) -> str:
+    return ", ".join(
+        summary for item in items if (summary := _item_summary(item, sku_resolver=sku_resolver))
+    )
 
 
-def _item_summary(item: Mapping[str, Any]) -> str:
-    sku = normalize_sku(_item_sku(item))
+def _item_summary(item: Mapping[str, Any], sku_resolver: _OrderSkuResolver | None = None) -> str:
+    sku = (
+        sku_resolver.resolve(item).sku if sku_resolver else _normalize_optional_sku(_item_sku(item))
+    )
     item_id = _item_id(item)
-    quantity = _sheet_number(_decimal(item.get("quantity", item.get("qty", 0))))
+    quantity = _sheet_number(_item_quantity(item))
     if not sku and not item_id:
         return ""
     label = sku or item_id
@@ -445,7 +808,26 @@ def _item_summary(item: Mapping[str, Any]) -> str:
 def _item_sku(item: Mapping[str, Any]) -> Any:
     raw_nested_item = item.get("item")
     nested_item: Mapping[str, Any] = raw_nested_item if isinstance(raw_nested_item, Mapping) else {}
-    return item.get("sku") or item.get("seller_sku") or nested_item.get("seller_sku")
+    return (
+        item.get("sku")
+        or item.get("seller_sku")
+        or item.get("seller_custom_field")
+        or nested_item.get("seller_sku")
+        or nested_item.get("seller_custom_field")
+        or ""
+    )
+
+
+def _normalize_optional_sku(value: Any) -> str:
+    if value is None:
+        return ""
+    return normalize_sku(value)
+
+
+def _with_enrichment_meta(meta: dict[str, Any], *, enriched_count: int) -> dict[str, Any]:
+    if not enriched_count:
+        return meta
+    return meta | {"sku_enriched_items": enriched_count}
 
 
 def _item_id(item: Mapping[str, Any]) -> str:
@@ -454,6 +836,46 @@ def _item_id(item: Mapping[str, Any]) -> str:
     return str(
         item.get("item_id") or nested_item.get("id") or nested_item.get("item_id") or ""
     ).strip()
+
+
+def _item_variation_id(item: Mapping[str, Any]) -> str:
+    raw_nested_item = item.get("item")
+    nested_item: Mapping[str, Any] = raw_nested_item if isinstance(raw_nested_item, Mapping) else {}
+    return _normalize_variation_id(item.get("variation_id") or nested_item.get("variation_id"))
+
+
+def _normalize_variation_id(value: Any) -> str:
+    return str(value or "").strip()
+
+
+def _unique_sku(rows: Sequence[Mapping[str, Any]]) -> str:
+    normalized_skus = {
+        normalized
+        for row in rows
+        if (normalized := _normalize_optional_sku(row.get("normalized_sku") or row.get("sku")))
+    }
+    if len(normalized_skus) != 1:
+        return ""
+    return next(iter(normalized_skus))
+
+
+def _item_quantity(item: Mapping[str, Any]) -> Decimal:
+    return _decimal(item.get("quantity", item.get("qty", 0)))
+
+
+def _item_unit_price(item: Mapping[str, Any]) -> Decimal | None:
+    for key in ("unit_price", "full_unit_price"):
+        value = item.get(key)
+        if value is not None:
+            return _decimal(value)
+    return None
+
+
+def _order_in_range(order: Mapping[str, Any], date_range: _DateRange) -> bool:
+    created = _optional_datetime(order.get("date_created"))
+    if created is None:
+        return False
+    return date_range.start <= created <= date_range.end
 
 
 def _question_status_counts(questions: Sequence[Mapping[str, Any]]) -> dict[str, int]:
@@ -495,6 +917,16 @@ def _average_response_minutes(questions: Sequence[Mapping[str, Any]]) -> int:
     if not response_minutes:
         return 0
     return round(sum(response_minutes) / len(response_minutes))
+
+
+def _current_value(row: Mapping[str, Any] | None, field: str) -> Any:
+    if row is None:
+        return ""
+    current = row.get("current", {})
+    if not isinstance(current, Mapping):
+        return ""
+    value = current.get(field)
+    return "" if value is None else value
 
 
 def _optional_datetime(value: Any) -> datetime | None:

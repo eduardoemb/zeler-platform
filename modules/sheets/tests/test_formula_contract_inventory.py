@@ -276,6 +276,32 @@ def test_batch_b_output_column_fixture_locks_mvp_and_deferred_columns() -> None:
     ]
     assert formulas["SHEETSELLER_UNIDADESVENDIDAS"]["columns"][0]["status"] == "mvp"
 
+    assert [column["name"] for column in formulas["SHEETSELLER_VENTAPORDIAS"]["columns"]] == [
+        "Unidades vendidas"
+    ]
+    assert formulas["SHEETSELLER_VENTAPORDIAS"]["columns"][0]["status"] == "mvp"
+
+    assert [column["name"] for column in formulas["SHEETSELLER_VENTASYSTOCK"]["columns"]] == [
+        "SKU",
+        "ID Publicación",
+        "Ventas 7 días",
+        "Ventas 15 días",
+        "Ventas 30 días",
+        "Stock",
+    ]
+
+    assert [column["name"] for column in formulas["SHEETSELLER_TOPVENTASUNIDADES"]["columns"]] == [
+        "SKU",
+        "ID Publicación",
+        "Unidades vendidas",
+    ]
+
+    assert [column["name"] for column in formulas["SHEETSELLER_TOPVENTASDINERO"]["columns"]] == [
+        "SKU",
+        "ID Publicación",
+        "Ventas",
+    ]
+
     preguntas_kpi_columns = formulas["SHEETSELLER_PREGUNTASKPI"]["columns"]
     assert [column["name"] for column in preguntas_kpi_columns[:2]] == ["Métrica", "Valor"]
     assert [column["status"] for column in preguntas_kpi_columns] == [
