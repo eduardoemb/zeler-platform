@@ -103,7 +103,7 @@ services:
 
   sheets-api:
     <<: *restart
-    image: us-central1-docker.pkg.dev/zeler-platform-dev/zeler-platform/sheets-api:batch-b-sales-fb5c1df
+    image: us-central1-docker.pkg.dev/zeler-platform-dev/zeler-platform/sheets-api:sheets-runtime-daf95e3
     networks:
       - platform_default
     env_file: /opt/zeler-platform/env/sheets-api.env
