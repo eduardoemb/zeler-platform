@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any, cast
 
 from zeler_sheets.formulas.dispatcher import FormulaDataUnavailableError
@@ -122,5 +123,36 @@ def _seller_item_filter(
 def _seller_date_filter(*, seller_id: str, date_from: Any, date_to: Any) -> dict[str, Any]:
     return {
         "seller_id": seller_id,
-        "date_created": {"$gte": date_from, "$lte": date_to},
+        "$or": [
+            {"date_created": {"$gte": date_from, "$lte": date_to}},
+            {
+                "date_created": {
+                    "$gte": _iso_date_lower_bound(date_from),
+                    "$lte": _iso_date_upper_bound(date_to),
+                }
+            },
+        ],
     }
+
+
+def _iso_date_lower_bound(value: Any) -> str:
+    parsed = _as_utc_datetime(value)
+    return parsed.date().isoformat()
+
+
+def _iso_date_upper_bound(value: Any) -> str:
+    parsed = _as_utc_datetime(value)
+    return f"{parsed.date().isoformat()}T99:99:99"
+
+
+def _as_utc_datetime(value: Any) -> datetime:
+    if isinstance(value, datetime):
+        parsed = value
+    elif isinstance(value, str):
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    else:
+        msg = "expected datetime or ISO datetime string"
+        raise TypeError(msg)
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)

@@ -84,13 +84,20 @@ class FakeDb:
 
 def _matches(doc: dict[str, Any], filter_spec: dict[str, Any]) -> bool:
     for key, expected in filter_spec.items():
+        if key == "$or":
+            if not any(_matches(doc, branch) for branch in expected):
+                return False
+            continue
         value = doc.get(key)
         if isinstance(expected, dict):
-            if "$in" in expected and value not in expected["$in"]:
-                return False
-            if "$gte" in expected and value < expected["$gte"]:
-                return False
-            if "$lte" in expected and value > expected["$lte"]:
+            try:
+                if "$in" in expected and value not in expected["$in"]:
+                    return False
+                if "$gte" in expected and value < expected["$gte"]:
+                    return False
+                if "$lte" in expected and value > expected["$lte"]:
+                    return False
+            except TypeError:
                 return False
         elif value != expected:
             return False
@@ -150,14 +157,70 @@ async def test_ventas_totales_uses_seller_scoped_orders_date_range_and_status_fi
     assert all_statuses.meta == {"orders_count": 2, "status_filter": "todos"}
     assert paid_only.values == [[100.5]]
     assert paid_only.meta == {"orders_count": 1, "status_filter": "paid"}
-    assert orders.last_find_filter == {
-        "seller_id": "seller-1",
-        "date_created": {
-            "$gte": datetime(2026, 5, 10, 0, 0, tzinfo=UTC),
-            "$lte": datetime(2026, 5, 11, 23, 59, 59, 999999, tzinfo=UTC),
+    assert orders.last_find_filter is not None
+    assert orders.last_find_filter["seller_id"] == "seller-1"
+    assert orders.last_find_filter["status"] == "paid"
+    assert orders.last_find_filter["$or"] == [
+        {
+            "date_created": {
+                "$gte": datetime(2026, 5, 10, 0, 0, tzinfo=UTC),
+                "$lte": datetime(2026, 5, 11, 23, 59, 59, 999999, tzinfo=UTC),
+            }
         },
-        "status": "paid",
+        {"date_created": {"$gte": "2026-05-10", "$lte": "2026-05-11T99:99:99"}},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_ventas_totales_matches_production_iso_string_dates() -> None:
+    db = FakeDb()
+    orders = db["orders"]
+    orders.documents = {
+        "order-1": _order_doc(
+            "order-1",
+            seller_id="seller-1",
+            status="paid",
+            date_created="2025-04-30T13:12:00Z",
+            total_amount="100.50",
+        ),
+        "order-2": _order_doc(
+            "order-2",
+            seller_id="seller-1",
+            status="cancelled",
+            date_created="2025-05-01T23:59:59Z",
+            total_amount="25.25",
+        ),
+        "outside": _order_doc(
+            "outside",
+            seller_id="seller-1",
+            status="paid",
+            date_created="2025-05-02T00:00:00Z",
+            total_amount="999",
+        ),
     }
+    dispatcher = _order_question_dispatcher(db)
+
+    all_statuses = await dispatcher.execute(
+        _context(
+            "SHEETSELLER_VENTASTOTALES",
+            {"fecha_inicial": "2025-04-30", "fecha_final": "2025-05-01", "estado": "todos"},
+        )
+    )
+    cancelled = await dispatcher.execute(
+        _context(
+            "SHEETSELLER_VENTASTOTALES",
+            {
+                "fecha_inicial": "2025-04-30",
+                "fecha_final": "2025-05-01",
+                "estado": "cancelled",
+            },
+        )
+    )
+
+    assert all_statuses.values == [[125.75]]
+    assert all_statuses.meta == {"orders_count": 2, "status_filter": "todos"}
+    assert cancelled.values == [[25.25]]
+    assert cancelled.meta == {"orders_count": 1, "status_filter": "cancelled"}
 
 
 @pytest.mark.asyncio
@@ -209,12 +272,13 @@ async def test_unidades_vendidas_returns_units_by_sku_item_pair_with_zero_for_mi
 
     assert result.values == [[3], [0], [1]]
     assert result.meta == {"partial_misses": 1, "orders_count": 2}
-    assert orders.last_find_filter == {
-        "seller_id": "seller-1",
+    assert orders.last_find_filter is not None
+    assert orders.last_find_filter["seller_id"] == "seller-1"
+    assert orders.last_find_filter["$or"][0] == {
         "date_created": {
             "$gte": datetime(2026, 5, 10, 0, 0, tzinfo=UTC),
             "$lte": datetime(2026, 5, 11, 23, 59, 59, 999999, tzinfo=UTC),
-        },
+        }
     }
 
 
@@ -267,13 +331,59 @@ async def test_preguntas_kpi_returns_canonical_question_counts_with_optional_hea
         ["Tiempo promedio respuesta (min)", 120],
     ]
     assert result.meta == {"questions_count": 2, "columns": "preguntas_kpi_mvp"}
-    assert questions.last_find_filter == {
-        "seller_id": "seller-1",
+    assert questions.last_find_filter is not None
+    assert questions.last_find_filter["seller_id"] == "seller-1"
+    assert questions.last_find_filter["$or"][0] == {
         "date_created": {
             "$gte": datetime(2026, 5, 10, 0, 0, tzinfo=UTC),
             "$lte": datetime(2026, 5, 11, 23, 59, 59, 999999, tzinfo=UTC),
-        },
+        }
     }
+
+
+@pytest.mark.asyncio
+async def test_preguntas_kpi_matches_production_iso_string_dates() -> None:
+    db = FakeDb()
+    questions = db["questions"]
+    questions.documents = {
+        "q1": _question_doc(
+            "q1",
+            seller_id="seller-1",
+            status="ANSWERED",
+            date_created="2025-09-26T10:00:00Z",
+            answer={"date_created": "2025-09-26T10:30:00Z"},
+        ),
+        "q2": _question_doc(
+            "q2",
+            seller_id="seller-1",
+            status="UNANSWERED",
+            date_created="2025-10-27T23:59:59Z",
+        ),
+        "outside": _question_doc(
+            "outside",
+            seller_id="seller-1",
+            status="ANSWERED",
+            date_created="2025-10-28T00:00:00Z",
+        ),
+    }
+    dispatcher = _order_question_dispatcher(db)
+
+    result = await dispatcher.execute(
+        _context(
+            "SHEETSELLER_PREGUNTASKPI",
+            {"fecha_inicio": "2025-09-26", "fecha_final": "2025-10-27", "encabezados": "si"},
+        )
+    )
+
+    assert result.values == [
+        ["Métrica", "Valor"],
+        ["Total preguntas", 2],
+        ["Respondidas", 1],
+        ["Sin responder", 1],
+        ["Eliminadas/Baneadas", 0],
+        ["Tiempo promedio respuesta (min)", 30],
+    ]
+    assert result.meta == {"questions_count": 2, "columns": "preguntas_kpi_mvp"}
 
 
 @pytest.mark.asyncio
