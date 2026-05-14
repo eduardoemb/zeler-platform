@@ -719,7 +719,12 @@ async def test_get_monitoring_returns_seller_scoped_snapshot_and_scheduler_statu
     assert body["scheduler"]["blocked_count"] == 1
     assert body["health"]["checks"]["catalog_rules"] == "ok"
     assert denied.status_code == 403
-    assert db.repricer_monitoring_snapshots.documents == [body["snapshot"]]
+    persisted_snapshot = db.repricer_monitoring_snapshots.documents[0]
+    assert isinstance(persisted_snapshot["generated_at"], datetime)
+    assert persisted_snapshot["worker_heartbeat_at"] is None
+    assert body["snapshot"]["generated_at"] == persisted_snapshot["generated_at"].astimezone(
+        UTC
+    ).isoformat().replace("+00:00", "Z")
 
 
 def _app(monkeypatch: pytest.MonkeyPatch) -> tuple[FastAPI, FakeDb]:

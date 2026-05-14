@@ -701,8 +701,9 @@ class RepricerMonitoringService:
                 "active_bulk_job_ids": [str(job["_id"]) for job in active_jobs],
             }
         )
+        snapshot_document = snapshot.model_dump(mode="python", by_alias=True)
+        await self._snapshots.insert_one(snapshot_document)
         snapshot_payload = snapshot.model_dump(mode="json", by_alias=True)
-        await self._snapshots.insert_one(snapshot_payload)
 
         return {
             "snapshot": snapshot_payload,

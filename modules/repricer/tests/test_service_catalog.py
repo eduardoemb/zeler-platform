@@ -713,7 +713,14 @@ async def test_monitoring_service_persists_snapshot_and_derives_scheduler_counts
     }
     assert status["snapshot"]["_id"] == "monitoring-123456789-acc-1-20260513T190000Z"
     assert status["snapshot"]["active_bulk_job_ids"] == ["bulk-active"]
-    assert db.repricer_monitoring_snapshots.inserted == [status["snapshot"]]
+    assert status["snapshot"]["generated_at"] == "2026-05-13T19:00:00Z"
+    assert status["snapshot"]["worker_heartbeat_at"] == "2026-05-13T18:59:00Z"
+
+    persisted_snapshot = db.repricer_monitoring_snapshots.inserted[0]
+    assert persisted_snapshot["generated_at"] == NOW
+    assert persisted_snapshot["worker_heartbeat_at"] == datetime(
+        2026, 5, 13, 18, 59, tzinfo=UTC
+    )
 
 
 @pytest.mark.asyncio
@@ -732,6 +739,11 @@ async def test_monitoring_service_reports_due_unknown_worker_without_live_meli_p
     assert status["scheduler"]["last_run_at"] is None
     assert status["scheduler"]["next_run_at"] is None
     assert status["scheduler"]["due"] is True
+    assert status["snapshot"]["generated_at"] == "2026-05-13T19:00:00Z"
+    assert status["snapshot"]["worker_heartbeat_at"] is None
+    persisted_snapshot = db.repricer_monitoring_snapshots.inserted[0]
+    assert persisted_snapshot["generated_at"] == NOW
+    assert persisted_snapshot["worker_heartbeat_at"] is None
 
 
 def _catalog_rule(
