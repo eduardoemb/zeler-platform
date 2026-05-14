@@ -29,6 +29,11 @@ from zeler_sheets.formulas.handlers_core import build_core_formula_handlers
 from zeler_sheets.formulas.handlers_orders_questions import build_order_question_formula_handlers
 from zeler_sheets.formulas.read_models import FormulaReadModelRepository
 from zeler_sheets.formulas.registry import FormulaRegistry
+from zeler_sheets.formulas.runtime_states import (
+    FormulaRuntimeState,
+    build_explicit_unsupported_formula_handlers,
+    get_formula_runtime_states,
+)
 from zeler_sheets.formulas.schemas import FormulaContract
 
 
@@ -259,11 +264,12 @@ def build_router(
 
     @router.get("/formulas/inventory")
     async def list_formula_inventory() -> JSONResponse:
+        runtime_states = get_formula_runtime_states()
         return JSONResponse(
             jsonable_encoder(
                 {
                     "formulas": [
-                        contract.to_json_dict() | {"status": "data_unavailable"}
+                        _contract_with_runtime_state(contract, runtime_states[contract.name])
                         for contract in registry.list_contracts()
                     ],
                     "error_codes": list(registry.error_codes),
@@ -432,6 +438,16 @@ async def _dispatch_formula(
     return result
 
 
+def _contract_with_runtime_state(
+    contract: FormulaContract,
+    runtime_state: FormulaRuntimeState,
+) -> dict[str, Any]:
+    payload = contract.to_json_dict() | {"status": runtime_state.state}
+    if runtime_state.state == "unsupported":
+        payload["unsupported_reason"] = runtime_state.reason
+    return payload
+
+
 def _runtime_dispatcher(
     request: Request,
     dispatcher: FormulaDispatcher | FormulaDispatchCallable | None,
@@ -444,6 +460,7 @@ def _runtime_dispatcher(
     return FormulaDispatcher(
         build_core_formula_handlers(repository, now_fn=now)
         | build_order_question_formula_handlers(repository, now_fn=now)
+        | build_explicit_unsupported_formula_handlers()
     )
 
 

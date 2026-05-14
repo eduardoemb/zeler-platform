@@ -938,7 +938,10 @@ async def test_formula_api_uses_core_handlers_and_keeps_other_formulas_data_unav
     assert not_ready.status_code == 200
     assert not_ready.json()["error"] == {
         "code": "DATA_UNAVAILABLE",
-        "message": "SHEETSELLER_PAUSADAS data is not available yet",
+        "message": (
+            "SHEETSELLER_PAUSADAS data is not available yet: "
+            "Historical paused-period read model is not available in zeler-platform yet."
+        ),
         "retryable": False,
     }
     assert db["sheets_item_formula_rows"].last_find_filter == {

@@ -18,6 +18,8 @@ BATCH_B_IMPLEMENTED_FORMULAS = frozenset(
         "SHEETSELLER_VENTASTOTALES",
         "SHEETSELLER_UNIDADESVENDIDAS",
         "SHEETSELLER_ORDENESPORSKU",
+        "SHEETSELLER_DIASDESDEULTIMAVENTA",
+        "SHEETSELLER_PRODUCTOSINVENTA",
         "SHEETSELLER_VENTAPORDIAS",
         "SHEETSELLER_VENTASYSTOCK",
         "SHEETSELLER_TOPVENTASUNIDADES",
@@ -71,6 +73,8 @@ def build_order_question_formula_handlers(
         "SHEETSELLER_VENTASTOTALES": handlers.sheetseller_ventas_totales,
         "SHEETSELLER_UNIDADESVENDIDAS": handlers.sheetseller_unidades_vendidas,
         "SHEETSELLER_ORDENESPORSKU": handlers.sheetseller_ordenes_por_sku,
+        "SHEETSELLER_DIASDESDEULTIMAVENTA": handlers.sheetseller_dias_desde_ultima_venta,
+        "SHEETSELLER_PRODUCTOSINVENTA": handlers.sheetseller_productos_sin_venta,
         "SHEETSELLER_VENTAPORDIAS": handlers.sheetseller_venta_por_dias,
         "SHEETSELLER_VENTASYSTOCK": handlers.sheetseller_ventas_y_stock,
         "SHEETSELLER_TOPVENTASUNIDADES": handlers.sheetseller_top_ventas_unidades,
@@ -218,6 +222,118 @@ class OrderQuestionFormulaHandlers:
                 "buyer_filter_count": len(buyer_filter),
                 "sku_filter_count": len(dict.fromkeys(requested_skus)),
                 "columns": "orders_by_sku_mvp",
+            },
+        )
+
+    async def sheetseller_dias_desde_ultima_venta(
+        self, context: FormulaExecutionContext
+    ) -> FormulaExecutionResult:
+        pairs = _lookup_pairs(
+            skus=context.args.get("skus"),
+            item_ids=context.args.get("id_publicaciones"),
+        )
+        now = _as_utc_datetime(self._now_fn())
+        orders = await self._repository.find_orders(
+            seller_id=context.seller_id,
+            date_from=datetime(1970, 1, 1, tzinfo=UTC),
+            date_to=datetime.combine(now.date(), time.max, tzinfo=UTC),
+        )
+        sku_resolver = await _sku_resolver_for_orders(
+            repository=self._repository,
+            seller_id=context.seller_id,
+            orders=orders,
+        )
+        latest_by_pair, enriched_count = _latest_sale_dates_by_pair(
+            orders,
+            sku_resolver=sku_resolver,
+        )
+        values: list[list[Any]] = []
+        misses = 0
+        today = now.date()
+        for pair in pairs:
+            latest = latest_by_pair.get((pair.sku, pair.item_id))
+            if latest is None:
+                misses += 1
+                values.append([""])
+            else:
+                values.append([max((today - latest.date()).days, 0)])
+        return FormulaExecutionResult(
+            values=values,
+            meta=_with_enrichment_meta(
+                {"partial_misses": misses, "orders_count": len(orders)},
+                enriched_count=enriched_count,
+            ),
+        )
+
+    async def sheetseller_productos_sin_venta(
+        self, context: FormulaExecutionContext
+    ) -> FormulaExecutionResult:
+        range_days = _positive_int(context.args.get("rango_dias"))
+        now = _as_utc_datetime(self._now_fn())
+        date_range = _last_days_range(now, range_days)
+        rows = await self._repository.find_item_formula_rows(seller_id=context.seller_id)
+        ordered_rows = sorted(
+            rows,
+            key=lambda row: (
+                normalize_sku(row.get("normalized_sku", "")),
+                str(row.get("item_id", "")),
+            ),
+        )
+        orders = await self._repository.find_orders(
+            seller_id=context.seller_id,
+            date_from=date_range.start,
+            date_to=date_range.end,
+        )
+        all_orders = await self._repository.find_orders(
+            seller_id=context.seller_id,
+            date_from=datetime(1970, 1, 1, tzinfo=UTC),
+            date_to=datetime.combine(now.date(), time.max, tzinfo=UTC),
+        )
+        sku_resolver = await _sku_resolver_for_orders(
+            repository=self._repository,
+            seller_id=context.seller_id,
+            orders=orders,
+        )
+        all_orders_sku_resolver = await _sku_resolver_for_orders(
+            repository=self._repository,
+            seller_id=context.seller_id,
+            orders=all_orders,
+        )
+        recent_totals, enriched_count = _unit_totals_by_pair(orders, sku_resolver=sku_resolver)
+        last_sales, _ = _latest_sale_dates_by_pair(
+            all_orders,
+            sku_resolver=all_orders_sku_resolver,
+        )
+        values: list[list[Any]] = _header_row(
+            context.args.get("encabezados"),
+            ["SKU", "ID Publicación", "Título", "Stock", "Días sin venta"],
+        )
+        for row in ordered_rows:
+            sku = normalize_sku(row.get("normalized_sku") or row.get("sku"))
+            item_id = str(row.get("item_id") or "").strip()
+            if not sku or not item_id:
+                continue
+            if recent_totals.get((sku, item_id), Decimal("0")) > 0:
+                continue
+            latest = last_sales.get((sku, item_id))
+            values.append(
+                [
+                    row.get("sku") or sku,
+                    item_id,
+                    _current_value(row, "title"),
+                    _current_value(row, "available_quantity"),
+                    "" if latest is None else max((now.date() - latest.date()).days, 0),
+                ]
+            )
+        header_count = 1 if _headers_requested(context.args.get("encabezados")) else 0
+        return FormulaExecutionResult(
+            values=values,
+            meta={
+                "rows_count": len(values) - header_count,
+                "orders_count": len(orders),
+                "rango_dias": range_days,
+                "columns": "products_without_sales_mvp",
+                "sku_enriched_items": enriched_count,
             },
         )
 
@@ -687,6 +803,26 @@ def _unit_totals_by_pair(
             if line.enriched:
                 enriched_count += 1
     return totals, enriched_count
+
+
+def _latest_sale_dates_by_pair(
+    orders: Sequence[Mapping[str, Any]], *, sku_resolver: _OrderSkuResolver
+) -> tuple[dict[tuple[str, str], datetime], int]:
+    latest: dict[tuple[str, str], datetime] = {}
+    enriched_count = 0
+    for order in orders:
+        sold_at = _optional_datetime(order.get("date_created"))
+        if sold_at is None:
+            continue
+        for line in _order_lines(order, sku_resolver=sku_resolver):
+            if not line.sku or not line.item_id:
+                continue
+            key = (line.sku, line.item_id)
+            if key not in latest or sold_at > latest[key]:
+                latest[key] = sold_at
+            if line.enriched:
+                enriched_count += 1
+    return latest, enriched_count
 
 
 def _revenue_totals_by_pair(

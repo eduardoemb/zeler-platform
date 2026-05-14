@@ -1,5 +1,32 @@
 {
   "schema_version": 1,
+  "unsupported_formulas": {
+    "SHEETSELLER_PAUSADAS": {"status": "unsupported", "reason": "Historical paused-period read model is not available in zeler-platform yet."},
+    "sheetseller_enviarafull": {"status": "unsupported", "reason": "Full replenishment recommendation read model is not available in zeler-platform yet."},
+    "SHEETSELLER_PUBLICACIONESDESCUIDADAS": {"status": "unsupported", "reason": "Neglected-publication history/read model is not available in zeler-platform yet."},
+    "SHEETSELLER_CATALOGO": {"status": "unsupported", "reason": "Catalog/buybox snapshot read model is not available in zeler-platform yet."},
+    "SHEETSELLER_TIEMPOSINSTOCK": {"status": "unsupported", "reason": "Stock history read model is not available in zeler-platform yet."},
+    "SHEETSELLER_TIEMPOACTIVA": {"status": "unsupported", "reason": "Active-time history read model is not available in zeler-platform yet."},
+    "SHEETSELLER_CATALOGOSINVINCULAR": {"status": "unsupported", "reason": "Recommended catalog-linking read model is not available in zeler-platform yet."},
+    "SHEETSELLER_CATALOGOBUYBOX": {"status": "unsupported", "reason": "Catalog/buybox competition read model is not available in zeler-platform yet."},
+    "SHEETSELLER_COMISION": {"status": "unsupported", "reason": "Commission and fee read model is not available in zeler-platform yet."},
+    "SHEETSELLER_DEVOLUCIONES": {"status": "unsupported", "reason": "Returns/claims read model is not available in zeler-platform yet."},
+    "SHEETSELLER_COMPETENCIA": {"status": "unsupported", "reason": "Competition snapshot read model is not available in zeler-platform yet."},
+    "SHEETSELLER_CATALOGOTIEMPO": {"status": "unsupported", "reason": "Catalog winning-time history read model is not available in zeler-platform yet."},
+    "SHEETSELLER_PRECIOHISTORICO": {"status": "unsupported", "reason": "Price history read model is not available in zeler-platform yet."},
+    "SHEETSELLER_TIEMPOSTOCKACTIVO": {"status": "unsupported", "reason": "Stock-available history read model is not available in zeler-platform yet."},
+    "SHEETSELLER_CALIDAD": {"status": "unsupported", "reason": "Listing quality/health read model is not available in zeler-platform yet."},
+    "SHEETSELLER_CALCULADORA": {"status": "unsupported", "reason": "Cost/category/catalog calculator read model is not available in zeler-platform yet."},
+    "SHEETSELLER_RETIROS": {"status": "unsupported", "reason": "Full withdrawals read model is not available in zeler-platform yet."},
+    "SHEETSELLER_SEMANASCONSTOCK": {"status": "unsupported", "reason": "Weekly stock-presence history read model is not available in zeler-platform yet."},
+    "SHEETSELLER_MEDIDASGENERAL": {"status": "unsupported", "reason": "Measurement read model is not available in zeler-platform yet."},
+    "SHEETSELLER_MEDIDAS": {"status": "unsupported", "reason": "Measurement read model is not available in zeler-platform yet."},
+    "SHEETSELLER_SUPERMERCADO": {"status": "unsupported", "reason": "Supermarket/regular listing flag read model is not available in zeler-platform yet."},
+    "sheetseller_obtener_catalogo": {"status": "unsupported", "reason": "Catalog collection read model is not available in zeler-platform yet."},
+    "SHEETSELLER_COSTOENVIOVENDEDOR": {"status": "unsupported", "reason": "Seller-paid shipping cost read model is not available in zeler-platform yet."},
+    "SHEETSELLER_COMPRADORES": {"status": "unsupported", "reason": "Current canonical orders do not expose buyer/shipping address fields."},
+    "SHEETSELLER_ENVIOSMERCADOENVIOS": {"status": "unsupported", "reason": "MercadoEnvios shipment/label read model is not available in zeler-platform yet."}
+  },
   "formulas": {
     "SHEETSELLER_DASHBOARD": {
       "legacy_source": "sheetsellerappindividual/addon/Publications.gs:SHEETSELLER_DASHBOARD -> /publications/personalizado",
@@ -100,6 +127,24 @@
       "compatibility_note": "Lookup-row MVP sums canonical orders.items quantity by normalized SKU + item_id over an inclusive date range. SKU may be enriched from seller-scoped sheets_item_sku_index only when item_id maps to exactly one SKU. Missing or ambiguous pairs return 0.",
       "columns": [
         {"name": "Unidades vendidas", "source": "orders.items.quantity | orders.items.qty + seller-scoped sheets_item_sku_index", "status": "mvp"}
+      ]
+    },
+    "SHEETSELLER_DIASDESDEULTIMAVENTA": {
+      "legacy_source": "sheetsellerappindividual/addon/Orders.gs:SHEETSELLER_DIASDESDEULTIMAVENTA",
+      "compatibility_note": "Lookup-row MVP returns calendar days since the latest seller-scoped canonical order line for each SKU+item_id pair. SKU enrichment follows the deterministic item_id rules used by other order formulas; missing or ambiguous pairs return blank.",
+      "columns": [
+        {"name": "Días desde última venta", "source": "orders.date_created + orders.items.quantity | orders.items.qty + seller-scoped sheets_item_sku_index", "status": "mvp"}
+      ]
+    },
+    "SHEETSELLER_PRODUCTOSINVENTA": {
+      "legacy_source": "sheetsellerappindividual/addon/Orders.gs:SHEETSELLER_PRODUCTOSINVENTA",
+      "compatibility_note": "MVP lists current seller item rows with zero canonical order-item units in the last N days. It does not infer advertising, catalog, or fee fields absent from current read models.",
+      "columns": [
+        {"name": "SKU", "source": "sheets_item_formula_rows.sku | normalized_sku", "status": "mvp"},
+        {"name": "ID Publicación", "source": "sheets_item_formula_rows.item_id", "status": "mvp"},
+        {"name": "Título", "source": "sheets_item_formula_rows.current.title", "status": "mvp"},
+        {"name": "Stock", "source": "sheets_item_formula_rows.current.available_quantity", "status": "mvp"},
+        {"name": "Días sin venta", "source": "latest matching orders.date_created before Formula API clock date", "status": "mvp"}
       ]
     },
     "SHEETSELLER_VENTAPORDIAS": {

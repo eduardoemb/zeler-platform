@@ -305,7 +305,15 @@ async def test_formula_inventory_route_exposes_all_registered_contracts() -> Non
     contracts = response.json()["formulas"]
     assert len(contracts) == 53
     assert contracts[0]["name"] == "SHEETSELLER_PUBLICACIONES"
-    assert contracts[0]["status"] == "data_unavailable"
+    assert contracts[0]["status"] == "implemented"
+    by_name = {contract["name"]: contract for contract in contracts}
+    assert by_name["SHEETSELLER_DIASDESDEULTIMAVENTA"]["status"] == "implemented"
+    assert by_name["SHEETSELLER_COMPRADORES"] == by_name["SHEETSELLER_COMPRADORES"] | {
+        "status": "unsupported",
+        "unsupported_reason": (
+            "Current canonical orders do not expose buyer/shipping address fields."
+        ),
+    }
     assert response.json()["error_codes"] == [
         "TOKEN_MISSING",
         "TOKEN_REVOKED",

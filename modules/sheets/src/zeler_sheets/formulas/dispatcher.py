@@ -26,10 +26,13 @@ class FormulaExecutionResult:
 
 
 class FormulaDataUnavailableError(Exception):
-    def __init__(self, formula: str) -> None:
-        super().__init__(f"{formula} data is not available yet")
+    def __init__(self, formula: str, reason: str | None = None) -> None:
+        message = f"{formula} data is not available yet"
+        if reason:
+            message = f"{message}: {reason}"
+        super().__init__(message)
         self.formula = formula
-        self.message = f"{formula} data is not available yet"
+        self.message = message
 
 
 FormulaHandler: TypeAlias = Callable[

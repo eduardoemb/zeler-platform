@@ -771,6 +771,128 @@ async def test_ventas_y_stock_combines_recent_sales_windows_with_current_stock()
 
 
 @pytest.mark.asyncio
+async def test_dias_desde_ultima_venta_uses_last_seller_scoped_order_date() -> None:
+    db = FakeDb()
+    db["sheets_item_sku_index"].documents = {
+        "seller-1:SKU-1:MLA1": _sku_index_doc("seller-1", "SKU-1", "MLA1"),
+        "seller-1:SKU-2:MLA2": _sku_index_doc("seller-1", "SKU-2", "MLA2"),
+    }
+    db["orders"].documents = {
+        "latest": _order_doc(
+            "latest",
+            seller_id="seller-1",
+            status="paid",
+            date_created="2026-05-12T10:00:00Z",
+            total_amount=20,
+            items=[{"item_id": "MLA1", "qty": 2, "unit_price": "10.00"}],
+        ),
+        "older": _order_doc(
+            "older",
+            seller_id="seller-1",
+            status="paid",
+            date_created="2026-05-05T10:00:00Z",
+            total_amount=10,
+            items=[{"item_id": "MLA1", "qty": 1, "unit_price": "10.00"}],
+        ),
+        "other-seller": _order_doc(
+            "other-seller",
+            seller_id="seller-2",
+            status="paid",
+            date_created="2026-05-14T10:00:00Z",
+            total_amount=999,
+            items=[{"item_id": "MLA1", "qty": 99, "unit_price": "10.00"}],
+        ),
+    }
+    dispatcher = _order_question_dispatcher(
+        db, now_fn=lambda: datetime(2026, 5, 14, 12, 0, tzinfo=UTC)
+    )
+
+    result = await dispatcher.execute(
+        _context(
+            "SHEETSELLER_DIASDESDEULTIMAVENTA",
+            {"skus": [["sku-1"], ["sku-2"]], "id_publicaciones": ["MLA1", "MLA2"]},
+        )
+    )
+
+    assert result.values == [[2], [""]]
+    assert result.meta == {
+        "partial_misses": 1,
+        "orders_count": 2,
+        "sku_enriched_items": 2,
+    }
+    assert db["orders"].last_find_filter is not None
+    assert db["orders"].last_find_filter["seller_id"] == "seller-1"
+    assert db["orders"].last_find_filter["$or"][0] == {
+        "date_created": {
+            "$gte": datetime(1970, 1, 1, 0, 0, tzinfo=UTC),
+            "$lte": datetime(2026, 5, 14, 23, 59, 59, 999999, tzinfo=UTC),
+        }
+    }
+
+
+@pytest.mark.asyncio
+async def test_productos_sin_venta_returns_current_items_without_recent_sales() -> None:
+    db = FakeDb()
+    db["sheets_item_sku_index"].documents = {
+        "seller-1:SKU-1:MLA1": _sku_index_doc("seller-1", "SKU-1", "MLA1"),
+        "seller-1:SKU-2:MLA2": _sku_index_doc("seller-1", "SKU-2", "MLA2"),
+        "seller-1:SKU-3:MLA3": _sku_index_doc("seller-1", "SKU-3", "MLA3"),
+    }
+    db["sheets_item_formula_rows"].documents = {
+        "seller-1:SKU-1:MLA1": _item_formula_row(
+            "seller-1", "SKU-1", "MLA1", stock=8, title="Sold recently"
+        ),
+        "seller-1:SKU-2:MLA2": _item_formula_row(
+            "seller-1", "SKU-2", "MLA2", stock=0, title="Old sale"
+        ),
+        "seller-1:SKU-3:MLA3": _item_formula_row(
+            "seller-1", "SKU-3", "MLA3", stock=5, title="Never sold"
+        ),
+        "seller-2:SKU-2:MLA2": _item_formula_row(
+            "seller-2", "SKU-2", "MLA2", stock=99, title="Wrong tenant"
+        ),
+    }
+    db["orders"].documents = {
+        "recent": _order_doc(
+            "recent",
+            seller_id="seller-1",
+            status="paid",
+            date_created="2026-05-12T10:00:00Z",
+            total_amount=10,
+            items=[{"item_id": "MLA1", "qty": 1, "unit_price": "10.00"}],
+        ),
+        "old": _order_doc(
+            "old",
+            seller_id="seller-1",
+            status="paid",
+            date_created="2026-05-01T10:00:00Z",
+            total_amount=20,
+            items=[{"item_id": "MLA2", "qty": 2, "unit_price": "10.00"}],
+        ),
+    }
+    dispatcher = _order_question_dispatcher(
+        db, now_fn=lambda: datetime(2026, 5, 14, 12, 0, tzinfo=UTC)
+    )
+
+    result = await dispatcher.execute(
+        _context("SHEETSELLER_PRODUCTOSINVENTA", {"rango_dias": 7, "encabezados": "si"})
+    )
+
+    assert result.values == [
+        ["SKU", "ID Publicación", "Título", "Stock", "Días sin venta"],
+        ["SKU-2", "MLA2", "Old sale", 0, 13],
+        ["SKU-3", "MLA3", "Never sold", 5, ""],
+    ]
+    assert result.meta == {
+        "rows_count": 2,
+        "orders_count": 1,
+        "rango_dias": 7,
+        "columns": "products_without_sales_mvp",
+        "sku_enriched_items": 1,
+    }
+
+
+@pytest.mark.asyncio
 async def test_preguntas_returns_question_table_with_date_and_hour_filters() -> None:
     db = FakeDb()
     questions = db["questions"]
@@ -1021,7 +1143,10 @@ async def test_formula_api_wires_batch_b_handlers_and_keeps_other_batch_b_data_u
     assert not_ready.status_code == 200
     assert not_ready.json()["error"] == {
         "code": "DATA_UNAVAILABLE",
-        "message": "SHEETSELLER_COMPRADORES data is not available yet",
+        "message": (
+            "SHEETSELLER_COMPRADORES data is not available yet: "
+            "Current canonical orders do not expose buyer/shipping address fields."
+        ),
         "retryable": False,
     }
 
@@ -1129,14 +1254,16 @@ def _sku_index_doc(seller_id: str, sku: str, item_id: str) -> dict[str, Any]:
     }
 
 
-def _item_formula_row(seller_id: str, sku: str, item_id: str, *, stock: int) -> dict[str, Any]:
+def _item_formula_row(
+    seller_id: str, sku: str, item_id: str, *, stock: int, title: str = ""
+) -> dict[str, Any]:
     return {
         "_id": f"{seller_id}:{sku}:{item_id}",
         "seller_id": seller_id,
         "sku": sku,
         "normalized_sku": sku.upper(),
         "item_id": item_id,
-        "current": {"available_quantity": stock},
+        "current": {"available_quantity": stock, "title": title},
         "schema_version": 1,
     }
 

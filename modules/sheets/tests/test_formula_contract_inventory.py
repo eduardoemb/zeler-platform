@@ -1,10 +1,20 @@
+# ruff: noqa: S105,S106
+
 from __future__ import annotations
 
 import json
 from pathlib import Path
 from typing import Any, cast
 
+import pytest
+
+from zeler_sheets.formulas.handlers_core import CORE_FORMULA_NAMES
+from zeler_sheets.formulas.handlers_orders_questions import BATCH_B_IMPLEMENTED_FORMULAS
 from zeler_sheets.formulas.registry import FormulaRegistry
+from zeler_sheets.formulas.runtime_states import (
+    build_explicit_unsupported_formula_handlers,
+    get_formula_runtime_states,
+)
 
 FIXTURE_PATH = (
     Path(__file__).parents[3]
@@ -324,3 +334,98 @@ def test_batch_b_output_column_fixture_locks_mvp_and_deferred_columns() -> None:
         "Respuesta",
         "Fecha respuesta",
     ]
+
+    assert [
+        column["name"] for column in formulas["SHEETSELLER_DIASDESDEULTIMAVENTA"]["columns"]
+    ] == ["Días desde última venta"]
+    assert formulas["SHEETSELLER_DIASDESDEULTIMAVENTA"]["columns"][0]["status"] == "mvp"
+
+    assert [column["name"] for column in formulas["SHEETSELLER_PRODUCTOSINVENTA"]["columns"]] == [
+        "SKU",
+        "ID Publicación",
+        "Título",
+        "Stock",
+        "Días sin venta",
+    ]
+    assert all(
+        column["status"] == "mvp" for column in formulas["SHEETSELLER_PRODUCTOSINVENTA"]["columns"]
+    )
+
+
+def test_every_legacy_formula_has_an_explicit_runtime_state() -> None:
+    registry = FormulaRegistry.default()
+    runtime_states = get_formula_runtime_states()
+    contract_names = {contract.name for contract in registry.list_contracts()}
+
+    assert set(runtime_states) == contract_names
+    assert {
+        formula for formula, state in runtime_states.items() if state.state == "implemented"
+    } == CORE_FORMULA_NAMES | BATCH_B_IMPLEMENTED_FORMULAS
+
+    unsupported = {
+        formula: state.reason
+        for formula, state in runtime_states.items()
+        if state.state == "unsupported"
+    }
+    assert len(unsupported) == 25
+    assert unsupported["SHEETSELLER_COMPRADORES"] == (
+        "Current canonical orders do not expose buyer/shipping address fields."
+    )
+    assert unsupported["SHEETSELLER_CATALOGO"] == (
+        "Catalog/buybox snapshot read model is not available in zeler-platform yet."
+    )
+    assert unsupported["SHEETSELLER_COSTOENVIOVENDEDOR"] == (
+        "Seller-paid shipping cost read model is not available in zeler-platform yet."
+    )
+    assert all(reason for reason in unsupported.values())
+
+
+def test_output_fixture_documents_every_explicitly_unsupported_formula_blocker() -> None:
+    fixture = _column_fixture()
+    unsupported_states = {
+        formula: state.reason
+        for formula, state in get_formula_runtime_states().items()
+        if state.state == "unsupported"
+    }
+
+    assert fixture["unsupported_formulas"] == {
+        formula: {"status": "unsupported", "reason": reason}
+        for formula, reason in unsupported_states.items()
+    }
+
+
+@pytest.mark.asyncio
+async def test_explicit_unsupported_handlers_are_routed_and_raise_data_unavailable() -> None:
+    handlers = build_explicit_unsupported_formula_handlers()
+    unsupported_states = {
+        formula: state
+        for formula, state in get_formula_runtime_states().items()
+        if state.state == "unsupported"
+    }
+
+    assert set(handlers) == set(unsupported_states)
+
+    with pytest.raises(Exception) as exc_info:
+        await handlers["SHEETSELLER_COMPRADORES"](  # type: ignore[misc]
+            _formula_context("SHEETSELLER_COMPRADORES", {"id_ordenes": ["order-1"]})
+        )
+
+    assert type(exc_info.value).__name__ == "FormulaDataUnavailableError"
+    assert str(exc_info.value) == (
+        "SHEETSELLER_COMPRADORES data is not available yet: "
+        "Current canonical orders do not expose buyer/shipping address fields."
+    )
+
+
+def _formula_context(formula: str, args: dict[str, Any]) -> Any:
+    from zeler_sheets.formulas.dispatcher import FormulaExecutionContext
+
+    return FormulaExecutionContext(
+        contract=FormulaRegistry.default().find_required(formula),
+        cuenta="HOPEMOB",
+        seller_id="seller-1",
+        seller_nickname="HOPEMOB",
+        token_id="token-1",
+        args=args,
+        request_id="req-1",
+    )
