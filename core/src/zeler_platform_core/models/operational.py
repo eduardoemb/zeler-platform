@@ -200,7 +200,9 @@ class RepricerBulkRow(UtcDatetimeMixin, SellerScopedDocument):
     created_at: datetime
     updated_at: datetime
 
-    @field_validator("account_id", "job_id", "item_id", "error_code", "error_message", mode="before")
+    @field_validator(
+        "account_id", "job_id", "item_id", "error_code", "error_message", mode="before"
+    )
     @classmethod
     def _coerce_bulk_row_fields(cls, value: object) -> object:
         if value is None:
@@ -243,7 +245,9 @@ class RepricerMonitoringSnapshot(UtcDatetimeMixin, SellerScopedDocument):
     def _coerce_bulk_job_ids(cls, value: object) -> list[str]:
         if value is None:
             return []
-        return [_coerce_str(item) for item in value]
+        if isinstance(value, (list, tuple, set)):
+            return [_coerce_str(item) for item in value]
+        return [_coerce_str(value)]
 
 
 class AuditLog(UtcDatetimeMixin, SellerScopedDocument):

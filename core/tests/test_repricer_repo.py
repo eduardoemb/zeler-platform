@@ -7,15 +7,15 @@ from typing import Any
 import pytest
 
 from zeler_platform_core.models import (
-    RepricerAllyAccount,
     RepricerAllies,
+    RepricerAllyAccount,
     RepricerBulkJob,
     RepricerBulkRow,
     RepricerCatalogRule,
+    RepricerLimits,
     RepricerMonitoringSnapshot,
     RepricerReport,
     RepricerRuleExecutionState,
-    RepricerLimits,
 )
 from zeler_platform_core.repos import RepricerBulkRowRepo, RepricerCatalogRuleRepo
 
@@ -256,20 +256,28 @@ async def test_repricer_catalog_rule_repo_lists_by_scope_and_upserts_json_docume
     database = FakeDatabase(
         {
             "repricer_catalog_rules": FakeCollection(
-                [_catalog_rule_doc("MLA-1"), _catalog_rule_doc("MLA-2"), _catalog_rule_doc("MLA-9", seller_id="999")]
+                [
+                    _catalog_rule_doc("MLA-1"),
+                    _catalog_rule_doc("MLA-2"),
+                    _catalog_rule_doc("MLA-9", seller_id="999"),
+                ]
             )
         }
     )
     repo = RepricerCatalogRuleRepo(FakeClient(database))
 
-    rules = await repo.list_by_seller("82453304", account_id="acc-1", active=True, limit=1, offset=1)
+    rules = await repo.list_by_seller(
+        "82453304", account_id="acc-1", active=True, limit=1, offset=1
+    )
 
     assert [rule.item_id for rule in rules] == ["MLA-2"]
     assert database["repricer_catalog_rules"].filters == [
         {"seller_id": "82453304", "account_id": "acc-1", "active": True}
     ]
 
-    new_rule = RepricerCatalogRule.model_validate({**_catalog_rule_doc("MLA-3"), "_id": "catalog-MLA-3"})
+    new_rule = RepricerCatalogRule.model_validate(
+        {**_catalog_rule_doc("MLA-3"), "_id": "catalog-MLA-3"}
+    )
     await repo.upsert(new_rule)
 
     assert database["repricer_catalog_rules"].replace_calls == [

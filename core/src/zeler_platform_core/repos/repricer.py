@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Generic, Protocol, TypeVar
+from typing import Any, Generic, Protocol, TypeVar, cast
 
 from pydantic import BaseModel
 
@@ -33,9 +33,10 @@ class SellerScopedRepo(Generic[ModelT]):
     default_sort: list[tuple[str, int]] = [("updated_at", -1)]
 
     def __init__(self, mongo_client: MongoClientLike) -> None:
-        self._collection: AsyncWriteCollection = mongo_client.get_default_database()[
-            self.collection_name
-        ]
+        self._collection = cast(
+            AsyncWriteCollection,
+            mongo_client.get_default_database()[self.collection_name],
+        )
 
     @staticmethod
     def _as_str(value: object) -> str:

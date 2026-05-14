@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
 from io import StringIO
-from typing import Any, Protocol
+from typing import Any, Protocol, cast
 
 from zeler_platform_core.models import (
     RepricerAllies,
@@ -732,7 +732,7 @@ class RepricerMonitoringService:
         limit: int = 1000,
     ) -> list[dict[str, Any]]:
         cursor = _sort_and_limit_cursor(collection.find(filter_spec), sort, limit)
-        return await cursor.to_list(length=limit)
+        return cast(list[dict[str, Any]], await cursor.to_list(length=limit))
 
 
 def _status_to_active(status: str | None) -> bool | None:

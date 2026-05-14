@@ -170,7 +170,9 @@ def test_repricer_phase1_foundation_validators_require_canonical_fields() -> Non
     for schema_name, missing_fields in expectations.items():
         validator = json.loads((ROOT / "infra/mongo/schemas" / schema_name).read_text())
 
-        result = validate_document_against_schema({"_id": schema_name.removesuffix(".json")}, validator)
+        result = validate_document_against_schema(
+            {"_id": schema_name.removesuffix(".json")}, validator
+        )
 
         assert result.valid is False
         assert result.missing_required_fields == missing_fields

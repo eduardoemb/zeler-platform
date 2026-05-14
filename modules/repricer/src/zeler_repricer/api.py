@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from decimal import Decimal
-from typing import Any
+from typing import Any, cast
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
@@ -548,11 +548,11 @@ def _bulk_result_payload(result: BulkValidationResult) -> dict[str, Any]:
 
 
 def _job_payload(job: Any) -> dict[str, Any]:
-    return job.model_dump(mode="json", by_alias=True)
+    return cast(dict[str, Any], job.model_dump(mode="json", by_alias=True))
 
 
 def _row_payload(row: Any) -> dict[str, Any]:
-    payload = row.model_dump(mode="json", by_alias=True)
+    payload = cast(dict[str, Any], row.model_dump(mode="json", by_alias=True))
     payload["error"] = None
     if row.error_code is not None:
         payload["error"] = {
