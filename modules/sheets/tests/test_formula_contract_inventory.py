@@ -246,6 +246,26 @@ def test_batch_b_output_column_fixture_locks_mvp_and_deferred_columns() -> None:
     fixture = _column_fixture()
     formulas = fixture["formulas"]
 
+    assert [column["name"] for column in formulas["SHEETSELLER_ORDENES"]["columns"]] == [
+        "ID Orden",
+        "Fecha",
+        "Estado",
+        "Buyer ID",
+        "Total",
+        "Shipment ID",
+        "Items",
+    ]
+
+    assert [column["name"] for column in formulas["SHEETSELLER_ORDENESPORSKU"]["columns"]] == [
+        "SKU",
+        "ID Orden",
+        "Fecha",
+        "Estado",
+        "Buyer ID",
+        "Total",
+        "Items",
+    ]
+
     assert [column["name"] for column in formulas["SHEETSELLER_VENTASTOTALES"]["columns"]] == [
         "Total ventas"
     ]
@@ -267,3 +287,14 @@ def test_batch_b_output_column_fixture_locks_mvp_and_deferred_columns() -> None:
     assert all(
         "source" in column or "legacy_source_note" in column for column in preguntas_kpi_columns
     )
+
+    assert [column["name"] for column in formulas["SHEETSELLER_PREGUNTAS"]["columns"]] == [
+        "ID Pregunta",
+        "Fecha",
+        "Item ID",
+        "Buyer ID",
+        "Estado",
+        "Pregunta",
+        "Respuesta",
+        "Fecha respuesta",
+    ]

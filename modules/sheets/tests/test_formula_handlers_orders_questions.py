@@ -105,6 +105,92 @@ def _matches(doc: dict[str, Any], filter_spec: dict[str, Any]) -> bool:
 
 
 @pytest.mark.asyncio
+async def test_ordenes_returns_order_table_with_status_buyer_filters_and_headers() -> None:
+    db = FakeDb()
+    orders = db["orders"]
+    orders.documents = {
+        "order-2": _order_doc(
+            "order-2",
+            seller_id="seller-1",
+            status="paid",
+            buyer_id="buyer-2",
+            date_created="2026-05-11T08:15:00Z",
+            total_amount="75.50",
+            shipment_id="shipment-2",
+            items=[{"seller_sku": "sku-2", "item": {"id": "MLA2"}, "quantity": 1}],
+        ),
+        "order-1": _order_doc(
+            "order-1",
+            seller_id="seller-1",
+            status="paid",
+            buyer_id="buyer-1",
+            date_created="2026-05-10T10:30:00Z",
+            total_amount="100.00",
+            shipment_id="shipment-1",
+            items=[{"sku": "sku-1", "item_id": "MLA1", "quantity": 2}],
+        ),
+        "cancelled": _order_doc(
+            "cancelled",
+            seller_id="seller-1",
+            status="cancelled",
+            buyer_id="buyer-1",
+            date_created="2026-05-10T12:00:00Z",
+            total_amount="55.00",
+        ),
+        "other-seller": _order_doc(
+            "other-seller",
+            seller_id="seller-2",
+            status="paid",
+            buyer_id="buyer-1",
+            date_created="2026-05-10T10:30:00Z",
+            total_amount="999.00",
+        ),
+    }
+    dispatcher = _order_question_dispatcher(db)
+
+    result = await dispatcher.execute(
+        _context(
+            "SHEETSELLER_ORDENES",
+            {
+                "fecha_inicial": "2026-05-10",
+                "fecha_final": "2026-05-11",
+                "estado": "paid",
+                "compradores": [["buyer-1"], ["buyer-2"]],
+                "encabezados": "si",
+            },
+        )
+    )
+
+    assert result.values == [
+        ["ID Orden", "Fecha", "Estado", "Buyer ID", "Total", "Shipment ID", "Items"],
+        [
+            "order-1",
+            "2026-05-10T10:30:00Z",
+            "paid",
+            "buyer-1",
+            100,
+            "shipment-1",
+            "SKU-1 x2 (MLA1)",
+        ],
+        [
+            "order-2",
+            "2026-05-11T08:15:00Z",
+            "paid",
+            "buyer-2",
+            75.5,
+            "shipment-2",
+            "SKU-2 x1 (MLA2)",
+        ],
+    ]
+    assert result.meta == {
+        "orders_count": 2,
+        "status_filter": "paid",
+        "buyer_filter_count": 2,
+        "columns": "orders_mvp",
+    }
+
+
+@pytest.mark.asyncio
 async def test_ventas_totales_uses_seller_scoped_orders_date_range_and_status_filters() -> None:
     db = FakeDb()
     orders = db["orders"]
@@ -224,6 +310,84 @@ async def test_ventas_totales_matches_production_iso_string_dates() -> None:
 
 
 @pytest.mark.asyncio
+async def test_ordenes_por_sku_filters_orders_by_requested_skus() -> None:
+    db = FakeDb()
+    orders = db["orders"]
+    orders.documents = {
+        "order-sku-1": _order_doc(
+            "order-sku-1",
+            seller_id="seller-1",
+            status="paid",
+            buyer_id="buyer-1",
+            date_created=datetime(2026, 5, 10, 8, 0, tzinfo=UTC),
+            total_amount=30,
+            items=[{"sku": "sku-1", "item_id": "MLA1", "quantity": 1}],
+        ),
+        "order-sku-2": _order_doc(
+            "order-sku-2",
+            seller_id="seller-1",
+            status="paid",
+            buyer_id="buyer-2",
+            date_created=datetime(2026, 5, 10, 9, 0, tzinfo=UTC),
+            total_amount=40,
+            items=[{"seller_sku": "sku-2", "item": {"id": "MLA2"}, "quantity": 3}],
+        ),
+        "order-no-sku-match": _order_doc(
+            "order-no-sku-match",
+            seller_id="seller-1",
+            status="paid",
+            buyer_id="buyer-3",
+            date_created=datetime(2026, 5, 10, 10, 0, tzinfo=UTC),
+            total_amount=50,
+            items=[{"sku": "other", "item_id": "MLA3", "quantity": 4}],
+        ),
+    }
+    dispatcher = _order_question_dispatcher(db)
+
+    result = await dispatcher.execute(
+        _context(
+            "SHEETSELLER_ORDENESPORSKU",
+            {
+                "skus": [["sku-2"], ["sku-1"]],
+                "fecha_inicial": "2026-05-10",
+                "fecha_final": "2026-05-10",
+                "estado": "todos",
+                "encabezados": "si",
+            },
+        )
+    )
+
+    assert result.values == [
+        ["SKU", "ID Orden", "Fecha", "Estado", "Buyer ID", "Total", "Items"],
+        [
+            "SKU-2",
+            "order-sku-2",
+            "2026-05-10T09:00:00+00:00",
+            "paid",
+            "buyer-2",
+            40,
+            "SKU-2 x3 (MLA2)",
+        ],
+        [
+            "SKU-1",
+            "order-sku-1",
+            "2026-05-10T08:00:00+00:00",
+            "paid",
+            "buyer-1",
+            30,
+            "SKU-1 x1 (MLA1)",
+        ],
+    ]
+    assert result.meta == {
+        "orders_count": 2,
+        "status_filter": "todos",
+        "buyer_filter_count": 0,
+        "sku_filter_count": 2,
+        "columns": "orders_by_sku_mvp",
+    }
+
+
+@pytest.mark.asyncio
 async def test_unidades_vendidas_returns_units_by_sku_item_pair_with_zero_for_misses() -> None:
     db = FakeDb()
     orders = db["orders"]
@@ -280,6 +444,88 @@ async def test_unidades_vendidas_returns_units_by_sku_item_pair_with_zero_for_mi
             "$lte": datetime(2026, 5, 11, 23, 59, 59, 999999, tzinfo=UTC),
         }
     }
+
+
+@pytest.mark.asyncio
+async def test_preguntas_returns_question_table_with_date_and_hour_filters() -> None:
+    db = FakeDb()
+    questions = db["questions"]
+    questions.documents = {
+        "q1": _question_doc(
+            "q1",
+            seller_id="seller-1",
+            status="UNANSWERED",
+            date_created="2026-05-10T09:30:00Z",
+            text="Still available?",
+            from_user_id="buyer-1",
+            item_id="MLA1",
+        ),
+        "q2": _question_doc(
+            "q2",
+            seller_id="seller-1",
+            status="ANSWERED",
+            date_created="2026-05-10T17:45:00Z",
+            text="Can you ship today?",
+            from_user_id="buyer-2",
+            item_id="MLA2",
+            answer={
+                "text": "Yes",
+                "date_created": "2026-05-10T18:00:00Z",
+                "status": "ACTIVE",
+            },
+        ),
+        "q-before-hours": _question_doc(
+            "q-before-hours",
+            seller_id="seller-1",
+            status="ANSWERED",
+            date_created="2026-05-10T08:59:59Z",
+        ),
+        "q-other-seller": _question_doc(
+            "q-other-seller",
+            seller_id="seller-2",
+            status="UNANSWERED",
+            date_created="2026-05-10T09:30:00Z",
+        ),
+    }
+    dispatcher = _order_question_dispatcher(db)
+
+    result = await dispatcher.execute(
+        _context(
+            "SHEETSELLER_PREGUNTAS",
+            {
+                "fecha_inicial": "2026-05-10",
+                "fecha_final": "2026-05-10",
+                "horario_inicial": "09:00",
+                "horario_final": "18:00",
+                "encabezados": "si",
+            },
+        )
+    )
+
+    assert result.values == [
+        [
+            "ID Pregunta",
+            "Fecha",
+            "Item ID",
+            "Buyer ID",
+            "Estado",
+            "Pregunta",
+            "Respuesta",
+            "Fecha respuesta",
+        ],
+        ["q1", "2026-05-10T09:30:00Z", "MLA1", "buyer-1", "UNANSWERED", "Still available?", "", ""],
+        [
+            "q2",
+            "2026-05-10T17:45:00Z",
+            "MLA2",
+            "buyer-2",
+            "ANSWERED",
+            "Can you ship today?",
+            "Yes",
+            "2026-05-10T18:00:00Z",
+        ],
+    ]
+    assert result.meta == {"questions_count": 2, "columns": "questions_mvp"}
 
 
 @pytest.mark.asyncio
@@ -414,13 +660,26 @@ async def test_formula_api_wires_batch_b_handlers_and_keeps_other_batch_b_data_u
                 "args": {"fecha_inicial": "2026-05-10", "fecha_final": "2026-05-10"},
             },
         )
-        not_ready = await client.post(
+        orders_table = await client.post(
             "/sheets/formulas:execute",
             headers={"Authorization": f"Bearer {token}"},
             json={
                 "formula": "SHEETSELLER_ORDENES",
                 "cuenta": "HOPEMOB",
-                "args": {"fecha_inicial": "2026-05-10", "fecha_final": "2026-05-10"},
+                "args": {
+                    "fecha_inicial": "2026-05-10",
+                    "fecha_final": "2026-05-10",
+                    "encabezados": "si",
+                },
+            },
+        )
+        not_ready = await client.post(
+            "/sheets/formulas:execute",
+            headers={"Authorization": f"Bearer {token}"},
+            json={
+                "formula": "SHEETSELLER_COMPRADORES",
+                "cuenta": "HOPEMOB",
+                "args": {"id_ordenes": ["order-1"]},
             },
         )
 
@@ -430,10 +689,15 @@ async def test_formula_api_wires_batch_b_handlers_and_keeps_other_batch_b_data_u
         "values": [[100]],
         "meta": {"orders_count": 1, "status_filter": "todos"},
     }
+    assert orders_table.status_code == 200
+    assert orders_table.json()["values"] == [
+        ["ID Orden", "Fecha", "Estado", "Buyer ID", "Total", "Shipment ID", "Items"],
+        ["order-1", "2026-05-10T10:30:00+00:00", "paid", "buyer-1", 100, "", ""],
+    ]
     assert not_ready.status_code == 200
     assert not_ready.json()["error"] == {
         "code": "DATA_UNAVAILABLE",
-        "message": "SHEETSELLER_ORDENES data is not available yet",
+        "message": "SHEETSELLER_COMPRADORES data is not available yet",
         "retryable": False,
     }
 
@@ -486,16 +750,19 @@ def _order_doc(
     *,
     seller_id: str,
     status: str,
-    date_created: datetime,
-    total_amount: int | float,
+    buyer_id: str = "buyer-1",
+    date_created: Any,
+    total_amount: Any,
+    shipment_id: str | None = None,
     items: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     return {
         "_id": order_id,
         "seller_id": seller_id,
-        "buyer_id": "buyer-1",
+        "buyer_id": buyer_id,
         "status": status,
         "date_created": date_created,
+        "shipment_id": shipment_id,
         "total_amount": total_amount,
         "items": items or [],
         "schema_version": 1,
@@ -507,16 +774,19 @@ def _question_doc(
     *,
     seller_id: str,
     status: str,
-    date_created: datetime,
+    date_created: Any,
+    item_id: str = "MLA1",
+    text: str = "Question?",
+    from_user_id: str = "buyer-1",
     answer: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     return {
         "_id": question_id,
         "seller_id": seller_id,
-        "item_id": "MLA1",
-        "text": "Question?",
+        "item_id": item_id,
+        "text": text,
         "status": status,
-        "from_user_id": "buyer-1",
+        "from_user_id": from_user_id,
         "date_created": date_created,
         "answer": answer,
         "schema_version": 1,

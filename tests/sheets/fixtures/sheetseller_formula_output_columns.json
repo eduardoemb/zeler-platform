@@ -62,6 +62,32 @@
         {"name": "PRECIO PROMO", "legacy_source_note": "legacy conditional column when tipo_precio='todos'", "status": "unsupported_until_defined", "reason": "No promotional price field is currently present in sheets_item_formula_rows."}
       ]
     },
+    "SHEETSELLER_ORDENES": {
+      "legacy_source": "sheetsellerappindividual/addon/Orders.gs:SHEETSELLER_ORDENES",
+      "compatibility_note": "MVP table is sourced from canonical orders with seller/date/status/buyer filters. It exposes only fields present in the current orders contract; richer buyer/shipping address columns remain separate unsupported formulas.",
+      "columns": [
+        {"name": "ID Orden", "source": "orders._id | orders.id", "status": "mvp"},
+        {"name": "Fecha", "source": "orders.date_created", "status": "mvp"},
+        {"name": "Estado", "source": "orders.status", "status": "mvp"},
+        {"name": "Buyer ID", "source": "orders.buyer_id", "status": "mvp"},
+        {"name": "Total", "source": "orders.total_amount", "status": "mvp"},
+        {"name": "Shipment ID", "source": "orders.shipment_id", "status": "mvp"},
+        {"name": "Items", "source": "orders.items", "status": "mvp"}
+      ]
+    },
+    "SHEETSELLER_ORDENESPORSKU": {
+      "legacy_source": "sheetsellerappindividual/addon/Orders.gs:SHEETSELLER_ORDENESPORSKU",
+      "compatibility_note": "MVP filters canonical orders by normalized SKU only when order item lines carry sku/seller_sku/nested item.seller_sku. Orders whose item lines do not expose SKU are deterministically omitted rather than guessed.",
+      "columns": [
+        {"name": "SKU", "source": "orders.items.sku | orders.items.seller_sku | orders.items.item.seller_sku", "status": "mvp"},
+        {"name": "ID Orden", "source": "orders._id | orders.id", "status": "mvp"},
+        {"name": "Fecha", "source": "orders.date_created", "status": "mvp"},
+        {"name": "Estado", "source": "orders.status", "status": "mvp"},
+        {"name": "Buyer ID", "source": "orders.buyer_id", "status": "mvp"},
+        {"name": "Total", "source": "orders.total_amount", "status": "mvp"},
+        {"name": "Items", "source": "orders.items", "status": "mvp"}
+      ]
+    },
     "SHEETSELLER_VENTASTOTALES": {
       "legacy_source": "sheetsellerappindividual/addon/Orders.gs:SHEETSELLER_VENTASTOTALES",
       "compatibility_note": "Scalar MVP sourced from canonical orders.total_amount with seller/date/status filters. estado='todos' means no status filter.",
@@ -74,6 +100,20 @@
       "compatibility_note": "Lookup-row MVP sums canonical orders.items quantity by normalized SKU + item_id over an inclusive date range. Missing pairs return 0.",
       "columns": [
         {"name": "Unidades vendidas", "source": "orders.items.quantity", "status": "mvp"}
+      ]
+    },
+    "SHEETSELLER_PREGUNTAS": {
+      "legacy_source": "sheetsellerappindividual/addon/Questions.gs:SHEETSELLER_PREGUNTAS",
+      "compatibility_note": "MVP table is sourced from canonical questions with seller/date/hour filters and includes answer text/date when present. It does not infer operator SLA buckets beyond the row data.",
+      "columns": [
+        {"name": "ID Pregunta", "source": "questions._id | questions.id", "status": "mvp"},
+        {"name": "Fecha", "source": "questions.date_created", "status": "mvp"},
+        {"name": "Item ID", "source": "questions.item_id", "status": "mvp"},
+        {"name": "Buyer ID", "source": "questions.from_user_id", "status": "mvp"},
+        {"name": "Estado", "source": "questions.status", "status": "mvp"},
+        {"name": "Pregunta", "source": "questions.text", "status": "mvp"},
+        {"name": "Respuesta", "source": "questions.answer.text", "status": "mvp"},
+        {"name": "Fecha respuesta", "source": "questions.answer.date_created", "status": "mvp"}
       ]
     },
     "SHEETSELLER_PREGUNTASKPI": {
