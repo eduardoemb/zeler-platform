@@ -191,6 +191,32 @@ def test_sheets_item_sku_index_schema_supports_v2_identity_fields() -> None:
     assert schema["properties"]["variation_id"] == {"bsonType": ["string", "long", "int", "null"]}
 
 
+def test_items_schema_supports_v2_formula_fields_without_raw_payload_drift() -> None:
+    validator = json.loads((ROOT / "infra/mongo/schemas/items.json").read_text())
+    schema = validator["$jsonSchema"]
+
+    assert schema["additionalProperties"] is False
+    assert schema["properties"]["permalink"] == {"bsonType": ["string", "null"]}
+    assert schema["properties"]["thumbnail"] == {"bsonType": ["string", "null"]}
+    assert schema["properties"]["catalog_product_id"] == {"bsonType": ["string", "null"]}
+    assert schema["properties"]["inventory_id"] == {"bsonType": ["string", "null"]}
+    assert "raw_payload_blob" not in schema["properties"]
+    assert schema["required"] == [
+        "_id",
+        "seller_id",
+        "title",
+        "price",
+        "base_price",
+        "available_quantity",
+        "status",
+        "category_id",
+        "last_meli_sync_at",
+        "date_created",
+        "last_updated",
+        "schema_version",
+    ]
+
+
 def test_google_oauth_indexes_match_contract() -> None:
     tokens_indexes = json.loads((ROOT / "infra/mongo/indexes/google_oauth_tokens.json").read_text())
     state_indexes = json.loads((ROOT / "infra/mongo/indexes/google_oauth_state.json").read_text())

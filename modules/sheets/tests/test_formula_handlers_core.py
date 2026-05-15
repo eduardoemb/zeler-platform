@@ -326,6 +326,50 @@ async def test_url_and_codigo_ml_handlers_lookup_sku_item_pairs_with_blanks_for_
 
 
 @pytest.mark.asyncio
+async def test_current_item_formula_handlers_return_blanks_when_enriched_source_fields_are_absent(
+) -> None:
+    db = FakeDb()
+    db["sheets_item_formula_rows"].documents = {
+        "seller-1-sku-1-mla1": {
+            "_id": "seller-1-sku-1-mla1",
+            "seller_id": "seller-1",
+            "sku": "sku-1",
+            "normalized_sku": "SKU-1",
+            "item_id": "MLA1",
+            "inventory_id": None,
+            "current": {
+                "permalink": None,
+                "thumbnail": None,
+                "catalog_product_id": None,
+                "inventory_id": None,
+            },
+        }
+    }
+    dispatcher = _core_dispatcher(db)
+
+    url = await dispatcher.execute(
+        _context("SHEETSELLER_URL", {"skus": "sku-1", "id_publicaciones": "MLA1"})
+    )
+    imagen = await dispatcher.execute(
+        _context("SHEETSELLER_IMAGENES", {"skus": "sku-1", "id_publicaciones": "MLA1"})
+    )
+    codigo = await dispatcher.execute(
+        _context("SHEETSELLER_CODIGOML", {"skus": "sku-1", "id_publicaciones": "MLA1"})
+    )
+
+    assert url.values == [[""]]
+    assert url.meta == {"partial_misses": 1}
+    assert imagen.values == [[""]]
+    assert imagen.meta == {
+        "partial_misses": 1,
+        "columns": "thumbnail_url",
+        "image_variant": "principal",
+    }
+    assert codigo.values == [[""]]
+    assert codigo.meta == {"partial_misses": 1}
+
+
+@pytest.mark.asyncio
 async def test_idstock_returns_seller_scoped_table_with_optional_headers() -> None:
     db = FakeDb()
     formula_rows = db["sheets_item_formula_rows"]

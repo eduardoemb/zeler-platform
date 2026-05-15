@@ -1,6 +1,7 @@
 {
   "$jsonSchema": {
     "bsonType": "object",
+    "additionalProperties": false,
     "properties": {
       "_id": {
         "bsonType": [
@@ -28,6 +29,12 @@
       "category_id": {
         "bsonType": "string"
       },
+      "catalog_product_id": {
+        "bsonType": [
+          "string",
+          "null"
+        ]
+      },
       "date_created": {
         "bsonType": "date"
       },
@@ -44,6 +51,18 @@
       },
       "last_updated": {
         "bsonType": "date"
+      },
+      "inventory_id": {
+        "bsonType": [
+          "string",
+          "null"
+        ]
+      },
+      "permalink": {
+        "bsonType": [
+          "string",
+          "null"
+        ]
       },
       "price": {
         "bsonType": [
@@ -74,6 +93,12 @@
       },
       "title": {
         "bsonType": "string"
+      },
+      "thumbnail": {
+        "bsonType": [
+          "string",
+          "null"
+        ]
       },
       "variations": {
         "bsonType": "array"

@@ -35,8 +35,8 @@ def test_schema_export_detects_committed_schema_drift(tmp_path: Path) -> None:
     assert drift == ["items.json"]
 
 
-def test_current_schema_version_returns_initial_version_for_canonical_entities() -> None:
-    assert current_schema_version("items") == 1
+def test_current_schema_version_returns_current_version_for_canonical_entities() -> None:
+    assert current_schema_version("items") == 2
     assert current_schema_version("meli_accounts") == 1
 
     with pytest.raises(KeyError):

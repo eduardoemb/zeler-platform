@@ -8,6 +8,7 @@ import httpx
 
 from zeler_bootstrap.state_machine import BootstrapStateMachine
 from zeler_platform_core.models import Claim, Item, Message, Order, Question, Shipment
+from zeler_platform_core.models.base import current_schema_version
 
 MELI_ITEMS_BATCH_SIZE = 20
 SELLER_SKU_ATTRIBUTE_ID = "SELLER_SKU"
@@ -186,7 +187,7 @@ class ItemsStage:
                             **body,
                             "seller_id": seller_id,
                             "last_meli_sync_at": _now(),
-                            "schema_version": 1,
+                            "schema_version": current_schema_version("items"),
                         }
                     ).model_dump(by_alias=True, mode="json")
                     await _upsert(self.database["items"], document)

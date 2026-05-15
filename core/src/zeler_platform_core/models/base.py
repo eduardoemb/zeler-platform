@@ -130,7 +130,7 @@ CURRENT_SCHEMA_VERSIONS: dict[str, int] = {
     "bootstrap_jobs": 1,
     "claims": 1,
     "events": 1,
-    "items": 1,
+    "items": 2,
     "meli_accounts": 1,
     "messages": 1,
     "module_registry": 1,

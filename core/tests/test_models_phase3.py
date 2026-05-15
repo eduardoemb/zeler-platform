@@ -96,6 +96,70 @@ def test_shipment_accepts_meli_not_delivered_status() -> None:
     assert shipment.status == "not_delivered"
 
 
+def test_item_preserves_whitelisted_formula_fields_without_raw_payload_drift() -> None:
+    item = Item.model_validate(
+        {
+            "id": "MLM123",
+            "seller_id": 123,
+            "title": "Item",
+            "price": Decimal("10.50"),
+            "base_price": Decimal("12.00"),
+            "available_quantity": 5,
+            "status": "active",
+            "category_id": "MLM-CAT",
+            "permalink": "https://articulo.example/MLM123",
+            "thumbnail": "https://img.example/MLM123.jpg",
+            "catalog_product_id": "MLM-CATALOG-1",
+            "inventory_id": "ITEM-INV-1",
+            "variations": [
+                {"id": 456, "inventory_id": "VAR-INV-456", "seller_custom_field": "sku-456"}
+            ],
+            "raw_payload_blob": {"must_not": "be persisted"},
+            "last_meli_sync_at": NOW,
+            "date_created": NOW,
+            "last_updated": NOW,
+            "schema_version": 2,
+        }
+    )
+
+    dumped = item.model_dump(by_alias=True, mode="json")
+
+    assert dumped["permalink"] == "https://articulo.example/MLM123"
+    assert dumped["thumbnail"] == "https://img.example/MLM123.jpg"
+    assert dumped["catalog_product_id"] == "MLM-CATALOG-1"
+    assert dumped["inventory_id"] == "ITEM-INV-1"
+    assert dumped["variations"][0]["inventory_id"] == "VAR-INV-456"
+    assert "raw_payload_blob" not in dumped
+
+
+def test_item_accepts_nullable_formula_fields() -> None:
+    item = Item.model_validate(
+        {
+            "id": "MLM124",
+            "seller_id": 123,
+            "title": "Item without enrichments",
+            "price": Decimal("10.50"),
+            "base_price": Decimal("12.00"),
+            "available_quantity": 5,
+            "status": "active",
+            "category_id": "MLM-CAT",
+            "permalink": None,
+            "thumbnail": None,
+            "catalog_product_id": None,
+            "inventory_id": None,
+            "last_meli_sync_at": NOW,
+            "date_created": NOW,
+            "last_updated": NOW,
+            "schema_version": 2,
+        }
+    )
+
+    assert item.permalink is None
+    assert item.thumbnail is None
+    assert item.catalog_product_id is None
+    assert item.inventory_id is None
+
+
 @pytest.mark.parametrize(
     ("model_cls", "payload", "id_field"),
     [

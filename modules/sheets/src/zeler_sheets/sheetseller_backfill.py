@@ -39,6 +39,17 @@ class BackfillSummary:
     variation_sku_rows: int
     skipped_missing_variation_sku: int
     skipped_ambiguous_sku: int
+    planned: int = 0
+    updated: int = 0
+    unchanged: int = 0
+    skipped_missing_source: int = 0
+    skipped_ambiguous: int = 0
+    errors: int = 0
+    formula_rows_with_permalink: int = 0
+    formula_rows_with_thumbnail: int = 0
+    formula_rows_with_catalog_product_id: int = 0
+    formula_rows_with_inventory_id: int = 0
+    skipped_ambiguous_formula_identity: int = 0
 
     def as_dict(self) -> dict[str, int | bool | str]:
         return asdict(self)
@@ -163,26 +174,37 @@ async def run_sheetseller_backfill(
     skipped_ambiguous_sku = 0
     sku_index_upserts = 0
     formula_row_upserts = 0
+    planned = 0
+    updated = 0
+    unchanged = 0
+    skipped_missing_source = 0
+    skipped_ambiguous_formula_identity = 0
+    formula_rows_with_permalink = 0
+    formula_rows_with_thumbnail = 0
+    formula_rows_with_catalog_product_id = 0
+    formula_rows_with_inventory_id = 0
 
     sku_index_collection = db[ITEM_SKU_INDEX_COLLECTION]
     formula_rows_collection = db[ITEM_FORMULA_ROWS_COLLECTION]
 
     for item in items:
         sku_index_docs: list[dict[str, Any]]
-        formula_row_doc: dict[str, Any] | None
+        formula_row_docs: list[dict[str, Any]]
         item_sku = resolve_seller_sku(item)
         if item_sku.ambiguous:
             skipped_ambiguous_sku += 1
             sku_index_docs = []
-            formula_row_doc = None
+            formula_row_docs = []
         elif item_sku.sku is None:
             skipped_missing_sku += 1
             sku_index_docs = []
-            formula_row_doc = None
+            formula_row_docs = []
         else:
             items_with_sku += 1
             sku_index_docs = [build_sku_index_doc(item, seller_id=seller_id, sku=item_sku.sku)]
-            formula_row_doc = build_formula_row_doc(item, seller_id=seller_id, sku=item_sku.sku)
+            formula_row_docs = [
+                build_formula_row_doc(item, seller_id=seller_id, sku=item_sku.sku)
+            ]
 
         variation_docs, variation_skips, variation_ambiguous = build_variation_sku_index_docs(
             item, seller_id=seller_id
@@ -191,24 +213,45 @@ async def run_sheetseller_backfill(
         skipped_missing_variation_sku += variation_skips
         skipped_ambiguous_sku += variation_ambiguous
         sku_index_docs.extend(variation_docs)
+        variation_formula_rows, variation_missing_source, variation_ambiguous_identity = (
+            build_variation_formula_row_docs(item, variation_docs, seller_id=seller_id)
+        )
+        formula_row_docs.extend(variation_formula_rows)
+        skipped_missing_source += variation_missing_source
+        skipped_ambiguous_formula_identity += variation_ambiguous_identity
 
-        if not sku_index_docs and formula_row_doc is None:
+        if not sku_index_docs and not formula_row_docs:
             continue
 
         sku_index_upserts += len(sku_index_docs)
-        formula_row_upserts += 1 if formula_row_doc is not None else 0
+        formula_row_upserts += len(formula_row_docs)
 
-        if dry_run:
-            continue
+        changed_formula_rows: list[dict[str, Any]] = []
+        for formula_row_doc in formula_row_docs:
+            diagnostics = _formula_row_diagnostics(formula_row_doc)
+            skipped_missing_source += 1 if diagnostics["missing_source"] else 0
+            formula_rows_with_permalink += int(diagnostics["with_permalink"])
+            formula_rows_with_thumbnail += int(diagnostics["with_thumbnail"])
+            formula_rows_with_catalog_product_id += int(
+                diagnostics["with_catalog_product_id"]
+            )
+            formula_rows_with_inventory_id += int(diagnostics["with_inventory_id"])
+            if await _is_existing_document_unchanged(formula_rows_collection, formula_row_doc):
+                unchanged += 1
+                continue
+            planned += 1
+            changed_formula_rows.append(formula_row_doc)
 
-        for sku_index_doc in sku_index_docs:
-            await sku_index_collection.replace_one(
-                {"_id": sku_index_doc["_id"]}, sku_index_doc, upsert=True
-            )
-        if formula_row_doc is not None:
-            await formula_rows_collection.replace_one(
-                {"_id": formula_row_doc["_id"]}, formula_row_doc, upsert=True
-            )
+        if not dry_run:
+            for sku_index_doc in sku_index_docs:
+                await sku_index_collection.replace_one(
+                    {"_id": sku_index_doc["_id"]}, sku_index_doc, upsert=True
+                )
+            for formula_row_doc in changed_formula_rows:
+                await formula_rows_collection.replace_one(
+                    {"_id": formula_row_doc["_id"]}, formula_row_doc, upsert=True
+                )
+                updated += 1
 
     return BackfillSummary(
         seller_id=seller_id,
@@ -221,6 +264,17 @@ async def run_sheetseller_backfill(
         variation_sku_rows=variation_sku_rows,
         skipped_missing_variation_sku=skipped_missing_variation_sku,
         skipped_ambiguous_sku=skipped_ambiguous_sku,
+        planned=planned,
+        updated=updated,
+        unchanged=unchanged,
+        skipped_missing_source=skipped_missing_source,
+        skipped_ambiguous=skipped_ambiguous_sku + skipped_ambiguous_formula_identity,
+        errors=0,
+        formula_rows_with_permalink=formula_rows_with_permalink,
+        formula_rows_with_thumbnail=formula_rows_with_thumbnail,
+        formula_rows_with_catalog_product_id=formula_rows_with_catalog_product_id,
+        formula_rows_with_inventory_id=formula_rows_with_inventory_id,
+        skipped_ambiguous_formula_identity=skipped_ambiguous_formula_identity,
     )
 
 
@@ -562,6 +616,39 @@ def build_variation_sku_index_docs(
     return docs, missing, ambiguous
 
 
+def build_variation_formula_row_docs(
+    item: dict[str, Any], variation_docs: Sequence[dict[str, Any]], *, seller_id: str
+) -> tuple[list[dict[str, Any]], int, int]:
+    docs: list[dict[str, Any]] = []
+    seen_ids: set[str] = set()
+    missing_source = 0
+    ambiguous = 0
+    for variation_doc in variation_docs:
+        variation_id = _optional_string(variation_doc.get("variation_id"))
+        sku = _optional_string(variation_doc.get("sku"))
+        inventory_id = _optional_string(variation_doc.get("inventory_id"))
+        if variation_id is None or sku is None:
+            ambiguous += 1
+            continue
+        if inventory_id is None:
+            missing_source += 1
+            continue
+        formula_row = build_formula_row_doc(
+            item,
+            seller_id=seller_id,
+            sku=sku,
+            variation_id=variation_id,
+            inventory_id=inventory_id,
+        )
+        row_id = str(formula_row["_id"])
+        if row_id in seen_ids:
+            ambiguous += 1
+            continue
+        seen_ids.add(row_id)
+        docs.append(formula_row)
+    return docs, missing_source, ambiguous
+
+
 def resolve_variation_sku(variation: dict[str, Any]) -> SkuCandidate:
     attribute_candidates = _seller_sku_values(variation.get("attributes"))
     if attribute_candidates:
@@ -588,6 +675,9 @@ def build_sku_index_doc(
         raise ValueError(msg)
     item_id = _item_id(item)
     normalized_sku = normalize_sku(resolved_sku)
+    resolved_inventory_id = inventory_id
+    if resolved_inventory_id is None and variation_id is None:
+        resolved_inventory_id = _optional_string(item.get("inventory_id"))
     return {
         "_id": _read_model_id(
             seller_id=seller_id,
@@ -603,7 +693,7 @@ def build_sku_index_doc(
         "variation_id": variation_id,
         "identity_level": identity_level,
         "source": source,
-        "inventory_id": inventory_id,
+        "inventory_id": resolved_inventory_id,
         "updated_at": _updated_at(item),
         "schema_version": READ_MODEL_SCHEMA_VERSION,
     }
@@ -635,7 +725,8 @@ def build_order_line_sku_index_doc(
 
 
 def build_formula_row_doc(
-    item: dict[str, Any], *, seller_id: str, sku: str | None = None
+    item: dict[str, Any], *, seller_id: str, sku: str | None = None,
+    variation_id: str | None = None, inventory_id: str | None = None
 ) -> dict[str, Any]:
     resolved_sku = sku or extract_seller_sku(item)
     if resolved_sku is None:
@@ -645,15 +736,24 @@ def build_formula_row_doc(
     normalized_sku = normalize_sku(resolved_sku)
     date_created = item.get("date_created")
     updated_at = _updated_at(item)
+    resolved_variation_id = _optional_string(variation_id)
+    resolved_inventory_id = _optional_string(inventory_id)
+    if resolved_inventory_id is None and resolved_variation_id is None:
+        resolved_inventory_id = _optional_string(item.get("inventory_id"))
     return {
-        "_id": _formula_row_id(seller_id=seller_id, normalized_sku=normalized_sku, item_id=item_id),
+        "_id": _formula_row_id(
+            seller_id=seller_id,
+            normalized_sku=normalized_sku,
+            item_id=item_id,
+            variation_id=resolved_variation_id,
+        ),
         "seller_id": seller_id,
         "seller_nickname": _optional_string(item.get("seller_nickname") or item.get("nickname")),
         "sku": resolved_sku,
         "normalized_sku": normalized_sku,
         "item_id": item_id,
-        "variation_id": item.get("variation_id"),
-        "inventory_id": None,
+        "variation_id": resolved_variation_id,
+        "inventory_id": resolved_inventory_id,
         "current": {
             "title": item.get("title"),
             "status": item.get("status"),
@@ -662,10 +762,10 @@ def build_formula_row_doc(
             "category_id": item.get("category_id"),
             "date_created": date_created,
             "updated_at": updated_at,
-            "permalink": None,
-            "thumbnail": None,
-            "catalog_product_id": None,
-            "inventory_id": None,
+            "permalink": _optional_string(item.get("permalink")),
+            "thumbnail": _optional_string(item.get("thumbnail")),
+            "catalog_product_id": _optional_string(item.get("catalog_product_id")),
+            "inventory_id": resolved_inventory_id,
         },
         "date_created": date_created,
         "updated_at": updated_at,
@@ -987,8 +1087,39 @@ def _read_model_id(
     return f"{seller_id}:{normalized_sku}:{item_id}:{identity}"
 
 
-def _formula_row_id(*, seller_id: str, normalized_sku: str, item_id: str) -> str:
-    return f"{seller_id}:{normalized_sku}:{item_id}"
+def _formula_row_id(
+    *, seller_id: str, normalized_sku: str, item_id: str, variation_id: str | None = None
+) -> str:
+    base_id = f"{seller_id}:{normalized_sku}:{item_id}"
+    return f"{base_id}:{variation_id}" if variation_id is not None else base_id
+
+
+def _formula_row_diagnostics(formula_row_doc: dict[str, Any]) -> dict[str, int | bool]:
+    current = formula_row_doc.get("current")
+    current_values = current if isinstance(current, dict) else {}
+    fields = {
+        "permalink": _optional_string(current_values.get("permalink")),
+        "thumbnail": _optional_string(current_values.get("thumbnail")),
+        "catalog_product_id": _optional_string(current_values.get("catalog_product_id")),
+        "inventory_id": _optional_string(
+            current_values.get("inventory_id") or formula_row_doc.get("inventory_id")
+        ),
+    }
+    return {
+        "missing_source": any(value is None for value in fields.values()),
+        "with_permalink": 1 if fields["permalink"] is not None else 0,
+        "with_thumbnail": 1 if fields["thumbnail"] is not None else 0,
+        "with_catalog_product_id": 1 if fields["catalog_product_id"] is not None else 0,
+        "with_inventory_id": 1 if fields["inventory_id"] is not None else 0,
+    }
+
+
+async def _is_existing_document_unchanged(collection: Any, document: dict[str, Any]) -> bool:
+    find_one = getattr(collection, "find_one", None)
+    if find_one is None:
+        return False
+    existing = await find_one({"_id": document["_id"]})
+    return bool(existing == document)
 
 
 async def _run_cli(args: argparse.Namespace) -> BackfillCliSummary:

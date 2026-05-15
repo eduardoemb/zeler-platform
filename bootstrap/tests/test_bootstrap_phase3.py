@@ -519,6 +519,61 @@ async def test_items_stage_chunks_item_detail_requests_to_meli_limit() -> None:
 
 
 @pytest.mark.asyncio
+async def test_items_stage_persists_formula_detail_fields_as_schema_v2() -> None:
+    collection = FakeBootstrapJobs()
+    collection.document["state"] = "running"
+    database = FakeDatabase()
+    gateway = FakeGateway()
+
+    async def get(path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+        gateway.calls.append((path, params))
+        if path == "/users/123/items/search":
+            return {"results": ["MLM1"], "scroll_id": None, "paging": {"total": 1}}
+        if path == "/items":
+            return cast(
+                dict[str, Any],
+                [
+                    {
+                        "code": 200,
+                        "body": {
+                            "id": "MLM1",
+                            "seller_id": "123",
+                            "title": "Item MLM1",
+                            "price": "10.00",
+                            "base_price": "10.00",
+                            "available_quantity": 5,
+                            "status": "active",
+                            "category_id": "MLM-CAT",
+                            "permalink": "https://articulo.example/MLM1",
+                            "thumbnail": "https://img.example/MLM1.jpg",
+                            "catalog_product_id": "MLM-CATALOG-1",
+                            "inventory_id": "ITEM-INV-1",
+                            "variations": [{"id": 456, "inventory_id": "VAR-INV-456"}],
+                            "raw_payload_blob": {"must_not": "be persisted"},
+                            "date_created": NOW,
+                            "last_updated": NOW,
+                        },
+                    }
+                ],
+            )
+        raise AssertionError(path)
+
+    gateway.get = get  # type: ignore[method-assign]
+    machine = BootstrapStateMachine(collection, "job-1", now_fn=lambda: NOW)
+
+    await ItemsStage(gateway, database).run(collection.document, machine)
+
+    document = database["items"].upserts[0][1]["$set"]
+    assert document["schema_version"] == 2
+    assert document["permalink"] == "https://articulo.example/MLM1"
+    assert document["thumbnail"] == "https://img.example/MLM1.jpg"
+    assert document["catalog_product_id"] == "MLM-CATALOG-1"
+    assert document["inventory_id"] == "ITEM-INV-1"
+    assert document["variations"][0]["inventory_id"] == "VAR-INV-456"
+    assert "raw_payload_blob" not in document
+
+
+@pytest.mark.asyncio
 async def test_messages_stage_skips_missing_pack_conversations() -> None:
     collection = FakeBootstrapJobs()
     collection.document["state"] = "running"

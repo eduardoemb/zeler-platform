@@ -69,6 +69,13 @@ class FakeCollection:
         self.last_cursor = FakeCursor(docs)
         return self.last_cursor
 
+    async def find_one(self, filter_spec: dict[str, Any]) -> dict[str, Any] | None:
+        self.find_filters.append(dict(filter_spec))
+        for doc in self.documents.values():
+            if _matches(doc, filter_spec):
+                return dict(doc)
+        return None
+
     async def replace_one(
         self, filter_spec: dict[str, Any], replacement: dict[str, Any], *, upsert: bool = False
     ) -> FakeReplaceResult:
@@ -235,6 +242,10 @@ def test_read_model_docs_use_deterministic_ids_and_map_safe_current_item_fields(
     item = _item_doc(
         "MLA1",
         attributes=[{"id": "SELLER_SKU", "value_name": " abc-123 "}],
+        permalink="https://articulo.example/MLA1",
+        thumbnail="https://img.example/MLA1.jpg",
+        catalog_product_id="MLA-CATALOG-1",
+        inventory_id="ITEM-INV-1",
         last_updated=NOW,
     )
 
@@ -253,7 +264,7 @@ def test_read_model_docs_use_deterministic_ids_and_map_safe_current_item_fields(
         "variation_id": None,
         "identity_level": "item",
         "source": "item_attribute",
-        "inventory_id": None,
+        "inventory_id": "ITEM-INV-1",
         "updated_at": NOW,
         "schema_version": 2,
     }
@@ -265,7 +276,7 @@ def test_read_model_docs_use_deterministic_ids_and_map_safe_current_item_fields(
         "normalized_sku": "ABC-123",
         "item_id": "MLA1",
         "variation_id": None,
-        "inventory_id": None,
+        "inventory_id": "ITEM-INV-1",
         "current": {
             "title": "Title MLA1",
             "status": "active",
@@ -274,15 +285,27 @@ def test_read_model_docs_use_deterministic_ids_and_map_safe_current_item_fields(
             "category_id": "MLA-CAT",
             "date_created": NOW,
             "updated_at": NOW,
-            "permalink": None,
-            "thumbnail": None,
-            "catalog_product_id": None,
-            "inventory_id": None,
+            "permalink": "https://articulo.example/MLA1",
+            "thumbnail": "https://img.example/MLA1.jpg",
+            "catalog_product_id": "MLA-CATALOG-1",
+            "inventory_id": "ITEM-INV-1",
         },
         "date_created": NOW,
         "updated_at": NOW,
         "schema_version": 2,
     }
+
+
+def test_formula_row_preserves_blank_enrichment_fields_when_source_is_absent() -> None:
+    item = _item_doc("MLA1", attributes=[{"id": "SELLER_SKU", "value_name": "abc-123"}])
+
+    formula_row = build_formula_row_doc(item, seller_id="82453304")
+
+    assert formula_row["inventory_id"] is None
+    assert formula_row["current"]["permalink"] is None
+    assert formula_row["current"]["thumbnail"] is None
+    assert formula_row["current"]["catalog_product_id"] is None
+    assert formula_row["current"]["inventory_id"] is None
 
 
 def test_variation_sku_index_docs_use_stable_v2_ids_and_sources() -> None:
@@ -318,6 +341,49 @@ def test_variation_sku_index_docs_use_stable_v2_ids_and_sources() -> None:
 
 
 @pytest.mark.asyncio
+async def test_backfill_builds_enriched_item_and_variation_formula_rows_from_deterministic_sources(
+) -> None:
+    db = FakeDb(
+        [
+            _item_doc(
+                "MLA1",
+                attributes=[{"id": "SELLER_SKU", "value_name": "item-sku"}],
+                permalink="https://articulo.example/MLA1",
+                thumbnail="https://img.example/MLA1.jpg",
+                catalog_product_id="MLA-CATALOG-1",
+                inventory_id="ITEM-INV-1",
+                variations=[
+                    {"id": 101, "seller_custom_field": "var-101", "inventory_id": "VAR-INV-101"},
+                    {"id": 102, "seller_custom_field": "var-102"},
+                ],
+            )
+        ]
+    )
+
+    summary = await run_sheetseller_backfill(db=db, seller_id="82453304", dry_run=False)
+
+    assert summary.planned == 2
+    assert summary.updated == 2
+    assert summary.unchanged == 0
+    assert summary.skipped_missing_source == 1
+    assert summary.skipped_ambiguous == 0
+    assert summary.errors == 0
+    assert summary.formula_rows_with_permalink == 2
+    assert summary.formula_rows_with_thumbnail == 2
+    assert summary.formula_rows_with_catalog_product_id == 2
+    assert summary.formula_rows_with_inventory_id == 2
+    assert sorted(db["sheets_item_formula_rows"].documents) == [
+        "82453304:ITEM-SKU:MLA1",
+        "82453304:VAR-101:MLA1:101",
+    ]
+    variation_row = db["sheets_item_formula_rows"].documents["82453304:VAR-101:MLA1:101"]
+    assert variation_row["variation_id"] == "101"
+    assert variation_row["inventory_id"] == "VAR-INV-101"
+    assert variation_row["current"]["inventory_id"] == "VAR-INV-101"
+    assert variation_row["current"]["permalink"] == "https://articulo.example/MLA1"
+
+
+@pytest.mark.asyncio
 async def test_backfill_dry_run_reads_seller_items_and_reports_counts_without_writes() -> None:
     db = FakeDb(
         [
@@ -341,6 +407,12 @@ async def test_backfill_dry_run_reads_seller_items_and_reports_counts_without_wr
         variation_sku_rows=0,
         skipped_missing_variation_sku=0,
         skipped_ambiguous_sku=0,
+        planned=2,
+        updated=0,
+        unchanged=0,
+        skipped_missing_source=2,
+        skipped_ambiguous=0,
+        errors=0,
     )
     assert db["items"].find_filters == [{"seller_id": "82453304"}]
     assert db["items"].last_cursor is not None
@@ -375,8 +447,31 @@ async def test_backfill_write_mode_upserts_both_read_models_and_is_idempotent() 
         variation_sku_rows=0,
         skipped_missing_variation_sku=0,
         skipped_ambiguous_sku=0,
+        planned=2,
+        updated=2,
+        unchanged=0,
+        skipped_missing_source=2,
+        skipped_ambiguous=0,
+        errors=0,
     )
-    assert second == first
+    assert second == BackfillSummary(
+        seller_id="82453304",
+        dry_run=False,
+        items_read=3,
+        items_with_sku=2,
+        skipped_missing_sku=1,
+        sku_index_upserts=2,
+        formula_row_upserts=2,
+        variation_sku_rows=0,
+        skipped_missing_variation_sku=0,
+        skipped_ambiguous_sku=0,
+        planned=0,
+        updated=0,
+        unchanged=2,
+        skipped_missing_source=2,
+        skipped_ambiguous=0,
+        errors=0,
+    )
     assert sorted(db["sheets_item_sku_index"].documents) == [
         "82453304:SKU 2:MLA2:item",
         "82453304:SKU-1:MLA1:item",
@@ -386,7 +481,7 @@ async def test_backfill_write_mode_upserts_both_read_models_and_is_idempotent() 
         "82453304:SKU-1:MLA1",
     ]
     assert len(db["sheets_item_sku_index"].replace_calls) == 4
-    assert len(db["sheets_item_formula_rows"].replace_calls) == 4
+    assert len(db["sheets_item_formula_rows"].replace_calls) == 2
     assert all(call[2] is True for call in db["sheets_item_sku_index"].replace_calls)
     assert all(
         call[0] == {"_id": call[1]["_id"]} for call in db["sheets_item_formula_rows"].replace_calls
@@ -423,8 +518,15 @@ async def test_backfill_writes_item_and_variation_identity_rows_idempotently() -
         variation_sku_rows=2,
         skipped_missing_variation_sku=1,
         skipped_ambiguous_sku=0,
+        planned=1,
+        updated=1,
+        unchanged=0,
+        skipped_missing_source=3,
+        skipped_ambiguous=0,
+        errors=0,
     )
-    assert second == first
+    assert second.updated == 0
+    assert second.unchanged == 1
     assert sorted(db["sheets_item_sku_index"].documents) == [
         "82453304:ITEM-SKU:MLA1:item",
         "82453304:VAR-101:MLA1:101",
@@ -451,6 +553,7 @@ async def test_backfill_dry_run_counts_variations_without_writing() -> None:
 
     assert summary.sku_index_upserts == 1
     assert summary.formula_row_upserts == 0
+    assert summary.planned == 0
     assert summary.variation_sku_rows == 1
     assert summary.skipped_missing_sku == 1
     assert summary.skipped_missing_variation_sku == 1
@@ -1107,9 +1210,13 @@ def _item_doc(
     seller_id: str = "82453304",
     attributes: list[dict[str, Any]] | None = None,
     variations: list[dict[str, Any]] | None = None,
+    permalink: str | None = None,
+    thumbnail: str | None = None,
+    catalog_product_id: str | None = None,
+    inventory_id: str | None = None,
     last_updated: datetime | None = None,
 ) -> dict[str, Any]:
-    return {
+    document = {
         "_id": item_id,
         "seller_id": seller_id,
         "title": f"Title {item_id}",
@@ -1121,8 +1228,17 @@ def _item_doc(
         "last_updated": last_updated or NOW,
         "attributes": attributes or [],
         "variations": variations or [],
-        "schema_version": 1,
+        "schema_version": 2,
     }
+    for key, value in (
+        ("permalink", permalink),
+        ("thumbnail", thumbnail),
+        ("catalog_product_id", catalog_product_id),
+        ("inventory_id", inventory_id),
+    ):
+        if value is not None:
+            document[key] = value
+    return document
 
 
 def _order_doc(
