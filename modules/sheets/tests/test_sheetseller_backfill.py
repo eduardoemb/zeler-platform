@@ -8,12 +8,16 @@ import pytest
 
 from zeler_sheets.sheetseller_backfill import (
     BackfillSummary,
+    OrderIdentityRepairSummary,
     OrderLineIdentityBackfillSummary,
     build_arg_parser,
     build_formula_row_doc,
     build_sku_index_doc,
     build_sku_index_docs,
+    extract_safe_order_item_identity,
     extract_seller_sku,
+    merge_order_items_identity,
+    run_order_identity_repair,
     run_order_line_identity_backfill,
     run_sheetseller_backfill,
 )
@@ -52,6 +56,7 @@ class FakeCollection:
         }
         self.find_filters: list[dict[str, Any]] = []
         self.replace_calls: list[tuple[dict[str, Any], dict[str, Any], bool]] = []
+        self.update_calls: list[tuple[dict[str, Any], dict[str, Any], bool]] = []
         self.last_cursor: FakeCursor | None = None
 
     def find(self, filter_spec: dict[str, Any]) -> FakeCursor:
@@ -70,6 +75,18 @@ class FakeCollection:
         self.documents[doc_id] = dict(replacement)
         return FakeReplaceResult()
 
+    async def update_one(
+        self, filter_spec: dict[str, Any], update: dict[str, Any], *, upsert: bool = False
+    ) -> FakeReplaceResult:
+        self.update_calls.append((dict(filter_spec), dict(update), upsert))
+        if upsert is not False:
+            raise AssertionError("order repair must update existing canonical orders only")
+        doc_id = str(filter_spec["_id"])
+        current = dict(self.documents[doc_id])
+        current.update(update.get("$set", {}))
+        self.documents[doc_id] = current
+        return FakeReplaceResult()
+
 
 class FakeDb:
     def __init__(
@@ -84,7 +101,30 @@ class FakeDb:
 
 
 def _matches(doc: dict[str, Any], filter_spec: dict[str, Any]) -> bool:
-    return all(doc.get(key) == value for key, value in filter_spec.items())
+    for key, value in filter_spec.items():
+        actual = doc.get(key)
+        if isinstance(value, dict):
+            if "$gte" in value and actual < value["$gte"]:
+                return False
+            if "$lt" in value and actual >= value["$lt"]:
+                return False
+            continue
+        if actual != value:
+            return False
+    return True
+
+
+class FakeGateway:
+    def __init__(self, payloads: dict[str, dict[str, Any]]) -> None:
+        self.payloads = payloads
+        self.calls: list[tuple[str, str]] = []
+
+    async def fetch_resource(self, *, seller_id: str, path: str) -> dict[str, Any]:
+        self.calls.append((seller_id, path))
+        payload = self.payloads[path]
+        if isinstance(payload, Exception):
+            raise payload
+        return payload
 
 
 def test_cli_requires_seller_id_and_defaults_to_dry_run() -> None:
@@ -92,10 +132,25 @@ def test_cli_requires_seller_id_and_defaults_to_dry_run() -> None:
 
     args = parser.parse_args(["--seller-id", "82453304"])
     write_args = parser.parse_args(["--seller-id", "82453304", "--write"])
+    repair_args = parser.parse_args(
+        [
+            "--seller-id",
+            "82453304",
+            "--source",
+            "orders-repair",
+            "--date-from",
+            "2025-04-30",
+            "--date-to",
+            "2025-05-01",
+        ]
+    )
 
     assert args.seller_id == "82453304"
     assert args.dry_run is True
     assert write_args.dry_run is False
+    assert repair_args.source == "orders-repair"
+    assert repair_args.date_from == "2025-04-30"
+    assert repair_args.date_to == "2025-05-01"
     with pytest.raises(SystemExit):
         parser.parse_args([])
 
@@ -449,6 +504,284 @@ async def test_order_line_identity_write_is_idempotent_and_skips_ambiguous_pairs
     assert db["sheets_item_sku_index"].replace_calls[0][2] is True
 
 
+def test_extract_safe_order_item_identity_keeps_identity_fields_only() -> None:
+    raw_item = {
+        "id": "line-id-is-not-canonical",
+        "buyer": {"id": "buyer-pii"},
+        "item": {
+            "id": "MLA1",
+            "variation_id": 101,
+            "seller_custom_field": " custom-101 ",
+            "attributes": [{"id": "SELLER_SKU", "value_name": " item-sku "}],
+        },
+        "variation_attributes": [{"id": "SELLER_SKU", "value_name": " var-101 "}],
+    }
+
+    identity = extract_safe_order_item_identity(raw_item)
+
+    assert identity == {
+        "item_id": "MLA1",
+        "variation_id": "101",
+        "seller_sku": "var-101",
+        "seller_custom_field": "custom-101",
+    }
+    assert "buyer" not in identity
+    assert "item" not in identity
+    assert "variation_attributes" not in identity
+
+
+def test_merge_order_items_identity_adds_missing_fields_without_overwriting() -> None:
+    existing_items = [
+        {"item_id": "MLA1", "qty": 1, "unit_price": "10.00", "seller_sku": "existing-sku"},
+        {"item_id": "MLA2", "qty": 1, "unit_price": "20.00"},
+        {"item_id": "MLA2", "qty": 1, "unit_price": "21.00"},
+    ]
+    enriched_items = [
+        {
+            "item_id": "MLA1",
+            "variation_id": "101",
+            "seller_sku": "new-sku",
+            "seller_custom_field": "custom-101",
+        },
+        {"item_id": "MLA2", "variation_id": "201", "seller_sku": "ambiguous-position"},
+    ]
+
+    merged, stats = merge_order_items_identity(existing_items, enriched_items)
+
+    assert merged == [
+        {
+            "item_id": "MLA1",
+            "qty": 1,
+            "unit_price": "10.00",
+            "seller_sku": "existing-sku",
+            "variation_id": "101",
+            "seller_custom_field": "custom-101",
+        },
+        {"item_id": "MLA2", "qty": 1, "unit_price": "20.00"},
+        {"item_id": "MLA2", "qty": 1, "unit_price": "21.00"},
+    ]
+    assert stats.matched_order_lines == 1
+    assert stats.updated_order_lines == 1
+    assert stats.identity_fields_added == 2
+    assert stats.skipped_unmatched_lines == 2
+
+
+@pytest.mark.asyncio
+async def test_order_identity_repair_dry_run_fetches_date_scoped_orders_without_writes() -> None:
+    db = FakeDb(
+        [],
+        orders=[
+            _order_doc(
+                "order-1",
+                date_created=datetime(2025, 4, 30, 12, tzinfo=UTC),
+                items=[{"item_id": "MLA1", "qty": 1, "unit_price": "10.00"}],
+            ),
+            _order_doc(
+                "order-2",
+                date_created=datetime(2025, 5, 2, 12, tzinfo=UTC),
+                items=[{"item_id": "MLA2", "qty": 1, "unit_price": "20.00"}],
+            ),
+            _order_doc(
+                "order-other-seller",
+                seller_id="999",
+                date_created=datetime(2025, 4, 30, 12, tzinfo=UTC),
+                items=[{"item_id": "MLB1", "qty": 1, "unit_price": "30.00"}],
+            ),
+        ],
+    )
+    gateway = FakeGateway(
+        {
+            "/orders/order-1": {
+                "order_items": [
+                    {
+                        "item": {
+                            "id": "MLA1",
+                            "variation_id": 101,
+                            "seller_custom_field": "custom-101",
+                        },
+                        "variation_attributes": [{"id": "SELLER_SKU", "value_name": "var-101"}],
+                    }
+                ]
+            }
+        }
+    )
+
+    summary = await run_order_identity_repair(
+        db=db,
+        gateway=gateway,
+        seller_id="82453304",
+        date_from="2025-04-30",
+        date_to="2025-05-01",
+        dry_run=True,
+    )
+
+    assert summary == OrderIdentityRepairSummary(
+        seller_id="82453304",
+        dry_run=True,
+        date_from="2025-04-30",
+        date_to="2025-05-01",
+        orders_read=1,
+        orders_fetched=1,
+        orders_with_safe_identity=1,
+        orders_updated=0,
+        order_lines_read=1,
+        enriched_order_lines=1,
+        matched_order_lines=1,
+        updated_order_lines=1,
+        identity_fields_added=3,
+        skipped_unmatched_lines=0,
+    )
+    assert db["orders"].find_filters == [
+        {
+            "seller_id": "82453304",
+            "date_created": {
+                "$gte": datetime(2025, 4, 30, tzinfo=UTC),
+                "$lt": datetime(2025, 5, 2, tzinfo=UTC),
+            },
+        }
+    ]
+    assert gateway.calls == [("82453304", "/orders/order-1")]
+    assert db["orders"].update_calls == []
+
+
+@pytest.mark.asyncio
+async def test_order_identity_repair_write_is_idempotent_and_unlocks_order_line_identity() -> None:
+    db = FakeDb(
+        [],
+        orders=[
+            _order_doc(
+                "order-1",
+                date_created=datetime(2025, 4, 30, 12, tzinfo=UTC),
+                items=[{"item_id": "MLA1", "qty": 1, "unit_price": "10.00"}],
+            )
+        ],
+    )
+    gateway = FakeGateway(
+        {
+            "/orders/order-1": {
+                "order_items": [
+                    {
+                        "item": {"id": "MLA1", "variation_id": 101},
+                        "seller_custom_field": "custom-101",
+                    }
+                ]
+            }
+        }
+    )
+
+    first = await run_order_identity_repair(
+        db=db,
+        gateway=gateway,
+        seller_id="82453304",
+        date_from="2025-04-30",
+        date_to="2025-05-01",
+        dry_run=False,
+    )
+    second = await run_order_identity_repair(
+        db=db,
+        gateway=gateway,
+        seller_id="82453304",
+        date_from="2025-04-30",
+        date_to="2025-05-01",
+        dry_run=False,
+    )
+    order_line_summary = await run_order_line_identity_backfill(
+        db=db,
+        seller_id="82453304",
+        date_from="2025-04-30",
+        date_to="2025-05-01",
+        dry_run=True,
+    )
+
+    assert first.orders_updated == 1
+    assert first.identity_fields_added == 2
+    assert second.orders_updated == 0
+    assert second.identity_fields_added == 0
+    assert db["orders"].documents["order-1"]["items"] == [
+        {
+            "item_id": "MLA1",
+            "qty": 1,
+            "unit_price": "10.00",
+            "variation_id": "101",
+            "seller_custom_field": "custom-101",
+        }
+    ]
+    assert order_line_summary.deterministic_pairs == 1
+    assert order_line_summary.sku_index_upserts == 1
+
+
+@pytest.mark.asyncio
+async def test_order_identity_repair_api_failure_writes_nothing() -> None:
+    db = FakeDb(
+        [],
+        orders=[
+            _order_doc(
+                "order-1",
+                date_created=datetime(2025, 4, 30, 12, tzinfo=UTC),
+                items=[{"item_id": "MLA1", "qty": 1, "unit_price": "10.00"}],
+            ),
+            _order_doc(
+                "order-2",
+                date_created=datetime(2025, 4, 30, 13, tzinfo=UTC),
+                items=[{"item_id": "MLA2", "qty": 1, "unit_price": "20.00"}],
+            ),
+        ],
+    )
+    gateway = FakeGateway(
+        {
+            "/orders/order-1": {
+                "order_items": [
+                    {
+                        "item": {"id": "MLA1", "variation_id": 101},
+                        "seller_custom_field": "custom-101",
+                    }
+                ]
+            },
+            "/orders/order-2": RuntimeError("rate-limit or auth failure"),
+        }
+    )
+
+    with pytest.raises(RuntimeError, match="rate-limit or auth failure"):
+        await run_order_identity_repair(
+            db=db,
+            gateway=gateway,
+            seller_id="82453304",
+            date_from="2025-04-30",
+            date_to="2025-05-01",
+            dry_run=False,
+        )
+
+    assert db["orders"].update_calls == []
+
+
+@pytest.mark.asyncio
+async def test_order_identity_repair_skips_payloads_without_identity_fields() -> None:
+    db = FakeDb(
+        [],
+        orders=[
+            _order_doc(
+                "order-1",
+                date_created=datetime(2025, 4, 30, 12, tzinfo=UTC),
+                items=[{"item_id": "MLA1", "qty": 1, "unit_price": "10.00"}],
+            )
+        ],
+    )
+    gateway = FakeGateway({"/orders/order-1": {"order_items": [{"item": {"id": "MLA1"}}]}})
+
+    summary = await run_order_identity_repair(
+        db=db,
+        gateway=gateway,
+        seller_id="82453304",
+        date_from="2025-04-30",
+        date_to="2025-05-01",
+        dry_run=False,
+    )
+
+    assert summary.orders_with_safe_identity == 0
+    assert summary.identity_fields_added == 0
+    assert db["orders"].update_calls == []
+
+
 def _item_doc(
     item_id: str,
     *,
@@ -477,12 +810,13 @@ def _order_doc(
     order_id: str,
     *,
     seller_id: str = "82453304",
+    date_created: datetime = NOW,
     items: list[dict[str, Any]],
 ) -> dict[str, Any]:
     return {
         "_id": order_id,
         "seller_id": seller_id,
-        "date_created": NOW,
+        "date_created": date_created,
         "items": items,
         "schema_version": 1,
     }

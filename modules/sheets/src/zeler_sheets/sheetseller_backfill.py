@@ -6,7 +6,8 @@ import json
 import os
 from collections.abc import Sequence
 from dataclasses import asdict, dataclass
-from typing import Any, cast
+from datetime import UTC, date, datetime, timedelta
+from typing import Any, Protocol, cast
 
 from zeler_sheets.formulas.read_models import normalize_sku
 
@@ -16,6 +17,11 @@ ITEM_SKU_INDEX_COLLECTION = "sheets_item_sku_index"
 ITEM_FORMULA_ROWS_COLLECTION = "sheets_item_formula_rows"
 READ_MODEL_SCHEMA_VERSION = 2
 SELLER_SKU_ATTRIBUTE_ID = "SELLER_SKU"
+DEFAULT_GATEWAY_BASE_URL = "http://gateway:8080/proxy/meli"
+
+
+class MeliOrderGatewayClient(Protocol):
+    async def fetch_resource(self, *, seller_id: str, path: str) -> dict[str, Any]: ...
 
 
 @dataclass(frozen=True)
@@ -51,6 +57,35 @@ class OrderLineIdentityBackfillSummary:
         return asdict(self)
 
 
+@dataclass(frozen=True)
+class OrderIdentityRepairSummary:
+    seller_id: str
+    dry_run: bool
+    date_from: str
+    date_to: str
+    orders_read: int
+    orders_fetched: int
+    orders_with_safe_identity: int
+    orders_updated: int
+    order_lines_read: int
+    enriched_order_lines: int
+    matched_order_lines: int
+    updated_order_lines: int
+    identity_fields_added: int
+    skipped_unmatched_lines: int
+
+    def as_dict(self) -> dict[str, int | bool | str]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class OrderIdentityMergeStats:
+    matched_order_lines: int = 0
+    updated_order_lines: int = 0
+    identity_fields_added: int = 0
+    skipped_unmatched_lines: int = 0
+
+
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Backfill Sheetseller formula read models from canonical items."
@@ -58,9 +93,17 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--seller-id", required=True, help="Seller id to backfill.")
     parser.add_argument(
         "--source",
-        choices=("items", "order-lines"),
+        choices=("items", "order-lines", "orders-repair"),
         default="items",
         help="Read-model source to backfill (default: items).",
+    )
+    parser.add_argument(
+        "--date-from",
+        help="Inclusive order date start (YYYY-MM-DD) for order-scoped sources.",
+    )
+    parser.add_argument(
+        "--date-to",
+        help="Inclusive order date end (YYYY-MM-DD) for order-scoped sources.",
     )
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument(
@@ -152,9 +195,16 @@ async def run_sheetseller_backfill(
 
 
 async def run_order_line_identity_backfill(
-    *, db: Any, seller_id: str, dry_run: bool = True
+    *,
+    db: Any,
+    seller_id: str,
+    dry_run: bool = True,
+    date_from: str | None = None,
+    date_to: str | None = None,
 ) -> OrderLineIdentityBackfillSummary:
-    orders = await _load_seller_orders(db=db, seller_id=seller_id)
+    orders = await _load_seller_orders(
+        db=db, seller_id=seller_id, date_from=date_from, date_to=date_to
+    )
     order_lines_read = 0
     order_lines_with_direct_sku = 0
     order_lines_with_variation_id = 0
@@ -216,6 +266,85 @@ async def run_order_line_identity_backfill(
         deterministic_pairs=len(deterministic_candidates),
         ambiguous_pairs=ambiguous_pairs,
         sku_index_upserts=len(sku_index_docs),
+    )
+
+
+async def run_order_identity_repair(
+    *,
+    db: Any,
+    gateway: MeliOrderGatewayClient,
+    seller_id: str,
+    date_from: str,
+    date_to: str,
+    dry_run: bool = True,
+) -> OrderIdentityRepairSummary:
+    orders = await _load_seller_orders(
+        db=db, seller_id=seller_id, date_from=date_from, date_to=date_to
+    )
+    orders_fetched = 0
+    orders_with_safe_identity = 0
+    orders_updated = 0
+    order_lines_read = 0
+    enriched_order_lines = 0
+    matched_order_lines = 0
+    updated_order_lines = 0
+    identity_fields_added = 0
+    skipped_unmatched_lines = 0
+    orders_collection = db[ORDERS_COLLECTION]
+    write_plans: list[tuple[dict[str, Any], list[dict[str, Any]]]] = []
+
+    for order in orders:
+        existing_items = _order_line_items(order)
+        order_lines_read += len(existing_items)
+        order_id = str(order.get("_id") or order.get("id") or "").strip()
+        if not order_id:
+            skipped_unmatched_lines += len(existing_items)
+            continue
+
+        payload = await gateway.fetch_resource(seller_id=seller_id, path=f"/orders/{order_id}")
+        orders_fetched += 1
+        enriched_items = [
+            identity
+            for raw_item in _order_line_items(payload)
+            if _has_safe_identity_fields(identity := extract_safe_order_item_identity(raw_item))
+        ]
+        enriched_order_lines += len(enriched_items)
+        if enriched_items:
+            orders_with_safe_identity += 1
+
+        merged_items, stats = merge_order_items_identity(existing_items, enriched_items)
+        matched_order_lines += stats.matched_order_lines
+        updated_order_lines += stats.updated_order_lines
+        identity_fields_added += stats.identity_fields_added
+        skipped_unmatched_lines += stats.skipped_unmatched_lines
+
+        if stats.identity_fields_added > 0:
+            write_plans.append(({"_id": order["_id"], "seller_id": seller_id}, merged_items))
+
+    if not dry_run:
+        for filter_spec, merged_items in write_plans:
+            await orders_collection.update_one(
+                filter_spec,
+                {"$set": {"items": merged_items}},
+                upsert=False,
+            )
+            orders_updated += 1
+
+    return OrderIdentityRepairSummary(
+        seller_id=seller_id,
+        dry_run=dry_run,
+        date_from=date_from,
+        date_to=date_to,
+        orders_read=len(orders),
+        orders_fetched=orders_fetched,
+        orders_with_safe_identity=orders_with_safe_identity,
+        orders_updated=orders_updated,
+        order_lines_read=order_lines_read,
+        enriched_order_lines=enriched_order_lines,
+        matched_order_lines=matched_order_lines,
+        updated_order_lines=updated_order_lines,
+        identity_fields_added=identity_fields_added,
+        skipped_unmatched_lines=skipped_unmatched_lines,
     )
 
 
@@ -423,9 +552,36 @@ async def _load_seller_items(*, db: Any, seller_id: str) -> list[dict[str, Any]]
     return cast("list[dict[str, Any]]", await cursor.to_list(length=None))
 
 
-async def _load_seller_orders(*, db: Any, seller_id: str) -> list[dict[str, Any]]:
-    cursor = db[ORDERS_COLLECTION].find({"seller_id": seller_id}).sort([("_id", 1)])
+async def _load_seller_orders(
+    *, db: Any, seller_id: str, date_from: str | None = None, date_to: str | None = None
+) -> list[dict[str, Any]]:
+    filter_spec = _seller_order_filter(seller_id=seller_id, date_from=date_from, date_to=date_to)
+    cursor = db[ORDERS_COLLECTION].find(filter_spec).sort([("_id", 1)])
     return cast("list[dict[str, Any]]", await cursor.to_list(length=None))
+
+
+def _seller_order_filter(
+    *, seller_id: str, date_from: str | None, date_to: str | None
+) -> dict[str, Any]:
+    filter_spec: dict[str, Any] = {"seller_id": seller_id}
+    if date_from is not None and date_to is not None:
+        filter_spec["date_created"] = {
+            "$gte": _parse_utc_datetime(date_from),
+            "$lt": _parse_utc_datetime(date_to, end_exclusive=True),
+        }
+    return filter_spec
+
+
+def _parse_utc_datetime(value: str, *, end_exclusive: bool = False) -> datetime:
+    normalized = value.strip()
+    if len(normalized) == 10:
+        parsed_date = date.fromisoformat(normalized)
+        parsed = datetime.combine(parsed_date, datetime.min.time(), tzinfo=UTC)
+        return parsed + timedelta(days=1) if end_exclusive else parsed
+    parsed = datetime.fromisoformat(normalized.replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
 
 
 def _order_line_items(order: dict[str, Any]) -> list[dict[str, Any]]:
@@ -433,6 +589,105 @@ def _order_line_items(order: dict[str, Any]) -> list[dict[str, Any]]:
     if not isinstance(raw_items, Sequence) or isinstance(raw_items, (str, bytes)):
         return []
     return [item for item in raw_items if isinstance(item, dict)]
+
+
+def extract_safe_order_item_identity(item: dict[str, Any]) -> dict[str, str]:
+    nested_item = _nested_order_item(item)
+    identity: dict[str, str] = {}
+    for field, value in (
+        ("item_id", _order_line_item_id(item)),
+        ("variation_id", _order_line_variation_id(item)),
+        ("sku", _first_string_value(item.get("sku"), nested_item.get("sku"))),
+        (
+            "seller_sku",
+            _first_string_value(
+                item.get("seller_sku"),
+                nested_item.get("seller_sku"),
+                _first_seller_sku_from_order_attributes(item, nested_item),
+            ),
+        ),
+        (
+            "seller_custom_field",
+            _first_string_value(
+                item.get("seller_custom_field"), nested_item.get("seller_custom_field")
+            ),
+        ),
+    ):
+        normalized = _string_value(value)
+        if normalized is not None:
+            identity[field] = normalized
+    return identity
+
+
+def merge_order_items_identity(
+    existing_items: Sequence[dict[str, Any]], enriched_items: Sequence[dict[str, Any]]
+) -> tuple[list[dict[str, Any]], OrderIdentityMergeStats]:
+    existing_counts = _item_id_counts(existing_items)
+    enriched_counts = _item_id_counts(enriched_items)
+    enriched_by_item = {
+        str(item["item_id"]): item
+        for item in enriched_items
+        if item.get("item_id") is not None and enriched_counts.get(str(item["item_id"])) == 1
+    }
+
+    matched_order_lines = 0
+    updated_order_lines = 0
+    identity_fields_added = 0
+    skipped_unmatched_lines = 0
+    merged_items: list[dict[str, Any]] = []
+
+    for existing_item in existing_items:
+        merged_item = dict(existing_item)
+        item_id = _order_line_item_id(existing_item)
+        enriched_item = (
+            enriched_by_item.get(item_id)
+            if item_id is not None
+            and existing_counts.get(item_id) == 1
+            and enriched_counts.get(item_id) == 1
+            else None
+        )
+        if enriched_item is None:
+            skipped_unmatched_lines += 1
+            merged_items.append(merged_item)
+            continue
+
+        matched_order_lines += 1
+        added_for_line = 0
+        for field in ("variation_id", "sku", "seller_sku", "seller_custom_field"):
+            if _string_value(merged_item.get(field)) is not None:
+                continue
+            value = _string_value(enriched_item.get(field))
+            if value is None:
+                continue
+            merged_item[field] = value
+            added_for_line += 1
+        if added_for_line:
+            updated_order_lines += 1
+            identity_fields_added += added_for_line
+        merged_items.append(merged_item)
+
+    return merged_items, OrderIdentityMergeStats(
+        matched_order_lines=matched_order_lines,
+        updated_order_lines=updated_order_lines,
+        identity_fields_added=identity_fields_added,
+        skipped_unmatched_lines=skipped_unmatched_lines,
+    )
+
+
+def _has_safe_identity_fields(identity: dict[str, str]) -> bool:
+    return any(
+        identity.get(field)
+        for field in ("variation_id", "sku", "seller_sku", "seller_custom_field")
+    )
+
+
+def _item_id_counts(items: Sequence[dict[str, Any]]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for item in items:
+        item_id = _order_line_item_id(item)
+        if item_id is not None:
+            counts[item_id] = counts.get(item_id, 0) + 1
+    return counts
 
 
 def resolve_order_line_sku(item: dict[str, Any]) -> str | None:
@@ -478,6 +733,14 @@ def _first_seller_sku_from_order_attributes(
         values = _seller_sku_values(attributes)
         if values:
             return values[0]
+    return None
+
+
+def _first_string_value(*values: Any) -> str | None:
+    for value in values:
+        normalized = _string_value(value)
+        if normalized is not None:
+            return normalized
     return None
 
 
@@ -559,8 +822,13 @@ def _formula_row_id(*, seller_id: str, normalized_sku: str, item_id: str) -> str
     return f"{seller_id}:{normalized_sku}:{item_id}"
 
 
-async def _run_cli(args: argparse.Namespace) -> BackfillSummary | OrderLineIdentityBackfillSummary:
+async def _run_cli(
+    args: argparse.Namespace,
+) -> BackfillSummary | OrderLineIdentityBackfillSummary | OrderIdentityRepairSummary:
     from motor.motor_asyncio import AsyncIOMotorClient
+
+    from zeler_platform_core.auth.meli_gateway_auth import MeliGatewayAuth
+    from zeler_platform_core.clients.meli_gateway_client import MeliGatewayClient
 
     mongo_uri = os.environ.get("MONGO_URI")
     mongo_db_name = os.environ.get("MONGO_DB")
@@ -571,15 +839,41 @@ async def _run_cli(args: argparse.Namespace) -> BackfillSummary | OrderLineIdent
 
     client: AsyncIOMotorClient[Any] = AsyncIOMotorClient(mongo_uri)
     try:
+        if args.source == "orders-repair":
+            date_from, date_to = _require_order_dates(args)
+            from google.cloud import kms
+
+            gateway = MeliGatewayClient(
+                os.environ.get("GATEWAY_BASE_URL", DEFAULT_GATEWAY_BASE_URL),
+                MeliGatewayAuth("sheets", kms.KeyManagementServiceClient()),
+            )
+            return await run_order_identity_repair(
+                db=client[mongo_db_name],
+                gateway=gateway,
+                seller_id=args.seller_id,
+                date_from=date_from,
+                date_to=date_to,
+                dry_run=args.dry_run,
+            )
         if args.source == "order-lines":
             return await run_order_line_identity_backfill(
-                db=client[mongo_db_name], seller_id=args.seller_id, dry_run=args.dry_run
+                db=client[mongo_db_name],
+                seller_id=args.seller_id,
+                dry_run=args.dry_run,
+                date_from=args.date_from,
+                date_to=args.date_to,
             )
         return await run_sheetseller_backfill(
             db=client[mongo_db_name], seller_id=args.seller_id, dry_run=args.dry_run
         )
     finally:
         client.close()
+
+
+def _require_order_dates(args: argparse.Namespace) -> tuple[str, str]:
+    if not args.date_from or not args.date_to:
+        raise SystemExit("--date-from and --date-to are required for --source orders-repair")
+    return str(args.date_from), str(args.date_to)
 
 
 def main(argv: Sequence[str] | None = None) -> None:
