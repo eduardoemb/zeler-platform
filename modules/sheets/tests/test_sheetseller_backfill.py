@@ -8,11 +8,13 @@ import pytest
 
 from zeler_sheets.sheetseller_backfill import (
     BackfillSummary,
+    OrderLineIdentityBackfillSummary,
     build_arg_parser,
     build_formula_row_doc,
     build_sku_index_doc,
     build_sku_index_docs,
     extract_seller_sku,
+    run_order_line_identity_backfill,
     run_sheetseller_backfill,
 )
 
@@ -70,8 +72,12 @@ class FakeCollection:
 
 
 class FakeDb:
-    def __init__(self, items: list[dict[str, Any]]) -> None:
+    def __init__(
+        self, items: list[dict[str, Any]], orders: list[dict[str, Any]] | None = None
+    ) -> None:
         self.collections: dict[str, FakeCollection] = {"items": FakeCollection(items)}
+        if orders is not None:
+            self.collections["orders"] = FakeCollection(orders)
 
     def __getitem__(self, name: str) -> FakeCollection:
         return self.collections.setdefault(name, FakeCollection())
@@ -336,6 +342,113 @@ async def test_backfill_dry_run_counts_variations_without_writing() -> None:
     assert db["sheets_item_sku_index"].documents == {}
 
 
+@pytest.mark.asyncio
+async def test_order_line_identity_dry_run_reports_sanitized_counts_without_writes() -> None:
+    db = FakeDb(
+        [],
+        orders=[
+            _order_doc(
+                "order-1",
+                items=[
+                    {
+                        "item_id": "MLA1",
+                        "variation_id": 101,
+                        "seller_custom_field": " var-101 ",
+                    },
+                    {
+                        "item": {"id": "MLA1", "variation_id": "102", "seller_sku": "var-102"},
+                    },
+                    {"item_id": "MLA2", "seller_sku": "item-sku"},
+                    {"item_id": "MLA2", "seller_custom_field": "other-sku"},
+                    {"item_id": "MLA3", "variation_id": 303},
+                ],
+            ),
+            _order_doc(
+                "order-other-seller",
+                seller_id="999",
+                items=[{"item_id": "MLB1", "seller_sku": "wrong-tenant"}],
+            ),
+        ],
+    )
+
+    summary = await run_order_line_identity_backfill(db=db, seller_id="82453304", dry_run=True)
+
+    assert summary == OrderLineIdentityBackfillSummary(
+        seller_id="82453304",
+        dry_run=True,
+        orders_read=1,
+        order_lines_read=5,
+        order_lines_with_direct_sku=4,
+        order_lines_with_variation_id=3,
+        deterministic_pairs=2,
+        ambiguous_pairs=1,
+        sku_index_upserts=2,
+    )
+    assert db["orders"].find_filters == [{"seller_id": "82453304"}]
+    assert db["sheets_item_sku_index"].documents == {}
+    assert db["sheets_item_sku_index"].replace_calls == []
+
+
+@pytest.mark.asyncio
+async def test_order_line_identity_write_is_idempotent_and_skips_ambiguous_pairs() -> None:
+    db = FakeDb(
+        [],
+        orders=[
+            _order_doc(
+                "order-1",
+                items=[
+                    {
+                        "item_id": "MLA1",
+                        "variation_id": 101,
+                        "seller_custom_field": " var-101 ",
+                    },
+                    {
+                        "item_id": "MLA1",
+                        "variation_id": "101",
+                        "seller_sku": "VAR-101",
+                    },
+                    {"item_id": "MLA2", "seller_sku": "amb-1"},
+                    {"item_id": "MLA2", "seller_custom_field": "amb-2"},
+                ],
+            )
+        ],
+    )
+
+    first = await run_order_line_identity_backfill(db=db, seller_id="82453304", dry_run=False)
+    second = await run_order_line_identity_backfill(db=db, seller_id="82453304", dry_run=False)
+
+    assert first == OrderLineIdentityBackfillSummary(
+        seller_id="82453304",
+        dry_run=False,
+        orders_read=1,
+        order_lines_read=4,
+        order_lines_with_direct_sku=4,
+        order_lines_with_variation_id=2,
+        deterministic_pairs=1,
+        ambiguous_pairs=1,
+        sku_index_upserts=1,
+    )
+    assert second == first
+    assert db["sheets_item_sku_index"].documents == {
+        "82453304:VAR-101:MLA1:101": {
+            "_id": "82453304:VAR-101:MLA1:101",
+            "seller_id": "82453304",
+            "seller_nickname": None,
+            "sku": "var-101",
+            "normalized_sku": "VAR-101",
+            "item_id": "MLA1",
+            "variation_id": "101",
+            "identity_level": "variation",
+            "source": "order_line",
+            "inventory_id": None,
+            "updated_at": NOW,
+            "schema_version": 2,
+        }
+    }
+    assert len(db["sheets_item_sku_index"].replace_calls) == 2
+    assert db["sheets_item_sku_index"].replace_calls[0][2] is True
+
+
 def _item_doc(
     item_id: str,
     *,
@@ -356,5 +469,20 @@ def _item_doc(
         "last_updated": last_updated or NOW,
         "attributes": attributes or [],
         "variations": variations or [],
+        "schema_version": 1,
+    }
+
+
+def _order_doc(
+    order_id: str,
+    *,
+    seller_id: str = "82453304",
+    items: list[dict[str, Any]],
+) -> dict[str, Any]:
+    return {
+        "_id": order_id,
+        "seller_id": seller_id,
+        "date_created": NOW,
+        "items": items,
         "schema_version": 1,
     }

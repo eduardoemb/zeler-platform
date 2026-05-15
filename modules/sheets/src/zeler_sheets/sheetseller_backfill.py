@@ -11,6 +11,7 @@ from typing import Any, cast
 from zeler_sheets.formulas.read_models import normalize_sku
 
 ITEMS_COLLECTION = "items"
+ORDERS_COLLECTION = "orders"
 ITEM_SKU_INDEX_COLLECTION = "sheets_item_sku_index"
 ITEM_FORMULA_ROWS_COLLECTION = "sheets_item_formula_rows"
 READ_MODEL_SCHEMA_VERSION = 2
@@ -34,11 +35,33 @@ class BackfillSummary:
         return asdict(self)
 
 
+@dataclass(frozen=True)
+class OrderLineIdentityBackfillSummary:
+    seller_id: str
+    dry_run: bool
+    orders_read: int
+    order_lines_read: int
+    order_lines_with_direct_sku: int
+    order_lines_with_variation_id: int
+    deterministic_pairs: int
+    ambiguous_pairs: int
+    sku_index_upserts: int
+
+    def as_dict(self) -> dict[str, int | bool | str]:
+        return asdict(self)
+
+
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Backfill Sheetseller formula read models from canonical items."
     )
     parser.add_argument("--seller-id", required=True, help="Seller id to backfill.")
+    parser.add_argument(
+        "--source",
+        choices=("items", "order-lines"),
+        default="items",
+        help="Read-model source to backfill (default: items).",
+    )
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument(
         "--dry-run",
@@ -128,11 +151,87 @@ async def run_sheetseller_backfill(
     )
 
 
+async def run_order_line_identity_backfill(
+    *, db: Any, seller_id: str, dry_run: bool = True
+) -> OrderLineIdentityBackfillSummary:
+    orders = await _load_seller_orders(db=db, seller_id=seller_id)
+    order_lines_read = 0
+    order_lines_with_direct_sku = 0
+    order_lines_with_variation_id = 0
+    identities: dict[tuple[str, str | None], dict[str, _OrderLineIdentityCandidate]] = {}
+
+    for order in orders:
+        updated_at = order.get("date_created") or order.get("updated_at")
+        for item in _order_line_items(order):
+            order_lines_read += 1
+            variation_id = _order_line_variation_id(item)
+            if variation_id is not None:
+                order_lines_with_variation_id += 1
+            sku = resolve_order_line_sku(item)
+            if sku is None:
+                continue
+            order_lines_with_direct_sku += 1
+            item_id = _order_line_item_id(item)
+            if item_id is None:
+                continue
+            identity_key = (item_id, variation_id)
+            by_sku = identities.setdefault(identity_key, {})
+            normalized_sku = normalize_sku(sku)
+            by_sku.setdefault(
+                normalized_sku,
+                _OrderLineIdentityCandidate(
+                    sku=sku,
+                    item_id=item_id,
+                    variation_id=variation_id,
+                    updated_at=updated_at,
+                ),
+            )
+
+    deterministic_candidates: list[_OrderLineIdentityCandidate] = []
+    ambiguous_pairs = 0
+    for by_sku in identities.values():
+        if len(by_sku) == 1:
+            deterministic_candidates.append(next(iter(by_sku.values())))
+        elif len(by_sku) > 1:
+            ambiguous_pairs += 1
+
+    sku_index_collection = db[ITEM_SKU_INDEX_COLLECTION]
+    sku_index_docs = [
+        build_order_line_sku_index_doc(candidate, seller_id=seller_id)
+        for candidate in deterministic_candidates
+    ]
+    if not dry_run:
+        for sku_index_doc in sku_index_docs:
+            await sku_index_collection.replace_one(
+                {"_id": sku_index_doc["_id"]}, sku_index_doc, upsert=True
+            )
+
+    return OrderLineIdentityBackfillSummary(
+        seller_id=seller_id,
+        dry_run=dry_run,
+        orders_read=len(orders),
+        order_lines_read=order_lines_read,
+        order_lines_with_direct_sku=order_lines_with_direct_sku,
+        order_lines_with_variation_id=order_lines_with_variation_id,
+        deterministic_pairs=len(deterministic_candidates),
+        ambiguous_pairs=ambiguous_pairs,
+        sku_index_upserts=len(sku_index_docs),
+    )
+
+
 @dataclass(frozen=True)
 class SkuCandidate:
     sku: str | None
     source: str | None
     ambiguous: bool = False
+
+
+@dataclass(frozen=True)
+class _OrderLineIdentityCandidate:
+    sku: str
+    item_id: str
+    variation_id: str | None
+    updated_at: Any
 
 
 def extract_seller_sku(item: dict[str, Any]) -> str | None:
@@ -255,6 +354,31 @@ def build_sku_index_doc(
     }
 
 
+def build_order_line_sku_index_doc(
+    candidate: _OrderLineIdentityCandidate, *, seller_id: str
+) -> dict[str, Any]:
+    normalized_sku = normalize_sku(candidate.sku)
+    return {
+        "_id": _read_model_id(
+            seller_id=seller_id,
+            normalized_sku=normalized_sku,
+            item_id=candidate.item_id,
+            variation_id=candidate.variation_id,
+        ),
+        "seller_id": seller_id,
+        "seller_nickname": None,
+        "sku": candidate.sku,
+        "normalized_sku": normalized_sku,
+        "item_id": candidate.item_id,
+        "variation_id": candidate.variation_id,
+        "identity_level": "variation" if candidate.variation_id is not None else "item",
+        "source": "order_line",
+        "inventory_id": None,
+        "updated_at": candidate.updated_at,
+        "schema_version": READ_MODEL_SCHEMA_VERSION,
+    }
+
+
 def build_formula_row_doc(
     item: dict[str, Any], *, seller_id: str, sku: str | None = None
 ) -> dict[str, Any]:
@@ -297,6 +421,64 @@ def build_formula_row_doc(
 async def _load_seller_items(*, db: Any, seller_id: str) -> list[dict[str, Any]]:
     cursor = db[ITEMS_COLLECTION].find({"seller_id": seller_id}).sort([("_id", 1)])
     return cast("list[dict[str, Any]]", await cursor.to_list(length=None))
+
+
+async def _load_seller_orders(*, db: Any, seller_id: str) -> list[dict[str, Any]]:
+    cursor = db[ORDERS_COLLECTION].find({"seller_id": seller_id}).sort([("_id", 1)])
+    return cast("list[dict[str, Any]]", await cursor.to_list(length=None))
+
+
+def _order_line_items(order: dict[str, Any]) -> list[dict[str, Any]]:
+    raw_items = order.get("items") or order.get("order_items") or []
+    if not isinstance(raw_items, Sequence) or isinstance(raw_items, (str, bytes)):
+        return []
+    return [item for item in raw_items if isinstance(item, dict)]
+
+
+def resolve_order_line_sku(item: dict[str, Any]) -> str | None:
+    nested_item = _nested_order_item(item)
+    value = (
+        item.get("sku")
+        or item.get("seller_sku")
+        or item.get("seller_custom_field")
+        or nested_item.get("sku")
+        or nested_item.get("seller_sku")
+        or nested_item.get("seller_custom_field")
+        or _first_seller_sku_from_order_attributes(item, nested_item)
+    )
+    return _string_value(value)
+
+
+def _order_line_item_id(item: dict[str, Any]) -> str | None:
+    nested_item = _nested_order_item(item)
+    return _optional_string(
+        item.get("item_id") or nested_item.get("id") or nested_item.get("item_id")
+    )
+
+
+def _order_line_variation_id(item: dict[str, Any]) -> str | None:
+    nested_item = _nested_order_item(item)
+    return _optional_string(item.get("variation_id") or nested_item.get("variation_id"))
+
+
+def _nested_order_item(item: dict[str, Any]) -> dict[str, Any]:
+    nested_item = item.get("item")
+    return nested_item if isinstance(nested_item, dict) else {}
+
+
+def _first_seller_sku_from_order_attributes(
+    item: dict[str, Any], nested_item: dict[str, Any]
+) -> str | None:
+    for attributes in (
+        item.get("variation_attributes"),
+        nested_item.get("variation_attributes"),
+        item.get("attributes"),
+        nested_item.get("attributes"),
+    ):
+        values = _seller_sku_values(attributes)
+        if values:
+            return values[0]
+    return None
 
 
 def _string_value(value: Any) -> str | None:
@@ -377,7 +559,7 @@ def _formula_row_id(*, seller_id: str, normalized_sku: str, item_id: str) -> str
     return f"{seller_id}:{normalized_sku}:{item_id}"
 
 
-async def _run_cli(args: argparse.Namespace) -> BackfillSummary:
+async def _run_cli(args: argparse.Namespace) -> BackfillSummary | OrderLineIdentityBackfillSummary:
     from motor.motor_asyncio import AsyncIOMotorClient
 
     mongo_uri = os.environ.get("MONGO_URI")
@@ -389,6 +571,10 @@ async def _run_cli(args: argparse.Namespace) -> BackfillSummary:
 
     client: AsyncIOMotorClient[Any] = AsyncIOMotorClient(mongo_uri)
     try:
+        if args.source == "order-lines":
+            return await run_order_line_identity_backfill(
+                db=client[mongo_db_name], seller_id=args.seller_id, dry_run=args.dry_run
+            )
         return await run_sheetseller_backfill(
             db=client[mongo_db_name], seller_id=args.seller_id, dry_run=args.dry_run
         )

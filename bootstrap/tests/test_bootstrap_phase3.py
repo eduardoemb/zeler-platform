@@ -411,6 +411,66 @@ async def test_orders_stage_preserves_variation_and_explicit_sku_fields() -> Non
 
 
 @pytest.mark.asyncio
+async def test_orders_stage_extracts_nested_seller_sku_attributes_without_guessing() -> None:
+    collection = FakeBootstrapJobs()
+    collection.document["state"] = "running"
+    database = FakeDatabase()
+    gateway = FakeGateway()
+
+    async def get(path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+        gateway.calls.append((path, params))
+        if path == "/orders/search":
+            return {
+                "results": [
+                    {
+                        "id": 987,
+                        "buyer": {"id": 45},
+                        "status": "paid",
+                        "date_created": NOW,
+                        "total_amount": "30.00",
+                        "order_items": [
+                            {
+                                "item": {
+                                    "id": "MLM1",
+                                    "variation_id": 456,
+                                    "variation_attributes": [
+                                        {"id": "SELLER_SKU", "value_name": "var-sku"}
+                                    ],
+                                    "attributes": [{"id": "SELLER_SKU", "value_name": "item-sku"}],
+                                },
+                                "quantity": 2,
+                                "unit_price": "10.00",
+                            },
+                            {
+                                "item": {"id": "MLM2", "attributes": []},
+                                "quantity": 1,
+                                "unit_price": "5.00",
+                            },
+                        ],
+                    }
+                ],
+                "paging": {"total": 1, "offset": 0, "limit": 50},
+            }
+        raise AssertionError(path)
+
+    gateway.get = get  # type: ignore[method-assign]
+    machine = BootstrapStateMachine(collection, "job-1", now_fn=lambda: NOW)
+
+    await OrdersStage(gateway, database).run(collection.document, machine)
+
+    assert database["orders"].upserts[0][1]["$set"]["items"] == [
+        {
+            "item_id": "MLM1",
+            "variation_id": "456",
+            "seller_sku": "var-sku",
+            "qty": 2,
+            "unit_price": "10.00",
+        },
+        {"item_id": "MLM2", "qty": 1, "unit_price": "5.00"},
+    ]
+
+
+@pytest.mark.asyncio
 async def test_items_stage_chunks_item_detail_requests_to_meli_limit() -> None:
     item_ids = [f"MLM{i}" for i in range((MELI_ITEMS_BATCH_SIZE * 2) + 3)]
     collection = FakeBootstrapJobs()

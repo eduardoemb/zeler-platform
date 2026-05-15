@@ -10,6 +10,7 @@ from zeler_bootstrap.state_machine import BootstrapStateMachine
 from zeler_platform_core.models import Claim, Item, Message, Order, Question, Shipment
 
 MELI_ITEMS_BATCH_SIZE = 20
+SELLER_SKU_ATTRIBUTE_ID = "SELLER_SKU"
 
 
 class BootstrapGatewayClient(Protocol):
@@ -76,8 +77,39 @@ def _copy_optional_identity(
     target: dict[str, Any], field: str, raw_item: dict[str, Any], item: dict[str, Any]
 ) -> None:
     value = raw_item.get(field) or item.get(field)
+    if value is None and field == "seller_sku":
+        value = _seller_sku_from_order_attributes(raw_item, item)
     if value is not None and str(value).strip():
         target[field] = value
+
+
+def _seller_sku_from_order_attributes(raw_item: dict[str, Any], item: dict[str, Any]) -> Any:
+    for attributes in (
+        raw_item.get("variation_attributes"),
+        item.get("variation_attributes"),
+        raw_item.get("attributes"),
+        item.get("attributes"),
+    ):
+        value = _seller_sku_from_attributes(attributes)
+        if value is not None:
+            return value
+    return None
+
+
+def _seller_sku_from_attributes(attributes: Any) -> Any:
+    if not isinstance(attributes, Iterable) or isinstance(attributes, (str, bytes)):
+        return None
+    for attribute in attributes:
+        if not isinstance(attribute, dict):
+            continue
+        attribute_id = str(attribute.get("id") or "").strip().upper()
+        if attribute_id != SELLER_SKU_ATTRIBUTE_ID:
+            continue
+        for key in ("value_name", "value", "name"):
+            value = attribute.get(key)
+            if value is not None and str(value).strip():
+                return value
+    return None
 
 
 def _without_none_values(document: dict[str, Any]) -> dict[str, Any]:
