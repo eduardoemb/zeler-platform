@@ -1,5 +1,13 @@
 from zeler_platform_core.models.base import current_schema_version
-from zeler_platform_core.models.entities import Claim, Item, Message, Order, Question, Shipment
+from zeler_platform_core.models.entities import (
+    Claim,
+    Item,
+    Message,
+    Order,
+    OrderItem,
+    Question,
+    Shipment,
+)
 from zeler_platform_core.models.events import (
     BootstrapCompleted,
     DomainEvent,
@@ -16,8 +24,8 @@ from zeler_platform_core.models.operational import (
     AuditLog,
     BootstrapJob,
     ModuleRegistry,
-    RepricerAllyAccount,
     RepricerAllies,
+    RepricerAllyAccount,
     RepricerBulkJob,
     RepricerBulkRow,
     RepricerCatalogRule,
@@ -48,6 +56,7 @@ __all__ = [
     "MessageReceived",
     "ModuleRegistry",
     "Order",
+    "OrderItem",
     "OrderCreated",
     "Question",
     "QuestionReceived",

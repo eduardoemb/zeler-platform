@@ -51,6 +51,10 @@ class Item(UtcDatetimeMixin, PriceMixin, SellerScopedDocument):
 
 class OrderItem(PriceMixin):
     item_id: str
+    variation_id: str | None = None
+    sku: str | None = None
+    seller_sku: str | None = None
+    seller_custom_field: str | None = None
     qty: int
     unit_price: Decimal
 
@@ -58,6 +62,18 @@ class OrderItem(PriceMixin):
     @classmethod
     def _coerce_item_id(cls, value: object) -> str:
         return _coerce_str(value)
+
+    @field_validator("variation_id", "sku", "seller_sku", "seller_custom_field", mode="before")
+    @classmethod
+    def _coerce_optional_identity(cls, value: object) -> object:
+        if value is None:
+            return None
+        normalized = _coerce_str(value).strip()
+        return normalized or None
+
+    def model_dump(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
+        kwargs.setdefault("exclude_none", True)
+        return super().model_dump(*args, **kwargs)
 
 
 class Order(UtcDatetimeMixin, PriceMixin, SellerScopedDocument):

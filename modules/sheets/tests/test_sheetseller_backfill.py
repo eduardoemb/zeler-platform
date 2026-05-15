@@ -11,6 +11,7 @@ from zeler_sheets.sheetseller_backfill import (
     build_arg_parser,
     build_formula_row_doc,
     build_sku_index_doc,
+    build_sku_index_docs,
     extract_seller_sku,
     run_sheetseller_backfill,
 )
@@ -103,8 +104,7 @@ def test_extract_seller_sku_supports_legacy_attribute_value_shapes() -> None:
         == "sku-value"
     )
     assert (
-        extract_seller_sku({"attributes": [{"id": "SELLER_SKU", "name": "sku-name"}]})
-        == "sku-name"
+        extract_seller_sku({"attributes": [{"id": "SELLER_SKU", "name": "sku-name"}]}) == "sku-name"
     )
     assert extract_seller_sku({"attributes": [{"id": "BRAND", "value_name": "Zeler"}]}) is None
     assert extract_seller_sku({"attributes": [{"id": "SELLER_SKU", "value_name": "   "}]}) is None
@@ -120,7 +120,7 @@ def test_read_model_docs_use_deterministic_ids_and_map_safe_current_item_fields(
     sku_index = build_sku_index_doc(item, seller_id="82453304")
     formula_row = build_formula_row_doc(item, seller_id="82453304")
 
-    expected_id = "82453304:ABC-123:MLA1"
+    expected_id = "82453304:ABC-123:MLA1:item"
     assert sku_index == {
         "_id": expected_id,
         "seller_id": "82453304",
@@ -129,9 +129,11 @@ def test_read_model_docs_use_deterministic_ids_and_map_safe_current_item_fields(
         "normalized_sku": "ABC-123",
         "item_id": "MLA1",
         "variation_id": None,
+        "identity_level": "item",
+        "source": "item_attribute",
         "inventory_id": None,
         "updated_at": NOW,
-        "schema_version": 1,
+        "schema_version": 2,
     }
     assert formula_row == {
         "_id": expected_id,
@@ -157,8 +159,40 @@ def test_read_model_docs_use_deterministic_ids_and_map_safe_current_item_fields(
         },
         "date_created": NOW,
         "updated_at": NOW,
-        "schema_version": 1,
+        "schema_version": 2,
     }
+
+
+def test_variation_sku_index_docs_use_stable_v2_ids_and_sources() -> None:
+    item = _item_doc(
+        "MLA1",
+        variations=[
+            {
+                "id": 101,
+                "seller_custom_field": " custom-101 ",
+                "inventory_id": "INV-101",
+            }
+        ],
+    )
+
+    docs = build_sku_index_docs(item, seller_id="82453304")
+
+    assert docs == [
+        {
+            "_id": "82453304:CUSTOM-101:MLA1:101",
+            "seller_id": "82453304",
+            "seller_nickname": None,
+            "sku": "custom-101",
+            "normalized_sku": "CUSTOM-101",
+            "item_id": "MLA1",
+            "variation_id": "101",
+            "identity_level": "variation",
+            "source": "variation_seller_custom_field",
+            "inventory_id": "INV-101",
+            "updated_at": NOW,
+            "schema_version": 2,
+        }
+    ]
 
 
 @pytest.mark.asyncio
@@ -182,6 +216,9 @@ async def test_backfill_dry_run_reads_seller_items_and_reports_counts_without_wr
         skipped_missing_sku=1,
         sku_index_upserts=2,
         formula_row_upserts=2,
+        variation_sku_rows=0,
+        skipped_missing_variation_sku=0,
+        skipped_ambiguous_sku=0,
     )
     assert db["items"].find_filters == [{"seller_id": "82453304"}]
     assert db["items"].last_cursor is not None
@@ -213,23 +250,89 @@ async def test_backfill_write_mode_upserts_both_read_models_and_is_idempotent() 
         skipped_missing_sku=1,
         sku_index_upserts=2,
         formula_row_upserts=2,
+        variation_sku_rows=0,
+        skipped_missing_variation_sku=0,
+        skipped_ambiguous_sku=0,
     )
     assert second == first
     assert sorted(db["sheets_item_sku_index"].documents) == [
-        "82453304:SKU 2:MLA2",
-        "82453304:SKU-1:MLA1",
+        "82453304:SKU 2:MLA2:item",
+        "82453304:SKU-1:MLA1:item",
     ]
     assert sorted(db["sheets_item_formula_rows"].documents) == [
-        "82453304:SKU 2:MLA2",
-        "82453304:SKU-1:MLA1",
+        "82453304:SKU 2:MLA2:item",
+        "82453304:SKU-1:MLA1:item",
     ]
     assert len(db["sheets_item_sku_index"].replace_calls) == 4
     assert len(db["sheets_item_formula_rows"].replace_calls) == 4
     assert all(call[2] is True for call in db["sheets_item_sku_index"].replace_calls)
     assert all(
-        call[0] == {"_id": call[1]["_id"]}
-        for call in db["sheets_item_formula_rows"].replace_calls
+        call[0] == {"_id": call[1]["_id"]} for call in db["sheets_item_formula_rows"].replace_calls
     )
+
+
+@pytest.mark.asyncio
+async def test_backfill_writes_item_and_variation_identity_rows_idempotently() -> None:
+    db = FakeDb(
+        [
+            _item_doc(
+                "MLA1",
+                attributes=[{"id": "SELLER_SKU", "value_name": "item-sku"}],
+                variations=[
+                    {"id": 101, "attributes": [{"id": "SELLER_SKU", "value_name": "var-101"}]},
+                    {"id": 102, "seller_custom_field": "var-102"},
+                    {"id": 103, "attributes": [{"id": "BRAND", "value_name": "Zeler"}]},
+                ],
+            )
+        ]
+    )
+
+    first = await run_sheetseller_backfill(db=db, seller_id="82453304", dry_run=False)
+    second = await run_sheetseller_backfill(db=db, seller_id="82453304", dry_run=False)
+
+    assert first == BackfillSummary(
+        seller_id="82453304",
+        dry_run=False,
+        items_read=1,
+        items_with_sku=1,
+        skipped_missing_sku=0,
+        sku_index_upserts=3,
+        formula_row_upserts=1,
+        variation_sku_rows=2,
+        skipped_missing_variation_sku=1,
+        skipped_ambiguous_sku=0,
+    )
+    assert second == first
+    assert sorted(db["sheets_item_sku_index"].documents) == [
+        "82453304:ITEM-SKU:MLA1:item",
+        "82453304:VAR-101:MLA1:101",
+        "82453304:VAR-102:MLA1:102",
+    ]
+    assert len(db["sheets_item_sku_index"].replace_calls) == 6
+
+
+@pytest.mark.asyncio
+async def test_backfill_dry_run_counts_variations_without_writing() -> None:
+    db = FakeDb(
+        [
+            _item_doc(
+                "MLA1",
+                variations=[
+                    {"id": 101, "seller_custom_field": "var-101"},
+                    {"id": 102},
+                ],
+            )
+        ]
+    )
+
+    summary = await run_sheetseller_backfill(db=db, seller_id="82453304", dry_run=True)
+
+    assert summary.sku_index_upserts == 1
+    assert summary.formula_row_upserts == 0
+    assert summary.variation_sku_rows == 1
+    assert summary.skipped_missing_sku == 1
+    assert summary.skipped_missing_variation_sku == 1
+    assert db["sheets_item_sku_index"].documents == {}
 
 
 def _item_doc(
@@ -237,6 +340,7 @@ def _item_doc(
     *,
     seller_id: str = "82453304",
     attributes: list[dict[str, Any]] | None = None,
+    variations: list[dict[str, Any]] | None = None,
     last_updated: datetime | None = None,
 ) -> dict[str, Any]:
     return {
@@ -250,5 +354,6 @@ def _item_doc(
         "date_created": NOW,
         "last_updated": last_updated or NOW,
         "attributes": attributes or [],
+        "variations": variations or [],
         "schema_version": 1,
     }

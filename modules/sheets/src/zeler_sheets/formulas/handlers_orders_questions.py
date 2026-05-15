@@ -781,9 +781,16 @@ async def _sku_resolver_for_orders(
     )
     if not item_ids:
         return _OrderSkuResolver([])
+    variation_values = [
+        _item_variation_id(item) for order in orders for item in _order_items(order)
+    ]
+    variation_ids: list[str | None] | None = None
+    if any(variation_values):
+        variation_ids = list(dict.fromkeys(value or None for value in variation_values))
     rows = await repository.find_sku_index_rows(
         seller_id=seller_id,
         item_ids=item_ids,
+        variation_ids=variation_ids,
         limit=max(500, len(item_ids) * 10),
     )
     return _OrderSkuResolver(rows)

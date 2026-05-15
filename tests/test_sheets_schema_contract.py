@@ -118,12 +118,12 @@ def test_sheets_indexes_match_phase6_contract() -> None:
     ]
     assert sku_index_indexes == [
         {
-            "keys": {"seller_id": 1, "normalized_sku": 1, "item_id": 1},
-            "options": {"name": "idx_sheets_item_sku_index_seller_sku_item"},
+            "keys": {"seller_id": 1, "normalized_sku": 1, "item_id": 1, "variation_id": 1},
+            "options": {"name": "idx_sheets_item_sku_index_seller_sku_item_variation"},
         },
         {
-            "keys": {"seller_id": 1, "item_id": 1},
-            "options": {"name": "idx_sheets_item_sku_index_seller_item"},
+            "keys": {"seller_id": 1, "item_id": 1, "variation_id": 1},
+            "options": {"name": "idx_sheets_item_sku_index_seller_item_variation"},
         },
     ]
     assert formula_row_indexes == [
@@ -172,6 +172,23 @@ def test_sheets_formula_foundation_validators_reject_missing_required_fields() -
         result = validate_document_against_schema({"_id": "doc-1"}, validator)
         assert result.valid is False
         assert result.missing_required_fields == missing_fields
+
+
+def test_sheets_item_sku_index_schema_supports_v2_identity_fields() -> None:
+    validator = json.loads((ROOT / "infra/mongo/schemas/sheets_item_sku_index.json").read_text())
+    schema = validator["$jsonSchema"]
+
+    assert schema["required"] == ["_id", "seller_id", "normalized_sku", "item_id", "schema_version"]
+    assert schema["properties"]["identity_level"] == {"enum": ["item", "variation"]}
+    assert schema["properties"]["source"] == {
+        "enum": [
+            "item_attribute",
+            "variation_attribute",
+            "variation_seller_custom_field",
+            "order_line",
+        ]
+    }
+    assert schema["properties"]["variation_id"] == {"bsonType": ["string", "long", "int", "null"]}
 
 
 def test_google_oauth_indexes_match_contract() -> None:

@@ -40,6 +40,7 @@ class FakeCollection:
     def __init__(self) -> None:
         self.documents: dict[str, dict[str, Any]] = {}
         self.last_find_filter: dict[str, Any] | None = None
+        self.find_filters: list[dict[str, Any]] = []
 
     async def insert_one(self, doc: dict[str, Any]) -> None:
         self.documents[str(doc["_id"])] = dict(doc)
@@ -53,6 +54,7 @@ class FakeCollection:
 
     def find(self, filter_spec: dict[str, Any]) -> FakeCursor:
         self.last_find_filter = dict(filter_spec)
+        self.find_filters.append(dict(filter_spec))
         return FakeCursor(
             [dict(doc) for doc in self.documents.values() if _matches(doc, filter_spec)]
         )
@@ -561,6 +563,94 @@ async def test_unidades_vendidas_uses_seller_scoped_sku_index_for_canonical_orde
 
     assert result.values == [[3], [0]]
     assert result.meta == {"partial_misses": 1, "orders_count": 2, "sku_enriched_items": 2}
+
+
+@pytest.mark.asyncio
+async def test_unidades_vendidas_batches_variation_identity_lookup_once() -> None:
+    db = FakeDb()
+    db["sheets_item_sku_index"].documents = {
+        "seller-1:SKU-RED:MLA1:101": _sku_index_doc(
+            "seller-1", "SKU-RED", "MLA1", variation_id="101"
+        ),
+        "seller-1:SKU-BLUE:MLA1:102": _sku_index_doc(
+            "seller-1", "SKU-BLUE", "MLA1", variation_id="102"
+        ),
+    }
+    db["orders"].documents = {
+        "order-1": _order_doc(
+            "order-1",
+            seller_id="seller-1",
+            status="paid",
+            date_created=datetime(2026, 5, 10, 12, 0, tzinfo=UTC),
+            total_amount=120,
+            items=[
+                {"item_id": "MLA1", "variation_id": 101, "qty": 2, "unit_price": "10.00"},
+                {"item_id": "MLA1", "variation_id": "102", "qty": 3, "unit_price": "8.00"},
+            ],
+        )
+    }
+    dispatcher = _order_question_dispatcher(db)
+
+    result = await dispatcher.execute(
+        _context(
+            "SHEETSELLER_UNIDADESVENDIDAS",
+            {
+                "skus": [["sku-red"], ["sku-blue"]],
+                "id_publicaciones": ["MLA1", "MLA1"],
+                "fecha_inicial": "2026-05-10",
+                "fecha_final": "2026-05-10",
+            },
+        )
+    )
+
+    assert result.values == [[2], [3]]
+    assert result.meta == {"partial_misses": 0, "orders_count": 1, "sku_enriched_items": 2}
+    assert db["sheets_item_sku_index"].find_filters == [
+        {
+            "seller_id": "seller-1",
+            "item_id": {"$in": ["MLA1"]},
+            "variation_id": {"$in": ["101", "102"]},
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_order_line_direct_sku_wins_over_ambiguous_identity_map() -> None:
+    db = FakeDb()
+    db["sheets_item_sku_index"].documents = {
+        "seller-1:WRONG-1:MLA1:101": _sku_index_doc(
+            "seller-1", "WRONG-1", "MLA1", variation_id="101"
+        ),
+        "seller-1:WRONG-2:MLA1:102": _sku_index_doc(
+            "seller-1", "WRONG-2", "MLA1", variation_id="102"
+        ),
+    }
+    db["orders"].documents = {
+        "order-1": _order_doc(
+            "order-1",
+            seller_id="seller-1",
+            status="paid",
+            date_created=datetime(2026, 5, 10, 12, 0, tzinfo=UTC),
+            total_amount=120,
+            items=[{"sku": "direct-sku", "item_id": "MLA1", "variation_id": 101, "quantity": 4}],
+        )
+    }
+    dispatcher = _order_question_dispatcher(db)
+
+    result = await dispatcher.execute(
+        _context(
+            "SHEETSELLER_UNIDADESVENDIDAS",
+            {
+                "skus": [["direct-sku"], ["wrong-1"]],
+                "id_publicaciones": ["MLA1", "MLA1"],
+                "fecha_inicial": "2026-05-10",
+                "fecha_final": "2026-05-10",
+            },
+        )
+    )
+
+    assert result.values == [[4], [0]]
+    assert result.meta == {"partial_misses": 1, "orders_count": 1}
 
 
 @pytest.mark.asyncio
@@ -1242,15 +1332,18 @@ def _question_doc(
     }
 
 
-def _sku_index_doc(seller_id: str, sku: str, item_id: str) -> dict[str, Any]:
+def _sku_index_doc(
+    seller_id: str, sku: str, item_id: str, *, variation_id: str | None = None
+) -> dict[str, Any]:
     return {
-        "_id": f"{seller_id}:{sku}:{item_id}",
+        "_id": f"{seller_id}:{sku}:{item_id}:{variation_id or 'item'}",
         "seller_id": seller_id,
         "sku": sku,
         "normalized_sku": sku.upper(),
         "item_id": item_id,
-        "variation_id": None,
-        "schema_version": 1,
+        "variation_id": variation_id,
+        "identity_level": "variation" if variation_id else "item",
+        "schema_version": 2,
     }
 
 

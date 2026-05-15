@@ -13,7 +13,7 @@ from zeler_sheets.formulas.read_models import normalize_sku
 ITEMS_COLLECTION = "items"
 ITEM_SKU_INDEX_COLLECTION = "sheets_item_sku_index"
 ITEM_FORMULA_ROWS_COLLECTION = "sheets_item_formula_rows"
-READ_MODEL_SCHEMA_VERSION = 1
+READ_MODEL_SCHEMA_VERSION = 2
 SELLER_SKU_ATTRIBUTE_ID = "SELLER_SKU"
 
 
@@ -26,6 +26,9 @@ class BackfillSummary:
     skipped_missing_sku: int
     sku_index_upserts: int
     formula_row_upserts: int
+    variation_sku_rows: int
+    skipped_missing_variation_sku: int
+    skipped_ambiguous_sku: int
 
     def as_dict(self) -> dict[str, int | bool | str]:
         return asdict(self)
@@ -59,6 +62,9 @@ async def run_sheetseller_backfill(
     items = await _load_seller_items(db=db, seller_id=seller_id)
     items_with_sku = 0
     skipped_missing_sku = 0
+    variation_sku_rows = 0
+    skipped_missing_variation_sku = 0
+    skipped_ambiguous_sku = 0
     sku_index_upserts = 0
     formula_row_upserts = 0
 
@@ -66,27 +72,47 @@ async def run_sheetseller_backfill(
     formula_rows_collection = db[ITEM_FORMULA_ROWS_COLLECTION]
 
     for item in items:
-        sku = extract_seller_sku(item)
-        if sku is None:
+        sku_index_docs: list[dict[str, Any]]
+        formula_row_doc: dict[str, Any] | None
+        item_sku = resolve_seller_sku(item)
+        if item_sku.ambiguous:
+            skipped_ambiguous_sku += 1
+            sku_index_docs = []
+            formula_row_doc = None
+        elif item_sku.sku is None:
             skipped_missing_sku += 1
+            sku_index_docs = []
+            formula_row_doc = None
+        else:
+            items_with_sku += 1
+            sku_index_docs = [build_sku_index_doc(item, seller_id=seller_id, sku=item_sku.sku)]
+            formula_row_doc = build_formula_row_doc(item, seller_id=seller_id, sku=item_sku.sku)
+
+        variation_docs, variation_skips, variation_ambiguous = build_variation_sku_index_docs(
+            item, seller_id=seller_id
+        )
+        variation_sku_rows += len(variation_docs)
+        skipped_missing_variation_sku += variation_skips
+        skipped_ambiguous_sku += variation_ambiguous
+        sku_index_docs.extend(variation_docs)
+
+        if not sku_index_docs and formula_row_doc is None:
             continue
 
-        items_with_sku += 1
-        sku_index_doc = build_sku_index_doc(item, seller_id=seller_id, sku=sku)
-        formula_row_doc = build_formula_row_doc(item, seller_id=seller_id, sku=sku)
-
-        sku_index_upserts += 1
-        formula_row_upserts += 1
+        sku_index_upserts += len(sku_index_docs)
+        formula_row_upserts += 1 if formula_row_doc is not None else 0
 
         if dry_run:
             continue
 
-        await sku_index_collection.replace_one(
-            {"_id": sku_index_doc["_id"]}, sku_index_doc, upsert=True
-        )
-        await formula_rows_collection.replace_one(
-            {"_id": formula_row_doc["_id"]}, formula_row_doc, upsert=True
-        )
+        for sku_index_doc in sku_index_docs:
+            await sku_index_collection.replace_one(
+                {"_id": sku_index_doc["_id"]}, sku_index_doc, upsert=True
+            )
+        if formula_row_doc is not None:
+            await formula_rows_collection.replace_one(
+                {"_id": formula_row_doc["_id"]}, formula_row_doc, upsert=True
+            )
 
     return BackfillSummary(
         seller_id=seller_id,
@@ -96,14 +122,29 @@ async def run_sheetseller_backfill(
         skipped_missing_sku=skipped_missing_sku,
         sku_index_upserts=sku_index_upserts,
         formula_row_upserts=formula_row_upserts,
+        variation_sku_rows=variation_sku_rows,
+        skipped_missing_variation_sku=skipped_missing_variation_sku,
+        skipped_ambiguous_sku=skipped_ambiguous_sku,
     )
 
 
+@dataclass(frozen=True)
+class SkuCandidate:
+    sku: str | None
+    source: str | None
+    ambiguous: bool = False
+
+
 def extract_seller_sku(item: dict[str, Any]) -> str | None:
+    return resolve_seller_sku(item).sku
+
+
+def resolve_seller_sku(item: dict[str, Any]) -> SkuCandidate:
     attributes = item.get("attributes")
     if not isinstance(attributes, Sequence) or isinstance(attributes, (str, bytes)):
-        return None
+        return SkuCandidate(sku=None, source=None)
 
+    candidates: list[str] = []
     for attribute in attributes:
         if not isinstance(attribute, dict):
             continue
@@ -113,12 +154,79 @@ def extract_seller_sku(item: dict[str, Any]) -> str | None:
         for key in ("value_name", "value", "name"):
             sku = _string_value(attribute.get(key))
             if sku is not None:
-                return sku
-    return None
+                candidates.append(sku)
+                break
+    return _single_sku_candidate(candidates, source="item_attribute")
+
+
+def build_sku_index_docs(item: dict[str, Any], *, seller_id: str) -> list[dict[str, Any]]:
+    item_sku = resolve_seller_sku(item)
+    item_docs = (
+        [build_sku_index_doc(item, seller_id=seller_id, sku=item_sku.sku)]
+        if item_sku.sku and not item_sku.ambiguous
+        else []
+    )
+    variation_docs, _, _ = build_variation_sku_index_docs(item, seller_id=seller_id)
+    return item_docs + variation_docs
+
+
+def build_variation_sku_index_docs(
+    item: dict[str, Any], *, seller_id: str
+) -> tuple[list[dict[str, Any]], int, int]:
+    variations = item.get("variations")
+    if not isinstance(variations, Sequence) or isinstance(variations, (str, bytes)):
+        return [], 0, 0
+
+    docs: list[dict[str, Any]] = []
+    missing = 0
+    ambiguous = 0
+    for variation in variations:
+        if not isinstance(variation, dict):
+            continue
+        variation_id = _optional_string(variation.get("id") or variation.get("variation_id"))
+        if variation_id is None:
+            missing += 1
+            continue
+        candidate = resolve_variation_sku(variation)
+        if candidate.ambiguous:
+            ambiguous += 1
+            continue
+        if candidate.sku is None or candidate.source is None:
+            missing += 1
+            continue
+        docs.append(
+            build_sku_index_doc(
+                item,
+                seller_id=seller_id,
+                sku=candidate.sku,
+                variation_id=variation_id,
+                identity_level="variation",
+                source=candidate.source,
+                inventory_id=_optional_string(variation.get("inventory_id")),
+            )
+        )
+    return docs, missing, ambiguous
+
+
+def resolve_variation_sku(variation: dict[str, Any]) -> SkuCandidate:
+    attribute_candidates = _seller_sku_values(variation.get("attributes"))
+    if attribute_candidates:
+        return _single_sku_candidate(attribute_candidates, source="variation_attribute")
+    seller_custom_field = _string_value(variation.get("seller_custom_field"))
+    if seller_custom_field is not None:
+        return SkuCandidate(sku=seller_custom_field, source="variation_seller_custom_field")
+    return SkuCandidate(sku=None, source=None)
 
 
 def build_sku_index_doc(
-    item: dict[str, Any], *, seller_id: str, sku: str | None = None
+    item: dict[str, Any],
+    *,
+    seller_id: str,
+    sku: str | None = None,
+    variation_id: str | None = None,
+    identity_level: str = "item",
+    source: str = "item_attribute",
+    inventory_id: str | None = None,
 ) -> dict[str, Any]:
     resolved_sku = sku or extract_seller_sku(item)
     if resolved_sku is None:
@@ -127,14 +235,21 @@ def build_sku_index_doc(
     item_id = _item_id(item)
     normalized_sku = normalize_sku(resolved_sku)
     return {
-        "_id": _read_model_id(seller_id=seller_id, normalized_sku=normalized_sku, item_id=item_id),
+        "_id": _read_model_id(
+            seller_id=seller_id,
+            normalized_sku=normalized_sku,
+            item_id=item_id,
+            variation_id=variation_id,
+        ),
         "seller_id": seller_id,
         "seller_nickname": _optional_string(item.get("seller_nickname") or item.get("nickname")),
         "sku": resolved_sku,
         "normalized_sku": normalized_sku,
         "item_id": item_id,
-        "variation_id": item.get("variation_id"),
-        "inventory_id": None,
+        "variation_id": variation_id,
+        "identity_level": identity_level,
+        "source": source,
+        "inventory_id": inventory_id,
         "updated_at": _updated_at(item),
         "schema_version": READ_MODEL_SCHEMA_VERSION,
     }
@@ -152,7 +267,9 @@ def build_formula_row_doc(
     date_created = item.get("date_created")
     updated_at = _updated_at(item)
     return {
-        "_id": _read_model_id(seller_id=seller_id, normalized_sku=normalized_sku, item_id=item_id),
+        "_id": _read_model_id(
+            seller_id=seller_id, normalized_sku=normalized_sku, item_id=item_id, variation_id=None
+        ),
         "seller_id": seller_id,
         "seller_nickname": _optional_string(item.get("seller_nickname") or item.get("nickname")),
         "sku": resolved_sku,
@@ -201,6 +318,37 @@ def _string_value(value: Any) -> str | None:
     return normalized or None
 
 
+def _seller_sku_values(attributes: Any) -> list[str]:
+    if not isinstance(attributes, Sequence) or isinstance(attributes, (str, bytes)):
+        return []
+    candidates: list[str] = []
+    for attribute in attributes:
+        if not isinstance(attribute, dict):
+            continue
+        attribute_id = str(attribute.get("id") or "").strip().upper()
+        if attribute_id != SELLER_SKU_ATTRIBUTE_ID:
+            continue
+        for key in ("value_name", "value", "name"):
+            sku = _string_value(attribute.get(key))
+            if sku is not None:
+                candidates.append(sku)
+                break
+    return candidates
+
+
+def _single_sku_candidate(candidates: Sequence[str], *, source: str) -> SkuCandidate:
+    normalized = {normalize_sku(candidate) for candidate in candidates if normalize_sku(candidate)}
+    if not normalized:
+        return SkuCandidate(sku=None, source=None)
+    if len(normalized) > 1:
+        return SkuCandidate(sku=None, source=source, ambiguous=True)
+    selected_normalized = next(iter(normalized))
+    for candidate in candidates:
+        if normalize_sku(candidate) == selected_normalized:
+            return SkuCandidate(sku=candidate.strip(), source=source)
+    return SkuCandidate(sku=None, source=None)
+
+
 def _optional_string(value: Any) -> str | None:
     if value is None:
         return None
@@ -220,8 +368,11 @@ def _updated_at(item: dict[str, Any]) -> Any:
     return item.get("updated_at") or item.get("last_updated")
 
 
-def _read_model_id(*, seller_id: str, normalized_sku: str, item_id: str) -> str:
-    return f"{seller_id}:{normalized_sku}:{item_id}"
+def _read_model_id(
+    *, seller_id: str, normalized_sku: str, item_id: str, variation_id: str | None
+) -> str:
+    identity = variation_id if variation_id is not None else "item"
+    return f"{seller_id}:{normalized_sku}:{item_id}:{identity}"
 
 
 async def _run_cli(args: argparse.Namespace) -> BackfillSummary:

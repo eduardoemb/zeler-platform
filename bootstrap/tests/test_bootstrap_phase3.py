@@ -14,8 +14,10 @@ from zeler_bootstrap.stages import (
     InMemoryPublisher,
     ItemsStage,
     MessagesStage,
+    OrdersStage,
 )
 from zeler_bootstrap.state_machine import BootstrapStateMachine, InvalidTransitionError
+from zeler_platform_core.models import OrderItem
 
 NOW = datetime(2026, 4, 24, 12, 0, tzinfo=UTC)
 
@@ -318,6 +320,93 @@ async def test_default_bootstrap_stages_fetch_paginate_upsert_and_emit_completio
             "event_type": "BootstrapCompleted",
             "payload": {"job_id": "job-1", "seller_id": "123"},
         }
+    ]
+
+
+def test_order_item_preserves_source_identity_fields_without_synthesizing_absent_values() -> None:
+    rich_item = OrderItem.model_validate(
+        {
+            "item_id": 123,
+            "variation_id": 456,
+            "sku": "sku-direct",
+            "seller_sku": "seller-sku",
+            "seller_custom_field": "custom-sku",
+            "qty": 2,
+            "unit_price": "10.00",
+        }
+    ).model_dump(mode="json")
+    minimal_item = OrderItem.model_validate(
+        {"item_id": 789, "qty": 1, "unit_price": "5.00"}
+    ).model_dump(mode="json")
+
+    assert rich_item == {
+        "item_id": "123",
+        "variation_id": "456",
+        "sku": "sku-direct",
+        "seller_sku": "seller-sku",
+        "seller_custom_field": "custom-sku",
+        "qty": 2,
+        "unit_price": "10.00",
+    }
+    assert minimal_item == {"item_id": "789", "qty": 1, "unit_price": "5.00"}
+
+
+@pytest.mark.asyncio
+async def test_orders_stage_preserves_variation_and_explicit_sku_fields() -> None:
+    collection = FakeBootstrapJobs()
+    collection.document["state"] = "running"
+    database = FakeDatabase()
+    gateway = FakeGateway()
+
+    async def get(path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+        gateway.calls.append((path, params))
+        if path == "/orders/search":
+            return {
+                "results": [
+                    {
+                        "id": 987,
+                        "buyer": {"id": 45},
+                        "status": "paid",
+                        "date_created": NOW,
+                        "total_amount": "20.00",
+                        "order_items": [
+                            {
+                                "item": {
+                                    "id": "MLM1",
+                                    "seller_sku": "nested-seller-sku",
+                                    "seller_custom_field": "nested-custom-sku",
+                                    "variation_id": 456,
+                                },
+                                "variation_id": 456,
+                                "seller_sku": "line-seller-sku",
+                                "sku": "line-sku",
+                                "quantity": 2,
+                                "unit_price": "10.00",
+                            },
+                            {"item": {"id": "MLM2"}, "quantity": 1, "unit_price": "5.00"},
+                        ],
+                    }
+                ],
+                "paging": {"total": 1, "offset": 0, "limit": 50},
+            }
+        raise AssertionError(path)
+
+    gateway.get = get  # type: ignore[method-assign]
+    machine = BootstrapStateMachine(collection, "job-1", now_fn=lambda: NOW)
+
+    await OrdersStage(gateway, database).run(collection.document, machine)
+
+    assert database["orders"].upserts[0][1]["$set"]["items"] == [
+        {
+            "item_id": "MLM1",
+            "variation_id": "456",
+            "sku": "line-sku",
+            "seller_sku": "line-seller-sku",
+            "seller_custom_field": "nested-custom-sku",
+            "qty": 2,
+            "unit_price": "10.00",
+        },
+        {"item_id": "MLM2", "qty": 1, "unit_price": "5.00"},
     ]
 
 

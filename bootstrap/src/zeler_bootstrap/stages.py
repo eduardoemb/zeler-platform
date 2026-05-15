@@ -59,14 +59,29 @@ def _normalize_order_items(raw_items: list[dict[str, Any]]) -> list[dict[str, An
             normalized.append(raw_item)
             continue
         item = raw_item.get("item") or {}
-        normalized.append(
-            {
-                "item_id": item.get("id") or raw_item.get("item_id"),
-                "qty": raw_item.get("quantity") or raw_item.get("qty"),
-                "unit_price": raw_item.get("unit_price"),
-            }
-        )
+        order_item = {
+            "item_id": item.get("id") or raw_item.get("item_id"),
+            "qty": raw_item.get("quantity") or raw_item.get("qty"),
+            "unit_price": raw_item.get("unit_price"),
+        }
+        _copy_optional_identity(order_item, "variation_id", raw_item, item)
+        _copy_optional_identity(order_item, "sku", raw_item, item)
+        _copy_optional_identity(order_item, "seller_sku", raw_item, item)
+        _copy_optional_identity(order_item, "seller_custom_field", raw_item, item)
+        normalized.append(order_item)
     return normalized
+
+
+def _copy_optional_identity(
+    target: dict[str, Any], field: str, raw_item: dict[str, Any], item: dict[str, Any]
+) -> None:
+    value = raw_item.get(field) or item.get(field)
+    if value is not None and str(value).strip():
+        target[field] = value
+
+
+def _without_none_values(document: dict[str, Any]) -> dict[str, Any]:
+    return {key: value for key, value in document.items() if value is not None}
 
 
 def _message_user_id(raw: dict[str, Any], field: str) -> Any:
@@ -194,6 +209,7 @@ class OrdersStage:
                 }
             )
             document = order.model_dump(by_alias=True, mode="json")
+            document["items"] = [_without_none_values(item) for item in document.get("items", [])]
             await _upsert(self.database["orders"], document)
             order_ids.append(order.id)
             message_targets.append({"pack_id": str(pack_id), "order_id": order.id})

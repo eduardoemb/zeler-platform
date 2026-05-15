@@ -10,7 +10,16 @@
       "normalized_sku": {"bsonType": "string"},
       "item_id": {"bsonType": "string"},
       "variation_id": {"bsonType": ["string", "long", "int", "null"]},
+      "identity_level": {"enum": ["item", "variation"]},
       "inventory_id": {"bsonType": ["string", "null"]},
+      "source": {
+        "enum": [
+          "item_attribute",
+          "variation_attribute",
+          "variation_seller_custom_field",
+          "order_line"
+        ]
+      },
       "updated_at": {"bsonType": ["date", "null"]},
       "schema_version": {"bsonType": "int"}
     }

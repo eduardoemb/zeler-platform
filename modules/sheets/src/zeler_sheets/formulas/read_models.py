@@ -26,11 +26,14 @@ class FormulaReadModelRepository:
         seller_id: str,
         skus: list[str] | tuple[str, ...] | None = None,
         item_ids: list[str] | tuple[str, ...] | None = None,
+        variation_ids: list[Any] | tuple[Any, ...] | None = None,
         limit: int = 500,
     ) -> list[dict[str, Any]]:
-        filter_spec = _seller_item_filter(seller_id=seller_id, skus=skus, item_ids=item_ids)
+        filter_spec = _seller_item_filter(
+            seller_id=seller_id, skus=skus, item_ids=item_ids, variation_ids=variation_ids
+        )
         cursor = self._item_sku_index.find(filter_spec).sort(
-            [("normalized_sku", 1), ("item_id", 1)]
+            [("normalized_sku", 1), ("item_id", 1), ("variation_id", 1)]
         )
         return cast("list[dict[str, Any]]", await cursor.to_list(length=limit))
 
@@ -105,6 +108,7 @@ def _seller_item_filter(
     seller_id: str,
     skus: list[str] | tuple[str, ...] | None = None,
     item_ids: list[str] | tuple[str, ...] | None = None,
+    variation_ids: list[Any] | tuple[Any, ...] | None = None,
     inventory_ids: list[str] | tuple[str, ...] | None = None,
 ) -> dict[str, Any]:
     filter_spec: dict[str, Any] = {"seller_id": seller_id}
@@ -115,6 +119,14 @@ def _seller_item_filter(
         filter_spec["normalized_sku"] = {"$in": normalized_skus}
     if item_ids:
         filter_spec["item_id"] = {"$in": [str(item_id) for item_id in item_ids]}
+    if variation_ids:
+        normalized_variations = list(
+            dict.fromkeys(
+                None if variation_id is None else str(variation_id).strip()
+                for variation_id in variation_ids
+            )
+        )
+        filter_spec["variation_id"] = {"$in": normalized_variations}
     if inventory_ids:
         filter_spec["inventory_id"] = {"$in": [str(inventory_id) for inventory_id in inventory_ids]}
     return filter_spec
