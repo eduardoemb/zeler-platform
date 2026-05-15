@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import math
 import os
 from collections.abc import Sequence
 from dataclasses import asdict, dataclass
@@ -202,9 +203,7 @@ async def run_sheetseller_backfill(
         else:
             items_with_sku += 1
             sku_index_docs = [build_sku_index_doc(item, seller_id=seller_id, sku=item_sku.sku)]
-            formula_row_docs = [
-                build_formula_row_doc(item, seller_id=seller_id, sku=item_sku.sku)
-            ]
+            formula_row_docs = [build_formula_row_doc(item, seller_id=seller_id, sku=item_sku.sku)]
 
         variation_docs, variation_skips, variation_ambiguous = build_variation_sku_index_docs(
             item, seller_id=seller_id
@@ -232,9 +231,7 @@ async def run_sheetseller_backfill(
             skipped_missing_source += 1 if diagnostics["missing_source"] else 0
             formula_rows_with_permalink += int(diagnostics["with_permalink"])
             formula_rows_with_thumbnail += int(diagnostics["with_thumbnail"])
-            formula_rows_with_catalog_product_id += int(
-                diagnostics["with_catalog_product_id"]
-            )
+            formula_rows_with_catalog_product_id += int(diagnostics["with_catalog_product_id"])
             formula_rows_with_inventory_id += int(diagnostics["with_inventory_id"])
             if await _is_existing_document_unchanged(formula_rows_collection, formula_row_doc):
                 unchanged += 1
@@ -725,8 +722,12 @@ def build_order_line_sku_index_doc(
 
 
 def build_formula_row_doc(
-    item: dict[str, Any], *, seller_id: str, sku: str | None = None,
-    variation_id: str | None = None, inventory_id: str | None = None
+    item: dict[str, Any],
+    *,
+    seller_id: str,
+    sku: str | None = None,
+    variation_id: str | None = None,
+    inventory_id: str | None = None,
 ) -> dict[str, Any]:
     resolved_sku = sku or extract_seller_sku(item)
     if resolved_sku is None:
@@ -758,7 +759,8 @@ def build_formula_row_doc(
             "title": item.get("title"),
             "status": item.get("status"),
             "available_quantity": item.get("available_quantity"),
-            "base_price": item.get("base_price"),
+            **({"price": _schema_safe_numeric(item.get("price"))} if "price" in item else {}),
+            "base_price": _schema_safe_numeric(item.get("base_price")),
             "category_id": item.get("category_id"),
             "date_created": date_created,
             "updated_at": updated_at,
@@ -835,6 +837,22 @@ def _parse_order_money(value: str) -> Decimal128 | None:
     if not parsed.is_finite():
         return None
     return Decimal128(parsed)
+
+
+def _schema_safe_numeric(value: Any) -> int | float | Decimal128 | None:
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, Decimal128):
+        return value if value.to_decimal().is_finite() else None
+    if isinstance(value, Decimal):
+        return Decimal128(value) if value.is_finite() else None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    if isinstance(value, str):
+        return _parse_order_money(value)
+    return None
 
 
 def _date_bound_string(value: str, *, end_exclusive: bool = False) -> str:

@@ -143,14 +143,14 @@ def _matches(doc: dict[str, Any], filter_spec: dict[str, Any]) -> bool:
 
 def _safe_gte(actual: Any, expected: Any) -> bool:
     try:
-        return actual >= expected
+        return bool(actual >= expected)
     except TypeError:
         return False
 
 
 def _safe_lt(actual: Any, expected: Any) -> bool:
     try:
-        return actual < expected
+        return bool(actual < expected)
     except TypeError:
         return False
 
@@ -168,7 +168,7 @@ def _set_path(document: dict[str, Any], dotted_path: str, value: Any) -> None:
 
 
 class FakeGateway:
-    def __init__(self, payloads: dict[str, dict[str, Any]]) -> None:
+    def __init__(self, payloads: dict[str, dict[str, Any] | Exception]) -> None:
         self.payloads = payloads
         self.calls: list[tuple[str, str]] = []
 
@@ -281,7 +281,7 @@ def test_read_model_docs_use_deterministic_ids_and_map_safe_current_item_fields(
             "title": "Title MLA1",
             "status": "active",
             "available_quantity": 7,
-            "base_price": Decimal("123.45"),
+            "base_price": Decimal128("123.45"),
             "category_id": "MLA-CAT",
             "date_created": NOW,
             "updated_at": NOW,
@@ -294,6 +294,31 @@ def test_read_model_docs_use_deterministic_ids_and_map_safe_current_item_fields(
         "updated_at": NOW,
         "schema_version": 2,
     }
+
+
+def test_formula_row_coerces_legacy_string_prices_to_schema_safe_decimals() -> None:
+    item = _item_doc("MLA1", attributes=[{"id": "SELLER_SKU", "value_name": "abc-123"}])
+    item["price"] = "1499.90"
+    item["base_price"] = "1234.56"
+
+    formula_row = build_formula_row_doc(item, seller_id="82453304")
+
+    current = formula_row["current"]
+    assert isinstance(current["price"], Decimal128)
+    assert isinstance(current["base_price"], Decimal128)
+    assert current["price"].to_decimal() == Decimal("1499.90")
+    assert current["base_price"].to_decimal() == Decimal("1234.56")
+
+
+def test_formula_row_coerces_unparseable_legacy_prices_to_none() -> None:
+    item = _item_doc("MLA1", attributes=[{"id": "SELLER_SKU", "value_name": "abc-123"}])
+    item["price"] = "not-a-number"
+    item["base_price"] = "NaN"
+
+    formula_row = build_formula_row_doc(item, seller_id="82453304")
+
+    assert formula_row["current"]["price"] is None
+    assert formula_row["current"]["base_price"] is None
 
 
 def test_formula_row_preserves_blank_enrichment_fields_when_source_is_absent() -> None:
@@ -341,8 +366,7 @@ def test_variation_sku_index_docs_use_stable_v2_ids_and_sources() -> None:
 
 
 @pytest.mark.asyncio
-async def test_backfill_builds_enriched_item_and_variation_formula_rows_from_deterministic_sources(
-) -> None:
+async def test_backfill_builds_enriched_formula_rows_from_deterministic_sources() -> None:
     db = FakeDb(
         [
             _item_doc(
