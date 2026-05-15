@@ -120,9 +120,10 @@ def test_read_model_docs_use_deterministic_ids_and_map_safe_current_item_fields(
     sku_index = build_sku_index_doc(item, seller_id="82453304")
     formula_row = build_formula_row_doc(item, seller_id="82453304")
 
-    expected_id = "82453304:ABC-123:MLA1:item"
+    expected_sku_index_id = "82453304:ABC-123:MLA1:item"
+    expected_formula_row_id = "82453304:ABC-123:MLA1"
     assert sku_index == {
-        "_id": expected_id,
+        "_id": expected_sku_index_id,
         "seller_id": "82453304",
         "seller_nickname": None,
         "sku": "abc-123",
@@ -136,7 +137,7 @@ def test_read_model_docs_use_deterministic_ids_and_map_safe_current_item_fields(
         "schema_version": 2,
     }
     assert formula_row == {
-        "_id": expected_id,
+        "_id": expected_formula_row_id,
         "seller_id": "82453304",
         "seller_nickname": None,
         "sku": "abc-123",
@@ -260,8 +261,8 @@ async def test_backfill_write_mode_upserts_both_read_models_and_is_idempotent() 
         "82453304:SKU-1:MLA1:item",
     ]
     assert sorted(db["sheets_item_formula_rows"].documents) == [
-        "82453304:SKU 2:MLA2:item",
-        "82453304:SKU-1:MLA1:item",
+        "82453304:SKU 2:MLA2",
+        "82453304:SKU-1:MLA1",
     ]
     assert len(db["sheets_item_sku_index"].replace_calls) == 4
     assert len(db["sheets_item_formula_rows"].replace_calls) == 4

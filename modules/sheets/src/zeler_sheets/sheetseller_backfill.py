@@ -267,9 +267,7 @@ def build_formula_row_doc(
     date_created = item.get("date_created")
     updated_at = _updated_at(item)
     return {
-        "_id": _read_model_id(
-            seller_id=seller_id, normalized_sku=normalized_sku, item_id=item_id, variation_id=None
-        ),
+        "_id": _formula_row_id(seller_id=seller_id, normalized_sku=normalized_sku, item_id=item_id),
         "seller_id": seller_id,
         "seller_nickname": _optional_string(item.get("seller_nickname") or item.get("nickname")),
         "sku": resolved_sku,
@@ -373,6 +371,10 @@ def _read_model_id(
 ) -> str:
     identity = variation_id if variation_id is not None else "item"
     return f"{seller_id}:{normalized_sku}:{item_id}:{identity}"
+
+
+def _formula_row_id(*, seller_id: str, normalized_sku: str, item_id: str) -> str:
+    return f"{seller_id}:{normalized_sku}:{item_id}"
 
 
 async def _run_cli(args: argparse.Namespace) -> BackfillSummary:
