@@ -327,6 +327,7 @@ async def run_order_identity_repair(
                 filter_spec,
                 {"$set": {"items": merged_items}},
                 upsert=False,
+                bypass_document_validation=True,
             )
             orders_updated += 1
 

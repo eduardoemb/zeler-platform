@@ -56,7 +56,7 @@ class FakeCollection:
         }
         self.find_filters: list[dict[str, Any]] = []
         self.replace_calls: list[tuple[dict[str, Any], dict[str, Any], bool]] = []
-        self.update_calls: list[tuple[dict[str, Any], dict[str, Any], bool]] = []
+        self.update_calls: list[tuple[dict[str, Any], dict[str, Any], dict[str, Any]]] = []
         self.last_cursor: FakeCursor | None = None
 
     def find(self, filter_spec: dict[str, Any]) -> FakeCursor:
@@ -76,9 +76,20 @@ class FakeCollection:
         return FakeReplaceResult()
 
     async def update_one(
-        self, filter_spec: dict[str, Any], update: dict[str, Any], *, upsert: bool = False
+        self,
+        filter_spec: dict[str, Any],
+        update: dict[str, Any],
+        *,
+        upsert: bool = False,
+        bypass_document_validation: bool = False,
     ) -> FakeReplaceResult:
-        self.update_calls.append((dict(filter_spec), dict(update), upsert))
+        self.update_calls.append(
+            (
+                dict(filter_spec),
+                dict(update),
+                {"upsert": upsert, "bypass_document_validation": bypass_document_validation},
+            )
+        )
         if upsert is not False:
             raise AssertionError("order repair must update existing canonical orders only")
         doc_id = str(filter_spec["_id"])
@@ -774,6 +785,10 @@ async def test_order_identity_repair_write_is_idempotent_and_unlocks_order_line_
     ]
     assert order_line_summary.deterministic_pairs == 1
     assert order_line_summary.sku_index_upserts == 1
+    assert db["orders"].update_calls[0][2] == {
+        "upsert": False,
+        "bypass_document_validation": True,
+    }
 
 
 @pytest.mark.asyncio
