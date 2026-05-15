@@ -1137,7 +1137,58 @@ async def _is_existing_document_unchanged(collection: Any, document: dict[str, A
     if find_one is None:
         return False
     existing = await find_one({"_id": document["_id"]})
-    return bool(existing == document)
+    return bool(existing is not None and _formula_row_values_equal(existing, document))
+
+
+def _formula_row_values_equal(left: Any, right: Any) -> bool:
+    if isinstance(left, dict) and isinstance(right, dict):
+        if left.keys() != right.keys():
+            return False
+        return all(_formula_row_values_equal(left[key], right[key]) for key in left)
+    if isinstance(left, list) and isinstance(right, list):
+        if len(left) != len(right):
+            return False
+        return all(
+            _formula_row_values_equal(left_value, right_value)
+            for left_value, right_value in zip(left, right, strict=True)
+        )
+    left_decimal = _formula_row_decimal_value(left)
+    right_decimal = _formula_row_decimal_value(right)
+    if left_decimal is not None and right_decimal is not None:
+        return left_decimal == right_decimal
+    left_datetime = _formula_row_datetime_value(left, right)
+    right_datetime = _formula_row_datetime_value(right, left)
+    if left_datetime is not None and right_datetime is not None:
+        return left_datetime == right_datetime
+    return bool(left == right)
+
+
+def _formula_row_decimal_value(value: Any) -> Decimal | None:
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, Decimal128):
+        decimal_value = value.to_decimal()
+        return decimal_value if decimal_value.is_finite() else None
+    if isinstance(value, Decimal):
+        return value if value.is_finite() else None
+    if isinstance(value, int):
+        return Decimal(value)
+    if isinstance(value, float):
+        return Decimal(str(value)) if math.isfinite(value) else None
+    return None
+
+
+def _formula_row_datetime_value(value: Any, other: Any) -> datetime | None:
+    if isinstance(value, datetime):
+        return value.astimezone(UTC) if value.tzinfo is not None else value.replace(tzinfo=UTC)
+    if isinstance(value, date):
+        return datetime.combine(value, datetime.min.time(), tzinfo=UTC)
+    if not isinstance(value, str) or not isinstance(other, (datetime, date)):
+        return None
+    try:
+        return _parse_utc_datetime(value)
+    except ValueError:
+        return None
 
 
 async def _run_cli(args: argparse.Namespace) -> BackfillCliSummary:

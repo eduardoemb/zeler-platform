@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
@@ -510,6 +511,44 @@ async def test_backfill_write_mode_upserts_both_read_models_and_is_idempotent() 
     assert all(
         call[0] == {"_id": call[1]["_id"]} for call in db["sheets_item_formula_rows"].replace_calls
     )
+
+
+@pytest.mark.asyncio
+async def test_backfill_counts_bson_equivalent_formula_rows_as_unchanged() -> None:
+    item_with_bson_price = _item_doc(
+        "MLA1",
+        attributes=[{"id": "SELLER_SKU", "value_name": "sku-1"}],
+        last_updated=NOW,
+    )
+    item_with_bson_price["price"] = 1499
+    item_with_bson_price["date_created"] = "2026-05-13T12:00:00+00:00"
+    item_with_decimal_base_price = _item_doc(
+        "MLA2",
+        attributes=[{"id": "SELLER_SKU", "value_name": "sku-2"}],
+        last_updated=NOW,
+    )
+    db = FakeDb([item_with_bson_price, item_with_decimal_base_price])
+
+    persisted_price_row = build_formula_row_doc(item_with_bson_price, seller_id="82453304")
+    persisted_price_row = deepcopy(persisted_price_row)
+    persisted_price_row["date_created"] = NOW
+    persisted_price_row["current"]["date_created"] = NOW
+    persisted_price_row["current"]["price"] = Decimal128("1499")
+    persisted_base_price_row = build_formula_row_doc(
+        item_with_decimal_base_price, seller_id="82453304"
+    )
+    persisted_base_price_row = deepcopy(persisted_base_price_row)
+    persisted_base_price_row["current"]["base_price"] = Decimal("123.45")
+    formula_rows = db["sheets_item_formula_rows"]
+    formula_rows.documents[str(persisted_price_row["_id"])] = persisted_price_row
+    formula_rows.documents[str(persisted_base_price_row["_id"])] = persisted_base_price_row
+
+    summary = await run_sheetseller_backfill(db=db, seller_id="82453304", dry_run=True)
+
+    assert summary.planned == 0
+    assert summary.updated == 0
+    assert summary.unchanged == 2
+    assert formula_rows.replace_calls == []
 
 
 @pytest.mark.asyncio
