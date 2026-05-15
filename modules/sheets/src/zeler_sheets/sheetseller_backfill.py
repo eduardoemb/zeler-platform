@@ -7,7 +7,10 @@ import os
 from collections.abc import Sequence
 from dataclasses import asdict, dataclass
 from datetime import UTC, date, datetime, timedelta
+from decimal import Decimal, InvalidOperation
 from typing import Any, Protocol, cast
+
+from bson.decimal128 import Decimal128
 
 from zeler_sheets.formulas.read_models import normalize_sku
 
@@ -79,11 +82,38 @@ class OrderIdentityRepairSummary:
 
 
 @dataclass(frozen=True)
+class OrderNormalizationSummary:
+    seller_id: str
+    dry_run: bool
+    date_from: str
+    date_to: str
+    orders_read: int
+    orders_to_update: int
+    orders_updated: int
+    date_fields_converted: int
+    money_fields_converted: int
+    skipped_unparseable_orders: int
+    unparseable_date_values: int
+    unparseable_money_values: int
+
+    def as_dict(self) -> dict[str, int | bool | str]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
 class OrderIdentityMergeStats:
     matched_order_lines: int = 0
     updated_order_lines: int = 0
     identity_fields_added: int = 0
     skipped_unmatched_lines: int = 0
+
+
+BackfillCliSummary = (
+    BackfillSummary
+    | OrderLineIdentityBackfillSummary
+    | OrderIdentityRepairSummary
+    | OrderNormalizationSummary
+)
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
@@ -93,7 +123,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--seller-id", required=True, help="Seller id to backfill.")
     parser.add_argument(
         "--source",
-        choices=("items", "order-lines", "orders-repair"),
+        choices=("items", "order-lines", "orders-repair", "orders-normalize"),
         default="items",
         help="Read-model source to backfill (default: items).",
     )
@@ -349,6 +379,101 @@ async def run_order_identity_repair(
     )
 
 
+async def run_order_normalization(
+    *,
+    db: Any,
+    seller_id: str,
+    date_from: str,
+    date_to: str,
+    dry_run: bool = True,
+) -> OrderNormalizationSummary:
+    orders = await _load_seller_orders(
+        db=db, seller_id=seller_id, date_from=date_from, date_to=date_to
+    )
+    orders_collection = db[ORDERS_COLLECTION]
+    write_plans: list[tuple[dict[str, Any], dict[str, Any]]] = []
+    date_fields_converted = 0
+    money_fields_converted = 0
+    skipped_unparseable_orders = 0
+    unparseable_date_values = 0
+    unparseable_money_values = 0
+
+    for order in orders:
+        set_fields: dict[str, Any] = {}
+        order_unparseable_dates = 0
+        order_unparseable_money = 0
+
+        for field in ("date_created", "date_closed"):
+            value = order.get(field)
+            if not isinstance(value, str):
+                continue
+            parsed_date = _parse_order_datetime(value)
+            if parsed_date is None:
+                order_unparseable_dates += 1
+                continue
+            set_fields[field] = parsed_date
+
+        total_amount = order.get("total_amount")
+        if isinstance(total_amount, str):
+            parsed_amount = _parse_order_money(total_amount)
+            if parsed_amount is None:
+                order_unparseable_money += 1
+            else:
+                set_fields["total_amount"] = parsed_amount
+
+        for index, item in enumerate(_order_line_items(order)):
+            unit_price = item.get("unit_price")
+            if not isinstance(unit_price, str):
+                continue
+            parsed_unit_price = _parse_order_money(unit_price)
+            if parsed_unit_price is None:
+                order_unparseable_money += 1
+                continue
+            set_fields[f"items.{index}.unit_price"] = parsed_unit_price
+
+        if order_unparseable_dates or order_unparseable_money:
+            skipped_unparseable_orders += 1
+            unparseable_date_values += order_unparseable_dates
+            unparseable_money_values += order_unparseable_money
+            continue
+        if not set_fields:
+            continue
+
+        date_fields_converted += sum(
+            1 for field in ("date_created", "date_closed") if field in set_fields
+        )
+        money_fields_converted += sum(
+            1 for field in set_fields if field == "total_amount" or field.endswith(".unit_price")
+        )
+        write_plans.append(({"_id": order["_id"], "seller_id": seller_id}, set_fields))
+
+    orders_updated = 0
+    if not dry_run:
+        for filter_spec, set_fields in write_plans:
+            await orders_collection.update_one(
+                filter_spec,
+                {"$set": set_fields},
+                upsert=False,
+                bypass_document_validation=False,
+            )
+            orders_updated += 1
+
+    return OrderNormalizationSummary(
+        seller_id=seller_id,
+        dry_run=dry_run,
+        date_from=date_from,
+        date_to=date_to,
+        orders_read=len(orders),
+        orders_to_update=len(write_plans),
+        orders_updated=orders_updated,
+        date_fields_converted=date_fields_converted,
+        money_fields_converted=money_fields_converted,
+        skipped_unparseable_orders=skipped_unparseable_orders,
+        unparseable_date_values=unparseable_date_values,
+        unparseable_money_values=unparseable_money_values,
+    )
+
+
 @dataclass(frozen=True)
 class SkuCandidate:
     sku: str | None
@@ -593,6 +718,23 @@ def _parse_utc_datetime(value: str, *, end_exclusive: bool = False) -> datetime:
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=UTC)
     return parsed.astimezone(UTC)
+
+
+def _parse_order_datetime(value: str) -> datetime | None:
+    try:
+        return _parse_utc_datetime(value)
+    except ValueError:
+        return None
+
+
+def _parse_order_money(value: str) -> Decimal128 | None:
+    try:
+        parsed = Decimal(value.strip())
+    except (InvalidOperation, ValueError):
+        return None
+    if not parsed.is_finite():
+        return None
+    return Decimal128(parsed)
 
 
 def _date_bound_string(value: str, *, end_exclusive: bool = False) -> str:
@@ -849,9 +991,7 @@ def _formula_row_id(*, seller_id: str, normalized_sku: str, item_id: str) -> str
     return f"{seller_id}:{normalized_sku}:{item_id}"
 
 
-async def _run_cli(
-    args: argparse.Namespace,
-) -> BackfillSummary | OrderLineIdentityBackfillSummary | OrderIdentityRepairSummary:
+async def _run_cli(args: argparse.Namespace) -> BackfillCliSummary:
     from motor.motor_asyncio import AsyncIOMotorClient
 
     from zeler_platform_core.auth.meli_gateway_auth import MeliGatewayAuth
@@ -866,6 +1006,15 @@ async def _run_cli(
 
     client: AsyncIOMotorClient[Any] = AsyncIOMotorClient(mongo_uri)
     try:
+        if args.source == "orders-normalize":
+            date_from, date_to = _require_order_dates(args)
+            return await run_order_normalization(
+                db=client[mongo_db_name],
+                seller_id=args.seller_id,
+                date_from=date_from,
+                date_to=date_to,
+                dry_run=args.dry_run,
+            )
         if args.source == "orders-repair":
             date_from, date_to = _require_order_dates(args)
             from google.cloud import kms
@@ -899,7 +1048,7 @@ async def _run_cli(
 
 def _require_order_dates(args: argparse.Namespace) -> tuple[str, str]:
     if not args.date_from or not args.date_to:
-        raise SystemExit("--date-from and --date-to are required for --source orders-repair")
+        raise SystemExit("--date-from and --date-to are required for order-scoped sources")
     return str(args.date_from), str(args.date_to)
 
 

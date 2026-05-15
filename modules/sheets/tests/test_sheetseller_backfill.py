@@ -5,11 +5,14 @@ from decimal import Decimal
 from typing import Any
 
 import pytest
+from bson.decimal128 import Decimal128
 
+from zeler_platform_core.models import Order
 from zeler_sheets.sheetseller_backfill import (
     BackfillSummary,
     OrderIdentityRepairSummary,
     OrderLineIdentityBackfillSummary,
+    OrderNormalizationSummary,
     build_arg_parser,
     build_formula_row_doc,
     build_sku_index_doc,
@@ -19,6 +22,7 @@ from zeler_sheets.sheetseller_backfill import (
     merge_order_items_identity,
     run_order_identity_repair,
     run_order_line_identity_backfill,
+    run_order_normalization,
     run_sheetseller_backfill,
 )
 
@@ -94,7 +98,8 @@ class FakeCollection:
             raise AssertionError("order repair must update existing canonical orders only")
         doc_id = str(filter_spec["_id"])
         current = dict(self.documents[doc_id])
-        current.update(update.get("$set", {}))
+        for path, value in update.get("$set", {}).items():
+            _set_path(current, path, value)
         self.documents[doc_id] = current
         return FakeReplaceResult()
 
@@ -143,6 +148,18 @@ def _safe_lt(actual: Any, expected: Any) -> bool:
         return False
 
 
+def _set_path(document: dict[str, Any], dotted_path: str, value: Any) -> None:
+    target: Any = document
+    parts = dotted_path.split(".")
+    for part in parts[:-1]:
+        target = target[int(part)] if isinstance(target, list) else target[part]
+    leaf = parts[-1]
+    if isinstance(target, list):
+        target[int(leaf)] = value
+    else:
+        target[leaf] = value
+
+
 class FakeGateway:
     def __init__(self, payloads: dict[str, dict[str, Any]]) -> None:
         self.payloads = payloads
@@ -173,6 +190,18 @@ def test_cli_requires_seller_id_and_defaults_to_dry_run() -> None:
             "2025-05-01",
         ]
     )
+    normalize_args = parser.parse_args(
+        [
+            "--seller-id",
+            "82453304",
+            "--source",
+            "orders-normalize",
+            "--date-from",
+            "2025-04-30",
+            "--date-to",
+            "2025-05-01",
+        ]
+    )
 
     assert args.seller_id == "82453304"
     assert args.dry_run is True
@@ -180,6 +209,8 @@ def test_cli_requires_seller_id_and_defaults_to_dry_run() -> None:
     assert repair_args.source == "orders-repair"
     assert repair_args.date_from == "2025-04-30"
     assert repair_args.date_to == "2025-05-01"
+    assert normalize_args.source == "orders-normalize"
+    assert normalize_args.dry_run is True
     with pytest.raises(SystemExit):
         parser.parse_args([])
 
@@ -895,6 +926,181 @@ async def test_order_identity_repair_skips_payloads_without_identity_fields() ->
     assert db["orders"].update_calls == []
 
 
+@pytest.mark.asyncio
+async def test_order_normalization_dry_run_counts_parseable_legacy_strings_without_writes() -> None:
+    db = FakeDb(
+        [],
+        orders=[
+            _canonical_order_doc(
+                "order-1",
+                date_created="2025-04-30T12:00:00.000+00:00",
+                date_closed="2025-04-30T12:05:00Z",
+                total_amount="20.50",
+                items=[{"item_id": "MLA1", "qty": 2, "unit_price": "10.25"}],
+            ),
+            _canonical_order_doc(
+                "order-2",
+                date_created=datetime(2025, 4, 30, 13, tzinfo=UTC),
+                total_amount=Decimal128("5.00"),
+                items=[{"item_id": "MLA2", "qty": 1, "unit_price": Decimal128("5.00")}],
+            ),
+            _canonical_order_doc(
+                "order-outside",
+                date_created="2025-05-02T00:00:00.000+00:00",
+                total_amount="9.99",
+                items=[{"item_id": "MLA3", "qty": 1, "unit_price": "9.99"}],
+            ),
+        ],
+    )
+
+    summary = await run_order_normalization(
+        db=db,
+        seller_id="82453304",
+        date_from="2025-04-30",
+        date_to="2025-05-01",
+        dry_run=True,
+    )
+
+    assert summary == OrderNormalizationSummary(
+        seller_id="82453304",
+        dry_run=True,
+        date_from="2025-04-30",
+        date_to="2025-05-01",
+        orders_read=2,
+        orders_to_update=1,
+        orders_updated=0,
+        date_fields_converted=2,
+        money_fields_converted=2,
+        skipped_unparseable_orders=0,
+        unparseable_date_values=0,
+        unparseable_money_values=0,
+    )
+    assert db["orders"].update_calls == []
+
+
+@pytest.mark.asyncio
+async def test_order_normalization_write_uses_targeted_sets_and_is_idempotent() -> None:
+    db = FakeDb(
+        [],
+        orders=[
+            _canonical_order_doc(
+                "order-1",
+                date_created="2025-04-30T12:00:00.000+00:00",
+                date_closed=None,
+                total_amount="20.50",
+                items=[
+                    {"item_id": "MLA1", "qty": 1, "unit_price": "10.25"},
+                    {"item_id": "MLA2", "qty": 1, "unit_price": Decimal128("10.25")},
+                ],
+            )
+        ],
+    )
+
+    first = await run_order_normalization(
+        db=db,
+        seller_id="82453304",
+        date_from="2025-04-30",
+        date_to="2025-05-01",
+        dry_run=False,
+    )
+    second = await run_order_normalization(
+        db=db,
+        seller_id="82453304",
+        date_from="2025-04-30",
+        date_to="2025-05-01",
+        dry_run=False,
+    )
+
+    assert first.orders_to_update == 1
+    assert first.orders_updated == 1
+    assert second.orders_to_update == 0
+    assert second.orders_updated == 0
+    assert db["orders"].update_calls[0] == (
+        {"_id": "order-1", "seller_id": "82453304"},
+        {
+            "$set": {
+                "date_created": datetime(2025, 4, 30, 12, tzinfo=UTC),
+                "total_amount": Decimal128("20.50"),
+                "items.0.unit_price": Decimal128("10.25"),
+            }
+        },
+        {"upsert": False, "bypass_document_validation": False},
+    )
+    assert db["orders"].documents["order-1"]["date_created"] == datetime(
+        2025, 4, 30, 12, tzinfo=UTC
+    )
+    assert db["orders"].documents["order-1"]["items"][0]["unit_price"] == Decimal128("10.25")
+
+
+@pytest.mark.asyncio
+async def test_order_normalization_skips_unparseable_values_without_partial_updates() -> None:
+    db = FakeDb(
+        [],
+        orders=[
+            _canonical_order_doc(
+                "bad-date",
+                date_created="2025-04-30Tbad",
+                total_amount="20.50",
+                items=[{"item_id": "MLA1", "qty": 1, "unit_price": "10.25"}],
+            ),
+            _canonical_order_doc(
+                "bad-money",
+                date_created="2025-04-30T12:00:00.000+00:00",
+                total_amount="not-money",
+                items=[{"item_id": "MLA2", "qty": 1, "unit_price": "10.25"}],
+            ),
+        ],
+    )
+
+    summary = await run_order_normalization(
+        db=db,
+        seller_id="82453304",
+        date_from="2025-04-30",
+        date_to="2025-05-01",
+        dry_run=False,
+    )
+
+    assert summary.orders_read == 2
+    assert summary.orders_to_update == 0
+    assert summary.orders_updated == 0
+    assert summary.skipped_unparseable_orders == 2
+    assert summary.unparseable_date_values == 1
+    assert summary.unparseable_money_values == 1
+    assert db["orders"].update_calls == []
+
+
+@pytest.mark.asyncio
+async def test_order_normalization_converted_documents_validate_against_order_model() -> None:
+    db = FakeDb(
+        [],
+        orders=[
+            _canonical_order_doc(
+                "order-1",
+                date_created="2025-04-30T12:00:00.000+00:00",
+                date_closed="2025-04-30T12:05:00.000+00:00",
+                total_amount="20.50",
+                items=[{"item_id": "MLA1", "qty": 2, "unit_price": "10.25"}],
+            )
+        ],
+    )
+
+    summary = await run_order_normalization(
+        db=db,
+        seller_id="82453304",
+        date_from="2025-04-30",
+        date_to="2025-05-01",
+        dry_run=False,
+    )
+    normalized = db["orders"].documents["order-1"]
+    model = Order.model_validate(normalized)
+
+    assert summary.orders_updated == 1
+    assert model.date_created == datetime(2025, 4, 30, 12, tzinfo=UTC)
+    assert model.date_closed == datetime(2025, 4, 30, 12, 5, tzinfo=UTC)
+    assert model.total_amount == Decimal("20.50")
+    assert model.items[0].unit_price == Decimal("10.25")
+
+
 def _item_doc(
     item_id: str,
     *,
@@ -930,6 +1136,28 @@ def _order_doc(
         "_id": order_id,
         "seller_id": seller_id,
         "date_created": date_created,
+        "items": items,
+        "schema_version": 1,
+    }
+
+
+def _canonical_order_doc(
+    order_id: str,
+    *,
+    seller_id: str = "82453304",
+    date_created: Any = NOW,
+    date_closed: Any = None,
+    total_amount: Any = None,
+    items: list[dict[str, Any]],
+) -> dict[str, Any]:
+    return {
+        "_id": order_id,
+        "seller_id": seller_id,
+        "buyer_id": "buyer-redacted",
+        "status": "paid",
+        "date_created": date_created,
+        "date_closed": date_closed,
+        "total_amount": total_amount if total_amount is not None else Decimal128("10.00"),
         "items": items,
         "schema_version": 1,
     }
