@@ -103,7 +103,7 @@ services:
 
   sheets-api:
     <<: *restart
-    image: us-central1-docker.pkg.dev/zeler-platform-dev/zeler-platform/sheets-api:orderrepair-0172bbc
+    image: us-central1-docker.pkg.dev/zeler-platform-dev/zeler-platform/sheets-api:orderrepair-a843966
     networks:
       - platform_default
     env_file: /opt/zeler-platform/env/sheets-api.env
