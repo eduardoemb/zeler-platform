@@ -103,7 +103,7 @@ services:
 
   sheets-api:
     <<: *restart
-    image: us-central1-docker.pkg.dev/zeler-platform-dev/zeler-platform/sheets-api:formula-readmodel-ccde8a3
+    image: us-central1-docker.pkg.dev/zeler-platform-dev/zeler-platform/sheets-api:formula-readmodel-c2963d1
     networks:
       - platform_default
     env_file: /opt/zeler-platform/env/sheets-api.env
