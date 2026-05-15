@@ -533,6 +533,38 @@ async def test_order_line_identity_write_is_idempotent_and_skips_ambiguous_pairs
     assert db["sheets_item_sku_index"].replace_calls[0][2] is True
 
 
+@pytest.mark.asyncio
+async def test_order_line_identity_write_coerces_canonical_iso_updated_at() -> None:
+    db = FakeDb(
+        [],
+        orders=[
+            _order_doc(
+                "order-1",
+                date_created="2025-04-30T00:51:07-04:00",
+                items=[
+                    {
+                        "item_id": "MLA1",
+                        "seller_custom_field": "sku-1",
+                    }
+                ],
+            )
+        ],
+    )
+
+    summary = await run_order_line_identity_backfill(
+        db=db,
+        seller_id="82453304",
+        date_from="2025-04-30",
+        date_to="2025-05-01",
+        dry_run=False,
+    )
+
+    assert summary.sku_index_upserts == 1
+    assert db["sheets_item_sku_index"].documents["82453304:SKU-1:MLA1:item"][
+        "updated_at"
+    ] == datetime(2025, 4, 30, 4, 51, 7, tzinfo=UTC)
+
+
 def test_extract_safe_order_item_identity_keeps_identity_fields_only() -> None:
     raw_item = {
         "id": "line-id-is-not-canonical",

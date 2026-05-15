@@ -504,7 +504,7 @@ def build_order_line_sku_index_doc(
         "identity_level": "variation" if candidate.variation_id is not None else "item",
         "source": "order_line",
         "inventory_id": None,
-        "updated_at": candidate.updated_at,
+        "updated_at": _coerce_datetime_value(candidate.updated_at),
         "schema_version": READ_MODEL_SCHEMA_VERSION,
     }
 
@@ -826,7 +826,16 @@ def _item_id(item: dict[str, Any]) -> str:
 
 
 def _updated_at(item: dict[str, Any]) -> Any:
-    return item.get("updated_at") or item.get("last_updated")
+    return _coerce_datetime_value(item.get("updated_at") or item.get("last_updated"))
+
+
+def _coerce_datetime_value(value: Any) -> Any:
+    if isinstance(value, str):
+        try:
+            return _parse_utc_datetime(value)
+        except ValueError:
+            return value
+    return value
 
 
 def _read_model_id(
