@@ -102,16 +102,34 @@ class FakeDb:
 
 def _matches(doc: dict[str, Any], filter_spec: dict[str, Any]) -> bool:
     for key, value in filter_spec.items():
+        if key == "$or" and isinstance(value, list):
+            if not any(_matches(doc, option) for option in value):
+                return False
+            continue
         actual = doc.get(key)
         if isinstance(value, dict):
-            if "$gte" in value and actual < value["$gte"]:
+            if "$gte" in value and not _safe_gte(actual, value["$gte"]):
                 return False
-            if "$lt" in value and actual >= value["$lt"]:
+            if "$lt" in value and not _safe_lt(actual, value["$lt"]):
                 return False
             continue
         if actual != value:
             return False
     return True
+
+
+def _safe_gte(actual: Any, expected: Any) -> bool:
+    try:
+        return actual >= expected
+    except TypeError:
+        return False
+
+
+def _safe_lt(actual: Any, expected: Any) -> bool:
+    try:
+        return actual < expected
+    except TypeError:
+        return False
 
 
 class FakeGateway:
@@ -634,14 +652,62 @@ async def test_order_identity_repair_dry_run_fetches_date_scoped_orders_without_
     assert db["orders"].find_filters == [
         {
             "seller_id": "82453304",
-            "date_created": {
-                "$gte": datetime(2025, 4, 30, tzinfo=UTC),
-                "$lt": datetime(2025, 5, 2, tzinfo=UTC),
-            },
+            "$or": [
+                {
+                    "date_created": {
+                        "$gte": datetime(2025, 4, 30, tzinfo=UTC),
+                        "$lt": datetime(2025, 5, 2, tzinfo=UTC),
+                    }
+                },
+                {"date_created": {"$gte": "2025-04-30", "$lt": "2025-05-02"}},
+            ],
         }
     ]
     assert gateway.calls == [("82453304", "/orders/order-1")]
     assert db["orders"].update_calls == []
+
+
+@pytest.mark.asyncio
+async def test_order_identity_repair_date_scope_matches_canonical_iso_dates() -> None:
+    db = FakeDb(
+        [],
+        orders=[
+            _order_doc(
+                "order-1",
+                date_created="2025-04-30T12:00:00.000+00:00",
+                items=[{"item_id": "MLA1", "qty": 1, "unit_price": "10.00"}],
+            ),
+            _order_doc(
+                "order-2",
+                date_created="2025-05-02T00:00:00.000+00:00",
+                items=[{"item_id": "MLA2", "qty": 1, "unit_price": "20.00"}],
+            ),
+        ],
+    )
+    gateway = FakeGateway(
+        {
+            "/orders/order-1": {
+                "order_items": [
+                    {
+                        "item": {"id": "MLA1", "variation_id": 101},
+                        "seller_custom_field": "custom-101",
+                    }
+                ]
+            }
+        }
+    )
+
+    summary = await run_order_identity_repair(
+        db=db,
+        gateway=gateway,
+        seller_id="82453304",
+        date_from="2025-04-30",
+        date_to="2025-05-01",
+        dry_run=True,
+    )
+
+    assert summary.orders_read == 1
+    assert summary.identity_fields_added == 2
 
 
 @pytest.mark.asyncio
@@ -810,7 +876,7 @@ def _order_doc(
     order_id: str,
     *,
     seller_id: str = "82453304",
-    date_created: datetime = NOW,
+    date_created: datetime | str = NOW,
     items: list[dict[str, Any]],
 ) -> dict[str, Any]:
     return {

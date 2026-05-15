@@ -565,10 +565,20 @@ def _seller_order_filter(
 ) -> dict[str, Any]:
     filter_spec: dict[str, Any] = {"seller_id": seller_id}
     if date_from is not None and date_to is not None:
-        filter_spec["date_created"] = {
-            "$gte": _parse_utc_datetime(date_from),
-            "$lt": _parse_utc_datetime(date_to, end_exclusive=True),
-        }
+        filter_spec["$or"] = [
+            {
+                "date_created": {
+                    "$gte": _parse_utc_datetime(date_from),
+                    "$lt": _parse_utc_datetime(date_to, end_exclusive=True),
+                }
+            },
+            {
+                "date_created": {
+                    "$gte": _date_bound_string(date_from),
+                    "$lt": _date_bound_string(date_to, end_exclusive=True),
+                }
+            },
+        ]
     return filter_spec
 
 
@@ -582,6 +592,13 @@ def _parse_utc_datetime(value: str, *, end_exclusive: bool = False) -> datetime:
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=UTC)
     return parsed.astimezone(UTC)
+
+
+def _date_bound_string(value: str, *, end_exclusive: bool = False) -> str:
+    parsed = _parse_utc_datetime(value, end_exclusive=end_exclusive)
+    if len(value.strip()) == 10:
+        return parsed.date().isoformat()
+    return parsed.isoformat()
 
 
 def _order_line_items(order: dict[str, Any]) -> list[dict[str, Any]]:
