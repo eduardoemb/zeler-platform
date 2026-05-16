@@ -5,7 +5,11 @@ from pathlib import Path
 from typing import Any
 
 from infra.mongo.readiness import build_mongo_readiness_report, render_mongo_markdown
-from infra.rabbitmq.readiness import build_rabbitmq_readiness_report, render_rabbitmq_markdown
+from infra.rabbitmq.readiness import (
+    build_rabbitmq_amqp_passive_readiness_report,
+    build_rabbitmq_readiness_report,
+    render_rabbitmq_markdown,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -89,6 +93,101 @@ def test_rabbitmq_readiness_accepts_management_default_classic_queue_type(
     )
 
     assert report.summary["missing_queues"] == 0
+
+
+def test_rabbitmq_passive_readiness_checks_resources_without_mutation(monkeypatch: Any) -> None:
+    calls: list[tuple[str, str, str]] = []
+
+    class FakeConnection:
+        async def channel(self) -> FakeChannel:
+            return FakeChannel()
+
+        async def close(self) -> None:
+            calls.append(("connection", "close", ""))
+
+    class FakeChannel:
+        async def declare_exchange(
+            self,
+            name: str,
+            type: str,
+            *,
+            durable: bool,
+            passive: bool,
+        ) -> None:
+            calls.append(("exchange", name, f"{type}:{durable}:{passive}"))
+
+        async def declare_queue(
+            self,
+            name: str,
+            *,
+            durable: bool,
+            passive: bool,
+            arguments: dict[str, Any],
+        ) -> None:
+            calls.append(("queue", name, f"{durable}:{passive}:{bool(arguments)}"))
+
+        async def close(self) -> None:
+            calls.append(("channel", "close", ""))
+
+    async def fake_connect_robust(_url: str, **_kwargs: Any) -> FakeConnection:
+        return FakeConnection()
+
+    monkeypatch.setattr("infra.rabbitmq.readiness.aio_pika.connect_robust", fake_connect_robust)
+
+    report = build_rabbitmq_amqp_passive_readiness_report(
+        definitions_path=ROOT / "infra" / "rabbitmq" / "definitions.json",
+        amqp_url="amqps://example.test/vhost",
+        timeout_seconds=1,
+    )
+
+    assert report.mode == "amqp-passive"
+    assert report.safe_to_execute is True
+    assert report.read_only is True
+    assert report.mutations_attempted == 0
+    assert report.summary["missing_exchanges"] == 0
+    assert report.summary["missing_queues"] == 0
+    assert report.summary["unchecked_bindings"] == report.summary["expected_bindings"]
+    assert any(call[0] == "exchange" for call in calls)
+    assert any(call[0] == "queue" for call in calls)
+
+
+def test_rabbitmq_passive_readiness_reports_missing_queue(monkeypatch: Any) -> None:
+    class FakeConnection:
+        async def channel(self) -> FakeChannel:
+            return FakeChannel()
+
+        async def close(self) -> None:
+            return None
+
+    class FakeChannel:
+        async def declare_exchange(self, *_args: Any, **_kwargs: Any) -> None:
+            return None
+
+        async def declare_queue(self, name: str, **_kwargs: Any) -> None:
+            if name == "zeler.repricer.sweep":
+                raise RuntimeError("not found")
+
+        async def close(self) -> None:
+            return None
+
+    async def fake_connect_robust(_url: str, **_kwargs: Any) -> FakeConnection:
+        return FakeConnection()
+
+    monkeypatch.setattr("infra.rabbitmq.readiness.aio_pika.connect_robust", fake_connect_robust)
+
+    report = build_rabbitmq_amqp_passive_readiness_report(
+        definitions_path=ROOT / "infra" / "rabbitmq" / "definitions.json",
+        amqp_url="amqps://example.test/vhost",
+        timeout_seconds=1,
+    )
+
+    assert report.summary["missing_queues"] == 1
+    assert any(
+        finding.severity == "fail"
+        and finding.resource_type == "queue"
+        and finding.resource_name == "zeler.repricer.sweep"
+        for finding in report.findings
+    )
 
 
 def test_mongo_readiness_offline_default_validates_schema_and_index_files() -> None:
@@ -289,6 +388,8 @@ def test_live_readiness_runbook_documents_sandbox_sequence_and_env_vars() -> Non
     assert "safe_to_execute" in runbook
     assert "read_only" in runbook
     assert "RabbitMQ_MANAGEMENT_EXPORT" in runbook
+    assert "RABBITMQ_READINESS_MODE=amqp-passive" in runbook
+    assert "infra.rabbitmq.apply_topology" in runbook
     assert "MONGO_URI" in runbook
     assert "MODULE_REGISTRY_EXPORT" in runbook
     assert "python -m infra.rabbitmq.readiness" in runbook

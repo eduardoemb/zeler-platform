@@ -137,7 +137,34 @@ def _has_any_env(env: Mapping[str, str], names: tuple[str, ...]) -> bool:
 
 def _env_checks(env: Mapping[str, str]) -> list[PreflightCheck]:
     checks: list[PreflightCheck] = []
+    rabbitmq_readiness_mode = env.get("RABBITMQ_READINESS_MODE", "").strip()
     for label, names, remediation in ENV_GROUPS:
+        if label == "RabbitMQ_MANAGEMENT_EXPORT" and rabbitmq_readiness_mode:
+            if rabbitmq_readiness_mode == "amqp-passive":
+                checks.append(
+                    PreflightCheck(
+                        category="env",
+                        name=label,
+                        status="pass",
+                        detail="RabbitMQ readiness source: amqp-passive",
+                        remediation="",
+                    )
+                )
+            else:
+                checks.append(
+                    PreflightCheck(
+                        category="env",
+                        name=label,
+                        status="fail",
+                        detail="RabbitMQ readiness source: unsupported mode",
+                        remediation=(
+                            "Use RABBITMQ_READINESS_MODE=amqp-passive or provide "
+                            "RabbitMQ_MANAGEMENT_EXPORT."
+                        ),
+                    )
+                )
+            continue
+
         present = _has_any_env(env, names)
         checks.append(
             PreflightCheck(

@@ -6,7 +6,7 @@ This runbook is for sandbox/live **validation only**. The tooling below is desig
 
 ## Safety model
 
-- `python -m infra.rabbitmq.readiness` reads `infra/rabbitmq/definitions.json` and, optionally, a RabbitMQ management export JSON file.
+- `python -m infra.rabbitmq.readiness` reads `infra/rabbitmq/definitions.json` and, optionally, a RabbitMQ management export JSON file. If the broker plan cannot export definitions, `--amqp-url "$RABBITMQ_URL"` runs an AMQP passive check for expected exchanges/queues without creating resources.
 - `python -m infra.mongo.readiness` reads local `infra/mongo/schemas/*.json`, `infra/mongo/indexes/*.json`, and `infra/mongo/seeds/*.json`; optional live mode only calls read-only Mongo metadata APIs (`listCollections`, `listIndexes`).
 - Module registry seed readiness validates `infra/mongo/seeds/module_registry.admin_clients.json` as a local JSON contract and can compare expected admin clients against a separately exported `module_registry` JSON file. The readiness command is read-only: it never inserts, upserts, imports, or repairs seed data.
 - Do not run `infra/mongo/apply_validators.py` as part of readiness validation; that script performs `collMod` / index application and belongs to an explicit deployment step.
@@ -20,6 +20,7 @@ Offline mode requires no credentials.
 Optional sandbox/live checks:
 
 - `RabbitMQ_MANAGEMENT_EXPORT`: path to a JSON export from RabbitMQ Management UI/API. Generate it outside this tool, then pass it as `--management-export "$RabbitMQ_MANAGEMENT_EXPORT"`.
+- `RABBITMQ_READINESS_MODE=amqp-passive`: preflight fallback for CloudAMQP plans that cannot export definitions. Pair it with `RABBITMQ_URL`/`CLOUDAMQP_URL` and run `python -m infra.rabbitmq.readiness --amqp-url "$RABBITMQ_URL"`.
 - `MONGO_URI`: MongoDB URI for the target database. The readiness tool uses it in read-only metadata mode only.
 - `MODULE_REGISTRY_EXPORT`: optional path to a read-only export of live/sandbox `module_registry` documents. Generate it outside the readiness tool, then pass it as `--module-registry-export "$MODULE_REGISTRY_EXPORT"`.
 
@@ -31,7 +32,13 @@ Optional sandbox/live checks:
    python -m infra.mongo.readiness --schemas-dir infra/mongo/schemas --indexes-dir infra/mongo/indexes
    ```
    This validates the local `module_registry.admin_clients.json` seed shape, including the `zeler-app` admin client and its `admin:repricer` scope.
-2. Export RabbitMQ definitions from the sandbox management console/API into a file.
+2. Export RabbitMQ definitions from the sandbox management console/API into a file. If the plan does not permit exports, use AMQP passive readiness instead:
+   ```bash
+   python -m infra.rabbitmq.readiness \
+     --definitions infra/rabbitmq/definitions.json \
+     --amqp-url "$RABBITMQ_URL"
+   ```
+   Passive mode cannot inspect bindings. Use a management export when available, or follow an explicitly approved idempotent topology apply with functional smoke.
 3. Compare expected topology against the export:
    ```bash
    python -m infra.rabbitmq.readiness \
@@ -67,6 +74,18 @@ Readiness only proves that the seed file is well-formed and, when an export is s
 ## Production validation sequence
 
 Repeat the sandbox sequence with production exports/URI only in an approved change window. These checks are read-only, but production credentials still require normal operational handling.
+
+## Approved RabbitMQ topology apply
+
+When readiness finds missing RabbitMQ resources and the operator explicitly approves a live apply, use:
+
+```bash
+python -m infra.rabbitmq.apply_topology \
+  --definitions infra/rabbitmq/definitions.json \
+  --amqp-url "$RABBITMQ_URL"
+```
+
+This command is intentionally not read-only. It idempotently declares the expected exchanges, queues, and bindings from the checked-in definitions file and prints counts only, never credentials. Re-run readiness after apply.
 
 ## What this runbook does not do
 
