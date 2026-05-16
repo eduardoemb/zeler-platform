@@ -39,7 +39,12 @@ def test_sheets_manifest_validates_owned_collections_and_readonly_scopes() -> No
         "sheets_sync_jobs",
         "google_oauth_tokens",
     ]
-    assert manifest.allowed_meli_scopes == ["GET /items/*", "GET /orders/*", "GET /shipments/*"]
+    assert manifest.allowed_meli_scopes == [
+        "GET /items",
+        "GET /items/*",
+        "GET /orders/*",
+        "GET /shipments/*",
+    ]
 
 
 def test_sheets_app_includes_google_oauth_routes() -> None:
@@ -69,7 +74,12 @@ async def test_sheets_startup_registers_manifest_and_health_ready() -> None:
     assert db.module_registry.documents["sheets"] == {
         "_id": "sheets",
         "version": "0.1.0",
-        "allowed_meli_scopes": ["GET /items/*", "GET /orders/*", "GET /shipments/*"],
+        "allowed_meli_scopes": [
+            "GET /items",
+            "GET /items/*",
+            "GET /orders/*",
+            "GET /shipments/*",
+        ],
         "routing_keys": ["items.*", "orders.*", "shipments.*"],
         "owned_collections": ["sheets_exports", "sheets_sync_jobs", "google_oauth_tokens"],
         "health_endpoint": "/health",
