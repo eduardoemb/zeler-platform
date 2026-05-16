@@ -936,7 +936,10 @@ def _canonical_item_detail_document(
             "schema_version": current_schema_version("items"),
         }
     )
-    return model.model_dump(by_alias=True, mode="json")
+    document = model.model_dump(by_alias=True, mode="python")
+    for money_field in ("price", "base_price"):
+        document[money_field] = _schema_safe_numeric(document.get(money_field))
+    return document
 
 
 def _canonical_item_values_equal(existing: dict[str, Any], planned: dict[str, Any]) -> bool:

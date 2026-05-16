@@ -696,16 +696,21 @@ async def test_item_detail_enrichment_fetches_canonical_ids_and_writes_formula_f
     assert filter_spec == {"_id": "MLA1", "seller_id": "82453304"}
     assert options == {"upsert": False, "bypass_document_validation": False}
     set_fields = update["$set"]
-    assert set_fields["last_meli_sync_at"].endswith("Z")
+    assert isinstance(set_fields["last_meli_sync_at"], datetime)
+    assert set_fields["last_meli_sync_at"].tzinfo is UTC
     without_sync_time = {
         key: value for key, value in set_fields.items() if key != "last_meli_sync_at"
     }
+    price = without_sync_time.pop("price")
+    base_price = without_sync_time.pop("base_price")
+    assert isinstance(price, Decimal128)
+    assert isinstance(base_price, Decimal128)
+    assert price.to_decimal() == Decimal("222.20")
+    assert base_price.to_decimal() == Decimal("210.00")
     assert without_sync_time == {
         "_id": "MLA1",
         "seller_id": "82453304",
         "title": "Updated title",
-        "price": "222.20",
-        "base_price": "210.00",
         "available_quantity": 9,
         "status": "active",
         "category_id": "MLA-CAT-UPDATED",
@@ -717,8 +722,8 @@ async def test_item_detail_enrichment_fetches_canonical_ids_and_writes_formula_f
         "attributes": [{"id": "SELLER_SKU", "value_name": "sku-1"}],
         "shipping": None,
         "health": None,
-        "date_created": NOW.isoformat().replace("+00:00", "Z"),
-        "last_updated": NOW.isoformat().replace("+00:00", "Z"),
+        "date_created": NOW,
+        "last_updated": NOW,
         "schema_version": 2,
     }
     stored = db["items"].documents["MLA1"]
@@ -727,6 +732,33 @@ async def test_item_detail_enrichment_fetches_canonical_ids_and_writes_formula_f
     assert stored["catalog_product_id"] == "MLA-CATALOG-1"
     assert stored["inventory_id"] == "INV-ITEM-1"
     assert stored["schema_version"] == 2
+
+
+@pytest.mark.asyncio
+async def test_item_detail_enrichment_writes_mongo_schema_safe_date_and_price_types() -> None:
+    canonical = _item_doc("MLA1")
+    canonical["price"] = Decimal("111.11")
+    db = FakeDb([canonical])
+    detail = _item_detail("MLA1")
+    detail["price"] = "222.20"
+    detail["base_price"] = "210.00"
+    detail["date_created"] = NOW.isoformat()
+    detail["last_updated"] = NOW.isoformat()
+    gateway = FakeItemGateway({"/items?ids=MLA1": [{"code": 200, "body": detail}]})
+
+    await run_item_detail_enrichment(db=db, gateway=gateway, seller_id="82453304", dry_run=False)
+
+    _, update, options = db["items"].update_calls[0]
+    set_fields = update["$set"]
+    assert options == {"upsert": False, "bypass_document_validation": False}
+    assert isinstance(set_fields["last_meli_sync_at"], datetime)
+    assert set_fields["last_meli_sync_at"].tzinfo is UTC
+    assert set_fields["date_created"] == NOW
+    assert set_fields["last_updated"] == NOW
+    assert isinstance(set_fields["price"], Decimal128)
+    assert isinstance(set_fields["base_price"], Decimal128)
+    assert set_fields["price"].to_decimal() == Decimal("222.20")
+    assert set_fields["base_price"].to_decimal() == Decimal("210.00")
 
 
 @pytest.mark.asyncio
