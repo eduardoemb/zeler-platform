@@ -103,7 +103,7 @@ services:
 
   sheets-api:
     <<: *restart
-    image: us-central1-docker.pkg.dev/zeler-platform-dev/zeler-platform/sheets-api:items-enrich-b147ac1
+    image: us-central1-docker.pkg.dev/zeler-platform-dev/zeler-platform/sheets-api:items-enrich-c94cfeb
     networks:
       - platform_default
     env_file: /opt/zeler-platform/env/sheets-api.env
