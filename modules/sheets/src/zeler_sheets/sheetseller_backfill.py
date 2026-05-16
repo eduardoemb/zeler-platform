@@ -13,6 +13,8 @@ from typing import Any, Protocol, cast
 
 from bson.decimal128 import Decimal128
 
+from zeler_platform_core.models import Item
+from zeler_platform_core.models.base import current_schema_version
 from zeler_sheets.formulas.read_models import normalize_sku
 
 ITEMS_COLLECTION = "items"
@@ -22,10 +24,15 @@ ITEM_FORMULA_ROWS_COLLECTION = "sheets_item_formula_rows"
 READ_MODEL_SCHEMA_VERSION = 2
 SELLER_SKU_ATTRIBUTE_ID = "SELLER_SKU"
 DEFAULT_GATEWAY_BASE_URL = "http://gateway:8080/proxy/meli"
+ITEM_DETAIL_BATCH_SIZE = 20
 
 
 class MeliOrderGatewayClient(Protocol):
     async def fetch_resource(self, *, seller_id: str, path: str) -> dict[str, Any]: ...
+
+
+class MeliItemGatewayClient(Protocol):
+    async def fetch_resource(self, *, seller_id: str, path: str) -> Any: ...
 
 
 @dataclass(frozen=True)
@@ -113,6 +120,21 @@ class OrderNormalizationSummary:
 
 
 @dataclass(frozen=True)
+class ItemDetailEnrichmentSummary:
+    dry_run: bool
+    items_read: int
+    batches_fetched: int
+    item_details_returned: int
+    items_validated: int
+    items_planned: int
+    items_updated: int
+    unchanged: int
+
+    def as_dict(self) -> dict[str, int | bool | str]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
 class OrderIdentityMergeStats:
     matched_order_lines: int = 0
     updated_order_lines: int = 0
@@ -122,6 +144,7 @@ class OrderIdentityMergeStats:
 
 BackfillCliSummary = (
     BackfillSummary
+    | ItemDetailEnrichmentSummary
     | OrderLineIdentityBackfillSummary
     | OrderIdentityRepairSummary
     | OrderNormalizationSummary
@@ -135,7 +158,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--seller-id", required=True, help="Seller id to backfill.")
     parser.add_argument(
         "--source",
-        choices=("items", "order-lines", "orders-repair", "orders-normalize"),
+        choices=("items", "items-enrich", "order-lines", "orders-repair", "orders-normalize"),
         default="items",
         help="Read-model source to backfill (default: items).",
     )
@@ -272,6 +295,79 @@ async def run_sheetseller_backfill(
         formula_rows_with_catalog_product_id=formula_rows_with_catalog_product_id,
         formula_rows_with_inventory_id=formula_rows_with_inventory_id,
         skipped_ambiguous_formula_identity=skipped_ambiguous_formula_identity,
+    )
+
+
+async def run_item_detail_enrichment(
+    *,
+    db: Any,
+    gateway: MeliItemGatewayClient,
+    seller_id: str,
+    dry_run: bool = True,
+    batch_size: int = ITEM_DETAIL_BATCH_SIZE,
+) -> ItemDetailEnrichmentSummary:
+    if batch_size < 1:
+        msg = "batch_size must be positive"
+        raise ValueError(msg)
+
+    existing_items = await _load_seller_items(db=db, seller_id=seller_id)
+    existing_by_id = {_item_id(item): item for item in existing_items}
+    item_ids = sorted(existing_by_id)
+    synced_at = datetime.now(UTC)
+    write_plans: list[tuple[dict[str, Any], dict[str, Any]]] = []
+    batches_fetched = 0
+    details_returned = 0
+    items_validated = 0
+    unchanged = 0
+
+    for batch in _chunks(item_ids, batch_size):
+        response = await gateway.fetch_resource(
+            seller_id=seller_id,
+            path=_item_detail_batch_path(batch),
+        )
+        batches_fetched += 1
+        raw_details = _extract_item_detail_entries(response)
+        details_returned += len(raw_details)
+        by_id = _validated_detail_entries_by_id(
+            raw_details, expected_ids=set(batch), seller_id=seller_id
+        )
+        if set(by_id) != set(batch):
+            msg = "item detail batch did not return every requested item"
+            raise RuntimeError(msg)
+        for item_id in batch:
+            document = _canonical_item_detail_document(
+                existing=existing_by_id[item_id],
+                detail=by_id[item_id],
+                seller_id=seller_id,
+                synced_at=synced_at,
+            )
+            items_validated += 1
+            if _canonical_item_values_equal(existing_by_id[item_id], document):
+                unchanged += 1
+                continue
+            write_plans.append(({"_id": item_id, "seller_id": seller_id}, document))
+
+    items_updated = 0
+    if not dry_run:
+        items_collection = db[ITEMS_COLLECTION]
+        for filter_spec, document in write_plans:
+            await items_collection.update_one(
+                filter_spec,
+                {"$set": document},
+                upsert=False,
+                bypass_document_validation=False,
+            )
+            items_updated += 1
+
+    return ItemDetailEnrichmentSummary(
+        dry_run=dry_run,
+        items_read=len(existing_items),
+        batches_fetched=batches_fetched,
+        item_details_returned=details_returned,
+        items_validated=items_validated,
+        items_planned=len(write_plans),
+        items_updated=items_updated,
+        unchanged=unchanged,
     )
 
 
@@ -780,6 +876,77 @@ async def _load_seller_items(*, db: Any, seller_id: str) -> list[dict[str, Any]]
     return cast("list[dict[str, Any]]", await cursor.to_list(length=None))
 
 
+def _chunks(items: Sequence[str], size: int) -> Sequence[list[str]]:
+    return [list(items[index : index + size]) for index in range(0, len(items), size)]
+
+
+def _item_detail_batch_path(item_ids: Sequence[str]) -> str:
+    return f"/items?ids={','.join(item_ids)}"
+
+
+def _extract_item_detail_entries(response: Any) -> list[dict[str, Any]]:
+    if isinstance(response, list):
+        raw_entries = response
+    elif isinstance(response, dict) and isinstance(response.get("results"), list):
+        raw_entries = response["results"]
+    elif isinstance(response, dict):
+        raw_entries = [response]
+    else:
+        msg = "item detail response must be a list or object"
+        raise RuntimeError(msg)
+    return [entry for entry in raw_entries if isinstance(entry, dict)]
+
+
+def _validated_detail_entries_by_id(
+    entries: Sequence[dict[str, Any]], *, expected_ids: set[str], seller_id: str
+) -> dict[str, dict[str, Any]]:
+    by_id: dict[str, dict[str, Any]] = {}
+    for entry in entries:
+        status_code = entry.get("code")
+        if status_code is not None and int(status_code) != 200:
+            msg = f"item detail fetch failed with status {int(status_code)}"
+            raise RuntimeError(msg)
+        body = entry.get("body", entry)
+        if not isinstance(body, dict):
+            msg = "item detail body must be an object"
+            raise RuntimeError(msg)
+        item_id = _optional_string(body.get("id") or body.get("_id"))
+        if item_id is None or item_id not in expected_ids:
+            msg = "item detail response contained an unexpected item"
+            raise RuntimeError(msg)
+        body_seller_id = _optional_string(body.get("seller_id"))
+        if body_seller_id is not None and body_seller_id != seller_id:
+            msg = "item detail response seller did not match requested seller"
+            raise RuntimeError(msg)
+        by_id[item_id] = body
+    return by_id
+
+
+def _canonical_item_detail_document(
+    *, existing: dict[str, Any], detail: dict[str, Any], seller_id: str, synced_at: datetime
+) -> dict[str, Any]:
+    item_id = _item_id(existing)
+    model = Item.model_validate(
+        {
+            **existing,
+            **detail,
+            "_id": item_id,
+            "seller_id": seller_id,
+            "last_meli_sync_at": synced_at,
+            "schema_version": current_schema_version("items"),
+        }
+    )
+    return model.model_dump(by_alias=True, mode="json")
+
+
+def _canonical_item_values_equal(existing: dict[str, Any], planned: dict[str, Any]) -> bool:
+    return all(
+        _formula_row_values_equal(existing.get(key), value)
+        for key, value in planned.items()
+        if key != "last_meli_sync_at"
+    )
+
+
 async def _load_seller_orders(
     *, db: Any, seller_id: str, date_from: str | None = None, date_to: str | None = None
 ) -> list[dict[str, Any]]:
@@ -1229,6 +1396,19 @@ async def _run_cli(args: argparse.Namespace) -> BackfillCliSummary:
                 seller_id=args.seller_id,
                 date_from=date_from,
                 date_to=date_to,
+                dry_run=args.dry_run,
+            )
+        if args.source == "items-enrich":
+            from google.cloud import kms
+
+            gateway = MeliGatewayClient(
+                os.environ.get("GATEWAY_BASE_URL", DEFAULT_GATEWAY_BASE_URL),
+                MeliGatewayAuth("sheets", kms.KeyManagementServiceClient()),
+            )
+            return await run_item_detail_enrichment(
+                db=client[mongo_db_name],
+                gateway=gateway,
+                seller_id=args.seller_id,
                 dry_run=args.dry_run,
             )
         if args.source == "order-lines":

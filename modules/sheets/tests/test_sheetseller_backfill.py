@@ -11,6 +11,7 @@ from bson.decimal128 import Decimal128
 from zeler_platform_core.models import Order
 from zeler_sheets.sheetseller_backfill import (
     BackfillSummary,
+    ItemDetailEnrichmentSummary,
     OrderIdentityRepairSummary,
     OrderLineIdentityBackfillSummary,
     OrderNormalizationSummary,
@@ -21,6 +22,7 @@ from zeler_sheets.sheetseller_backfill import (
     extract_safe_order_item_identity,
     extract_seller_sku,
     merge_order_items_identity,
+    run_item_detail_enrichment,
     run_order_identity_repair,
     run_order_line_identity_backfill,
     run_order_normalization,
@@ -181,6 +183,19 @@ class FakeGateway:
         return payload
 
 
+class FakeItemGateway:
+    def __init__(self, payloads: dict[str, Any | Exception]) -> None:
+        self.payloads = payloads
+        self.calls: list[tuple[str, str]] = []
+
+    async def fetch_resource(self, *, seller_id: str, path: str) -> Any:
+        self.calls.append((seller_id, path))
+        payload = self.payloads[path]
+        if isinstance(payload, Exception):
+            raise payload
+        return payload
+
+
 def test_cli_requires_seller_id_and_defaults_to_dry_run() -> None:
     parser = build_arg_parser()
 
@@ -219,6 +234,9 @@ def test_cli_requires_seller_id_and_defaults_to_dry_run() -> None:
     assert repair_args.date_to == "2025-05-01"
     assert normalize_args.source == "orders-normalize"
     assert normalize_args.dry_run is True
+    enrich_args = parser.parse_args(["--seller-id", "82453304", "--source", "items-enrich"])
+    assert enrich_args.source == "items-enrich"
+    assert enrich_args.dry_run is True
     with pytest.raises(SystemExit):
         parser.parse_args([])
 
@@ -621,6 +639,190 @@ async def test_backfill_dry_run_counts_variations_without_writing() -> None:
     assert summary.skipped_missing_sku == 1
     assert summary.skipped_missing_variation_sku == 1
     assert db["sheets_item_sku_index"].documents == {}
+
+
+@pytest.mark.asyncio
+async def test_item_detail_enrichment_fetches_canonical_ids_and_writes_formula_fields() -> None:
+    canonical = _item_doc("MLA1", attributes=[{"id": "SELLER_SKU", "value_name": "sku-1"}])
+    canonical["price"] = Decimal("123.45")
+    db = FakeDb([canonical, _item_doc("MLB1", seller_id="999")])
+    gateway = FakeItemGateway(
+        {
+            "/items?ids=MLA1": [
+                {
+                    "code": 200,
+                    "body": {
+                        "id": "MLA1",
+                        "seller_id": 82453304,
+                        "title": "Updated title",
+                        "price": "222.20",
+                        "base_price": "210.00",
+                        "available_quantity": 9,
+                        "status": "active",
+                        "category_id": "MLA-CAT-UPDATED",
+                        "permalink": "https://articulo.example/MLA1",
+                        "thumbnail": "https://img.example/MLA1.jpg",
+                        "catalog_product_id": "MLA-CATALOG-1",
+                        "inventory_id": "INV-ITEM-1",
+                        "variations": [{"id": 101, "inventory_id": "INV-VAR-101"}],
+                        "attributes": [{"id": "SELLER_SKU", "value_name": "sku-1"}],
+                        "date_created": NOW.isoformat(),
+                        "last_updated": NOW.isoformat(),
+                        "unexpected_raw_payload": {"secret": "must-not-persist"},
+                    },
+                }
+            ]
+        }
+    )
+
+    summary = await run_item_detail_enrichment(
+        db=db, gateway=gateway, seller_id="82453304", dry_run=False
+    )
+
+    assert summary == ItemDetailEnrichmentSummary(
+        dry_run=False,
+        items_read=1,
+        batches_fetched=1,
+        item_details_returned=1,
+        items_validated=1,
+        items_planned=1,
+        items_updated=1,
+        unchanged=0,
+    )
+    assert gateway.calls == [("82453304", "/items?ids=MLA1")]
+    assert db["items"].find_filters == [{"seller_id": "82453304"}]
+    assert len(db["items"].update_calls) == 1
+    filter_spec, update, options = db["items"].update_calls[0]
+    assert filter_spec == {"_id": "MLA1", "seller_id": "82453304"}
+    assert options == {"upsert": False, "bypass_document_validation": False}
+    set_fields = update["$set"]
+    assert set_fields["last_meli_sync_at"].endswith("Z")
+    without_sync_time = {
+        key: value for key, value in set_fields.items() if key != "last_meli_sync_at"
+    }
+    assert without_sync_time == {
+        "_id": "MLA1",
+        "seller_id": "82453304",
+        "title": "Updated title",
+        "price": "222.20",
+        "base_price": "210.00",
+        "available_quantity": 9,
+        "status": "active",
+        "category_id": "MLA-CAT-UPDATED",
+        "permalink": "https://articulo.example/MLA1",
+        "thumbnail": "https://img.example/MLA1.jpg",
+        "catalog_product_id": "MLA-CATALOG-1",
+        "inventory_id": "INV-ITEM-1",
+        "variations": [{"id": 101, "inventory_id": "INV-VAR-101"}],
+        "attributes": [{"id": "SELLER_SKU", "value_name": "sku-1"}],
+        "shipping": None,
+        "health": None,
+        "date_created": NOW.isoformat().replace("+00:00", "Z"),
+        "last_updated": NOW.isoformat().replace("+00:00", "Z"),
+        "schema_version": 2,
+    }
+    stored = db["items"].documents["MLA1"]
+    assert stored["permalink"] == "https://articulo.example/MLA1"
+    assert stored["thumbnail"] == "https://img.example/MLA1.jpg"
+    assert stored["catalog_product_id"] == "MLA-CATALOG-1"
+    assert stored["inventory_id"] == "INV-ITEM-1"
+    assert stored["schema_version"] == 2
+
+
+@pytest.mark.asyncio
+async def test_item_detail_enrichment_dry_run_reports_plan_without_writes() -> None:
+    canonical = _item_doc("MLA1")
+    canonical["price"] = Decimal("123.45")
+    db = FakeDb([canonical])
+    gateway = FakeItemGateway({"/items?ids=MLA1": [{"code": 200, "body": _item_detail("MLA1")}]})
+
+    summary = await run_item_detail_enrichment(db=db, gateway=gateway, seller_id="82453304")
+
+    assert summary.items_planned == 1
+    assert summary.items_updated == 0
+    assert db["items"].update_calls == []
+    assert db["items"].documents["MLA1"].get("permalink") is None
+
+
+@pytest.mark.asyncio
+async def test_item_detail_enrichment_api_failure_writes_nothing_for_any_batch() -> None:
+    first = _item_doc("MLA1")
+    first["price"] = Decimal("123.45")
+    second = _item_doc("MLA2")
+    second["price"] = Decimal("123.45")
+    db = FakeDb([first, second])
+    gateway = FakeItemGateway(
+        {
+            "/items?ids=MLA1": [{"code": 200, "body": _item_detail("MLA1")}],
+            "/items?ids=MLA2": RuntimeError("gateway failure"),
+        }
+    )
+
+    with pytest.raises(RuntimeError, match="gateway failure"):
+        await run_item_detail_enrichment(
+            db=db, gateway=gateway, seller_id="82453304", dry_run=False, batch_size=1
+        )
+
+    assert db["items"].update_calls == []
+    assert db["items"].documents["MLA1"].get("permalink") is None
+
+
+@pytest.mark.asyncio
+async def test_item_detail_enrichment_persists_only_canonical_item_fields() -> None:
+    canonical = _item_doc("MLA1")
+    canonical["price"] = Decimal("123.45")
+    db = FakeDb([canonical])
+    raw_detail = _item_detail("MLA1")
+    raw_detail.update(
+        {
+            "buyer": {"id": "pii"},
+            "seller_address": {"address_line": "private"},
+            "raw_payload": {"anything": "must-not-persist"},
+        }
+    )
+    gateway = FakeItemGateway({"/items?ids=MLA1": [{"code": 200, "body": raw_detail}]})
+
+    summary = await run_item_detail_enrichment(
+        db=db, gateway=gateway, seller_id="82453304", dry_run=False
+    )
+
+    assert summary.items_updated == 1
+    stored = db["items"].documents["MLA1"]
+    assert "buyer" not in stored
+    assert "seller_address" not in stored
+    assert "raw_payload" not in stored
+
+
+@pytest.mark.asyncio
+async def test_item_detail_enrichment_summary_is_sanitized_and_useful() -> None:
+    current = _item_doc("MLA1", permalink="https://articulo.example/MLA1")
+    current["price"] = Decimal("123.45")
+    db = FakeDb([current])
+    detail = _item_detail("MLA1")
+    detail["permalink"] = "https://articulo.example/MLA1"
+    gateway = FakeItemGateway({"/items?ids=MLA1": [{"code": 200, "body": detail}]})
+
+    summary = await run_item_detail_enrichment(
+        db=db, gateway=gateway, seller_id="82453304", dry_run=False
+    )
+
+    assert summary.items_read == 1
+    assert summary.items_validated == 1
+    assert summary.unchanged == 0
+    serialized = summary.as_dict()
+    assert serialized == {
+        "dry_run": False,
+        "items_read": 1,
+        "batches_fetched": 1,
+        "item_details_returned": 1,
+        "items_validated": 1,
+        "items_planned": 1,
+        "items_updated": 1,
+        "unchanged": 0,
+    }
+    assert "82453304" not in str(serialized)
+    assert "MLA1" not in str(serialized)
+    assert "https://" not in str(serialized)
 
 
 @pytest.mark.asyncio
@@ -1302,6 +1504,27 @@ def _item_doc(
         if value is not None:
             document[key] = value
     return document
+
+
+def _item_detail(item_id: str, *, seller_id: str = "82453304") -> dict[str, Any]:
+    return {
+        "id": item_id,
+        "seller_id": seller_id,
+        "title": f"Detail {item_id}",
+        "price": "123.45",
+        "base_price": "123.45",
+        "available_quantity": 7,
+        "status": "active",
+        "category_id": "MLA-CAT",
+        "permalink": f"https://articulo.example/{item_id}",
+        "thumbnail": f"https://img.example/{item_id}.jpg",
+        "catalog_product_id": f"CATALOG-{item_id}",
+        "inventory_id": f"INV-{item_id}",
+        "attributes": [],
+        "variations": [],
+        "date_created": NOW.isoformat(),
+        "last_updated": NOW.isoformat(),
+    }
 
 
 def _order_doc(
