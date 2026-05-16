@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -13,6 +14,36 @@ from zeler_platform_core.runtime.registration import register_module
 from zeler_publicador.api import Generator, Publisher, build_router
 from zeler_publicador.generator import ListingGenerator, LLMNotConfiguredError, Stub503LLM
 from zeler_publicador.publisher import PublicadorPublisher
+
+
+class PublicadorConfigError(RuntimeError):
+    """Raised when Publicador runtime config would otherwise fall back unsafely."""
+
+
+@dataclass(frozen=True)
+class PublicadorRuntimeConfig:
+    gateway_base_url: str
+    gateway_module_token: str
+
+
+def resolve_publicador_runtime_config(env: dict[str, str | None]) -> PublicadorRuntimeConfig:
+    gateway_base_url = (env.get("GATEWAY_BASE_URL") or "").strip().rstrip("/")
+    gateway_module_token = (env.get("GATEWAY_MODULE_TOKEN") or "").strip()
+
+    if not gateway_base_url:
+        raise PublicadorConfigError("GATEWAY_BASE_URL is required for Publicador API mode")
+    if not gateway_module_token:
+        raise PublicadorConfigError("GATEWAY_MODULE_TOKEN is required for Publicador API mode")
+    if _is_unsafe_gateway_base_url(gateway_base_url):
+        raise PublicadorConfigError(
+            "GATEWAY_BASE_URL must point to the live gateway proxy, "
+            "not local or legacy Publicador runtime"
+        )
+
+    return PublicadorRuntimeConfig(
+        gateway_base_url=gateway_base_url,
+        gateway_module_token=gateway_module_token,
+    )
 
 
 def build_app(
@@ -58,7 +89,6 @@ def make_app() -> FastAPI:
         raise RuntimeError("MONGO_URI is required for API mode")
     if not mongo_db_name:
         raise RuntimeError("MONGO_DB is required for API mode")
-
     mongo_db: object = AsyncIOMotorClient(mongo_uri)[mongo_db_name]
     return build_app(
         mongo_db=mongo_db,
@@ -82,6 +112,9 @@ class _StubPublisher:
 
 
 class _GatewayProxyClient:
+    def __init__(self, config: PublicadorRuntimeConfig | None = None) -> None:
+        self._config = config
+
     async def request(
         self, method: str, path: str, *, seller_id: str, json: dict[str, Any]
     ) -> dict[str, Any]:
@@ -89,14 +122,31 @@ class _GatewayProxyClient:
 
         import httpx
 
-        base_url = os.environ.get("GATEWAY_BASE_URL", "http://gateway:8080/proxy/meli")
-        token = os.environ.get("GATEWAY_MODULE_TOKEN", "")
+        config = self._config or resolve_publicador_runtime_config(
+            {
+                "GATEWAY_BASE_URL": os.environ.get("GATEWAY_BASE_URL"),
+                "GATEWAY_MODULE_TOKEN": os.environ.get("GATEWAY_MODULE_TOKEN"),
+            }
+        )
         async with httpx.AsyncClient(timeout=10.0) as client:
             response = await client.request(
                 method,
-                f"{base_url.rstrip('/')}/{path.lstrip('/')}",
-                headers={"Authorization": f"Bearer {token}", "X-Seller-Id": seller_id},
+                f"{config.gateway_base_url}/{path.lstrip('/')}",
+                headers={
+                    "Authorization": f"Bearer {config.gateway_module_token}",
+                    "X-Seller-Id": seller_id,
+                },
                 json=json,
             )
         response.raise_for_status()
         return response.json()  # type: ignore[no-any-return]
+
+
+def _is_unsafe_gateway_base_url(base_url: str) -> bool:
+    lowered = base_url.lower()
+    return (
+        lowered.startswith("http://localhost")
+        or lowered.startswith("http://127.0.0.1")
+        or "publicadormeli" in lowered
+        or "zeler-core" in lowered
+    )

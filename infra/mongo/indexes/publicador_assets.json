@@ -1,0 +1,4 @@
+[
+  {"keys":{"seller_id":1,"owner_id":1,"status":1},"options":{"name":"idx_publicador_assets_seller_owner_status"}},
+  {"keys":{"seller_id":1,"hash":1},"options":{"name":"uniq_publicador_assets_seller_hash","unique":true,"partialFilterExpression":{"hash":{"$exists":true}}}}
+]

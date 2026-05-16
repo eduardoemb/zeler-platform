@@ -1,0 +1,4 @@
+[
+  {"keys":{"seller_id":1,"created_at":-1},"options":{"name":"idx_publicador_events_seller_created"}},
+  {"keys":{"aggregate_type":1,"aggregate_id":1},"options":{"name":"idx_publicador_events_aggregate"}}
+]

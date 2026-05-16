@@ -1,3 +1,5 @@
 [
-  {"keys":{"seller_id":1,"status":1,"updated_at":-1},"options":{"name":"idx_publicador_drafts_seller_status_updated"}}
+  {"keys":{"seller_id":1,"account_id":1,"status":1,"updated_at":-1},"options":{"name":"idx_publicador_drafts_scope_status_updated"}},
+  {"keys":{"seller_id":1,"account_id":1,"sku":1},"options":{"name":"uniq_publicador_drafts_scope_sku","unique":true,"partialFilterExpression":{"sku":{"$exists":true}}}},
+  {"keys":{"meli_item_id":1},"options":{"name":"idx_publicador_drafts_meli_item"}}
 ]

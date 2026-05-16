@@ -1,0 +1,21 @@
+{
+  "$jsonSchema": {
+    "bsonType": "object",
+    "properties": {
+      "_id": {"bsonType": ["objectId", "string"]},
+      "account_id": {"bsonType": "string"},
+      "config_fingerprint": {"bsonType": "string"},
+      "created_at": {"bsonType": "date"},
+      "draft_id": {"bsonType": ["null", "string"]},
+      "model": {"bsonType": "string"},
+      "provider": {"bsonType": "string"},
+      "redacted_input": {"bsonType": "object"},
+      "schema_version": {"bsonType": "int"},
+      "seller_id": {"bsonType": ["string", "long", "int"]},
+      "status": {"enum": ["pending", "succeeded", "failed"]}
+    },
+    "required": ["seller_id", "account_id", "provider", "model", "config_fingerprint", "redacted_input", "status", "created_at", "schema_version"]
+  },
+  "validationAction": "error",
+  "validationLevel": "strict"
+}

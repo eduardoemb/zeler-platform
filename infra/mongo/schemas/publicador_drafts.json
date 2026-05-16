@@ -3,10 +3,18 @@
     "bsonType": "object",
     "properties": {
       "_id": {"bsonType": ["objectId", "string"]},
+      "account_id": {"bsonType": "string"},
+      "approval_status": {"enum": ["draft", "pending", "approved", "rejected"]},
       "created_at": {"bsonType": "date"},
+      "created_by": {"bsonType": "string"},
+      "enrichment_status": {"enum": ["pending", "generated", "failed"]},
       "generated_listing": {"bsonType": "object"},
+      "gtin": {"bsonType": ["null", "string"]},
+      "meli_item_id": {"bsonType": ["null", "string"]},
+      "process_status": {"enum": ["not_started", "processing", "published", "failed"]},
       "schema_version": {"bsonType": "int"},
       "seller_id": {"bsonType": ["string", "long", "int"]},
+      "sku": {"bsonType": "string"},
       "source_product": {"bsonType": "object"},
       "status": {"enum": ["draft", "generated", "validation_failed", "published", "failed"]},
       "updated_at": {"bsonType": "date"}
@@ -14,11 +22,17 @@
     "required": [
       "_id",
       "seller_id",
+      "account_id",
+      "sku",
       "source_product",
       "generated_listing",
       "status",
+      "enrichment_status",
+      "approval_status",
+      "process_status",
       "created_at",
       "updated_at",
+      "created_by",
       "schema_version"
     ]
   },

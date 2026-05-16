@@ -1,0 +1,23 @@
+{
+  "$jsonSchema": {
+    "bsonType": "object",
+    "properties": {
+      "_id": {"bsonType": ["objectId", "string"]},
+      "account_id": {"bsonType": "string"},
+      "blocked_items": {"bsonType": "int"},
+      "created_at": {"bsonType": "date"},
+      "created_by": {"bsonType": "string"},
+      "idempotency_key": {"bsonType": "string"},
+      "publishable_items": {"bsonType": "int"},
+      "schema_version": {"bsonType": "int"},
+      "seller_id": {"bsonType": ["string", "long", "int"]},
+      "source_filename": {"bsonType": "string"},
+      "status": {"enum": ["uploaded", "parsing", "completed", "failed", "publishing", "published"]},
+      "total_items": {"bsonType": "int"},
+      "updated_at": {"bsonType": "date"}
+    },
+    "required": ["seller_id", "account_id", "source_filename", "idempotency_key", "status", "total_items", "publishable_items", "blocked_items", "created_at", "updated_at", "created_by", "schema_version"]
+  },
+  "validationAction": "error",
+  "validationLevel": "strict"
+}

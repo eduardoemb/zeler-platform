@@ -1,0 +1,22 @@
+{
+  "$jsonSchema": {
+    "bsonType": "object",
+    "properties": {
+      "_id": {"bsonType": ["objectId", "string"]},
+      "account_id": {"bsonType": "string"},
+      "batch_id": {"bsonType": ["objectId", "string"]},
+      "created_at": {"bsonType": "date"},
+      "draft_id": {"bsonType": ["null", "string"]},
+      "parsed_fields": {"bsonType": "object"},
+      "row_number": {"bsonType": "int"},
+      "schema_version": {"bsonType": "int"},
+      "seller_id": {"bsonType": ["string", "long", "int"]},
+      "sku": {"bsonType": "string"},
+      "status": {"enum": ["queued", "blocked", "enriched", "published", "failed"]},
+      "updated_at": {"bsonType": "date"}
+    },
+    "required": ["seller_id", "account_id", "batch_id", "row_number", "sku", "parsed_fields", "status", "created_at", "updated_at", "schema_version"]
+  },
+  "validationAction": "error",
+  "validationLevel": "strict"
+}

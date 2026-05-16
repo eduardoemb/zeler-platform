@@ -1,41 +1,55 @@
-# Pilot runbook — publicador
+# Pilot runbook — Publicador
+
+## Safety contract
+
+- Execute live checks only with explicit approval, pilot seller `82453304`, and an authenticated `https://app.zeler.ai` session or approved VM/VPC/runtime container.
+- Use the zeler-app broker/module-admin flow for `admin:publicador`; do not paste credentials into commands, tickets, screenshots, or logs.
+- Production Mongo validation must run only from approved VM/VPC/runtime context and must emit sanitized counts/status summaries, never connection details.
+- Stop if unrelated Fulldock/decommission workspace changes would be included in a deploy, commit, or smoke revision.
 
 ## Pre-flight
 
-- Verify worker process is not required for request-driven publicador, and API service is running.
-- Verify API health returns 200: `curl https://publicador.zeler.ai/health`.
-- Verify gateway health returns 200.
-- Verify `meli_accounts` has seller `82453304` with `status="active"` and non-expired tokens.
-- Verify RabbitMQ topology: `python -m infra.rabbitmq.readiness --rabbitmq-url=$RABBITMQ_URL --read-only`.
-- Verify Mongo validators: `python -m infra.mongo.drift_check --mongo-uri=$MONGO_URI`.
-- Verify publicador templates/category/export docs exist.
+- Confirm the committed revision is Publicador-only and all Batch 8 regression tests passed or blockers are documented.
+- Confirm gateway and Publicador API health from the approved runtime context.
+- Confirm `module_registry._id = "zeler-app"` is enabled for pilot seller `82453304` and `admin:publicador` scope using sanitized output.
+- Confirm `PUBLICADOR_API_URL` and gateway settings point at live Zeler surfaces and fail closed if absent/local/legacy.
 
-## Setup
+## Smoke route matrix
 
-Ensure `OPENAI_API_KEY` is configured. If not configured, `Stub503LLM` returns HTTP 503 with `code="llm_not_configured"`; that proves routing is wired but does not publish.
+Open the Publicador routes from the real app session and record only sanitized route/status/outcome evidence:
 
-## Trigger
+- `/publicador/dashboard`
+- `/publicador/products/new`
+- `/publicador/products/new/assets`
+- `/publicador/products/new/generate`
+- `/publicador/products/new/taxonomy`
+- `/publicador/publications`
+- `/publicador/publications/<publication_id>`
+- `/publicador/publications/<publication_id>/approval`
+- `/publicador/publications/<publication_id>/process`
+- `/publicador/publications/<publication_id>/validation`
+- `/publicador/publications/<publication_id>/publish-review`
+- `/publicador/publications/<publication_id>/catalog`
+- `/publicador/batches`
+- `/publicador/batches/new`
+- `/publicador/batches/<batch_id>`
+- `/publicador/suggestions`
+- `/publicador/logs`
+- `/publicador/statistics`
+- `/publicador/settings`
 
-Create a draft, generate content, then publish:
+Acceptable result per route: data rendered, explicit empty state, or safe blocked state that names the missing configuration/permission without exposing credentials.
 
-```bash
-curl -X POST https://publicador.zeler.ai/publicador/drafts -H 'Content-Type: application/json' -d '{"seller_id":"82453304","title":"Pilot item","category_id":"MLA123","price":10000}'
-curl -X POST https://publicador.zeler.ai/publicador/drafts/<draft_id>/generate
-curl -X POST https://publicador.zeler.ai/publicador/drafts/<draft_id>/publish
-```
+## Publish smoke guardrails
 
-## Verify success
-
-- `db.publicador_drafts.findOne({seller_id: "82453304"})` has the draft.
-- `db.publicador_history.findOne({seller_id: "82453304", outcome: "published"})` has a Meli `item_id`.
-- Gateway audit log shows `POST /items` returning 200/201.
-
-## Verify broken
-
-- 503 with `code="llm_not_configured"` means the stub is still in use.
-- `db.publicador_history.find({seller_id: "82453304", outcome: "failed"})` contains Meli error payloads.
+- Only publish a deliberately prepared pilot draft for seller `82453304`.
+- Expected publish payload remains paused with available quantity `0`.
+- Evidence must be sanitized: route, operation, HTTP status class, draft/publication identifier category, and whether the seller-scoped history/event was recorded.
+- Do not run ad-hoc local scripts against production data; use approved runtime tooling only.
 
 ## Rollback
 
-- Pause seller `82453304` using `docs/runbooks/account-kill-switch.md`.
-- Delete or archive the pilot draft from `publicador_drafts`.
+- Disable the Publicador UI entry point for the affected seller/module scope or redeploy the previous revision if route safety regresses.
+- Redeploy the previous image for the Publicador API if publish/config hardening regresses.
+- Pause or archive pilot artifacts for seller `82453304` using approved runtime operations with sanitized evidence.
+- Re-run the route matrix after rollback and attach sanitized before/after status.

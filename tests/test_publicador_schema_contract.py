@@ -16,11 +16,17 @@ def test_publicador_drafts_validator_rejects_missing_required_fields() -> None:
     assert result.valid is False
     assert result.missing_required_fields == [
         "seller_id",
+        "account_id",
+        "sku",
         "source_product",
         "generated_listing",
         "status",
+        "enrichment_status",
+        "approval_status",
+        "process_status",
         "created_at",
         "updated_at",
+        "created_by",
         "schema_version",
     ]
 
@@ -47,9 +53,18 @@ def test_publicador_indexes_match_phase6_contract() -> None:
 
     assert drafts_indexes == [
         {
-            "keys": {"seller_id": 1, "status": 1, "updated_at": -1},
-            "options": {"name": "idx_publicador_drafts_seller_status_updated"},
-        }
+            "keys": {"seller_id": 1, "account_id": 1, "status": 1, "updated_at": -1},
+            "options": {"name": "idx_publicador_drafts_scope_status_updated"},
+        },
+        {
+            "keys": {"seller_id": 1, "account_id": 1, "sku": 1},
+            "options": {
+                "name": "uniq_publicador_drafts_scope_sku",
+                "unique": True,
+                "partialFilterExpression": {"sku": {"$exists": True}},
+            },
+        },
+        {"keys": {"meli_item_id": 1}, "options": {"name": "idx_publicador_drafts_meli_item"}},
     ]
     assert history_indexes == [
         {

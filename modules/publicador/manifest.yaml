@@ -3,10 +3,28 @@ version: 0.1.0
 subscribed_events: []
 owned_collections:
   - publicador_drafts
+  - publicador_assets
+  - publicador_batches
+  - publicador_batch_items
+  - publicador_catalog_suggestions
+  - publicador_events
   - publicador_history
+  - publicador_settings
+  - publicador_ai_generations
 allowed_meli_scopes:
+  - GET /categories/*
+  - GET /categories/*/attributes
+  - GET /sites/*/domain_discovery/search*
   - POST /items
   - PUT /items/*
-  - GET /categories/*
   - POST /items/validate
+  - POST /pictures
+  - GET /sites/*/listing_types
+  - GET /products/search*
+  - POST /catalog_suggestions/validate
+  - POST /catalog_suggestions
+  - GET /catalog_suggestions/*
+  - GET /users/*/brands
+  - GET /users/*/stores/search*
+  - GET /users/*/shipping_preferences
 health_endpoint: /health

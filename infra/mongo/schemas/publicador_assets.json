@@ -1,0 +1,26 @@
+{
+  "$jsonSchema": {
+    "bsonType": "object",
+    "properties": {
+      "_id": {"bsonType": ["objectId", "string"]},
+      "account_id": {"bsonType": "string"},
+      "content_type": {"bsonType": "string"},
+      "created_at": {"bsonType": "date"},
+      "hash": {"bsonType": ["null", "string"]},
+      "height": {"bsonType": "int"},
+      "meli_picture_id": {"bsonType": ["null", "string"]},
+      "owner_id": {"bsonType": "string"},
+      "owner_type": {"enum": ["draft", "batch_item", "suggestion"]},
+      "schema_version": {"bsonType": "int"},
+      "seller_id": {"bsonType": ["string", "long", "int"]},
+      "sku": {"bsonType": "string"},
+      "status": {"enum": ["local", "uploaded", "failed"]},
+      "storage_uri": {"bsonType": "string"},
+      "updated_at": {"bsonType": "date"},
+      "width": {"bsonType": "int"}
+    },
+    "required": ["seller_id", "account_id", "owner_type", "owner_id", "sku", "storage_uri", "content_type", "width", "height", "status", "created_at", "updated_at", "schema_version"]
+  },
+  "validationAction": "error",
+  "validationLevel": "strict"
+}

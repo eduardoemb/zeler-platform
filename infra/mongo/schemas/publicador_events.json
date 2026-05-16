@@ -1,0 +1,20 @@
+{
+  "$jsonSchema": {
+    "bsonType": "object",
+    "properties": {
+      "_id": {"bsonType": ["objectId", "string"]},
+      "account_id": {"bsonType": "string"},
+      "actor": {"bsonType": ["null", "string"]},
+      "aggregate_id": {"bsonType": "string"},
+      "aggregate_type": {"enum": ["draft", "batch", "batch_item", "suggestion", "asset", "settings", "ai_generation"]},
+      "created_at": {"bsonType": "date"},
+      "operation": {"bsonType": "string"},
+      "schema_version": {"bsonType": "int"},
+      "seller_id": {"bsonType": ["string", "long", "int"]},
+      "status": {"bsonType": "string"}
+    },
+    "required": ["seller_id", "account_id", "aggregate_type", "aggregate_id", "operation", "status", "created_at", "schema_version"]
+  },
+  "validationAction": "error",
+  "validationLevel": "strict"
+}

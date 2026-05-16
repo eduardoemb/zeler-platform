@@ -1,0 +1,5 @@
+[
+  {"keys":{"batch_id":1,"status":1},"options":{"name":"idx_publicador_batch_items_batch_status"}},
+  {"keys":{"batch_id":1,"sku":1},"options":{"name":"uniq_publicador_batch_items_batch_sku","unique":true}},
+  {"keys":{"seller_id":1,"sku":1},"options":{"name":"idx_publicador_batch_items_seller_sku"}}
+]

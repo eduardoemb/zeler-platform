@@ -1,0 +1,19 @@
+{
+  "$jsonSchema": {
+    "bsonType": "object",
+    "properties": {
+      "_id": {"bsonType": ["objectId", "string"]},
+      "account_id": {"bsonType": "string"},
+      "ai_provider_ref": {"bsonType": ["null", "string"]},
+      "catalog_behavior": {"enum": ["search_first", "suggest_when_unmatched", "manual_only"]},
+      "created_at": {"bsonType": "date"},
+      "defaults": {"bsonType": "object"},
+      "schema_version": {"bsonType": "int"},
+      "seller_id": {"bsonType": ["string", "long", "int"]},
+      "updated_at": {"bsonType": "date"}
+    },
+    "required": ["seller_id", "account_id", "defaults", "ai_provider_ref", "catalog_behavior", "created_at", "updated_at", "schema_version"]
+  },
+  "validationAction": "error",
+  "validationLevel": "strict"
+}
