@@ -1,38 +1,13 @@
-# Pilot runbook — fulldock
+# Pilot runbook — fulldock (archived)
 
-## Pre-flight
+Fulldock is decommissioned. This runbook is retained only to explain why old
+Fulldock pilot operations should not be executed during current platform work.
 
-- Verify worker process is running: `docker compose ps fulldock-worker`.
-- Verify API health returns 200: `curl https://fulldock.zeler.ai/health`.
-- Verify gateway health returns 200.
-- Verify `meli_accounts` has seller `82453304` with `status="active"` and non-expired tokens.
-- Verify RabbitMQ topology: `python -m infra.rabbitmq.readiness --rabbitmq-url=$RABBITMQ_URL --read-only`.
-- Verify Mongo validators: `python -m infra.mongo.drift_check --mongo-uri=$MONGO_URI`.
-- Confirm seller `82453304` has Meli Full enabled and OAuth scope for `PUT /items/*/stock_locations`.
+- Do not start or validate a Fulldock API/worker runtime.
+- Do not bind/replay stock-location events to Fulldock queues.
+- Do not mutate `fulldock_inventory_rules` or `fulldock_history` without a
+  future explicit data-retention SDD and operator approval.
 
-## Setup
-
-```javascript
-db.fulldock_inventory_rules.insertOne({_id: "pilot-82453304-stock", seller_id: "82453304", item_id: "<item_id>", enabled: true, target_location_id: "<target_location_id>", target_quantity: 10})
-```
-
-## Trigger
-
-Emit an `items.updated` or `shipments.updated` event for the item using `gateway/cli/replay.py`, or wait for the real Meli webhook.
-
-## Verify success
-
-- `db.fulldock_history.findOne({seller_id: "82453304", outcome: "updated"})` exists.
-- Gateway audit log shows `PUT /items/<id>/stock_locations` returning 200.
-- Worker logs include `worker.message.ack`.
-
-## Verify broken
-
-- `db.fulldock_history.findOne({seller_id: "82453304", outcome: "malformed_resource"})` exists.
-- Gateway audit log has 403 from Meli, usually missing OAuth scope.
-- DLQ entry exists.
-
-## Rollback
-
-- Pause seller `82453304` using `docs/runbooks/account-kill-switch.md`.
-- Disable pilot rule: `db.fulldock_inventory_rules.updateOne({_id: "pilot-82453304-stock"}, {$set: {enabled: false}})`.
+Rollback or reactivation must restore UI catalog/route, `admin:fulldock`, runtime
+services, DNS, and RabbitMQ bindings from preserved references before any live
+traffic is sent.

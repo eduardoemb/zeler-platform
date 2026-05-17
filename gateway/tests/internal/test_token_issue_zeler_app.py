@@ -49,7 +49,6 @@ class FakeAsyncDb:
                             "admin:sheets",
                             "admin:publicador",
                             "admin:autoreply",
-                            "admin:fulldock",
                         ],
                     }
                 ]
@@ -146,7 +145,7 @@ async def test_zeler_app_broker_auth_issues_module_admin_jwt_with_expected_claim
     claims = verify_module_jwt(response.json()["access_token"])
     assert claims.module_id == "repricer"
     assert claims.seller_id == PILOT_SELLER_ID
-    assert claims.token_type == "module_admin"
+    assert claims.token_type == "module_admin"  # noqa: S105 - token type enum value.
     assert claims.scopes == ["admin:repricer"]
     assert claims.issued_by == "zeler-app"
     assert claims.exp - claims.iat <= 300
@@ -163,10 +162,14 @@ async def test_zeler_app_broker_auth_rejects_unregistered_seller_without_minting
     from zeler_gateway.internal.router import router
 
     mint_calls: list[dict[str, Any]] = []
+    def record_mint_call(*args: Any, **kwargs: Any) -> str:
+        mint_calls.append({"args": args, "kwargs": kwargs})
+        return "bad"
+
     monkeypatch.setattr(
         internal_router,
         "mint_module_jwt",
-        lambda *args, **kwargs: mint_calls.append({"args": args, "kwargs": kwargs}) or "bad",
+        record_mint_call,
     )
     app = FastAPI()
     app.state.mongo_db = FakeAsyncDb()
@@ -204,10 +207,14 @@ async def test_zeler_app_broker_auth_rejects_out_of_scope_module_without_minting
     from zeler_gateway.internal.router import router
 
     mint_calls: list[dict[str, Any]] = []
+    def record_mint_call(*args: Any, **kwargs: Any) -> str:
+        mint_calls.append({"args": args, "kwargs": kwargs})
+        return "bad"
+
     monkeypatch.setattr(
         internal_router,
         "mint_module_jwt",
-        lambda *args, **kwargs: mint_calls.append({"args": args, "kwargs": kwargs}) or "bad",
+        record_mint_call,
     )
     app = FastAPI()
     app.state.mongo_db = FakeAsyncDb()

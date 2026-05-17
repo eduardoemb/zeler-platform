@@ -73,7 +73,6 @@ services:
       - repricer-api
       - publicador-api
       - autoreply-api
-      - fulldock-api
 
   # --------------------------------------------------------------------------
   # Gateway — public API + Meli OAuth + internal proxy
@@ -131,16 +130,6 @@ services:
       mongo:
         condition: service_healthy
 
-  fulldock-api:
-    <<: *restart
-    image: us-central1-docker.pkg.dev/zeler-platform-dev/zeler-platform/fulldock-api:dlq-skip-3bf73ee
-    networks:
-      - platform_default
-    env_file: /opt/zeler-platform/env/fulldock-api.env
-    depends_on:
-      mongo:
-        condition: service_healthy
-
   # --------------------------------------------------------------------------
   # Workers
   # --------------------------------------------------------------------------
@@ -170,16 +159,6 @@ services:
     networks:
       - platform_default
     env_file: /opt/zeler-platform/env/autoreply-worker.env
-    depends_on:
-      mongo:
-        condition: service_healthy
-
-  fulldock-worker:
-    <<: *restart
-    image: us-central1-docker.pkg.dev/zeler-platform-dev/zeler-platform/fulldock-worker:dlq-skip-d6b3029
-    networks:
-      - platform_default
-    env_file: /opt/zeler-platform/env/fulldock-worker.env
     depends_on:
       mongo:
         condition: service_healthy

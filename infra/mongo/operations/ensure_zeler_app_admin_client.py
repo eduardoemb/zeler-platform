@@ -14,7 +14,6 @@ REQUIRED_ADMIN_SCOPES = [
     "admin:sheets",
     "admin:publicador",
     "admin:autoreply",
-    "admin:fulldock",
 ]
 
 

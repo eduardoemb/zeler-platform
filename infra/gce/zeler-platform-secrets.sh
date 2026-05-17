@@ -12,7 +12,6 @@
 #   sheets-api, sheets-worker,
 #   publicador-api,
 #   autoreply-api, autoreply-worker,
-#   fulldock-api, fulldock-worker
 
 set -euo pipefail
 
@@ -105,7 +104,7 @@ write gateway \
 # ---------------------------------------------------------------------------
 # Module APIs that only need BASE plus the gateway endpoint
 # ---------------------------------------------------------------------------
-for svc in repricer-api publicador-api autoreply-api fulldock-api; do
+for svc in repricer-api publicador-api autoreply-api; do
   write "$svc" \
     "${BASE[@]}" \
     "GATEWAY_BASE_URL=$GATEWAY_PROXY_BASE_URL"
@@ -137,7 +136,7 @@ write sheets-worker \
 # ---------------------------------------------------------------------------
 # Workers that call gateway proxy with minted JWT/KMS auth
 # ---------------------------------------------------------------------------
-for svc in repricer-worker autoreply-worker fulldock-worker; do
+for svc in repricer-worker autoreply-worker; do
   write "$svc" \
     "${BASE[@]}" \
     "GATEWAY_BASE_URL=$GATEWAY_PROXY_BASE_URL"

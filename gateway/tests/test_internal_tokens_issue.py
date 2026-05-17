@@ -272,7 +272,7 @@ async def test_issue_module_admin_token_requires_target_module_id(
     assert response.json() == {"error": "target_module_id_required"}
 
 
-def test_admin_client_seed_contains_zeler_app_all_module_admin_scopes() -> None:
+def test_admin_client_seed_contains_zeler_app_active_module_admin_scopes() -> None:
     seed = json.loads(ADMIN_CLIENT_SEED_PATH.read_text(encoding="utf-8"))
 
     assert seed["collection"] == "module_registry"
@@ -285,7 +285,6 @@ def test_admin_client_seed_contains_zeler_app_all_module_admin_scopes() -> None:
             "admin:sheets",
             "admin:publicador",
             "admin:autoreply",
-            "admin:fulldock",
         ],
         "allowed_seller_ids": [82453304],
         "routing_keys": [],

@@ -2,7 +2,7 @@
 
 > **Stack**: Ubuntu 22.04 LTS · Docker Compose · Caddy auto-TLS · MongoDB 7.0 RS  
 > **VM**: `platform-vm` · Zone: `us-central1-a` · Project: `zeler-platform-dev`  
-> **Domain**: `zeler.ai` · DNS: Squarespace · 6 public subdomains
+> **Domain**: `zeler.ai` · DNS: Squarespace · 5 public subdomains
 
 ---
 
@@ -137,8 +137,6 @@ build sheets-api        modules/sheets/Dockerfile.api
 build sheets-worker     modules/sheets/Dockerfile.worker
 build autoreply-api     modules/autoreply/Dockerfile.api
 build autoreply-worker  modules/autoreply/Dockerfile.worker
-build fulldock-api      modules/fulldock/Dockerfile.api
-build fulldock-worker   modules/fulldock/Dockerfile.worker
 build publicador-api    modules/publicador/Dockerfile.api
 ```
 
@@ -153,8 +151,6 @@ for svc_df in \
   "sheets-worker:modules/sheets/Dockerfile.worker" \
   "autoreply-api:modules/autoreply/Dockerfile.api" \
   "autoreply-worker:modules/autoreply/Dockerfile.worker" \
-  "fulldock-api:modules/fulldock/Dockerfile.api" \
-  "fulldock-worker:modules/fulldock/Dockerfile.worker" \
   "publicador-api:modules/publicador/Dockerfile.api"
 do
   svc="${svc_df%%:*}"; dockerfile="${svc_df##*:}"
@@ -438,7 +434,6 @@ Configure the app runtime with these server env values:
 | `zeler-app` | `SHEETS_API_URL` | `https://sheets.zeler.ai` |
 | `zeler-app` | `PUBLICADOR_API_URL` | `https://publicador.zeler.ai` |
 | `zeler-app` | `AUTOREPLY_API_URL` | `https://autoreply.zeler.ai` |
-| `zeler-app` | `FULLDOCK_API_URL` | `https://fulldock.zeler.ai` |
 | `gateway` | `OAUTH_SUCCESS_URL` | `https://app.zeler.ai/accounts/linked` |
 | `zeler-app` + `gateway` | `ZELER_APP_BROKER_SECRET` | Secret Manager secret `zeler-app-broker-secret`; values must match exactly. |
 
@@ -531,23 +526,23 @@ PY"
 ```
 
 Expected JSON contains `_id: "zeler-app"`, `status: "enabled"`, `allowed_seller_ids: [82453304]`,
-and exactly `admin:repricer`, `admin:sheets`, `admin:publicador`, `admin:autoreply`,
-`admin:fulldock`.
+and exactly `admin:repricer`, `admin:sheets`, `admin:publicador`, and `admin:autoreply`.
+Fulldock is intentionally decommissioned and must not appear as `admin:fulldock`.
 
 ### Safe smoke sequence for seller `82453304`
 
 1. Public health, read-only:
    ```bash
-   for s in gateway repricer sheets publicador autoreply fulldock; do
+   for s in gateway repricer sheets publicador autoreply; do
      curl -fsS "https://${s}.zeler.ai/health" >/dev/null && echo "$s OK"
    done
    ```
 2. Open `zeler-app` with a real authenticated app session and the pilot seller selected. If the UI
    needs manual browser auth, record that blocker rather than inventing a session.
 3. Smoke these routes for seller `82453304`: `/accounts`, `/bootstrap/<known-job-id>`,
-   `/repricer/rules`, `/sheets/config`, `/publicador/drafts`, `/autoreply/templates`,
-   `/fulldock/rules`. Valid results are data, an explicit empty state, or a clearly documented
-   account-linking/data blocker.
+   `/repricer/rules`, `/sheets/config`, `/publicador/drafts`, `/autoreply/templates`.
+   Valid results are data, an explicit empty state, or a clearly documented
+   account-linking/data blocker. `/fulldock/rules` should remain unavailable because Fulldock is retired.
 4. Do not run create/update/delete module actions during smoke unless a separate rollout plan
    explicitly authorizes that mutation.
 5. Check gateway/module logs for 401/403/412 spikes and token issuance audit events. Do not print
@@ -639,15 +634,15 @@ Run after every deploy or cutover. All must pass before marking the deploy stabl
 ### HTTPS health checks (TLS cert must be valid, not self-signed)
 
 ```bash
-for s in gateway sheets repricer publicador autoreply fulldock; do
+for s in gateway sheets repricer publicador autoreply; do
   echo -n "=== $s: "
   curl -fsSI "https://${s}.zeler.ai/health" | head -1 || echo "FAIL"
 done
 ```
 
-Expected: `HTTP/2 200` for all 6 subdomains.
+Expected: `HTTP/2 200` for all 5 active subdomains.
 
-### Container state (12 containers, all running)
+### Container state (10 active containers, all running)
 
 ```bash
 gcloud compute ssh platform-vm --tunnel-through-iap --zone=$ZONE --project=$PROJECT \
@@ -661,7 +656,7 @@ gcloud compute ssh platform-vm --tunnel-through-iap --zone=$ZONE --project=$PROJ
 
 ```bash
 gcloud compute ssh platform-vm --tunnel-through-iap --zone=$ZONE --project=$PROJECT << 'EOF'
-for w in repricer-worker sheets-worker autoreply-worker fulldock-worker; do
+for w in repricer-worker sheets-worker autoreply-worker; do
   echo "=== $w ==="; sudo docker logs "$w" --tail 20 2>&1 | grep -iE "consumer|started|bound" || echo "NO MATCH"
 done
 EOF
@@ -726,8 +721,9 @@ sheets.zeler.ai      A  <vm-static-ip>
 repricer.zeler.ai    A  <vm-static-ip>
 publicador.zeler.ai  A  <vm-static-ip>
 autoreply.zeler.ai   A  <vm-static-ip>
-fulldock.zeler.ai    A  <vm-static-ip>
 ```
+
+`fulldock.zeler.ai` is intentionally omitted because Fulldock is decommissioned.
 
 Get the static IP:
 

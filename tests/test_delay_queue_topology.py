@@ -9,8 +9,9 @@ DELAY_TARGET_QUEUES = (
     "zeler.repricer.items",
     "zeler.sheets.events",
     "zeler.autoreply.events",
-    "zeler.fulldock.events",
 )
+
+RETIRED_FULLDOCK_QUEUE = "zeler.fulldock.events"
 
 
 def test_each_worker_module_has_delay_queue_declared() -> None:
@@ -39,6 +40,13 @@ def test_delay_queues_are_bound_to_retry_publisher_routes() -> None:
     for queue_name in DELAY_TARGET_QUEUES:
         delay_queue = f"{queue_name}.delay"
         assert ("meli.events", delay_queue, delay_queue) in bindings
+
+
+def test_retired_fulldock_delay_queue_is_not_declared_or_bound() -> None:
+    topology = json.loads(DELAY_TOPOLOGY.read_text(encoding="utf-8"))
+    serialized_topology = json.dumps(topology, sort_keys=True)
+
+    assert RETIRED_FULLDOCK_QUEUE not in serialized_topology
 
 
 def test_delay_queue_has_dlx_to_main_queue() -> None:

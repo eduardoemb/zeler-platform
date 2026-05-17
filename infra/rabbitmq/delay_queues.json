@@ -33,15 +33,6 @@
         "x-dead-letter-exchange": "",
         "x-dead-letter-routing-key": "zeler.autoreply.events"
       }
-    },
-    {
-      "name": "zeler.fulldock.events.delay",
-      "durable": true,
-      "arguments": {
-        "x-message-ttl": 30000,
-        "x-dead-letter-exchange": "",
-        "x-dead-letter-routing-key": "zeler.fulldock.events"
-      }
     }
   ],
   "bindings": [
@@ -59,11 +50,6 @@
       "source": "meli.events",
       "destination": "zeler.autoreply.events.delay",
       "routing_key": "zeler.autoreply.events.delay"
-    },
-    {
-      "source": "meli.events",
-      "destination": "zeler.fulldock.events.delay",
-      "routing_key": "zeler.fulldock.events.delay"
     }
   ]
 }

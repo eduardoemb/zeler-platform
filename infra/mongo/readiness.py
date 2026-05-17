@@ -15,7 +15,6 @@ EXPECTED_ADMIN_CLIENT_SCOPES = {
         "admin:sheets",
         "admin:publicador",
         "admin:autoreply",
-        "admin:fulldock",
     }
 }
 

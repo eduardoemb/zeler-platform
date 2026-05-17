@@ -6,7 +6,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Any
 
-SERVICES = ("gateway", "repricer", "sheets", "publicador", "autoreply", "fulldock")
+SERVICES = ("gateway", "repricer", "sheets", "publicador", "autoreply")
 MetricsSource = Callable[[str, str], int]
 HealthSource = Callable[[Sequence[str], str], dict[str, bool]]
 LogsSource = Callable[[str, str], list[dict[str, Any]]]

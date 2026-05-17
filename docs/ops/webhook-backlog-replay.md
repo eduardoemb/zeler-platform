@@ -11,14 +11,12 @@ mark MongoDB documents unless the business owner explicitly approves a specific
 - `--execute` also requires an operator-provided `--run-id`.
 - `--execute` fails closed unless exactly one RabbitMQ gate source is provided:
   `--rabbit-management-export` or `--rabbit-management-url`.
-- Allowed topics are only `price_suggestion`, `stock-locations`, and
-  `user-products-families`.
+- Allowed topics are only `price_suggestion` and `user-products-families`.
+  Fulldock is decommissioned, so `stock-locations` is no longer an allowed replay topic.
 - Default dedupe is `latest-per-resource`, which coalesces `price_suggestion` and
-  `stock-locations` to the newest event per `(topic, user_id, resource)`.
+  to the newest event per `(topic, user_id, resource)`.
 - Active RabbitMQ gates are topic-specific: `price_suggestion` gates only on
-  `zeler.repricer.items`; `stock-locations` gates only on
-  `zeler.fulldock.events`. Legacy dedicated queues are remediation-only and do
-  not block replay when the active path is healthy.
+  `zeler.repricer.items`.
 - `user-products-families` is a no-go. There is no defined Sheets
   `user_products.*` handler/consumer path, and `--allow-user-products-families`
   cannot convert undefined behavior into functional replay safety.
@@ -51,13 +49,12 @@ VM deployment. Do not deploy, restart, or rebuild as part of replay planning.
 
 ## Preflight (read-only)
 
-1. Recount target MongoDB documents with `published_at: null` for the three
-   allowed topics and compare with the baseline: `35 price_suggestion`,
-   `53 stock-locations`, `5 user-products-families`.
+1. Recount target MongoDB documents with `published_at: null` for the allowed
+   topics and compare with the baseline: `35 price_suggestion`,
+   `5 user-products-families`.
 2. Recount corrupt required fields and duplicates. Expected corrupt count is `0`.
 3. Export RabbitMQ queue state for active and fanout queues plus DLQs:
     - `zeler.repricer.items`, `zeler.repricer.price_suggestion`
-    - `zeler.fulldock.events`, `zeler.fulldock.stock_locations`
     - `zeler.sheets.events`, `zeler.sheets.user_products`
 4. Confirm required active consumers, routing keys, and recent logs have no
     `worker.message.requeued`, `worker.message.dlq`, 429, or 5xx spikes.
@@ -77,23 +74,11 @@ otherwise mutate RabbitMQ/topology from the gate report. Capture a sanitized
 export, verify `zeler.repricer.items` is healthy, and get explicit operator
 approval for the exact follow-up remediation command.
 
-### Fulldock stock-location queue note
+### Fulldock stock-location queue note (archived)
 
-`zeler.fulldock.events` is the active Fulldock consumer queue and is expected to
-bind `items.*`, `shipments.*`, and `stock_locations.*`. The dedicated
-`zeler.fulldock.stock_locations` queue may exist from earlier fanout topology;
-if it has ready messages and `0` consumers, treat it as an operator remediation
-item, not as replay capacity.
-
-`zeler.fulldock.stock_locations` may contain fanout copies and has no consumer;
-handling requires explicit approval for the inspect/drain/purge/rebind decision,
-not automatic replay gating.
-
-Do not purge, delete, requeue, bind, unbind, publish, replay, deploy, build,
-move, or otherwise mutate that queue during dry-run planning. Before any
-approved cleanup, capture a sanitized management export, confirm the active
-`zeler.fulldock.events` consumer is healthy, confirm DLQs are bound, and get
-explicit approval for the exact queue operation/run ID.
+Fulldock is decommissioned. Stock-location replay through Fulldock is not an
+active capacity path and must remain blocked unless a future reactivation SDD
+explicitly restores UI, registry scope, runtime, and RabbitMQ topology.
 
 ### User-products-families no-go
 
@@ -105,28 +90,8 @@ execution plans before any publish or Mongo mark.
 
 ### Stock-location replay readiness gate
 
-stock-locations remains `NO_GO` until all stock-location readiness checks pass.
-The gate is intentionally stricter than the generic RabbitMQ gate because these
-events use `/user-products/{id}/stock` resources and can create wrong writes or
-feedback loops if the Fulldock worker is stale.
-
-Required checks before an operator may approve stock-location replay:
-
-- Focused Fulldock tests for manifest scope, parser, mapping/no-op behavior,
-  drift-only writes, and 403/404/429 handling have passed with `uv run pytest`.
-- The active module registry for `fulldock` includes both
-  `GET /user-products/*/stock` and `PUT /items/*/stock_locations`.
-- Read-only gateway/audit/log review shows no recent gateway `out_of_scope` for
-  `/user-products/{id}/stock` after the registry refresh.
-- Fulldock history/logs show no `malformed_resource`, `missing_mapping`, or `resource_not_found` spike for stock-location traffic.
-- Fulldock logs and RabbitMQ exports show no DLQ growth, 403 stop condition, or
-  429 requeue spikes while the active `zeler.fulldock.events` consumer is bound
-  to `stock_locations.*`.
-- A sanitized dry-run plan still uses `latest-per-resource` coalescing and does
-  not print raw payloads, credentials, or customer data.
-
-If any check fails, keep stock-location replay blocked and name the failed gate
-in the change/incident notes. Do not compensate by replaying a smaller batch.
+`stock-locations` is retired with Fulldock and is not accepted by the replay CLI.
+Do not compensate by replaying a smaller batch.
 
 ## Dry-run plan
 

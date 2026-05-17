@@ -1,12 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import sys
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
-
 from infra.operations import preflight
 
 
@@ -110,11 +110,20 @@ def test_cli_emits_summary_to_stderr_on_failure(capsys: Any) -> None:
 
 
 def test_publicador_rabbitmq_check_is_not_required() -> None:
-    result = preflight.asyncio.run(
+    result = asyncio.run(
         preflight._check_rabbitmq(FailingRabbit(), "publicador")  # noqa: SLF001
     )
 
     assert result == preflight.CheckResult(True, "rabbitmq topology not_required for publicador")
+
+
+def test_retired_fulldock_rabbitmq_check_is_not_supported() -> None:
+    result = asyncio.run(
+        preflight._check_rabbitmq(FailingRabbit(), "fulldock")  # noqa: SLF001
+    )
+
+    assert "fulldock" not in preflight.RABBITMQ_WORKER_TOPOLOGY
+    assert result == preflight.CheckResult(False, "unsupported module fulldock")
 
 
 def test_cli_infers_rabbitmq_vhost_from_cloudamqp_url(monkeypatch: Any) -> None:
@@ -211,7 +220,7 @@ def test_rabbitmq_management_client_uses_url_encoded_non_root_vhost(monkeypatch:
         "tenant/prod",
     )
 
-    assert preflight.asyncio.run(client.topology_valid("repricer")) is True
+    assert asyncio.run(client.topology_valid("repricer")) is True
     assert calls == [
         "/api/queues/tenant%2Fprod",
         "/api/queues/tenant%2Fprod/zeler.repricer.items.dlq/bindings",
@@ -224,7 +233,6 @@ def test_rabbitmq_management_client_uses_url_encoded_non_root_vhost(monkeypatch:
         ("repricer", "zeler.repricer.items", "zeler.repricer.items.dlq"),
         ("sheets", "zeler.sheets.events", "zeler.sheets.events.dlq"),
         ("autoreply", "zeler.autoreply.events", "zeler.autoreply.events.dlq"),
-        ("fulldock", "zeler.fulldock.events", "zeler.fulldock.events.dlq"),
     ],
 )
 def test_rabbitmq_management_client_uses_worker_queue_names(
@@ -259,7 +267,7 @@ def test_rabbitmq_management_client_uses_worker_queue_names(
 
     client = preflight._RabbitManagementPreflightClient("http://localhost:15672", "/")  # noqa: SLF001
 
-    assert preflight.asyncio.run(client.topology_valid(module)) is True
+    assert asyncio.run(client.topology_valid(module)) is True
     assert calls == [
         "/api/queues/%2F",
         f"/api/queues/%2F/{dlq_name}/bindings",
@@ -296,7 +304,7 @@ def test_rabbitmq_management_client_preserves_root_vhost_encoding(monkeypatch: A
 
     client = preflight._RabbitManagementPreflightClient("http://localhost:15672", "/")  # noqa: SLF001
 
-    assert preflight.asyncio.run(client.topology_valid("repricer")) is True
+    assert asyncio.run(client.topology_valid("repricer")) is True
     assert calls == [
         "/api/queues/%2F",
         "/api/queues/%2F/zeler.repricer.items.dlq/bindings",

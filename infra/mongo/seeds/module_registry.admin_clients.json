@@ -8,8 +8,7 @@
         "admin:repricer",
         "admin:sheets",
         "admin:publicador",
-        "admin:autoreply",
-        "admin:fulldock"
+        "admin:autoreply"
       ],
       "allowed_seller_ids": [
         82453304

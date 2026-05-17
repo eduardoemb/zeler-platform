@@ -22,13 +22,12 @@ from zeler_gateway.webhooks.publisher import (
     publish_webhook_event,
 )
 
-ALLOWED_TOPICS = ("price_suggestion", "stock-locations", "user-products-families")
+ALLOWED_TOPICS = ("price_suggestion", "user-products-families")
 BASELINE_COUNTS = {
     "price_suggestion": 35,
-    "stock-locations": 53,
     "user-products-families": 5,
 }
-COALESCED_TOPICS = {"price_suggestion", "stock-locations"}
+COALESCED_TOPICS = {"price_suggestion"}
 WEBHOOK_EVENTS_PROJECTION = {
     "_id": 1,
     "topic": 1,
@@ -41,7 +40,6 @@ WEBHOOK_EVENTS_PROJECTION = {
 DEFAULT_MAX_TIME_MS = 5000
 TOPIC_REQUIRED_GATE_QUEUES = {
     "price_suggestion": ("zeler.repricer.items",),
-    "stock-locations": ("zeler.fulldock.events",),
 }
 TOPIC_NO_GO_REASONS = {
     "user-products-families": (
@@ -52,11 +50,9 @@ TOPIC_NO_GO_REASONS = {
 }
 LEGACY_REMEDIATION_QUEUES = {
     "price_suggestion": ("zeler.repricer.price_suggestion",),
-    "stock-locations": ("zeler.fulldock.stock_locations",),
 }
 TOPIC_ROUTING_KEYS = {
     "price_suggestion": "price_suggestion.updated",
-    "stock-locations": "stock_locations.updated",
     "user-products-families": "user_products.families_updated",
 }
 

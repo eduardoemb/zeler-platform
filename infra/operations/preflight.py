@@ -11,7 +11,7 @@ from datetime import UTC, datetime
 from typing import Any, Protocol
 from urllib.parse import quote, unquote, urlparse
 
-MODULES = ("repricer", "sheets", "publicador", "autoreply", "fulldock")
+MODULES = ("repricer", "sheets", "publicador", "autoreply")
 DEFAULT_MONGO_URI = "mongodb://localhost:27017/zeler_platform"
 DEFAULT_RABBITMQ_MANAGEMENT_URL = "http://localhost:15672"
 DEFAULT_GATEWAY_URL = "http://localhost:8000"
@@ -28,7 +28,6 @@ RABBITMQ_WORKER_TOPOLOGY: dict[str, RabbitWorkerTopology | None] = {
     "sheets": RabbitWorkerTopology("zeler.sheets.events", "zeler.sheets.events.dlq"),
     "publicador": None,
     "autoreply": RabbitWorkerTopology("zeler.autoreply.events", "zeler.autoreply.events.dlq"),
-    "fulldock": RabbitWorkerTopology("zeler.fulldock.events", "zeler.fulldock.events.dlq"),
 }
 
 

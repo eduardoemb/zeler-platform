@@ -32,7 +32,6 @@ def test_topology_declares_meli_events_topic_exchange_and_module_queues() -> Non
         "zeler.sheets.orders",
         "zeler.publicador.questions",
         "zeler.publicador.messages",
-        "zeler.fulldock.events",
         "zeler.autoreply.events",
     ]:
         assert queues[queue_name]["durable"] is True
@@ -51,10 +50,7 @@ def test_topology_bindings_include_supported_module_routing_keys() -> None:
     assert ("zeler.sheets.orders", "orders.*") in bindings
     assert ("zeler.publicador.questions", "questions.*") in bindings
     assert ("zeler.publicador.messages", "messages.*") in bindings
-    assert ("zeler.fulldock.events", "items.*") not in bindings
-    assert ("zeler.fulldock.events", "items.price_updated") not in bindings
-    assert ("zeler.fulldock.events", "shipments.*") in bindings
-    assert ("zeler.fulldock.events", "stock_locations.*") in bindings
+    assert not any(destination.startswith("zeler.fulldock") for destination, _ in bindings)
     assert ("zeler.autoreply.events", "questions.new") in bindings
     assert ("zeler.autoreply.events", "messages.new") in bindings
 
@@ -98,12 +94,12 @@ def test_topology_includes_new_queues() -> None:
     queue_names = {queue["name"] for queue in topology["queues"]}
 
     assert "zeler.repricer.price_suggestion" in queue_names
-    assert "zeler.fulldock.stock_locations" in queue_names
     assert "zeler.sheets.user_products" in queue_names
     assert "webhooks.unknown.dlq" in queue_names
+    assert not any(queue_name.startswith("zeler.fulldock") for queue_name in queue_names)
 
 
-def test_active_fulldock_and_autoreply_queues_match_migrated_dlq_arguments() -> None:
+def test_active_autoreply_queue_matches_migrated_dlq_arguments() -> None:
     topology = build_topology_definitions()
     queues = {queue["name"]: queue for queue in topology["queues"]}
     bindings = {
@@ -111,15 +107,15 @@ def test_active_fulldock_and_autoreply_queues_match_migrated_dlq_arguments() -> 
         for binding in topology["bindings"]
     }
 
-    for queue_name in ["zeler.fulldock.events", "zeler.autoreply.events"]:
-        dlq_name = f"{queue_name}.dlq"
-        dlx_name = f"{queue_name}.dlx"
-        assert queues[queue_name]["arguments"] == {
-            "x-dead-letter-exchange": dlx_name,
-            "x-dead-letter-routing-key": dlq_name,
-        }
-        assert queues[dlq_name]["arguments"] == {}
-        assert (dlx_name, dlq_name, dlq_name) in bindings
+    queue_name = "zeler.autoreply.events"
+    dlq_name = f"{queue_name}.dlq"
+    dlx_name = f"{queue_name}.dlx"
+    assert queues[queue_name]["arguments"] == {
+        "x-dead-letter-exchange": dlx_name,
+        "x-dead-letter-routing-key": dlq_name,
+    }
+    assert queues[dlq_name]["arguments"] == {}
+    assert (dlx_name, dlq_name, dlq_name) in bindings
 
 
 def test_unknown_dlq_bound_to_meli_events_exchange() -> None:

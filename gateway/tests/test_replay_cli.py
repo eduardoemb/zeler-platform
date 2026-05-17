@@ -133,26 +133,6 @@ def _coalescing_baseline() -> list[dict[str, Any]]:
                 "received_at": base - timedelta(minutes=duplicate_index + 1),
             }
         )
-    for index in range(18):
-        documents.append(
-            _event(
-                f"stock-{index}",
-                topic="stock-locations",
-                resource=f"/user-products/MLMU{index}/stock",
-                minutes=index,
-            )
-        )
-    for duplicate_index in range(35):
-        documents.append(
-            {
-                **_event(
-                    f"stock-duplicate-{duplicate_index}",
-                    topic="stock-locations",
-                    resource=f"/user-products/MLMU{duplicate_index % 18}/stock",
-                ),
-                "received_at": base - timedelta(minutes=duplicate_index + 1),
-            }
-        )
     documents.extend(
         _event(
             f"families-{index}",
@@ -186,11 +166,9 @@ def test_safety_cli_validates_allowlist_limits_rate_and_concurrency() -> None:
             "--run-id",
             "ops-20260428-price",
             "--topics",
-            "price_suggestion,stock-locations",
+            "price_suggestion",
             "--limit",
             "price_suggestion=3",
-            "--limit",
-            "stock-locations=2",
             "--rate-per-sec",
             "0.5",
             "--dedupe-policy",
@@ -202,8 +180,8 @@ def test_safety_cli_validates_allowlist_limits_rate_and_concurrency() -> None:
 
     assert options.execute is True
     assert options.run_id == "ops-20260428-price"
-    assert options.topics == ("price_suggestion", "stock-locations")
-    assert options.limits == {"price_suggestion": 3, "stock-locations": 2}
+    assert options.topics == ("price_suggestion",)
+    assert options.limits == {"price_suggestion": 3}
     assert options.rate_per_sec == 0.5
     assert options.concurrency == 1
     assert options.dedupe_policy == "none"
@@ -217,26 +195,9 @@ def test_safety_cli_validates_allowlist_limits_rate_and_concurrency() -> None:
         parse_replay_args(["--concurrency", "2"])
 
 
-def test_stock_locations_replay_gate_requires_only_active_fulldock_consumer() -> None:
-    options = parse_replay_args(["--topics", "stock-locations"])
-
-    decision = evaluate_rabbit_gates(
-        [
-            QueueSnapshot(
-                name="zeler.fulldock.events",
-                ready=0,
-                unacked=0,
-                consumers=1,
-                dlq_ready=0,
-                routing_keys=("stock_locations.updated",),
-            )
-        ],
-        ("stock-locations",),
-        options,
-    )
-
-    assert decision.allowed is True
-    assert decision.reason == "ok"
+def test_stock_locations_topic_is_retired_with_fulldock() -> None:
+    with pytest.raises(ReplayConfigError, match="unsupported topic"):
+        parse_replay_args(["--topics", "stock-locations"])
 
 
 def test_price_suggestion_gate_uses_active_items_queue_and_reports_legacy_remediation() -> None:
@@ -413,7 +374,6 @@ async def test_coalescing_selects_live_targets_and_gates_user_products_families(
             topics=tuple(ALLOWED_TOPICS),
             expected_counts={
                 "price_suggestion": 35,
-                "stock-locations": 53,
                 "user-products-families": 5,
             },
         ),
@@ -421,8 +381,6 @@ async def test_coalescing_selects_live_targets_and_gates_user_products_families(
 
     assert plan.topic_counts["price_suggestion"].selected == 21
     assert plan.topic_counts["price_suggestion"].skipped == 14
-    assert plan.topic_counts["stock-locations"].selected == 18
-    assert plan.topic_counts["stock-locations"].skipped == 35
     assert plan.topic_counts["user-products-families"].selected == 0
     assert plan.topic_counts["user-products-families"].skipped == 5
     skipped_family_reasons = {
@@ -503,7 +461,10 @@ async def test_user_products_families_gate_is_no_go_and_explains_missing_behavio
 
     assert decision.allowed is False
     assert decision.reason == "topic_no_go"
-    assert "Sheets user_products.* handler/consumer behavior is not defined" in decision.detail
+    assert (
+        "Sheets user_products.* handler/consumer behavior is not defined"
+        in decision.detail
+    )
     assert plan.selected == ()
     assert [event.skip_reason for event in plan.skipped] == ["topic_no_go"]
 
@@ -523,14 +484,6 @@ def test_allow_user_products_families_flag_cannot_define_functional_safety() -> 
 def test_legacy_dead_end_queues_are_reported_in_json_and_markdown_without_actions() -> None:
     snapshots = [
         QueueSnapshot(
-            name="zeler.fulldock.stock_locations",
-            ready=7,
-            unacked=1,
-            consumers=0,
-            dlq_ready=0,
-            routing_keys=("stock_locations.updated",),
-        ),
-        QueueSnapshot(
             name="zeler.repricer.price_suggestion",
             ready=42,
             unacked=0,
@@ -539,13 +492,12 @@ def test_legacy_dead_end_queues_are_reported_in_json_and_markdown_without_action
             routing_keys=("price_suggestion.updated",),
         ),
     ]
-    report = build_rabbit_remediation_report(snapshots, ("stock-locations", "price_suggestion"))
+    report = build_rabbit_remediation_report(snapshots, ("price_suggestion",))
     plan = ReplayPlan(
         run_id="dry-run-report",
         selected=(),
         skipped=(),
         topic_counts={
-            "stock-locations": TopicPlanCount(total=0, selected=0, skipped=0),
             "price_suggestion": TopicPlanCount(total=0, selected=0, skipped=0),
         },
         created_at=datetime(2026, 4, 28, 12, 0, tzinfo=UTC),
@@ -555,8 +507,9 @@ def test_legacy_dead_end_queues_are_reported_in_json_and_markdown_without_action
     markdown_output = format_replay_output(plan, "markdown", remediation_report=report)
 
     payload = json.loads(json_output)
-    assert payload["rabbit_remediation"]["legacy_queues"][0]["queue"] == (
-        "zeler.fulldock.stock_locations"
+    assert (
+        payload["rabbit_remediation"]["legacy_queues"][0]["queue"]
+        == "zeler.repricer.price_suggestion"
     )
     assert payload["rabbit_remediation"]["legacy_queues"][0]["remediation_only"] is True
     assert payload["rabbit_remediation"]["legacy_queues"][0]["approval_required"] is True

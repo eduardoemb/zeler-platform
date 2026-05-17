@@ -7,7 +7,8 @@
 - `sheets-health` — checks `https://sheets.zeler.ai/health` every 30s.
 - `publicador-health` — checks `https://publicador.zeler.ai/health` every 30s.
 - `autoreply-health` — checks `https://autoreply.zeler.ai/health` every 30s.
-- `fulldock-health` — checks `https://fulldock.zeler.ai/health` every 30s.
+
+Fulldock is decommissioned and has no active uptime check.
 
 ## DLQ alerts
 

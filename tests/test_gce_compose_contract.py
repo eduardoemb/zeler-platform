@@ -1,8 +1,9 @@
 """
 Contract tests for GCE infra artifacts: docker-compose.yml, Caddyfile, env-templates.
 
-Task 1.7: Compose contract (12 services, no :latest, network, private Mongo port, caddy ports).
-Task 1.8: Caddyfile contract (6 site blocks under zeler.ai only).
+Task 1.7: Compose contract
+  (10 active services, no :latest, network, private Mongo port, caddy ports).
+Task 1.8: Caddyfile contract (5 active site blocks under zeler.ai only).
 Task 1.9: Env-template contract (required keys per service per design §7).
 """
 
@@ -36,8 +37,6 @@ EXPECTED_SERVICES = {
     "publicador-api",
     "autoreply-api",
     "autoreply-worker",
-    "fulldock-api",
-    "fulldock-worker",
 }
 
 EXPECTED_SUBDOMAINS = {
@@ -46,7 +45,6 @@ EXPECTED_SUBDOMAINS = {
     "repricer.zeler.ai",
     "publicador.zeler.ai",
     "autoreply.zeler.ai",
-    "fulldock.zeler.ai",
 }
 
 SCOPED_GATEWAY_TOKEN_ENV_TEMPLATES = (
@@ -55,18 +53,15 @@ SCOPED_GATEWAY_TOKEN_ENV_TEMPLATES = (
     "sheets-api",
     "publicador-api",
     "autoreply-api",
-    "fulldock-api",
     "repricer-worker",
     "sheets-worker",
     "autoreply-worker",
-    "fulldock-worker",
 )
 
 WORKER_RUN_ENTRY_TESTS = (
     PROJECT_ROOT / "modules" / "repricer" / "tests" / "test_repricer_run_entry.py",
     PROJECT_ROOT / "modules" / "sheets" / "tests" / "test_sheets_run_entry.py",
     PROJECT_ROOT / "modules" / "autoreply" / "tests" / "test_autoreply_run_entry.py",
-    PROJECT_ROOT / "modules" / "fulldock" / "tests" / "test_fulldock_run_entry.py",
 )
 
 # Design §7 — required keys per service (beyond BASE where applicable).
@@ -98,7 +93,6 @@ SERVICE_REQUIRED_KEYS: dict[str, set[str]] = {
     "repricer-api": BASE_KEYS,
     "publicador-api": BASE_KEYS,
     "autoreply-api": BASE_KEYS,
-    "fulldock-api": BASE_KEYS,
     "sheets-api": BASE_KEYS
     | {
         "GOOGLE_OAUTH_CLIENT_ID",
@@ -117,7 +111,6 @@ SERVICE_REQUIRED_KEYS: dict[str, set[str]] = {
     },
     "repricer-worker": BASE_KEYS | {"GATEWAY_BASE_URL"},
     "autoreply-worker": BASE_KEYS | {"GATEWAY_BASE_URL"},
-    "fulldock-worker": BASE_KEYS | {"GATEWAY_BASE_URL"},
 }
 
 
@@ -148,7 +141,7 @@ class TestComposeServices:
     def test_compose_file_exists(self) -> None:
         assert COMPOSE_FILE.exists(), f"Missing: {COMPOSE_FILE}"
 
-    def test_compose_declares_exactly_12_services(self) -> None:
+    def test_compose_declares_exactly_10_active_services(self) -> None:
         data = load_compose()
         services = set(data.get("services", {}).keys())
         assert services == EXPECTED_SERVICES, f"Expected {EXPECTED_SERVICES!r}, got {services!r}"
@@ -176,7 +169,9 @@ class TestComposeServices:
     def test_mongo_publishes_only_private_bind_port(self) -> None:
         data = load_compose()
         mongo_cfg = data["services"]["mongo"]
-        assert mongo_cfg.get("ports") == ["${MONGO_PRIVATE_BIND_IP:-127.0.0.1}:27017:27017"]
+        assert mongo_cfg.get("ports") == [
+            "${MONGO_PRIVATE_BIND_IP:-127.0.0.1}:27017:27017"
+        ]
 
     def test_caddy_publishes_only_80_and_443(self) -> None:
         data = load_compose()
@@ -223,7 +218,7 @@ class TestCaddyfileContract:
     def test_caddyfile_exists(self) -> None:
         assert CADDYFILE.exists(), f"Missing: {CADDYFILE}"
 
-    def test_caddyfile_has_exactly_6_site_blocks(self) -> None:
+    def test_caddyfile_has_exactly_5_active_site_blocks(self) -> None:
         text = CADDYFILE.read_text()
         # Site blocks start with a hostname at line-start (not inside braces/snippets).
         # Pattern: lines that are "<hostname> {" (site block headers).
@@ -259,7 +254,6 @@ class TestCaddyfileContract:
             "repricer.zeler.ai": "repricer-api:8080",
             "publicador.zeler.ai": "publicador-api:8080",
             "autoreply.zeler.ai": "autoreply-api:8080",
-            "fulldock.zeler.ai": "fulldock-api:8080",
         }
         for subdomain, upstream in expected_upstreams.items():
             assert upstream in text, (
@@ -350,7 +344,6 @@ class TestEnvTemplateContract:
             "https://sheets.zeler.ai",
             "https://publicador.zeler.ai",
             "https://autoreply.zeler.ai",
-            "https://fulldock.zeler.ai",
             "platform-vm",
             "us-central1-a",
             "zeler-platform-dev",

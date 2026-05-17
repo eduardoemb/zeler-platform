@@ -45,5 +45,13 @@ def test_pilot_runbook_exists_for_autoreply() -> None:
     _assert_pilot_runbook("autoreply", "autoreply_templates")
 
 
-def test_pilot_runbook_exists_for_fulldock() -> None:
-    _assert_pilot_runbook("fulldock", "fulldock_inventory_rules")
+def test_fulldock_pilot_runbook_is_archived_not_active() -> None:
+    path = ROOT / "docs" / "operations" / "pilot-runbooks" / "fulldock.md"
+
+    assert path.exists()
+    content = path.read_text(encoding="utf-8")
+    assert "Fulldock is decommissioned" in content
+    assert "no longer an active pilot module" in content
+    assert "fulldock_inventory_rules" in content
+    assert "fulldock_history" in content
+    assert "## Pre-flight checks" not in content
