@@ -2,21 +2,37 @@
 
 ## Project identity
 
-This repository is `zeler-platform`.
+This repository is `zeler-platform`: the canonical backend, data, workers, and
+cloud/runtime platform for the Zeler product suite.
+
+It works together with the active frontend repository `zeler-app` at
+`/Users/eduardoramirez/Documents/repositorios/zeler-app`. Do not create a new
+frontend for product UI work unless the user explicitly asks for one.
 
 Do not treat `zeler-core` as the active project for this repo. References to
 `zeler-core` are legacy/migration context only and must not be used as canonical
 paths for new work.
 
-`zeler-platform` is the canonical backend/platform for the Zeler products. It
-works together with the existing frontend repository `zeler-app` at
-`/Users/eduardoramirez/Documents/repositorios/zeler-app`; do not create a new
-frontend when product UI work is requested unless the user explicitly asks for
-one.
+## Current platform objective
+
+The goal is a functional Zeler platform where `zeler-app` is the unified visual
+interface and `zeler-platform` owns product APIs, sellers/accounts, auth, events,
+workers, persistence, and runtime operations.
+
+Current state from code/docs review:
+
+- The platform is materially integrated: `zeler-app` calls live platform/module
+  APIs through server-side clients and module-admin JWTs.
+- The active products are `repricer`, `sheets`, `publicador`, and `autoreply`.
+- Fulldock is retired and must remain unavailable unless explicitly reactivated.
+- The remaining gap is not basic wiring; it is operational confidence: live
+  smoke tests, stale-doc cleanup, runtime config verification, and finishing any
+  product-specific stubs/follow-ups.
 
 ## Skill registry
 
-Skill registry lives at `/Users/eduardoramirez/Documents/repositorios/zeler-platform/.atl/skill-registry.md`.
+Skill registry lives at
+`/Users/eduardoramirez/Documents/repositorios/zeler-platform/.atl/skill-registry.md`.
 
 ## Project rules
 
@@ -28,8 +44,10 @@ Skill registry lives at `/Users/eduardoramirez/Documents/repositorios/zeler-plat
   production environment values.
 - Never run local Docker builds. Use Cloud Build for production images only when
   the user explicitly authorizes build/deploy work.
-- Do not mutate `../zeler-core` artifacts from this repository unless the user explicitly asks for cross-repo migration/decommission work.
-- Prefer local `sdd/zeler-platform-greenfield/` artifacts as the source of truth for platform design, specs, tasks, and verification notes.
+- Do not mutate `../zeler-core` artifacts from this repository unless the user
+  explicitly asks for cross-repo migration/decommission work.
+- Prefer local `sdd/zeler-platform-greenfield/` artifacts as the source of truth
+  for platform design, specs, tasks, and verification notes.
 - For substantial product changes, use SDD (`/sdd-new`, `/sdd-ff`, `/sdd-apply`,
   `/sdd-verify`, `/sdd-archive`) instead of ad-hoc implementation.
 
@@ -37,41 +55,94 @@ Skill registry lives at `/Users/eduardoramirez/Documents/repositorios/zeler-plat
 
 Python 3.11 + uv workspace + FastAPI + MongoDB + RabbitMQ/CloudAMQP + GCP.
 
-- HTTP services/jobs target Cloud Run.
-- Always-on AMQP consumers may run on GCE VMs with Docker.
-- MongoDB targets are local Docker for development and the documented production MongoDB deployment path; older Atlas mentions in SDD/tasks may be historical or superseded.
+- HTTP services/jobs target Cloud Run where applicable.
+- Always-on APIs/workers currently run through VM Docker Compose in production.
+- MongoDB targets are local Docker for development and the documented production
+  MongoDB deployment path; older Atlas mentions in SDD/tasks may be historical
+  or superseded.
 - Secrets/crypto use GCP Secret Manager and KMS where applicable.
+- Root quality gates: `uv run pytest`, `uv run ruff check .`,
+  `uv run ruff format --check .`, and `uv run mypy .`.
 
 Production currently runs in GCP project `zeler-platform-dev`, VM
-`platform-vm`, zone `us-central1-a`, with Docker Compose-managed services and
-Artifact Registry images. Production Mongo must not be queried from the local
-assistant environment; validate or repair production Mongo only from the
-approved VM/VPC/runtime-container context, using sanitized output and without
-printing `MONGO_URI` or credentials.
+`platform-vm`, zone `us-central1-a`, with Docker Compose-managed services,
+MongoDB, Caddy, and Artifact Registry images. Production Mongo must not be
+queried from the local assistant environment; validate or repair production
+Mongo only from the approved VM/VPC/runtime-container context, using sanitized
+output and without printing `MONGO_URI` or credentials.
 
-The team also operates the connected production surfaces through available CLI
+The team also operates connected production surfaces through available CLI
 access where configured: GCP, Vercel, GitHub, and related tooling. Use those
 tools carefully and prefer narrowly scoped deploys/restarts over broad changes.
 
-## Repo layout
+## Architecture map
 
-- `gateway/` — FastAPI gateway, OAuth/proxy/webhook/internal token surfaces.
-- `core/` — shared domain models, read-only repositories, events, and auth utilities.
-- `modules/` — platform modules (`repricer`, `sheets`, `publicador`, `autoreply`).
-- `bootstrap/` — one-shot bootstrap jobs.
-- `infra/` — MongoDB, RabbitMQ, Docker/GCE/GCP runbooks and deploy helpers.
-- `tests/` — cross-package integration tests.
+| Area | Canonical location | Notes |
+| --- | --- | --- |
+| Gateway/API edge | `gateway/` | FastAPI app for OAuth, webhooks, proxy, internal token broker, health, readiness, and observability. |
+| Shared platform core | `core/` | Pydantic models, read repositories, Mongo schema export, event/idempotency helpers, auth/JWT/KMS utilities. |
+| Product modules | `modules/` | Product APIs and workers for `repricer`, `sheets`, `publicador`, and `autoreply`. |
+| Bootstrap jobs | `bootstrap/` | One-shot bootstrap/runtime setup jobs and status surfaces. |
+| Infrastructure | `infra/` | Mongo validators/indexes/seeds, RabbitMQ topology, Docker/GCE/GCP runbooks and deploy helpers. |
+| Cross-package tests | `tests/` | Integration, e2e, and platform-level contract tests. |
+| Frontend | `../zeler-app` | Next.js UI for accounts, bootstrap, and product management screens. |
 
-## Connected repositories and product parity
+## Backend service boundaries
 
-`zeler-app` is the active web UI for the platform. Product UI work should adapt
-screens into that existing app and use the platform module-admin token flow,
-linked seller context, and live API URLs. Current live app deployment is hosted
-at `https://app.zeler.ai`.
+- `gateway/` owns platform entrypoints: MercadoLibre OAuth, token issuance and
+  refresh, module proxying, webhook ingestion, health/readiness, metrics, and
+  internal broker APIs.
+- Modules should call MercadoLibre through the gateway/proxy path by default.
+  Direct Meli calls are exceptional and guarded by repository checks.
+- Product modules own product-specific APIs and workers. Shared seller/account,
+  auth, events, and persistence contracts belong in `core/`.
+- `bootstrap/` is for one-shot environment/account setup, not long-running
+  product behavior.
 
-Product parity work is being planned product by product from legacy repositories.
-Treat those repos as functional references, not as runtime dependencies or
-canonical infrastructure:
+## Frontend integration contract (`zeler-app`)
+
+`zeler-app` is the active web UI, deployed at `https://app.zeler.ai`.
+
+Expected integration model:
+
+- Server-side env vars define live API URLs:
+  `ZELER_GATEWAY_URL`, `REPRICER_API_URL`, `SHEETS_API_URL`,
+  `PUBLICADOR_API_URL`, and `AUTOREPLY_API_URL`.
+- `ZELER_APP_BROKER_SECRET` is server-only. Never expose it as `NEXT_PUBLIC_*`.
+- `zeler-app` signs broker requests and calls gateway `/internal/tokens/issue`
+  to mint short-lived `module_admin` JWTs.
+- Module API calls use those JWTs and retry once on `401`.
+- UI requests require a real linked/inactive-aware seller context; do not bypass
+  OAuth or manually copy/reassign tokens.
+- `module_registry._id = "zeler-app"` must remain enabled/scoped for the active
+  seller and include all active admin scopes: `admin:repricer`, `admin:sheets`,
+  `admin:publicador`, and `admin:autoreply`.
+
+Known active app surfaces include:
+
+- `/accounts`
+- `/bootstrap/[jobId]`
+- `/repricer/catalog`
+- `/sheets/config`
+- `/publicador/*` management routes, including drafts/publications-related views
+- `/autoreply/*` management routes, including dashboard/questions/conversations,
+  claims/config/templates-related views
+
+## Product modules and parity status
+
+| Product | Platform backend | App surface | Current status |
+| --- | --- | --- | --- |
+| Repricer | `modules/repricer/` | `/repricer/catalog` and related repricer views | Implemented for catalog/rules, limits, allies, bulk jobs, reports, monitoring, and worker processing. Prefer `/repricer/catalog`; older `/repricer/rules` references are stale. |
+| Sheets | `modules/sheets/` | `/sheets/config` | Implemented for exports, sync jobs, extension tokens, formulas, and Google OAuth-sensitive configuration. Runtime credentials must be verified carefully. |
+| Publicador | `modules/publicador/` | `/publicador/*` | Broadly implemented for drafts, publications, taxonomy, assets, AI, batches, suggestions, logs, stats, and settings. AI/provider features may fail closed or stub if provider config is missing. |
+| Autoreply | `modules/autoreply/` | `/autoreply/*` | Implemented for dashboard/questions/conversations/claims read surfaces, config, templates, and worker reply flows. Some action surfaces may still be stubbed or incomplete. |
+| Fulldock | Archive/decommission references only | none | Retired. Do not add routes, env vars, registry scopes, workers, or runtime config unless a future explicit reactivation restores the full module. |
+
+## Legacy product references
+
+Product parity work is planned product by product from legacy repositories.
+Treat those repos as functional references, not runtime dependencies or canonical
+infrastructure:
 
 - `../sheetsellerappindividual` — legacy SheetSeller product. The add-on under
   `addon/` is the reference for Google Workspace / Google Sheets formula
@@ -79,8 +150,8 @@ canonical infrastructure:
 - `../repricer-meli` — legacy EasyReprice/Repricer product. Use the Next/FastAPI
   implementation as the main product reference; old React/Flask surfaces are
   historical unless explicitly requested. Amazon and deprecated automatic
-  non-catalog repricing are out of the current parity scope unless the user
-  reopens them.
+  non-catalog repricing are out of current parity scope unless the user reopens
+  them.
 - `../Autoreplyia` — legacy Autoreply product. Use `backend-new/` and
   `frontend-new/` as the canonical product reference; `backend/` and `frontend/`
   are historical/deprecated.
@@ -95,21 +166,44 @@ When adapting legacy products:
   and seller/account selection.
 - Keep product-specific workers/event processing in `zeler-platform`.
 
+## Cloud, database, and events
+
+- GCP project: `zeler-platform-dev`.
+- Production VM: `platform-vm` in `us-central1-a`.
+- Runtime model: Docker Compose-managed gateway, module APIs, workers, MongoDB,
+  and Caddy, with Artifact Registry images.
+- Bootstrap/deploy path may use Cloud Build and Cloud Run Job configs where
+  documented.
+- MongoDB schema ownership lives in `core/models` plus validators/indexes/seeds
+  under `infra/mongo/`.
+- RabbitMQ uses the `meli.events` topic exchange with product workers consuming
+  routing keys and DLQ/retry behavior.
+- Prefer deploy/runbooks in `docs/deploy.md`, `infra/gce/`, and `infra/mongo/`
+  over older readiness notes when docs conflict.
+
 ## Live integration notes
 
 - Pilot seller used for operational smoke tests: `82453304`.
-- Existing `zeler-app` route surfaces include `/accounts`, `/bootstrap/[jobId]`,
-  `/repricer/rules`, `/sheets/config`, `/publicador/drafts`, and
-  `/autoreply/templates`. Fulldock is retired; `/fulldock/rules` must remain
-  unavailable unless a future reactivation restores the module from git/image
-  history and re-establishes the required UI, registry, runtime, and RabbitMQ
-  prerequisites.
-- `zeler-app` uses a server-side broker secret and gateway token broker flow for
-  module-admin JWTs. Never expose broker secrets as `NEXT_PUBLIC_*`.
-- `module_registry._id = "zeler-app"` must remain enabled/scoped for the seller
-  and module admin scopes when live UI calls module APIs.
-- For authenticated UI smoke, use a real `app.zeler.ai` session and a legitimately
-  linked MercadoLibre seller; do not bypass OAuth or copy/reassign tokens by hand.
+- For authenticated UI smoke, use a real `app.zeler.ai` session and a
+  legitimately linked MercadoLibre seller.
+- Do not bypass OAuth, manually copy tokens, or patch production data from local
+  context.
+- If `docs/live-readiness-validation.md` conflicts with deploy seeds about
+  `zeler-app` scopes, prefer `docs/deploy.md` and
+  `infra/mongo/seeds/module_registry.admin_clients.json`.
+
+## Known risks and gaps
+
+- Live operational state must be verified from the approved runtime context; code
+  and docs alone do not prove production health.
+- Some older docs still mention stale Repricer routes or incomplete registry
+  scopes.
+- Publicador AI paths depend on provider/runtime configuration and may fail
+  closed if not configured.
+- Autoreply has broad UI/API coverage, but some claims/messages/actions surfaces
+  may still be read-only, stubbed, or incomplete.
+- Bootstrap has known follow-ups around retry, drift reports, alerting, and
+  reconciliation.
 
 ## SDD design
 
