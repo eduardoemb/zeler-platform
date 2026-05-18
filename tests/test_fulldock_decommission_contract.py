@@ -32,6 +32,7 @@ ACTIVE_FULLDOCK_REFERENCE_FILES = (
 ARCHIVED_FULLDOCK_DOCS = (
     ROOT / "docs/operations/pilot-runbooks/fulldock.md",
     ROOT / "docs/runbooks/pilot-fulldock.md",
+    ROOT / "docs/operations/fulldock-archive-policy.md",
 )
 
 
@@ -148,8 +149,9 @@ def test_gce_runtime_artifacts_have_no_active_fulldock_services_or_hosts() -> No
 
     assert "fulldock-api" not in compose
     assert "fulldock-worker" not in compose
-    assert "fulldock.zeler.ai" not in caddyfile
     assert "fulldock-api" not in caddyfile
+    assert "fulldock.zeler.ai" in caddyfile
+    assert "respond \"Fulldock is decommissioned\" 410" in caddyfile
 
 
 def test_fulldock_docs_are_archived_not_active_runbooks() -> None:
@@ -190,6 +192,18 @@ def test_fulldock_historical_collections_are_retained_as_archive_contracts() -> 
     for retained_path in retained_paths:
         relative_path = retained_path.relative_to(ROOT)
         assert retained_path.exists(), f"{relative_path} should remain for archive/history"
+
+
+def test_fulldock_archive_policy_formalizes_read_only_retention() -> None:
+    policy = (ROOT / "docs/operations/fulldock-archive-policy.md").read_text(
+        encoding="utf-8"
+    )
+
+    assert "read-only archive" in policy
+    assert "fulldock_inventory_rules" in policy
+    assert "fulldock_history" in policy
+    assert "Do not run delete, drop, rewrite, or migration operations" in policy
+    assert "separate approved SDD" in policy
 
 
 def test_fulldock_decommission_does_not_add_productive_data_deletion_scripts() -> None:

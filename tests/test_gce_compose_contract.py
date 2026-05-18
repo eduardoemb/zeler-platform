@@ -3,7 +3,7 @@ Contract tests for GCE infra artifacts: docker-compose.yml, Caddyfile, env-templ
 
 Task 1.7: Compose contract
   (10 active services, no :latest, network, private Mongo port, caddy ports).
-Task 1.8: Caddyfile contract (5 active site blocks under zeler.ai only).
+Task 1.8: Caddyfile contract (5 active site blocks + retired Fulldock parking under zeler.ai only).
 Task 1.9: Env-template contract (required keys per service per design §7).
 """
 
@@ -46,6 +46,7 @@ EXPECTED_SUBDOMAINS = {
     "publicador.zeler.ai",
     "autoreply.zeler.ai",
 }
+PARKED_SUBDOMAINS = {"fulldock.zeler.ai"}
 
 SCOPED_GATEWAY_TOKEN_ENV_TEMPLATES = (
     "gateway",
@@ -218,7 +219,7 @@ class TestCaddyfileContract:
     def test_caddyfile_exists(self) -> None:
         assert CADDYFILE.exists(), f"Missing: {CADDYFILE}"
 
-    def test_caddyfile_has_exactly_5_active_site_blocks(self) -> None:
+    def test_caddyfile_has_exactly_5_active_site_blocks_and_retired_parking(self) -> None:
         text = CADDYFILE.read_text()
         # Site blocks start with a hostname at line-start (not inside braces/snippets).
         # Pattern: lines that are "<hostname> {" (site block headers).
@@ -229,8 +230,8 @@ class TestCaddyfileContract:
         )
         matches = site_block_pattern.findall(text)
         found = set(matches)
-        assert found == EXPECTED_SUBDOMAINS, (
-            f"Expected site blocks {EXPECTED_SUBDOMAINS!r}, got {found!r}"
+        assert found == EXPECTED_SUBDOMAINS | PARKED_SUBDOMAINS, (
+            f"Expected site blocks {(EXPECTED_SUBDOMAINS | PARKED_SUBDOMAINS)!r}, got {found!r}"
         )
 
     def test_caddyfile_only_zeler_ai_domains(self) -> None:
@@ -259,6 +260,13 @@ class TestCaddyfileContract:
             assert upstream in text, (
                 f"Caddyfile missing reverse_proxy to {upstream!r} (expected for {subdomain})"
             )
+
+    def test_retired_fulldock_hostname_is_parked_not_proxied(self) -> None:
+        text = CADDYFILE.read_text()
+
+        assert "fulldock.zeler.ai" in text
+        assert "respond \"Fulldock is decommissioned\" 410" in text
+        assert "fulldock-api" not in text
 
     def test_caddyfile_has_global_email(self) -> None:
         text = CADDYFILE.read_text()

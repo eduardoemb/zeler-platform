@@ -37,3 +37,9 @@ autoreply.zeler.ai {
 	import common
 	reverse_proxy autoreply-api:8080
 }
+
+fulldock.zeler.ai {
+	import common
+	header Content-Type text/plain
+	respond "Fulldock is decommissioned" 410
+}
