@@ -9,13 +9,11 @@ API_DOCKERFILES = (
     ROOT / "modules" / "sheets" / "Dockerfile.api",
     ROOT / "modules" / "publicador" / "Dockerfile.api",
     ROOT / "modules" / "autoreply" / "Dockerfile.api",
-    ROOT / "modules" / "fulldock" / "Dockerfile.api",
 )
 WORKER_DOCKERFILES = (
     ROOT / "modules" / "repricer" / "Dockerfile.worker",
     ROOT / "modules" / "sheets" / "Dockerfile.worker",
     ROOT / "modules" / "autoreply" / "Dockerfile.worker",
-    ROOT / "modules" / "fulldock" / "Dockerfile.worker",
 )
 
 

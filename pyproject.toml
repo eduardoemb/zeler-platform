@@ -64,7 +64,6 @@ mypy_path = [
   "$MYPY_CONFIG_FILE_DIR/modules/sheets/src",
   "$MYPY_CONFIG_FILE_DIR/modules/publicador/src",
   "$MYPY_CONFIG_FILE_DIR/modules/autoreply/src",
-  "$MYPY_CONFIG_FILE_DIR/modules/fulldock/src",
   "$MYPY_CONFIG_FILE_DIR/modules/sheets/tests",
   "$MYPY_CONFIG_FILE_DIR/bootstrap/src",
 ]
@@ -87,7 +86,6 @@ pythonpath = [
   "modules/sheets/src",
   "modules/publicador/src",
   "modules/autoreply/src",
-  "modules/fulldock/src",
   "modules/sheets/tests",
   "bootstrap/src",
 ]

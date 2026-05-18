@@ -57,7 +57,7 @@ tools carefully and prefer narrowly scoped deploys/restarts over broad changes.
 
 - `gateway/` — FastAPI gateway, OAuth/proxy/webhook/internal token surfaces.
 - `core/` — shared domain models, read-only repositories, events, and auth utilities.
-- `modules/` — platform modules (`repricer`, `sheets`, `publicador`, `autoreply`, `fulldock`).
+- `modules/` — platform modules (`repricer`, `sheets`, `publicador`, `autoreply`).
 - `bootstrap/` — one-shot bootstrap jobs.
 - `infra/` — MongoDB, RabbitMQ, Docker/GCE/GCP runbooks and deploy helpers.
 - `tests/` — cross-package integration tests.
@@ -99,8 +99,11 @@ When adapting legacy products:
 
 - Pilot seller used for operational smoke tests: `82453304`.
 - Existing `zeler-app` route surfaces include `/accounts`, `/bootstrap/[jobId]`,
-  `/repricer/rules`, `/sheets/config`, `/publicador/drafts`,
-  `/autoreply/templates`, and `/fulldock/rules`.
+  `/repricer/rules`, `/sheets/config`, `/publicador/drafts`, and
+  `/autoreply/templates`. Fulldock is retired; `/fulldock/rules` must remain
+  unavailable unless a future reactivation restores the module from git/image
+  history and re-establishes the required UI, registry, runtime, and RabbitMQ
+  prerequisites.
 - `zeler-app` uses a server-side broker secret and gateway token broker flow for
   module-admin JWTs. Never expose broker secrets as `NEXT_PUBLIC_*`.
 - `module_registry._id = "zeler-app"` must remain enabled/scoped for the seller

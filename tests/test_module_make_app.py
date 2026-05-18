@@ -8,7 +8,7 @@ from types import ModuleType
 import pytest
 from fastapi import FastAPI
 
-MODULES = ("repricer", "sheets", "publicador", "autoreply", "fulldock")
+MODULES = ("repricer", "sheets", "publicador", "autoreply")
 
 
 class FakeMongoClient:
@@ -36,6 +36,8 @@ def test_make_app_returns_fastapi(monkeypatch: pytest.MonkeyPatch, module_name: 
     monkeypatch.setenv("MONGO_URI", "mongodb://mongo:27017")
     monkeypatch.setenv("MONGO_DB", f"zeler_{module_name}")
     monkeypatch.setattr("motor.motor_asyncio.AsyncIOMotorClient", FakeMongoClient)
+    monkeypatch.setattr("google.cloud.kms.KeyManagementServiceClient", object)
+    _set_module_env(monkeypatch, module_name)
     module = import_app_module(module_name)
 
     app = module.make_app()
@@ -93,3 +95,13 @@ def test_make_app_is_no_arg(module_name: str) -> None:
     ]
 
     assert required_positionals == []
+
+
+def _set_module_env(monkeypatch: pytest.MonkeyPatch, module_name: str) -> None:
+    if module_name != "sheets":
+        return
+
+    monkeypatch.setenv("GOOGLE_OAUTH_CLIENT_ID", "test-client")
+    monkeypatch.setenv("GOOGLE_OAUTH_CLIENT_SECRET", "test-secret")
+    monkeypatch.setenv("GOOGLE_OAUTH_REDIRECT_URI", "https://example.test/oauth")
+    monkeypatch.setenv("KMS_PROJECT_ID", "test-project")

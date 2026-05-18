@@ -12,7 +12,6 @@ resolution-markers = [
 members = [
     "zeler-autoreply",
     "zeler-bootstrap",
-    "zeler-fulldock",
     "zeler-gateway",
     "zeler-platform",
     "zeler-platform-core",
@@ -2512,31 +2511,6 @@ requires-dist = [
     { name = "aio-pika", specifier = ">=9.4.0" },
     { name = "httpx", specifier = ">=0.28.1" },
     { name = "motor", specifier = ">=3.7.1" },
-    { name = "zeler-platform-core", editable = "core" },
-]
-
-[[package]]
-name = "zeler-fulldock"
-version = "0.0.0"
-source = { editable = "modules/fulldock" }
-dependencies = [
-    { name = "aio-pika" },
-    { name = "fastapi" },
-    { name = "httpx" },
-    { name = "motor" },
-    { name = "structlog" },
-    { name = "uvicorn", extra = ["standard"] },
-    { name = "zeler-platform-core" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "aio-pika", specifier = ">=9.4.0" },
-    { name = "fastapi", specifier = ">=0.110,<1" },
-    { name = "httpx", specifier = ">=0.27.0" },
-    { name = "motor", specifier = ">=3.7.1" },
-    { name = "structlog", specifier = ">=24.1.0" },
-    { name = "uvicorn", extras = ["standard"], specifier = ">=0.30.0" },
     { name = "zeler-platform-core", editable = "core" },
 ]
 

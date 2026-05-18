@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib.util
 import json
 from pathlib import Path
 from typing import Any
@@ -14,6 +15,54 @@ ROOT = Path(__file__).resolve().parents[1]
 ADMIN_CLIENT_SEED_PATH = ROOT / "infra/mongo/seeds/module_registry.admin_clients.json"
 COMPOSE_PATH = ROOT / "infra/gce/docker-compose.yml"
 CADDYFILE_PATH = ROOT / "infra/gce/Caddyfile"
+ACTIVE_FULLDOCK_REFERENCE_FILES = (
+    ROOT / "pyproject.toml",
+    ROOT / "uv.lock",
+    ROOT / "tests/test_package_imports.py",
+    ROOT / "tests/test_module_app_health_real.py",
+    ROOT / "tests/test_module_make_app.py",
+    ROOT / "tests/test_consumer_heartbeat.py",
+    ROOT / "tests/test_consumer_rate_limit_isolation.py",
+    ROOT / "tests/test_module_dockerfiles.py",
+    ROOT / "tests/test_dockerfile_healthcheck.py",
+    ROOT / "tests/operations/smoke_helpers.py",
+    ROOT / "README.md",
+    ROOT / "AGENTS.md",
+)
+ARCHIVED_FULLDOCK_DOCS = (
+    ROOT / "docs/operations/pilot-runbooks/fulldock.md",
+    ROOT / "docs/runbooks/pilot-fulldock.md",
+)
+
+
+def test_fulldock_module_package_tree_is_physically_absent() -> None:
+    package_tree = ROOT / "modules/fulldock"
+
+    assert not package_tree.exists(), "modules/fulldock must be restored from git/image history"
+    assert importlib.util.find_spec("zeler_fulldock") is None
+
+
+def test_workspace_metadata_has_no_active_fulldock_package_references() -> None:
+    forbidden_tokens = ("modules/fulldock", "zeler-fulldock", "zeler_fulldock")
+
+    offenders = _paths_containing(ACTIVE_FULLDOCK_REFERENCE_FILES[:2], forbidden_tokens)
+
+    assert offenders == []
+
+
+def test_active_tests_and_docs_do_not_keep_fulldock_buildable_or_importable() -> None:
+    forbidden_tokens = (
+        "zeler_fulldock",
+        "modules/fulldock",
+        '"fulldock"',
+        "'fulldock'",
+        "fulldock-api",
+        "fulldock-worker",
+    )
+
+    offenders = _paths_containing(ACTIVE_FULLDOCK_REFERENCE_FILES[2:], forbidden_tokens)
+
+    assert offenders == []
 
 
 def test_zeler_app_admin_seed_excludes_retired_fulldock_scope() -> None:
@@ -105,8 +154,7 @@ def test_gce_runtime_artifacts_have_no_active_fulldock_services_or_hosts() -> No
 
 def test_fulldock_docs_are_archived_not_active_runbooks() -> None:
     active_docs = [
-        ROOT / "docs/operations/pilot-runbooks/fulldock.md",
-        ROOT / "docs/runbooks/pilot-fulldock.md",
+        *ARCHIVED_FULLDOCK_DOCS,
         ROOT / "docs/operations/alerts.md",
         ROOT / "docs/ops/webhook-backlog-replay.md",
     ]
@@ -120,6 +168,17 @@ def test_fulldock_docs_are_archived_not_active_runbooks() -> None:
     assert "Fulldock is decommissioned" in combined
 
 
+def test_fulldock_archive_docs_explain_code_deletion_rollback_boundary() -> None:
+    combined = "\n".join(path.read_text(encoding="utf-8") for path in ARCHIVED_FULLDOCK_DOCS)
+
+    assert "git history" in combined
+    assert "previously built image" in combined
+    assert "UI catalog/route" in combined
+    assert "admin:fulldock" in combined
+    assert "runtime services" in combined
+    assert "RabbitMQ" in combined
+
+
 def test_fulldock_historical_collections_are_retained_as_archive_contracts() -> None:
     retained_paths = [
         ROOT / "infra/mongo/schemas/fulldock_inventory_rules.json",
@@ -131,3 +190,37 @@ def test_fulldock_historical_collections_are_retained_as_archive_contracts() -> 
     for retained_path in retained_paths:
         relative_path = retained_path.relative_to(ROOT)
         assert retained_path.exists(), f"{relative_path} should remain for archive/history"
+
+
+def test_fulldock_decommission_does_not_add_productive_data_deletion_scripts() -> None:
+    destructive_tokens = (
+        "drop_collection(\"fulldock_",
+        "drop_collection('fulldock_",
+        ".drop(\"fulldock_",
+        ".drop('fulldock_",
+        "delete_many({})",
+        "deleteMany({})",
+    )
+    scanned_paths = [
+        *ROOT.glob("infra/**/*.py"),
+        *ROOT.glob("infra/**/*.sh"),
+        *ROOT.glob("infra/**/*.md"),
+        *ROOT.glob("docs/**/*.md"),
+    ]
+
+    offenders = _paths_containing(scanned_paths, destructive_tokens)
+
+    assert offenders == []
+
+
+def _paths_containing(paths: list[Path] | tuple[Path, ...], tokens: tuple[str, ...]) -> list[str]:
+    offenders: list[str] = []
+    for path in paths:
+        if not path.exists() or not path.is_file():
+            continue
+        content = path.read_text(encoding="utf-8")
+        matched_tokens = [token for token in tokens if token in content]
+        if matched_tokens:
+            relative = path.relative_to(ROOT)
+            offenders.append(f"{relative}: {', '.join(matched_tokens)}")
+    return sorted(offenders)

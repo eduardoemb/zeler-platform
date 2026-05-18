@@ -10,7 +10,6 @@ def test_top_level_packages_are_importable() -> None:
         "zeler_sheets",
         "zeler_publicador",
         "zeler_autoreply",
-        "zeler_fulldock",
     ]
 
     imported = [importlib.import_module(module_name).__name__ for module_name in module_names]

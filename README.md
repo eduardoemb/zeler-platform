@@ -6,7 +6,7 @@ Unified Mercado Libre integration platform for Zeler.
 
 - `gateway/` — FastAPI gateway entrypoint and future OAuth/proxy/webhook flows.
 - `core/` — shared domain models and reusable libraries.
-- `modules/` — module packages (`repricer`, `sheets`, `publicador`, `autoreply`, `fulldock`).
+- `modules/` — module packages (`repricer`, `sheets`, `publicador`, `autoreply`).
 - `bootstrap/` — one-shot bootstrap jobs.
 - `infra/` — platform infrastructure assets and local development helpers.
 

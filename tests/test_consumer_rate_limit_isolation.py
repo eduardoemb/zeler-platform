@@ -92,17 +92,6 @@ class RateLimitThenOkHandler:
             "zeler.autoreply.events",
             id="autoreply",
         ),
-        pytest.param(
-            "zeler_fulldock.consumer.FulldockAmqpConsumerRunner",
-            {
-                "event_id": "evt-1",
-                "event_type": "shipments.updated",
-                "seller_id": 123,
-                "resource": "/shipments/1",
-            },
-            "zeler.fulldock.events",
-            id="fulldock",
-        ),
     ],
 )
 @pytest.mark.asyncio

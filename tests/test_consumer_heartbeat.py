@@ -5,7 +5,6 @@ from typing import Any
 import pytest
 
 from zeler_autoreply.consumer import AutoreplyAmqpConsumerRunner
-from zeler_fulldock.consumer import FulldockAmqpConsumerRunner
 from zeler_repricer.consumer import RepricerAmqpConsumerRunner
 from zeler_sheets.consumer import SheetsAmqpConsumerRunner
 
@@ -68,7 +67,6 @@ RUNNERS = (
     ("zeler_repricer.consumer", RepricerAmqpConsumerRunner),
     ("zeler_sheets.consumer", SheetsAmqpConsumerRunner),
     ("zeler_autoreply.consumer", AutoreplyAmqpConsumerRunner),
-    ("zeler_fulldock.consumer", FulldockAmqpConsumerRunner),
 )
 
 

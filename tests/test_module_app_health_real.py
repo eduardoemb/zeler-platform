@@ -7,7 +7,6 @@ import httpx
 import pytest
 
 from zeler_autoreply.app import build_app as build_autoreply_app
-from zeler_fulldock.app import build_app as build_fulldock_app
 from zeler_publicador.app import build_app as build_publicador_app
 from zeler_repricer.app import build_app as build_repricer_app
 from zeler_sheets.app import build_app as build_sheets_app
@@ -43,7 +42,6 @@ MODULE_BUILDERS: tuple[tuple[str, Callable[..., Any]], ...] = (
     ("sheets", build_sheets_app),
     ("publicador", build_publicador_app),
     ("autoreply", build_autoreply_app),
-    ("fulldock", build_fulldock_app),
 )
 
 

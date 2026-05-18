@@ -43,7 +43,7 @@ class FakeRabbit:
         self.published: list[dict[str, Any]] = []
 
     async def topology_valid(self, module: str) -> bool:
-        return module in {"repricer", "sheets", "publicador", "autoreply", "fulldock"}
+        return module in {"repricer", "sheets", "publicador", "autoreply"}
 
     async def publish(self, *, module: str, payload: dict[str, Any]) -> None:
         self.published.append({"module": module, "payload": payload})

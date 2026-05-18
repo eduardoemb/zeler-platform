@@ -7,8 +7,8 @@ import pytest
 # Baseline captured before this change: uv run pytest -q -> 504 passing tests.
 # Final regression after this change: uv run pytest -q -> 557 passing tests (+53).
 REPO_ROOT = Path(__file__).resolve().parents[1]
-API_MODULES = ("repricer", "sheets", "publicador", "autoreply", "fulldock")
-WORKER_MODULES = ("repricer", "sheets", "autoreply", "fulldock")
+API_MODULES = ("repricer", "sheets", "publicador", "autoreply")
+WORKER_MODULES = ("repricer", "sheets", "autoreply")
 
 
 def dockerfile_path(module_name: str, variant: str) -> Path:
