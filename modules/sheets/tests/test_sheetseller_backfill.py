@@ -427,6 +427,95 @@ async def test_backfill_builds_enriched_formula_rows_from_deterministic_sources(
 
 
 @pytest.mark.asyncio
+async def test_backfill_builds_formula_rows_for_order_line_sku_identities() -> None:
+    db = FakeDb(
+        [
+            _item_doc(
+                "MLM2169717119",
+                permalink="https://articulo.example/MLM2169717119",
+                thumbnail="https://img.example/MLM2169717119.jpg",
+                catalog_product_id="MLM-CATALOG-1",
+            )
+        ]
+    )
+    db["sheets_item_sku_index"].documents[
+        "82453304:DEP-04-153-REM:MLM2169717119:182028311662"
+    ] = {
+        "_id": "82453304:DEP-04-153-REM:MLM2169717119:182028311662",
+        "seller_id": "82453304",
+        "seller_nickname": None,
+        "sku": "DEP-04-153-REM",
+        "normalized_sku": "DEP-04-153-REM",
+        "item_id": "MLM2169717119",
+        "variation_id": "182028311662",
+        "identity_level": "variation",
+        "source": "order_line",
+        "inventory_id": None,
+        "updated_at": NOW,
+        "schema_version": 1,
+    }
+
+    summary = await run_sheetseller_backfill(db=db, seller_id="82453304", dry_run=False)
+
+    assert summary.items_read == 1
+    assert summary.items_with_sku == 0
+    assert summary.skipped_missing_sku == 1
+    assert summary.sku_index_upserts == 0
+    assert summary.formula_row_upserts == 1
+    assert summary.planned == 1
+    assert summary.updated == 1
+    row = db["sheets_item_formula_rows"].documents[
+        "82453304:DEP-04-153-REM:MLM2169717119:182028311662"
+    ]
+    assert row["sku"] == "DEP-04-153-REM"
+    assert row["item_id"] == "MLM2169717119"
+    assert row["variation_id"] == "182028311662"
+    assert row["inventory_id"] is None
+    assert row["current"]["title"] == "Title MLM2169717119"
+    assert row["current"]["permalink"] == "https://articulo.example/MLM2169717119"
+    assert db["sheets_item_sku_index"].find_filters == [
+        {"seller_id": "82453304", "source": "order_line"}
+    ]
+
+
+@pytest.mark.asyncio
+async def test_backfill_prefers_enriched_formula_rows_over_order_line_duplicates() -> None:
+    db = FakeDb(
+        [
+            _item_doc(
+                "MLA1",
+                variations=[
+                    {"id": 101, "seller_custom_field": "sku-1", "inventory_id": "VAR-INV-101"}
+                ],
+                permalink="https://articulo.example/MLA1",
+                thumbnail="https://img.example/MLA1.jpg",
+                catalog_product_id="MLA-CATALOG-1",
+            )
+        ]
+    )
+    db["sheets_item_sku_index"].documents["82453304:SKU-1:MLA1:101"] = {
+        "_id": "82453304:SKU-1:MLA1:101",
+        "seller_id": "82453304",
+        "seller_nickname": None,
+        "sku": "sku-1",
+        "normalized_sku": "SKU-1",
+        "item_id": "MLA1",
+        "variation_id": "101",
+        "identity_level": "variation",
+        "source": "order_line",
+        "inventory_id": None,
+        "updated_at": NOW,
+        "schema_version": 1,
+    }
+
+    await run_sheetseller_backfill(db=db, seller_id="82453304", dry_run=False)
+
+    row = db["sheets_item_formula_rows"].documents["82453304:SKU-1:MLA1:101"]
+    assert row["inventory_id"] == "VAR-INV-101"
+    assert row["current"]["inventory_id"] == "VAR-INV-101"
+
+
+@pytest.mark.asyncio
 async def test_backfill_dry_run_reads_seller_items_and_reports_counts_without_writes() -> None:
     db = FakeDb(
         [

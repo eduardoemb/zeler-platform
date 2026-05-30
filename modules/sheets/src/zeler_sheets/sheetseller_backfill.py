@@ -210,6 +210,10 @@ async def run_sheetseller_backfill(
 
     sku_index_collection = db[ITEM_SKU_INDEX_COLLECTION]
     formula_rows_collection = db[ITEM_FORMULA_ROWS_COLLECTION]
+    order_line_identities_by_item = await load_order_line_sku_identities_by_item(
+        sku_index_collection,
+        seller_id=seller_id,
+    )
 
     for item in items:
         sku_index_docs: list[dict[str, Any]]
@@ -241,6 +245,13 @@ async def run_sheetseller_backfill(
         formula_row_docs.extend(variation_formula_rows)
         skipped_missing_source += variation_missing_source
         skipped_ambiguous_formula_identity += variation_ambiguous_identity
+        order_line_formula_rows = build_order_line_formula_row_docs(
+            item,
+            order_line_identities=order_line_identities_by_item.get(_item_id(item), ()),
+            seller_id=seller_id,
+        )
+        formula_row_docs.extend(order_line_formula_rows)
+        formula_row_docs = _dedupe_formula_row_docs(formula_row_docs)
 
         if not sku_index_docs and not formula_row_docs:
             continue
@@ -740,6 +751,51 @@ def build_variation_formula_row_docs(
         seen_ids.add(row_id)
         docs.append(formula_row)
     return docs, missing_source, ambiguous
+
+
+async def load_order_line_sku_identities_by_item(
+    sku_index_collection: Any, *, seller_id: str
+) -> dict[str, list[dict[str, Any]]]:
+    identities = await sku_index_collection.find(
+        {
+            "seller_id": seller_id,
+            "source": "order_line",
+        }
+    ).to_list(length=None)
+    by_item: dict[str, list[dict[str, Any]]] = {}
+    for identity in identities:
+        item_id = _optional_string(identity.get("item_id"))
+        if item_id is None:
+            continue
+        by_item.setdefault(item_id, []).append(identity)
+    return by_item
+
+
+def build_order_line_formula_row_docs(
+    item: dict[str, Any], *, order_line_identities: Sequence[dict[str, Any]], seller_id: str
+) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for identity in order_line_identities:
+        sku = _optional_string(identity.get("sku") or identity.get("normalized_sku"))
+        if sku is None:
+            continue
+        rows.append(
+            build_formula_row_doc(
+                item,
+                seller_id=seller_id,
+                sku=sku,
+                variation_id=_optional_string(identity.get("variation_id")),
+                inventory_id=_optional_string(identity.get("inventory_id")),
+            )
+        )
+    return _dedupe_formula_row_docs(rows)
+
+
+def _dedupe_formula_row_docs(docs: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
+    deduped: dict[str, dict[str, Any]] = {}
+    for doc in docs:
+        deduped.setdefault(str(doc["_id"]), doc)
+    return list(deduped.values())
 
 
 def resolve_variation_sku(variation: dict[str, Any]) -> SkuCandidate:

@@ -8,6 +8,7 @@ from typing import Any
 
 import httpx
 import pytest
+from bson.decimal128 import Decimal128
 from fastapi import FastAPI
 
 from zeler_sheets.extension_tokens import ExtensionTokenService, SellerScope
@@ -289,6 +290,41 @@ async def test_execute_success_envelope_allows_formula_handlers_to_report_partia
         "ok": True,
         "values": [[""]],
         "meta": {"partial_misses": 1},
+    }
+
+
+@pytest.mark.asyncio
+async def test_execute_serializes_mongo_decimal_values_as_json_numbers() -> None:
+    now = datetime(2026, 5, 13, 12, 0, tzinfo=UTC)
+
+    def decimal_handler(_context: Any) -> FormulaExecutionResult:
+        return FormulaExecutionResult(
+            values=[
+                ["SKU", "Precio"],
+                ["DEP-04-153-REM", Decimal128("101.96")],
+            ],
+            meta={"decimal": Decimal128("1.50")},
+        )
+
+    app, _db, token = await _app_with_token(
+        now=now,
+        formula_dispatcher=decimal_handler,
+    )
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.post(
+            "/sheets/formulas:execute",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"formula": "SHEETSELLER_SKU", "cuenta": "HOPEMOB", "args": {}},
+        )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "ok": True,
+        "values": [["SKU", "Precio"], ["DEP-04-153-REM", 101.96]],
+        "meta": {"decimal": 1.5},
     }
 
 

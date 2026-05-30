@@ -3,8 +3,10 @@ from __future__ import annotations
 import inspect
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
+from decimal import Decimal
 from typing import Any
 
+from bson.decimal128 import Decimal128
 from fastapi import APIRouter, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
@@ -423,7 +425,11 @@ async def _execute_formula_payload(
             retryable=True,
         )
 
-    return {"ok": True, "values": result.values, "meta": result.meta}, 200
+    return {
+        "ok": True,
+        "values": _formula_json_safe(result.values),
+        "meta": _formula_json_safe(result.meta),
+    }, 200
 
 
 async def _dispatch_formula(
@@ -470,6 +476,28 @@ def _bearer_token(request: Request) -> str:
     if separator and scheme.casefold() == "bearer":
         return token.strip()
     return ""
+
+
+def _formula_json_safe(value: Any) -> Any:
+    if isinstance(value, Decimal128):
+        return _decimal_to_sheet_number(value.to_decimal())
+    if isinstance(value, Decimal):
+        return _decimal_to_sheet_number(value)
+    if isinstance(value, list):
+        return [_formula_json_safe(item) for item in value]
+    if isinstance(value, tuple):
+        return [_formula_json_safe(item) for item in value]
+    if isinstance(value, dict):
+        return {key: _formula_json_safe(item) for key, item in value.items()}
+    return value
+
+
+def _decimal_to_sheet_number(value: Decimal) -> int | float | str:
+    if not value.is_finite():
+        return str(value)
+    if value == value.to_integral_value():
+        return int(value)
+    return float(value)
 
 
 def _missing_required_argument(contract: FormulaContract, args: dict[str, Any]) -> str | None:
