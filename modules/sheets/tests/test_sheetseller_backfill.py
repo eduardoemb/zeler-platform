@@ -994,6 +994,35 @@ async def test_order_line_identity_dry_run_reports_sanitized_counts_without_writ
 
 
 @pytest.mark.asyncio
+async def test_order_line_identity_skips_cancelled_orders() -> None:
+    cancelled_order = _order_doc(
+        "cancelled-order",
+        items=[{"item_id": "MLM3484876282", "seller_sku": "HER-05-145"}],
+    )
+    cancelled_order["status"] = "cancelled"
+    db = FakeDb(
+        [],
+        orders=[
+            cancelled_order,
+            _order_doc(
+                "paid-order",
+                items=[{"item_id": "MLA1", "seller_sku": "active-sku"}],
+            ),
+        ],
+    )
+
+    summary = await run_order_line_identity_backfill(db=db, seller_id="82453304", dry_run=False)
+
+    assert summary.orders_read == 2
+    assert summary.order_lines_read == 1
+    assert summary.order_lines_with_direct_sku == 1
+    assert summary.deterministic_pairs == 1
+    assert sorted(db["sheets_item_sku_index"].documents) == [
+        "82453304:ACTIVE-SKU:MLA1:item"
+    ]
+
+
+@pytest.mark.asyncio
 async def test_order_line_identity_write_is_idempotent_and_skips_ambiguous_pairs() -> None:
     db = FakeDb(
         [],

@@ -399,6 +399,8 @@ async def run_order_line_identity_backfill(
     identities: dict[tuple[str, str | None], dict[str, _OrderLineIdentityCandidate]] = {}
 
     for order in orders:
+        if _is_cancelled_order(order):
+            continue
         updated_at = order.get("date_created") or order.get("updated_at")
         for item in _order_line_items(order):
             order_lines_read += 1
@@ -1034,6 +1036,10 @@ def _seller_order_filter(
             },
         ]
     return filter_spec
+
+
+def _is_cancelled_order(order: dict[str, Any]) -> bool:
+    return str(order.get("status") or "").strip().casefold() == "cancelled"
 
 
 def _parse_utc_datetime(value: str, *, end_exclusive: bool = False) -> datetime:
