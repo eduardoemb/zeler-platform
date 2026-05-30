@@ -8,7 +8,7 @@ from typing import Any, cast
 
 from bson.decimal128 import Decimal128
 
-from zeler_platform_core.models import Item, Order
+from zeler_platform_core.models import Item, Order, Shipment
 from zeler_platform_core.models.base import current_schema_version
 from zeler_sheets.sheetseller_backfill import (
     build_formula_row_doc,
@@ -30,6 +30,9 @@ class SheetsEventPersistence:
             return
         if event_type.startswith("orders."):
             await self._persist_order(seller_id=str(seller_id), resource=resource)
+            return
+        if event_type.startswith("shipments."):
+            await self._persist_shipment(seller_id=str(seller_id), resource=resource)
 
     async def _persist_item(self, *, seller_id: str, resource: dict[str, Any]) -> None:
         document = _canonical_item_document(resource, seller_id=seller_id, synced_at=self._clock())
@@ -62,6 +65,12 @@ class SheetsEventPersistence:
     async def _persist_order(self, *, seller_id: str, resource: dict[str, Any]) -> None:
         document = _canonical_order_document(resource, seller_id=seller_id)
         await self._db["orders"].replace_one(
+            {"_id": document["_id"], "seller_id": seller_id}, document, upsert=True
+        )
+
+    async def _persist_shipment(self, *, seller_id: str, resource: dict[str, Any]) -> None:
+        document = _canonical_shipment_document(resource, seller_id=seller_id)
+        await self._db["shipments"].replace_one(
             {"_id": document["_id"], "seller_id": seller_id}, document, upsert=True
         )
 
@@ -102,6 +111,23 @@ def _canonical_order_document(resource: dict[str, Any], *, seller_id: str) -> di
             "shipment_id": _shipment_id(resource),
             "items": _order_items(resource),
             "schema_version": current_schema_version("orders"),
+        }
+    )
+    return cast(
+        "dict[str, Any]",
+        _bson_safe(model.model_dump(by_alias=True, mode="python", exclude_none=True)),
+    )
+
+
+def _canonical_shipment_document(resource: dict[str, Any], *, seller_id: str) -> dict[str, Any]:
+    shipment_id = _string_id(resource.get("_id") or resource.get("id"))
+    model = Shipment.model_validate(
+        {
+            **resource,
+            "_id": shipment_id,
+            "seller_id": seller_id,
+            "order_id": _shipment_order_id(resource),
+            "schema_version": current_schema_version("shipments"),
         }
     )
     return cast(
@@ -161,6 +187,13 @@ def _shipment_id(resource: dict[str, Any]) -> str | None:
     else:
         value = resource.get("shipment_id")
     return None if value is None else str(value)
+
+
+def _shipment_order_id(resource: dict[str, Any]) -> str:
+    order = resource.get("order")
+    if isinstance(order, dict):
+        return _string_id(order.get("id") or order.get("order_id"))
+    return _string_id(resource.get("order_id"))
 
 
 def _string_id(value: Any) -> str:

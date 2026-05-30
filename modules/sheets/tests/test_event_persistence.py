@@ -126,3 +126,39 @@ async def test_persists_order_for_sheetseller_order_formulas() -> None:
     assert order["items"] == [
         {"item_id": "MLA1", "seller_sku": "sku-1", "qty": 2, "unit_price": Decimal128("149.95")}
     ]
+
+
+@pytest.mark.asyncio
+async def test_persists_shipment_for_live_shipping_notifications() -> None:
+    db = FakeDb()
+    persistence = SheetsEventPersistence(db=db, clock=lambda: NOW)
+
+    await persistence.persist(
+        event_type="shipments.updated",
+        seller_id=82453304,
+        resource={
+            "id": 3001,
+            "order_id": 2001,
+            "status": "ready_to_ship",
+            "substatus": "printed",
+            "tracking_number": "TRACK-1",
+            "logistic_type": "fulfillment",
+            "date_created": "2026-05-29T10:00:00+00:00",
+            "last_updated": "2026-05-30T11:00:00+00:00",
+        },
+    )
+
+    shipment = db["shipments"].documents["3001"]
+    assert shipment == {
+        "_id": "3001",
+        "seller_id": "82453304",
+        "order_id": "2001",
+        "status": "ready_to_ship",
+        "substatus": "printed",
+        "tracking_number": "TRACK-1",
+        "logistic_type": "fulfillment",
+        "date_created": datetime(2026, 5, 29, 10, 0, tzinfo=UTC),
+        "last_updated": datetime(2026, 5, 30, 11, 0, tzinfo=UTC),
+        "schema_version": 1,
+    }
+    BSON.encode(shipment)
