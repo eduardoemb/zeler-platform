@@ -23,6 +23,7 @@ from zeler_platform_core.events.idempotency import IdempotencyStore as CoreIdemp
 from zeler_platform_core.runtime.manifest import validate_manifest
 from zeler_platform_core.runtime.retry_delay import RETRY_ATTEMPT_HEADER, RetryDelayPublisher
 from zeler_platform_core.runtime.worker_health import WorkerHealthSidecar
+from zeler_sheets.event_persistence import SheetsEventPersistence
 from zeler_sheets.google_errors import RetryableGoogleSheetsApiError
 from zeler_sheets.google_sheets_client import make_sheets_client
 from zeler_sheets.sheets_config import SheetsSettings
@@ -496,16 +497,27 @@ class SheetsEventHandler:
         gateway_client: GatewayResourceClient,
         sheets_client: GoogleSheetsClient,
         idempotency_store: IdempotencyStore,
+        event_persistence: Any | None = None,
     ) -> None:
         self._db = db
         self._gateway_client = gateway_client
         self._sheets_client = sheets_client
         self._idempotency_store = idempotency_store
+        self._event_persistence = event_persistence or SheetsEventPersistence(db=db)
 
     async def handle(self, event: SheetsEvent) -> str:
         if await self._idempotency_store.is_duplicate(event.idempotency_key):
             return "duplicate"
 
+        resource = await self._gateway_client.fetch_resource(
+            seller_id=event.seller_id,
+            path=event.resource,
+        )
+        await self._event_persistence.persist(
+            event_type=event.event_type,
+            seller_id=event.seller_id,
+            resource=resource,
+        )
         export_config = await self._db["sheets_exports"].find_one(
             {"seller_id": str(event.seller_id), "enabled": True}
         )
@@ -513,10 +525,6 @@ class SheetsEventHandler:
             await self._idempotency_store.mark_processed(event.idempotency_key)
             return "no_export"
 
-        resource = await self._gateway_client.fetch_resource(
-            seller_id=event.seller_id,
-            path=event.resource,
-        )
         row = format_resource_row(event.event_type, resource)
         await self._sheets_client.append_row(
             seller_id=str(event.seller_id),

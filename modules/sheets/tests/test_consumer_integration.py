@@ -21,20 +21,27 @@ class FakeAuth:
 
 class FakeCollection:
     def __init__(self, document: dict[str, Any] | None) -> None:
-        self.document = document
+        self.documents = [document] if document is not None else []
 
     async def find_one(self, query: dict[str, Any]) -> dict[str, Any] | None:
-        assert query == {"seller_id": "82453304", "enabled": True}
-        return self.document
+        for document in self.documents:
+            if all(document.get(key) == value for key, value in query.items()):
+                return document
+        return None
+
+    async def replace_one(
+        self, filter_spec: dict[str, Any], replacement: dict[str, Any], *, upsert: bool = False
+    ) -> None:
+        del filter_spec, upsert
+        self.documents.append(dict(replacement))
 
 
 class FakeDb:
     def __init__(self, document: dict[str, Any] | None) -> None:
-        self.collection = FakeCollection(document)
+        self.collections = {"sheets_exports": FakeCollection(document)}
 
     def __getitem__(self, name: str) -> FakeCollection:
-        assert name == "sheets_exports"
-        return self.collection
+        return self.collections.setdefault(name, FakeCollection(None))
 
 
 class FakeSheetsClient:
@@ -68,7 +75,12 @@ async def test_sheets_consumer_uses_unified_meli_gateway_client_end_to_end() -> 
                 "title": "Hopemob case",
                 "status": "active",
                 "price": 199,
+                "base_price": 199,
                 "available_quantity": 7,
+                "category_id": "MLM123",
+                "attributes": [{"id": "SELLER_SKU", "value_name": "SKU-HOPE"}],
+                "date_created": "2026-05-01T10:00:00Z",
+                "last_updated": "2026-05-30T10:00:00Z",
             },
         )
 
@@ -80,7 +92,14 @@ async def test_sheets_consumer_uses_unified_meli_gateway_client_end_to_end() -> 
     )
     sheets_client = FakeSheetsClient()
     event_handler = consumer.SheetsEventHandler(
-        db=FakeDb({"spreadsheet_id": "sheet-1", "worksheet_name": "Hoja 1"}),
+        db=FakeDb(
+            {
+                "seller_id": "82453304",
+                "enabled": True,
+                "spreadsheet_id": "sheet-1",
+                "worksheet_name": "Hoja 1",
+            }
+        ),
         gateway_client=gateway_client,
         sheets_client=sheets_client,
         idempotency_store=FakeIdempotency(),
