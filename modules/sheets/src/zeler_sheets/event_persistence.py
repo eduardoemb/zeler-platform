@@ -12,8 +12,11 @@ from zeler_platform_core.models import Item, Order, Shipment
 from zeler_platform_core.models.base import current_schema_version
 from zeler_sheets.sheetseller_backfill import (
     build_formula_row_doc,
+    build_order_line_formula_row_docs,
+    build_order_line_sku_index_docs,
     build_sku_index_docs,
     build_variation_formula_row_docs,
+    extract_safe_order_item_identity,
 )
 
 
@@ -56,17 +59,65 @@ class SheetsEventPersistence:
             item, sku_index_docs, seller_id=seller_id
         )
         formula_row_docs.extend(variation_formula_rows)
+        order_line_identities = await self._load_order_line_sku_identities(
+            item_id=str(item["_id"]), seller_id=seller_id
+        )
+        order_line_identities = _missing_order_line_identities(
+            order_line_identities, sku_index_docs
+        )
+        formula_row_docs.extend(
+            build_order_line_formula_row_docs(
+                item,
+                order_line_identities=order_line_identities,
+                seller_id=seller_id,
+            )
+        )
 
         for formula_row_doc in formula_row_docs:
             await self._db["sheets_item_formula_rows"].replace_one(
                 {"_id": formula_row_doc["_id"]}, formula_row_doc, upsert=True
             )
 
+    async def _load_order_line_sku_identities(
+        self, *, item_id: str, seller_id: str
+    ) -> list[dict[str, Any]]:
+        collection = self._db["sheets_item_sku_index"]
+        cursor = collection.find(
+            {
+                "seller_id": seller_id,
+                "item_id": item_id,
+                "source": "order_line",
+            }
+        )
+        return cast("list[dict[str, Any]]", await cursor.to_list(length=None))
+
     async def _persist_order(self, *, seller_id: str, resource: dict[str, Any]) -> None:
         document = _canonical_order_document(resource, seller_id=seller_id)
         await self._db["orders"].replace_one(
             {"_id": document["_id"], "seller_id": seller_id}, document, upsert=True
         )
+        await self._refresh_order_line_sku_index(document, seller_id=seller_id)
+
+    async def _refresh_order_line_sku_index(self, order: dict[str, Any], *, seller_id: str) -> None:
+        collection = self._db["sheets_item_sku_index"]
+        for sku_index_doc in build_order_line_sku_index_docs(order, seller_id=seller_id):
+            if await self._has_conflicting_order_line_identity(sku_index_doc):
+                continue
+            await collection.replace_one({"_id": sku_index_doc["_id"]}, sku_index_doc, upsert=True)
+
+    async def _has_conflicting_order_line_identity(self, sku_index_doc: dict[str, Any]) -> bool:
+        collection = self._db["sheets_item_sku_index"]
+        cursor = collection.find(
+            {
+                "seller_id": sku_index_doc["seller_id"],
+                "item_id": sku_index_doc["item_id"],
+                "variation_id": sku_index_doc.get("variation_id"),
+                "source": "order_line",
+            }
+        )
+        existing_docs = await cursor.to_list(length=None)
+        normalized_sku = sku_index_doc.get("normalized_sku")
+        return any(existing.get("normalized_sku") != normalized_sku for existing in existing_docs)
 
     async def _persist_shipment(self, *, seller_id: str, resource: dict[str, Any]) -> None:
         document = _canonical_shipment_document(resource, seller_id=seller_id)
@@ -136,6 +187,24 @@ def _canonical_shipment_document(resource: dict[str, Any], *, seller_id: str) ->
     )
 
 
+def _missing_order_line_identities(
+    order_line_identities: Sequence[dict[str, Any]], sku_index_docs: Sequence[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    direct_identity_keys = {
+        (str(doc.get("item_id") or ""), _optional_string(doc.get("variation_id")))
+        for doc in sku_index_docs
+    }
+    return [
+        identity
+        for identity in order_line_identities
+        if (
+            str(identity.get("item_id") or ""),
+            _optional_string(identity.get("variation_id")),
+        )
+        not in direct_identity_keys
+    ]
+
+
 def _bson_safe(value: Any) -> Any:
     if isinstance(value, Decimal):
         return Decimal128(value)
@@ -155,18 +224,16 @@ def _order_items(resource: dict[str, Any]) -> list[dict[str, Any]]:
     for raw_item in raw_items:
         if not isinstance(raw_item, dict):
             continue
-        nested = raw_item.get("item")
-        nested_item: dict[str, Any] = nested if isinstance(nested, dict) else {}
-        item_id = raw_item.get("item_id") or nested_item.get("id") or nested_item.get("item_id")
-        if item_id is None:
+        identity = extract_safe_order_item_identity(raw_item)
+        if "item_id" not in identity:
             continue
         normalized: dict[str, Any] = {
-            "item_id": str(item_id),
+            "item_id": identity["item_id"],
             "qty": raw_item.get("qty", raw_item.get("quantity", 1)),
             "unit_price": raw_item.get("unit_price", 0),
         }
         for field in ("variation_id", "sku", "seller_sku", "seller_custom_field"):
-            value = raw_item.get(field) or nested_item.get(field)
+            value = identity.get(field)
             if value is not None:
                 normalized[field] = str(value).strip()
         items.append(normalized)
@@ -194,6 +261,13 @@ def _shipment_order_id(resource: dict[str, Any]) -> str:
     if isinstance(order, dict):
         return _string_id(order.get("id") or order.get("order_id"))
     return _string_id(resource.get("order_id"))
+
+
+def _optional_string(value: Any) -> str | None:
+    if value is None:
+        return None
+    normalized = str(value).strip()
+    return normalized or None
 
 
 def _string_id(value: Any) -> str:

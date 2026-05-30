@@ -9,6 +9,14 @@ import pytest
 from zeler_sheets.consumer import SheetsEvent, SheetsEventHandler
 
 
+class FakeCursor:
+    def __init__(self, docs: list[dict[str, Any]]) -> None:
+        self._docs = docs
+
+    async def to_list(self, *, length: int | None = None) -> list[dict[str, Any]]:
+        return self._docs[:length]
+
+
 class FakeCollection:
     def __init__(self, docs: list[dict[str, Any]] | None = None) -> None:
         self.docs = docs or []
@@ -19,6 +27,11 @@ class FakeCollection:
             if all(doc.get(key) == value for key, value in query.items()):
                 return doc
         return None
+
+    def find(self, query: dict[str, Any]) -> FakeCursor:
+        return FakeCursor(
+            [doc for doc in self.docs if all(doc.get(key) == value for key, value in query.items())]
+        )
 
     async def replace_one(
         self, filter_spec: dict[str, Any], replacement: dict[str, Any], *, upsert: bool = False

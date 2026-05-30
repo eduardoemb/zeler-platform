@@ -19,6 +19,14 @@ class FakeAuth:
         return f"jwt-for-{seller_id}"
 
 
+class FakeCursor:
+    def __init__(self, documents: list[dict[str, Any]]) -> None:
+        self._documents = documents
+
+    async def to_list(self, *, length: int | None = None) -> list[dict[str, Any]]:
+        return self._documents[:length]
+
+
 class FakeCollection:
     def __init__(self, document: dict[str, Any] | None) -> None:
         self.documents = [document] if document is not None else []
@@ -28,6 +36,15 @@ class FakeCollection:
             if all(document.get(key) == value for key, value in query.items()):
                 return document
         return None
+
+    def find(self, query: dict[str, Any]) -> FakeCursor:
+        return FakeCursor(
+            [
+                document
+                for document in self.documents
+                if all(document.get(key) == value for key, value in query.items())
+            ]
+        )
 
     async def replace_one(
         self, filter_spec: dict[str, Any], replacement: dict[str, Any], *, upsert: bool = False

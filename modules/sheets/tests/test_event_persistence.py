@@ -18,6 +18,14 @@ class FakeReplaceResult:
     upserted_id = None
 
 
+class FakeCursor:
+    def __init__(self, documents: list[dict[str, Any]]) -> None:
+        self._documents = documents
+
+    async def to_list(self, *, length: int | None = None) -> list[dict[str, Any]]:
+        return self._documents[:length]
+
+
 class FakeCollection:
     def __init__(self) -> None:
         self.documents: dict[str, dict[str, Any]] = {}
@@ -29,6 +37,20 @@ class FakeCollection:
         self.replace_calls.append((dict(filter_spec), dict(replacement), upsert))
         self.documents[str(replacement["_id"])] = dict(replacement)
         return FakeReplaceResult()
+
+    def find(self, filter_spec: dict[str, Any]) -> FakeCursor:
+        documents = [
+            document
+            for document in self.documents.values()
+            if all(document.get(key) == value for key, value in filter_spec.items())
+        ]
+        return FakeCursor(documents)
+
+    async def find_one(self, filter_spec: dict[str, Any]) -> dict[str, Any] | None:
+        for document in self.documents.values():
+            if all(document.get(key) == value for key, value in filter_spec.items()):
+                return document
+        return None
 
 
 class FakeDb:
@@ -126,6 +148,215 @@ async def test_persists_order_for_sheetseller_order_formulas() -> None:
     assert order["items"] == [
         {"item_id": "MLA1", "seller_sku": "sku-1", "qty": 2, "unit_price": Decimal128("149.95")}
     ]
+
+
+@pytest.mark.asyncio
+async def test_persisted_order_feeds_live_sku_index_from_order_line_identity() -> None:
+    db = FakeDb()
+    persistence = SheetsEventPersistence(db=db, clock=lambda: NOW)
+
+    await persistence.persist(
+        event_type="orders.updated",
+        seller_id=82453304,
+        resource={
+            "id": 2001,
+            "status": "paid",
+            "date_created": "2026-05-29T10:00:00+00:00",
+            "total_amount": "299.90",
+            "buyer": {"id": 123},
+            "order_items": [
+                {
+                    "item": {"id": "MLA1", "variation_id": 101, "seller_sku": "sku-1"},
+                    "quantity": 2,
+                    "unit_price": "149.95",
+                }
+            ],
+        },
+    )
+
+    assert db["sheets_item_sku_index"].documents["82453304:SKU-1:MLA1:101"] == {
+        "_id": "82453304:SKU-1:MLA1:101",
+        "seller_id": "82453304",
+        "seller_nickname": None,
+        "sku": "sku-1",
+        "normalized_sku": "SKU-1",
+        "item_id": "MLA1",
+        "variation_id": "101",
+        "identity_level": "variation",
+        "source": "order_line",
+        "inventory_id": None,
+        "updated_at": datetime(2026, 5, 29, 10, 0, tzinfo=UTC),
+        "schema_version": 2,
+    }
+
+
+@pytest.mark.asyncio
+async def test_persisted_order_feeds_sku_index_from_order_line_seller_sku_attribute() -> None:
+    db = FakeDb()
+    persistence = SheetsEventPersistence(db=db, clock=lambda: NOW)
+
+    await persistence.persist(
+        event_type="orders.updated",
+        seller_id=82453304,
+        resource={
+            "id": 2001,
+            "status": "paid",
+            "date_created": "2026-05-29T10:00:00+00:00",
+            "total_amount": "299.90",
+            "buyer": {"id": 123},
+            "order_items": [
+                {
+                    "item": {
+                        "id": "MLA1",
+                        "variation_id": 101,
+                        "variation_attributes": [{"id": "SELLER_SKU", "value_name": "attr-sku-1"}],
+                    },
+                    "quantity": 2,
+                    "unit_price": "149.95",
+                }
+            ],
+        },
+    )
+
+    order = db["orders"].documents["2001"]
+    assert order["items"] == [
+        {
+            "item_id": "MLA1",
+            "variation_id": "101",
+            "seller_sku": "attr-sku-1",
+            "qty": 2,
+            "unit_price": Decimal128("149.95"),
+        }
+    ]
+    assert (
+        db["sheets_item_sku_index"].documents["82453304:ATTR-SKU-1:MLA1:101"]["source"]
+        == "order_line"
+    )
+
+
+@pytest.mark.asyncio
+async def test_order_line_sku_index_skips_conflicting_live_identity() -> None:
+    db = FakeDb()
+    db["sheets_item_sku_index"].documents["82453304:SKU-1:MLA1:101"] = {
+        "_id": "82453304:SKU-1:MLA1:101",
+        "seller_id": "82453304",
+        "sku": "sku-1",
+        "normalized_sku": "SKU-1",
+        "item_id": "MLA1",
+        "variation_id": "101",
+        "identity_level": "variation",
+        "source": "order_line",
+        "inventory_id": None,
+        "updated_at": datetime(2026, 5, 29, 10, 0, tzinfo=UTC),
+        "schema_version": 2,
+    }
+    persistence = SheetsEventPersistence(db=db, clock=lambda: NOW)
+
+    await persistence.persist(
+        event_type="orders.updated",
+        seller_id=82453304,
+        resource={
+            "id": 2002,
+            "status": "paid",
+            "date_created": "2026-05-30T10:00:00+00:00",
+            "total_amount": "299.90",
+            "buyer": {"id": 123},
+            "order_items": [
+                {
+                    "item": {"id": "MLA1", "variation_id": 101, "seller_sku": "sku-2"},
+                    "quantity": 2,
+                    "unit_price": "149.95",
+                }
+            ],
+        },
+    )
+
+    assert sorted(db["sheets_item_sku_index"].documents) == ["82453304:SKU-1:MLA1:101"]
+
+
+@pytest.mark.asyncio
+async def test_item_without_seller_sku_refreshes_formula_rows_from_known_order_line_sku() -> None:
+    db = FakeDb()
+    db["sheets_item_sku_index"].documents["82453304:SKU-1:MLA1:101"] = {
+        "_id": "82453304:SKU-1:MLA1:101",
+        "seller_id": "82453304",
+        "sku": "sku-1",
+        "normalized_sku": "SKU-1",
+        "item_id": "MLA1",
+        "variation_id": "101",
+        "identity_level": "variation",
+        "source": "order_line",
+        "inventory_id": None,
+        "updated_at": datetime(2026, 5, 29, 10, 0, tzinfo=UTC),
+        "schema_version": 2,
+    }
+    persistence = SheetsEventPersistence(db=db, clock=lambda: NOW)
+
+    await persistence.persist(
+        event_type="items.updated",
+        seller_id=82453304,
+        resource={
+            "id": "MLA1",
+            "title": "Premium widget updated",
+            "price": "149.99",
+            "base_price": "159.99",
+            "available_quantity": 7,
+            "status": "active",
+            "category_id": "MLA123",
+            "permalink": "https://articulo.example/MLA1",
+            "thumbnail": "https://img.example/MLA1.jpg",
+            "catalog_product_id": "CAT-1",
+            "attributes": [],
+            "variations": [{"id": 101, "inventory_id": "INV-VAR-101"}],
+            "date_created": "2026-05-01T10:00:00+00:00",
+            "last_updated": "2026-05-30T11:00:00+00:00",
+        },
+    )
+
+    formula_row = db["sheets_item_formula_rows"].documents["82453304:SKU-1:MLA1:101"]
+    assert formula_row["sku"] == "sku-1"
+    assert formula_row["inventory_id"] == "INV-VAR-101"
+    assert formula_row["current"]["title"] == "Premium widget updated"
+    assert formula_row["current"]["catalog_product_id"] == "CAT-1"
+    assert formula_row["current"]["inventory_id"] == "INV-VAR-101"
+
+
+@pytest.mark.asyncio
+async def test_item_with_direct_sku_does_not_create_stale_order_line_duplicate() -> None:
+    db = FakeDb()
+    db["sheets_item_sku_index"].documents["82453304:STALE-SKU:MLA1:item"] = {
+        "_id": "82453304:STALE-SKU:MLA1:item",
+        "seller_id": "82453304",
+        "sku": "stale-sku",
+        "normalized_sku": "STALE-SKU",
+        "item_id": "MLA1",
+        "variation_id": None,
+        "identity_level": "item",
+        "source": "order_line",
+        "inventory_id": None,
+        "updated_at": datetime(2026, 5, 29, 10, 0, tzinfo=UTC),
+        "schema_version": 2,
+    }
+    persistence = SheetsEventPersistence(db=db, clock=lambda: NOW)
+
+    await persistence.persist(
+        event_type="items.updated",
+        seller_id=82453304,
+        resource={
+            "id": "MLA1",
+            "title": "Premium widget",
+            "price": "149.99",
+            "base_price": "159.99",
+            "available_quantity": 7,
+            "status": "active",
+            "category_id": "MLA123",
+            "attributes": [{"id": "SELLER_SKU", "value_name": "fresh-sku"}],
+            "date_created": "2026-05-01T10:00:00+00:00",
+            "last_updated": "2026-05-30T11:00:00+00:00",
+        },
+    )
+
+    assert sorted(db["sheets_item_formula_rows"].documents) == ["82453304:FRESH-SKU:MLA1"]
 
 
 @pytest.mark.asyncio

@@ -787,10 +787,72 @@ def build_order_line_formula_row_docs(
                 seller_id=seller_id,
                 sku=sku,
                 variation_id=_optional_string(identity.get("variation_id")),
-                inventory_id=_optional_string(identity.get("inventory_id")),
+                inventory_id=_order_line_identity_inventory_id(item, identity),
             )
         )
     return _dedupe_formula_row_docs(rows)
+
+
+def build_order_line_sku_index_docs(
+    order: dict[str, Any], *, seller_id: str
+) -> list[dict[str, Any]]:
+    if _is_cancelled_order(order):
+        return []
+
+    updated_at = order.get("date_created") or order.get("updated_at")
+    identities: dict[tuple[str, str | None], dict[str, _OrderLineIdentityCandidate]] = {}
+    for item in _order_line_items(order):
+        sku = resolve_order_line_sku(item)
+        if sku is None:
+            continue
+        item_id = _order_line_item_id(item)
+        if item_id is None:
+            continue
+        variation_id = _order_line_variation_id(item)
+        by_sku = identities.setdefault((item_id, variation_id), {})
+        normalized_sku = normalize_sku(sku)
+        by_sku.setdefault(
+            normalized_sku,
+            _OrderLineIdentityCandidate(
+                sku=sku,
+                item_id=item_id,
+                variation_id=variation_id,
+                updated_at=updated_at,
+            ),
+        )
+
+    deterministic_candidates = [
+        next(iter(by_sku.values())) for by_sku in identities.values() if len(by_sku) == 1
+    ]
+    return [
+        build_order_line_sku_index_doc(candidate, seller_id=seller_id)
+        for candidate in deterministic_candidates
+    ]
+
+
+def _order_line_identity_inventory_id(item: dict[str, Any], identity: dict[str, Any]) -> str | None:
+    inventory_id = _optional_string(identity.get("inventory_id"))
+    if inventory_id is not None:
+        return inventory_id
+    variation_id = _optional_string(identity.get("variation_id"))
+    if variation_id is None:
+        return None
+    return _variation_inventory_id(item, variation_id)
+
+
+def _variation_inventory_id(item: dict[str, Any], variation_id: str) -> str | None:
+    variations = item.get("variations")
+    if not isinstance(variations, Sequence) or isinstance(variations, (str, bytes)):
+        return None
+    for variation in variations:
+        if not isinstance(variation, dict):
+            continue
+        current_variation_id = _optional_string(
+            variation.get("id") or variation.get("variation_id")
+        )
+        if current_variation_id == variation_id:
+            return _optional_string(variation.get("inventory_id"))
+    return None
 
 
 def _dedupe_formula_row_docs(docs: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
