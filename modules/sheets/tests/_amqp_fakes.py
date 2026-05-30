@@ -43,6 +43,8 @@ class FakeQueue:
 class FakeChannel:
     def __init__(self) -> None:
         self.qos: list[int] = []
+        self.exchanges: dict[str, FakeExchange] = {}
+        self.queues: dict[str, FakeQueue] = {}
         self.exchange = FakeExchange()
         self.queue = FakeQueue()
         self.declared_exchanges: list[tuple[str, Any, bool]] = []
@@ -55,13 +57,17 @@ class FakeChannel:
         self, name: str, exchange_type: Any, *, durable: bool
     ) -> FakeExchange:
         self.declared_exchanges.append((name, exchange_type, durable))
-        return self.exchange
+        exchange = self.exchanges.setdefault(name, FakeExchange())
+        self.exchange = exchange
+        return exchange
 
     async def declare_queue(
         self, name: str, *, durable: bool, arguments: dict[str, object]
     ) -> FakeQueue:
         self.declared_queues.append((name, durable, arguments))
-        return self.queue
+        queue = self.queues.setdefault(name, FakeQueue())
+        self.queue = queue
+        return queue
 
 
 class FakeConnection:

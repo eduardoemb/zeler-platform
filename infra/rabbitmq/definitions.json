@@ -274,7 +274,8 @@
       "name": "zeler.sheets.events",
       "durable": true,
       "arguments": {
-        "x-dead-letter-exchange": "zeler.sheets.events.dlx"
+        "x-dead-letter-exchange": "zeler.sheets.events.dlx",
+        "x-dead-letter-routing-key": "zeler.sheets.events.dlq"
       }
     },
     {
@@ -628,7 +629,7 @@
     {
       "source": "zeler.sheets.events.dlx",
       "destination": "zeler.sheets.events.dlq",
-      "routing_key": "zeler.sheets.events"
+      "routing_key": "zeler.sheets.events.dlq"
     },
     {
       "source": "meli.events",

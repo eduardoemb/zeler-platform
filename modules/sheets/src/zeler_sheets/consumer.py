@@ -30,6 +30,7 @@ from zeler_sheets.sheets_config import SheetsSettings
 MELI_EVENTS_EXCHANGE = "meli.events"
 SHEETS_EVENTS_QUEUE = "zeler.sheets.events"
 SHEETS_EVENTS_DLX = "zeler.sheets.events.dlx"
+SHEETS_EVENTS_DLQ = f"{SHEETS_EVENTS_QUEUE}.dlq"
 SHEETS_DELIVERY_LIMIT = 5
 DEFAULT_PREFETCH_COUNT = 10
 SHEETS_DEFAULT_ROUTING_KEYS = ("items.*", "orders.*", "shipments.*")
@@ -188,11 +189,24 @@ class SheetsAmqpConsumerRunner:
             aio_pika.ExchangeType.TOPIC,
             durable=True,
         )
+        dead_letter_exchange = await channel.declare_exchange(
+            self.config.dead_letter_exchange,
+            aio_pika.ExchangeType.DIRECT,
+            durable=True,
+        )
+        dead_letter_queue_name = f"{self.config.queue_name}.dlq"
+        dead_letter_queue = await channel.declare_queue(
+            dead_letter_queue_name,
+            durable=True,
+            arguments={},
+        )
+        await dead_letter_queue.bind(dead_letter_exchange, routing_key=dead_letter_queue_name)
         queue = await channel.declare_queue(
             self.config.queue_name,
             durable=True,
             arguments={
                 "x-dead-letter-exchange": self.config.dead_letter_exchange,
+                "x-dead-letter-routing-key": dead_letter_queue_name,
             },
         )
         for routing_key in self.config.routing_keys:

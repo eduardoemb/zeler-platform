@@ -10,6 +10,7 @@ from googleapiclient.errors import HttpError  # type: ignore[import-untyped]
 from httplib2 import Response  # type: ignore[import-untyped]
 
 from zeler_sheets.google_errors import (
+    GoogleSheetsApiError,
     RetryableGoogleSheetsApiError,
     SellerNotConnectedError,
     SellerTokenRevokedError,
@@ -185,4 +186,25 @@ async def test_append_row_raises_retryable_error_for_sheets_429_with_retry_after
         )
 
     assert exc_info.value.retry_after_seconds == 7
+    assert store.marked_errors == []
+
+
+@pytest.mark.asyncio
+async def test_append_row_raises_non_retryable_error_for_sheets_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request = FakeExecuteRequest(error=TimeoutError("The read operation timed out"))
+    service, _values = _build_service(request)
+    store = FakeTokenStore()
+    monkeypatch.setattr("zeler_sheets.google_sheets_client.build", lambda *args, **kwargs: service)
+
+    with pytest.raises(GoogleSheetsApiError, match="append outcome unknown"):
+        await GoogleSheetsClient(token_store=store).append_row(
+            seller_id="seller-1",
+            spreadsheet_id="sheet-123",
+            worksheet_name="Items",
+            row=["shipments.updated"],
+            idempotency_key="idem-1",
+        )
+
     assert store.marked_errors == []

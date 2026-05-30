@@ -8,6 +8,9 @@ import pytest
 
 from zeler_sheets import consumer
 from zeler_sheets.consumer import (
+    SHEETS_EVENTS_DLQ,
+    SHEETS_EVENTS_DLX,
+    SHEETS_EVENTS_QUEUE,
     SheetsAmqpConsumerRunner,
     SheetsEvent,
     _sheets_event_from_message,
@@ -83,22 +86,36 @@ async def test_sheets_runner_declares_queue_with_dlx_and_binds_manifest_routing_
     assert calls == ["amqp://unit-test"]
     channel = connection.channel_obj
     assert channel.qos == [10]
-    assert channel.declared_exchanges == [("meli.events", runner.exchange_type_topic, True)]
+    assert channel.declared_exchanges == [
+        ("meli.events", runner.exchange_type_topic, True),
+        (SHEETS_EVENTS_DLX, consumer.aio_pika.ExchangeType.DIRECT, True),
+    ]
     assert channel.declared_queues == [
         (
-            "zeler.sheets.events",
+            SHEETS_EVENTS_DLQ,
             True,
-            {"x-dead-letter-exchange": "zeler.sheets.events.dlx"},
-        )
+            {},
+        ),
+        (
+            SHEETS_EVENTS_QUEUE,
+            True,
+            {
+                "x-dead-letter-exchange": SHEETS_EVENTS_DLX,
+                "x-dead-letter-routing-key": SHEETS_EVENTS_DLQ,
+            },
+        ),
     ]
-    assert "x-delivery-limit" not in channel.declared_queues[0][2]
-    assert [routing_key for _, routing_key in channel.queue.bindings] == [
+    assert "x-delivery-limit" not in channel.declared_queues[1][2]
+    assert channel.queues[SHEETS_EVENTS_DLQ].bindings == [
+        (channel.exchanges[SHEETS_EVENTS_DLX], SHEETS_EVENTS_DLQ)
+    ]
+    assert [routing_key for _, routing_key in channel.queues[SHEETS_EVENTS_QUEUE].bindings] == [
         "items.*",
         "orders.*",
         "shipments.*",
     ]
-    assert channel.queue.consumer.__self__ is runner
-    assert channel.queue.consumer.__func__ is runner.handle_message.__func__
+    assert channel.queues[SHEETS_EVENTS_QUEUE].consumer.__self__ is runner
+    assert channel.queues[SHEETS_EVENTS_QUEUE].consumer.__func__ is runner.handle_message.__func__
 
 
 @pytest.mark.asyncio

@@ -56,6 +56,10 @@ class GoogleSheetsClient:
         )
         try:
             await asyncio.to_thread(request.execute)
+        except TimeoutError as exc:
+            raise GoogleSheetsApiError(
+                "Google Sheets API request timed out; append outcome unknown"
+            ) from exc
         except HttpError as exc:
             status_code = int(getattr(exc.resp, "status", 0))
             if is_retryable_google_sheets_error(status_code=status_code, content=exc.content):

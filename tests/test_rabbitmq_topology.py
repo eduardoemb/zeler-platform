@@ -78,11 +78,13 @@ def test_sheets_worker_queue_contract_matches_topology_and_preflight() -> None:
     assert queues[SHEETS_EVENTS_QUEUE]["durable"] is True
     assert queues[SHEETS_EVENTS_QUEUE]["arguments"] == {
         "x-dead-letter-exchange": SHEETS_EVENTS_DLX,
+        "x-dead-letter-routing-key": f"{SHEETS_EVENTS_QUEUE}.dlq",
     }
-    assert "x-dead-letter-routing-key" not in queues[SHEETS_EVENTS_QUEUE]["arguments"]
-    assert SHEETS_EVENTS_QUEUE not in ACTIVE_QUEUE_DEAD_LETTER_ROUTING_KEYS
+    assert ACTIVE_QUEUE_DEAD_LETTER_ROUTING_KEYS[SHEETS_EVENTS_QUEUE] == (
+        f"{SHEETS_EVENTS_QUEUE}.dlq"
+    )
     assert queues[sheets_topology.dlq]["durable"] is True
-    assert (SHEETS_EVENTS_DLX, sheets_topology.dlq, SHEETS_EVENTS_QUEUE) in bindings
+    assert (SHEETS_EVENTS_DLX, sheets_topology.dlq, f"{SHEETS_EVENTS_QUEUE}.dlq") in bindings
 
     for routing_key in SHEETS_DEFAULT_ROUTING_KEYS:
         assert ("meli.events", SHEETS_EVENTS_QUEUE, routing_key) in bindings
