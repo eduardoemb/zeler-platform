@@ -90,6 +90,7 @@ SERVICE_REQUIRED_KEYS: dict[str, set[str]] = {
         "KMS_MELI_TOKENS_KEY",
         "KMS_PLATFORM_JWT_KEY",
         "ZELER_APP_BROKER_SECRET",
+        "MELI_ALLOWED_IPS",
     },
     "repricer-api": BASE_KEYS,
     "publicador-api": BASE_KEYS,
@@ -337,6 +338,15 @@ class TestEnvTemplateContract:
 
         assert expected in (ENV_TEMPLATES_DIR / "gateway.env.template").read_text()
         assert f'"{expected}"' in SECRETS_SCRIPT.read_text()
+
+    def test_gateway_webhook_allowlist_is_fetched_from_secret_manager(self) -> None:
+        text = SECRETS_SCRIPT.read_text()
+
+        assert "MELI_ALLOWED_IPS=$(s meli-allowed-ips)" in text
+        assert "MELI_ALLOWED_IPS=$MELI_ALLOWED_IPS" in text
+        assert "MELI_ALLOWED_IPS=__PLACEHOLDER__" in (
+            ENV_TEMPLATES_DIR / "gateway.env.template"
+        ).read_text()
 
     def test_deploy_runbook_documents_zeler_app_live_validation(self) -> None:
         text = (PROJECT_ROOT / "docs" / "deploy.md").read_text()
