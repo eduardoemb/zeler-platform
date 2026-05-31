@@ -57,6 +57,7 @@ ENTITY_SCHEMAS: dict[str, dict[str, Any]] = {
                     "invalid_grant",
                     "error",
                     "invalid",
+                    "paused",
                 ]
             },
             "expires_at": DATE,
@@ -97,6 +98,7 @@ ENTITY_SCHEMAS: dict[str, dict[str, Any]] = {
         },
     },
     "items": {
+        "additionalProperties": False,
         "required": [
             "_id",
             "seller_id",
@@ -120,10 +122,14 @@ ENTITY_SCHEMAS: dict[str, dict[str, Any]] = {
             "available_quantity": {"bsonType": ["int", "long"]},
             "status": {"bsonType": "string"},
             "category_id": {"bsonType": "string"},
+            "catalog_product_id": {"bsonType": ["string", "null"]},
             "variations": {"bsonType": "array"},
             "attributes": {"bsonType": "array"},
             "shipping": {"bsonType": ["object", "null"]},
             "health": {"bsonType": ["double", "int", "long", "null"]},
+            "inventory_id": {"bsonType": ["string", "null"]},
+            "permalink": {"bsonType": ["string", "null"]},
+            "thumbnail": {"bsonType": ["string", "null"]},
             "last_meli_sync_at": DATE,
             "date_created": DATE,
             "last_updated": DATE,
@@ -311,12 +317,19 @@ ENTITY_SCHEMAS: dict[str, dict[str, Any]] = {
             "state": {"enum": ["pending", "running", "paused", "succeeded", "failed", "cancelled"]},
             "dag": {"bsonType": "object"},
             "checkpoints": {"bsonType": "object"},
+            "attempt_count": {"bsonType": "int", "minimum": 0},
             "current_stage": {"bsonType": ["string", "null"]},
+            "dispatch_attempts": {"bsonType": "int", "minimum": 0},
             "stage_progress": {"bsonType": "object"},
             "started_at": NULLABLE_DATE,
             "finished_at": NULLABLE_DATE,
+            "failed_at": NULLABLE_DATE,
             "error": {"bsonType": ["string", "null"]},
+            "last_error": {"bsonType": ["string", "null"], "maxLength": 1024},
             "errors": {"bsonType": "array"},
+            "triggered_by": {
+                "enum": ["oauth_callback", "oauth_callback_force", "manual", "retry"]
+            },
             "created_at": DATE,
             "updated_at": DATE,
             **SCHEMA_VERSION,
@@ -327,6 +340,7 @@ ENTITY_SCHEMAS: dict[str, dict[str, Any]] = {
             "_id",
             "version",
             "allowed_meli_scopes",
+            "allowed_platform_user_ids",
             "routing_keys",
             "status",
             "schema_version",
@@ -335,6 +349,15 @@ ENTITY_SCHEMAS: dict[str, dict[str, Any]] = {
             **ID_OBJECT_OR_STRING,
             "version": {"bsonType": "string"},
             "allowed_meli_scopes": {"bsonType": "array"},
+            "allowed_platform_user_ids": {
+                "bsonType": "array",
+                "items": {"bsonType": "string"},
+                "maxItems": 100,
+            },
+            "allowed_seller_ids": {
+                "bsonType": "array",
+                "items": {"bsonType": ["int", "long", "string"]},
+            },
             "routing_keys": {"bsonType": "array"},
             "status": {"enum": ["enabled", "disabled", "degraded"]},
             "last_heartbeat_at": NULLABLE_DATE,
@@ -420,14 +443,17 @@ CANONICAL_SCHEMA_FILES = {f"{collection}.json" for collection in ENTITY_SCHEMAS}
 
 
 def _validator_payload(schema: dict[str, Any]) -> dict[str, Any]:
+    json_schema = {
+        "bsonType": "object",
+        "required": schema["required"],
+        "properties": schema["properties"],
+    }
+    if "additionalProperties" in schema:
+        json_schema["additionalProperties"] = schema["additionalProperties"]
     return {
         "validationAction": "error",
         "validationLevel": "strict",
-        "$jsonSchema": {
-            "bsonType": "object",
-            "required": schema["required"],
-            "properties": schema["properties"],
-        },
+        "$jsonSchema": json_schema,
     }
 
 
