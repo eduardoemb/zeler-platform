@@ -8,7 +8,7 @@ This runbook is for sandbox/live **validation only**. The tooling below is desig
 
 - `python -m infra.rabbitmq.readiness` reads `infra/rabbitmq/definitions.json` and, optionally, a RabbitMQ management export JSON file. If the broker plan cannot export definitions, `--amqp-url "$RABBITMQ_URL"` runs an AMQP passive check for expected exchanges/queues without creating resources.
 - `python -m infra.mongo.readiness` reads local `infra/mongo/schemas/*.json`, `infra/mongo/indexes/*.json`, and `infra/mongo/seeds/*.json`; optional live mode only calls read-only Mongo metadata APIs (`listCollections`, `listIndexes`).
-- Module registry seed readiness validates `infra/mongo/seeds/module_registry.admin_clients.json` as a local JSON contract and can compare expected admin clients against a separately exported `module_registry` JSON file. The readiness command is read-only: it never inserts, upserts, imports, or repairs seed data.
+- Module registry seed readiness validates `infra/mongo/seeds/module_registry.admin_clients.json` as a local JSON contract and can compare expected admin clients against a separately exported `module_registry` JSON file. For `zeler-app`, `allowed_platform_user_ids` is the canonical rollout allowlist; `allowed_seller_ids` is a deprecated fallback only for old signed requests without `platform_user_id`. The readiness command is read-only: it never inserts, upserts, imports, or repairs seed data.
 - Do not run `infra/mongo/apply_validators.py` as part of readiness validation; that script performs `collMod` / index application and belongs to an explicit deployment step.
 - Do not apply module_registry seeds as part of readiness validation; seed application is a separate manual/deployment step with explicit operator approval.
 - Do not import RabbitMQ definitions during readiness validation; import/apply operations are deployment steps and require operator approval.
@@ -31,7 +31,7 @@ Optional sandbox/live checks:
    python -m infra.rabbitmq.readiness --definitions infra/rabbitmq/definitions.json
    python -m infra.mongo.readiness --schemas-dir infra/mongo/schemas --indexes-dir infra/mongo/indexes
    ```
-   This validates the local `module_registry.admin_clients.json` seed shape, including the `zeler-app` admin client and its `admin:repricer` scope.
+   This validates the local `module_registry.admin_clients.json` seed shape, including the `zeler-app` admin client, bounded `allowed_platform_user_ids`, deprecated seller fallback, and admin scopes.
 2. Export RabbitMQ definitions from the sandbox management console/API into a file. If the plan does not permit exports, use AMQP passive readiness instead:
    ```bash
    python -m infra.rabbitmq.readiness \
@@ -66,10 +66,14 @@ Optional sandbox/live checks:
 Readiness only proves that the seed file is well-formed and, when an export is supplied, that expected read-only docs are present. To apply the admin-client seed in a sandbox/live database, use a separate approved operation outside the readiness command:
 
 1. Confirm the target database and change window.
-2. Review `infra/mongo/seeds/module_registry.admin_clients.json` and verify it contains `_id="zeler-app"`, `status="enabled"`, and only the intended `allowed_meli_scopes` (`admin:repricer`).
-3. Apply the seed with the team's approved Mongo import/upsert procedure. This is intentionally not implemented by `infra.mongo.readiness`.
+2. Review `infra/mongo/seeds/module_registry.admin_clients.json` and verify it contains `_id="zeler-app"`, `status="enabled"`, `allowed_platform_user_ids` as a bounded list, deprecated `allowed_seller_ids` only for rollout fallback, and the intended admin scopes (`admin:repricer`, `admin:sheets`, `admin:publicador`, `admin:autoreply`).
+3. Apply the seed with the team's approved Mongo import/upsert procedure, or run the approved VM/VPC repair script with `ZELER_APP_ALLOWED_PLATFORM_USER_IDS` set in the runtime environment when provisioning platform-user access. This is intentionally not implemented by `infra.mongo.readiness`.
 4. Export or query `module_registry` read-only after the apply step and re-run readiness with `--module-registry-export "$MODULE_REGISTRY_EXPORT"`.
-5. Treat missing `zeler-app` or scope mismatch findings as a failed bootstrap; do not proceed to zeler-app admin-token smoke checks until corrected by an explicit apply step.
+5. Treat missing `zeler-app`, malformed `allowed_platform_user_ids`, or scope mismatch findings as a failed bootstrap; do not proceed to zeler-app admin-token smoke checks until corrected by an explicit apply step.
+
+## zeler-app broker contract note
+
+`zeler-app` must derive `platform_user_id` from its authenticated server session and include it in the signed `/internal/tokens/issue` body for `module_admin` requests. Do not trust browser-supplied query strings or headers for this value. Gateway denials and readiness reports must stay sanitized: print IDs and finding summaries only, never broker secrets, bearer tokens, OAuth tokens, cookies, or raw connection strings.
 
 ## Production validation sequence
 
@@ -92,5 +96,5 @@ This command is intentionally not read-only. It idempotently declares the expect
 - It does not create exchanges, queues, bindings, validators, collections, or indexes.
 - It does not import RabbitMQ definitions.
 - It does not call `collMod`, `createIndex`, `drop`, or data import commands.
-- It does not apply module registry seeds, insert `zeler-app`, or upsert `allowed_meli_scopes`.
+- It does not apply module registry seeds, insert `zeler-app`, or upsert `allowed_meli_scopes` / `allowed_platform_user_ids`.
 - It does not connect to Meli or validate live Meli OAuth scopes.
