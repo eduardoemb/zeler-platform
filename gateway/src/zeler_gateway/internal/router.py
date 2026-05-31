@@ -48,7 +48,6 @@ async def issue_token(request: Request, payload: TokenIssueRequest) -> JSONRespo
     module = await db["module_registry"].find_one({"_id": caller["module_id"], "status": "enabled"})
     if module is None:
         return _json_error(401, "unknown_module")
-
     seller_authorization = await _authorize_token_issue_seller(
         db=db,
         payload=payload,
@@ -69,7 +68,7 @@ async def issue_token(request: Request, payload: TokenIssueRequest) -> JSONRespo
             payload.target_module_id.strip(),
             seller_id=payload.seller_id,
             ttl_s=payload.ttl_s,
-            token_type="module_admin",  # noqa: S106 - token type enum value.
+            token_type="module_admin",  # noqa: S106 - token type discriminator, not a secret
             scopes=payload.scopes,
             issued_by=caller["module_id"],
         )
