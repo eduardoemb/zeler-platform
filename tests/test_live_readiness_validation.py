@@ -238,6 +238,127 @@ def test_mongo_readiness_validates_zeler_app_admin_seed_scope() -> None:
     ]
 
 
+def test_mongo_readiness_validates_zeler_app_user_allowlist_contract() -> None:
+    report = build_mongo_readiness_report(
+        schemas_dir=ROOT / "infra" / "mongo" / "schemas",
+        indexes_dir=ROOT / "infra" / "mongo" / "indexes",
+        seeds_dir=ROOT / "infra" / "mongo" / "seeds",
+        mongo_uri=None,
+    )
+
+    assert report.summary["module_registry_user_allowlist_mismatches"] == 0
+    assert report.summary["module_registry_export_user_allowlist_mismatches"] == 0
+    assert not [
+        finding
+        for finding in report.findings
+        if finding.resource_type in {"seed", "module_registry_doc"}
+        and finding.resource_name == "zeler-app"
+        and "allowed_platform_user_ids" in finding.detail
+    ]
+
+
+def test_mongo_readiness_reports_missing_zeler_app_user_allowlist(tmp_path: Path) -> None:
+    seeds_dir = tmp_path / "seeds"
+    seeds_dir.mkdir()
+    seed_without_user_allowlist = {
+        "collection": "module_registry",
+        "documents": [
+            {
+                "_id": "zeler-app",
+                "version": "0.1.0",
+                "allowed_meli_scopes": [
+                    "admin:repricer",
+                    "admin:sheets",
+                    "admin:publicador",
+                    "admin:autoreply",
+                ],
+                "allowed_seller_ids": [82453304],
+                "routing_keys": [],
+                "owned_collections": [],
+                "health_endpoint": "/health",
+                "status": "enabled",
+                "schema_version": 1,
+            }
+        ],
+    }
+    (seeds_dir / "module_registry.admin_clients.json").write_text(
+        json.dumps(seed_without_user_allowlist), encoding="utf-8"
+    )
+
+    report = build_mongo_readiness_report(
+        schemas_dir=ROOT / "infra" / "mongo" / "schemas",
+        indexes_dir=ROOT / "infra" / "mongo" / "indexes",
+        seeds_dir=seeds_dir,
+        mongo_uri=None,
+    )
+
+    assert report.summary["module_registry_user_allowlist_mismatches"] == 1
+    assert any(
+        finding.severity == "fail"
+        and finding.resource_type == "seed"
+        and finding.resource_name == "zeler-app"
+        and "allowed_platform_user_ids must be a list" in finding.detail
+        for finding in report.findings
+    )
+
+
+def test_mongo_readiness_reports_export_missing_zeler_app_user_allowlist(
+    tmp_path: Path,
+) -> None:
+    export_path = tmp_path / "module-registry-export.json"
+    export_path.write_text(
+        json.dumps(
+            {
+                "documents": [
+                    {
+                        "_id": "zeler-app",
+                        "version": "0.1.0",
+                        "allowed_meli_scopes": [
+                            "admin:repricer",
+                            "admin:sheets",
+                            "admin:publicador",
+                            "admin:autoreply",
+                        ],
+                        "allowed_seller_ids": [82453304],
+                        "routing_keys": [],
+                        "status": "enabled",
+                        "schema_version": 1,
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    report = build_mongo_readiness_report(
+        schemas_dir=ROOT / "infra" / "mongo" / "schemas",
+        indexes_dir=ROOT / "infra" / "mongo" / "indexes",
+        seeds_dir=ROOT / "infra" / "mongo" / "seeds",
+        module_registry_export_path=export_path,
+        mongo_uri=None,
+    )
+
+    assert report.summary["module_registry_export_user_allowlist_mismatches"] == 1
+    assert any(
+        finding.severity == "fail"
+        and finding.resource_type == "module_registry_doc"
+        and finding.resource_name == "zeler-app"
+        and "allowed_platform_user_ids must be a list" in finding.detail
+        for finding in report.findings
+    )
+
+
+def test_mongo_readiness_validates_meli_account_ownership_lookup_index() -> None:
+    indexes = json.loads(
+        (ROOT / "infra" / "mongo" / "indexes" / "meli_accounts.json").read_text(encoding="utf-8")
+    )
+
+    assert {
+        "keys": {"platform_user_id": 1, "seller_id": 1, "status": 1},
+        "options": {"name": "idx_meli_accounts_platform_user_seller_status"},
+    } in indexes
+
+
 def test_mongo_readiness_reports_wrong_zeler_app_admin_seed_scope(tmp_path: Path) -> None:
     seeds_dir = tmp_path / "seeds"
     seeds_dir.mkdir()

@@ -20,6 +20,16 @@
   },
   {
     "keys": {
+      "platform_user_id": 1,
+      "seller_id": 1,
+      "status": 1
+    },
+    "options": {
+      "name": "idx_meli_accounts_platform_user_seller_status"
+    }
+  },
+  {
+    "keys": {
       "lock_held_until": 1
     },
     "options": {

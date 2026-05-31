@@ -391,6 +391,8 @@ def test_operational_models_validate_statuses_ttl_fields_and_uuid_events() -> No
         id="repricer",
         version="0.1.0",
         allowed_meli_scopes=["GET /items/*"],
+        allowed_platform_user_ids=[123, "platform-user-456"],
+        allowed_seller_ids=[82453304, "987654321"],
         routing_keys=["items.*"],
         status="enabled",
     )
@@ -428,6 +430,8 @@ def test_operational_models_validate_statuses_ttl_fields_and_uuid_events() -> No
     assert webhook_event.user_id == "123"
     assert bootstrap_job.state == "pending"
     assert module_registry.status == "enabled"
+    assert module_registry.allowed_platform_user_ids == ["123", "platform-user-456"]
+    assert module_registry.allowed_seller_ids == ["82453304", "987654321"]
     assert repricer_rule.item_id == "1234"
     assert repricer_history.item_id == "1234"
     assert audit_log.seller_id == "123"
@@ -442,3 +446,16 @@ def test_operational_models_validate_statuses_ttl_fields_and_uuid_events() -> No
     )
     assert completed.event_type == "BootstrapCompleted"
     assert completed.account_id == "123"
+
+
+def test_module_registry_defaults_user_and_deprecated_seller_allowlists() -> None:
+    module_registry = ModuleRegistry(
+        id="zeler-app",
+        version="0.1.0",
+        allowed_meli_scopes=[],
+        routing_keys=[],
+        status="enabled",
+    )
+
+    assert module_registry.allowed_platform_user_ids == []
+    assert module_registry.allowed_seller_ids == []
