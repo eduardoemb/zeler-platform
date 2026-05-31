@@ -33,11 +33,13 @@ class FakeCursor:
 class FakeCollection:
     def __init__(self) -> None:
         self.documents: dict[str, dict[str, Any]] = {}
+        self.find_filters: list[dict[str, Any]] = []
 
     async def insert_one(self, doc: dict[str, Any]) -> None:
         self.documents[str(doc["_id"])] = dict(doc)
 
     async def find_one(self, filter_spec: dict[str, Any]) -> dict[str, Any] | None:
+        self.find_filters.append(dict(filter_spec))
         for doc in self.documents.values():
             if _matches(doc, filter_spec):
                 return dict(doc)
@@ -290,6 +292,81 @@ async def test_execute_success_envelope_allows_formula_handlers_to_report_partia
         "ok": True,
         "values": [[""]],
         "meta": {"partial_misses": 1},
+    }
+
+
+@pytest.mark.asyncio
+async def test_execute_resolves_seller_timezone_from_legacy_int_meli_account_id() -> None:
+    now = datetime(2026, 5, 13, 12, 0, tzinfo=UTC)
+
+    def timezone_echo_handler(context: Any) -> FormulaExecutionResult:
+        return FormulaExecutionResult(
+            values=[[context.seller_timezone]],
+            meta={"seller_timezone": context.seller_timezone},
+        )
+
+    app, db, token = await _app_with_token(
+        now=now,
+        formula_dispatcher=timezone_echo_handler,
+    )
+    db["meli_accounts"].documents = {
+        "legacy-int-account": {
+            "_id": "legacy-int-account",
+            "seller_id": 123456789,
+            "timezone": "America/Mexico_City",
+        }
+    }
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.post(
+            "/sheets/formulas:execute",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"formula": "SHEETSELLER_SKU", "cuenta": "HOPEMOB", "args": {}},
+        )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "ok": True,
+        "values": [["America/Mexico_City"]],
+        "meta": {"seller_timezone": "America/Mexico_City"},
+    }
+    assert db["meli_accounts"].find_filters == [
+        {"seller_id": "123456789"},
+        {"seller_id": 123456789},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_execute_uses_utc_timezone_when_meli_account_timezone_is_missing() -> None:
+    now = datetime(2026, 5, 13, 12, 0, tzinfo=UTC)
+
+    def timezone_echo_handler(context: Any) -> FormulaExecutionResult:
+        return FormulaExecutionResult(
+            values=[[context.seller_timezone]],
+            meta={"seller_timezone": context.seller_timezone},
+        )
+
+    app, _db, token = await _app_with_token(
+        now=now,
+        formula_dispatcher=timezone_echo_handler,
+    )
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.post(
+            "/sheets/formulas:execute",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"formula": "SHEETSELLER_SKU", "cuenta": "HOPEMOB", "args": {}},
+        )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "ok": True,
+        "values": [["UTC"]],
+        "meta": {"seller_timezone": "UTC"},
     }
 
 

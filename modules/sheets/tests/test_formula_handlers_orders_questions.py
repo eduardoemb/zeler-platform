@@ -312,6 +312,129 @@ async def test_ventas_totales_matches_production_iso_string_dates() -> None:
 
 
 @pytest.mark.asyncio
+async def test_ventas_totales_interprets_date_bounds_in_seller_timezone() -> None:
+    db = FakeDb()
+    orders = db["orders"]
+    orders.documents = {
+        "previous-local-day": _order_doc(
+            "previous-local-day",
+            seller_id="seller-1",
+            status="paid",
+            date_created=datetime(2026, 5, 1, 5, 59, 59, 999999, tzinfo=UTC),
+            total_amount=999,
+        ),
+        "local-day-start": _order_doc(
+            "local-day-start",
+            seller_id="seller-1",
+            status="paid",
+            date_created=datetime(2026, 5, 1, 6, 0, tzinfo=UTC),
+            total_amount=100,
+        ),
+        "local-day-end": _order_doc(
+            "local-day-end",
+            seller_id="seller-1",
+            status="paid",
+            date_created=datetime(2026, 5, 2, 5, 59, 59, 999999, tzinfo=UTC),
+            total_amount=25,
+        ),
+        "next-local-day": _order_doc(
+            "next-local-day",
+            seller_id="seller-1",
+            status="paid",
+            date_created=datetime(2026, 5, 2, 6, 0, tzinfo=UTC),
+            total_amount=999,
+        ),
+    }
+    dispatcher = _order_question_dispatcher(db)
+
+    result = await dispatcher.execute(
+        _context(
+            "SHEETSELLER_VENTASTOTALES",
+            {"fecha_inicial": "2026-05-01", "fecha_final": "2026-05-01", "estado": "paid"},
+            seller_timezone="America/Mexico_City",
+        )
+    )
+
+    assert result.values == [[125]]
+    assert result.meta == {"orders_count": 2, "status_filter": "paid"}
+    assert orders.last_find_filter is not None
+    assert orders.last_find_filter["$or"][0] == {
+        "date_created": {
+            "$gte": datetime(2026, 5, 1, 6, 0, tzinfo=UTC),
+            "$lte": datetime(2026, 5, 2, 5, 59, 59, 999999, tzinfo=UTC),
+        }
+    }
+
+
+@pytest.mark.asyncio
+async def test_ordenes_renders_output_dates_in_seller_timezone() -> None:
+    db = FakeDb()
+    db["orders"].documents = {
+        "order-local": _order_doc(
+            "order-local",
+            seller_id="seller-1",
+            status="paid",
+            date_created=datetime(2026, 5, 1, 6, 30, tzinfo=UTC),
+            total_amount=100,
+        ),
+    }
+    dispatcher = _order_question_dispatcher(db)
+
+    result = await dispatcher.execute(
+        _context(
+            "SHEETSELLER_ORDENES",
+            {"fecha_inicial": "2026-05-01", "fecha_final": "2026-05-01", "encabezados": "si"},
+            seller_timezone="America/Mexico_City",
+        )
+    )
+
+    assert result.values == [
+        ["ID Orden", "Fecha", "Estado", "Buyer ID", "Total", "Shipment ID", "Items"],
+        ["order-local", "2026-05-01T00:30:00-06:00", "paid", "buyer-1", 100, "", ""],
+    ]
+
+
+@pytest.mark.asyncio
+async def test_ventas_totales_falls_back_to_utc_for_missing_seller_timezone() -> None:
+    db = FakeDb()
+    orders = db["orders"]
+    orders.documents = {
+        "utc-day-start": _order_doc(
+            "utc-day-start",
+            seller_id="seller-1",
+            status="paid",
+            date_created=datetime(2026, 5, 1, 0, 0, tzinfo=UTC),
+            total_amount=100,
+        ),
+        "next-utc-day": _order_doc(
+            "next-utc-day",
+            seller_id="seller-1",
+            status="paid",
+            date_created=datetime(2026, 5, 2, 0, 0, tzinfo=UTC),
+            total_amount=999,
+        ),
+    }
+    dispatcher = _order_question_dispatcher(db)
+
+    result = await dispatcher.execute(
+        _context(
+            "SHEETSELLER_VENTASTOTALES",
+            {"fecha_inicial": "2026-05-01", "fecha_final": "2026-05-01"},
+        )
+    )
+
+    assert result.values == [[100]]
+    assert result.meta == {"orders_count": 1, "status_filter": "todos"}
+    assert orders.last_find_filter is not None
+    assert orders.last_find_filter["$or"][0] == {
+        "date_created": {
+            "$gte": datetime(2026, 5, 1, 0, 0, tzinfo=UTC),
+            "$lte": datetime(2026, 5, 1, 23, 59, 59, 999999, tzinfo=UTC),
+        }
+    }
+
+
+@pytest.mark.asyncio
 async def test_ordenes_por_sku_filters_orders_by_requested_skus() -> None:
     db = FakeDb()
     orders = db["orders"]
@@ -1247,7 +1370,9 @@ def _order_question_dispatcher(db: FakeDb, *, now_fn: Any | None = None) -> Form
     )
 
 
-def _context(formula: str, args: dict[str, Any]) -> FormulaExecutionContext:
+def _context(
+    formula: str, args: dict[str, Any], *, seller_timezone: str = "UTC"
+) -> FormulaExecutionContext:
     return FormulaExecutionContext(
         contract=FormulaRegistry.default().find_required(formula),
         cuenta="HOPEMOB",
@@ -1256,6 +1381,7 @@ def _context(formula: str, args: dict[str, Any]) -> FormulaExecutionContext:
         token_id="token-1",
         args=args,
         request_id="req-1",
+        seller_timezone=seller_timezone,
     )
 
 

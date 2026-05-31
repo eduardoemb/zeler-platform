@@ -5,6 +5,7 @@ from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from bson.decimal128 import Decimal128
 from fastapi import APIRouter, Request
@@ -412,6 +413,7 @@ async def _execute_formula_payload(
         token_id=validation.token_id,
         args=payload.args,
         request_id=payload.request_id,
+        seller_timezone=await _seller_timezone(request, validation.seller_id),
     )
     try:
         result = await _dispatch_formula(_runtime_dispatcher(request, dispatcher, now=now), context)
@@ -468,6 +470,34 @@ def _runtime_dispatcher(
         | build_order_question_formula_handlers(repository, now_fn=now)
         | build_explicit_unsupported_formula_handlers()
     )
+
+
+async def _seller_timezone(request: Request, seller_id: str) -> str:
+    collection = request.app.state.mongo_db["meli_accounts"]
+    account = await collection.find_one({"seller_id": seller_id})
+    if account is None:
+        legacy_seller_id = _legacy_int_seller_id(seller_id)
+        if legacy_seller_id is not None:
+            account = await collection.find_one({"seller_id": legacy_seller_id})
+    return _valid_timezone(account.get("timezone") if account else None)
+
+
+def _legacy_int_seller_id(seller_id: str) -> int | None:
+    try:
+        return int(seller_id)
+    except ValueError:
+        return None
+
+
+def _valid_timezone(value: Any) -> str:
+    if not isinstance(value, str) or not value.strip():
+        return "UTC"
+    timezone = value.strip()
+    try:
+        ZoneInfo(timezone)
+    except ZoneInfoNotFoundError:
+        return "UTC"
+    return timezone
 
 
 def _bearer_token(request: Request) -> str:

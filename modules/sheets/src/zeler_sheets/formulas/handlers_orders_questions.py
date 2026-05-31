@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Mapping, Sequence
-from datetime import UTC, datetime, time, timedelta
+from datetime import UTC, datetime, time, timedelta, tzinfo
 from decimal import Decimal, InvalidOperation
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from zeler_sheets.formulas.dispatcher import (
     FormulaExecutionContext,
@@ -95,7 +96,12 @@ class OrderQuestionFormulaHandlers:
         self._now_fn = now_fn or (lambda: datetime.now(UTC))
 
     async def sheetseller_ordenes(self, context: FormulaExecutionContext) -> FormulaExecutionResult:
-        date_range = _date_range(context.args.get("fecha_inicial"), context.args.get("fecha_final"))
+        timezone = _context_timezone(context)
+        date_range = _date_range(
+            context.args.get("fecha_inicial"),
+            context.args.get("fecha_final"),
+            timezone=timezone,
+        )
         status_filter = _status_filter(context.args.get("estado", "todos"))
         buyer_filter = _buyer_filter(context.args.get("compradores", ""))
         orders = await self._repository.find_orders(
@@ -106,7 +112,7 @@ class OrderQuestionFormulaHandlers:
         )
         filtered_orders = _filter_orders_by_buyers(orders, buyer_filter)
         values: list[list[Any]] = _header_row(context.args.get("encabezados"), ORDENES_MVP_HEADERS)
-        values.extend(_order_row(order) for order in filtered_orders)
+        values.extend(_order_row(order, timezone=timezone) for order in filtered_orders)
         return FormulaExecutionResult(
             values=values,
             meta={
@@ -120,7 +126,11 @@ class OrderQuestionFormulaHandlers:
     async def sheetseller_ventas_totales(
         self, context: FormulaExecutionContext
     ) -> FormulaExecutionResult:
-        date_range = _date_range(context.args.get("fecha_inicial"), context.args.get("fecha_final"))
+        date_range = _date_range(
+            context.args.get("fecha_inicial"),
+            context.args.get("fecha_final"),
+            timezone=_context_timezone(context),
+        )
         status_filter = _status_filter(context.args.get("estado", "todos"))
         orders = await self._repository.find_orders(
             seller_id=context.seller_id,
@@ -144,7 +154,11 @@ class OrderQuestionFormulaHandlers:
             skus=context.args.get("skus"),
             item_ids=context.args.get("id_publicaciones"),
         )
-        date_range = _date_range(context.args.get("fecha_inicial"), context.args.get("fecha_final"))
+        date_range = _date_range(
+            context.args.get("fecha_inicial"),
+            context.args.get("fecha_final"),
+            timezone=_context_timezone(context),
+        )
         orders = await self._repository.find_orders(
             seller_id=context.seller_id,
             date_from=date_range.start,
@@ -175,7 +189,12 @@ class OrderQuestionFormulaHandlers:
         self, context: FormulaExecutionContext
     ) -> FormulaExecutionResult:
         requested_skus = _flatten_sheet_values(context.args.get("skus"), normalize=normalize_sku)
-        date_range = _date_range(context.args.get("fecha_inicial"), context.args.get("fecha_final"))
+        timezone = _context_timezone(context)
+        date_range = _date_range(
+            context.args.get("fecha_inicial"),
+            context.args.get("fecha_final"),
+            timezone=timezone,
+        )
         status_filter = _status_filter(context.args.get("estado", "todos"))
         buyer_filter = _buyer_filter(context.args.get("compradores", ""))
         orders = await self._repository.find_orders(
@@ -206,7 +225,7 @@ class OrderQuestionFormulaHandlers:
                     [
                         requested_sku,
                         _document_id(order),
-                        _sheet_datetime(order.get("date_created")),
+                        _sheet_datetime(order.get("date_created"), timezone=timezone),
                         order.get("status") or "",
                         _buyer_id(order),
                         _sheet_number(_decimal(order.get("total_amount"))),
@@ -232,11 +251,13 @@ class OrderQuestionFormulaHandlers:
             skus=context.args.get("skus"),
             item_ids=context.args.get("id_publicaciones"),
         )
+        timezone = _context_timezone(context)
         now = _as_utc_datetime(self._now_fn())
+        local_now = now.astimezone(timezone)
         orders = await self._repository.find_orders(
             seller_id=context.seller_id,
             date_from=datetime(1970, 1, 1, tzinfo=UTC),
-            date_to=datetime.combine(now.date(), time.max, tzinfo=UTC),
+            date_to=_local_day_boundary(local_now.date(), time.max, timezone=timezone),
         )
         sku_resolver = await _sku_resolver_for_orders(
             repository=self._repository,
@@ -249,14 +270,14 @@ class OrderQuestionFormulaHandlers:
         )
         values: list[list[Any]] = []
         misses = 0
-        today = now.date()
+        today = local_now.date()
         for pair in pairs:
             latest = latest_by_pair.get((pair.sku, pair.item_id))
             if latest is None:
                 misses += 1
                 values.append([""])
             else:
-                values.append([max((today - latest.date()).days, 0)])
+                values.append([max((today - latest.astimezone(timezone).date()).days, 0)])
         return FormulaExecutionResult(
             values=values,
             meta=_with_enrichment_meta(
@@ -269,8 +290,10 @@ class OrderQuestionFormulaHandlers:
         self, context: FormulaExecutionContext
     ) -> FormulaExecutionResult:
         range_days = _positive_int(context.args.get("rango_dias"))
+        timezone = _context_timezone(context)
         now = _as_utc_datetime(self._now_fn())
-        date_range = _last_days_range(now, range_days)
+        local_now = now.astimezone(timezone)
+        date_range = _last_days_range(now, range_days, timezone=timezone)
         rows = await self._repository.find_item_formula_rows(seller_id=context.seller_id)
         ordered_rows = sorted(
             rows,
@@ -287,7 +310,7 @@ class OrderQuestionFormulaHandlers:
         all_orders = await self._repository.find_orders(
             seller_id=context.seller_id,
             date_from=datetime(1970, 1, 1, tzinfo=UTC),
-            date_to=datetime.combine(now.date(), time.max, tzinfo=UTC),
+            date_to=_local_day_boundary(local_now.date(), time.max, timezone=timezone),
         )
         sku_resolver = await _sku_resolver_for_orders(
             repository=self._repository,
@@ -322,7 +345,9 @@ class OrderQuestionFormulaHandlers:
                     item_id,
                     _current_value(row, "title"),
                     _current_value(row, "available_quantity"),
-                    "" if latest is None else max((now.date() - latest.date()).days, 0),
+                    ""
+                    if latest is None
+                    else max((local_now.date() - latest.astimezone(timezone).date()).days, 0),
                 ]
             )
         header_count = 1 if _headers_requested(context.args.get("encabezados")) else 0
@@ -345,7 +370,9 @@ class OrderQuestionFormulaHandlers:
             item_ids=context.args.get("id_publicaciones"),
         )
         range_days = _positive_int(context.args.get("rango_dias"))
-        date_range = _last_days_range(self._now_fn(), range_days)
+        date_range = _last_days_range(
+            self._now_fn(), range_days, timezone=_context_timezone(context)
+        )
         orders = await self._repository.find_orders(
             seller_id=context.seller_id,
             date_from=date_range.start,
@@ -381,8 +408,9 @@ class OrderQuestionFormulaHandlers:
             skus=context.args.get("skus"),
             item_ids=context.args.get("id_publicaciones"),
         )
+        timezone = _context_timezone(context)
         now = _as_utc_datetime(self._now_fn())
-        date_ranges = {days: _last_days_range(now, days) for days in (7, 15, 30)}
+        date_ranges = {days: _last_days_range(now, days, timezone=timezone) for days in (7, 15, 30)}
         rows = await self._repository.find_item_formula_rows(
             seller_id=context.seller_id,
             skus=[pair.sku for pair in pairs],
@@ -444,7 +472,11 @@ class OrderQuestionFormulaHandlers:
     async def sheetseller_top_ventas_unidades(
         self, context: FormulaExecutionContext
     ) -> FormulaExecutionResult:
-        date_range = _date_range(context.args.get("fecha_inicial"), context.args.get("fecha_final"))
+        date_range = _date_range(
+            context.args.get("fecha_inicial"),
+            context.args.get("fecha_final"),
+            timezone=_context_timezone(context),
+        )
         top_count = _positive_int(context.args.get("cantidad_top"))
         orders = await self._repository.find_orders(
             seller_id=context.seller_id,
@@ -477,7 +509,11 @@ class OrderQuestionFormulaHandlers:
     async def sheetseller_top_ventas_dinero(
         self, context: FormulaExecutionContext
     ) -> FormulaExecutionResult:
-        date_range = _date_range(context.args.get("fecha_inicial"), context.args.get("fecha_final"))
+        date_range = _date_range(
+            context.args.get("fecha_inicial"),
+            context.args.get("fecha_final"),
+            timezone=_context_timezone(context),
+        )
         top_count = _positive_int(context.args.get("cantidad_top"))
         orders = await self._repository.find_orders(
             seller_id=context.seller_id,
@@ -516,7 +552,12 @@ class OrderQuestionFormulaHandlers:
     async def sheetseller_preguntas(
         self, context: FormulaExecutionContext
     ) -> FormulaExecutionResult:
-        date_range = _date_range(context.args.get("fecha_inicial"), context.args.get("fecha_final"))
+        timezone = _context_timezone(context)
+        date_range = _date_range(
+            context.args.get("fecha_inicial"),
+            context.args.get("fecha_final"),
+            timezone=timezone,
+        )
         hour_range = _hour_range(
             context.args.get("horario_inicial"), context.args.get("horario_final")
         )
@@ -526,12 +567,14 @@ class OrderQuestionFormulaHandlers:
             date_to=date_range.end,
         )
         filtered_questions = [
-            question for question in questions if _question_in_hour_range(question, hour_range)
+            question
+            for question in questions
+            if _question_in_hour_range(question, hour_range, timezone=timezone)
         ]
         values: list[list[Any]] = _header_row(
             context.args.get("encabezados"), PREGUNTAS_MVP_HEADERS
         )
-        values.extend(_question_row(question) for question in filtered_questions)
+        values.extend(_question_row(question, timezone=timezone) for question in filtered_questions)
         return FormulaExecutionResult(
             values=values,
             meta={"questions_count": len(filtered_questions), "columns": "questions_mvp"},
@@ -540,7 +583,11 @@ class OrderQuestionFormulaHandlers:
     async def sheetseller_preguntas_kpi(
         self, context: FormulaExecutionContext
     ) -> FormulaExecutionResult:
-        date_range = _date_range(context.args.get("fecha_inicio"), context.args.get("fecha_final"))
+        date_range = _date_range(
+            context.args.get("fecha_inicio"),
+            context.args.get("fecha_final"),
+            timezone=_context_timezone(context),
+        )
         questions = await self._repository.find_questions(
             seller_id=context.seller_id,
             date_from=date_range.start,
@@ -641,23 +688,24 @@ class _OrderLine:
         self.enriched = enriched
 
 
-def _date_range(start_value: Any, end_value: Any) -> _DateRange:
+def _date_range(start_value: Any, end_value: Any, *, timezone: tzinfo = UTC) -> _DateRange:
     return _DateRange(
-        start=_parse_date_boundary(start_value, end_of_day=False),
-        end=_parse_date_boundary(end_value, end_of_day=True),
+        start=_parse_date_boundary(start_value, end_of_day=False, timezone=timezone),
+        end=_parse_date_boundary(end_value, end_of_day=True, timezone=timezone),
     )
 
 
-def _last_days_range(now_value: datetime, days: int) -> _DateRange:
+def _last_days_range(now_value: datetime, days: int, *, timezone: tzinfo = UTC) -> _DateRange:
     now = _as_utc_datetime(now_value)
-    start_date = now.date() - timedelta(days=days - 1)
+    local_now = now.astimezone(timezone)
+    start_date = local_now.date() - timedelta(days=days - 1)
     return _DateRange(
-        start=datetime.combine(start_date, time.min, tzinfo=UTC),
-        end=datetime.combine(now.date(), time.max, tzinfo=UTC),
+        start=_local_day_boundary(start_date, time.min, timezone=timezone),
+        end=_local_day_boundary(local_now.date(), time.max, timezone=timezone),
     )
 
 
-def _parse_date_boundary(value: Any, *, end_of_day: bool) -> datetime:
+def _parse_date_boundary(value: Any, *, end_of_day: bool, timezone: tzinfo = UTC) -> datetime:
     if isinstance(value, datetime):
         parsed = value
         date_only = False
@@ -669,12 +717,16 @@ def _parse_date_boundary(value: Any, *, end_of_day: bool) -> datetime:
         raise ValueError("expected ISO date or datetime")
 
     if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=UTC)
+        parsed = parsed.replace(tzinfo=timezone if date_only else UTC)
     parsed = parsed.astimezone(UTC)
     if date_only:
         boundary = time.max if end_of_day else time.min
-        return datetime.combine(parsed.date(), boundary, tzinfo=UTC)
+        return _local_day_boundary(parsed.astimezone(timezone).date(), boundary, timezone=timezone)
     return parsed
+
+
+def _local_day_boundary(date_value: Any, boundary: time, *, timezone: tzinfo) -> datetime:
+    return datetime.combine(date_value, boundary, tzinfo=timezone).astimezone(UTC)
 
 
 def _as_utc_datetime(value: datetime) -> datetime:
@@ -871,10 +923,10 @@ def _order_lines(order: Mapping[str, Any], *, sku_resolver: _OrderSkuResolver) -
     return lines
 
 
-def _order_row(order: Mapping[str, Any]) -> list[Any]:
+def _order_row(order: Mapping[str, Any], *, timezone: tzinfo) -> list[Any]:
     return [
         _document_id(order),
-        _sheet_datetime(order.get("date_created")),
+        _sheet_datetime(order.get("date_created"), timezone=timezone),
         order.get("status") or "",
         _buyer_id(order),
         _sheet_number(_decimal(order.get("total_amount"))),
@@ -883,12 +935,12 @@ def _order_row(order: Mapping[str, Any]) -> list[Any]:
     ]
 
 
-def _question_row(question: Mapping[str, Any]) -> list[Any]:
+def _question_row(question: Mapping[str, Any], *, timezone: tzinfo) -> list[Any]:
     answer = question.get("answer")
     answer_values: Mapping[str, Any] = answer if isinstance(answer, Mapping) else {}
     return [
         _document_id(question),
-        _sheet_datetime(question.get("date_created")),
+        _sheet_datetime(question.get("date_created"), timezone=timezone),
         str(question.get("item_id") or ""),
         str(question.get("from_user_id") or ""),
         question.get("status") or "",
@@ -897,7 +949,8 @@ def _question_row(question: Mapping[str, Any]) -> list[Any]:
         _sheet_datetime(
             answer_values.get("date_created")
             or answer_values.get("answered_at")
-            or answer_values.get("created_at")
+            or answer_values.get("created_at"),
+            timezone=timezone,
         ),
     ]
 
@@ -1034,11 +1087,13 @@ def _question_status_counts(questions: Sequence[Mapping[str, Any]]) -> dict[str,
     return counts
 
 
-def _question_in_hour_range(question: Mapping[str, Any], hour_range: _HourRange) -> bool:
+def _question_in_hour_range(
+    question: Mapping[str, Any], hour_range: _HourRange, *, timezone: tzinfo
+) -> bool:
     created = _optional_datetime(question.get("date_created"))
     if created is None:
         return False
-    question_time = created.time().replace(tzinfo=None)
+    question_time = created.astimezone(timezone).time().replace(tzinfo=None)
     if hour_range.start <= hour_range.end:
         return hour_range.start <= question_time <= hour_range.end
     return question_time >= hour_range.start or question_time <= hour_range.end
@@ -1111,10 +1166,32 @@ def _sheet_number(value: Decimal) -> int | float:
     return float(value)
 
 
-def _sheet_datetime(value: Any) -> str:
+def _sheet_datetime(value: Any, *, timezone: tzinfo = UTC) -> str:
     if value is None:
         return ""
     if isinstance(value, datetime):
         parsed = value if value.tzinfo is not None else value.replace(tzinfo=UTC)
-        return parsed.astimezone(UTC).isoformat()
+        return parsed.astimezone(timezone).isoformat()
+    if not _is_utc_timezone(timezone):
+        try:
+            parsed = datetime.fromisoformat(str(value).strip().replace("Z", "+00:00"))
+        except ValueError:
+            return str(value).strip()
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=UTC)
+        return parsed.astimezone(timezone).isoformat()
     return str(value).strip()
+
+
+def _is_utc_timezone(timezone: tzinfo) -> bool:
+    return timezone is UTC or getattr(timezone, "key", None) == "UTC"
+
+
+def _context_timezone(context: FormulaExecutionContext) -> tzinfo:
+    value = getattr(context, "seller_timezone", "UTC")
+    if not isinstance(value, str) or not value.strip():
+        return UTC
+    try:
+        return ZoneInfo(value.strip())
+    except ZoneInfoNotFoundError:
+        return UTC
