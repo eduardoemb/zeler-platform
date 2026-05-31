@@ -1,7 +1,7 @@
 {
   "$jsonSchema": {
-    "bsonType": "object",
     "additionalProperties": false,
+    "bsonType": "object",
     "properties": {
       "_id": {
         "bsonType": [
@@ -26,14 +26,14 @@
           "long"
         ]
       },
-      "category_id": {
-        "bsonType": "string"
-      },
       "catalog_product_id": {
         "bsonType": [
           "string",
           "null"
         ]
+      },
+      "category_id": {
+        "bsonType": "string"
       },
       "date_created": {
         "bsonType": "date"
@@ -46,17 +46,17 @@
           "null"
         ]
       },
-      "last_meli_sync_at": {
-        "bsonType": "date"
-      },
-      "last_updated": {
-        "bsonType": "date"
-      },
       "inventory_id": {
         "bsonType": [
           "string",
           "null"
         ]
+      },
+      "last_meli_sync_at": {
+        "bsonType": "date"
+      },
+      "last_updated": {
+        "bsonType": "date"
       },
       "permalink": {
         "bsonType": [
@@ -91,14 +91,14 @@
       "status": {
         "bsonType": "string"
       },
-      "title": {
-        "bsonType": "string"
-      },
       "thumbnail": {
         "bsonType": [
           "string",
           "null"
         ]
+      },
+      "title": {
+        "bsonType": "string"
       },
       "variations": {
         "bsonType": "array"
