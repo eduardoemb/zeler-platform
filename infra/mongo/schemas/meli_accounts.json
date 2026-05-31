@@ -99,6 +99,12 @@
           "int"
         ]
       },
+      "site_id": {
+        "bsonType": [
+          "string",
+          "null"
+        ]
+      },
       "status": {
         "enum": [
           "active",
@@ -114,6 +120,12 @@
       "sync_status": {
         "bsonType": [
           "object",
+          "null"
+        ]
+      },
+      "timezone": {
+        "bsonType": [
+          "string",
           "null"
         ]
       },

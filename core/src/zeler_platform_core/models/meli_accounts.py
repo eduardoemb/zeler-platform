@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from typing import Literal
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import field_validator
 
@@ -40,8 +41,29 @@ class MeliAccount(UtcDatetimeMixin, TimestampedDocument):
     connected_at: datetime | None = None
     last_error: str | None = None
     sync_status: dict[str, object] | None = None
+    site_id: str | None = None
+    timezone: str | None = None
 
     @field_validator("seller_id", mode="before")
     @classmethod
     def _coerce_seller_id(cls, value: object) -> str:
         return _coerce_str(value)
+
+    @field_validator("site_id", "timezone", mode="before")
+    @classmethod
+    def _coerce_optional_metadata_str(cls, value: object) -> str | None:
+        if value is None:
+            return None
+        return _coerce_str(value)
+
+    @field_validator("timezone")
+    @classmethod
+    def _validate_timezone(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        try:
+            ZoneInfo(value)
+        except ZoneInfoNotFoundError as exc:
+            msg = "timezone must be a valid IANA timezone"
+            raise ValueError(msg) from exc
+        return value

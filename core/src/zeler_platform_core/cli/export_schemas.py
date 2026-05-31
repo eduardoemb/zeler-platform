@@ -57,6 +57,7 @@ ENTITY_SCHEMAS: dict[str, dict[str, Any]] = {
                     "invalid_grant",
                     "error",
                     "invalid",
+                    "paused",
                 ]
             },
             "expires_at": DATE,
@@ -67,6 +68,8 @@ ENTITY_SCHEMAS: dict[str, dict[str, Any]] = {
             "kms_key_version": {"bsonType": "string"},
             "last_error": {"bsonType": ["string", "null"]},
             "sync_status": {"bsonType": ["object", "null"]},
+            "site_id": {"bsonType": ["string", "null"]},
+            "timezone": {"bsonType": ["string", "null"]},
             "created_at": DATE,
             "updated_at": DATE,
             **SCHEMA_VERSION,
