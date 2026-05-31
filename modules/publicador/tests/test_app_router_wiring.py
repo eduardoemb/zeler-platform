@@ -184,7 +184,7 @@ def _auth_headers() -> dict[str, str]:
     token = mint_module_jwt(
         "publicador",
         seller_id=123456789,
-        token_type="module_admin",
+        token_type="module_admin",  # noqa: S106 - token type discriminator, not a secret
         scopes=["admin:publicador"],
         issued_by="zeler-app",
     )

@@ -54,7 +54,7 @@ def _module_admin_forbidden_detail(
     expected_module_id: str,
     seller_id: str | int | None,
 ) -> str | None:
-    if claims.token_type != "module_admin":
+    if claims.token_type != "module_admin":  # noqa: S105 - token type discriminator, not a secret
         return "JWT token_type must be module_admin"
     if claims.module_id != expected_module_id:
         return f"JWT module_id must be {expected_module_id}"
