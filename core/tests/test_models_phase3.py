@@ -96,6 +96,23 @@ def test_shipment_accepts_meli_not_delivered_status() -> None:
     assert shipment.status == "not_delivered"
 
 
+def test_order_accepts_meli_partially_refunded_status() -> None:
+    order = Order.model_validate(
+        {
+            "id": 123,
+            "seller_id": 456,
+            "buyer_id": 789,
+            "status": "partially_refunded",
+            "date_created": NOW,
+            "total_amount": Decimal("10.00"),
+            "items": [],
+            "schema_version": 1,
+        }
+    )
+
+    assert order.status == "partially_refunded"
+
+
 def test_item_preserves_whitelisted_formula_fields_without_raw_payload_drift() -> None:
     item = Item.model_validate(
         {

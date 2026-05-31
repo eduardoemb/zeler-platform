@@ -1,0 +1,432 @@
+from __future__ import annotations
+
+from datetime import UTC, datetime
+from typing import Any
+
+import pytest
+from bson.decimal128 import Decimal128
+
+from zeler_sheets.historical_meli_backfill import (
+    build_arg_parser,
+    parse_inclusive_date_range,
+    run_historical_meli_backfill,
+    validate_cli_safety,
+)
+
+
+class FakeReplaceResult:
+    matched_count = 1
+    modified_count = 1
+    upserted_id = None
+
+
+class FakeCursor:
+    def __init__(self, documents: list[dict[str, Any]]) -> None:
+        self._documents = documents
+
+    async def to_list(self, *, length: int | None = None) -> list[dict[str, Any]]:
+        return self._documents[:length]
+
+
+class FakeCollection:
+    def __init__(self) -> None:
+        self.documents: dict[str, dict[str, Any]] = {}
+        self.replace_calls: list[tuple[dict[str, Any], dict[str, Any], bool]] = []
+
+    async def replace_one(
+        self, filter_spec: dict[str, Any], replacement: dict[str, Any], *, upsert: bool = False
+    ) -> FakeReplaceResult:
+        self.replace_calls.append((dict(filter_spec), dict(replacement), upsert))
+        self.documents[str(replacement["_id"])] = dict(replacement)
+        return FakeReplaceResult()
+
+    async def find_one(self, filter_spec: dict[str, Any]) -> dict[str, Any] | None:
+        for document in self.documents.values():
+            if all(document.get(key) == value for key, value in filter_spec.items()):
+                return dict(document)
+        return None
+
+    def find(self, filter_spec: dict[str, Any]) -> FakeCursor:
+        documents = [
+            document
+            for document in self.documents.values()
+            if all(document.get(key) == value for key, value in filter_spec.items())
+        ]
+        return FakeCursor(documents)
+
+
+class FakeDb:
+    def __init__(self) -> None:
+        self.collections: dict[str, FakeCollection] = {}
+
+    def __getitem__(self, name: str) -> FakeCollection:
+        return self.collections.setdefault(name, FakeCollection())
+
+
+class FakeGateway:
+    def __init__(self, *, return_item_detail: bool = True) -> None:
+        self.calls: list[tuple[str, str]] = []
+        self.return_item_detail = return_item_detail
+
+    async def fetch_resource(self, *, seller_id: str, path: str) -> Any:
+        self.calls.append((seller_id, path))
+        if path.startswith("/orders/search?"):
+            return {"results": [{"id": 2001}], "paging": {"total": 1, "limit": 50, "offset": 0}}
+        if path == "/items?ids=MLA1" and self.return_item_detail:
+            return [{"code": 200, "body": _item_detail()}]
+        if path == "/items?ids=MLA1":
+            return [{"code": 404, "body": {"message": "not found"}}]
+        if path == "/shipments/3001":
+            return _shipment_detail()
+        raise AssertionError(f"Unexpected gateway path: {path}")
+
+
+class FakeOrderDetailGateway:
+    def __init__(self, *, order_status: str = "paid") -> None:
+        self.calls: list[tuple[str, str]] = []
+        self.order_status = order_status
+
+    async def fetch_resource(self, *, seller_id: str, path: str) -> Any:
+        self.calls.append((seller_id, path))
+        if path == "/orders/2001":
+            return _order_detail(status=self.order_status)
+        raise AssertionError(f"Unexpected order detail gateway path: {path}")
+
+
+def test_parse_inclusive_date_range_uses_exclusive_next_day() -> None:
+    parsed = parse_inclusive_date_range("2026-05-01", "2026-05-01")
+
+    assert parsed.date_from == "2026-05-01"
+    assert parsed.date_to == "2026-05-01"
+    assert parsed.start == datetime(2026, 5, 1, tzinfo=UTC)
+    assert parsed.end_exclusive == datetime(2026, 5, 2, tzinfo=UTC)
+
+
+def test_parse_inclusive_date_range_rejects_invalid_bounds() -> None:
+    with pytest.raises(ValueError, match="date-to must be on or after date-from"):
+        parse_inclusive_date_range("2026-05-02", "2026-05-01")
+
+
+def test_cli_defaults_to_bootstrap_search_module_and_sheets_order_detail_module() -> None:
+    args = build_arg_parser().parse_args(
+        ["--seller-id", "82453304", "--date-from", "2026-05-01", "--date-to", "2026-05-01"]
+    )
+
+    assert args.module_id == "bootstrap"
+    assert args.order_detail_module_id == "sheets"
+    assert args.dry_run is True
+    validate_cli_safety(args)
+
+
+def test_cli_write_requires_approved_runtime_confirmation() -> None:
+    parser = build_arg_parser()
+    args = parser.parse_args(
+        [
+            "--seller-id",
+            "82453304",
+            "--date-from",
+            "2026-05-01",
+            "--date-to",
+            "2026-05-01",
+            "--write",
+        ]
+    )
+
+    with pytest.raises(SystemExit, match="--confirm-approved-runtime is required with --write"):
+        validate_cli_safety(args)
+
+    confirmed_args = parser.parse_args(
+        [
+            "--seller-id",
+            "82453304",
+            "--date-from",
+            "2026-05-01",
+            "--date-to",
+            "2026-05-01",
+            "--write",
+            "--confirm-approved-runtime",
+        ]
+    )
+
+    validate_cli_safety(confirmed_args)
+
+
+@pytest.mark.asyncio
+async def test_runner_write_requires_approved_runtime() -> None:
+    with pytest.raises(ValueError, match="approved_runtime is required"):
+        await run_historical_meli_backfill(
+            db=FakeDb(),
+            gateway=FakeGateway(),
+            order_detail_gateway=FakeOrderDetailGateway(),
+            seller_id="82453304",
+            date_from="2026-05-01",
+            date_to="2026-05-01",
+            dry_run=False,
+            max_orders=1,
+        )
+
+
+@pytest.mark.asyncio
+async def test_historical_backfill_dry_run_does_not_write() -> None:
+    db = FakeDb()
+    gateway = FakeGateway()
+
+    summary = await run_historical_meli_backfill(
+        db=db,
+        gateway=gateway,
+        order_detail_gateway=FakeOrderDetailGateway(),
+        seller_id="82453304",
+        date_from="2026-05-01",
+        date_to="2026-05-01",
+        dry_run=True,
+        max_orders=1,
+    )
+
+    assert summary.dry_run is True
+    assert summary.orders_found == 1
+    assert summary.planned_orders == 1
+    assert summary.planned_items == 1
+    assert summary.planned_shipments == 1
+    assert summary.written_orders == 0
+    assert summary.written_items == 0
+    assert summary.written_shipments == 0
+    assert all(not collection.replace_calls for collection in db.collections.values())
+
+
+@pytest.mark.asyncio
+async def test_historical_backfill_fetches_order_details_through_separate_gateway() -> None:
+    db = FakeDb()
+    gateway = FakeGateway()
+    order_detail_gateway = FakeOrderDetailGateway()
+
+    summary = await run_historical_meli_backfill(
+        db=db,
+        gateway=gateway,
+        order_detail_gateway=order_detail_gateway,
+        seller_id="82453304",
+        date_from="2026-05-01",
+        date_to="2026-05-01",
+        dry_run=True,
+        max_orders=1,
+    )
+
+    assert summary.orders_fetched == 1
+    assert order_detail_gateway.calls == [("82453304", "/orders/2001")]
+    main_paths = [path for _, path in gateway.calls]
+    assert any(path.startswith("/orders/search?") for path in main_paths)
+    assert "/orders/2001" not in main_paths
+    assert "/items?ids=MLA1" in main_paths
+    assert "/shipments/3001" in main_paths
+
+
+@pytest.mark.asyncio
+async def test_historical_backfill_write_persists_canonical_docs_and_read_models() -> None:
+    db = FakeDb()
+    gateway = FakeGateway()
+
+    summary = await run_historical_meli_backfill(
+        db=db,
+        gateway=gateway,
+        order_detail_gateway=FakeOrderDetailGateway(),
+        seller_id="82453304",
+        date_from="2026-05-01",
+        date_to="2026-05-01",
+        dry_run=False,
+        approved_runtime=True,
+        max_orders=1,
+    )
+
+    assert summary.as_dict()["status"] == "write_complete"
+    assert summary.order_ids == ["2001"]
+    assert summary.item_ids == ["MLA1"]
+    assert summary.shipment_ids == ["3001"]
+    assert summary.written_orders == 1
+    assert summary.written_items == 1
+    assert summary.written_shipments == 1
+
+    search_path = gateway.calls[0][1]
+    assert search_path.startswith("/orders/search?")
+    assert "seller=82453304" in search_path
+    assert "order.date_created.from=2026-05-01T00%3A00%3A00Z" in search_path
+    assert "order.date_created.to=2026-05-01T23%3A59%3A59.999Z" in search_path
+
+    order = db["orders"].documents["2001"]
+    assert order["seller_id"] == "82453304"
+    assert order["shipment_id"] == "3001"
+    assert order["items"] == [
+        {"item_id": "MLA1", "seller_sku": "sku-1", "qty": 2, "unit_price": Decimal128("149.95")}
+    ]
+
+    item = db["items"].documents["MLA1"]
+    assert item["seller_id"] == "82453304"
+    assert item["price"] == Decimal128("149.99")
+
+    shipment = db["shipments"].documents["3001"]
+    assert shipment["seller_id"] == "82453304"
+    assert shipment["order_id"] == "2001"
+
+    assert db["sheets_item_sku_index"].documents["82453304:SKU-1:MLA1:item"]["item_id"] == "MLA1"
+    formula_row = db["sheets_item_formula_rows"].documents["82453304:SKU-1:MLA1"]
+    assert formula_row["current"]["title"] == "Premium widget"
+    assert formula_row["current"]["inventory_id"] == "INV-ITEM-1"
+
+
+@pytest.mark.asyncio
+async def test_historical_backfill_write_accepts_partially_refunded_orders() -> None:
+    db = FakeDb()
+    gateway = FakeGateway()
+
+    summary = await run_historical_meli_backfill(
+        db=db,
+        gateway=gateway,
+        order_detail_gateway=FakeOrderDetailGateway(order_status="partially_refunded"),
+        seller_id="82453304",
+        date_from="2026-05-01",
+        date_to="2026-05-01",
+        dry_run=False,
+        approved_runtime=True,
+        max_orders=1,
+    )
+
+    assert summary.status == "write_complete"
+    assert db["orders"].documents["2001"]["status"] == "partially_refunded"
+
+
+@pytest.mark.asyncio
+async def test_historical_backfill_write_reupserts_fetched_docs_even_when_existing() -> None:
+    db = FakeDb()
+    gateway = FakeGateway()
+    await run_historical_meli_backfill(
+        db=db,
+        gateway=gateway,
+        order_detail_gateway=FakeOrderDetailGateway(),
+        seller_id="82453304",
+        date_from="2026-05-01",
+        date_to="2026-05-01",
+        dry_run=False,
+        approved_runtime=True,
+        max_orders=1,
+    )
+    gateway.calls.clear()
+
+    summary = await run_historical_meli_backfill(
+        db=db,
+        gateway=gateway,
+        order_detail_gateway=FakeOrderDetailGateway(),
+        seller_id="82453304",
+        date_from="2026-05-01",
+        date_to="2026-05-01",
+        dry_run=False,
+        approved_runtime=True,
+        max_orders=1,
+    )
+
+    assert summary.existing_orders == 1
+    assert summary.existing_items == 1
+    assert summary.existing_shipments == 1
+    assert summary.missing_orders == 0
+    assert summary.missing_items == 0
+    assert summary.missing_shipments == 0
+    assert summary.planned_orders == 1
+    assert summary.planned_items == 1
+    assert summary.planned_shipments == 1
+    assert summary.written_orders == 1
+    assert summary.written_items == 1
+    assert summary.written_shipments == 1
+
+
+@pytest.mark.asyncio
+async def test_historical_backfill_dry_run_reports_item_detail_misses() -> None:
+    db = FakeDb()
+    gateway = FakeGateway(return_item_detail=False)
+
+    summary = await run_historical_meli_backfill(
+        db=db,
+        gateway=gateway,
+        order_detail_gateway=FakeOrderDetailGateway(),
+        seller_id="82453304",
+        date_from="2026-05-01",
+        date_to="2026-05-01",
+        dry_run=True,
+        max_orders=1,
+    )
+
+    assert summary.item_ids == ["MLA1"]
+    assert summary.items_fetched == 0
+    assert summary.item_detail_missing == 1
+    assert summary.missing_item_detail_ids == ["MLA1"]
+    assert summary.planned_items == 0
+    assert all(not collection.replace_calls for collection in db.collections.values())
+
+
+@pytest.mark.asyncio
+async def test_historical_backfill_write_fails_before_mutation_when_item_details_missing() -> None:
+    db = FakeDb()
+    gateway = FakeGateway(return_item_detail=False)
+
+    with pytest.raises(ValueError, match="missing item details for 1 item"):
+        await run_historical_meli_backfill(
+            db=db,
+            gateway=gateway,
+            order_detail_gateway=FakeOrderDetailGateway(),
+            seller_id="82453304",
+            date_from="2026-05-01",
+            date_to="2026-05-01",
+            dry_run=False,
+            approved_runtime=True,
+            max_orders=1,
+        )
+
+    assert all(not collection.replace_calls for collection in db.collections.values())
+
+
+def _order_detail(*, status: str = "paid") -> dict[str, Any]:
+    return {
+        "id": 2001,
+        "status": status,
+        "date_created": "2026-05-01T12:00:00+00:00",
+        "date_closed": "2026-05-01T12:05:00+00:00",
+        "total_amount": "299.90",
+        "buyer": {"id": 123},
+        "shipping": {"id": 3001},
+        "order_items": [
+            {
+                "item": {"id": "MLA1", "seller_sku": "sku-1"},
+                "quantity": 2,
+                "unit_price": "149.95",
+            }
+        ],
+        "tags": ["paid"],
+    }
+
+
+def _item_detail() -> dict[str, Any]:
+    return {
+        "id": "MLA1",
+        "title": "Premium widget",
+        "price": "149.99",
+        "base_price": "159.99",
+        "available_quantity": 7,
+        "status": "active",
+        "category_id": "MLA123",
+        "permalink": "https://articulo.example/MLA1",
+        "thumbnail": "https://img.example/MLA1.jpg",
+        "inventory_id": "INV-ITEM-1",
+        "attributes": [{"id": "SELLER_SKU", "value_name": "sku-1"}],
+        "variations": [],
+        "date_created": "2026-05-01T10:00:00+00:00",
+        "last_updated": "2026-05-01T11:00:00+00:00",
+    }
+
+
+def _shipment_detail() -> dict[str, Any]:
+    return {
+        "id": 3001,
+        "order_id": 2001,
+        "status": "ready_to_ship",
+        "substatus": "printed",
+        "tracking_number": "TRACK-1",
+        "logistic_type": "drop_off",
+        "date_created": "2026-05-01T12:10:00+00:00",
+        "last_updated": "2026-05-01T12:30:00+00:00",
+    }

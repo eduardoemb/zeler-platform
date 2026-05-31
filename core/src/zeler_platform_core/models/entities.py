@@ -14,7 +14,14 @@ from zeler_platform_core.models.base import (
 )
 
 ItemStatus = Literal["active", "paused", "closed", "under_review", "inactive"]
-OrderStatus = Literal["paid", "confirmed", "payment_required", "payment_in_process", "cancelled"]
+OrderStatus = Literal[
+    "paid",
+    "confirmed",
+    "payment_required",
+    "payment_in_process",
+    "cancelled",
+    "partially_refunded",
+]
 MessageStatus = Literal["available", "blocked", "moderated", "deleted"]
 ShipmentStatus = Literal[
     "pending",
