@@ -7,6 +7,7 @@ from typing import Any, Protocol
 import httpx
 
 from zeler_bootstrap.state_machine import BootstrapStateMachine
+from zeler_platform_core.meli_timezones import resolve_meli_timezone
 from zeler_platform_core.models import Claim, Item, Message, Order, Question, Shipment
 from zeler_platform_core.models.base import current_schema_version
 
@@ -148,18 +149,39 @@ class AccountsStage:
     async def run(self, job: dict[str, Any], state_machine: BootstrapStateMachine) -> None:
         seller_id = str(job["seller_id"])
         metadata = await self.gateway.get(f"/users/{seller_id}")
+        update = _account_metadata_update(seller_id=seller_id, metadata=metadata)
         await self.database["meli_accounts"].update_one(
             {"seller_id": seller_id},
-            {
-                "$set": {
-                    "seller_id": seller_id,
-                    "nickname": metadata.get("nickname"),
-                    "schema_version": 1,
-                }
-            },
+            update,
             upsert=True,
         )
         await state_machine.update_cursor(self.name, {"seller_id": seller_id})
+
+
+def _account_metadata_update(*, seller_id: str, metadata: dict[str, Any]) -> dict[str, Any]:
+    site_id = _metadata_site_id(metadata)
+    timezone_resolution = resolve_meli_timezone(site_id)
+    set_fields = _without_none_values(
+        {
+            "seller_id": seller_id,
+            "nickname": metadata.get("nickname"),
+            "schema_version": 1,
+            "site_id": timezone_resolution.site_id,
+        }
+    )
+    update: dict[str, Any] = {"$set": set_fields}
+    if timezone_resolution.site_id is None:
+        update["$setOnInsert"] = {"timezone": timezone_resolution.timezone}
+    else:
+        set_fields["timezone"] = timezone_resolution.timezone
+    return update
+
+
+def _metadata_site_id(metadata: dict[str, Any]) -> str | None:
+    value = metadata.get("site_id")
+    if value is None:
+        return None
+    return str(value)
 
 
 class ItemsStage:

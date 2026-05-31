@@ -9,6 +9,7 @@ import pytest
 from zeler_bootstrap.runner import BootstrapDagRunner, BootstrapStage, build_default_stages
 from zeler_bootstrap.stages import (
     MELI_ITEMS_BATCH_SIZE,
+    AccountsStage,
     BootstrapGatewayClient,
     ClaimsStage,
     InMemoryPublisher,
@@ -91,7 +92,7 @@ class FakeGateway(BootstrapGatewayClient):
     async def get(self, path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
         self.calls.append((path, params))
         if path == "/users/123":
-            return {"id": 123, "nickname": "TEST_SELLER"}
+            return {"id": 123, "nickname": "TEST_SELLER", "site_id": "MLM"}
         if path == "/users/123/items/search":
             cursor = (params or {}).get("scroll_id")
             if cursor is None:
@@ -321,6 +322,55 @@ async def test_default_bootstrap_stages_fetch_paginate_upsert_and_emit_completio
             "payload": {"job_id": "job-1", "seller_id": "123"},
         }
     ]
+
+
+@pytest.mark.asyncio
+async def test_accounts_stage_persists_site_id_and_resolved_timezone() -> None:
+    collection = FakeBootstrapJobs()
+    collection.document["state"] = "running"
+    database = FakeDatabase()
+    gateway = FakeGateway()
+    machine = BootstrapStateMachine(collection, "job-1", now_fn=lambda: NOW)
+
+    await AccountsStage(gateway, database).run(collection.document, machine)
+
+    filter_spec, update, upsert = database["meli_accounts"].upserts[0]
+    assert filter_spec == {"seller_id": "123"}
+    assert upsert is True
+    assert update["$set"] == {
+        "seller_id": "123",
+        "nickname": "TEST_SELLER",
+        "site_id": "MLM",
+        "timezone": "America/Mexico_City",
+        "schema_version": 1,
+    }
+
+
+@pytest.mark.asyncio
+async def test_accounts_stage_uses_insert_only_utc_fallback_without_null_overwrite() -> None:
+    collection = FakeBootstrapJobs()
+    collection.document["state"] = "running"
+    database = FakeDatabase()
+    gateway = FakeGateway()
+
+    async def get(path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+        gateway.calls.append((path, params))
+        if path == "/users/123":
+            return {"id": 123, "nickname": "TEST_SELLER", "site_id": None}
+        raise AssertionError(path)
+
+    gateway.get = get  # type: ignore[method-assign]
+    machine = BootstrapStateMachine(collection, "job-1", now_fn=lambda: NOW)
+
+    await AccountsStage(gateway, database).run(collection.document, machine)
+
+    _, update, _ = database["meli_accounts"].upserts[0]
+    assert update["$set"] == {
+        "seller_id": "123",
+        "nickname": "TEST_SELLER",
+        "schema_version": 1,
+    }
+    assert update["$setOnInsert"] == {"timezone": "UTC"}
 
 
 def test_order_item_preserves_source_identity_fields_without_synthesizing_absent_values() -> None:

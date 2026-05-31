@@ -8,16 +8,20 @@ from typing import Any, cast
 from urllib.parse import urlencode
 
 import httpx
+import structlog
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, RedirectResponse, Response
 
 from zeler_gateway.config import Settings
 from zeler_gateway.oauth.events import emit_accounts_linked
 from zeler_gateway.tokens.encryption import encrypt_token
+from zeler_platform_core.meli_timezones import resolve_meli_timezone
 
+logger = structlog.get_logger(__name__)
 router = APIRouter(prefix="/oauth", tags=["oauth"])
 
 MELI_AUTHORIZE_URL = "https://auth.mercadolibre.com/authorization"
+MELI_API_BASE = "https://api.mercadolibre.com"
 MELI_TOKEN_URL = "https://api.mercadolibre.com/oauth/token"  # noqa: S105 - OAuth endpoint URL
 APP_ID = "zeler-platform"
 
@@ -79,6 +83,17 @@ async def callback(
     now = datetime.now(UTC)
     expires_in = int(token_payload["expires_in"])
     scope = str(token_payload.get("scope", ""))
+    user_metadata = await _fetch_user_metadata(
+        access_token=str(token_payload["access_token"]), seller_id=seller_id
+    )
+    site_id = _metadata_site_id(user_metadata)
+    timezone_resolution = resolve_meli_timezone(site_id)
+    if timezone_resolution.fallback:
+        logger.warning(
+            "oauth.user_timezone.fallback",
+            seller_id=seller_id,
+            **timezone_resolution.warning_fields,
+        )
 
     access_enc = encrypt_token(str(token_payload["access_token"]), account_id=str(seller_id))
     refresh_enc = encrypt_token(str(token_payload["refresh_token"]), account_id=str(seller_id))
@@ -97,10 +112,9 @@ async def callback(
         "invalid_grant",
     }
 
-    # TODO(P1.x): fetch real nickname from GET /users/{user_id} once we have a settings toggle.
     doc_set: dict[str, Any] = {
         "seller_id": seller_id,
-        "nickname": f"seller_{seller_id}",
+        "nickname": _metadata_nickname(user_metadata, seller_id),
         "app_id": APP_ID,
         "platform_user_id": platform_user_id,
         "access_token_ciphertext": access_enc.ciphertext,
@@ -116,7 +130,10 @@ async def callback(
         "schema_version": 1,
         "updated_at": now,
         "last_refreshed_at": now,
+        "timezone": timezone_resolution.timezone,
     }
+    if timezone_resolution.site_id is not None:
+        doc_set["site_id"] = timezone_resolution.site_id
     doc_set_on_insert: dict[str, Any] = {
         "created_at": now,
         "connected_at": now,
@@ -165,3 +182,46 @@ async def _exchange_authorization_code(
     if response.status_code >= 400:
         raise HTTPException(status_code=400, detail="OAuth code exchange failed")
     return cast(dict[str, Any], response.json())
+
+
+async def _fetch_user_metadata(*, access_token: str, seller_id: int) -> dict[str, Any] | None:
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.get(
+                f"{MELI_API_BASE}/users/{seller_id}",
+                headers={"Authorization": f"Bearer {access_token}"},
+            )
+    except httpx.HTTPError as exc:
+        logger.warning(
+            "oauth.user_metadata.unavailable",
+            seller_id=seller_id,
+            error_type=type(exc).__name__,
+        )
+        return None
+
+    if response.status_code >= 400:
+        logger.warning(
+            "oauth.user_metadata.unavailable",
+            seller_id=seller_id,
+            status_code=response.status_code,
+        )
+        return None
+    return cast(dict[str, Any], response.json())
+
+
+def _metadata_site_id(metadata: dict[str, Any] | None) -> str | None:
+    if metadata is None:
+        return None
+    value = metadata.get("site_id")
+    if value is None:
+        return None
+    return str(value)
+
+
+def _metadata_nickname(metadata: dict[str, Any] | None, seller_id: int) -> str:
+    if metadata is None:
+        return f"seller_{seller_id}"
+    nickname = metadata.get("nickname")
+    if nickname is None or not str(nickname).strip():
+        return f"seller_{seller_id}"
+    return str(nickname)
