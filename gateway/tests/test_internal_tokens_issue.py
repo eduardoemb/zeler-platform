@@ -286,6 +286,7 @@ def test_admin_client_seed_contains_zeler_app_active_module_admin_scopes() -> No
             "admin:publicador",
             "admin:autoreply",
         ],
+        "allowed_platform_user_ids": [],
         "allowed_seller_ids": [82453304],
         "routing_keys": [],
         "owned_collections": [],

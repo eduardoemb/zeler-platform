@@ -46,7 +46,10 @@ async def issue_token(request: Request, payload: TokenIssueRequest) -> JSONRespo
     module = await db["module_registry"].find_one({"_id": caller["module_id"], "status": "enabled"})
     if module is None:
         return _json_error(401, "unknown_module")
-    if not _seller_allowed(payload.seller_id, cast(list[int] | None, module.get("allowed_seller_ids"))):
+    if not _seller_allowed(
+        payload.seller_id,
+        cast(list[int] | None, module.get("allowed_seller_ids")),
+    ):
         return _json_error(403, "seller_mismatch")
     allowed_scopes = cast(list[str], module.get("allowed_meli_scopes", []))
     if not all(_scope_allowed(scope, allowed_scopes) for scope in payload.scopes):
@@ -59,7 +62,7 @@ async def issue_token(request: Request, payload: TokenIssueRequest) -> JSONRespo
             payload.target_module_id.strip(),
             seller_id=payload.seller_id,
             ttl_s=payload.ttl_s,
-            token_type="module_admin",
+            token_type="module_admin",  # noqa: S106 - token type discriminator, not a secret
             scopes=payload.scopes,
             issued_by=caller["module_id"],
         )
