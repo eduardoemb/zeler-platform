@@ -336,6 +336,56 @@ async def test_zeler_app_seed_allows_repricer_admin_token_exchange(
 
     assert response.status_code == 200
     assert response.json()["access_token"] == "jwt:repricer:82453304:120"  # noqa: S105
+    audit_doc = app.state.mongo_db["audit_log"].documents[0]
+    assert "platform_user_id" not in audit_doc
+
+
+@pytest.mark.asyncio
+async def test_legacy_bearer_module_admin_rejects_platform_user_id_body(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import zeler_gateway.internal.router as internal_router
+    from zeler_gateway.internal.router import router
+
+    mint_calls: list[dict[str, Any]] = []
+
+    def record_mint_call(*args: Any, **kwargs: Any) -> str:
+        mint_calls.append({"args": args, "kwargs": kwargs})
+        return "bad"
+
+    app = FastAPI()
+    app.state.mongo_db = FakeAsyncDb()
+    app.state.mongo_db["module_registry"].documents.append(
+        {"_id": "zeler-app", "status": "enabled", "allowed_meli_scopes": ["admin:repricer"]}
+    )
+    app.include_router(router)
+    monkeypatch.setattr(
+        internal_router,
+        "verify_module_jwt",
+        lambda token: FakeClaims(module_id="zeler-app", seller_id=82453304),
+    )
+    monkeypatch.setattr(internal_router, "mint_module_jwt", record_mint_call)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.post(
+            "/internal/tokens/issue",
+            headers={"Authorization": "Bearer zeler-app-gateway-token"},
+            json={
+                "seller_id": 82453304,
+                "platform_user_id": "browser-controlled-user",
+                "scopes": ["admin:repricer"],
+                "ttl_s": 120,
+                "token_kind": "module_admin",
+                "target_module_id": "repricer",
+            },
+        )
+
+    assert response.status_code == 403
+    assert response.json() == {"error": "out_of_scope"}
+    assert mint_calls == []
+    assert app.state.mongo_db["audit_log"].documents == []
 
 
 @pytest.mark.asyncio
