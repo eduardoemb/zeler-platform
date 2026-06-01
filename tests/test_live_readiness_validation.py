@@ -238,29 +238,12 @@ def test_mongo_readiness_validates_zeler_app_admin_seed_scope() -> None:
     ]
 
 
-def test_mongo_readiness_validates_zeler_app_user_allowlist_contract() -> None:
-    report = build_mongo_readiness_report(
-        schemas_dir=ROOT / "infra" / "mongo" / "schemas",
-        indexes_dir=ROOT / "infra" / "mongo" / "indexes",
-        seeds_dir=ROOT / "infra" / "mongo" / "seeds",
-        mongo_uri=None,
-    )
-
-    assert report.summary["module_registry_user_allowlist_mismatches"] == 0
-    assert report.summary["module_registry_export_user_allowlist_mismatches"] == 0
-    assert not [
-        finding
-        for finding in report.findings
-        if finding.resource_type in {"seed", "module_registry_doc"}
-        and finding.resource_name == "zeler-app"
-        and "allowed_platform_user_ids" in finding.detail
-    ]
-
-
-def test_mongo_readiness_allows_missing_zeler_app_user_allowlist(tmp_path: Path) -> None:
+def test_mongo_readiness_rejects_removed_zeler_app_user_allowlist_field(
+    tmp_path: Path,
+) -> None:
     seeds_dir = tmp_path / "seeds"
     seeds_dir.mkdir()
-    seed_without_user_allowlist = {
+    seed_with_removed_user_allowlist = {
         "collection": "module_registry",
         "documents": [
             {
@@ -272,6 +255,7 @@ def test_mongo_readiness_allows_missing_zeler_app_user_allowlist(tmp_path: Path)
                     "admin:publicador",
                     "admin:autoreply",
                 ],
+                "allowed_platform_user_ids": ["platform-user-1"],
                 "allowed_seller_ids": [82453304],
                 "routing_keys": [],
                 "owned_collections": [],
@@ -282,7 +266,7 @@ def test_mongo_readiness_allows_missing_zeler_app_user_allowlist(tmp_path: Path)
         ],
     }
     (seeds_dir / "module_registry.admin_clients.json").write_text(
-        json.dumps(seed_without_user_allowlist), encoding="utf-8"
+        json.dumps(seed_with_removed_user_allowlist), encoding="utf-8"
     )
 
     report = build_mongo_readiness_report(
@@ -292,17 +276,16 @@ def test_mongo_readiness_allows_missing_zeler_app_user_allowlist(tmp_path: Path)
         mongo_uri=None,
     )
 
-    assert report.summary["module_registry_user_allowlist_mismatches"] == 0
-    assert not [
-        finding
-        for finding in report.findings
-        if finding.resource_type == "seed"
+    assert any(
+        finding.severity == "fail"
+        and finding.resource_type == "seed"
         and finding.resource_name == "zeler-app"
-        and "allowed_platform_user_ids" in finding.detail
-    ]
+        and "allowed_platform_user_ids is no longer supported" in finding.detail
+        for finding in report.findings
+    )
 
 
-def test_mongo_readiness_allows_export_missing_zeler_app_user_allowlist(
+def test_mongo_readiness_rejects_export_with_removed_zeler_app_user_allowlist_field(
     tmp_path: Path,
 ) -> None:
     export_path = tmp_path / "module-registry-export.json"
@@ -319,6 +302,7 @@ def test_mongo_readiness_allows_export_missing_zeler_app_user_allowlist(
                             "admin:publicador",
                             "admin:autoreply",
                         ],
+                        "allowed_platform_user_ids": ["platform-user-1"],
                         "allowed_seller_ids": [82453304],
                         "routing_keys": [],
                         "status": "enabled",
@@ -338,14 +322,13 @@ def test_mongo_readiness_allows_export_missing_zeler_app_user_allowlist(
         mongo_uri=None,
     )
 
-    assert report.summary["module_registry_export_user_allowlist_mismatches"] == 0
-    assert not [
-        finding
-        for finding in report.findings
-        if finding.resource_type == "module_registry_doc"
+    assert any(
+        finding.severity == "fail"
+        and finding.resource_type == "module_registry_doc"
         and finding.resource_name == "zeler-app"
-        and "allowed_platform_user_ids" in finding.detail
-    ]
+        and finding.detail == "allowed_platform_user_ids is no longer supported"
+        for finding in report.findings
+    )
 
 
 def test_mongo_readiness_validates_meli_account_ownership_lookup_index() -> None:

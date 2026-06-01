@@ -342,7 +342,6 @@ ENTITY_SCHEMAS: dict[str, dict[str, Any]] = {
             "_id",
             "version",
             "allowed_meli_scopes",
-            "allowed_platform_user_ids",
             "routing_keys",
             "status",
             "schema_version",
@@ -351,11 +350,6 @@ ENTITY_SCHEMAS: dict[str, dict[str, Any]] = {
             **ID_OBJECT_OR_STRING,
             "version": {"bsonType": "string"},
             "allowed_meli_scopes": {"bsonType": "array"},
-            "allowed_platform_user_ids": {
-                "bsonType": "array",
-                "items": {"bsonType": "string"},
-                "maxItems": 100,
-            },
             "allowed_seller_ids": {
                 "bsonType": "array",
                 "items": {"bsonType": ["int", "long", "string"]},

@@ -31,7 +31,7 @@ Optional sandbox/live checks:
    python -m infra.rabbitmq.readiness --definitions infra/rabbitmq/definitions.json
    python -m infra.mongo.readiness --schemas-dir infra/mongo/schemas --indexes-dir infra/mongo/indexes
    ```
-   This validates the local `module_registry.admin_clients.json` seed shape, including the `zeler-app` admin client, optional legacy `allowed_platform_user_ids` shape when present, deprecated seller fallback, and admin scopes.
+   This validates the local `module_registry.admin_clients.json` seed shape, including the `zeler-app` admin client, deprecated seller fallback, and admin scopes.
 2. Export RabbitMQ definitions from the sandbox management console/API into a file. If the plan does not permit exports, use AMQP passive readiness instead:
    ```bash
    python -m infra.rabbitmq.readiness \
@@ -67,9 +67,9 @@ Readiness only proves that the seed file is well-formed and, when an export is s
 
 1. Confirm the target database and change window.
 2. Review `infra/mongo/seeds/module_registry.admin_clients.json` and verify it contains `_id="zeler-app"`, `status="enabled"`, deprecated `allowed_seller_ids` only for rollout fallback, and the intended admin scopes (`admin:repricer`, `admin:sheets`, `admin:publicador`, `admin:autoreply`).
-3. Apply the seed with the team's approved Mongo import/upsert procedure, or run the approved VM/VPC repair script. Do not provision new users through `allowed_platform_user_ids`; linked active seller ownership is checked in `meli_accounts`. This is intentionally not implemented by `infra.mongo.readiness`.
+3. Apply the seed with the team's approved Mongo import/upsert procedure, or run the approved VM/VPC repair script. Do not provision users in `module_registry`; linked active seller ownership is checked in `meli_accounts`. This is intentionally not implemented by `infra.mongo.readiness`.
 4. Export or query `module_registry` read-only after the apply step and re-run readiness with `--module-registry-export "$MODULE_REGISTRY_EXPORT"`.
-5. Treat missing `zeler-app`, malformed optional `allowed_platform_user_ids`, or scope mismatch findings as a failed bootstrap; do not proceed to zeler-app admin-token smoke checks until corrected by an explicit apply step.
+5. Treat missing `zeler-app` or scope mismatch findings as a failed bootstrap; do not proceed to zeler-app admin-token smoke checks until corrected by an explicit apply step.
 
 ## zeler-app broker contract note
 

@@ -11,13 +11,6 @@
       "allowed_meli_scopes": {
         "bsonType": "array"
       },
-      "allowed_platform_user_ids": {
-        "bsonType": "array",
-        "items": {
-          "bsonType": "string"
-        },
-        "maxItems": 100
-      },
       "allowed_seller_ids": {
         "bsonType": "array",
         "items": {

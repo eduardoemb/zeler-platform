@@ -31,6 +31,8 @@ class FakeCollection:
         existing = self.documents.get(doc_id, {"_id": doc_id})
         set_doc = update.get("$set", {})
         self.documents[doc_id] = {**existing, **set_doc}
+        for unset_key in update.get("$unset", {}):
+            self.documents[doc_id].pop(unset_key, None)
         return FakeUpdateResult(matched_count=1 if doc_id in self.documents else 0)
 
     def find_one(self, filter_: dict[str, Any]) -> dict[str, Any] | None:
@@ -108,26 +110,9 @@ def test_ensure_zeler_app_admin_client_repairs_stale_doc(
     assert result == {"client_id": "zeler-app", "status": "updated"}
     zeler_app = database["module_registry"].documents["zeler-app"]
     assert zeler_app["status"] == "enabled"
-    assert zeler_app["allowed_platform_user_ids"] == ["platform-user-existing"]
+    assert "allowed_platform_user_ids" not in zeler_app
     assert zeler_app["allowed_seller_ids"] == [PILOT_SELLER_ID]
     assert zeler_app["allowed_meli_scopes"] == REQUIRED_SCOPES
-
-
-def test_ensure_zeler_app_admin_client_accepts_env_platform_user_allowlist(
-    monkeypatch: pytest.MonkeyPatch,
-    operation_module: Any,
-) -> None:
-    database = FakeDatabase()
-    fake_client = FakeClient(database)
-    monkeypatch.setattr(operation_module, "MongoClient", lambda _uri: fake_client)
-    monkeypatch.setenv(
-        "ZELER_APP_ALLOWED_PLATFORM_USER_IDS", " platform-user-1,platform-user-2 ,, "
-    )
-
-    operation_module.ensure_zeler_app_admin_client("mongodb://test/db")
-
-    zeler_app = database["module_registry"].documents["zeler-app"]
-    assert zeler_app["allowed_platform_user_ids"] == ["platform-user-1", "platform-user-2"]
 
 
 def test_ensure_zeler_app_admin_client_preserves_existing_deprecated_seller_fallback(
@@ -138,7 +123,6 @@ def test_ensure_zeler_app_admin_client_preserves_existing_deprecated_seller_fall
     database["module_registry"].documents["zeler-app"] = {
         "_id": "zeler-app",
         "status": "enabled",
-        "allowed_platform_user_ids": [],
         "allowed_seller_ids": [11111111, "22222222"],
         "allowed_meli_scopes": REQUIRED_SCOPES,
         "schema_version": 1,

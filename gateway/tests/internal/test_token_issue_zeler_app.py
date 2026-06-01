@@ -25,7 +25,7 @@ OTHER_USER_SELLER_ID = 33333333
 INACTIVE_SELLER_ID = 44444444
 ALLOWED_PLATFORM_USER_ID = "platform-user-allowed"
 OTHER_PLATFORM_USER_ID = "platform-user-other"
-UNALLOWED_PLATFORM_USER_ID = "platform-user-unallowed"
+NEW_PLATFORM_USER_ID = "platform-user-new"
 
 
 class FakeAsyncCollection:
@@ -56,7 +56,6 @@ class FakeAsyncDb:
                     or {
                         "_id": "zeler-app",
                         "status": "enabled",
-                        "allowed_platform_user_ids": [ALLOWED_PLATFORM_USER_ID],
                         "allowed_seller_ids": [
                             PILOT_SELLER_ID,
                             OTHER_USER_SELLER_ID,
@@ -341,7 +340,7 @@ async def test_zeler_app_platform_user_cannot_issue_for_other_users_seller(
 
 
 @pytest.mark.asyncio
-async def test_zeler_app_unallowlisted_platform_user_can_use_owned_active_seller(
+async def test_zeler_app_platform_user_can_use_owned_active_seller(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import zeler_gateway.internal.router as internal_router
@@ -360,7 +359,7 @@ async def test_zeler_app_unallowlisted_platform_user_can_use_owned_active_seller
             {
                 "seller_id": PILOT_SELLER_ID,
                 "app_id": ZELER_PLATFORM_APP_ID,
-                "platform_user_id": UNALLOWED_PLATFORM_USER_ID,
+                "platform_user_id": NEW_PLATFORM_USER_ID,
                 "status": "active",
             }
         ]
@@ -369,7 +368,7 @@ async def test_zeler_app_unallowlisted_platform_user_can_use_owned_active_seller
     body = _json_body(
         {
             "seller_id": PILOT_SELLER_ID,
-            "platform_user_id": UNALLOWED_PLATFORM_USER_ID,
+            "platform_user_id": NEW_PLATFORM_USER_ID,
             "scopes": ["admin:repricer"],
             "ttl_s": 120,
             "token_kind": "module_admin",
@@ -390,12 +389,12 @@ async def test_zeler_app_unallowlisted_platform_user_can_use_owned_active_seller
     assert response.json()["access_token"] == "bad"  # noqa: S105
     assert len(mint_calls) == 1
     audit_doc = app.state.mongo_db["audit_log"].documents[0]
-    assert audit_doc["platform_user_id"] == UNALLOWED_PLATFORM_USER_ID
+    assert audit_doc["platform_user_id"] == NEW_PLATFORM_USER_ID
     assert audit_doc["seller_id"] == PILOT_SELLER_ID
 
 
 @pytest.mark.asyncio
-async def test_zeler_app_unallowlisted_platform_user_still_needs_active_seller_ownership(
+async def test_zeler_app_platform_user_without_account_ownership_is_denied(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import zeler_gateway.internal.router as internal_router
@@ -414,7 +413,7 @@ async def test_zeler_app_unallowlisted_platform_user_still_needs_active_seller_o
     body = _json_body(
         {
             "seller_id": OWNED_SELLER_ID,
-            "platform_user_id": UNALLOWED_PLATFORM_USER_ID,
+            "platform_user_id": NEW_PLATFORM_USER_ID,
             "scopes": ["admin:repricer"],
             "ttl_s": 120,
             "token_kind": "module_admin",
@@ -711,7 +710,6 @@ async def test_zeler_app_deprecated_seller_fallback_accepts_string_allowed_selle
         zeler_app_doc={
             "_id": "zeler-app",
             "status": "enabled",
-            "allowed_platform_user_ids": [ALLOWED_PLATFORM_USER_ID],
             "allowed_seller_ids": [str(PILOT_SELLER_ID)],
             "allowed_meli_scopes": ["admin:repricer"],
         }

@@ -15,20 +15,6 @@ REQUIRED_ADMIN_SCOPES = [
     "admin:publicador",
     "admin:autoreply",
 ]
-PLATFORM_USER_ALLOWLIST_ENV = "ZELER_APP_ALLOWED_PLATFORM_USER_IDS"
-
-
-def _parse_env_allowlist(raw_value: str) -> list[str]:
-    return [item.strip() for item in raw_value.split(",") if item.strip()]
-
-
-def _existing_platform_user_allowlist(existing: Mapping[str, Any] | None) -> list[str]:
-    if not existing:
-        return []
-    raw_allowlist = existing.get("allowed_platform_user_ids")
-    if not isinstance(raw_allowlist, list):
-        return []
-    return [str(item) for item in raw_allowlist if str(item).strip()]
 
 
 def _deprecated_seller_fallback(existing: Mapping[str, Any] | None) -> list[Any]:
@@ -45,12 +31,6 @@ def ensure_zeler_app_admin_client(mongo_uri: str) -> dict[str, str]:
         database = client.get_default_database()
         module_registry = database["module_registry"]
         existing = module_registry.find_one({"_id": ZELER_APP_CLIENT_ID})
-        env_allowlist = os.environ.get(PLATFORM_USER_ALLOWLIST_ENV)
-        allowed_platform_user_ids = (
-            _parse_env_allowlist(env_allowlist)
-            if env_allowlist is not None
-            else _existing_platform_user_allowlist(existing)
-        )
         set_doc: dict[str, Any] = {
             "_id": ZELER_APP_CLIENT_ID,
             "version": "0.1.0",
@@ -62,12 +42,10 @@ def ensure_zeler_app_admin_client(mongo_uri: str) -> dict[str, str]:
             "status": "enabled",
             "schema_version": 1,
         }
-        if allowed_platform_user_ids:
-            set_doc["allowed_platform_user_ids"] = allowed_platform_user_ids
 
         module_registry.update_one(
             {"_id": ZELER_APP_CLIENT_ID},
-            {"$set": set_doc},
+            {"$set": set_doc, "$unset": {"allowed_platform_user_ids": ""}},
             upsert=True,
         )
         return {"client_id": ZELER_APP_CLIENT_ID, "status": "updated"}

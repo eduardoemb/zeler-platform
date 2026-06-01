@@ -17,10 +17,6 @@ EXPECTED_ADMIN_CLIENT_SCOPES = {
         "admin:autoreply",
     }
 }
-EXPECTED_PLATFORM_USER_ALLOWLIST_CLIENTS: set[str] = set()
-MAX_PLATFORM_USER_ALLOWLIST_SIZE = 100
-
-
 @dataclass(frozen=True)
 class MongoReadinessFinding:
     severity: Severity
@@ -135,6 +131,8 @@ def _is_module_registry_seed_document(document: Any) -> bool:
 
 def _validate_module_registry_seed_document(document: dict[str, Any]) -> list[str]:
     errors: list[str] = []
+    if "allowed_platform_user_ids" in document:
+        errors.append("allowed_platform_user_ids is no longer supported")
     required_object_fields = {
         "version": str,
         "allowed_meli_scopes": list,
@@ -170,24 +168,9 @@ def _find_admin_scope_mismatch(document: dict[str, Any]) -> str | None:
     return None
 
 
-def _find_platform_user_allowlist_mismatch(document: dict[str, Any]) -> str | None:
-    if (
-        document["_id"] not in EXPECTED_PLATFORM_USER_ALLOWLIST_CLIENTS
-        and "allowed_platform_user_ids" not in document
-    ):
-        return None
-    allowlist = document.get("allowed_platform_user_ids")
-    if not isinstance(allowlist, list):
-        return "allowed_platform_user_ids must be a list"
-    if len(allowlist) > MAX_PLATFORM_USER_ALLOWLIST_SIZE:
-        return (
-            "allowed_platform_user_ids must remain a bounded rollout allowlist; "
-            f"max={MAX_PLATFORM_USER_ALLOWLIST_SIZE}"
-        )
-    if not all(isinstance(platform_user_id, str) for platform_user_id in allowlist):
-        return "allowed_platform_user_ids must contain only strings"
-    if any(not platform_user_id.strip() for platform_user_id in allowlist):
-        return "allowed_platform_user_ids must not contain blank strings"
+def _find_removed_platform_user_allowlist_field(document: dict[str, Any]) -> str | None:
+    if "allowed_platform_user_ids" in document:
+        return "allowed_platform_user_ids is no longer supported"
     return None
 
 
@@ -200,7 +183,6 @@ def _validate_seed_files(
     seed_docs = 0
     module_registry_admin_clients = 0
     scope_mismatches = 0
-    user_allowlist_mismatches = 0
 
     for seed_path in seed_files:
         try:
@@ -239,16 +221,6 @@ def _validate_seed_files(
                                 detail=mismatch,
                             )
                         )
-                    if mismatch := _find_platform_user_allowlist_mismatch(document):
-                        user_allowlist_mismatches += 1
-                        findings.append(
-                            MongoReadinessFinding(
-                                severity="fail",
-                                resource_type="seed",
-                                resource_name=document["_id"],
-                                detail=mismatch,
-                            )
-                        )
         except (OSError, json.JSONDecodeError, ValueError) as exc:
             errors += 1
             findings.append(
@@ -267,7 +239,6 @@ def _validate_seed_files(
             "seed_file_errors": errors,
             "module_registry_admin_clients": module_registry_admin_clients,
             "module_registry_scope_mismatches": scope_mismatches,
-            "module_registry_user_allowlist_mismatches": user_allowlist_mismatches,
         },
         findings,
     )
@@ -297,7 +268,6 @@ def _module_registry_export_findings(
                 "module_registry_export_docs_checked": 0,
                 "module_registry_missing_admin_clients": 0,
                 "module_registry_export_scope_mismatches": 0,
-                "module_registry_export_user_allowlist_mismatches": 0,
             },
             [],
         )
@@ -307,7 +277,6 @@ def _module_registry_export_findings(
     findings: list[MongoReadinessFinding] = []
     missing_admin_clients = 0
     scope_mismatches = 0
-    user_allowlist_mismatches = 0
 
     for module_id in sorted(EXPECTED_ADMIN_CLIENT_SCOPES):
         document = by_id.get(module_id)
@@ -332,8 +301,8 @@ def _module_registry_export_findings(
                     detail=mismatch,
                 )
             )
-        if mismatch := _find_platform_user_allowlist_mismatch(document):
-            user_allowlist_mismatches += 1
+        if mismatch := _find_removed_platform_user_allowlist_field(document):
+            scope_mismatches += 1
             findings.append(
                 MongoReadinessFinding(
                     severity="fail",
@@ -342,13 +311,11 @@ def _module_registry_export_findings(
                     detail=mismatch,
                 )
             )
-
     return (
         {
             "module_registry_export_docs_checked": len(documents),
             "module_registry_missing_admin_clients": missing_admin_clients,
             "module_registry_export_scope_mismatches": scope_mismatches,
-            "module_registry_export_user_allowlist_mismatches": user_allowlist_mismatches,
         },
         findings,
     )

@@ -58,14 +58,13 @@ class BootstrapJob(UtcDatetimeMixin, SellerScopedDocument):
 class ModuleRegistry(UtcDatetimeMixin, MongoDocument):
     version: str
     allowed_meli_scopes: list[str] = Field(default_factory=list)
-    allowed_platform_user_ids: list[str] = Field(default_factory=list)
     allowed_seller_ids: list[str] = Field(default_factory=list)
     routing_keys: list[str] = Field(default_factory=list)
     status: Literal["enabled", "disabled", "degraded"]
     last_heartbeat_at: datetime | None = None
     health: dict[str, Any] | None = None
 
-    @field_validator("allowed_platform_user_ids", "allowed_seller_ids", mode="before")
+    @field_validator("allowed_seller_ids", mode="before")
     @classmethod
     def _coerce_allowlist_ids(cls, value: object) -> list[str]:
         if value is None:

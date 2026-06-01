@@ -436,7 +436,6 @@ Configure the app runtime with these server env values:
 | `zeler-app` | `AUTOREPLY_API_URL` | `https://autoreply.zeler.ai` |
 | `gateway` | `OAUTH_SUCCESS_URL` | `https://app.zeler.ai/accounts/linked` |
 | `zeler-app` + `gateway` | `ZELER_APP_BROKER_SECRET` | Secret Manager secret `zeler-app-broker-secret`; values must match exactly. |
-| `gateway` updater context | `ZELER_APP_ALLOWED_PLATFORM_USER_IDS` | Legacy optional field only; new linked-account access must rely on active `meli_accounts` ownership, not manual allowlisting. |
 
 `ZELER_APP_BROKER_SECRET` is server-only. Never configure it as `NEXT_PUBLIC_*`, never print it,
 and never paste it into local shells. The gateway receives it through
@@ -497,10 +496,9 @@ main()
 PY"
 ```
 
-Expected output: `zeler-app admin client updated`. The updater reads
-`ZELER_APP_ALLOWED_PLATFORM_USER_IDS` only as an optional legacy field and otherwise does not create a
-platform-user allowlist. It also preserves the deprecated `allowed_seller_ids` fallback for rollout compatibility.
-The command must not print `MONGO_URI` or any secret value.
+Expected output: `zeler-app admin client updated`. The updater removes any stale
+`allowed_platform_user_ids` field and preserves only the deprecated `allowed_seller_ids` fallback for
+rollout compatibility. The command must not print `MONGO_URI` or any secret value.
 
 Validate the registry document shape from the same VM/VPC boundary without exposing secrets:
 
@@ -526,7 +524,7 @@ try:
     print(json.dumps({
         '_id': doc.get('_id'),
         'status': doc.get('status'),
-        'allowed_platform_user_ids': doc.get('allowed_platform_user_ids'),
+        'has_allowed_platform_user_ids': 'allowed_platform_user_ids' in doc,
         'allowed_seller_ids': doc.get('allowed_seller_ids'),
         'allowed_meli_scopes': doc.get('allowed_meli_scopes'),
     }, sort_keys=True))
@@ -536,7 +534,8 @@ PY"
 ```
 
 Expected JSON contains `_id: "zeler-app"`, `status: "enabled"`, deprecated
-`allowed_seller_ids: [82453304]` only while the rollout fallback is needed, and exactly `admin:repricer`, `admin:sheets`, `admin:publicador`, and
+`allowed_seller_ids: [82453304]` only while the rollout fallback is needed,
+`has_allowed_platform_user_ids: false`, and exactly `admin:repricer`, `admin:sheets`, `admin:publicador`, and
 `admin:autoreply`.
 Fulldock is intentionally decommissioned and must not appear as `admin:fulldock`.
 
