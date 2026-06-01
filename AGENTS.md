@@ -50,6 +50,12 @@ Skill registry lives at
   for platform design, specs, tasks, and verification notes.
 - For substantial product changes, use SDD (`/sdd-new`, `/sdd-ff`, `/sdd-apply`,
   `/sdd-verify`, `/sdd-archive`) instead of ad-hoc implementation.
+- Prefer Git worktrees for parallel or isolated changes. Keep `main` clean and
+  use one worktree per active change, PR chain, hotfix, or risky experiment.
+- When the user asks to close the session, run a worktree cleanup check before
+  the final session summary: list active worktrees, remove only worktrees that
+  are clean and fully finished, and ask before removing any worktree with
+  uncommitted, unpushed, or unmerged work.
 
 ## Stack summary
 
