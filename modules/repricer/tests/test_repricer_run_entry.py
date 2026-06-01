@@ -292,8 +292,12 @@ async def _exercise_run(monkeypatch: pytest.MonkeyPatch) -> _RunState:
         async def close(self) -> None:
             state.runner_closed = True
 
+    class FakeKmsClient:
+        pass
+
     monkeypatch.setattr("zeler_repricer.consumer.AsyncIOMotorClient", FakeMongoClient)
     monkeypatch.setattr("zeler_repricer.consumer.RepricerAmqpConsumerRunner", FakeRunner)
+    monkeypatch.setattr("google.cloud.kms.KeyManagementServiceClient", FakeKmsClient)
     monkeypatch.setattr(
         "zeler_repricer.consumer.asyncio.get_running_loop", lambda: _FakeLoop(state)
     )

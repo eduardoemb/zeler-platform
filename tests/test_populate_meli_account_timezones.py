@@ -69,7 +69,9 @@ def test_population_updates_hopemob_without_touching_canonical_collections(
     fake_client = FakeClient(database)
     monkeypatch.setattr(operation_module, "MongoClient", lambda _uri: fake_client)
 
-    result = operation_module.populate_meli_account_timezones("mongodb://example.invalid/zeler", dry_run=False)
+    result = operation_module.populate_meli_account_timezones(
+        "mongodb://example.invalid/zeler", dry_run=False
+    )
 
     hopemob = database["meli_accounts"].documents[0]
     assert hopemob["site_id"] == "MLM"

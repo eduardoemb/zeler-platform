@@ -38,6 +38,32 @@ class FakeCollection:
                 "_id": doc_id,
             }
 
+    async def replace_one(
+        self, filter_spec: dict[str, Any], replacement: dict[str, Any], *, upsert: bool = False
+    ) -> None:
+        doc_id = str(filter_spec["_id"])
+        if doc_id in self.documents or upsert:
+            self.documents[doc_id] = dict(replacement)
+
+    def find(self, query: dict[str, Any]) -> FakeCursor:
+        return FakeCursor(
+            [
+                dict(doc)
+                for doc in self.documents.values()
+                if all(doc.get(key) == value for key, value in query.items())
+            ]
+        )
+
+
+class FakeCursor:
+    def __init__(self, documents: list[dict[str, Any]]) -> None:
+        self._documents = documents
+
+    async def to_list(self, length: int | None = None) -> list[dict[str, Any]]:
+        if length is None:
+            return list(self._documents)
+        return list(self._documents[:length])
+
 
 class FakeDb:
     def __init__(self, token_doc: dict[str, Any]) -> None:
@@ -54,6 +80,9 @@ class FakeDb:
                 }
             ),
             "google_oauth_tokens": FakeCollection({token_doc["_id"]: token_doc}),
+            "items": FakeCollection(),
+            "sheets_item_sku_index": FakeCollection(),
+            "sheets_item_formula_rows": FakeCollection(),
         }
 
     def __getitem__(self, name: str) -> FakeCollection:
@@ -109,7 +138,7 @@ def _token_doc(fake_kms_client: FakeKmsClient) -> dict[str, Any]:
         "refresh_token_nonce": refresh.nonce,
         "kms_key_version": access.kms_key_version,
         "scopes": ["https://www.googleapis.com/auth/spreadsheets"],
-        "expires_at": now + timedelta(days=30),
+        "expires_at": now + timedelta(days=365),
         "status": "active",
         "last_error": None,
         "connected_at": now,

@@ -24,12 +24,14 @@ from zeler_platform_core.auth.jwt import (
 
 router = APIRouter(prefix="/internal", tags=["internal"])
 ZELER_APP_CLIENT_ID = "zeler-app"
+ZELER_PLATFORM_APP_ID = "zeler-platform"
 ZELER_APP_SIGNATURE_HEADER = "X-Zeler-Signature"
 ZELER_CLIENT_ID_HEADER = "X-Zeler-Client-Id"
 
 
 class TokenIssueRequest(BaseModel):
     seller_id: int
+    platform_user_id: str | None = None
     scopes: list[str] = Field(min_length=1)
     ttl_s: int = Field(gt=0, le=300)
     token_kind: Literal["meli_access", "module_admin"] = "meli_access"  # noqa: S105 - token type discriminator, not a secret
@@ -46,8 +48,15 @@ async def issue_token(request: Request, payload: TokenIssueRequest) -> JSONRespo
     module = await db["module_registry"].find_one({"_id": caller["module_id"], "status": "enabled"})
     if module is None:
         return _json_error(401, "unknown_module")
-    if not _seller_allowed(payload.seller_id, cast(list[int] | None, module.get("allowed_seller_ids"))):
-        return _json_error(403, "seller_mismatch")
+    seller_authorization = await _authorize_token_issue_seller(
+        db=db,
+        payload=payload,
+        module=module,
+        caller_auth_scheme=caller["auth_scheme"],
+    )
+    if isinstance(seller_authorization, JSONResponse):
+        return seller_authorization
+
     allowed_scopes = cast(list[str], module.get("allowed_meli_scopes", []))
     if not all(_scope_allowed(scope, allowed_scopes) for scope in payload.scopes):
         return _json_error(403, "out_of_scope")
@@ -59,7 +68,7 @@ async def issue_token(request: Request, payload: TokenIssueRequest) -> JSONRespo
             payload.target_module_id.strip(),
             seller_id=payload.seller_id,
             ttl_s=payload.ttl_s,
-            token_type="module_admin",
+            token_type="module_admin",  # noqa: S106 - token type discriminator, not a secret
             scopes=payload.scopes,
             issued_by=caller["module_id"],
         )
@@ -71,6 +80,7 @@ async def issue_token(request: Request, payload: TokenIssueRequest) -> JSONRespo
             ttl_s=payload.ttl_s,
             token_kind=payload.token_kind,
             target_module_id=payload.target_module_id.strip(),
+            platform_user_id=seller_authorization,
         )
         return JSONResponse(
             {
@@ -104,6 +114,7 @@ async def issue_token(request: Request, payload: TokenIssueRequest) -> JSONRespo
         ttl_s=payload.ttl_s,
         token_kind=payload.token_kind,
         target_module_id=None,
+        platform_user_id=seller_authorization,
     )
     return JSONResponse(
         {
@@ -128,7 +139,10 @@ async def _authenticate_issue_caller(
             return _json_error(403, "out_of_scope")
         if not await _verify_zeler_app_signature(request):
             return _json_error(401, "invalid_token", detail="invalid zeler-app signature")
-        return {"module_id": ZELER_APP_CLIENT_ID}
+        return {"module_id": ZELER_APP_CLIENT_ID, "auth_scheme": "zeler_app_hmac"}
+
+    if _signed_platform_user_id(payload) is not None:
+        return _json_error(403, "out_of_scope")
 
     auth_header = request.headers.get("Authorization")
     if auth_header is None or not auth_header.startswith("Bearer "):
@@ -141,7 +155,7 @@ async def _authenticate_issue_caller(
 
     if claims.seller_id != payload.seller_id:
         return _json_error(403, "seller_mismatch")
-    return {"module_id": claims.module_id}
+    return {"module_id": claims.module_id, "auth_scheme": "bearer"}
 
 
 async def _verify_zeler_app_signature(request: Request) -> bool:
@@ -153,16 +167,83 @@ async def _verify_zeler_app_signature(request: Request) -> bool:
         return False
     body = await request.body()
     digest = hmac.new(secret.encode("utf-8"), body, hashlib.sha256).digest()
-    expected_signature = "sha256=" + base64.urlsafe_b64encode(digest).rstrip(b"=").decode(
-        "ascii"
-    )
+    expected_signature = "sha256=" + base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
     return hmac.compare_digest(provided_signature, expected_signature)
 
 
-def _seller_allowed(seller_id: int, allowed_seller_ids: list[int] | None) -> bool:
+def _seller_allowed(seller_id: int, allowed_seller_ids: list[Any] | None) -> bool:
     if allowed_seller_ids is None:
         return True
-    return seller_id in allowed_seller_ids
+    return str(seller_id) in _string_set(allowed_seller_ids)
+
+
+async def _authorize_token_issue_seller(
+    *,
+    db: Any,
+    payload: TokenIssueRequest,
+    module: dict[str, Any],
+    caller_auth_scheme: str,
+) -> str | None | JSONResponse:
+    signed_platform_user_id = _signed_platform_user_id(payload)
+    if (
+        caller_auth_scheme == "zeler_app_hmac"
+        and _platform_user_id_field_present(payload)
+        and signed_platform_user_id is None
+    ):
+        return _json_error(403, "seller_mismatch")
+
+    if caller_auth_scheme == "zeler_app_hmac" and signed_platform_user_id is not None:
+        allowed_platform_user_ids = _string_set(module.get("allowed_platform_user_ids"))
+        if signed_platform_user_id not in allowed_platform_user_ids:
+            return _json_error(403, "seller_mismatch")
+        owns_active_seller = await _platform_user_owns_active_seller(
+            db, platform_user_id=signed_platform_user_id, seller_id=payload.seller_id
+        )
+        if not owns_active_seller:
+            return _json_error(403, "seller_mismatch")
+        return signed_platform_user_id
+
+    if not _seller_allowed(
+        payload.seller_id, cast(list[Any] | None, module.get("allowed_seller_ids"))
+    ):
+        return _json_error(403, "seller_mismatch")
+    return None
+
+
+def _signed_platform_user_id(payload: TokenIssueRequest) -> str | None:
+    if payload.platform_user_id is None:
+        return None
+    platform_user_id = payload.platform_user_id.strip()
+    if not platform_user_id:
+        return None
+    return platform_user_id
+
+
+def _platform_user_id_field_present(payload: TokenIssueRequest) -> bool:
+    return "platform_user_id" in payload.model_fields_set
+
+
+def _string_set(raw_values: Any) -> set[str]:
+    if not isinstance(raw_values, list):
+        return set()
+    return {str(value).strip() for value in raw_values if str(value).strip()}
+
+
+async def _platform_user_owns_active_seller(
+    db: Any, *, platform_user_id: str, seller_id: int
+) -> bool:
+    for normalized_seller_id in (seller_id, str(seller_id)):
+        account = await db["meli_accounts"].find_one(
+            {
+                "platform_user_id": platform_user_id,
+                "app_id": ZELER_PLATFORM_APP_ID,
+                "seller_id": normalized_seller_id,
+                "status": "active",
+            }
+        )
+        if account is not None:
+            return True
+    return False
 
 
 async def _insert_issue_audit(
@@ -174,6 +255,7 @@ async def _insert_issue_audit(
     ttl_s: int,
     token_kind: str,
     target_module_id: str | None,
+    platform_user_id: str | None,
 ) -> None:
     document: dict[str, Any] = {
         "at": datetime.now(UTC),
@@ -186,10 +268,13 @@ async def _insert_issue_audit(
         "scopes": scopes,
         "ttl_s": ttl_s,
         "token_kind": token_kind,
+        "decision": "issued",
         "schema_version": 1,
     }
     if target_module_id is not None:
         document["target_module_id"] = target_module_id
+    if platform_user_id is not None:
+        document["platform_user_id"] = platform_user_id
     await db["audit_log"].insert_one(document)
 
 

@@ -80,4 +80,5 @@ def test_meli_accounts_indexes_are_created(meli_accounts_collection: Any) -> Non
 
     assert "uniq_meli_accounts_seller_app" in index_names
     assert "idx_meli_accounts_status_expires_at" in index_names
+    assert "idx_meli_accounts_platform_user_seller_status" in index_names
     assert "idx_meli_accounts_lock_held_until_sparse" in index_names
