@@ -17,6 +17,7 @@ class FormulaExecutionContext:
     token_id: str
     args: Mapping[str, Any]
     request_id: str | None
+    seller_timezone: str = "UTC"
 
 
 @dataclass(frozen=True, slots=True)

@@ -11,6 +11,7 @@ import pytest
 import respx
 
 from zeler_gateway.app import app
+from zeler_gateway.oauth import router as oauth_router
 from zeler_gateway.tokens.encryption import reset_dek_cache, set_kms_client
 
 
@@ -106,6 +107,14 @@ class FakeAsyncDatabase:
         if collection_name == "meli_oauth_state":
             return self.meli_oauth_state
         raise AssertionError(collection_name)
+
+
+class RecordingLogger:
+    def __init__(self) -> None:
+        self.warnings: list[tuple[str, dict[str, Any]]] = []
+
+    def warning(self, event: str, **fields: Any) -> None:
+        self.warnings.append((event, fields))
 
 
 def _pkce_challenge(code_verifier: str) -> str:
@@ -234,6 +243,12 @@ async def test_callback_consumes_state_and_sends_code_verifier(
                     },
                 )
             )
+            user_route = respx_mock.get("https://api.mercadolibre.com/users/123456789").mock(
+                return_value=httpx.Response(
+                    200,
+                    json={"id": 123456789, "nickname": "TEST_SELLER", "site_id": "MLM"},
+                )
+            )
 
             response = await client.get(
                 "/oauth/callback", params={"code": "valid-code", "state": state}
@@ -241,6 +256,8 @@ async def test_callback_consumes_state_and_sends_code_verifier(
 
     assert response.status_code == 302
     assert token_route.called
+    assert user_route.called
+    assert user_route.calls.last.request.headers["authorization"] == "Bearer access-token-plain"
     assert "state-1" not in fake_mongo_db.meli_oauth_state.documents
     token_request = token_route.calls.last.request
     token_form = parse_qs(token_request.content.decode())
@@ -259,6 +276,9 @@ async def test_callback_consumes_state_and_sends_code_verifier(
     assert stored["seller_id"] == 123456789
     assert stored["app_id"] == "zeler-platform"
     assert stored["status"] == "active"
+    assert stored["nickname"] == "TEST_SELLER"
+    assert stored["site_id"] == "MLM"
+    assert stored["timezone"] == "America/Mexico_City"
     assert stored["scopes"] == ["read", "write"]
     assert stored["schema_version"] == 1
     assert isinstance(stored["created_at"], datetime)
@@ -311,6 +331,12 @@ async def test_callback_state_consumed_only_once(fake_mongo_db: FakeAsyncDatabas
                     },
                 )
             )
+            respx_mock.get("https://api.mercadolibre.com/users/123456789").mock(
+                return_value=httpx.Response(
+                    200,
+                    json={"id": 123456789, "nickname": "TEST_SELLER", "site_id": "MLM"},
+                )
+            )
             first = await client.get(
                 "/oauth/callback", params={"code": "valid-code", "state": state}
             )
@@ -355,7 +381,75 @@ async def _run_oauth_callback(
             respx_mock.post("https://api.mercadolibre.com/oauth/token").mock(
                 return_value=token_response
             )
+            respx_mock.get("https://api.mercadolibre.com/users/123456789").mock(
+                return_value=httpx.Response(
+                    200,
+                    json={"id": 123456789, "nickname": "TEST_SELLER", "site_id": "MLM"},
+                )
+            )
             return await client.get("/oauth/callback", params={"code": code, "state": state})
+
+
+@pytest.mark.asyncio
+async def test_callback_links_with_utc_timezone_when_user_metadata_fails(
+    fake_mongo_db: FakeAsyncDatabase,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = _seed_oauth_state(fake_mongo_db)
+    logger = RecordingLogger()
+    monkeypatch.setattr(oauth_router, "logger", logger, raising=False)
+    transport = httpx.ASGITransport(app=app)
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://gateway.test") as client:
+        with respx.mock(assert_all_called=True) as respx_mock:
+            respx_mock.post("https://api.mercadolibre.com/oauth/token").mock(
+                return_value=httpx.Response(
+                    200,
+                    json={
+                        "access_token": "access-token-plain",
+                        "refresh_token": "refresh-token-plain",
+                        "user_id": 123456789,
+                        "expires_in": 21600,
+                        "scope": "read write",
+                    },
+                )
+            )
+            respx_mock.get("https://api.mercadolibre.com/users/123456789").mock(
+                return_value=httpx.Response(500, json={"message": "meli unavailable"})
+            )
+
+            response = await client.get(
+                "/oauth/callback", params={"code": "valid-code", "state": state}
+            )
+
+    assert response.status_code == 302
+    stored = await fake_mongo_db["meli_accounts"].find_one(
+        {"seller_id": 123456789, "app_id": "zeler-platform"}
+    )
+    assert stored is not None
+    assert stored["nickname"] == "seller_123456789"
+    assert stored["timezone"] == "UTC"
+    assert "site_id" not in stored
+    assert logger.warnings == [
+        (
+            "oauth.user_metadata.unavailable",
+            {"seller_id": 123456789, "status_code": 500},
+        ),
+        (
+            "oauth.user_timezone.fallback",
+            {
+                "seller_id": 123456789,
+                "site_id": None,
+                "timezone": "UTC",
+                "fallback": True,
+                "reason": "missing_site_id",
+            },
+        ),
+    ]
+    logged_text = repr(logger.warnings)
+    assert "access-token-plain" not in logged_text
+    assert "refresh-token-plain" not in logged_text
+    assert "meli-client-secret-test" not in logged_text
 
 
 @pytest.mark.asyncio
