@@ -21,6 +21,30 @@
           ]
         }
       },
+      "display_identity": {
+        "bsonType": "object",
+        "properties": {
+          "availability": {
+            "enum": [
+              "active",
+              "retired"
+            ]
+          },
+          "display_name": {
+            "bsonType": "string"
+          },
+          "legacy_display_name": {
+            "bsonType": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "display_name",
+          "availability"
+        ]
+      },
       "health": {
         "bsonType": [
           "object",

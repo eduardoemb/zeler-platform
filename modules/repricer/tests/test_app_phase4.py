@@ -56,6 +56,11 @@ async def test_repricer_startup_registers_manifest_and_health_ready() -> None:
         ],
         "owned_collections": ["repricer_rules", "repricer_history"],
         "health_endpoint": "/health",
+        "display_identity": {
+            "display_name": "ZelerPricing",
+            "legacy_display_name": "EasyReprice",
+            "availability": "active",
+        },
         "status": "enabled",
         "schema_version": 1,
     }

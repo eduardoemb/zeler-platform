@@ -45,6 +45,7 @@ def test_sheets_manifest_validates_owned_collections_and_readonly_scopes() -> No
         "GET /orders/*",
         "GET /shipments/*",
     ]
+    assert manifest.display_identity.display_name == "ZelerData"
 
 
 def test_sheets_app_includes_google_oauth_routes() -> None:
@@ -83,6 +84,11 @@ async def test_sheets_startup_registers_manifest_and_health_ready() -> None:
         "routing_keys": ["items.*", "orders.*", "shipments.*"],
         "owned_collections": ["sheets_exports", "sheets_sync_jobs", "google_oauth_tokens"],
         "health_endpoint": "/health",
+        "display_identity": {
+            "display_name": "ZelerData",
+            "legacy_display_name": "SheetsellerApp",
+            "availability": "active",
+        },
         "status": "enabled",
         "schema_version": 1,
     }

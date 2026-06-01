@@ -20,6 +20,7 @@ async def register_module(manifest: ModuleManifest, mongo_db: Any) -> None:
         "routing_keys": manifest.routing_keys,
         "owned_collections": manifest.owned_collections,
         "health_endpoint": manifest.health_endpoint,
+        "display_identity": manifest.display_identity.model_dump(mode="json"),
         "status": "enabled",
         "schema_version": 1,
     }

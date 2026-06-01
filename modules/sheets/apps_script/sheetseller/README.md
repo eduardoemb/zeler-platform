@@ -1,6 +1,6 @@
 # Private/manual Apps Script pilot
 
-This directory contains the minimum Sheetseller Apps Script project used for the private pilot. It is intentionally thin: formulas keep their legacy names and forward to the zeler-platform Formula API with an extension token.
+This directory contains the minimum ZelerData Apps Script project used for the private pilot. Sheetseller remains a legacy Sheetseller compatibility name only: formulas keep their legacy `SHEETSELLER_*` names and forward to the zeler-platform Formula API with an extension token.
 
 Pilot seller: `82453304`
 
@@ -27,13 +27,13 @@ Use only seller `82453304` for this manual validation pass. Do not query old sto
    - `modules/sheets/apps_script/sheetseller/Client.gs`
    - `modules/sheets/apps_script/sheetseller/Formulas.gs`
 5. Save the Apps Script project.
-6. Reload the spreadsheet and confirm the **Sheetseller** menu appears.
+6. Reload the spreadsheet and confirm the **ZelerData** menu appears.
 
 ## Configure API base URL and token
 
-1. In Apps Script, run `setSheetsellerApiBaseUrl("https://<pilot-api-host>")` once for the spreadsheet, or open `showSheetsellerSettings` from the **Sheetseller** menu and paste the base URL.
+1. In Apps Script, run `setSheetsellerApiBaseUrl("https://<pilot-api-host>")` once for the spreadsheet, or open `showSheetsellerSettings` from the **ZelerData** menu and paste the base URL.
 2. Create an extension token in zeler-app `/sheets/config` and copy it during the show-once extension token moment.
-3. Open **Sheetseller → Settings**, paste the extension token, and save. Never store the raw token in the spreadsheet cells or any repo artifact.
+3. Open **ZelerData → Settings**, paste the extension token, and save. Never store the raw token in the spreadsheet cells or any repo artifact.
 
 The API base URL is stored in document properties because it is non-secret spreadsheet configuration. The extension token is stored in user properties so each operator keeps their own bearer credential within Apps Script constraints.
 
@@ -90,7 +90,7 @@ Start with the smallest smoke check, then move to table formulas:
 - [ ] Confirm zeler-app `/sheets/config` deployed and able to issue a show-once extension token.
 - [ ] Confirm the token is scoped only to seller `82453304`.
 - [ ] Install the private Apps Script project from the repo files listed above.
-- [ ] Configure the pilot API base URL and save the token through **Sheetseller → Settings**.
+- [ ] Configure the pilot API base URL and save the token through **ZelerData → Settings**.
 - [ ] Validate the four smoke formulas, then the full matrix for implemented wrappers.
 - [ ] Call one not-yet-implemented formula and confirm `DATA_UNAVAILABLE` is stable.
 - [ ] Clear the saved token and confirm `TOKEN_MISSING` is stable.

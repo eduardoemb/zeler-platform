@@ -15,6 +15,7 @@ from zeler_platform_core.models.base import (
     _coerce_str,
 )
 from zeler_platform_core.models.events import BootstrapCompleted
+from zeler_platform_core.runtime.module_identity import ModuleDisplayIdentity
 
 
 class WebhookEvent(UtcDatetimeMixin, MongoDocument):
@@ -60,6 +61,7 @@ class ModuleRegistry(UtcDatetimeMixin, MongoDocument):
     allowed_meli_scopes: list[str] = Field(default_factory=list)
     allowed_seller_ids: list[str] = Field(default_factory=list)
     routing_keys: list[str] = Field(default_factory=list)
+    display_identity: ModuleDisplayIdentity | None = None
     status: Literal["enabled", "disabled", "degraded"]
     last_heartbeat_at: datetime | None = None
     health: dict[str, Any] | None = None

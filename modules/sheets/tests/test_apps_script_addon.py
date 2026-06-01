@@ -67,6 +67,20 @@ def test_config_ui_stores_only_extension_token_in_user_properties() -> None:
     assert not re.search(r"password|contraseñ|username|usuario", config_source, re.IGNORECASE)
 
 
+def test_config_ui_uses_zelerdata_visible_copy_without_renaming_compatibility_keys() -> None:
+    config_source = _read_addon_file("Config.gs")
+
+    assert '.createMenu("ZelerData")' in config_source
+    assert '.setTitle("ZelerData settings")' in config_source
+    assert '"ZelerData extension token cleared"' in config_source
+    assert '"ZelerData"' in config_source
+    assert "ZelerData private pilot" in config_source
+    assert "SHEETSELLER_EXTENSION_TOKEN" in config_source
+    assert "SHEETSELLER_API_BASE_URL" in config_source
+    assert "function showSheetsellerSettings" in config_source
+    assert "function setSheetsellerExtensionToken" in config_source
+
+
 def test_formula_api_client_posts_to_execute_route_with_bearer_token() -> None:
     client_source = _read_addon_file("Client.gs")
 
@@ -153,6 +167,16 @@ def test_private_manual_installation_docs_cover_setup_without_secrets() -> None:
     assert "Marketplace" in docs
     assert "username" not in docs.lower()
     assert "password" not in docs.lower()
+
+
+def test_private_manual_installation_docs_use_zelerdata_as_primary_display_name() -> None:
+    docs = _read_addon_file("README.md")
+
+    assert "ZelerData Apps Script project" in docs
+    assert "legacy Sheetseller compatibility name" in docs
+    assert "formulas keep their legacy `SHEETSELLER_*` names" in docs
+    assert "ZelerData → Settings" in docs
+    assert "**ZelerData** menu appears" in docs
 
 
 def test_private_pilot_runbook_locks_deployment_prerequisites_and_token_safety() -> None:
