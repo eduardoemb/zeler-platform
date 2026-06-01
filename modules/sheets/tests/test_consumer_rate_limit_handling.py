@@ -7,6 +7,7 @@ import httpx
 import pytest
 
 from zeler_platform_core.clients.meli_gateway_client import GatewayRateLimitError
+from zeler_platform_core.runtime.retry_delay import RETRY_ATTEMPT_HEADER
 from zeler_sheets import consumer
 from zeler_sheets.consumer import SheetsAmqpConsumerRunner, SheetsEvent
 
@@ -94,7 +95,7 @@ async def test_gateway_rate_limit_sleeps_then_requeues_with_retry_after_log(
             "body": message.body,
             "queue_name": "zeler.sheets.events",
             "delay_ms": 5000,
-            "headers": {consumer.RETRY_ATTEMPT_HEADER: 1},
+            "headers": {RETRY_ATTEMPT_HEADER: 1},
         }
     ]
     assert log_spy.warning_calls == [

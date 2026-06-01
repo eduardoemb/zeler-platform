@@ -107,8 +107,7 @@ def parse_legacy_batch_zip(content: bytes) -> ParsedLegacyBatch:
         return ParsedLegacyBatch(
             account_id=account_id,
             rows=[
-                _parse_row(index, row, image_map)
-                for index, row in enumerate(excel_rows, start=3)
+                _parse_row(index, row, image_map) for index, row in enumerate(excel_rows, start=3)
             ],
             global_warnings=warnings,
         )
@@ -235,9 +234,7 @@ def _read_images(
         if extension is None:
             continue
         relative = (
-            name.removeprefix(root_prefix)
-            if root_prefix and name.startswith(root_prefix)
-            else name
+            name.removeprefix(root_prefix) if root_prefix and name.startswith(root_prefix) else name
         )
         parts = relative.split("/")
         if len(parts) < 2 or not parts[0]:

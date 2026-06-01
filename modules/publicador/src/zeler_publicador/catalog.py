@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, cast
 from urllib.parse import quote_plus, urlencode
 from uuid import uuid4
 
@@ -90,7 +90,7 @@ class CatalogSuggestionService:
             seller_id=seller_id, account_id=account_id, draft_id=draft_id
         )
         now = self._clock()
-        suggestion = {
+        suggestion: dict[str, Any] = {
             "_id": self._id_factory("suggestion"),
             "seller_id": seller_id,
             "account_id": account_id,
@@ -128,13 +128,14 @@ class CatalogSuggestionService:
         status: str | None = None,
         draft_id: str | None = None,
     ) -> list[dict[str, Any]]:
-        query = {"seller_id": seller_id, "account_id": account_id}
+        query: dict[str, Any] = {"seller_id": seller_id, "account_id": account_id}
         if status:
             query["status"] = status
         if draft_id:
             query["draft_id"] = draft_id
-        return await self._mongo_db["publicador_catalog_suggestions"].find(query).to_list(
-            length=100
+        return cast(
+            list[dict[str, Any]],
+            await self._mongo_db["publicador_catalog_suggestions"].find(query).to_list(length=100),
         )
 
     async def get_suggestion(
@@ -261,7 +262,7 @@ class CatalogSuggestionService:
         )
         if draft is None:
             raise ValueError("publicador_draft_not_found")
-        return draft
+        return cast(dict[str, Any], draft)
 
     async def _load_suggestion(
         self, *, seller_id: str, account_id: str, suggestion_id: str
@@ -271,7 +272,7 @@ class CatalogSuggestionService:
         )
         if suggestion is None:
             raise ValueError("publicador_catalog_suggestion_not_found")
-        return suggestion
+        return cast(dict[str, Any], suggestion)
 
     async def _replace_draft(self, draft: dict[str, Any]) -> None:
         await self._mongo_db["publicador_drafts"].replace_one(
@@ -314,25 +315,34 @@ class CatalogSuggestionService:
         return updated
 
     async def _suggestion_picture_ids(self, suggestion: dict[str, Any]) -> list[str]:
-        assets = await self._mongo_db["publicador_assets"].find(
-            {
-                "seller_id": suggestion["seller_id"],
-                "account_id": suggestion["account_id"],
-                "owner_type": "suggestion",
-                "owner_id": suggestion["_id"],
-            }
-        ).to_list(length=10)
+        assets = (
+            await self._mongo_db["publicador_assets"]
+            .find(
+                {
+                    "seller_id": suggestion["seller_id"],
+                    "account_id": suggestion["account_id"],
+                    "owner_type": "suggestion",
+                    "owner_id": suggestion["_id"],
+                }
+            )
+            .to_list(length=10)
+        )
         return [str(asset["meli_picture_id"]) for asset in assets if asset.get("meli_picture_id")]
 
     async def _history_for_suggestion(self, suggestion: dict[str, Any]) -> list[dict[str, Any]]:
-        return await self._mongo_db["publicador_events"].find(
-            {
-                "seller_id": suggestion["seller_id"],
-                "account_id": suggestion["account_id"],
-                "aggregate_type": "catalog_suggestion",
-                "aggregate_id": suggestion["_id"],
-            }
-        ).to_list(length=100)
+        return cast(
+            list[dict[str, Any]],
+            await self._mongo_db["publicador_events"]
+            .find(
+                {
+                    "seller_id": suggestion["seller_id"],
+                    "account_id": suggestion["account_id"],
+                    "aggregate_type": "catalog_suggestion",
+                    "aggregate_id": suggestion["_id"],
+                }
+            )
+            .to_list(length=100),
+        )
 
     async def _append_suggestion_event(
         self,

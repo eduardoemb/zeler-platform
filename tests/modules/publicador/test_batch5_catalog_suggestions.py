@@ -81,6 +81,7 @@ async def test_catalog_search_and_link_publish_persist_catalog_product_id() -> N
     )
 
     publish_payload = next(call[2] for call in gateway.calls if call[:2] == ("POST", "/items"))
+    assert publish_payload is not None
     updated_draft = db["publicador_drafts"].docs[0]
     assert candidates == [
         {
@@ -269,9 +270,7 @@ class _FakeCatalogGateway:
     def __init__(self) -> None:
         self.calls: list[tuple[str, str, dict[str, Any] | None]] = []
 
-    async def request(
-        self, method: str, path: str, json: dict[str, Any] | None = None
-    ) -> Any:
+    async def request(self, method: str, path: str, json: dict[str, Any] | None = None) -> Any:
         self.calls.append((method, path, json))
         if method == "GET" and path.startswith("/products/search"):
             return {

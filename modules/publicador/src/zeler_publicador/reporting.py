@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections import Counter
 from collections.abc import Callable
 from datetime import UTC, date, datetime, time
-from typing import Any
+from typing import Any, cast
 from uuid import uuid4
 
 from zeler_publicador.schemas import SCHEMA_VERSION, PublicadorSettings
@@ -145,7 +145,7 @@ class PublicadorReportingService:
             {"seller_id": seller_id, "account_id": account_id}
         )
         if existing is not None:
-            return existing
+            return cast(dict[str, Any], existing)
         now = self._clock()
         return {
             "seller_id": seller_id,
@@ -161,19 +161,20 @@ class PublicadorReportingService:
 
     async def upsert_settings(self, settings: PublicadorSettings) -> dict[str, Any]:
         now = self._clock()
-        existing = await self._mongo_db["publicador_settings"].find_one(
-            {"seller_id": settings.seller_id, "account_id": settings.account_id}
+        existing = cast(
+            dict[str, Any] | None,
+            await self._mongo_db["publicador_settings"].find_one(
+                {"seller_id": settings.seller_id, "account_id": settings.account_id}
+            ),
         )
-        document = {
+        document: dict[str, Any] = {
             **(existing or {}),
             **settings.model_dump(),
             "created_at": existing.get("created_at") if existing else now,
             "updated_at": now,
             "schema_version": SCHEMA_VERSION,
         }
-        document.setdefault(
-            "_id", self._id_factory("settings")
-        )
+        document.setdefault("_id", self._id_factory("settings"))
         await self._mongo_db["publicador_settings"].replace_one(
             {"seller_id": settings.seller_id, "account_id": settings.account_id},
             document,
@@ -218,9 +219,12 @@ class PublicadorReportingService:
     async def _scoped_docs(
         self, collection: str, *, seller_id: str, account_id: str
     ) -> list[dict[str, Any]]:
-        return await self._mongo_db[collection].find(
-            {"seller_id": seller_id, "account_id": account_id}
-        ).to_list(length=5000)
+        return cast(
+            list[dict[str, Any]],
+            await self._mongo_db[collection]
+            .find({"seller_id": seller_id, "account_id": account_id})
+            .to_list(length=5000),
+        )
 
     def _matches_event_filters(
         self,
@@ -255,7 +259,7 @@ class PublicadorReportingService:
         return _in_date_range(self._created_at(event), date_from=date_from, date_to=date_to)
 
     def _public_event(self, event: dict[str, Any]) -> dict[str, Any]:
-        return _redact(event)
+        return cast(dict[str, Any], _redact(event))
 
     def _created_at(self, doc: dict[str, Any]) -> datetime:
         value = doc.get("created_at") or doc.get("updated_at")
@@ -303,9 +307,7 @@ class PublicadorReportingService:
 def _redact(value: Any) -> Any:
     if isinstance(value, dict):
         return {
-            key: _redact(child)
-            for key, child in value.items()
-            if key.lower() not in SECRET_KEYS
+            key: _redact(child) for key, child in value.items() if key.lower() not in SECRET_KEYS
         }
     if isinstance(value, list):
         return [_redact(child) for child in value]

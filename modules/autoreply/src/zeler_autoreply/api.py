@@ -3,7 +3,7 @@ from __future__ import annotations
 import contextlib
 from collections.abc import Callable
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, cast
 
 from fastapi import APIRouter, Request
 from fastapi.encoders import jsonable_encoder
@@ -247,9 +247,7 @@ def build_router(*, clock: Callable[[], datetime] | None = None) -> APIRouter:
         auth = _authorize(request, seller_id=seller_id)
         if auth is not None:
             return auth
-        return JSONResponse(
-            {"seller_id": seller_id, "claim_id": claim_id, "available_offers": []}
-        )
+        return JSONResponse({"seller_id": seller_id, "claim_id": claim_id, "available_offers": []})
 
     @router.get("/notifications")
     async def list_notifications(request: Request, seller_id: str) -> JSONResponse:
@@ -302,9 +300,7 @@ def build_router(*, clock: Callable[[], datetime] | None = None) -> APIRouter:
         return JSONResponse(jsonable_encoder(current or _default_preferences(seller_id)))
 
     @router.patch("/config/preferences")
-    async def update_preferences(
-        request: Request, payload: PreferencesPayload
-    ) -> JSONResponse:
+    async def update_preferences(request: Request, payload: PreferencesPayload) -> JSONResponse:
         auth = _authorize(request, seller_id=payload.seller_id)
         if auth is not None:
             return auth
@@ -525,9 +521,7 @@ def _authorize(request: Request, seller_id: str | int | None = None) -> JSONResp
     )
 
 
-async def _questions_response(
-    request: Request, *, seller_id: str, answered: bool
-) -> JSONResponse:
+async def _questions_response(request: Request, *, seller_id: str, answered: bool) -> JSONResponse:
     auth = _authorize(request, seller_id=seller_id)
     if auth is not None:
         return auth
@@ -617,10 +611,11 @@ async def _delete_config_item(
 async def _find_many(
     request: Request, collection_name: str, *, seller_id: str
 ) -> list[dict[str, Any]]:
-    return (
+    return cast(
+        list[dict[str, Any]],
         await request.app.state.mongo_db[collection_name]
         .find(_seller_filter(seller_id))
-        .to_list(length=100)
+        .to_list(length=100),
     )
 
 
@@ -698,7 +693,7 @@ def _group_conversations(messages: list[dict[str, Any]]) -> list[dict[str, Any]]
     for message in messages:
         grouped.setdefault(_conversation_id(message), []).append(message)
 
-    conversations = []
+    conversations: list[dict[str, Any]] = []
     for conversation_id, group in grouped.items():
         sorted_group = sorted(group, key=lambda doc: str(doc.get("date_created", "")), reverse=True)
         latest = sorted_group[0]

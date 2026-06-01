@@ -171,9 +171,7 @@ class TestComposeServices:
     def test_mongo_publishes_only_private_bind_port(self) -> None:
         data = load_compose()
         mongo_cfg = data["services"]["mongo"]
-        assert mongo_cfg.get("ports") == [
-            "${MONGO_PRIVATE_BIND_IP:-127.0.0.1}:27017:27017"
-        ]
+        assert mongo_cfg.get("ports") == ["${MONGO_PRIVATE_BIND_IP:-127.0.0.1}:27017:27017"]
 
     def test_caddy_publishes_only_80_and_443(self) -> None:
         data = load_compose()
@@ -266,7 +264,7 @@ class TestCaddyfileContract:
         text = CADDYFILE.read_text()
 
         assert "fulldock.zeler.ai" in text
-        assert "respond \"Fulldock is decommissioned\" 410" in text
+        assert 'respond "Fulldock is decommissioned" 410' in text
         assert "fulldock-api" not in text
 
     def test_caddyfile_has_global_email(self) -> None:
@@ -323,7 +321,7 @@ class TestEnvTemplateContract:
 
         assert "GATEWAY_PROXY_BASE_URL=http://gateway:8080/proxy/meli" in text
         assert "GATEWAY_BASE_URL=$GATEWAY_PROXY_BASE_URL" in text
-        assert "GATEWAY_BASE_URL=http://gateway:8080\"" not in text
+        assert 'GATEWAY_BASE_URL=http://gateway:8080"' not in text
 
     def test_secrets_script_fetches_zeler_app_broker_secret_for_gateway_only(self) -> None:
         text = SECRETS_SCRIPT.read_text()
@@ -344,9 +342,10 @@ class TestEnvTemplateContract:
 
         assert "MELI_ALLOWED_IPS=$(s meli-allowed-ips)" in text
         assert "MELI_ALLOWED_IPS=$MELI_ALLOWED_IPS" in text
-        assert "MELI_ALLOWED_IPS=__PLACEHOLDER__" in (
-            ENV_TEMPLATES_DIR / "gateway.env.template"
-        ).read_text()
+        assert (
+            "MELI_ALLOWED_IPS=__PLACEHOLDER__"
+            in (ENV_TEMPLATES_DIR / "gateway.env.template").read_text()
+        )
 
     def test_deploy_runbook_documents_zeler_app_live_validation(self) -> None:
         text = (PROJECT_ROOT / "docs" / "deploy.md").read_text()

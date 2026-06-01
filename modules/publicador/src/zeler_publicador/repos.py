@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, cast
 from uuid import uuid4
 
 from zeler_publicador.schemas import SCHEMA_VERSION, DraftCreate, DraftRead, DraftUpdate
@@ -25,7 +25,7 @@ class PublicadorRepository:
     async def create_draft(self, draft: DraftCreate) -> DraftRead:
         now = self._clock()
         draft_id = self._id_factory("draft")
-        document = {
+        document: dict[str, Any] = {
             "_id": draft_id,
             "seller_id": draft.seller_id,
             "account_id": draft.account_id,
@@ -86,7 +86,10 @@ class PublicadorRepository:
         query: dict[str, Any] = {"seller_id": seller_id}
         if account_id is not None:
             query["account_id"] = account_id
-        return await self._mongo_db["publicador_drafts"].find(query).to_list(length=100)
+        return cast(
+            list[dict[str, Any]],
+            await self._mongo_db["publicador_drafts"].find(query).to_list(length=100),
+        )
 
     async def get_draft(
         self, *, draft_id: str, seller_id: str, account_id: str | None = None
@@ -94,7 +97,9 @@ class PublicadorRepository:
         query: dict[str, Any] = {"_id": draft_id, "seller_id": seller_id}
         if account_id is not None:
             query["account_id"] = account_id
-        return await self._mongo_db["publicador_drafts"].find_one(query)
+        return cast(
+            dict[str, Any] | None, await self._mongo_db["publicador_drafts"].find_one(query)
+        )
 
     async def update_draft(
         self,
@@ -105,9 +110,7 @@ class PublicadorRepository:
         update: DraftUpdate,
         actor_id: str,
     ) -> dict[str, Any] | None:
-        draft = await self.get_draft(
-            draft_id=draft_id, seller_id=seller_id, account_id=account_id
-        )
+        draft = await self.get_draft(draft_id=draft_id, seller_id=seller_id, account_id=account_id)
         if draft is None:
             return None
 
@@ -141,9 +144,7 @@ class PublicadorRepository:
         actor_id: str,
         reason: str | None = None,
     ) -> dict[str, Any] | None:
-        draft = await self.get_draft(
-            draft_id=draft_id, seller_id=seller_id, account_id=account_id
-        )
+        draft = await self.get_draft(draft_id=draft_id, seller_id=seller_id, account_id=account_id)
         if draft is None:
             return None
 
@@ -185,14 +186,19 @@ class PublicadorRepository:
     async def history_for_draft(
         self, *, draft_id: str, seller_id: str, account_id: str
     ) -> list[dict[str, Any]]:
-        return await self._mongo_db["publicador_events"].find(
-            {
-                "seller_id": seller_id,
-                "account_id": account_id,
-                "aggregate_type": "draft",
-                "aggregate_id": draft_id,
-            }
-        ).to_list(length=100)
+        return cast(
+            list[dict[str, Any]],
+            await self._mongo_db["publicador_events"]
+            .find(
+                {
+                    "seller_id": seller_id,
+                    "account_id": account_id,
+                    "aggregate_type": "draft",
+                    "aggregate_id": draft_id,
+                }
+            )
+            .to_list(length=100),
+        )
 
     async def _append_event(
         self,

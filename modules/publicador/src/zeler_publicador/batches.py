@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from datetime import UTC, datetime
 from hashlib import sha256
-from typing import Any
+from typing import Any, cast
 from uuid import uuid4
 
 from zeler_publicador.batch_parser import (
@@ -50,10 +50,10 @@ class PublicadorBatchService:
             {"seller_id": seller_id, "account_id": account_id, "idempotency_key": idempotency_key}
         )
         if existing is not None:
-            return existing
+            return cast(dict[str, Any], existing)
 
         now = self._clock()
-        batch = {
+        batch: dict[str, Any] = {
             "_id": self._id_factory("batch"),
             "seller_id": seller_id,
             "account_id": account_id,
@@ -73,8 +73,7 @@ class PublicadorBatchService:
         }
         await self._mongo_db["publicador_batches"].insert_one(batch)
         items = [
-            self._item_from_row(batch=batch, row=row, actor_id=actor_id)
-            for row in parsed.rows
+            self._item_from_row(batch=batch, row=row, actor_id=actor_id) for row in parsed.rows
         ]
         for item in items:
             await self._mongo_db["publicador_batch_items"].insert_one(item)
@@ -96,9 +95,12 @@ class PublicadorBatchService:
         return created
 
     async def list_batches(self, *, seller_id: str, account_id: str) -> list[dict[str, Any]]:
-        return await self._mongo_db["publicador_batches"].find(
-            {"seller_id": seller_id, "account_id": account_id}
-        ).to_list(length=100)
+        return cast(
+            list[dict[str, Any]],
+            await self._mongo_db["publicador_batches"]
+            .find({"seller_id": seller_id, "account_id": account_id})
+            .to_list(length=100),
+        )
 
     async def batch_detail(
         self, *, seller_id: str, account_id: str, batch_id: str
@@ -183,9 +185,7 @@ class PublicadorBatchService:
                     actor_id=actor_id,
                 )
             except (RuntimeError, ValueError, LegacyBatchContractError) as exc:
-                await self._replace_item(
-                    self._failed_item(item, actor_id=actor_id, error=str(exc))
-                )
+                await self._replace_item(self._failed_item(item, actor_id=actor_id, error=str(exc)))
                 continue
             if result["status"] == "published":
                 await self._replace_item(
@@ -274,9 +274,9 @@ class PublicadorBatchService:
                 }
             )
             if existing is not None:
-                return existing
+                return cast(dict[str, Any], existing)
         now = self._clock()
-        draft = {
+        draft: dict[str, Any] = {
             "_id": self._id_factory("draft"),
             "seller_id": item["seller_id"],
             "account_id": item["account_id"],
@@ -383,14 +383,17 @@ class PublicadorBatchService:
         )
         if batch is None:
             raise PublicadorBatchError("publicador_batch_not_found")
-        return batch
+        return cast(dict[str, Any], batch)
 
     async def _items_for_batch(
         self, *, seller_id: str, account_id: str, batch_id: str
     ) -> list[dict[str, Any]]:
-        return await self._mongo_db["publicador_batch_items"].find(
-            {"batch_id": batch_id, "seller_id": seller_id, "account_id": account_id}
-        ).to_list(length=1000)
+        return cast(
+            list[dict[str, Any]],
+            await self._mongo_db["publicador_batch_items"]
+            .find({"batch_id": batch_id, "seller_id": seller_id, "account_id": account_id})
+            .to_list(length=1000),
+        )
 
     async def _refresh_counts(self, *, batch_id: str, seller_id: str, account_id: str) -> None:
         batch = await self._load_batch(

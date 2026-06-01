@@ -4,6 +4,7 @@ from datetime import UTC, datetime
 from decimal import Decimal
 
 from zeler_platform_core.models import RepricerAllies, RepricerCatalogRule, RepricerLimits
+from zeler_platform_core.models.operational import RepricerAllyAccount, RepricerRuleExecutionState
 from zeler_repricer.engine import NoAction, SetPrice, evaluate_catalog_rule
 
 NOW = datetime(2026, 5, 13, 20, 0, tzinfo=UTC)
@@ -103,7 +104,7 @@ def test_catalog_rule_excludes_allied_competitor_from_price_decision() -> None:
     allies = RepricerAllies(
         _id="allies-123456789",
         seller_id="123456789",
-        allies=[{"account_id": "ally-1", "nickname": "ALLY SHOP"}],
+        allies=[RepricerAllyAccount(account_id="ally-1", nickname="ALLY SHOP")],
         created_at=NOW,
         updated_at=NOW,
     )
@@ -137,7 +138,7 @@ def _catalog_rule(
         min_price=Decimal(min_price),
         max_price=Decimal(max_price),
         active=active,
-        execution_state={},
+        execution_state=RepricerRuleExecutionState(),
         created_at=NOW,
         updated_at=NOW,
         created_by="operator-1",

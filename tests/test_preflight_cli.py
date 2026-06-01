@@ -129,7 +129,9 @@ def test_retired_fulldock_rabbitmq_check_is_not_supported() -> None:
 def test_cli_infers_rabbitmq_vhost_from_cloudamqp_url(monkeypatch: Any) -> None:
     monkeypatch.delenv("RABBITMQ_VHOST", raising=False)
     monkeypatch.delenv("RABBITMQ_URL", raising=False)
-    monkeypatch.setenv("CLOUDAMQP_URL", "amqps://user:pass@woodpecker.rmq.cloudamqp.com/tenant-vhost")
+    monkeypatch.setenv(
+        "CLOUDAMQP_URL", "amqps://user:pass@woodpecker.rmq.cloudamqp.com/tenant-vhost"
+    )
     captured: dict[str, str] = {}
 
     def rabbit_factory(url: str, vhost: str) -> FakeRabbit:

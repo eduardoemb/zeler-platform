@@ -17,6 +17,8 @@ EXPECTED_ADMIN_CLIENT_SCOPES = {
         "admin:autoreply",
     }
 }
+
+
 @dataclass(frozen=True)
 class MongoReadinessFinding:
     severity: Severity

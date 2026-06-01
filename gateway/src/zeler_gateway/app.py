@@ -45,8 +45,10 @@ async def publish_repricer_sweep_requests(
     now = clock().astimezone(UTC)
     timestamp = now.strftime("%Y%m%dT%H%M%SZ")
     occurred_at = now.isoformat().replace("+00:00", "Z")
-    cursor = db["repricer_catalog_rules"].find({"active": True}).sort(
-        [("seller_id", 1), ("account_id", 1)]
+    cursor = (
+        db["repricer_catalog_rules"]
+        .find({"active": True})
+        .sort([("seller_id", 1), ("account_id", 1)])
     )
     documents = await cursor.to_list(length=1000)
     seller_accounts = sorted(

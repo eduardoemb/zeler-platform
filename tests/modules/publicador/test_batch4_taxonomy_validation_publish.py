@@ -173,6 +173,7 @@ async def test_valid_publish_uses_paused_status_zero_stock_and_stores_meli_respo
 
     published_call = next(call for call in gateway.calls if call[0:2] == ("POST", "/items"))
     payload = published_call[2]
+    assert payload is not None
     assert result["status"] == "published"
     assert payload["status"] == "paused"
     assert payload["available_quantity"] == 0
@@ -238,9 +239,7 @@ class _FakeMeliGateway:
     def __init__(self) -> None:
         self.calls: list[tuple[str, str, dict[str, Any] | None]] = []
 
-    async def request(
-        self, method: str, path: str, json: dict[str, Any] | None = None
-    ) -> Any:
+    async def request(self, method: str, path: str, json: dict[str, Any] | None = None) -> Any:
         self.calls.append((method, path, json))
         if method == "GET" and path.startswith("/sites/MLM/domain_discovery/search"):
             return [

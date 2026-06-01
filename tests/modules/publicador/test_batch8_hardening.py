@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -14,7 +15,9 @@ def test_publicador_runtime_config_fails_closed_without_gateway_or_token() -> No
         resolve_publicador_runtime_config({"GATEWAY_MODULE_TOKEN": "module-token"})
 
     with pytest.raises(PublicadorConfigError, match="GATEWAY_MODULE_TOKEN is required"):
-        resolve_publicador_runtime_config({"GATEWAY_BASE_URL": "https://gateway.zeler.ai/proxy/meli"})
+        resolve_publicador_runtime_config(
+            {"GATEWAY_BASE_URL": "https://gateway.zeler.ai/proxy/meli"}
+        )
 
 
 def test_publicador_runtime_config_rejects_local_legacy_and_normalizes_gateway_proxy() -> None:
@@ -45,17 +48,19 @@ def test_publicador_smoke_plan_is_sanitized_and_covers_parity_routes() -> None:
     from zeler_publicador.hardening import build_publicador_smoke_plan
 
     plan = build_publicador_smoke_plan(pilot_seller_id="82453304")
+    routes = cast(list[str], plan["routes"])
+    evidence_contract = cast(str, plan["evidence_contract"])
 
     assert plan["pilot_seller_id"] == "82453304"
     assert plan["execution_contexts"] == [
         "authenticated zeler-app session",
         "approved VM/VPC/runtime container",
     ]
-    assert "/publicador/dashboard" in plan["routes"]
-    assert "/publicador/publications/<publication_id>/process" in plan["routes"]
-    assert "/publicador/batches/<batch_id>" in plan["routes"]
-    assert "/publicador/statistics" in plan["routes"]
-    assert "sanitized" in plan["evidence_contract"]
+    assert "/publicador/dashboard" in routes
+    assert "/publicador/publications/<publication_id>/process" in routes
+    assert "/publicador/batches/<batch_id>" in routes
+    assert "/publicador/statistics" in routes
+    assert "sanitized" in evidence_contract
     assert "token" not in str(plan).lower()
     assert "secret" not in str(plan).lower()
     assert "mongodb://" not in str(plan).lower()

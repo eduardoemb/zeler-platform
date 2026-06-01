@@ -257,7 +257,9 @@ async def test_issue_module_admin_token_requires_target_module_id(
 
     app = FastAPI()
     app.state.mongo_db = FakeAsyncDb()
-    app.state.mongo_db["module_registry"].documents[0]["allowed_meli_scopes"].append("admin:repricer")
+    app.state.mongo_db["module_registry"].documents[0]["allowed_meli_scopes"].append(
+        "admin:repricer"
+    )
     app.state.mongo_db["module_registry"].documents.append(
         {"_id": "zeler-app", "status": "enabled", "allowed_meli_scopes": ["admin:repricer"]}
     )

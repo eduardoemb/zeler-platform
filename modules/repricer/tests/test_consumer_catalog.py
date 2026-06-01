@@ -269,9 +269,10 @@ def test_repricer_worker_subscribes_to_scheduler_sweep_requests() -> None:
 
     manifest_path = Path(__file__).resolve().parents[1] / "manifest.yaml"
 
-    assert "repricer.sweep.requested" in RepricerAmqpConsumerConfig(
-        rabbitmq_url="amqp://guest:guest@rabbitmq:5672/"
-    ).routing_keys
+    assert (
+        "repricer.sweep.requested"
+        in RepricerAmqpConsumerConfig(rabbitmq_url="amqp://guest:guest@rabbitmq:5672/").routing_keys
+    )
     assert "repricer.sweep.requested" in _routing_keys_from_manifest(manifest_path)
 
 

@@ -438,9 +438,7 @@ async def test_backfill_builds_formula_rows_for_order_line_sku_identities() -> N
             )
         ]
     )
-    db["sheets_item_sku_index"].documents[
-        "82453304:DEP-04-153-REM:MLM2169717119:182028311662"
-    ] = {
+    db["sheets_item_sku_index"].documents["82453304:DEP-04-153-REM:MLM2169717119:182028311662"] = {
         "_id": "82453304:DEP-04-153-REM:MLM2169717119:182028311662",
         "seller_id": "82453304",
         "seller_nickname": None,
@@ -1017,9 +1015,7 @@ async def test_order_line_identity_skips_cancelled_orders() -> None:
     assert summary.order_lines_read == 1
     assert summary.order_lines_with_direct_sku == 1
     assert summary.deterministic_pairs == 1
-    assert sorted(db["sheets_item_sku_index"].documents) == [
-        "82453304:ACTIVE-SKU:MLA1:item"
-    ]
+    assert sorted(db["sheets_item_sku_index"].documents) == ["82453304:ACTIVE-SKU:MLA1:item"]
 
 
 @pytest.mark.asyncio

@@ -290,9 +290,7 @@ async def _build_rabbitmq_amqp_passive_readiness_report_async(
                 )
     finally:
         if connection is not None:
-            with contextlib.suppress(
-                aio_pika.exceptions.AMQPException, RuntimeError, TimeoutError
-            ):
+            with contextlib.suppress(aio_pika.exceptions.AMQPException, RuntimeError, TimeoutError):
                 await connection.close()
 
     if not any(finding.severity == "fail" for finding in findings):

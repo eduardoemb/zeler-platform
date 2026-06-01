@@ -4,7 +4,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from hashlib import sha256
-from typing import Any, Literal, Protocol
+from typing import Any, Literal, Protocol, cast
 from uuid import uuid4
 
 from zeler_publicador.schemas import SCHEMA_VERSION
@@ -169,6 +169,7 @@ class AssetService:
         )
         if asset is None:
             raise ValueError("publicador_asset_not_found")
+        asset = cast(dict[str, Any], asset)
         if asset.get("meli_picture_id"):
             await self._append_asset_event(
                 asset,

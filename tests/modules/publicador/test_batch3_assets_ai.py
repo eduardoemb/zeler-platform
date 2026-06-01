@@ -125,7 +125,10 @@ async def test_asset_service_validates_image_rules_and_registers_metadata_idempo
     assert [asset["_id"] for asset in first] == ["asset-1", "asset-2", "asset-3"]
     assert [asset["_id"] for asset in second] == ["asset-1", "asset-2", "asset-3"]
     assert len(db["publicador_assets"].docs) == 3
-    assert db["publicador_assets"].docs[0]["storage_uri"] == "fake://seller-1/MLM-1/draft-1/SKU-1-1.jpg"
+    assert (
+        db["publicador_assets"].docs[0]["storage_uri"]
+        == "fake://seller-1/MLM-1/draft-1/SKU-1-1.jpg"
+    )
     assert "data" not in db["publicador_assets"].docs[0]
     assert db["publicador_drafts"].docs[0]["asset_ids"] == ["asset-1", "asset-2", "asset-3"]
     assert db["publicador_events"].docs[-1]["operation"] == "asset.registered"
@@ -180,7 +183,10 @@ async def test_asset_meli_upload_retry_keeps_metadata_and_does_not_duplicate_suc
     assert retried["status"] == "uploaded"
     assert retried["meli_picture_id"] == "meli-picture-1"
     assert repeated["meli_picture_id"] == "meli-picture-1"
-    assert gateway.uploaded_uris == ["fake://seller-1/MLM-1/draft-1/SKU-1-1.jpg", "fake://seller-1/MLM-1/draft-1/SKU-1-1.jpg"]
+    assert gateway.uploaded_uris == [
+        "fake://seller-1/MLM-1/draft-1/SKU-1-1.jpg",
+        "fake://seller-1/MLM-1/draft-1/SKU-1-1.jpg",
+    ]
     assert [event["operation"] for event in db["publicador_events"].docs[-3:]] == [
         "asset.meli_upload_failed",
         "asset.meli_uploaded",
@@ -351,9 +357,7 @@ async def test_publicador_assets_and_ai_api_contracts_persist_batch3_foundations
     assert ai.status_code == 202
     assert ai.json()["generated_listing"]["title"] == "Campera generada"
     assert (
-        db["publicador_ai_generations"].docs[0]["redacted_input"]["prompt_inputs"][
-            "access_token"
-        ]
+        db["publicador_ai_generations"].docs[0]["redacted_input"]["prompt_inputs"]["access_token"]
         == "[REDACTED]"  # noqa: S105
     )
 

@@ -4,8 +4,10 @@ import importlib.util
 from pathlib import Path
 from typing import Any
 
+import aio_pika
 import pytest
 
+from zeler_platform_core.runtime.retry_delay import RETRY_ATTEMPT_HEADER
 from zeler_sheets import consumer
 from zeler_sheets.consumer import (
     SHEETS_EVENTS_DLQ,
@@ -88,7 +90,7 @@ async def test_sheets_runner_declares_queue_with_dlx_and_binds_manifest_routing_
     assert channel.qos == [10]
     assert channel.declared_exchanges == [
         ("meli.events", runner.exchange_type_topic, True),
-        (SHEETS_EVENTS_DLX, consumer.aio_pika.ExchangeType.DIRECT, True),
+        (SHEETS_EVENTS_DLX, aio_pika.ExchangeType.DIRECT, True),
     ]
     assert channel.declared_queues == [
         (
@@ -139,15 +141,17 @@ async def test_sheets_runner_start_wires_default_retry_delay_publisher(
 
     await runner.start()
     await runner.handle_message(message)
+    retry_delay_publisher = runner._retry_delay_publisher  # noqa: SLF001 - asserts runtime wiring
+    assert retry_delay_publisher is not None
 
     assert message.acked is True
     assert message.nacks == []
-    assert runner._retry_delay_publisher.calls == [  # noqa: SLF001 - asserts runtime wiring
+    assert retry_delay_publisher.calls == [
         {
             "body": message.body,
             "queue_name": "zeler.sheets.events",
             "delay_ms": 9000,
-            "headers": {consumer.RETRY_ATTEMPT_HEADER: 1},
+            "headers": {RETRY_ATTEMPT_HEADER: 1},
         }
     ]
 

@@ -395,9 +395,7 @@ class RepricerEventHandler:
         if catalog_rule is not None:
             history_doc["account_id"] = catalog_rule.account_id
             history_doc["rule_id"] = catalog_rule.id
-        await self._db["repricer_history"].insert_one(
-            history_doc
-        )
+        await self._db["repricer_history"].insert_one(history_doc)
 
 
 def _execution_outcome(decision: NoAction) -> str:

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, cast
 
 import httpx
 import pytest
@@ -182,8 +182,8 @@ class FakeDb:
 
 def _matches(actual: Any, expected: Any) -> bool:
     if isinstance(expected, dict) and "$in" in expected:
-        return actual in expected["$in"]
-    return actual == expected
+        return actual in cast(list[Any], expected["$in"])
+    return bool(actual == expected)
 
 
 @pytest.mark.asyncio
@@ -399,18 +399,24 @@ async def test_parity_read_routes_return_seller_scoped_payloads(
         }
 
     assert all(response.status_code == 200 for response in responses.values())
-    assert responses["/autoreply/questions?seller_id=123456789"].json()["questions"][0][
-        "question_id"
-    ] == "question-1"
-    assert responses["/autoreply/conversations?seller_id=123456789"].json()["conversations"][0][
-        "conversation_id"
-    ] == "pack-1"
-    assert responses["/autoreply/claims?seller_id=123456789"].json()["claims"][0][
-        "claim_id"
-    ] == "claim-1"
-    assert responses["/autoreply/config/preferences?seller_id=123456789"].json()["ai"][
-        "secret_name"
-    ] is None
+    assert (
+        responses["/autoreply/questions?seller_id=123456789"].json()["questions"][0]["question_id"]
+        == "question-1"
+    )
+    assert (
+        responses["/autoreply/conversations?seller_id=123456789"].json()["conversations"][0][
+            "conversation_id"
+        ]
+        == "pack-1"
+    )
+    assert (
+        responses["/autoreply/claims?seller_id=123456789"].json()["claims"][0]["claim_id"]
+        == "claim-1"
+    )
+    assert (
+        responses["/autoreply/config/preferences?seller_id=123456789"].json()["ai"]["secret_name"]
+        is None
+    )
 
 
 @pytest.mark.asyncio

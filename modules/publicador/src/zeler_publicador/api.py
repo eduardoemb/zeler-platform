@@ -3,7 +3,7 @@ from __future__ import annotations
 from base64 import b64decode
 from collections.abc import Callable
 from datetime import UTC, datetime
-from typing import Any, Protocol
+from typing import Any, Protocol, cast
 
 from fastapi import APIRouter, Request
 from fastapi.encoders import jsonable_encoder
@@ -432,9 +432,7 @@ def build_router(
         return JSONResponse(status_code=201, content=jsonable_encoder({"assets": assets}))
 
     @router.post("/ai/generate", status_code=202)
-    async def generate_ai(
-        request: Request, payload: AiGenerateRequest
-    ) -> JSONResponse:
+    async def generate_ai(request: Request, payload: AiGenerateRequest) -> JSONResponse:
         auth = _authorize(request, seller_id=payload.seller_id)
         if auth is not None:
             return auth
@@ -720,8 +718,10 @@ def build_router(
         auth = _authorize(request, seller_id=seller_id)
         if auth is not None:
             return auth
-        return await _reporting_service(request, clock=now).get_settings(
-            seller_id=seller_id, account_id=account_id
+        return PublicadorSettings.model_validate(
+            await _reporting_service(request, clock=now).get_settings(
+                seller_id=seller_id, account_id=account_id
+            )
         )
 
     @router.put("/settings", response_model=PublicadorSettings)
@@ -731,7 +731,9 @@ def build_router(
         auth = _authorize(request, seller_id=payload.seller_id)
         if auth is not None:
             return auth
-        return await _reporting_service(request, clock=now).upsert_settings(payload)
+        return PublicadorSettings.model_validate(
+            await _reporting_service(request, clock=now).upsert_settings(payload)
+        )
 
     return router
 
@@ -836,9 +838,7 @@ async def _publication_transition(
         reason=reason,
     )
     if updated is None:
-        return JSONResponse(
-            status_code=404, content={"error": "publicador_publication_not_found"}
-        )
+        return JSONResponse(status_code=404, content={"error": "publicador_publication_not_found"})
     return await _draft_with_events(request, updated)
 
 
@@ -881,9 +881,7 @@ async def _suggestion_action(
             )
         raise ValueError("publicador_catalog_suggestion_action_unsupported")
     except ValueError as exc:
-        status_code = (
-            404 if str(exc) == "publicador_catalog_suggestion_not_found" else 422
-        )
+        status_code = 404 if str(exc) == "publicador_catalog_suggestion_not_found" else 422
         return JSONResponse(status_code=status_code, content={"error": str(exc)})
 
 
@@ -894,13 +892,19 @@ async def _draft_with_events(request: Request, draft: dict[str, Any]) -> dict[st
 
 async def _seller_history(request: Request, *, seller_id: str) -> list[dict[str, Any]]:
     try:
-        return await request.app.state.mongo_db["publicador_events"].find(
-            {"seller_id": seller_id}
-        ).to_list(length=100)
+        return cast(
+            list[dict[str, Any]],
+            await request.app.state.mongo_db["publicador_events"]
+            .find({"seller_id": seller_id})
+            .to_list(length=100),
+        )
     except (AssertionError, KeyError):
-        return await request.app.state.mongo_db["publicador_history"].find(
-            {"seller_id": seller_id}
-        ).to_list(length=100)
+        return cast(
+            list[dict[str, Any]],
+            await request.app.state.mongo_db["publicador_history"]
+            .find({"seller_id": seller_id})
+            .to_list(length=100),
+        )
 
 
 async def _history_for_draft(request: Request, *, draft: dict[str, Any]) -> list[dict[str, Any]]:
@@ -911,9 +915,11 @@ async def _history_for_draft(request: Request, *, draft: dict[str, Any]) -> list
             account_id=str(draft["account_id"]),
         )
     except (AssertionError, KeyError):
-        history = await request.app.state.mongo_db["publicador_history"].find(
-            {"seller_id": draft["seller_id"]}
-        ).to_list(length=100)
+        history = (
+            await request.app.state.mongo_db["publicador_history"]
+            .find({"seller_id": draft["seller_id"]})
+            .to_list(length=100)
+        )
         return [doc for doc in history if doc.get("draft_id") == draft.get("_id")]
 
 

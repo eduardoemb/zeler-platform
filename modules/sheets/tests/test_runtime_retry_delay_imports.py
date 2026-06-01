@@ -11,7 +11,8 @@ def _is_infra_import(module_name: str) -> bool:
 
 
 def test_sheets_worker_uses_packaged_retry_delay_publisher() -> None:
-    assert consumer.RetryDelayPublisher.__module__ == "zeler_platform_core.runtime.retry_delay"
+    retry_delay_publisher = consumer.__dict__["RetryDelayPublisher"]
+    assert retry_delay_publisher.__module__ == "zeler_platform_core.runtime.retry_delay"
 
 
 def test_sheets_consumer_does_not_import_top_level_infra_runtime_code() -> None:

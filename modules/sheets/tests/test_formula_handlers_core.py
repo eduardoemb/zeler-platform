@@ -326,8 +326,7 @@ async def test_url_and_codigo_ml_handlers_lookup_sku_item_pairs_with_blanks_for_
 
 
 @pytest.mark.asyncio
-async def test_current_item_formula_handlers_return_blanks_when_enriched_source_fields_are_absent(
-) -> None:
+async def test_item_formula_handlers_return_blanks_without_enriched_source_fields() -> None:
     db = FakeDb()
     db["sheets_item_formula_rows"].documents = {
         "seller-1-sku-1-mla1": {

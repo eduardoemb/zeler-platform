@@ -2,22 +2,18 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from datetime import UTC, datetime
-from typing import Any, Protocol
+from typing import Any, Protocol, cast
 from urllib.parse import quote_plus
 
 from zeler_publicador.schemas import SCHEMA_VERSION
 
 
 class MeliGateway(Protocol):
-    async def request(
-        self, method: str, path: str, json: dict[str, Any] | None = None
-    ) -> Any: ...
+    async def request(self, method: str, path: str, json: dict[str, Any] | None = None) -> Any: ...
 
 
 class MissingMeliGateway:
-    async def request(
-        self, _method: str, _path: str, json: dict[str, Any] | None = None
-    ) -> Any:
+    async def request(self, _method: str, _path: str, json: dict[str, Any] | None = None) -> Any:
         raise RuntimeError("publicador_meli_gateway_not_configured")
 
 
@@ -151,13 +147,15 @@ class MeliPublicationService:
             attributes.append({"id": "GTIN", "value_name": str(gtin)})
         pictures = [
             {"id": asset["meli_picture_id"]}
-            for asset in await self._mongo_db["publicador_assets"].find(
+            for asset in await self._mongo_db["publicador_assets"]
+            .find(
                 {
                     "seller_id": draft["seller_id"],
                     "account_id": draft["account_id"],
                     "owner_id": draft["_id"],
                 }
-            ).to_list(length=10)
+            )
+            .to_list(length=10)
             if asset.get("meli_picture_id")
         ]
         payload: dict[str, Any] = {
@@ -195,7 +193,7 @@ class MeliPublicationService:
         )
         if draft is None:
             raise ValueError("publicador_draft_not_found")
-        return draft
+        return cast(dict[str, Any], draft)
 
     def _local_field_errors(
         self,

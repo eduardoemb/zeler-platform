@@ -214,6 +214,7 @@ async def test_process_and_publish_batch_converts_valid_rows_to_drafts_and_pause
     )
 
     publish_payload = next(call[2] for call in gateway.calls if call[:2] == ("POST", "/items"))
+    assert publish_payload is not None
     assert processed["status"] == "processed"
     assert db["publicador_batch_items"].docs[0]["draft_id"] == "draft-1"
     assert db["publicador_drafts"].docs[0]["sku"] == "SKU-1"
@@ -300,9 +301,7 @@ class _FakeMeliGateway:
     def __init__(self) -> None:
         self.calls: list[tuple[str, str, dict[str, Any] | None]] = []
 
-    async def request(
-        self, method: str, path: str, json: dict[str, Any] | None = None
-    ) -> Any:
+    async def request(self, method: str, path: str, json: dict[str, Any] | None = None) -> Any:
         self.calls.append((method, path, json))
         if (method, path) == ("GET", "/categories/MLM-BATCH/attributes"):
             return []
@@ -406,7 +405,7 @@ def _xlsx_bytes(
     ]
     sheet_xml = "".join(
         f'<row r="{index}">'
-        f'{"".join(_cell(index, col_index, value) for col_index, value in enumerate(row, start=1))}'
+        f"{''.join(_cell(index, col_index, value) for col_index, value in enumerate(row, start=1))}"
         "</row>"
         for index, row in enumerate(sheet_rows, start=1)
     )

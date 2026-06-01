@@ -94,10 +94,7 @@ class RepricerCatalogRuleService:
             filter_spec["active"] = active_filter
 
         cursor = (
-            self._collection.find(filter_spec)
-            .sort([("updated_at", -1)])
-            .skip(offset)
-            .limit(limit)
+            self._collection.find(filter_spec).sort([("updated_at", -1)]).skip(offset).limit(limit)
         )
         documents = await cursor.to_list(length=limit)
         rules = [RepricerCatalogRule.model_validate(document) for document in documents]
@@ -220,9 +217,7 @@ class RepricerGuardService:
                 "max_price_limit": max_price_limit,
                 "undercut_delta": Decimal(str(payload.get("undercut_delta", "0"))),
                 "pause_competition": bool(payload.get("pause_competition", False)),
-                "escalate_to_manual_review": bool(
-                    payload.get("escalate_to_manual_review", False)
-                ),
+                "escalate_to_manual_review": bool(payload.get("escalate_to_manual_review", False)),
                 "created_at": existing.created_at if existing is not None else now,
                 "updated_at": now,
             }

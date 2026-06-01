@@ -461,10 +461,7 @@ async def test_user_products_families_gate_is_no_go_and_explains_missing_behavio
 
     assert decision.allowed is False
     assert decision.reason == "topic_no_go"
-    assert (
-        "Sheets user_products.* handler/consumer behavior is not defined"
-        in decision.detail
-    )
+    assert "Sheets user_products.* handler/consumer behavior is not defined" in decision.detail
     assert plan.selected == ()
     assert [event.skip_reason for event in plan.skipped] == ["topic_no_go"]
 

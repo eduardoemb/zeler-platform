@@ -255,9 +255,7 @@ async def test_catalog_service_refresh_counts_only_seller_scoped_catalog_rules()
     result = await service.refresh_catalog_rules(seller_id="123456789", account_id="acc-1")
 
     assert result == {"status": "refreshed", "matched_rules": 1}
-    assert db.repricer_catalog_rules.filters == [
-        {"seller_id": "123456789", "account_id": "acc-1"}
-    ]
+    assert db.repricer_catalog_rules.filters == [{"seller_id": "123456789", "account_id": "acc-1"}]
 
 
 @pytest.mark.asyncio
@@ -360,9 +358,7 @@ async def test_bulk_service_validates_csv_rows_with_catalog_guards_and_allies() 
             max_price="130.00",
         )
     )
-    db.repricer_allies.documents.append(
-        _allies_doc(seller_id="123456789", account_ids=["ally-1"])
-    )
+    db.repricer_allies.documents.append(_allies_doc(seller_id="123456789", account_ids=["ally-1"]))
     service = RepricerBulkJobService(db, clock=lambda: NOW)
 
     result = await service.validate_upload(
@@ -575,9 +571,7 @@ async def test_report_service_creates_and_downloads_rules_export() -> None:
         status="ready",
         report_type="rules_export",
     )
-    download = await service.get_download(
-        seller_id="123456789", report_id=created.id
-    )
+    download = await service.get_download(seller_id="123456789", report_id=created.id)
 
     assert created.id == "report-123456789-acc-1-rules_export-20260513T190000Z"
     assert created.status == "ready"
@@ -592,9 +586,7 @@ async def test_report_service_creates_and_downloads_rules_export() -> None:
         "item_id,title,sku,strategy,min_price,max_price,active,last_outcome",
         "MLA123,Catalog Item,SKU-1,competitive,100.00,120.00,true,",
     ]
-    assert db.repricer_catalog_rules.filters == [
-        {"seller_id": "123456789", "account_id": "acc-1"}
-    ]
+    assert db.repricer_catalog_rules.filters == [{"seller_id": "123456789", "account_id": "acc-1"}]
     assert db.repricer_reports.replacements[0][0] == {
         "_id": created.id,
         "seller_id": "123456789",
@@ -718,9 +710,7 @@ async def test_monitoring_service_persists_snapshot_and_derives_scheduler_counts
 
     persisted_snapshot = db.repricer_monitoring_snapshots.inserted[0]
     assert persisted_snapshot["generated_at"] == NOW
-    assert persisted_snapshot["worker_heartbeat_at"] == datetime(
-        2026, 5, 13, 18, 59, tzinfo=UTC
-    )
+    assert persisted_snapshot["worker_heartbeat_at"] == datetime(2026, 5, 13, 18, 59, tzinfo=UTC)
 
 
 @pytest.mark.asyncio

@@ -237,9 +237,7 @@ def build_router() -> APIRouter:
         return JSONResponse(allies.model_dump(mode="json", by_alias=True))
 
     @router.post("/bulk-jobs/validate", status_code=201)
-    async def validate_bulk_job(
-        request: Request, payload: BulkValidatePayload
-    ) -> JSONResponse:
+    async def validate_bulk_job(request: Request, payload: BulkValidatePayload) -> JSONResponse:
         claims, auth = _claims_or_error(request, seller_id=payload.seller_id)
         if auth is not None:
             return auth
@@ -419,9 +417,7 @@ def build_router() -> APIRouter:
         return JSONResponse([report.model_dump(mode="json", by_alias=True) for report in reports])
 
     @router.post("/reports/rules-export", status_code=201)
-    async def create_rules_export(
-        request: Request, payload: RulesExportPayload
-    ) -> JSONResponse:
+    async def create_rules_export(request: Request, payload: RulesExportPayload) -> JSONResponse:
         claims, auth = _claims_or_error(request, seller_id=payload.seller_id)
         if auth is not None:
             return auth

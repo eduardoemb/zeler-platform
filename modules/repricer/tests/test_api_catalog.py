@@ -507,9 +507,7 @@ async def test_bulk_process_status_and_errors_are_seller_scoped_and_retry_safe(
     assert processed.json()["status"] == "completed_with_errors"
     assert retried.json() == processed.json()
     assert status.json()["job"] == processed.json()
-    assert [row["error"]["code"] for row in errors.json()["rows"]] == [
-        "min_price_above_max_price"
-    ]
+    assert [row["error"]["code"] for row in errors.json()["rows"]] == ["min_price_above_max_price"]
     assert denied.status_code == 403
     assert [doc["_id"] for doc in db.repricer_catalog_rules.documents] == [
         "catalog-123456789-acc-1-MLA1"

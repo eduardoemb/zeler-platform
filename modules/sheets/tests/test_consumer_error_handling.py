@@ -6,6 +6,7 @@ import httpx
 import pytest
 
 from zeler_platform_core.clients.meli_gateway_client import GatewayRateLimitError
+from zeler_platform_core.runtime.retry_delay import RETRY_ATTEMPT_HEADER
 from zeler_sheets import consumer
 from zeler_sheets.consumer import SheetsAmqpConsumerRunner, SheetsEvent
 from zeler_sheets.google_errors import GoogleSheetsApiError, RetryableGoogleSheetsApiError
@@ -224,7 +225,7 @@ async def test_google_sheets_429_is_delayed_and_acked_without_dlq(
             "body": message.body,
             "queue_name": "zeler.sheets.events",
             "delay_ms": 12000,
-            "headers": {consumer.RETRY_ATTEMPT_HEADER: 1},
+            "headers": {RETRY_ATTEMPT_HEADER: 1},
         }
     ]
     assert log_spy.warning_calls == [
@@ -262,7 +263,7 @@ async def test_google_sheets_retry_attempt_header_exhausts_delivery_limit_withou
     )
     message = FakeMessage(
         _valid_payload(resource="/items/MLA-GOOGLE-429"),
-        headers={consumer.RETRY_ATTEMPT_HEADER: 5},
+        headers={RETRY_ATTEMPT_HEADER: 5},
     )
 
     await runner.handle_message(message)
