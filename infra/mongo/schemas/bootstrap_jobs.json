@@ -24,12 +24,12 @@
           "null"
         ]
       },
+      "dag": {
+        "bsonType": "object"
+      },
       "dispatch_attempts": {
         "bsonType": "int",
         "minimum": 0
-      },
-      "dag": {
-        "bsonType": "object"
       },
       "error": {
         "bsonType": [
@@ -40,13 +40,13 @@
       "errors": {
         "bsonType": "array"
       },
-      "finished_at": {
+      "failed_at": {
         "bsonType": [
           "date",
           "null"
         ]
       },
-      "failed_at": {
+      "finished_at": {
         "bsonType": [
           "date",
           "null"

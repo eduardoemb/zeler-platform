@@ -436,6 +436,7 @@ Configure the app runtime with these server env values:
 | `zeler-app` | `AUTOREPLY_API_URL` | `https://autoreply.zeler.ai` |
 | `gateway` | `OAUTH_SUCCESS_URL` | `https://app.zeler.ai/accounts/linked` |
 | `zeler-app` + `gateway` | `ZELER_APP_BROKER_SECRET` | Secret Manager secret `zeler-app-broker-secret`; values must match exactly. |
+| `gateway` updater context | `ZELER_APP_ALLOWED_PLATFORM_USER_IDS` | Optional comma-separated platform-user rollout allowlist for `module_registry._id="zeler-app"`; use sanitized IDs only in operator logs. |
 
 `ZELER_APP_BROKER_SECRET` is server-only. Never configure it as `NEXT_PUBLIC_*`, never print it,
 and never paste it into local shells. The gateway receives it through
@@ -446,6 +447,13 @@ runtime secret store.
 the local default `https://app.zeler.local/accounts/linked` after a successful MercadoLibre OAuth
 callback. Production gateway env must set it to the live app linked-accounts route above before an
 operator runs the OAuth account-linking smoke.
+
+`zeler-app` must send the authenticated server-derived `platform_user_id` in the signed
+`/internal/tokens/issue` JSON body when requesting `module_admin` tokens. The gateway authorizes that
+user against `allowed_platform_user_ids` and an active linked `meli_accounts` seller. Deprecated
+`allowed_seller_ids` remains only as a rollout fallback for old signed requests that do not include
+`platform_user_id`; if a signed request includes a non-allowed user, the seller fallback must not grant
+access.
 
 ### Create or rotate the broker secret
 
@@ -490,8 +498,10 @@ main()
 PY"
 ```
 
-Expected output: `zeler-app admin client updated`. The command must not print `MONGO_URI` or any
-secret value.
+Expected output: `zeler-app admin client updated`. The updater reads
+`ZELER_APP_ALLOWED_PLATFORM_USER_IDS` when present, otherwise preserves the existing platform-user
+allowlist. It also preserves the deprecated `allowed_seller_ids` fallback for rollout compatibility.
+The command must not print `MONGO_URI` or any secret value.
 
 Validate the registry document shape from the same VM/VPC boundary without exposing secrets:
 
@@ -517,6 +527,7 @@ try:
     print(json.dumps({
         '_id': doc.get('_id'),
         'status': doc.get('status'),
+        'allowed_platform_user_ids': doc.get('allowed_platform_user_ids'),
         'allowed_seller_ids': doc.get('allowed_seller_ids'),
         'allowed_meli_scopes': doc.get('allowed_meli_scopes'),
     }, sort_keys=True))
@@ -525,8 +536,10 @@ finally:
 PY"
 ```
 
-Expected JSON contains `_id: "zeler-app"`, `status: "enabled"`, `allowed_seller_ids: [82453304]`,
-and exactly `admin:repricer`, `admin:sheets`, `admin:publicador`, and `admin:autoreply`.
+Expected JSON contains `_id: "zeler-app"`, `status: "enabled"`, an
+`allowed_platform_user_ids` list, deprecated `allowed_seller_ids: [82453304]` only while the rollout
+fallback is needed, and exactly `admin:repricer`, `admin:sheets`, `admin:publicador`, and
+`admin:autoreply`.
 Fulldock is intentionally decommissioned and must not appear as `admin:fulldock`.
 
 ### Safe smoke sequence for seller `82453304`
@@ -540,7 +553,7 @@ Fulldock is intentionally decommissioned and must not appear as `admin:fulldock`
 2. Open `zeler-app` with a real authenticated app session and the pilot seller selected. If the UI
    needs manual browser auth, record that blocker rather than inventing a session.
 3. Smoke these routes for seller `82453304`: `/accounts`, `/bootstrap/<known-job-id>`,
-   `/repricer/rules`, `/sheets/config`, `/publicador/drafts`, `/autoreply/templates`.
+   `/repricer/catalog`, `/sheets/config`, `/publicador/drafts`, `/autoreply/templates`.
    Valid results are data, an explicit empty state, or a clearly documented
    account-linking/data blocker. `/fulldock/rules` should remain unavailable because Fulldock is retired.
 4. Do not run create/update/delete module actions during smoke unless a separate rollout plan

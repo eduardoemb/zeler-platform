@@ -80,6 +80,12 @@ Fulldock is decommissioned. Stock-location replay through Fulldock is not an
 active capacity path and must remain blocked unless a future reactivation SDD
 explicitly restores UI, registry scope, runtime, and RabbitMQ topology.
 
+For the legacy readiness vocabulary, stock-locations remains `NO_GO`: do not
+restore `GET /user-products/*/stock` or `PUT /items/*/stock_locations` scopes,
+and require no recent gateway `out_of_scope` errors before any future
+reactivation proposal even considers stock-location replay.
+The archived gate also requires no `malformed_resource`, `missing_mapping`, or `resource_not_found` spike in the relevant worker logs.
+
 ### User-products-families no-go
 
 `user-products-families` remains blocked even if an operator passes
