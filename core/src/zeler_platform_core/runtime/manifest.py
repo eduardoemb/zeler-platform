@@ -6,6 +6,11 @@ from typing import Any
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from zeler_platform_core.runtime.module_identity import (
+    ModuleDisplayIdentity,
+    resolve_active_module_display_identity,
+)
+
 GATEWAY_OWNED_COLLECTIONS = frozenset(
     {
         "meli_accounts",
@@ -45,6 +50,7 @@ class ModuleManifest(BaseModel):
 
     def __init__(self, **data: Any) -> None:
         super().__init__(**data)
+        self._raise_for_missing_display_identity()
         self._raise_for_owned_collection_collisions()
 
     @property
@@ -54,6 +60,10 @@ class ModuleManifest(BaseModel):
     @property
     def routing_keys(self) -> list[str]:
         return self.subscribed_events
+
+    @property
+    def display_identity(self) -> ModuleDisplayIdentity:
+        return resolve_active_module_display_identity(self.module_id)
 
     @field_validator("health_endpoint")
     @classmethod
@@ -76,6 +86,9 @@ class ModuleManifest(BaseModel):
             raise ManifestConflictError(
                 f"owned_collections collide with platform-owned collections: {joined}"
             )
+
+    def _raise_for_missing_display_identity(self) -> None:
+        resolve_active_module_display_identity(self.module_id)
 
 
 def validate_manifest(path: str | Path) -> ModuleManifest:

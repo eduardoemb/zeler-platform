@@ -79,11 +79,32 @@ def test_zeler_app_admin_seed_excludes_retired_fulldock_scope() -> None:
     assert "admin:fulldock" not in zeler_app["allowed_meli_scopes"]
 
 
+def test_zelerstock_identity_is_retired_metadata_only() -> None:
+    from zeler_platform_core.runtime.module_identity import (
+        active_module_display_identities,
+        retired_module_display_identities,
+    )
+
+    active_identities = active_module_display_identities()
+    retired_identity = retired_module_display_identities()["fulldock"]
+
+    assert "fulldock" not in active_identities
+    assert all(identity.display_name != "ZelerStock" for identity in active_identities.values())
+    assert retired_identity.display_name == "ZelerStock"
+    assert retired_identity.legacy_display_name == "FullDockManager"
+    assert retired_identity.availability == "retired"
+
+
 @pytest.mark.asyncio
 async def test_zeler_app_seed_rejects_retired_fulldock_module_admin_token(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from gateway.tests.test_internal_tokens_issue import FakeAsyncDb, FakeClaims
+    from gateway.tests.test_internal_tokens_issue import (
+        BROKER_SECRET,
+        FakeAsyncDb,
+        _broker_headers,
+        _json_body,
+    )
 
     import zeler_gateway.internal.router as internal_router
     from zeler_gateway.internal.router import router
@@ -94,19 +115,25 @@ async def test_zeler_app_seed_rejects_retired_fulldock_module_admin_token(
     app.state.mongo_db = FakeAsyncDb()
     app.state.mongo_db["module_registry"].documents.extend(seed["documents"])
     app.include_router(router)
+
     def record_mint_call(*args: Any, **kwargs: Any) -> str:
         mint_calls.append({"args": args, "kwargs": kwargs})
         return "bad"
 
-    monkeypatch.setattr(
-        internal_router,
-        "verify_module_jwt",
-        lambda token: FakeClaims(module_id="zeler-app", seller_id=82453304),
-    )
+    monkeypatch.setenv("ZELER_APP_BROKER_SECRET", BROKER_SECRET)
     monkeypatch.setattr(
         internal_router,
         "mint_module_jwt",
         record_mint_call,
+    )
+    body = _json_body(
+        {
+            "seller_id": 82453304,
+            "scopes": ["admin:fulldock"],
+            "ttl_s": 120,
+            "token_kind": "module_admin",
+            "target_module_id": "fulldock",
+        }
     )
 
     async with httpx.AsyncClient(
@@ -114,14 +141,8 @@ async def test_zeler_app_seed_rejects_retired_fulldock_module_admin_token(
     ) as client:
         response = await client.post(
             "/internal/tokens/issue",
-            headers={"Authorization": "Bearer zeler-app-gateway-token"},
-            json={
-                "seller_id": 82453304,
-                "scopes": ["admin:fulldock"],
-                "ttl_s": 120,
-                "token_kind": "module_admin",
-                "target_module_id": "fulldock",
-            },
+            content=body,
+            headers=_broker_headers(body),
         )
 
     assert response.status_code == 403
@@ -151,7 +172,7 @@ def test_gce_runtime_artifacts_have_no_active_fulldock_services_or_hosts() -> No
     assert "fulldock-worker" not in compose
     assert "fulldock-api" not in caddyfile
     assert "fulldock.zeler.ai" in caddyfile
-    assert "respond \"Fulldock is decommissioned\" 410" in caddyfile
+    assert 'respond "Fulldock is decommissioned" 410' in caddyfile
 
 
 def test_fulldock_docs_are_archived_not_active_runbooks() -> None:
@@ -195,9 +216,7 @@ def test_fulldock_historical_collections_are_retained_as_archive_contracts() -> 
 
 
 def test_fulldock_archive_policy_formalizes_read_only_retention() -> None:
-    policy = (ROOT / "docs/operations/fulldock-archive-policy.md").read_text(
-        encoding="utf-8"
-    )
+    policy = (ROOT / "docs/operations/fulldock-archive-policy.md").read_text(encoding="utf-8")
 
     assert "read-only archive" in policy
     assert "fulldock_inventory_rules" in policy
@@ -208,9 +227,9 @@ def test_fulldock_archive_policy_formalizes_read_only_retention() -> None:
 
 def test_fulldock_decommission_does_not_add_productive_data_deletion_scripts() -> None:
     destructive_tokens = (
-        "drop_collection(\"fulldock_",
+        'drop_collection("fulldock_',
         "drop_collection('fulldock_",
-        ".drop(\"fulldock_",
+        '.drop("fulldock_',
         ".drop('fulldock_",
         "delete_many({})",
         "deleteMany({})",

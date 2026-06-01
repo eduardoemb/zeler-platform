@@ -329,9 +329,7 @@ ENTITY_SCHEMAS: dict[str, dict[str, Any]] = {
             "error": {"bsonType": ["string", "null"]},
             "last_error": {"bsonType": ["string", "null"], "maxLength": 1024},
             "errors": {"bsonType": "array"},
-            "triggered_by": {
-                "enum": ["oauth_callback", "oauth_callback_force", "manual", "retry"]
-            },
+            "triggered_by": {"enum": ["oauth_callback", "oauth_callback_force", "manual", "retry"]},
             "created_at": DATE,
             "updated_at": DATE,
             **SCHEMA_VERSION,
@@ -355,6 +353,15 @@ ENTITY_SCHEMAS: dict[str, dict[str, Any]] = {
                 "items": {"bsonType": ["int", "long", "string"]},
             },
             "routing_keys": {"bsonType": "array"},
+            "display_identity": {
+                "bsonType": "object",
+                "required": ["display_name", "availability"],
+                "properties": {
+                    "display_name": {"bsonType": "string"},
+                    "legacy_display_name": {"bsonType": ["string", "null"]},
+                    "availability": {"enum": ["active", "retired"]},
+                },
+            },
             "status": {"enum": ["enabled", "disabled", "degraded"]},
             "last_heartbeat_at": NULLABLE_DATE,
             "health": {"bsonType": ["object", "null"]},

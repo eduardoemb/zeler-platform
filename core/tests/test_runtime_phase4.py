@@ -61,6 +61,45 @@ health_endpoint: /health
     assert manifest.name == "repricer"
     assert manifest.allowed_meli_scopes == ["PUT /items/*", "GET /items/*"]
     assert manifest.routing_keys == ["items.*", "items.price_updated"]
+    assert manifest.display_identity.display_name == "ZelerPricing"
+    assert manifest.display_identity.legacy_display_name == "EasyReprice"
+    assert manifest.display_identity.availability == "active"
+
+
+def test_active_and_retired_module_display_identities_are_canonical() -> None:
+    from zeler_platform_core.runtime.module_identity import (
+        active_module_display_identities,
+        resolve_module_display_identity,
+        retired_module_display_identities,
+    )
+
+    active_identities = active_module_display_identities()
+
+    assert {
+        module_id: identity.display_name for module_id, identity in active_identities.items()
+    } == {
+        "sheets": "ZelerData",
+        "repricer": "ZelerPricing",
+        "publicador": "ZelerListings",
+        "autoreply": "ZelerSupport",
+    }
+    assert {
+        module_id: identity.legacy_display_name for module_id, identity in active_identities.items()
+    } == {
+        "sheets": "SheetsellerApp",
+        "repricer": "EasyReprice",
+        "publicador": "Autopubli",
+        "autoreply": "AutoReply",
+    }
+    assert all(identity.availability == "active" for identity in active_identities.values())
+
+    retired_identity = retired_module_display_identities()["fulldock"]
+    resolved_retired_identity = resolve_module_display_identity("fulldock")
+
+    assert retired_identity.display_name == "ZelerStock"
+    assert retired_identity.availability == "retired"
+    assert resolved_retired_identity is not None
+    assert resolved_retired_identity.availability == "retired"
 
 
 def test_manifest_missing_allowed_meli_scopes_raises(tmp_path: Path) -> None:
@@ -80,6 +119,18 @@ health_endpoint: /health
 
     with pytest.raises(ValueError, match="allowed_meli_scopes"):
         validate_manifest(manifest_path)
+
+
+def test_manifest_validation_rejects_active_module_without_display_identity() -> None:
+    with pytest.raises(ValueError, match="display identity"):
+        ModuleManifest(
+            name="unknown_active_module",
+            version="0.1.0",
+            subscribed_events=["items.*"],
+            owned_collections=["unknown_active_records"],
+            allowed_meli_scopes=["GET /items/*"],
+            health_endpoint="/health",
+        )
 
 
 def test_manifest_rejects_gateway_owned_collection() -> None:
@@ -115,6 +166,11 @@ async def test_registration_upserts_module_registry_doc() -> None:
         "routing_keys": ["items.*", "items.price_updated"],
         "owned_collections": ["repricer_rules", "repricer_history"],
         "health_endpoint": "/health",
+        "display_identity": {
+            "display_name": "ZelerPricing",
+            "legacy_display_name": "EasyReprice",
+            "availability": "active",
+        },
         "status": "enabled",
         "schema_version": 1,
     }

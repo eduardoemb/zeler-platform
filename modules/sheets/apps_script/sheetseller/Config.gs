@@ -4,7 +4,7 @@ var SHEETSELLER_DEFAULT_API_BASE_URL = "https://api.zeler.app";
 
 function onOpen() {
   SpreadsheetApp.getUi()
-    .createMenu("Sheetseller")
+    .createMenu("ZelerData")
     .addItem("Settings", "showSheetsellerSettings")
     .addSeparator()
     .addItem("Clear extension token", "clearSheetsellerExtensionToken")
@@ -14,7 +14,7 @@ function onOpen() {
 function showSheetsellerSettings() {
   var settings = getSheetsellerSettings_();
   var html = HtmlService.createHtmlOutput(buildSheetsellerSettingsHtml_(settings))
-    .setTitle("Sheetseller settings")
+    .setTitle("ZelerData settings")
     .setWidth(420);
   SpreadsheetApp.getUi().showSidebar(html);
 }
@@ -60,7 +60,7 @@ function setSheetsellerExtensionToken(extensionToken) {
 
 function clearSheetsellerExtensionToken() {
   PropertiesService.getUserProperties().deleteProperty(SHEETSELLER_EXTENSION_TOKEN_KEY);
-  SpreadsheetApp.getActive().toast("Sheetseller extension token cleared", "Sheetseller", 5);
+  SpreadsheetApp.getActive().toast("ZelerData extension token cleared", "ZelerData", 5);
   return { tokenStored: false };
 }
 
@@ -88,7 +88,7 @@ function buildSheetsellerSettingsHtml_(settings) {
   var prefix = settings.tokenStored ? "Stored token prefix: " + escapeHtml_(settings.tokenPrefix) : "No token stored";
   return "" +
     "<section style='font:14px Arial,sans-serif;color:#17202a;padding:16px'>" +
-    "<h1 style='font-size:18px;margin:0 0 8px'>Sheetseller private pilot</h1>" +
+    "<h1 style='font-size:18px;margin:0 0 8px'>ZelerData private pilot</h1>" +
     "<p style='line-height:1.45'>Paste the show-once extension token from zeler-app. The token is stored only for your Google account in this spreadsheet.</p>" +
     "<label>API base URL</label>" +
     "<input id='apiBaseUrl' style='box-sizing:border-box;width:100%;margin:6px 0 12px;padding:8px' value='" + escapeHtml_(settings.apiBaseUrl) + "'>" +

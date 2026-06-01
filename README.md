@@ -10,6 +10,22 @@ Unified Mercado Libre integration platform for Zeler.
 - `bootstrap/` — one-shot bootstrap jobs.
 - `infra/` — platform infrastructure assets and local development helpers.
 
+## Module display identities
+
+Platform module IDs remain stable runtime contracts. Zeler-facing display names
+are metadata layered on top of those IDs:
+
+| Module ID | Display name | Legacy alias |
+| --- | --- | --- |
+| `sheets` | ZelerData | SheetsellerApp |
+| `repricer` | ZelerPricing | EasyReprice |
+| `publicador` | ZelerListings | Autopubli |
+| `autoreply` | ZelerSupport | AutoReply |
+
+`fulldock` is retired historical metadata only: FullDockManager maps to
+ZelerStock, but no active routes, scopes, services, workers, or registry access
+are enabled.
+
 ## Quick start
 
 ```bash

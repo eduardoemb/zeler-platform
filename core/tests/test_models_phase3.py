@@ -393,6 +393,11 @@ def test_operational_models_validate_statuses_ttl_fields_and_uuid_events() -> No
         allowed_meli_scopes=["GET /items/*"],
         allowed_seller_ids=[82453304, "987654321"],
         routing_keys=["items.*"],
+        display_identity={
+            "display_name": "ZelerPricing",
+            "legacy_display_name": "EasyReprice",
+            "availability": "active",
+        },
         status="enabled",
     )
     repricer_rule = RepricerRule(
@@ -430,6 +435,10 @@ def test_operational_models_validate_statuses_ttl_fields_and_uuid_events() -> No
     assert bootstrap_job.state == "pending"
     assert module_registry.status == "enabled"
     assert module_registry.allowed_seller_ids == ["82453304", "987654321"]
+    assert module_registry.display_identity is not None
+    assert module_registry.display_identity.display_name == "ZelerPricing"
+    assert module_registry.display_identity.legacy_display_name == "EasyReprice"
+    assert module_registry.display_identity.availability == "active"
     assert repricer_rule.item_id == "1234"
     assert repricer_history.item_id == "1234"
     assert audit_log.seller_id == "123"
@@ -456,3 +465,20 @@ def test_module_registry_defaults_deprecated_seller_allowlist() -> None:
     )
 
     assert module_registry.allowed_seller_ids == []
+    assert module_registry.display_identity is None
+
+
+def test_module_registry_rejects_invalid_display_identity_availability() -> None:
+    with pytest.raises(ValidationError):
+        ModuleRegistry(
+            id="repricer",
+            version="0.1.0",
+            allowed_meli_scopes=["GET /items/*"],
+            routing_keys=["items.*"],
+            display_identity={
+                "display_name": "ZelerPricing",
+                "legacy_display_name": "EasyReprice",
+                "availability": "preview",
+            },
+            status="enabled",
+        )

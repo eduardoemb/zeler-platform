@@ -66,6 +66,7 @@ def test_publicador_manifest_validates_owned_collections_and_write_scopes() -> N
     assert manifest.routing_keys == []
     assert manifest.owned_collections == PUBLICADOR_OWNED_COLLECTIONS
     assert manifest.allowed_meli_scopes == PUBLICADOR_MELI_SCOPES
+    assert manifest.display_identity.display_name == "ZelerListings"
 
 
 @pytest.mark.asyncio
@@ -89,6 +90,11 @@ async def test_publicador_startup_registers_manifest_and_health_ready() -> None:
         "routing_keys": [],
         "owned_collections": PUBLICADOR_OWNED_COLLECTIONS,
         "health_endpoint": "/health",
+        "display_identity": {
+            "display_name": "ZelerListings",
+            "legacy_display_name": "Autopubli",
+            "availability": "active",
+        },
         "status": "enabled",
         "schema_version": 1,
     }

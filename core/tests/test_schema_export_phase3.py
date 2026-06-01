@@ -26,6 +26,24 @@ def test_export_schemas_writes_mongo_wrapped_validators(tmp_path: Path) -> None:
     assert schema["properties"]["schema_version"]["bsonType"] == "int"
 
 
+def test_module_registry_schema_exposes_optional_display_identity(tmp_path: Path) -> None:
+    export_schemas(tmp_path)
+    payload = json.loads((tmp_path / "module_registry.json").read_text(encoding="utf-8"))
+    schema = payload["$jsonSchema"]
+    display_identity = schema["properties"]["display_identity"]
+
+    assert "display_identity" not in schema["required"]
+    assert display_identity == {
+        "bsonType": "object",
+        "properties": {
+            "availability": {"enum": ["active", "retired"]},
+            "display_name": {"bsonType": "string"},
+            "legacy_display_name": {"bsonType": ["string", "null"]},
+        },
+        "required": ["display_name", "availability"],
+    }
+
+
 def test_schema_export_detects_committed_schema_drift(tmp_path: Path) -> None:
     export_schemas(tmp_path)
     (tmp_path / "items.json").write_text('{"stale": true}\n', encoding="utf-8")

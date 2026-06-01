@@ -39,6 +39,7 @@ def test_autoreply_manifest_validates_events_collections_and_scopes() -> None:
         "GET /questions/*",
         "GET /messages/*",
     ]
+    assert manifest.display_identity.display_name == "ZelerSupport"
 
 
 @pytest.mark.asyncio
@@ -66,6 +67,11 @@ async def test_autoreply_startup_registers_manifest_and_health_ready() -> None:
         "routing_keys": ["questions.new", "messages.new"],
         "owned_collections": ["autoreply_templates", "autoreply_history"],
         "health_endpoint": "/health",
+        "display_identity": {
+            "display_name": "ZelerSupport",
+            "legacy_display_name": "AutoReply",
+            "availability": "active",
+        },
         "status": "enabled",
         "schema_version": 1,
     }
