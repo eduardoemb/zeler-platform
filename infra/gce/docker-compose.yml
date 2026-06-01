@@ -79,7 +79,7 @@ services:
   # --------------------------------------------------------------------------
   gateway:
     <<: *restart
-    image: us-central1-docker.pkg.dev/zeler-platform-dev/zeler-platform/gateway:repricer-product-parity-c19b714
+    image: us-central1-docker.pkg.dev/zeler-platform-dev/zeler-platform/gateway:auth-linked-sellers-773f308
     networks:
       - platform_default
     env_file: /opt/zeler-platform/env/gateway.env
