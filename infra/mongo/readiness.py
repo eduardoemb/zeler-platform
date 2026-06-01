@@ -17,7 +17,7 @@ EXPECTED_ADMIN_CLIENT_SCOPES = {
         "admin:autoreply",
     }
 }
-EXPECTED_PLATFORM_USER_ALLOWLIST_CLIENTS = {"zeler-app"}
+EXPECTED_PLATFORM_USER_ALLOWLIST_CLIENTS: set[str] = set()
 MAX_PLATFORM_USER_ALLOWLIST_SIZE = 100
 
 
@@ -171,7 +171,10 @@ def _find_admin_scope_mismatch(document: dict[str, Any]) -> str | None:
 
 
 def _find_platform_user_allowlist_mismatch(document: dict[str, Any]) -> str | None:
-    if document["_id"] not in EXPECTED_PLATFORM_USER_ALLOWLIST_CLIENTS:
+    if (
+        document["_id"] not in EXPECTED_PLATFORM_USER_ALLOWLIST_CLIENTS
+        and "allowed_platform_user_ids" not in document
+    ):
         return None
     allowlist = document.get("allowed_platform_user_ids")
     if not isinstance(allowlist, list):

@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import base64
+import hashlib
+import hmac
 import json
 from dataclasses import dataclass
 from pathlib import Path
@@ -16,6 +19,7 @@ ADMIN_CLIENT_SEED_PATH = (
     / "seeds"
     / "module_registry.admin_clients.json"
 )
+BROKER_SECRET = "test-zeler-app-broker-secret"  # noqa: S105 - test fixture only
 
 
 class FakeAsyncCollection:
@@ -67,6 +71,20 @@ class FakeAsyncDb:
 class FakeClaims:
     module_id: str = "repricer"
     seller_id: int = 123456789
+
+
+def _json_body(payload: dict[str, Any]) -> bytes:
+    return json.dumps(payload, separators=(",", ":")).encode("utf-8")
+
+
+def _broker_headers(body: bytes) -> dict[str, str]:
+    digest = hmac.new(BROKER_SECRET.encode("utf-8"), body, hashlib.sha256).digest()
+    signature = "sha256=" + base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
+    return {
+        "Content-Type": "application/json",
+        "X-Zeler-Client-Id": "zeler-app",
+        "X-Zeler-Signature": signature,
+    }
 
 
 @pytest.mark.asyncio
@@ -184,7 +202,7 @@ async def test_issue_rejects_ttl_over_five_minutes(monkeypatch: pytest.MonkeyPat
 
 
 @pytest.mark.asyncio
-async def test_issue_can_return_short_lived_module_admin_token(
+async def test_zeler_app_bearer_module_admin_token_requires_broker_signature(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import zeler_gateway.internal.router as internal_router
@@ -201,11 +219,13 @@ async def test_issue_can_return_short_lived_module_admin_token(
         "verify_module_jwt",
         lambda token: FakeClaims(module_id="zeler-app"),
     )
-    monkeypatch.setattr(
-        internal_router,
-        "mint_module_jwt",
-        lambda module_id, seller_id, ttl_s, **_claims: f"jwt:{module_id}:{seller_id}:{ttl_s}",
-    )
+    mint_calls: list[dict[str, Any]] = []
+
+    def record_mint_call(*args: Any, **kwargs: Any) -> str:
+        mint_calls.append({"args": args, "kwargs": kwargs})
+        return "bad"
+
+    monkeypatch.setattr(internal_router, "mint_module_jwt", record_mint_call)
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -222,17 +242,10 @@ async def test_issue_can_return_short_lived_module_admin_token(
             },
         )
 
-    assert response.status_code == 200
-    assert response.json() == {
-        "access_token": "jwt:repricer:123456789:120",
-        "token_type": "Bearer",
-        "expires_in": 120,
-        "scopes": ["admin:repricer"],
-    }
-    audit_doc = app.state.mongo_db["audit_log"].documents[0]
-    assert audit_doc["module_id"] == "zeler-app"
-    assert audit_doc["target_module_id"] == "repricer"
-    assert audit_doc["token_kind"] == "module_admin"  # noqa: S105 - token type discriminator
+    assert response.status_code == 401
+    assert response.json()["error"] == "invalid_token"
+    assert mint_calls == []
+    assert app.state.mongo_db["audit_log"].documents == []
 
 
 @pytest.mark.asyncio
@@ -244,6 +257,7 @@ async def test_issue_module_admin_token_requires_target_module_id(
 
     app = FastAPI()
     app.state.mongo_db = FakeAsyncDb()
+    app.state.mongo_db["module_registry"].documents[0]["allowed_meli_scopes"].append("admin:repricer")
     app.state.mongo_db["module_registry"].documents.append(
         {"_id": "zeler-app", "status": "enabled", "allowed_meli_scopes": ["admin:repricer"]}
     )
@@ -251,7 +265,7 @@ async def test_issue_module_admin_token_requires_target_module_id(
     monkeypatch.setattr(
         internal_router,
         "verify_module_jwt",
-        lambda token: FakeClaims(module_id="zeler-app"),
+        lambda token: FakeClaims(module_id="repricer"),
     )
 
     async with httpx.AsyncClient(
@@ -286,7 +300,6 @@ def test_admin_client_seed_contains_zeler_app_active_module_admin_scopes() -> No
             "admin:publicador",
             "admin:autoreply",
         ],
-        "allowed_platform_user_ids": [],
         "allowed_seller_ids": [82453304],
         "routing_keys": [],
         "owned_collections": [],
@@ -308,15 +321,20 @@ async def test_zeler_app_seed_allows_repricer_admin_token_exchange(
     app.state.mongo_db = FakeAsyncDb()
     app.state.mongo_db["module_registry"].documents.extend(seed["documents"])
     app.include_router(router)
-    monkeypatch.setattr(
-        internal_router,
-        "verify_module_jwt",
-        lambda token: FakeClaims(module_id="zeler-app", seller_id=82453304),
-    )
+    monkeypatch.setenv("ZELER_APP_BROKER_SECRET", BROKER_SECRET)
     monkeypatch.setattr(
         internal_router,
         "mint_module_jwt",
         lambda module_id, seller_id, ttl_s, **_claims: f"jwt:{module_id}:{seller_id}:{ttl_s}",
+    )
+    body = _json_body(
+        {
+            "seller_id": 82453304,
+            "scopes": ["admin:repricer"],
+            "ttl_s": 120,
+            "token_kind": "module_admin",
+            "target_module_id": "repricer",
+        }
     )
 
     async with httpx.AsyncClient(
@@ -324,14 +342,8 @@ async def test_zeler_app_seed_allows_repricer_admin_token_exchange(
     ) as client:
         response = await client.post(
             "/internal/tokens/issue",
-            headers={"Authorization": "Bearer zeler-app-gateway-token"},
-            json={
-                "seller_id": 82453304,
-                "scopes": ["admin:repricer"],
-                "ttl_s": 120,
-                "token_kind": "module_admin",
-                "target_module_id": "repricer",
-            },
+            content=body,
+            headers=_broker_headers(body),
         )
 
     assert response.status_code == 200
@@ -400,15 +412,20 @@ async def test_zeler_app_seed_allows_all_module_admin_scopes(
     app.state.mongo_db = FakeAsyncDb()
     app.state.mongo_db["module_registry"].documents.extend(seed["documents"])
     app.include_router(router)
-    monkeypatch.setattr(
-        internal_router,
-        "verify_module_jwt",
-        lambda token: FakeClaims(module_id="zeler-app", seller_id=82453304),
-    )
+    monkeypatch.setenv("ZELER_APP_BROKER_SECRET", BROKER_SECRET)
     monkeypatch.setattr(
         internal_router,
         "mint_module_jwt",
         lambda module_id, seller_id, ttl_s, **_claims: f"jwt:{module_id}:{seller_id}:{ttl_s}",
+    )
+    body = _json_body(
+        {
+            "seller_id": 82453304,
+            "scopes": ["admin:publicador"],
+            "ttl_s": 120,
+            "token_kind": "module_admin",
+            "target_module_id": "publicador",
+        }
     )
 
     async with httpx.AsyncClient(
@@ -416,14 +433,8 @@ async def test_zeler_app_seed_allows_all_module_admin_scopes(
     ) as client:
         response = await client.post(
             "/internal/tokens/issue",
-            headers={"Authorization": "Bearer zeler-app-gateway-token"},
-            json={
-                "seller_id": 82453304,
-                "scopes": ["admin:publicador"],
-                "ttl_s": 120,
-                "token_kind": "module_admin",
-                "target_module_id": "publicador",
-            },
+            content=body,
+            headers=_broker_headers(body),
         )
 
     assert response.status_code == 200

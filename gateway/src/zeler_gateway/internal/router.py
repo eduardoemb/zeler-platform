@@ -64,8 +64,11 @@ async def issue_token(request: Request, payload: TokenIssueRequest) -> JSONRespo
     if payload.token_kind == "module_admin":  # noqa: S105 - token type discriminator, not a secret
         if payload.target_module_id is None or not payload.target_module_id.strip():
             return _json_error(422, "target_module_id_required")
+        target_module_id = payload.target_module_id.strip()
+        if not _module_admin_scopes_match_target(payload.scopes, target_module_id):
+            return _json_error(403, "out_of_scope")
         admin_token = mint_module_jwt(
-            payload.target_module_id.strip(),
+            target_module_id,
             seller_id=payload.seller_id,
             ttl_s=payload.ttl_s,
             token_type="module_admin",  # noqa: S106 - token type discriminator, not a secret
@@ -79,7 +82,7 @@ async def issue_token(request: Request, payload: TokenIssueRequest) -> JSONRespo
             scopes=payload.scopes,
             ttl_s=payload.ttl_s,
             token_kind=payload.token_kind,
-            target_module_id=payload.target_module_id.strip(),
+            target_module_id=target_module_id,
             platform_user_id=seller_authorization,
         )
         return JSONResponse(
@@ -130,6 +133,10 @@ def _scope_allowed(requested_scope: str, allowed_scopes: list[str]) -> bool:
     return any(fnmatchcase(requested_scope, allowed_scope) for allowed_scope in allowed_scopes)
 
 
+def _module_admin_scopes_match_target(scopes: list[str], target_module_id: str) -> bool:
+    return all(scope == f"admin:{target_module_id}" for scope in scopes)
+
+
 async def _authenticate_issue_caller(
     request: Request, payload: TokenIssueRequest
 ) -> dict[str, str] | JSONResponse:
@@ -155,6 +162,8 @@ async def _authenticate_issue_caller(
 
     if claims.seller_id != payload.seller_id:
         return _json_error(403, "seller_mismatch")
+    if claims.module_id == ZELER_APP_CLIENT_ID:
+        return _json_error(401, "invalid_token", detail="zeler-app must use broker signature")
     return {"module_id": claims.module_id, "auth_scheme": "bearer"}
 
 
@@ -193,9 +202,6 @@ async def _authorize_token_issue_seller(
         return _json_error(403, "seller_mismatch")
 
     if caller_auth_scheme == "zeler_app_hmac" and signed_platform_user_id is not None:
-        allowed_platform_user_ids = _string_set(module.get("allowed_platform_user_ids"))
-        if signed_platform_user_id not in allowed_platform_user_ids:
-            return _json_error(403, "seller_mismatch")
         owns_active_seller = await _platform_user_owns_active_seller(
             db, platform_user_id=signed_platform_user_id, seller_id=payload.seller_id
         )

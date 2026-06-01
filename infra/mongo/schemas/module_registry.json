@@ -61,7 +61,6 @@
       "_id",
       "version",
       "allowed_meli_scopes",
-      "allowed_platform_user_ids",
       "routing_keys",
       "status",
       "schema_version"

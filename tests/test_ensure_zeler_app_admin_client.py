@@ -81,7 +81,7 @@ def test_ensure_zeler_app_admin_client_inserts_missing_doc(
     zeler_app = database["module_registry"].documents["zeler-app"]
     assert zeler_app["_id"] == "zeler-app"
     assert zeler_app["status"] == "enabled"
-    assert zeler_app["allowed_platform_user_ids"] == []
+    assert "allowed_platform_user_ids" not in zeler_app
     assert zeler_app["allowed_seller_ids"] == [PILOT_SELLER_ID]
     assert zeler_app["allowed_meli_scopes"] == REQUIRED_SCOPES
     assert fake_client.closed

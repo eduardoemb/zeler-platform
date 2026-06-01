@@ -51,22 +51,23 @@ def ensure_zeler_app_admin_client(mongo_uri: str) -> dict[str, str]:
             if env_allowlist is not None
             else _existing_platform_user_allowlist(existing)
         )
+        set_doc: dict[str, Any] = {
+            "_id": ZELER_APP_CLIENT_ID,
+            "version": "0.1.0",
+            "allowed_meli_scopes": REQUIRED_ADMIN_SCOPES,
+            "allowed_seller_ids": _deprecated_seller_fallback(existing),
+            "routing_keys": [],
+            "owned_collections": [],
+            "health_endpoint": "/health",
+            "status": "enabled",
+            "schema_version": 1,
+        }
+        if allowed_platform_user_ids:
+            set_doc["allowed_platform_user_ids"] = allowed_platform_user_ids
+
         module_registry.update_one(
             {"_id": ZELER_APP_CLIENT_ID},
-            {
-                "$set": {
-                    "_id": ZELER_APP_CLIENT_ID,
-                    "version": "0.1.0",
-                    "allowed_meli_scopes": REQUIRED_ADMIN_SCOPES,
-                    "allowed_platform_user_ids": allowed_platform_user_ids,
-                    "allowed_seller_ids": _deprecated_seller_fallback(existing),
-                    "routing_keys": [],
-                    "owned_collections": [],
-                    "health_endpoint": "/health",
-                    "status": "enabled",
-                    "schema_version": 1,
-                }
-            },
+            {"$set": set_doc},
             upsert=True,
         )
         return {"client_id": ZELER_APP_CLIENT_ID, "status": "updated"}

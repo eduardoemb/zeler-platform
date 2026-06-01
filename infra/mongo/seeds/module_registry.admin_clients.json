@@ -10,7 +10,6 @@
         "admin:publicador",
         "admin:autoreply"
       ],
-      "allowed_platform_user_ids": [],
       "allowed_seller_ids": [
         82453304
       ],

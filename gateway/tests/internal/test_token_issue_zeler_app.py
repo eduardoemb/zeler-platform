@@ -341,7 +341,7 @@ async def test_zeler_app_platform_user_cannot_issue_for_other_users_seller(
 
 
 @pytest.mark.asyncio
-async def test_zeler_app_unallowed_platform_user_cannot_use_owned_seller(
+async def test_zeler_app_unallowlisted_platform_user_can_use_owned_active_seller(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import zeler_gateway.internal.router as internal_router
@@ -359,6 +359,7 @@ async def test_zeler_app_unallowed_platform_user_cannot_use_owned_seller(
         meli_accounts=[
             {
                 "seller_id": PILOT_SELLER_ID,
+                "app_id": ZELER_PLATFORM_APP_ID,
                 "platform_user_id": UNALLOWED_PLATFORM_USER_ID,
                 "status": "active",
             }
@@ -368,6 +369,51 @@ async def test_zeler_app_unallowed_platform_user_cannot_use_owned_seller(
     body = _json_body(
         {
             "seller_id": PILOT_SELLER_ID,
+            "platform_user_id": UNALLOWED_PLATFORM_USER_ID,
+            "scopes": ["admin:repricer"],
+            "ttl_s": 120,
+            "token_kind": "module_admin",
+            "target_module_id": "repricer",
+        }
+    )
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.post(
+            "/internal/tokens/issue",
+            content=body,
+            headers=_broker_headers(body),
+        )
+
+    assert response.status_code == 200
+    assert response.json()["access_token"] == "bad"  # noqa: S105
+    assert len(mint_calls) == 1
+    audit_doc = app.state.mongo_db["audit_log"].documents[0]
+    assert audit_doc["platform_user_id"] == UNALLOWED_PLATFORM_USER_ID
+    assert audit_doc["seller_id"] == PILOT_SELLER_ID
+
+
+@pytest.mark.asyncio
+async def test_zeler_app_unallowlisted_platform_user_still_needs_active_seller_ownership(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import zeler_gateway.internal.router as internal_router
+    from zeler_gateway.internal.router import router
+
+    mint_calls: list[dict[str, Any]] = []
+
+    def record_mint_call(*args: Any, **kwargs: Any) -> str:
+        mint_calls.append({"args": args, "kwargs": kwargs})
+        return "bad"
+
+    monkeypatch.setattr(internal_router, "mint_module_jwt", record_mint_call)
+    app = FastAPI()
+    app.state.mongo_db = FakeAsyncDb()
+    app.include_router(router)
+    body = _json_body(
+        {
+            "seller_id": OWNED_SELLER_ID,
             "platform_user_id": UNALLOWED_PLATFORM_USER_ID,
             "scopes": ["admin:repricer"],
             "ttl_s": 120,
@@ -461,6 +507,49 @@ async def test_zeler_app_platform_user_scope_checks_still_deny_out_of_scope(
             "ttl_s": 120,
             "token_kind": "module_admin",
             "target_module_id": "orders",
+        }
+    )
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.post(
+            "/internal/tokens/issue",
+            content=body,
+            headers=_broker_headers(body),
+        )
+
+    assert response.status_code == 403
+    assert response.json() == {"error": "out_of_scope"}
+    assert mint_calls == []
+    assert app.state.mongo_db["audit_log"].documents == []
+
+
+@pytest.mark.asyncio
+async def test_zeler_app_module_admin_scope_must_match_target_module(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import zeler_gateway.internal.router as internal_router
+    from zeler_gateway.internal.router import router
+
+    mint_calls: list[dict[str, Any]] = []
+
+    def record_mint_call(*args: Any, **kwargs: Any) -> str:
+        mint_calls.append({"args": args, "kwargs": kwargs})
+        return "bad"
+
+    monkeypatch.setattr(internal_router, "mint_module_jwt", record_mint_call)
+    app = FastAPI()
+    app.state.mongo_db = FakeAsyncDb()
+    app.include_router(router)
+    body = _json_body(
+        {
+            "seller_id": OWNED_SELLER_ID,
+            "platform_user_id": ALLOWED_PLATFORM_USER_ID,
+            "scopes": ["admin:sheets"],
+            "ttl_s": 120,
+            "token_kind": "module_admin",
+            "target_module_id": "repricer",
         }
     )
 

@@ -257,7 +257,7 @@ def test_mongo_readiness_validates_zeler_app_user_allowlist_contract() -> None:
     ]
 
 
-def test_mongo_readiness_reports_missing_zeler_app_user_allowlist(tmp_path: Path) -> None:
+def test_mongo_readiness_allows_missing_zeler_app_user_allowlist(tmp_path: Path) -> None:
     seeds_dir = tmp_path / "seeds"
     seeds_dir.mkdir()
     seed_without_user_allowlist = {
@@ -292,17 +292,17 @@ def test_mongo_readiness_reports_missing_zeler_app_user_allowlist(tmp_path: Path
         mongo_uri=None,
     )
 
-    assert report.summary["module_registry_user_allowlist_mismatches"] == 1
-    assert any(
-        finding.severity == "fail"
-        and finding.resource_type == "seed"
-        and finding.resource_name == "zeler-app"
-        and "allowed_platform_user_ids must be a list" in finding.detail
+    assert report.summary["module_registry_user_allowlist_mismatches"] == 0
+    assert not [
+        finding
         for finding in report.findings
-    )
+        if finding.resource_type == "seed"
+        and finding.resource_name == "zeler-app"
+        and "allowed_platform_user_ids" in finding.detail
+    ]
 
 
-def test_mongo_readiness_reports_export_missing_zeler_app_user_allowlist(
+def test_mongo_readiness_allows_export_missing_zeler_app_user_allowlist(
     tmp_path: Path,
 ) -> None:
     export_path = tmp_path / "module-registry-export.json"
@@ -338,14 +338,14 @@ def test_mongo_readiness_reports_export_missing_zeler_app_user_allowlist(
         mongo_uri=None,
     )
 
-    assert report.summary["module_registry_export_user_allowlist_mismatches"] == 1
-    assert any(
-        finding.severity == "fail"
-        and finding.resource_type == "module_registry_doc"
-        and finding.resource_name == "zeler-app"
-        and "allowed_platform_user_ids must be a list" in finding.detail
+    assert report.summary["module_registry_export_user_allowlist_mismatches"] == 0
+    assert not [
+        finding
         for finding in report.findings
-    )
+        if finding.resource_type == "module_registry_doc"
+        and finding.resource_name == "zeler-app"
+        and "allowed_platform_user_ids" in finding.detail
+    ]
 
 
 def test_mongo_readiness_validates_meli_account_ownership_lookup_index() -> None:

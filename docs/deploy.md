@@ -436,7 +436,7 @@ Configure the app runtime with these server env values:
 | `zeler-app` | `AUTOREPLY_API_URL` | `https://autoreply.zeler.ai` |
 | `gateway` | `OAUTH_SUCCESS_URL` | `https://app.zeler.ai/accounts/linked` |
 | `zeler-app` + `gateway` | `ZELER_APP_BROKER_SECRET` | Secret Manager secret `zeler-app-broker-secret`; values must match exactly. |
-| `gateway` updater context | `ZELER_APP_ALLOWED_PLATFORM_USER_IDS` | Optional comma-separated platform-user rollout allowlist for `module_registry._id="zeler-app"`; use sanitized IDs only in operator logs. |
+| `gateway` updater context | `ZELER_APP_ALLOWED_PLATFORM_USER_IDS` | Legacy optional field only; new linked-account access must rely on active `meli_accounts` ownership, not manual allowlisting. |
 
 `ZELER_APP_BROKER_SECRET` is server-only. Never configure it as `NEXT_PUBLIC_*`, never print it,
 and never paste it into local shells. The gateway receives it through
@@ -450,10 +450,9 @@ operator runs the OAuth account-linking smoke.
 
 `zeler-app` must send the authenticated server-derived `platform_user_id` in the signed
 `/internal/tokens/issue` JSON body when requesting `module_admin` tokens. The gateway authorizes that
-user against `allowed_platform_user_ids` and an active linked `meli_accounts` seller. Deprecated
+user against an active linked `meli_accounts` seller owned by that `platform_user_id`. Deprecated
 `allowed_seller_ids` remains only as a rollout fallback for old signed requests that do not include
-`platform_user_id`; if a signed request includes a non-allowed user, the seller fallback must not grant
-access.
+`platform_user_id`; signed requests with `platform_user_id` must not use the seller fallback.
 
 ### Create or rotate the broker secret
 
@@ -499,8 +498,8 @@ PY"
 ```
 
 Expected output: `zeler-app admin client updated`. The updater reads
-`ZELER_APP_ALLOWED_PLATFORM_USER_IDS` when present, otherwise preserves the existing platform-user
-allowlist. It also preserves the deprecated `allowed_seller_ids` fallback for rollout compatibility.
+`ZELER_APP_ALLOWED_PLATFORM_USER_IDS` only as an optional legacy field and otherwise does not create a
+platform-user allowlist. It also preserves the deprecated `allowed_seller_ids` fallback for rollout compatibility.
 The command must not print `MONGO_URI` or any secret value.
 
 Validate the registry document shape from the same VM/VPC boundary without exposing secrets:
@@ -536,9 +535,8 @@ finally:
 PY"
 ```
 
-Expected JSON contains `_id: "zeler-app"`, `status: "enabled"`, an
-`allowed_platform_user_ids` list, deprecated `allowed_seller_ids: [82453304]` only while the rollout
-fallback is needed, and exactly `admin:repricer`, `admin:sheets`, `admin:publicador`, and
+Expected JSON contains `_id: "zeler-app"`, `status: "enabled"`, deprecated
+`allowed_seller_ids: [82453304]` only while the rollout fallback is needed, and exactly `admin:repricer`, `admin:sheets`, `admin:publicador`, and
 `admin:autoreply`.
 Fulldock is intentionally decommissioned and must not appear as `admin:fulldock`.
 
