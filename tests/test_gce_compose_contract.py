@@ -21,6 +21,9 @@ COMPOSE_FILE = INFRA_GCE / "docker-compose.yml"
 CADDYFILE = INFRA_GCE / "Caddyfile"
 ENV_TEMPLATES_DIR = INFRA_GCE / "env-templates"
 SECRETS_SCRIPT = INFRA_GCE / "zeler-platform-secrets.sh"
+STARTUP_SCRIPT = INFRA_GCE / "platform-vm-startup.sh"
+DOCKER_MAINTENANCE_SCRIPT = INFRA_GCE / "docker-maintenance.sh"
+DOCKER_DEPLOY_PREFLIGHT_SCRIPT = INFRA_GCE / "docker-deploy-preflight.sh"
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -402,3 +405,73 @@ class TestEnvTemplateContract:
         keys = load_template_keys("mongo")
         assert "MONGO_INITDB_ROOT_USERNAME" in keys
         assert "MONGO_INITDB_ROOT_PASSWORD" in keys
+
+# ===========================================================================
+# Ops hardening — platform-vm root disk safeguards
+# ===========================================================================
+
+
+class TestDockerRootDiskSafeguards:
+    @pytest.mark.parametrize(
+        "path",
+        (DOCKER_MAINTENANCE_SCRIPT, DOCKER_DEPLOY_PREFLIGHT_SCRIPT, STARTUP_SCRIPT),
+    )
+    def test_docker_maintenance_artifacts_never_prune_volumes(self, path: Path) -> None:
+        text = path.read_text()
+
+        forbidden_patterns = (
+            "docker volume prune",
+            "docker system prune --volumes",
+            "docker system prune -a --volumes",
+            "--volumes",
+        )
+        for forbidden in forbidden_patterns:
+            assert forbidden not in text, (
+                f"{path.relative_to(PROJECT_ROOT)} must not prune Docker volumes; "
+                "Mongo data lives on /var/lib/zeler-mongo"
+            )
+
+    def test_maintenance_script_prunes_only_safe_docker_objects_with_retention(self) -> None:
+        text = DOCKER_MAINTENANCE_SCRIPT.read_text()
+
+        assert "DOCKER_PRUNE_UNTIL=${DOCKER_PRUNE_UNTIL:-72h}" in text
+        assert "docker container prune" in text
+        assert "docker image prune" in text
+        assert "docker builder prune" in text
+        assert "until=$DOCKER_PRUNE_UNTIL" in text
+        assert "docker system df" in text
+        assert "df -h /" in text
+
+    def test_deploy_preflight_checks_root_free_space_then_runs_safe_cleanup(self) -> None:
+        text = DOCKER_DEPLOY_PREFLIGHT_SCRIPT.read_text()
+
+        assert "MIN_FREE_GIB=${MIN_FREE_GIB:-5}" in text
+        assert "df -Pk /" in text
+        assert "/opt/zeler-platform/docker-maintenance.sh" in text
+        assert "50GB" in text
+        assert "cleanup cannot maintain" in text
+
+    def test_startup_installs_log_rotation_and_maintenance_timer(self) -> None:
+        text = STARTUP_SCRIPT.read_text()
+
+        assert "/etc/docker/daemon.json" in text
+        assert '"log-driver": "local"' in text
+        assert '"max-size": "50m"' in text
+        assert '"max-file": "5"' in text
+        assert "cmp -s" in text
+        assert "/opt/zeler-platform/docker-maintenance.sh" in text
+        assert "/opt/zeler-platform/docker-deploy-preflight.sh" in text
+        assert "zeler-docker-maintenance.service" in text
+        assert "zeler-docker-maintenance.timer" in text
+        assert "systemctl enable --now zeler-docker-maintenance.timer" in text
+
+    def test_deploy_runbook_runs_preflight_before_single_service_pull(self) -> None:
+        text = (PROJECT_ROOT / "docs" / "deploy.md").read_text()
+
+        deploy_section = text.split("## 5. Re-deploy a Single Service", 1)[1].split("---", 1)[0]
+        assert "/opt/zeler-platform/docker-deploy-preflight.sh" in deploy_section
+        assert deploy_section.index("/opt/zeler-platform/docker-deploy-preflight.sh") < deploy_section.index(
+            "docker compose pull <service>"
+        )
+        assert "never prune volumes" in text.lower()
+        assert "/var/lib/zeler-mongo" in text

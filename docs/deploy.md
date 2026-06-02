@@ -103,6 +103,8 @@ gcloud compute ssh platform-vm --tunnel-through-iap --zone=$ZONE --project=$PROJ
 # Inside VM — verify startup complete
 test -f /opt/zeler-platform/.startup-complete && echo OK
 df -h /var/lib/zeler-mongo          # mounted disk ≥40 GB available
+df -h /                             # boot disk has deploy margin
+systemctl is-enabled zeler-docker-maintenance.timer
 docker --version
 docker compose version
 ```
@@ -340,6 +342,29 @@ Sheets API boots in pass-1 with placeholder OAuth credentials and returns HTTP 5
 
 ---
 
+## 5a. platform-vm root disk guardrails
+
+`platform-vm` keeps the boot disk at **20GB** for now. Do not resize it yet: the active
+policy is deploy preflight, safe Docker cleanup, Docker log rotation, a daily maintenance
+timer, and alerts. Resize the boot disk to **50GB** only if cleanup cannot maintain at
+least **5GiB** free on `/` or repeated pulls keep exhausting the margin.
+
+When applying this to an already-running VM, plan a maintenance window after the daemon
+config change: existing containers may need `docker compose up -d --force-recreate <service>`
+to pick up the new Docker log driver and log limits. New containers get the limits automatically.
+
+Safety rules:
+
+- Mongo data lives on the separate persistent disk mounted at `/var/lib/zeler-mongo`.
+- Safe cleanup may remove stopped containers, unused images, and builder cache older than 72 hours.
+- **Never prune Docker volumes** and never prune volumes during root-disk maintenance.
+- The deploy preflight must run before every `docker compose pull` on the VM.
+- Docker daemon log rotation is installed through `/etc/docker/daemon.json` (`local`, `max-size=50m`, `max-file=5`).
+- `zeler-docker-maintenance.timer` runs the safe maintenance script daily; daily is intentional because failed pulls can fill the small boot disk quickly.
+- Configure Cloud Monitoring root filesystem alerts at 80% warning and 90% critical.
+
+---
+
 ## 5. Re-deploy a Single Service
 
 ```bash
@@ -347,9 +372,25 @@ TAG=rollout-v2  # or whatever new tag was built
 
 gcloud compute ssh platform-vm --tunnel-through-iap --zone=$ZONE --project=$PROJECT \
   --command="cd /opt/zeler-platform && \
+    sudo /opt/zeler-platform/docker-deploy-preflight.sh && \
     sudo docker compose pull <service> && \
     sudo docker compose up -d --no-deps <service>"
 ```
+
+The preflight requires at least 5GiB free on `/`. If the margin is lower, it runs safe Docker maintenance and re-checks before pulling images.
+
+Manual safe cleanup, if an operator needs to run it outside the timer:
+
+```bash
+gcloud compute ssh platform-vm --tunnel-through-iap --zone=$ZONE --project=$PROJECT \
+  --command="sudo /opt/zeler-platform/docker-maintenance.sh"
+```
+
+This cleanup only prunes stopped containers, unused images, and builder cache older than the retention window. Default retention is 72h/3 days and can be overridden with `DOCKER_PRUNE_UNTIL` for a one-off run.
+
+Never prune Docker volumes. Never prune volumes. Do not run `docker volume prune`, and do not run Docker system prune with volume cleanup. Mongo data lives on `/var/lib/zeler-mongo`.
+
+Recommended alerting: configure Cloud Monitoring policies on `platform-vm` root filesystem usage with warning at 80% and critical at 90%, so operators clean up or investigate before deploy pulls hit the 5GiB preflight floor.
 
 For env-only changes (no new image):
 
