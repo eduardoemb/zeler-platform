@@ -145,6 +145,39 @@ def test_all_53_zelerdata_formula_wrappers_preserve_names_and_parameter_order() 
     assert "sheetseller_" not in formulas_source
 
 
+def test_canonical_formula_wrappers_expose_google_sheets_autocomplete_jsdoc() -> None:
+    formulas_source = _read_addon_file("Formulas.gs")
+
+    assert formulas_source.count("@customfunction") == len(_contracts())
+    for contract in _contracts():
+        canonical_name = _canonical_formula_name(contract["name"])
+        match = re.search(
+            rf"/\*\*(?P<doc>.*?)\*/\s*function\s+{re.escape(canonical_name)}\s*\(",
+            formulas_source,
+            re.DOTALL,
+        )
+        assert match is not None, canonical_name
+
+        doc = match.group("doc")
+        parameters = [
+            _parameter_name(parameter) for parameter in _signature_parameters(contract["signature"])
+        ]
+        assert re.search(r"^\s*\*\s+[^@\s].+", doc, re.MULTILINE), canonical_name
+        for parameter in parameters:
+            assert re.search(rf"@param\s+\{{[^}}]+\}}\s+{parameter}\b", doc), canonical_name
+        assert re.search(r"@returns?\s+\{[^}]+\}", doc), canonical_name
+        assert "@customfunction" in doc, canonical_name
+
+        alias_name = canonical_name.lower()
+        alias_match = re.search(
+            rf"(?P<doc>/\*\*.*?\*/\s*)?function\s+{re.escape(alias_name)}\s*\(",
+            formulas_source,
+            re.DOTALL,
+        )
+        assert alias_match is not None, alias_name
+        assert "@customfunction" not in (alias_match.group("doc") or ""), alias_name
+
+
 def test_wrappers_forward_cuenta_as_seller_nickname_and_all_args_to_formula_api() -> None:
     formulas_source = _read_addon_file("Formulas.gs")
 
