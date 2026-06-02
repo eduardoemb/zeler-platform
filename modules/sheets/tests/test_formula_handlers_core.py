@@ -124,10 +124,10 @@ async def test_sku_and_id_handlers_use_seller_scoped_sku_index_and_preserve_rang
     dispatcher = _core_dispatcher(db)
 
     sku_result = await dispatcher.execute(
-        _context("SHEETSELLER_SKU", {"skus": [[" sku-1 ", "SKU-2"], ["SKU-1", "missing"]]})
+        _context("ZELERDATA_SKU", {"skus": [[" sku-1 ", "SKU-2"], ["SKU-1", "missing"]]})
     )
     id_result = await dispatcher.execute(
-        _context("SHEETSELLER_ID", {"skus": [[" sku-1 ", "SKU-2"], ["SKU-1", "missing"]]})
+        _context("ZELERDATA_ID", {"skus": [[" sku-1 ", "SKU-2"], ["SKU-1", "missing"]]})
     )
 
     assert sku_result.values == [["sku-1"], ["Sku 2"]]
@@ -172,11 +172,11 @@ async def test_stock_and_precio_handlers_lookup_scalar_and_range_pairs_with_blan
     dispatcher = _core_dispatcher(db)
 
     scalar_stock = await dispatcher.execute(
-        _context("SHEETSELLER_STOCK", {"skus": " sku-1 ", "id_publicaciones": "MLA1"})
+        _context("ZELERDATA_STOCK", {"skus": " sku-1 ", "id_publicaciones": "MLA1"})
     )
     range_stock = await dispatcher.execute(
         _context(
-            "SHEETSELLER_STOCK",
+            "ZELERDATA_STOCK",
             {
                 "skus": [["sku-1"], ["sku-2"], ["missing"]],
                 "id_publicaciones": ["MLA1", "MLA2", "MLA-X"],
@@ -185,7 +185,7 @@ async def test_stock_and_precio_handlers_lookup_scalar_and_range_pairs_with_blan
     )
     range_precio = await dispatcher.execute(
         _context(
-            "SHEETSELLER_PRECIO",
+            "ZELERDATA_PRECIO",
             {
                 "skus": ["sku-1", "sku-2", "missing"],
                 "id_publicaciones": ["MLA1", "MLA2", "MLA-X"],
@@ -249,13 +249,13 @@ async def test_title_status_and_days_handlers_lookup_item_ids_with_blanks_for_mi
     dispatcher = _core_dispatcher(db, now=now)
 
     scalar_title = await dispatcher.execute(
-        _context("SHEETSELLER_TITULO", {"id_publicaciones": "MLA1"})
+        _context("ZELERDATA_TITULO", {"id_publicaciones": "MLA1"})
     )
     range_status = await dispatcher.execute(
-        _context("SHEETSELLER_STATUS", {"id_publicaciones": [["MLA1"], ["MLA2"], ["MLA-X"]]})
+        _context("ZELERDATA_STATUS", {"id_publicaciones": [["MLA1"], ["MLA2"], ["MLA-X"]]})
     )
     range_days = await dispatcher.execute(
-        _context("SHEETSELLER_DIASPUBLICADA", {"id_publicaciones": ["MLA1", "MLA2", "MLA-X"]})
+        _context("ZELERDATA_DIASPUBLICADA", {"id_publicaciones": ["MLA1", "MLA2", "MLA-X"]})
     )
 
     assert scalar_title.values == [["First listing"]]
@@ -302,11 +302,11 @@ async def test_url_and_codigo_ml_handlers_lookup_sku_item_pairs_with_blanks_for_
     dispatcher = _core_dispatcher(db)
 
     scalar_url = await dispatcher.execute(
-        _context("SHEETSELLER_URL", {"skus": "sku-1", "id_publicaciones": "MLA1"})
+        _context("ZELERDATA_URL", {"skus": "sku-1", "id_publicaciones": "MLA1"})
     )
     range_codigo = await dispatcher.execute(
         _context(
-            "SHEETSELLER_CODIGOML",
+            "ZELERDATA_CODIGOML",
             {
                 "skus": [["sku-1"], ["sku-2"], ["missing"]],
                 "id_publicaciones": ["MLA1", "MLA2", "MLA-X"],
@@ -347,13 +347,13 @@ async def test_item_formula_handlers_return_blanks_without_enriched_source_field
     dispatcher = _core_dispatcher(db)
 
     url = await dispatcher.execute(
-        _context("SHEETSELLER_URL", {"skus": "sku-1", "id_publicaciones": "MLA1"})
+        _context("ZELERDATA_URL", {"skus": "sku-1", "id_publicaciones": "MLA1"})
     )
     imagen = await dispatcher.execute(
-        _context("SHEETSELLER_IMAGENES", {"skus": "sku-1", "id_publicaciones": "MLA1"})
+        _context("ZELERDATA_IMAGENES", {"skus": "sku-1", "id_publicaciones": "MLA1"})
     )
     codigo = await dispatcher.execute(
-        _context("SHEETSELLER_CODIGOML", {"skus": "sku-1", "id_publicaciones": "MLA1"})
+        _context("ZELERDATA_CODIGOML", {"skus": "sku-1", "id_publicaciones": "MLA1"})
     )
 
     assert url.values == [[""]]
@@ -410,12 +410,12 @@ async def test_idstock_returns_seller_scoped_table_with_optional_headers() -> No
 
     without_headers = await dispatcher.execute(
         _context(
-            "SHEETSELLER_IDSTOCK",
+            "ZELERDATA_IDSTOCK",
             {"skus": [["sku-1"], ["missing"], ["sku-2"]], "encabezados": ""},
         )
     )
     with_headers = await dispatcher.execute(
-        _context("SHEETSELLER_IDSTOCK", {"skus": "sku-1", "encabezados": "si"})
+        _context("ZELERDATA_IDSTOCK", {"skus": "sku-1", "encabezados": "si"})
     )
 
     assert without_headers.values == [
@@ -473,12 +473,12 @@ async def test_codigo_ml_to_sku_id_returns_seller_scoped_table_with_optional_hea
 
     without_headers = await dispatcher.execute(
         _context(
-            "SHEETSELLER_CODIGOML2SKUID",
+            "ZELERDATA_CODIGOML2SKUID",
             {"codigo_ml": [[" inv-1 "], ["missing"], ["INV-2"]], "encabezados": ""},
         )
     )
     with_headers = await dispatcher.execute(
-        _context("SHEETSELLER_CODIGOML2SKUID", {"codigo_ml": "INV-1", "encabezados": "sí"})
+        _context("ZELERDATA_CODIGOML2SKUID", {"codigo_ml": "INV-1", "encabezados": "sí"})
     )
 
     assert without_headers.values == [["INV-1", "MLA1", "sku-1"], ["INV-2", "MLA2", "sku-2"]]
@@ -545,11 +545,11 @@ async def test_publicaciones_returns_minimal_current_item_table_with_optional_he
     dispatcher = _core_dispatcher(db)
 
     with_headers = await dispatcher.execute(
-        _context("SHEETSELLER_PUBLICACIONES", {"skus": "todos", "encabezados": "si"})
+        _context("ZELERDATA_PUBLICACIONES", {"skus": "todos", "encabezados": "si"})
     )
     without_headers = await dispatcher.execute(
         _context(
-            "SHEETSELLER_PUBLICACIONES",
+            "ZELERDATA_PUBLICACIONES",
             {"skus": [["sku-2"], ["missing"]], "encabezados": ""},
         )
     )
@@ -627,10 +627,10 @@ async def test_dashboard_returns_minimal_current_item_table_with_optional_header
     dispatcher = _core_dispatcher(db)
 
     with_headers = await dispatcher.execute(
-        _context("SHEETSELLER_DASHBOARD", {"skus": "todos", "encabezados": "verdadero"})
+        _context("ZELERDATA_DASHBOARD", {"skus": "todos", "encabezados": "verdadero"})
     )
     without_headers = await dispatcher.execute(
-        _context("SHEETSELLER_DASHBOARD", {"skus": [["sku-2"], ["missing"]]})
+        _context("ZELERDATA_DASHBOARD", {"skus": [["sku-2"], ["missing"]]})
     )
 
     assert with_headers.values == [
@@ -750,7 +750,7 @@ async def test_dashboard_sin_catalogo_excludes_rows_with_catalog_product_indicat
 
     result = await dispatcher.execute(
         _context(
-            "SHEETSELLER_DASHBOARDSINCATALOGO",
+            "ZELERDATA_DASHBOARDSINCATALOGO",
             {"skus": "todos", "encabezados": "sí"},
         )
     )
@@ -827,10 +827,10 @@ async def test_categorias_returns_category_by_item_id_with_blanks_for_misses() -
     dispatcher = _core_dispatcher(db)
 
     scalar_category = await dispatcher.execute(
-        _context("SHEETSELLER_CATEGORIAS", {"id_publicaciones": "MLA1"})
+        _context("ZELERDATA_CATEGORIAS", {"id_publicaciones": "MLA1"})
     )
     range_category = await dispatcher.execute(
-        _context("SHEETSELLER_CATEGORIAS", {"id_publicaciones": [["MLA1"], ["MLA-X"], ["MLA2"]]})
+        _context("ZELERDATA_CATEGORIAS", {"id_publicaciones": [["MLA1"], ["MLA-X"], ["MLA2"]]})
     )
 
     assert scalar_category.values == [["MLA-CELLPHONES"]]
@@ -884,11 +884,11 @@ async def test_imagenes_returns_thumbnail_urls_for_item_sku_pairs_and_todos() ->
     dispatcher = _core_dispatcher(db)
 
     scalar_image = await dispatcher.execute(
-        _context("SHEETSELLER_IMAGENES", {"skus": "sku-1", "id_publicaciones": "MLA1"})
+        _context("ZELERDATA_IMAGENES", {"skus": "sku-1", "id_publicaciones": "MLA1"})
     )
     range_images = await dispatcher.execute(
         _context(
-            "SHEETSELLER_IMAGENES",
+            "ZELERDATA_IMAGENES",
             {
                 "skus": [["sku-1"], ["sku-2"], ["missing"]],
                 "id_publicaciones": ["MLA1", "MLA2", "MLA-X"],
@@ -897,7 +897,7 @@ async def test_imagenes_returns_thumbnail_urls_for_item_sku_pairs_and_todos() ->
         )
     )
     all_images = await dispatcher.execute(
-        _context("SHEETSELLER_IMAGENES", {"skus": "todos", "id_publicaciones": "todos"})
+        _context("ZELERDATA_IMAGENES", {"skus": "todos", "id_publicaciones": "todos"})
     )
 
     assert scalar_image.values == [["https://img.example/mla1.jpg"]]
@@ -950,7 +950,7 @@ async def test_formula_api_uses_core_handlers_and_keeps_other_formulas_data_unav
             "/sheets/formulas:execute",
             headers={"Authorization": f"Bearer {token}"},
             json={
-                "formula": "SHEETSELLER_STOCK",
+                "formula": "ZELERDATA_STOCK",
                 "cuenta": "HOPEMOB",
                 "args": {"skus": "sku-1", "id_publicaciones": "MLA1"},
             },
@@ -959,7 +959,7 @@ async def test_formula_api_uses_core_handlers_and_keeps_other_formulas_data_unav
             "/sheets/formulas:execute",
             headers={"Authorization": f"Bearer {token}"},
             json={
-                "formula": "SHEETSELLER_TITULO",
+                "formula": "ZELERDATA_TITULO",
                 "cuenta": "HOPEMOB",
                 "args": {"id_publicaciones": "MLA1"},
             },
@@ -968,7 +968,7 @@ async def test_formula_api_uses_core_handlers_and_keeps_other_formulas_data_unav
             "/sheets/formulas:execute",
             headers={"Authorization": f"Bearer {token}"},
             json={
-                "formula": "SHEETSELLER_PAUSADAS",
+                "formula": "ZELERDATA_PAUSADAS",
                 "cuenta": "HOPEMOB",
                 "args": {"id_publicaciones": "MLA1"},
             },
@@ -982,7 +982,7 @@ async def test_formula_api_uses_core_handlers_and_keeps_other_formulas_data_unav
     assert not_ready.json()["error"] == {
         "code": "DATA_UNAVAILABLE",
         "message": (
-            "SHEETSELLER_PAUSADAS data is not available yet: "
+            "ZELERDATA_PAUSADAS data is not available yet: "
             "Historical paused-period read model is not available in zeler-platform yet."
         ),
         "retryable": False,

@@ -1,7 +1,7 @@
-function sheetsellerExecute_(formulaName, cuenta, args) {
-  var token = getSheetsellerExtensionToken_();
+function zelerdataExecute_(formulaName, cuenta, args) {
+  var token = getZelerDataExtensionToken_();
   if (!token) {
-    return [["TOKEN_MISSING: configure the Sheetseller extension token from the Sheetseller menu"]];
+    return [["TOKEN_MISSING: configure the ZelerData extension token from the ZelerData menu"]];
   }
   var payload = {
     formula: formulaName,
@@ -11,7 +11,7 @@ function sheetsellerExecute_(formulaName, cuenta, args) {
   };
   var response;
   try {
-    response = UrlFetchApp.fetch(sheetsellerBuildEndpoint_(getSheetsellerApiBaseUrl_()), {
+    response = UrlFetchApp.fetch(zelerdataBuildEndpoint_(getZelerDataApiBaseUrl_()), {
       method: "post",
       contentType: "application/json",
       headers: {
@@ -23,14 +23,14 @@ function sheetsellerExecute_(formulaName, cuenta, args) {
   } catch (error) {
     return [["INTERNAL: Formula API request failed"]];
   }
-  return sheetsellerEnvelopeToValues_(sheetsellerParseResponse_(response));
+  return zelerdataEnvelopeToValues_(zelerdataParseResponse_(response));
 }
 
-function sheetsellerBuildEndpoint_(apiBaseUrl) {
+function zelerdataBuildEndpoint_(apiBaseUrl) {
   return String(apiBaseUrl || "").replace(/\/+$/, "") + "/sheets/formulas:execute";
 }
 
-function sheetsellerParseResponse_(response) {
+function zelerdataParseResponse_(response) {
   var body = response.getContentText() || "{}";
   try {
     return JSON.parse(body);
@@ -43,22 +43,22 @@ function sheetsellerParseResponse_(response) {
   }
 }
 
-function sheetsellerEnvelopeToValues_(envelope) {
+function zelerdataEnvelopeToValues_(envelope) {
   if (envelope && Array.isArray(envelope.values)) {
     if (envelope.values.length === 0) {
       return [[""]];
     }
-    return sheetsellerCoerce2d_(envelope.values);
+    return zelerdataCoerce2d_(envelope.values);
   }
   var code = (envelope && envelope.error && envelope.error.code) || "DATA_UNAVAILABLE";
   var message = code + ": " + ((envelope && envelope.error && envelope.error.message) || "formula data is unavailable");
   if (code === "TOKEN_MISSING") {
-    message = "TOKEN_MISSING: configure the Sheetseller extension token from the Sheetseller menu";
+    message = "TOKEN_MISSING: configure the ZelerData extension token from the ZelerData menu";
   }
   return [[message]];
 }
 
-function sheetsellerCoerce2d_(value) {
+function zelerdataCoerce2d_(value) {
   if (Array.isArray(value)) {
     if (value.length === 0) {
       return [[""]];

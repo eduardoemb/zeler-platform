@@ -31,61 +31,62 @@ COLUMN_FIXTURE_PATH = (
     / "sheetseller_formula_output_columns.json"
 )
 
-EXPECTED_FORMULA_NAMES = [
-    "SHEETSELLER_PUBLICACIONES",
-    "SHEETSELLER_SKU",
-    "SHEETSELLER_ID",
-    "SHEETSELLER_STOCK",
-    "SHEETSELLER_TITULO",
-    "SHEETSELLER_URL",
-    "SHEETSELLER_PRECIO",
-    "SHEETSELLER_IDSTOCK",
-    "SHEETSELLER_STATUS",
-    "SHEETSELLER_PAUSADAS",
-    "SHEETSELLER_CODIGOML",
-    "sheetseller_enviarafull",
-    "SHEETSELLER_CODIGOML2SKUID",
-    "SHEETSELLER_DIASPUBLICADA",
-    "SHEETSELLER_PUBLICACIONESDESCUIDADAS",
-    "SHEETSELLER_CATALOGO",
-    "SHEETSELLER_DASHBOARD",
-    "SHEETSELLER_TIEMPOSINSTOCK",
-    "SHEETSELLER_TIEMPOACTIVA",
-    "SHEETSELLER_CATALOGOSINVINCULAR",
-    "SHEETSELLER_CATALOGOBUYBOX",
-    "SHEETSELLER_COMISION",
-    "SHEETSELLER_DEVOLUCIONES",
-    "SHEETSELLER_COMPETENCIA",
-    "SHEETSELLER_CATALOGOTIEMPO",
-    "SHEETSELLER_PRECIOHISTORICO",
-    "SHEETSELLER_TIEMPOSTOCKACTIVO",
-    "SHEETSELLER_DASHBOARDSINCATALOGO",
-    "SHEETSELLER_CALIDAD",
-    "SHEETSELLER_CALCULADORA",
-    "SHEETSELLER_RETIROS",
-    "SHEETSELLER_IMAGENES",
-    "SHEETSELLER_SEMANASCONSTOCK",
-    "SHEETSELLER_MEDIDASGENERAL",
-    "SHEETSELLER_MEDIDAS",
-    "SHEETSELLER_CATEGORIAS",
-    "SHEETSELLER_SUPERMERCADO",
-    "sheetseller_obtener_catalogo",
-    "SHEETSELLER_ORDENES",
-    "SHEETSELLER_UNIDADESVENDIDAS",
-    "SHEETSELLER_ORDENESPORSKU",
-    "SHEETSELLER_DIASDESDEULTIMAVENTA",
-    "SHEETSELLER_PRODUCTOSINVENTA",
-    "SHEETSELLER_VENTAPORDIAS",
-    "SHEETSELLER_VENTASYSTOCK",
-    "SHEETSELLER_TOPVENTASUNIDADES",
-    "SHEETSELLER_TOPVENTASDINERO",
-    "SHEETSELLER_COSTOENVIOVENDEDOR",
-    "SHEETSELLER_VENTASTOTALES",
-    "SHEETSELLER_COMPRADORES",
-    "SHEETSELLER_ENVIOSMERCADOENVIOS",
-    "SHEETSELLER_PREGUNTAS",
-    "SHEETSELLER_PREGUNTASKPI",
+EXPECTED_FORMULA_SUFFIXES = [
+    "PUBLICACIONES",
+    "SKU",
+    "ID",
+    "STOCK",
+    "TITULO",
+    "URL",
+    "PRECIO",
+    "IDSTOCK",
+    "STATUS",
+    "PAUSADAS",
+    "CODIGOML",
+    "ENVIARAFULL",
+    "CODIGOML2SKUID",
+    "DIASPUBLICADA",
+    "PUBLICACIONESDESCUIDADAS",
+    "CATALOGO",
+    "DASHBOARD",
+    "TIEMPOSINSTOCK",
+    "TIEMPOACTIVA",
+    "CATALOGOSINVINCULAR",
+    "CATALOGOBUYBOX",
+    "COMISION",
+    "DEVOLUCIONES",
+    "COMPETENCIA",
+    "CATALOGOTIEMPO",
+    "PRECIOHISTORICO",
+    "TIEMPOSTOCKACTIVO",
+    "DASHBOARDSINCATALOGO",
+    "CALIDAD",
+    "CALCULADORA",
+    "RETIROS",
+    "IMAGENES",
+    "SEMANASCONSTOCK",
+    "MEDIDASGENERAL",
+    "MEDIDAS",
+    "CATEGORIAS",
+    "SUPERMERCADO",
+    "OBTENER_CATALOGO",
+    "ORDENES",
+    "UNIDADESVENDIDAS",
+    "ORDENESPORSKU",
+    "DIASDESDEULTIMAVENTA",
+    "PRODUCTOSINVENTA",
+    "VENTAPORDIAS",
+    "VENTASYSTOCK",
+    "TOPVENTASUNIDADES",
+    "TOPVENTASDINERO",
+    "COSTOENVIOVENDEDOR",
+    "VENTASTOTALES",
+    "COMPRADORES",
+    "ENVIOSMERCADOENVIOS",
+    "PREGUNTAS",
+    "PREGUNTASKPI",
 ]
+EXPECTED_FORMULA_NAMES = [f"ZELERDATA_{suffix}" for suffix in EXPECTED_FORMULA_SUFFIXES]
 
 EXPECTED_ERROR_CODES = [
     "TOKEN_MISSING",
@@ -111,13 +112,16 @@ def _column_fixture() -> dict[str, Any]:
     return cast("dict[str, Any]", loaded)
 
 
-def test_fixture_locks_all_53_legacy_formula_names_in_order() -> None:
+def test_fixture_locks_all_53_zelerdata_formula_names_in_order() -> None:
     fixture = _fixture()
     contracts = fixture["contracts"]
 
     assert [contract["name"] for contract in contracts] == EXPECTED_FORMULA_NAMES
     assert len({contract["name"] for contract in contracts}) == 53
     assert fixture["stable_error_codes"] == EXPECTED_ERROR_CODES
+    assert all(contract["name"].startswith("ZELERDATA_") for contract in contracts)
+    assert all("SHEETSELLER" not in contract["name"] for contract in contracts)
+    assert all("sheetseller" not in contract["name"] for contract in contracts)
 
 
 def test_registry_matches_the_contract_fixture_exactly() -> None:
@@ -133,7 +137,7 @@ def test_registry_matches_the_contract_fixture_exactly() -> None:
 def test_representative_signatures_defaults_batches_and_outputs_are_preserved() -> None:
     registry = FormulaRegistry.default()
 
-    publicaciones = registry.get("SHEETSELLER_PUBLICACIONES")
+    publicaciones = registry.get("ZELERDATA_PUBLICACIONES")
     assert publicaciones.signature == (
         '(cuenta, skus="todos", tipo_almacenamiento="todos", tipo_precio="base", '
         'imagen="", encabezados="")'
@@ -149,7 +153,7 @@ def test_representative_signatures_defaults_batches_and_outputs_are_preserved() 
     assert publicaciones.batch == "A"
     assert publicaciones.output_shape == "table"
 
-    semanas_con_stock = registry.get("SHEETSELLER_SEMANASCONSTOCK")
+    semanas_con_stock = registry.get("ZELERDATA_SEMANASCONSTOCK")
     assert semanas_con_stock.signature == (
         '(cuenta, id_publicaciones="todos", skus="todos", fecha_inicial, '
         'fecha_final, encabezados="")'
@@ -172,7 +176,7 @@ def test_representative_signatures_defaults_batches_and_outputs_are_preserved() 
     ]
     assert semanas_con_stock.batch == "C"
 
-    ventas_totales = registry.get("SHEETSELLER_VENTASTOTALES")
+    ventas_totales = registry.get("ZELERDATA_VENTASTOTALES")
     assert ventas_totales.output_shape == "scalar"
     assert ventas_totales.parameters[-1].default == "todos"
 
@@ -180,12 +184,12 @@ def test_representative_signatures_defaults_batches_and_outputs_are_preserved() 
 def test_lookup_contracts_preserve_scalar_and_range_input_cases() -> None:
     registry = FormulaRegistry.default()
 
-    stock = registry.get("SHEETSELLER_STOCK")
+    stock = registry.get("ZELERDATA_STOCK")
     stock_inputs = {parameter.name: parameter.input_cases for parameter in stock.parameters}
     assert stock_inputs["skus"] == tuple(RANGE_INPUT_CASES)
     assert stock_inputs["id_publicaciones"] == tuple(RANGE_INPUT_CASES)
 
-    ordenes_por_sku = registry.get("SHEETSELLER_ORDENESPORSKU")
+    ordenes_por_sku = registry.get("ZELERDATA_ORDENESPORSKU")
     sku_parameter = next(
         parameter for parameter in ordenes_por_sku.parameters if parameter.name == "skus"
     )
@@ -199,7 +203,9 @@ def test_lookup_contracts_preserve_scalar_and_range_input_cases() -> None:
 def test_unknown_formula_returns_stable_formula_unknown_code() -> None:
     registry = FormulaRegistry.default()
 
-    assert registry.find("SHEETSELLER_NO_EXISTE") is None
+    assert registry.find("ZELERDATA_NO_EXISTE") is None
+    assert registry.find("SHEETSELLER_SKU") is None
+    assert registry.find("sheetseller_sku") is None
     assert registry.unknown_formula_error_code == "FORMULA_UNKNOWN"
 
 
@@ -235,7 +241,7 @@ def test_dashboard_output_column_fixture_locks_mvp_and_deferred_columns() -> Non
     ]
     expected_unsupported_until_defined = ["TIENE CATALOGO", "PRECIO PROMO"]
 
-    for formula in ["SHEETSELLER_DASHBOARD", "SHEETSELLER_DASHBOARDSINCATALOGO"]:
+    for formula in ["ZELERDATA_DASHBOARD", "ZELERDATA_DASHBOARDSINCATALOGO"]:
         columns = formulas[formula]["columns"]
         assert [column["name"] for column in columns if column["status"] == "mvp"] == expected_mvp
         assert [
@@ -246,7 +252,7 @@ def test_dashboard_output_column_fixture_locks_mvp_and_deferred_columns() -> Non
         ] == expected_unsupported_until_defined
         assert all("source" in column or "legacy_source_note" in column for column in columns)
 
-    assert formulas["SHEETSELLER_DASHBOARDSINCATALOGO"]["compatibility_note"] == (
+    assert formulas["ZELERDATA_DASHBOARDSINCATALOGO"]["compatibility_note"] == (
         "MVP excludes rows when current.catalog_product_id is present; richer catalog/buybox "
         "semantics remain unsupported_until_defined."
     )
@@ -256,7 +262,7 @@ def test_batch_b_output_column_fixture_locks_mvp_and_deferred_columns() -> None:
     fixture = _column_fixture()
     formulas = fixture["formulas"]
 
-    assert [column["name"] for column in formulas["SHEETSELLER_ORDENES"]["columns"]] == [
+    assert [column["name"] for column in formulas["ZELERDATA_ORDENES"]["columns"]] == [
         "ID Orden",
         "Fecha",
         "Estado",
@@ -266,7 +272,7 @@ def test_batch_b_output_column_fixture_locks_mvp_and_deferred_columns() -> None:
         "Items",
     ]
 
-    assert [column["name"] for column in formulas["SHEETSELLER_ORDENESPORSKU"]["columns"]] == [
+    assert [column["name"] for column in formulas["ZELERDATA_ORDENESPORSKU"]["columns"]] == [
         "SKU",
         "ID Orden",
         "Fecha",
@@ -276,22 +282,22 @@ def test_batch_b_output_column_fixture_locks_mvp_and_deferred_columns() -> None:
         "Items",
     ]
 
-    assert [column["name"] for column in formulas["SHEETSELLER_VENTASTOTALES"]["columns"]] == [
+    assert [column["name"] for column in formulas["ZELERDATA_VENTASTOTALES"]["columns"]] == [
         "Total ventas"
     ]
-    assert formulas["SHEETSELLER_VENTASTOTALES"]["columns"][0]["status"] == "mvp"
+    assert formulas["ZELERDATA_VENTASTOTALES"]["columns"][0]["status"] == "mvp"
 
-    assert [column["name"] for column in formulas["SHEETSELLER_UNIDADESVENDIDAS"]["columns"]] == [
+    assert [column["name"] for column in formulas["ZELERDATA_UNIDADESVENDIDAS"]["columns"]] == [
         "Unidades vendidas"
     ]
-    assert formulas["SHEETSELLER_UNIDADESVENDIDAS"]["columns"][0]["status"] == "mvp"
+    assert formulas["ZELERDATA_UNIDADESVENDIDAS"]["columns"][0]["status"] == "mvp"
 
-    assert [column["name"] for column in formulas["SHEETSELLER_VENTAPORDIAS"]["columns"]] == [
+    assert [column["name"] for column in formulas["ZELERDATA_VENTAPORDIAS"]["columns"]] == [
         "Unidades vendidas"
     ]
-    assert formulas["SHEETSELLER_VENTAPORDIAS"]["columns"][0]["status"] == "mvp"
+    assert formulas["ZELERDATA_VENTAPORDIAS"]["columns"][0]["status"] == "mvp"
 
-    assert [column["name"] for column in formulas["SHEETSELLER_VENTASYSTOCK"]["columns"]] == [
+    assert [column["name"] for column in formulas["ZELERDATA_VENTASYSTOCK"]["columns"]] == [
         "SKU",
         "ID Publicación",
         "Ventas 7 días",
@@ -300,19 +306,19 @@ def test_batch_b_output_column_fixture_locks_mvp_and_deferred_columns() -> None:
         "Stock",
     ]
 
-    assert [column["name"] for column in formulas["SHEETSELLER_TOPVENTASUNIDADES"]["columns"]] == [
+    assert [column["name"] for column in formulas["ZELERDATA_TOPVENTASUNIDADES"]["columns"]] == [
         "SKU",
         "ID Publicación",
         "Unidades vendidas",
     ]
 
-    assert [column["name"] for column in formulas["SHEETSELLER_TOPVENTASDINERO"]["columns"]] == [
+    assert [column["name"] for column in formulas["ZELERDATA_TOPVENTASDINERO"]["columns"]] == [
         "SKU",
         "ID Publicación",
         "Ventas",
     ]
 
-    preguntas_kpi_columns = formulas["SHEETSELLER_PREGUNTASKPI"]["columns"]
+    preguntas_kpi_columns = formulas["ZELERDATA_PREGUNTASKPI"]["columns"]
     assert [column["name"] for column in preguntas_kpi_columns[:2]] == ["Métrica", "Valor"]
     assert [column["status"] for column in preguntas_kpi_columns] == [
         "mvp",
@@ -324,7 +330,7 @@ def test_batch_b_output_column_fixture_locks_mvp_and_deferred_columns() -> None:
         "source" in column or "legacy_source_note" in column for column in preguntas_kpi_columns
     )
 
-    assert [column["name"] for column in formulas["SHEETSELLER_PREGUNTAS"]["columns"]] == [
+    assert [column["name"] for column in formulas["ZELERDATA_PREGUNTAS"]["columns"]] == [
         "ID Pregunta",
         "Fecha",
         "Item ID",
@@ -335,12 +341,12 @@ def test_batch_b_output_column_fixture_locks_mvp_and_deferred_columns() -> None:
         "Fecha respuesta",
     ]
 
-    assert [
-        column["name"] for column in formulas["SHEETSELLER_DIASDESDEULTIMAVENTA"]["columns"]
-    ] == ["Días desde última venta"]
-    assert formulas["SHEETSELLER_DIASDESDEULTIMAVENTA"]["columns"][0]["status"] == "mvp"
+    assert [column["name"] for column in formulas["ZELERDATA_DIASDESDEULTIMAVENTA"]["columns"]] == [
+        "Días desde última venta"
+    ]
+    assert formulas["ZELERDATA_DIASDESDEULTIMAVENTA"]["columns"][0]["status"] == "mvp"
 
-    assert [column["name"] for column in formulas["SHEETSELLER_PRODUCTOSINVENTA"]["columns"]] == [
+    assert [column["name"] for column in formulas["ZELERDATA_PRODUCTOSINVENTA"]["columns"]] == [
         "SKU",
         "ID Publicación",
         "Título",
@@ -348,7 +354,7 @@ def test_batch_b_output_column_fixture_locks_mvp_and_deferred_columns() -> None:
         "Días sin venta",
     ]
     assert all(
-        column["status"] == "mvp" for column in formulas["SHEETSELLER_PRODUCTOSINVENTA"]["columns"]
+        column["status"] == "mvp" for column in formulas["ZELERDATA_PRODUCTOSINVENTA"]["columns"]
     )
 
 
@@ -368,13 +374,13 @@ def test_every_legacy_formula_has_an_explicit_runtime_state() -> None:
         if state.state == "unsupported"
     }
     assert len(unsupported) == 25
-    assert unsupported["SHEETSELLER_COMPRADORES"] == (
+    assert unsupported["ZELERDATA_COMPRADORES"] == (
         "Current canonical orders do not expose buyer/shipping address fields."
     )
-    assert unsupported["SHEETSELLER_CATALOGO"] == (
+    assert unsupported["ZELERDATA_CATALOGO"] == (
         "Catalog/buybox snapshot read model is not available in zeler-platform yet."
     )
-    assert unsupported["SHEETSELLER_COSTOENVIOVENDEDOR"] == (
+    assert unsupported["ZELERDATA_COSTOENVIOVENDEDOR"] == (
         "Seller-paid shipping cost read model is not available in zeler-platform yet."
     )
     assert all(reason for reason in unsupported.values())
@@ -406,13 +412,13 @@ async def test_explicit_unsupported_handlers_are_routed_and_raise_data_unavailab
     assert set(handlers) == set(unsupported_states)
 
     with pytest.raises(Exception) as exc_info:
-        await handlers["SHEETSELLER_COMPRADORES"](  # type: ignore[misc]
-            _formula_context("SHEETSELLER_COMPRADORES", {"id_ordenes": ["order-1"]})
+        await handlers["ZELERDATA_COMPRADORES"](  # type: ignore[misc]
+            _formula_context("ZELERDATA_COMPRADORES", {"id_ordenes": ["order-1"]})
         )
 
     assert type(exc_info.value).__name__ == "FormulaDataUnavailableError"
     assert str(exc_info.value) == (
-        "SHEETSELLER_COMPRADORES data is not available yet: "
+        "ZELERDATA_COMPRADORES data is not available yet: "
         "Current canonical orders do not expose buyer/shipping address fields."
     )
 

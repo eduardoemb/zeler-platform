@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from types import SimpleNamespace
 from typing import Any
 
 import httpx
@@ -59,6 +60,7 @@ class FakeDb:
         self.sheets_exports = FakeCollection()
         self.sheets_sync_jobs = FakeCollection()
         self.sheets_extension_tokens = FakeCollection()
+        self.meli_accounts = FakeCollection()
 
     def __getitem__(self, name: str) -> FakeCollection:
         if name == "sheets_exports":
@@ -67,11 +69,20 @@ class FakeDb:
             return self.sheets_sync_jobs
         if name == "sheets_extension_tokens":
             return self.sheets_extension_tokens
+        if name == "meli_accounts":
+            return self.meli_accounts
         raise AssertionError(name)
 
 
 def _matches(doc: dict[str, Any], filter_spec: dict[str, Any]) -> bool:
-    return all(doc.get(key) == value for key, value in filter_spec.items())
+    for key, expected in filter_spec.items():
+        actual = doc.get(key)
+        if isinstance(expected, dict) and "$in" in expected:
+            if actual not in expected["$in"]:
+                return False
+        elif actual != expected:
+            return False
+    return True
 
 
 @pytest.mark.asyncio
@@ -200,12 +211,179 @@ async def test_extension_token_api_can_read_pepper_from_app_settings(
     assert response.json()["token_once"].startswith("zs_ext_")
 
 
+@pytest.mark.asyncio
+async def test_platform_user_token_creation_canonicalizes_active_same_user_scopes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app, db = _app(
+        monkeypatch,
+        token_values=["multi-seller-secret"],
+        claims=_claims(platform_user_id="platform-user-123", issued_by="zeler-app"),
+    )
+    db.meli_accounts.docs.extend(
+        [
+            {
+                "seller_id": 123456789,
+                "nickname": "HOPEMOB",
+                "platform_user_id": "platform-user-123",
+                "app_id": "zeler-platform",
+                "status": "active",
+            },
+            {
+                "seller_id": "987654321",
+                "nickname": "TESTUSER",
+                "platform_user_id": "platform-user-123",
+                "app_id": "zeler-platform",
+                "status": "active",
+            },
+        ]
+    )
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.post(
+            "/sheets/extension-tokens",
+            headers={"Authorization": "Bearer valid"},
+            json={
+                "label": "All accounts",
+                "seller_scopes": [
+                    {"seller_id": "123456789", "nickname": "spoofed"},
+                    {"seller_id": "987654321", "nickname": "stale"},
+                ],
+            },
+        )
+
+    assert response.status_code == 201
+    assert response.json()["owner_user_id"] == "platform-user-123"
+    assert response.json()["seller_scopes"] == [
+        {"seller_id": "123456789", "nickname": "HOPEMOB"},
+        {"seller_id": "987654321", "nickname": "TESTUSER"},
+    ]
+    assert db.sheets_extension_tokens.docs[0]["seller_scopes"] == [
+        {"seller_id": "123456789", "nickname": "HOPEMOB"},
+        {"seller_id": "987654321", "nickname": "TESTUSER"},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_platform_user_token_creation_rejects_foreign_inactive_empty_and_duplicates(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app, db = _app(
+        monkeypatch,
+        token_values=["unused-secret"],
+        claims=_claims(platform_user_id="platform-user-123", issued_by="zeler-app"),
+    )
+    db.meli_accounts.docs.extend(
+        [
+            {
+                "seller_id": 123456789,
+                "nickname": "HOPEMOB",
+                "platform_user_id": "platform-user-123",
+                "app_id": "zeler-platform",
+                "status": "active",
+            },
+            {
+                "seller_id": 222222222,
+                "nickname": "INACTIVE",
+                "platform_user_id": "platform-user-123",
+                "app_id": "zeler-platform",
+                "status": "inactive",
+            },
+            {
+                "seller_id": 333333333,
+                "nickname": "FOREIGN",
+                "platform_user_id": "other-user",
+                "app_id": "zeler-platform",
+                "status": "active",
+            },
+        ]
+    )
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        inactive = await client.post(
+            "/sheets/extension-tokens",
+            headers={"Authorization": "Bearer valid"},
+            json={
+                "label": "Inactive",
+                "seller_scopes": [{"seller_id": "222222222", "nickname": "INACTIVE"}],
+            },
+        )
+        foreign = await client.post(
+            "/sheets/extension-tokens",
+            headers={"Authorization": "Bearer valid"},
+            json={
+                "label": "Foreign",
+                "seller_scopes": [{"seller_id": "333333333", "nickname": "FOREIGN"}],
+            },
+        )
+        empty = await client.post(
+            "/sheets/extension-tokens",
+            headers={"Authorization": "Bearer valid"},
+            json={"label": "Empty", "seller_scopes": []},
+        )
+        duplicate = await client.post(
+            "/sheets/extension-tokens",
+            headers={"Authorization": "Bearer valid"},
+            json={
+                "label": "Duplicate",
+                "seller_scopes": [
+                    {"seller_id": "123456789", "nickname": "HOPEMOB"},
+                    {"seller_id": "123456789", "nickname": "HOPEMOB"},
+                ],
+            },
+        )
+
+    assert inactive.status_code == 403
+    assert inactive.json()["error"] == "forbidden"
+    assert foreign.status_code == 403
+    assert foreign.json()["error"] == "forbidden"
+    assert empty.status_code == 403
+    assert empty.json()["error"] == "forbidden"
+    assert duplicate.status_code == 400
+    assert duplicate.json()["error"] == "invalid_seller_scopes"
+    assert db.sheets_extension_tokens.docs == []
+
+
+@pytest.mark.asyncio
+async def test_legacy_token_creation_ignores_client_only_extra_seller_scope(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app, db = _app(monkeypatch, token_values=["legacy-secret"], claims=_claims())
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.post(
+            "/sheets/extension-tokens",
+            headers={"Authorization": "Bearer valid"},
+            json={
+                "label": "Legacy",
+                "seller_scopes": [
+                    {"seller_id": "123456789", "nickname": "HOPEMOB"},
+                    {"seller_id": "999999999", "nickname": "OTHER"},
+                ],
+            },
+        )
+
+    assert response.status_code == 403
+    assert response.json() == {
+        "error": "forbidden",
+        "detail": "seller scopes must match JWT seller_id",
+    }
+    assert db.sheets_extension_tokens.docs == []
+
+
 def _app(
     monkeypatch: pytest.MonkeyPatch,
     *,
     token_values: list[str] | None = None,
     jwt_error: Exception | None = None,
     configure_pepper: bool = True,
+    claims: object | None = None,
 ) -> tuple[FastAPI, FakeDb]:
     import zeler_sheets.api as api
     from zeler_sheets.api import build_router
@@ -226,15 +404,28 @@ def _app(
     def fake_verify(_token: str) -> object:
         if jwt_error is not None:
             raise jwt_error
-        return _claims()
+        return claims or _claims()
 
     monkeypatch.setattr(api, "verify_module_jwt", fake_verify)
     return app, db
 
 
-def _claims() -> object:
+def _claims(*, platform_user_id: str | None = None, issued_by: str | None = "user-1") -> object:
     from zeler_platform_core.auth.jwt import ModuleClaims
 
+    claim_values = {
+        "module_id": "sheets",
+        "seller_id": 123456789,
+        "iss": "module:sheets",
+        "aud": "gateway",
+        "iat": 1,
+        "exp": 2,
+        "token_type": "module_admin",
+        "scopes": ["admin:sheets"],
+        "issued_by": issued_by,
+    }
+    if platform_user_id is not None:
+        return SimpleNamespace(**claim_values, platform_user_id=platform_user_id)
     return ModuleClaims(
         module_id="sheets",
         seller_id=123456789,

@@ -1,49 +1,49 @@
-var SHEETSELLER_EXTENSION_TOKEN_KEY = "SHEETSELLER_EXTENSION_TOKEN";
-var SHEETSELLER_API_BASE_URL_KEY = "SHEETSELLER_API_BASE_URL";
-var SHEETSELLER_DEFAULT_API_BASE_URL = "https://api.zeler.app";
+var ZELERDATA_EXTENSION_TOKEN_KEY = "ZELERDATA_EXTENSION_TOKEN";
+var ZELERDATA_API_BASE_URL_KEY = "ZELERDATA_API_BASE_URL";
+var ZELERDATA_DEFAULT_API_BASE_URL = "https://api.zeler.app";
 
 function onOpen() {
   SpreadsheetApp.getUi()
     .createMenu("ZelerData")
-    .addItem("Settings", "showSheetsellerSettings")
+    .addItem("Settings", "showZelerDataSettings")
     .addSeparator()
-    .addItem("Clear extension token", "clearSheetsellerExtensionToken")
+    .addItem("Clear extension token", "clearZelerDataExtensionToken")
     .addToUi();
 }
 
-function showSheetsellerSettings() {
-  var settings = getSheetsellerSettings_();
-  var html = HtmlService.createHtmlOutput(buildSheetsellerSettingsHtml_(settings))
+function showZelerDataSettings() {
+  var settings = getZelerDataSettings_();
+  var html = HtmlService.createHtmlOutput(buildZelerDataSettingsHtml_(settings))
     .setTitle("ZelerData settings")
     .setWidth(420);
   SpreadsheetApp.getUi().showSidebar(html);
 }
 
-function saveSheetsellerSettings(form) {
+function saveZelerDataSettings(form) {
   var apiBaseUrl = String((form && form.apiBaseUrl) || "").trim();
   var token = String((form && form.extensionToken) || "").trim();
   if (apiBaseUrl) {
-    setSheetsellerApiBaseUrl(apiBaseUrl);
+    setZelerDataApiBaseUrl(apiBaseUrl);
   }
   if (token) {
-    setSheetsellerExtensionToken(token);
+    setZelerDataExtensionToken(token);
   }
-  return getSheetsellerSettings_();
+  return getZelerDataSettings_();
 }
 
-function setSheetsellerApiBaseUrl(apiBaseUrl) {
+function setZelerDataApiBaseUrl(apiBaseUrl) {
   var normalized = String(apiBaseUrl || "").trim().replace(/\/+$/, "");
   if (!normalized) {
     throw new Error("API base URL is required");
   }
   PropertiesService.getDocumentProperties().setProperty(
-    SHEETSELLER_API_BASE_URL_KEY,
+    ZELERDATA_API_BASE_URL_KEY,
     normalized
   );
   return normalized;
 }
 
-function setSheetsellerExtensionToken(extensionToken) {
+function setZelerDataExtensionToken(extensionToken) {
   var token = String(extensionToken || "").trim();
   if (!token) {
     throw new Error("Extension token is required");
@@ -52,39 +52,39 @@ function setSheetsellerExtensionToken(extensionToken) {
   // Google account. DocumentProperties is intentionally reserved for the
   // non-secret API base URL shared by this spreadsheet.
   PropertiesService.getUserProperties().setProperty(
-    SHEETSELLER_EXTENSION_TOKEN_KEY,
+    ZELERDATA_EXTENSION_TOKEN_KEY,
     token
   );
   return { tokenStored: true, tokenPrefix: token.substring(0, 10) };
 }
 
-function clearSheetsellerExtensionToken() {
-  PropertiesService.getUserProperties().deleteProperty(SHEETSELLER_EXTENSION_TOKEN_KEY);
+function clearZelerDataExtensionToken() {
+  PropertiesService.getUserProperties().deleteProperty(ZELERDATA_EXTENSION_TOKEN_KEY);
   SpreadsheetApp.getActive().toast("ZelerData extension token cleared", "ZelerData", 5);
   return { tokenStored: false };
 }
 
-function getSheetsellerExtensionToken_() {
-  return PropertiesService.getUserProperties().getProperty(SHEETSELLER_EXTENSION_TOKEN_KEY) || "";
+function getZelerDataExtensionToken_() {
+  return PropertiesService.getUserProperties().getProperty(ZELERDATA_EXTENSION_TOKEN_KEY) || "";
 }
 
-function getSheetsellerApiBaseUrl_() {
+function getZelerDataApiBaseUrl_() {
   return (
-    PropertiesService.getDocumentProperties().getProperty(SHEETSELLER_API_BASE_URL_KEY) ||
-    SHEETSELLER_DEFAULT_API_BASE_URL
+    PropertiesService.getDocumentProperties().getProperty(ZELERDATA_API_BASE_URL_KEY) ||
+    ZELERDATA_DEFAULT_API_BASE_URL
   );
 }
 
-function getSheetsellerSettings_() {
-  var token = getSheetsellerExtensionToken_();
+function getZelerDataSettings_() {
+  var token = getZelerDataExtensionToken_();
   return {
-    apiBaseUrl: getSheetsellerApiBaseUrl_(),
+    apiBaseUrl: getZelerDataApiBaseUrl_(),
     tokenStored: Boolean(token),
     tokenPrefix: token ? token.substring(0, 10) : ""
   };
 }
 
-function buildSheetsellerSettingsHtml_(settings) {
+function buildZelerDataSettingsHtml_(settings) {
   var prefix = settings.tokenStored ? "Stored token prefix: " + escapeHtml_(settings.tokenPrefix) : "No token stored";
   return "" +
     "<section style='font:14px Arial,sans-serif;color:#17202a;padding:16px'>" +
@@ -97,7 +97,7 @@ function buildSheetsellerSettingsHtml_(settings) {
     "<p style='font-size:12px;color:#52616b'>" + prefix + "</p>" +
     "<button onclick='save()' style='background:#123044;color:#fff;border:0;border-radius:4px;padding:8px 12px'>Save settings</button> " +
     "<button onclick='clearToken()' style='background:#fff;color:#8a1f11;border:1px solid #d8dee4;border-radius:4px;padding:8px 12px'>Clear token</button>" +
-    "<script>function save(){google.script.run.withSuccessHandler(function(){document.querySelector(\"textarea\").value=\"\";}).saveSheetsellerSettings({apiBaseUrl:document.getElementById(\"apiBaseUrl\").value,extensionToken:document.getElementById(\"extensionToken\").value});}function clearToken(){google.script.run.clearSheetsellerExtensionToken();}</script>" +
+    "<script>function save(){google.script.run.withSuccessHandler(function(){document.querySelector(\"textarea\").value=\"\";}).saveZelerDataSettings({apiBaseUrl:document.getElementById(\"apiBaseUrl\").value,extensionToken:document.getElementById(\"extensionToken\").value});}function clearToken(){google.script.run.clearZelerDataExtensionToken();}</script>" +
     "</section>";
 }
 

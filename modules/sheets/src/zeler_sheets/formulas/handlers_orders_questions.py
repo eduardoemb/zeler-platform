@@ -15,18 +15,18 @@ from zeler_sheets.formulas.read_models import FormulaReadModelRepository, normal
 
 BATCH_B_IMPLEMENTED_FORMULAS = frozenset(
     {
-        "SHEETSELLER_ORDENES",
-        "SHEETSELLER_VENTASTOTALES",
-        "SHEETSELLER_UNIDADESVENDIDAS",
-        "SHEETSELLER_ORDENESPORSKU",
-        "SHEETSELLER_DIASDESDEULTIMAVENTA",
-        "SHEETSELLER_PRODUCTOSINVENTA",
-        "SHEETSELLER_VENTAPORDIAS",
-        "SHEETSELLER_VENTASYSTOCK",
-        "SHEETSELLER_TOPVENTASUNIDADES",
-        "SHEETSELLER_TOPVENTASDINERO",
-        "SHEETSELLER_PREGUNTAS",
-        "SHEETSELLER_PREGUNTASKPI",
+        "ZELERDATA_ORDENES",
+        "ZELERDATA_VENTASTOTALES",
+        "ZELERDATA_UNIDADESVENDIDAS",
+        "ZELERDATA_ORDENESPORSKU",
+        "ZELERDATA_DIASDESDEULTIMAVENTA",
+        "ZELERDATA_PRODUCTOSINVENTA",
+        "ZELERDATA_VENTAPORDIAS",
+        "ZELERDATA_VENTASYSTOCK",
+        "ZELERDATA_TOPVENTASUNIDADES",
+        "ZELERDATA_TOPVENTASDINERO",
+        "ZELERDATA_PREGUNTAS",
+        "ZELERDATA_PREGUNTASKPI",
     }
 )
 
@@ -70,18 +70,18 @@ def build_order_question_formula_handlers(
 ) -> dict[str, FormulaHandler]:
     handlers = OrderQuestionFormulaHandlers(repository, now_fn=now_fn)
     return {
-        "SHEETSELLER_ORDENES": handlers.sheetseller_ordenes,
-        "SHEETSELLER_VENTASTOTALES": handlers.sheetseller_ventas_totales,
-        "SHEETSELLER_UNIDADESVENDIDAS": handlers.sheetseller_unidades_vendidas,
-        "SHEETSELLER_ORDENESPORSKU": handlers.sheetseller_ordenes_por_sku,
-        "SHEETSELLER_DIASDESDEULTIMAVENTA": handlers.sheetseller_dias_desde_ultima_venta,
-        "SHEETSELLER_PRODUCTOSINVENTA": handlers.sheetseller_productos_sin_venta,
-        "SHEETSELLER_VENTAPORDIAS": handlers.sheetseller_venta_por_dias,
-        "SHEETSELLER_VENTASYSTOCK": handlers.sheetseller_ventas_y_stock,
-        "SHEETSELLER_TOPVENTASUNIDADES": handlers.sheetseller_top_ventas_unidades,
-        "SHEETSELLER_TOPVENTASDINERO": handlers.sheetseller_top_ventas_dinero,
-        "SHEETSELLER_PREGUNTAS": handlers.sheetseller_preguntas,
-        "SHEETSELLER_PREGUNTASKPI": handlers.sheetseller_preguntas_kpi,
+        "ZELERDATA_ORDENES": handlers.sheetseller_ordenes,
+        "ZELERDATA_VENTASTOTALES": handlers.sheetseller_ventas_totales,
+        "ZELERDATA_UNIDADESVENDIDAS": handlers.sheetseller_unidades_vendidas,
+        "ZELERDATA_ORDENESPORSKU": handlers.sheetseller_ordenes_por_sku,
+        "ZELERDATA_DIASDESDEULTIMAVENTA": handlers.sheetseller_dias_desde_ultima_venta,
+        "ZELERDATA_PRODUCTOSINVENTA": handlers.sheetseller_productos_sin_venta,
+        "ZELERDATA_VENTAPORDIAS": handlers.sheetseller_venta_por_dias,
+        "ZELERDATA_VENTASYSTOCK": handlers.sheetseller_ventas_y_stock,
+        "ZELERDATA_TOPVENTASUNIDADES": handlers.sheetseller_top_ventas_unidades,
+        "ZELERDATA_TOPVENTASDINERO": handlers.sheetseller_top_ventas_dinero,
+        "ZELERDATA_PREGUNTAS": handlers.sheetseller_preguntas,
+        "ZELERDATA_PREGUNTASKPI": handlers.sheetseller_preguntas_kpi,
     }
 
 

@@ -355,6 +355,73 @@ async def test_zeler_app_seed_allows_repricer_admin_token_exchange(
 
 
 @pytest.mark.asyncio
+async def test_zeler_app_owned_seller_mints_module_admin_with_platform_user_claim(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import zeler_gateway.internal.router as internal_router
+    from zeler_gateway.internal.router import router
+
+    seed = json.loads(ADMIN_CLIENT_SEED_PATH.read_text(encoding="utf-8"))
+    app = FastAPI()
+    app.state.mongo_db = FakeAsyncDb()
+    app.state.mongo_db["module_registry"].documents.extend(seed["documents"])
+    app.state.mongo_db["meli_accounts"].documents.append(
+        {
+            "seller_id": 82453304,
+            "platform_user_id": "platform-user-123",
+            "app_id": "zeler-platform",
+            "status": "active",
+        }
+    )
+    app.include_router(router)
+    monkeypatch.setenv("ZELER_APP_BROKER_SECRET", BROKER_SECRET)
+    mint_calls: list[dict[str, Any]] = []
+
+    def record_mint_call(*args: Any, **kwargs: Any) -> str:
+        mint_calls.append({"args": args, "kwargs": kwargs})
+        return "signed-module-admin-jwt"
+
+    monkeypatch.setattr(internal_router, "mint_module_jwt", record_mint_call)
+    body = _json_body(
+        {
+            "seller_id": 82453304,
+            "platform_user_id": "platform-user-123",
+            "scopes": ["admin:sheets"],
+            "ttl_s": 120,
+            "token_kind": "module_admin",
+            "target_module_id": "sheets",
+        }
+    )
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.post(
+            "/internal/tokens/issue",
+            content=body,
+            headers=_broker_headers(body),
+        )
+
+    assert response.status_code == 200
+    assert response.json()["access_token"] == "signed-module-admin-jwt"  # noqa: S105
+    assert mint_calls == [
+        {
+            "args": ("sheets",),
+            "kwargs": {
+                "seller_id": 82453304,
+                "ttl_s": 120,
+                "token_type": "module_admin",
+                "scopes": ["admin:sheets"],
+                "issued_by": "zeler-app",
+                "platform_user_id": "platform-user-123",
+            },
+        }
+    ]
+    audit_doc = app.state.mongo_db["audit_log"].documents[0]
+    assert audit_doc["platform_user_id"] == "platform-user-123"
+
+
+@pytest.mark.asyncio
 async def test_legacy_bearer_module_admin_rejects_platform_user_id_body(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -152,7 +152,7 @@ async def test_ordenes_returns_order_table_with_status_buyer_filters_and_headers
 
     result = await dispatcher.execute(
         _context(
-            "SHEETSELLER_ORDENES",
+            "ZELERDATA_ORDENES",
             {
                 "fecha_inicial": "2026-05-10",
                 "fecha_final": "2026-05-11",
@@ -230,13 +230,13 @@ async def test_ventas_totales_uses_seller_scoped_orders_date_range_and_status_fi
 
     all_statuses = await dispatcher.execute(
         _context(
-            "SHEETSELLER_VENTASTOTALES",
+            "ZELERDATA_VENTASTOTALES",
             {"fecha_inicial": "2026-05-10", "fecha_final": "2026-05-11", "estado": "todos"},
         )
     )
     paid_only = await dispatcher.execute(
         _context(
-            "SHEETSELLER_VENTASTOTALES",
+            "ZELERDATA_VENTASTOTALES",
             {"fecha_inicial": "2026-05-10", "fecha_final": "2026-05-11", "estado": "paid"},
         )
     )
@@ -290,13 +290,13 @@ async def test_ventas_totales_matches_production_iso_string_dates() -> None:
 
     all_statuses = await dispatcher.execute(
         _context(
-            "SHEETSELLER_VENTASTOTALES",
+            "ZELERDATA_VENTASTOTALES",
             {"fecha_inicial": "2025-04-30", "fecha_final": "2025-05-01", "estado": "todos"},
         )
     )
     cancelled = await dispatcher.execute(
         _context(
-            "SHEETSELLER_VENTASTOTALES",
+            "ZELERDATA_VENTASTOTALES",
             {
                 "fecha_inicial": "2025-04-30",
                 "fecha_final": "2025-05-01",
@@ -349,7 +349,7 @@ async def test_ventas_totales_interprets_date_bounds_in_seller_timezone() -> Non
 
     result = await dispatcher.execute(
         _context(
-            "SHEETSELLER_VENTASTOTALES",
+            "ZELERDATA_VENTASTOTALES",
             {"fecha_inicial": "2026-05-01", "fecha_final": "2026-05-01", "estado": "paid"},
             seller_timezone="America/Mexico_City",
         )
@@ -382,7 +382,7 @@ async def test_ordenes_renders_output_dates_in_seller_timezone() -> None:
 
     result = await dispatcher.execute(
         _context(
-            "SHEETSELLER_ORDENES",
+            "ZELERDATA_ORDENES",
             {"fecha_inicial": "2026-05-01", "fecha_final": "2026-05-01", "encabezados": "si"},
             seller_timezone="America/Mexico_City",
         )
@@ -418,7 +418,7 @@ async def test_ventas_totales_falls_back_to_utc_for_missing_seller_timezone() ->
 
     result = await dispatcher.execute(
         _context(
-            "SHEETSELLER_VENTASTOTALES",
+            "ZELERDATA_VENTASTOTALES",
             {"fecha_inicial": "2026-05-01", "fecha_final": "2026-05-01"},
         )
     )
@@ -471,7 +471,7 @@ async def test_ordenes_por_sku_filters_orders_by_requested_skus() -> None:
 
     result = await dispatcher.execute(
         _context(
-            "SHEETSELLER_ORDENESPORSKU",
+            "ZELERDATA_ORDENESPORSKU",
             {
                 "skus": [["sku-2"], ["sku-1"]],
                 "fecha_inicial": "2026-05-10",
@@ -545,7 +545,7 @@ async def test_ordenes_por_sku_enriches_canonical_order_items_from_seller_sku_in
 
     result = await dispatcher.execute(
         _context(
-            "SHEETSELLER_ORDENESPORSKU",
+            "ZELERDATA_ORDENESPORSKU",
             {
                 "skus": [["sku-1"], ["amb-1"]],
                 "fecha_inicial": "2026-05-10",
@@ -618,7 +618,7 @@ async def test_unidades_vendidas_returns_units_by_sku_item_pair_with_zero_for_mi
 
     result = await dispatcher.execute(
         _context(
-            "SHEETSELLER_UNIDADESVENDIDAS",
+            "ZELERDATA_UNIDADESVENDIDAS",
             {
                 "skus": [["sku-1"], ["missing"], ["sku-2"]],
                 "id_publicaciones": ["MLA1", "MLA-X", "MLA2"],
@@ -674,7 +674,7 @@ async def test_unidades_vendidas_uses_seller_scoped_sku_index_for_canonical_orde
 
     result = await dispatcher.execute(
         _context(
-            "SHEETSELLER_UNIDADESVENDIDAS",
+            "ZELERDATA_UNIDADESVENDIDAS",
             {
                 "skus": [["sku-1"], ["amb-1"]],
                 "id_publicaciones": ["MLA1", "MLA2"],
@@ -716,7 +716,7 @@ async def test_unidades_vendidas_batches_variation_identity_lookup_once() -> Non
 
     result = await dispatcher.execute(
         _context(
-            "SHEETSELLER_UNIDADESVENDIDAS",
+            "ZELERDATA_UNIDADESVENDIDAS",
             {
                 "skus": [["sku-red"], ["sku-blue"]],
                 "id_publicaciones": ["MLA1", "MLA1"],
@@ -762,7 +762,7 @@ async def test_order_line_direct_sku_wins_over_ambiguous_identity_map() -> None:
 
     result = await dispatcher.execute(
         _context(
-            "SHEETSELLER_UNIDADESVENDIDAS",
+            "ZELERDATA_UNIDADESVENDIDAS",
             {
                 "skus": [["direct-sku"], ["wrong-1"]],
                 "id_publicaciones": ["MLA1", "MLA1"],
@@ -814,7 +814,7 @@ async def test_venta_por_dias_sums_recent_units_from_now_with_sku_enrichment() -
 
     result = await dispatcher.execute(
         _context(
-            "SHEETSELLER_VENTAPORDIAS",
+            "ZELERDATA_VENTAPORDIAS",
             {"skus": ["sku-1", "missing"], "id_publicaciones": ["MLA1", "MLA-X"], "rango_dias": 7},
         )
     )
@@ -864,7 +864,7 @@ async def test_top_ventas_unidades_and_dinero_rank_enriched_items_deterministica
 
     unidades = await dispatcher.execute(
         _context(
-            "SHEETSELLER_TOPVENTASUNIDADES",
+            "ZELERDATA_TOPVENTASUNIDADES",
             {
                 "fecha_inicial": "2026-05-10",
                 "fecha_final": "2026-05-11",
@@ -875,7 +875,7 @@ async def test_top_ventas_unidades_and_dinero_rank_enriched_items_deterministica
     )
     dinero = await dispatcher.execute(
         _context(
-            "SHEETSELLER_TOPVENTASDINERO",
+            "ZELERDATA_TOPVENTASDINERO",
             {
                 "fecha_inicial": "2026-05-10",
                 "fecha_final": "2026-05-11",
@@ -961,7 +961,7 @@ async def test_ventas_y_stock_combines_recent_sales_windows_with_current_stock()
 
     result = await dispatcher.execute(
         _context(
-            "SHEETSELLER_VENTASYSTOCK",
+            "ZELERDATA_VENTASYSTOCK",
             {
                 "skus": [["sku-1"], ["sku-2"]],
                 "id_publicaciones": ["MLA1", "MLA2"],
@@ -1022,7 +1022,7 @@ async def test_dias_desde_ultima_venta_uses_last_seller_scoped_order_date() -> N
 
     result = await dispatcher.execute(
         _context(
-            "SHEETSELLER_DIASDESDEULTIMAVENTA",
+            "ZELERDATA_DIASDESDEULTIMAVENTA",
             {"skus": [["sku-1"], ["sku-2"]], "id_publicaciones": ["MLA1", "MLA2"]},
         )
     )
@@ -1088,7 +1088,7 @@ async def test_productos_sin_venta_returns_current_items_without_recent_sales() 
     )
 
     result = await dispatcher.execute(
-        _context("SHEETSELLER_PRODUCTOSINVENTA", {"rango_dias": 7, "encabezados": "si"})
+        _context("ZELERDATA_PRODUCTOSINVENTA", {"rango_dias": 7, "encabezados": "si"})
     )
 
     assert result.values == [
@@ -1150,7 +1150,7 @@ async def test_preguntas_returns_question_table_with_date_and_hour_filters() -> 
 
     result = await dispatcher.execute(
         _context(
-            "SHEETSELLER_PREGUNTAS",
+            "ZELERDATA_PREGUNTAS",
             {
                 "fecha_inicial": "2026-05-10",
                 "fecha_final": "2026-05-10",
@@ -1222,7 +1222,7 @@ async def test_preguntas_kpi_returns_canonical_question_counts_with_optional_hea
 
     result = await dispatcher.execute(
         _context(
-            "SHEETSELLER_PREGUNTASKPI",
+            "ZELERDATA_PREGUNTASKPI",
             {"fecha_inicio": "2026-05-10", "fecha_final": "2026-05-11", "encabezados": "si"},
         )
     )
@@ -1275,7 +1275,7 @@ async def test_preguntas_kpi_matches_production_iso_string_dates() -> None:
 
     result = await dispatcher.execute(
         _context(
-            "SHEETSELLER_PREGUNTASKPI",
+            "ZELERDATA_PREGUNTASKPI",
             {"fecha_inicio": "2025-09-26", "fecha_final": "2025-10-27", "encabezados": "si"},
         )
     )
@@ -1314,7 +1314,7 @@ async def test_formula_api_wires_batch_b_handlers_and_keeps_other_batch_b_data_u
             "/sheets/formulas:execute",
             headers={"Authorization": f"Bearer {token}"},
             json={
-                "formula": "SHEETSELLER_VENTASTOTALES",
+                "formula": "ZELERDATA_VENTASTOTALES",
                 "cuenta": "HOPEMOB",
                 "args": {"fecha_inicial": "2026-05-10", "fecha_final": "2026-05-10"},
             },
@@ -1323,7 +1323,7 @@ async def test_formula_api_wires_batch_b_handlers_and_keeps_other_batch_b_data_u
             "/sheets/formulas:execute",
             headers={"Authorization": f"Bearer {token}"},
             json={
-                "formula": "SHEETSELLER_ORDENES",
+                "formula": "ZELERDATA_ORDENES",
                 "cuenta": "HOPEMOB",
                 "args": {
                     "fecha_inicial": "2026-05-10",
@@ -1336,7 +1336,7 @@ async def test_formula_api_wires_batch_b_handlers_and_keeps_other_batch_b_data_u
             "/sheets/formulas:execute",
             headers={"Authorization": f"Bearer {token}"},
             json={
-                "formula": "SHEETSELLER_COMPRADORES",
+                "formula": "ZELERDATA_COMPRADORES",
                 "cuenta": "HOPEMOB",
                 "args": {"id_ordenes": ["order-1"]},
             },
@@ -1357,7 +1357,7 @@ async def test_formula_api_wires_batch_b_handlers_and_keeps_other_batch_b_data_u
     assert not_ready.json()["error"] == {
         "code": "DATA_UNAVAILABLE",
         "message": (
-            "SHEETSELLER_COMPRADORES data is not available yet: "
+            "ZELERDATA_COMPRADORES data is not available yet: "
             "Current canonical orders do not expose buyer/shipping address fields."
         ),
         "retryable": False,

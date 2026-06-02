@@ -4,7 +4,7 @@ import inspect
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from decimal import Decimal
-from typing import Any
+from typing import Any, cast
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from bson.decimal128 import Decimal128
@@ -55,6 +55,9 @@ class ExtensionTokenPayload(BaseModel):
     seller_scopes: list[SellerScope]
     formula_scopes: list[str] | None = None
     expires_at: datetime | None = None
+
+
+ZELER_PLATFORM_APP_ID = "zeler-platform"
 
 
 class FormulaExecutePayload(BaseModel):
@@ -182,8 +185,9 @@ def build_router(
         if auth is not None:
             return auth
         claims = _claims(request)
-        owner = owner_user_id or str(claims.issued_by or claims.seller_id)
-        if owner != str(claims.issued_by or claims.seller_id):
+        default_owner = _extension_token_owner(claims)
+        owner = owner_user_id or default_owner
+        if owner != default_owner:
             return JSONResponse(status_code=403, content={"error": "forbidden"})
         service = _extension_token_service(
             request,
@@ -202,23 +206,39 @@ def build_router(
         if auth is not None:
             return auth
         claims = _claims(request)
-        forbidden = _seller_scope_forbidden(payload.seller_scopes, seller_id=str(claims.seller_id))
-        if forbidden is not None:
-            return forbidden
-        owner = str(claims.issued_by or claims.seller_id)
+        canonical_scopes_or_error = await _canonical_seller_scopes(
+            request.app.state.mongo_db,
+            payload.seller_scopes,
+            claims=claims,
+        )
+        if isinstance(canonical_scopes_or_error, JSONResponse):
+            return canonical_scopes_or_error
+        if not getattr(claims, "platform_user_id", None):
+            forbidden = _seller_scope_forbidden(
+                canonical_scopes_or_error, seller_id=str(claims.seller_id)
+            )
+            if forbidden is not None:
+                return forbidden
+        owner = _extension_token_owner(claims)
         service = _extension_token_service(
             request,
             now=now,
             token_pepper=extension_token_pepper,
             token_factory=extension_token_factory,
         )
-        issued = await service.create_token(
-            owner_user_id=owner,
-            label=payload.label,
-            seller_scopes=payload.seller_scopes,
-            formula_scopes=payload.formula_scopes,
-            expires_at=payload.expires_at,
-        )
+        try:
+            issued = await service.create_token(
+                owner_user_id=owner,
+                label=payload.label,
+                seller_scopes=canonical_scopes_or_error,
+                formula_scopes=payload.formula_scopes,
+                expires_at=payload.expires_at,
+            )
+        except ExtensionTokenValidationError as exc:
+            return JSONResponse(
+                status_code=400,
+                content={"error": "invalid_seller_scopes", "detail": exc.message},
+            )
         body = issued.metadata.model_dump(mode="json") | {"token_once": issued.token_once}
         return JSONResponse(status_code=201, content=jsonable_encoder(body))
 
@@ -237,7 +257,7 @@ def build_router(
         try:
             issued = await service.rotate_token(
                 token_id,
-                owner_user_id=str(claims.issued_by or claims.seller_id),
+                owner_user_id=_extension_token_owner(claims),
             )
         except KeyError:
             return JSONResponse(status_code=404, content={"error": "extension_token_not_found"})
@@ -259,7 +279,7 @@ def build_router(
         try:
             metadata = await service.revoke_token(
                 token_id,
-                owner_user_id=str(claims.issued_by or claims.seller_id),
+                owner_user_id=_extension_token_owner(claims),
             )
         except KeyError:
             return JSONResponse(status_code=404, content={"error": "extension_token_not_found"})
@@ -571,6 +591,67 @@ def _seller_scope_forbidden(
             status_code=403,
             content={"error": "forbidden", "detail": "seller scopes must match JWT seller_id"},
         )
+    return None
+
+
+def _extension_token_owner(claims: Any) -> str:
+    return str(getattr(claims, "platform_user_id", None) or claims.issued_by or claims.seller_id)
+
+
+async def _canonical_seller_scopes(
+    db: Any,
+    seller_scopes: list[SellerScope],
+    *,
+    claims: Any,
+) -> list[SellerScope] | JSONResponse:
+    platform_user_id = getattr(claims, "platform_user_id", None)
+    if not platform_user_id:
+        return seller_scopes
+    if not seller_scopes:
+        return JSONResponse(
+            status_code=403,
+            content={"error": "forbidden", "detail": "seller scopes must not be empty"},
+        )
+
+    canonical_scopes: list[SellerScope] = []
+    for scope in seller_scopes:
+        account = await _find_active_platform_account(
+            db,
+            platform_user_id=str(platform_user_id),
+            seller_id=scope.seller_id,
+        )
+        if account is None:
+            return JSONResponse(
+                status_code=403,
+                content={"error": "forbidden", "detail": "seller scope is not authorized"},
+            )
+        canonical_scopes.append(
+            SellerScope(
+                seller_id=str(account["seller_id"]),
+                nickname=str(account.get("nickname") or account["seller_id"]),
+            )
+        )
+    return canonical_scopes
+
+
+async def _find_active_platform_account(
+    db: Any, *, platform_user_id: str, seller_id: str
+) -> dict[str, Any] | None:
+    seller_id_values: list[str | int] = [seller_id]
+    legacy_seller_id = _legacy_int_seller_id(seller_id)
+    if legacy_seller_id is not None:
+        seller_id_values.append(legacy_seller_id)
+    for normalized_seller_id in seller_id_values:
+        account = await db["meli_accounts"].find_one(
+            {
+                "platform_user_id": platform_user_id,
+                "app_id": ZELER_PLATFORM_APP_ID,
+                "seller_id": normalized_seller_id,
+                "status": "active",
+            }
+        )
+        if account is not None:
+            return cast("dict[str, Any]", account)
     return None
 
 

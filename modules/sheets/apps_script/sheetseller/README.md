@@ -1,6 +1,6 @@
 # Private/manual Apps Script pilot
 
-This directory contains the minimum ZelerData Apps Script project used for the private pilot. Sheetseller remains a legacy Sheetseller compatibility name only: formulas keep their legacy `SHEETSELLER_*` names and forward to the zeler-platform Formula API with an extension token.
+This directory contains the minimum ZelerData Apps Script project used for the private pilot. Formulas use canonical `ZELERDATA_*` names and forward to the zeler-platform Formula API with an extension token.
 
 Pilot seller: `82453304`
 
@@ -10,7 +10,7 @@ Use only seller `82453304` for this manual validation pass. Do not query old sto
 
 - Formula API deployed: zeler-platform must expose `/sheets/formulas:execute`, `/sheets/formulas:batch`, and `/sheets/formulas/inventory` in the pilot environment.
 - The Formula API deployment must have the extension token pepper configured before any token is issued or validated.
-- zeler-app `/sheets/config` deployed: the operator must be able to create a show-once extension token from the existing Sheetseller config UI.
+- zeler-app `/sheets/config` deployed: the operator must be able to create a show-once extension token from the existing ZelerData config UI.
 - The token shown by zeler-app must be scoped only to pilot seller `82453304` / its visible `cuenta` nickname.
 - Do not paste real tokens into repo/issues/logs, chat, screenshots, support tickets, test output, or comments.
 - Do not paste tokens into this repository, issues, chat, logs, or screenshots.
@@ -31,7 +31,7 @@ Use only seller `82453304` for this manual validation pass. Do not query old sto
 
 ## Configure API base URL and token
 
-1. In Apps Script, run `setSheetsellerApiBaseUrl("https://<pilot-api-host>")` once for the spreadsheet, or open `showSheetsellerSettings` from the **ZelerData** menu and paste the base URL.
+1. In Apps Script, run `setZelerDataApiBaseUrl("https://<pilot-api-host>")` once for the spreadsheet, or open `showZelerDataSettings` from the **ZelerData** menu and paste the base URL.
 2. Create an extension token in zeler-app `/sheets/config` and copy it during the show-once extension token moment.
 3. Open **ZelerData → Settings**, paste the extension token, and save. Never store the raw token in the spreadsheet cells or any repo artifact.
 
@@ -39,7 +39,7 @@ The API base URL is stored in document properties because it is non-secret sprea
 
 ## Authorize scopes
 
-Run `showSheetsellerSettings` from Apps Script or reload the sheet and use the menu. Google will ask for the manifest scopes needed to show UI, call the Formula API, and interact with the current spreadsheet.
+Run `showZelerDataSettings` from Apps Script or reload the sheet and use the menu. Google will ask for the manifest scopes needed to show UI, call the Formula API, and interact with the current spreadsheet.
 
 ## Validation matrix for currently implemented wrappers
 
@@ -47,30 +47,30 @@ Run `showSheetsellerSettings` from Apps Script or reload the sheet and use the m
 
 | Formula | Example Google Sheets formula | Expected pilot check |
 |---|---|---|
-| `SHEETSELLER_CATEGORIAS` | `=SHEETSELLER_CATEGORIAS("cuenta", "MLA1")` | Category ID by item ID, blank for unknown item IDs. |
-| `SHEETSELLER_CODIGOML` | `=SHEETSELLER_CODIGOML("cuenta", "SKU-1", "MLA1")` | Inventory / ML code by SKU + item ID. |
-| `SHEETSELLER_CODIGOML2SKUID` | `=SHEETSELLER_CODIGOML2SKUID("cuenta", "INV-1", "si")` | Optional headers plus code, item ID, SKU rows. |
-| `SHEETSELLER_DASHBOARD` | `=SHEETSELLER_DASHBOARD("cuenta", "todos", "todos", "base", "si")` | MVP dashboard columns for current item data. |
-| `SHEETSELLER_DASHBOARDSINCATALOGO` | `=SHEETSELLER_DASHBOARDSINCATALOGO("cuenta", "todos", "todos", "base", "si")` | Same MVP dashboard columns, excluding rows with catalog indicators. |
-| `SHEETSELLER_DIASPUBLICADA` | `=SHEETSELLER_DIASPUBLICADA("cuenta", "MLA1")` | Days since publication date when current read model has a date. |
-| `SHEETSELLER_ID` | `=SHEETSELLER_ID("cuenta", "SKU-1")` | Item IDs for the SKU; duplicates are allowed. |
-| `SHEETSELLER_IDSTOCK` | `=SHEETSELLER_IDSTOCK("cuenta", "SKU-1", "si")` | Optional headers plus SKU, item ID, stock rows. |
-| `SHEETSELLER_IMAGENES` | `=SHEETSELLER_IMAGENES("cuenta", "todos", "todos")` | Thumbnail URLs from the current item read model. |
-| `SHEETSELLER_PRECIO` | `=SHEETSELLER_PRECIO("cuenta", "SKU-1", "MLA1", "base")` | Base price by SKU + item ID. |
-| `SHEETSELLER_PUBLICACIONES` | `=SHEETSELLER_PUBLICACIONES("cuenta", "todos", "todos", "base", "", "si")` | MVP current publication table. |
-| `SHEETSELLER_SKU` | `=SHEETSELLER_SKU("cuenta")` | Unique SKU list for the authorized seller. |
-| `SHEETSELLER_STATUS` | `=SHEETSELLER_STATUS("cuenta", "MLA1")` | Current publication status by item ID. |
-| `SHEETSELLER_STOCK` | `=SHEETSELLER_STOCK("cuenta", "SKU-1", "MLA1")` | Stock by SKU + item ID. |
-| `SHEETSELLER_TITULO` | `=SHEETSELLER_TITULO("cuenta", "MLA1")` | Current listing title by item ID. |
-| `SHEETSELLER_URL` | `=SHEETSELLER_URL("cuenta", "SKU-1", "MLA1")` | Current permalink by SKU + item ID. |
+| `ZELERDATA_CATEGORIAS` | `=ZELERDATA_CATEGORIAS("cuenta", "MLA1")` | Category ID by item ID, blank for unknown item IDs. |
+| `ZELERDATA_CODIGOML` | `=ZELERDATA_CODIGOML("cuenta", "SKU-1", "MLA1")` | Inventory / ML code by SKU + item ID. |
+| `ZELERDATA_CODIGOML2SKUID` | `=ZELERDATA_CODIGOML2SKUID("cuenta", "INV-1", "si")` | Optional headers plus code, item ID, SKU rows. |
+| `ZELERDATA_DASHBOARD` | `=ZELERDATA_DASHBOARD("cuenta", "todos", "todos", "base", "si")` | MVP dashboard columns for current item data. |
+| `ZELERDATA_DASHBOARDSINCATALOGO` | `=ZELERDATA_DASHBOARDSINCATALOGO("cuenta", "todos", "todos", "base", "si")` | Same MVP dashboard columns, excluding rows with catalog indicators. |
+| `ZELERDATA_DIASPUBLICADA` | `=ZELERDATA_DIASPUBLICADA("cuenta", "MLA1")` | Days since publication date when current read model has a date. |
+| `ZELERDATA_ID` | `=ZELERDATA_ID("cuenta", "SKU-1")` | Item IDs for the SKU; duplicates are allowed. |
+| `ZELERDATA_IDSTOCK` | `=ZELERDATA_IDSTOCK("cuenta", "SKU-1", "si")` | Optional headers plus SKU, item ID, stock rows. |
+| `ZELERDATA_IMAGENES` | `=ZELERDATA_IMAGENES("cuenta", "todos", "todos")` | Thumbnail URLs from the current item read model. |
+| `ZELERDATA_PRECIO` | `=ZELERDATA_PRECIO("cuenta", "SKU-1", "MLA1", "base")` | Base price by SKU + item ID. |
+| `ZELERDATA_PUBLICACIONES` | `=ZELERDATA_PUBLICACIONES("cuenta", "todos", "todos", "base", "", "si")` | MVP current publication table. |
+| `ZELERDATA_SKU` | `=ZELERDATA_SKU("cuenta")` | Unique SKU list for the authorized seller. |
+| `ZELERDATA_STATUS` | `=ZELERDATA_STATUS("cuenta", "MLA1")` | Current publication status by item ID. |
+| `ZELERDATA_STOCK` | `=ZELERDATA_STOCK("cuenta", "SKU-1", "MLA1")` | Stock by SKU + item ID. |
+| `ZELERDATA_TITULO` | `=ZELERDATA_TITULO("cuenta", "MLA1")` | Current listing title by item ID. |
+| `ZELERDATA_URL` | `=ZELERDATA_URL("cuenta", "SKU-1", "MLA1")` | Current permalink by SKU + item ID. |
 
 Start with the smallest smoke check, then move to table formulas:
 
 ```text
-=SHEETSELLER_SKU("cuenta")
-=SHEETSELLER_STOCK("cuenta", "SKU-1", "MLA1")
-=SHEETSELLER_DASHBOARD("cuenta", "todos", "todos", "base", "si")
-=SHEETSELLER_IMAGENES("cuenta", "todos", "todos")
+=ZELERDATA_SKU("cuenta")
+=ZELERDATA_STOCK("cuenta", "SKU-1", "MLA1")
+=ZELERDATA_DASHBOARD("cuenta", "todos", "todos", "base", "si")
+=ZELERDATA_IMAGENES("cuenta", "todos", "todos")
 ```
 
 ## Expected stable errors during pilot

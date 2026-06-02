@@ -52,6 +52,7 @@ class ModuleClaims:
     token_type: str | None = None
     scopes: list[str] | None = None
     issued_by: str | None = None
+    platform_user_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -98,6 +99,7 @@ def mint_module_jwt(
     token_type: str | None = None,
     scopes: list[str] | None = None,
     issued_by: str | None = None,
+    platform_user_id: str | None = None,
 ) -> str:
     now = int(time.time())
     payload = {
@@ -115,6 +117,8 @@ def mint_module_jwt(
         payload["scopes"] = scopes
     if issued_by is not None:
         payload["issued_by"] = issued_by
+    if platform_user_id is not None:
+        payload["platform_user_id"] = platform_user_id
     return _mint_es256_jwt(payload)
 
 
@@ -153,6 +157,7 @@ def verify_module_jwt(token: str) -> ModuleClaims:
         token_type=_optional_str_claim(payload, "token_type"),
         scopes=_optional_str_list_claim(payload, "scopes"),
         issued_by=_optional_str_claim(payload, "issued_by"),
+        platform_user_id=_optional_str_claim(payload, "platform_user_id"),
     )
 
 

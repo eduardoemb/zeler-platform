@@ -206,6 +206,106 @@ async def test_validate_token_enforces_seller_scope_and_records_audit_without_se
 
 
 @pytest.mark.asyncio
+async def test_validate_token_resolves_multi_seller_scope_by_id_or_nickname() -> None:
+    now = datetime(2026, 5, 13, 12, 0, tzinfo=UTC)
+    db = FakeDb()
+    service = _service(db, now=now, token_values=["multi-secret"])
+    issued = await service.create_token(
+        owner_user_id="platform-user-123",
+        label="Multi seller",
+        seller_scopes=[
+            SellerScope(seller_id="123456789", nickname="HOPEMOB"),
+            SellerScope(seller_id="987654321", nickname="TESTUSER"),
+        ],
+    )
+
+    by_id = await service.validate_token(
+        issued.token_once,
+        cuenta="987654321",
+        formula="ZELERDATA_STOCK",
+    )
+    by_nickname = await service.validate_token(
+        issued.token_once,
+        cuenta="hopemob",
+        formula="ZELERDATA_STOCK",
+    )
+
+    assert by_id.seller_id == "987654321"
+    assert by_id.seller_nickname == "TESTUSER"
+    assert by_nickname.seller_id == "123456789"
+    assert by_nickname.seller_nickname == "HOPEMOB"
+
+
+@pytest.mark.asyncio
+async def test_create_token_rejects_empty_and_duplicate_seller_scopes() -> None:
+    now = datetime(2026, 5, 13, 12, 0, tzinfo=UTC)
+    duplicate_id_service = _service(FakeDb(), now=now, token_values=["unused-1"])
+    duplicate_nickname_service = _service(FakeDb(), now=now, token_values=["unused-2"])
+    empty_service = _service(FakeDb(), now=now, token_values=["unused-3"])
+
+    with pytest.raises(ExtensionTokenValidationError) as duplicate_id_exc:
+        await duplicate_id_service.create_token(
+            owner_user_id="platform-user-123",
+            label="Duplicate ids",
+            seller_scopes=[
+                SellerScope(seller_id="123456789", nickname="HOPEMOB"),
+                SellerScope(seller_id="123456789", nickname="OTHER"),
+            ],
+        )
+    with pytest.raises(ExtensionTokenValidationError) as duplicate_nickname_exc:
+        await duplicate_nickname_service.create_token(
+            owner_user_id="platform-user-123",
+            label="Duplicate nicknames",
+            seller_scopes=[
+                SellerScope(seller_id="123456789", nickname="HOPEMOB"),
+                SellerScope(seller_id="987654321", nickname="hopemob"),
+            ],
+        )
+    with pytest.raises(ExtensionTokenValidationError) as empty_exc:
+        await empty_service.create_token(
+            owner_user_id="platform-user-123",
+            label="Empty",
+            seller_scopes=[],
+        )
+
+    assert duplicate_id_exc.value.code == "SELLER_SCOPE_INVALID"
+    assert duplicate_nickname_exc.value.code == "SELLER_SCOPE_INVALID"
+    assert empty_exc.value.code == "SELLER_SCOPE_INVALID"
+
+
+@pytest.mark.asyncio
+async def test_validate_token_fails_safely_for_ambiguous_stored_nicknames() -> None:
+    now = datetime(2026, 5, 13, 12, 0, tzinfo=UTC)
+    db = FakeDb()
+    service = _service(db, now=now, token_values=["ambiguous-secret"])
+    issued = await service.create_token(
+        owner_user_id="platform-user-123",
+        label="Ambiguous",
+        seller_scopes=[SellerScope(seller_id="123456789", nickname="HOPEMOB")],
+    )
+    stored = db.sheets_extension_tokens.documents[issued.metadata.id]
+    stored["seller_scopes"] = [
+        {"seller_id": "123456789", "nickname": "HOPEMOB"},
+        {"seller_id": "987654321", "nickname": "hopemob"},
+    ]
+
+    by_id = await service.validate_token(
+        issued.token_once,
+        cuenta="987654321",
+        formula="ZELERDATA_STOCK",
+    )
+    with pytest.raises(ExtensionTokenValidationError) as nickname_exc:
+        await service.validate_token(
+            issued.token_once,
+            cuenta="HOPEMOB",
+            formula="ZELERDATA_STOCK",
+        )
+
+    assert by_id.seller_id == "987654321"
+    assert nickname_exc.value.code == "SELLER_FORBIDDEN"
+
+
+@pytest.mark.asyncio
 async def test_rotate_and_revoke_invalidate_previous_or_current_secret() -> None:
     now = datetime(2026, 5, 13, 12, 0, tzinfo=UTC)
     db = FakeDb()

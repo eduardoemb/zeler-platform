@@ -92,7 +92,7 @@ async def test_execute_known_formula_validates_token_and_cuenta_nickname() -> No
             "/sheets/formulas:execute",
             headers={"Authorization": f"Bearer {token}"},
             json={
-                "formula": "SHEETSELLER_STOCK",
+                "formula": "ZELERDATA_STOCK",
                 "cuenta": "HOPEMOB",
                 "args": {"skus": ["SKU-1"], "id_publicaciones": ["MLA1"]},
                 "request_id": "req-data-unavailable",
@@ -107,12 +107,59 @@ async def test_execute_known_formula_validates_token_and_cuenta_nickname() -> No
         "token_id": stored["_id"],
         "seller_id": "123456789",
         "seller_nickname": "HOPEMOB",
-        "formula": "SHEETSELLER_STOCK",
+        "formula": "ZELERDATA_STOCK",
         "request_id": "req-data-unavailable",
         "outcome": "allowed",
         "error_code": None,
         "occurred_at": now,
     }
+
+
+@pytest.mark.asyncio
+async def test_execute_formula_resolves_multi_seller_cuenta_by_id_and_nickname() -> None:
+    now = datetime(2026, 5, 13, 12, 0, tzinfo=UTC)
+
+    def seller_echo_handler(context: Any) -> FormulaExecutionResult:
+        return FormulaExecutionResult(
+            values=[[context.seller_id, context.seller_nickname]],
+            meta={"seller_id": context.seller_id, "seller_nickname": context.seller_nickname},
+        )
+
+    app, db = _app(now=now, formula_dispatcher=seller_echo_handler)
+    issued = await _token_service(db, now=now).create_token(
+        owner_user_id="platform-user-123",
+        label="Multi seller formula sheet",
+        seller_scopes=[
+            SellerScope(seller_id="123456789", nickname="HOPEMOB"),
+            SellerScope(seller_id="987654321", nickname="TESTUSER"),
+        ],
+    )
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        by_id = await client.post(
+            "/sheets/formulas:execute",
+            headers={"Authorization": f"Bearer {issued.token_once}"},
+            json={"formula": "ZELERDATA_SKU", "cuenta": "987654321", "args": {}},
+        )
+        by_nickname = await client.post(
+            "/sheets/formulas:execute",
+            headers={"Authorization": f"Bearer {issued.token_once}"},
+            json={"formula": "ZELERDATA_SKU", "cuenta": "testuser", "args": {}},
+        )
+        unauthorized = await client.post(
+            "/sheets/formulas:execute",
+            headers={"Authorization": f"Bearer {issued.token_once}"},
+            json={"formula": "ZELERDATA_SKU", "cuenta": "555555555", "args": {}},
+        )
+
+    assert by_id.status_code == 200
+    assert by_id.json()["values"] == [["987654321", "TESTUSER"]]
+    assert by_nickname.status_code == 200
+    assert by_nickname.json()["values"] == [["987654321", "TESTUSER"]]
+    assert unauthorized.status_code == 403
+    assert unauthorized.json()["error"]["code"] == "SELLER_FORBIDDEN"
 
 
 @pytest.mark.asyncio
@@ -125,7 +172,7 @@ async def test_execute_returns_token_error_envelopes_for_missing_and_revoked_tok
     ) as client:
         missing = await client.post(
             "/sheets/formulas:execute",
-            json={"formula": "SHEETSELLER_SKU", "cuenta": "HOPEMOB", "args": {}},
+            json={"formula": "ZELERDATA_SKU", "cuenta": "HOPEMOB", "args": {}},
         )
         await _token_service(app.state.mongo_db, now=now).revoke_token(
             next(iter(app.state.mongo_db.sheets_extension_tokens.documents)),
@@ -134,7 +181,7 @@ async def test_execute_returns_token_error_envelopes_for_missing_and_revoked_tok
         revoked = await client.post(
             "/sheets/formulas:execute",
             headers={"Authorization": f"Bearer {token}"},
-            json={"formula": "SHEETSELLER_SKU", "cuenta": "HOPEMOB", "args": {}},
+            json={"formula": "ZELERDATA_SKU", "cuenta": "HOPEMOB", "args": {}},
         )
 
     assert missing.status_code == 401
@@ -156,18 +203,18 @@ async def test_execute_returns_forbidden_unknown_and_bad_argument_envelopes() ->
         forbidden = await client.post(
             "/sheets/formulas:execute",
             headers={"Authorization": f"Bearer {token}"},
-            json={"formula": "SHEETSELLER_SKU", "cuenta": "OTHER", "args": {}},
+            json={"formula": "ZELERDATA_SKU", "cuenta": "OTHER", "args": {}},
         )
         unknown = await client.post(
             "/sheets/formulas:execute",
             headers={"Authorization": f"Bearer {token}"},
-            json={"formula": "SHEETSELLER_NOPE", "cuenta": "HOPEMOB", "args": {}},
+            json={"formula": "SHEETSELLER_SKU", "cuenta": "HOPEMOB", "args": {}},
         )
         bad_argument = await client.post(
             "/sheets/formulas:execute",
             headers={"Authorization": f"Bearer {token}"},
             json={
-                "formula": "SHEETSELLER_STOCK",
+                "formula": "ZELERDATA_STOCK",
                 "cuenta": "HOPEMOB",
                 "args": {"skus": ["SKU-1"]},
             },
@@ -178,7 +225,7 @@ async def test_execute_returns_forbidden_unknown_and_bad_argument_envelopes() ->
     assert unknown.status_code == 200
     assert unknown.json()["error"] == {
         "code": "FORMULA_UNKNOWN",
-        "message": "unknown formula SHEETSELLER_NOPE",
+        "message": "unknown formula SHEETSELLER_SKU",
         "retryable": False,
     }
     assert bad_argument.status_code == 400
@@ -194,7 +241,7 @@ async def test_execute_returns_rate_limited_and_internal_envelopes() -> None:
     now = datetime(2026, 5, 13, 12, 0, tzinfo=UTC)
     rate_limited_app, _db, limited_token = await _app_with_token(
         now=now,
-        formula_rate_limit_hook=lambda context: context["formula"] != "SHEETSELLER_PRECIO",
+        formula_rate_limit_hook=lambda context: context["formula"] != "ZELERDATA_PRECIO",
     )
     internal_app, _internal_db, internal_token = await _app_with_token(
         now=now,
@@ -208,7 +255,7 @@ async def test_execute_returns_rate_limited_and_internal_envelopes() -> None:
             "/sheets/formulas:execute",
             headers={"Authorization": f"Bearer {limited_token}"},
             json={
-                "formula": "SHEETSELLER_PRECIO",
+                "formula": "ZELERDATA_PRECIO",
                 "cuenta": "HOPEMOB",
                 "args": {"skus": ["SKU-1"], "id_publicaciones": ["MLA1"]},
                 "request_id": "req-rate",
@@ -221,7 +268,7 @@ async def test_execute_returns_rate_limited_and_internal_envelopes() -> None:
         internal = await client.post(
             "/sheets/formulas:execute",
             headers={"Authorization": f"Bearer {internal_token}"},
-            json={"formula": "SHEETSELLER_SKU", "cuenta": "HOPEMOB", "args": {}},
+            json={"formula": "ZELERDATA_SKU", "cuenta": "HOPEMOB", "args": {}},
         )
 
     assert rate_limited.status_code == 429
@@ -252,8 +299,8 @@ async def test_batch_returns_independent_formula_envelopes() -> None:
             headers={"Authorization": f"Bearer {token}"},
             json={
                 "requests": [
+                    {"formula": "ZELERDATA_SKU", "cuenta": "HOPEMOB", "args": {}},
                     {"formula": "SHEETSELLER_SKU", "cuenta": "HOPEMOB", "args": {}},
-                    {"formula": "SHEETSELLER_NOPE", "cuenta": "HOPEMOB", "args": {}},
                 ]
             },
         )
@@ -284,7 +331,7 @@ async def test_execute_success_envelope_allows_formula_handlers_to_report_partia
         response = await client.post(
             "/sheets/formulas:execute",
             headers={"Authorization": f"Bearer {token}"},
-            json={"formula": "SHEETSELLER_SKU", "cuenta": "HOPEMOB", "args": {}},
+            json={"formula": "ZELERDATA_SKU", "cuenta": "HOPEMOB", "args": {}},
         )
 
     assert response.status_code == 200
@@ -323,7 +370,7 @@ async def test_execute_resolves_seller_timezone_from_legacy_int_meli_account_id(
         response = await client.post(
             "/sheets/formulas:execute",
             headers={"Authorization": f"Bearer {token}"},
-            json={"formula": "SHEETSELLER_SKU", "cuenta": "HOPEMOB", "args": {}},
+            json={"formula": "ZELERDATA_SKU", "cuenta": "HOPEMOB", "args": {}},
         )
 
     assert response.status_code == 200
@@ -359,7 +406,7 @@ async def test_execute_uses_utc_timezone_when_meli_account_timezone_is_missing()
         response = await client.post(
             "/sheets/formulas:execute",
             headers={"Authorization": f"Bearer {token}"},
-            json={"formula": "SHEETSELLER_SKU", "cuenta": "HOPEMOB", "args": {}},
+            json={"formula": "ZELERDATA_SKU", "cuenta": "HOPEMOB", "args": {}},
         )
 
     assert response.status_code == 200
@@ -394,7 +441,7 @@ async def test_execute_serializes_mongo_decimal_values_as_json_numbers() -> None
         response = await client.post(
             "/sheets/formulas:execute",
             headers={"Authorization": f"Bearer {token}"},
-            json={"formula": "SHEETSELLER_SKU", "cuenta": "HOPEMOB", "args": {}},
+            json={"formula": "ZELERDATA_SKU", "cuenta": "HOPEMOB", "args": {}},
         )
 
     assert response.status_code == 200
@@ -417,11 +464,11 @@ async def test_formula_inventory_route_exposes_all_registered_contracts() -> Non
     assert response.status_code == 200
     contracts = response.json()["formulas"]
     assert len(contracts) == 53
-    assert contracts[0]["name"] == "SHEETSELLER_PUBLICACIONES"
+    assert contracts[0]["name"] == "ZELERDATA_PUBLICACIONES"
     assert contracts[0]["status"] == "implemented"
     by_name = {contract["name"]: contract for contract in contracts}
-    assert by_name["SHEETSELLER_DIASDESDEULTIMAVENTA"]["status"] == "implemented"
-    assert by_name["SHEETSELLER_COMPRADORES"] == by_name["SHEETSELLER_COMPRADORES"] | {
+    assert by_name["ZELERDATA_DIASDESDEULTIMAVENTA"]["status"] == "implemented"
+    assert by_name["ZELERDATA_COMPRADORES"] == by_name["ZELERDATA_COMPRADORES"] | {
         "status": "unsupported",
         "unsupported_reason": (
             "Current canonical orders do not expose buyer/shipping address fields."

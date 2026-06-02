@@ -17,6 +17,14 @@ def _contracts() -> list[dict[str, Any]]:
     return cast("list[dict[str, Any]]", loaded)
 
 
+def _canonical_formula_name(legacy_name: str) -> str:
+    if legacy_name == "ZELERDATA_ENVIARAFULL":
+        return "ZELERDATA_ENVIARAFULL"
+    if legacy_name == "ZELERDATA_OBTENER_CATALOGO":
+        return "ZELERDATA_OBTENER_CATALOGO"
+    return legacy_name.replace("ZELERDATA_", "ZELERDATA_")
+
+
 def _read_addon_file(name: str) -> str:
     return (ADDON_DIR / name).read_text(encoding="utf-8")
 
@@ -55,19 +63,19 @@ def test_config_ui_stores_only_extension_token_in_user_properties() -> None:
     config_source = _read_addon_file("Config.gs")
 
     assert "onOpen" in config_source
-    assert "showSheetsellerSettings" in config_source
-    assert "saveSheetsellerSettings" in config_source
-    assert "clearSheetsellerExtensionToken" in config_source
+    assert "showZelerDataSettings" in config_source
+    assert "saveZelerDataSettings" in config_source
+    assert "clearZelerDataExtensionToken" in config_source
     assert "PropertiesService.getUserProperties()" in config_source
-    assert "SHEETSELLER_EXTENSION_TOKEN" in config_source
+    assert "ZELERDATA_EXTENSION_TOKEN" in config_source
     assert "PropertiesService.getDocumentProperties()" in config_source
-    assert "SHEETSELLER_API_BASE_URL" in config_source
+    assert "ZELERDATA_API_BASE_URL" in config_source
     assert "UserProperties" in config_source
     assert "DocumentProperties" in config_source
     assert not re.search(r"password|contraseñ|username|usuario", config_source, re.IGNORECASE)
 
 
-def test_config_ui_uses_zelerdata_visible_copy_without_renaming_compatibility_keys() -> None:
+def test_config_ui_uses_zelerdata_visible_copy_and_property_keys() -> None:
     config_source = _read_addon_file("Config.gs")
 
     assert '.createMenu("ZelerData")' in config_source
@@ -75,10 +83,11 @@ def test_config_ui_uses_zelerdata_visible_copy_without_renaming_compatibility_ke
     assert '"ZelerData extension token cleared"' in config_source
     assert '"ZelerData"' in config_source
     assert "ZelerData private pilot" in config_source
-    assert "SHEETSELLER_EXTENSION_TOKEN" in config_source
-    assert "SHEETSELLER_API_BASE_URL" in config_source
-    assert "function showSheetsellerSettings" in config_source
-    assert "function setSheetsellerExtensionToken" in config_source
+    assert "ZELERDATA_EXTENSION_TOKEN" in config_source
+    assert "ZELERDATA_API_BASE_URL" in config_source
+    assert "function showZelerDataSettings" in config_source
+    assert "function setZelerDataExtensionToken" in config_source
+    assert "SHEETSELLER_" not in config_source
 
 
 def test_formula_api_client_posts_to_execute_route_with_bearer_token() -> None:
@@ -91,32 +100,35 @@ def test_formula_api_client_posts_to_execute_route_with_bearer_token() -> None:
     assert "muteHttpExceptions: true" in client_source
     assert "JSON.stringify" in client_source
     assert "JSON.parse" in client_source
-    assert "sheetsellerEnvelopeToValues_" in client_source
+    assert "zelerdataEnvelopeToValues_" in client_source
 
 
 def test_formula_api_envelopes_are_converted_to_sheets_safe_2d_values() -> None:
     client_source = _read_addon_file("Client.gs")
 
-    assert "function sheetsellerEnvelopeToValues_(envelope)" in client_source
+    assert "function zelerdataEnvelopeToValues_(envelope)" in client_source
     assert "Array.isArray(envelope.values)" in client_source
     assert "envelope.values.length === 0" in client_source
     assert 'return [[""]]' in client_source
-    assert "return sheetsellerCoerce2d_(envelope.values)" in client_source
+    assert "return zelerdataCoerce2d_(envelope.values)" in client_source
     assert "DATA_UNAVAILABLE" in client_source
     assert "TOKEN_MISSING" in client_source
     assert "return [[message]]" in client_source
-    assert "function sheetsellerCoerce2d_(value)" in client_source
+    assert "function zelerdataCoerce2d_(value)" in client_source
+    assert "Sheetseller" not in client_source
 
 
-def test_all_53_legacy_formula_wrappers_preserve_names_and_parameter_order() -> None:
+def test_all_53_zelerdata_formula_wrappers_preserve_names_and_parameter_order() -> None:
     formulas_source = _read_addon_file("Formulas.gs")
 
     wrapper_names = re.findall(r"^function\s+([A-Za-z0-9_]+)\s*\(", formulas_source, re.MULTILINE)
-    expected_names = [contract["name"] for contract in _contracts()]
+    expected_names = [_canonical_formula_name(contract["name"]) for contract in _contracts()]
+    expected_lowercase_names = [name.lower() for name in expected_names]
 
-    assert wrapper_names == expected_names
+    assert wrapper_names == expected_names + expected_lowercase_names
     for contract in _contracts():
-        arguments = _function_arguments(formulas_source, contract["name"])
+        canonical_name = _canonical_formula_name(contract["name"])
+        arguments = _function_arguments(formulas_source, canonical_name)
         actual_names = [
             _parameter_name(part.strip()) for part in arguments.split(",") if part.strip()
         ]
@@ -124,33 +136,35 @@ def test_all_53_legacy_formula_wrappers_preserve_names_and_parameter_order() -> 
         expected_names_for_formula = [
             _parameter_name(parameter) for parameter in expected_parameters
         ]
-        assert actual_names == expected_names_for_formula, contract["name"]
+        assert actual_names == expected_names_for_formula, canonical_name
         for parameter in expected_parameters:
             if "=" in parameter:
-                assert parameter in arguments, contract["name"]
+                assert parameter in arguments, canonical_name
+        assert _function_arguments(formulas_source, canonical_name.lower()) == arguments
+    assert "SHEETSELLER_" not in formulas_source
+    assert "sheetseller_" not in formulas_source
 
 
 def test_wrappers_forward_cuenta_as_seller_nickname_and_all_args_to_formula_api() -> None:
     formulas_source = _read_addon_file("Formulas.gs")
 
-    assert "databaseName is a legacy name; pass the seller nickname" in formulas_source
-    assert "collectionName is a legacy name; pass the seller nickname" in formulas_source
+    assert "databaseName:" not in formulas_source
+    assert "collectionName:" not in formulas_source
     for contract in _contracts():
+        canonical_name = _canonical_formula_name(contract["name"])
         parameters = [
             _parameter_name(parameter) for parameter in _signature_parameters(contract["signature"])
         ]
         first_parameter = parameters[0]
         body_pattern = (
-            rf"function\s+{re.escape(contract['name'])}\s*\([^)]*\)\s*\{{(?P<body>.*?)\n\}}"
+            rf"function\s+{re.escape(canonical_name)}\s*\([^)]*\)\s*\{{(?P<body>.*?)\n\}}"
         )
         match = re.search(body_pattern, formulas_source, re.DOTALL)
-        assert match is not None, contract["name"]
+        assert match is not None, canonical_name
         body = match.group("body")
-        assert f'sheetsellerExecute_("{contract["name"]}", {first_parameter},' in body
+        assert f'zelerdataExecute_("{canonical_name}", {first_parameter},' in body
         for parameter in parameters[1:]:
-            assert f"{parameter}: {parameter}" in body, contract["name"]
-        assert "databaseName:" not in body
-        assert "collectionName:" not in body
+            assert f"{parameter}: {parameter}" in body, canonical_name
 
 
 def test_private_manual_installation_docs_cover_setup_without_secrets() -> None:
@@ -158,13 +172,15 @@ def test_private_manual_installation_docs_cover_setup_without_secrets() -> None:
 
     assert "Private/manual Apps Script pilot" in docs
     assert "Create Apps Script project" in docs
-    assert "setSheetsellerApiBaseUrl" in docs
-    assert "showSheetsellerSettings" in docs
+    assert "setZelerDataApiBaseUrl" in docs
+    assert "showZelerDataSettings" in docs
     assert "extension token" in docs
     assert "Authorize scopes" in docs
-    assert "SHEETSELLER_SKU" in docs
+    assert "ZELERDATA_SKU" in docs
     assert "Do not paste tokens into this repository" in docs
     assert "Marketplace" in docs
+    assert "Sheetseller" not in docs
+    assert "SHEETSELLER" not in docs
     assert "username" not in docs.lower()
     assert "password" not in docs.lower()
 
@@ -173,8 +189,6 @@ def test_private_manual_installation_docs_use_zelerdata_as_primary_display_name(
     docs = _read_addon_file("README.md")
 
     assert "ZelerData Apps Script project" in docs
-    assert "legacy Sheetseller compatibility name" in docs
-    assert "formulas keep their legacy `SHEETSELLER_*` names" in docs
     assert "ZelerData → Settings" in docs
     assert "**ZelerData** menu appears" in docs
 
@@ -202,10 +216,10 @@ def test_private_pilot_runbook_lists_current_formula_validation_matrix_and_stabl
         assert formula_name in docs
 
     example_formulas = [
-        '=SHEETSELLER_SKU("cuenta")',
-        '=SHEETSELLER_STOCK("cuenta", "SKU-1", "MLA1")',
-        '=SHEETSELLER_DASHBOARD("cuenta", "todos", "todos", "base", "si")',
-        '=SHEETSELLER_IMAGENES("cuenta", "todos", "todos")',
+        '=ZELERDATA_SKU("cuenta")',
+        '=ZELERDATA_STOCK("cuenta", "SKU-1", "MLA1")',
+        '=ZELERDATA_DASHBOARD("cuenta", "todos", "todos", "base", "si")',
+        '=ZELERDATA_IMAGENES("cuenta", "todos", "todos")',
     ]
     for example in example_formulas:
         assert example in docs
