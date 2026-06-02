@@ -114,7 +114,7 @@ async def test_formula_audit_service_persists_redacted_request_decisions() -> No
             "token_id": "sheets-ext-token-abc",
             "seller_id": "123456789",
             "seller_nickname": "HOPEMOB",
-            "formula": "SHEETSELLER_PRECIO",
+            "formula": "ZELERDATA_PRECIO",
             "request_id": "req-1",
             "outcome": "denied",
             "error_code": "RATE_LIMITED",
@@ -131,7 +131,7 @@ async def test_formula_audit_service_persists_redacted_request_decisions() -> No
             "token_id": "sheets-ext-token-abc",
             "seller_id": "123456789",
             "seller_nickname": "HOPEMOB",
-            "formula": "SHEETSELLER_PRECIO",
+            "formula": "ZELERDATA_PRECIO",
             "request_id": "req-1",
             "outcome": "denied",
             "error_code": "RATE_LIMITED",
@@ -158,21 +158,21 @@ async def test_formula_rate_limiter_is_scoped_by_token_seller_formula_and_window
         "token_id": "token-1",
         "seller_id": "seller-1",
         "seller_nickname": "HOPEMOB",
-        "formula": "SHEETSELLER_PRECIO",
+        "formula": "ZELERDATA_PRECIO",
         "request_id": "req-rate",
     }
 
     assert await service.allow(context) is True
     assert await service.allow(context) is True
     assert await service.allow(context) is False
-    assert await service.allow(context | {"formula": "SHEETSELLER_SKU"}) is True
+    assert await service.allow(context | {"formula": "ZELERDATA_SKU"}) is True
     assert await service.allow(context | {"seller_id": "seller-2"}) is True
 
     current_time = current_time + timedelta(seconds=61)
     assert await service.allow(context) is True
 
     counter_docs = list(db["rate_limit_counters"].documents.values())
-    precio_counter = next(doc for doc in counter_docs if doc["formula"] == "SHEETSELLER_PRECIO")
+    precio_counter = next(doc for doc in counter_docs if doc["formula"] == "ZELERDATA_PRECIO")
     assert precio_counter["token_id"] == "token-1"
     assert precio_counter["seller_id"] == "seller-1"
     assert precio_counter["count"] == 2
@@ -226,12 +226,12 @@ def test_unbuilt_historical_and_catalog_formulas_raise_data_unavailable() -> Non
     registry = FormulaRegistry.default()
 
     with pytest.raises(Exception) as historical:
-        require_formula_read_model_available(registry.find_required("SHEETSELLER_PAUSADAS"))
+        require_formula_read_model_available(registry.find_required("ZELERDATA_PAUSADAS"))
     with pytest.raises(Exception) as catalog:
-        require_formula_read_model_available(registry.find_required("SHEETSELLER_CATALOGO"))
+        require_formula_read_model_available(registry.find_required("ZELERDATA_CATALOGO"))
 
-    assert "SHEETSELLER_PAUSADAS data is not available yet" in str(historical.value)
-    assert "SHEETSELLER_CATALOGO data is not available yet" in str(catalog.value)
+    assert "ZELERDATA_PAUSADAS data is not available yet" in str(historical.value)
+    assert "ZELERDATA_CATALOGO data is not available yet" in str(catalog.value)
 
 
 @pytest.mark.asyncio
@@ -262,14 +262,14 @@ async def test_extension_token_validation_awaits_persistent_audit_and_rate_limit
     allowed = await token_service.validate_token(
         issued.token_once,
         cuenta="HOPEMOB",
-        formula="SHEETSELLER_PRECIO",
+        formula="ZELERDATA_PRECIO",
         request_id="req-allowed",
     )
     with pytest.raises(ExtensionTokenValidationError) as exc_info:
         await token_service.validate_token(
             issued.token_once,
             cuenta="HOPEMOB",
-            formula="SHEETSELLER_PRECIO",
+            formula="ZELERDATA_PRECIO",
             request_id="req-limited",
         )
 

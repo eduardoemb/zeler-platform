@@ -110,6 +110,7 @@ class ExtensionTokenService:
         formula_scopes: list[str] | None = None,
         expires_at: datetime | None = None,
     ) -> IssuedExtensionToken:
+        _validate_seller_scopes(seller_scopes)
         now = self._now()
         token = self._new_token()
         token_id = _token_id(token)
@@ -187,9 +188,10 @@ class ExtensionTokenService:
         if doc is None:
             raise ExtensionTokenValidationError("TOKEN_REVOKED", "extension token is not active")
 
-        scope = _resolve_seller_scope(doc, cuenta)
+        scope: SellerScope | None = None
         try:
             self._validate_active(doc)
+            scope = _resolve_seller_scope(doc, cuenta)
             if scope is None:
                 raise ExtensionTokenValidationError(
                     "SELLER_FORBIDDEN", "extension token cannot access seller"
@@ -316,9 +318,51 @@ def _metadata_from_doc(doc: dict[str, Any]) -> ExtensionTokenMetadata:
 
 
 def _resolve_seller_scope(doc: dict[str, Any], cuenta: str) -> SellerScope | None:
-    normalized = cuenta.casefold()
-    for raw_scope in doc.get("seller_scopes", []):
-        scope = SellerScope(**raw_scope)
-        if scope.seller_id == cuenta or scope.nickname.casefold() == normalized:
-            return scope
+    requested = cuenta.strip()
+    normalized = requested.casefold()
+    scopes = [SellerScope(**raw_scope) for raw_scope in doc.get("seller_scopes", [])]
+    seller_id_matches = [scope for scope in scopes if scope.seller_id == requested]
+    if len(seller_id_matches) == 1:
+        return seller_id_matches[0]
+    if len(seller_id_matches) > 1:
+        raise ExtensionTokenValidationError(
+            "SELLER_FORBIDDEN", "extension token seller scope is ambiguous"
+        )
+
+    nickname_matches = [scope for scope in scopes if scope.nickname.casefold() == normalized]
+    if len(nickname_matches) == 1:
+        return nickname_matches[0]
+    if len(nickname_matches) > 1:
+        raise ExtensionTokenValidationError(
+            "SELLER_FORBIDDEN", "extension token seller scope is ambiguous"
+        )
     return None
+
+
+def _validate_seller_scopes(seller_scopes: list[SellerScope]) -> None:
+    if not seller_scopes:
+        raise ExtensionTokenValidationError(
+            "SELLER_SCOPE_INVALID", "extension token must include at least one seller scope"
+        )
+
+    seller_ids: set[str] = set()
+    nicknames: set[str] = set()
+    for scope in seller_scopes:
+        seller_id = scope.seller_id.strip()
+        nickname = scope.nickname.strip()
+        if not seller_id or not nickname:
+            raise ExtensionTokenValidationError(
+                "SELLER_SCOPE_INVALID", "seller scopes must include seller_id and nickname"
+            )
+        normalized_seller_id = seller_id.casefold()
+        normalized_nickname = nickname.casefold()
+        if normalized_seller_id in seller_ids:
+            raise ExtensionTokenValidationError(
+                "SELLER_SCOPE_INVALID", "seller scopes must not contain duplicate seller_id values"
+            )
+        if normalized_nickname in nicknames:
+            raise ExtensionTokenValidationError(
+                "SELLER_SCOPE_INVALID", "seller scopes must not contain duplicate nicknames"
+            )
+        seller_ids.add(normalized_seller_id)
+        nicknames.add(normalized_nickname)

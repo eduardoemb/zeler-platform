@@ -406,6 +406,7 @@ class TestEnvTemplateContract:
         assert "MONGO_INITDB_ROOT_USERNAME" in keys
         assert "MONGO_INITDB_ROOT_PASSWORD" in keys
 
+
 # ===========================================================================
 # Ops hardening — platform-vm root disk safeguards
 # ===========================================================================
@@ -470,8 +471,8 @@ class TestDockerRootDiskSafeguards:
 
         deploy_section = text.split("## 5. Re-deploy a Single Service", 1)[1].split("---", 1)[0]
         assert "/opt/zeler-platform/docker-deploy-preflight.sh" in deploy_section
-        assert deploy_section.index("/opt/zeler-platform/docker-deploy-preflight.sh") < deploy_section.index(
-            "docker compose pull <service>"
-        )
+        assert deploy_section.index(
+            "/opt/zeler-platform/docker-deploy-preflight.sh"
+        ) < deploy_section.index("docker compose pull <service>")
         assert "never prune volumes" in text.lower()
         assert "/var/lib/zeler-mongo" in text

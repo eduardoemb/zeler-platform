@@ -74,6 +74,7 @@ async def issue_token(request: Request, payload: TokenIssueRequest) -> JSONRespo
             token_type="module_admin",  # noqa: S106 - token type discriminator, not a secret
             scopes=payload.scopes,
             issued_by=caller["module_id"],
+            platform_user_id=seller_authorization,
         )
         await _insert_issue_audit(
             db=db,

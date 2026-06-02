@@ -75,6 +75,28 @@ def test_mint_verify_roundtrip() -> None:
     assert claims.iss == "module:repricer"
     assert claims.aud == "gateway"
     assert claims.exp > claims.iat
+    assert claims.platform_user_id is None
+
+
+def test_mint_verify_module_admin_platform_user_id_roundtrip() -> None:
+    token = mint_module_jwt(
+        "sheets",
+        seller_id=123456789,
+        ttl_s=60,
+        token_type="module_admin",  # noqa: S106 - token type discriminator, not a secret
+        scopes=["admin:sheets"],
+        issued_by="zeler-app",
+        platform_user_id="platform-user-123",
+    )
+
+    claims = verify_module_jwt(token)
+
+    assert claims.module_id == "sheets"
+    assert claims.seller_id == 123456789
+    assert claims.token_type == "module_admin"  # noqa: S105 - token type discriminator
+    assert claims.scopes == ["admin:sheets"]
+    assert claims.issued_by == "zeler-app"
+    assert claims.platform_user_id == "platform-user-123"
 
 
 def test_expired_jwt_raises() -> None:
