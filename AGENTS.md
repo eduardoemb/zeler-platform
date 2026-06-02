@@ -50,8 +50,19 @@ Skill registry lives at
   for platform design, specs, tasks, and verification notes.
 - For substantial product changes, use SDD (`/sdd-new`, `/sdd-ff`, `/sdd-apply`,
   `/sdd-verify`, `/sdd-archive`) instead of ad-hoc implementation.
-- Prefer Git worktrees for parallel or isolated changes. Keep `main` clean and
-  use one worktree per active change, PR chain, hotfix, or risky experiment.
+- Git worktrees are mandatory for coding sessions. Keep the root `main`
+  checkout clean and use it only for inspection, sync, and worktree
+  administration. Before editing code, creating files, running formatters, or
+  committing, create or switch to a dedicated worktree for the active change,
+  PR chain, hotfix, or risky experiment.
+- Do not implement from the root `main` checkout. If the root checkout is dirty,
+  stop before making more changes, identify whether the dirty files belong to an
+  existing active worktree/task, and ask before moving, stashing, discarding, or
+  mixing them with the current change.
+- Name worktree branches with conventional prefixes, for example
+  `feat/<change>`, `fix/<change>`, `docs/<change>`, or `chore/<change>`. Use one
+  worktree per active change or PR slice; stacked/chained PRs should use separate
+  worktrees or clearly named branches for each review slice.
 - When the user asks to close the session, run a worktree cleanup check before
   the final session summary: list active worktrees, remove only worktrees that
   are clean and fully finished, and ask before removing any worktree with
