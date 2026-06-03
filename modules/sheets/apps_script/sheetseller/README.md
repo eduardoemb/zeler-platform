@@ -1,70 +1,41 @@
-# Private/manual Apps Script pilot
+# ZelerData Google Workspace Marketplace add-on
 
-This directory contains the minimum ZelerData Apps Script project used for the private pilot. Formulas use canonical `ZELERDATA_*` names and forward to the zeler-platform Formula API with an extension token.
+This directory contains the ZelerData Apps Script project prepared for public Google Workspace Marketplace review. It exposes the **ZelerData** menu, stores each user's show-once extension token in Apps Script user properties, and forwards `ZELERDATA_*` custom functions to the zeler-platform Formula API.
 
-Pilot seller: `82453304`
+## Quick path
 
-Use only seller `82453304` for this manual validation pass. Do not query old stores, production dumps, or unrelated sellers while validating the pilot.
+1. Install ZelerData from Google Workspace Marketplace.
+2. Open a Google Sheet and confirm the **ZelerData** menu appears.
+3. Open **ZelerData → Settings**, paste the show-once extension token from `https://app.zeler.ai/sheets/config`, and choose **Save token**.
+4. Start with `=ZELERDATA_SKU("cuenta")`, then validate the formulas documented in `docs/sheets/zelerdata-formulas.md`.
 
-## Safety gates before touching a Google Sheet
+Do not paste tokens into this repository, issues, chat, logs, screenshots, spreadsheet cells, or support tickets.
 
-- Formula API deployed: zeler-platform must expose `/sheets/formulas:execute`, `/sheets/formulas:batch`, and `/sheets/formulas/inventory` in the pilot environment.
-- The Formula API deployment must have the extension token pepper configured before any token is issued or validated.
-- zeler-app `/sheets/config` deployed: the operator must be able to create a show-once extension token from the existing ZelerData config UI.
-- The token shown by zeler-app must be scoped only to pilot seller `82453304` / its visible `cuenta` nickname.
-- Do not paste real tokens into repo/issues/logs, chat, screenshots, support tickets, test output, or comments.
-- Do not paste tokens into this repository, issues, chat, logs, or screenshots.
-- Do not deploy from this checklist. This runbook is for private/manual install and smoke validation only; release and deploy decisions stay with the orchestrator/operator.
+## Source readiness checklist
 
-## Create Apps Script project (private, from repo files)
+- [ ] `appsscript.json` uses V8 and only the documented OAuth scopes.
+- [ ] `Config.gs` defines `onInstall(e)` and `onOpen(e)` for the public menu/sidebar flow.
+- [ ] `Client.gs` sends requests to `/sheets/formulas:execute` with the saved bearer token and returns review-safe error messages.
+- [ ] `Formulas.gs` preserves all 53 wrapper names, parameters, aliases, and Google Sheets autocomplete JSDoc.
+- [ ] This README and `docs/sheets/zelerdata-marketplace-publication.md` point operators to manual Marketplace release steps.
+- [ ] The submitted Apps Script source matches an immutable Apps Script version recorded in the release evidence.
 
-1. Open the pilot Google Sheet for seller `82453304`.
-2. Go to **Extensions → Apps Script** and create a private Apps Script project bound to that spreadsheet.
-3. In the Apps Script editor, enable **Project Settings → Show "appsscript.json" manifest file in editor** if the manifest is hidden.
-4. Copy these files from this repo path, preserving the same names:
-   - `modules/sheets/apps_script/sheetseller/appsscript.json`
-   - `modules/sheets/apps_script/sheetseller/Config.gs`
-   - `modules/sheets/apps_script/sheetseller/Client.gs`
-   - `modules/sheets/apps_script/sheetseller/Formulas.gs`
-5. Save the Apps Script project.
-6. Reload the spreadsheet and confirm the **ZelerData** menu appears.
+## Configure ZelerData settings
 
-## Configure API base URL and token
+- `showZelerDataSettings` opens the public settings sidebar.
+- The sidebar links to zeler-app Sheets config for token creation.
+- The Formula API URL defaults to the production-safe endpoint in `Config.gs`; Marketplace users should not edit infrastructure endpoints.
+- `setZelerDataApiBaseUrl` remains available only for support-led review or rollback diagnostics, not for normal Marketplace setup.
 
-1. In Apps Script, run `setZelerDataApiBaseUrl("https://<pilot-api-host>")` once for the spreadsheet, or open `showZelerDataSettings` from the **ZelerData** menu and paste the base URL.
-2. Create an extension token in zeler-app `/sheets/config` and copy it during the show-once extension token moment.
-3. Open **ZelerData → Settings**, paste the extension token, and save. Never store the raw token in the spreadsheet cells or any repo artifact.
-
-The API base URL is stored in document properties because it is non-secret spreadsheet configuration. The extension token is stored in user properties so each operator keeps their own bearer credential within Apps Script constraints.
+The API base URL is stored in document properties because it is non-secret spreadsheet configuration. The extension token is stored in user properties so each Google account keeps its own bearer credential within Apps Script constraints.
 
 ## Authorize scopes
 
-Run `showZelerDataSettings` from Apps Script or reload the sheet and use the menu. Google will ask for the manifest scopes needed to show UI, call the Formula API, and interact with the current spreadsheet.
+Google asks for the manifest scopes needed to show the ZelerData UI, call the Formula API, and interact only with the current spreadsheet. The scope matrix for OAuth consent and Marketplace SDK review lives in `docs/sheets/zelerdata-marketplace-publication.md`.
 
-## Validation matrix for currently implemented wrappers
+## Public formula smoke checks
 
-`cuenta` must be the seller nickname or canonical seller visible to token scope. For this pilot, use the nickname associated with seller `82453304`; examples below use the placeholder `"cuenta"` so no real account label is committed.
-
-| Formula | Example Google Sheets formula | Expected pilot check |
-|---|---|---|
-| `ZELERDATA_CATEGORIAS` | `=ZELERDATA_CATEGORIAS("cuenta", "MLA1")` | Category ID by item ID, blank for unknown item IDs. |
-| `ZELERDATA_CODIGOML` | `=ZELERDATA_CODIGOML("cuenta", "SKU-1", "MLA1")` | Inventory / ML code by SKU + item ID. |
-| `ZELERDATA_CODIGOML2SKUID` | `=ZELERDATA_CODIGOML2SKUID("cuenta", "INV-1", "si")` | Optional headers plus code, item ID, SKU rows. |
-| `ZELERDATA_DASHBOARD` | `=ZELERDATA_DASHBOARD("cuenta", "todos", "todos", "base", "si")` | MVP dashboard columns for current item data. |
-| `ZELERDATA_DASHBOARDSINCATALOGO` | `=ZELERDATA_DASHBOARDSINCATALOGO("cuenta", "todos", "todos", "base", "si")` | Same MVP dashboard columns, excluding rows with catalog indicators. |
-| `ZELERDATA_DIASPUBLICADA` | `=ZELERDATA_DIASPUBLICADA("cuenta", "MLA1")` | Days since publication date when current read model has a date. |
-| `ZELERDATA_ID` | `=ZELERDATA_ID("cuenta", "SKU-1")` | Item IDs for the SKU; duplicates are allowed. |
-| `ZELERDATA_IDSTOCK` | `=ZELERDATA_IDSTOCK("cuenta", "SKU-1", "si")` | Optional headers plus SKU, item ID, stock rows. |
-| `ZELERDATA_IMAGENES` | `=ZELERDATA_IMAGENES("cuenta", "todos", "todos")` | Thumbnail URLs from the current item read model. |
-| `ZELERDATA_PRECIO` | `=ZELERDATA_PRECIO("cuenta", "SKU-1", "MLA1", "base")` | Base price by SKU + item ID. |
-| `ZELERDATA_PUBLICACIONES` | `=ZELERDATA_PUBLICACIONES("cuenta", "todos", "todos", "base", "", "si")` | MVP current publication table. |
-| `ZELERDATA_SKU` | `=ZELERDATA_SKU("cuenta")` | Unique SKU list for the authorized seller. |
-| `ZELERDATA_STATUS` | `=ZELERDATA_STATUS("cuenta", "MLA1")` | Current publication status by item ID. |
-| `ZELERDATA_STOCK` | `=ZELERDATA_STOCK("cuenta", "SKU-1", "MLA1")` | Stock by SKU + item ID. |
-| `ZELERDATA_TITULO` | `=ZELERDATA_TITULO("cuenta", "MLA1")` | Current listing title by item ID. |
-| `ZELERDATA_URL` | `=ZELERDATA_URL("cuenta", "SKU-1", "MLA1")` | Current permalink by SKU + item ID. |
-
-Start with the smallest smoke check, then move to table formulas:
+`cuenta` must be the seller nickname or canonical seller visible to token scope. Use placeholders in repo evidence and sanitized screenshots.
 
 ```text
 =ZELERDATA_SKU("cuenta")
@@ -73,30 +44,8 @@ Start with the smallest smoke check, then move to table formulas:
 =ZELERDATA_IMAGENES("cuenta", "todos", "todos")
 ```
 
-## Expected stable errors during pilot
-
-- `DATA_UNAVAILABLE`: expected for formulas whose backend handler/read model is not implemented yet, for example Batch B/C/D/E formulas outside the matrix above. The wrapper exists, but the platform intentionally returns a safe unavailable cell instead of calling old services.
-- `TOKEN_MISSING`: expected when the Apps Script user properties do not contain a saved token.
-- `TOKEN_REVOKED`: expected after the token is revoked or rotated away in zeler-app.
-- `SELLER_FORBIDDEN`: expected when `cuenta` does not match seller `82453304` / the token seller scope.
-- `FORMULA_UNKNOWN`: expected only if the formula name sent to the API is not in the 53-formula registry.
-- `BAD_ARGUMENT`: expected for malformed arguments or incompatible range cardinality.
-- `RATE_LIMITED`: expected if a manual recalculation loop exceeds the per-token/per-seller budget.
-- `INTERNAL`: unexpected; stop validation, capture the non-secret request context, and escalate without token material.
-
-## Manual pilot checklist
-
-- [ ] Confirm Formula API deployed with extension token pepper configured.
-- [ ] Confirm zeler-app `/sheets/config` deployed and able to issue a show-once extension token.
-- [ ] Confirm the token is scoped only to seller `82453304`.
-- [ ] Install the private Apps Script project from the repo files listed above.
-- [ ] Configure the pilot API base URL and save the token through **ZelerData → Settings**.
-- [ ] Validate the four smoke formulas, then the full matrix for implemented wrappers.
-- [ ] Call one not-yet-implemented formula and confirm `DATA_UNAVAILABLE` is stable.
-- [ ] Clear the saved token and confirm `TOKEN_MISSING` is stable.
-- [ ] Revoke or rotate the token from zeler-app and confirm `TOKEN_REVOKED` is stable.
-- [ ] Confirm audit/recalculation evidence does not include raw token material.
+Supported and deferred formula behavior is documented in `docs/sheets/zelerdata-formulas.md`.
 
 ## Release boundary
 
-This is not a Marketplace package. Marketplace publication remains deferred until quotas, support/privacy assets, review evidence, and private-pilot hardening are complete.
+Repo changes prove source readiness only. Google Cloud project linkage, OAuth consent, immutable Apps Script version creation, Marketplace SDK listing, asset upload, review submission, and approved-context smoke tests are manual operator steps documented in `docs/sheets/zelerdata-marketplace-publication.md`.
