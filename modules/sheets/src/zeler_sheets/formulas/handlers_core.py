@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Mapping
-from datetime import UTC, datetime
+from datetime import UTC, datetime, time, timedelta
 from typing import Any
 
 from zeler_sheets.formulas.dispatcher import (
@@ -32,16 +32,44 @@ CORE_FORMULA_NAMES = frozenset(
     }
 )
 
-DASHBOARD_MVP_HEADERS = [
-    "SKU",
+DASHBOARD_LEGACY_HEADERS = [
     "ID Publicación",
     "Título",
-    "Status",
-    "Stock",
+    "SKU",
+    "Stock Actual",
     "Precio",
+    "Logística",
     "URL",
-    "Categoría",
-    "Imagen",
+    "Tipo De Publicación",
+    "Status",
+    "Código ML",
+    "Días Pausada",
+    "Ventas (7 días)",
+    "Ventas (15 días)",
+    "Ventas (30 días)",
+    "Ventas (60 días)",
+    "Ventas (90 días)",
+    "Envió A Cargo De",
+    "Costo De Envío",
+    "% Comisión",
+    "Comisión",
+    "Costo Por Unidad",
+    "Tiene Catálogo",
+]
+
+PUBLICACIONES_LEGACY_HEADERS = [
+    "ID Publicación",
+    "Título",
+    "SKU",
+    "Stock Actual",
+    "Precio",
+    "Logística",
+    "URL",
+    "Tipo De Publicación",
+    "Status",
+    "Código ML",
+    "ID Inventario",
+    "Tiempo En Pausa",
 ]
 
 
@@ -112,32 +140,20 @@ class CoreFormulaHandlers:
         ordered_rows = _order_rows_by_requested_skus(rows, requested_skus)
         values: list[list[Any]] = _header_row(
             context.args.get("encabezados"),
-            ["SKU", "ID Publicación", "Título", "Status", "Stock", "Precio", "URL"],
+            PUBLICACIONES_LEGACY_HEADERS,
         )
         matched_skus: set[str] = set()
         for row in ordered_rows:
             item_id = row.get("item_id") or ""
             if not item_id:
                 continue
-            current = row.get("current", {})
-            current_values = current if isinstance(current, Mapping) else {}
-            values.append(
-                [
-                    row.get("sku") or row.get("normalized_sku") or "",
-                    item_id,
-                    current_values.get("title") or "",
-                    current_values.get("status") or "",
-                    _blank_if_none(current_values.get("available_quantity")),
-                    _blank_if_none(current_values.get("base_price")),
-                    current_values.get("permalink") or "",
-                ]
-            )
+            values.append(_publicaciones_row(row))
             matched_skus.add(normalize_sku(row.get("normalized_sku", "")))
         return FormulaExecutionResult(
             values=values,
             meta={
                 "partial_misses": _partial_misses(requested_skus, matched_skus),
-                "columns": "minimal_current_item",
+                "columns": "legacy_publications",
             },
         )
 
@@ -174,17 +190,16 @@ class CoreFormulaHandlers:
         )
         ordered_rows = _order_rows_by_requested_skus(rows, requested_skus)
         values: list[list[Any]] = _header_row(
-            context.args.get("encabezados"), ["SKU", "ID Publicación", "Stock"]
+            context.args.get("encabezados"), ["ID Publicación", "Stock"]
         )
         matched_skus: set[str] = set()
         for row in ordered_rows:
-            sku = row.get("sku") or row.get("normalized_sku") or ""
             item_id = row.get("item_id") or ""
             if not item_id:
                 continue
             current = row.get("current", {})
             stock = current.get("available_quantity") if isinstance(current, Mapping) else None
-            values.append([sku, item_id, "" if stock is None else stock])
+            values.append([item_id, "" if stock is None else stock])
             matched_skus.add(normalize_sku(row.get("normalized_sku", "")))
         return FormulaExecutionResult(
             values=values,
@@ -213,7 +228,7 @@ class CoreFormulaHandlers:
         )
         ordered_rows = _order_rows_by_requested_inventory_codes(rows, requested_codes)
         values: list[list[Any]] = _header_row(
-            context.args.get("encabezados"), ["Código ML", "ID Publicación", "SKU"]
+            context.args.get("encabezados"), ["ID Publicación", "SKU"]
         )
         matched_codes: set[str] = set()
         for row in ordered_rows:
@@ -222,7 +237,7 @@ class CoreFormulaHandlers:
             sku = row.get("sku") or row.get("normalized_sku") or ""
             if not inventory_id or not item_id:
                 continue
-            values.append([inventory_id, item_id, sku])
+            values.append([item_id, sku])
             matched_codes.add(_normalize_inventory_code(inventory_id))
         return FormulaExecutionResult(
             values=values,
@@ -411,29 +426,156 @@ class CoreFormulaHandlers:
         visible_rows = [
             row for row in ordered_rows if not exclude_catalog or not _has_catalog_product(row)
         ]
-        values: list[list[Any]] = _header_row(
-            context.args.get("encabezados"), DASHBOARD_MVP_HEADERS
-        )
+        sales_windows = await self._dashboard_sales_windows(context.seller_id, visible_rows)
+        headers = list(DASHBOARD_LEGACY_HEADERS)
+        include_promo = str(context.args.get("tipo_precio") or "").strip().casefold() == "todos"
+        if include_promo:
+            headers.append("Precio Promo")
+        values: list[list[Any]] = _header_row(context.args.get("encabezados"), headers)
         for row in visible_rows:
             item_id = row.get("item_id") or ""
             if not item_id:
                 continue
-            values.append(_dashboard_row(row))
+            values.append(
+                _dashboard_row(
+                    row,
+                    sales_windows=sales_windows,
+                    include_promo=include_promo,
+                )
+            )
 
         matched_skus = {normalize_sku(row.get("normalized_sku", "")) for row in ordered_rows}
         meta: dict[str, Any] = {
             "partial_misses": _partial_misses(requested_skus, matched_skus),
-            "columns": "dashboard_mvp_current_item",
+            "columns": "legacy_dashboard",
         }
         if exclude_catalog:
             meta["excluded_catalog_rows"] = len(ordered_rows) - len(visible_rows)
         return FormulaExecutionResult(values=values, meta=meta)
+
+    async def _dashboard_sales_windows(
+        self, seller_id: str, rows: Iterable[Mapping[str, Any]]
+    ) -> dict[int, dict[tuple[str, str], int]]:
+        row_pairs = {
+            (
+                normalize_sku(row.get("normalized_sku") or row.get("sku")),
+                str(row.get("item_id") or ""),
+            )
+            for row in rows
+            if normalize_sku(row.get("normalized_sku") or row.get("sku")) and row.get("item_id")
+        }
+        if not row_pairs:
+            return {days: {} for days in (7, 15, 30, 60, 90)}
+        now = _as_utc_datetime(self._now_fn())
+        orders = await self._repository.find_orders(
+            seller_id=seller_id,
+            date_from=_last_days_start(now, 90),
+            date_to=_day_end(now),
+        )
+        sku_resolver = await _dashboard_sku_resolver_for_orders(
+            repository=self._repository,
+            seller_id=seller_id,
+            orders=orders,
+        )
+        windows: dict[int, dict[tuple[str, str], int]] = {days: {} for days in (7, 15, 30, 60, 90)}
+        for order in orders:
+            created = _optional_datetime(order.get("date_created"))
+            if created is None:
+                continue
+            for item in _order_items(order):
+                sku = _dashboard_order_item_sku(item, sku_resolver=sku_resolver)
+                item_id = _item_id(item)
+                key = (sku, item_id)
+                if key not in row_pairs:
+                    continue
+                quantity = _item_quantity(item)
+                for days in windows:
+                    if _last_days_start(now, days) <= created <= _day_end(now):
+                        windows[days][key] = windows[days].get(key, 0) + quantity
+        return windows
 
 
 class _LookupPair:
     def __init__(self, *, sku: str, item_id: str) -> None:
         self.sku = sku
         self.item_id = item_id
+
+
+class _DashboardSkuResolver:
+    def __init__(self, rows: list[dict[str, Any]]) -> None:
+        rows_by_item_id: dict[str, list[dict[str, Any]]] = {}
+        rows_by_item_level: dict[str, list[dict[str, Any]]] = {}
+        rows_by_item_variation: dict[tuple[str, str], list[dict[str, Any]]] = {}
+        items_with_variation_rows: set[str] = set()
+        for row in rows:
+            item_id = str(row.get("item_id") or "").strip()
+            if item_id:
+                rows_by_item_id.setdefault(item_id, []).append(row)
+                variation_id = _normalize_variation_id(row.get("variation_id"))
+                if variation_id:
+                    items_with_variation_rows.add(item_id)
+                    rows_by_item_variation.setdefault((item_id, variation_id), []).append(row)
+                else:
+                    rows_by_item_level.setdefault(item_id, []).append(row)
+        self._rows_by_item_id = rows_by_item_id
+        self._rows_by_item_level = rows_by_item_level
+        self._rows_by_item_variation = rows_by_item_variation
+        self._items_with_variation_rows = items_with_variation_rows
+
+    def resolve(self, item_id: str, variation_id: str = "") -> str:
+        item_id = str(item_id or "").strip()
+        if variation_id:
+            variation_rows = self._rows_by_item_variation.get((item_id, variation_id), [])
+            if variation_rows:
+                return _unique_dashboard_sku(variation_rows)
+            if item_id in self._items_with_variation_rows:
+                return ""
+            return _unique_dashboard_sku(self._rows_by_item_level.get(item_id, []))
+        return _unique_dashboard_sku(self._rows_by_item_id.get(item_id, []))
+
+
+def _unique_dashboard_sku(rows: Iterable[Mapping[str, Any]]) -> str:
+    normalized_skus = {
+        normalize_sku(row.get("normalized_sku") or row.get("sku"))
+        for row in rows
+        if normalize_sku(row.get("normalized_sku") or row.get("sku"))
+    }
+    if len(normalized_skus) != 1:
+        return ""
+    return next(iter(normalized_skus))
+
+
+async def _dashboard_sku_resolver_for_orders(
+    *,
+    repository: FormulaReadModelRepository,
+    seller_id: str,
+    orders: list[dict[str, Any]],
+) -> _DashboardSkuResolver:
+    item_ids = list(
+        dict.fromkeys(
+            item_id
+            for order in orders
+            for item in _order_items(order)
+            if (item_id := _item_id(item))
+        )
+    )
+    if not item_ids:
+        return _DashboardSkuResolver([])
+    rows = await repository.find_sku_index_rows(
+        seller_id=seller_id,
+        item_ids=item_ids,
+        limit=max(500, len(item_ids) * 10),
+    )
+    return _DashboardSkuResolver(rows)
+
+
+def _dashboard_order_item_sku(
+    item: Mapping[str, Any], *, sku_resolver: _DashboardSkuResolver
+) -> str:
+    direct_sku = normalize_sku(_item_sku(item))
+    if direct_sku:
+        return direct_sku
+    return sku_resolver.resolve(_item_id(item), _item_variation_id(item))
 
 
 def _lookup_pairs(*, skus: Any, item_ids: Any) -> list[_LookupPair]:
@@ -617,18 +759,123 @@ def _current_value(row: Mapping[str, Any], field: str) -> Any:
     return _blank_if_none(current.get(field))
 
 
-def _dashboard_row(row: Mapping[str, Any]) -> list[Any]:
+def _inventory_code(row: Mapping[str, Any]) -> Any:
+    return row.get("inventory_id") or _current_value(row, "inventory_id")
+
+
+def _publicaciones_row(row: Mapping[str, Any]) -> list[Any]:
+    inventory_code = _inventory_code(row)
     return [
-        row.get("sku") or row.get("normalized_sku") or "",
         row.get("item_id") or "",
         _current_value(row, "title"),
-        _current_value(row, "status"),
+        row.get("sku") or row.get("normalized_sku") or "",
         _current_value(row, "available_quantity"),
         _current_value(row, "base_price"),
+        "",
         _current_value(row, "permalink"),
-        _current_value(row, "category_id"),
-        _current_value(row, "thumbnail"),
+        "",
+        _current_value(row, "status"),
+        inventory_code,
+        inventory_code,
+        "",
     ]
+
+
+def _dashboard_row(
+    row: Mapping[str, Any],
+    *,
+    sales_windows: Mapping[int, Mapping[tuple[str, str], int]],
+    include_promo: bool,
+) -> list[Any]:
+    key = (
+        normalize_sku(row.get("normalized_sku") or row.get("sku")),
+        str(row.get("item_id") or ""),
+    )
+    return [
+        row.get("item_id") or "",
+        _current_value(row, "title"),
+        row.get("sku") or row.get("normalized_sku") or "",
+        _current_value(row, "available_quantity"),
+        _current_value(row, "base_price"),
+        "",
+        _current_value(row, "permalink"),
+        "",
+        _current_value(row, "status"),
+        _inventory_code(row),
+        "",
+        sales_windows.get(7, {}).get(key, 0),
+        sales_windows.get(15, {}).get(key, 0),
+        sales_windows.get(30, {}).get(key, 0),
+        sales_windows.get(60, {}).get(key, 0),
+        sales_windows.get(90, {}).get(key, 0),
+        "",
+        "",
+        "",
+        "",
+        "",
+        "Sí" if _has_catalog_product(row) else "No",
+    ] + ([""] if include_promo else [])
+
+
+def _last_days_start(now: datetime, days: int) -> datetime:
+    local_date = now.astimezone(UTC).date() - timedelta(days=days - 1)
+    return datetime.combine(local_date, time.min, tzinfo=UTC)
+
+
+def _day_end(now: datetime) -> datetime:
+    return datetime.combine(now.astimezone(UTC).date(), time.max, tzinfo=UTC)
+
+
+def _optional_datetime(value: Any) -> datetime | None:
+    try:
+        return _as_utc_datetime(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _order_items(order: Mapping[str, Any]) -> list[Mapping[str, Any]]:
+    raw_items = order.get("items") or []
+    if not isinstance(raw_items, Iterable) or isinstance(raw_items, (str, bytes)):
+        return []
+    return [item for item in raw_items if isinstance(item, Mapping)]
+
+
+def _item_sku(item: Mapping[str, Any]) -> Any:
+    raw_nested_item = item.get("item")
+    nested_item: Mapping[str, Any] = raw_nested_item if isinstance(raw_nested_item, Mapping) else {}
+    return (
+        item.get("sku")
+        or item.get("seller_sku")
+        or item.get("seller_custom_field")
+        or nested_item.get("seller_sku")
+        or nested_item.get("seller_custom_field")
+        or ""
+    )
+
+
+def _item_id(item: Mapping[str, Any]) -> str:
+    raw_nested_item = item.get("item")
+    nested_item: Mapping[str, Any] = raw_nested_item if isinstance(raw_nested_item, Mapping) else {}
+    return str(
+        item.get("item_id") or nested_item.get("id") or nested_item.get("item_id") or ""
+    ).strip()
+
+
+def _item_variation_id(item: Mapping[str, Any]) -> str:
+    raw_nested_item = item.get("item")
+    nested_item: Mapping[str, Any] = raw_nested_item if isinstance(raw_nested_item, Mapping) else {}
+    return _normalize_variation_id(item.get("variation_id") or nested_item.get("variation_id"))
+
+
+def _normalize_variation_id(value: Any) -> str:
+    return str(value or "").strip()
+
+
+def _item_quantity(item: Mapping[str, Any]) -> int:
+    try:
+        return int(str(item.get("quantity", item.get("qty", 0))))
+    except ValueError:
+        return 0
 
 
 def _has_catalog_product(row: Mapping[str, Any]) -> bool:

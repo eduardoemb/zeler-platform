@@ -12,6 +12,7 @@ from fastapi import FastAPI
 from zeler_sheets.extension_tokens import ExtensionTokenService, SellerScope
 from zeler_sheets.formulas.dispatcher import FormulaDispatcher, FormulaExecutionContext
 from zeler_sheets.formulas.handlers_orders_questions import (
+    _OrderSkuResolver,
     build_order_question_formula_handlers,
 )
 from zeler_sheets.formulas.read_models import FormulaReadModelRepository
@@ -106,6 +107,44 @@ def _matches(doc: dict[str, Any], filter_spec: dict[str, Any]) -> bool:
     return True
 
 
+ORDER_LINE_LEGACY_HEADERS = [
+    "Fecha",
+    "ID Orden",
+    "Título",
+    "SKU",
+    "ID Publicación",
+    "Unidades Vendidas",
+    "Precio",
+    "ID Carrito",
+    "% Comisión",
+    "Comisión",
+    "Costo Por Unidad",
+    "Costo De Envío",
+    "Status",
+]
+BUYER_ADDRESS_LEGACY_HEADERS = [
+    "Nombre Comprador",
+    "Calle",
+    "Número",
+    "Colonia",
+    "Código Postal",
+    "Ciudad",
+    "Estado",
+    "País",
+]
+
+PRODUCTOS_SIN_VENTA_LEGACY_HEADERS = [
+    "Título",
+    "Código ML",
+    "ID Publicación",
+    "SKU",
+    "Stock Actual",
+    "Fecha Ultimo Cambio",
+    "Status Actual",
+    "Envío A Cargo De",
+]
+
+
 @pytest.mark.asyncio
 async def test_ordenes_returns_order_table_with_status_buyer_filters_and_headers() -> None:
     db = FakeDb()
@@ -119,7 +158,14 @@ async def test_ordenes_returns_order_table_with_status_buyer_filters_and_headers
             date_created="2026-05-11T08:15:00Z",
             total_amount="75.50",
             shipment_id="shipment-2",
-            items=[{"seller_sku": "sku-2", "item": {"id": "MLA2"}, "quantity": 1}],
+            items=[
+                {
+                    "seller_sku": "sku-2",
+                    "item": {"id": "MLA2", "title": "Second order item"},
+                    "quantity": 1,
+                    "unit_price": "75.50",
+                }
+            ],
         ),
         "order-1": _order_doc(
             "order-1",
@@ -129,7 +175,15 @@ async def test_ordenes_returns_order_table_with_status_buyer_filters_and_headers
             date_created="2026-05-10T10:30:00Z",
             total_amount="100.00",
             shipment_id="shipment-1",
-            items=[{"sku": "sku-1", "item_id": "MLA1", "quantity": 2}],
+            items=[
+                {
+                    "sku": "sku-1",
+                    "item_id": "MLA1",
+                    "title": "First order item",
+                    "quantity": 2,
+                    "unit_price": "50.00",
+                }
+            ],
         ),
         "cancelled": _order_doc(
             "cancelled",
@@ -164,31 +218,329 @@ async def test_ordenes_returns_order_table_with_status_buyer_filters_and_headers
     )
 
     assert result.values == [
-        ["ID Orden", "Fecha", "Estado", "Buyer ID", "Total", "Shipment ID", "Items"],
+        ORDER_LINE_LEGACY_HEADERS + BUYER_ADDRESS_LEGACY_HEADERS,
         [
-            "order-1",
             "2026-05-10T10:30:00Z",
+            "order-1",
+            "First order item",
+            "SKU-1",
+            "MLA1",
+            2,
+            50,
+            "",
+            "",
+            "",
+            "",
+            "",
             "paid",
-            "buyer-1",
-            100,
-            "shipment-1",
-            "SKU-1 x2 (MLA1)",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
         ],
         [
-            "order-2",
             "2026-05-11T08:15:00Z",
-            "paid",
-            "buyer-2",
+            "order-2",
+            "Second order item",
+            "SKU-2",
+            "MLA2",
+            1,
             75.5,
-            "shipment-2",
-            "SKU-2 x1 (MLA2)",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "paid",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
         ],
     ]
     assert result.meta == {
         "orders_count": 2,
         "status_filter": "paid",
         "buyer_filter_count": 2,
-        "columns": "orders_mvp",
+        "columns": "legacy_order_lines_with_buyers",
+    }
+
+
+@pytest.mark.asyncio
+async def test_ordenes_keeps_unresolved_sku_lines_and_sku_filter_omits_them() -> None:
+    db = FakeDb()
+    db["orders"].documents = {
+        "unresolved-sku": _order_doc(
+            "unresolved-sku",
+            seller_id="seller-1",
+            status="paid",
+            buyer_id="buyer-1",
+            date_created=datetime(2026, 5, 10, 8, 30, tzinfo=UTC),
+            total_amount="59.97",
+            items=[
+                {
+                    "item_id": "MLA-UNRESOLVED",
+                    "title": "Unresolved SKU item",
+                    "quantity": 3,
+                    "unit_price": "19.99",
+                }
+            ],
+        )
+    }
+    dispatcher = _order_question_dispatcher(db)
+
+    orders_table = await dispatcher.execute(
+        _context(
+            "ZELERDATA_ORDENES",
+            {
+                "fecha_inicial": "2026-05-10",
+                "fecha_final": "2026-05-10",
+                "estado": "paid",
+                "encabezados": "si",
+            },
+        )
+    )
+    filtered_table = await dispatcher.execute(
+        _context(
+            "ZELERDATA_ORDENESPORSKU",
+            {
+                "skus": "sku-missing",
+                "fecha_inicial": "2026-05-10",
+                "fecha_final": "2026-05-10",
+                "estado": "paid",
+                "encabezados": "si",
+            },
+        )
+    )
+
+    assert orders_table.values == [
+        ORDER_LINE_LEGACY_HEADERS,
+        [
+            "2026-05-10T08:30:00+00:00",
+            "unresolved-sku",
+            "Unresolved SKU item",
+            "",
+            "MLA-UNRESOLVED",
+            3,
+            19.99,
+            "",
+            "",
+            "",
+            "",
+            "",
+            "paid",
+        ],
+    ]
+    assert orders_table.meta == {
+        "orders_count": 1,
+        "status_filter": "paid",
+        "buyer_filter_count": 0,
+        "columns": "legacy_order_lines",
+    }
+    assert filtered_table.values == [ORDER_LINE_LEGACY_HEADERS]
+    assert filtered_table.meta == {
+        "orders_count": 0,
+        "status_filter": "paid",
+        "buyer_filter_count": 0,
+        "sku_filter_count": 1,
+        "columns": "legacy_order_lines",
+    }
+
+
+@pytest.mark.asyncio
+async def test_ordenes_compradores_boolean_flag_adds_buyer_columns_without_filtering() -> None:
+    db = FakeDb()
+    db["orders"].documents = {
+        "order-1": _order_doc(
+            "order-1",
+            seller_id="seller-1",
+            status="paid",
+            buyer_id="buyer-1",
+            date_created="2026-05-10T10:30:00Z",
+            total_amount="100.00",
+            items=[{"sku": "sku-1", "item_id": "MLA1", "title": "First item", "quantity": 2}],
+        )
+        | {
+            "buyer_name": "Ada Lovelace",
+            "buyer_address": {
+                "street_name": "Main St",
+                "street_number": "123",
+                "neighborhood": {"name": "Centro"},
+                "zip_code": "12345",
+                "city": {"name": "Montevideo"},
+                "state": {"name": "Montevideo"},
+                "country": {"name": "Uruguay"},
+            },
+        },
+        "order-2": _order_doc(
+            "order-2",
+            seller_id="seller-1",
+            status="paid",
+            buyer_id="buyer-2",
+            date_created="2026-05-11T08:15:00Z",
+            total_amount="75.50",
+            items=[{"seller_sku": "sku-2", "item": {"id": "MLA2"}, "quantity": 1}],
+        ),
+    }
+    dispatcher = _order_question_dispatcher(db)
+
+    result = await dispatcher.execute(
+        _context(
+            "ZELERDATA_ORDENES",
+            {
+                "fecha_inicial": "2026-05-10",
+                "fecha_final": "2026-05-11",
+                "estado": "paid",
+                "compradores": "verdadero",
+                "encabezados": "si",
+            },
+        )
+    )
+
+    assert result.values == [
+        ORDER_LINE_LEGACY_HEADERS + BUYER_ADDRESS_LEGACY_HEADERS,
+        [
+            "2026-05-10T10:30:00Z",
+            "order-1",
+            "First item",
+            "SKU-1",
+            "MLA1",
+            2,
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "paid",
+            "Ada Lovelace",
+            "Main St",
+            "123",
+            "Centro",
+            "12345",
+            "Montevideo",
+            "Montevideo",
+            "Uruguay",
+        ],
+        [
+            "2026-05-11T08:15:00Z",
+            "order-2",
+            "",
+            "SKU-2",
+            "MLA2",
+            1,
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "paid",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+        ],
+    ]
+    assert result.meta == {
+        "orders_count": 2,
+        "status_filter": "paid",
+        "buyer_filter_count": 0,
+        "columns": "legacy_order_lines_with_buyers",
+    }
+
+
+@pytest.mark.parametrize("compradores", ["no", "falso", "false", "0", False, 0])
+@pytest.mark.asyncio
+async def test_ordenes_compradores_false_like_values_do_not_filter_or_add_buyer_columns(
+    compradores: Any,
+) -> None:
+    db = FakeDb()
+    db["orders"].documents = {
+        "order-1": _order_doc(
+            "order-1",
+            seller_id="seller-1",
+            status="paid",
+            buyer_id="buyer-1",
+            date_created="2026-05-10T10:30:00Z",
+            total_amount="100.00",
+            items=[{"sku": "sku-1", "item_id": "MLA1", "title": "First item", "quantity": 2}],
+        ),
+        "order-2": _order_doc(
+            "order-2",
+            seller_id="seller-1",
+            status="paid",
+            buyer_id="buyer-2",
+            date_created="2026-05-11T08:15:00Z",
+            total_amount="75.50",
+            items=[{"seller_sku": "sku-2", "item": {"id": "MLA2"}, "quantity": 1}],
+        ),
+    }
+    dispatcher = _order_question_dispatcher(db)
+
+    result = await dispatcher.execute(
+        _context(
+            "ZELERDATA_ORDENES",
+            {
+                "fecha_inicial": "2026-05-10",
+                "fecha_final": "2026-05-11",
+                "estado": "paid",
+                "compradores": compradores,
+                "encabezados": "si",
+            },
+        )
+    )
+
+    assert result.values == [
+        ORDER_LINE_LEGACY_HEADERS,
+        [
+            "2026-05-10T10:30:00Z",
+            "order-1",
+            "First item",
+            "SKU-1",
+            "MLA1",
+            2,
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "paid",
+        ],
+        [
+            "2026-05-11T08:15:00Z",
+            "order-2",
+            "",
+            "SKU-2",
+            "MLA2",
+            1,
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "paid",
+        ],
+    ]
+    assert result.meta == {
+        "orders_count": 2,
+        "status_filter": "paid",
+        "buyer_filter_count": 0,
+        "columns": "legacy_order_lines",
     }
 
 
@@ -376,6 +728,7 @@ async def test_ordenes_renders_output_dates_in_seller_timezone() -> None:
             status="paid",
             date_created=datetime(2026, 5, 1, 6, 30, tzinfo=UTC),
             total_amount=100,
+            items=[{"sku": "sku-1", "item_id": "MLA1", "title": "Local item", "quantity": 1}],
         ),
     }
     dispatcher = _order_question_dispatcher(db)
@@ -389,8 +742,22 @@ async def test_ordenes_renders_output_dates_in_seller_timezone() -> None:
     )
 
     assert result.values == [
-        ["ID Orden", "Fecha", "Estado", "Buyer ID", "Total", "Shipment ID", "Items"],
-        ["order-local", "2026-05-01T00:30:00-06:00", "paid", "buyer-1", 100, "", ""],
+        ORDER_LINE_LEGACY_HEADERS,
+        [
+            "2026-05-01T00:30:00-06:00",
+            "order-local",
+            "Local item",
+            "SKU-1",
+            "MLA1",
+            1,
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "paid",
+        ],
     ]
 
 
@@ -446,7 +813,15 @@ async def test_ordenes_por_sku_filters_orders_by_requested_skus() -> None:
             buyer_id="buyer-1",
             date_created=datetime(2026, 5, 10, 8, 0, tzinfo=UTC),
             total_amount=30,
-            items=[{"sku": "sku-1", "item_id": "MLA1", "quantity": 1}],
+            items=[
+                {
+                    "sku": "sku-1",
+                    "item_id": "MLA1",
+                    "title": "First SKU item",
+                    "quantity": 1,
+                    "unit_price": 30,
+                }
+            ],
         ),
         "order-sku-2": _order_doc(
             "order-sku-2",
@@ -455,7 +830,14 @@ async def test_ordenes_por_sku_filters_orders_by_requested_skus() -> None:
             buyer_id="buyer-2",
             date_created=datetime(2026, 5, 10, 9, 0, tzinfo=UTC),
             total_amount=40,
-            items=[{"seller_sku": "sku-2", "item": {"id": "MLA2"}, "quantity": 3}],
+            items=[
+                {
+                    "seller_sku": "sku-2",
+                    "item": {"id": "MLA2", "title": "Second SKU item"},
+                    "quantity": 3,
+                    "unit_price": 40,
+                }
+            ],
         ),
         "order-no-sku-match": _order_doc(
             "order-no-sku-match",
@@ -483,24 +865,36 @@ async def test_ordenes_por_sku_filters_orders_by_requested_skus() -> None:
     )
 
     assert result.values == [
-        ["SKU", "ID Orden", "Fecha", "Estado", "Buyer ID", "Total", "Items"],
+        ORDER_LINE_LEGACY_HEADERS,
         [
-            "SKU-2",
-            "order-sku-2",
             "2026-05-10T09:00:00+00:00",
-            "paid",
-            "buyer-2",
+            "order-sku-2",
+            "Second SKU item",
+            "SKU-2",
+            "MLA2",
+            3,
             40,
-            "SKU-2 x3 (MLA2)",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "paid",
         ],
         [
-            "SKU-1",
-            "order-sku-1",
             "2026-05-10T08:00:00+00:00",
-            "paid",
-            "buyer-1",
+            "order-sku-1",
+            "First SKU item",
+            "SKU-1",
+            "MLA1",
+            1,
             30,
-            "SKU-1 x1 (MLA1)",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "paid",
         ],
     ]
     assert result.meta == {
@@ -508,7 +902,7 @@ async def test_ordenes_por_sku_filters_orders_by_requested_skus() -> None:
         "status_filter": "todos",
         "buyer_filter_count": 0,
         "sku_filter_count": 2,
-        "columns": "orders_by_sku_mvp",
+        "columns": "legacy_order_lines",
     }
 
 
@@ -520,6 +914,11 @@ async def test_ordenes_por_sku_enriches_canonical_order_items_from_seller_sku_in
         "seller-2:SKU-1:MLA1": _sku_index_doc("seller-2", "WRONG", "MLA1"),
         "seller-1:AMB-1:MLA2": _sku_index_doc("seller-1", "AMB-1", "MLA2"),
         "seller-1:AMB-2:MLA2": _sku_index_doc("seller-1", "AMB-2", "MLA2"),
+    }
+    db["sheets_item_formula_rows"].documents = {
+        "seller-1:SKU-1:MLA1": _item_formula_row(
+            "seller-1", "SKU-1", "MLA1", stock=4, title="Enriched title"
+        ),
     }
     db["orders"].documents = {
         "enriched": _order_doc(
@@ -557,15 +956,21 @@ async def test_ordenes_por_sku_enriches_canonical_order_items_from_seller_sku_in
     )
 
     assert result.values == [
-        ["SKU", "ID Orden", "Fecha", "Estado", "Buyer ID", "Total", "Items"],
+        ORDER_LINE_LEGACY_HEADERS,
         [
-            "SKU-1",
-            "enriched",
             "2026-05-10T08:00:00+00:00",
+            "enriched",
+            "Enriched title",
+            "SKU-1",
+            "MLA1",
+            2,
+            15,
+            "",
+            "",
+            "",
+            "",
+            "",
             "paid",
-            "buyer-1",
-            30,
-            "SKU-1 x2 (MLA1)",
         ],
     ]
     assert result.meta == {
@@ -573,12 +978,125 @@ async def test_ordenes_por_sku_enriches_canonical_order_items_from_seller_sku_in
         "status_filter": "todos",
         "buyer_filter_count": 0,
         "sku_filter_count": 2,
-        "columns": "orders_by_sku_mvp",
+        "columns": "legacy_order_lines",
     }
     assert db["sheets_item_sku_index"].last_find_filter == {
         "seller_id": "seller-1",
         "item_id": {"$in": ["MLA1", "MLA2"]},
     }
+
+
+@pytest.mark.asyncio
+async def test_ordenes_por_sku_buyer_id_filter_includes_buyer_columns() -> None:
+    db = FakeDb()
+    db["orders"].documents = {
+        "matching-buyer": _order_doc(
+            "matching-buyer",
+            seller_id="seller-1",
+            status="paid",
+            buyer_id="buyer-2",
+            date_created=datetime(2026, 5, 10, 9, 0, tzinfo=UTC),
+            total_amount=40,
+            items=[{"sku": "sku-1", "item_id": "MLA1", "title": "Included", "quantity": 1}],
+        ),
+        "other-buyer": _order_doc(
+            "other-buyer",
+            seller_id="seller-1",
+            status="paid",
+            buyer_id="buyer-1",
+            date_created=datetime(2026, 5, 10, 10, 0, tzinfo=UTC),
+            total_amount=50,
+            items=[{"sku": "sku-1", "item_id": "MLA1", "title": "Excluded", "quantity": 1}],
+        ),
+    }
+    dispatcher = _order_question_dispatcher(db)
+
+    result = await dispatcher.execute(
+        _context(
+            "ZELERDATA_ORDENESPORSKU",
+            {
+                "skus": "sku-1",
+                "fecha_inicial": "2026-05-10",
+                "fecha_final": "2026-05-10",
+                "estado": "paid",
+                "compradores": "buyer-2",
+                "encabezados": "si",
+            },
+        )
+    )
+
+    assert result.values == [
+        ORDER_LINE_LEGACY_HEADERS + BUYER_ADDRESS_LEGACY_HEADERS,
+        [
+            "2026-05-10T09:00:00+00:00",
+            "matching-buyer",
+            "Included",
+            "SKU-1",
+            "MLA1",
+            1,
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "paid",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+        ],
+    ]
+    assert result.meta == {
+        "orders_count": 1,
+        "status_filter": "paid",
+        "buyer_filter_count": 1,
+        "sku_filter_count": 1,
+        "columns": "legacy_order_lines_with_buyers",
+    }
+
+
+@pytest.mark.asyncio
+async def test_unidades_vendidas_ignores_unresolved_sku_order_lines() -> None:
+    db = FakeDb()
+    db["orders"].documents = {
+        "unresolved-sku": _order_doc(
+            "unresolved-sku",
+            seller_id="seller-1",
+            status="paid",
+            buyer_id="buyer-1",
+            date_created=datetime(2026, 5, 10, 8, 30, tzinfo=UTC),
+            total_amount="59.97",
+            items=[
+                {
+                    "item_id": "MLA-UNRESOLVED",
+                    "title": "Unresolved SKU item",
+                    "quantity": 3,
+                    "unit_price": "19.99",
+                }
+            ],
+        )
+    }
+    dispatcher = _order_question_dispatcher(db)
+
+    result = await dispatcher.execute(
+        _context(
+            "ZELERDATA_UNIDADESVENDIDAS",
+            {
+                "skus": [["sku-1"]],
+                "id_publicaciones": [["MLA-UNRESOLVED"]],
+                "fecha_inicial": "2026-05-10",
+                "fecha_final": "2026-05-10",
+            },
+        )
+    )
+
+    assert result.values == [[0]]
+    assert result.meta == {"partial_misses": 1, "orders_count": 1}
 
 
 @pytest.mark.asyncio
@@ -732,7 +1250,57 @@ async def test_unidades_vendidas_batches_variation_identity_lookup_once() -> Non
         {
             "seller_id": "seller-1",
             "item_id": {"$in": ["MLA1"]},
-            "variation_id": {"$in": ["101", "102"]},
+        }
+    ]
+
+
+def test_order_sku_resolver_does_not_guess_missing_variation_from_other_variation_row() -> None:
+    resolver = _OrderSkuResolver(
+        [_sku_index_doc("seller-1", "SKU-RED", "MLA1", variation_id="101")]
+    )
+
+    resolution = resolver.resolve({"item_id": "MLA1", "variation_id": "102"})
+
+    assert resolution.sku == ""
+    assert resolution.enriched is False
+
+
+@pytest.mark.asyncio
+async def test_unidades_vendidas_variation_order_uses_unique_item_level_fallback() -> None:
+    db = FakeDb()
+    db["sheets_item_sku_index"].documents = {
+        "seller-1:SKU-BASE:MLA1:item": _sku_index_doc("seller-1", "SKU-BASE", "MLA1"),
+    }
+    db["orders"].documents = {
+        "order-1": _order_doc(
+            "order-1",
+            seller_id="seller-1",
+            status="paid",
+            date_created=datetime(2026, 5, 10, 12, 0, tzinfo=UTC),
+            total_amount=120,
+            items=[{"item_id": "MLA1", "variation_id": "102", "qty": 4, "unit_price": "10.00"}],
+        )
+    }
+    dispatcher = _order_question_dispatcher(db)
+
+    result = await dispatcher.execute(
+        _context(
+            "ZELERDATA_UNIDADESVENDIDAS",
+            {
+                "skus": [["sku-base"]],
+                "id_publicaciones": ["MLA1"],
+                "fecha_inicial": "2026-05-10",
+                "fecha_final": "2026-05-10",
+            },
+        )
+    )
+
+    assert result.values == [[4]]
+    assert result.meta == {"partial_misses": 0, "orders_count": 1, "sku_enriched_items": 1}
+    assert db["sheets_item_sku_index"].find_filters == [
+        {
+            "seller_id": "seller-1",
+            "item_id": {"$in": ["MLA1"]},
         }
     ]
 
@@ -836,6 +1404,17 @@ async def test_top_ventas_unidades_and_dinero_rank_enriched_items_deterministica
         "seller-1:SKU-2:MLA2": _sku_index_doc("seller-1", "SKU-2", "MLA2"),
         "seller-1:SKU-3:MLA3": _sku_index_doc("seller-1", "SKU-3", "MLA3"),
     }
+    db["sheets_item_formula_rows"].documents = {
+        "seller-1:SKU-1:MLA1": _item_formula_row(
+            "seller-1", "SKU-1", "MLA1", stock=8, title="First top title"
+        ),
+        "seller-1:SKU-2:MLA2": _item_formula_row(
+            "seller-1", "SKU-2", "MLA2", stock=5, title="Second top title"
+        ),
+        "seller-1:SKU-3:MLA3": _item_formula_row(
+            "seller-1", "SKU-3", "MLA3", stock=0, title="Third top title"
+        ),
+    }
     db["orders"].documents = {
         "order-1": _order_doc(
             "order-1",
@@ -886,9 +1465,9 @@ async def test_top_ventas_unidades_and_dinero_rank_enriched_items_deterministica
     )
 
     assert unidades.values == [
-        ["SKU", "ID Publicación", "Unidades vendidas"],
-        ["SKU-3", "MLA3", 9],
-        ["SKU-2", "MLA2", 5],
+        ["ID Publicación", "SKU", "Título", "Unidades Vendidas"],
+        ["MLA3", "SKU-3", "Third top title", 9],
+        ["MLA2", "SKU-2", "Second top title", 5],
     ]
     assert unidades.meta == {
         "orders_count": 2,
@@ -897,9 +1476,9 @@ async def test_top_ventas_unidades_and_dinero_rank_enriched_items_deterministica
         "sku_enriched_items": 4,
     }
     assert dinero.values == [
-        ["SKU", "ID Publicación", "Ventas"],
-        ["SKU-1", "MLA1", 40],
-        ["SKU-2", "MLA2", 15],
+        ["ID Publicación", "SKU", "Título", "Unidades Vendidas", "Cantidad De Dinero"],
+        ["MLA1", "SKU-1", "First top title", 3, 40],
+        ["MLA2", "SKU-2", "Second top title", 5, 15],
     ]
     assert dinero.meta == {
         "orders_count": 2,
@@ -971,14 +1550,19 @@ async def test_ventas_y_stock_combines_recent_sales_windows_with_current_stock()
     )
 
     assert result.values == [
-        ["SKU", "ID Publicación", "Ventas 7 días", "Ventas 15 días", "Ventas 30 días", "Stock"],
-        ["SKU-1", "MLA1", 1, 3, 7, 8],
-        ["SKU-2", "MLA2", 0, 0, 0, 0],
+        [
+            "Unidades Vendidas (7 días)",
+            "Unidades Vendidas (15 días)",
+            "Unidades Vendidas (30 días)",
+            "Stock actual",
+        ],
+        [1, 3, 7, 8],
+        [0, 0, 0, 0],
     ]
     assert result.meta == {
         "partial_misses": 0,
         "orders_count": 3,
-        "columns": "sales_and_stock_mvp",
+        "columns": "legacy_sales_and_stock",
         "sku_enriched_items": 3,
     }
 
@@ -1056,10 +1640,22 @@ async def test_productos_sin_venta_returns_current_items_without_recent_sales() 
             "seller-1", "SKU-1", "MLA1", stock=8, title="Sold recently"
         ),
         "seller-1:SKU-2:MLA2": _item_formula_row(
-            "seller-1", "SKU-2", "MLA2", stock=0, title="Old sale"
+            "seller-1",
+            "SKU-2",
+            "MLA2",
+            stock=0,
+            title="Old sale",
+            inventory_id="INV-2",
+            status="paused",
         ),
         "seller-1:SKU-3:MLA3": _item_formula_row(
-            "seller-1", "SKU-3", "MLA3", stock=5, title="Never sold"
+            "seller-1",
+            "SKU-3",
+            "MLA3",
+            stock=5,
+            title="Never sold",
+            inventory_id="INV-3",
+            status="active",
         ),
         "seller-2:SKU-2:MLA2": _item_formula_row(
             "seller-2", "SKU-2", "MLA2", stock=99, title="Wrong tenant"
@@ -1092,16 +1688,24 @@ async def test_productos_sin_venta_returns_current_items_without_recent_sales() 
     )
 
     assert result.values == [
-        ["SKU", "ID Publicación", "Título", "Stock", "Días sin venta"],
-        ["SKU-2", "MLA2", "Old sale", 0, 13],
-        ["SKU-3", "MLA3", "Never sold", 5, ""],
+        PRODUCTOS_SIN_VENTA_LEGACY_HEADERS,
+        ["Old sale", "INV-2", "MLA2", "SKU-2", 0, "", "paused", ""],
+        ["Never sold", "INV-3", "MLA3", "SKU-3", 5, "", "active", ""],
     ]
     assert result.meta == {
         "rows_count": 2,
         "orders_count": 1,
         "rango_dias": 7,
-        "columns": "products_without_sales_mvp",
+        "columns": "legacy_products_without_sales",
         "sku_enriched_items": 1,
+    }
+    assert len(db["orders"].find_filters) == 1
+    assert db["orders"].last_find_filter is not None
+    assert db["orders"].last_find_filter["$or"][0] == {
+        "date_created": {
+            "$gte": datetime(2026, 5, 8, 0, 0, tzinfo=UTC),
+            "$lte": datetime(2026, 5, 14, 23, 59, 59, 999999, tzinfo=UTC),
+        }
     }
 
 
@@ -1304,6 +1908,15 @@ async def test_formula_api_wires_batch_b_handlers_and_keeps_other_batch_b_data_u
             status="paid",
             date_created=datetime(2026, 5, 10, 10, 30, tzinfo=UTC),
             total_amount=100,
+            items=[
+                {
+                    "sku": "sku-1",
+                    "item_id": "MLA1",
+                    "title": "API item",
+                    "quantity": 2,
+                    "unit_price": 50,
+                }
+            ],
         ),
     }
 
@@ -1350,8 +1963,22 @@ async def test_formula_api_wires_batch_b_handlers_and_keeps_other_batch_b_data_u
     }
     assert orders_table.status_code == 200
     assert orders_table.json()["values"] == [
-        ["ID Orden", "Fecha", "Estado", "Buyer ID", "Total", "Shipment ID", "Items"],
-        ["order-1", "2026-05-10T10:30:00+00:00", "paid", "buyer-1", 100, "", ""],
+        ORDER_LINE_LEGACY_HEADERS,
+        [
+            "2026-05-10T10:30:00+00:00",
+            "order-1",
+            "API item",
+            "SKU-1",
+            "MLA1",
+            2,
+            50,
+            "",
+            "",
+            "",
+            "",
+            "",
+            "paid",
+        ],
     ]
     assert not_ready.status_code == 200
     assert not_ready.json()["error"] == {
@@ -1474,7 +2101,14 @@ def _sku_index_doc(
 
 
 def _item_formula_row(
-    seller_id: str, sku: str, item_id: str, *, stock: int, title: str = ""
+    seller_id: str,
+    sku: str,
+    item_id: str,
+    *,
+    stock: int,
+    title: str = "",
+    inventory_id: str = "",
+    status: str = "",
 ) -> dict[str, Any]:
     return {
         "_id": f"{seller_id}:{sku}:{item_id}",
@@ -1482,7 +2116,13 @@ def _item_formula_row(
         "sku": sku,
         "normalized_sku": sku.upper(),
         "item_id": item_id,
-        "current": {"available_quantity": stock, "title": title},
+        "inventory_id": inventory_id,
+        "current": {
+            "available_quantity": stock,
+            "title": title,
+            "status": status,
+            "inventory_id": inventory_id,
+        },
         "schema_version": 1,
     }
 
