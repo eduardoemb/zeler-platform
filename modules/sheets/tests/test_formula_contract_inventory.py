@@ -212,75 +212,110 @@ def test_unknown_formula_returns_stable_formula_unknown_code() -> None:
 def test_dashboard_output_column_fixture_locks_mvp_and_deferred_columns() -> None:
     fixture = _column_fixture()
     formulas = fixture["formulas"]
-    expected_mvp = [
-        "SKU",
+    expected_dashboard = [
         "ID Publicación",
         "Título",
-        "Status",
-        "Stock",
+        "SKU",
+        "Stock Actual",
         "Precio",
+        "Logística",
         "URL",
-        "Categoría",
-        "Imagen",
+        "Tipo De Publicación",
+        "Status",
+        "Código ML",
+        "Días Pausada",
+        "Ventas (7 días)",
+        "Ventas (15 días)",
+        "Ventas (30 días)",
+        "Ventas (60 días)",
+        "Ventas (90 días)",
+        "Envió A Cargo De",
+        "Costo De Envío",
+        "% Comisión",
+        "Comisión",
+        "Costo Por Unidad",
+        "Tiene Catálogo",
     ]
-    expected_legacy_deferred = [
-        "LOGISTICA",
-        "TIPO DE PUBLICACION",
-        "CODIGO ML",
-        "DIAS PAUSADA",
-        "VENTAS (7 DIAS)",
-        "VENTAS (15 DIAS)",
-        "VENTAS (30 DIAS)",
-        "VENTAS (60 DIAS)",
-        "VENTAS (90 DIAS)",
-        "ENVIO A CARGO DE",
-        "COSTO DE ENVIO",
-        "% COMISION",
-        "COMISION",
-        "COSTO POR UNIDAD",
-    ]
-    expected_unsupported_until_defined = ["TIENE CATALOGO", "PRECIO PROMO"]
 
     for formula in ["ZELERDATA_DASHBOARD", "ZELERDATA_DASHBOARDSINCATALOGO"]:
         columns = formulas[formula]["columns"]
-        assert [column["name"] for column in columns if column["status"] == "mvp"] == expected_mvp
         assert [
-            column["name"] for column in columns if column["status"] == "deferred"
-        ] == expected_legacy_deferred
-        assert [
-            column["name"] for column in columns if column["status"] == "unsupported_until_defined"
-        ] == expected_unsupported_until_defined
+            column["name"] for column in columns[: len(expected_dashboard)]
+        ] == expected_dashboard
+        assert [column["name"] for column in columns if column["status"] == "blank_compatible"] == [
+            "Logística",
+            "Tipo De Publicación",
+            "Días Pausada",
+            "Envió A Cargo De",
+            "Costo De Envío",
+            "% Comisión",
+            "Comisión",
+            "Costo Por Unidad",
+            "Precio Promo",
+        ]
+        assert "Categoría" not in [column["name"] for column in columns]
+        assert "Imagen" not in [column["name"] for column in columns]
         assert all("source" in column or "legacy_source_note" in column for column in columns)
 
     assert formulas["ZELERDATA_DASHBOARDSINCATALOGO"]["compatibility_note"] == (
-        "MVP excludes rows when current.catalog_product_id is present; richer catalog/buybox "
-        "semantics remain unsupported_until_defined."
+        "Excludes rows when current.catalog_product_id is present; richer catalog/buybox "
+        "semantics remain blank-compatible unless represented in current item rows."
     )
 
 
 def test_batch_b_output_column_fixture_locks_mvp_and_deferred_columns() -> None:
     fixture = _column_fixture()
     formulas = fixture["formulas"]
+    buyer_address_columns = [
+        "Nombre Comprador",
+        "Calle",
+        "Número",
+        "Colonia",
+        "Código Postal",
+        "Ciudad",
+        "Estado",
+        "País",
+    ]
 
     assert [column["name"] for column in formulas["ZELERDATA_ORDENES"]["columns"]] == [
-        "ID Orden",
         "Fecha",
-        "Estado",
-        "Buyer ID",
-        "Total",
-        "Shipment ID",
-        "Items",
+        "ID Orden",
+        "Título",
+        "SKU",
+        "ID Publicación",
+        "Unidades Vendidas",
+        "Precio",
+        "ID Carrito",
+        "% Comisión",
+        "Comisión",
+        "Costo Por Unidad",
+        "Costo De Envío",
+        "Status",
     ]
+    assert [
+        column["name"]
+        for column in formulas["ZELERDATA_ORDENES"]["optional_columns_when_compradores"]
+    ] == buyer_address_columns
 
     assert [column["name"] for column in formulas["ZELERDATA_ORDENESPORSKU"]["columns"]] == [
-        "SKU",
-        "ID Orden",
         "Fecha",
-        "Estado",
-        "Buyer ID",
-        "Total",
-        "Items",
+        "ID Orden",
+        "Título",
+        "SKU",
+        "ID Publicación",
+        "Unidades Vendidas",
+        "Precio",
+        "ID Carrito",
+        "% Comisión",
+        "Comisión",
+        "Costo Por Unidad",
+        "Costo De Envío",
+        "Status",
     ]
+    assert [
+        column["name"]
+        for column in formulas["ZELERDATA_ORDENESPORSKU"]["optional_columns_when_compradores"]
+    ] == buyer_address_columns
 
     assert [column["name"] for column in formulas["ZELERDATA_VENTASTOTALES"]["columns"]] == [
         "Total ventas"
@@ -298,24 +333,25 @@ def test_batch_b_output_column_fixture_locks_mvp_and_deferred_columns() -> None:
     assert formulas["ZELERDATA_VENTAPORDIAS"]["columns"][0]["status"] == "mvp"
 
     assert [column["name"] for column in formulas["ZELERDATA_VENTASYSTOCK"]["columns"]] == [
-        "SKU",
-        "ID Publicación",
-        "Ventas 7 días",
-        "Ventas 15 días",
-        "Ventas 30 días",
-        "Stock",
+        "Unidades Vendidas (7 días)",
+        "Unidades Vendidas (15 días)",
+        "Unidades Vendidas (30 días)",
+        "Stock actual",
     ]
 
     assert [column["name"] for column in formulas["ZELERDATA_TOPVENTASUNIDADES"]["columns"]] == [
-        "SKU",
         "ID Publicación",
-        "Unidades vendidas",
+        "SKU",
+        "Título",
+        "Unidades Vendidas",
     ]
 
     assert [column["name"] for column in formulas["ZELERDATA_TOPVENTASDINERO"]["columns"]] == [
-        "SKU",
         "ID Publicación",
-        "Ventas",
+        "SKU",
+        "Título",
+        "Unidades Vendidas",
+        "Cantidad De Dinero",
     ]
 
     preguntas_kpi_columns = formulas["ZELERDATA_PREGUNTASKPI"]["columns"]
@@ -347,15 +383,16 @@ def test_batch_b_output_column_fixture_locks_mvp_and_deferred_columns() -> None:
     assert formulas["ZELERDATA_DIASDESDEULTIMAVENTA"]["columns"][0]["status"] == "mvp"
 
     assert [column["name"] for column in formulas["ZELERDATA_PRODUCTOSINVENTA"]["columns"]] == [
-        "SKU",
-        "ID Publicación",
         "Título",
-        "Stock",
-        "Días sin venta",
+        "Código ML",
+        "ID Publicación",
+        "SKU",
+        "Stock Actual",
+        "Fecha Ultimo Cambio",
+        "Status Actual",
+        "Envío A Cargo De",
     ]
-    assert all(
-        column["status"] == "mvp" for column in formulas["ZELERDATA_PRODUCTOSINVENTA"]["columns"]
-    )
+    assert formulas["ZELERDATA_PRODUCTOSINVENTA"]["columns"][-1]["status"] == "blank_compatible"
 
 
 def test_every_legacy_formula_has_an_explicit_runtime_state() -> None:

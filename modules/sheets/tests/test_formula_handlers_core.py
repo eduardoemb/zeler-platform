@@ -78,13 +78,65 @@ class FakeDb:
 
 def _matches(doc: dict[str, Any], filter_spec: dict[str, Any]) -> bool:
     for key, expected in filter_spec.items():
+        if key == "$or":
+            if not any(_matches(doc, branch) for branch in expected):
+                return False
+            continue
         value = doc.get(key)
-        if isinstance(expected, dict) and "$in" in expected:
-            if value not in expected["$in"]:
+        if isinstance(expected, dict):
+            try:
+                if "$in" in expected and value not in expected["$in"]:
+                    return False
+                if "$gte" in expected and value < expected["$gte"]:
+                    return False
+                if "$lte" in expected and value > expected["$lte"]:
+                    return False
+            except TypeError:
                 return False
         elif value != expected:
             return False
     return True
+
+
+PUBLICACIONES_LEGACY_HEADERS = [
+    "ID Publicación",
+    "Título",
+    "SKU",
+    "Stock Actual",
+    "Precio",
+    "Logística",
+    "URL",
+    "Tipo De Publicación",
+    "Status",
+    "Código ML",
+    "ID Inventario",
+    "Tiempo En Pausa",
+]
+
+DASHBOARD_LEGACY_HEADERS = [
+    "ID Publicación",
+    "Título",
+    "SKU",
+    "Stock Actual",
+    "Precio",
+    "Logística",
+    "URL",
+    "Tipo De Publicación",
+    "Status",
+    "Código ML",
+    "Días Pausada",
+    "Ventas (7 días)",
+    "Ventas (15 días)",
+    "Ventas (30 días)",
+    "Ventas (60 días)",
+    "Ventas (90 días)",
+    "Envió A Cargo De",
+    "Costo De Envío",
+    "% Comisión",
+    "Comisión",
+    "Costo Por Unidad",
+    "Tiene Catálogo",
+]
 
 
 @pytest.mark.asyncio
@@ -217,6 +269,7 @@ async def test_title_status_and_days_handlers_lookup_item_ids_with_blanks_for_mi
             "seller_id": "seller-1",
             "normalized_sku": "SKU-1",
             "item_id": "MLA1",
+            "inventory_id": "INV-1",
             "current": {
                 "title": "First listing",
                 "status": "active",
@@ -228,6 +281,7 @@ async def test_title_status_and_days_handlers_lookup_item_ids_with_blanks_for_mi
             "seller_id": "seller-1",
             "normalized_sku": "SKU-2",
             "item_id": "MLA2",
+            "inventory_id": "INV-2",
             "current": {
                 "title": "Second listing",
                 "status": "paused",
@@ -418,16 +472,12 @@ async def test_idstock_returns_seller_scoped_table_with_optional_headers() -> No
         _context("ZELERDATA_IDSTOCK", {"skus": "sku-1", "encabezados": "si"})
     )
 
-    assert without_headers.values == [
-        ["sku-1", "MLA1", 7],
-        ["sku-1", "MLA3", 0],
-        ["sku-2", "MLA2", 4],
-    ]
+    assert without_headers.values == [["MLA1", 7], ["MLA3", 0], ["MLA2", 4]]
     assert without_headers.meta == {"partial_misses": 1}
     assert with_headers.values == [
-        ["SKU", "ID Publicación", "Stock"],
-        ["sku-1", "MLA1", 7],
-        ["sku-1", "MLA3", 0],
+        ["ID Publicación", "Stock"],
+        ["MLA1", 7],
+        ["MLA3", 0],
     ]
     assert with_headers.meta == {"partial_misses": 0}
     assert formula_rows.last_find_filter == {
@@ -481,11 +531,11 @@ async def test_codigo_ml_to_sku_id_returns_seller_scoped_table_with_optional_hea
         _context("ZELERDATA_CODIGOML2SKUID", {"codigo_ml": "INV-1", "encabezados": "sí"})
     )
 
-    assert without_headers.values == [["INV-1", "MLA1", "sku-1"], ["INV-2", "MLA2", "sku-2"]]
+    assert without_headers.values == [["MLA1", "sku-1"], ["MLA2", "sku-2"]]
     assert without_headers.meta == {"partial_misses": 1}
     assert with_headers.values == [
-        ["Código ML", "ID Publicación", "SKU"],
-        ["INV-1", "MLA1", "sku-1"],
+        ["ID Publicación", "SKU"],
+        ["MLA1", "sku-1"],
     ]
     assert with_headers.meta == {"partial_misses": 0}
     assert formula_rows.last_find_filter == {
@@ -505,6 +555,7 @@ async def test_publicaciones_returns_minimal_current_item_table_with_optional_he
             "sku": "sku-1",
             "normalized_sku": "SKU-1",
             "item_id": "MLA1",
+            "inventory_id": "INV-1",
             "current": {
                 "title": "First listing",
                 "status": "active",
@@ -519,6 +570,7 @@ async def test_publicaciones_returns_minimal_current_item_table_with_optional_he
             "sku": "sku-2",
             "normalized_sku": "SKU-2",
             "item_id": "MLA2",
+            "inventory_id": "INV-2",
             "current": {
                 "title": "Second listing",
                 "status": "paused",
@@ -555,15 +607,54 @@ async def test_publicaciones_returns_minimal_current_item_table_with_optional_he
     )
 
     assert with_headers.values == [
-        ["SKU", "ID Publicación", "Título", "Status", "Stock", "Precio", "URL"],
-        ["sku-1", "MLA1", "First listing", "active", 7, 123.45, "https://meli.example/mla1"],
-        ["sku-2", "MLA2", "Second listing", "paused", 0, 10, "https://meli.example/mla2"],
+        PUBLICACIONES_LEGACY_HEADERS,
+        [
+            "MLA1",
+            "First listing",
+            "sku-1",
+            7,
+            123.45,
+            "",
+            "https://meli.example/mla1",
+            "",
+            "active",
+            "INV-1",
+            "INV-1",
+            "",
+        ],
+        [
+            "MLA2",
+            "Second listing",
+            "sku-2",
+            0,
+            10,
+            "",
+            "https://meli.example/mla2",
+            "",
+            "paused",
+            "INV-2",
+            "INV-2",
+            "",
+        ],
     ]
-    assert with_headers.meta == {"partial_misses": 0, "columns": "minimal_current_item"}
+    assert with_headers.meta == {"partial_misses": 0, "columns": "legacy_publications"}
     assert without_headers.values == [
-        ["sku-2", "MLA2", "Second listing", "paused", 0, 10, "https://meli.example/mla2"]
+        [
+            "MLA2",
+            "Second listing",
+            "sku-2",
+            0,
+            10,
+            "",
+            "https://meli.example/mla2",
+            "",
+            "paused",
+            "INV-2",
+            "INV-2",
+            "",
+        ]
     ]
-    assert without_headers.meta == {"partial_misses": 1, "columns": "minimal_current_item"}
+    assert without_headers.meta == {"partial_misses": 1, "columns": "legacy_publications"}
     assert formula_rows.last_find_filter == {
         "seller_id": "seller-1",
         "normalized_sku": {"$in": ["SKU-2", "MISSING"]},
@@ -581,6 +672,7 @@ async def test_dashboard_returns_minimal_current_item_table_with_optional_header
             "sku": "sku-1",
             "normalized_sku": "SKU-1",
             "item_id": "MLA1",
+            "inventory_id": "INV-1",
             "current": {
                 "title": "First listing",
                 "status": "active",
@@ -597,6 +689,7 @@ async def test_dashboard_returns_minimal_current_item_table_with_optional_header
             "sku": "sku-2",
             "normalized_sku": "SKU-2",
             "item_id": "MLA2",
+            "inventory_id": "INV-2",
             "current": {
                 "title": "Second listing",
                 "status": "paused",
@@ -605,6 +698,7 @@ async def test_dashboard_returns_minimal_current_item_table_with_optional_header
                 "permalink": "https://meli.example/mla2",
                 "category_id": "MLA-ACCESSORIES",
                 "thumbnail": None,
+                "catalog_product_id": "MLA-CATALOG-2",
             },
         },
         "seller-2-sku-1-mla1": {
@@ -624,68 +718,476 @@ async def test_dashboard_returns_minimal_current_item_table_with_optional_header
             },
         },
     }
+    db["orders"].documents = {
+        "recent": {
+            "_id": "recent",
+            "seller_id": "seller-1",
+            "date_created": datetime(2026, 5, 12, 10, 0, tzinfo=UTC),
+            "items": [{"sku": "sku-1", "item_id": "MLA1", "quantity": 2}],
+        },
+        "older": {
+            "_id": "older",
+            "seller_id": "seller-1",
+            "date_created": datetime(2026, 5, 1, 10, 0, tzinfo=UTC),
+            "items": [{"sku": "sku-1", "item_id": "MLA1", "quantity": 3}],
+        },
+        "outside": {
+            "_id": "outside",
+            "seller_id": "seller-1",
+            "date_created": datetime(2026, 2, 1, 10, 0, tzinfo=UTC),
+            "items": [{"sku": "sku-1", "item_id": "MLA1", "quantity": 99}],
+        },
+    }
     dispatcher = _core_dispatcher(db)
 
     with_headers = await dispatcher.execute(
-        _context("ZELERDATA_DASHBOARD", {"skus": "todos", "encabezados": "verdadero"})
+        _context(
+            "ZELERDATA_DASHBOARD",
+            {"skus": "todos", "encabezados": "verdadero", "tipo_precio": "todos"},
+        )
     )
     without_headers = await dispatcher.execute(
         _context("ZELERDATA_DASHBOARD", {"skus": [["sku-2"], ["missing"]]})
     )
 
     assert with_headers.values == [
+        DASHBOARD_LEGACY_HEADERS + ["Precio Promo"],
         [
-            "SKU",
-            "ID Publicación",
-            "Título",
-            "Status",
-            "Stock",
-            "Precio",
-            "URL",
-            "Categoría",
-            "Imagen",
-        ],
-        [
-            "sku-1",
             "MLA1",
             "First listing",
-            "active",
+            "sku-1",
             7,
             123.45,
+            "",
             "https://meli.example/mla1",
-            "MLA-CELLPHONES",
-            "https://img.example/mla1.jpg",
+            "",
+            "active",
+            "INV-1",
+            "",
+            2,
+            5,
+            5,
+            5,
+            5,
+            "",
+            "",
+            "",
+            "",
+            "",
+            "No",
+            "",
         ],
         [
-            "sku-2",
             "MLA2",
             "Second listing",
-            "paused",
+            "sku-2",
             0,
             10,
+            "",
             "https://meli.example/mla2",
-            "MLA-ACCESSORIES",
+            "",
+            "paused",
+            "INV-2",
+            "",
+            0,
+            0,
+            0,
+            0,
+            0,
+            "",
+            "",
+            "",
+            "",
+            "",
+            "Sí",
             "",
         ],
     ]
-    assert with_headers.meta == {"partial_misses": 0, "columns": "dashboard_mvp_current_item"}
+    assert with_headers.meta == {"partial_misses": 0, "columns": "legacy_dashboard"}
     assert without_headers.values == [
         [
-            "sku-2",
             "MLA2",
             "Second listing",
-            "paused",
+            "sku-2",
             0,
             10,
-            "https://meli.example/mla2",
-            "MLA-ACCESSORIES",
             "",
+            "https://meli.example/mla2",
+            "",
+            "paused",
+            "INV-2",
+            "",
+            0,
+            0,
+            0,
+            0,
+            0,
+            "",
+            "",
+            "",
+            "",
+            "",
+            "Sí",
         ]
     ]
-    assert without_headers.meta == {"partial_misses": 1, "columns": "dashboard_mvp_current_item"}
+    assert without_headers.meta == {"partial_misses": 1, "columns": "legacy_dashboard"}
     assert formula_rows.last_find_filter == {
         "seller_id": "seller-1",
         "normalized_sku": {"$in": ["SKU-2", "MISSING"]},
+    }
+
+
+@pytest.mark.asyncio
+async def test_dashboard_sales_windows_use_sku_index_when_order_item_has_only_item_id() -> None:
+    db = FakeDb()
+    db["sheets_item_formula_rows"].documents = {
+        "seller-1-sku-1-mla1": {
+            "_id": "seller-1-sku-1-mla1",
+            "seller_id": "seller-1",
+            "sku": "sku-1",
+            "normalized_sku": "SKU-1",
+            "item_id": "MLA1",
+            "current": {
+                "title": "Resolved listing",
+                "status": "active",
+                "available_quantity": 7,
+            },
+        }
+    }
+    db["sheets_item_sku_index"].documents = {
+        "seller-1:SKU-1:MLA1": {
+            "_id": "seller-1:SKU-1:MLA1",
+            "seller_id": "seller-1",
+            "sku": "sku-1",
+            "normalized_sku": "SKU-1",
+            "item_id": "MLA1",
+        }
+    }
+    db["orders"].documents = {
+        "recent": {
+            "_id": "recent",
+            "seller_id": "seller-1",
+            "date_created": datetime(2026, 5, 12, 10, 0, tzinfo=UTC),
+            "items": [{"item_id": "MLA1", "quantity": 2}],
+        }
+    }
+    dispatcher = _core_dispatcher(db)
+
+    result = await dispatcher.execute(
+        _context("ZELERDATA_DASHBOARD", {"skus": "todos", "encabezados": "si"})
+    )
+
+    assert result.values == [
+        DASHBOARD_LEGACY_HEADERS,
+        [
+            "MLA1",
+            "Resolved listing",
+            "sku-1",
+            7,
+            "",
+            "",
+            "",
+            "",
+            "active",
+            "",
+            "",
+            2,
+            2,
+            2,
+            2,
+            2,
+            "",
+            "",
+            "",
+            "",
+            "",
+            "No",
+        ],
+    ]
+    assert db["sheets_item_sku_index"].last_find_filter == {
+        "seller_id": "seller-1",
+        "item_id": {"$in": ["MLA1"]},
+    }
+
+
+@pytest.mark.asyncio
+async def test_dashboard_sales_windows_resolve_item_variations_from_seller_sku_index() -> None:
+    db = FakeDb()
+    db["sheets_item_formula_rows"].documents = {
+        "seller-1-sku-blue-mla1": {
+            "_id": "seller-1-sku-blue-mla1",
+            "seller_id": "seller-1",
+            "sku": "sku-blue",
+            "normalized_sku": "SKU-BLUE",
+            "item_id": "MLA1",
+            "current": {"title": "Blue variation", "status": "active", "available_quantity": 6},
+        },
+        "seller-1-sku-red-mla1": {
+            "_id": "seller-1-sku-red-mla1",
+            "seller_id": "seller-1",
+            "sku": "sku-red",
+            "normalized_sku": "SKU-RED",
+            "item_id": "MLA1",
+            "current": {"title": "Red variation", "status": "active", "available_quantity": 4},
+        },
+    }
+    db["sheets_item_sku_index"].documents = {
+        "seller-1:SKU-BLUE:MLA1:102": {
+            "_id": "seller-1:SKU-BLUE:MLA1:102",
+            "seller_id": "seller-1",
+            "sku": "sku-blue",
+            "normalized_sku": "SKU-BLUE",
+            "item_id": "MLA1",
+            "variation_id": "102",
+        },
+        "seller-1:SKU-RED:MLA1:101": {
+            "_id": "seller-1:SKU-RED:MLA1:101",
+            "seller_id": "seller-1",
+            "sku": "sku-red",
+            "normalized_sku": "SKU-RED",
+            "item_id": "MLA1",
+            "variation_id": "101",
+        },
+        "seller-2:SKU-BLUE:MLA1:102": {
+            "_id": "seller-2:SKU-BLUE:MLA1:102",
+            "seller_id": "seller-2",
+            "sku": "wrong-tenant",
+            "normalized_sku": "WRONG-TENANT",
+            "item_id": "MLA1",
+            "variation_id": "102",
+        },
+    }
+    db["orders"].documents = {
+        "recent": {
+            "_id": "recent",
+            "seller_id": "seller-1",
+            "date_created": datetime(2026, 5, 12, 10, 0, tzinfo=UTC),
+            "items": [{"item_id": "MLA1", "variation_id": 102, "quantity": 3}],
+        }
+    }
+    dispatcher = _core_dispatcher(db)
+
+    result = await dispatcher.execute(
+        _context("ZELERDATA_DASHBOARD", {"skus": "todos", "encabezados": "si"})
+    )
+
+    assert result.values == [
+        DASHBOARD_LEGACY_HEADERS,
+        [
+            "MLA1",
+            "Blue variation",
+            "sku-blue",
+            6,
+            "",
+            "",
+            "",
+            "",
+            "active",
+            "",
+            "",
+            3,
+            3,
+            3,
+            3,
+            3,
+            "",
+            "",
+            "",
+            "",
+            "",
+            "No",
+        ],
+        [
+            "MLA1",
+            "Red variation",
+            "sku-red",
+            4,
+            "",
+            "",
+            "",
+            "",
+            "active",
+            "",
+            "",
+            0,
+            0,
+            0,
+            0,
+            0,
+            "",
+            "",
+            "",
+            "",
+            "",
+            "No",
+        ],
+    ]
+    assert db["sheets_item_sku_index"].last_find_filter == {
+        "seller_id": "seller-1",
+        "item_id": {"$in": ["MLA1"]},
+    }
+
+
+@pytest.mark.asyncio
+async def test_dashboard_sales_windows_do_not_guess_item_level_sku_for_missing_variation() -> None:
+    db = FakeDb()
+    db["sheets_item_formula_rows"].documents = {
+        "seller-1-sku-base-mla1": {
+            "_id": "seller-1-sku-base-mla1",
+            "seller_id": "seller-1",
+            "sku": "sku-base",
+            "normalized_sku": "SKU-BASE",
+            "item_id": "MLA1",
+            "current": {
+                "title": "Item-level listing",
+                "status": "active",
+                "available_quantity": 9,
+            },
+        }
+    }
+    db["sheets_item_sku_index"].documents = {
+        "seller-1:SKU-BASE:MLA1": {
+            "_id": "seller-1:SKU-BASE:MLA1",
+            "seller_id": "seller-1",
+            "sku": "sku-base",
+            "normalized_sku": "SKU-BASE",
+            "item_id": "MLA1",
+            "variation_id": None,
+        },
+        "seller-1:SKU-BLUE:MLA1:102": {
+            "_id": "seller-1:SKU-BLUE:MLA1:102",
+            "seller_id": "seller-1",
+            "sku": "sku-blue",
+            "normalized_sku": "SKU-BLUE",
+            "item_id": "MLA1",
+            "variation_id": "102",
+        },
+    }
+    db["orders"].documents = {
+        "recent": {
+            "_id": "recent",
+            "seller_id": "seller-1",
+            "date_created": datetime(2026, 5, 12, 10, 0, tzinfo=UTC),
+            "items": [{"item_id": "MLA1", "variation_id": 103, "quantity": 4}],
+        }
+    }
+    dispatcher = _core_dispatcher(db)
+
+    result = await dispatcher.execute(
+        _context("ZELERDATA_DASHBOARD", {"skus": "todos", "encabezados": "si"})
+    )
+
+    assert result.values == [
+        DASHBOARD_LEGACY_HEADERS,
+        [
+            "MLA1",
+            "Item-level listing",
+            "sku-base",
+            9,
+            "",
+            "",
+            "",
+            "",
+            "active",
+            "",
+            "",
+            0,
+            0,
+            0,
+            0,
+            0,
+            "",
+            "",
+            "",
+            "",
+            "",
+            "No",
+        ],
+    ]
+    assert db["sheets_item_sku_index"].last_find_filter == {
+        "seller_id": "seller-1",
+        "item_id": {"$in": ["MLA1"]},
+    }
+
+
+@pytest.mark.asyncio
+async def test_dashboard_sales_windows_fall_back_to_unique_item_level_variation_sku() -> None:
+    db = FakeDb()
+    db["sheets_item_formula_rows"].documents = {
+        "seller-1-sku-1-mla1": {
+            "_id": "seller-1-sku-1-mla1",
+            "seller_id": "seller-1",
+            "sku": "sku-1",
+            "normalized_sku": "SKU-1",
+            "item_id": "MLA1",
+            "current": {
+                "title": "Item-level listing",
+                "status": "active",
+                "available_quantity": 9,
+            },
+        }
+    }
+    db["sheets_item_sku_index"].documents = {
+        "seller-1:SKU-1:MLA1": {
+            "_id": "seller-1:SKU-1:MLA1",
+            "seller_id": "seller-1",
+            "sku": "sku-1",
+            "normalized_sku": "SKU-1",
+            "item_id": "MLA1",
+        },
+        "seller-2:SKU-OTHER:MLA1:102": {
+            "_id": "seller-2:SKU-OTHER:MLA1:102",
+            "seller_id": "seller-2",
+            "sku": "wrong-tenant",
+            "normalized_sku": "SKU-OTHER",
+            "item_id": "MLA1",
+            "variation_id": "102",
+        },
+    }
+    db["orders"].documents = {
+        "recent": {
+            "_id": "recent",
+            "seller_id": "seller-1",
+            "date_created": datetime(2026, 5, 12, 10, 0, tzinfo=UTC),
+            "items": [{"item_id": "MLA1", "variation_id": 102, "quantity": 4}],
+        }
+    }
+    dispatcher = _core_dispatcher(db)
+
+    result = await dispatcher.execute(
+        _context("ZELERDATA_DASHBOARD", {"skus": "todos", "encabezados": "si"})
+    )
+
+    assert result.values == [
+        DASHBOARD_LEGACY_HEADERS,
+        [
+            "MLA1",
+            "Item-level listing",
+            "sku-1",
+            9,
+            "",
+            "",
+            "",
+            "",
+            "active",
+            "",
+            "",
+            4,
+            4,
+            4,
+            4,
+            4,
+            "",
+            "",
+            "",
+            "",
+            "",
+            "No",
+        ],
+    ]
+    assert db["sheets_item_sku_index"].last_find_filter == {
+        "seller_id": "seller-1",
+        "item_id": {"$in": ["MLA1"]},
     }
 
 
@@ -756,43 +1258,59 @@ async def test_dashboard_sin_catalogo_excludes_rows_with_catalog_product_indicat
     )
 
     assert result.values == [
+        DASHBOARD_LEGACY_HEADERS,
         [
-            "SKU",
-            "ID Publicación",
-            "Título",
-            "Status",
-            "Stock",
-            "Precio",
-            "URL",
-            "Categoría",
-            "Imagen",
-        ],
-        [
-            "sku-1",
             "MLA1",
             "Classic listing",
-            "active",
+            "sku-1",
             4,
             20,
+            "",
             "https://meli.example/mla1",
-            "MLA-CELLPHONES",
-            "https://img.example/mla1.jpg",
+            "",
+            "active",
+            "",
+            "",
+            0,
+            0,
+            0,
+            0,
+            0,
+            "",
+            "",
+            "",
+            "",
+            "",
+            "No",
         ],
         [
-            "sku-3",
             "MLA3",
             "Blank catalog indicator listing",
-            "paused",
+            "sku-3",
             0,
             5,
+            "",
             "https://meli.example/mla3",
-            "MLA-OTHER",
-            "https://img.example/mla3.jpg",
+            "",
+            "paused",
+            "",
+            "",
+            0,
+            0,
+            0,
+            0,
+            0,
+            "",
+            "",
+            "",
+            "",
+            "",
+            "No",
         ],
     ]
     assert result.meta == {
         "partial_misses": 0,
-        "columns": "dashboard_mvp_current_item",
+        "columns": "legacy_dashboard",
         "excluded_catalog_rows": 1,
     }
 

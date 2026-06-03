@@ -28,91 +28,150 @@
     "ZELERDATA_ENVIOSMERCADOENVIOS": {"status": "unsupported", "reason": "MercadoEnvios shipment/label read model is not available in zeler-platform yet."}
   },
   "formulas": {
+    "ZELERDATA_CODIGOML2SKUID": {
+      "legacy_source": "sheetsellerappindividual/addon/Publications.gs:ZELERDATA_CODIGOML2SKUID",
+      "columns": [
+        {"name": "ID Publicación", "source": "sheets_item_formula_rows.item_id", "status": "mvp"},
+        {"name": "SKU", "source": "sheets_item_formula_rows.sku | normalized_sku", "status": "mvp"}
+      ]
+    },
+    "ZELERDATA_IDSTOCK": {
+      "legacy_source": "sheetsellerappindividual/addon/Publications.gs:ZELERDATA_IDSTOCK",
+      "columns": [
+        {"name": "ID Publicación", "source": "sheets_item_formula_rows.item_id", "status": "mvp"},
+        {"name": "Stock", "source": "sheets_item_formula_rows.current.available_quantity", "status": "mvp"}
+      ]
+    },
+    "ZELERDATA_PUBLICACIONES": {
+      "legacy_source": "sheetsellerappindividual/addon/Publications.gs:ZELERDATA_PUBLICACIONES",
+      "columns": [
+        {"name": "ID Publicación", "source": "sheets_item_formula_rows.item_id", "status": "mvp"},
+        {"name": "Título", "source": "sheets_item_formula_rows.current.title", "status": "mvp"},
+        {"name": "SKU", "source": "sheets_item_formula_rows.sku | normalized_sku", "status": "mvp"},
+        {"name": "Stock Actual", "source": "sheets_item_formula_rows.current.available_quantity", "status": "mvp"},
+        {"name": "Precio", "source": "sheets_item_formula_rows.current.base_price", "status": "mvp"},
+        {"name": "Logística", "legacy_source_note": "legacy logistics column", "status": "blank_compatible", "reason": "No logistics/fulfillment field is currently present in sheets_item_formula_rows."},
+        {"name": "URL", "source": "sheets_item_formula_rows.current.permalink", "status": "mvp"},
+        {"name": "Tipo De Publicación", "legacy_source_note": "legacy listing type column", "status": "blank_compatible", "reason": "No listing type field is currently present in sheets_item_formula_rows."},
+        {"name": "Status", "source": "sheets_item_formula_rows.current.status", "status": "mvp"},
+        {"name": "Código ML", "source": "sheets_item_formula_rows.inventory_id | current.inventory_id", "status": "mvp"},
+        {"name": "ID Inventario", "source": "sheets_item_formula_rows.inventory_id | current.inventory_id", "status": "mvp"},
+        {"name": "Tiempo En Pausa", "legacy_source_note": "legacy paused-time column", "status": "blank_compatible", "reason": "Requires historical paused-period read model."}
+      ]
+    },
     "ZELERDATA_DASHBOARD": {
       "legacy_source": "sheetsellerappindividual/addon/Publications.gs:ZELERDATA_DASHBOARD -> /publications/personalizado",
       "columns": [
-        {"name": "SKU", "source": "sheets_item_formula_rows.sku | normalized_sku", "status": "mvp"},
         {"name": "ID Publicación", "source": "sheets_item_formula_rows.item_id", "status": "mvp"},
         {"name": "Título", "source": "sheets_item_formula_rows.current.title", "status": "mvp"},
-        {"name": "Status", "source": "sheets_item_formula_rows.current.status", "status": "mvp"},
-        {"name": "Stock", "source": "sheets_item_formula_rows.current.available_quantity", "status": "mvp"},
+        {"name": "SKU", "source": "sheets_item_formula_rows.sku | normalized_sku", "status": "mvp"},
+        {"name": "Stock Actual", "source": "sheets_item_formula_rows.current.available_quantity", "status": "mvp"},
         {"name": "Precio", "source": "sheets_item_formula_rows.current.base_price", "status": "mvp"},
+        {"name": "Logística", "legacy_source_note": "legacy /publications/personalizado logistics column", "status": "blank_compatible", "reason": "No logistics/fulfillment field is currently present in sheets_item_formula_rows."},
         {"name": "URL", "source": "sheets_item_formula_rows.current.permalink", "status": "mvp"},
-        {"name": "Categoría", "source": "sheets_item_formula_rows.current.category_id", "status": "mvp"},
-        {"name": "Imagen", "source": "sheets_item_formula_rows.current.thumbnail", "status": "mvp"},
-        {"name": "LOGISTICA", "legacy_source_note": "legacy /publications/personalizado logistics column", "status": "deferred", "reason": "No logistics/fulfillment field is currently present in sheets_item_formula_rows."},
-        {"name": "TIPO DE PUBLICACION", "legacy_source_note": "legacy /publications/personalizado listing type column", "status": "deferred", "reason": "No listing type field is currently present in sheets_item_formula_rows."},
-        {"name": "CODIGO ML", "source": "sheets_item_formula_rows.inventory_id | current.inventory_id", "status": "deferred", "reason": "Available as a lookup formula, but excluded from the locked dashboard MVP column set."},
-        {"name": "DIAS PAUSADA", "legacy_source_note": "legacy paused-days/historical state column", "status": "deferred", "reason": "Requires historical paused-period read model."},
-        {"name": "VENTAS (7 DIAS)", "legacy_source_note": "legacy recent sales aggregation", "status": "deferred", "reason": "Requires order/sales read model."},
-        {"name": "VENTAS (15 DIAS)", "legacy_source_note": "legacy recent sales aggregation", "status": "deferred", "reason": "Requires order/sales read model."},
-        {"name": "VENTAS (30 DIAS)", "legacy_source_note": "legacy recent sales aggregation", "status": "deferred", "reason": "Requires order/sales read model."},
-        {"name": "VENTAS (60 DIAS)", "legacy_source_note": "legacy recent sales aggregation", "status": "deferred", "reason": "Requires order/sales read model."},
-        {"name": "VENTAS (90 DIAS)", "legacy_source_note": "legacy recent sales aggregation", "status": "deferred", "reason": "Requires order/sales read model."},
-        {"name": "ENVIO A CARGO DE", "legacy_source_note": "legacy shipping payer column", "status": "deferred", "reason": "Requires shipping/cost read model."},
-        {"name": "COSTO DE ENVIO", "legacy_source_note": "legacy shipping cost column", "status": "deferred", "reason": "Requires shipping/cost read model."},
-        {"name": "% COMISION", "legacy_source_note": "legacy commission percentage column", "status": "deferred", "reason": "Requires fee/commission read model."},
-        {"name": "COMISION", "legacy_source_note": "legacy commission amount column", "status": "deferred", "reason": "Requires fee/commission read model."},
-        {"name": "COSTO POR UNIDAD", "legacy_source_note": "legacy unit cost column", "status": "deferred", "reason": "No platform-owned unit-cost source is defined for this formula."},
-        {"name": "TIENE CATALOGO", "source": "sheets_item_formula_rows.current.catalog_product_id", "status": "unsupported_until_defined", "reason": "Current catalog_product_id is safe for exclusion, but exact legacy display semantics are not defined."},
-        {"name": "PRECIO PROMO", "legacy_source_note": "legacy conditional column when tipo_precio='todos'", "status": "unsupported_until_defined", "reason": "No promotional price field is currently present in sheets_item_formula_rows."}
+        {"name": "Tipo De Publicación", "legacy_source_note": "legacy /publications/personalizado listing type column", "status": "blank_compatible", "reason": "No listing type field is currently present in sheets_item_formula_rows."},
+        {"name": "Status", "source": "sheets_item_formula_rows.current.status", "status": "mvp"},
+        {"name": "Código ML", "source": "sheets_item_formula_rows.inventory_id | current.inventory_id", "status": "mvp"},
+        {"name": "Días Pausada", "legacy_source_note": "legacy paused-days/historical state column", "status": "blank_compatible", "reason": "Requires historical paused-period read model."},
+        {"name": "Ventas (7 días)", "source": "orders.items.quantity | qty by SKU/item_id/variation_id", "status": "mvp"},
+        {"name": "Ventas (15 días)", "source": "orders.items.quantity | qty by SKU/item_id/variation_id", "status": "mvp"},
+        {"name": "Ventas (30 días)", "source": "orders.items.quantity | qty by SKU/item_id/variation_id", "status": "mvp"},
+        {"name": "Ventas (60 días)", "source": "orders.items.quantity | qty by SKU/item_id/variation_id", "status": "mvp"},
+        {"name": "Ventas (90 días)", "source": "orders.items.quantity | qty by SKU/item_id/variation_id", "status": "mvp"},
+        {"name": "Envió A Cargo De", "legacy_source_note": "legacy shipping payer column", "status": "blank_compatible", "reason": "Requires shipping/cost read model."},
+        {"name": "Costo De Envío", "legacy_source_note": "legacy shipping cost column", "status": "blank_compatible", "reason": "Requires shipping/cost read model."},
+        {"name": "% Comisión", "legacy_source_note": "legacy commission percentage column", "status": "blank_compatible", "reason": "Requires fee/commission read model."},
+        {"name": "Comisión", "legacy_source_note": "legacy commission amount column", "status": "blank_compatible", "reason": "Requires fee/commission read model."},
+        {"name": "Costo Por Unidad", "legacy_source_note": "legacy unit cost column", "status": "blank_compatible", "reason": "No platform-owned unit-cost source is defined for this formula."},
+        {"name": "Tiene Catálogo", "source": "sheets_item_formula_rows.current.catalog_product_id", "status": "mvp"},
+        {"name": "Precio Promo", "legacy_source_note": "legacy conditional column when tipo_precio='todos'", "status": "blank_compatible", "reason": "No promotional price field is currently present in sheets_item_formula_rows."}
       ]
     },
     "ZELERDATA_DASHBOARDSINCATALOGO": {
       "legacy_source": "sheetsellerappindividual/addon/Publications.gs:ZELERDATA_DASHBOARDSINCATALOGO -> /publications/personalizado_sincat",
-      "compatibility_note": "MVP excludes rows when current.catalog_product_id is present; richer catalog/buybox semantics remain unsupported_until_defined.",
+      "compatibility_note": "Excludes rows when current.catalog_product_id is present; richer catalog/buybox semantics remain blank-compatible unless represented in current item rows.",
       "columns": [
-        {"name": "SKU", "source": "sheets_item_formula_rows.sku | normalized_sku", "status": "mvp"},
         {"name": "ID Publicación", "source": "sheets_item_formula_rows.item_id", "status": "mvp"},
         {"name": "Título", "source": "sheets_item_formula_rows.current.title", "status": "mvp"},
-        {"name": "Status", "source": "sheets_item_formula_rows.current.status", "status": "mvp"},
-        {"name": "Stock", "source": "sheets_item_formula_rows.current.available_quantity", "status": "mvp"},
+        {"name": "SKU", "source": "sheets_item_formula_rows.sku | normalized_sku", "status": "mvp"},
+        {"name": "Stock Actual", "source": "sheets_item_formula_rows.current.available_quantity", "status": "mvp"},
         {"name": "Precio", "source": "sheets_item_formula_rows.current.base_price", "status": "mvp"},
+        {"name": "Logística", "legacy_source_note": "legacy /publications/personalizado_sincat logistics column", "status": "blank_compatible", "reason": "No logistics/fulfillment field is currently present in sheets_item_formula_rows."},
         {"name": "URL", "source": "sheets_item_formula_rows.current.permalink", "status": "mvp"},
-        {"name": "Categoría", "source": "sheets_item_formula_rows.current.category_id", "status": "mvp"},
-        {"name": "Imagen", "source": "sheets_item_formula_rows.current.thumbnail", "status": "mvp"},
-        {"name": "LOGISTICA", "legacy_source_note": "legacy /publications/personalizado_sincat logistics column", "status": "deferred", "reason": "No logistics/fulfillment field is currently present in sheets_item_formula_rows."},
-        {"name": "TIPO DE PUBLICACION", "legacy_source_note": "legacy /publications/personalizado_sincat listing type column", "status": "deferred", "reason": "No listing type field is currently present in sheets_item_formula_rows."},
-        {"name": "CODIGO ML", "source": "sheets_item_formula_rows.inventory_id | current.inventory_id", "status": "deferred", "reason": "Available as a lookup formula, but excluded from the locked dashboard MVP column set."},
-        {"name": "DIAS PAUSADA", "legacy_source_note": "legacy paused-days/historical state column", "status": "deferred", "reason": "Requires historical paused-period read model."},
-        {"name": "VENTAS (7 DIAS)", "legacy_source_note": "legacy recent sales aggregation", "status": "deferred", "reason": "Requires order/sales read model."},
-        {"name": "VENTAS (15 DIAS)", "legacy_source_note": "legacy recent sales aggregation", "status": "deferred", "reason": "Requires order/sales read model."},
-        {"name": "VENTAS (30 DIAS)", "legacy_source_note": "legacy recent sales aggregation", "status": "deferred", "reason": "Requires order/sales read model."},
-        {"name": "VENTAS (60 DIAS)", "legacy_source_note": "legacy recent sales aggregation", "status": "deferred", "reason": "Requires order/sales read model."},
-        {"name": "VENTAS (90 DIAS)", "legacy_source_note": "legacy recent sales aggregation", "status": "deferred", "reason": "Requires order/sales read model."},
-        {"name": "ENVIO A CARGO DE", "legacy_source_note": "legacy shipping payer column", "status": "deferred", "reason": "Requires shipping/cost read model."},
-        {"name": "COSTO DE ENVIO", "legacy_source_note": "legacy shipping cost column", "status": "deferred", "reason": "Requires shipping/cost read model."},
-        {"name": "% COMISION", "legacy_source_note": "legacy commission percentage column", "status": "deferred", "reason": "Requires fee/commission read model."},
-        {"name": "COMISION", "legacy_source_note": "legacy commission amount column", "status": "deferred", "reason": "Requires fee/commission read model."},
-        {"name": "COSTO POR UNIDAD", "legacy_source_note": "legacy unit cost column", "status": "deferred", "reason": "No platform-owned unit-cost source is defined for this formula."},
-        {"name": "TIENE CATALOGO", "source": "sheets_item_formula_rows.current.catalog_product_id", "status": "unsupported_until_defined", "reason": "Used only as the MVP exclusion predicate; exact legacy display semantics are not defined."},
-        {"name": "PRECIO PROMO", "legacy_source_note": "legacy conditional column when tipo_precio='todos'", "status": "unsupported_until_defined", "reason": "No promotional price field is currently present in sheets_item_formula_rows."}
+        {"name": "Tipo De Publicación", "legacy_source_note": "legacy /publications/personalizado_sincat listing type column", "status": "blank_compatible", "reason": "No listing type field is currently present in sheets_item_formula_rows."},
+        {"name": "Status", "source": "sheets_item_formula_rows.current.status", "status": "mvp"},
+        {"name": "Código ML", "source": "sheets_item_formula_rows.inventory_id | current.inventory_id", "status": "mvp"},
+        {"name": "Días Pausada", "legacy_source_note": "legacy paused-days/historical state column", "status": "blank_compatible", "reason": "Requires historical paused-period read model."},
+        {"name": "Ventas (7 días)", "source": "orders.items.quantity | qty by SKU/item_id/variation_id", "status": "mvp"},
+        {"name": "Ventas (15 días)", "source": "orders.items.quantity | qty by SKU/item_id/variation_id", "status": "mvp"},
+        {"name": "Ventas (30 días)", "source": "orders.items.quantity | qty by SKU/item_id/variation_id", "status": "mvp"},
+        {"name": "Ventas (60 días)", "source": "orders.items.quantity | qty by SKU/item_id/variation_id", "status": "mvp"},
+        {"name": "Ventas (90 días)", "source": "orders.items.quantity | qty by SKU/item_id/variation_id", "status": "mvp"},
+        {"name": "Envió A Cargo De", "legacy_source_note": "legacy shipping payer column", "status": "blank_compatible", "reason": "Requires shipping/cost read model."},
+        {"name": "Costo De Envío", "legacy_source_note": "legacy shipping cost column", "status": "blank_compatible", "reason": "Requires shipping/cost read model."},
+        {"name": "% Comisión", "legacy_source_note": "legacy commission percentage column", "status": "blank_compatible", "reason": "Requires fee/commission read model."},
+        {"name": "Comisión", "legacy_source_note": "legacy commission amount column", "status": "blank_compatible", "reason": "Requires fee/commission read model."},
+        {"name": "Costo Por Unidad", "legacy_source_note": "legacy unit cost column", "status": "blank_compatible", "reason": "No platform-owned unit-cost source is defined for this formula."},
+        {"name": "Tiene Catálogo", "source": "sheets_item_formula_rows.current.catalog_product_id", "status": "mvp"},
+        {"name": "Precio Promo", "legacy_source_note": "legacy conditional column when tipo_precio='todos'", "status": "blank_compatible", "reason": "No promotional price field is currently present in sheets_item_formula_rows."}
       ]
     },
     "ZELERDATA_ORDENES": {
       "legacy_source": "sheetsellerappindividual/addon/Orders.gs:ZELERDATA_ORDENES",
-      "compatibility_note": "MVP table is sourced from canonical orders with seller/date/status/buyer filters. It exposes only fields present in the current orders contract; richer buyer/shipping address columns remain separate unsupported formulas.",
+      "compatibility_note": "Legacy-compatible table is sourced from canonical orders with seller/date/status/buyer filters and emits one row per order item line. When compradores is a boolean-like flag or buyer-id filter, buyer/address columns are appended and blanked if unavailable.",
       "columns": [
-        {"name": "ID Orden", "source": "orders._id | orders.id", "status": "mvp"},
         {"name": "Fecha", "source": "orders.date_created", "status": "mvp"},
-        {"name": "Estado", "source": "orders.status", "status": "mvp"},
-        {"name": "Buyer ID", "source": "orders.buyer_id", "status": "mvp"},
-        {"name": "Total", "source": "orders.total_amount", "status": "mvp"},
-        {"name": "Shipment ID", "source": "orders.shipment_id", "status": "mvp"},
-        {"name": "Items", "source": "orders.items", "status": "mvp"}
+        {"name": "ID Orden", "source": "orders._id | orders.id", "status": "mvp"},
+        {"name": "Título", "source": "orders.items.title | item.title | sheets_item_formula_rows.current.title", "status": "mvp"},
+        {"name": "SKU", "source": "orders.items SKU fields | seller-scoped sheets_item_sku_index", "status": "mvp"},
+        {"name": "ID Publicación", "source": "orders.items.item_id | orders.items.item.id", "status": "mvp"},
+        {"name": "Unidades Vendidas", "source": "orders.items.quantity | orders.items.qty", "status": "mvp"},
+        {"name": "Precio", "source": "orders.items.unit_price | full_unit_price", "status": "mvp"},
+        {"name": "ID Carrito", "legacy_source_note": "legacy cart id column", "status": "blank_compatible", "reason": "Current canonical orders do not expose a stable cart id field for this contract."},
+        {"name": "% Comisión", "legacy_source_note": "legacy commission percentage column", "status": "blank_compatible", "reason": "Requires fee/commission read model."},
+        {"name": "Comisión", "legacy_source_note": "legacy commission amount column", "status": "blank_compatible", "reason": "Requires fee/commission read model."},
+        {"name": "Costo Por Unidad", "legacy_source_note": "legacy unit cost column", "status": "blank_compatible", "reason": "No platform-owned unit-cost source is defined for this formula."},
+        {"name": "Costo De Envío", "legacy_source_note": "legacy shipping cost column", "status": "blank_compatible", "reason": "Requires shipping/cost read model."},
+        {"name": "Status", "source": "orders.status", "status": "mvp"}
+      ],
+      "optional_columns_when_compradores": [
+        {"name": "Nombre Comprador", "source": "orders.buyer_name | orders.buyer", "status": "blank_compatible", "reason": "Canonical orders may not include buyer name fields."},
+        {"name": "Calle", "source": "orders.buyer_address | shipping_address | receiver_address", "status": "blank_compatible", "reason": "Canonical orders may not include buyer/shipping address fields."},
+        {"name": "Número", "source": "orders.buyer_address | shipping_address | receiver_address", "status": "blank_compatible", "reason": "Canonical orders may not include buyer/shipping address fields."},
+        {"name": "Colonia", "source": "orders.buyer_address | shipping_address | receiver_address", "status": "blank_compatible", "reason": "Canonical orders may not include buyer/shipping address fields."},
+        {"name": "Código Postal", "source": "orders.buyer_address | shipping_address | receiver_address", "status": "blank_compatible", "reason": "Canonical orders may not include buyer/shipping address fields."},
+        {"name": "Ciudad", "source": "orders.buyer_address | shipping_address | receiver_address", "status": "blank_compatible", "reason": "Canonical orders may not include buyer/shipping address fields."},
+        {"name": "Estado", "source": "orders.buyer_address | shipping_address | receiver_address", "status": "blank_compatible", "reason": "Canonical orders may not include buyer/shipping address fields."},
+        {"name": "País", "source": "orders.buyer_address | shipping_address | receiver_address", "status": "blank_compatible", "reason": "Canonical orders may not include buyer/shipping address fields."}
       ]
     },
     "ZELERDATA_ORDENESPORSKU": {
       "legacy_source": "sheetsellerappindividual/addon/Orders.gs:ZELERDATA_ORDENESPORSKU",
-      "compatibility_note": "MVP filters canonical orders by normalized SKU from order item fields when present, or from seller-scoped sheets_item_sku_index by item_id when the item_id maps to exactly one SKU. Ambiguous item_id mappings are deterministically omitted rather than guessed.",
+      "compatibility_note": "Filters canonical orders by normalized SKU from order item fields when present, or from seller-scoped sheets_item_sku_index by item_id when the item_id maps to exactly one SKU. Ambiguous item_id mappings are deterministically omitted rather than guessed. When compradores is a boolean-like flag or buyer-id filter, buyer/address columns are appended and blanked if unavailable.",
       "columns": [
-        {"name": "SKU", "source": "orders.items.sku | orders.items.seller_sku | orders.items.item.seller_sku | seller-scoped sheets_item_sku_index.item_id", "status": "mvp"},
-        {"name": "ID Orden", "source": "orders._id | orders.id", "status": "mvp"},
         {"name": "Fecha", "source": "orders.date_created", "status": "mvp"},
-        {"name": "Estado", "source": "orders.status", "status": "mvp"},
-        {"name": "Buyer ID", "source": "orders.buyer_id", "status": "mvp"},
-        {"name": "Total", "source": "orders.total_amount", "status": "mvp"},
-        {"name": "Items", "source": "orders.items", "status": "mvp"}
+        {"name": "ID Orden", "source": "orders._id | orders.id", "status": "mvp"},
+        {"name": "Título", "source": "orders.items.title | item.title | sheets_item_formula_rows.current.title", "status": "mvp"},
+        {"name": "SKU", "source": "orders.items.sku | orders.items.seller_sku | orders.items.item.seller_sku | seller-scoped sheets_item_sku_index.item_id", "status": "mvp"},
+        {"name": "ID Publicación", "source": "orders.items.item_id | orders.items.item.id", "status": "mvp"},
+        {"name": "Unidades Vendidas", "source": "orders.items.quantity | orders.items.qty", "status": "mvp"},
+        {"name": "Precio", "source": "orders.items.unit_price | full_unit_price", "status": "mvp"},
+        {"name": "ID Carrito", "legacy_source_note": "legacy cart id column", "status": "blank_compatible", "reason": "Current canonical orders do not expose a stable cart id field for this contract."},
+        {"name": "% Comisión", "legacy_source_note": "legacy commission percentage column", "status": "blank_compatible", "reason": "Requires fee/commission read model."},
+        {"name": "Comisión", "legacy_source_note": "legacy commission amount column", "status": "blank_compatible", "reason": "Requires fee/commission read model."},
+        {"name": "Costo Por Unidad", "legacy_source_note": "legacy unit cost column", "status": "blank_compatible", "reason": "No platform-owned unit-cost source is defined for this formula."},
+        {"name": "Costo De Envío", "legacy_source_note": "legacy shipping cost column", "status": "blank_compatible", "reason": "Requires shipping/cost read model."},
+        {"name": "Status", "source": "orders.status", "status": "mvp"}
+      ],
+      "optional_columns_when_compradores": [
+        {"name": "Nombre Comprador", "source": "orders.buyer_name | orders.buyer", "status": "blank_compatible", "reason": "Canonical orders may not include buyer name fields."},
+        {"name": "Calle", "source": "orders.buyer_address | shipping_address | receiver_address", "status": "blank_compatible", "reason": "Canonical orders may not include buyer/shipping address fields."},
+        {"name": "Número", "source": "orders.buyer_address | shipping_address | receiver_address", "status": "blank_compatible", "reason": "Canonical orders may not include buyer/shipping address fields."},
+        {"name": "Colonia", "source": "orders.buyer_address | shipping_address | receiver_address", "status": "blank_compatible", "reason": "Canonical orders may not include buyer/shipping address fields."},
+        {"name": "Código Postal", "source": "orders.buyer_address | shipping_address | receiver_address", "status": "blank_compatible", "reason": "Canonical orders may not include buyer/shipping address fields."},
+        {"name": "Ciudad", "source": "orders.buyer_address | shipping_address | receiver_address", "status": "blank_compatible", "reason": "Canonical orders may not include buyer/shipping address fields."},
+        {"name": "Estado", "source": "orders.buyer_address | shipping_address | receiver_address", "status": "blank_compatible", "reason": "Canonical orders may not include buyer/shipping address fields."},
+        {"name": "País", "source": "orders.buyer_address | shipping_address | receiver_address", "status": "blank_compatible", "reason": "Canonical orders may not include buyer/shipping address fields."}
       ]
     },
     "ZELERDATA_VENTASTOTALES": {
@@ -138,13 +197,16 @@
     },
     "ZELERDATA_PRODUCTOSINVENTA": {
       "legacy_source": "sheetsellerappindividual/addon/Orders.gs:ZELERDATA_PRODUCTOSINVENTA",
-      "compatibility_note": "MVP lists current seller item rows with zero canonical order-item units in the last N days. It does not infer advertising, catalog, or fee fields absent from current read models.",
+      "compatibility_note": "Lists current seller item rows with zero canonical order-item units in the last N days. Missing shipping/change-date fields are emitted as blank-compatible columns.",
       "columns": [
-        {"name": "SKU", "source": "sheets_item_formula_rows.sku | normalized_sku", "status": "mvp"},
-        {"name": "ID Publicación", "source": "sheets_item_formula_rows.item_id", "status": "mvp"},
         {"name": "Título", "source": "sheets_item_formula_rows.current.title", "status": "mvp"},
-        {"name": "Stock", "source": "sheets_item_formula_rows.current.available_quantity", "status": "mvp"},
-        {"name": "Días sin venta", "source": "latest matching orders.date_created before Formula API clock date", "status": "mvp"}
+        {"name": "Código ML", "source": "sheets_item_formula_rows.inventory_id | current.inventory_id", "status": "mvp"},
+        {"name": "ID Publicación", "source": "sheets_item_formula_rows.item_id", "status": "mvp"},
+        {"name": "SKU", "source": "sheets_item_formula_rows.sku | normalized_sku", "status": "mvp"},
+        {"name": "Stock Actual", "source": "sheets_item_formula_rows.current.available_quantity", "status": "mvp"},
+        {"name": "Fecha Ultimo Cambio", "legacy_source_note": "legacy last-change column", "status": "blank_compatible", "reason": "No current stable last-change source is defined in sheets_item_formula_rows."},
+        {"name": "Status Actual", "source": "sheets_item_formula_rows.current.status", "status": "mvp"},
+        {"name": "Envío A Cargo De", "legacy_source_note": "legacy shipping payer column", "status": "blank_compatible", "reason": "Requires shipping/cost read model."}
       ]
     },
     "ZELERDATA_VENTAPORDIAS": {
@@ -156,32 +218,33 @@
     },
     "ZELERDATA_VENTASYSTOCK": {
       "legacy_source": "sheetsellerappindividual/addon/Orders.gs:ZELERDATA_VENTASYSTOCK",
-      "compatibility_note": "MVP combines 7/15/30-day unit windows from canonical orders with current stock from sheets_item_formula_rows. It does not include unsupported cost/shipping/commission legacy columns.",
+      "compatibility_note": "Combines 7/15/30-day unit windows from canonical orders with current stock from sheets_item_formula_rows.",
       "columns": [
-        {"name": "SKU", "source": "formula input normalized SKU", "status": "mvp"},
-        {"name": "ID Publicación", "source": "formula input id_publicaciones", "status": "mvp"},
-        {"name": "Ventas 7 días", "source": "orders.items.quantity | orders.items.qty + seller-scoped sheets_item_sku_index", "status": "mvp"},
-        {"name": "Ventas 15 días", "source": "orders.items.quantity | orders.items.qty + seller-scoped sheets_item_sku_index", "status": "mvp"},
-        {"name": "Ventas 30 días", "source": "orders.items.quantity | orders.items.qty + seller-scoped sheets_item_sku_index", "status": "mvp"},
-        {"name": "Stock", "source": "sheets_item_formula_rows.current.available_quantity", "status": "mvp"}
+        {"name": "Unidades Vendidas (7 días)", "source": "orders.items.quantity | orders.items.qty + seller-scoped sheets_item_sku_index", "status": "mvp"},
+        {"name": "Unidades Vendidas (15 días)", "source": "orders.items.quantity | orders.items.qty + seller-scoped sheets_item_sku_index", "status": "mvp"},
+        {"name": "Unidades Vendidas (30 días)", "source": "orders.items.quantity | orders.items.qty + seller-scoped sheets_item_sku_index", "status": "mvp"},
+        {"name": "Stock actual", "source": "sheets_item_formula_rows.current.available_quantity", "status": "mvp"}
       ]
     },
     "ZELERDATA_TOPVENTASUNIDADES": {
       "legacy_source": "sheetsellerappindividual/addon/Orders.gs:ZELERDATA_TOPVENTASUNIDADES",
       "compatibility_note": "MVP ranks seller-scoped SKU+item pairs by summed canonical order item quantity over the inclusive date range. SKU enrichment is deterministic by seller-scoped item_id; ambiguous rows are omitted.",
       "columns": [
-        {"name": "SKU", "source": "orders.items SKU fields | seller-scoped sheets_item_sku_index", "status": "mvp"},
         {"name": "ID Publicación", "source": "orders.items.item_id | orders.items.item.id", "status": "mvp"},
-        {"name": "Unidades vendidas", "source": "orders.items.quantity | orders.items.qty", "status": "mvp"}
+        {"name": "SKU", "source": "orders.items SKU fields | seller-scoped sheets_item_sku_index", "status": "mvp"},
+        {"name": "Título", "source": "sheets_item_formula_rows.current.title", "status": "mvp"},
+        {"name": "Unidades Vendidas", "source": "orders.items.quantity | orders.items.qty", "status": "mvp"}
       ]
     },
     "ZELERDATA_TOPVENTASDINERO": {
       "legacy_source": "sheetsellerappindividual/addon/Orders.gs:ZELERDATA_TOPVENTASDINERO",
-      "compatibility_note": "MVP ranks seller-scoped SKU+item pairs by quantity * orders.items.unit_price over the inclusive date range. Lines without unit_price are skipped rather than allocating order totals.",
+      "compatibility_note": "Ranks seller-scoped SKU+item pairs by quantity * orders.items.unit_price over the inclusive date range. Lines without unit_price are skipped rather than allocating order totals.",
       "columns": [
-        {"name": "SKU", "source": "orders.items SKU fields | seller-scoped sheets_item_sku_index", "status": "mvp"},
         {"name": "ID Publicación", "source": "orders.items.item_id | orders.items.item.id", "status": "mvp"},
-        {"name": "Ventas", "source": "orders.items.qty * orders.items.unit_price", "status": "mvp"}
+        {"name": "SKU", "source": "orders.items SKU fields | seller-scoped sheets_item_sku_index", "status": "mvp"},
+        {"name": "Título", "source": "sheets_item_formula_rows.current.title", "status": "mvp"},
+        {"name": "Unidades Vendidas", "source": "orders.items.quantity | orders.items.qty", "status": "mvp"},
+        {"name": "Cantidad De Dinero", "source": "orders.items.qty * orders.items.unit_price", "status": "mvp"}
       ]
     },
     "ZELERDATA_PREGUNTAS": {
