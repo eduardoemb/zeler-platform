@@ -85,7 +85,7 @@ def _function_arguments(source: str, function_name: str) -> str:
 def test_apps_script_manifest_declares_public_marketplace_runtime_and_minimal_scopes() -> None:
     manifest = json.loads(_read_addon_file("appsscript.json"))
 
-    assert manifest["timeZone"] == "America/Argentina/Buenos_Aires"
+    assert manifest["timeZone"] == "America/Mexico_City"
     assert manifest["runtimeVersion"] == "V8"
     assert manifest["exceptionLogging"] == "STACKDRIVER"
     assert manifest["oauthScopes"] == [
