@@ -1,8 +1,13 @@
 var ZELERDATA_EXTENSION_TOKEN_KEY = "ZELERDATA_EXTENSION_TOKEN";
 var ZELERDATA_API_BASE_URL_KEY = "ZELERDATA_API_BASE_URL";
 var ZELERDATA_DEFAULT_API_BASE_URL = "https://api.zeler.app";
+var ZELERDATA_TOKEN_CONFIG_URL = "https://app.zeler.ai/sheets/config";
 
-function onOpen() {
+function onInstall(e) {
+  onOpen(e);
+}
+
+function onOpen(e) {
   SpreadsheetApp.getUi()
     .createMenu("ZelerData")
     .addItem("Settings", "showZelerDataSettings")
@@ -20,11 +25,7 @@ function showZelerDataSettings() {
 }
 
 function saveZelerDataSettings(form) {
-  var apiBaseUrl = String((form && form.apiBaseUrl) || "").trim();
   var token = String((form && form.extensionToken) || "").trim();
-  if (apiBaseUrl) {
-    setZelerDataApiBaseUrl(apiBaseUrl);
-  }
   if (token) {
     setZelerDataExtensionToken(token);
   }
@@ -55,7 +56,7 @@ function setZelerDataExtensionToken(extensionToken) {
     ZELERDATA_EXTENSION_TOKEN_KEY,
     token
   );
-  return { tokenStored: true, tokenPrefix: token.substring(0, 10) };
+  return { tokenStored: true };
 }
 
 function clearZelerDataExtensionToken() {
@@ -79,25 +80,24 @@ function getZelerDataSettings_() {
   var token = getZelerDataExtensionToken_();
   return {
     apiBaseUrl: getZelerDataApiBaseUrl_(),
-    tokenStored: Boolean(token),
-    tokenPrefix: token ? token.substring(0, 10) : ""
+    tokenStored: Boolean(token)
   };
 }
 
 function buildZelerDataSettingsHtml_(settings) {
-  var prefix = settings.tokenStored ? "Stored token prefix: " + escapeHtml_(settings.tokenPrefix) : "No token stored";
+  var tokenStatus = settings.tokenStored ? "A token is saved for your Google account." : "No token is saved yet.";
   return "" +
     "<section style='font:14px Arial,sans-serif;color:#17202a;padding:16px'>" +
-    "<h1 style='font-size:18px;margin:0 0 8px'>ZelerData private pilot</h1>" +
-    "<p style='line-height:1.45'>Paste the show-once extension token from zeler-app. The token is stored only for your Google account in this spreadsheet.</p>" +
-    "<label>API base URL</label>" +
-    "<input id='apiBaseUrl' style='box-sizing:border-box;width:100%;margin:6px 0 12px;padding:8px' value='" + escapeHtml_(settings.apiBaseUrl) + "'>" +
+    "<h1 style='font-size:18px;margin:0 0 8px'>Install ZelerData from Google Workspace Marketplace</h1>" +
+    "<p style='line-height:1.45'>Use ZelerData formulas in this spreadsheet by saving the show-once extension token from <a target='_blank' href='" + ZELERDATA_TOKEN_CONFIG_URL + "'>zeler-app Sheets config</a>.</p>" +
+    "<p style='line-height:1.45'>Never paste tokens into spreadsheet cells, comments, screenshots, or support tickets. Tokens are stored only in Apps Script UserProperties for your Google account.</p>" +
+    "<p style='font-size:12px;color:#52616b'>Formula API: " + escapeHtml_(settings.apiBaseUrl) + ". Contact Zeler support if this production endpoint needs review.</p>" +
     "<label>Extension token</label>" +
-    "<textarea id='extensionToken' rows='4' style='box-sizing:border-box;width:100%;margin:6px 0 12px;padding:8px' placeholder='zs_ext_...'></textarea>" +
-    "<p style='font-size:12px;color:#52616b'>" + prefix + "</p>" +
-    "<button onclick='save()' style='background:#123044;color:#fff;border:0;border-radius:4px;padding:8px 12px'>Save settings</button> " +
+    "<textarea id='extensionToken' rows='4' style='box-sizing:border-box;width:100%;margin:6px 0 12px;padding:8px' placeholder='Paste the show-once extension token'></textarea>" +
+    "<p id='zelerdataStatus' style='font-size:12px;color:#52616b'>" + tokenStatus + "</p>" +
+    "<button onclick='save()' style='background:#123044;color:#fff;border:0;border-radius:4px;padding:8px 12px'>Save token</button> " +
     "<button onclick='clearToken()' style='background:#fff;color:#8a1f11;border:1px solid #d8dee4;border-radius:4px;padding:8px 12px'>Clear token</button>" +
-    "<script>function save(){google.script.run.withSuccessHandler(function(){document.querySelector(\"textarea\").value=\"\";}).saveZelerDataSettings({apiBaseUrl:document.getElementById(\"apiBaseUrl\").value,extensionToken:document.getElementById(\"extensionToken\").value});}function clearToken(){google.script.run.clearZelerDataExtensionToken();}</script>" +
+    "<script>function save(){google.script.run.withSuccessHandler(function(){document.querySelector(\"textarea\").value=\"\";document.getElementById(\"zelerdataStatus\").textContent=\"Token saved. You can now use ZELERDATA_* formulas.\";}).saveZelerDataSettings({extensionToken:document.getElementById(\"extensionToken\").value});}function clearToken(){google.script.run.withSuccessHandler(function(){document.getElementById(\"zelerdataStatus\").textContent=\"Token cleared. Add a new token before using formulas.\";}).clearZelerDataExtensionToken();}</script>" +
     "</section>";
 }
 

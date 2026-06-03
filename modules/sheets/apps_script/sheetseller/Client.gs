@@ -1,7 +1,7 @@
 function zelerdataExecute_(formulaName, cuenta, args) {
   var token = getZelerDataExtensionToken_();
   if (!token) {
-    return [["TOKEN_MISSING: configure the ZelerData extension token from the ZelerData menu"]];
+    return [[zelerdataPublicErrorMessage_("TOKEN_MISSING", "")]];
   }
   var payload = {
     formula: formulaName,
@@ -21,7 +21,10 @@ function zelerdataExecute_(formulaName, cuenta, args) {
       muteHttpExceptions: true
     });
   } catch (error) {
-    return [["INTERNAL: Formula API request failed"]];
+    return [[zelerdataPublicErrorMessage_("NETWORK_ERROR", "")]];
+  }
+  if (response.getResponseCode && response.getResponseCode() >= 500) {
+    return [[zelerdataPublicErrorMessage_("SERVICE_UNAVAILABLE", "")]];
   }
   return zelerdataEnvelopeToValues_(zelerdataParseResponse_(response));
 }
@@ -37,8 +40,8 @@ function zelerdataParseResponse_(response) {
   } catch (error) {
     return {
       ok: false,
-      error: { code: "INTERNAL", message: "Formula API returned invalid JSON" },
-      values: [["INTERNAL: Formula API returned invalid JSON"]]
+      error: { code: "SERVICE_UNAVAILABLE", message: "The service returned an unreadable response" },
+      values: [[zelerdataPublicErrorMessage_("SERVICE_UNAVAILABLE", "")]]
     };
   }
 }
@@ -51,11 +54,31 @@ function zelerdataEnvelopeToValues_(envelope) {
     return zelerdataCoerce2d_(envelope.values);
   }
   var code = (envelope && envelope.error && envelope.error.code) || "DATA_UNAVAILABLE";
-  var message = code + ": " + ((envelope && envelope.error && envelope.error.message) || "formula data is unavailable");
+  var message = (envelope && envelope.error && envelope.error.message) || "";
+  return [[zelerdataPublicErrorMessage_(code, message)]];
+}
+
+function zelerdataPublicErrorMessage_(code, message) {
   if (code === "TOKEN_MISSING") {
-    message = "TOKEN_MISSING: configure the ZelerData extension token from the ZelerData menu";
+    return "TOKEN_MISSING: open ZelerData > Settings and save a show-once extension token from zeler-app Sheets config";
   }
-  return [[message]];
+  if (code === "TOKEN_REVOKED") {
+    return "TOKEN_REVOKED: create a new token in zeler-app and save it from ZelerData > Settings";
+  }
+  if (code === "SELLER_FORBIDDEN") {
+    return "SELLER_FORBIDDEN: this token is not authorized for the requested cuenta";
+  }
+  if (code === "NETWORK_ERROR") {
+    return "NETWORK_ERROR: ZelerData could not reach the Formula API. Try again or contact Zeler support.";
+  }
+  if (code === "SERVICE_UNAVAILABLE" || code === "INTERNAL") {
+    return "SERVICE_UNAVAILABLE: ZelerData could not complete this request. Try again or contact Zeler support.";
+  }
+  if (code === "DATA_UNAVAILABLE") {
+    return "DATA_UNAVAILABLE: this formula is not available for the requested data yet";
+  }
+  var safeMessage = String(message || "formula data is unavailable").replace(/https?:\/\/\S+/g, "[redacted-url]");
+  return code + ": " + safeMessage;
 }
 
 function zelerdataCoerce2d_(value) {
