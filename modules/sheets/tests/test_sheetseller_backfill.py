@@ -265,6 +265,7 @@ def test_read_model_docs_use_deterministic_ids_and_map_safe_current_item_fields(
         thumbnail="https://img.example/MLA1.jpg",
         catalog_product_id="MLA-CATALOG-1",
         inventory_id="ITEM-INV-1",
+        shipping={"logistic_type": "fulfillment", "free_shipping": True},
         last_updated=NOW,
     )
 
@@ -308,6 +309,8 @@ def test_read_model_docs_use_deterministic_ids_and_map_safe_current_item_fields(
             "thumbnail": "https://img.example/MLA1.jpg",
             "catalog_product_id": "MLA-CATALOG-1",
             "inventory_id": "ITEM-INV-1",
+            "shipping_logistic_type": "fulfillment",
+            "shipping_payer": "Vendedor",
         },
         "date_created": NOW,
         "updated_at": NOW,
@@ -350,6 +353,21 @@ def test_formula_row_preserves_blank_enrichment_fields_when_source_is_absent() -
     assert formula_row["current"]["thumbnail"] is None
     assert formula_row["current"]["catalog_product_id"] is None
     assert formula_row["current"]["inventory_id"] is None
+    assert formula_row["current"]["shipping_logistic_type"] is None
+    assert formula_row["current"]["shipping_payer"] is None
+
+
+def test_formula_row_derives_shipping_logistic_type_from_mode_and_buyer_payer() -> None:
+    item = _item_doc(
+        "MLA1",
+        attributes=[{"id": "SELLER_SKU", "value_name": "abc-123"}],
+        shipping={"mode": "me2", "free_shipping": False},
+    )
+
+    formula_row = build_formula_row_doc(item, seller_id="82453304")
+
+    assert formula_row["current"]["shipping_logistic_type"] == "me2"
+    assert formula_row["current"]["shipping_payer"] == "Comprador"
 
 
 def test_variation_sku_index_docs_use_stable_v2_ids_and_sources() -> None:
@@ -1625,6 +1643,7 @@ def _item_doc(
     thumbnail: str | None = None,
     catalog_product_id: str | None = None,
     inventory_id: str | None = None,
+    shipping: dict[str, Any] | None = None,
     last_updated: datetime | None = None,
 ) -> dict[str, Any]:
     document = {
@@ -1646,6 +1665,7 @@ def _item_doc(
         ("thumbnail", thumbnail),
         ("catalog_product_id", catalog_product_id),
         ("inventory_id", inventory_id),
+        ("shipping", shipping),
     ):
         if value is not None:
             document[key] = value

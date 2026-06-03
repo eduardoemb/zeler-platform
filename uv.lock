@@ -2579,6 +2579,7 @@ source = { virtual = "." }
 
 [package.dev-dependencies]
 dev = [
+    { name = "cachetools" },
     { name = "commitizen" },
     { name = "email-validator" },
     { name = "fastapi" },
@@ -2603,6 +2604,7 @@ dev = [
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "cachetools", specifier = ">=7.0.6" },
     { name = "commitizen", specifier = ">=3.29.0" },
     { name = "email-validator", specifier = ">=2.2.0" },
     { name = "fastapi", specifier = ">=0.110,<1" },

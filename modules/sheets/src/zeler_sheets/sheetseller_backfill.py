@@ -984,6 +984,8 @@ def build_formula_row_doc(
             "thumbnail": _optional_string(item.get("thumbnail")),
             "catalog_product_id": _optional_string(item.get("catalog_product_id")),
             "inventory_id": resolved_inventory_id,
+            "shipping_logistic_type": _shipping_logistic_type(item.get("shipping")),
+            "shipping_payer": _shipping_payer(item.get("shipping")),
         },
         "date_created": date_created,
         "updated_at": updated_at,
@@ -1146,6 +1148,21 @@ def _schema_safe_numeric(value: Any) -> int | float | Decimal128 | None:
         return value if math.isfinite(value) else None
     if isinstance(value, str):
         return _parse_order_money(value)
+    return None
+
+
+def _shipping_logistic_type(shipping: Any) -> str | None:
+    if not isinstance(shipping, dict):
+        return None
+    return _optional_string(shipping.get("logistic_type") or shipping.get("mode"))
+
+
+def _shipping_payer(shipping: Any) -> str | None:
+    if not isinstance(shipping, dict) or "free_shipping" not in shipping:
+        return None
+    free_shipping = shipping.get("free_shipping")
+    if isinstance(free_shipping, bool):
+        return "Vendedor" if free_shipping else "Comprador"
     return None
 
 

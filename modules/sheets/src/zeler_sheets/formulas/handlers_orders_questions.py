@@ -11,6 +11,7 @@ from zeler_sheets.formulas.dispatcher import (
     FormulaExecutionResult,
     FormulaHandler,
 )
+from zeler_sheets.formulas.output_normalization import NA_VALUE, normalize_response_rows
 from zeler_sheets.formulas.read_models import FormulaReadModelRepository, normalize_sku
 
 BATCH_B_IMPLEMENTED_FORMULAS = frozenset(
@@ -153,6 +154,7 @@ class OrderQuestionFormulaHandlers:
         )
         headers = _order_line_headers(include_buyer_columns=buyer_selection.include_buyer_columns)
         values: list[list[Any]] = _header_row(context.args.get("encabezados"), headers)
+        header_rows = len(values)
         values.extend(
             _order_line_row(
                 order,
@@ -165,7 +167,7 @@ class OrderQuestionFormulaHandlers:
             for line in _order_lines(order, sku_resolver=sku_resolver)
         )
         return FormulaExecutionResult(
-            values=values,
+            values=normalize_response_rows(values, header_rows=header_rows),
             meta={
                 "orders_count": len(filtered_orders),
                 "status_filter": status_filter or "todos",
@@ -270,6 +272,7 @@ class OrderQuestionFormulaHandlers:
         )
         headers = _order_line_headers(include_buyer_columns=buyer_selection.include_buyer_columns)
         values: list[list[Any]] = _header_row(context.args.get("encabezados"), headers)
+        header_rows = len(values)
         for requested_sku in dict.fromkeys(requested_skus):
             for order in filtered_orders:
                 for line in _order_lines(order, sku_resolver=sku_resolver):
@@ -285,7 +288,7 @@ class OrderQuestionFormulaHandlers:
                         )
         rows_count = len(values) - (1 if _headers_requested(context.args.get("encabezados")) else 0)
         return FormulaExecutionResult(
-            values=values,
+            values=normalize_response_rows(values, header_rows=header_rows),
             meta={
                 "orders_count": rows_count,
                 "status_filter": status_filter or "todos",
@@ -369,6 +372,7 @@ class OrderQuestionFormulaHandlers:
             context.args.get("encabezados"),
             PRODUCTOS_SIN_VENTA_LEGACY_HEADERS,
         )
+        header_rows = len(values)
         for row in ordered_rows:
             sku = normalize_sku(row.get("normalized_sku") or row.get("sku"))
             item_id = str(row.get("item_id") or "").strip()
@@ -383,14 +387,14 @@ class OrderQuestionFormulaHandlers:
                     item_id,
                     row.get("sku") or sku,
                     _current_value(row, "available_quantity"),
-                    "",
+                    NA_VALUE,
                     _current_value(row, "status"),
-                    "",
+                    _current_value(row, "shipping_payer"),
                 ]
             )
         header_count = 1 if _headers_requested(context.args.get("encabezados")) else 0
         return FormulaExecutionResult(
-            values=values,
+            values=normalize_response_rows(values, header_rows=header_rows),
             meta={
                 "rows_count": len(values) - header_count,
                 "orders_count": len(orders),
@@ -1078,11 +1082,11 @@ def _order_line_row(
         line.item_id,
         _sheet_number(line.quantity),
         "" if line.unit_price is None else _sheet_number(line.unit_price),
-        "",
-        "",
-        "",
-        "",
-        "",
+        NA_VALUE,
+        NA_VALUE,
+        NA_VALUE,
+        NA_VALUE,
+        NA_VALUE,
         order.get("status") or "",
     ]
     if include_buyer_columns:
@@ -1145,7 +1149,7 @@ def _address_value(address: Mapping[str, Any], *keys: str) -> Any:
                 return nested_value
         elif value is not None:
             return value
-    return ""
+    return NA_VALUE
 
 
 def _order_row(order: Mapping[str, Any], *, timezone: tzinfo) -> list[Any]:

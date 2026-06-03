@@ -145,6 +145,16 @@ PRODUCTOS_SIN_VENTA_LEGACY_HEADERS = [
 ]
 
 
+def _formula_table_contract(rows: list[list[Any]], *, header_rows: int = 1) -> list[list[Any]]:
+    normalized: list[list[Any]] = []
+    for index, row in enumerate(rows):
+        if index < header_rows or not row or str(row[0]).strip() == "":
+            normalized.append(row)
+            continue
+        normalized.append([row[0], *("NA" if cell == "" else cell for cell in row[1:])])
+    return normalized
+
+
 @pytest.mark.asyncio
 async def test_ordenes_returns_order_table_with_status_buyer_filters_and_headers() -> None:
     db = FakeDb()
@@ -217,7 +227,7 @@ async def test_ordenes_returns_order_table_with_status_buyer_filters_and_headers
         )
     )
 
-    assert result.values == [
+    assert result.values == _formula_table_contract([
         ORDER_LINE_LEGACY_HEADERS + BUYER_ADDRESS_LEGACY_HEADERS,
         [
             "2026-05-10T10:30:00Z",
@@ -265,7 +275,7 @@ async def test_ordenes_returns_order_table_with_status_buyer_filters_and_headers
             "",
             "",
         ],
-    ]
+    ])
     assert result.meta == {
         "orders_count": 2,
         "status_filter": "paid",
@@ -321,7 +331,7 @@ async def test_ordenes_keeps_unresolved_sku_lines_and_sku_filter_omits_them() ->
         )
     )
 
-    assert orders_table.values == [
+    assert orders_table.values == _formula_table_contract([
         ORDER_LINE_LEGACY_HEADERS,
         [
             "2026-05-10T08:30:00+00:00",
@@ -338,7 +348,7 @@ async def test_ordenes_keeps_unresolved_sku_lines_and_sku_filter_omits_them() ->
             "",
             "paid",
         ],
-    ]
+    ])
     assert orders_table.meta == {
         "orders_count": 1,
         "status_filter": "paid",
@@ -405,7 +415,7 @@ async def test_ordenes_compradores_boolean_flag_adds_buyer_columns_without_filte
         )
     )
 
-    assert result.values == [
+    assert result.values == _formula_table_contract([
         ORDER_LINE_LEGACY_HEADERS + BUYER_ADDRESS_LEGACY_HEADERS,
         [
             "2026-05-10T10:30:00Z",
@@ -453,13 +463,102 @@ async def test_ordenes_compradores_boolean_flag_adds_buyer_columns_without_filte
             "",
             "",
         ],
-    ]
+    ])
     assert result.meta == {
         "orders_count": 2,
         "status_filter": "paid",
         "buyer_filter_count": 0,
         "columns": "legacy_order_lines_with_buyers",
     }
+
+
+@pytest.mark.asyncio
+async def test_order_tables_emit_na_for_unavailable_fields_and_missing_buyers() -> None:
+    db = FakeDb()
+    db["orders"].documents = {
+        "order-1": _order_doc(
+            "order-1",
+            seller_id="seller-1",
+            status="paid",
+            buyer_id="buyer-1",
+            date_created="2026-05-10T10:30:00Z",
+            total_amount="100.00",
+            items=[{"sku": "sku-1", "item_id": "MLA1", "title": "First item", "quantity": 2}],
+        )
+    }
+    dispatcher = _order_question_dispatcher(db)
+
+    result = await dispatcher.execute(
+        _context(
+            "ZELERDATA_ORDENES",
+            {
+                "fecha_inicial": "2026-05-10",
+                "fecha_final": "2026-05-10",
+                "estado": "paid",
+                "compradores": "si",
+                "encabezados": "si",
+            },
+        )
+    )
+
+    assert result.values == [
+        ORDER_LINE_LEGACY_HEADERS + BUYER_ADDRESS_LEGACY_HEADERS,
+        [
+            "2026-05-10T10:30:00Z",
+            "order-1",
+            "First item",
+            "SKU-1",
+            "MLA1",
+            2,
+            "NA",
+            "NA",
+            "NA",
+            "NA",
+            "NA",
+            "NA",
+            "paid",
+            "NA",
+            "NA",
+            "NA",
+            "NA",
+            "NA",
+            "NA",
+            "NA",
+            "NA",
+        ],
+    ]
+
+
+@pytest.mark.asyncio
+async def test_productos_sin_venta_uses_shipping_payer_and_na_for_deferred_change_date() -> None:
+    db = FakeDb()
+    db["sheets_item_formula_rows"].documents = {
+        "seller-1-sku-1-mla1": _item_formula_row(
+            "seller-1", "SKU-1", "MLA1", stock=4, title="Unsold item"
+        )
+        | {
+            "sku": "sku-1",
+            "inventory_id": None,
+            "current": {
+                "title": "Unsold item",
+                "available_quantity": 4,
+                "status": "active",
+                "shipping_payer": "Comprador",
+            },
+        },
+    }
+    dispatcher = _order_question_dispatcher(
+        db, now_fn=lambda: datetime(2026, 5, 14, 12, 0, tzinfo=UTC)
+    )
+
+    result = await dispatcher.execute(
+        _context("ZELERDATA_PRODUCTOSINVENTA", {"rango_dias": 7, "encabezados": "si"})
+    )
+
+    assert result.values == [
+        PRODUCTOS_SIN_VENTA_LEGACY_HEADERS,
+        ["Unsold item", "NA", "MLA1", "sku-1", 4, "NA", "active", "Comprador"],
+    ]
 
 
 @pytest.mark.parametrize("compradores", ["no", "falso", "false", "0", False, 0])
@@ -503,7 +602,7 @@ async def test_ordenes_compradores_false_like_values_do_not_filter_or_add_buyer_
         )
     )
 
-    assert result.values == [
+    assert result.values == _formula_table_contract([
         ORDER_LINE_LEGACY_HEADERS,
         [
             "2026-05-10T10:30:00Z",
@@ -535,7 +634,7 @@ async def test_ordenes_compradores_false_like_values_do_not_filter_or_add_buyer_
             "",
             "paid",
         ],
-    ]
+    ])
     assert result.meta == {
         "orders_count": 2,
         "status_filter": "paid",
@@ -741,7 +840,7 @@ async def test_ordenes_renders_output_dates_in_seller_timezone() -> None:
         )
     )
 
-    assert result.values == [
+    assert result.values == _formula_table_contract([
         ORDER_LINE_LEGACY_HEADERS,
         [
             "2026-05-01T00:30:00-06:00",
@@ -758,7 +857,7 @@ async def test_ordenes_renders_output_dates_in_seller_timezone() -> None:
             "",
             "paid",
         ],
-    ]
+    ])
 
 
 @pytest.mark.asyncio
@@ -864,7 +963,7 @@ async def test_ordenes_por_sku_filters_orders_by_requested_skus() -> None:
         )
     )
 
-    assert result.values == [
+    assert result.values == _formula_table_contract([
         ORDER_LINE_LEGACY_HEADERS,
         [
             "2026-05-10T09:00:00+00:00",
@@ -896,7 +995,7 @@ async def test_ordenes_por_sku_filters_orders_by_requested_skus() -> None:
             "",
             "paid",
         ],
-    ]
+    ])
     assert result.meta == {
         "orders_count": 2,
         "status_filter": "todos",
@@ -955,7 +1054,7 @@ async def test_ordenes_por_sku_enriches_canonical_order_items_from_seller_sku_in
         )
     )
 
-    assert result.values == [
+    assert result.values == _formula_table_contract([
         ORDER_LINE_LEGACY_HEADERS,
         [
             "2026-05-10T08:00:00+00:00",
@@ -972,7 +1071,7 @@ async def test_ordenes_por_sku_enriches_canonical_order_items_from_seller_sku_in
             "",
             "paid",
         ],
-    ]
+    ])
     assert result.meta == {
         "orders_count": 1,
         "status_filter": "todos",
@@ -1025,7 +1124,7 @@ async def test_ordenes_por_sku_buyer_id_filter_includes_buyer_columns() -> None:
         )
     )
 
-    assert result.values == [
+    assert result.values == _formula_table_contract([
         ORDER_LINE_LEGACY_HEADERS + BUYER_ADDRESS_LEGACY_HEADERS,
         [
             "2026-05-10T09:00:00+00:00",
@@ -1050,7 +1149,7 @@ async def test_ordenes_por_sku_buyer_id_filter_includes_buyer_columns() -> None:
             "",
             "",
         ],
-    ]
+    ])
     assert result.meta == {
         "orders_count": 1,
         "status_filter": "paid",
@@ -1687,11 +1786,11 @@ async def test_productos_sin_venta_returns_current_items_without_recent_sales() 
         _context("ZELERDATA_PRODUCTOSINVENTA", {"rango_dias": 7, "encabezados": "si"})
     )
 
-    assert result.values == [
+    assert result.values == _formula_table_contract([
         PRODUCTOS_SIN_VENTA_LEGACY_HEADERS,
         ["Old sale", "INV-2", "MLA2", "SKU-2", 0, "", "paused", ""],
         ["Never sold", "INV-3", "MLA3", "SKU-3", 5, "", "active", ""],
-    ]
+    ])
     assert result.meta == {
         "rows_count": 2,
         "orders_count": 1,
@@ -1962,7 +2061,7 @@ async def test_formula_api_wires_batch_b_handlers_and_keeps_other_batch_b_data_u
         "meta": {"orders_count": 1, "status_filter": "todos"},
     }
     assert orders_table.status_code == 200
-    assert orders_table.json()["values"] == [
+    assert orders_table.json()["values"] == _formula_table_contract([
         ORDER_LINE_LEGACY_HEADERS,
         [
             "2026-05-10T10:30:00+00:00",
@@ -1979,7 +2078,7 @@ async def test_formula_api_wires_batch_b_handlers_and_keeps_other_batch_b_data_u
             "",
             "paid",
         ],
-    ]
+    ])
     assert not_ready.status_code == 200
     assert not_ready.json()["error"] == {
         "code": "DATA_UNAVAILABLE",
