@@ -50,13 +50,13 @@
         {"name": "SKU", "source": "sheets_item_formula_rows.sku | normalized_sku", "status": "mvp"},
         {"name": "Stock Actual", "source": "sheets_item_formula_rows.current.available_quantity", "status": "mvp"},
         {"name": "Precio", "source": "sheets_item_formula_rows.current.base_price", "status": "mvp"},
-        {"name": "Logística", "legacy_source_note": "legacy logistics column", "status": "blank_compatible", "reason": "No logistics/fulfillment field is currently present in sheets_item_formula_rows."},
+        {"name": "Logística", "source": "sheets_item_formula_rows.current.shipping_logistic_type", "status": "mvp"},
         {"name": "URL", "source": "sheets_item_formula_rows.current.permalink", "status": "mvp"},
-        {"name": "Tipo De Publicación", "legacy_source_note": "legacy listing type column", "status": "blank_compatible", "reason": "No listing type field is currently present in sheets_item_formula_rows."},
+        {"name": "Tipo De Publicación", "legacy_source_note": "legacy listing type column", "status": "explicit_na", "reason": "No listing type field is currently present in sheets_item_formula_rows."},
         {"name": "Status", "source": "sheets_item_formula_rows.current.status", "status": "mvp"},
         {"name": "Código ML", "source": "sheets_item_formula_rows.inventory_id | current.inventory_id", "status": "mvp"},
         {"name": "ID Inventario", "source": "sheets_item_formula_rows.inventory_id | current.inventory_id", "status": "mvp"},
-        {"name": "Tiempo En Pausa", "legacy_source_note": "legacy paused-time column", "status": "blank_compatible", "reason": "Requires historical paused-period read model."}
+        {"name": "Tiempo En Pausa", "legacy_source_note": "legacy paused-time column", "status": "explicit_na", "reason": "Requires historical paused-period read model."}
       ]
     },
     "ZELERDATA_DASHBOARD": {
@@ -67,24 +67,24 @@
         {"name": "SKU", "source": "sheets_item_formula_rows.sku | normalized_sku", "status": "mvp"},
         {"name": "Stock Actual", "source": "sheets_item_formula_rows.current.available_quantity", "status": "mvp"},
         {"name": "Precio", "source": "sheets_item_formula_rows.current.base_price", "status": "mvp"},
-        {"name": "Logística", "legacy_source_note": "legacy /publications/personalizado logistics column", "status": "blank_compatible", "reason": "No logistics/fulfillment field is currently present in sheets_item_formula_rows."},
+        {"name": "Logística", "source": "sheets_item_formula_rows.current.shipping_logistic_type", "status": "mvp"},
         {"name": "URL", "source": "sheets_item_formula_rows.current.permalink", "status": "mvp"},
-        {"name": "Tipo De Publicación", "legacy_source_note": "legacy /publications/personalizado listing type column", "status": "blank_compatible", "reason": "No listing type field is currently present in sheets_item_formula_rows."},
+        {"name": "Tipo De Publicación", "legacy_source_note": "legacy /publications/personalizado listing type column", "status": "explicit_na", "reason": "No listing type field is currently present in sheets_item_formula_rows."},
         {"name": "Status", "source": "sheets_item_formula_rows.current.status", "status": "mvp"},
         {"name": "Código ML", "source": "sheets_item_formula_rows.inventory_id | current.inventory_id", "status": "mvp"},
-        {"name": "Días Pausada", "legacy_source_note": "legacy paused-days/historical state column", "status": "blank_compatible", "reason": "Requires historical paused-period read model."},
+        {"name": "Días Pausada", "legacy_source_note": "legacy paused-days/historical state column", "status": "explicit_na", "reason": "Requires historical paused-period read model."},
         {"name": "Ventas (7 días)", "source": "orders.items.quantity | qty by SKU/item_id/variation_id", "status": "mvp"},
         {"name": "Ventas (15 días)", "source": "orders.items.quantity | qty by SKU/item_id/variation_id", "status": "mvp"},
         {"name": "Ventas (30 días)", "source": "orders.items.quantity | qty by SKU/item_id/variation_id", "status": "mvp"},
         {"name": "Ventas (60 días)", "source": "orders.items.quantity | qty by SKU/item_id/variation_id", "status": "mvp"},
         {"name": "Ventas (90 días)", "source": "orders.items.quantity | qty by SKU/item_id/variation_id", "status": "mvp"},
-        {"name": "Envió A Cargo De", "legacy_source_note": "legacy shipping payer column", "status": "blank_compatible", "reason": "Requires shipping/cost read model."},
-        {"name": "Costo De Envío", "legacy_source_note": "legacy shipping cost column", "status": "blank_compatible", "reason": "Requires shipping/cost read model."},
-        {"name": "% Comisión", "legacy_source_note": "legacy commission percentage column", "status": "blank_compatible", "reason": "Requires fee/commission read model."},
-        {"name": "Comisión", "legacy_source_note": "legacy commission amount column", "status": "blank_compatible", "reason": "Requires fee/commission read model."},
-        {"name": "Costo Por Unidad", "legacy_source_note": "legacy unit cost column", "status": "blank_compatible", "reason": "No platform-owned unit-cost source is defined for this formula."},
+        {"name": "Envió A Cargo De", "source": "sheets_item_formula_rows.current.shipping_payer", "status": "mvp"},
+        {"name": "Costo De Envío", "legacy_source_note": "legacy shipping cost column", "status": "explicit_na", "reason": "Requires shipping/cost read model."},
+        {"name": "% Comisión", "legacy_source_note": "legacy commission percentage column", "status": "explicit_na", "reason": "Requires fee/commission read model."},
+        {"name": "Comisión", "legacy_source_note": "legacy commission amount column", "status": "explicit_na", "reason": "Requires fee/commission read model."},
+        {"name": "Costo Por Unidad", "legacy_source_note": "legacy unit cost column", "status": "explicit_na", "reason": "No platform-owned unit-cost source is defined for this formula."},
         {"name": "Tiene Catálogo", "source": "sheets_item_formula_rows.current.catalog_product_id", "status": "mvp"},
-        {"name": "Precio Promo", "legacy_source_note": "legacy conditional column when tipo_precio='todos'", "status": "blank_compatible", "reason": "No promotional price field is currently present in sheets_item_formula_rows."}
+        {"name": "Precio Promo", "legacy_source_note": "legacy conditional column when tipo_precio='todos'", "status": "explicit_na", "reason": "No promotional price field is currently present in sheets_item_formula_rows."}
       ]
     },
     "ZELERDATA_DASHBOARDSINCATALOGO": {
@@ -96,24 +96,24 @@
         {"name": "SKU", "source": "sheets_item_formula_rows.sku | normalized_sku", "status": "mvp"},
         {"name": "Stock Actual", "source": "sheets_item_formula_rows.current.available_quantity", "status": "mvp"},
         {"name": "Precio", "source": "sheets_item_formula_rows.current.base_price", "status": "mvp"},
-        {"name": "Logística", "legacy_source_note": "legacy /publications/personalizado_sincat logistics column", "status": "blank_compatible", "reason": "No logistics/fulfillment field is currently present in sheets_item_formula_rows."},
+        {"name": "Logística", "source": "sheets_item_formula_rows.current.shipping_logistic_type", "status": "mvp"},
         {"name": "URL", "source": "sheets_item_formula_rows.current.permalink", "status": "mvp"},
-        {"name": "Tipo De Publicación", "legacy_source_note": "legacy /publications/personalizado_sincat listing type column", "status": "blank_compatible", "reason": "No listing type field is currently present in sheets_item_formula_rows."},
+        {"name": "Tipo De Publicación", "legacy_source_note": "legacy /publications/personalizado_sincat listing type column", "status": "explicit_na", "reason": "No listing type field is currently present in sheets_item_formula_rows."},
         {"name": "Status", "source": "sheets_item_formula_rows.current.status", "status": "mvp"},
         {"name": "Código ML", "source": "sheets_item_formula_rows.inventory_id | current.inventory_id", "status": "mvp"},
-        {"name": "Días Pausada", "legacy_source_note": "legacy paused-days/historical state column", "status": "blank_compatible", "reason": "Requires historical paused-period read model."},
+        {"name": "Días Pausada", "legacy_source_note": "legacy paused-days/historical state column", "status": "explicit_na", "reason": "Requires historical paused-period read model."},
         {"name": "Ventas (7 días)", "source": "orders.items.quantity | qty by SKU/item_id/variation_id", "status": "mvp"},
         {"name": "Ventas (15 días)", "source": "orders.items.quantity | qty by SKU/item_id/variation_id", "status": "mvp"},
         {"name": "Ventas (30 días)", "source": "orders.items.quantity | qty by SKU/item_id/variation_id", "status": "mvp"},
         {"name": "Ventas (60 días)", "source": "orders.items.quantity | qty by SKU/item_id/variation_id", "status": "mvp"},
         {"name": "Ventas (90 días)", "source": "orders.items.quantity | qty by SKU/item_id/variation_id", "status": "mvp"},
-        {"name": "Envió A Cargo De", "legacy_source_note": "legacy shipping payer column", "status": "blank_compatible", "reason": "Requires shipping/cost read model."},
-        {"name": "Costo De Envío", "legacy_source_note": "legacy shipping cost column", "status": "blank_compatible", "reason": "Requires shipping/cost read model."},
-        {"name": "% Comisión", "legacy_source_note": "legacy commission percentage column", "status": "blank_compatible", "reason": "Requires fee/commission read model."},
-        {"name": "Comisión", "legacy_source_note": "legacy commission amount column", "status": "blank_compatible", "reason": "Requires fee/commission read model."},
-        {"name": "Costo Por Unidad", "legacy_source_note": "legacy unit cost column", "status": "blank_compatible", "reason": "No platform-owned unit-cost source is defined for this formula."},
+        {"name": "Envió A Cargo De", "source": "sheets_item_formula_rows.current.shipping_payer", "status": "mvp"},
+        {"name": "Costo De Envío", "legacy_source_note": "legacy shipping cost column", "status": "explicit_na", "reason": "Requires shipping/cost read model."},
+        {"name": "% Comisión", "legacy_source_note": "legacy commission percentage column", "status": "explicit_na", "reason": "Requires fee/commission read model."},
+        {"name": "Comisión", "legacy_source_note": "legacy commission amount column", "status": "explicit_na", "reason": "Requires fee/commission read model."},
+        {"name": "Costo Por Unidad", "legacy_source_note": "legacy unit cost column", "status": "explicit_na", "reason": "No platform-owned unit-cost source is defined for this formula."},
         {"name": "Tiene Catálogo", "source": "sheets_item_formula_rows.current.catalog_product_id", "status": "mvp"},
-        {"name": "Precio Promo", "legacy_source_note": "legacy conditional column when tipo_precio='todos'", "status": "blank_compatible", "reason": "No promotional price field is currently present in sheets_item_formula_rows."}
+        {"name": "Precio Promo", "legacy_source_note": "legacy conditional column when tipo_precio='todos'", "status": "explicit_na", "reason": "No promotional price field is currently present in sheets_item_formula_rows."}
       ]
     },
     "ZELERDATA_ORDENES": {
@@ -127,22 +127,22 @@
         {"name": "ID Publicación", "source": "orders.items.item_id | orders.items.item.id", "status": "mvp"},
         {"name": "Unidades Vendidas", "source": "orders.items.quantity | orders.items.qty", "status": "mvp"},
         {"name": "Precio", "source": "orders.items.unit_price | full_unit_price", "status": "mvp"},
-        {"name": "ID Carrito", "legacy_source_note": "legacy cart id column", "status": "blank_compatible", "reason": "Current canonical orders do not expose a stable cart id field for this contract."},
-        {"name": "% Comisión", "legacy_source_note": "legacy commission percentage column", "status": "blank_compatible", "reason": "Requires fee/commission read model."},
-        {"name": "Comisión", "legacy_source_note": "legacy commission amount column", "status": "blank_compatible", "reason": "Requires fee/commission read model."},
-        {"name": "Costo Por Unidad", "legacy_source_note": "legacy unit cost column", "status": "blank_compatible", "reason": "No platform-owned unit-cost source is defined for this formula."},
-        {"name": "Costo De Envío", "legacy_source_note": "legacy shipping cost column", "status": "blank_compatible", "reason": "Requires shipping/cost read model."},
+        {"name": "ID Carrito", "legacy_source_note": "legacy cart id column", "status": "explicit_na", "reason": "Current canonical orders do not expose a stable cart id field for this contract."},
+        {"name": "% Comisión", "legacy_source_note": "legacy commission percentage column", "status": "explicit_na", "reason": "Requires fee/commission read model."},
+        {"name": "Comisión", "legacy_source_note": "legacy commission amount column", "status": "explicit_na", "reason": "Requires fee/commission read model."},
+        {"name": "Costo Por Unidad", "legacy_source_note": "legacy unit cost column", "status": "explicit_na", "reason": "No platform-owned unit-cost source is defined for this formula."},
+        {"name": "Costo De Envío", "legacy_source_note": "legacy shipping cost column", "status": "explicit_na", "reason": "Requires shipping/cost read model."},
         {"name": "Status", "source": "orders.status", "status": "mvp"}
       ],
       "optional_columns_when_compradores": [
-        {"name": "Nombre Comprador", "source": "orders.buyer_name | orders.buyer", "status": "blank_compatible", "reason": "Canonical orders may not include buyer name fields."},
-        {"name": "Calle", "source": "orders.buyer_address | shipping_address | receiver_address", "status": "blank_compatible", "reason": "Canonical orders may not include buyer/shipping address fields."},
-        {"name": "Número", "source": "orders.buyer_address | shipping_address | receiver_address", "status": "blank_compatible", "reason": "Canonical orders may not include buyer/shipping address fields."},
-        {"name": "Colonia", "source": "orders.buyer_address | shipping_address | receiver_address", "status": "blank_compatible", "reason": "Canonical orders may not include buyer/shipping address fields."},
-        {"name": "Código Postal", "source": "orders.buyer_address | shipping_address | receiver_address", "status": "blank_compatible", "reason": "Canonical orders may not include buyer/shipping address fields."},
-        {"name": "Ciudad", "source": "orders.buyer_address | shipping_address | receiver_address", "status": "blank_compatible", "reason": "Canonical orders may not include buyer/shipping address fields."},
-        {"name": "Estado", "source": "orders.buyer_address | shipping_address | receiver_address", "status": "blank_compatible", "reason": "Canonical orders may not include buyer/shipping address fields."},
-        {"name": "País", "source": "orders.buyer_address | shipping_address | receiver_address", "status": "blank_compatible", "reason": "Canonical orders may not include buyer/shipping address fields."}
+        {"name": "Nombre Comprador", "source": "orders.buyer_name | orders.buyer", "status": "explicit_na_when_missing", "reason": "Canonical orders may not include buyer name fields."},
+        {"name": "Calle", "source": "orders.buyer_address | shipping_address | receiver_address", "status": "explicit_na_when_missing", "reason": "Canonical orders may not include buyer/shipping address fields."},
+        {"name": "Número", "source": "orders.buyer_address | shipping_address | receiver_address", "status": "explicit_na_when_missing", "reason": "Canonical orders may not include buyer/shipping address fields."},
+        {"name": "Colonia", "source": "orders.buyer_address | shipping_address | receiver_address", "status": "explicit_na_when_missing", "reason": "Canonical orders may not include buyer/shipping address fields."},
+        {"name": "Código Postal", "source": "orders.buyer_address | shipping_address | receiver_address", "status": "explicit_na_when_missing", "reason": "Canonical orders may not include buyer/shipping address fields."},
+        {"name": "Ciudad", "source": "orders.buyer_address | shipping_address | receiver_address", "status": "explicit_na_when_missing", "reason": "Canonical orders may not include buyer/shipping address fields."},
+        {"name": "Estado", "source": "orders.buyer_address | shipping_address | receiver_address", "status": "explicit_na_when_missing", "reason": "Canonical orders may not include buyer/shipping address fields."},
+        {"name": "País", "source": "orders.buyer_address | shipping_address | receiver_address", "status": "explicit_na_when_missing", "reason": "Canonical orders may not include buyer/shipping address fields."}
       ]
     },
     "ZELERDATA_ORDENESPORSKU": {
@@ -156,22 +156,22 @@
         {"name": "ID Publicación", "source": "orders.items.item_id | orders.items.item.id", "status": "mvp"},
         {"name": "Unidades Vendidas", "source": "orders.items.quantity | orders.items.qty", "status": "mvp"},
         {"name": "Precio", "source": "orders.items.unit_price | full_unit_price", "status": "mvp"},
-        {"name": "ID Carrito", "legacy_source_note": "legacy cart id column", "status": "blank_compatible", "reason": "Current canonical orders do not expose a stable cart id field for this contract."},
-        {"name": "% Comisión", "legacy_source_note": "legacy commission percentage column", "status": "blank_compatible", "reason": "Requires fee/commission read model."},
-        {"name": "Comisión", "legacy_source_note": "legacy commission amount column", "status": "blank_compatible", "reason": "Requires fee/commission read model."},
-        {"name": "Costo Por Unidad", "legacy_source_note": "legacy unit cost column", "status": "blank_compatible", "reason": "No platform-owned unit-cost source is defined for this formula."},
-        {"name": "Costo De Envío", "legacy_source_note": "legacy shipping cost column", "status": "blank_compatible", "reason": "Requires shipping/cost read model."},
+        {"name": "ID Carrito", "legacy_source_note": "legacy cart id column", "status": "explicit_na", "reason": "Current canonical orders do not expose a stable cart id field for this contract."},
+        {"name": "% Comisión", "legacy_source_note": "legacy commission percentage column", "status": "explicit_na", "reason": "Requires fee/commission read model."},
+        {"name": "Comisión", "legacy_source_note": "legacy commission amount column", "status": "explicit_na", "reason": "Requires fee/commission read model."},
+        {"name": "Costo Por Unidad", "legacy_source_note": "legacy unit cost column", "status": "explicit_na", "reason": "No platform-owned unit-cost source is defined for this formula."},
+        {"name": "Costo De Envío", "legacy_source_note": "legacy shipping cost column", "status": "explicit_na", "reason": "Requires shipping/cost read model."},
         {"name": "Status", "source": "orders.status", "status": "mvp"}
       ],
       "optional_columns_when_compradores": [
-        {"name": "Nombre Comprador", "source": "orders.buyer_name | orders.buyer", "status": "blank_compatible", "reason": "Canonical orders may not include buyer name fields."},
-        {"name": "Calle", "source": "orders.buyer_address | shipping_address | receiver_address", "status": "blank_compatible", "reason": "Canonical orders may not include buyer/shipping address fields."},
-        {"name": "Número", "source": "orders.buyer_address | shipping_address | receiver_address", "status": "blank_compatible", "reason": "Canonical orders may not include buyer/shipping address fields."},
-        {"name": "Colonia", "source": "orders.buyer_address | shipping_address | receiver_address", "status": "blank_compatible", "reason": "Canonical orders may not include buyer/shipping address fields."},
-        {"name": "Código Postal", "source": "orders.buyer_address | shipping_address | receiver_address", "status": "blank_compatible", "reason": "Canonical orders may not include buyer/shipping address fields."},
-        {"name": "Ciudad", "source": "orders.buyer_address | shipping_address | receiver_address", "status": "blank_compatible", "reason": "Canonical orders may not include buyer/shipping address fields."},
-        {"name": "Estado", "source": "orders.buyer_address | shipping_address | receiver_address", "status": "blank_compatible", "reason": "Canonical orders may not include buyer/shipping address fields."},
-        {"name": "País", "source": "orders.buyer_address | shipping_address | receiver_address", "status": "blank_compatible", "reason": "Canonical orders may not include buyer/shipping address fields."}
+        {"name": "Nombre Comprador", "source": "orders.buyer_name | orders.buyer", "status": "explicit_na_when_missing", "reason": "Canonical orders may not include buyer name fields."},
+        {"name": "Calle", "source": "orders.buyer_address | shipping_address | receiver_address", "status": "explicit_na_when_missing", "reason": "Canonical orders may not include buyer/shipping address fields."},
+        {"name": "Número", "source": "orders.buyer_address | shipping_address | receiver_address", "status": "explicit_na_when_missing", "reason": "Canonical orders may not include buyer/shipping address fields."},
+        {"name": "Colonia", "source": "orders.buyer_address | shipping_address | receiver_address", "status": "explicit_na_when_missing", "reason": "Canonical orders may not include buyer/shipping address fields."},
+        {"name": "Código Postal", "source": "orders.buyer_address | shipping_address | receiver_address", "status": "explicit_na_when_missing", "reason": "Canonical orders may not include buyer/shipping address fields."},
+        {"name": "Ciudad", "source": "orders.buyer_address | shipping_address | receiver_address", "status": "explicit_na_when_missing", "reason": "Canonical orders may not include buyer/shipping address fields."},
+        {"name": "Estado", "source": "orders.buyer_address | shipping_address | receiver_address", "status": "explicit_na_when_missing", "reason": "Canonical orders may not include buyer/shipping address fields."},
+        {"name": "País", "source": "orders.buyer_address | shipping_address | receiver_address", "status": "explicit_na_when_missing", "reason": "Canonical orders may not include buyer/shipping address fields."}
       ]
     },
     "ZELERDATA_VENTASTOTALES": {
@@ -204,9 +204,9 @@
         {"name": "ID Publicación", "source": "sheets_item_formula_rows.item_id", "status": "mvp"},
         {"name": "SKU", "source": "sheets_item_formula_rows.sku | normalized_sku", "status": "mvp"},
         {"name": "Stock Actual", "source": "sheets_item_formula_rows.current.available_quantity", "status": "mvp"},
-        {"name": "Fecha Ultimo Cambio", "legacy_source_note": "legacy last-change column", "status": "blank_compatible", "reason": "No current stable last-change source is defined in sheets_item_formula_rows."},
+        {"name": "Fecha Ultimo Cambio", "legacy_source_note": "legacy last-change column", "status": "explicit_na", "reason": "No current stable last-change source is defined in sheets_item_formula_rows."},
         {"name": "Status Actual", "source": "sheets_item_formula_rows.current.status", "status": "mvp"},
-        {"name": "Envío A Cargo De", "legacy_source_note": "legacy shipping payer column", "status": "blank_compatible", "reason": "Requires shipping/cost read model."}
+        {"name": "Envío A Cargo De", "source": "sheets_item_formula_rows.current.shipping_payer", "status": "mvp"}
       ]
     },
     "ZELERDATA_VENTAPORDIAS": {

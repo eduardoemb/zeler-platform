@@ -30,6 +30,8 @@
           "catalog_product_id": {"bsonType": ["string", "null"]},
           "category_id": {"bsonType": ["string", "null"]},
           "thumbnail": {"bsonType": ["string", "null"]},
+          "shipping_logistic_type": {"bsonType": ["string", "null"]},
+          "shipping_payer": {"bsonType": ["string", "null"]},
           "date_created": {"bsonType": ["date", "string", "null"]},
           "updated_at": {"bsonType": ["date", "null"]}
         }

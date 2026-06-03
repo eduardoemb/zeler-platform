@@ -242,11 +242,27 @@ def test_dashboard_output_column_fixture_locks_mvp_and_deferred_columns() -> Non
         assert [
             column["name"] for column in columns[: len(expected_dashboard)]
         ] == expected_dashboard
-        assert [column["name"] for column in columns if column["status"] == "blank_compatible"] == [
+        assert [column["name"] for column in columns if column["status"] == "mvp"] == [
+            "ID Publicación",
+            "Título",
+            "SKU",
+            "Stock Actual",
+            "Precio",
             "Logística",
+            "URL",
+            "Status",
+            "Código ML",
+            "Ventas (7 días)",
+            "Ventas (15 días)",
+            "Ventas (30 días)",
+            "Ventas (60 días)",
+            "Ventas (90 días)",
+            "Envió A Cargo De",
+            "Tiene Catálogo",
+        ]
+        assert [column["name"] for column in columns if column["status"] == "explicit_na"] == [
             "Tipo De Publicación",
             "Días Pausada",
-            "Envió A Cargo De",
             "Costo De Envío",
             "% Comisión",
             "Comisión",
@@ -392,7 +408,7 @@ def test_batch_b_output_column_fixture_locks_mvp_and_deferred_columns() -> None:
         "Status Actual",
         "Envío A Cargo De",
     ]
-    assert formulas["ZELERDATA_PRODUCTOSINVENTA"]["columns"][-1]["status"] == "blank_compatible"
+    assert formulas["ZELERDATA_PRODUCTOSINVENTA"]["columns"][-1]["status"] == "mvp"
 
 
 def test_every_legacy_formula_has_an_explicit_runtime_state() -> None:

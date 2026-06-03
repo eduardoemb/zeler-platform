@@ -139,6 +139,16 @@ DASHBOARD_LEGACY_HEADERS = [
 ]
 
 
+def _formula_table_contract(rows: list[list[Any]], *, header_rows: int = 1) -> list[list[Any]]:
+    normalized: list[list[Any]] = []
+    for index, row in enumerate(rows):
+        if index < header_rows or not row or str(row[0]).strip() == "":
+            normalized.append(row)
+            continue
+        normalized.append([row[0], *("NA" if cell == "" else cell for cell in row[1:])])
+    return normalized
+
+
 @pytest.mark.asyncio
 async def test_sku_and_id_handlers_use_seller_scoped_sku_index_and_preserve_range_order() -> None:
     db = FakeDb()
@@ -370,7 +380,7 @@ async def test_url_and_codigo_ml_handlers_lookup_sku_item_pairs_with_blanks_for_
 
     assert scalar_url.values == [["https://meli.example/mla1"]]
     assert scalar_url.meta == {"partial_misses": 0}
-    assert range_codigo.values == [["INV-1"], ["INV-2"], [""]]
+    assert range_codigo.values == [["INV-1"], ["INV-2"], ["NA"]]
     assert range_codigo.meta == {"partial_misses": 1}
     assert formula_rows.last_find_filter == {
         "seller_id": "seller-1",
@@ -418,8 +428,88 @@ async def test_item_formula_handlers_return_blanks_without_enriched_source_field
         "columns": "thumbnail_url",
         "image_variant": "principal",
     }
-    assert codigo.values == [[""]]
+    assert codigo.values == [["NA"]]
     assert codigo.meta == {"partial_misses": 1}
+
+
+@pytest.mark.asyncio
+async def test_publicaciones_dashboard_emit_na_for_deferred_fields_and_current_shipping() -> None:
+    db = FakeDb()
+    db["sheets_item_formula_rows"].documents = {
+        "seller-1-sku-1-mla1": {
+            "_id": "seller-1-sku-1-mla1",
+            "seller_id": "seller-1",
+            "sku": "sku-1",
+            "normalized_sku": "SKU-1",
+            "item_id": "MLA1",
+            "inventory_id": None,
+            "current": {
+                "title": "First listing",
+                "status": "active",
+                "available_quantity": 0,
+                "base_price": 0,
+                "shipping_logistic_type": "fulfillment",
+                "shipping_payer": "Vendedor",
+            },
+        },
+    }
+    dispatcher = _core_dispatcher(db)
+
+    publicaciones = await dispatcher.execute(
+        _context("ZELERDATA_PUBLICACIONES", {"skus": "todos", "encabezados": "si"})
+    )
+    dashboard = await dispatcher.execute(
+        _context(
+            "ZELERDATA_DASHBOARD",
+            {"skus": "todos", "encabezados": "si", "tipo_precio": "todos"},
+        )
+    )
+
+    assert publicaciones.values == [
+        PUBLICACIONES_LEGACY_HEADERS,
+        [
+            "MLA1",
+            "First listing",
+            "sku-1",
+            0,
+            0,
+            "fulfillment",
+            "NA",
+            "NA",
+            "active",
+            "NA",
+            "NA",
+            "NA",
+        ],
+    ]
+    assert dashboard.values == [
+        DASHBOARD_LEGACY_HEADERS + ["Precio Promo"],
+        [
+            "MLA1",
+            "First listing",
+            "sku-1",
+            0,
+            0,
+            "fulfillment",
+            "NA",
+            "NA",
+            "active",
+            "NA",
+            "NA",
+            0,
+            0,
+            0,
+            0,
+            0,
+            "Vendedor",
+            "NA",
+            "NA",
+            "NA",
+            "NA",
+            "No",
+            "NA",
+        ],
+    ]
 
 
 @pytest.mark.asyncio
@@ -606,7 +696,7 @@ async def test_publicaciones_returns_minimal_current_item_table_with_optional_he
         )
     )
 
-    assert with_headers.values == [
+    assert with_headers.values == _formula_table_contract([
         PUBLICACIONES_LEGACY_HEADERS,
         [
             "MLA1",
@@ -636,9 +726,10 @@ async def test_publicaciones_returns_minimal_current_item_table_with_optional_he
             "INV-2",
             "",
         ],
-    ]
+    ])
     assert with_headers.meta == {"partial_misses": 0, "columns": "legacy_publications"}
-    assert without_headers.values == [
+    assert without_headers.values == _formula_table_contract(
+        [
         [
             "MLA2",
             "Second listing",
@@ -653,7 +744,9 @@ async def test_publicaciones_returns_minimal_current_item_table_with_optional_he
             "INV-2",
             "",
         ]
-    ]
+        ],
+        header_rows=0,
+    )
     assert without_headers.meta == {"partial_misses": 1, "columns": "legacy_publications"}
     assert formula_rows.last_find_filter == {
         "seller_id": "seller-1",
@@ -750,7 +843,7 @@ async def test_dashboard_returns_minimal_current_item_table_with_optional_header
         _context("ZELERDATA_DASHBOARD", {"skus": [["sku-2"], ["missing"]]})
     )
 
-    assert with_headers.values == [
+    assert with_headers.values == _formula_table_contract([
         DASHBOARD_LEGACY_HEADERS + ["Precio Promo"],
         [
             "MLA1",
@@ -802,9 +895,10 @@ async def test_dashboard_returns_minimal_current_item_table_with_optional_header
             "Sí",
             "",
         ],
-    ]
+    ])
     assert with_headers.meta == {"partial_misses": 0, "columns": "legacy_dashboard"}
-    assert without_headers.values == [
+    assert without_headers.values == _formula_table_contract(
+        [
         [
             "MLA2",
             "Second listing",
@@ -829,7 +923,9 @@ async def test_dashboard_returns_minimal_current_item_table_with_optional_header
             "",
             "Sí",
         ]
-    ]
+        ],
+        header_rows=0,
+    )
     assert without_headers.meta == {"partial_misses": 1, "columns": "legacy_dashboard"}
     assert formula_rows.last_find_filter == {
         "seller_id": "seller-1",
@@ -877,7 +973,7 @@ async def test_dashboard_sales_windows_use_sku_index_when_order_item_has_only_it
         _context("ZELERDATA_DASHBOARD", {"skus": "todos", "encabezados": "si"})
     )
 
-    assert result.values == [
+    assert result.values == _formula_table_contract([
         DASHBOARD_LEGACY_HEADERS,
         [
             "MLA1",
@@ -903,7 +999,7 @@ async def test_dashboard_sales_windows_use_sku_index_when_order_item_has_only_it
             "",
             "No",
         ],
-    ]
+    ])
     assert db["sheets_item_sku_index"].last_find_filter == {
         "seller_id": "seller-1",
         "item_id": {"$in": ["MLA1"]},
@@ -971,7 +1067,7 @@ async def test_dashboard_sales_windows_resolve_item_variations_from_seller_sku_i
         _context("ZELERDATA_DASHBOARD", {"skus": "todos", "encabezados": "si"})
     )
 
-    assert result.values == [
+    assert result.values == _formula_table_contract([
         DASHBOARD_LEGACY_HEADERS,
         [
             "MLA1",
@@ -1021,7 +1117,7 @@ async def test_dashboard_sales_windows_resolve_item_variations_from_seller_sku_i
             "",
             "No",
         ],
-    ]
+    ])
     assert db["sheets_item_sku_index"].last_find_filter == {
         "seller_id": "seller-1",
         "item_id": {"$in": ["MLA1"]},
@@ -1077,7 +1173,7 @@ async def test_dashboard_sales_windows_do_not_guess_item_level_sku_for_missing_v
         _context("ZELERDATA_DASHBOARD", {"skus": "todos", "encabezados": "si"})
     )
 
-    assert result.values == [
+    assert result.values == _formula_table_contract([
         DASHBOARD_LEGACY_HEADERS,
         [
             "MLA1",
@@ -1103,7 +1199,7 @@ async def test_dashboard_sales_windows_do_not_guess_item_level_sku_for_missing_v
             "",
             "No",
         ],
-    ]
+    ])
     assert db["sheets_item_sku_index"].last_find_filter == {
         "seller_id": "seller-1",
         "item_id": {"$in": ["MLA1"]},
@@ -1158,7 +1254,7 @@ async def test_dashboard_sales_windows_fall_back_to_unique_item_level_variation_
         _context("ZELERDATA_DASHBOARD", {"skus": "todos", "encabezados": "si"})
     )
 
-    assert result.values == [
+    assert result.values == _formula_table_contract([
         DASHBOARD_LEGACY_HEADERS,
         [
             "MLA1",
@@ -1184,7 +1280,7 @@ async def test_dashboard_sales_windows_fall_back_to_unique_item_level_variation_
             "",
             "No",
         ],
-    ]
+    ])
     assert db["sheets_item_sku_index"].last_find_filter == {
         "seller_id": "seller-1",
         "item_id": {"$in": ["MLA1"]},
@@ -1257,7 +1353,7 @@ async def test_dashboard_sin_catalogo_excludes_rows_with_catalog_product_indicat
         )
     )
 
-    assert result.values == [
+    assert result.values == _formula_table_contract([
         DASHBOARD_LEGACY_HEADERS,
         [
             "MLA1",
@@ -1307,7 +1403,7 @@ async def test_dashboard_sin_catalogo_excludes_rows_with_catalog_product_indicat
             "",
             "No",
         ],
-    ]
+    ])
     assert result.meta == {
         "partial_misses": 0,
         "columns": "legacy_dashboard",

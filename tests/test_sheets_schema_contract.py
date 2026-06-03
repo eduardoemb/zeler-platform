@@ -191,6 +191,14 @@ def test_sheets_item_sku_index_schema_supports_v2_identity_fields() -> None:
     assert schema["properties"]["variation_id"] == {"bsonType": ["string", "long", "int", "null"]}
 
 
+def test_sheets_item_formula_rows_schema_supports_current_shipping_fields() -> None:
+    validator = json.loads((ROOT / "infra/mongo/schemas/sheets_item_formula_rows.json").read_text())
+    current_properties = validator["$jsonSchema"]["properties"]["current"]["properties"]
+
+    assert current_properties["shipping_logistic_type"] == {"bsonType": ["string", "null"]}
+    assert current_properties["shipping_payer"] == {"bsonType": ["string", "null"]}
+
+
 def test_items_schema_supports_v2_formula_fields_without_raw_payload_drift() -> None:
     validator = json.loads((ROOT / "infra/mongo/schemas/items.json").read_text())
     schema = validator["$jsonSchema"]

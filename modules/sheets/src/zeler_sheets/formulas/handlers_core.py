@@ -9,6 +9,7 @@ from zeler_sheets.formulas.dispatcher import (
     FormulaExecutionResult,
     FormulaHandler,
 )
+from zeler_sheets.formulas.output_normalization import NA_VALUE, normalize_response_rows
 from zeler_sheets.formulas.read_models import FormulaReadModelRepository, normalize_sku
 
 CORE_FORMULA_NAMES = frozenset(
@@ -142,6 +143,7 @@ class CoreFormulaHandlers:
             context.args.get("encabezados"),
             PUBLICACIONES_LEGACY_HEADERS,
         )
+        header_rows = len(values)
         matched_skus: set[str] = set()
         for row in ordered_rows:
             item_id = row.get("item_id") or ""
@@ -150,7 +152,7 @@ class CoreFormulaHandlers:
             values.append(_publicaciones_row(row))
             matched_skus.add(normalize_sku(row.get("normalized_sku", "")))
         return FormulaExecutionResult(
-            values=values,
+            values=normalize_response_rows(values, header_rows=header_rows),
             meta={
                 "partial_misses": _partial_misses(requested_skus, matched_skus),
                 "columns": "legacy_publications",
@@ -216,6 +218,7 @@ class CoreFormulaHandlers:
             context,
             field="inventory_id",
             row_field_fallback="inventory_id",
+            missing_value=NA_VALUE,
         )
 
     async def sheetseller_codigoml2skuid(
@@ -328,6 +331,7 @@ class CoreFormulaHandlers:
         *,
         field: str,
         row_field_fallback: str | None = None,
+        missing_value: str = "",
     ) -> FormulaExecutionResult:
         pairs = _lookup_pairs(
             skus=context.args.get("skus"),
@@ -352,7 +356,7 @@ class CoreFormulaHandlers:
                 value = row.get(row_field_fallback)
             if value is None:
                 misses += 1
-                values.append([""])
+                values.append([missing_value])
             else:
                 values.append([value])
         return FormulaExecutionResult(values=values, meta={"partial_misses": misses})
@@ -432,6 +436,7 @@ class CoreFormulaHandlers:
         if include_promo:
             headers.append("Precio Promo")
         values: list[list[Any]] = _header_row(context.args.get("encabezados"), headers)
+        header_rows = len(values)
         for row in visible_rows:
             item_id = row.get("item_id") or ""
             if not item_id:
@@ -451,7 +456,9 @@ class CoreFormulaHandlers:
         }
         if exclude_catalog:
             meta["excluded_catalog_rows"] = len(ordered_rows) - len(visible_rows)
-        return FormulaExecutionResult(values=values, meta=meta)
+        return FormulaExecutionResult(
+            values=normalize_response_rows(values, header_rows=header_rows), meta=meta
+        )
 
     async def _dashboard_sales_windows(
         self, seller_id: str, rows: Iterable[Mapping[str, Any]]
@@ -736,16 +743,20 @@ def _image_partial_misses(
 
 
 def _header_row(value: Any, headers: list[str]) -> list[list[Any]]:
-    if str(value or "").strip().casefold() in {
+    if _headers_requested(value):
+        return [headers]
+    return []
+
+
+def _headers_requested(value: Any) -> bool:
+    return str(value or "").strip().casefold() in {
         "si",
         "sí",
         "verdadero",
         "true",
         "1",
         "yes",
-    }:
-        return [headers]
-    return []
+    }
 
 
 def _blank_if_none(value: Any) -> Any:
@@ -771,13 +782,13 @@ def _publicaciones_row(row: Mapping[str, Any]) -> list[Any]:
         row.get("sku") or row.get("normalized_sku") or "",
         _current_value(row, "available_quantity"),
         _current_value(row, "base_price"),
-        "",
+        _current_value(row, "shipping_logistic_type"),
         _current_value(row, "permalink"),
-        "",
+        NA_VALUE,
         _current_value(row, "status"),
         inventory_code,
         inventory_code,
-        "",
+        NA_VALUE,
     ]
 
 
@@ -797,24 +808,24 @@ def _dashboard_row(
         row.get("sku") or row.get("normalized_sku") or "",
         _current_value(row, "available_quantity"),
         _current_value(row, "base_price"),
-        "",
+        _current_value(row, "shipping_logistic_type"),
         _current_value(row, "permalink"),
-        "",
+        NA_VALUE,
         _current_value(row, "status"),
         _inventory_code(row),
-        "",
+        NA_VALUE,
         sales_windows.get(7, {}).get(key, 0),
         sales_windows.get(15, {}).get(key, 0),
         sales_windows.get(30, {}).get(key, 0),
         sales_windows.get(60, {}).get(key, 0),
         sales_windows.get(90, {}).get(key, 0),
-        "",
-        "",
-        "",
-        "",
-        "",
+        _current_value(row, "shipping_payer"),
+        NA_VALUE,
+        NA_VALUE,
+        NA_VALUE,
+        NA_VALUE,
         "Sí" if _has_catalog_product(row) else "No",
-    ] + ([""] if include_promo else [])
+    ] + ([NA_VALUE] if include_promo else [])
 
 
 def _last_days_start(now: datetime, days: int) -> datetime:
