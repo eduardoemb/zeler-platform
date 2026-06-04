@@ -18,12 +18,19 @@
       "logistic_type": {
         "bsonType": "string"
       },
+      "order_id": {
+        "bsonType": [
+          "string",
+          "long",
+          "int"
+        ]
+      },
       "receiver_address": {
+        "additionalProperties": false,
         "bsonType": [
           "object",
           "null"
         ],
-        "additionalProperties": false,
         "properties": {
           "city": {
             "bsonType": [
@@ -82,13 +89,6 @@
             "maxLength": 120
           }
         }
-      },
-      "order_id": {
-        "bsonType": [
-          "string",
-          "long",
-          "int"
-        ]
       },
       "schema_version": {
         "bsonType": "int"
