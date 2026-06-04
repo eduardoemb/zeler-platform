@@ -938,6 +938,61 @@ async def test_dashboard_returns_minimal_current_item_table_with_optional_header
 
 
 @pytest.mark.asyncio
+async def test_dashboard_formulas_resolve_unit_cost_only_from_seller_owned_config() -> None:
+    db = FakeDb()
+    db["sheets_item_formula_rows"].documents = {
+        "row-1": _dashboard_item("sku-1", "SKU-1", "MLA1", sale_fee=88),
+        "row-2": _dashboard_item("sku-2", "SKU-2", "MLA2", commission=77),
+    }
+    db["seller_unit_costs"].documents = {
+        "cost-sku-1": _unit_cost_doc("cost-sku-1", "seller-1", "SKU-1", "12.50"),
+        "other-seller": _unit_cost_doc("other-seller", "seller-2", "SKU-2", "99"),
+    }
+    dispatcher = _core_dispatcher(db)
+
+    dashboard = await dispatcher.execute(
+        _context("ZELERDATA_DASHBOARD", {"skus": "todos", "encabezados": "si"})
+    )
+    sin_catalogo = await dispatcher.execute(
+        _context("ZELERDATA_DASHBOARDSINCATALOGO", {"skus": "todos", "encabezados": "si"})
+    )
+
+    assert [row[20] for row in dashboard.values[1:]] == [12.5, "NA"]
+    assert [row[20] for row in sin_catalogo.values[1:]] == [12.5, "NA"]
+    assert db["seller_unit_costs"].last_find_filter == {
+        "seller_id": "seller-1",
+        "$or": [
+            {"normalized_sku": {"$in": ["SKU-1", "SKU-2"]}},
+            {"item_id": {"$in": ["MLA1", "MLA2"]}},
+        ],
+    }
+
+
+def _dashboard_item(sku: str, normalized_sku: str, item_id: str, **current: Any) -> dict[str, Any]:
+    return {
+        "_id": item_id,
+        "seller_id": "seller-1",
+        "sku": sku,
+        "normalized_sku": normalized_sku,
+        "item_id": item_id,
+        "current": {"title": item_id, "base_price": 99} | current,
+    }
+
+
+def _unit_cost_doc(doc_id: str, seller_id: str, sku: str, unit_cost: str) -> dict[str, Any]:
+    return {
+        "_id": doc_id,
+        "seller_id": seller_id,
+        "normalized_sku": sku,
+        "unit_cost": unit_cost,
+        "currency": "ARS",
+        "source": "manual",
+        "status": "active",
+        "effective_from": datetime(2026, 1, 1, tzinfo=UTC),
+    }
+
+
+@pytest.mark.asyncio
 async def test_dashboard_emits_valid_persisted_promo_price_only_for_tipo_todos() -> None:
     db = FakeDb()
     db["sheets_item_formula_rows"].documents = {

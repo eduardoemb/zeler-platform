@@ -81,7 +81,7 @@
         {"name": "Costo De Envío", "source": "sheets_item_formula_rows.current.seller_shipping_cost", "status": "mvp", "reason": "Item-level estimated seller shipping cost only; unavailable validated source remains NA."},
         {"name": "% Comisión", "legacy_source_note": "legacy commission percentage column", "status": "explicit_na", "reason": "Requires fee/commission read model."},
         {"name": "Comisión", "legacy_source_note": "legacy commission amount column", "status": "explicit_na", "reason": "Requires fee/commission read model."},
-        {"name": "Costo Por Unidad", "legacy_source_note": "legacy unit cost column", "status": "explicit_na", "reason": "No platform-owned unit-cost source is defined for this formula."},
+        {"name": "Costo Por Unidad", "source": "seller_unit_costs.unit_cost by seller-owned SKU/item/variation config", "status": "mvp", "reason": "Returns NA unless an active unambiguous seller-owned unit cost config matches."},
         {"name": "Tiene Catálogo", "source": "sheets_item_formula_rows.current.catalog_product_id", "status": "mvp"},
         {"name": "Precio Promo", "source": "sheets_item_formula_rows.current.current_promotion.sale_amount", "status": "mvp", "reason": "Emitted only when tipo_precio='todos' and persisted /items/{id}/sale_price projection is valid."}
       ]
@@ -110,7 +110,7 @@
         {"name": "Costo De Envío", "source": "sheets_item_formula_rows.current.seller_shipping_cost", "status": "mvp", "reason": "Item-level estimated seller shipping cost only; unavailable validated source remains NA."},
         {"name": "% Comisión", "legacy_source_note": "legacy commission percentage column", "status": "explicit_na", "reason": "Requires fee/commission read model."},
         {"name": "Comisión", "legacy_source_note": "legacy commission amount column", "status": "explicit_na", "reason": "Requires fee/commission read model."},
-        {"name": "Costo Por Unidad", "legacy_source_note": "legacy unit cost column", "status": "explicit_na", "reason": "No platform-owned unit-cost source is defined for this formula."},
+        {"name": "Costo Por Unidad", "source": "seller_unit_costs.unit_cost by seller-owned SKU/item/variation config", "status": "mvp", "reason": "Returns NA unless an active unambiguous seller-owned unit cost config matches."},
         {"name": "Tiene Catálogo", "source": "sheets_item_formula_rows.current.catalog_product_id", "status": "mvp"},
         {"name": "Precio Promo", "source": "sheets_item_formula_rows.current.current_promotion.sale_amount", "status": "mvp", "reason": "Emitted only when tipo_precio='todos' and persisted /items/{id}/sale_price projection is valid."}
       ]
@@ -129,7 +129,7 @@
         {"name": "ID Carrito", "legacy_source_note": "legacy cart id column", "status": "explicit_na", "reason": "Current canonical orders do not expose a stable cart id field for this contract."},
         {"name": "% Comisión", "legacy_source_note": "legacy commission percentage column", "status": "explicit_na", "reason": "Requires fee/commission read model."},
         {"name": "Comisión", "legacy_source_note": "legacy commission amount column", "status": "explicit_na", "reason": "Requires fee/commission read model."},
-        {"name": "Costo Por Unidad", "legacy_source_note": "legacy unit cost column", "status": "explicit_na", "reason": "No platform-owned unit-cost source is defined for this formula."},
+        {"name": "Costo Por Unidad", "source": "seller_unit_costs.unit_cost by seller-owned SKU/item/variation config", "status": "mvp", "reason": "Returns NA unless an active unambiguous seller-owned unit cost config matches order date."},
         {"name": "Costo De Envío", "legacy_source_note": "legacy shipping cost column", "status": "explicit_na", "reason": "Requires shipping/cost read model."},
         {"name": "Status", "source": "orders.status", "status": "mvp"}
       ],
@@ -158,7 +158,7 @@
         {"name": "ID Carrito", "legacy_source_note": "legacy cart id column", "status": "explicit_na", "reason": "Current canonical orders do not expose a stable cart id field for this contract."},
         {"name": "% Comisión", "legacy_source_note": "legacy commission percentage column", "status": "explicit_na", "reason": "Requires fee/commission read model."},
         {"name": "Comisión", "legacy_source_note": "legacy commission amount column", "status": "explicit_na", "reason": "Requires fee/commission read model."},
-        {"name": "Costo Por Unidad", "legacy_source_note": "legacy unit cost column", "status": "explicit_na", "reason": "No platform-owned unit-cost source is defined for this formula."},
+        {"name": "Costo Por Unidad", "source": "seller_unit_costs.unit_cost by seller-owned SKU/item/variation config", "status": "mvp", "reason": "Returns NA unless an active unambiguous seller-owned unit cost config matches order date."},
         {"name": "Costo De Envío", "legacy_source_note": "legacy shipping cost column", "status": "explicit_na", "reason": "Requires shipping/cost read model."},
         {"name": "Status", "source": "orders.status", "status": "mvp"}
       ],

@@ -8,6 +8,7 @@ owned_collections:
   - sheets_exports
   - sheets_sync_jobs
   - google_oauth_tokens
+  - seller_unit_costs
 allowed_meli_scopes:
   - GET /items
   - GET /items/*

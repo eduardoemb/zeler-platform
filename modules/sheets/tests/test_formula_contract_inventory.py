@@ -260,6 +260,7 @@ def test_dashboard_output_column_fixture_locks_mvp_and_deferred_columns() -> Non
             "Ventas (90 días)",
             "Envió A Cargo De",
             "Costo De Envío",
+            "Costo Por Unidad",
             "Tiene Catálogo",
             "Precio Promo",
         ]
@@ -267,8 +268,18 @@ def test_dashboard_output_column_fixture_locks_mvp_and_deferred_columns() -> Non
             "Días Pausada",
             "% Comisión",
             "Comisión",
-            "Costo Por Unidad",
         ]
+        unit_cost_column = next(
+            column for column in columns if column["name"] == "Costo Por Unidad"
+        )
+        assert unit_cost_column == {
+            "name": "Costo Por Unidad",
+            "source": "seller_unit_costs.unit_cost by seller-owned SKU/item/variation config",
+            "status": "mvp",
+            "reason": (
+                "Returns NA unless an active unambiguous seller-owned unit cost config matches."
+            ),
+        }
         assert "Categoría" not in [column["name"] for column in columns]
         assert "Imagen" not in [column["name"] for column in columns]
         assert all("source" in column or "legacy_source_note" in column for column in columns)
@@ -328,6 +339,21 @@ def test_batch_b_output_column_fixture_locks_mvp_and_deferred_columns() -> None:
         "Costo De Envío",
         "Status",
     ]
+    for formula in ["ZELERDATA_ORDENES", "ZELERDATA_ORDENESPORSKU"]:
+        unit_cost_column = next(
+            column
+            for column in formulas[formula]["columns"]
+            if column["name"] == "Costo Por Unidad"
+        )
+        assert unit_cost_column == {
+            "name": "Costo Por Unidad",
+            "source": "seller_unit_costs.unit_cost by seller-owned SKU/item/variation config",
+            "status": "mvp",
+            "reason": (
+                "Returns NA unless an active unambiguous seller-owned unit cost config "
+                "matches order date."
+            ),
+        }
     assert [
         column["name"]
         for column in formulas["ZELERDATA_ORDENESPORSKU"]["optional_columns_when_compradores"]

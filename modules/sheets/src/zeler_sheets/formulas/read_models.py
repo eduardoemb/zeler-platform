@@ -5,11 +5,13 @@ from typing import Any, cast
 
 from zeler_sheets.formulas.dispatcher import FormulaDataUnavailableError
 from zeler_sheets.formulas.schemas import FormulaContract
+from zeler_sheets.unit_costs import UnitCostLookup, resolve_unit_cost
 
 ITEM_FORMULA_ROWS_COLLECTION = "sheets_item_formula_rows"
 ITEM_SKU_INDEX_COLLECTION = "sheets_item_sku_index"
 ORDERS_COLLECTION = "orders"
 QUESTIONS_COLLECTION = "questions"
+SELLER_UNIT_COSTS_COLLECTION = "seller_unit_costs"
 SHIPMENTS_COLLECTION = "shipments"
 UNBUILT_BATCH_MARKERS = frozenset({"C", "D", "E"})
 SHIPMENT_RECEIVER_ADDRESS_PROJECTION = {
@@ -31,6 +33,7 @@ class FormulaReadModelRepository:
         self._item_sku_index = db[ITEM_SKU_INDEX_COLLECTION]
         self._orders = db[ORDERS_COLLECTION]
         self._questions = db[QUESTIONS_COLLECTION]
+        self._seller_unit_costs = db[SELLER_UNIT_COSTS_COLLECTION]
         self._shipments = db[SHIPMENTS_COLLECTION]
 
     async def find_sku_index_rows(
@@ -152,6 +155,40 @@ class FormulaReadModelRepository:
         )
         cursor = self._questions.find(filter_spec).sort([("date_created", 1), ("_id", 1)])
         return cast("list[dict[str, Any]]", await cursor.to_list(length=limit))
+
+    async def find_unit_costs(
+        self,
+        *,
+        seller_id: str,
+        lookups: list[UnitCostLookup] | tuple[UnitCostLookup, ...],
+        limit: int = 1000,
+    ) -> dict[UnitCostLookup, Any]:
+        normalized_lookups = [
+            lookup for lookup in lookups if lookup.normalized_sku or lookup.item_id
+        ]
+        if not normalized_lookups:
+            return {}
+        skus = list(
+            dict.fromkeys(
+                lookup.normalized_sku for lookup in normalized_lookups if lookup.normalized_sku
+            )
+        )
+        item_ids = list(
+            dict.fromkeys(lookup.item_id for lookup in normalized_lookups if lookup.item_id)
+        )
+        branches: list[dict[str, Any]] = []
+        if skus:
+            branches.append({"normalized_sku": {"$in": skus}})
+        if item_ids:
+            branches.append({"item_id": {"$in": item_ids}})
+        filter_spec: dict[str, Any] = {"seller_id": seller_id}
+        if branches:
+            filter_spec["$or"] = branches
+        cursor = self._seller_unit_costs.find(filter_spec).sort(
+            [("normalized_sku", 1), ("item_id", 1), ("variation_id", 1), ("effective_from", -1)]
+        )
+        docs = cast("list[dict[str, Any]]", await cursor.to_list(length=limit))
+        return {lookup: resolve_unit_cost(docs, lookup) for lookup in normalized_lookups}
 
 
 def require_formula_read_model_available(contract: FormulaContract) -> None:

@@ -1,4 +1,5 @@
 # ruff: noqa: S105,S106
+# fmt: off
 
 from __future__ import annotations
 
@@ -1088,6 +1089,57 @@ async def test_ordenes_por_sku_enriches_canonical_order_items_from_seller_sku_in
         "seller_id": "seller-1",
         "item_id": {"$in": ["MLA1", "MLA2"]},
     }
+
+
+@pytest.mark.asyncio
+async def test_order_tables_resolve_unit_cost_from_seller_config_by_order_date() -> None:
+    db = FakeDb()
+    db["orders"].documents = {
+        "order-1": _order_doc(
+            "order-1",
+            seller_id="seller-1",
+            status="paid",
+            date_created=datetime(2026, 5, 10, 8, 0, tzinfo=UTC),
+            total_amount=39,
+            items=[
+                {"sku": "sku-1", "item_id": "MLA1", "variation_id": 101, "qty": 2},
+                {"sku": "sku-2", "item_id": "MLA2", "qty": 1, "sale_fee": 7},
+            ],
+        )
+    }
+    db["seller_unit_costs"].documents = {
+        "item-cost": _unit_cost_doc("item-cost", item_id="MLA1", unit_cost="20"),
+        "variation-cost": _unit_cost_doc(
+            "variation-cost", item_id="MLA1", variation_id="101", unit_cost="25.50"
+        ),
+        "expired-sku": _unit_cost_doc(
+            "expired-sku",
+            normalized_sku="SKU-2",
+            unit_cost="9",
+            effective_to=datetime(2026, 5, 1, tzinfo=UTC),
+        ),
+    }
+    dispatcher = _order_question_dispatcher(db)
+
+    orders = await dispatcher.execute(
+        _context(
+            "ZELERDATA_ORDENES",
+            {"fecha_inicial": "2026-05-10", "fecha_final": "2026-05-10"},
+        )
+    )
+    by_sku = await dispatcher.execute(
+        _context(
+            "ZELERDATA_ORDENESPORSKU",
+            {
+                "skus": "sku-1",
+                "fecha_inicial": "2026-05-10",
+                "fecha_final": "2026-05-10",
+            },
+        )
+    )
+
+    assert [row[10] for row in orders.values] == [25.5, "NA"]
+    assert by_sku.values[0][10] == 25.5
 
 
 @pytest.mark.asyncio
@@ -2203,6 +2255,31 @@ def _sku_index_doc(
         "variation_id": variation_id,
         "identity_level": "variation" if variation_id else "item",
         "schema_version": 2,
+    }
+
+
+def _unit_cost_doc(
+    doc_id: str,
+    *,
+    normalized_sku: str | None = None,
+    item_id: str | None = None,
+    variation_id: str | None = None,
+    unit_cost: str,
+    effective_to: datetime | None = None,
+) -> dict[str, Any]:
+    return {
+        "_id": doc_id,
+        "seller_id": "seller-1",
+        "normalized_sku": normalized_sku,
+        "item_id": item_id,
+        "variation_id": variation_id,
+        "unit_cost": unit_cost,
+        "currency": "ARS",
+        "source": "manual",
+        "status": "active",
+        "effective_from": datetime(2026, 1, 1, tzinfo=UTC),
+        "effective_to": effective_to,
+        "schema_version": 1,
     }
 
 

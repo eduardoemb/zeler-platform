@@ -38,6 +38,7 @@ def test_sheets_manifest_validates_owned_collections_and_readonly_scopes() -> No
         "sheets_exports",
         "sheets_sync_jobs",
         "google_oauth_tokens",
+        "seller_unit_costs",
     ]
     assert manifest.allowed_meli_scopes == [
         "GET /items",
@@ -84,7 +85,12 @@ async def test_sheets_startup_registers_manifest_and_health_ready() -> None:
             "GET /shipments/*",
         ],
         "routing_keys": ["items.*", "orders.*", "shipments.*"],
-        "owned_collections": ["sheets_exports", "sheets_sync_jobs", "google_oauth_tokens"],
+        "owned_collections": [
+            "sheets_exports",
+            "sheets_sync_jobs",
+            "google_oauth_tokens",
+            "seller_unit_costs",
+        ],
         "health_endpoint": "/health",
         "display_identity": {
             "display_name": "ZelerData",
