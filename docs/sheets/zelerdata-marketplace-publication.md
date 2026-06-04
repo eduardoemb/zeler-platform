@@ -6,7 +6,8 @@ ZelerData is prepared as a public Google Sheets Editor add-on in repo, but publi
 
 1. Verify source readiness in `modules/sheets/apps_script/sheetseller/`.
 2. Complete the manual Google Cloud, OAuth, Apps Script, and Marketplace SDK steps below.
-3. Record only placeholders and sanitized evidence in repo or review artifacts.
+3. Confirm the Marketplace rejection-prevention checklist before resubmitting.
+4. Record only placeholders and sanitized evidence in repo or review artifacts.
 
 Manual-only steps are outside repo implementation. Do not automate them from this repository.
 
@@ -15,12 +16,33 @@ Manual-only steps are outside repo implementation. Do not automate them from thi
 | Step | Owner | Pass/Fail | Sanitized evidence |
 |---|---|---|---|
 | Google Cloud project linkage | Authorized operator |  | `<google-cloud-project-id>` linked to Apps Script project. |
-| OAuth consent screen | Authorized operator |  | Consent configured with `<support-url>` and `<privacy-policy-url>`. |
+| OAuth consent screen | Authorized operator |  | User type `External`; publishing status `In production`; consent configured with `<support-url>` and `<privacy-policy-url>`. |
 | Apps Script immutable version | Authorized operator |  | `<apps-script-version>` created from reviewed source. |
 | Marketplace SDK listing | Authorized operator |  | `<marketplace-listing-id>` configured for Google Sheets. |
 | Listing assets | Authorized operator |  | Icons/screenshots uploaded with no token or account data. |
 | Review submission | Authorized operator |  | Submitted version and listing IDs recorded as placeholders. |
 | Post-approval smoke tests | Authorized operator |  | Approved install context tested with sanitized formula screenshots. |
+
+## Marketplace rejection-prevention checklist
+
+Before submitting or resubmitting the listing, confirm these manual Google Cloud
+and Marketplace SDK settings. They prevent the known review failures from the
+first ZelerData submission.
+
+| Area | Required setting | Why it matters |
+|---|---|---|
+| Google Auth Platform → Audience/Public | User type is `External` / `Usuarios externos`. | Public Marketplace apps must be available to users outside the organization. |
+| Google Auth Platform → Audience/Public | Publishing status is `In production` / `En producción`. | OAuth verification and public Marketplace review cannot proceed while the app is in testing mode. |
+| Marketplace SDK listing copy | Google product names include `™`, for example `Google Sheets™` and `Apps Script™`. | Google trademarked product names require attribution in app names and descriptions. |
+| Marketplace SDK long description | Includes a trademark footnote. | Makes attribution explicit for review. |
+
+Recommended footnotes:
+
+- Spanish: `Google Sheets™ y Apps Script™ son marcas comerciales de Google LLC.`
+- English: `Google Sheets™ and Apps Script™ are trademarks of Google LLC.`
+
+Do not click **Volver al modo de prueba** or **Marcar como interno** after the
+OAuth audience is compliant.
 
 ## Scope matrix
 
