@@ -5,6 +5,8 @@ from typing import Any
 
 import httpx
 import pytest
+from bson import encode as bson_encode
+from bson.decimal128 import Decimal128
 from fastapi import FastAPI
 
 
@@ -39,6 +41,7 @@ class FakeCollection:
         self, query: dict[str, Any], replacement: dict[str, Any], *, upsert: bool
     ) -> None:
         assert upsert is True
+        bson_encode(replacement)
         for index, doc in enumerate(self.docs):
             if all(doc.get(key) == value for key, value in query.items()):
                 self.docs[index] = replacement
@@ -47,6 +50,13 @@ class FakeCollection:
 
     async def insert_one(self, doc: dict[str, Any]) -> None:
         self.docs.append(doc)
+
+    async def update_one(self, query: dict[str, Any], update: dict[str, Any]) -> None:
+        for doc in self.docs:
+            if all(doc.get(key) == value for key, value in query.items()):
+                doc.update(update.get("$set", {}))
+                return
+        raise AssertionError(query)
 
 
 class FakeDb:
@@ -80,12 +90,15 @@ class FakeDb:
                 }
             ]
         )
+        self.seller_unit_costs = FakeCollection()
 
     def __getitem__(self, name: str) -> FakeCollection:
         if name == "sheets_exports":
             return self.sheets_exports
         if name == "sheets_sync_jobs":
             return self.sheets_sync_jobs
+        if name == "seller_unit_costs":
+            return self.seller_unit_costs
         raise AssertionError(name)
 
 
@@ -158,6 +171,52 @@ async def test_manual_sync_creates_pending_job_from_config(monkeypatch: pytest.M
     assert response.json()["state"] == "pending"
     assert response.json()["_id"].startswith("sheets-sync-123456789-")
     assert db.sheets_sync_jobs.docs[-1]["state"] == "pending"
+
+
+@pytest.mark.asyncio
+async def test_unit_cost_config_endpoints_are_seller_scoped(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app, db = _app(monkeypatch)
+    payload = {
+        "normalized_sku": " sku-1 ",
+        "unit_cost": "10.50",
+        "currency": "ars",
+        "source": "manual",
+    }
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        upsert = await client.put(
+            "/sheets/unit-costs/123456789",
+            headers={"Authorization": "Bearer valid"},
+            json=payload,
+        )
+        listed = await client.get(
+            "/sheets/unit-costs?seller_id=123456789",
+            headers={"Authorization": "Bearer valid"},
+        )
+        deactivated = await client.post(
+            f"/sheets/unit-costs/123456789/{upsert.json()['_id']}:deactivate",
+            headers={"Authorization": "Bearer valid"},
+        )
+
+    assert upsert.status_code == 200
+    assert upsert.json() == upsert.json() | {
+        "seller_id": "123456789",
+        "normalized_sku": "SKU-1",
+        "unit_cost": 10.5,
+        "currency": "ARS",
+        "source": "manual",
+        "status": "active",
+    }
+    assert listed.status_code == 200
+    assert listed.json()[0]["_id"] == upsert.json()["_id"]
+    assert isinstance(db.seller_unit_costs.docs[0]["unit_cost"], Decimal128)
+    assert db.seller_unit_costs.docs[0]["unit_cost"].to_decimal().is_finite()
+    assert deactivated.json()["status"] == "inactive"
+    assert db.seller_unit_costs.docs[0]["status"] == "inactive"
 
 
 @pytest.mark.asyncio

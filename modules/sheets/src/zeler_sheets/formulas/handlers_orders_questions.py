@@ -13,6 +13,7 @@ from zeler_sheets.formulas.dispatcher import (
 )
 from zeler_sheets.formulas.output_normalization import NA_VALUE, normalize_response_rows
 from zeler_sheets.formulas.read_models import FormulaReadModelRepository, normalize_sku
+from zeler_sheets.unit_costs import UnitCostLookup, sheet_unit_cost_value
 
 BATCH_B_IMPLEMENTED_FORMULAS = frozenset(
     {
@@ -152,6 +153,16 @@ class OrderQuestionFormulaHandlers:
             orders=filtered_orders,
             sku_resolver=sku_resolver,
         )
+        order_lines = [
+            (order, line)
+            for order in filtered_orders
+            for line in _order_lines(order, sku_resolver=sku_resolver)
+        ]
+        unit_costs = await _unit_costs_for_order_lines(
+            repository=self._repository,
+            seller_id=context.seller_id,
+            order_lines=order_lines,
+        )
         headers = _order_line_headers(include_buyer_columns=buyer_selection.include_buyer_columns)
         values: list[list[Any]] = _header_row(context.args.get("encabezados"), headers)
         header_rows = len(values)
@@ -160,11 +171,13 @@ class OrderQuestionFormulaHandlers:
                 order,
                 line,
                 item_rows=item_rows,
+                unit_cost=unit_costs.get(
+                    _unit_cost_lookup_for_line(context.seller_id, order, line)
+                ),
                 timezone=timezone,
                 include_buyer_columns=buyer_selection.include_buyer_columns,
             )
-            for order in filtered_orders
-            for line in _order_lines(order, sku_resolver=sku_resolver)
+            for order, line in order_lines
         )
         return FormulaExecutionResult(
             values=normalize_response_rows(values, header_rows=header_rows),
@@ -270,22 +283,34 @@ class OrderQuestionFormulaHandlers:
             orders=filtered_orders,
             sku_resolver=sku_resolver,
         )
+        filtered_lines = [
+            (order, line)
+            for requested_sku in dict.fromkeys(requested_skus)
+            for order in filtered_orders
+            for line in _order_lines(order, sku_resolver=sku_resolver)
+            if line.sku == requested_sku
+        ]
+        unit_costs = await _unit_costs_for_order_lines(
+            repository=self._repository,
+            seller_id=context.seller_id,
+            order_lines=filtered_lines,
+        )
         headers = _order_line_headers(include_buyer_columns=buyer_selection.include_buyer_columns)
         values: list[list[Any]] = _header_row(context.args.get("encabezados"), headers)
         header_rows = len(values)
-        for requested_sku in dict.fromkeys(requested_skus):
-            for order in filtered_orders:
-                for line in _order_lines(order, sku_resolver=sku_resolver):
-                    if line.sku == requested_sku:
-                        values.append(
-                            _order_line_row(
-                                order,
-                                line,
-                                item_rows=item_rows,
-                                timezone=timezone,
-                                include_buyer_columns=buyer_selection.include_buyer_columns,
-                            )
-                        )
+        for order, line in filtered_lines:
+            values.append(
+                _order_line_row(
+                    order,
+                    line,
+                    item_rows=item_rows,
+                    unit_cost=unit_costs.get(
+                        _unit_cost_lookup_for_line(context.seller_id, order, line)
+                    ),
+                    timezone=timezone,
+                    include_buyer_columns=buyer_selection.include_buyer_columns,
+                )
+            )
         rows_count = len(values) - (1 if _headers_requested(context.args.get("encabezados")) else 0)
         return FormulaExecutionResult(
             values=normalize_response_rows(values, header_rows=header_rows),
@@ -757,6 +782,7 @@ class _OrderLine:
         title: str,
         quantity: Decimal,
         unit_price: Decimal | None,
+        variation_id: str,
         enriched: bool,
     ) -> None:
         self.sku = sku
@@ -764,6 +790,7 @@ class _OrderLine:
         self.title = title
         self.quantity = quantity
         self.unit_price = unit_price
+        self.variation_id = variation_id
         self.enriched = enriched
 
 
@@ -989,6 +1016,28 @@ async def _item_formula_rows_for_pairs(
     }
 
 
+async def _unit_costs_for_order_lines(
+    *,
+    repository: FormulaReadModelRepository,
+    seller_id: str,
+    order_lines: Sequence[tuple[Mapping[str, Any], _OrderLine]],
+) -> dict[UnitCostLookup, Any]:
+    lookups = [_unit_cost_lookup_for_line(seller_id, order, line) for order, line in order_lines]
+    return await repository.find_unit_costs(seller_id=seller_id, lookups=lookups)
+
+
+def _unit_cost_lookup_for_line(
+    seller_id: str, order: Mapping[str, Any], line: _OrderLine
+) -> UnitCostLookup:
+    return UnitCostLookup(
+        seller_id=seller_id,
+        normalized_sku=line.sku,
+        item_id=line.item_id,
+        variation_id=line.variation_id,
+        as_of=_optional_datetime(order.get("date_created")),
+    )
+
+
 def _unit_totals_by_pair(
     orders: Sequence[Mapping[str, Any]], *, sku_resolver: _OrderSkuResolver
 ) -> tuple[dict[tuple[str, str], Decimal], int]:
@@ -1059,6 +1108,7 @@ def _order_lines(order: Mapping[str, Any], *, sku_resolver: _OrderSkuResolver) -
                 title=_item_title(item),
                 quantity=_item_quantity(item),
                 unit_price=_item_unit_price(item),
+                variation_id=_item_variation_id(item),
                 enriched=resolution.enriched,
             )
         )
@@ -1070,6 +1120,7 @@ def _order_line_row(
     line: _OrderLine,
     *,
     item_rows: Mapping[tuple[str, str], Mapping[str, Any]],
+    unit_cost: Any,
     timezone: tzinfo,
     include_buyer_columns: bool,
 ) -> list[Any]:
@@ -1085,7 +1136,7 @@ def _order_line_row(
         NA_VALUE,
         NA_VALUE,
         NA_VALUE,
-        NA_VALUE,
+        sheet_unit_cost_value(unit_cost),
         NA_VALUE,
         order.get("status") or "",
     ]

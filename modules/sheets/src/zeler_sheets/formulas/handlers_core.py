@@ -15,6 +15,7 @@ from zeler_sheets.formulas.dispatcher import (
 )
 from zeler_sheets.formulas.output_normalization import NA_VALUE, normalize_response_rows
 from zeler_sheets.formulas.read_models import FormulaReadModelRepository, normalize_sku
+from zeler_sheets.unit_costs import UnitCostLookup, sheet_unit_cost_value
 
 CORE_FORMULA_NAMES = frozenset(
     {
@@ -435,6 +436,10 @@ class CoreFormulaHandlers:
             row for row in ordered_rows if not exclude_catalog or not _has_catalog_product(row)
         ]
         sales_windows = await self._dashboard_sales_windows(context.seller_id, visible_rows)
+        formula_time = self._now_fn()
+        unit_costs = await self._dashboard_unit_costs(
+            context.seller_id, visible_rows, as_of=formula_time
+        )
         headers = list(DASHBOARD_LEGACY_HEADERS)
         include_promo = str(context.args.get("tipo_precio") or "").strip().casefold() == "todos"
         if include_promo:
@@ -449,6 +454,9 @@ class CoreFormulaHandlers:
                 _dashboard_row(
                     row,
                     sales_windows=sales_windows,
+                    unit_cost=unit_costs.get(
+                        _unit_cost_lookup_for_row(context.seller_id, row, formula_time)
+                    ),
                     include_promo=include_promo,
                 )
             )
@@ -504,6 +512,12 @@ class CoreFormulaHandlers:
                     if _last_days_start(now, days) <= created <= _day_end(now):
                         windows[days][key] = windows[days].get(key, 0) + quantity
         return windows
+
+    async def _dashboard_unit_costs(
+        self, seller_id: str, rows: Iterable[Mapping[str, Any]], *, as_of: datetime
+    ) -> dict[UnitCostLookup, Any]:
+        lookups = [_unit_cost_lookup_for_row(seller_id, row, as_of) for row in rows]
+        return await self._repository.find_unit_costs(seller_id=seller_id, lookups=lookups)
 
 
 class _LookupPair:
@@ -805,6 +819,7 @@ def _dashboard_row(
     row: Mapping[str, Any],
     *,
     sales_windows: Mapping[int, Mapping[tuple[str, str], int]],
+    unit_cost: Any,
     include_promo: bool,
 ) -> list[Any]:
     key = (
@@ -832,9 +847,21 @@ def _dashboard_row(
         _seller_shipping_cost(row),
         NA_VALUE,
         NA_VALUE,
-        NA_VALUE,
+        sheet_unit_cost_value(unit_cost),
         "Sí" if _has_catalog_product(row) else "No",
     ] + ([NA_VALUE] if include_promo else [])
+
+
+def _unit_cost_lookup_for_row(
+    seller_id: str, row: Mapping[str, Any], as_of: datetime
+) -> UnitCostLookup:
+    return UnitCostLookup(
+        seller_id=seller_id,
+        normalized_sku=normalize_sku(row.get("normalized_sku") or row.get("sku")),
+        item_id=str(row.get("item_id") or ""),
+        variation_id=_normalize_variation_id(row.get("variation_id")),
+        as_of=as_of,
+    )
 
 
 def _seller_shipping_cost(row: Mapping[str, Any]) -> Any:

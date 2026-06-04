@@ -174,6 +174,41 @@ def test_sheets_formula_foundation_validators_reject_missing_required_fields() -
         assert result.missing_required_fields == missing_fields
 
 
+def test_seller_unit_costs_validator_and_indexes_match_contract() -> None:
+    validator = json.loads((ROOT / "infra/mongo/schemas/seller_unit_costs.json").read_text())
+    indexes = json.loads((ROOT / "infra/mongo/indexes/seller_unit_costs.json").read_text())
+
+    result = validate_document_against_schema({"_id": "cost-1"}, validator)
+
+    assert result.valid is False
+    assert result.missing_required_fields == [
+        "seller_id",
+        "unit_cost",
+        "currency",
+        "source",
+        "status",
+        "effective_from",
+        "created_at",
+        "updated_at",
+        "schema_version",
+    ]
+    schema = validator["$jsonSchema"]
+    assert schema["additionalProperties"] is False
+    assert schema["properties"]["source"] == {"enum": ["manual", "import"]}
+    assert schema["properties"]["status"] == {"enum": ["active", "inactive"]}
+    assert [index["options"]["name"] for index in indexes] == [
+        "idx_seller_unit_costs_seller_identity_status_effective",
+        "idx_seller_unit_costs_seller_item_variation",
+        "idx_seller_unit_costs_seller_sku",
+        "uniq_seller_unit_costs_active_identity_effective",
+    ]
+    assert indexes[-1]["options"] == {
+        "name": "uniq_seller_unit_costs_active_identity_effective",
+        "unique": True,
+        "partialFilterExpression": {"status": "active"},
+    }
+
+
 def test_sheets_item_sku_index_schema_supports_v2_identity_fields() -> None:
     validator = json.loads((ROOT / "infra/mongo/schemas/sheets_item_sku_index.json").read_text())
     schema = validator["$jsonSchema"]
@@ -265,4 +300,5 @@ def test_sheets_manifest_owns_google_oauth_tokens_not_transient_state() -> None:
     manifest = validate_manifest("modules/sheets/manifest.yaml")
 
     assert "google_oauth_tokens" in manifest.owned_collections
+    assert "seller_unit_costs" in manifest.owned_collections
     assert "google_oauth_state" not in manifest.owned_collections

@@ -37,6 +37,7 @@ from zeler_platform_core.models.operational import (
     RepricerRuleExecutionState,
     WebhookEvent,
 )
+from zeler_platform_core.models.unit_costs import SellerUnitCost
 from zeler_platform_core.models.users import User
 
 __all__ = [
@@ -71,6 +72,7 @@ __all__ = [
     "RepricerReport",
     "RepricerRule",
     "RepricerRuleExecutionState",
+    "SellerUnitCost",
     "Shipment",
     "User",
     "WebhookEvent",
