@@ -1094,6 +1094,56 @@ def test_sale_price_projection_keeps_bounded_discount_scalars_only() -> None:
     assert "prices" not in projection
 
 
+@pytest.mark.asyncio
+async def test_items_backfill_propagates_mongo_loaded_current_promotion_to_formula_row() -> None:
+    mongo_loaded_at = NOW.replace(tzinfo=None)
+    item = _item_doc("MLA1", attributes=[{"id": "SELLER_SKU", "value_name": "sku-1"}])
+    item["current_promotion"] = {
+        "source": "/items/{id}/sale_price",
+        "sale_amount": Decimal128("99.90"),
+        "regular_amount": Decimal128("149.90"),
+        "discount_percent": Decimal128("33.36"),
+        "currency_id": "MXN",
+        "promotion_id": "PROMO-1",
+        "promotion_type": "deal",
+        "reference_at": mongo_loaded_at,
+        "synced_at": mongo_loaded_at,
+    }
+    db = FakeDb([item])
+
+    formula_row = build_formula_row_doc(item, seller_id="82453304")
+    summary = await run_sheetseller_backfill(db=db, seller_id="82453304", dry_run=False)
+    dashboard = await _core_formula_dispatcher(db).execute(
+        _formula_context("ZELERDATA_DASHBOARD", {"skus": "todos", "tipo_precio": "todos"})
+    )
+
+    expected_projection = {
+        "source": "/items/{id}/sale_price",
+        "sale_amount": Decimal128("99.90"),
+        "regular_amount": Decimal128("149.90"),
+        "discount_percent": Decimal128("33.36"),
+        "currency_id": "MXN",
+        "promotion_id": "PROMO-1",
+        "promotion_type": "deal",
+        "reference_at": NOW,
+        "synced_at": NOW,
+    }
+    assert summary.updated == 1
+    assert formula_row["current"]["current_promotion"] == expected_projection
+    persisted_row = db["sheets_item_formula_rows"].documents["82453304:SKU-1:MLA1"]
+    assert persisted_row["current"]["current_promotion"] == expected_projection
+    assert "raw" not in persisted_row["current"]["current_promotion"]
+    assert dashboard.values[0][-1] == Decimal("99.90")
+
+
+def test_formula_row_doc_omits_absent_current_promotion_from_formula_row() -> None:
+    item = _item_doc("MLA1", attributes=[{"id": "SELLER_SKU", "value_name": "sku-1"}])
+
+    formula_row = build_formula_row_doc(item, seller_id="82453304")
+
+    assert "current_promotion" not in formula_row["current"]
+
+
 @pytest.mark.parametrize(
     "payload",
     [
