@@ -131,6 +131,7 @@ ENTITY_SCHEMAS: dict[str, dict[str, Any]] = {
             "health": {"bsonType": ["double", "int", "long", "null"]},
             "inventory_id": {"bsonType": ["string", "null"]},
             "listing_type_id": {"bsonType": ["string", "null"]},
+            "seller_shipping_cost": {"bsonType": ["decimal", "double", "int", "long", "null"]},
             "permalink": {"bsonType": ["string", "null"]},
             "thumbnail": {"bsonType": ["string", "null"]},
             "last_meli_sync_at": DATE,
