@@ -35,6 +35,74 @@
       "category_id": {
         "bsonType": "string"
       },
+      "current_promotion": {
+        "additionalProperties": false,
+        "bsonType": [
+          "object",
+          "null"
+        ],
+        "properties": {
+          "currency_id": {
+            "bsonType": "string"
+          },
+          "discount_percent": {
+            "bsonType": [
+              "decimal",
+              "double",
+              "int",
+              "long",
+              "null"
+            ]
+          },
+          "promotion_id": {
+            "bsonType": [
+              "string",
+              "null"
+            ]
+          },
+          "promotion_type": {
+            "bsonType": [
+              "string",
+              "null"
+            ]
+          },
+          "reference_at": {
+            "bsonType": "date"
+          },
+          "regular_amount": {
+            "bsonType": [
+              "decimal",
+              "double",
+              "int",
+              "long"
+            ]
+          },
+          "sale_amount": {
+            "bsonType": [
+              "decimal",
+              "double",
+              "int",
+              "long"
+            ]
+          },
+          "source": {
+            "enum": [
+              "/items/{id}/sale_price"
+            ]
+          },
+          "synced_at": {
+            "bsonType": "date"
+          }
+        },
+        "required": [
+          "source",
+          "sale_amount",
+          "regular_amount",
+          "currency_id",
+          "reference_at",
+          "synced_at"
+        ]
+      },
       "date_created": {
         "bsonType": "date"
       },

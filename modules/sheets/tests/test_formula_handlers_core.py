@@ -938,6 +938,93 @@ async def test_dashboard_returns_minimal_current_item_table_with_optional_header
 
 
 @pytest.mark.asyncio
+async def test_dashboard_emits_valid_persisted_promo_price_only_for_tipo_todos() -> None:
+    db = FakeDb()
+    db["sheets_item_formula_rows"].documents = {
+        "seller-1-sku-1-mla1": {
+            "_id": "seller-1-sku-1-mla1",
+            "seller_id": "seller-1",
+            "sku": "sku-1",
+            "normalized_sku": "SKU-1",
+            "item_id": "MLA1",
+            "current": {
+                "title": "Promoted listing",
+                "status": "active",
+                "available_quantity": 7,
+                "base_price": 149.90,
+                "current_promotion": {
+                    "source": "/items/{id}/sale_price",
+                    "sale_amount": 99.90,
+                    "regular_amount": 149.90,
+                    "currency_id": "MXN",
+                    "reference_at": datetime(2026, 6, 4, 12, tzinfo=UTC),
+                    "synced_at": datetime(2026, 6, 4, 12, tzinfo=UTC),
+                },
+            },
+        }
+    }
+    dispatcher = _core_dispatcher(db)
+
+    with_promo = await dispatcher.execute(
+        _context("ZELERDATA_DASHBOARD", {"skus": "todos", "tipo_precio": "todos"})
+    )
+    without_promo_column = await dispatcher.execute(
+        _context("ZELERDATA_DASHBOARD", {"skus": "todos", "tipo_precio": "base"})
+    )
+
+    assert with_promo.values[0][-1] == 99.90
+    assert len(without_promo_column.values[0]) == len(DASHBOARD_LEGACY_HEADERS)
+
+
+@pytest.mark.asyncio
+async def test_dashboard_keeps_promo_na_for_missing_or_non_discounted_projection() -> None:
+    db = FakeDb()
+    db["sheets_item_formula_rows"].documents = {
+        "seller-1-sku-1-mla1": {
+            "_id": "seller-1-sku-1-mla1",
+            "seller_id": "seller-1",
+            "sku": "sku-1",
+            "normalized_sku": "SKU-1",
+            "item_id": "MLA1",
+            "current": {
+                "title": "Missing promo",
+                "status": "active",
+                "available_quantity": 7,
+                "base_price": 149.90,
+            },
+        },
+        "seller-1-sku-2-mla2": {
+            "_id": "seller-1-sku-2-mla2",
+            "seller_id": "seller-1",
+            "sku": "sku-2",
+            "normalized_sku": "SKU-2",
+            "item_id": "MLA2",
+            "current": {
+                "title": "Non discount",
+                "status": "active",
+                "available_quantity": 7,
+                "base_price": 149.90,
+                "current_promotion": {
+                    "source": "/items/{id}/sale_price",
+                    "sale_amount": 149.90,
+                    "regular_amount": 149.90,
+                    "currency_id": "MXN",
+                    "reference_at": datetime(2026, 6, 4, 12, tzinfo=UTC),
+                    "synced_at": datetime(2026, 6, 4, 12, tzinfo=UTC),
+                },
+            },
+        },
+    }
+    dispatcher = _core_dispatcher(db)
+
+    result = await dispatcher.execute(
+        _context("ZELERDATA_DASHBOARD", {"skus": "todos", "tipo_precio": "todos"})
+    )
+
+    assert [row[-1] for row in result.values] == ["NA", "NA"]
+
+
+@pytest.mark.asyncio
 async def test_dashboard_sales_windows_use_sku_index_when_order_item_has_only_item_id() -> None:
     db = FakeDb()
     db["sheets_item_formula_rows"].documents = {

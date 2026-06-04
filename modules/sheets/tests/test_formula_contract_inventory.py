@@ -261,13 +261,13 @@ def test_dashboard_output_column_fixture_locks_mvp_and_deferred_columns() -> Non
             "Envió A Cargo De",
             "Costo De Envío",
             "Tiene Catálogo",
+            "Precio Promo",
         ]
         assert [column["name"] for column in columns if column["status"] == "explicit_na"] == [
             "Días Pausada",
             "% Comisión",
             "Comisión",
             "Costo Por Unidad",
-            "Precio Promo",
         ]
         assert "Categoría" not in [column["name"] for column in columns]
         assert "Imagen" not in [column["name"] for column in columns]

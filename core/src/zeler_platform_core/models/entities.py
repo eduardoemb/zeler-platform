@@ -4,7 +4,7 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Any, Literal
 
-from pydantic import Field, field_validator
+from pydantic import ConfigDict, Field, field_validator, model_validator
 
 from zeler_platform_core.models.base import (
     PriceMixin,
@@ -40,6 +40,63 @@ ClaimStage = Literal["claim", "dispute", "recontact", "none"]
 ClaimType = Literal["mediations", "returns", "fulfillment", "cancel_purchase"]
 
 
+class PromoPriceProjection(UtcDatetimeMixin):
+    model_config = ConfigDict(arbitrary_types_allowed=True, extra="forbid")
+
+    source: Literal["/items/{id}/sale_price"]
+    sale_amount: Decimal
+    regular_amount: Decimal
+    discount_percent: Decimal | None = None
+    currency_id: str
+    promotion_id: str | None = None
+    promotion_type: str | None = None
+    reference_at: datetime
+    synced_at: datetime
+
+    @field_validator("sale_amount", "regular_amount", "discount_percent", mode="before")
+    @classmethod
+    def _coerce_finite_non_negative_decimal(cls, value: object) -> Decimal | None:
+        if value is None:
+            return None
+        if isinstance(value, (bool, dict, list)):
+            msg = "promo numeric fields must be finite non-negative numbers"
+            raise ValueError(msg)
+        parsed = value if isinstance(value, Decimal) else Decimal(str(value))
+        if not parsed.is_finite() or parsed < 0:
+            msg = "promo numeric fields must be finite non-negative numbers"
+            raise ValueError(msg)
+        return parsed
+
+    @field_validator("currency_id", mode="before")
+    @classmethod
+    def _coerce_currency_id(cls, value: object) -> str:
+        normalized = _coerce_str(value).strip().upper()
+        if not normalized:
+            msg = "currency_id must be non-blank"
+            raise ValueError(msg)
+        return normalized
+
+    @field_validator("promotion_id", "promotion_type", mode="before")
+    @classmethod
+    def _coerce_optional_promo_string(cls, value: object) -> object:
+        if value is None:
+            return None
+        normalized = _coerce_str(value).strip()
+        return normalized or None
+
+    @field_validator("reference_at", "synced_at", mode="before")
+    @classmethod
+    def _promotion_datetimes_must_be_aware(cls, value: object) -> object:
+        return UtcDatetimeMixin._datetime_must_be_aware(value)
+
+    @model_validator(mode="after")
+    def _must_be_discount(self) -> PromoPriceProjection:
+        if self.sale_amount >= self.regular_amount:
+            msg = "sale_amount must be less than regular_amount"
+            raise ValueError(msg)
+        return self
+
+
 class Item(UtcDatetimeMixin, PriceMixin, SellerScopedDocument):
     title: str
     price: Decimal
@@ -57,6 +114,7 @@ class Item(UtcDatetimeMixin, PriceMixin, SellerScopedDocument):
     attributes: list[dict[str, Any]] = Field(default_factory=list)
     shipping: dict[str, Any] | None = None
     health: float | None = None
+    current_promotion: PromoPriceProjection | None = None
     last_meli_sync_at: datetime
     date_created: datetime
     last_updated: datetime

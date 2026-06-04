@@ -8,7 +8,7 @@ import os
 from collections.abc import Sequence
 from dataclasses import asdict, dataclass
 from datetime import UTC, date, datetime, timedelta
-from decimal import Decimal, InvalidOperation
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from typing import Any, Protocol, cast
 from urllib.parse import quote
 
@@ -16,7 +16,7 @@ import httpx
 from bson.decimal128 import Decimal128
 
 from zeler_platform_core.clients.meli_gateway_client import GatewayRateLimitError
-from zeler_platform_core.models import Item
+from zeler_platform_core.models import Item, PromoPriceProjection
 from zeler_platform_core.models.base import current_schema_version
 from zeler_sheets.formulas.read_models import normalize_sku
 
@@ -28,6 +28,8 @@ READ_MODEL_SCHEMA_VERSION = 2
 SELLER_SKU_ATTRIBUTE_ID = "SELLER_SKU"
 DEFAULT_GATEWAY_BASE_URL = "http://gateway:8080/proxy/meli"
 ITEM_DETAIL_BATCH_SIZE = 20
+SALE_PRICE_SOURCE = "/items/{id}/sale_price"
+SALE_PRICE_CONTEXT = "channel_marketplace"
 
 
 class MeliOrderGatewayClient(Protocol):
@@ -135,6 +137,9 @@ class ItemDetailEnrichmentSummary:
     shipping_options_requested: int = 0
     seller_shipping_costs_enriched: int = 0
     seller_shipping_costs_unavailable: int = 0
+    sale_price_requested: int = 0
+    sale_price_promotions_enriched: int = 0
+    sale_price_promotions_unavailable: int = 0
 
     def as_dict(self) -> dict[str, int | bool | str]:
         return asdict(self)
@@ -189,6 +194,13 @@ def build_arg_parser() -> argparse.ArgumentParser:
         action="store_false",
         dest="dry_run",
         help="Explicitly write idempotent read-model upserts.",
+    )
+    parser.add_argument(
+        "--enable-sale-price",
+        action="store_true",
+        dest="sale_price_enabled",
+        default=False,
+        help="Enable gated /items/{id}/sale_price enrichment after approved runtime validation.",
     )
     return parser
 
@@ -322,6 +334,7 @@ async def run_item_detail_enrichment(
     seller_id: str,
     dry_run: bool = True,
     batch_size: int = ITEM_DETAIL_BATCH_SIZE,
+    sale_price_enabled: bool = False,
 ) -> ItemDetailEnrichmentSummary:
     if batch_size < 1:
         msg = "batch_size must be positive"
@@ -331,7 +344,7 @@ async def run_item_detail_enrichment(
     existing_by_id = {_item_id(item): item for item in existing_items}
     item_ids = sorted(existing_by_id)
     synced_at = datetime.now(UTC)
-    write_plans: list[tuple[dict[str, Any], dict[str, Any]]] = []
+    write_plans: list[tuple[dict[str, Any], dict[str, Any], bool]] = []
     batches_fetched = 0
     details_returned = 0
     items_validated = 0
@@ -339,6 +352,9 @@ async def run_item_detail_enrichment(
     shipping_options_requested = 0
     seller_shipping_costs_enriched = 0
     seller_shipping_costs_unavailable = 0
+    sale_price_requested = 0
+    sale_price_promotions_enriched = 0
+    sale_price_promotions_unavailable = 0
 
     for batch in _chunks(item_ids, batch_size):
         response = await gateway.fetch_resource(
@@ -356,6 +372,7 @@ async def run_item_detail_enrichment(
             raise RuntimeError(msg)
         for item_id in batch:
             detail = dict(by_id[item_id])
+            clear_current_promotion = False
             seller_shipping_cost = await _resolve_seller_shipping_cost(
                 gateway=gateway,
                 seller_id=seller_id,
@@ -371,6 +388,24 @@ async def run_item_detail_enrichment(
             else:
                 seller_shipping_costs_enriched += 1
             detail["seller_shipping_cost"] = seller_shipping_cost
+            if sale_price_enabled:
+                sale_price_requested += 1
+                current_promotion = await _resolve_sale_price_projection(
+                    gateway=gateway,
+                    seller_id=seller_id,
+                    item_id=item_id,
+                    synced_at=synced_at,
+                )
+                if current_promotion is None:
+                    sale_price_promotions_unavailable += 1
+                    detail["current_promotion"] = None
+                    clear_current_promotion = True
+                else:
+                    sale_price_promotions_enriched += 1
+                    detail["current_promotion"] = current_promotion
+            elif "current_promotion" in existing_by_id[item_id]:
+                detail["current_promotion"] = None
+                clear_current_promotion = True
             document = _canonical_item_detail_document(
                 existing=existing_by_id[item_id],
                 detail=detail,
@@ -378,18 +413,25 @@ async def run_item_detail_enrichment(
                 synced_at=synced_at,
             )
             items_validated += 1
-            if _canonical_item_values_equal(existing_by_id[item_id], document):
+            if not clear_current_promotion and _canonical_item_values_equal(
+                existing_by_id[item_id], document
+            ):
                 unchanged += 1
                 continue
-            write_plans.append(({"_id": item_id, "seller_id": seller_id}, document))
+            write_plans.append(
+                ({"_id": item_id, "seller_id": seller_id}, document, clear_current_promotion)
+            )
 
     items_updated = 0
     if not dry_run:
         items_collection = db[ITEMS_COLLECTION]
-        for filter_spec, document in write_plans:
+        for filter_spec, document, clear_current_promotion in write_plans:
+            update: dict[str, Any] = {"$set": document}
+            if clear_current_promotion:
+                update["$unset"] = {"current_promotion": ""}
             await items_collection.update_one(
                 filter_spec,
-                {"$set": document},
+                update,
                 upsert=False,
                 bypass_document_validation=False,
             )
@@ -407,6 +449,9 @@ async def run_item_detail_enrichment(
         shipping_options_requested=shipping_options_requested,
         seller_shipping_costs_enriched=seller_shipping_costs_enriched,
         seller_shipping_costs_unavailable=seller_shipping_costs_unavailable,
+        sale_price_requested=sale_price_requested,
+        sale_price_promotions_enriched=sale_price_promotions_enriched,
+        sale_price_promotions_unavailable=sale_price_promotions_unavailable,
     )
 
 
@@ -1017,6 +1062,7 @@ def build_formula_row_doc(
                 if "seller_shipping_cost" in item
                 else {}
             ),
+            **_formula_row_current_promotion_fields(item),
             "inventory_id": resolved_inventory_id,
             "shipping_logistic_type": _shipping_logistic_type(item.get("shipping")),
             "shipping_payer": _shipping_payer(item.get("shipping")),
@@ -1025,6 +1071,11 @@ def build_formula_row_doc(
         "updated_at": updated_at,
         "schema_version": READ_MODEL_SCHEMA_VERSION,
     }
+
+
+def _formula_row_current_promotion_fields(item: dict[str, Any]) -> dict[str, Any]:
+    current_promotion = _schema_safe_current_promotion(item.get("current_promotion"))
+    return {"current_promotion": current_promotion} if current_promotion is not None else {}
 
 
 async def _load_seller_items(*, db: Any, seller_id: str) -> list[dict[str, Any]]:
@@ -1095,7 +1146,88 @@ def _canonical_item_detail_document(
     document = model.model_dump(by_alias=True, mode="python")
     for money_field in ("price", "base_price", "seller_shipping_cost"):
         document[money_field] = _schema_safe_numeric(document.get(money_field))
+    current_promotion = _schema_safe_current_promotion(document.get("current_promotion"))
+    if current_promotion is None:
+        document.pop("current_promotion", None)
+    else:
+        document["current_promotion"] = current_promotion
     return document
+
+
+async def _resolve_sale_price_projection(
+    *,
+    gateway: MeliItemGatewayClient,
+    seller_id: str,
+    item_id: str,
+    synced_at: datetime,
+) -> dict[str, Any] | None:
+    try:
+        response = await gateway.fetch_resource(
+            seller_id=seller_id,
+            path=_sale_price_path(item_id),
+        )
+    except (RuntimeError, GatewayRateLimitError, httpx.HTTPStatusError, httpx.RequestError):
+        return None
+    return project_sale_price_projection(response, synced_at=synced_at)
+
+
+def _sale_price_path(item_id: str) -> str:
+    escaped_item_id = quote(item_id, safe="")
+    return f"/items/{escaped_item_id}/sale_price?context={SALE_PRICE_CONTEXT}"
+
+
+def project_sale_price_projection(payload: Any, *, synced_at: datetime) -> dict[str, Any] | None:
+    if not isinstance(payload, dict):
+        return None
+    sale_amount = _safe_decimal(payload.get("amount"))
+    regular_amount = _safe_decimal(payload.get("regular_amount"))
+    currency_id = _optional_string(payload.get("currency_id"))
+    if sale_amount is None or regular_amount is None or currency_id is None:
+        return None
+    if sale_amount >= regular_amount:
+        return None
+    reference_at = _sale_price_reference_at(payload) or synced_at
+    discount_percent = _safe_decimal(payload.get("discount_percent"))
+    if discount_percent is None:
+        raw_discount_percent = (regular_amount - sale_amount) / regular_amount * Decimal("100")
+        discount_percent = raw_discount_percent.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    try:
+        projection = PromoPriceProjection.model_validate(
+            {
+                "source": SALE_PRICE_SOURCE,
+                "sale_amount": sale_amount,
+                "regular_amount": regular_amount,
+                "discount_percent": discount_percent,
+                "currency_id": currency_id,
+                "promotion_id": _optional_string(
+                    payload.get("promotion_id") or payload.get("campaign_id")
+                ),
+                "promotion_type": _optional_string(
+                    payload.get("promotion_type") or payload.get("type")
+                ),
+                "reference_at": reference_at,
+                "synced_at": synced_at,
+            }
+        )
+    except ValueError:
+        return None
+    return _schema_safe_current_promotion(projection)
+
+
+def _sale_price_reference_at(payload: dict[str, Any]) -> datetime | None:
+    for key in ("reference_at", "last_updated", "updated_at", "date_created"):
+        value = payload.get(key)
+        if value is None:
+            continue
+        try:
+            parsed = _parse_utc_datetime(value) if isinstance(value, str) else value
+        except ValueError:
+            continue
+        if isinstance(parsed, datetime):
+            return (
+                parsed.astimezone(UTC) if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
+            )
+    return None
 
 
 async def _resolve_seller_shipping_cost(
@@ -1244,6 +1376,53 @@ def _schema_safe_numeric(value: Any) -> int | float | Decimal128 | None:
     if isinstance(value, str):
         return _parse_order_money(value)
     return None
+
+
+def _safe_decimal(value: Any) -> Decimal | None:
+    if value is None or isinstance(value, (bool, dict, list)):
+        return None
+    if isinstance(value, Decimal128):
+        decimal_value = value.to_decimal()
+    elif isinstance(value, Decimal):
+        decimal_value = value
+    else:
+        try:
+            decimal_value = Decimal(str(value))
+        except (InvalidOperation, ValueError):
+            return None
+    if not decimal_value.is_finite() or decimal_value < 0:
+        return None
+    return decimal_value
+
+
+def _schema_safe_current_promotion(value: Any) -> dict[str, Any] | None:
+    if value is None:
+        return None
+    if isinstance(value, PromoPriceProjection):
+        raw_projection = value.model_dump(mode="python", exclude_none=True)
+    elif isinstance(value, dict):
+        try:
+            raw_projection = PromoPriceProjection.model_validate(value).model_dump(
+                mode="python", exclude_none=True
+            )
+        except ValueError:
+            return None
+    else:
+        return None
+    projection: dict[str, Any] = {
+        "source": raw_projection["source"],
+        "sale_amount": Decimal128(raw_projection["sale_amount"]),
+        "regular_amount": Decimal128(raw_projection["regular_amount"]),
+        "currency_id": raw_projection["currency_id"],
+        "reference_at": raw_projection["reference_at"],
+        "synced_at": raw_projection["synced_at"],
+    }
+    if raw_projection.get("discount_percent") is not None:
+        projection["discount_percent"] = Decimal128(raw_projection["discount_percent"])
+    for key in ("promotion_id", "promotion_type"):
+        if raw_projection.get(key) is not None:
+            projection[key] = raw_projection[key]
+    return projection
 
 
 def _shipping_logistic_type(shipping: Any) -> str | None:
@@ -1649,6 +1828,7 @@ async def _run_cli(args: argparse.Namespace) -> BackfillCliSummary:
                 gateway=gateway,
                 seller_id=args.seller_id,
                 dry_run=args.dry_run,
+                sale_price_enabled=bool(args.sale_price_enabled),
             )
         if args.source == "order-lines":
             return await run_order_line_identity_backfill(

@@ -5,6 +5,7 @@ from zeler_platform_core.models.entities import (
     Message,
     Order,
     OrderItem,
+    PromoPriceProjection,
     Question,
     Shipment,
 )
@@ -58,6 +59,7 @@ __all__ = [
     "Order",
     "OrderItem",
     "OrderCreated",
+    "PromoPriceProjection",
     "Question",
     "QuestionReceived",
     "RepricerAllyAccount",

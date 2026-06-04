@@ -203,6 +203,25 @@ def test_sheets_item_formula_rows_schema_supports_current_shipping_fields() -> N
     }
 
 
+def test_sheets_item_formula_rows_schema_supports_bounded_current_promotion_only() -> None:
+    validator = json.loads((ROOT / "infra/mongo/schemas/sheets_item_formula_rows.json").read_text())
+    current_promotion = validator["$jsonSchema"]["properties"]["current"]["properties"][
+        "current_promotion"
+    ]
+
+    assert current_promotion["additionalProperties"] is False
+    assert current_promotion["required"] == [
+        "source",
+        "sale_amount",
+        "regular_amount",
+        "currency_id",
+        "reference_at",
+        "synced_at",
+    ]
+    assert "raw_payload" not in current_promotion["properties"]
+    assert "prices" not in current_promotion["properties"]
+
+
 def test_items_schema_supports_v2_formula_fields_without_raw_payload_drift() -> None:
     validator = json.loads((ROOT / "infra/mongo/schemas/items.json").read_text())
     schema = validator["$jsonSchema"]
@@ -216,6 +235,18 @@ def test_items_schema_supports_v2_formula_fields_without_raw_payload_drift() -> 
     assert schema["properties"]["seller_shipping_cost"] == {
         "bsonType": ["decimal", "double", "int", "long", "null"]
     }
+    current_promotion = schema["properties"]["current_promotion"]
+    assert current_promotion["additionalProperties"] is False
+    assert current_promotion["required"] == [
+        "source",
+        "sale_amount",
+        "regular_amount",
+        "currency_id",
+        "reference_at",
+        "synced_at",
+    ]
+    assert "raw_payload" not in current_promotion["properties"]
+    assert "prices" not in current_promotion["properties"]
     assert "raw_payload_blob" not in schema["properties"]
     assert schema["required"] == [
         "_id",
