@@ -377,20 +377,9 @@ async def test_ordenes_compradores_boolean_flag_adds_buyer_columns_without_filte
             buyer_id="buyer-1",
             date_created="2026-05-10T10:30:00Z",
             total_amount="100.00",
+            shipment_id="shipment-1",
             items=[{"sku": "sku-1", "item_id": "MLA1", "title": "First item", "quantity": 2}],
-        )
-        | {
-            "buyer_name": "Ada Lovelace",
-            "buyer_address": {
-                "street_name": "Main St",
-                "street_number": "123",
-                "neighborhood": {"name": "Centro"},
-                "zip_code": "12345",
-                "city": {"name": "Montevideo"},
-                "state": {"name": "Montevideo"},
-                "country": {"name": "Uruguay"},
-            },
-        },
+        ),
         "order-2": _order_doc(
             "order-2",
             seller_id="seller-1",
@@ -400,6 +389,22 @@ async def test_ordenes_compradores_boolean_flag_adds_buyer_columns_without_filte
             total_amount="75.50",
             items=[{"seller_sku": "sku-2", "item": {"id": "MLA2"}, "quantity": 1}],
         ),
+    }
+    db["shipments"].documents = {
+        "shipment-1": {
+            "_id": "shipment-1",
+            "seller_id": "seller-1",
+            "receiver_address": {
+                "name": "SNAPSHOT_BUYER_OK",
+                "street_name": "SNAPSHOT_STREET_OK",
+                "street_number": "SNAPSHOT_NUMBER_OK",
+                "neighborhood": "SNAPSHOT_NEIGHBORHOOD_OK",
+                "zip_code": "SNAPSHOT_ZIP_OK",
+                "city": "SNAPSHOT_CITY_OK",
+                "state": "SNAPSHOT_STATE_OK",
+                "country": "SNAPSHOT_COUNTRY_OK",
+            },
+        }
     }
     dispatcher = _order_question_dispatcher(db)
 
@@ -432,14 +437,14 @@ async def test_ordenes_compradores_boolean_flag_adds_buyer_columns_without_filte
             "",
             "",
             "paid",
-            "Ada Lovelace",
-            "Main St",
-            "123",
-            "Centro",
-            "12345",
-            "Montevideo",
-            "Montevideo",
-            "Uruguay",
+            "SNAPSHOT_BUYER_OK",
+            "SNAPSHOT_STREET_OK",
+            "SNAPSHOT_NUMBER_OK",
+            "SNAPSHOT_NEIGHBORHOOD_OK",
+            "SNAPSHOT_ZIP_OK",
+            "SNAPSHOT_CITY_OK",
+            "SNAPSHOT_STATE_OK",
+            "SNAPSHOT_COUNTRY_OK",
         ],
         [
             "2026-05-11T08:15:00Z",
@@ -2096,7 +2101,7 @@ async def test_formula_api_wires_batch_b_handlers_and_keeps_other_batch_b_data_u
                 },
             },
         )
-        not_ready = await client.post(
+        compradores = await client.post(
             "/sheets/formulas:execute",
             headers={"Authorization": f"Bearer {token}"},
             json={
@@ -2131,14 +2136,16 @@ async def test_formula_api_wires_batch_b_handlers_and_keeps_other_batch_b_data_u
             "paid",
         ],
     ])
-    assert not_ready.status_code == 200
-    assert not_ready.json()["error"] == {
-        "code": "DATA_UNAVAILABLE",
-        "message": (
-            "ZELERDATA_COMPRADORES data is not available yet: "
-            "Current canonical orders do not expose buyer/shipping address fields."
-        ),
-        "retryable": False,
+    assert compradores.status_code == 200
+    assert compradores.json() == {
+        "ok": True,
+        "values": [["NA", "NA", "NA", "NA", "NA", "NA", "NA", "NA"]],
+        "meta": {
+            "orders_count": 1,
+            "address_available": 0,
+            "address_missing": 1,
+            "columns": "buyer_address_snapshot",
+        },
     }
 
 

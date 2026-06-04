@@ -6,6 +6,7 @@ from zeler_platform_core.models.entities import (
     Order,
     OrderItem,
     Question,
+    ReceiverAddressSnapshot,
     Shipment,
 )
 from zeler_platform_core.models.events import (
@@ -61,6 +62,7 @@ __all__ = [
     "OrderCreated",
     "Question",
     "QuestionReceived",
+    "ReceiverAddressSnapshot",
     "RepricerAllyAccount",
     "RepricerAllies",
     "RepricerBulkJob",

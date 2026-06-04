@@ -27,6 +27,7 @@ BATCH_B_IMPLEMENTED_FORMULAS = frozenset(
         "ZELERDATA_VENTASYSTOCK",
         "ZELERDATA_TOPVENTASUNIDADES",
         "ZELERDATA_TOPVENTASDINERO",
+        "ZELERDATA_COMPRADORES",
         "ZELERDATA_PREGUNTAS",
         "ZELERDATA_PREGUNTASKPI",
     }
@@ -111,6 +112,7 @@ def build_order_question_formula_handlers(
         "ZELERDATA_VENTASYSTOCK": handlers.sheetseller_ventas_y_stock,
         "ZELERDATA_TOPVENTASUNIDADES": handlers.sheetseller_top_ventas_unidades,
         "ZELERDATA_TOPVENTASDINERO": handlers.sheetseller_top_ventas_dinero,
+        "ZELERDATA_COMPRADORES": handlers.sheetseller_compradores,
         "ZELERDATA_PREGUNTAS": handlers.sheetseller_preguntas,
         "ZELERDATA_PREGUNTASKPI": handlers.sheetseller_preguntas_kpi,
     }
@@ -163,6 +165,12 @@ class OrderQuestionFormulaHandlers:
             seller_id=context.seller_id,
             order_lines=order_lines,
         )
+        receiver_addresses = await _receiver_addresses_for_orders(
+            repository=self._repository,
+            seller_id=context.seller_id,
+            orders=filtered_orders,
+            enabled=buyer_selection.include_buyer_columns,
+        )
         headers = _order_line_headers(include_buyer_columns=buyer_selection.include_buyer_columns)
         values: list[list[Any]] = _header_row(context.args.get("encabezados"), headers)
         header_rows = len(values)
@@ -174,6 +182,7 @@ class OrderQuestionFormulaHandlers:
                 unit_cost=unit_costs.get(
                     _unit_cost_lookup_for_line(context.seller_id, order, line)
                 ),
+                receiver_addresses=receiver_addresses,
                 timezone=timezone,
                 include_buyer_columns=buyer_selection.include_buyer_columns,
             )
@@ -295,6 +304,12 @@ class OrderQuestionFormulaHandlers:
             seller_id=context.seller_id,
             order_lines=filtered_lines,
         )
+        receiver_addresses = await _receiver_addresses_for_orders(
+            repository=self._repository,
+            seller_id=context.seller_id,
+            orders=filtered_orders,
+            enabled=buyer_selection.include_buyer_columns,
+        )
         headers = _order_line_headers(include_buyer_columns=buyer_selection.include_buyer_columns)
         values: list[list[Any]] = _header_row(context.args.get("encabezados"), headers)
         header_rows = len(values)
@@ -307,6 +322,7 @@ class OrderQuestionFormulaHandlers:
                     unit_cost=unit_costs.get(
                         _unit_cost_lookup_for_line(context.seller_id, order, line)
                     ),
+                    receiver_addresses=receiver_addresses,
                     timezone=timezone,
                     include_buyer_columns=buyer_selection.include_buyer_columns,
                 )
@@ -322,6 +338,51 @@ class OrderQuestionFormulaHandlers:
                 "columns": _order_line_columns_meta(
                     include_buyer_columns=buyer_selection.include_buyer_columns
                 ),
+            },
+        )
+
+    async def sheetseller_compradores(
+        self, context: FormulaExecutionContext
+    ) -> FormulaExecutionResult:
+        requested_order_ids = _flatten_sheet_values(
+            context.args.get("id_ordenes"), normalize=lambda order_id: str(order_id).strip()
+        )
+        orders = await self._repository.find_orders_by_ids(
+            seller_id=context.seller_id,
+            order_ids=requested_order_ids,
+            limit=max(1000, len(requested_order_ids)),
+        )
+        orders_by_id = {_document_id(order): order for order in orders}
+        ordered_orders = [
+            orders_by_id[order_id]
+            for order_id in dict.fromkeys(requested_order_ids)
+            if order_id in orders_by_id
+        ]
+        receiver_addresses = await _receiver_addresses_for_orders(
+            repository=self._repository,
+            seller_id=context.seller_id,
+            orders=ordered_orders,
+            enabled=True,
+        )
+        values: list[list[Any]] = _header_row(
+            context.args.get("encabezados"), BUYER_ADDRESS_LEGACY_HEADERS
+        )
+        values.extend(
+            _buyer_address_values(_receiver_address_for_order(order, receiver_addresses))
+            for order in ordered_orders
+        )
+        address_available = sum(
+            1
+            for order in ordered_orders
+            if _address_has_source_values(_receiver_address_for_order(order, receiver_addresses))
+        )
+        return FormulaExecutionResult(
+            values=values,
+            meta={
+                "orders_count": len(ordered_orders),
+                "address_available": address_available,
+                "address_missing": len(ordered_orders) - address_available,
+                "columns": "buyer_address_snapshot",
             },
         )
 
@@ -1038,6 +1099,27 @@ def _unit_cost_lookup_for_line(
     )
 
 
+async def _receiver_addresses_for_orders(
+    *,
+    repository: FormulaReadModelRepository,
+    seller_id: str,
+    orders: Sequence[Mapping[str, Any]],
+    enabled: bool,
+) -> dict[str, dict[str, Any]]:
+    if not enabled:
+        return {}
+    shipment_ids = list(
+        dict.fromkeys(shipment_id for order in orders if (shipment_id := _shipment_id(order)))
+    )
+    if not shipment_ids:
+        return {}
+    return await repository.find_shipment_receiver_addresses(
+        seller_id=seller_id,
+        shipment_ids=shipment_ids,
+        limit=max(1000, len(shipment_ids)),
+    )
+
+
 def _unit_totals_by_pair(
     orders: Sequence[Mapping[str, Any]], *, sku_resolver: _OrderSkuResolver
 ) -> tuple[dict[tuple[str, str], Decimal], int]:
@@ -1121,6 +1203,7 @@ def _order_line_row(
     *,
     item_rows: Mapping[tuple[str, str], Mapping[str, Any]],
     unit_cost: Any,
+    receiver_addresses: Mapping[str, Mapping[str, Any]],
     timezone: tzinfo,
     include_buyer_columns: bool,
 ) -> list[Any]:
@@ -1141,7 +1224,7 @@ def _order_line_row(
         order.get("status") or "",
     ]
     if include_buyer_columns:
-        values.extend(_buyer_address_values(order))
+        values.extend(_buyer_address_values(_receiver_address_for_order(order, receiver_addresses)))
     return values
 
 
@@ -1155,52 +1238,38 @@ def _order_line_columns_meta(*, include_buyer_columns: bool) -> str:
     return "legacy_order_lines_with_buyers" if include_buyer_columns else "legacy_order_lines"
 
 
-def _buyer_address_values(order: Mapping[str, Any]) -> list[Any]:
-    address = _buyer_address(order)
+def _buyer_address_values(address: Mapping[str, Any]) -> list[Any]:
     return [
-        _buyer_name(order),
-        _address_value(address, "street_name", "street", "calle"),
-        _address_value(address, "street_number", "number", "numero", "número"),
+        _address_value(address, "name"),
+        _address_value(address, "street_name"),
+        _address_value(address, "street_number"),
         _address_value(address, "neighborhood", "colonia"),
-        _address_value(address, "zip_code", "postal_code", "codigo_postal", "código_postal"),
-        _address_value(address, "city", "ciudad"),
-        _address_value(address, "state", "estado"),
-        _address_value(address, "country", "pais", "país"),
+        _address_value(address, "zip_code"),
+        _address_value(address, "city"),
+        _address_value(address, "state"),
+        _address_value(address, "country"),
     ]
-
-
-def _buyer_name(order: Mapping[str, Any]) -> str:
-    direct_name = str(order.get("buyer_name") or order.get("buyer_full_name") or "").strip()
-    if direct_name:
-        return direct_name
-    buyer = order.get("buyer")
-    if not isinstance(buyer, Mapping):
-        return ""
-    nested_name = str(buyer.get("name") or buyer.get("full_name") or "").strip()
-    if nested_name:
-        return nested_name
-    parts = [str(buyer.get(key) or "").strip() for key in ("first_name", "last_name")]
-    return " ".join(part for part in parts if part)
-
-
-def _buyer_address(order: Mapping[str, Any]) -> Mapping[str, Any]:
-    for key in ("buyer_address", "shipping_address", "receiver_address", "address"):
-        value = order.get(key)
-        if isinstance(value, Mapping):
-            return value
-    return {}
 
 
 def _address_value(address: Mapping[str, Any], *keys: str) -> Any:
     for key in keys:
         value = address.get(key)
-        if isinstance(value, Mapping):
-            nested_value = value.get("name") or value.get("id")
-            if nested_value is not None:
-                return nested_value
-        elif value is not None:
-            return value
+        if isinstance(value, str) and value.strip():
+            return value.strip()
     return NA_VALUE
+
+
+def _receiver_address_for_order(
+    order: Mapping[str, Any], receiver_addresses: Mapping[str, Mapping[str, Any]]
+) -> Mapping[str, Any]:
+    shipment_id = _shipment_id(order)
+    if not shipment_id:
+        return {}
+    return receiver_addresses.get(shipment_id, {})
+
+
+def _address_has_source_values(address: Mapping[str, Any]) -> bool:
+    return any(value != NA_VALUE for value in _buyer_address_values(address))
 
 
 def _order_row(order: Mapping[str, Any], *, timezone: tzinfo) -> list[Any]:

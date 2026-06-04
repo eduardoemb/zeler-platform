@@ -452,10 +452,8 @@ def test_every_legacy_formula_has_an_explicit_runtime_state() -> None:
         for formula, state in runtime_states.items()
         if state.state == "unsupported"
     }
-    assert len(unsupported) == 25
-    assert unsupported["ZELERDATA_COMPRADORES"] == (
-        "Current canonical orders do not expose buyer/shipping address fields."
-    )
+    assert len(unsupported) == 24
+    assert "ZELERDATA_COMPRADORES" not in unsupported
     assert unsupported["ZELERDATA_CATALOGO"] == (
         "Catalog/buybox snapshot read model is not available in zeler-platform yet."
     )
@@ -491,14 +489,14 @@ async def test_explicit_unsupported_handlers_are_routed_and_raise_data_unavailab
     assert set(handlers) == set(unsupported_states)
 
     with pytest.raises(Exception) as exc_info:
-        await handlers["ZELERDATA_COMPRADORES"](  # type: ignore[misc]
-            _formula_context("ZELERDATA_COMPRADORES", {"id_ordenes": ["order-1"]})
+        await handlers["ZELERDATA_ENVIOSMERCADOENVIOS"](  # type: ignore[misc]
+            _formula_context("ZELERDATA_ENVIOSMERCADOENVIOS", {})
         )
 
     assert type(exc_info.value).__name__ == "FormulaDataUnavailableError"
     assert str(exc_info.value) == (
-        "ZELERDATA_COMPRADORES data is not available yet: "
-        "Current canonical orders do not expose buyer/shipping address fields."
+        "ZELERDATA_ENVIOSMERCADOENVIOS data is not available yet: "
+        "MercadoEnvios shipment/label read model is not available in zeler-platform yet."
     )
 
 
