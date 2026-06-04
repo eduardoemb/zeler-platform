@@ -10,9 +10,12 @@ from dataclasses import asdict, dataclass
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from typing import Any, Protocol, cast
+from urllib.parse import quote
 
+import httpx
 from bson.decimal128 import Decimal128
 
+from zeler_platform_core.clients.meli_gateway_client import GatewayRateLimitError
 from zeler_platform_core.models import Item
 from zeler_platform_core.models.base import current_schema_version
 from zeler_sheets.formulas.read_models import normalize_sku
@@ -129,6 +132,9 @@ class ItemDetailEnrichmentSummary:
     items_planned: int
     items_updated: int
     unchanged: int
+    shipping_options_requested: int = 0
+    seller_shipping_costs_enriched: int = 0
+    seller_shipping_costs_unavailable: int = 0
 
     def as_dict(self) -> dict[str, int | bool | str]:
         return asdict(self)
@@ -330,6 +336,9 @@ async def run_item_detail_enrichment(
     details_returned = 0
     items_validated = 0
     unchanged = 0
+    shipping_options_requested = 0
+    seller_shipping_costs_enriched = 0
+    seller_shipping_costs_unavailable = 0
 
     for batch in _chunks(item_ids, batch_size):
         response = await gateway.fetch_resource(
@@ -346,9 +355,25 @@ async def run_item_detail_enrichment(
             msg = "item detail batch did not return every requested item"
             raise RuntimeError(msg)
         for item_id in batch:
+            detail = dict(by_id[item_id])
+            seller_shipping_cost = await _resolve_seller_shipping_cost(
+                gateway=gateway,
+                seller_id=seller_id,
+                item_id=item_id,
+                detail=detail,
+            )
+            is_free_shipping = _is_seller_paid_free_shipping(detail)
+            if is_free_shipping:
+                shipping_options_requested += 1
+            if seller_shipping_cost is None:
+                if is_free_shipping:
+                    seller_shipping_costs_unavailable += 1
+            else:
+                seller_shipping_costs_enriched += 1
+            detail["seller_shipping_cost"] = seller_shipping_cost
             document = _canonical_item_detail_document(
                 existing=existing_by_id[item_id],
-                detail=by_id[item_id],
+                detail=detail,
                 seller_id=seller_id,
                 synced_at=synced_at,
             )
@@ -379,6 +404,9 @@ async def run_item_detail_enrichment(
         items_planned=len(write_plans),
         items_updated=items_updated,
         unchanged=unchanged,
+        shipping_options_requested=shipping_options_requested,
+        seller_shipping_costs_enriched=seller_shipping_costs_enriched,
+        seller_shipping_costs_unavailable=seller_shipping_costs_unavailable,
     )
 
 
@@ -984,6 +1012,11 @@ def build_formula_row_doc(
             "thumbnail": _optional_string(item.get("thumbnail")),
             "catalog_product_id": _optional_string(item.get("catalog_product_id")),
             "listing_type_id": _optional_string(item.get("listing_type_id")),
+            **(
+                {"seller_shipping_cost": _schema_safe_numeric(item.get("seller_shipping_cost"))}
+                if "seller_shipping_cost" in item
+                else {}
+            ),
             "inventory_id": resolved_inventory_id,
             "shipping_logistic_type": _shipping_logistic_type(item.get("shipping")),
             "shipping_payer": _shipping_payer(item.get("shipping")),
@@ -1060,9 +1093,70 @@ def _canonical_item_detail_document(
         }
     )
     document = model.model_dump(by_alias=True, mode="python")
-    for money_field in ("price", "base_price"):
+    for money_field in ("price", "base_price", "seller_shipping_cost"):
         document[money_field] = _schema_safe_numeric(document.get(money_field))
     return document
+
+
+async def _resolve_seller_shipping_cost(
+    *,
+    gateway: MeliItemGatewayClient,
+    seller_id: str,
+    item_id: str,
+    detail: dict[str, Any],
+) -> Decimal | int | None:
+    if _is_non_free_shipping(detail):
+        return 0
+    if not _is_seller_paid_free_shipping(detail):
+        return None
+    try:
+        response = await gateway.fetch_resource(
+            seller_id=seller_id,
+            path=_seller_shipping_options_path(seller_id=seller_id, item_id=item_id),
+        )
+    except (RuntimeError, GatewayRateLimitError, httpx.HTTPStatusError, httpx.RequestError):
+        return None
+    return _extract_seller_shipping_cost(response)
+
+
+def _seller_shipping_options_path(*, seller_id: str, item_id: str) -> str:
+    escaped_seller_id = quote(str(seller_id), safe="")
+    escaped_item_id = quote(item_id, safe="")
+    return f"/users/{escaped_seller_id}/shipping_options/free?item_id={escaped_item_id}"
+
+
+def _is_seller_paid_free_shipping(item: dict[str, Any]) -> bool:
+    shipping = item.get("shipping")
+    return isinstance(shipping, dict) and shipping.get("free_shipping") is True
+
+
+def _is_non_free_shipping(item: dict[str, Any]) -> bool:
+    shipping = item.get("shipping")
+    return isinstance(shipping, dict) and shipping.get("free_shipping") is False
+
+
+def _extract_seller_shipping_cost(response: Any) -> Decimal | None:
+    if not isinstance(response, dict):
+        return None
+    coverage = response.get("coverage")
+    if not isinstance(coverage, dict):
+        return None
+    all_country = coverage.get("all_country")
+    if not isinstance(all_country, dict):
+        return None
+    return _bounded_shipping_cost(all_country.get("list_cost"))
+
+
+def _bounded_shipping_cost(value: Any) -> Decimal | None:
+    if value is None or isinstance(value, (bool, dict, list)):
+        return None
+    try:
+        cost = value if isinstance(value, Decimal) else Decimal(str(value))
+    except (InvalidOperation, ValueError):
+        return None
+    if not cost.is_finite() or cost < 0:
+        return None
+    return cost
 
 
 def _canonical_item_values_equal(existing: dict[str, Any], planned: dict[str, Any]) -> bool:

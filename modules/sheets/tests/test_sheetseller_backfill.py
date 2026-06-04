@@ -5,9 +5,11 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 
+import httpx
 import pytest
 from bson.decimal128 import Decimal128
 
+from zeler_platform_core.clients.meli_gateway_client import GatewayRateLimitError
 from zeler_platform_core.models import Order
 from zeler_sheets.sheetseller_backfill import (
     BackfillSummary,
@@ -828,6 +830,7 @@ async def test_item_detail_enrichment_fetches_canonical_ids_and_writes_formula_f
         "catalog_product_id": "MLA-CATALOG-1",
         "inventory_id": "INV-ITEM-1",
         "listing_type_id": "gold_special",
+        "seller_shipping_cost": None,
         "variations": [{"id": 101, "inventory_id": "INV-VAR-101"}],
         "attributes": [{"id": "SELLER_SKU", "value_name": "sku-1"}],
         "shipping": None,
@@ -843,6 +846,215 @@ async def test_item_detail_enrichment_fetches_canonical_ids_and_writes_formula_f
     assert stored["inventory_id"] == "INV-ITEM-1"
     assert stored["listing_type_id"] == "gold_special"
     assert stored["schema_version"] == 2
+
+
+@pytest.mark.asyncio
+async def test_item_detail_enrichment_enriches_free_shipping_cost_and_non_free_zero() -> None:
+    free_shipping_item = _item_doc("MLA1")
+    non_free_item = _item_doc("MLA2")
+    db = FakeDb([free_shipping_item, non_free_item])
+    free_detail = _item_detail("MLA1")
+    free_detail["shipping"] = {"free_shipping": True, "logistic_type": "fulfillment"}
+    non_free_detail = _item_detail("MLA2")
+    non_free_detail["shipping"] = {"free_shipping": False, "logistic_type": "drop_off"}
+    gateway = FakeItemGateway(
+        {
+            "/items?ids=MLA1,MLA2": [
+                {"code": 200, "body": free_detail},
+                {"code": 200, "body": non_free_detail},
+            ],
+            "/users/82453304/shipping_options/free?item_id=MLA1": {
+                "coverage": {"all_country": {"list_cost": "83.25"}}
+            },
+        }
+    )
+
+    summary = await run_item_detail_enrichment(
+        db=db, gateway=gateway, seller_id="82453304", dry_run=False
+    )
+
+    assert gateway.calls == [
+        ("82453304", "/items?ids=MLA1,MLA2"),
+        ("82453304", "/users/82453304/shipping_options/free?item_id=MLA1"),
+    ]
+    assert summary.as_dict() | {"dry_run": False} == summary.as_dict()
+    assert summary.shipping_options_requested == 1
+    assert summary.seller_shipping_costs_enriched == 2
+    assert summary.seller_shipping_costs_unavailable == 0
+    persisted_by_id = {call[0]["_id"]: call[1]["$set"] for call in db["items"].update_calls}
+    free_cost = persisted_by_id["MLA1"]["seller_shipping_cost"]
+    assert isinstance(free_cost, Decimal128)
+    assert free_cost.to_decimal() == Decimal("83.25")
+    non_free_cost = persisted_by_id["MLA2"]["seller_shipping_cost"]
+    assert isinstance(non_free_cost, Decimal128)
+    assert non_free_cost.to_decimal() == Decimal("0")
+
+
+@pytest.mark.asyncio
+async def test_item_detail_enrichment_keeps_cost_absent_when_source_denied_or_malformed() -> None:
+    denied_item = _item_doc("MLA1")
+    malformed_item = _item_doc("MLA2")
+    db = FakeDb([denied_item, malformed_item])
+    denied_detail = _item_detail("MLA1")
+    denied_detail["shipping"] = {"free_shipping": True}
+    malformed_detail = _item_detail("MLA2")
+    malformed_detail["shipping"] = {"free_shipping": True}
+    gateway = FakeItemGateway(
+        {
+            "/items?ids=MLA1,MLA2": [
+                {"code": 200, "body": denied_detail},
+                {"code": 200, "body": malformed_detail},
+            ],
+            "/users/82453304/shipping_options/free?item_id=MLA1": RuntimeError("out_of_scope"),
+            "/users/82453304/shipping_options/free?item_id=MLA2": {
+                "coverage": {"all_country": {"list_cost": "not-a-number"}}
+            },
+        }
+    )
+
+    summary = await run_item_detail_enrichment(
+        db=db, gateway=gateway, seller_id="82453304", dry_run=False
+    )
+
+    assert summary.shipping_options_requested == 2
+    assert summary.seller_shipping_costs_enriched == 0
+    assert summary.seller_shipping_costs_unavailable == 2
+    persisted_by_id = {call[0]["_id"]: call[1]["$set"] for call in db["items"].update_calls}
+    assert persisted_by_id["MLA1"]["seller_shipping_cost"] is None
+    assert persisted_by_id["MLA2"]["seller_shipping_cost"] is None
+
+
+@pytest.mark.asyncio
+async def test_item_detail_enrichment_keeps_cost_absent_on_http_status_error() -> None:
+    denied_item = _item_doc("MLA1")
+    db = FakeDb([denied_item])
+    denied_detail = _item_detail("MLA1")
+    denied_detail["shipping"] = {"free_shipping": True}
+    request = httpx.Request("GET", "https://gateway.example/proxy/meli/users/82453304")
+    response = httpx.Response(
+        403,
+        request=request,
+        json={"message": "seller 82453304 denied for item MLA1"},
+    )
+    gateway = FakeItemGateway(
+        {
+            "/items?ids=MLA1": [{"code": 200, "body": denied_detail}],
+            "/users/82453304/shipping_options/free?item_id=MLA1": httpx.HTTPStatusError(
+                "forbidden shipping options source",
+                request=request,
+                response=response,
+            ),
+        }
+    )
+
+    summary = await run_item_detail_enrichment(
+        db=db, gateway=gateway, seller_id="82453304", dry_run=False
+    )
+
+    assert summary.items_validated == 1
+    assert summary.items_updated == 1
+    assert summary.shipping_options_requested == 1
+    assert summary.seller_shipping_costs_enriched == 0
+    assert summary.seller_shipping_costs_unavailable == 1
+    persisted = db["items"].update_calls[0][1]["$set"]
+    assert persisted["seller_shipping_cost"] is None
+    assert "message" not in persisted
+    serialized_summary = str(summary.as_dict())
+    assert "82453304" not in serialized_summary
+    assert "MLA1" not in serialized_summary
+    assert "forbidden" not in serialized_summary
+
+
+@pytest.mark.asyncio
+async def test_item_detail_enrichment_keeps_cost_absent_on_gateway_rate_limit() -> None:
+    item = _item_doc("MLA1")
+    db = FakeDb([item])
+    detail = _item_detail("MLA1")
+    detail["shipping"] = {"free_shipping": True}
+    request = httpx.Request("GET", "https://gateway.example/proxy/meli/users/82453304")
+    response = httpx.Response(
+        429,
+        request=request,
+        json={"message": "seller 82453304 rate limited for item MLA1"},
+    )
+    gateway = FakeItemGateway(
+        {
+            "/items?ids=MLA1": [{"code": 200, "body": detail}],
+            "/users/82453304/shipping_options/free?item_id=MLA1": GatewayRateLimitError(
+                retry_after_seconds=5,
+                response=response,
+            ),
+        }
+    )
+
+    summary = await run_item_detail_enrichment(
+        db=db, gateway=gateway, seller_id="82453304", dry_run=False
+    )
+
+    assert summary.items_validated == 1
+    assert summary.items_updated == 1
+    assert summary.shipping_options_requested == 1
+    assert summary.seller_shipping_costs_enriched == 0
+    assert summary.seller_shipping_costs_unavailable == 1
+    persisted = db["items"].update_calls[0][1]["$set"]
+    assert persisted["seller_shipping_cost"] is None
+    assert "message" not in persisted
+    assert "response" not in persisted
+    serialized_persisted = str(persisted)
+    assert "rate limited" not in serialized_persisted
+    serialized_summary = str(summary.as_dict())
+    assert "82453304" not in serialized_summary
+    assert "MLA1" not in serialized_summary
+    assert "rate limited" not in serialized_summary
+
+
+@pytest.mark.asyncio
+async def test_item_detail_enrichment_keeps_cost_absent_on_shipping_request_error() -> None:
+    item = _item_doc("MLA1")
+    db = FakeDb([item])
+    detail = _item_detail("MLA1")
+    detail["shipping"] = {"free_shipping": True}
+    request = httpx.Request("GET", "https://gateway.example/proxy/meli/users/82453304")
+    gateway = FakeItemGateway(
+        {
+            "/items?ids=MLA1": [{"code": 200, "body": detail}],
+            "/users/82453304/shipping_options/free?item_id=MLA1": httpx.RequestError(
+                "timeout fetching seller 82453304 shipping for item MLA1",
+                request=request,
+            ),
+        }
+    )
+
+    summary = await run_item_detail_enrichment(
+        db=db, gateway=gateway, seller_id="82453304", dry_run=False
+    )
+
+    assert summary.items_validated == 1
+    assert summary.items_updated == 1
+    assert summary.shipping_options_requested == 1
+    assert summary.seller_shipping_costs_enriched == 0
+    assert summary.seller_shipping_costs_unavailable == 1
+    persisted = db["items"].update_calls[0][1]["$set"]
+    assert persisted["seller_shipping_cost"] is None
+    assert "timeout" not in persisted
+    assert "request" not in persisted
+    serialized_persisted = str(persisted)
+    assert "timeout fetching" not in serialized_persisted
+    serialized_summary = str(summary.as_dict())
+    assert "82453304" not in serialized_summary
+    assert "MLA1" not in serialized_summary
+    assert "timeout" not in serialized_summary
+
+
+def test_formula_row_doc_denormalizes_seller_shipping_cost_scalar_only() -> None:
+    item = _item_doc("MLA1", attributes=[{"id": "SELLER_SKU", "value_name": "sku-1"}])
+    item["seller_shipping_cost"] = Decimal128("83.25")
+    item["shipping_options"] = {"raw": "must-not-persist"}
+
+    formula_row = build_formula_row_doc(item, seller_id="82453304")
+
+    assert formula_row["current"]["seller_shipping_cost"].to_decimal() == Decimal("83.25")
+    assert "shipping_options" not in formula_row["current"]
 
 
 @pytest.mark.asyncio
@@ -962,6 +1174,9 @@ async def test_item_detail_enrichment_summary_is_sanitized_and_useful() -> None:
         "items_planned": 1,
         "items_updated": 1,
         "unchanged": 0,
+        "shipping_options_requested": 0,
+        "seller_shipping_costs_enriched": 0,
+        "seller_shipping_costs_unavailable": 0,
     }
     assert "82453304" not in str(serialized)
     assert "MLA1" not in str(serialized)

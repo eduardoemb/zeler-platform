@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import math
 from collections.abc import Callable, Iterable, Mapping
 from datetime import UTC, datetime, time, timedelta
+from decimal import Decimal
 from typing import Any
+
+from bson.decimal128 import Decimal128
 
 from zeler_sheets.formulas.dispatcher import (
     FormulaExecutionContext,
@@ -825,12 +829,28 @@ def _dashboard_row(
         sales_windows.get(60, {}).get(key, 0),
         sales_windows.get(90, {}).get(key, 0),
         _current_value(row, "shipping_payer"),
-        NA_VALUE,
+        _seller_shipping_cost(row),
         NA_VALUE,
         NA_VALUE,
         NA_VALUE,
         "Sí" if _has_catalog_product(row) else "No",
     ] + ([NA_VALUE] if include_promo else [])
+
+
+def _seller_shipping_cost(row: Mapping[str, Any]) -> Any:
+    value = _current_value(row, "seller_shipping_cost")
+    if value == "" or isinstance(value, bool):
+        return NA_VALUE
+    if isinstance(value, Decimal128):
+        decimal_value = value.to_decimal()
+        return decimal_value if decimal_value.is_finite() and decimal_value >= 0 else NA_VALUE
+    if isinstance(value, Decimal):
+        return value if value.is_finite() and value >= 0 else NA_VALUE
+    if isinstance(value, int):
+        return value if value >= 0 else NA_VALUE
+    if isinstance(value, float):
+        return value if math.isfinite(value) and value >= 0 else NA_VALUE
+    return NA_VALUE
 
 
 def _last_days_start(now: datetime, days: int) -> datetime:

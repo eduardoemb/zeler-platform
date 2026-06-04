@@ -181,6 +181,54 @@ def test_item_accepts_nullable_formula_fields() -> None:
     assert item.listing_type_id is None
 
 
+def test_item_accepts_bounded_seller_shipping_cost_without_raw_payload_drift() -> None:
+    item = Item.model_validate(
+        {
+            "id": "MLM125",
+            "seller_id": 123,
+            "title": "Item with shipping cost",
+            "price": Decimal("10.50"),
+            "base_price": Decimal("12.00"),
+            "available_quantity": 5,
+            "status": "active",
+            "category_id": "MLM-CAT",
+            "seller_shipping_cost": "83.25",
+            "shipping_options": {"receiver_address": "must-not-persist"},
+            "last_meli_sync_at": NOW,
+            "date_created": NOW,
+            "last_updated": NOW,
+            "schema_version": 2,
+        }
+    )
+
+    dumped = item.model_dump(by_alias=True, mode="json")
+
+    assert dumped["seller_shipping_cost"] == "83.25"
+    assert "shipping_options" not in dumped
+
+
+@pytest.mark.parametrize("bad_cost", [Decimal("-0.01"), Decimal("NaN"), {"list_cost": 1}])
+def test_item_rejects_invalid_seller_shipping_cost_values(bad_cost: object) -> None:
+    with pytest.raises(ValidationError):
+        Item.model_validate(
+            {
+                "id": "MLM126",
+                "seller_id": 123,
+                "title": "Item with invalid shipping cost",
+                "price": Decimal("10.50"),
+                "base_price": Decimal("12.00"),
+                "available_quantity": 5,
+                "status": "active",
+                "category_id": "MLM-CAT",
+                "seller_shipping_cost": bad_cost,
+                "last_meli_sync_at": NOW,
+                "date_created": NOW,
+                "last_updated": NOW,
+                "schema_version": 2,
+            }
+        )
+
+
 @pytest.mark.parametrize(
     ("model_cls", "payload", "id_field"),
     [
