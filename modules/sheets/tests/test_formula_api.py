@@ -469,10 +469,7 @@ async def test_formula_inventory_route_exposes_all_registered_contracts() -> Non
     by_name = {contract["name"]: contract for contract in contracts}
     assert by_name["ZELERDATA_DIASDESDEULTIMAVENTA"]["status"] == "implemented"
     assert by_name["ZELERDATA_COMPRADORES"] == by_name["ZELERDATA_COMPRADORES"] | {
-        "status": "unsupported",
-        "unsupported_reason": (
-            "Current canonical orders do not expose buyer/shipping address fields."
-        ),
+        "status": "implemented"
     }
     assert response.json()["error_codes"] == [
         "TOKEN_MISSING",

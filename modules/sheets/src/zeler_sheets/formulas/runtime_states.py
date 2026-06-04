@@ -49,7 +49,6 @@ UNSUPPORTED_FORMULA_REASONS: Mapping[str, str] = {
     "ZELERDATA_SUPERMERCADO": "Supermarket/regular listing flag read model is not available in zeler-platform yet.",
     "ZELERDATA_OBTENER_CATALOGO": "Catalog collection read model is not available in zeler-platform yet.",
     "ZELERDATA_COSTOENVIOVENDEDOR": "Seller-paid shipping cost read model is not available in zeler-platform yet.",
-    "ZELERDATA_COMPRADORES": "Current canonical orders do not expose buyer/shipping address fields.",
     "ZELERDATA_ENVIOSMERCADOENVIOS": "MercadoEnvios shipment/label read model is not available in zeler-platform yet.",
 }
 
