@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
 from typing import Any
 
@@ -64,9 +65,12 @@ class FakeDb:
 
 
 class FakeGateway:
-    def __init__(self, *, return_item_detail: bool = True) -> None:
+    def __init__(
+        self, *, return_item_detail: bool = True, unauthorized_shipment: bool = False
+    ) -> None:
         self.calls: list[tuple[str, str]] = []
         self.return_item_detail = return_item_detail
+        self.unauthorized_shipment = unauthorized_shipment
 
     async def fetch_resource(self, *, seller_id: str, path: str) -> Any:
         self.calls.append((seller_id, path))
@@ -76,6 +80,11 @@ class FakeGateway:
             return [{"code": 200, "body": _item_detail()}]
         if path == "/items?ids=MLA1":
             return [{"code": 404, "body": {"message": "not found"}}]
+        if path == "/shipments/3001" and self.unauthorized_shipment:
+            return {
+                "status": 403,
+                "message": "cannot access SENTINEL BUYER NAME, SENTINEL STREET 123",
+            }
         if path == "/shipments/3001":
             return _shipment_detail()
         raise AssertionError(f"Unexpected gateway path: {path}")
@@ -151,6 +160,63 @@ def test_cli_write_requires_approved_runtime_confirmation() -> None:
     validate_cli_safety(confirmed_args)
 
 
+def test_cli_buyer_address_pii_mode_requires_approved_bounded_runtime() -> None:
+    parser = build_arg_parser()
+    missing_confirmation = parser.parse_args(
+        [
+            "--seller-id",
+            "82453304",
+            "--date-from",
+            "2026-05-01",
+            "--date-to",
+            "2026-05-01",
+            "--include-buyer-address-pii",
+            "--max-orders",
+            "1",
+        ]
+    )
+
+    with pytest.raises(
+        SystemExit, match="--confirm-approved-runtime is required with --include-buyer-address-pii"
+    ):
+        validate_cli_safety(missing_confirmation)
+
+    unbounded = parser.parse_args(
+        [
+            "--seller-id",
+            "82453304",
+            "--date-from",
+            "2026-05-01",
+            "--date-to",
+            "2026-05-01",
+            "--include-buyer-address-pii",
+            "--confirm-approved-runtime",
+        ]
+    )
+
+    with pytest.raises(
+        SystemExit, match="--max-orders is required with --include-buyer-address-pii"
+    ):
+        validate_cli_safety(unbounded)
+
+    bounded = parser.parse_args(
+        [
+            "--seller-id",
+            "82453304",
+            "--date-from",
+            "2026-05-01",
+            "--date-to",
+            "2026-05-01",
+            "--include-buyer-address-pii",
+            "--confirm-approved-runtime",
+            "--max-orders",
+            "1",
+        ]
+    )
+
+    validate_cli_safety(bounded)
+
+
 @pytest.mark.asyncio
 async def test_runner_write_requires_approved_runtime() -> None:
     with pytest.raises(ValueError, match="approved_runtime is required"):
@@ -163,6 +229,35 @@ async def test_runner_write_requires_approved_runtime() -> None:
             date_to="2026-05-01",
             dry_run=False,
             max_orders=1,
+        )
+
+
+@pytest.mark.asyncio
+async def test_runner_buyer_address_pii_mode_requires_approved_bounded_runtime() -> None:
+    with pytest.raises(ValueError, match="approved_runtime is required for buyer/address PII mode"):
+        await run_historical_meli_backfill(
+            db=FakeDb(),
+            gateway=FakeGateway(),
+            order_detail_gateway=FakeOrderDetailGateway(),
+            seller_id="82453304",
+            date_from="2026-05-01",
+            date_to="2026-05-01",
+            dry_run=True,
+            include_buyer_address_pii=True,
+            max_orders=1,
+        )
+
+    with pytest.raises(ValueError, match="max_orders is required for buyer/address PII mode"):
+        await run_historical_meli_backfill(
+            db=FakeDb(),
+            gateway=FakeGateway(),
+            order_detail_gateway=FakeOrderDetailGateway(),
+            seller_id="82453304",
+            date_from="2026-05-01",
+            date_to="2026-05-01",
+            dry_run=True,
+            approved_runtime=True,
+            include_buyer_address_pii=True,
         )
 
 
@@ -191,6 +286,67 @@ async def test_historical_backfill_dry_run_does_not_write() -> None:
     assert summary.written_items == 0
     assert summary.written_shipments == 0
     assert all(not collection.replace_calls for collection in db.collections.values())
+
+
+@pytest.mark.asyncio
+async def test_buyer_address_pii_dry_run_reports_only_sanitized_aggregate_counts() -> None:
+    db = FakeDb()
+
+    summary = await run_historical_meli_backfill(
+        db=db,
+        gateway=FakeGateway(),
+        order_detail_gateway=FakeOrderDetailGateway(),
+        seller_id="82453304",
+        date_from="2026-05-01",
+        date_to="2026-05-01",
+        dry_run=True,
+        approved_runtime=True,
+        include_buyer_address_pii=True,
+        max_orders=1,
+    )
+
+    output = summary.as_dict()
+    output_json = json.dumps(output, sort_keys=True)
+    assert output["buyer_address_pii_mode"] is True
+    assert output["output_mode"] == "sanitized_aggregate"
+    assert output["address_matched"] == 1
+    assert output["address_populated"] == 1
+    assert output["address_missing"] == 0
+    assert output["address_unauthorized"] == 0
+    assert output["redacted_errors"] == 0
+    assert "order_ids" not in output
+    assert "shipment_ids" not in output
+    assert "item_ids" not in output
+    assert "missing_item_detail_ids" not in output
+    assert "2001" not in output_json
+    assert "3001" not in output_json
+    assert "SENTINEL BUYER NAME" not in output_json
+    assert "SENTINEL STREET" not in output_json
+    assert all(not collection.replace_calls for collection in db.collections.values())
+
+
+@pytest.mark.asyncio
+async def test_buyer_address_pii_summary_counts_unauthorized_without_leaking_payload() -> None:
+    summary = await run_historical_meli_backfill(
+        db=FakeDb(),
+        gateway=FakeGateway(unauthorized_shipment=True),
+        order_detail_gateway=FakeOrderDetailGateway(),
+        seller_id="82453304",
+        date_from="2026-05-01",
+        date_to="2026-05-01",
+        dry_run=True,
+        approved_runtime=True,
+        include_buyer_address_pii=True,
+        max_orders=1,
+    )
+
+    output_json = json.dumps(summary.as_dict(), sort_keys=True)
+    assert summary.address_matched == 1
+    assert summary.address_populated == 0
+    assert summary.address_unauthorized == 1
+    assert summary.redacted_errors == 0
+    assert "SENTINEL BUYER NAME" not in output_json
+    assert "SENTINEL STREET" not in output_json
 
 
 @pytest.mark.asyncio
@@ -264,11 +420,49 @@ async def test_historical_backfill_write_persists_canonical_docs_and_read_models
     shipment = db["shipments"].documents["3001"]
     assert shipment["seller_id"] == "82453304"
     assert shipment["order_id"] == "2001"
+    assert "receiver_address" not in shipment
 
     assert db["sheets_item_sku_index"].documents["82453304:SKU-1:MLA1:item"]["item_id"] == "MLA1"
     formula_row = db["sheets_item_formula_rows"].documents["82453304:SKU-1:MLA1"]
     assert formula_row["current"]["title"] == "Premium widget"
     assert formula_row["current"]["inventory_id"] == "INV-ITEM-1"
+
+
+@pytest.mark.asyncio
+async def test_buyer_address_pii_write_persists_snapshot_and_keeps_output_sanitized() -> None:
+    db = FakeDb()
+
+    summary = await run_historical_meli_backfill(
+        db=db,
+        gateway=FakeGateway(),
+        order_detail_gateway=FakeOrderDetailGateway(),
+        seller_id="82453304",
+        date_from="2026-05-01",
+        date_to="2026-05-01",
+        dry_run=False,
+        approved_runtime=True,
+        include_buyer_address_pii=True,
+        max_orders=1,
+    )
+
+    shipment = db["shipments"].documents["3001"]
+    assert shipment["receiver_address"] == {
+        "name": "SENTINEL BUYER NAME",
+        "street_name": "SENTINEL STREET",
+        "street_number": "123",
+        "neighborhood": "SENTINEL NEIGHBORHOOD",
+        "zip_code": "SENTINEL ZIP",
+        "city": "SENTINEL CITY",
+        "state": "SENTINEL STATE",
+        "country": "SENTINEL COUNTRY",
+    }
+    output_json = json.dumps(summary.as_dict(), sort_keys=True)
+    assert summary.written_shipments == 1
+    assert summary.address_populated == 1
+    assert "shipment_ids" not in summary.as_dict()
+    assert "3001" not in output_json
+    assert "SENTINEL BUYER NAME" not in output_json
+    assert "SENTINEL STREET" not in output_json
 
 
 @pytest.mark.asyncio
@@ -429,4 +623,14 @@ def _shipment_detail() -> dict[str, Any]:
         "logistic_type": "drop_off",
         "date_created": "2026-05-01T12:10:00+00:00",
         "last_updated": "2026-05-01T12:30:00+00:00",
+        "receiver_address": {
+            "receiver_name": "SENTINEL BUYER NAME",
+            "street_name": "SENTINEL STREET",
+            "street_number": "123",
+            "neighborhood": {"name": "SENTINEL NEIGHBORHOOD"},
+            "zip_code": "SENTINEL ZIP",
+            "city": {"name": "SENTINEL CITY"},
+            "state": {"name": "SENTINEL STATE"},
+            "country": {"name": "SENTINEL COUNTRY"},
+        },
     }
