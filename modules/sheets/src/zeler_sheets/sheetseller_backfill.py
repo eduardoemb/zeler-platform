@@ -1402,9 +1402,9 @@ def _schema_safe_current_promotion(value: Any) -> dict[str, Any] | None:
         raw_projection = value.model_dump(mode="python", exclude_none=True)
     elif isinstance(value, dict):
         try:
-            raw_projection = PromoPriceProjection.model_validate(value).model_dump(
-                mode="python", exclude_none=True
-            )
+            raw_projection = PromoPriceProjection.model_validate(
+                _normalize_mongo_loaded_promo_datetimes(value)
+            ).model_dump(mode="python", exclude_none=True)
         except ValueError:
             return None
     else:
@@ -1423,6 +1423,19 @@ def _schema_safe_current_promotion(value: Any) -> dict[str, Any] | None:
         if raw_projection.get(key) is not None:
             projection[key] = raw_projection[key]
     return projection
+
+
+def _normalize_mongo_loaded_promo_datetimes(value: dict[str, Any]) -> dict[str, Any]:
+    normalized = dict(value)
+    for key in ("reference_at", "synced_at"):
+        current = normalized.get(key)
+        if isinstance(current, datetime):
+            normalized[key] = (
+                current.astimezone(UTC)
+                if current.tzinfo is not None
+                else current.replace(tzinfo=UTC)
+            )
+    return normalized
 
 
 def _shipping_logistic_type(shipping: Any) -> str | None:
