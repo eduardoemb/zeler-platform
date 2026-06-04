@@ -467,3 +467,183 @@ async def test_persists_shipment_for_live_shipping_notifications() -> None:
         "schema_version": 1,
     }
     BSON.encode(shipment)
+
+
+@pytest.mark.asyncio
+async def test_persists_shipment_receiver_address_from_allowlisted_snapshot_only() -> None:
+    db = FakeDb()
+    persistence = SheetsEventPersistence(db=db, clock=lambda: NOW)
+
+    await persistence.persist(
+        event_type="shipments.updated",
+        seller_id=82453304,
+        resource={
+            "id": 3001,
+            "order_id": 2001,
+            "status": "ready_to_ship",
+            "substatus": "printed",
+            "tracking_number": "TRACK-1",
+            "logistic_type": "fulfillment",
+            "date_created": "2026-05-29T10:00:00+00:00",
+            "last_updated": "2026-05-30T11:00:00+00:00",
+            "receiver_address": {
+                "receiver_name": "  Synthetic Buyer  ",
+                "street_name": " Sentinel Street ",
+                "street_number": 123,
+                "neighborhood": {"name": " Test Neighborhood "},
+                "zip_code": " 1000 ",
+                "city": {"name": " Test City "},
+                "state": {"name": " Test State "},
+                "country": {"id": "AR", "name": " Argentina "},
+                "phone": "+54-PII-PHONE",
+                "email": "pii@example.invalid",
+                "document": "PII-DOCUMENT",
+                "comment": "PII-COMMENT",
+                "latitude": "PII-GEO-LAT",
+                "longitude": "PII-GEO-LON",
+            },
+            "receiver": {"name": "RAW-RECEIVER-PII", "phone": "+54-RAW-PHONE"},
+            "buyer": {"email": "raw-buyer@example.invalid"},
+            "token": "PII-OAUTH-TOKEN",
+        },
+    )
+
+    shipment = db["shipments"].documents["3001"]
+    assert shipment["receiver_address"] == {
+        "name": "Synthetic Buyer",
+        "street_name": "Sentinel Street",
+        "street_number": "123",
+        "neighborhood": "Test Neighborhood",
+        "zip_code": "1000",
+        "city": "Test City",
+        "state": "Test State",
+        "country": "Argentina",
+    }
+    serialized_shipment = repr(shipment)
+    for forbidden in (
+        "+54-PII-PHONE",
+        "pii@example.invalid",
+        "PII-DOCUMENT",
+        "PII-COMMENT",
+        "PII-GEO-LAT",
+        "PII-GEO-LON",
+        "RAW-RECEIVER-PII",
+        "raw-buyer@example.invalid",
+        "PII-OAUTH-TOKEN",
+    ):
+        assert forbidden not in serialized_shipment
+    BSON.encode(shipment)
+
+
+@pytest.mark.asyncio
+async def test_shipment_receiver_address_drops_nested_string_values() -> None:
+    db = FakeDb()
+    persistence = SheetsEventPersistence(db=db, clock=lambda: NOW)
+
+    await persistence.persist(
+        event_type="shipments.updated",
+        seller_id=82453304,
+        resource={
+            "id": 3001,
+            "order_id": 2001,
+            "status": "ready_to_ship",
+            "logistic_type": "fulfillment",
+            "date_created": "2026-05-29T10:00:00+00:00",
+            "last_updated": "2026-05-30T11:00:00+00:00",
+            "receiver_address": {
+                "receiver_name": {"raw": "PII-NESTED-NAME"},
+                "street_name": ["PII-NESTED-STREET"],
+                "street_number": {"raw": "PII-NESTED-NUMBER"},
+                "neighborhood": {"name": ["PII-NESTED-NEIGHBORHOOD"]},
+                "zip_code": {"raw": "PII-NESTED-ZIP"},
+                "city": {"name": {"raw": "PII-NESTED-CITY"}},
+                "state": {"name": " Safe State "},
+                "country": {"id": "AR"},
+            },
+        },
+    )
+
+    shipment = db["shipments"].documents["3001"]
+    assert shipment["receiver_address"] == {"state": "Safe State", "country": "AR"}
+    serialized_shipment = repr(shipment)
+    for forbidden in (
+        "PII-NESTED-NAME",
+        "PII-NESTED-STREET",
+        "PII-NESTED-NUMBER",
+        "PII-NESTED-NEIGHBORHOOD",
+        "PII-NESTED-ZIP",
+        "PII-NESTED-CITY",
+    ):
+        assert forbidden not in serialized_shipment
+
+
+@pytest.mark.asyncio
+async def test_shipment_receiver_address_uses_scalar_fallback_when_primary_name_is_nested() -> None:
+    db = FakeDb()
+    persistence = SheetsEventPersistence(db=db, clock=lambda: NOW)
+
+    await persistence.persist(
+        event_type="shipments.updated",
+        seller_id=82453304,
+        resource={
+            "id": 3001,
+            "order_id": 2001,
+            "status": "ready_to_ship",
+            "logistic_type": "fulfillment",
+            "date_created": "2026-05-29T10:00:00+00:00",
+            "last_updated": "2026-05-30T11:00:00+00:00",
+            "receiver_address": {
+                "receiver_name": {"raw": "PII-NESTED-NAME"},
+                "name": " Safe Buyer ",
+            },
+        },
+    )
+
+    shipment = db["shipments"].documents["3001"]
+    assert shipment["receiver_address"] == {"name": "Safe Buyer"}
+    assert "PII-NESTED-NAME" not in repr(shipment)
+
+
+@pytest.mark.asyncio
+async def test_shipment_persistence_errors_do_not_leak_receiver_address_pii(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    db = FakeDb()
+    persistence = SheetsEventPersistence(db=db, clock=lambda: NOW)
+    caplog.set_level("DEBUG")
+    resource = {
+        "id": 3001,
+        "order_id": 2001,
+        "status": "invalid-status",
+        "logistic_type": "fulfillment",
+        "date_created": "2026-05-29T10:00:00+00:00",
+        "last_updated": "2026-05-30T11:00:00+00:00",
+        "receiver_address": {
+            "receiver_name": "PII-SENTINEL-NAME",
+            "street_name": "PII-SENTINEL-STREET",
+            "phone": "+54-PII-PHONE",
+            "email": "pii@example.invalid",
+        },
+    }
+
+    with pytest.raises(ValueError) as exc_info:
+        await persistence.persist(
+            event_type="shipments.updated", seller_id=82453304, resource=resource
+        )
+
+    error_text = str(exc_info.value)
+    assert "shipment resource failed validation" in error_text
+    assert exc_info.value.args == ("shipment resource failed validation",)
+    assert exc_info.value.__cause__ is None
+    assert db["shipments"].replace_calls == []
+    captured_logs = "\n".join(
+        f"{record.getMessage()} {record.__dict__}" for record in caplog.records
+    )
+    for forbidden in (
+        "PII-SENTINEL-NAME",
+        "PII-SENTINEL-STREET",
+        "+54-PII-PHONE",
+        "pii@example.invalid",
+    ):
+        assert forbidden not in error_text
+        assert forbidden not in captured_logs

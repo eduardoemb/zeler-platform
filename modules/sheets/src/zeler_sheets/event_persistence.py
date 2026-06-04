@@ -7,6 +7,7 @@ from decimal import Decimal
 from typing import Any, cast
 
 from bson.decimal128 import Decimal128
+from pydantic import ValidationError
 
 from zeler_platform_core.models import Item, Order, Shipment
 from zeler_platform_core.models.base import current_schema_version
@@ -172,15 +173,20 @@ def _canonical_order_document(resource: dict[str, Any], *, seller_id: str) -> di
 
 def _canonical_shipment_document(resource: dict[str, Any], *, seller_id: str) -> dict[str, Any]:
     shipment_id = _string_id(resource.get("_id") or resource.get("id"))
-    model = Shipment.model_validate(
-        {
-            **resource,
-            "_id": shipment_id,
-            "seller_id": seller_id,
-            "order_id": _shipment_order_id(resource),
-            "schema_version": current_schema_version("shipments"),
-        }
-    )
+    try:
+        model = Shipment.model_validate(
+            {
+                **resource,
+                "_id": shipment_id,
+                "seller_id": seller_id,
+                "order_id": _shipment_order_id(resource),
+                "receiver_address": _receiver_address_snapshot(resource),
+                "schema_version": current_schema_version("shipments"),
+            }
+        )
+    except ValidationError:
+        msg = "shipment resource failed validation"
+        raise ValueError(msg) from None
     return cast(
         "dict[str, Any]",
         _bson_safe(model.model_dump(by_alias=True, mode="python", exclude_none=True)),
@@ -261,6 +267,52 @@ def _shipment_order_id(resource: dict[str, Any]) -> str:
     if isinstance(order, dict):
         return _string_id(order.get("id") or order.get("order_id"))
     return _string_id(resource.get("order_id"))
+
+
+def _receiver_address_snapshot(resource: dict[str, Any]) -> dict[str, Any] | None:
+    raw_address = resource.get("receiver_address")
+    if not isinstance(raw_address, dict):
+        return None
+
+    snapshot = {
+        "name": _first_receiver_address_string(
+            raw_address.get("receiver_name"), raw_address.get("name")
+        ),
+        "street_name": _receiver_address_string(raw_address.get("street_name")),
+        "street_number": _receiver_address_string(raw_address.get("street_number")),
+        "neighborhood": _receiver_address_string(_named_value(raw_address.get("neighborhood"))),
+        "zip_code": _receiver_address_string(raw_address.get("zip_code")),
+        "city": _receiver_address_string(_named_value(raw_address.get("city"))),
+        "state": _receiver_address_string(_named_value(raw_address.get("state"))),
+        "country": _receiver_address_string(_named_value(raw_address.get("country"))),
+    }
+    sanitized = {key: value for key, value in snapshot.items() if value is not None}
+    return sanitized or None
+
+
+def _named_value(value: Any) -> Any:
+    if isinstance(value, dict):
+        return _receiver_address_string(value.get("name")) or _receiver_address_string(
+            value.get("id")
+        )
+    return value
+
+
+def _receiver_address_string(value: Any) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, (dict, list, tuple, set, bytes, bytearray)):
+        return None
+    normalized = str(value).strip()
+    return normalized or None
+
+
+def _first_receiver_address_string(*values: Any) -> str | None:
+    for value in values:
+        normalized = _receiver_address_string(value)
+        if normalized is not None:
+            return normalized
+    return None
 
 
 def _optional_string(value: Any) -> str | None:

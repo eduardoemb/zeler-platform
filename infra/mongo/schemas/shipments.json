@@ -25,6 +25,71 @@
           "int"
         ]
       },
+      "receiver_address": {
+        "additionalProperties": false,
+        "bsonType": [
+          "object",
+          "null"
+        ],
+        "properties": {
+          "city": {
+            "bsonType": [
+              "string",
+              "null"
+            ],
+            "maxLength": 120
+          },
+          "country": {
+            "bsonType": [
+              "string",
+              "null"
+            ],
+            "maxLength": 120
+          },
+          "name": {
+            "bsonType": [
+              "string",
+              "null"
+            ],
+            "maxLength": 120
+          },
+          "neighborhood": {
+            "bsonType": [
+              "string",
+              "null"
+            ],
+            "maxLength": 120
+          },
+          "state": {
+            "bsonType": [
+              "string",
+              "null"
+            ],
+            "maxLength": 120
+          },
+          "street_name": {
+            "bsonType": [
+              "string",
+              "null"
+            ],
+            "maxLength": 120
+          },
+          "street_number": {
+            "bsonType": [
+              "string",
+              "null"
+            ],
+            "maxLength": 120
+          },
+          "zip_code": {
+            "bsonType": [
+              "string",
+              "null"
+            ],
+            "maxLength": 120
+          }
+        }
+      },
       "schema_version": {
         "bsonType": "int"
       },
