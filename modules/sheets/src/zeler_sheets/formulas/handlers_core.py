@@ -441,7 +441,9 @@ class CoreFormulaHandlers:
             context.seller_id, visible_rows, as_of=formula_time
         )
         headers = list(DASHBOARD_LEGACY_HEADERS)
-        include_promo = str(context.args.get("tipo_precio") or "").strip().casefold() == "todos"
+        tipo_precio = str(context.args.get("tipo_precio") or "").strip().casefold()
+        include_promo = tipo_precio == "todos"
+        use_promo_as_selected_price = tipo_precio == "promo"
         if include_promo:
             headers.append("Precio Promo")
         values: list[list[Any]] = _header_row(context.args.get("encabezados"), headers)
@@ -458,6 +460,7 @@ class CoreFormulaHandlers:
                         _unit_cost_lookup_for_row(context.seller_id, row, formula_time)
                     ),
                     include_promo=include_promo,
+                    use_promo_as_selected_price=use_promo_as_selected_price,
                 )
             )
 
@@ -821,8 +824,14 @@ def _dashboard_row(
     sales_windows: Mapping[int, Mapping[tuple[str, str], int]],
     unit_cost: Any,
     include_promo: bool,
+    use_promo_as_selected_price: bool,
 ) -> list[Any]:
-    values = _dashboard_row_base(row, sales_windows=sales_windows, unit_cost=unit_cost)
+    values = _dashboard_row_base(
+        row,
+        sales_windows=sales_windows,
+        unit_cost=unit_cost,
+        use_promo_as_selected_price=use_promo_as_selected_price,
+    )
     return [*values, _promo_price(row)] if include_promo else values
 
 
@@ -831,6 +840,7 @@ def _dashboard_row_base(
     *,
     sales_windows: Mapping[int, Mapping[tuple[str, str], int]],
     unit_cost: Any,
+    use_promo_as_selected_price: bool,
 ) -> list[Any]:
     key = (
         normalize_sku(row.get("normalized_sku") or row.get("sku")),
@@ -841,7 +851,7 @@ def _dashboard_row_base(
         _current_value(row, "title"),
         row.get("sku") or row.get("normalized_sku") or "",
         _current_value(row, "available_quantity"),
-        _current_value(row, "base_price"),
+        _promo_price(row) if use_promo_as_selected_price else _current_value(row, "base_price"),
         _current_value(row, "shipping_logistic_type"),
         _current_value(row, "permalink"),
         _listing_type_id(row),
