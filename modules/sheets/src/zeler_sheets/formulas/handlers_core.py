@@ -774,6 +774,11 @@ def _inventory_code(row: Mapping[str, Any]) -> Any:
     return row.get("inventory_id") or _current_value(row, "inventory_id")
 
 
+def _listing_type_id(row: Mapping[str, Any]) -> Any:
+    value = _current_value(row, "listing_type_id")
+    return value or NA_VALUE
+
+
 def _publicaciones_row(row: Mapping[str, Any]) -> list[Any]:
     inventory_code = _inventory_code(row)
     return [
@@ -784,7 +789,7 @@ def _publicaciones_row(row: Mapping[str, Any]) -> list[Any]:
         _current_value(row, "base_price"),
         _current_value(row, "shipping_logistic_type"),
         _current_value(row, "permalink"),
-        NA_VALUE,
+        _listing_type_id(row),
         _current_value(row, "status"),
         inventory_code,
         inventory_code,
@@ -810,7 +815,7 @@ def _dashboard_row(
         _current_value(row, "base_price"),
         _current_value(row, "shipping_logistic_type"),
         _current_value(row, "permalink"),
-        NA_VALUE,
+        _listing_type_id(row),
         _current_value(row, "status"),
         _inventory_code(row),
         NA_VALUE,

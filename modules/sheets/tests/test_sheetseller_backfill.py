@@ -265,6 +265,7 @@ def test_read_model_docs_use_deterministic_ids_and_map_safe_current_item_fields(
         thumbnail="https://img.example/MLA1.jpg",
         catalog_product_id="MLA-CATALOG-1",
         inventory_id="ITEM-INV-1",
+        listing_type_id="gold_special",
         shipping={"logistic_type": "fulfillment", "free_shipping": True},
         last_updated=NOW,
     )
@@ -309,6 +310,7 @@ def test_read_model_docs_use_deterministic_ids_and_map_safe_current_item_fields(
             "thumbnail": "https://img.example/MLA1.jpg",
             "catalog_product_id": "MLA-CATALOG-1",
             "inventory_id": "ITEM-INV-1",
+            "listing_type_id": "gold_special",
             "shipping_logistic_type": "fulfillment",
             "shipping_payer": "Vendedor",
         },
@@ -353,6 +355,7 @@ def test_formula_row_preserves_blank_enrichment_fields_when_source_is_absent() -
     assert formula_row["current"]["thumbnail"] is None
     assert formula_row["current"]["catalog_product_id"] is None
     assert formula_row["current"]["inventory_id"] is None
+    assert formula_row["current"]["listing_type_id"] is None
     assert formula_row["current"]["shipping_logistic_type"] is None
     assert formula_row["current"]["shipping_payer"] is None
 
@@ -769,6 +772,7 @@ async def test_item_detail_enrichment_fetches_canonical_ids_and_writes_formula_f
                         "thumbnail": "https://img.example/MLA1.jpg",
                         "catalog_product_id": "MLA-CATALOG-1",
                         "inventory_id": "INV-ITEM-1",
+                        "listing_type_id": "gold_special",
                         "variations": [{"id": 101, "inventory_id": "INV-VAR-101"}],
                         "attributes": [{"id": "SELLER_SKU", "value_name": "sku-1"}],
                         "date_created": NOW.isoformat(),
@@ -823,6 +827,7 @@ async def test_item_detail_enrichment_fetches_canonical_ids_and_writes_formula_f
         "thumbnail": "https://img.example/MLA1.jpg",
         "catalog_product_id": "MLA-CATALOG-1",
         "inventory_id": "INV-ITEM-1",
+        "listing_type_id": "gold_special",
         "variations": [{"id": 101, "inventory_id": "INV-VAR-101"}],
         "attributes": [{"id": "SELLER_SKU", "value_name": "sku-1"}],
         "shipping": None,
@@ -836,6 +841,7 @@ async def test_item_detail_enrichment_fetches_canonical_ids_and_writes_formula_f
     assert stored["thumbnail"] == "https://img.example/MLA1.jpg"
     assert stored["catalog_product_id"] == "MLA-CATALOG-1"
     assert stored["inventory_id"] == "INV-ITEM-1"
+    assert stored["listing_type_id"] == "gold_special"
     assert stored["schema_version"] == 2
 
 
@@ -1643,6 +1649,7 @@ def _item_doc(
     thumbnail: str | None = None,
     catalog_product_id: str | None = None,
     inventory_id: str | None = None,
+    listing_type_id: str | None = None,
     shipping: dict[str, Any] | None = None,
     last_updated: datetime | None = None,
 ) -> dict[str, Any]:
@@ -1665,6 +1672,7 @@ def _item_doc(
         ("thumbnail", thumbnail),
         ("catalog_product_id", catalog_product_id),
         ("inventory_id", inventory_id),
+        ("listing_type_id", listing_type_id),
         ("shipping", shipping),
     ):
         if value is not None:

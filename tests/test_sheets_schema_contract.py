@@ -197,6 +197,7 @@ def test_sheets_item_formula_rows_schema_supports_current_shipping_fields() -> N
 
     assert current_properties["shipping_logistic_type"] == {"bsonType": ["string", "null"]}
     assert current_properties["shipping_payer"] == {"bsonType": ["string", "null"]}
+    assert current_properties["listing_type_id"] == {"bsonType": ["string", "null"]}
 
 
 def test_items_schema_supports_v2_formula_fields_without_raw_payload_drift() -> None:
@@ -208,6 +209,7 @@ def test_items_schema_supports_v2_formula_fields_without_raw_payload_drift() -> 
     assert schema["properties"]["thumbnail"] == {"bsonType": ["string", "null"]}
     assert schema["properties"]["catalog_product_id"] == {"bsonType": ["string", "null"]}
     assert schema["properties"]["inventory_id"] == {"bsonType": ["string", "null"]}
+    assert schema["properties"]["listing_type_id"] == {"bsonType": ["string", "null"]}
     assert "raw_payload_blob" not in schema["properties"]
     assert schema["required"] == [
         "_id",

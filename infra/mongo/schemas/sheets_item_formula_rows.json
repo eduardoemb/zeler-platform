@@ -28,6 +28,7 @@
           "available_quantity": {"bsonType": ["int", "long", "double", "null"]},
           "base_price": {"bsonType": ["int", "long", "double", "decimal", "null"]},
           "catalog_product_id": {"bsonType": ["string", "null"]},
+          "listing_type_id": {"bsonType": ["string", "null"]},
           "category_id": {"bsonType": ["string", "null"]},
           "thumbnail": {"bsonType": ["string", "null"]},
           "shipping_logistic_type": {"bsonType": ["string", "null"]},

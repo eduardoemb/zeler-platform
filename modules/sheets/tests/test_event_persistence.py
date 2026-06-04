@@ -81,6 +81,7 @@ async def test_persists_item_and_refreshes_sheetseller_read_models() -> None:
             "thumbnail": "https://img.example/MLA1.jpg",
             "catalog_product_id": "CAT-1",
             "inventory_id": "INV-ITEM-1",
+            "listing_type_id": "gold_special",
             "shipping": {"logistic_type": "cross_docking", "free_shipping": False},
             "attributes": [{"id": "SELLER_SKU", "value_name": "sku-1"}],
             "variations": [
@@ -97,6 +98,7 @@ async def test_persists_item_and_refreshes_sheetseller_read_models() -> None:
     assert item["schema_version"] == 2
     assert item["last_meli_sync_at"] == NOW
     assert item["price"] == Decimal128("149.99")
+    assert item["listing_type_id"] == "gold_special"
     BSON.encode(item)
 
     assert sorted(db["sheets_item_sku_index"].documents) == [
@@ -110,6 +112,7 @@ async def test_persists_item_and_refreshes_sheetseller_read_models() -> None:
     variation_row = db["sheets_item_formula_rows"].documents["82453304:VAR-101:MLA1:101"]
     assert variation_row["inventory_id"] == "INV-VAR-101"
     assert variation_row["current"]["title"] == "Premium widget"
+    assert variation_row["current"]["listing_type_id"] == "gold_special"
     assert variation_row["current"]["shipping_logistic_type"] == "cross_docking"
     assert variation_row["current"]["shipping_payer"] == "Comprador"
 
