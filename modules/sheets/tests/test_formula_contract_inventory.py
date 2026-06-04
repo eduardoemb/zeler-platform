@@ -250,6 +250,7 @@ def test_dashboard_output_column_fixture_locks_mvp_and_deferred_columns() -> Non
             "Precio",
             "Logística",
             "URL",
+            "Tipo De Publicación",
             "Status",
             "Código ML",
             "Ventas (7 días)",
@@ -261,7 +262,6 @@ def test_dashboard_output_column_fixture_locks_mvp_and_deferred_columns() -> Non
             "Tiene Catálogo",
         ]
         assert [column["name"] for column in columns if column["status"] == "explicit_na"] == [
-            "Tipo De Publicación",
             "Días Pausada",
             "Costo De Envío",
             "% Comisión",

@@ -983,6 +983,7 @@ def build_formula_row_doc(
             "permalink": _optional_string(item.get("permalink")),
             "thumbnail": _optional_string(item.get("thumbnail")),
             "catalog_product_id": _optional_string(item.get("catalog_product_id")),
+            "listing_type_id": _optional_string(item.get("listing_type_id")),
             "inventory_id": resolved_inventory_id,
             "shipping_logistic_type": _shipping_logistic_type(item.get("shipping")),
             "shipping_payer": _shipping_payer(item.get("shipping")),

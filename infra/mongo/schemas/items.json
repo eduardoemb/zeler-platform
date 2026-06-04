@@ -58,6 +58,12 @@
       "last_updated": {
         "bsonType": "date"
       },
+      "listing_type_id": {
+        "bsonType": [
+          "string",
+          "null"
+        ]
+      },
       "permalink": {
         "bsonType": [
           "string",

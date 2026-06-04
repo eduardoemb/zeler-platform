@@ -51,6 +51,7 @@ class Item(UtcDatetimeMixin, PriceMixin, SellerScopedDocument):
     thumbnail: str | None = None
     catalog_product_id: str | None = None
     inventory_id: str | None = None
+    listing_type_id: str | None = None
     variations: list[dict[str, Any]] = Field(default_factory=list)
     attributes: list[dict[str, Any]] = Field(default_factory=list)
     shipping: dict[str, Any] | None = None
@@ -59,7 +60,14 @@ class Item(UtcDatetimeMixin, PriceMixin, SellerScopedDocument):
     date_created: datetime
     last_updated: datetime
 
-    @field_validator("permalink", "thumbnail", "catalog_product_id", "inventory_id", mode="before")
+    @field_validator(
+        "permalink",
+        "thumbnail",
+        "catalog_product_id",
+        "inventory_id",
+        "listing_type_id",
+        mode="before",
+    )
     @classmethod
     def _coerce_optional_formula_field(cls, value: object) -> object:
         if value is None:

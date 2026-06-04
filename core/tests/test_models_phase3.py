@@ -128,6 +128,7 @@ def test_item_preserves_whitelisted_formula_fields_without_raw_payload_drift() -
             "thumbnail": "https://img.example/MLM123.jpg",
             "catalog_product_id": "MLM-CATALOG-1",
             "inventory_id": "ITEM-INV-1",
+            "listing_type_id": " gold_special ",
             "variations": [
                 {"id": 456, "inventory_id": "VAR-INV-456", "seller_custom_field": "sku-456"}
             ],
@@ -145,6 +146,7 @@ def test_item_preserves_whitelisted_formula_fields_without_raw_payload_drift() -
     assert dumped["thumbnail"] == "https://img.example/MLM123.jpg"
     assert dumped["catalog_product_id"] == "MLM-CATALOG-1"
     assert dumped["inventory_id"] == "ITEM-INV-1"
+    assert dumped["listing_type_id"] == "gold_special"
     assert dumped["variations"][0]["inventory_id"] == "VAR-INV-456"
     assert "raw_payload_blob" not in dumped
 
@@ -164,6 +166,7 @@ def test_item_accepts_nullable_formula_fields() -> None:
             "thumbnail": None,
             "catalog_product_id": None,
             "inventory_id": None,
+            "listing_type_id": "   ",
             "last_meli_sync_at": NOW,
             "date_created": NOW,
             "last_updated": NOW,
@@ -175,6 +178,7 @@ def test_item_accepts_nullable_formula_fields() -> None:
     assert item.thumbnail is None
     assert item.catalog_product_id is None
     assert item.inventory_id is None
+    assert item.listing_type_id is None
 
 
 @pytest.mark.parametrize(

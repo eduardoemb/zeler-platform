@@ -598,6 +598,7 @@ async def test_items_stage_persists_formula_detail_fields_as_schema_v2() -> None
                             "thumbnail": "https://img.example/MLM1.jpg",
                             "catalog_product_id": "MLM-CATALOG-1",
                             "inventory_id": "ITEM-INV-1",
+                            "listing_type_id": "gold_special",
                             "variations": [{"id": 456, "inventory_id": "VAR-INV-456"}],
                             "raw_payload_blob": {"must_not": "be persisted"},
                             "date_created": NOW,
@@ -619,6 +620,7 @@ async def test_items_stage_persists_formula_detail_fields_as_schema_v2() -> None
     assert document["thumbnail"] == "https://img.example/MLM1.jpg"
     assert document["catalog_product_id"] == "MLM-CATALOG-1"
     assert document["inventory_id"] == "ITEM-INV-1"
+    assert document["listing_type_id"] == "gold_special"
     assert document["variations"][0]["inventory_id"] == "VAR-INV-456"
     assert "raw_payload_blob" not in document
 
