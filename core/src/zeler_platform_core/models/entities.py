@@ -171,12 +171,44 @@ class Message(UtcDatetimeMixin, SellerScopedDocument):
         return None if value is None else _coerce_str(value)
 
 
+class ReceiverAddressSnapshot(UtcDatetimeMixin):
+    name: str | None = Field(default=None, max_length=120)
+    street_name: str | None = Field(default=None, max_length=120)
+    street_number: str | None = Field(default=None, max_length=120)
+    neighborhood: str | None = Field(default=None, max_length=120)
+    zip_code: str | None = Field(default=None, max_length=120)
+    city: str | None = Field(default=None, max_length=120)
+    state: str | None = Field(default=None, max_length=120)
+    country: str | None = Field(default=None, max_length=120)
+
+    @field_validator(
+        "name",
+        "street_name",
+        "street_number",
+        "neighborhood",
+        "zip_code",
+        "city",
+        "state",
+        "country",
+        mode="before",
+    )
+    @classmethod
+    def _coerce_optional_receiver_address_field(cls, value: object) -> object:
+        if value is None:
+            return None
+        if isinstance(value, (dict, list, tuple, set, bytes, bytearray)):
+            return None
+        normalized = _coerce_str(value).strip()
+        return normalized or None
+
+
 class Shipment(UtcDatetimeMixin, SellerScopedDocument):
     order_id: str
     status: ShipmentStatus
     substatus: str | None = None
     tracking_number: str | None = None
     logistic_type: ShipmentLogisticType
+    receiver_address: ReceiverAddressSnapshot | None = None
     date_created: datetime
     last_updated: datetime
 

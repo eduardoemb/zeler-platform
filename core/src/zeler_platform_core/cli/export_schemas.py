@@ -12,6 +12,20 @@ SELLER = {"seller_id": {"bsonType": ["string", "long", "int"]}}
 DATE = {"bsonType": "date"}
 NULLABLE_DATE = {"bsonType": ["date", "null"]}
 MONEY = {"bsonType": ["decimal", "double", "int", "long"]}
+RECEIVER_ADDRESS_SNAPSHOT = {
+    "bsonType": ["object", "null"],
+    "additionalProperties": False,
+    "properties": {
+        "name": {"bsonType": ["string", "null"], "maxLength": 120},
+        "street_name": {"bsonType": ["string", "null"], "maxLength": 120},
+        "street_number": {"bsonType": ["string", "null"], "maxLength": 120},
+        "neighborhood": {"bsonType": ["string", "null"], "maxLength": 120},
+        "zip_code": {"bsonType": ["string", "null"], "maxLength": 120},
+        "city": {"bsonType": ["string", "null"], "maxLength": 120},
+        "state": {"bsonType": ["string", "null"], "maxLength": 120},
+        "country": {"bsonType": ["string", "null"], "maxLength": 120},
+    },
+}
 
 ENTITY_SCHEMAS: dict[str, dict[str, Any]] = {
     "meli_accounts": {
@@ -233,6 +247,7 @@ ENTITY_SCHEMAS: dict[str, dict[str, Any]] = {
             "substatus": {"bsonType": ["string", "null"]},
             "tracking_number": {"bsonType": ["string", "null"]},
             "logistic_type": {"bsonType": "string"},
+            "receiver_address": RECEIVER_ADDRESS_SNAPSHOT,
             "date_created": DATE,
             "last_updated": DATE,
             **SCHEMA_VERSION,
