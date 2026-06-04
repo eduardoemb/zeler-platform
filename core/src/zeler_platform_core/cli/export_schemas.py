@@ -12,6 +12,29 @@ SELLER = {"seller_id": {"bsonType": ["string", "long", "int"]}}
 DATE = {"bsonType": "date"}
 NULLABLE_DATE = {"bsonType": ["date", "null"]}
 MONEY = {"bsonType": ["decimal", "double", "int", "long"]}
+PROMO_PRICE_PROJECTION = {
+    "additionalProperties": False,
+    "bsonType": ["object", "null"],
+    "required": [
+        "source",
+        "sale_amount",
+        "regular_amount",
+        "currency_id",
+        "reference_at",
+        "synced_at",
+    ],
+    "properties": {
+        "source": {"enum": ["/items/{id}/sale_price"]},
+        "sale_amount": MONEY,
+        "regular_amount": MONEY,
+        "discount_percent": {"bsonType": ["decimal", "double", "int", "long", "null"]},
+        "currency_id": {"bsonType": "string"},
+        "promotion_id": {"bsonType": ["string", "null"]},
+        "promotion_type": {"bsonType": ["string", "null"]},
+        "reference_at": DATE,
+        "synced_at": DATE,
+    },
+}
 RECEIVER_ADDRESS_SNAPSHOT = {
     "bsonType": ["object", "null"],
     "additionalProperties": False,
@@ -138,6 +161,7 @@ ENTITY_SCHEMAS: dict[str, dict[str, Any]] = {
             "available_quantity": {"bsonType": ["int", "long"]},
             "status": {"bsonType": "string"},
             "category_id": {"bsonType": "string"},
+            "current_promotion": PROMO_PRICE_PROJECTION,
             "catalog_product_id": {"bsonType": ["string", "null"]},
             "variations": {"bsonType": "array"},
             "attributes": {"bsonType": "array"},
