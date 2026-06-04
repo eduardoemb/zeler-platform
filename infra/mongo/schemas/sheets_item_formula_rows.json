@@ -33,6 +33,7 @@
           "thumbnail": {"bsonType": ["string", "null"]},
           "shipping_logistic_type": {"bsonType": ["string", "null"]},
           "shipping_payer": {"bsonType": ["string", "null"]},
+          "seller_shipping_cost": {"bsonType": ["int", "long", "double", "decimal", "null"]},
           "date_created": {"bsonType": ["date", "string", "null"]},
           "updated_at": {"bsonType": ["date", "null"]}
         }

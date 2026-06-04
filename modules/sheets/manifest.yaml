@@ -11,6 +11,7 @@ owned_collections:
 allowed_meli_scopes:
   - GET /items
   - GET /items/*
+  - GET /users/*/shipping_options/free
   - GET /orders/*
   - GET /shipments/*
 health_endpoint: /health

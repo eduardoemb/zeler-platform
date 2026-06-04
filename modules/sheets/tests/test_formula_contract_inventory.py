@@ -259,11 +259,11 @@ def test_dashboard_output_column_fixture_locks_mvp_and_deferred_columns() -> Non
             "Ventas (60 días)",
             "Ventas (90 días)",
             "Envió A Cargo De",
+            "Costo De Envío",
             "Tiene Catálogo",
         ]
         assert [column["name"] for column in columns if column["status"] == "explicit_na"] == [
             "Días Pausada",
-            "Costo De Envío",
             "% Comisión",
             "Comisión",
             "Costo Por Unidad",

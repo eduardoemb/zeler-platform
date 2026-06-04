@@ -88,6 +88,15 @@
           "int"
         ]
       },
+      "seller_shipping_cost": {
+        "bsonType": [
+          "decimal",
+          "double",
+          "int",
+          "long",
+          "null"
+        ]
+      },
       "shipping": {
         "bsonType": [
           "object",

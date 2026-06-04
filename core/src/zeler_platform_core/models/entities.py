@@ -52,6 +52,7 @@ class Item(UtcDatetimeMixin, PriceMixin, SellerScopedDocument):
     catalog_product_id: str | None = None
     inventory_id: str | None = None
     listing_type_id: str | None = None
+    seller_shipping_cost: Decimal | None = None
     variations: list[dict[str, Any]] = Field(default_factory=list)
     attributes: list[dict[str, Any]] = Field(default_factory=list)
     shipping: dict[str, Any] | None = None
@@ -74,6 +75,20 @@ class Item(UtcDatetimeMixin, PriceMixin, SellerScopedDocument):
             return None
         normalized = _coerce_str(value).strip()
         return normalized or None
+
+    @field_validator("seller_shipping_cost", mode="before")
+    @classmethod
+    def _coerce_seller_shipping_cost(cls, value: object) -> Decimal | None:
+        if value is None:
+            return None
+        if isinstance(value, (bool, dict, list)):
+            msg = "seller_shipping_cost must be a finite non-negative number"
+            raise ValueError(msg)
+        parsed = value if isinstance(value, Decimal) else Decimal(str(value))
+        if not parsed.is_finite() or parsed < 0:
+            msg = "seller_shipping_cost must be a finite non-negative number"
+            raise ValueError(msg)
+        return parsed
 
 
 class OrderItem(PriceMixin):
