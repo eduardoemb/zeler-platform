@@ -11,6 +11,10 @@ from bson.decimal128 import Decimal128
 
 from zeler_platform_core.clients.meli_gateway_client import GatewayRateLimitError
 from zeler_platform_core.models import Order
+from zeler_sheets.formulas.dispatcher import FormulaDispatcher, FormulaExecutionContext
+from zeler_sheets.formulas.handlers_core import build_core_formula_handlers
+from zeler_sheets.formulas.read_models import FormulaReadModelRepository
+from zeler_sheets.formulas.registry import FormulaRegistry
 from zeler_sheets.sheetseller_backfill import (
     BackfillSummary,
     ItemDetailEnrichmentSummary,
@@ -24,6 +28,7 @@ from zeler_sheets.sheetseller_backfill import (
     extract_safe_order_item_identity,
     extract_seller_sku,
     merge_order_items_identity,
+    project_sale_price_projection,
     run_item_detail_enrichment,
     run_order_identity_repair,
     run_order_line_identity_backfill,
@@ -112,6 +117,8 @@ class FakeCollection:
         current = dict(self.documents[doc_id])
         for path, value in update.get("$set", {}).items():
             _set_path(current, path, value)
+        for path in update.get("$unset", {}):
+            _unset_path(current, path)
         self.documents[doc_id] = current
         return FakeReplaceResult()
 
@@ -170,6 +177,18 @@ def _set_path(document: dict[str, Any], dotted_path: str, value: Any) -> None:
         target[int(leaf)] = value
     else:
         target[leaf] = value
+
+
+def _unset_path(document: dict[str, Any], dotted_path: str) -> None:
+    target: Any = document
+    parts = dotted_path.split(".")
+    for part in parts[:-1]:
+        target = target[int(part)] if isinstance(target, list) else target.get(part, {})
+    leaf = parts[-1]
+    if isinstance(target, list):
+        del target[int(leaf)]
+    elif isinstance(target, dict):
+        target.pop(leaf, None)
 
 
 class FakeGateway:
@@ -1046,6 +1065,198 @@ async def test_item_detail_enrichment_keeps_cost_absent_on_shipping_request_erro
     assert "timeout" not in serialized_summary
 
 
+def test_sale_price_projection_keeps_bounded_discount_scalars_only() -> None:
+    projection = project_sale_price_projection(
+        {
+            "amount": "99.90",
+            "regular_amount": "149.90",
+            "currency_id": "MXN",
+            "promotion_id": "PROMO-1",
+            "promotion_type": "deal",
+            "metadata": {"must": "not persist"},
+            "prices": [{"must": "not persist"}],
+        },
+        synced_at=NOW,
+    )
+
+    assert projection == {
+        "source": "/items/{id}/sale_price",
+        "sale_amount": Decimal128("99.90"),
+        "regular_amount": Decimal128("149.90"),
+        "discount_percent": Decimal128("33.36"),
+        "currency_id": "MXN",
+        "promotion_id": "PROMO-1",
+        "promotion_type": "deal",
+        "reference_at": NOW,
+        "synced_at": NOW,
+    }
+    assert "metadata" not in projection
+    assert "prices" not in projection
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"amount": "149.90", "regular_amount": "149.90", "currency_id": "MXN"},
+        {"amount": "159.90", "regular_amount": "149.90", "currency_id": "MXN"},
+        {"amount": "99.90", "regular_amount": None, "currency_id": "MXN"},
+        {"amount": "99.90", "regular_amount": "149.90", "currency_id": ""},
+    ],
+)
+def test_sale_price_projection_returns_none_for_unusable_sources(payload: dict[str, Any]) -> None:
+    assert project_sale_price_projection(payload, synced_at=NOW) is None
+
+
+@pytest.mark.asyncio
+async def test_item_detail_enrichment_preserves_na_when_sale_price_gate_disabled() -> None:
+    canonical = _item_doc("MLA1", attributes=[{"id": "SELLER_SKU", "value_name": "sku-1"}])
+    db = FakeDb([canonical])
+    gateway = FakeItemGateway(
+        {
+            "/items?ids=MLA1": [
+                {"code": 200, "body": _item_detail("MLA1")},
+            ]
+        }
+    )
+
+    summary = await run_item_detail_enrichment(
+        db=db,
+        gateway=gateway,
+        seller_id="82453304",
+        dry_run=False,
+    )
+
+    assert gateway.calls == [("82453304", "/items?ids=MLA1")]
+    assert summary.sale_price_requested == 0
+    assert summary.sale_price_promotions_enriched == 0
+    persisted = db["items"].update_calls[0][1]["$set"]
+    assert "current_promotion" not in persisted
+
+
+@pytest.mark.asyncio
+async def test_item_detail_enrichment_fetches_gated_sale_price_projection() -> None:
+    canonical = _item_doc("MLA1", attributes=[{"id": "SELLER_SKU", "value_name": "sku-1"}])
+    db = FakeDb([canonical])
+    gateway = FakeItemGateway(
+        {
+            "/items?ids=MLA1": [{"code": 200, "body": _item_detail("MLA1")}],
+            "/items/MLA1/sale_price?context=channel_marketplace": {
+                "amount": "99.90",
+                "regular_amount": "149.90",
+                "currency_id": "MXN",
+                "promotion_id": "PROMO-1",
+                "promotion_type": "deal",
+                "raw": {"must": "not persist"},
+            },
+        }
+    )
+
+    summary = await run_item_detail_enrichment(
+        db=db,
+        gateway=gateway,
+        seller_id="82453304",
+        dry_run=False,
+        sale_price_enabled=True,
+    )
+
+    assert gateway.calls == [
+        ("82453304", "/items?ids=MLA1"),
+        ("82453304", "/items/MLA1/sale_price?context=channel_marketplace"),
+    ]
+    assert summary.sale_price_requested == 1
+    assert summary.sale_price_promotions_enriched == 1
+    current_promotion = db["items"].update_calls[0][1]["$set"]["current_promotion"]
+    assert current_promotion["sale_amount"].to_decimal() == Decimal("99.90")
+    assert current_promotion["regular_amount"].to_decimal() == Decimal("149.90")
+    assert current_promotion["source"] == "/items/{id}/sale_price"
+    assert "raw" not in current_promotion
+
+
+@pytest.mark.asyncio
+async def test_item_detail_enrichment_keeps_base_enrichment_when_sale_price_unavailable() -> None:
+    canonical = _item_doc("MLA1", attributes=[{"id": "SELLER_SKU", "value_name": "sku-1"}])
+    db = FakeDb([canonical])
+    gateway = FakeItemGateway(
+        {
+            "/items?ids=MLA1": [{"code": 200, "body": _item_detail("MLA1")}],
+            "/items/MLA1/sale_price?context=channel_marketplace": RuntimeError("unavailable"),
+        }
+    )
+
+    summary = await run_item_detail_enrichment(
+        db=db,
+        gateway=gateway,
+        seller_id="82453304",
+        dry_run=False,
+        sale_price_enabled=True,
+    )
+
+    assert summary.items_updated == 1
+    assert summary.sale_price_requested == 1
+    assert summary.sale_price_promotions_unavailable == 1
+    persisted = db["items"].update_calls[0][1]["$set"]
+    assert persisted["title"] == "Detail MLA1"
+    assert "current_promotion" not in persisted
+
+
+@pytest.mark.parametrize(
+    ("sale_price_enabled", "sale_price_payload"),
+    [
+        (False, None),
+        (True, RuntimeError("unavailable")),
+        (True, {"amount": "149.90", "regular_amount": "149.90", "currency_id": "MXN"}),
+    ],
+)
+@pytest.mark.asyncio
+async def test_item_detail_enrichment_clears_stale_promo_when_sale_price_is_unusable(
+    sale_price_enabled: bool,
+    sale_price_payload: Any,
+) -> None:
+    canonical = _item_doc("MLA1", attributes=[{"id": "SELLER_SKU", "value_name": "sku-1"}])
+    stale_promotion = {
+        "source": "/items/{id}/sale_price",
+        "sale_amount": Decimal128("99.90"),
+        "regular_amount": Decimal128("149.90"),
+        "discount_percent": Decimal128("33.36"),
+        "currency_id": "MXN",
+        "promotion_id": "PROMO-STALE",
+        "promotion_type": "deal",
+        "reference_at": NOW,
+        "synced_at": NOW,
+    }
+    canonical["current_promotion"] = stale_promotion
+    stale_formula_row = build_formula_row_doc(canonical, seller_id="82453304")
+    db = FakeDb([canonical])
+    db["sheets_item_formula_rows"].documents[stale_formula_row["_id"]] = stale_formula_row
+    detail = _item_detail("MLA1")
+    detail["attributes"] = [{"id": "SELLER_SKU", "value_name": "sku-1"}]
+    gateway_payloads: dict[str, Any | Exception] = {
+        "/items?ids=MLA1": [{"code": 200, "body": detail}],
+    }
+    if sale_price_enabled:
+        gateway_payloads["/items/MLA1/sale_price?context=channel_marketplace"] = sale_price_payload
+    gateway = FakeItemGateway(gateway_payloads)
+
+    await run_item_detail_enrichment(
+        db=db,
+        gateway=gateway,
+        seller_id="82453304",
+        dry_run=False,
+        sale_price_enabled=sale_price_enabled,
+    )
+    await run_sheetseller_backfill(db=db, seller_id="82453304", dry_run=False)
+    dashboard = await _core_formula_dispatcher(db).execute(
+        _formula_context("ZELERDATA_DASHBOARD", {"skus": "todos", "tipo_precio": "todos"})
+    )
+
+    item_update = db["items"].update_calls[0][1]
+    assert item_update.get("$unset") == {"current_promotion": ""}
+    assert "current_promotion" not in db["items"].documents["MLA1"]
+    refreshed_row = db["sheets_item_formula_rows"].documents["82453304:SKU-1:MLA1"]
+    assert "current_promotion" not in refreshed_row["current"]
+    assert dashboard.values[0][-1] == "NA"
+
+
 def test_formula_row_doc_denormalizes_seller_shipping_cost_scalar_only() -> None:
     item = _item_doc("MLA1", attributes=[{"id": "SELLER_SKU", "value_name": "sku-1"}])
     item["seller_shipping_cost"] = Decimal128("83.25")
@@ -1177,6 +1388,9 @@ async def test_item_detail_enrichment_summary_is_sanitized_and_useful() -> None:
         "shipping_options_requested": 0,
         "seller_shipping_costs_enriched": 0,
         "seller_shipping_costs_unavailable": 0,
+        "sale_price_requested": 0,
+        "sale_price_promotions_enriched": 0,
+        "sale_price_promotions_unavailable": 0,
     }
     assert "82453304" not in str(serialized)
     assert "MLA1" not in str(serialized)
@@ -1952,3 +2166,24 @@ def _canonical_order_doc(
         "items": items,
         "schema_version": 1,
     }
+
+
+def _core_formula_dispatcher(db: FakeDb) -> FormulaDispatcher:
+    return FormulaDispatcher(
+        build_core_formula_handlers(
+            FormulaReadModelRepository(db=db),
+            now_fn=lambda: NOW,
+        )
+    )
+
+
+def _formula_context(formula: str, args: dict[str, Any]) -> FormulaExecutionContext:
+    return FormulaExecutionContext(
+        contract=FormulaRegistry.default().find_required(formula),
+        cuenta="HOPEMOB",
+        seller_id="82453304",
+        seller_nickname="HOPEMOB",
+        token_id=str(1),
+        args=args,
+        request_id="req-1",
+    )

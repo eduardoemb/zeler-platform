@@ -366,6 +366,74 @@ async def test_item_with_direct_sku_does_not_create_stale_order_line_duplicate()
 
 
 @pytest.mark.asyncio
+async def test_item_event_refreshes_formula_rows_from_persisted_current_promotion() -> None:
+    db = FakeDb()
+    persistence = SheetsEventPersistence(db=db, clock=lambda: NOW)
+
+    await persistence.persist(
+        event_type="items.updated",
+        seller_id=82453304,
+        resource={
+            "id": "MLA1",
+            "title": "Promoted listing",
+            "price": "99.90",
+            "base_price": "149.90",
+            "available_quantity": 7,
+            "status": "active",
+            "category_id": "MLA123",
+            "attributes": [{"id": "SELLER_SKU", "value_name": "sku-1"}],
+            "date_created": "2026-05-01T10:00:00+00:00",
+            "last_updated": "2026-05-30T11:00:00+00:00",
+            "current_promotion": {
+                "source": "/items/{id}/sale_price",
+                "sale_amount": "99.90",
+                "regular_amount": "149.90",
+                "discount_percent": "33.36",
+                "currency_id": "MXN",
+                "promotion_id": "PROMO-1",
+                "promotion_type": "deal",
+                "reference_at": NOW,
+                "synced_at": NOW,
+            },
+        },
+    )
+
+    item = db["items"].documents["MLA1"]
+    row = db["sheets_item_formula_rows"].documents["82453304:SKU-1:MLA1"]
+    assert item["current_promotion"]["sale_amount"] == Decimal128("99.90")
+    assert row["current"]["current_promotion"]["sale_amount"] == Decimal128("99.90")
+
+
+@pytest.mark.asyncio
+async def test_price_event_does_not_treat_prices_payload_as_promo_source() -> None:
+    db = FakeDb()
+    persistence = SheetsEventPersistence(db=db, clock=lambda: NOW)
+
+    await persistence.persist(
+        event_type="items.price_updated",
+        seller_id=82453304,
+        resource={
+            "id": "MLA1",
+            "title": "Price updated listing",
+            "price": "99.90",
+            "base_price": "149.90",
+            "available_quantity": 7,
+            "status": "active",
+            "category_id": "MLA123",
+            "attributes": [{"id": "SELLER_SKU", "value_name": "sku-1"}],
+            "prices": [{"amount": "99.90", "regular_amount": "149.90"}],
+            "date_created": "2026-05-01T10:00:00+00:00",
+            "last_updated": "2026-05-30T11:00:00+00:00",
+        },
+    )
+
+    item = db["items"].documents["MLA1"]
+    row = db["sheets_item_formula_rows"].documents["82453304:SKU-1:MLA1"]
+    assert "current_promotion" not in item
+    assert "current_promotion" not in row["current"]
+
+
+@pytest.mark.asyncio
 async def test_persists_shipment_for_live_shipping_notifications() -> None:
     db = FakeDb()
     persistence = SheetsEventPersistence(db=db, clock=lambda: NOW)

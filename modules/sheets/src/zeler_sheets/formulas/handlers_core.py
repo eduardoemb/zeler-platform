@@ -3,7 +3,7 @@ from __future__ import annotations
 import math
 from collections.abc import Callable, Iterable, Mapping
 from datetime import UTC, datetime, time, timedelta
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from bson.decimal128 import Decimal128
@@ -822,6 +822,16 @@ def _dashboard_row(
     unit_cost: Any,
     include_promo: bool,
 ) -> list[Any]:
+    values = _dashboard_row_base(row, sales_windows=sales_windows, unit_cost=unit_cost)
+    return [*values, _promo_price(row)] if include_promo else values
+
+
+def _dashboard_row_base(
+    row: Mapping[str, Any],
+    *,
+    sales_windows: Mapping[int, Mapping[tuple[str, str], int]],
+    unit_cost: Any,
+) -> list[Any]:
     key = (
         normalize_sku(row.get("normalized_sku") or row.get("sku")),
         str(row.get("item_id") or ""),
@@ -849,7 +859,49 @@ def _dashboard_row(
         NA_VALUE,
         sheet_unit_cost_value(unit_cost),
         "Sí" if _has_catalog_product(row) else "No",
-    ] + ([NA_VALUE] if include_promo else [])
+    ]
+
+
+def _promo_price(row: Mapping[str, Any]) -> Any:
+    current = row.get("current", {})
+    if not isinstance(current, Mapping):
+        return NA_VALUE
+    projection = current.get("current_promotion")
+    if not isinstance(projection, Mapping):
+        return NA_VALUE
+    if projection.get("source") != "/items/{id}/sale_price":
+        return NA_VALUE
+    if not str(projection.get("currency_id") or "").strip():
+        return NA_VALUE
+    if projection.get("reference_at") is None or projection.get("synced_at") is None:
+        return NA_VALUE
+    sale_amount = _promo_decimal(projection.get("sale_amount"))
+    regular_amount = _promo_decimal(projection.get("regular_amount"))
+    if sale_amount is None or regular_amount is None or sale_amount >= regular_amount:
+        return NA_VALUE
+    raw_sale_amount = projection.get("sale_amount")
+    return (
+        raw_sale_amount.to_decimal() if isinstance(raw_sale_amount, Decimal128) else raw_sale_amount
+    )
+
+
+def _promo_decimal(value: Any) -> Decimal | None:
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, Decimal128):
+        decimal_value = value.to_decimal()
+    elif isinstance(value, Decimal):
+        decimal_value = value
+    elif isinstance(value, int):
+        decimal_value = Decimal(value)
+    elif isinstance(value, float):
+        decimal_value = Decimal(str(value)) if math.isfinite(value) else Decimal("NaN")
+    else:
+        try:
+            decimal_value = Decimal(str(value))
+        except (InvalidOperation, ValueError):
+            return None
+    return decimal_value if decimal_value.is_finite() and decimal_value >= 0 else None
 
 
 def _unit_cost_lookup_for_row(

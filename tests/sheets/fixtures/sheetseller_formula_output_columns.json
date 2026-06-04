@@ -83,7 +83,7 @@
         {"name": "Comisión", "legacy_source_note": "legacy commission amount column", "status": "explicit_na", "reason": "Requires fee/commission read model."},
         {"name": "Costo Por Unidad", "source": "seller_unit_costs.unit_cost by seller-owned SKU/item/variation config", "status": "mvp", "reason": "Returns NA unless an active unambiguous seller-owned unit cost config matches."},
         {"name": "Tiene Catálogo", "source": "sheets_item_formula_rows.current.catalog_product_id", "status": "mvp"},
-        {"name": "Precio Promo", "legacy_source_note": "legacy conditional column when tipo_precio='todos'", "status": "explicit_na", "reason": "No promotional price field is currently present in sheets_item_formula_rows."}
+        {"name": "Precio Promo", "source": "sheets_item_formula_rows.current.current_promotion.sale_amount", "status": "mvp", "reason": "Emitted only when tipo_precio='todos' and persisted /items/{id}/sale_price projection is valid."}
       ]
     },
     "ZELERDATA_DASHBOARDSINCATALOGO": {
@@ -112,7 +112,7 @@
         {"name": "Comisión", "legacy_source_note": "legacy commission amount column", "status": "explicit_na", "reason": "Requires fee/commission read model."},
         {"name": "Costo Por Unidad", "source": "seller_unit_costs.unit_cost by seller-owned SKU/item/variation config", "status": "mvp", "reason": "Returns NA unless an active unambiguous seller-owned unit cost config matches."},
         {"name": "Tiene Catálogo", "source": "sheets_item_formula_rows.current.catalog_product_id", "status": "mvp"},
-        {"name": "Precio Promo", "legacy_source_note": "legacy conditional column when tipo_precio='todos'", "status": "explicit_na", "reason": "No promotional price field is currently present in sheets_item_formula_rows."}
+        {"name": "Precio Promo", "source": "sheets_item_formula_rows.current.current_promotion.sale_amount", "status": "mvp", "reason": "Emitted only when tipo_precio='todos' and persisted /items/{id}/sale_price projection is valid."}
       ]
     },
     "ZELERDATA_ORDENES": {
