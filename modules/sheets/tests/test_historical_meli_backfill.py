@@ -621,6 +621,66 @@ async def test_historical_backfill_fails_closed_when_shipment_costs_are_unmatche
 
 
 @pytest.mark.asyncio
+async def test_historical_backfill_fails_closed_on_decimal128_seller_cost_overflow() -> None:
+    db = FakeDb()
+    gateway = FakeGateway(
+        shipment_costs_payload={
+            "currency_id": "MXN",
+            "senders": [{"sender_id": "82453304", "cost": "1E+10000"}],
+            "receiver": {"cost": "100.00"},
+        }
+    )
+
+    summary = await run_historical_meli_backfill(
+        db=db,
+        gateway=gateway,
+        order_detail_gateway=FakeOrderDetailGateway(),
+        seller_id="82453304",
+        date_from="2026-05-01",
+        date_to="2026-05-01",
+        dry_run=False,
+        approved_runtime=True,
+        max_orders=1,
+    )
+
+    assert ("82453304", "/shipments/3001/costs") in gateway.calls
+    assert summary.shipment_costs_requested == 1
+    assert summary.shipment_real_shipping_costs_enriched == 0
+    assert summary.shipment_real_shipping_costs_unavailable == 1
+    assert "real_shipping_cost" not in db["shipments"].documents["3001"]
+
+
+@pytest.mark.asyncio
+async def test_historical_backfill_fails_closed_on_decimal128_receiver_cost_overflow() -> None:
+    db = FakeDb()
+    gateway = FakeGateway(
+        shipment_costs_payload={
+            "currency_id": "MXN",
+            "senders": [{"sender_id": "82453304", "cost": "24.50"}],
+            "receiver": {"cost": "1E+10000"},
+        }
+    )
+
+    summary = await run_historical_meli_backfill(
+        db=db,
+        gateway=gateway,
+        order_detail_gateway=FakeOrderDetailGateway(),
+        seller_id="82453304",
+        date_from="2026-05-01",
+        date_to="2026-05-01",
+        dry_run=False,
+        approved_runtime=True,
+        max_orders=1,
+    )
+
+    assert ("82453304", "/shipments/3001/costs") in gateway.calls
+    assert summary.shipment_costs_requested == 1
+    assert summary.shipment_real_shipping_costs_enriched == 0
+    assert summary.shipment_real_shipping_costs_unavailable == 1
+    assert "real_shipping_cost" not in db["shipments"].documents["3001"]
+
+
+@pytest.mark.asyncio
 async def test_buyer_address_pii_write_persists_snapshot_and_keeps_output_sanitized() -> None:
     db = FakeDb()
 

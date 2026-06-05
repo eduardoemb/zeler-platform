@@ -12,6 +12,7 @@ from urllib.parse import urlencode
 
 from zeler_platform_core.models import ShipmentRealShippingCostProjection
 from zeler_sheets.event_persistence import SheetsEventPersistence
+from zeler_sheets.sheetseller_backfill import _schema_safe_shipment_real_shipping_cost_projection
 
 DEFAULT_GATEWAY_BASE_URL = "http://gateway:8080/proxy/meli"
 DEFAULT_GATEWAY_MODULE_ID = "bootstrap"
@@ -419,7 +420,7 @@ async def _resolve_shipment_real_shipping_cost(
     )
     if projection is None:
         return None
-    return projection.model_dump(mode="python", exclude_none=True)
+    return _schema_safe_shipment_real_shipping_cost_projection(projection)
 
 
 async def _count_existing(*, db: Any, collection: str, seller_id: str, ids: Sequence[str]) -> int:
