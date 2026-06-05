@@ -18,15 +18,15 @@ ZelerData formulas are Google Sheets custom functions backed by the zeler-platfo
 | `ZELERDATA_CODIGOML` | `=ZELERDATA_CODIGOML("cuenta", "SKU-1", "MLA1")` | Inventory or ML code by SKU and item ID. |
 | `ZELERDATA_CODIGOML2SKUID` | `=ZELERDATA_CODIGOML2SKUID("cuenta", "INV-1", "si")` | Code, item ID, and SKU rows. |
 | `ZELERDATA_COMPRADORES` | `=ZELERDATA_COMPRADORES("cuenta", "ORDER-1", "si")` | Buyer/address table with the eight approved fields: Nombre Comprador, Calle, Número, Colonia, Código Postal, Ciudad, Estado, and País. Missing values return `NA`. |
-| `ZELERDATA_DASHBOARD` | `=ZELERDATA_DASHBOARD("cuenta", "todos", "todos", "base", "si")` | Current item dashboard table. |
-| `ZELERDATA_DASHBOARDSINCATALOGO` | `=ZELERDATA_DASHBOARDSINCATALOGO("cuenta", "todos", "todos", "base", "si")` | Dashboard table excluding catalog items. |
+| `ZELERDATA_DASHBOARD` | `=ZELERDATA_DASHBOARD("cuenta", "todos", "todos", "base", "si")` | Current item dashboard table, including per-window `ID Carrito` values from contributing orders. |
+| `ZELERDATA_DASHBOARDSINCATALOGO` | `=ZELERDATA_DASHBOARDSINCATALOGO("cuenta", "todos", "todos", "base", "si")` | Dashboard table excluding catalog items, including per-window `ID Carrito` values from contributing orders. |
 | `ZELERDATA_DIASDESDEULTIMAVENTA` | `=ZELERDATA_DIASDESDEULTIMAVENTA("cuenta", "SKU-1", "MLA1")` | Days since the last sale for a SKU and item ID. |
 | `ZELERDATA_DIASPUBLICADA` | `=ZELERDATA_DIASPUBLICADA("cuenta", "MLA1")` | Days since publication creation. |
 | `ZELERDATA_ID` | `=ZELERDATA_ID("cuenta", "SKU-1")` | Item IDs for a SKU. |
 | `ZELERDATA_IDSTOCK` | `=ZELERDATA_IDSTOCK("cuenta", "SKU-1", "si")` | SKU, item ID, and stock rows. |
 | `ZELERDATA_IMAGENES` | `=ZELERDATA_IMAGENES("cuenta", "todos", "todos")` | Image URLs from the current item read model. |
-| `ZELERDATA_ORDENES` | `=ZELERDATA_ORDENES("cuenta", "2026-01-01", "2026-01-31", "todos", "", "si")` | Orders table for a date range. |
-| `ZELERDATA_ORDENESPORSKU` | `=ZELERDATA_ORDENESPORSKU("cuenta", "SKU-1", "2026-01-01", "2026-01-31", "todos", "", "si")` | Orders filtered by SKU and date range. |
+| `ZELERDATA_ORDENES` | `=ZELERDATA_ORDENES("cuenta", "2026-01-01", "2026-01-31", "todos", "", "si")` | Orders table for a date range; `ID Carrito` comes only from MercadoLibre `orders.pack_id`. |
+| `ZELERDATA_ORDENESPORSKU` | `=ZELERDATA_ORDENESPORSKU("cuenta", "SKU-1", "2026-01-01", "2026-01-31", "todos", "", "si")` | Orders filtered by SKU and date range; `ID Carrito` comes only from MercadoLibre `orders.pack_id`. |
 | `ZELERDATA_PAUSADAS` | `=ZELERDATA_PAUSADAS("cuenta", "MLA1")` | Paused days from observed status transitions only; missing pause source returns `NA`. |
 | `ZELERDATA_PRECIO` | `=ZELERDATA_PRECIO("cuenta", "SKU-1", "MLA1", "base")` | Selected price by SKU and item ID. |
 | `ZELERDATA_PREGUNTAS` | `=ZELERDATA_PREGUNTAS("cuenta", "2026-01-01", "2026-01-31", "00:00", "23:59", "si")` | Questions and answers table for a date and time range. |
@@ -44,6 +44,8 @@ ZelerData formulas are Google Sheets custom functions backed by the zeler-platfo
 | `ZELERDATA_VENTAPORDIAS` | `=ZELERDATA_VENTAPORDIAS("cuenta", "SKU-1", "MLA1", 30)` | Units sold over the selected day range. |
 | `ZELERDATA_VENTASTOTALES` | `=ZELERDATA_VENTASTOTALES("cuenta", "2026-01-01", "2026-01-31", "todos")` | Total sales amount for a date range. |
 | `ZELERDATA_VENTASYSTOCK` | `=ZELERDATA_VENTASYSTOCK("cuenta", "SKU-1", "MLA1", "si")` | 7/15/30-day sales and current stock. |
+
+`ID Carrito` values are never derived from order id, shipment id, message pack fallbacks, buyer data, fees, shipping costs, promo price, or status history. Missing MercadoLibre `orders.pack_id` values display as `NA`. Dashboard cart columns are item/window facts (`ID Carrito (7/15/30/60/90 días)`) and use the latest contributing order line in each window.
 
 ## Deferred formulas
 

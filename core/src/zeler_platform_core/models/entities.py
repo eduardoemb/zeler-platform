@@ -351,13 +351,22 @@ class Order(UtcDatetimeMixin, PriceMixin, SellerScopedDocument):
     total_amount: Decimal
     items: list[OrderItem] = Field(default_factory=list)
     shipment_id: str | None = None
+    meli_pack_id: str | None = None
     tags: list[str] = Field(default_factory=list)
     feedback: dict[str, Any] | None = None
 
-    @field_validator("buyer_id", "shipment_id", mode="before")
+    @field_validator("buyer_id", mode="before")
+    @classmethod
+    def _coerce_buyer_id(cls, value: object) -> str:
+        return _coerce_str(value)
+
+    @field_validator("shipment_id", "meli_pack_id", mode="before")
     @classmethod
     def _coerce_optional_ids(cls, value: object) -> object:
-        return None if value is None else _coerce_str(value)
+        if value is None:
+            return None
+        normalized = _coerce_str(value).strip()
+        return normalized or None
 
 
 class QuestionAnswer(UtcDatetimeMixin):

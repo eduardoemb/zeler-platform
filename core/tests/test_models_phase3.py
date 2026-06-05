@@ -113,6 +113,38 @@ def test_order_accepts_meli_partially_refunded_status() -> None:
     assert order.status == "partially_refunded"
 
 
+def test_order_coerces_optional_meli_pack_id_and_drops_blank_values() -> None:
+    packed_order = Order.model_validate(
+        {
+            "id": 123,
+            "seller_id": 456,
+            "buyer_id": 789,
+            "status": "paid",
+            "date_created": NOW,
+            "total_amount": Decimal("10.00"),
+            "meli_pack_id": 555,
+            "items": [],
+            "schema_version": 1,
+        }
+    )
+    blank_pack_order = Order.model_validate(
+        {
+            "id": 124,
+            "seller_id": 456,
+            "buyer_id": 789,
+            "status": "paid",
+            "date_created": NOW,
+            "total_amount": Decimal("10.00"),
+            "meli_pack_id": "   ",
+            "items": [],
+            "schema_version": 1,
+        }
+    )
+
+    assert packed_order.meli_pack_id == "555"
+    assert blank_pack_order.meli_pack_id is None
+
+
 def test_item_preserves_whitelisted_formula_fields_without_raw_payload_drift() -> None:
     item = Item.model_validate(
         {

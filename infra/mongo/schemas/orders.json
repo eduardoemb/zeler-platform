@@ -34,6 +34,14 @@
       "items": {
         "bsonType": "array"
       },
+      "meli_pack_id": {
+        "bsonType": [
+          "string",
+          "long",
+          "int",
+          "null"
+        ]
+      },
       "schema_version": {
         "bsonType": "int"
       },
