@@ -12,6 +12,7 @@ owned_collections:
 allowed_meli_scopes:
   - GET /items
   - GET /items/*
+  - GET /sites/*/listing_prices
   - GET /users/*/shipping_options/free
   - GET /orders/*
   - GET /shipments/*
