@@ -41,6 +41,10 @@
           "billable_weight": {"bsonType": ["int", "long", "double", "decimal", "null"]},
           "tags": {"bsonType": "array"},
           "seller_shipping_cost": {"bsonType": ["int", "long", "double", "decimal", "null"]},
+          "status_observed_at": {"bsonType": ["date", "null"]},
+          "status_started_at": {"bsonType": ["date", "null"]},
+          "paused_since": {"bsonType": ["date", "null"]},
+          "last_status_change_at": {"bsonType": ["date", "null"]},
           "listing_price_fixed_fee": {
             "bsonType": ["object", "null"],
             "additionalProperties": false,

@@ -257,6 +257,7 @@ def test_dashboard_output_column_fixture_locks_mvp_and_deferred_columns() -> Non
             "Tipo De Publicación",
             "Status",
             "Código ML",
+            "Días Pausada",
             "Ventas (7 días)",
             "Ventas (15 días)",
             "Ventas (30 días)",
@@ -269,10 +270,18 @@ def test_dashboard_output_column_fixture_locks_mvp_and_deferred_columns() -> Non
             "Precio Promo",
         ]
         assert [column["name"] for column in columns if column["status"] == "explicit_na"] == [
-            "Días Pausada",
             "% Comisión",
             "Comisión",
         ]
+        paused_column = next(column for column in columns if column["name"] == "Días Pausada")
+        assert paused_column == {
+            "name": "Días Pausada",
+            "source": (
+                "sheets_item_formula_rows.current.paused_since from observed status transitions"
+            ),
+            "status": "mvp",
+            "reason": "Returns NA when observed status-history source truth is missing.",
+        }
         unit_cost_column = next(
             column for column in columns if column["name"] == "Costo Por Unidad"
         )
@@ -293,6 +302,20 @@ def test_dashboard_output_column_fixture_locks_mvp_and_deferred_columns() -> Non
         "Excludes rows when current.catalog_product_id is present; richer catalog/buybox "
         "semantics remain blank-compatible unless represented in current item rows."
     )
+
+    pause_time_column = next(
+        column
+        for column in formulas["ZELERDATA_PUBLICACIONES"]["columns"]
+        if column["name"] == "Tiempo En Pausa"
+    )
+    assert pause_time_column == {
+        "name": "Tiempo En Pausa",
+        "source": (
+            "sheets_item_formula_rows.current.paused_since from observed status transitions"
+        ),
+        "status": "mvp",
+        "reason": "Returns NA when observed status-history source truth is missing.",
+    }
 
 
 def test_batch_b_output_column_fixture_locks_mvp_and_deferred_columns() -> None:
@@ -461,7 +484,7 @@ def test_every_legacy_formula_has_an_explicit_runtime_state() -> None:
         for formula, state in runtime_states.items()
         if state.state == "unsupported"
     }
-    assert len(unsupported) == 24
+    assert len(unsupported) == 23
     assert "ZELERDATA_COMPRADORES" not in unsupported
     assert unsupported["ZELERDATA_CATALOGO"] == (
         "Catalog/buybox snapshot read model is not available in zeler-platform yet."

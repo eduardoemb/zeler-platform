@@ -26,7 +26,6 @@ class FormulaRuntimeState:
 
 
 UNSUPPORTED_FORMULA_REASONS: Mapping[str, str] = {
-    "ZELERDATA_PAUSADAS": "Historical paused-period read model is not available in zeler-platform yet.",
     "ZELERDATA_ENVIARAFULL": "Full replenishment recommendation read model is not available in zeler-platform yet.",
     "ZELERDATA_PUBLICACIONESDESCUIDADAS": "Neglected-publication history/read model is not available in zeler-platform yet.",
     "ZELERDATA_CATALOGO": "Catalog/buybox snapshot read model is not available in zeler-platform yet.",

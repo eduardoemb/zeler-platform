@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Callable, Iterable, Mapping
-from datetime import UTC, datetime, time, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
@@ -27,6 +27,7 @@ CORE_FORMULA_NAMES = frozenset(
         "ZELERDATA_PRECIO",
         "ZELERDATA_IDSTOCK",
         "ZELERDATA_STATUS",
+        "ZELERDATA_PAUSADAS",
         "ZELERDATA_CODIGOML",
         "ZELERDATA_CODIGOML2SKUID",
         "ZELERDATA_DIASPUBLICADA",
@@ -94,6 +95,7 @@ def build_core_formula_handlers(
         "ZELERDATA_PRECIO": handlers.sheetseller_precio,
         "ZELERDATA_IDSTOCK": handlers.sheetseller_idstock,
         "ZELERDATA_STATUS": handlers.sheetseller_status,
+        "ZELERDATA_PAUSADAS": handlers.sheetseller_pausadas,
         "ZELERDATA_CODIGOML": handlers.sheetseller_codigoml,
         "ZELERDATA_CODIGOML2SKUID": handlers.sheetseller_codigoml2skuid,
         "ZELERDATA_DIASPUBLICADA": handlers.sheetseller_diaspublicada,
@@ -149,11 +151,12 @@ class CoreFormulaHandlers:
         )
         header_rows = len(values)
         matched_skus: set[str] = set()
+        today = _as_utc_datetime(self._now_fn()).date()
         for row in ordered_rows:
             item_id = row.get("item_id") or ""
             if not item_id:
                 continue
-            values.append(_publicaciones_row(row))
+            values.append(_publicaciones_row(row, today=today))
             matched_skus.add(normalize_sku(row.get("normalized_sku", "")))
         return FormulaExecutionResult(
             values=normalize_response_rows(values, header_rows=header_rows),
@@ -214,6 +217,27 @@ class CoreFormulaHandlers:
 
     async def sheetseller_status(self, context: FormulaExecutionContext) -> FormulaExecutionResult:
         return await self._lookup_current_field_by_item_id(context, field="status")
+
+    async def sheetseller_pausadas(
+        self, context: FormulaExecutionContext
+    ) -> FormulaExecutionResult:
+        item_ids = _normalize_item_id_argument(context.args.get("id_publicaciones"))
+        rows = await self._repository.find_item_formula_rows(
+            seller_id=context.seller_id,
+            item_ids=item_ids,
+        )
+        rows_by_item_id = {str(row.get("item_id", "")).strip(): row for row in rows}
+        today = _as_utc_datetime(self._now_fn()).date()
+        values: list[list[Any]] = []
+        misses = 0
+        for item_id in item_ids:
+            paused_days = _paused_days(rows_by_item_id.get(item_id), today=today)
+            if paused_days is None:
+                misses += 1
+                values.append([NA_VALUE])
+            else:
+                values.append([paused_days])
+        return FormulaExecutionResult(values=values, meta={"partial_misses": misses})
 
     async def sheetseller_codigoml(
         self, context: FormulaExecutionContext
@@ -443,6 +467,7 @@ class CoreFormulaHandlers:
             headers.append("Precio Promo")
         values: list[list[Any]] = _header_row(context.args.get("encabezados"), headers)
         header_rows = len(values)
+        today = _as_utc_datetime(self._now_fn()).date()
         for row in visible_rows:
             item_id = row.get("item_id") or ""
             if not item_id:
@@ -452,6 +477,7 @@ class CoreFormulaHandlers:
                     row,
                     sales_windows=sales_windows,
                     include_promo=include_promo,
+                    today=today,
                     use_promo_as_selected_price=use_promo_as_selected_price,
                 )
             )
@@ -786,8 +812,9 @@ def _listing_type_id(row: Mapping[str, Any]) -> Any:
     return value or NA_VALUE
 
 
-def _publicaciones_row(row: Mapping[str, Any]) -> list[Any]:
+def _publicaciones_row(row: Mapping[str, Any], *, today: date) -> list[Any]:
     inventory_code = _inventory_code(row)
+    paused_days = _paused_days(row, today=today)
     return [
         row.get("item_id") or "",
         _current_value(row, "title"),
@@ -800,7 +827,7 @@ def _publicaciones_row(row: Mapping[str, Any]) -> list[Any]:
         _current_value(row, "status"),
         inventory_code,
         inventory_code,
-        NA_VALUE,
+        paused_days if paused_days is not None else NA_VALUE,
     ]
 
 
@@ -809,11 +836,13 @@ def _dashboard_row(
     *,
     sales_windows: Mapping[int, Mapping[tuple[str, str], int]],
     include_promo: bool,
+    today: date,
     use_promo_as_selected_price: bool,
 ) -> list[Any]:
     values = _dashboard_row_base(
         row,
         sales_windows=sales_windows,
+        today=today,
         use_promo_as_selected_price=use_promo_as_selected_price,
     )
     return [*values, _promo_price(row)] if include_promo else values
@@ -823,12 +852,14 @@ def _dashboard_row_base(
     row: Mapping[str, Any],
     *,
     sales_windows: Mapping[int, Mapping[tuple[str, str], int]],
+    today: date,
     use_promo_as_selected_price: bool,
 ) -> list[Any]:
     key = (
         normalize_sku(row.get("normalized_sku") or row.get("sku")),
         str(row.get("item_id") or ""),
     )
+    paused_days = _paused_days(row, today=today)
     return [
         row.get("item_id") or "",
         _current_value(row, "title"),
@@ -840,7 +871,7 @@ def _dashboard_row_base(
         _listing_type_id(row),
         _current_value(row, "status"),
         _inventory_code(row),
-        NA_VALUE,
+        paused_days if paused_days is not None else NA_VALUE,
         sales_windows.get(7, {}).get(key, 0),
         sales_windows.get(15, {}).get(key, 0),
         sales_windows.get(30, {}).get(key, 0),
@@ -1047,6 +1078,20 @@ def _seller_shipping_cost(row: Mapping[str, Any]) -> Any:
     if isinstance(value, float):
         return value if math.isfinite(value) and value >= 0 else NA_VALUE
     return NA_VALUE
+
+
+def _paused_days(row: Mapping[str, Any] | None, *, today: date) -> int | None:
+    if row is None:
+        return None
+    current = row.get("current", {})
+    if not isinstance(current, Mapping):
+        return None
+    if str(current.get("status") or "").strip().casefold() != "paused":
+        return None
+    paused_since = _optional_datetime(current.get("paused_since"))
+    if paused_since is None:
+        return None
+    return max((today - paused_since.date()).days, 0)
 
 
 def _last_days_start(now: datetime, days: int) -> datetime:

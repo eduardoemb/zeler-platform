@@ -27,6 +27,7 @@ ZelerData formulas are Google Sheets custom functions backed by the zeler-platfo
 | `ZELERDATA_IMAGENES` | `=ZELERDATA_IMAGENES("cuenta", "todos", "todos")` | Image URLs from the current item read model. |
 | `ZELERDATA_ORDENES` | `=ZELERDATA_ORDENES("cuenta", "2026-01-01", "2026-01-31", "todos", "", "si")` | Orders table for a date range. |
 | `ZELERDATA_ORDENESPORSKU` | `=ZELERDATA_ORDENESPORSKU("cuenta", "SKU-1", "2026-01-01", "2026-01-31", "todos", "", "si")` | Orders filtered by SKU and date range. |
+| `ZELERDATA_PAUSADAS` | `=ZELERDATA_PAUSADAS("cuenta", "MLA1")` | Paused days from observed status transitions only; missing pause source returns `NA`. |
 | `ZELERDATA_PRECIO` | `=ZELERDATA_PRECIO("cuenta", "SKU-1", "MLA1", "base")` | Selected price by SKU and item ID. |
 | `ZELERDATA_PREGUNTAS` | `=ZELERDATA_PREGUNTAS("cuenta", "2026-01-01", "2026-01-31", "00:00", "23:59", "si")` | Questions and answers table for a date and time range. |
 | `ZELERDATA_PREGUNTASKPI` | `=ZELERDATA_PREGUNTASKPI("cuenta", "2026-01-01", "2026-01-31", "si")` | Question KPI table for a date range. |
@@ -65,7 +66,6 @@ The formulas below are preserved as wrappers for Sheetseller-compatible contract
 | `ZELERDATA_MEDIDAS` | returns DATA_UNAVAILABLE until a platform read model is implemented. |
 | `ZELERDATA_MEDIDASGENERAL` | returns DATA_UNAVAILABLE until a platform read model is implemented. |
 | `ZELERDATA_OBTENER_CATALOGO` | returns DATA_UNAVAILABLE until a platform read model is implemented. |
-| `ZELERDATA_PAUSADAS` | returns DATA_UNAVAILABLE until a platform read model is implemented. |
 | `ZELERDATA_PRECIOHISTORICO` | returns DATA_UNAVAILABLE until a platform read model is implemented. |
 | `ZELERDATA_PUBLICACIONESDESCUIDADAS` | returns DATA_UNAVAILABLE until a platform read model is implemented. |
 | `ZELERDATA_RETIROS` | returns DATA_UNAVAILABLE until a platform read model is implemented. |

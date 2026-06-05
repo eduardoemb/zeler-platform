@@ -1,0 +1,28 @@
+{
+  "$jsonSchema": {
+    "bsonType": "object",
+    "required": [
+      "_id",
+      "seller_id",
+      "item_id",
+      "current_status",
+      "first_observed_at",
+      "last_observed_at",
+      "schema_version"
+    ],
+    "properties": {
+      "_id": {"bsonType": "string"},
+      "seller_id": {"bsonType": "string"},
+      "item_id": {"bsonType": "string"},
+      "current_status": {"bsonType": "string"},
+      "first_observed_at": {"bsonType": "date"},
+      "last_observed_at": {"bsonType": "date"},
+      "status_started_at": {"bsonType": ["date", "null"]},
+      "paused_since": {"bsonType": ["date", "null"]},
+      "last_status_change_at": {"bsonType": ["date", "null"]},
+      "schema_version": {"bsonType": "int"}
+    }
+  },
+  "validationAction": "error",
+  "validationLevel": "strict"
+}

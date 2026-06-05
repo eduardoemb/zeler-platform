@@ -41,9 +41,12 @@ NOW = datetime(2026, 5, 13, 12, 0, tzinfo=UTC)
 
 
 class FakeReplaceResult:
-    matched_count = 1
-    modified_count = 1
-    upserted_id = None
+    def __init__(
+        self, *, matched_count: int = 1, modified_count: int = 1, upserted_id: str | None = None
+    ) -> None:
+        self.matched_count = matched_count
+        self.modified_count = modified_count
+        self.upserted_id = upserted_id
 
 
 class FakeCursor:
@@ -91,11 +94,19 @@ class FakeCollection:
         self, filter_spec: dict[str, Any], replacement: dict[str, Any], *, upsert: bool = False
     ) -> FakeReplaceResult:
         self.replace_calls.append((dict(filter_spec), dict(replacement), upsert))
+        for doc_id, document in self.documents.items():
+            if _matches(document, filter_spec):
+                self.documents[doc_id] = dict(replacement)
+                return FakeReplaceResult()
         if upsert is False:
-            raise AssertionError("backfill writes must be idempotent upserts")
-        doc_id = str(filter_spec["_id"])
+            return FakeReplaceResult(matched_count=0, modified_count=0)
+        doc_id = str(replacement["_id"])
+        if "_id" in filter_spec and any(
+            not key.startswith("$") and key != "_id" for key in filter_spec
+        ):
+            return FakeReplaceResult(matched_count=0, modified_count=0)
         self.documents[doc_id] = dict(replacement)
-        return FakeReplaceResult()
+        return FakeReplaceResult(matched_count=0, modified_count=0, upserted_id=doc_id)
 
     async def update_one(
         self,
@@ -124,6 +135,76 @@ class FakeCollection:
         return FakeReplaceResult()
 
 
+class LiveInsertOnFormulaReplaceCollection(FakeCollection):
+    def __init__(self, live_document: dict[str, Any]) -> None:
+        super().__init__()
+        self._live_document = dict(live_document)
+        self._inserted_live_document = False
+
+    async def replace_one(
+        self, filter_spec: dict[str, Any], replacement: dict[str, Any], *, upsert: bool = False
+    ) -> FakeReplaceResult:
+        if not self._inserted_live_document:
+            self._inserted_live_document = True
+            self.documents[str(self._live_document["_id"])] = dict(self._live_document)
+        for doc_id, document in self.documents.items():
+            if _matches(document, filter_spec):
+                self.documents[doc_id] = dict(replacement)
+                return FakeReplaceResult()
+        if not upsert:
+            return FakeReplaceResult(matched_count=0, modified_count=0)
+        replacement_id = str(replacement["_id"])
+        if replacement_id in self.documents:
+            return FakeReplaceResult(matched_count=0, modified_count=0)
+        self.documents[replacement_id] = dict(replacement)
+        return FakeReplaceResult(matched_count=0, modified_count=0, upserted_id=replacement_id)
+
+
+class LiveCorrectionOnFormulaReplaceCollection(FakeCollection):
+    def __init__(self, *, initial_document: dict[str, Any], live_document: dict[str, Any]) -> None:
+        super().__init__([initial_document])
+        self._live_document = dict(live_document)
+        self._corrected_live_document = False
+
+    async def replace_one(
+        self, filter_spec: dict[str, Any], replacement: dict[str, Any], *, upsert: bool = False
+    ) -> FakeReplaceResult:
+        if not self._corrected_live_document:
+            self._corrected_live_document = True
+            self.documents[str(self._live_document["_id"])] = dict(self._live_document)
+        return await super().replace_one(filter_spec, replacement, upsert=upsert)
+
+
+class LiveStateCorrectionAfterInitialLoadCursor(FakeCursor):
+    def __init__(self, docs: list[dict[str, Any]], on_loaded: Any) -> None:
+        super().__init__(docs)
+        self._on_loaded = on_loaded
+
+    async def to_list(self, length: int | None = None) -> list[dict[str, Any]]:
+        docs = await super().to_list(length=length)
+        self._on_loaded()
+        return docs
+
+
+class LiveStateCorrectionAfterInitialLoadCollection(FakeCollection):
+    def __init__(self, *, initial_document: dict[str, Any], live_document: dict[str, Any]) -> None:
+        super().__init__([initial_document])
+        self._live_document = dict(live_document)
+        self._corrected_live_state = False
+
+    def find(self, filter_spec: dict[str, Any]) -> FakeCursor:
+        self.find_filters.append(dict(filter_spec))
+        docs = [dict(doc) for doc in self.documents.values() if _matches(doc, filter_spec)]
+        self.last_cursor = LiveStateCorrectionAfterInitialLoadCursor(docs, self._correct_live_state)
+        return self.last_cursor
+
+    def _correct_live_state(self) -> None:
+        if self._corrected_live_state:
+            return
+        self._corrected_live_state = True
+        self.documents[str(self._live_document["_id"])] = dict(self._live_document)
+
+
 class FakeDb:
     def __init__(
         self, items: list[dict[str, Any]], orders: list[dict[str, Any]] | None = None
@@ -142,16 +223,31 @@ def _matches(doc: dict[str, Any], filter_spec: dict[str, Any]) -> bool:
             if not any(_matches(doc, option) for option in value):
                 return False
             continue
-        actual = doc.get(key)
+        actual = _nested_value(doc, key)
         if isinstance(value, dict):
+            if "$exists" in value:
+                if (actual is not None) != value["$exists"]:
+                    return False
+                continue
             if "$gte" in value and not _safe_gte(actual, value["$gte"]):
                 return False
             if "$lt" in value and not _safe_lt(actual, value["$lt"]):
+                return False
+            if "$lte" in value and not _safe_lte(actual, value["$lte"]):
                 return False
             continue
         if actual != value:
             return False
     return True
+
+
+def _nested_value(document: dict[str, Any], key: str) -> Any:
+    value: Any = document
+    for part in key.split("."):
+        if not isinstance(value, dict) or part not in value:
+            return None
+        value = value[part]
+    return value
 
 
 def _safe_gte(actual: Any, expected: Any) -> bool:
@@ -164,6 +260,13 @@ def _safe_gte(actual: Any, expected: Any) -> bool:
 def _safe_lt(actual: Any, expected: Any) -> bool:
     try:
         return bool(actual < expected)
+    except TypeError:
+        return False
+
+
+def _safe_lte(actual: Any, expected: Any) -> bool:
+    try:
+        return bool(actual <= expected)
     except TypeError:
         return False
 
@@ -415,6 +518,28 @@ def test_formula_row_preserves_blank_enrichment_fields_when_source_is_absent() -
     assert formula_row["current"]["listing_type_id"] is None
     assert formula_row["current"]["shipping_logistic_type"] is None
     assert formula_row["current"]["shipping_payer"] is None
+    assert "status_started_at" not in formula_row["current"]
+    assert "paused_since" not in formula_row["current"]
+    assert "last_status_change_at" not in formula_row["current"]
+
+
+def test_formula_row_carries_observed_status_history_scalars_when_present() -> None:
+    paused_since = datetime(2026, 5, 10, 8, 0, tzinfo=UTC)
+    item = _item_doc(
+        "MLA1",
+        attributes=[{"id": "SELLER_SKU", "value_name": "abc-123"}],
+    )
+    item["status"] = "paused"
+    item["status_started_at"] = paused_since
+    item["paused_since"] = paused_since
+    item["last_status_change_at"] = paused_since
+
+    formula_row = build_formula_row_doc(item, seller_id="82453304")
+
+    assert formula_row["current"]["status"] == "paused"
+    assert formula_row["current"]["status_started_at"] == paused_since
+    assert formula_row["current"]["paused_since"] == paused_since
+    assert formula_row["current"]["last_status_change_at"] == paused_since
 
 
 def test_formula_row_derives_shipping_logistic_type_from_mode_and_buyer_payer() -> None:
@@ -520,6 +645,442 @@ async def test_backfill_builds_enriched_formula_rows_from_deterministic_sources(
     assert variation_row["inventory_id"] == "VAR-INV-101"
     assert variation_row["current"]["inventory_id"] == "VAR-INV-101"
     assert variation_row["current"]["permalink"] == "https://articulo.example/MLA1"
+
+
+@pytest.mark.asyncio
+async def test_backfill_enriches_formula_rows_from_status_history_states_without_guessing() -> None:
+    paused_since = datetime(2026, 5, 10, 8, 0, tzinfo=UTC)
+    active_item = _item_doc(
+        "MLA1",
+        attributes=[{"id": "SELLER_SKU", "value_name": "sku-1"}],
+        last_updated=datetime(2026, 5, 30, 12, 0, tzinfo=UTC),
+    )
+    paused_item = _item_doc(
+        "MLA2",
+        attributes=[{"id": "SELLER_SKU", "value_name": "sku-2"}],
+        last_updated=datetime(2026, 5, 30, 12, 0, tzinfo=UTC),
+    )
+    paused_item["status"] = "paused"
+    db = FakeDb([active_item, paused_item])
+    db["item_status_states"].documents["82453304:MLA2"] = {
+        "_id": "82453304:MLA2",
+        "seller_id": "82453304",
+        "item_id": "MLA2",
+        "current_status": "paused",
+        "first_observed_at": NOW,
+        "last_observed_at": paused_since,
+        "status_started_at": paused_since,
+        "paused_since": paused_since,
+        "last_status_change_at": paused_since,
+        "schema_version": 1,
+    }
+
+    summary = await run_sheetseller_backfill(db=db, seller_id="82453304", dry_run=False)
+
+    assert summary.updated == 2
+    assert db["item_status_states"].find_filters[0] == {"seller_id": "82453304"}
+    active_row = db["sheets_item_formula_rows"].documents["82453304:SKU-1:MLA1"]
+    paused_row = db["sheets_item_formula_rows"].documents["82453304:SKU-2:MLA2"]
+    assert "paused_since" not in active_row["current"]
+    assert active_row["current"]["updated_at"] == datetime(2026, 5, 30, 12, 0, tzinfo=UTC)
+    assert paused_row["current"]["status"] == "paused"
+    assert paused_row["current"]["status_started_at"] == paused_since
+    assert paused_row["current"]["paused_since"] == paused_since
+    assert paused_row["current"]["last_status_change_at"] == paused_since
+
+
+@pytest.mark.asyncio
+async def test_backfill_does_not_overwrite_newer_live_formula_status_history() -> None:
+    stale_paused_since = datetime(2026, 5, 10, 8, 0, tzinfo=UTC)
+    newer_closed_at = datetime(2026, 5, 12, 8, 0, tzinfo=UTC)
+    item = _item_doc(
+        "MLA1",
+        attributes=[{"id": "SELLER_SKU", "value_name": "sku-1"}],
+        last_updated=datetime(2026, 5, 30, 12, 0, tzinfo=UTC),
+    )
+    item["status"] = "paused"
+    db = FakeDb([item])
+    db["item_status_states"].documents["82453304:MLA1"] = {
+        "_id": "82453304:MLA1",
+        "seller_id": "82453304",
+        "item_id": "MLA1",
+        "current_status": "paused",
+        "first_observed_at": NOW,
+        "last_observed_at": stale_paused_since,
+        "status_started_at": stale_paused_since,
+        "paused_since": stale_paused_since,
+        "last_status_change_at": stale_paused_since,
+        "schema_version": 1,
+    }
+    existing_row = build_formula_row_doc(item, seller_id="82453304")
+    existing_row["current"].update(
+        {
+            "status": "closed",
+            "status_observed_at": newer_closed_at,
+            "status_started_at": newer_closed_at,
+            "last_status_change_at": newer_closed_at,
+        }
+    )
+    existing_row["current"].pop("paused_since", None)
+    db["sheets_item_formula_rows"].documents[str(existing_row["_id"])] = existing_row
+
+    summary = await run_sheetseller_backfill(db=db, seller_id="82453304", dry_run=False)
+
+    row = db["sheets_item_formula_rows"].documents["82453304:SKU-1:MLA1"]
+    assert summary.updated == 0
+    assert row["current"]["status"] == "closed"
+    assert row["current"]["status_observed_at"] == newer_closed_at
+    assert row["current"]["status_started_at"] == newer_closed_at
+    assert row["current"]["last_status_change_at"] == newer_closed_at
+    assert "paused_since" not in row["current"]
+
+
+@pytest.mark.asyncio
+async def test_backfill_equal_observed_preserves_better_live_paused_scalar_tuple() -> None:
+    observed_at = datetime(2026, 5, 12, 8, 0, tzinfo=UTC)
+    live_paused_since = datetime(2026, 5, 10, 8, 0, tzinfo=UTC)
+    stale_paused_since = datetime(2026, 5, 11, 8, 0, tzinfo=UTC)
+    item = _item_doc(
+        "MLA1",
+        attributes=[{"id": "SELLER_SKU", "value_name": "sku-1"}],
+        last_updated=datetime(2026, 5, 30, 12, 0, tzinfo=UTC),
+    )
+    item["status"] = "paused"
+    db = FakeDb([item])
+    db["item_status_states"].documents["82453304:MLA1"] = {
+        "_id": "82453304:MLA1",
+        "seller_id": "82453304",
+        "item_id": "MLA1",
+        "current_status": "paused",
+        "first_observed_at": NOW,
+        "last_observed_at": observed_at,
+        "status_started_at": stale_paused_since,
+        "paused_since": stale_paused_since,
+        "last_status_change_at": stale_paused_since,
+        "schema_version": 1,
+    }
+    existing_row = build_formula_row_doc(item, seller_id="82453304")
+    existing_row["current"]["title"] = "Old title"
+    existing_row["current"].update(
+        {
+            "status": "paused",
+            "status_observed_at": observed_at,
+            "status_started_at": live_paused_since,
+            "paused_since": live_paused_since,
+            "last_status_change_at": live_paused_since,
+        }
+    )
+    db["sheets_item_formula_rows"].documents[str(existing_row["_id"])] = existing_row
+
+    summary = await run_sheetseller_backfill(db=db, seller_id="82453304", dry_run=False)
+
+    row = db["sheets_item_formula_rows"].documents["82453304:SKU-1:MLA1"]
+    assert summary.updated == 1
+    assert row["current"]["title"] == "Title MLA1"
+    assert row["current"]["status"] == "paused"
+    assert row["current"]["status_observed_at"] == observed_at
+    assert row["current"]["status_started_at"] == live_paused_since
+    assert row["current"]["paused_since"] == live_paused_since
+    assert row["current"]["last_status_change_at"] == live_paused_since
+
+
+@pytest.mark.asyncio
+async def test_backfill_retries_better_equal_observed_tuple_race() -> None:
+    observed_at = datetime(2026, 5, 12, 8, 0, tzinfo=UTC)
+    live_paused_since = datetime(2026, 5, 10, 8, 0, tzinfo=UTC)
+    stale_paused_since = datetime(2026, 5, 11, 8, 0, tzinfo=UTC)
+    item = _item_doc(
+        "MLA1",
+        attributes=[{"id": "SELLER_SKU", "value_name": "sku-1"}],
+        last_updated=datetime(2026, 5, 30, 12, 0, tzinfo=UTC),
+    )
+    item["status"] = "paused"
+    db = FakeDb([item])
+    db["item_status_states"].documents["82453304:MLA1"] = {
+        "_id": "82453304:MLA1",
+        "seller_id": "82453304",
+        "item_id": "MLA1",
+        "current_status": "paused",
+        "first_observed_at": NOW,
+        "last_observed_at": observed_at,
+        "status_started_at": stale_paused_since,
+        "paused_since": stale_paused_since,
+        "last_status_change_at": stale_paused_since,
+        "schema_version": 1,
+    }
+    initial_stale_row = build_formula_row_doc(item, seller_id="82453304")
+    initial_stale_row["current"]["title"] = "Old title"
+    initial_stale_row["current"].update(
+        {
+            "status": "paused",
+            "status_observed_at": observed_at,
+            "status_started_at": stale_paused_since,
+            "paused_since": stale_paused_since,
+            "last_status_change_at": stale_paused_since,
+        }
+    )
+    live_row = deepcopy(initial_stale_row)
+    live_row["current"].update(
+        {
+            "title": "Live title",
+            "status_started_at": live_paused_since,
+            "paused_since": live_paused_since,
+            "last_status_change_at": live_paused_since,
+        }
+    )
+    db.collections["sheets_item_formula_rows"] = LiveCorrectionOnFormulaReplaceCollection(
+        initial_document=initial_stale_row,
+        live_document=live_row,
+    )
+
+    summary = await run_sheetseller_backfill(db=db, seller_id="82453304", dry_run=False)
+
+    row = db["sheets_item_formula_rows"].documents["82453304:SKU-1:MLA1"]
+    assert summary.updated == 1
+    assert row["current"]["title"] == "Title MLA1"
+    assert row["current"]["status"] == "paused"
+    assert row["current"]["status_observed_at"] == observed_at
+    assert row["current"]["status_started_at"] == live_paused_since
+    assert row["current"]["paused_since"] == live_paused_since
+    assert row["current"]["last_status_change_at"] == live_paused_since
+
+
+@pytest.mark.asyncio
+async def test_backfill_missing_row_uses_latest_status_state_after_initial_load_race() -> None:
+    observed_at = datetime(2026, 5, 12, 8, 0, tzinfo=UTC)
+    live_paused_since = datetime(2026, 5, 10, 8, 0, tzinfo=UTC)
+    stale_paused_since = datetime(2026, 5, 11, 8, 0, tzinfo=UTC)
+    item = _item_doc(
+        "MLA1",
+        attributes=[{"id": "SELLER_SKU", "value_name": "sku-1"}],
+        last_updated=datetime(2026, 5, 30, 12, 0, tzinfo=UTC),
+    )
+    item["status"] = "paused"
+    stale_state = {
+        "_id": "82453304:MLA1",
+        "seller_id": "82453304",
+        "item_id": "MLA1",
+        "current_status": "paused",
+        "first_observed_at": NOW,
+        "last_observed_at": observed_at,
+        "status_started_at": stale_paused_since,
+        "paused_since": stale_paused_since,
+        "last_status_change_at": stale_paused_since,
+        "schema_version": 1,
+    }
+    live_state = {
+        **stale_state,
+        "status_started_at": live_paused_since,
+        "paused_since": live_paused_since,
+        "last_status_change_at": live_paused_since,
+    }
+    db = FakeDb([item])
+    db.collections["item_status_states"] = LiveStateCorrectionAfterInitialLoadCollection(
+        initial_document=stale_state,
+        live_document=live_state,
+    )
+
+    summary = await run_sheetseller_backfill(db=db, seller_id="82453304", dry_run=False)
+
+    row = db["sheets_item_formula_rows"].documents["82453304:SKU-1:MLA1"]
+    assert summary.updated == 1
+    assert row["current"]["status"] == "paused"
+    assert row["current"]["status_observed_at"] == observed_at
+    assert row["current"]["status_started_at"] == live_paused_since
+    assert row["current"]["paused_since"] == live_paused_since
+    assert row["current"]["last_status_change_at"] == live_paused_since
+
+
+@pytest.mark.asyncio
+async def test_backfill_existing_row_uses_latest_status_state_after_initial_load_race() -> None:
+    observed_at = datetime(2026, 5, 12, 8, 0, tzinfo=UTC)
+    stale_paused_since = datetime(2026, 5, 10, 8, 0, tzinfo=UTC)
+    item = _item_doc(
+        "MLA1",
+        attributes=[{"id": "SELLER_SKU", "value_name": "sku-1"}],
+        last_updated=datetime(2026, 5, 30, 12, 0, tzinfo=UTC),
+    )
+    item["status"] = "paused"
+    stale_state = {
+        "_id": "82453304:MLA1",
+        "seller_id": "82453304",
+        "item_id": "MLA1",
+        "current_status": "paused",
+        "first_observed_at": NOW,
+        "last_observed_at": observed_at,
+        "status_started_at": stale_paused_since,
+        "paused_since": stale_paused_since,
+        "last_status_change_at": stale_paused_since,
+        "schema_version": 1,
+    }
+    live_state = {
+        **stale_state,
+        "current_status": "closed",
+        "status_started_at": observed_at,
+        "last_status_change_at": observed_at,
+    }
+    live_state.pop("paused_since")
+    existing_row = build_formula_row_doc(item, seller_id="82453304")
+    existing_row["current"]["title"] = "Old title"
+    existing_row["current"].update(
+        {
+            "status": "paused",
+            "status_observed_at": observed_at,
+            "status_started_at": stale_paused_since,
+            "paused_since": stale_paused_since,
+            "last_status_change_at": stale_paused_since,
+        }
+    )
+    db = FakeDb([item])
+    db.collections["item_status_states"] = LiveStateCorrectionAfterInitialLoadCollection(
+        initial_document=stale_state,
+        live_document=live_state,
+    )
+    db["sheets_item_formula_rows"].documents[str(existing_row["_id"])] = existing_row
+
+    summary = await run_sheetseller_backfill(db=db, seller_id="82453304", dry_run=False)
+
+    row = db["sheets_item_formula_rows"].documents["82453304:SKU-1:MLA1"]
+    assert summary.updated == 1
+    assert row["current"]["title"] == "Title MLA1"
+    assert row["current"]["status"] == "closed"
+    assert row["current"]["status_observed_at"] == observed_at
+    assert row["current"]["status_started_at"] == observed_at
+    assert row["current"]["last_status_change_at"] == observed_at
+    assert "paused_since" not in row["current"]
+
+
+@pytest.mark.asyncio
+async def test_backfill_existing_unchanged_row_uses_latest_status_state_before_comparison() -> None:
+    observed_at = datetime(2026, 5, 12, 8, 0, tzinfo=UTC)
+    stale_paused_since = datetime(2026, 5, 10, 8, 0, tzinfo=UTC)
+    item = _item_doc(
+        "MLA1",
+        attributes=[{"id": "SELLER_SKU", "value_name": "sku-1"}],
+        last_updated=datetime(2026, 5, 30, 12, 0, tzinfo=UTC),
+    )
+    item["status"] = "paused"
+    stale_state = {
+        "_id": "82453304:MLA1",
+        "seller_id": "82453304",
+        "item_id": "MLA1",
+        "current_status": "paused",
+        "first_observed_at": NOW,
+        "last_observed_at": observed_at,
+        "status_started_at": stale_paused_since,
+        "paused_since": stale_paused_since,
+        "last_status_change_at": stale_paused_since,
+        "schema_version": 1,
+    }
+    live_state = {
+        **stale_state,
+        "current_status": "closed",
+        "status_started_at": observed_at,
+        "last_status_change_at": observed_at,
+    }
+    live_state.pop("paused_since")
+    stale_planned_row = build_formula_row_doc(item, seller_id="82453304")
+    stale_planned_row["current"].update(
+        {
+            "status": "paused",
+            "status_observed_at": observed_at,
+            "status_started_at": stale_paused_since,
+            "paused_since": stale_paused_since,
+            "last_status_change_at": stale_paused_since,
+        }
+    )
+    db = FakeDb([item])
+    db.collections["item_status_states"] = LiveStateCorrectionAfterInitialLoadCollection(
+        initial_document=stale_state,
+        live_document=live_state,
+    )
+    db["sheets_item_formula_rows"].documents[str(stale_planned_row["_id"])] = stale_planned_row
+
+    summary = await run_sheetseller_backfill(db=db, seller_id="82453304", dry_run=False)
+
+    row = db["sheets_item_formula_rows"].documents["82453304:SKU-1:MLA1"]
+    assert summary.unchanged == 0
+    assert summary.updated == 1
+    assert row["current"]["status"] == "closed"
+    assert row["current"]["status_observed_at"] == observed_at
+    assert row["current"]["status_started_at"] == observed_at
+    assert row["current"]["last_status_change_at"] == observed_at
+    assert "paused_since" not in row["current"]
+
+
+@pytest.mark.asyncio
+async def test_backfill_atomic_missing_row_guard_does_not_overwrite_newer_live_insert() -> None:
+    stale_paused_since = datetime(2026, 5, 10, 8, 0, tzinfo=UTC)
+    newer_closed_at = datetime(2026, 5, 12, 8, 0, tzinfo=UTC)
+    item = _item_doc(
+        "MLA1",
+        attributes=[{"id": "SELLER_SKU", "value_name": "sku-1"}],
+        last_updated=datetime(2026, 5, 30, 12, 0, tzinfo=UTC),
+    )
+    item["status"] = "paused"
+    planned_stale_row = build_formula_row_doc(item, seller_id="82453304")
+    live_newer_row = deepcopy(planned_stale_row)
+    live_newer_row["current"].update(
+        {
+            "status": "closed",
+            "status_observed_at": newer_closed_at,
+            "status_started_at": newer_closed_at,
+            "last_status_change_at": newer_closed_at,
+        }
+    )
+    live_newer_row["current"].pop("paused_since", None)
+    db = FakeDb([item])
+    db["item_status_states"].documents["82453304:MLA1"] = {
+        "_id": "82453304:MLA1",
+        "seller_id": "82453304",
+        "item_id": "MLA1",
+        "current_status": "paused",
+        "first_observed_at": NOW,
+        "last_observed_at": stale_paused_since,
+        "status_started_at": stale_paused_since,
+        "paused_since": stale_paused_since,
+        "last_status_change_at": stale_paused_since,
+        "schema_version": 1,
+    }
+    db.collections["sheets_item_formula_rows"] = LiveInsertOnFormulaReplaceCollection(
+        live_newer_row
+    )
+
+    summary = await run_sheetseller_backfill(db=db, seller_id="82453304", dry_run=False)
+
+    row = db["sheets_item_formula_rows"].documents["82453304:SKU-1:MLA1"]
+    assert summary.updated == 0
+    assert row["current"]["status"] == "closed"
+    assert row["current"]["status_observed_at"] == newer_closed_at
+    assert row["current"]["status_started_at"] == newer_closed_at
+    assert row["current"]["last_status_change_at"] == newer_closed_at
+    assert "paused_since" not in row["current"]
+
+
+@pytest.mark.asyncio
+async def test_backfill_without_status_state_strips_legacy_item_status_history_scalars() -> None:
+    guessed_paused_since = datetime(2026, 5, 10, 8, 0, tzinfo=UTC)
+    item = _item_doc(
+        "MLA1",
+        attributes=[{"id": "SELLER_SKU", "value_name": "sku-1"}],
+        last_updated=datetime(2026, 5, 30, 12, 0, tzinfo=UTC),
+    )
+    item["status"] = "paused"
+    item["status_observed_at"] = guessed_paused_since
+    item["status_started_at"] = guessed_paused_since
+    item["paused_since"] = guessed_paused_since
+    item["last_status_change_at"] = guessed_paused_since
+    db = FakeDb([item])
+
+    summary = await run_sheetseller_backfill(db=db, seller_id="82453304", dry_run=False)
+
+    row = db["sheets_item_formula_rows"].documents["82453304:SKU-1:MLA1"]
+    assert summary.updated == 1
+    assert row["current"]["status"] == "paused"
+    assert "status_observed_at" not in row["current"]
+    assert "status_started_at" not in row["current"]
+    assert "paused_since" not in row["current"]
+    assert "last_status_change_at" not in row["current"]
 
 
 @pytest.mark.asyncio
@@ -710,7 +1271,12 @@ async def test_backfill_write_mode_upserts_both_read_models_and_is_idempotent() 
     assert len(db["sheets_item_formula_rows"].replace_calls) == 2
     assert all(call[2] is True for call in db["sheets_item_sku_index"].replace_calls)
     assert all(
-        call[0] == {"_id": call[1]["_id"]} for call in db["sheets_item_formula_rows"].replace_calls
+        call[0]
+        == {
+            "_id": call[1]["_id"],
+            "$or": [{"current.status_observed_at": {"$exists": False}}],
+        }
+        for call in db["sheets_item_formula_rows"].replace_calls
     )
 
 

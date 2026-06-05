@@ -16,9 +16,12 @@ from zeler_sheets.historical_meli_backfill import (
 
 
 class FakeReplaceResult:
-    matched_count = 1
-    modified_count = 1
-    upserted_id = None
+    def __init__(
+        self, *, matched_count: int = 1, modified_count: int = 1, upserted_id: str | None = None
+    ) -> None:
+        self.matched_count = matched_count
+        self.modified_count = modified_count
+        self.upserted_id = upserted_id
 
 
 class FakeCursor:
@@ -38,12 +41,36 @@ class FakeCollection:
         self, filter_spec: dict[str, Any], replacement: dict[str, Any], *, upsert: bool = False
     ) -> FakeReplaceResult:
         self.replace_calls.append((dict(filter_spec), dict(replacement), upsert))
-        self.documents[str(replacement["_id"])] = dict(replacement)
-        return FakeReplaceResult()
+        for document_id, document in self.documents.items():
+            if _matches_filter(document, filter_spec):
+                self.documents[document_id] = dict(replacement)
+                return FakeReplaceResult()
+        if upsert:
+            document_id = str(replacement["_id"])
+            self.documents[document_id] = dict(replacement)
+            return FakeReplaceResult(matched_count=0, modified_count=0, upserted_id=document_id)
+        return FakeReplaceResult(matched_count=0, modified_count=0)
+
+    async def update_one(
+        self, filter_spec: dict[str, Any], update: dict[str, Any], *, upsert: bool = False
+    ) -> FakeReplaceResult:
+        for document in self.documents.values():
+            if _matches_filter(document, filter_spec):
+                for path, value in update.get("$set", {}).items():
+                    _set_path(document, path, value)
+                for path in update.get("$unset", {}):
+                    _unset_path(document, path)
+                return FakeReplaceResult()
+        if upsert and "$setOnInsert" in update:
+            document = dict(update["$setOnInsert"])
+            document_id = str(document["_id"])
+            self.documents[document_id] = document
+            return FakeReplaceResult(matched_count=0, modified_count=0, upserted_id=document_id)
+        return FakeReplaceResult(matched_count=0, modified_count=0)
 
     async def find_one(self, filter_spec: dict[str, Any]) -> dict[str, Any] | None:
         for document in self.documents.values():
-            if all(document.get(key) == value for key, value in filter_spec.items()):
+            if _matches_filter(document, filter_spec):
                 return dict(document)
         return None
 
@@ -51,9 +78,59 @@ class FakeCollection:
         documents = [
             document
             for document in self.documents.values()
-            if all(document.get(key) == value for key, value in filter_spec.items())
+            if _matches_filter(document, filter_spec)
         ]
         return FakeCursor(documents)
+
+
+def _matches_filter(document: dict[str, Any], filter_spec: dict[str, Any]) -> bool:
+    for key, expected in filter_spec.items():
+        if key == "$or":
+            if not any(_matches_filter(document, option) for option in expected):
+                return False
+            continue
+        actual = _nested_value(document, key)
+        if isinstance(expected, dict) and "$exists" in expected:
+            if (actual is not None) != expected["$exists"]:
+                return False
+            continue
+        if isinstance(expected, dict) and "$lte" in expected:
+            if actual is None or actual > expected["$lte"]:
+                return False
+            continue
+        if actual != expected:
+            return False
+    return True
+
+
+def _nested_value(document: dict[str, Any], dotted_path: str) -> Any:
+    value: Any = document
+    for part in dotted_path.split("."):
+        if not isinstance(value, dict) or part not in value:
+            return None
+        value = value[part]
+    return value
+
+
+def _set_path(document: dict[str, Any], dotted_path: str, value: Any) -> None:
+    target: Any = document
+    parts = dotted_path.split(".")
+    for part in parts[:-1]:
+        if not isinstance(target.get(part), dict):
+            target[part] = {}
+        target = target[part]
+    target[parts[-1]] = value
+
+
+def _unset_path(document: dict[str, Any], dotted_path: str) -> None:
+    target: Any = document
+    parts = dotted_path.split(".")
+    for part in parts[:-1]:
+        if not isinstance(target, dict) or not isinstance(target.get(part), dict):
+            return
+        target = target[part]
+    if isinstance(target, dict):
+        target.pop(parts[-1], None)
 
 
 class FakeDb:

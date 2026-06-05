@@ -14,6 +14,7 @@ from zeler_platform_core.models.base import (
 )
 
 ItemStatus = Literal["active", "paused", "closed", "under_review", "inactive"]
+ItemStatusHistorySource = Literal["sheets_event_persistence"]
 OrderStatus = Literal[
     "paid",
     "confirmed",
@@ -223,6 +224,7 @@ class Item(UtcDatetimeMixin, PriceMixin, SellerScopedDocument):
     current_promotion: PromoPriceProjection | None = None
     listing_price_fixed_fee: ListingPriceFixedFeeProjection | None = None
     last_meli_sync_at: datetime
+    status_observed_at: datetime | None = None
     date_created: datetime
     last_updated: datetime
 
@@ -276,6 +278,42 @@ class Item(UtcDatetimeMixin, PriceMixin, SellerScopedDocument):
             msg = "tags must be a list of strings"
             raise ValueError(msg)
         return [tag for raw in value if (tag := _coerce_str(raw).strip())]
+
+
+class ItemStatusTransition(UtcDatetimeMixin, SellerScopedDocument):
+    item_id: str
+    from_status: str
+    to_status: str
+    observed_at: datetime
+    source: ItemStatusHistorySource
+
+    @field_validator("item_id", "from_status", "to_status", mode="before")
+    @classmethod
+    def _coerce_required_string(cls, value: object) -> str:
+        normalized = _coerce_str(value).strip()
+        if not normalized:
+            msg = "status transition fields must not be blank"
+            raise ValueError(msg)
+        return normalized
+
+
+class ItemStatusState(UtcDatetimeMixin, SellerScopedDocument):
+    item_id: str
+    current_status: str
+    first_observed_at: datetime
+    last_observed_at: datetime
+    status_started_at: datetime | None = None
+    paused_since: datetime | None = None
+    last_status_change_at: datetime | None = None
+
+    @field_validator("item_id", "current_status", mode="before")
+    @classmethod
+    def _coerce_required_string(cls, value: object) -> str:
+        normalized = _coerce_str(value).strip()
+        if not normalized:
+            msg = "status state fields must not be blank"
+            raise ValueError(msg)
+        return normalized
 
 
 class OrderItem(PriceMixin):

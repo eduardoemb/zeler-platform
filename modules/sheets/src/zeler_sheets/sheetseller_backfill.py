@@ -14,20 +14,29 @@ from urllib.parse import quote
 
 import httpx
 from bson.decimal128 import Decimal128
+from pymongo.errors import DuplicateKeyError
 
 from zeler_platform_core.clients.meli_gateway_client import GatewayRateLimitError
 from zeler_platform_core.models import Item, ListingPriceFixedFeeProjection, PromoPriceProjection
 from zeler_platform_core.models.base import current_schema_version
 from zeler_sheets.formulas.read_models import normalize_sku
+from zeler_sheets.status_history import (
+    bson_ms_utc_datetime,
+    normalize_status_history_datetimes,
+    require_bson_ms_utc_datetime,
+)
 
 ITEMS_COLLECTION = "items"
 ORDERS_COLLECTION = "orders"
 ITEM_SKU_INDEX_COLLECTION = "sheets_item_sku_index"
 ITEM_FORMULA_ROWS_COLLECTION = "sheets_item_formula_rows"
+ITEM_STATUS_STATES_COLLECTION = "item_status_states"
 READ_MODEL_SCHEMA_VERSION = 2
 SELLER_SKU_ATTRIBUTE_ID = "SELLER_SKU"
 DEFAULT_GATEWAY_BASE_URL = "http://gateway:8080/proxy/meli"
 ITEM_DETAIL_BATCH_SIZE = 20
+STATUS_HISTORY_SCALAR_FIELDS = ("status_started_at", "paused_since", "last_status_change_at")
+FORMULA_ROW_REPLACE_ATTEMPTS = 3
 SALE_PRICE_SOURCE = "/items/{id}/sale_price"
 LISTING_PRICE_FIXED_FEE_SOURCE = "/sites/{site}/listing_prices"
 SALE_PRICE_CONTEXT = "channel_marketplace"
@@ -247,8 +256,10 @@ async def run_sheetseller_backfill(
         sku_index_collection,
         seller_id=seller_id,
     )
+    status_states_by_item = await load_item_status_states_by_item(db=db, seller_id=seller_id)
 
     for item in items:
+        item = _item_with_status_history(item, status_states_by_item.get(_item_id(item)))
         sku_index_docs: list[dict[str, Any]]
         formula_row_docs: list[dict[str, Any]]
         item_sku = resolve_seller_sku(item)
@@ -294,6 +305,10 @@ async def run_sheetseller_backfill(
 
         changed_formula_rows: list[dict[str, Any]] = []
         for formula_row_doc in formula_row_docs:
+            formula_row_doc = await _formula_row_with_latest_status_state(
+                db=db,
+                formula_row_doc=formula_row_doc,
+            )
             diagnostics = _formula_row_diagnostics(formula_row_doc)
             skipped_missing_source += 1 if diagnostics["missing_source"] else 0
             formula_rows_with_permalink += int(diagnostics["with_permalink"])
@@ -312,10 +327,12 @@ async def run_sheetseller_backfill(
                     {"_id": sku_index_doc["_id"]}, sku_index_doc, upsert=True
                 )
             for formula_row_doc in changed_formula_rows:
-                await formula_rows_collection.replace_one(
-                    {"_id": formula_row_doc["_id"]}, formula_row_doc, upsert=True
-                )
-                updated += 1
+                if await _replace_formula_row_from_backfill_if_current(
+                    formula_rows_collection,
+                    formula_row_doc,
+                    db=db,
+                ):
+                    updated += 1
 
     return BackfillSummary(
         seller_id=seller_id,
@@ -906,6 +923,17 @@ async def load_order_line_sku_identities_by_item(
     return by_item
 
 
+async def load_item_status_states_by_item(*, db: Any, seller_id: str) -> dict[str, dict[str, Any]]:
+    states = (
+        await db[ITEM_STATUS_STATES_COLLECTION].find({"seller_id": seller_id}).to_list(length=None)
+    )
+    return {
+        item_id: normalize_status_history_datetimes(state)
+        for state in states
+        if (item_id := _optional_string(state.get("item_id"))) is not None
+    }
+
+
 def build_order_line_formula_row_docs(
     item: dict[str, Any], *, order_line_identities: Sequence[dict[str, Any]], seller_id: str
 ) -> list[dict[str, Any]]:
@@ -1092,6 +1120,16 @@ def build_formula_row_doc(
     resolved_inventory_id = _optional_string(inventory_id)
     if resolved_inventory_id is None and resolved_variation_id is None:
         resolved_inventory_id = _optional_string(item.get("inventory_id"))
+    status_history_scalars = {
+        field: value
+        for field in (
+            "status_observed_at",
+            "status_started_at",
+            "paused_since",
+            "last_status_change_at",
+        )
+        if (value := bson_ms_utc_datetime(item.get(field))) is not None
+    }
     return {
         "_id": _formula_row_id(
             seller_id=seller_id,
@@ -1132,6 +1170,7 @@ def build_formula_row_doc(
             **_formula_row_listing_price_shipping_basis_fields(item),
             "shipping_logistic_type": _shipping_logistic_type(item.get("shipping")),
             "shipping_payer": _shipping_payer(item.get("shipping")),
+            **status_history_scalars,
         },
         "date_created": date_created,
         "updated_at": updated_at,
@@ -1172,6 +1211,220 @@ def _formula_row_listing_price_shipping_basis_fields(item: dict[str, Any]) -> di
 async def _load_seller_items(*, db: Any, seller_id: str) -> list[dict[str, Any]]:
     cursor = db[ITEMS_COLLECTION].find({"seller_id": seller_id}).sort([("_id", 1)])
     return cast("list[dict[str, Any]]", await cursor.to_list(length=None))
+
+
+def _item_with_status_history(
+    item: dict[str, Any], status_state: dict[str, Any] | None
+) -> dict[str, Any]:
+    if status_state is None:
+        return _item_without_status_history(item)
+    status_state = normalize_status_history_datetimes(status_state)
+    enriched = dict(item)
+    enriched["status"] = status_state["current_status"]
+    for field in (
+        "status_observed_at",
+        "status_started_at",
+        "paused_since",
+        "last_status_change_at",
+    ):
+        enriched.pop(field, None)
+    if (last_observed_at := bson_ms_utc_datetime(status_state.get("last_observed_at"))) is not None:
+        enriched["status_observed_at"] = last_observed_at
+    for field in ("status_started_at", "paused_since", "last_status_change_at"):
+        if (value := bson_ms_utc_datetime(status_state.get(field))) is not None:
+            enriched[field] = value
+    return enriched
+
+
+async def _replace_formula_row_from_backfill_if_current(
+    collection: Any, formula_row_doc: dict[str, Any], *, db: Any
+) -> bool:
+    for _ in range(FORMULA_ROW_REPLACE_ATTEMPTS):
+        existing = await collection.find_one({"_id": formula_row_doc["_id"]})
+        if existing is not None:
+            latest_formula_row_doc = await _formula_row_with_latest_status_state(
+                db=db,
+                formula_row_doc=formula_row_doc,
+            )
+            latest_observed_at = _formula_row_status_observed_at(latest_formula_row_doc)
+            existing_observed_at = _formula_row_status_observed_at(existing)
+            if existing_observed_at is not None and (
+                latest_observed_at is None or existing_observed_at > latest_observed_at
+            ):
+                return False
+            candidate = _formula_row_with_better_live_paused_scalar_tuple(
+                planned=latest_formula_row_doc,
+                existing=existing,
+            )
+            result = await collection.replace_one(
+                {
+                    "_id": candidate["_id"],
+                    **_formula_row_status_history_tuple_guard(existing),
+                },
+                candidate,
+                upsert=False,
+            )
+            if result.matched_count > 0:
+                return True
+            continue
+
+        latest_formula_row_doc = await _formula_row_with_latest_status_state(
+            db=db,
+            formula_row_doc=formula_row_doc,
+        )
+        try:
+            result = await collection.replace_one(
+                {
+                    "_id": latest_formula_row_doc["_id"],
+                    **_status_observed_at_guard("current.status_observed_at", None),
+                },
+                latest_formula_row_doc,
+                upsert=True,
+            )
+        except DuplicateKeyError:
+            continue
+        if result.matched_count > 0 or result.upserted_id is not None:
+            return True
+    return False
+
+
+async def _formula_row_with_latest_status_state(
+    *, db: Any, formula_row_doc: dict[str, Any]
+) -> dict[str, Any]:
+    seller_id = _optional_string(formula_row_doc.get("seller_id"))
+    item_id = _optional_string(formula_row_doc.get("item_id"))
+    if seller_id is None or item_id is None:
+        return _formula_row_without_status_history(formula_row_doc)
+    status_state = await db[ITEM_STATUS_STATES_COLLECTION].find_one(
+        {"seller_id": seller_id, "item_id": item_id}
+    )
+    return _formula_row_with_status_history(formula_row_doc, status_state)
+
+
+def _formula_row_with_status_history(
+    formula_row_doc: dict[str, Any], status_state: dict[str, Any] | None
+) -> dict[str, Any]:
+    refreshed = _formula_row_without_status_history(formula_row_doc)
+    if status_state is None:
+        return refreshed
+    status_state = normalize_status_history_datetimes(status_state)
+    current = refreshed.get("current")
+    if not isinstance(current, dict):
+        return refreshed
+    current["status"] = status_state["current_status"]
+    if (last_observed_at := bson_ms_utc_datetime(status_state.get("last_observed_at"))) is not None:
+        current["status_observed_at"] = last_observed_at
+    for field in STATUS_HISTORY_SCALAR_FIELDS:
+        if (value := bson_ms_utc_datetime(status_state.get(field))) is not None:
+            current[field] = value
+    return refreshed
+
+
+def _formula_row_without_status_history(formula_row_doc: dict[str, Any]) -> dict[str, Any]:
+    stripped = dict(formula_row_doc)
+    current = stripped.get("current")
+    if not isinstance(current, dict):
+        return stripped
+    stripped_current = dict(current)
+    for field in (
+        "status_observed_at",
+        "status_started_at",
+        "paused_since",
+        "last_status_change_at",
+    ):
+        stripped_current.pop(field, None)
+    stripped["current"] = stripped_current
+    return stripped
+
+
+def _item_without_status_history(item: dict[str, Any]) -> dict[str, Any]:
+    stripped = dict(item)
+    for field in (
+        "status_observed_at",
+        "status_started_at",
+        "paused_since",
+        "last_status_change_at",
+    ):
+        stripped.pop(field, None)
+    return stripped
+
+
+def _formula_row_status_observed_at(formula_row_doc: dict[str, Any] | None) -> datetime | None:
+    if formula_row_doc is None:
+        return None
+    current = formula_row_doc.get("current")
+    if not isinstance(current, dict):
+        return None
+    value = current.get("status_observed_at")
+    return bson_ms_utc_datetime(value)
+
+
+def _formula_row_with_better_live_paused_scalar_tuple(
+    *, planned: dict[str, Any], existing: dict[str, Any]
+) -> dict[str, Any]:
+    planned_observed_at = _formula_row_status_observed_at(planned)
+    if (
+        planned_observed_at is None
+        or _formula_row_status_observed_at(existing) != planned_observed_at
+    ):
+        return planned
+    planned_current = planned.get("current")
+    existing_current = existing.get("current")
+    if not isinstance(planned_current, dict) or not isinstance(existing_current, dict):
+        return planned
+    if _optional_string(planned_current.get("status")) != "paused":
+        return planned
+    if _optional_string(existing_current.get("status")) != "paused":
+        return planned
+    planned_scalars = {
+        field: bson_ms_utc_datetime(planned_current.get(field))
+        for field in STATUS_HISTORY_SCALAR_FIELDS
+    }
+    existing_scalars = {
+        field: bson_ms_utc_datetime(existing_current.get(field))
+        for field in STATUS_HISTORY_SCALAR_FIELDS
+    }
+    if any(value is None for value in planned_scalars.values()) or any(
+        value is None for value in existing_scalars.values()
+    ):
+        return planned
+    if existing_scalars["paused_since"] >= planned_scalars["paused_since"]:
+        return planned
+    if any(
+        existing_scalars[field] > planned_scalars[field] for field in STATUS_HISTORY_SCALAR_FIELDS
+    ):
+        return planned
+
+    merged = dict(planned)
+    merged_current = dict(planned_current)
+    for field, value in existing_scalars.items():
+        merged_current[field] = value
+    merged["current"] = merged_current
+    return merged
+
+
+def _formula_row_status_history_tuple_guard(formula_row_doc: dict[str, Any]) -> dict[str, Any]:
+    current = formula_row_doc.get("current")
+    current_values = current if isinstance(current, dict) else {}
+    guard: dict[str, Any] = {}
+    status = _optional_string(current_values.get("status"))
+    guard["current.status"] = status if status is not None else {"$exists": False}
+    for field in ("status_observed_at", *STATUS_HISTORY_SCALAR_FIELDS):
+        value = bson_ms_utc_datetime(current_values.get(field))
+        guard[f"current.{field}"] = value if value is not None else {"$exists": False}
+    return guard
+
+
+def _status_observed_at_guard(field: str, observed_at: datetime | None) -> dict[str, Any]:
+    if observed_at is None:
+        return {"$or": [{field: {"$exists": False}}]}
+    observed_at = require_bson_ms_utc_datetime(observed_at)
+    return {
+        "$or": [
+            {field: {"$exists": False}},
+            {field: {"$lte": observed_at}},
+        ]
+    }
 
 
 def _chunks(items: Sequence[str], size: int) -> Sequence[list[str]]:
@@ -1234,7 +1487,9 @@ def _canonical_item_detail_document(
             "schema_version": current_schema_version("items"),
         }
     )
-    document = model.model_dump(by_alias=True, mode="python")
+    document = normalize_status_history_datetimes(model.model_dump(by_alias=True, mode="python"))
+    if document.get("status_observed_at") is None:
+        document.pop("status_observed_at", None)
     for money_field in ("price", "base_price", "seller_shipping_cost"):
         document[money_field] = _schema_safe_numeric(document.get(money_field))
     fixed_fee = _schema_safe_listing_fixed_fee(document.get("listing_price_fixed_fee"))
@@ -2104,13 +2359,13 @@ def _formula_row_decimal_value(value: Any) -> Decimal | None:
 
 def _formula_row_datetime_value(value: Any, other: Any) -> datetime | None:
     if isinstance(value, datetime):
-        return value.astimezone(UTC) if value.tzinfo is not None else value.replace(tzinfo=UTC)
+        return require_bson_ms_utc_datetime(value)
     if isinstance(value, date):
         return datetime.combine(value, datetime.min.time(), tzinfo=UTC)
     if not isinstance(value, str) or not isinstance(other, (datetime, date)):
         return None
     try:
-        return _parse_utc_datetime(value)
+        return require_bson_ms_utc_datetime(_parse_utc_datetime(value))
     except ValueError:
         return None
 

@@ -138,6 +138,12 @@
       "last_meli_sync_at": {
         "bsonType": "date"
       },
+      "last_status_change_at": {
+        "bsonType": [
+          "date",
+          "null"
+        ]
+      },
       "last_updated": {
         "bsonType": "date"
       },
@@ -239,6 +245,12 @@
           "null"
         ]
       },
+      "paused_since": {
+        "bsonType": [
+          "date",
+          "null"
+        ]
+      },
       "permalink": {
         "bsonType": [
           "string",
@@ -286,6 +298,18 @@
       },
       "status": {
         "bsonType": "string"
+      },
+      "status_observed_at": {
+        "bsonType": [
+          "date",
+          "null"
+        ]
+      },
+      "status_started_at": {
+        "bsonType": [
+          "date",
+          "null"
+        ]
       },
       "tags": {
         "bsonType": "array"
