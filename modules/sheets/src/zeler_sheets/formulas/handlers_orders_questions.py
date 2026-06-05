@@ -1178,7 +1178,7 @@ def _order_line_row(
         line.item_id,
         _sheet_number(line.quantity),
         "" if line.unit_price is None else _sheet_number(line.unit_price),
-        NA_VALUE,
+        _order_meli_pack_id(order),
         NA_VALUE,
         NA_VALUE,
         _listing_fixed_fee(row),
@@ -1188,6 +1188,14 @@ def _order_line_row(
     if include_buyer_columns:
         values.extend(_buyer_address_values(_receiver_address_for_order(order, receiver_addresses)))
     return values
+
+
+def _order_meli_pack_id(order: Mapping[str, Any]) -> str:
+    value = order.get("meli_pack_id")
+    if value is None:
+        return NA_VALUE
+    normalized = str(value).strip()
+    return normalized or NA_VALUE
 
 
 def _listing_fixed_fee(row: Mapping[str, Any] | None) -> Any:

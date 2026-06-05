@@ -235,6 +235,7 @@ ENTITY_SCHEMAS: dict[str, dict[str, Any]] = {
             "total_amount": MONEY,
             "items": {"bsonType": "array"},
             "shipment_id": {"bsonType": ["string", "long", "int", "null"]},
+            "meli_pack_id": {"bsonType": ["string", "long", "int", "null"]},
             "tags": {"bsonType": "array"},
             "feedback": {"bsonType": ["object", "null"]},
             **SCHEMA_VERSION,

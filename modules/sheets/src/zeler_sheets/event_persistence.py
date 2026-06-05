@@ -540,6 +540,7 @@ def _canonical_order_document(resource: dict[str, Any], *, seller_id: str) -> di
             "seller_id": seller_id,
             "buyer_id": _buyer_id(resource),
             "shipment_id": _shipment_id(resource),
+            "meli_pack_id": _meli_pack_id(resource),
             "items": _order_items(resource),
             "schema_version": current_schema_version("orders"),
         }
@@ -972,6 +973,14 @@ def _shipment_id(resource: dict[str, Any]) -> str | None:
     else:
         value = resource.get("shipment_id")
     return None if value is None else str(value)
+
+
+def _meli_pack_id(resource: dict[str, Any]) -> str | None:
+    value = resource.get("pack_id")
+    if value is None:
+        return None
+    normalized = str(value).strip()
+    return normalized or None
 
 
 def _shipment_order_id(resource: dict[str, Any]) -> str:

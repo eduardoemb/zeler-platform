@@ -38,6 +38,9 @@ CORE_FORMULA_NAMES = frozenset(
     }
 )
 
+DASHBOARD_WINDOW_DAYS = (7, 15, 30, 60, 90)
+DASHBOARD_PACK_ID_HEADERS = [f"ID Carrito ({days} días)" for days in DASHBOARD_WINDOW_DAYS]
+
 DASHBOARD_LEGACY_HEADERS = [
     "ID Publicación",
     "Título",
@@ -61,6 +64,7 @@ DASHBOARD_LEGACY_HEADERS = [
     "Comisión",
     "Costo Por Unidad",
     "Tiene Catálogo",
+    *DASHBOARD_PACK_ID_HEADERS,
 ]
 
 PUBLICACIONES_LEGACY_HEADERS = [
@@ -458,7 +462,9 @@ class CoreFormulaHandlers:
         visible_rows = [
             row for row in ordered_rows if not exclude_catalog or not _has_catalog_product(row)
         ]
-        sales_windows = await self._dashboard_sales_windows(context.seller_id, visible_rows)
+        sales_windows, pack_windows = await self._dashboard_sales_windows(
+            context.seller_id, visible_rows
+        )
         headers = list(DASHBOARD_LEGACY_HEADERS)
         tipo_precio = str(context.args.get("tipo_precio") or "").strip().casefold()
         include_promo = tipo_precio == "todos"
@@ -476,6 +482,7 @@ class CoreFormulaHandlers:
                 _dashboard_row(
                     row,
                     sales_windows=sales_windows,
+                    pack_windows=pack_windows,
                     include_promo=include_promo,
                     today=today,
                     use_promo_as_selected_price=use_promo_as_selected_price,
@@ -495,7 +502,7 @@ class CoreFormulaHandlers:
 
     async def _dashboard_sales_windows(
         self, seller_id: str, rows: Iterable[Mapping[str, Any]]
-    ) -> dict[int, dict[tuple[str, str], int]]:
+    ) -> tuple[dict[int, dict[tuple[str, str], int]], dict[int, dict[tuple[str, str], str]]]:
         row_pairs = {
             (
                 normalize_sku(row.get("normalized_sku") or row.get("sku")),
@@ -505,7 +512,10 @@ class CoreFormulaHandlers:
             if normalize_sku(row.get("normalized_sku") or row.get("sku")) and row.get("item_id")
         }
         if not row_pairs:
-            return {days: {} for days in (7, 15, 30, 60, 90)}
+            return (
+                {days: {} for days in DASHBOARD_WINDOW_DAYS},
+                {days: {} for days in DASHBOARD_WINDOW_DAYS},
+            )
         now = _as_utc_datetime(self._now_fn())
         orders = await self._repository.find_orders(
             seller_id=seller_id,
@@ -517,11 +527,18 @@ class CoreFormulaHandlers:
             seller_id=seller_id,
             orders=orders,
         )
-        windows: dict[int, dict[tuple[str, str], int]] = {days: {} for days in (7, 15, 30, 60, 90)}
+        windows: dict[int, dict[tuple[str, str], int]] = {
+            days: {} for days in DASHBOARD_WINDOW_DAYS
+        }
+        pack_candidates: dict[
+            int, dict[tuple[str, str], tuple[tuple[datetime, int, int, str], str | None]]
+        ] = {days: {} for days in DASHBOARD_WINDOW_DAYS}
         for order in orders:
             created = _optional_datetime(order.get("date_created"))
             if created is None:
                 continue
+            pack_id = _order_meli_pack_id(order)
+            order_sort_key = (created, *_order_id_sort_key(order.get("_id") or order.get("id")))
             for item in _order_items(order):
                 sku = _dashboard_order_item_sku(item, sku_resolver=sku_resolver)
                 item_id = _item_id(item)
@@ -532,7 +549,17 @@ class CoreFormulaHandlers:
                 for days in windows:
                     if _last_days_start(now, days) <= created <= _day_end(now):
                         windows[days][key] = windows[days].get(key, 0) + quantity
-        return windows
+                        current = pack_candidates[days].get(key)
+                        if current is None or order_sort_key > current[0]:
+                            pack_candidates[days][key] = (order_sort_key, pack_id)
+        pack_windows: dict[int, dict[tuple[str, str], str]] = {}
+        for days, candidates in pack_candidates.items():
+            day_pack_windows: dict[tuple[str, str], str] = {}
+            for key, (_, candidate_pack_id) in candidates.items():
+                if candidate_pack_id is not None:
+                    day_pack_windows[key] = candidate_pack_id
+            pack_windows[days] = day_pack_windows
+        return windows, pack_windows
 
 
 class _LookupPair:
@@ -616,6 +643,21 @@ def _dashboard_order_item_sku(
     if direct_sku:
         return direct_sku
     return sku_resolver.resolve(_item_id(item), _item_variation_id(item))
+
+
+def _order_meli_pack_id(order: Mapping[str, Any]) -> str | None:
+    value = order.get("meli_pack_id")
+    if value is None:
+        return None
+    normalized = str(value).strip()
+    return normalized or None
+
+
+def _order_id_sort_key(value: Any) -> tuple[int, int, str]:
+    normalized = str(value or "").strip()
+    if normalized.isdecimal():
+        return (1, int(normalized), normalized)
+    return (0, 0, normalized)
 
 
 def _lookup_pairs(*, skus: Any, item_ids: Any) -> list[_LookupPair]:
@@ -835,6 +877,7 @@ def _dashboard_row(
     row: Mapping[str, Any],
     *,
     sales_windows: Mapping[int, Mapping[tuple[str, str], int]],
+    pack_windows: Mapping[int, Mapping[tuple[str, str], str]],
     include_promo: bool,
     today: date,
     use_promo_as_selected_price: bool,
@@ -842,6 +885,7 @@ def _dashboard_row(
     values = _dashboard_row_base(
         row,
         sales_windows=sales_windows,
+        pack_windows=pack_windows,
         today=today,
         use_promo_as_selected_price=use_promo_as_selected_price,
     )
@@ -852,6 +896,7 @@ def _dashboard_row_base(
     row: Mapping[str, Any],
     *,
     sales_windows: Mapping[int, Mapping[tuple[str, str], int]],
+    pack_windows: Mapping[int, Mapping[tuple[str, str], str]],
     today: date,
     use_promo_as_selected_price: bool,
 ) -> list[Any]:
@@ -883,7 +928,18 @@ def _dashboard_row_base(
         NA_VALUE,
         _listing_fixed_fee(row),
         "Sí" if _has_catalog_product(row) else "No",
+        _dashboard_pack_id(pack_windows, key, 7),
+        _dashboard_pack_id(pack_windows, key, 15),
+        _dashboard_pack_id(pack_windows, key, 30),
+        _dashboard_pack_id(pack_windows, key, 60),
+        _dashboard_pack_id(pack_windows, key, 90),
     ]
+
+
+def _dashboard_pack_id(
+    pack_windows: Mapping[int, Mapping[tuple[str, str], str]], key: tuple[str, str], days: int
+) -> str:
+    return pack_windows.get(days, {}).get(key) or NA_VALUE
 
 
 def _listing_fixed_fee(row: Mapping[str, Any]) -> Any:

@@ -135,6 +135,14 @@ def _message_date_created(raw: dict[str, Any]) -> Any:
     return raw.get("date_created") or raw.get("date") or message_date.get("created")
 
 
+def _meli_pack_id(raw: dict[str, Any]) -> str | None:
+    value = raw.get("pack_id")
+    if value is None:
+        return None
+    normalized = str(value).strip()
+    return normalized or None
+
+
 def _now() -> datetime:
     return datetime.now(UTC)
 
@@ -260,6 +268,7 @@ class OrdersStage:
                     "total_amount": raw["total_amount"],
                     "items": _normalize_order_items(raw.get("items") or raw.get("order_items", [])),
                     "shipment_id": shipment_id,
+                    "meli_pack_id": _meli_pack_id(raw),
                     "schema_version": 1,
                 }
             )

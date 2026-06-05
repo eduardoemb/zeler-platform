@@ -239,6 +239,11 @@ def test_dashboard_output_column_fixture_locks_mvp_and_deferred_columns() -> Non
         "Comisión",
         "Costo Por Unidad",
         "Tiene Catálogo",
+        "ID Carrito (7 días)",
+        "ID Carrito (15 días)",
+        "ID Carrito (30 días)",
+        "ID Carrito (60 días)",
+        "ID Carrito (90 días)",
     ]
 
     for formula in ["ZELERDATA_DASHBOARD", "ZELERDATA_DASHBOARDSINCATALOGO"]:
@@ -267,6 +272,11 @@ def test_dashboard_output_column_fixture_locks_mvp_and_deferred_columns() -> Non
             "Costo De Envío",
             "Costo Por Unidad",
             "Tiene Catálogo",
+            "ID Carrito (7 días)",
+            "ID Carrito (15 días)",
+            "ID Carrito (30 días)",
+            "ID Carrito (60 días)",
+            "ID Carrito (90 días)",
             "Precio Promo",
         ]
         assert [column["name"] for column in columns if column["status"] == "explicit_na"] == [
@@ -294,6 +304,18 @@ def test_dashboard_output_column_fixture_locks_mvp_and_deferred_columns() -> Non
                 "is present."
             ),
         }
+        cart_columns = [column for column in columns if column["name"].startswith("ID Carrito (")]
+        assert cart_columns == [
+            {
+                "name": f"ID Carrito ({days} días)",
+                "source": (
+                    f"latest contributing orders.meli_pack_id for the {days}-day sales window"
+                ),
+                "status": "mvp",
+                "reason": "Returns NA when no contributing order line has a MercadoLibre pack_id.",
+            }
+            for days in (7, 15, 30, 60, 90)
+        ]
         assert "Categoría" not in [column["name"] for column in columns]
         assert "Imagen" not in [column["name"] for column in columns]
         assert all("source" in column or "legacy_source_note" in column for column in columns)
@@ -372,6 +394,15 @@ def test_batch_b_output_column_fixture_locks_mvp_and_deferred_columns() -> None:
         "Status",
     ]
     for formula in ["ZELERDATA_ORDENES", "ZELERDATA_ORDENESPORSKU"]:
+        cart_column = next(
+            column for column in formulas[formula]["columns"] if column["name"] == "ID Carrito"
+        )
+        assert cart_column == {
+            "name": "ID Carrito",
+            "source": "orders.meli_pack_id from MercadoLibre orders.pack_id",
+            "status": "mvp",
+            "reason": "Returns NA when the official MercadoLibre pack_id is missing.",
+        }
         unit_cost_column = next(
             column
             for column in formulas[formula]["columns"]

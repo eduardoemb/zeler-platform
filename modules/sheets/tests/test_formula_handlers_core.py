@@ -137,16 +137,25 @@ DASHBOARD_LEGACY_HEADERS = [
     "Comisión",
     "Costo Por Unidad",
     "Tiene Catálogo",
+    "ID Carrito (7 días)",
+    "ID Carrito (15 días)",
+    "ID Carrito (30 días)",
+    "ID Carrito (60 días)",
+    "ID Carrito (90 días)",
 ]
 
 
 def _formula_table_contract(rows: list[list[Any]], *, header_rows: int = 1) -> list[list[Any]]:
     normalized: list[list[Any]] = []
+    expected_width = len(rows[0]) if header_rows and rows else None
     for index, row in enumerate(rows):
         if index < header_rows or not row or str(row[0]).strip() == "":
             normalized.append(row)
             continue
-        normalized.append([row[0], *("NA" if cell == "" else cell for cell in row[1:])])
+        row_values = [row[0], *("NA" if cell == "" else cell for cell in row[1:])]
+        if expected_width is not None and len(row_values) < expected_width:
+            row_values.extend(["NA"] * (expected_width - len(row_values)))
+        normalized.append(row_values)
     return normalized
 
 
@@ -509,8 +518,161 @@ async def test_publicaciones_dashboard_emit_na_for_deferred_fields_and_current_s
             "NA",
             "No",
             "NA",
+            "NA",
+            "NA",
+            "NA",
+            "NA",
+            "NA",
         ],
     ]
+
+
+@pytest.mark.asyncio
+async def test_dashboard_adds_per_window_latest_contributing_meli_pack_ids() -> None:
+    now = datetime(2026, 5, 13, 12, 0, tzinfo=UTC)
+    db = FakeDb()
+    db["sheets_item_formula_rows"].documents = {
+        "seller-1-sku-1-mla1": {
+            "_id": "seller-1-sku-1-mla1",
+            "seller_id": "seller-1",
+            "sku": "sku-1",
+            "normalized_sku": "SKU-1",
+            "item_id": "MLA1",
+            "current": {"title": "First listing", "status": "active", "available_quantity": 7},
+        },
+        "seller-1-sku-2-mla2": {
+            "_id": "seller-1-sku-2-mla2",
+            "seller_id": "seller-1",
+            "sku": "sku-2",
+            "normalized_sku": "SKU-2",
+            "item_id": "MLA2",
+            "current": {"title": "Second listing", "status": "active", "available_quantity": 4},
+        },
+    }
+    db["orders"].documents = {
+        "100": {
+            "_id": "100",
+            "seller_id": "seller-1",
+            "date_created": datetime(2026, 5, 12, 10, 0, tzinfo=UTC),
+            "meli_pack_id": "111",
+            "items": [{"sku": "sku-1", "item_id": "MLA1", "quantity": 1}],
+        },
+        "101": {
+            "_id": "101",
+            "seller_id": "seller-1",
+            "date_created": datetime(2026, 5, 12, 10, 0, tzinfo=UTC),
+            "meli_pack_id": "222",
+            "items": [{"sku": "sku-1", "item_id": "MLA1", "quantity": 1}],
+        },
+        "window-15-only": {
+            "_id": "window-15-only",
+            "seller_id": "seller-1",
+            "date_created": datetime(2026, 5, 5, 10, 0, tzinfo=UTC),
+            "meli_pack_id": "333",
+            "items": [{"sku": "sku-2", "item_id": "MLA2", "quantity": 3}],
+        },
+        "non-contributing": {
+            "_id": "non-contributing",
+            "seller_id": "seller-1",
+            "date_created": datetime(2026, 5, 12, 10, 0, tzinfo=UTC),
+            "meli_pack_id": "999",
+            "items": [{"sku": "other", "item_id": "MLA999", "quantity": 9}],
+        },
+    }
+    dispatcher = _core_dispatcher(db, now=now)
+
+    result = await dispatcher.execute(
+        _context("ZELERDATA_DASHBOARD", {"skus": "todos", "encabezados": "si"})
+    )
+
+    assert result.values[0][-5:] == [
+        "ID Carrito (7 días)",
+        "ID Carrito (15 días)",
+        "ID Carrito (30 días)",
+        "ID Carrito (60 días)",
+        "ID Carrito (90 días)",
+    ]
+    assert result.values[1][-5:] == ["222", "222", "222", "222", "222"]
+    assert result.values[2][-5:] == ["NA", "333", "333", "333", "333"]
+
+
+@pytest.mark.asyncio
+async def test_dashboard_prioritizes_later_pack_date_before_higher_order_id() -> None:
+    now = datetime(2026, 5, 13, 12, 0, tzinfo=UTC)
+    db = FakeDb()
+    db["sheets_item_formula_rows"].documents = {
+        "seller-1-sku-1-mla1": {
+            "_id": "seller-1-sku-1-mla1",
+            "seller_id": "seller-1",
+            "sku": "sku-1",
+            "normalized_sku": "SKU-1",
+            "item_id": "MLA1",
+            "current": {"title": "First listing", "status": "active"},
+        }
+    }
+    db["orders"].documents = {
+        "999999": {
+            "_id": "999999",
+            "seller_id": "seller-1",
+            "date_created": datetime(2026, 5, 11, 10, 0, tzinfo=UTC),
+            "meli_pack_id": "older-higher-order-id",
+            "items": [{"sku": "sku-1", "item_id": "MLA1", "quantity": 1}],
+        },
+        "100": {
+            "_id": "100",
+            "seller_id": "seller-1",
+            "date_created": datetime(2026, 5, 12, 10, 0, tzinfo=UTC),
+            "meli_pack_id": "newer-lower-order-id",
+            "items": [{"sku": "sku-1", "item_id": "MLA1", "quantity": 1}],
+        },
+    }
+    dispatcher = _core_dispatcher(db, now=now)
+
+    result = await dispatcher.execute(_context("ZELERDATA_DASHBOARD", {"skus": "todos"}))
+
+    assert result.values[0][-5:] == [
+        "newer-lower-order-id",
+        "newer-lower-order-id",
+        "newer-lower-order-id",
+        "newer-lower-order-id",
+        "newer-lower-order-id",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_dashboard_latest_missing_pack_id_renders_na_over_older_pack() -> None:
+    now = datetime(2026, 5, 13, 12, 0, tzinfo=UTC)
+    db = FakeDb()
+    db["sheets_item_formula_rows"].documents = {
+        "seller-1-sku-1-mla1": {
+            "_id": "seller-1-sku-1-mla1",
+            "seller_id": "seller-1",
+            "sku": "sku-1",
+            "normalized_sku": "SKU-1",
+            "item_id": "MLA1",
+            "current": {"title": "First listing", "status": "active"},
+        }
+    }
+    db["orders"].documents = {
+        "older-packed-order": {
+            "_id": "older-packed-order",
+            "seller_id": "seller-1",
+            "date_created": datetime(2026, 5, 11, 10, 0, tzinfo=UTC),
+            "meli_pack_id": "old-pack",
+            "items": [{"sku": "sku-1", "item_id": "MLA1", "quantity": 1}],
+        },
+        "newer-missing-pack-order": {
+            "_id": "newer-missing-pack-order",
+            "seller_id": "seller-1",
+            "date_created": datetime(2026, 5, 12, 10, 0, tzinfo=UTC),
+            "items": [{"sku": "sku-1", "item_id": "MLA1", "quantity": 1}],
+        },
+    }
+    dispatcher = _core_dispatcher(db, now=now)
+
+    result = await dispatcher.execute(_context("ZELERDATA_DASHBOARD", {"skus": "todos"}))
+
+    assert result.values[0][-5:] == ["NA", "NA", "NA", "NA", "NA"]
 
 
 @pytest.mark.asyncio
@@ -1012,6 +1174,11 @@ async def test_dashboard_returns_minimal_current_item_table_with_optional_header
                 "",
                 "",
                 "Sí",
+                "NA",
+                "NA",
+                "NA",
+                "NA",
+                "NA",
             ]
         ],
         header_rows=0,

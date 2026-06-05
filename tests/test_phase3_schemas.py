@@ -91,6 +91,17 @@ def test_entity_schemas_require_tenant_and_canonical_ids() -> None:
         assert required_fields <= required
 
 
+def test_orders_schema_allows_optional_meli_pack_id_without_requiring_it() -> None:
+    schema = _json_schema("orders.json")
+    properties = schema["properties"]
+    required = schema["required"]
+
+    assert isinstance(properties, dict)
+    assert properties["meli_pack_id"] == {"bsonType": ["string", "long", "int", "null"]}
+    assert isinstance(required, list)
+    assert "meli_pack_id" not in required
+
+
 def test_ttl_indexes_are_declared_for_ephemeral_collections() -> None:
     ttl_expectations = {
         "webhook_events.json": ("ttl_received_at_45d", "received_at", 45 * 24 * 60 * 60),

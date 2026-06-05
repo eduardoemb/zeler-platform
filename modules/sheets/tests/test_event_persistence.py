@@ -1392,6 +1392,7 @@ async def test_persists_order_for_sheetseller_order_formulas() -> None:
             "date_created": "2026-05-29T10:00:00+00:00",
             "date_closed": "2026-05-29T10:05:00+00:00",
             "total_amount": "299.90",
+            "pack_id": 998877,
             "buyer": {"id": 123},
             "shipping": {"id": 555},
             "order_items": [
@@ -1409,12 +1410,44 @@ async def test_persists_order_for_sheetseller_order_formulas() -> None:
     assert order["_id"] == "2001"
     assert order["seller_id"] == "82453304"
     assert order["buyer_id"] == "123"
+    assert order["meli_pack_id"] == "998877"
     assert order["shipment_id"] == "555"
     assert order["total_amount"] == Decimal128("299.90")
     BSON.encode(order)
     assert order["items"] == [
         {"item_id": "MLA1", "seller_sku": "sku-1", "qty": 2, "unit_price": Decimal128("149.95")}
     ]
+
+
+@pytest.mark.asyncio
+async def test_order_persistence_does_not_fallback_for_missing_pack_id() -> None:
+    db = FakeDb()
+    persistence = SheetsEventPersistence(db=db, clock=lambda: NOW)
+
+    await persistence.persist(
+        event_type="orders.updated",
+        seller_id=82453304,
+        resource={
+            "id": 2002,
+            "status": "paid",
+            "date_created": "2026-05-29T10:00:00+00:00",
+            "total_amount": "99.90",
+            "buyer": {"id": 123},
+            "shipping": {"id": 555},
+            "order_items": [
+                {
+                    "item": {"id": "MLA1", "seller_sku": "sku-1"},
+                    "quantity": 1,
+                    "unit_price": "99.90",
+                }
+            ],
+        },
+    )
+
+    order = db["orders"].documents["2002"]
+    assert "meli_pack_id" not in order
+    assert order["_id"] == "2002"
+    assert order["shipment_id"] == "555"
 
 
 @pytest.mark.asyncio

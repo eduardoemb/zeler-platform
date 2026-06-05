@@ -51,6 +51,11 @@ DASHBOARD_LEGACY_HEADERS = [
     "Comisión",
     "Costo Por Unidad",
     "Tiene Catálogo",
+    "ID Carrito (7 días)",
+    "ID Carrito (15 días)",
+    "ID Carrito (30 días)",
+    "ID Carrito (60 días)",
+    "ID Carrito (90 días)",
 ]
 
 

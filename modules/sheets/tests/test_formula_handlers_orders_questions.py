@@ -537,6 +537,60 @@ async def test_order_tables_emit_na_for_unavailable_fields_and_missing_buyers() 
 
 
 @pytest.mark.asyncio
+async def test_order_tables_render_meli_pack_id_as_id_carrito_without_fallbacks() -> None:
+    db = FakeDb()
+    db["orders"].documents = {
+        "packed-order": _order_doc(
+            "packed-order",
+            seller_id="seller-1",
+            status="paid",
+            buyer_id="buyer-1",
+            date_created="2026-05-10T10:30:00Z",
+            total_amount="100.00",
+            shipment_id="shipment-1",
+            items=[{"sku": "sku-1", "item_id": "MLA1", "title": "Packed item", "quantity": 2}],
+        )
+        | {"meli_pack_id": "123"},
+        "missing-pack-order": _order_doc(
+            "missing-pack-order",
+            seller_id="seller-1",
+            status="paid",
+            buyer_id="buyer-1",
+            date_created="2026-05-10T11:30:00Z",
+            total_amount="50.00",
+            shipment_id="shipment-2",
+            items=[
+                {"sku": "sku-2", "item_id": "MLA2", "title": "No pack item", "quantity": 1}
+            ],
+        ),
+    }
+    dispatcher = _order_question_dispatcher(db)
+
+    orders = await dispatcher.execute(
+        _context(
+            "ZELERDATA_ORDENES",
+            {"fecha_inicial": "2026-05-10", "fecha_final": "2026-05-10", "encabezados": "si"},
+        )
+    )
+    by_sku = await dispatcher.execute(
+        _context(
+            "ZELERDATA_ORDENESPORSKU",
+            {
+                "skus": [["sku-1"], ["sku-2"]],
+                "fecha_inicial": "2026-05-10",
+                "fecha_final": "2026-05-10",
+                "encabezados": "si",
+            },
+        )
+    )
+
+    assert [row[7] for row in orders.values[1:]] == ["123", "NA"]
+    assert [row[7] for row in by_sku.values[1:]] == ["123", "NA"]
+    assert [row[1] for row in orders.values[1:]] == ["packed-order", "missing-pack-order"]
+    assert [row[7] for row in orders.values[1:]] != ["packed-order", "shipment-2"]
+
+
+@pytest.mark.asyncio
 async def test_productos_sin_venta_uses_shipping_payer_and_na_for_deferred_change_date() -> None:
     db = FakeDb()
     db["sheets_item_formula_rows"].documents = {
