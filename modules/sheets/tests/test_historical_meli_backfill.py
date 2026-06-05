@@ -143,11 +143,16 @@ class FakeDb:
 
 class FakeGateway:
     def __init__(
-        self, *, return_item_detail: bool = True, unauthorized_shipment: bool = False
+        self,
+        *,
+        return_item_detail: bool = True,
+        unauthorized_shipment: bool = False,
+        shipment_costs_payload: Any | None = None,
     ) -> None:
         self.calls: list[tuple[str, str]] = []
         self.return_item_detail = return_item_detail
         self.unauthorized_shipment = unauthorized_shipment
+        self.shipment_costs_payload = shipment_costs_payload or _shipment_costs_payload()
 
     async def fetch_resource(self, *, seller_id: str, path: str) -> Any:
         self.calls.append((seller_id, path))
@@ -164,6 +169,8 @@ class FakeGateway:
             }
         if path == "/shipments/3001":
             return _shipment_detail()
+        if path == "/shipments/3001/costs":
+            return self.shipment_costs_payload
         raise AssertionError(f"Unexpected gateway path: {path}")
 
 
@@ -506,6 +513,114 @@ async def test_historical_backfill_write_persists_canonical_docs_and_read_models
 
 
 @pytest.mark.asyncio
+async def test_historical_backfill_dedupes_shipment_cost_fetches_and_persists_projection() -> None:
+    class SharedShipmentGateway:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, str]] = []
+
+        async def fetch_resource(self, *, seller_id: str, path: str) -> Any:
+            self.calls.append((seller_id, path))
+            if path.startswith("/orders/search?"):
+                return {
+                    "results": [{"id": 2001}, {"id": 2002}],
+                    "paging": {"total": 2, "limit": 50, "offset": 0},
+                }
+            if path == "/items?ids=MLA1,MLA2":
+                mla1 = _item_detail()
+                mla2 = {**_item_detail(), "id": "MLA2"}
+                return [{"code": 200, "body": mla1}, {"code": 200, "body": mla2}]
+            if path == "/shipments/3001":
+                return _shipment_detail()
+            if path == "/shipments/3001/costs":
+                return _shipment_costs_payload()
+            raise AssertionError(f"Unexpected gateway path: {path}")
+
+    class SharedShipmentOrderDetailGateway:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, str]] = []
+
+        async def fetch_resource(self, *, seller_id: str, path: str) -> Any:
+            self.calls.append((seller_id, path))
+            if path == "/orders/2001":
+                return _order_detail()
+            if path == "/orders/2002":
+                order = _order_detail()
+                order["id"] = 2002
+                order["order_items"] = [
+                    {
+                        "item": {"id": "MLA2", "seller_sku": "sku-2"},
+                        "quantity": 1,
+                        "unit_price": "49.95",
+                    }
+                ]
+                return order
+            raise AssertionError(f"Unexpected order detail gateway path: {path}")
+
+    db = FakeDb()
+    gateway = SharedShipmentGateway()
+
+    summary = await run_historical_meli_backfill(
+        db=db,
+        gateway=gateway,
+        order_detail_gateway=SharedShipmentOrderDetailGateway(),
+        seller_id="82453304",
+        date_from="2026-05-01",
+        date_to="2026-05-01",
+        dry_run=False,
+        approved_runtime=True,
+        max_orders=2,
+    )
+
+    gateway_paths = [path for _, path in gateway.calls]
+    assert gateway_paths.count("/shipments/3001") == 1
+    assert gateway_paths.count("/shipments/3001/costs") == 1
+    assert summary.shipment_costs_requested == 1
+    assert summary.shipment_real_shipping_costs_enriched == 1
+    assert summary.shipment_real_shipping_costs_unavailable == 0
+
+    shipment = db["shipments"].documents["3001"]
+    real_cost = shipment["real_shipping_cost"]
+    assert real_cost["source"] == "/shipments/{shipment_id}/costs"
+    assert real_cost["seller_cost"].to_decimal() == Decimal128("24.50").to_decimal()
+    assert real_cost["receiver_cost"].to_decimal() == Decimal128("100.00").to_decimal()
+    assert real_cost["currency_id"] == "MXN"
+    assert real_cost["matched_sender_id"] == "82453304"
+    serialized_shipment = repr(shipment)
+    for forbidden in ("senders", "buyer", "address", "token", "raw_payload"):
+        assert forbidden not in serialized_shipment
+
+
+@pytest.mark.asyncio
+async def test_historical_backfill_fails_closed_when_shipment_costs_are_unmatched() -> None:
+    db = FakeDb()
+    gateway = FakeGateway(
+        shipment_costs_payload={
+            "currency_id": "MXN",
+            "senders": [{"sender_id": "999999", "cost": "24.50"}],
+            "receiver": {"cost": "100.00"},
+        }
+    )
+
+    summary = await run_historical_meli_backfill(
+        db=db,
+        gateway=gateway,
+        order_detail_gateway=FakeOrderDetailGateway(),
+        seller_id="82453304",
+        date_from="2026-05-01",
+        date_to="2026-05-01",
+        dry_run=False,
+        approved_runtime=True,
+        max_orders=1,
+    )
+
+    assert ("82453304", "/shipments/3001/costs") in gateway.calls
+    assert summary.shipment_costs_requested == 1
+    assert summary.shipment_real_shipping_costs_enriched == 0
+    assert summary.shipment_real_shipping_costs_unavailable == 1
+    assert "real_shipping_cost" not in db["shipments"].documents["3001"]
+
+
+@pytest.mark.asyncio
 async def test_buyer_address_pii_write_persists_snapshot_and_keeps_output_sanitized() -> None:
     db = FakeDb()
 
@@ -710,4 +825,18 @@ def _shipment_detail() -> dict[str, Any]:
             "state": {"name": "SENTINEL STATE"},
             "country": {"name": "SENTINEL COUNTRY"},
         },
+    }
+
+
+def _shipment_costs_payload() -> dict[str, Any]:
+    return {
+        "currency_id": "MXN",
+        "senders": [
+            {"sender_id": "111", "cost": "9.99"},
+            {"sender_id": "82453304", "cost": "24.50", "currency_id": "MXN"},
+        ],
+        "receiver": {"cost": "100.00", "address": {"raw": "must-not-persist"}},
+        "buyer": {"name": "must-not-persist"},
+        "token": "must-not-persist",
+        "raw_payload": {"must": "not persist"},
     }

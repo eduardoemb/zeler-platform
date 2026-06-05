@@ -1764,6 +1764,52 @@ async def test_persists_shipment_for_live_shipping_notifications() -> None:
 
 
 @pytest.mark.asyncio
+async def test_persists_shipment_real_shipping_cost_projection_only() -> None:
+    db = FakeDb()
+    persistence = SheetsEventPersistence(db=db, clock=lambda: NOW)
+
+    await persistence.persist(
+        event_type="shipments.updated",
+        seller_id=82453304,
+        resource={
+            "id": 3001,
+            "order_id": 2001,
+            "status": "ready_to_ship",
+            "logistic_type": "fulfillment",
+            "date_created": "2026-05-29T10:00:00+00:00",
+            "last_updated": "2026-05-30T11:00:00+00:00",
+            "real_shipping_cost": {
+                "source": "/shipments/{shipment_id}/costs",
+                "seller_cost": "24.50",
+                "receiver_cost": "100.00",
+                "currency_id": "MXN",
+                "matched_sender_id": "82453304",
+                "synced_at": NOW,
+            },
+            "senders": [{"sender_id": "82453304", "cost": "24.50"}],
+            "receiver": {"cost": "100.00", "address": "must-not-persist"},
+            "buyer": {"name": "must-not-persist"},
+            "token": "must-not-persist",
+            "raw_payload": {"must": "not persist"},
+        },
+    )
+
+    shipment = db["shipments"].documents["3001"]
+    assert shipment["real_shipping_cost"] == {
+        "source": "/shipments/{shipment_id}/costs",
+        "seller_cost": Decimal128("24.50"),
+        "receiver_cost": Decimal128("100.00"),
+        "currency_id": "MXN",
+        "matched_sender_id": "82453304",
+        "synced_at": NOW,
+    }
+    serialized_shipment = repr(shipment)
+    for forbidden in ("senders", "buyer", "address", "token", "raw_payload"):
+        assert forbidden not in serialized_shipment
+    BSON.encode(shipment)
+
+
+@pytest.mark.asyncio
 async def test_persists_shipment_receiver_address_from_allowlisted_snapshot_only() -> None:
     db = FakeDb()
     persistence = SheetsEventPersistence(db=db, clock=lambda: NOW)
