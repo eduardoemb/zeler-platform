@@ -2821,6 +2821,76 @@ async def test_shipment_real_shipping_cost_enrichment_is_bounded_and_fails_close
 
 
 @pytest.mark.asyncio
+async def test_shipment_real_cost_fails_closed_for_out_of_range_seller_cost() -> None:
+    db = FakeDb([], shipments=[_shipment_doc("3001")])
+    gateway = FakeItemGateway(
+        {
+            "/shipments/3001/costs": {
+                "currency_id": "MXN",
+                "senders": [{"sender_id": "82453304", "cost": "1E+10000"}],
+                "receiver": {"cost": "100.00"},
+            }
+        }
+    )
+
+    summary = await run_shipment_real_shipping_cost_enrichment(
+        db=db, gateway=gateway, seller_id="82453304", dry_run=False, limit=25
+    )
+
+    assert summary == ShipmentRealShippingCostEnrichmentSummary(
+        dry_run=False,
+        limit=25,
+        shipments_read=1,
+        shipments_with_id=1,
+        shipment_costs_requested=1,
+        shipment_real_shipping_costs_enriched=0,
+        shipment_real_shipping_costs_unavailable=1,
+        shipments_planned=0,
+        shipments_updated=0,
+    )
+    assert gateway.calls == [("82453304", "/shipments/3001/costs")]
+    assert db["shipments"].update_calls == []
+    assert "real_shipping_cost" not in db["shipments"].documents["3001"]
+    assert "3001" not in str(summary.as_dict())
+    assert "82453304" not in str(summary.as_dict())
+
+
+@pytest.mark.asyncio
+async def test_shipment_real_cost_fails_closed_for_out_of_range_receiver_cost() -> None:
+    db = FakeDb([], shipments=[_shipment_doc("3001")])
+    gateway = FakeItemGateway(
+        {
+            "/shipments/3001/costs": {
+                "currency_id": "MXN",
+                "senders": [{"sender_id": "82453304", "cost": "24.50"}],
+                "receiver": {"cost": "1E+10000"},
+            }
+        }
+    )
+
+    summary = await run_shipment_real_shipping_cost_enrichment(
+        db=db, gateway=gateway, seller_id="82453304", dry_run=False, limit=25
+    )
+
+    assert summary == ShipmentRealShippingCostEnrichmentSummary(
+        dry_run=False,
+        limit=25,
+        shipments_read=1,
+        shipments_with_id=1,
+        shipment_costs_requested=1,
+        shipment_real_shipping_costs_enriched=0,
+        shipment_real_shipping_costs_unavailable=1,
+        shipments_planned=0,
+        shipments_updated=0,
+    )
+    assert gateway.calls == [("82453304", "/shipments/3001/costs")]
+    assert db["shipments"].update_calls == []
+    assert "real_shipping_cost" not in db["shipments"].documents["3001"]
+    assert "3001" not in str(summary.as_dict())
+    assert "82453304" not in str(summary.as_dict())
+
+
+@pytest.mark.asyncio
 async def test_order_line_identity_dry_run_reports_sanitized_counts_without_writes() -> None:
     db = FakeDb(
         [],

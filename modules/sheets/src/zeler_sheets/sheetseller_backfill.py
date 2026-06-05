@@ -2466,13 +2466,19 @@ def _schema_safe_shipment_real_shipping_cost_projection(
     if value is None:
         return None
     raw_projection = value.model_dump(mode="python", exclude_none=True)
+    seller_cost = _decimal128_or_none(raw_projection["seller_cost"])
+    if seller_cost is None:
+        return None
     projection: dict[str, Any] = {
         "source": raw_projection["source"],
-        "seller_cost": Decimal128(raw_projection["seller_cost"]),
+        "seller_cost": seller_cost,
         "synced_at": raw_projection["synced_at"],
     }
     if raw_projection.get("receiver_cost") is not None:
-        projection["receiver_cost"] = Decimal128(raw_projection["receiver_cost"])
+        receiver_cost = _decimal128_or_none(raw_projection["receiver_cost"])
+        if receiver_cost is None:
+            return None
+        projection["receiver_cost"] = receiver_cost
     for key in ("currency_id", "matched_sender_id"):
         if raw_projection.get(key) is not None:
             projection[key] = raw_projection[key]
