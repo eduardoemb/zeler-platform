@@ -33,7 +33,6 @@ UNSUPPORTED_FORMULA_REASONS: Mapping[str, str] = {
     "ZELERDATA_TIEMPOACTIVA": "Active-time history read model is not available in zeler-platform yet.",
     "ZELERDATA_CATALOGOSINVINCULAR": "Recommended catalog-linking read model is not available in zeler-platform yet.",
     "ZELERDATA_CATALOGOBUYBOX": "Catalog/buybox competition read model is not available in zeler-platform yet.",
-    "ZELERDATA_COMISION": "Commission and fee read model is not available in zeler-platform yet.",
     "ZELERDATA_DEVOLUCIONES": "Returns/claims read model is not available in zeler-platform yet.",
     "ZELERDATA_COMPETENCIA": "Competition snapshot read model is not available in zeler-platform yet.",
     "ZELERDATA_CATALOGOTIEMPO": "Catalog winning-time history read model is not available in zeler-platform yet.",
