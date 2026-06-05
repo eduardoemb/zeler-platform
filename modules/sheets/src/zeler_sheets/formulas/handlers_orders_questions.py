@@ -167,6 +167,11 @@ class OrderQuestionFormulaHandlers:
             orders=filtered_orders,
             enabled=buyer_selection.include_buyer_columns,
         )
+        real_shipping_costs = await _real_shipping_costs_for_orders(
+            repository=self._repository,
+            seller_id=context.seller_id,
+            orders=filtered_orders,
+        )
         headers = _order_line_headers(include_buyer_columns=buyer_selection.include_buyer_columns)
         values: list[list[Any]] = _header_row(context.args.get("encabezados"), headers)
         header_rows = len(values)
@@ -176,6 +181,7 @@ class OrderQuestionFormulaHandlers:
                 line,
                 item_rows=item_rows,
                 receiver_addresses=receiver_addresses,
+                real_shipping_costs=real_shipping_costs,
                 timezone=timezone,
                 include_buyer_columns=buyer_selection.include_buyer_columns,
             )
@@ -298,6 +304,11 @@ class OrderQuestionFormulaHandlers:
             orders=filtered_orders,
             enabled=buyer_selection.include_buyer_columns,
         )
+        real_shipping_costs = await _real_shipping_costs_for_orders(
+            repository=self._repository,
+            seller_id=context.seller_id,
+            orders=[order for order, _line in filtered_lines],
+        )
         headers = _order_line_headers(include_buyer_columns=buyer_selection.include_buyer_columns)
         values: list[list[Any]] = _header_row(context.args.get("encabezados"), headers)
         header_rows = len(values)
@@ -308,6 +319,7 @@ class OrderQuestionFormulaHandlers:
                     line,
                     item_rows=item_rows,
                     receiver_addresses=receiver_addresses,
+                    real_shipping_costs=real_shipping_costs,
                     timezone=timezone,
                     include_buyer_columns=buyer_selection.include_buyer_columns,
                 )
@@ -1062,6 +1074,24 @@ async def _item_formula_rows_for_pairs(
     }
 
 
+async def _real_shipping_costs_for_orders(
+    *,
+    repository: FormulaReadModelRepository,
+    seller_id: str,
+    orders: Sequence[Mapping[str, Any]],
+) -> dict[str, Decimal]:
+    shipment_ids = list(
+        dict.fromkeys(shipment_id for order in orders if (shipment_id := _shipment_id(order)))
+    )
+    if not shipment_ids:
+        return {}
+    return await repository.find_shipment_real_shipping_costs(
+        seller_id=seller_id,
+        shipment_ids=shipment_ids,
+        limit=max(1000, len(shipment_ids)),
+    )
+
+
 async def _receiver_addresses_for_orders(
     *,
     repository: FormulaReadModelRepository,
@@ -1166,6 +1196,7 @@ def _order_line_row(
     *,
     item_rows: Mapping[tuple[str, str], Mapping[str, Any]],
     receiver_addresses: Mapping[str, Mapping[str, Any]],
+    real_shipping_costs: Mapping[str, Any],
     timezone: tzinfo,
     include_buyer_columns: bool,
 ) -> list[Any]:
@@ -1182,7 +1213,7 @@ def _order_line_row(
         NA_VALUE,
         NA_VALUE,
         _listing_fixed_fee(row),
-        NA_VALUE,
+        _shipment_real_shipping_cost_value(order, real_shipping_costs),
         order.get("status") or "",
     ]
     if include_buyer_columns:
@@ -1393,6 +1424,18 @@ def _receiver_address_for_order(
     if not shipment_id:
         return {}
     return receiver_addresses.get(shipment_id, {})
+
+
+def _shipment_real_shipping_cost_value(
+    order: Mapping[str, Any], real_shipping_costs: Mapping[str, Any]
+) -> Any:
+    shipment_id = _shipment_id(order)
+    if not shipment_id:
+        return NA_VALUE
+    cost = _optional_non_negative_decimal(real_shipping_costs.get(shipment_id))
+    if cost is None:
+        return NA_VALUE
+    return _sheet_number(cost)
 
 
 def _address_has_source_values(address: Mapping[str, Any]) -> bool:
@@ -1650,6 +1693,18 @@ def _decimal(value: Any) -> Decimal:
         return Decimal(str(value or 0))
     except (InvalidOperation, ValueError):
         return Decimal("0")
+
+
+def _optional_non_negative_decimal(value: Any) -> Decimal | None:
+    if value is None or isinstance(value, (bool, dict, list, tuple, set)):
+        return None
+    try:
+        parsed = value if isinstance(value, Decimal) else Decimal(str(value))
+    except (InvalidOperation, ValueError):
+        return None
+    if not parsed.is_finite() or parsed < 0:
+        return None
+    return parsed
 
 
 def _sheet_number(value: Decimal) -> int | float:
