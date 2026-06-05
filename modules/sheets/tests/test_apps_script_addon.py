@@ -145,6 +145,8 @@ def test_public_settings_sidebar_guides_marketplace_users_without_endpoint_editi
 
     assert "Install ZelerData from Google Workspace Marketplace" in config_source
     assert "https://app.zeler.ai/sheets/config" in config_source
+    assert 'ZELERDATA_DEFAULT_API_BASE_URL = "https://sheets.zeler.ai"' in config_source
+    assert "https://api.zeler.app" not in config_source
     assert "show-once extension token" in config_source
     assert "Save token" in config_source
     assert "Token saved. You can now use ZELERDATA_* formulas." in config_source

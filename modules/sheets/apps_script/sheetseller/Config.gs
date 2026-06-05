@@ -1,6 +1,6 @@
 var ZELERDATA_EXTENSION_TOKEN_KEY = "ZELERDATA_EXTENSION_TOKEN";
 var ZELERDATA_API_BASE_URL_KEY = "ZELERDATA_API_BASE_URL";
-var ZELERDATA_DEFAULT_API_BASE_URL = "https://api.zeler.app";
+var ZELERDATA_DEFAULT_API_BASE_URL = "https://sheets.zeler.ai";
 var ZELERDATA_TOKEN_CONFIG_URL = "https://app.zeler.ai/sheets/config";
 
 function onInstall(e) {
