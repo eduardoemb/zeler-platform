@@ -1471,6 +1471,7 @@ async def test_item_detail_enrichment_fetches_canonical_ids_and_writes_formula_f
         "catalog_product_id": "MLA-CATALOG-1",
         "inventory_id": "INV-ITEM-1",
         "listing_type_id": "gold_special",
+        "listing_fee_projection": None,
         "seller_shipping_cost": None,
         "billable_weight": None,
         "tags": [],

@@ -200,6 +200,78 @@ class ListingPriceFixedFeeProjection(UtcDatetimeMixin):
         return self
 
 
+class ListingFeeProjection(UtcDatetimeMixin):
+    model_config = ConfigDict(arbitrary_types_allowed=True, extra="forbid")
+
+    source: Literal["/sites/{site}/listing_prices"]
+    site_id: str
+    currency_id: str
+    price: Decimal
+    listing_type_id: str
+    category_id: str
+    sale_fee_amount: Decimal
+    percentage_fee: Decimal
+    gross_amount: Decimal | None = None
+    fixed_fee: Decimal | None = None
+    meli_percentage_fee: Decimal | None = None
+    financing_add_on_fee: Decimal | None = None
+    synced_at: datetime
+
+    @field_validator(
+        "price",
+        "sale_fee_amount",
+        "percentage_fee",
+        "gross_amount",
+        "fixed_fee",
+        "meli_percentage_fee",
+        "financing_add_on_fee",
+        mode="before",
+    )
+    @classmethod
+    def _coerce_finite_non_negative_decimal(cls, value: object) -> Decimal | None:
+        msg = "listing fee numeric fields must be finite non-negative numbers"
+        if value is None:
+            return None
+        if isinstance(value, (bool, dict, list)):
+            raise ValueError(msg)
+        try:
+            parsed = value if isinstance(value, Decimal) else Decimal(str(value))
+        except (InvalidOperation, ValueError) as exc:
+            raise ValueError(msg) from exc
+        if not parsed.is_finite() or parsed < 0:
+            raise ValueError(msg)
+        return parsed
+
+    @field_validator("site_id", "currency_id", mode="before")
+    @classmethod
+    def _coerce_uppercase_id(cls, value: object) -> str:
+        if value is None or isinstance(value, (dict, list)):
+            msg = "listing fee ids must be non-blank"
+            raise ValueError(msg)
+        normalized = _coerce_str(value).strip().upper()
+        if not normalized:
+            msg = "listing fee ids must be non-blank"
+            raise ValueError(msg)
+        return normalized
+
+    @field_validator("listing_type_id", "category_id", mode="before")
+    @classmethod
+    def _coerce_required_context_string(cls, value: object) -> str:
+        if value is None or isinstance(value, (dict, list)):
+            msg = "listing fee context fields must be non-blank"
+            raise ValueError(msg)
+        normalized = _coerce_str(value).strip()
+        if not normalized:
+            msg = "listing fee context fields must be non-blank"
+            raise ValueError(msg)
+        return normalized
+
+    @field_validator("synced_at", mode="before")
+    @classmethod
+    def _listing_fee_synced_at_must_be_aware(cls, value: object) -> object:
+        return UtcDatetimeMixin._datetime_must_be_aware(value)
+
+
 class Item(UtcDatetimeMixin, PriceMixin, SellerScopedDocument):
     title: str
     price: Decimal
@@ -223,6 +295,7 @@ class Item(UtcDatetimeMixin, PriceMixin, SellerScopedDocument):
     health: float | None = None
     current_promotion: PromoPriceProjection | None = None
     listing_price_fixed_fee: ListingPriceFixedFeeProjection | None = None
+    listing_fee_projection: ListingFeeProjection | None = None
     last_meli_sync_at: datetime
     status_observed_at: datetime | None = None
     date_created: datetime
