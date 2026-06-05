@@ -272,9 +272,6 @@
           "null"
         ]
       },
-      "tags": {
-        "bsonType": "array"
-      },
       "shipping": {
         "bsonType": [
           "object",
@@ -289,6 +286,9 @@
       },
       "status": {
         "bsonType": "string"
+      },
+      "tags": {
+        "bsonType": "array"
       },
       "thumbnail": {
         "bsonType": [
