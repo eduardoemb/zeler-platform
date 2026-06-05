@@ -2651,6 +2651,26 @@ async def test_item_detail_enrichment_writes_mongo_schema_safe_date_and_price_ty
 
 
 @pytest.mark.asyncio
+async def test_item_detail_enrichment_dry_run_accepts_naive_existing_status_observed_at() -> None:
+    canonical = _item_doc("MLA1")
+    canonical["status_observed_at"] = datetime(2026, 5, 31, 10, 30)
+    db = FakeDb([canonical])
+    gateway = FakeItemGateway({"/items?ids=MLA1": [{"code": 200, "body": _item_detail("MLA1")}]})
+
+    summary = await run_item_detail_enrichment(
+        db=db,
+        gateway=gateway,
+        seller_id="82453304",
+        dry_run=True,
+    )
+
+    assert summary.items_validated == 1
+    assert summary.items_planned == 1
+    assert summary.items_updated == 0
+    assert db["items"].update_calls == []
+
+
+@pytest.mark.asyncio
 async def test_item_detail_enrichment_dry_run_reports_plan_without_writes() -> None:
     canonical = _item_doc("MLA1")
     canonical["price"] = Decimal("123.45")
