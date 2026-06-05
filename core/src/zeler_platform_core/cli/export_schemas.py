@@ -12,6 +12,7 @@ SELLER = {"seller_id": {"bsonType": ["string", "long", "int"]}}
 DATE = {"bsonType": "date"}
 NULLABLE_DATE = {"bsonType": ["date", "null"]}
 MONEY = {"bsonType": ["decimal", "double", "int", "long"]}
+NULLABLE_MONEY = {"bsonType": ["decimal", "double", "int", "long", "null"]}
 PROMO_PRICE_PROJECTION = {
     "additionalProperties": False,
     "bsonType": ["object", "null"],
@@ -61,6 +62,36 @@ LISTING_PRICE_FIXED_FEE_PROJECTION = {
         "currency_id": {"bsonType": "string"},
         "synced_at": DATE,
         "params": LISTING_PRICE_FIXED_FEE_PARAMS,
+    },
+}
+LISTING_FEE_PROJECTION = {
+    "additionalProperties": False,
+    "bsonType": ["object", "null"],
+    "required": [
+        "source",
+        "site_id",
+        "currency_id",
+        "price",
+        "listing_type_id",
+        "category_id",
+        "sale_fee_amount",
+        "percentage_fee",
+        "synced_at",
+    ],
+    "properties": {
+        "source": {"enum": ["/sites/{site}/listing_prices"]},
+        "site_id": {"bsonType": "string"},
+        "currency_id": {"bsonType": "string"},
+        "price": MONEY,
+        "listing_type_id": {"bsonType": "string"},
+        "category_id": {"bsonType": "string"},
+        "sale_fee_amount": MONEY,
+        "percentage_fee": MONEY,
+        "gross_amount": NULLABLE_MONEY,
+        "fixed_fee": NULLABLE_MONEY,
+        "meli_percentage_fee": NULLABLE_MONEY,
+        "financing_add_on_fee": NULLABLE_MONEY,
+        "synced_at": DATE,
     },
 }
 RECEIVER_ADDRESS_SNAPSHOT = {
@@ -193,6 +224,7 @@ ENTITY_SCHEMAS: dict[str, dict[str, Any]] = {
             "site_id": {"bsonType": ["string", "null"]},
             "current_promotion": PROMO_PRICE_PROJECTION,
             "listing_price_fixed_fee": LISTING_PRICE_FIXED_FEE_PROJECTION,
+            "listing_fee_projection": LISTING_FEE_PROJECTION,
             "catalog_product_id": {"bsonType": ["string", "null"]},
             "variations": {"bsonType": "array"},
             "attributes": {"bsonType": "array"},

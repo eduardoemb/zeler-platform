@@ -147,6 +147,106 @@
       "last_updated": {
         "bsonType": "date"
       },
+      "listing_fee_projection": {
+        "additionalProperties": false,
+        "bsonType": [
+          "object",
+          "null"
+        ],
+        "properties": {
+          "category_id": {
+            "bsonType": "string"
+          },
+          "currency_id": {
+            "bsonType": "string"
+          },
+          "financing_add_on_fee": {
+            "bsonType": [
+              "decimal",
+              "double",
+              "int",
+              "long",
+              "null"
+            ]
+          },
+          "fixed_fee": {
+            "bsonType": [
+              "decimal",
+              "double",
+              "int",
+              "long",
+              "null"
+            ]
+          },
+          "gross_amount": {
+            "bsonType": [
+              "decimal",
+              "double",
+              "int",
+              "long",
+              "null"
+            ]
+          },
+          "listing_type_id": {
+            "bsonType": "string"
+          },
+          "meli_percentage_fee": {
+            "bsonType": [
+              "decimal",
+              "double",
+              "int",
+              "long",
+              "null"
+            ]
+          },
+          "percentage_fee": {
+            "bsonType": [
+              "decimal",
+              "double",
+              "int",
+              "long"
+            ]
+          },
+          "price": {
+            "bsonType": [
+              "decimal",
+              "double",
+              "int",
+              "long"
+            ]
+          },
+          "sale_fee_amount": {
+            "bsonType": [
+              "decimal",
+              "double",
+              "int",
+              "long"
+            ]
+          },
+          "site_id": {
+            "bsonType": "string"
+          },
+          "source": {
+            "enum": [
+              "/sites/{site}/listing_prices"
+            ]
+          },
+          "synced_at": {
+            "bsonType": "date"
+          }
+        },
+        "required": [
+          "source",
+          "site_id",
+          "currency_id",
+          "price",
+          "listing_type_id",
+          "category_id",
+          "sale_fee_amount",
+          "percentage_fee",
+          "synced_at"
+        ]
+      },
       "listing_price_fixed_fee": {
         "additionalProperties": false,
         "bsonType": [

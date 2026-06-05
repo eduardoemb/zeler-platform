@@ -30,6 +30,40 @@
           "base_price": {"bsonType": ["int", "long", "double", "decimal", "null"]},
           "catalog_product_id": {"bsonType": ["string", "null"]},
           "listing_type_id": {"bsonType": ["string", "null"]},
+          "listing_fee_projection": {
+            "bsonType": ["object", "null"],
+            "additionalProperties": false,
+            "required": [
+              "source",
+              "site_id",
+              "currency_id",
+              "price",
+              "listing_type_id",
+              "category_id",
+              "sale_fee_amount",
+              "percentage_fee",
+              "synced_at"
+            ],
+            "properties": {
+              "source": {"enum": ["/sites/{site}/listing_prices"]},
+              "site_id": {"bsonType": "string"},
+              "currency_id": {"bsonType": "string"},
+              "price": {"bsonType": ["decimal", "double", "int", "long"]},
+              "listing_type_id": {"bsonType": "string"},
+              "category_id": {"bsonType": "string"},
+              "sale_fee_amount": {"bsonType": ["decimal", "double", "int", "long"]},
+              "percentage_fee": {"bsonType": ["decimal", "double", "int", "long"]},
+              "gross_amount": {"bsonType": ["decimal", "double", "int", "long", "null"]},
+              "fixed_fee": {"bsonType": ["decimal", "double", "int", "long", "null"]},
+              "meli_percentage_fee": {
+                "bsonType": ["decimal", "double", "int", "long", "null"]
+              },
+              "financing_add_on_fee": {
+                "bsonType": ["decimal", "double", "int", "long", "null"]
+              },
+              "synced_at": {"bsonType": "date"}
+            }
+          },
           "category_id": {"bsonType": ["string", "null"]},
           "currency_id": {"bsonType": ["string", "null"]},
           "site_id": {"bsonType": ["string", "null"]},

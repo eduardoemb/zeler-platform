@@ -2,12 +2,50 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any
 
 from infra.mongo.validator_contract import validate_document_against_schema
 
 from zeler_platform_core.cli.export_schemas import ENTITY_SCHEMAS, _validator_payload
 
 ROOT = Path(__file__).resolve().parents[1]
+
+LISTING_FEE_PROJECTION_REQUIRED_FIELDS = [
+    "source",
+    "site_id",
+    "currency_id",
+    "price",
+    "listing_type_id",
+    "category_id",
+    "sale_fee_amount",
+    "percentage_fee",
+    "synced_at",
+]
+LISTING_FEE_PROJECTION_FIELDS = [
+    *LISTING_FEE_PROJECTION_REQUIRED_FIELDS,
+    "gross_amount",
+    "fixed_fee",
+    "meli_percentage_fee",
+    "financing_add_on_fee",
+]
+
+
+def assert_bounded_listing_fee_projection_schema(projection: dict[str, Any]) -> None:
+    properties = projection["properties"]
+
+    assert projection["additionalProperties"] is False
+    assert projection["required"] == LISTING_FEE_PROJECTION_REQUIRED_FIELDS
+    assert sorted(properties) == sorted(LISTING_FEE_PROJECTION_FIELDS)
+    assert properties["source"] == {"enum": ["/sites/{site}/listing_prices"]}
+    assert properties["site_id"] == {"bsonType": "string"}
+    assert properties["currency_id"] == {"bsonType": "string"}
+    assert properties["price"] == {"bsonType": ["decimal", "double", "int", "long"]}
+    assert properties["sale_fee_amount"] == {"bsonType": ["decimal", "double", "int", "long"]}
+    assert properties["percentage_fee"] == {"bsonType": ["decimal", "double", "int", "long"]}
+    assert "raw_payload" not in properties
+    assert "sale_fee_details" not in properties
+    assert "sale_fee" not in properties
+    assert "details" not in properties
 
 
 def test_sheets_exports_validator_rejects_missing_required_fields() -> None:
@@ -358,6 +396,13 @@ def test_sheets_item_formula_rows_schema_supports_bounded_listing_price_fixed_fe
     assert "buyer" not in projection["properties"]
 
 
+def test_sheets_item_formula_rows_schema_supports_bounded_listing_fee_projection_only() -> None:
+    validator = json.loads((ROOT / "infra/mongo/schemas/sheets_item_formula_rows.json").read_text())
+    current_properties = validator["$jsonSchema"]["properties"]["current"]["properties"]
+
+    assert_bounded_listing_fee_projection_schema(current_properties["listing_fee_projection"])
+
+
 def test_items_schema_supports_v2_formula_fields_without_raw_payload_drift() -> None:
     validator = json.loads((ROOT / "infra/mongo/schemas/items.json").read_text())
     schema = validator["$jsonSchema"]
@@ -382,6 +427,7 @@ def test_items_schema_supports_v2_formula_fields_without_raw_payload_drift() -> 
     assert fixed_fee["required"] == ["source", "fixed_fee", "currency_id", "synced_at", "params"]
     assert fixed_fee["properties"]["source"] == {"enum": ["/sites/{site}/listing_prices"]}
     assert fixed_fee["properties"]["params"]["additionalProperties"] is False
+    assert_bounded_listing_fee_projection_schema(schema["properties"]["listing_fee_projection"])
     current_promotion = schema["properties"]["current_promotion"]
     assert current_promotion["additionalProperties"] is False
     assert current_promotion["required"] == [
