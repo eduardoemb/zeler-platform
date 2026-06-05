@@ -27,7 +27,7 @@ class FakeCollection:
 
     async def update_one(
         self, filter_spec: dict[str, Any], update_spec: dict[str, Any], *, upsert: bool = False
-    ) -> None:
+    ) -> FakeWriteResult:
         doc_id = str(filter_spec["_id"])
         existing = dict(self.documents.get(doc_id, {}))
         if existing or upsert:
@@ -37,13 +37,26 @@ class FakeCollection:
                 **update_spec.get("$set", {}),
                 "_id": doc_id,
             }
+            return FakeWriteResult(
+                upserted_id=doc_id if upsert and not existing else None,
+                matched_count=1 if existing else 0,
+                modified_count=1 if existing else 0,
+            )
+        return FakeWriteResult(matched_count=0, modified_count=0)
 
     async def replace_one(
         self, filter_spec: dict[str, Any], replacement: dict[str, Any], *, upsert: bool = False
-    ) -> None:
+    ) -> FakeWriteResult:
         doc_id = str(filter_spec["_id"])
-        if doc_id in self.documents or upsert:
+        existing = doc_id in self.documents
+        if existing or upsert:
             self.documents[doc_id] = dict(replacement)
+            return FakeWriteResult(
+                upserted_id=doc_id if upsert and not existing else None,
+                matched_count=1 if existing else 0,
+                modified_count=1 if existing else 0,
+            )
+        return FakeWriteResult(matched_count=0, modified_count=0)
 
     def find(self, query: dict[str, Any]) -> FakeCursor:
         return FakeCursor(
@@ -63,6 +76,15 @@ class FakeCursor:
         if length is None:
             return list(self._documents)
         return list(self._documents[:length])
+
+
+class FakeWriteResult:
+    def __init__(
+        self, *, matched_count: int = 1, modified_count: int = 1, upserted_id: str | None = None
+    ) -> None:
+        self.matched_count = matched_count
+        self.modified_count = modified_count
+        self.upserted_id = upserted_id
 
 
 class FakeDb:
@@ -86,7 +108,7 @@ class FakeDb:
         }
 
     def __getitem__(self, name: str) -> FakeCollection:
-        return self.collections[name]
+        return self.collections.setdefault(name, FakeCollection())
 
 
 class FakeGatewayClient:

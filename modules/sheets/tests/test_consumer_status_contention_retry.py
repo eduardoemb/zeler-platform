@@ -9,6 +9,7 @@ from typing import Any
 
 import pytest
 
+import zeler_sheets
 from zeler_sheets.event_persistence import StatusObservationContentionError
 
 
@@ -16,11 +17,16 @@ from zeler_sheets.event_persistence import StatusObservationContentionError
 def consumer_module(monkeypatch: pytest.MonkeyPatch) -> Iterator[Any]:
     _install_optional_runtime_stubs(monkeypatch)
     previous_consumer_module = sys.modules.pop("zeler_sheets.consumer", None)
+    previous_package_consumer = getattr(zeler_sheets, "consumer", None)
     module = importlib.import_module("zeler_sheets.consumer")
     yield module
     sys.modules.pop("zeler_sheets.consumer", None)
     if previous_consumer_module is not None:
         sys.modules["zeler_sheets.consumer"] = previous_consumer_module
+    if previous_package_consumer is not None:
+        zeler_sheets.consumer = previous_package_consumer
+    elif hasattr(zeler_sheets, "consumer"):
+        delattr(zeler_sheets, "consumer")
 
 
 def _install_optional_runtime_stubs(monkeypatch: pytest.MonkeyPatch) -> None:
