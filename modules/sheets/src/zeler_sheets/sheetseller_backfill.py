@@ -156,6 +156,9 @@ class ItemDetailEnrichmentSummary:
     sale_price_requested: int = 0
     sale_price_promotions_enriched: int = 0
     sale_price_promotions_unavailable: int = 0
+    listing_prices_requested: int = 0
+    listing_fee_projections_enriched: int = 0
+    listing_fee_projections_unavailable: int = 0
     listing_fixed_fee_requested: int = 0
     listing_fixed_fee_enriched: int = 0
     listing_fixed_fee_unavailable: int = 0
@@ -380,10 +383,11 @@ async def run_item_detail_enrichment(
         raise ValueError(msg)
 
     existing_items = await _load_seller_items(db=db, seller_id=seller_id)
+    site_id = await _load_seller_site_id(db=db, seller_id=seller_id)
     existing_by_id = {_item_id(item): item for item in existing_items}
     item_ids = sorted(existing_by_id)
     synced_at = datetime.now(UTC)
-    write_plans: list[tuple[dict[str, Any], dict[str, Any], bool, bool]] = []
+    write_plans: list[tuple[dict[str, Any], dict[str, Any], bool, bool, bool]] = []
     batches_fetched = 0
     details_returned = 0
     items_validated = 0
@@ -394,6 +398,9 @@ async def run_item_detail_enrichment(
     sale_price_requested = 0
     sale_price_promotions_enriched = 0
     sale_price_promotions_unavailable = 0
+    listing_prices_requested = 0
+    listing_fee_projections_enriched = 0
+    listing_fee_projections_unavailable = 0
     listing_fixed_fee_requested = 0
     listing_fixed_fee_enriched = 0
     listing_fixed_fee_unavailable = 0
@@ -417,6 +424,7 @@ async def run_item_detail_enrichment(
             detail = dict(by_id[item_id])
             clear_current_promotion = False
             clear_listing_fixed_fee = False
+            clear_listing_fee_projection = False
             seller_shipping_cost = await _resolve_seller_shipping_cost(
                 gateway=gateway,
                 seller_id=seller_id,
@@ -450,6 +458,36 @@ async def run_item_detail_enrichment(
             elif "current_promotion" in existing_by_id[item_id]:
                 detail["current_promotion"] = None
                 clear_current_promotion = True
+            if site_id is not None:
+                listing_fee_context = build_listing_fee_projection_context(
+                    site_id=site_id, detail=detail
+                )
+                if listing_fee_context is None:
+                    listing_fee_projections_unavailable += 1
+                    detail["listing_fee_projection"] = None
+                    clear_listing_fee_projection = (
+                        "listing_fee_projection" in existing_by_id[item_id]
+                    )
+                else:
+                    listing_prices_requested += 1
+                    listing_fee_projection = await _resolve_listing_fee_projection(
+                        gateway=gateway,
+                        seller_id=seller_id,
+                        context=listing_fee_context,
+                        synced_at=synced_at,
+                    )
+                    if listing_fee_projection is None:
+                        listing_fee_projections_unavailable += 1
+                        detail["listing_fee_projection"] = None
+                        clear_listing_fee_projection = (
+                            "listing_fee_projection" in existing_by_id[item_id]
+                        )
+                    else:
+                        listing_fee_projections_enriched += 1
+                        detail["listing_fee_projection"] = listing_fee_projection
+            elif "listing_fee_projection" in existing_by_id[item_id]:
+                detail["listing_fee_projection"] = None
+                clear_listing_fee_projection = True
             if listing_fixed_fee_enabled:
                 listing_params = _listing_price_fixed_fee_params(item_id=item_id, detail=detail)
                 if listing_params is None:
@@ -483,6 +521,7 @@ async def run_item_detail_enrichment(
             if (
                 not clear_current_promotion
                 and not clear_listing_fixed_fee
+                and not clear_listing_fee_projection
                 and _canonical_item_values_equal(existing_by_id[item_id], document)
             ):
                 unchanged += 1
@@ -493,19 +532,28 @@ async def run_item_detail_enrichment(
                     document,
                     clear_current_promotion,
                     clear_listing_fixed_fee,
+                    clear_listing_fee_projection,
                 )
             )
 
     items_updated = 0
     if not dry_run:
         items_collection = db[ITEMS_COLLECTION]
-        for filter_spec, document, clear_current_promotion, clear_listing_fixed_fee in write_plans:
+        for (
+            filter_spec,
+            document,
+            clear_current_promotion,
+            clear_listing_fixed_fee,
+            clear_listing_fee_projection,
+        ) in write_plans:
             update: dict[str, Any] = {"$set": document}
             unset_fields: dict[str, str] = {}
             if clear_current_promotion:
                 unset_fields["current_promotion"] = ""
             if clear_listing_fixed_fee:
                 unset_fields["listing_price_fixed_fee"] = ""
+            if clear_listing_fee_projection:
+                unset_fields["listing_fee_projection"] = ""
             if unset_fields:
                 update["$unset"] = unset_fields
             await items_collection.update_one(
@@ -531,6 +579,9 @@ async def run_item_detail_enrichment(
         sale_price_requested=sale_price_requested,
         sale_price_promotions_enriched=sale_price_promotions_enriched,
         sale_price_promotions_unavailable=sale_price_promotions_unavailable,
+        listing_prices_requested=listing_prices_requested,
+        listing_fee_projections_enriched=listing_fee_projections_enriched,
+        listing_fee_projections_unavailable=listing_fee_projections_unavailable,
         listing_fixed_fee_requested=listing_fixed_fee_requested,
         listing_fixed_fee_enriched=listing_fixed_fee_enriched,
         listing_fixed_fee_unavailable=listing_fixed_fee_unavailable,
@@ -1223,6 +1274,20 @@ def _formula_row_listing_price_shipping_basis_fields(item: dict[str, Any]) -> di
 async def _load_seller_items(*, db: Any, seller_id: str) -> list[dict[str, Any]]:
     cursor = db[ITEMS_COLLECTION].find({"seller_id": seller_id}).sort([("_id", 1)])
     return cast("list[dict[str, Any]]", await cursor.to_list(length=None))
+
+
+async def _load_seller_site_id(*, db: Any, seller_id: str) -> str | None:
+    seller_id_candidates: list[str | int] = [seller_id]
+    if seller_id.isdecimal():
+        seller_id_candidates.append(int(seller_id))
+    for seller_id_candidate in seller_id_candidates:
+        account = await db["meli_accounts"].find_one({"seller_id": seller_id_candidate})
+        if not isinstance(account, dict):
+            continue
+        site_id = _optional_string(account.get("site_id"))
+        if site_id is not None:
+            return site_id.upper()
+    return None
 
 
 def _item_with_status_history(
@@ -2023,6 +2088,23 @@ def _schema_safe_current_promotion(value: Any) -> dict[str, Any] | None:
         if raw_projection.get(key) is not None:
             projection[key] = raw_projection[key]
     return projection
+
+
+async def _resolve_listing_fee_projection(
+    *,
+    gateway: MeliItemGatewayClient,
+    seller_id: str,
+    context: dict[str, Any],
+    synced_at: datetime,
+) -> dict[str, Any] | None:
+    try:
+        response = await gateway.fetch_resource(
+            seller_id=seller_id,
+            path=listing_fee_projection_path(context),
+        )
+    except (RuntimeError, GatewayRateLimitError, httpx.HTTPStatusError, httpx.RequestError):
+        return None
+    return project_listing_fee_projection(response, context=context, synced_at=synced_at)
 
 
 def build_listing_fee_projection_context(

@@ -2114,6 +2114,117 @@ def test_formula_row_doc_propagates_listing_fee_projection_without_raw_payload_o
     assert "buyer" not in projection
 
 
+@pytest.mark.asyncio
+async def test_item_detail_enrichment_fetches_listing_prices_and_denormalizes_projection() -> None:
+    canonical = _item_doc("MLA1", attributes=[{"id": "SELLER_SKU", "value_name": "sku-1"}])
+    db = FakeDb([canonical])
+    db["meli_accounts"].documents["account-1"] = {
+        "_id": "account-1",
+        "seller_id": "82453304",
+        "site_id": "mla",
+    }
+    detail = _item_detail("MLA1")
+    detail.update(
+        {
+            "currency_id": "ARS",
+            "listing_type_id": "gold_special",
+            "attributes": [{"id": "SELLER_SKU", "value_name": "sku-1"}],
+            "shipping": {"mode": "me2", "logistic_type": "fulfillment", "free_shipping": False},
+            "tags": ["catalog_listing"],
+        }
+    )
+    listing_price_path = (
+        "/sites/MLA/listing_prices?price=123.45&listing_type_id=gold_special"
+        "&category_id=MLA-CAT&currency_id=ARS&logistic_type=fulfillment"
+        "&shipping_mode=me2&tags=catalog_listing"
+    )
+    gateway = FakeItemGateway(
+        {
+            "/items?ids=MLA1": [{"code": 200, "body": detail}],
+            listing_price_path: {
+                "sale_fee_amount": "155.99",
+                "currency_id": "ARS",
+                "sale_fee_details": {"percentage_fee": "12.00", "gross_amount": "160.00"},
+                "raw": {"must": "not persist"},
+            },
+        }
+    )
+
+    summary = await run_item_detail_enrichment(
+        db=db,
+        gateway=gateway,
+        seller_id="82453304",
+        dry_run=False,
+    )
+    await run_sheetseller_backfill(db=db, seller_id="82453304", dry_run=False)
+
+    assert gateway.calls == [("82453304", "/items?ids=MLA1"), ("82453304", listing_price_path)]
+    assert summary.listing_prices_requested == 1
+    assert summary.listing_fee_projections_enriched == 1
+    assert summary.listing_fee_projections_unavailable == 0
+    persisted = db["items"].documents["MLA1"]["listing_fee_projection"]
+    assert persisted["sale_fee_amount"].to_decimal() == Decimal("155.99")
+    assert persisted["percentage_fee"].to_decimal() == Decimal("12.00")
+    assert "raw" not in persisted
+    refreshed_row = db["sheets_item_formula_rows"].documents["82453304:SKU-1:MLA1"]
+    row_projection = refreshed_row["current"]["listing_fee_projection"]
+    assert row_projection["sale_fee_amount"].to_decimal() == Decimal("155.99")
+
+
+@pytest.mark.asyncio
+async def test_item_detail_enrichment_clears_stale_listing_fee_projection_failures() -> None:
+    stale_projection = {
+        **_listing_fee_context(),
+        "source": "/sites/{site}/listing_prices",
+        "sale_fee_amount": Decimal128("155.99"),
+        "percentage_fee": Decimal128("12.00"),
+        "synced_at": NOW,
+    }
+    missing_param = _item_doc("MLA1", attributes=[{"id": "SELLER_SKU", "value_name": "sku-1"}])
+    invalid_payload = _item_doc("MLA2", attributes=[{"id": "SELLER_SKU", "value_name": "sku-2"}])
+    for item in (missing_param, invalid_payload):
+        item["listing_fee_projection"] = dict(stale_projection)
+    db = FakeDb([missing_param, invalid_payload])
+    db["meli_accounts"].documents["account-1"] = {
+        "_id": "account-1",
+        "seller_id": 82453304,
+        "site_id": "MLA",
+    }
+    detail_missing = _item_detail("MLA1")
+    detail_missing.update({"currency_id": "ARS", "listing_type_id": None})
+    detail_invalid = _item_detail("MLA2")
+    detail_invalid.update({"currency_id": "ARS", "listing_type_id": "gold_special"})
+    listing_price_path = (
+        "/sites/MLA/listing_prices?price=123.45&listing_type_id=gold_special"
+        "&category_id=MLA-CAT&currency_id=ARS"
+    )
+    gateway = FakeItemGateway(
+        {
+            "/items?ids=MLA1,MLA2": [
+                {"code": 200, "body": detail_missing},
+                {"code": 200, "body": detail_invalid},
+            ],
+            listing_price_path: {"sale_fee_details": {"percentage_fee": "12.00"}},
+        }
+    )
+
+    summary = await run_item_detail_enrichment(
+        db=db,
+        gateway=gateway,
+        seller_id="82453304",
+        dry_run=False,
+    )
+
+    assert summary.listing_prices_requested == 1
+    assert summary.listing_fee_projections_enriched == 0
+    assert summary.listing_fee_projections_unavailable == 2
+    assert all(
+        call[1].get("$unset") == {"listing_fee_projection": ""} for call in db["items"].update_calls
+    )
+    assert "listing_fee_projection" not in db["items"].documents["MLA1"]
+    assert "listing_fee_projection" not in db["items"].documents["MLA2"]
+
+
 def test_listing_price_fixed_fee_projection_keeps_bounded_sanitized_fields_only() -> None:
     projection = project_listing_price_fixed_fee_projection(
         {
@@ -2564,6 +2675,9 @@ async def test_item_detail_enrichment_summary_is_sanitized_and_useful() -> None:
         "sale_price_requested": 0,
         "sale_price_promotions_enriched": 0,
         "sale_price_promotions_unavailable": 0,
+        "listing_prices_requested": 0,
+        "listing_fee_projections_enriched": 0,
+        "listing_fee_projections_unavailable": 0,
         "listing_fixed_fee_requested": 0,
         "listing_fixed_fee_enriched": 0,
         "listing_fixed_fee_unavailable": 0,
