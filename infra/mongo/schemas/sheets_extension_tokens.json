@@ -18,6 +18,10 @@
       "_id": {"bsonType": "string"},
       "token_hash": {"bsonType": "string"},
       "token_prefix": {"bsonType": "string"},
+      "token_secret_ciphertext": {"bsonType": "binData"},
+      "token_secret_dek_wrapped": {"bsonType": "binData"},
+      "token_secret_nonce": {"bsonType": "binData"},
+      "token_secret_kms_key_version": {"bsonType": "string"},
       "owner_user_id": {"bsonType": "string"},
       "label": {"bsonType": "string"},
       "seller_scopes": {
@@ -38,6 +42,7 @@
       "updated_at": {"bsonType": "date"},
       "rotated_at": {"bsonType": ["date", "null"]},
       "revoked_at": {"bsonType": ["date", "null"]},
+      "deleted_at": {"bsonType": ["date", "null"]},
       "last_used_at": {"bsonType": ["date", "null"]},
       "schema_version": {"bsonType": "int"}
     }

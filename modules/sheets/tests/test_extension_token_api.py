@@ -10,6 +10,8 @@ import httpx
 import pytest
 from fastapi import FastAPI
 
+from zeler_sheets.extension_tokens import ExtensionTokenService, SellerScope, hash_extension_token
+
 
 class FakeUpdateResult:
     modified_count = 1
@@ -72,6 +74,38 @@ class FakeDb:
         if name == "meli_accounts":
             return self.meli_accounts
         raise AssertionError(name)
+
+
+class FakeExtensionTokenCipher:
+    def __init__(self) -> None:
+        self.plaintexts_by_token_id: dict[str, str] = {}
+
+    def encrypt(
+        self,
+        plaintext: str,
+        *,
+        owner_user_id: str,
+        token_id: str,
+    ) -> dict[str, bytes | str]:
+        assert owner_user_id
+        self.plaintexts_by_token_id[token_id] = plaintext
+        return {
+            "token_secret_ciphertext": f"ciphertext:{token_id}".encode(),
+            "token_secret_dek_wrapped": f"dek:{token_id}".encode(),
+            "token_secret_nonce": f"nonce:{token_id}".encode(),
+            "token_secret_kms_key_version": "kms-test-version",
+        }
+
+    async def decrypt(
+        self,
+        doc: dict[str, Any],
+        *,
+        owner_user_id: str,
+        token_id: str,
+    ) -> str:
+        assert doc["token_secret_ciphertext"] == f"ciphertext:{token_id}".encode()
+        assert owner_user_id == doc["owner_user_id"]
+        return self.plaintexts_by_token_id[token_id]
 
 
 def _matches(doc: dict[str, Any], filter_spec: dict[str, Any]) -> bool:
@@ -156,6 +190,278 @@ async def test_rotate_and_revoke_extension_token_api(monkeypatch: pytest.MonkeyP
     assert revoked.status_code == 200
     assert revoked.json()["status"] == "revoked"
     assert db.sheets_extension_tokens.docs[-1]["status"] == "revoked"
+
+
+@pytest.mark.asyncio
+async def test_reveal_extension_token_api_returns_secret_without_ciphertext(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app, _db = _app(
+        monkeypatch,
+        token_values=["api-reveal-secret"],
+        secret_cipher=FakeExtensionTokenCipher(),
+    )
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        created = await client.post(
+            "/sheets/extension-tokens",
+            headers={"Authorization": "Bearer valid"},
+            json={
+                "label": "Revealable sheet",
+                "seller_scopes": [{"seller_id": "123456789", "nickname": "HOPEMOB"}],
+            },
+        )
+        revealed = await client.post(
+            f"/sheets/extension-tokens/{created.json()['id']}:reveal",
+            headers={"Authorization": "Bearer valid"},
+        )
+
+    assert revealed.status_code == 200
+    body = revealed.json()
+    assert body["token_once"] == created.json()["token_once"]
+    assert body["id"] == created.json()["id"]
+    assert "token_secret" not in str(body)
+    assert "token_hash" not in body
+
+
+@pytest.mark.asyncio
+async def test_delete_extension_token_api_soft_deletes_revoked_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app, db = _app(
+        monkeypatch,
+        token_values=["api-delete-secret"],
+        secret_cipher=FakeExtensionTokenCipher(),
+    )
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        created = await client.post(
+            "/sheets/extension-tokens",
+            headers={"Authorization": "Bearer valid"},
+            json={
+                "label": "Delete from UI",
+                "seller_scopes": [{"seller_id": "123456789", "nickname": "HOPEMOB"}],
+            },
+        )
+        active_delete = await client.delete(
+            f"/sheets/extension-tokens/{created.json()['id']}",
+            headers={"Authorization": "Bearer valid"},
+        )
+        await client.post(
+            f"/sheets/extension-tokens/{created.json()['id']}:revoke",
+            headers={"Authorization": "Bearer valid"},
+        )
+        deleted = await client.delete(
+            f"/sheets/extension-tokens/{created.json()['id']}",
+            headers={"Authorization": "Bearer valid"},
+        )
+        listed = await client.get(
+            "/sheets/extension-tokens?owner_user_id=user-1",
+            headers={"Authorization": "Bearer valid"},
+        )
+
+    assert active_delete.status_code == 409
+    assert active_delete.json()["error"] == "TOKEN_NOT_REVOKED"
+    assert deleted.status_code == 204
+    assert deleted.content == b""
+    assert db.sheets_extension_tokens.docs[0]["deleted_at"] == datetime(
+        2026, 5, 13, 12, 0, tzinfo=UTC
+    )
+    assert listed.status_code == 200
+    assert listed.json() == []
+
+
+@pytest.mark.asyncio
+async def test_delete_extension_token_api_rejects_nonexistent_and_already_deleted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app, _db = _app(
+        monkeypatch,
+        token_values=["api-redelete-secret"],
+        secret_cipher=FakeExtensionTokenCipher(),
+    )
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        created = await client.post(
+            "/sheets/extension-tokens",
+            headers={"Authorization": "Bearer valid"},
+            json={
+                "label": "Delete twice",
+                "seller_scopes": [{"seller_id": "123456789", "nickname": "HOPEMOB"}],
+            },
+        )
+        await client.post(
+            f"/sheets/extension-tokens/{created.json()['id']}:revoke",
+            headers={"Authorization": "Bearer valid"},
+        )
+        first_delete = await client.delete(
+            f"/sheets/extension-tokens/{created.json()['id']}",
+            headers={"Authorization": "Bearer valid"},
+        )
+        repeated_delete = await client.delete(
+            f"/sheets/extension-tokens/{created.json()['id']}",
+            headers={"Authorization": "Bearer valid"},
+        )
+        missing_delete = await client.delete(
+            "/sheets/extension-tokens/sheets-ext-token-missing",
+            headers={"Authorization": "Bearer valid"},
+        )
+
+    assert first_delete.status_code == 204
+    assert repeated_delete.status_code == 409
+    assert repeated_delete.json() == {
+        "error": "TOKEN_DELETED",
+        "detail": "El token ya fue eliminado.",
+    }
+    assert missing_delete.status_code == 404
+    assert missing_delete.json() == {
+        "error": "TOKEN_NOT_FOUND_OR_FORBIDDEN",
+        "detail": "Token no encontrado o sin permisos.",
+    }
+
+
+@pytest.mark.asyncio
+async def test_management_api_requires_all_multi_seller_scopes_authorized(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cipher = FakeExtensionTokenCipher()
+    claims = _claims(platform_user_id="platform-user-123", issued_by="zeler-app")
+    app, db = _app(
+        monkeypatch,
+        token_values=["unused-route-secret"],
+        claims=claims,
+        secret_cipher=cipher,
+    )
+    db.meli_accounts.docs.append(
+        {
+            "seller_id": 123456789,
+            "nickname": "HOPEMOB",
+            "platform_user_id": "platform-user-123",
+            "app_id": "zeler-platform",
+            "status": "active",
+        }
+    )
+    issued = await ExtensionTokenService(
+        db=db,
+        token_pepper="test-pepper",
+        now_fn=lambda: datetime(2026, 5, 13, 12, 0, tzinfo=UTC),
+        token_factory=lambda: "multi-seller-route-secret",
+        secret_cipher=cipher,
+    ).create_token(
+        owner_user_id="platform-user-123",
+        label="Partially authorized",
+        seller_scopes=[
+            SellerScope(seller_id="123456789", nickname="HOPEMOB"),
+            SellerScope(seller_id="987654321", nickname="TESTUSER"),
+        ],
+    )
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        listed = await client.get(
+            "/sheets/extension-tokens?owner_user_id=platform-user-123",
+            headers={"Authorization": "Bearer valid"},
+        )
+        revealed = await client.post(
+            f"/sheets/extension-tokens/{issued.metadata.id}:reveal",
+            headers={"Authorization": "Bearer valid"},
+        )
+
+    assert listed.status_code == 200
+    assert listed.json() == []
+    assert revealed.status_code == 404
+    assert revealed.json() == {
+        "error": "TOKEN_NOT_FOUND_OR_FORBIDDEN",
+        "detail": "Token no encontrado o sin permisos.",
+    }
+
+
+@pytest.mark.asyncio
+async def test_reveal_api_maps_legacy_and_foreign_scope_to_stable_errors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    claims = _claims(platform_user_id="platform-user-123", issued_by="zeler-app")
+    app, db = _app(
+        monkeypatch,
+        token_values=["unused-api-secret"],
+        claims=claims,
+        secret_cipher=FakeExtensionTokenCipher(),
+    )
+    db.meli_accounts.docs.append(
+        {
+            "seller_id": 123456789,
+            "nickname": "HOPEMOB",
+            "platform_user_id": "platform-user-123",
+            "app_id": "zeler-platform",
+            "status": "active",
+        }
+    )
+    now = datetime(2026, 5, 13, 12, 0, tzinfo=UTC)
+    legacy_token = "zs_ext_legacy-api-material"
+    db.sheets_extension_tokens.docs.append(
+        {
+            "_id": "sheets-ext-token-legacy-api",
+            "label": "Legacy API",
+            "token_prefix": legacy_token[:18],
+            "token_hash": hash_extension_token(legacy_token, token_pepper="test-pepper"),
+            "owner_user_id": "platform-user-123",
+            "seller_scopes": [{"seller_id": "123456789", "nickname": "HOPEMOB"}],
+            "formula_scopes": ["formulas:execute"],
+            "status": "active",
+            "expires_at": None,
+            "created_at": now,
+            "updated_at": now,
+            "rotated_at": None,
+            "revoked_at": None,
+            "last_used_at": None,
+            "schema_version": 1,
+        }
+    )
+    foreign = await ExtensionTokenService(
+        db=db,
+        token_pepper="test-pepper",
+        now_fn=lambda: now,
+        token_factory=lambda: "foreign-api-secret",
+        secret_cipher=FakeExtensionTokenCipher(),
+    ).create_token(
+        owner_user_id="platform-user-123",
+        label="Foreign scope",
+        seller_scopes=[SellerScope(seller_id="987654321", nickname="OTHER")],
+    )
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        legacy_reveal = await client.post(
+            "/sheets/extension-tokens/sheets-ext-token-legacy-api:reveal",
+            headers={"Authorization": "Bearer valid"},
+        )
+        foreign_reveal = await client.post(
+            f"/sheets/extension-tokens/{foreign.metadata.id}:reveal",
+            headers={"Authorization": "Bearer valid"},
+        )
+
+    assert legacy_reveal.status_code == 409
+    assert legacy_reveal.json() == {
+        "error": "TOKEN_SECRET_UNAVAILABLE",
+        "detail": (
+            "Este token no se puede revelar. Generá o rotá el token para obtener "
+            "un valor recuperable."
+        ),
+    }
+    assert foreign_reveal.status_code == 404
+    assert foreign_reveal.json() == {
+        "error": "TOKEN_NOT_FOUND_OR_FORBIDDEN",
+        "detail": "Token no encontrado o sin permisos.",
+    }
+    assert legacy_token not in str(legacy_reveal.json())
 
 
 @pytest.mark.asyncio
@@ -384,6 +690,7 @@ def _app(
     jwt_error: Exception | None = None,
     configure_pepper: bool = True,
     claims: object | None = None,
+    secret_cipher: FakeExtensionTokenCipher | None = None,
 ) -> tuple[FastAPI, FakeDb]:
     import zeler_sheets.api as api
     from zeler_sheets.api import build_router
@@ -398,6 +705,7 @@ def _app(
             clock=lambda: datetime(2026, 5, 13, 12, 0, tzinfo=UTC),
             extension_token_pepper=pepper,
             extension_token_factory=lambda: values.pop(0),
+            extension_token_secret_cipher=secret_cipher,
         )
     )
 
