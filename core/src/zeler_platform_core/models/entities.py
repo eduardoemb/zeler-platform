@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from datetime import datetime
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal, DecimalException, InvalidOperation
 from typing import Any, Literal
 
 from pydantic import ConfigDict, Field, field_validator, model_validator
@@ -509,6 +510,143 @@ class ReceiverAddressSnapshot(UtcDatetimeMixin):
         return normalized or None
 
 
+class ShipmentRealShippingCostProjection(UtcDatetimeMixin):
+    model_config = ConfigDict(arbitrary_types_allowed=True, extra="forbid")
+
+    source: Literal["/shipments/{shipment_id}/costs"]
+    seller_cost: Decimal
+    receiver_cost: Decimal | None = None
+    currency_id: str | None = None
+    matched_sender_id: str | None = None
+    synced_at: datetime
+
+    @field_validator("seller_cost", "receiver_cost", mode="before")
+    @classmethod
+    def _coerce_finite_non_negative_decimal(cls, value: object) -> Decimal | None:
+        parsed = cls._parse_cost(value)
+        if parsed is None and value is not None:
+            msg = "real shipping cost fields must be finite non-negative numbers"
+            raise ValueError(msg)
+        return parsed
+
+    @field_validator("currency_id", mode="before")
+    @classmethod
+    def _coerce_optional_currency_id(cls, value: object) -> object:
+        if value is None:
+            return None
+        if isinstance(value, (dict, list, tuple, set, bytes, bytearray)):
+            return None
+        normalized = _coerce_str(value).strip().upper()
+        return normalized or None
+
+    @field_validator("matched_sender_id", mode="before")
+    @classmethod
+    def _coerce_optional_sender_id(cls, value: object) -> object:
+        if value is None:
+            return None
+        if isinstance(value, (dict, list, tuple, set, bytes, bytearray)):
+            return None
+        normalized = _coerce_str(value).strip()
+        return normalized or None
+
+    @field_validator("synced_at", mode="before")
+    @classmethod
+    def _synced_at_must_be_aware(cls, value: object) -> object:
+        return UtcDatetimeMixin._datetime_must_be_aware(value)
+
+    @classmethod
+    def from_meli_costs_payload(
+        cls,
+        costs_payload: object,
+        *,
+        seller_id: object,
+        synced_at: datetime,
+    ) -> ShipmentRealShippingCostProjection | None:
+        if not isinstance(costs_payload, Mapping):
+            return None
+        normalized_seller_id = _coerce_str(seller_id).strip()
+        if not normalized_seller_id:
+            return None
+        senders = costs_payload.get("senders")
+        if not isinstance(senders, list):
+            return None
+
+        matched_sender: Mapping[str, object] | None = None
+        matched_sender_id: str | None = None
+        for sender in senders:
+            if not isinstance(sender, Mapping):
+                continue
+            sender_identifier = cls._extract_sender_id(sender)
+            if sender_identifier == normalized_seller_id:
+                matched_sender = sender
+                matched_sender_id = sender_identifier
+                break
+        if matched_sender is None:
+            return None
+
+        seller_cost = cls._parse_cost(matched_sender.get("cost"))
+        if seller_cost is None:
+            return None
+
+        receiver_cost = cls._extract_receiver_cost(costs_payload)
+        currency_id = cls._extract_currency_id(costs_payload, matched_sender)
+        return cls.model_validate(
+            {
+                "source": "/shipments/{shipment_id}/costs",
+                "seller_cost": seller_cost,
+                "receiver_cost": receiver_cost,
+                "currency_id": currency_id,
+                "matched_sender_id": matched_sender_id,
+                "synced_at": synced_at,
+            }
+        )
+
+    @staticmethod
+    def _parse_cost(value: object) -> Decimal | None:
+        if value is None or isinstance(value, (bool, dict, list, tuple, set)):
+            return None
+        try:
+            parsed = value if isinstance(value, Decimal) else Decimal(str(value))
+        except (DecimalException, ValueError):
+            return None
+        if not parsed.is_finite() or parsed < 0:
+            return None
+        return parsed
+
+    @staticmethod
+    def _extract_sender_id(sender: Mapping[str, object]) -> str | None:
+        for field_name in ("sender_id", "seller_id", "user_id", "id"):
+            value = sender.get(field_name)
+            if value is None or isinstance(value, (dict, list, tuple, set, bytes, bytearray)):
+                continue
+            normalized = _coerce_str(value).strip()
+            if normalized:
+                return normalized
+        return None
+
+    @classmethod
+    def _extract_receiver_cost(cls, costs_payload: Mapping[str, object]) -> Decimal | None:
+        receiver = costs_payload.get("receiver")
+        if not isinstance(receiver, Mapping):
+            return None
+        return cls._parse_cost(receiver.get("cost"))
+
+    @classmethod
+    def _extract_currency_id(
+        cls,
+        costs_payload: Mapping[str, object],
+        matched_sender: Mapping[str, object],
+    ) -> str | None:
+        for source in (matched_sender, costs_payload):
+            value = source.get("currency_id")
+            if value is None or isinstance(value, (dict, list, tuple, set, bytes, bytearray)):
+                continue
+            normalized = _coerce_str(value).strip().upper()
+            if normalized:
+                return normalized
+        return None
+
+
 class Shipment(UtcDatetimeMixin, SellerScopedDocument):
     order_id: str
     status: ShipmentStatus
@@ -516,6 +654,7 @@ class Shipment(UtcDatetimeMixin, SellerScopedDocument):
     tracking_number: str | None = None
     logistic_type: ShipmentLogisticType
     receiver_address: ReceiverAddressSnapshot | None = None
+    real_shipping_cost: ShipmentRealShippingCostProjection | None = None
     date_created: datetime
     last_updated: datetime
 

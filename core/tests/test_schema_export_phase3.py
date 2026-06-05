@@ -65,6 +65,29 @@ def test_module_registry_schema_exposes_optional_display_identity(tmp_path: Path
     }
 
 
+def test_shipment_schema_export_includes_sanitized_real_shipping_cost_projection(
+    tmp_path: Path,
+) -> None:
+    export_schemas(tmp_path)
+    payload = json.loads((tmp_path / "shipments.json").read_text(encoding="utf-8"))
+    schema = payload["$jsonSchema"]
+    projection = schema["properties"]["real_shipping_cost"]
+
+    assert projection["additionalProperties"] is False
+    assert projection["bsonType"] == ["object", "null"]
+    assert projection["required"] == ["source", "seller_cost", "synced_at"]
+    assert projection["properties"] == {
+        "source": {"enum": ["/shipments/{shipment_id}/costs"]},
+        "seller_cost": {"bsonType": ["decimal", "double", "int", "long"]},
+        "receiver_cost": {"bsonType": ["decimal", "double", "int", "long", "null"]},
+        "currency_id": {"bsonType": ["string", "null"]},
+        "matched_sender_id": {"bsonType": ["string", "null"]},
+        "synced_at": {"bsonType": "date"},
+    }
+    for forbidden_field in ("raw_payload", "senders", "receiver", "buyer", "address", "token"):
+        assert forbidden_field not in projection["properties"]
+
+
 def test_schema_export_detects_committed_schema_drift(tmp_path: Path) -> None:
     export_schemas(tmp_path)
     (tmp_path / "items.json").write_text('{"stale": true}\n', encoding="utf-8")

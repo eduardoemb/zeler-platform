@@ -25,6 +25,57 @@
           "int"
         ]
       },
+      "real_shipping_cost": {
+        "additionalProperties": false,
+        "bsonType": [
+          "object",
+          "null"
+        ],
+        "properties": {
+          "currency_id": {
+            "bsonType": [
+              "string",
+              "null"
+            ]
+          },
+          "matched_sender_id": {
+            "bsonType": [
+              "string",
+              "null"
+            ]
+          },
+          "receiver_cost": {
+            "bsonType": [
+              "decimal",
+              "double",
+              "int",
+              "long",
+              "null"
+            ]
+          },
+          "seller_cost": {
+            "bsonType": [
+              "decimal",
+              "double",
+              "int",
+              "long"
+            ]
+          },
+          "source": {
+            "enum": [
+              "/shipments/{shipment_id}/costs"
+            ]
+          },
+          "synced_at": {
+            "bsonType": "date"
+          }
+        },
+        "required": [
+          "source",
+          "seller_cost",
+          "synced_at"
+        ]
+      },
       "receiver_address": {
         "additionalProperties": false,
         "bsonType": [

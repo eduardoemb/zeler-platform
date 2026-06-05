@@ -476,6 +476,26 @@ def test_canonical_items_schema_exports_status_history_date_fields() -> None:
         assert field_name not in generated_schema["required"]
 
 
+def test_shipments_schema_supports_bounded_real_shipping_cost_projection_only() -> None:
+    validator = json.loads((ROOT / "infra/mongo/schemas/shipments.json").read_text())
+    schema = validator["$jsonSchema"]
+    projection = schema["properties"]["real_shipping_cost"]
+
+    assert projection["additionalProperties"] is False
+    assert projection["bsonType"] == ["object", "null"]
+    assert projection["required"] == ["source", "seller_cost", "synced_at"]
+    assert projection["properties"] == {
+        "source": {"enum": ["/shipments/{shipment_id}/costs"]},
+        "seller_cost": {"bsonType": ["decimal", "double", "int", "long"]},
+        "receiver_cost": {"bsonType": ["decimal", "double", "int", "long", "null"]},
+        "currency_id": {"bsonType": ["string", "null"]},
+        "matched_sender_id": {"bsonType": ["string", "null"]},
+        "synced_at": {"bsonType": "date"},
+    }
+    for forbidden_field in ("raw_payload", "senders", "receiver", "buyer", "address", "token"):
+        assert forbidden_field not in projection["properties"]
+
+
 def test_google_oauth_indexes_match_contract() -> None:
     tokens_indexes = json.loads((ROOT / "infra/mongo/indexes/google_oauth_tokens.json").read_text())
     state_indexes = json.loads((ROOT / "infra/mongo/indexes/google_oauth_state.json").read_text())
