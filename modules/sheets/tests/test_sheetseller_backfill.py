@@ -21,6 +21,7 @@ from zeler_sheets.sheetseller_backfill import (
     OrderIdentityRepairSummary,
     OrderLineIdentityBackfillSummary,
     OrderNormalizationSummary,
+    ShipmentRealShippingCostEnrichmentSummary,
     build_arg_parser,
     build_formula_row_doc,
     build_sku_index_doc,
@@ -35,6 +36,7 @@ from zeler_sheets.sheetseller_backfill import (
     run_order_line_identity_backfill,
     run_order_normalization,
     run_sheetseller_backfill,
+    run_shipment_real_shipping_cost_enrichment,
 )
 
 NOW = datetime(2026, 5, 13, 12, 0, tzinfo=UTC)
@@ -207,11 +209,16 @@ class LiveStateCorrectionAfterInitialLoadCollection(FakeCollection):
 
 class FakeDb:
     def __init__(
-        self, items: list[dict[str, Any]], orders: list[dict[str, Any]] | None = None
+        self,
+        items: list[dict[str, Any]],
+        orders: list[dict[str, Any]] | None = None,
+        shipments: list[dict[str, Any]] | None = None,
     ) -> None:
         self.collections: dict[str, FakeCollection] = {"items": FakeCollection(items)}
         if orders is not None:
             self.collections["orders"] = FakeCollection(orders)
+        if shipments is not None:
+            self.collections["shipments"] = FakeCollection(shipments)
 
     def __getitem__(self, name: str) -> FakeCollection:
         return self.collections.setdefault(name, FakeCollection())
@@ -226,7 +233,8 @@ def _matches(doc: dict[str, Any], filter_spec: dict[str, Any]) -> bool:
         actual = _nested_value(doc, key)
         if isinstance(value, dict):
             if "$exists" in value:
-                if (actual is not None) != value["$exists"]:
+                exists = _nested_exists(doc, key)
+                if bool(value["$exists"]) is not exists:
                     return False
                 continue
             if "$gte" in value and not _safe_gte(actual, value["$gte"]):
@@ -248,6 +256,15 @@ def _nested_value(document: dict[str, Any], key: str) -> Any:
             return None
         value = value[part]
     return value
+
+
+def _nested_exists(document: dict[str, Any], key: str) -> bool:
+    value: Any = document
+    for part in key.split("."):
+        if not isinstance(value, dict) or part not in value:
+            return False
+        value = value[part]
+    return True
 
 
 def _safe_gte(actual: Any, expected: Any) -> bool:
@@ -366,6 +383,11 @@ def test_cli_requires_seller_id_and_defaults_to_dry_run() -> None:
     assert enrich_args.source == "items-enrich"
     assert enrich_args.dry_run is True
     assert fixed_fee_args.listing_fixed_fee_enabled is True
+    shipment_costs_args = parser.parse_args(
+        ["--seller-id", "82453304", "--source", "shipments-costs", "--limit", "25"]
+    )
+    assert shipment_costs_args.source == "shipments-costs"
+    assert shipment_costs_args.limit == 25
     with pytest.raises(SystemExit):
         parser.parse_args([])
 
@@ -2404,6 +2426,116 @@ async def test_item_detail_enrichment_summary_is_sanitized_and_useful() -> None:
 
 
 @pytest.mark.asyncio
+async def test_shipment_real_shipping_cost_enrichment_updates_sanitized_projection_only() -> None:
+    db = FakeDb(
+        [],
+        shipments=[
+            _shipment_doc("3001"),
+            _shipment_doc(
+                "3002",
+                real_shipping_cost={
+                    "source": "/shipments/{shipment_id}/costs",
+                    "seller_cost": Decimal128("9.99"),
+                    "synced_at": NOW,
+                },
+            ),
+        ],
+    )
+    gateway = FakeItemGateway(
+        {
+            "/shipments/3001/costs": {
+                "currency_id": "MXN",
+                "senders": [
+                    {"sender_id": "111", "cost": "9.99"},
+                    {"sender_id": "82453304", "cost": "24.50"},
+                ],
+                "receiver": {"cost": "100.00", "address": "must-not-persist"},
+                "buyer": {"name": "must-not-persist"},
+                "raw_payload": {"must": "not persist"},
+            }
+        }
+    )
+
+    summary = await run_shipment_real_shipping_cost_enrichment(
+        db=db, gateway=gateway, seller_id="82453304", dry_run=False, limit=25
+    )
+
+    assert summary == ShipmentRealShippingCostEnrichmentSummary(
+        dry_run=False,
+        limit=25,
+        shipments_read=1,
+        shipments_with_id=1,
+        shipment_costs_requested=1,
+        shipment_real_shipping_costs_enriched=1,
+        shipment_real_shipping_costs_unavailable=0,
+        shipments_planned=1,
+        shipments_updated=1,
+    )
+    assert gateway.calls == [("82453304", "/shipments/3001/costs")]
+    assert db["shipments"].update_calls == [
+        (
+            {"_id": "3001", "seller_id": "82453304"},
+            {
+                "$set": {
+                    "real_shipping_cost": {
+                        "source": "/shipments/{shipment_id}/costs",
+                        "seller_cost": Decimal128("24.50"),
+                        "receiver_cost": Decimal128("100.00"),
+                        "currency_id": "MXN",
+                        "matched_sender_id": "82453304",
+                        "synced_at": db["shipments"].documents["3001"]["real_shipping_cost"][
+                            "synced_at"
+                        ],
+                    }
+                }
+            },
+            {"upsert": False, "bypass_document_validation": False},
+        )
+    ]
+    stored_projection = db["shipments"].documents["3001"]["real_shipping_cost"]
+    assert stored_projection["seller_cost"].to_decimal() == Decimal("24.50")
+    assert stored_projection["receiver_cost"].to_decimal() == Decimal("100.00")
+    serialized_projection = repr(stored_projection)
+    for forbidden in ("senders", "buyer", "address", "raw_payload"):
+        assert forbidden not in serialized_projection
+
+
+@pytest.mark.asyncio
+async def test_shipment_real_shipping_cost_enrichment_is_bounded_and_fails_closed() -> None:
+    db = FakeDb([], shipments=[_shipment_doc("3001"), _shipment_doc("3002")])
+    gateway = FakeItemGateway(
+        {
+            "/shipments/3001/costs": {
+                "currency_id": "MXN",
+                "senders": [{"sender_id": "999999", "cost": "24.50"}],
+                "receiver": {"cost": "100.00"},
+            }
+        }
+    )
+
+    summary = await run_shipment_real_shipping_cost_enrichment(
+        db=db, gateway=gateway, seller_id="82453304", dry_run=False, limit=1
+    )
+
+    assert summary.as_dict() == {
+        "dry_run": False,
+        "limit": 1,
+        "shipments_read": 1,
+        "shipments_with_id": 1,
+        "shipment_costs_requested": 1,
+        "shipment_real_shipping_costs_enriched": 0,
+        "shipment_real_shipping_costs_unavailable": 1,
+        "shipments_planned": 0,
+        "shipments_updated": 0,
+    }
+    assert gateway.calls == [("82453304", "/shipments/3001/costs")]
+    assert db["shipments"].update_calls == []
+    assert "real_shipping_cost" not in db["shipments"].documents["3001"]
+    assert "3001" not in str(summary.as_dict())
+    assert "82453304" not in str(summary.as_dict())
+
+
+@pytest.mark.asyncio
 async def test_order_line_identity_dry_run_reports_sanitized_counts_without_writes() -> None:
     db = FakeDb(
         [],
@@ -3138,6 +3270,27 @@ def _item_detail(item_id: str, *, seller_id: str = "82453304") -> dict[str, Any]
         "date_created": NOW.isoformat(),
         "last_updated": NOW.isoformat(),
     }
+
+
+def _shipment_doc(
+    shipment_id: str,
+    *,
+    seller_id: str = "82453304",
+    real_shipping_cost: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    shipment = {
+        "_id": shipment_id,
+        "seller_id": seller_id,
+        "order_id": "2001",
+        "status": "ready_to_ship",
+        "logistic_type": "fulfillment",
+        "date_created": NOW,
+        "last_updated": NOW,
+        "schema_version": 1,
+    }
+    if real_shipping_cost is not None:
+        shipment["real_shipping_cost"] = real_shipping_cost
+    return shipment
 
 
 def _order_doc(
