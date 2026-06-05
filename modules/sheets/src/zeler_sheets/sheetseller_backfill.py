@@ -22,6 +22,7 @@ from zeler_platform_core.models import (
     ListingFeeProjection,
     ListingPriceFixedFeeProjection,
     PromoPriceProjection,
+    ShipmentRealShippingCostProjection,
 )
 from zeler_platform_core.models.base import current_schema_version
 from zeler_sheets.formulas.read_models import normalize_sku
@@ -33,6 +34,7 @@ from zeler_sheets.status_history import (
 
 ITEMS_COLLECTION = "items"
 ORDERS_COLLECTION = "orders"
+SHIPMENTS_COLLECTION = "shipments"
 ITEM_SKU_INDEX_COLLECTION = "sheets_item_sku_index"
 ITEM_FORMULA_ROWS_COLLECTION = "sheets_item_formula_rows"
 ITEM_STATUS_STATES_COLLECTION = "item_status_states"
@@ -42,6 +44,7 @@ DEFAULT_GATEWAY_BASE_URL = "http://gateway:8080/proxy/meli"
 ITEM_DETAIL_BATCH_SIZE = 20
 STATUS_HISTORY_SCALAR_FIELDS = ("status_started_at", "paused_since", "last_status_change_at")
 FORMULA_ROW_REPLACE_ATTEMPTS = 3
+SHIPMENT_REAL_SHIPPING_COST_ENRICHMENT_LIMIT = 100
 SALE_PRICE_SOURCE = "/items/{id}/sale_price"
 LISTING_PRICE_FIXED_FEE_SOURCE = "/sites/{site}/listing_prices"
 LISTING_FEE_PROJECTION_SOURCE = LISTING_PRICE_FIXED_FEE_SOURCE
@@ -169,6 +172,22 @@ class ItemDetailEnrichmentSummary:
 
 
 @dataclass(frozen=True)
+class ShipmentRealShippingCostEnrichmentSummary:
+    dry_run: bool
+    limit: int
+    shipments_read: int
+    shipments_with_id: int
+    shipment_costs_requested: int
+    shipment_real_shipping_costs_enriched: int
+    shipment_real_shipping_costs_unavailable: int
+    shipments_planned: int
+    shipments_updated: int
+
+    def as_dict(self) -> dict[str, int | bool]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
 class OrderIdentityMergeStats:
     matched_order_lines: int = 0
     updated_order_lines: int = 0
@@ -179,6 +198,7 @@ class OrderIdentityMergeStats:
 BackfillCliSummary = (
     BackfillSummary
     | ItemDetailEnrichmentSummary
+    | ShipmentRealShippingCostEnrichmentSummary
     | OrderLineIdentityBackfillSummary
     | OrderIdentityRepairSummary
     | OrderNormalizationSummary
@@ -192,7 +212,14 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--seller-id", required=True, help="Seller id to backfill.")
     parser.add_argument(
         "--source",
-        choices=("items", "items-enrich", "order-lines", "orders-repair", "orders-normalize"),
+        choices=(
+            "items",
+            "items-enrich",
+            "shipments-costs",
+            "order-lines",
+            "orders-repair",
+            "orders-normalize",
+        ),
         default="items",
         help="Read-model source to backfill (default: items).",
     )
@@ -233,6 +260,15 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help=(
             "Enable gated /sites/{site}/listing_prices fixed-fee enrichment after approved "
             "runtime validation."
+        ),
+    )
+    parser.add_argument(
+        "--limit",
+        type=_positive_int_arg,
+        default=SHIPMENT_REAL_SHIPPING_COST_ENRICHMENT_LIMIT,
+        help=(
+            "Maximum persisted shipments to inspect for shipments-costs enrichment "
+            f"(default: {SHIPMENT_REAL_SHIPPING_COST_ENRICHMENT_LIMIT})."
         ),
     )
     return parser
@@ -586,6 +622,80 @@ async def run_item_detail_enrichment(
         listing_fixed_fee_enriched=listing_fixed_fee_enriched,
         listing_fixed_fee_unavailable=listing_fixed_fee_unavailable,
         listing_fixed_fee_missing_params=listing_fixed_fee_missing_params,
+    )
+
+
+async def run_shipment_real_shipping_cost_enrichment(
+    *,
+    db: Any,
+    gateway: MeliItemGatewayClient,
+    seller_id: str,
+    dry_run: bool = True,
+    limit: int = SHIPMENT_REAL_SHIPPING_COST_ENRICHMENT_LIMIT,
+) -> ShipmentRealShippingCostEnrichmentSummary:
+    if limit < 1:
+        msg = "limit must be positive"
+        raise ValueError(msg)
+
+    shipments = await _load_shipments_needing_real_shipping_cost(
+        db=db,
+        seller_id=seller_id,
+        limit=limit,
+    )
+    synced_at = datetime.now(UTC)
+    seen_shipment_ids: set[str] = set()
+    shipments_with_id = 0
+    shipment_costs_requested = 0
+    shipment_real_shipping_costs_enriched = 0
+    shipment_real_shipping_costs_unavailable = 0
+    write_plans: list[tuple[dict[str, Any], dict[str, Any]]] = []
+
+    for shipment in shipments:
+        shipment_id = _optional_string(shipment.get("_id") or shipment.get("id"))
+        if shipment_id is None or shipment_id in seen_shipment_ids:
+            continue
+        seen_shipment_ids.add(shipment_id)
+        shipments_with_id += 1
+        shipment_costs_requested += 1
+        projection = await _resolve_shipment_real_shipping_cost_projection(
+            gateway=gateway,
+            seller_id=seller_id,
+            shipment_id=shipment_id,
+            synced_at=synced_at,
+        )
+        if projection is None:
+            shipment_real_shipping_costs_unavailable += 1
+            continue
+        shipment_real_shipping_costs_enriched += 1
+        write_plans.append(
+            (
+                {"_id": shipment_id, "seller_id": seller_id},
+                {"$set": {"real_shipping_cost": projection}},
+            )
+        )
+
+    shipments_updated = 0
+    if not dry_run:
+        shipments_collection = db[SHIPMENTS_COLLECTION]
+        for filter_spec, update in write_plans:
+            await shipments_collection.update_one(
+                filter_spec,
+                update,
+                upsert=False,
+                bypass_document_validation=False,
+            )
+            shipments_updated += 1
+
+    return ShipmentRealShippingCostEnrichmentSummary(
+        dry_run=dry_run,
+        limit=limit,
+        shipments_read=len(shipments),
+        shipments_with_id=shipments_with_id,
+        shipment_costs_requested=shipment_costs_requested,
+        shipment_real_shipping_costs_enriched=shipment_real_shipping_costs_enriched,
+        shipment_real_shipping_costs_unavailable=shipment_real_shipping_costs_unavailable,
+        shipments_planned=len(write_plans),
+        shipments_updated=shipments_updated,
     )
 
 
@@ -1453,18 +1563,20 @@ def _formula_row_with_better_live_paused_scalar_tuple(
         return planned
     if _optional_string(existing_current.get("status")) != "paused":
         return planned
-    planned_scalars = {
+    planned_scalars_raw = {
         field: bson_ms_utc_datetime(planned_current.get(field))
         for field in STATUS_HISTORY_SCALAR_FIELDS
     }
-    existing_scalars = {
+    existing_scalars_raw = {
         field: bson_ms_utc_datetime(existing_current.get(field))
         for field in STATUS_HISTORY_SCALAR_FIELDS
     }
-    if any(value is None for value in planned_scalars.values()) or any(
-        value is None for value in existing_scalars.values()
+    if any(value is None for value in planned_scalars_raw.values()) or any(
+        value is None for value in existing_scalars_raw.values()
     ):
         return planned
+    planned_scalars = cast("dict[str, datetime]", planned_scalars_raw)
+    existing_scalars = cast("dict[str, datetime]", existing_scalars_raw)
     if existing_scalars["paused_since"] >= planned_scalars["paused_since"]:
         return planned
     if any(
@@ -1502,6 +1614,25 @@ def _status_observed_at_guard(field: str, observed_at: datetime | None) -> dict[
             {field: {"$lte": observed_at}},
         ]
     }
+
+
+async def _load_shipments_needing_real_shipping_cost(
+    *, db: Any, seller_id: str, limit: int
+) -> list[dict[str, Any]]:
+    cursor = (
+        db[SHIPMENTS_COLLECTION]
+        .find(
+            {
+                "seller_id": seller_id,
+                "$or": [
+                    {"real_shipping_cost": {"$exists": False}},
+                    {"real_shipping_cost": None},
+                ],
+            }
+        )
+        .sort([("_id", 1)])
+    )
+    return cast("list[dict[str, Any]]", await cursor.to_list(length=limit))
 
 
 def _chunks(items: Sequence[str], size: int) -> Sequence[list[str]]:
@@ -1604,6 +1735,33 @@ async def _resolve_sale_price_projection(
     except (RuntimeError, GatewayRateLimitError, httpx.HTTPStatusError, httpx.RequestError):
         return None
     return project_sale_price_projection(response, synced_at=synced_at)
+
+
+async def _resolve_shipment_real_shipping_cost_projection(
+    *,
+    gateway: MeliItemGatewayClient,
+    seller_id: str,
+    shipment_id: str,
+    synced_at: datetime,
+) -> dict[str, Any] | None:
+    try:
+        response = await gateway.fetch_resource(
+            seller_id=seller_id,
+            path=_shipment_costs_path(shipment_id),
+        )
+    except (RuntimeError, GatewayRateLimitError, httpx.HTTPStatusError, httpx.RequestError):
+        return None
+    projection = ShipmentRealShippingCostProjection.from_meli_costs_payload(
+        response,
+        seller_id=seller_id,
+        synced_at=synced_at,
+    )
+    return _schema_safe_shipment_real_shipping_cost_projection(projection)
+
+
+def _shipment_costs_path(shipment_id: str) -> str:
+    escaped_shipment_id = quote(shipment_id, safe="")
+    return f"/shipments/{escaped_shipment_id}/costs"
 
 
 def _sale_price_path(item_id: str) -> str:
@@ -2302,6 +2460,31 @@ def project_listing_price_fixed_fee_projection(
     return _schema_safe_listing_fixed_fee(projection)
 
 
+def _schema_safe_shipment_real_shipping_cost_projection(
+    value: ShipmentRealShippingCostProjection | None,
+) -> dict[str, Any] | None:
+    if value is None:
+        return None
+    raw_projection = value.model_dump(mode="python", exclude_none=True)
+    seller_cost = _decimal128_or_none(raw_projection["seller_cost"])
+    if seller_cost is None:
+        return None
+    projection: dict[str, Any] = {
+        "source": raw_projection["source"],
+        "seller_cost": seller_cost,
+        "synced_at": raw_projection["synced_at"],
+    }
+    if raw_projection.get("receiver_cost") is not None:
+        receiver_cost = _decimal128_or_none(raw_projection["receiver_cost"])
+        if receiver_cost is None:
+            return None
+        projection["receiver_cost"] = receiver_cost
+    for key in ("currency_id", "matched_sender_id"):
+        if raw_projection.get(key) is not None:
+            projection[key] = raw_projection[key]
+    return projection
+
+
 def _normalize_mongo_loaded_promo_datetimes(value: dict[str, Any]) -> dict[str, Any]:
     normalized = dict(value)
     for key in ("reference_at", "synced_at"):
@@ -2721,6 +2904,20 @@ async def _run_cli(args: argparse.Namespace) -> BackfillCliSummary:
                 sale_price_enabled=bool(args.sale_price_enabled),
                 listing_fixed_fee_enabled=bool(args.listing_fixed_fee_enabled),
             )
+        if args.source == "shipments-costs":
+            from google.cloud import kms
+
+            gateway = MeliGatewayClient(
+                os.environ.get("GATEWAY_BASE_URL", DEFAULT_GATEWAY_BASE_URL),
+                MeliGatewayAuth("sheets", kms.KeyManagementServiceClient()),
+            )
+            return await run_shipment_real_shipping_cost_enrichment(
+                db=client[mongo_db_name],
+                gateway=gateway,
+                seller_id=args.seller_id,
+                dry_run=args.dry_run,
+                limit=cast("int", args.limit),
+            )
         if args.source == "order-lines":
             return await run_order_line_identity_backfill(
                 db=client[mongo_db_name],
@@ -2740,6 +2937,13 @@ def _require_order_dates(args: argparse.Namespace) -> tuple[str, str]:
     if not args.date_from or not args.date_to:
         raise SystemExit("--date-from and --date-to are required for order-scoped sources")
     return str(args.date_from), str(args.date_to)
+
+
+def _positive_int_arg(value: str) -> int:
+    parsed = int(value)
+    if parsed < 1:
+        raise argparse.ArgumentTypeError("must be greater than zero")
+    return parsed
 
 
 def main(argv: Sequence[str] | None = None) -> None:

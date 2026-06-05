@@ -10,7 +10,9 @@ from datetime import UTC, date, datetime, timedelta
 from typing import Any, Protocol, cast
 from urllib.parse import urlencode
 
+from zeler_platform_core.models import ShipmentRealShippingCostProjection
 from zeler_sheets.event_persistence import SheetsEventPersistence
+from zeler_sheets.sheetseller_backfill import _schema_safe_shipment_real_shipping_cost_projection
 
 DEFAULT_GATEWAY_BASE_URL = "http://gateway:8080/proxy/meli"
 DEFAULT_GATEWAY_MODULE_ID = "bootstrap"
@@ -51,6 +53,9 @@ class HistoricalMeliBackfillSummary:
     address_missing: int
     address_unauthorized: int
     redacted_errors: int
+    shipment_costs_requested: int
+    shipment_real_shipping_costs_enriched: int
+    shipment_real_shipping_costs_unavailable: int
     item_detail_missing: int
     existing_orders: int
     existing_items: int
@@ -90,6 +95,9 @@ class ShipmentFetchResult:
     address_missing: int
     address_unauthorized: int
     redacted_errors: int
+    shipment_costs_requested: int
+    shipment_real_shipping_costs_enriched: int
+    shipment_real_shipping_costs_unavailable: int
 
 
 def parse_inclusive_date_range(date_from: str, date_to: str) -> InclusiveDateRange:
@@ -230,6 +238,13 @@ async def run_historical_meli_backfill(
         address_missing=shipment_fetch.address_missing,
         address_unauthorized=shipment_fetch.address_unauthorized,
         redacted_errors=shipment_fetch.redacted_errors,
+        shipment_costs_requested=shipment_fetch.shipment_costs_requested,
+        shipment_real_shipping_costs_enriched=(
+            shipment_fetch.shipment_real_shipping_costs_enriched
+        ),
+        shipment_real_shipping_costs_unavailable=(
+            shipment_fetch.shipment_real_shipping_costs_unavailable
+        ),
         item_detail_missing=len(missing_item_detail_ids),
         existing_orders=existing_orders,
         existing_items=existing_items,
@@ -327,6 +342,10 @@ async def _fetch_shipments(
     address_missing = 0
     address_unauthorized = 0
     redacted_errors = 0
+    shipment_costs_requested = 0
+    shipment_real_shipping_costs_enriched = 0
+    shipment_real_shipping_costs_unavailable = 0
+    synced_at = datetime.now(UTC)
 
     for shipment_id in shipment_ids:
         try:
@@ -351,6 +370,20 @@ async def _fetch_shipments(
             address_missing += 1
         if not include_buyer_address_pii:
             shipment.pop("receiver_address", None)
+        fetched_shipment_id = _resource_id(shipment)
+        if fetched_shipment_id is not None and "real_shipping_cost" not in shipment:
+            shipment_costs_requested += 1
+            real_shipping_cost = await _resolve_shipment_real_shipping_cost(
+                gateway=gateway,
+                seller_id=seller_id,
+                shipment_id=fetched_shipment_id,
+                synced_at=synced_at,
+            )
+            if real_shipping_cost is None:
+                shipment_real_shipping_costs_unavailable += 1
+            else:
+                shipment["real_shipping_cost"] = real_shipping_cost
+                shipment_real_shipping_costs_enriched += 1
         shipments.append(shipment)
 
     return ShipmentFetchResult(
@@ -360,7 +393,34 @@ async def _fetch_shipments(
         address_missing=address_missing,
         address_unauthorized=address_unauthorized,
         redacted_errors=redacted_errors,
+        shipment_costs_requested=shipment_costs_requested,
+        shipment_real_shipping_costs_enriched=shipment_real_shipping_costs_enriched,
+        shipment_real_shipping_costs_unavailable=shipment_real_shipping_costs_unavailable,
     )
+
+
+async def _resolve_shipment_real_shipping_cost(
+    *,
+    gateway: HistoricalMeliGateway,
+    seller_id: str,
+    shipment_id: str,
+    synced_at: datetime,
+) -> dict[str, Any] | None:
+    try:
+        costs_payload = await gateway.fetch_resource(
+            seller_id=seller_id,
+            path=f"/shipments/{shipment_id}/costs",
+        )
+    except Exception:  # noqa: BLE001 - costs enrichment fails closed with sanitized counters.
+        return None
+    projection = ShipmentRealShippingCostProjection.from_meli_costs_payload(
+        costs_payload,
+        seller_id=seller_id,
+        synced_at=synced_at,
+    )
+    if projection is None:
+        return None
+    return _schema_safe_shipment_real_shipping_cost_projection(projection)
 
 
 async def _count_existing(*, db: Any, collection: str, seller_id: str, ids: Sequence[str]) -> int:

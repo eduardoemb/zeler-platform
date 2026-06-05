@@ -28,6 +28,7 @@ class FakeDb:
 
 
 def test_sheets_manifest_validates_owned_collections_and_readonly_scopes() -> None:
+    from zeler_gateway.proxy.router import _scope_matches
     from zeler_platform_core.runtime.manifest import validate_manifest
 
     manifest = validate_manifest("modules/sheets/manifest.yaml")
@@ -48,6 +49,9 @@ def test_sheets_manifest_validates_owned_collections_and_readonly_scopes() -> No
         "GET /orders/*",
         "GET /shipments/*",
     ]
+    assert _scope_matches(
+        method="GET", path="/shipments/3001/costs", allowed_scopes=manifest.allowed_meli_scopes
+    )
     assert manifest.display_identity.display_name == "ZelerData"
 
 
