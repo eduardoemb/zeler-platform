@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from decimal import Decimal
 from typing import Any
 
 import httpx
@@ -1646,6 +1647,189 @@ async def test_order_tables_return_na_for_fixed_fee_mismatch_from_backfill_row()
 
 
 @pytest.mark.asyncio
+async def test_find_shipment_real_shipping_costs_returns_seller_scoped_seller_costs_only() -> None:
+    db = FakeDb()
+    db["shipments"].documents = {
+        "ship-ok": _shipment_doc(
+            "ship-ok",
+            seller_id="seller-1",
+            real_shipping_cost={
+                "source": "/shipments/{shipment_id}/costs",
+                "seller_cost": "27.90",
+                "receiver_cost": "11.10",
+                "currency_id": "ARS",
+            },
+        ),
+        "ship-receiver-only": _shipment_doc(
+            "ship-receiver-only",
+            seller_id="seller-1",
+            real_shipping_cost={
+                "source": "/shipments/{shipment_id}/costs",
+                "receiver_cost": "99.99",
+            },
+        ),
+        "ship-malformed": _shipment_doc(
+            "ship-malformed",
+            seller_id="seller-1",
+            real_shipping_cost={"seller_cost": {"raw": "unsafe"}},
+        ),
+        "ship-other-seller": _shipment_doc(
+            "ship-other-seller",
+            seller_id="seller-2",
+            real_shipping_cost={
+                "source": "/shipments/{shipment_id}/costs",
+                "seller_cost": "888",
+            },
+        ),
+    }
+    repository = FormulaReadModelRepository(db=db)
+
+    result = await repository.find_shipment_real_shipping_costs(
+        seller_id="seller-1",
+        shipment_ids=["ship-ok", "ship-ok", "ship-receiver-only", "ship-malformed", "missing"],
+    )
+
+    assert result == {"ship-ok": Decimal("27.90")}
+    assert db["shipments"].last_find_filter == {
+        "seller_id": "seller-1",
+        "_id": {"$in": ["ship-ok", "ship-receiver-only", "ship-malformed", "missing"]},
+    }
+
+
+@pytest.mark.asyncio
+async def test_ordenes_renders_seller_paid_real_shipping_cost_from_shipment_projection() -> None:
+    db = FakeDb()
+    db["orders"].documents = {
+        "order-1": _order_doc(
+            "order-1",
+            seller_id="seller-1",
+            status="paid",
+            date_created=datetime(2026, 5, 10, 8, 0, tzinfo=UTC),
+            total_amount=39,
+            shipment_id="ship-1",
+            items=[{"sku": "sku-1", "item_id": "MLA1", "title": "Shipped item", "qty": 1}],
+        )
+    }
+    db["shipments"].documents = {
+        "ship-1": _shipment_doc(
+            "ship-1",
+            seller_id="seller-1",
+            real_shipping_cost={
+                "source": "/shipments/{shipment_id}/costs",
+                "seller_cost": "27.90",
+                "receiver_cost": "11.10",
+                "currency_id": "ARS",
+            },
+        )
+    }
+    dispatcher = _order_question_dispatcher(db)
+
+    result = await dispatcher.execute(
+        _context(
+            "ZELERDATA_ORDENES",
+            {"fecha_inicial": "2026-05-10", "fecha_final": "2026-05-10"},
+        )
+    )
+
+    assert result.values[0][11] == 27.9
+    assert db["shipments"].last_find_filter == {
+        "seller_id": "seller-1",
+        "_id": {"$in": ["ship-1"]},
+    }
+
+
+@pytest.mark.asyncio
+async def test_ordenes_fails_closed_without_seller_cost_and_ignores_estimates() -> None:
+    db = FakeDb()
+    db["orders"].documents = {
+        "receiver-only": _order_doc(
+            "receiver-only",
+            seller_id="seller-1",
+            status="paid",
+            date_created=datetime(2026, 5, 10, 8, 0, tzinfo=UTC),
+            total_amount=39,
+            shipment_id="ship-receiver-only",
+            items=[{"sku": "sku-1", "item_id": "MLA1", "title": "Receiver-only", "qty": 1}],
+        ),
+        "no-shipment": _order_doc(
+            "no-shipment",
+            seller_id="seller-1",
+            status="paid",
+            date_created=datetime(2026, 5, 10, 9, 0, tzinfo=UTC),
+            total_amount=40,
+            items=[{"sku": "sku-2", "item_id": "MLA2", "title": "No shipment", "qty": 1}],
+        ),
+    }
+    db["shipments"].documents = {
+        "ship-receiver-only": _shipment_doc(
+            "ship-receiver-only",
+            seller_id="seller-1",
+            real_shipping_cost={
+                "source": "/shipments/{shipment_id}/costs",
+                "receiver_cost": "99.99",
+            },
+        )
+    }
+    db["sheets_item_formula_rows"].documents = {
+        "seller-1:SKU-1:MLA1": _item_formula_row("seller-1", "SKU-1", "MLA1", stock=1)
+        | {"current": {"seller_shipping_cost": "88.88"}}
+    }
+    dispatcher = _order_question_dispatcher(db)
+
+    result = await dispatcher.execute(
+        _context(
+            "ZELERDATA_ORDENES",
+            {"fecha_inicial": "2026-05-10", "fecha_final": "2026-05-10"},
+        )
+    )
+
+    assert [row[11] for row in result.values] == ["NA", "NA"]
+
+
+@pytest.mark.asyncio
+async def test_ordenes_por_sku_repeats_full_real_shipping_cost_for_each_sku_row() -> None:
+    db = FakeDb()
+    db["orders"].documents = {
+        "order-1": _order_doc(
+            "order-1",
+            seller_id="seller-1",
+            status="paid",
+            date_created=datetime(2026, 5, 10, 8, 0, tzinfo=UTC),
+            total_amount=80,
+            shipment_id="ship-1",
+            items=[
+                {"sku": "sku-1", "item_id": "MLA1", "title": "First SKU", "qty": 1},
+                {"sku": "sku-2", "item_id": "MLA2", "title": "Second SKU", "qty": 1},
+            ],
+        )
+    }
+    db["shipments"].documents = {
+        "ship-1": _shipment_doc(
+            "ship-1",
+            seller_id="seller-1",
+            real_shipping_cost={
+                "source": "/shipments/{shipment_id}/costs",
+                "seller_cost": "45.20",
+            },
+        )
+    }
+    dispatcher = _order_question_dispatcher(db)
+
+    result = await dispatcher.execute(
+        _context(
+            "ZELERDATA_ORDENESPORSKU",
+            {
+                "skus": [["sku-1"], ["sku-2"]],
+                "fecha_inicial": "2026-05-10",
+                "fecha_final": "2026-05-10",
+            },
+        )
+    )
+
+    assert [row[11] for row in result.values] == [45.2, 45.2]
+
+
+@pytest.mark.asyncio
 async def test_ordenes_por_sku_buyer_id_filter_includes_buyer_columns() -> None:
     db = FakeDb()
     db["orders"].documents = {
@@ -2825,6 +3009,23 @@ def _order_formula_row(
         "current": {"title": item_id} | current,
         "schema_version": 1,
     }
+
+
+def _shipment_doc(
+    shipment_id: str,
+    *,
+    seller_id: str,
+    real_shipping_cost: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    shipment: dict[str, Any] = {
+        "_id": shipment_id,
+        "seller_id": seller_id,
+        "status": "delivered",
+        "schema_version": 1,
+    }
+    if real_shipping_cost is not None:
+        shipment["real_shipping_cost"] = real_shipping_cost
+    return shipment
 
 
 def _sort_value(value: Any) -> Any:

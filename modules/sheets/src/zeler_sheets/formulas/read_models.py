@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from decimal import Decimal, DecimalException
 from typing import Any, cast
 
 from zeler_sheets.formulas.dispatcher import FormulaDataUnavailableError
@@ -24,6 +25,10 @@ SHIPMENT_RECEIVER_ADDRESS_PROJECTION = {
     "receiver_address.city": 1,
     "receiver_address.state": 1,
     "receiver_address.country": 1,
+}
+SHIPMENT_REAL_SHIPPING_COST_PROJECTION = {
+    "_id": 1,
+    "real_shipping_cost.seller_cost": 1,
 }
 
 
@@ -140,6 +145,40 @@ class FormulaReadModelRepository:
                 snapshots[shipment_id] = receiver_address
         return snapshots
 
+    async def find_shipment_real_shipping_costs(
+        self,
+        *,
+        seller_id: str,
+        shipment_ids: list[str] | tuple[str, ...],
+        limit: int = 1000,
+    ) -> dict[str, Decimal]:
+        normalized_shipment_ids = list(
+            dict.fromkeys(
+                str(shipment_id).strip() for shipment_id in shipment_ids if str(shipment_id).strip()
+            )
+        )
+        if not normalized_shipment_ids:
+            return {}
+        cursor = _find_with_optional_projection(
+            self._shipments,
+            {"seller_id": seller_id, "_id": {"$in": normalized_shipment_ids}},
+            SHIPMENT_REAL_SHIPPING_COST_PROJECTION,
+        )
+        rows = cast(
+            "list[dict[str, Any]]",
+            await cursor.to_list(length=max(limit, len(normalized_shipment_ids))),
+        )
+        costs: dict[str, Decimal] = {}
+        for row in rows:
+            shipment_id = str(row.get("_id") or "").strip()
+            projection = row.get("real_shipping_cost")
+            if not shipment_id or not isinstance(projection, dict):
+                continue
+            seller_cost = _finite_non_negative_decimal(projection.get("seller_cost"))
+            if seller_cost is not None:
+                costs[shipment_id] = seller_cost
+        return costs
+
     async def find_questions(
         self,
         *,
@@ -210,6 +249,18 @@ def _find_with_optional_projection(
 
 def normalize_sku(sku: Any) -> str:
     return str(sku).strip().upper()
+
+
+def _finite_non_negative_decimal(value: Any) -> Decimal | None:
+    if value is None or isinstance(value, (bool, dict, list, tuple, set)):
+        return None
+    try:
+        parsed = value if isinstance(value, Decimal) else Decimal(str(value))
+    except (DecimalException, ValueError):
+        return None
+    if not parsed.is_finite() or parsed < 0:
+        return None
+    return parsed
 
 
 def _seller_item_filter(

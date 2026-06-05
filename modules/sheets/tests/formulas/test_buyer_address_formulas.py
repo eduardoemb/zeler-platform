@@ -77,6 +77,7 @@ class FakeCollection:
         self.documents: dict[str, dict[str, Any]] = {}
         self.last_find_filter: dict[str, Any] | None = None
         self.last_find_projection: dict[str, Any] | None = None
+        self.find_calls: list[dict[str, dict[str, Any] | None]] = []
 
     def find(
         self,
@@ -85,6 +86,12 @@ class FakeCollection:
     ) -> FakeCursor:
         self.last_find_filter = dict(filter_spec)
         self.last_find_projection = dict(projection) if projection is not None else None
+        self.find_calls.append(
+            {
+                "filter": dict(filter_spec),
+                "projection": dict(projection) if projection is not None else None,
+            }
+        )
         docs = [dict(doc) for doc in self.documents.values() if _matches(doc, filter_spec)]
         if projection is not None:
             docs = [_project(doc, projection) for doc in docs]
@@ -171,11 +178,13 @@ async def test_order_formulas_use_projected_shipment_snapshot_for_exact_buyer_fi
         "buyer_filter_count": 0,
         "columns": "legacy_order_lines_with_buyers",
     }
-    assert db["shipments"].last_find_filter == {
+    shipment_filter = {
         "seller_id": "seller-1",
         "_id": {"$in": ["shipment-allowed"]},
     }
-    assert db["shipments"].last_find_projection == _shipment_projection()
+    assert {"filter": shipment_filter, "projection": _shipment_projection()} in db[
+        "shipments"
+    ].find_calls
     _assert_no_leaks(result.values, result.meta)
 
 
