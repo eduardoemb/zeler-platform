@@ -212,6 +212,10 @@ def test_unknown_formula_returns_stable_formula_unknown_code() -> None:
 def test_dashboard_output_column_fixture_locks_mvp_and_deferred_columns() -> None:
     fixture = _column_fixture()
     formulas = fixture["formulas"]
+    fixed_fee_source = (
+        "sheets_item_formula_rows.current.listing_price_fixed_fee.fixed_fee from "
+        "/sites/{site}/listing_prices.sale_fee_details.fixed_fee"
+    )
     expected_dashboard = [
         "ID Publicación",
         "Título",
@@ -274,10 +278,11 @@ def test_dashboard_output_column_fixture_locks_mvp_and_deferred_columns() -> Non
         )
         assert unit_cost_column == {
             "name": "Costo Por Unidad",
-            "source": "seller_unit_costs.unit_cost by seller-owned SKU/item/variation config",
+            "source": fixed_fee_source,
             "status": "mvp",
             "reason": (
-                "Returns NA unless an active unambiguous seller-owned unit cost config matches."
+                "Returns NA unless a validated persisted listing-prices fixed-fee projection "
+                "is present."
             ),
         }
         assert "Categoría" not in [column["name"] for column in columns]
@@ -293,6 +298,10 @@ def test_dashboard_output_column_fixture_locks_mvp_and_deferred_columns() -> Non
 def test_batch_b_output_column_fixture_locks_mvp_and_deferred_columns() -> None:
     fixture = _column_fixture()
     formulas = fixture["formulas"]
+    fixed_fee_source = (
+        "sheets_item_formula_rows.current.listing_price_fixed_fee.fixed_fee from "
+        "/sites/{site}/listing_prices.sale_fee_details.fixed_fee"
+    )
     buyer_address_columns = [
         "Nombre Comprador",
         "Calle",
@@ -347,11 +356,11 @@ def test_batch_b_output_column_fixture_locks_mvp_and_deferred_columns() -> None:
         )
         assert unit_cost_column == {
             "name": "Costo Por Unidad",
-            "source": "seller_unit_costs.unit_cost by seller-owned SKU/item/variation config",
+            "source": fixed_fee_source,
             "status": "mvp",
             "reason": (
-                "Returns NA unless an active unambiguous seller-owned unit cost config "
-                "matches order date."
+                "Returns NA unless a validated persisted listing-prices fixed-fee projection "
+                "is present for the order line item."
             ),
         }
     assert [

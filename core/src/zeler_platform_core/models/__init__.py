@@ -2,6 +2,7 @@ from zeler_platform_core.models.base import current_schema_version
 from zeler_platform_core.models.entities import (
     Claim,
     Item,
+    ListingPriceFixedFeeProjection,
     Message,
     Order,
     OrderItem,
@@ -50,6 +51,7 @@ __all__ = [
     "current_schema_version",
     "DomainEvent",
     "Item",
+    "ListingPriceFixedFeeProjection",
     "ItemPriceChanged",
     "ItemUpdated",
     "MeliAccount",

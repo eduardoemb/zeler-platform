@@ -26,6 +26,15 @@
           "long"
         ]
       },
+      "billable_weight": {
+        "bsonType": [
+          "decimal",
+          "double",
+          "int",
+          "long",
+          "null"
+        ]
+      },
       "catalog_product_id": {
         "bsonType": [
           "string",
@@ -34,6 +43,12 @@
       },
       "category_id": {
         "bsonType": "string"
+      },
+      "currency_id": {
+        "bsonType": [
+          "string",
+          "null"
+        ]
       },
       "current_promotion": {
         "additionalProperties": false,
@@ -126,6 +141,98 @@
       "last_updated": {
         "bsonType": "date"
       },
+      "listing_price_fixed_fee": {
+        "additionalProperties": false,
+        "bsonType": [
+          "object",
+          "null"
+        ],
+        "properties": {
+          "currency_id": {
+            "bsonType": "string"
+          },
+          "fixed_fee": {
+            "bsonType": [
+              "decimal",
+              "double",
+              "int",
+              "long"
+            ]
+          },
+          "params": {
+            "additionalProperties": false,
+            "bsonType": "object",
+            "properties": {
+              "billable_weight": {
+                "bsonType": [
+                  "decimal",
+                  "double",
+                  "int",
+                  "long",
+                  "null"
+                ]
+              },
+              "category_id": {
+                "bsonType": "string"
+              },
+              "currency_id": {
+                "bsonType": "string"
+              },
+              "listing_type_id": {
+                "bsonType": "string"
+              },
+              "logistic_type": {
+                "bsonType": [
+                  "string",
+                  "null"
+                ]
+              },
+              "price": {
+                "bsonType": [
+                  "decimal",
+                  "double",
+                  "int",
+                  "long"
+                ]
+              },
+              "shipping_mode": {
+                "bsonType": [
+                  "string",
+                  "null"
+                ]
+              },
+              "site_id": {
+                "bsonType": "string"
+              },
+              "tags": {
+                "bsonType": "array"
+              }
+            },
+            "required": [
+              "site_id",
+              "category_id",
+              "price",
+              "currency_id",
+              "listing_type_id"
+            ]
+          },
+          "source": {
+            "enum": [
+              "/sites/{site}/listing_prices"
+            ]
+          },
+          "synced_at": {
+            "bsonType": "date"
+          }
+        },
+        "required": [
+          "source",
+          "fixed_fee",
+          "currency_id",
+          "synced_at",
+          "params"
+        ]
+      },
       "listing_type_id": {
         "bsonType": [
           "string",
@@ -171,8 +278,17 @@
           "null"
         ]
       },
+      "site_id": {
+        "bsonType": [
+          "string",
+          "null"
+        ]
+      },
       "status": {
         "bsonType": "string"
+      },
+      "tags": {
+        "bsonType": "array"
       },
       "thumbnail": {
         "bsonType": [

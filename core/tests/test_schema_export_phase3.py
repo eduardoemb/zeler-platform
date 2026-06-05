@@ -26,6 +26,27 @@ def test_export_schemas_writes_mongo_wrapped_validators(tmp_path: Path) -> None:
     assert schema["properties"]["schema_version"]["bsonType"] == "int"
 
 
+def test_exported_items_schema_includes_listing_price_fixed_fee_projection(tmp_path: Path) -> None:
+    export_schemas(tmp_path)
+    payload = json.loads((tmp_path / "items.json").read_text(encoding="utf-8"))
+    schema = payload["$jsonSchema"]
+    projection = schema["properties"]["listing_price_fixed_fee"]
+
+    assert schema["properties"]["currency_id"] == {"bsonType": ["string", "null"]}
+    assert schema["properties"]["site_id"] == {"bsonType": ["string", "null"]}
+    assert projection["additionalProperties"] is False
+    assert projection["required"] == ["source", "fixed_fee", "currency_id", "synced_at", "params"]
+    assert projection["properties"]["source"] == {"enum": ["/sites/{site}/listing_prices"]}
+    assert projection["properties"]["params"]["additionalProperties"] is False
+    assert projection["properties"]["params"]["required"] == [
+        "site_id",
+        "category_id",
+        "price",
+        "currency_id",
+        "listing_type_id",
+    ]
+
+
 def test_module_registry_schema_exposes_optional_display_identity(tmp_path: Path) -> None:
     export_schemas(tmp_path)
     payload = json.loads((tmp_path / "module_registry.json").read_text(encoding="utf-8"))

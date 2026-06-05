@@ -231,7 +231,15 @@ def test_sheets_item_formula_rows_schema_supports_current_shipping_fields() -> N
     current_properties = validator["$jsonSchema"]["properties"]["current"]["properties"]
 
     assert current_properties["shipping_logistic_type"] == {"bsonType": ["string", "null"]}
+    assert current_properties["shipping_mode"] == {"bsonType": ["string", "null"]}
+    assert current_properties["logistic_type"] == {"bsonType": ["string", "null"]}
     assert current_properties["shipping_payer"] == {"bsonType": ["string", "null"]}
+    assert current_properties["billable_weight"] == {
+        "bsonType": ["int", "long", "double", "decimal", "null"]
+    }
+    assert current_properties["tags"] == {"bsonType": "array"}
+    assert current_properties["currency_id"] == {"bsonType": ["string", "null"]}
+    assert current_properties["site_id"] == {"bsonType": ["string", "null"]}
     assert current_properties["listing_type_id"] == {"bsonType": ["string", "null"]}
     assert current_properties["seller_shipping_cost"] == {
         "bsonType": ["int", "long", "double", "decimal", "null"]
@@ -257,6 +265,20 @@ def test_sheets_item_formula_rows_schema_supports_bounded_current_promotion_only
     assert "prices" not in current_promotion["properties"]
 
 
+def test_sheets_item_formula_rows_schema_supports_bounded_listing_price_fixed_fee_only() -> None:
+    validator = json.loads((ROOT / "infra/mongo/schemas/sheets_item_formula_rows.json").read_text())
+    projection = validator["$jsonSchema"]["properties"]["current"]["properties"][
+        "listing_price_fixed_fee"
+    ]
+
+    assert projection["additionalProperties"] is False
+    assert projection["required"] == ["source", "fixed_fee", "currency_id", "synced_at", "params"]
+    assert projection["properties"]["source"] == {"enum": ["/sites/{site}/listing_prices"]}
+    assert projection["properties"]["params"]["additionalProperties"] is False
+    assert "raw_payload" not in projection["properties"]
+    assert "buyer" not in projection["properties"]
+
+
 def test_items_schema_supports_v2_formula_fields_without_raw_payload_drift() -> None:
     validator = json.loads((ROOT / "infra/mongo/schemas/items.json").read_text())
     schema = validator["$jsonSchema"]
@@ -270,6 +292,17 @@ def test_items_schema_supports_v2_formula_fields_without_raw_payload_drift() -> 
     assert schema["properties"]["seller_shipping_cost"] == {
         "bsonType": ["decimal", "double", "int", "long", "null"]
     }
+    assert schema["properties"]["billable_weight"] == {
+        "bsonType": ["decimal", "double", "int", "long", "null"]
+    }
+    assert schema["properties"]["tags"] == {"bsonType": "array"}
+    assert schema["properties"]["currency_id"] == {"bsonType": ["string", "null"]}
+    assert schema["properties"]["site_id"] == {"bsonType": ["string", "null"]}
+    fixed_fee = schema["properties"]["listing_price_fixed_fee"]
+    assert fixed_fee["additionalProperties"] is False
+    assert fixed_fee["required"] == ["source", "fixed_fee", "currency_id", "synced_at", "params"]
+    assert fixed_fee["properties"]["source"] == {"enum": ["/sites/{site}/listing_prices"]}
+    assert fixed_fee["properties"]["params"]["additionalProperties"] is False
     current_promotion = schema["properties"]["current_promotion"]
     assert current_promotion["additionalProperties"] is False
     assert current_promotion["required"] == [
@@ -282,6 +315,7 @@ def test_items_schema_supports_v2_formula_fields_without_raw_payload_drift() -> 
     ]
     assert "raw_payload" not in current_promotion["properties"]
     assert "prices" not in current_promotion["properties"]
+    assert "raw_payload" not in fixed_fee["properties"]
     assert "raw_payload_blob" not in schema["properties"]
     assert schema["required"] == [
         "_id",
@@ -333,3 +367,11 @@ def test_sheets_manifest_owns_google_oauth_tokens_not_transient_state() -> None:
     assert "google_oauth_tokens" in manifest.owned_collections
     assert "seller_unit_costs" in manifest.owned_collections
     assert "google_oauth_state" not in manifest.owned_collections
+
+
+def test_sheets_manifest_allows_listing_prices_scope() -> None:
+    from zeler_platform_core.runtime.manifest import validate_manifest
+
+    manifest = validate_manifest("modules/sheets/manifest.yaml")
+
+    assert "GET /sites/*/listing_prices" in manifest.allowed_meli_scopes
