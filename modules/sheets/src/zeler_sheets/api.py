@@ -15,6 +15,7 @@ from pydantic import BaseModel, Field
 
 from zeler_platform_core.auth.jwt import verify_module_jwt
 from zeler_platform_core.auth.module_admin import authorize_module_admin
+from zeler_platform_core.models import SellerUnitCost
 from zeler_sheets.extension_tokens import (
     AuditHook,
     ExtensionTokenService,
@@ -55,6 +56,19 @@ class ExtensionTokenPayload(BaseModel):
     seller_scopes: list[SellerScope]
     formula_scopes: list[str] | None = None
     expires_at: datetime | None = None
+
+
+class UnitCostConfigPayload(BaseModel):
+    normalized_sku: str | None = None
+    item_id: str | None = None
+    variation_id: str | None = None
+    unit_cost: Decimal
+    currency: str
+    source: str
+    effective_from: datetime | None = None
+    effective_to: datetime | None = None
+    created_by: str | None = None
+    updated_by: str | None = None
 
 
 ZELER_PLATFORM_APP_ID = "zeler-platform"
@@ -176,6 +190,62 @@ def build_router(
             .to_list(length=20)
         )
         return JSONResponse(jsonable_encoder(docs))
+
+    @router.get("/unit-costs")
+    async def list_unit_costs(request: Request, seller_id: str) -> JSONResponse:
+        auth = _authorize(request, seller_id=seller_id)
+        if auth is not None:
+            return auth
+        docs = (
+            await request.app.state.mongo_db["seller_unit_costs"]
+            .find({"seller_id": seller_id})
+            .sort([("normalized_sku", 1), ("item_id", 1), ("variation_id", 1)])
+            .to_list(length=500)
+        )
+        return JSONResponse(jsonable_encoder(_unit_cost_json_safe(docs)))
+
+    @router.put("/unit-costs/{seller_id}")
+    async def upsert_unit_cost(
+        request: Request, seller_id: str, payload: UnitCostConfigPayload
+    ) -> JSONResponse:
+        auth = _authorize(request, seller_id=seller_id)
+        if auth is not None:
+            return auth
+        current_time = now()
+        payload_doc = payload.model_dump()
+        effective_from = payload_doc.pop("effective_from") or current_time
+        model_doc = SellerUnitCost(
+            _id=_unit_cost_id(seller_id, payload),
+            seller_id=seller_id,
+            status="active",
+            effective_from=effective_from,
+            created_at=current_time,
+            updated_at=current_time,
+            **payload_doc,
+        ).model_dump(by_alias=True)
+        doc = cast(dict[str, Any], _bson_safe(model_doc))
+        await request.app.state.mongo_db["seller_unit_costs"].replace_one(
+            {"_id": doc["_id"]}, doc, upsert=True
+        )
+        return JSONResponse(jsonable_encoder(_unit_cost_json_safe(doc)))
+
+    @router.post("/unit-costs/{seller_id}/{unit_cost_id}:deactivate")
+    async def deactivate_unit_cost(
+        request: Request, seller_id: str, unit_cost_id: str
+    ) -> JSONResponse:
+        auth = _authorize(request, seller_id=seller_id)
+        if auth is not None:
+            return auth
+        collection = request.app.state.mongo_db["seller_unit_costs"]
+        existing = await collection.find_one({"_id": unit_cost_id, "seller_id": seller_id})
+        if existing is None:
+            return JSONResponse(status_code=404, content={"error": "unit_cost_not_found"})
+        await collection.update_one(
+            {"_id": unit_cost_id, "seller_id": seller_id},
+            {"$set": {"status": "inactive", "updated_at": now()}},
+        )
+        updated = await collection.find_one({"_id": unit_cost_id, "seller_id": seller_id})
+        return JSONResponse(jsonable_encoder(_unit_cost_json_safe(updated)))
 
     @router.get("/extension-tokens")
     async def list_extension_tokens(
@@ -550,6 +620,28 @@ def _decimal_to_sheet_number(value: Decimal) -> int | float | str:
     return float(value)
 
 
+def _bson_safe(value: Any) -> Any:
+    if isinstance(value, Decimal):
+        return Decimal128(value)
+    if isinstance(value, list):
+        return [_bson_safe(item) for item in value]
+    if isinstance(value, dict):
+        return {key: _bson_safe(item) for key, item in value.items()}
+    return value
+
+
+def _unit_cost_json_safe(value: Any) -> Any:
+    if isinstance(value, Decimal128):
+        return _decimal_to_sheet_number(value.to_decimal())
+    if isinstance(value, Decimal):
+        return _decimal_to_sheet_number(value)
+    if isinstance(value, list):
+        return [_unit_cost_json_safe(item) for item in value]
+    if isinstance(value, dict):
+        return {key: _unit_cost_json_safe(item) for key, item in value.items()}
+    return value
+
+
 def _missing_required_argument(contract: FormulaContract, args: dict[str, Any]) -> str | None:
     for parameter in contract.parameters:
         if parameter.name == "cuenta":
@@ -592,6 +684,18 @@ def _seller_scope_forbidden(
             content={"error": "forbidden", "detail": "seller scopes must match JWT seller_id"},
         )
     return None
+
+
+def _unit_cost_id(seller_id: str, payload: UnitCostConfigPayload) -> str:
+    identity = ":".join(
+        [
+            str(seller_id).strip(),
+            str(payload.normalized_sku or "_").strip().upper() or "_",
+            str(payload.item_id or "_").strip() or "_",
+            str(payload.variation_id or "_").strip() or "_",
+        ]
+    )
+    return f"seller-unit-cost:{identity}"
 
 
 def _extension_token_owner(claims: Any) -> str:

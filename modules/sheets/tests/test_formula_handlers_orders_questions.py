@@ -1,4 +1,5 @@
 # ruff: noqa: S105,S106
+# fmt: off
 
 from __future__ import annotations
 
@@ -17,6 +18,7 @@ from zeler_sheets.formulas.handlers_orders_questions import (
 )
 from zeler_sheets.formulas.read_models import FormulaReadModelRepository
 from zeler_sheets.formulas.registry import FormulaRegistry
+from zeler_sheets.sheetseller_backfill import build_formula_row_doc
 
 
 class FakeUpdateResult:
@@ -376,20 +378,9 @@ async def test_ordenes_compradores_boolean_flag_adds_buyer_columns_without_filte
             buyer_id="buyer-1",
             date_created="2026-05-10T10:30:00Z",
             total_amount="100.00",
+            shipment_id="shipment-1",
             items=[{"sku": "sku-1", "item_id": "MLA1", "title": "First item", "quantity": 2}],
-        )
-        | {
-            "buyer_name": "Ada Lovelace",
-            "buyer_address": {
-                "street_name": "Main St",
-                "street_number": "123",
-                "neighborhood": {"name": "Centro"},
-                "zip_code": "12345",
-                "city": {"name": "Montevideo"},
-                "state": {"name": "Montevideo"},
-                "country": {"name": "Uruguay"},
-            },
-        },
+        ),
         "order-2": _order_doc(
             "order-2",
             seller_id="seller-1",
@@ -399,6 +390,22 @@ async def test_ordenes_compradores_boolean_flag_adds_buyer_columns_without_filte
             total_amount="75.50",
             items=[{"seller_sku": "sku-2", "item": {"id": "MLA2"}, "quantity": 1}],
         ),
+    }
+    db["shipments"].documents = {
+        "shipment-1": {
+            "_id": "shipment-1",
+            "seller_id": "seller-1",
+            "receiver_address": {
+                "name": "SNAPSHOT_BUYER_OK",
+                "street_name": "SNAPSHOT_STREET_OK",
+                "street_number": "SNAPSHOT_NUMBER_OK",
+                "neighborhood": "SNAPSHOT_NEIGHBORHOOD_OK",
+                "zip_code": "SNAPSHOT_ZIP_OK",
+                "city": "SNAPSHOT_CITY_OK",
+                "state": "SNAPSHOT_STATE_OK",
+                "country": "SNAPSHOT_COUNTRY_OK",
+            },
+        }
     }
     dispatcher = _order_question_dispatcher(db)
 
@@ -431,14 +438,14 @@ async def test_ordenes_compradores_boolean_flag_adds_buyer_columns_without_filte
             "",
             "",
             "paid",
-            "Ada Lovelace",
-            "Main St",
-            "123",
-            "Centro",
-            "12345",
-            "Montevideo",
-            "Montevideo",
-            "Uruguay",
+            "SNAPSHOT_BUYER_OK",
+            "SNAPSHOT_STREET_OK",
+            "SNAPSHOT_NUMBER_OK",
+            "SNAPSHOT_NEIGHBORHOOD_OK",
+            "SNAPSHOT_ZIP_OK",
+            "SNAPSHOT_CITY_OK",
+            "SNAPSHOT_STATE_OK",
+            "SNAPSHOT_COUNTRY_OK",
         ],
         [
             "2026-05-11T08:15:00Z",
@@ -1083,6 +1090,505 @@ async def test_ordenes_por_sku_enriches_canonical_order_items_from_seller_sku_in
         "seller_id": "seller-1",
         "item_id": {"$in": ["MLA1", "MLA2"]},
     }
+
+
+@pytest.mark.asyncio
+async def test_order_tables_use_listing_fixed_fee_projection_without_seller_cost_lookup() -> None:
+    db = FakeDb()
+    db["orders"].documents = {
+        "order-1": _order_doc(
+            "order-1",
+            seller_id="seller-1",
+            status="paid",
+            date_created=datetime(2026, 5, 10, 8, 0, tzinfo=UTC),
+            total_amount=39,
+            items=[
+                {"sku": "sku-1", "item_id": "MLA1", "variation_id": 101, "qty": 2},
+                {"sku": "sku-2", "item_id": "MLA2", "qty": 1, "sale_fee": 7},
+            ],
+        )
+    }
+    db["sheets_item_formula_rows"].documents = {
+        "row-1": {
+            "_id": "row-1",
+            "seller_id": "seller-1",
+            "sku": "sku-1",
+            "normalized_sku": "SKU-1",
+            "item_id": "MLA1",
+            "variation_id": "101",
+            "current": {
+                "base_price": 12345.67,
+                "category_id": "MLA-CAT",
+                "currency_id": "ARS",
+                "site_id": "MLA",
+                "listing_type_id": "gold_special",
+                "shipping_mode": "me2",
+                "logistic_type": "fulfillment",
+                "listing_price_fixed_fee": {
+                    "source": "/sites/{site}/listing_prices",
+                    "fixed_fee": 1350.25,
+                    "currency_id": "ARS",
+                    "synced_at": datetime(2026, 6, 4, tzinfo=UTC),
+                    "params": {
+                        "site_id": "MLA",
+                        "category_id": "MLA-CAT",
+                        "price": 12345.67,
+                        "currency_id": "ARS",
+                        "listing_type_id": "gold_special",
+                        "shipping_mode": "me2",
+                        "logistic_type": "fulfillment",
+                    },
+                }
+            },
+        },
+        "row-2": {
+            "_id": "row-2",
+            "seller_id": "seller-1",
+            "sku": "sku-2",
+            "normalized_sku": "SKU-2",
+            "item_id": "MLA2",
+            "current": {
+                "listing_price_fixed_fee": {
+                    "source": "/items/{id}/sale_price",
+                    "fixed_fee": 7,
+                    "currency_id": "ARS",
+                    "synced_at": datetime(2026, 6, 4, tzinfo=UTC),
+                    "params": {},
+                }
+            },
+        },
+    }
+    db["seller_unit_costs"].documents = {
+        "item-cost": _unit_cost_doc("item-cost", item_id="MLA1", unit_cost="20"),
+        "variation-cost": _unit_cost_doc(
+            "variation-cost", item_id="MLA1", variation_id="101", unit_cost="25.50"
+        ),
+        "expired-sku": _unit_cost_doc(
+            "expired-sku",
+            normalized_sku="SKU-2",
+            unit_cost="9",
+            effective_to=datetime(2026, 5, 1, tzinfo=UTC),
+        ),
+    }
+    dispatcher = _order_question_dispatcher(db)
+
+    orders = await dispatcher.execute(
+        _context(
+            "ZELERDATA_ORDENES",
+            {"fecha_inicial": "2026-05-10", "fecha_final": "2026-05-10"},
+        )
+    )
+    by_sku = await dispatcher.execute(
+        _context(
+            "ZELERDATA_ORDENESPORSKU",
+            {
+                "skus": "sku-1",
+                "fecha_inicial": "2026-05-10",
+                "fecha_final": "2026-05-10",
+            },
+        )
+    )
+
+    assert [row[10] for row in orders.values] == [1350.25, "NA"]
+    assert by_sku.values[0][10] == 1350.25
+    assert db["seller_unit_costs"].find_filters == []
+
+
+@pytest.mark.asyncio
+async def test_order_tables_return_na_for_invalid_listing_fixed_fee_projection() -> None:
+    synced_at = datetime(2026, 6, 4, tzinfo=UTC)
+    projection = {
+        "source": "/sites/{site}/listing_prices",
+        "fixed_fee": 1350.25,
+        "currency_id": "ARS",
+        "synced_at": synced_at,
+        "params": {
+            "site_id": "MLA",
+            "category_id": "MLA-CAT",
+            "price": 12345.67,
+            "currency_id": "ARS",
+            "listing_type_id": "gold_special",
+        },
+    }
+    db = FakeDb()
+    db["orders"].documents = {
+        "order-1": _order_doc(
+            "order-1",
+            seller_id="seller-1",
+            status="paid",
+            date_created=datetime(2026, 5, 10, 8, 0, tzinfo=UTC),
+            total_amount=39,
+            items=[
+                {"sku": "sku-1", "item_id": "MLA1", "qty": 1},
+                {"sku": "sku-2", "item_id": "MLA2", "qty": 1},
+                {"sku": "sku-3", "item_id": "MLA3", "qty": 1},
+                {"sku": "sku-4", "item_id": "MLA4", "qty": 1},
+                {"sku": "sku-5", "item_id": "MLA5", "qty": 1},
+            ],
+        )
+    }
+    db["sheets_item_formula_rows"].documents = {
+        "currency-mismatch": _order_formula_row(
+            "sku-1",
+            "SKU-1",
+            "MLA1",
+            base_price=12345.67,
+            category_id="MLA-CAT",
+            currency_id="ARS",
+            site_id="MLA",
+            listing_type_id="gold_special",
+            listing_price_fixed_fee=projection
+            | {"params": projection["params"] | {"currency_id": "USD"}},
+        ),
+        "price-mismatch": _order_formula_row(
+            "sku-2",
+            "SKU-2",
+            "MLA2",
+            base_price=99999,
+            category_id="MLA-CAT",
+            currency_id="ARS",
+            site_id="MLA",
+            listing_type_id="gold_special",
+            listing_price_fixed_fee=projection,
+        ),
+        "category-mismatch": _order_formula_row(
+            "sku-3",
+            "SKU-3",
+            "MLA3",
+            base_price=12345.67,
+            category_id="MLA-OTHER",
+            currency_id="ARS",
+            site_id="MLA",
+            listing_type_id="gold_special",
+            listing_price_fixed_fee=projection,
+        ),
+        "listing-type-mismatch": _order_formula_row(
+            "sku-4",
+            "SKU-4",
+            "MLA4",
+            base_price=12345.67,
+            category_id="MLA-CAT",
+            currency_id="ARS",
+            site_id="MLA",
+            listing_type_id="gold_pro",
+            listing_price_fixed_fee=projection,
+        ),
+        "missing-currency-site-basis": _order_formula_row(
+            "sku-5",
+            "SKU-5",
+            "MLA5",
+            base_price=12345.67,
+            category_id="MLA-CAT",
+            listing_type_id="gold_special",
+            listing_price_fixed_fee=projection,
+        ),
+    }
+    dispatcher = _order_question_dispatcher(db)
+
+    result = await dispatcher.execute(
+        _context(
+            "ZELERDATA_ORDENES",
+            {"fecha_inicial": "2026-05-10", "fecha_final": "2026-05-10"},
+        )
+    )
+
+    assert [row[10] for row in result.values] == ["NA", "NA", "NA", "NA", "NA"]
+
+
+@pytest.mark.asyncio
+async def test_order_tables_validate_fixed_fee_price_and_shipping_request_basis() -> None:
+    synced_at = datetime(2026, 6, 4, tzinfo=UTC)
+    projection = {
+        "source": "/sites/{site}/listing_prices",
+        "fixed_fee": 1350.25,
+        "currency_id": "ARS",
+        "synced_at": synced_at,
+        "params": {
+            "site_id": "MLA",
+            "category_id": "MLA-CAT",
+            "price": 100,
+            "currency_id": "ARS",
+            "listing_type_id": "gold_special",
+            "shipping_mode": "me2",
+            "logistic_type": "fulfillment",
+            "billable_weight": 500,
+            "tags": ["mandatory_free_shipping"],
+        },
+    }
+    matching_basis = {
+        "price": 100,
+        "base_price": 120,
+        "category_id": "MLA-CAT",
+        "currency_id": "ARS",
+        "site_id": "MLA",
+        "listing_type_id": "gold_special",
+        "shipping_mode": "me2",
+        "logistic_type": "fulfillment",
+        "billable_weight": 500,
+        "tags": ["mandatory_free_shipping"],
+    }
+    logistic_mismatch_basis = matching_basis | {
+        "logistic_type": "drop_off",
+        "shipping_logistic_type": "drop_off",
+    }
+    db = FakeDb()
+    db["orders"].documents = {
+        "order-1": _order_doc(
+            "order-1",
+            seller_id="seller-1",
+            status="paid",
+            date_created=datetime(2026, 5, 10, 8, 0, tzinfo=UTC),
+            total_amount=39,
+            items=[
+                {"sku": "sku-1", "item_id": "MLA1", "qty": 1},
+                {"sku": "sku-2", "item_id": "MLA2", "qty": 1},
+                {"sku": "sku-3", "item_id": "MLA3", "qty": 1},
+                {"sku": "sku-4", "item_id": "MLA4", "qty": 1},
+                {"sku": "sku-5", "item_id": "MLA5", "qty": 1},
+                {"sku": "sku-6", "item_id": "MLA6", "qty": 1},
+                {"sku": "sku-7", "item_id": "MLA7", "qty": 1},
+                {"sku": "sku-8", "item_id": "MLA8", "qty": 1},
+                {"sku": "sku-9", "item_id": "MLA9", "qty": 1},
+            ],
+        )
+    }
+    db["sheets_item_formula_rows"].documents = {
+        "valid-price-basis": _order_formula_row(
+            "sku-1",
+            "SKU-1",
+            "MLA1",
+            **matching_basis,
+            listing_price_fixed_fee=projection,
+        ),
+        "shipping-mode-mismatch": _order_formula_row(
+            "sku-2",
+            "SKU-2",
+            "MLA2",
+            **(matching_basis | {"shipping_mode": "me1"}),
+            listing_price_fixed_fee=projection,
+        ),
+        "logistic-type-mismatch": _order_formula_row(
+            "sku-3",
+            "SKU-3",
+            "MLA3",
+            **logistic_mismatch_basis,
+            listing_price_fixed_fee=projection,
+        ),
+        "billable-weight-missing": _order_formula_row(
+            "sku-4",
+            "SKU-4",
+            "MLA4",
+            **{key: value for key, value in matching_basis.items() if key != "billable_weight"},
+            listing_price_fixed_fee=projection,
+        ),
+        "tags-mismatch": _order_formula_row(
+            "sku-5",
+            "SKU-5",
+            "MLA5",
+            **(matching_basis | {"tags": ["other_tag"]}),
+            listing_price_fixed_fee=projection,
+        ),
+        "shipping-mode-param-missing": _order_formula_row(
+            "sku-6",
+            "SKU-6",
+            "MLA6",
+            **matching_basis,
+            listing_price_fixed_fee=projection
+            | {
+                "params": {
+                    key: value
+                    for key, value in projection["params"].items()
+                    if key != "shipping_mode"
+                }
+            },
+        ),
+        "logistic-type-param-missing": _order_formula_row(
+            "sku-7",
+            "SKU-7",
+            "MLA7",
+            **matching_basis,
+            listing_price_fixed_fee=projection
+            | {
+                "params": {
+                    key: value
+                    for key, value in projection["params"].items()
+                    if key != "logistic_type"
+                }
+            },
+        ),
+        "shipping-mode-row-missing": _order_formula_row(
+            "sku-8",
+            "SKU-8",
+            "MLA8",
+            **{key: value for key, value in matching_basis.items() if key != "shipping_mode"},
+            listing_price_fixed_fee=projection,
+        ),
+        "logistic-type-row-missing": _order_formula_row(
+            "sku-9",
+            "SKU-9",
+            "MLA9",
+            **{key: value for key, value in matching_basis.items() if key != "logistic_type"},
+            listing_price_fixed_fee=projection,
+        ),
+    }
+    dispatcher = _order_question_dispatcher(db)
+
+    result = await dispatcher.execute(
+        _context(
+            "ZELERDATA_ORDENES",
+            {"fecha_inicial": "2026-05-10", "fecha_final": "2026-05-10"},
+        )
+    )
+
+    assert [row[10] for row in result.values] == [
+        1350.25,
+        "NA",
+        "NA",
+        "NA",
+        "NA",
+        "NA",
+        "NA",
+        "NA",
+        "NA",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_order_tables_return_na_when_fixed_fee_optional_basis_params_are_missing() -> None:
+    synced_at = datetime(2026, 6, 4, tzinfo=UTC)
+    projection = {
+        "source": "/sites/{site}/listing_prices",
+        "fixed_fee": 1350.25,
+        "currency_id": "ARS",
+        "synced_at": synced_at,
+        "params": {
+            "site_id": "MLA",
+            "category_id": "MLA-CAT",
+            "price": 100,
+            "currency_id": "ARS",
+            "listing_type_id": "gold_special",
+            "shipping_mode": "me2",
+            "logistic_type": "fulfillment",
+        },
+    }
+    matching_basis = {
+        "price": 100,
+        "base_price": 120,
+        "category_id": "MLA-CAT",
+        "currency_id": "ARS",
+        "site_id": "MLA",
+        "listing_type_id": "gold_special",
+        "shipping_mode": "me2",
+        "logistic_type": "fulfillment",
+    }
+    db = FakeDb()
+    db["orders"].documents = {
+        "order-1": _order_doc(
+            "order-1",
+            seller_id="seller-1",
+            status="paid",
+            date_created=datetime(2026, 5, 10, 8, 0, tzinfo=UTC),
+            total_amount=39,
+            items=[
+                {"sku": "sku-1", "item_id": "MLA1", "qty": 1},
+                {"sku": "sku-2", "item_id": "MLA2", "qty": 1},
+                {"sku": "sku-3", "item_id": "MLA3", "qty": 1},
+            ],
+        )
+    }
+    db["sheets_item_formula_rows"].documents = {
+        "billable-weight-param-missing": _order_formula_row(
+            "sku-1",
+            "SKU-1",
+            "MLA1",
+            **(matching_basis | {"billable_weight": 500}),
+            listing_price_fixed_fee=projection,
+        ),
+        "tags-param-missing": _order_formula_row(
+            "sku-2",
+            "SKU-2",
+            "MLA2",
+            **(matching_basis | {"tags": ["mandatory_free_shipping"]}),
+            listing_price_fixed_fee=projection,
+        ),
+        "optional-basis-absent": _order_formula_row(
+            "sku-3",
+            "SKU-3",
+            "MLA3",
+            **(matching_basis | {"tags": []}),
+            listing_price_fixed_fee=projection,
+        ),
+    }
+    dispatcher = _order_question_dispatcher(db)
+
+    result = await dispatcher.execute(
+        _context(
+            "ZELERDATA_ORDENES",
+            {"fecha_inicial": "2026-05-10", "fecha_final": "2026-05-10"},
+        )
+    )
+
+    assert [row[10] for row in result.values] == ["NA", "NA", 1350.25]
+
+
+@pytest.mark.asyncio
+async def test_order_tables_return_na_for_fixed_fee_mismatch_from_backfill_row() -> None:
+    synced_at = datetime(2026, 6, 4, tzinfo=UTC)
+    db = FakeDb()
+    db["orders"].documents = {
+        "order-1": _order_doc(
+            "order-1",
+            seller_id="seller-1",
+            status="paid",
+            date_created=datetime(2026, 5, 10, 8, 0, tzinfo=UTC),
+            total_amount=39,
+            items=[{"sku": "sku-1", "item_id": "MLB1", "qty": 1}],
+        )
+    }
+    row = build_formula_row_doc(
+        {
+            "_id": "MLB1",
+            "seller_id": "seller-1",
+            "title": "USD MLB listing",
+            "status": "active",
+            "available_quantity": 7,
+            "price": 12345.67,
+            "base_price": 12345.67,
+            "category_id": "MLA-CAT",
+            "currency_id": "USD",
+            "site_id": "MLB",
+            "listing_type_id": "gold_special",
+            "date_created": synced_at,
+            "last_updated": synced_at,
+            "attributes": [{"id": "SELLER_SKU", "value_name": "sku-1"}],
+            "variations": [],
+            "listing_price_fixed_fee": {
+                "source": "/sites/{site}/listing_prices",
+                "fixed_fee": 1350.25,
+                "currency_id": "ARS",
+                "synced_at": synced_at,
+                "params": {
+                    "site_id": "MLA",
+                    "category_id": "MLA-CAT",
+                    "price": 12345.67,
+                    "currency_id": "ARS",
+                    "listing_type_id": "gold_special",
+                },
+            },
+        },
+        seller_id="seller-1",
+    )
+    db["sheets_item_formula_rows"].documents = {row["_id"]: row}
+    dispatcher = _order_question_dispatcher(db)
+
+    result = await dispatcher.execute(
+        _context(
+            "ZELERDATA_ORDENES",
+            {"fecha_inicial": "2026-05-10", "fecha_final": "2026-05-10"},
+        )
+    )
+
+    assert result.values[0][10] == "NA"
 
 
 @pytest.mark.asyncio
@@ -2044,7 +2550,7 @@ async def test_formula_api_wires_batch_b_handlers_and_keeps_other_batch_b_data_u
                 },
             },
         )
-        not_ready = await client.post(
+        compradores = await client.post(
             "/sheets/formulas:execute",
             headers={"Authorization": f"Bearer {token}"},
             json={
@@ -2079,14 +2585,16 @@ async def test_formula_api_wires_batch_b_handlers_and_keeps_other_batch_b_data_u
             "paid",
         ],
     ])
-    assert not_ready.status_code == 200
-    assert not_ready.json()["error"] == {
-        "code": "DATA_UNAVAILABLE",
-        "message": (
-            "ZELERDATA_COMPRADORES data is not available yet: "
-            "Current canonical orders do not expose buyer/shipping address fields."
-        ),
-        "retryable": False,
+    assert compradores.status_code == 200
+    assert compradores.json() == {
+        "ok": True,
+        "values": [["NA", "NA", "NA", "NA", "NA", "NA", "NA", "NA"]],
+        "meta": {
+            "orders_count": 1,
+            "address_available": 0,
+            "address_missing": 1,
+            "columns": "buyer_address_snapshot",
+        },
     }
 
 
@@ -2199,6 +2707,31 @@ def _sku_index_doc(
     }
 
 
+def _unit_cost_doc(
+    doc_id: str,
+    *,
+    normalized_sku: str | None = None,
+    item_id: str | None = None,
+    variation_id: str | None = None,
+    unit_cost: str,
+    effective_to: datetime | None = None,
+) -> dict[str, Any]:
+    return {
+        "_id": doc_id,
+        "seller_id": "seller-1",
+        "normalized_sku": normalized_sku,
+        "item_id": item_id,
+        "variation_id": variation_id,
+        "unit_cost": unit_cost,
+        "currency": "ARS",
+        "source": "manual",
+        "status": "active",
+        "effective_from": datetime(2026, 1, 1, tzinfo=UTC),
+        "effective_to": effective_to,
+        "schema_version": 1,
+    }
+
+
 def _item_formula_row(
     seller_id: str,
     sku: str,
@@ -2222,6 +2755,20 @@ def _item_formula_row(
             "status": status,
             "inventory_id": inventory_id,
         },
+        "schema_version": 1,
+    }
+
+
+def _order_formula_row(
+    sku: str, normalized_sku: str, item_id: str, **current: Any
+) -> dict[str, Any]:
+    return {
+        "_id": item_id,
+        "seller_id": "seller-1",
+        "sku": sku,
+        "normalized_sku": normalized_sku,
+        "item_id": item_id,
+        "current": {"title": item_id} | current,
         "schema_version": 1,
     }
 

@@ -4,10 +4,13 @@ from zeler_platform_core.models.entities import (
     Item,
     ItemStatusState,
     ItemStatusTransition,
+    ListingPriceFixedFeeProjection,
     Message,
     Order,
     OrderItem,
+    PromoPriceProjection,
     Question,
+    ReceiverAddressSnapshot,
     Shipment,
 )
 from zeler_platform_core.models.events import (
@@ -39,6 +42,7 @@ from zeler_platform_core.models.operational import (
     RepricerRuleExecutionState,
     WebhookEvent,
 )
+from zeler_platform_core.models.unit_costs import SellerUnitCost
 from zeler_platform_core.models.users import User
 
 __all__ = [
@@ -51,6 +55,7 @@ __all__ = [
     "Item",
     "ItemStatusState",
     "ItemStatusTransition",
+    "ListingPriceFixedFeeProjection",
     "ItemPriceChanged",
     "ItemUpdated",
     "MeliAccount",
@@ -62,8 +67,10 @@ __all__ = [
     "Order",
     "OrderItem",
     "OrderCreated",
+    "PromoPriceProjection",
     "Question",
     "QuestionReceived",
+    "ReceiverAddressSnapshot",
     "RepricerAllyAccount",
     "RepricerAllies",
     "RepricerBulkJob",
@@ -75,6 +82,7 @@ __all__ = [
     "RepricerReport",
     "RepricerRule",
     "RepricerRuleExecutionState",
+    "SellerUnitCost",
     "Shipment",
     "User",
     "WebhookEvent",

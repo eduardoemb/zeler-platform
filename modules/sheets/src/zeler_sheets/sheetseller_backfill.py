@@ -8,7 +8,7 @@ import os
 from collections.abc import Sequence
 from dataclasses import asdict, dataclass
 from datetime import UTC, date, datetime, timedelta
-from decimal import Decimal, InvalidOperation
+from decimal import ROUND_HALF_UP, Decimal, DecimalException, InvalidOperation
 from typing import Any, Protocol, cast
 from urllib.parse import quote
 
@@ -17,7 +17,7 @@ from bson.decimal128 import Decimal128
 from pymongo.errors import DuplicateKeyError
 
 from zeler_platform_core.clients.meli_gateway_client import GatewayRateLimitError
-from zeler_platform_core.models import Item
+from zeler_platform_core.models import Item, ListingPriceFixedFeeProjection, PromoPriceProjection
 from zeler_platform_core.models.base import current_schema_version
 from zeler_sheets.formulas.read_models import normalize_sku
 from zeler_sheets.status_history import (
@@ -37,6 +37,9 @@ DEFAULT_GATEWAY_BASE_URL = "http://gateway:8080/proxy/meli"
 ITEM_DETAIL_BATCH_SIZE = 20
 STATUS_HISTORY_SCALAR_FIELDS = ("status_started_at", "paused_since", "last_status_change_at")
 FORMULA_ROW_REPLACE_ATTEMPTS = 3
+SALE_PRICE_SOURCE = "/items/{id}/sale_price"
+LISTING_PRICE_FIXED_FEE_SOURCE = "/sites/{site}/listing_prices"
+SALE_PRICE_CONTEXT = "channel_marketplace"
 
 
 class MeliOrderGatewayClient(Protocol):
@@ -144,6 +147,13 @@ class ItemDetailEnrichmentSummary:
     shipping_options_requested: int = 0
     seller_shipping_costs_enriched: int = 0
     seller_shipping_costs_unavailable: int = 0
+    sale_price_requested: int = 0
+    sale_price_promotions_enriched: int = 0
+    sale_price_promotions_unavailable: int = 0
+    listing_fixed_fee_requested: int = 0
+    listing_fixed_fee_enriched: int = 0
+    listing_fixed_fee_unavailable: int = 0
+    listing_fixed_fee_missing_params: int = 0
 
     def as_dict(self) -> dict[str, int | bool | str]:
         return asdict(self)
@@ -198,6 +208,23 @@ def build_arg_parser() -> argparse.ArgumentParser:
         action="store_false",
         dest="dry_run",
         help="Explicitly write idempotent read-model upserts.",
+    )
+    parser.add_argument(
+        "--enable-sale-price",
+        action="store_true",
+        dest="sale_price_enabled",
+        default=False,
+        help="Enable gated /items/{id}/sale_price enrichment after approved runtime validation.",
+    )
+    parser.add_argument(
+        "--enable-listing-fixed-fee",
+        action="store_true",
+        dest="listing_fixed_fee_enabled",
+        default=False,
+        help=(
+            "Enable gated /sites/{site}/listing_prices fixed-fee enrichment after approved "
+            "runtime validation."
+        ),
     )
     return parser
 
@@ -339,6 +366,8 @@ async def run_item_detail_enrichment(
     seller_id: str,
     dry_run: bool = True,
     batch_size: int = ITEM_DETAIL_BATCH_SIZE,
+    sale_price_enabled: bool = False,
+    listing_fixed_fee_enabled: bool = False,
 ) -> ItemDetailEnrichmentSummary:
     if batch_size < 1:
         msg = "batch_size must be positive"
@@ -348,7 +377,7 @@ async def run_item_detail_enrichment(
     existing_by_id = {_item_id(item): item for item in existing_items}
     item_ids = sorted(existing_by_id)
     synced_at = datetime.now(UTC)
-    write_plans: list[tuple[dict[str, Any], dict[str, Any]]] = []
+    write_plans: list[tuple[dict[str, Any], dict[str, Any], bool, bool]] = []
     batches_fetched = 0
     details_returned = 0
     items_validated = 0
@@ -356,6 +385,13 @@ async def run_item_detail_enrichment(
     shipping_options_requested = 0
     seller_shipping_costs_enriched = 0
     seller_shipping_costs_unavailable = 0
+    sale_price_requested = 0
+    sale_price_promotions_enriched = 0
+    sale_price_promotions_unavailable = 0
+    listing_fixed_fee_requested = 0
+    listing_fixed_fee_enriched = 0
+    listing_fixed_fee_unavailable = 0
+    listing_fixed_fee_missing_params = 0
 
     for batch in _chunks(item_ids, batch_size):
         response = await gateway.fetch_resource(
@@ -373,6 +409,8 @@ async def run_item_detail_enrichment(
             raise RuntimeError(msg)
         for item_id in batch:
             detail = dict(by_id[item_id])
+            clear_current_promotion = False
+            clear_listing_fixed_fee = False
             seller_shipping_cost = await _resolve_seller_shipping_cost(
                 gateway=gateway,
                 seller_id=seller_id,
@@ -388,6 +426,47 @@ async def run_item_detail_enrichment(
             else:
                 seller_shipping_costs_enriched += 1
             detail["seller_shipping_cost"] = seller_shipping_cost
+            if sale_price_enabled:
+                sale_price_requested += 1
+                current_promotion = await _resolve_sale_price_projection(
+                    gateway=gateway,
+                    seller_id=seller_id,
+                    item_id=item_id,
+                    synced_at=synced_at,
+                )
+                if current_promotion is None:
+                    sale_price_promotions_unavailable += 1
+                    detail["current_promotion"] = None
+                    clear_current_promotion = True
+                else:
+                    sale_price_promotions_enriched += 1
+                    detail["current_promotion"] = current_promotion
+            elif "current_promotion" in existing_by_id[item_id]:
+                detail["current_promotion"] = None
+                clear_current_promotion = True
+            if listing_fixed_fee_enabled:
+                listing_params = _listing_price_fixed_fee_params(item_id=item_id, detail=detail)
+                if listing_params is None:
+                    listing_fixed_fee_missing_params += 1
+                    detail["listing_price_fixed_fee"] = None
+                    clear_listing_fixed_fee = "listing_price_fixed_fee" in existing_by_id[item_id]
+                else:
+                    listing_fixed_fee_requested += 1
+                    fixed_fee_projection = await _resolve_listing_price_fixed_fee_projection(
+                        gateway=gateway,
+                        seller_id=seller_id,
+                        params=listing_params,
+                        synced_at=synced_at,
+                    )
+                    if fixed_fee_projection is None:
+                        listing_fixed_fee_unavailable += 1
+                        detail["listing_price_fixed_fee"] = None
+                        clear_listing_fixed_fee = (
+                            "listing_price_fixed_fee" in existing_by_id[item_id]
+                        )
+                    else:
+                        listing_fixed_fee_enriched += 1
+                        detail["listing_price_fixed_fee"] = fixed_fee_projection
             document = _canonical_item_detail_document(
                 existing=existing_by_id[item_id],
                 detail=detail,
@@ -395,18 +474,37 @@ async def run_item_detail_enrichment(
                 synced_at=synced_at,
             )
             items_validated += 1
-            if _canonical_item_values_equal(existing_by_id[item_id], document):
+            if (
+                not clear_current_promotion
+                and not clear_listing_fixed_fee
+                and _canonical_item_values_equal(existing_by_id[item_id], document)
+            ):
                 unchanged += 1
                 continue
-            write_plans.append(({"_id": item_id, "seller_id": seller_id}, document))
+            write_plans.append(
+                (
+                    {"_id": item_id, "seller_id": seller_id},
+                    document,
+                    clear_current_promotion,
+                    clear_listing_fixed_fee,
+                )
+            )
 
     items_updated = 0
     if not dry_run:
         items_collection = db[ITEMS_COLLECTION]
-        for filter_spec, document in write_plans:
+        for filter_spec, document, clear_current_promotion, clear_listing_fixed_fee in write_plans:
+            update: dict[str, Any] = {"$set": document}
+            unset_fields: dict[str, str] = {}
+            if clear_current_promotion:
+                unset_fields["current_promotion"] = ""
+            if clear_listing_fixed_fee:
+                unset_fields["listing_price_fixed_fee"] = ""
+            if unset_fields:
+                update["$unset"] = unset_fields
             await items_collection.update_one(
                 filter_spec,
-                {"$set": document},
+                update,
                 upsert=False,
                 bypass_document_validation=False,
             )
@@ -424,6 +522,13 @@ async def run_item_detail_enrichment(
         shipping_options_requested=shipping_options_requested,
         seller_shipping_costs_enriched=seller_shipping_costs_enriched,
         seller_shipping_costs_unavailable=seller_shipping_costs_unavailable,
+        sale_price_requested=sale_price_requested,
+        sale_price_promotions_enriched=sale_price_promotions_enriched,
+        sale_price_promotions_unavailable=sale_price_promotions_unavailable,
+        listing_fixed_fee_requested=listing_fixed_fee_requested,
+        listing_fixed_fee_enriched=listing_fixed_fee_enriched,
+        listing_fixed_fee_unavailable=listing_fixed_fee_unavailable,
+        listing_fixed_fee_missing_params=listing_fixed_fee_missing_params,
     )
 
 
@@ -1009,6 +1114,8 @@ def build_formula_row_doc(
     normalized_sku = normalize_sku(resolved_sku)
     date_created = item.get("date_created")
     updated_at = _updated_at(item)
+    currency_id = _formula_row_currency_id(item)
+    site_id = _formula_row_site_id(item_id=item_id, item=item)
     resolved_variation_id = _optional_string(variation_id)
     resolved_inventory_id = _optional_string(inventory_id)
     if resolved_inventory_id is None and resolved_variation_id is None:
@@ -1044,6 +1151,8 @@ def build_formula_row_doc(
             **({"price": _schema_safe_numeric(item.get("price"))} if "price" in item else {}),
             "base_price": _schema_safe_numeric(item.get("base_price")),
             "category_id": item.get("category_id"),
+            "currency_id": currency_id,
+            "site_id": site_id,
             "date_created": date_created,
             "updated_at": updated_at,
             "permalink": _optional_string(item.get("permalink")),
@@ -1055,7 +1164,10 @@ def build_formula_row_doc(
                 if "seller_shipping_cost" in item
                 else {}
             ),
+            **_formula_row_listing_fixed_fee_fields(item),
+            **_formula_row_current_promotion_fields(item),
             "inventory_id": resolved_inventory_id,
+            **_formula_row_listing_price_shipping_basis_fields(item),
             "shipping_logistic_type": _shipping_logistic_type(item.get("shipping")),
             "shipping_payer": _shipping_payer(item.get("shipping")),
             **status_history_scalars,
@@ -1064,6 +1176,36 @@ def build_formula_row_doc(
         "updated_at": updated_at,
         "schema_version": READ_MODEL_SCHEMA_VERSION,
     }
+
+
+def _formula_row_current_promotion_fields(item: dict[str, Any]) -> dict[str, Any]:
+    current_promotion = _schema_safe_current_promotion(item.get("current_promotion"))
+    return {"current_promotion": current_promotion} if current_promotion is not None else {}
+
+
+def _formula_row_listing_fixed_fee_fields(item: dict[str, Any]) -> dict[str, Any]:
+    fixed_fee = _schema_safe_listing_fixed_fee(item.get("listing_price_fixed_fee"))
+    return {"listing_price_fixed_fee": fixed_fee} if fixed_fee is not None else {}
+
+
+def _formula_row_listing_price_shipping_basis_fields(item: dict[str, Any]) -> dict[str, Any]:
+    shipping = item.get("shipping")
+    shipping_values = shipping if isinstance(shipping, dict) else {}
+    fields: dict[str, Any] = {}
+    shipping_mode = _optional_string(shipping_values.get("mode"))
+    logistic_type = _optional_string(shipping_values.get("logistic_type"))
+    if shipping_mode is not None:
+        fields["shipping_mode"] = shipping_mode
+    if logistic_type is not None:
+        fields["logistic_type"] = logistic_type
+    billable_weight = _schema_safe_numeric(
+        item.get("billable_weight") or shipping_values.get("billable_weight")
+    )
+    if billable_weight is not None:
+        fields["billable_weight"] = billable_weight
+    if "tags" in item:
+        fields["tags"] = _schema_safe_tags(item.get("tags"))
+    return fields
 
 
 async def _load_seller_items(*, db: Any, seller_id: str) -> list[dict[str, Any]]:
@@ -1350,7 +1492,93 @@ def _canonical_item_detail_document(
         document.pop("status_observed_at", None)
     for money_field in ("price", "base_price", "seller_shipping_cost"):
         document[money_field] = _schema_safe_numeric(document.get(money_field))
+    fixed_fee = _schema_safe_listing_fixed_fee(document.get("listing_price_fixed_fee"))
+    if fixed_fee is None:
+        document.pop("listing_price_fixed_fee", None)
+    else:
+        document["listing_price_fixed_fee"] = fixed_fee
+    current_promotion = _schema_safe_current_promotion(document.get("current_promotion"))
+    if current_promotion is None:
+        document.pop("current_promotion", None)
+    else:
+        document["current_promotion"] = current_promotion
     return document
+
+
+async def _resolve_sale_price_projection(
+    *,
+    gateway: MeliItemGatewayClient,
+    seller_id: str,
+    item_id: str,
+    synced_at: datetime,
+) -> dict[str, Any] | None:
+    try:
+        response = await gateway.fetch_resource(
+            seller_id=seller_id,
+            path=_sale_price_path(item_id),
+        )
+    except (RuntimeError, GatewayRateLimitError, httpx.HTTPStatusError, httpx.RequestError):
+        return None
+    return project_sale_price_projection(response, synced_at=synced_at)
+
+
+def _sale_price_path(item_id: str) -> str:
+    escaped_item_id = quote(item_id, safe="")
+    return f"/items/{escaped_item_id}/sale_price?context={SALE_PRICE_CONTEXT}"
+
+
+def project_sale_price_projection(payload: Any, *, synced_at: datetime) -> dict[str, Any] | None:
+    if not isinstance(payload, dict):
+        return None
+    sale_amount = _safe_decimal(payload.get("amount"))
+    regular_amount = _safe_decimal(payload.get("regular_amount"))
+    currency_id = _optional_string(payload.get("currency_id"))
+    if sale_amount is None or regular_amount is None or currency_id is None:
+        return None
+    if sale_amount >= regular_amount:
+        return None
+    reference_at = _sale_price_reference_at(payload) or synced_at
+    discount_percent = _safe_decimal(payload.get("discount_percent"))
+    if discount_percent is None:
+        raw_discount_percent = (regular_amount - sale_amount) / regular_amount * Decimal("100")
+        discount_percent = raw_discount_percent.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    try:
+        projection = PromoPriceProjection.model_validate(
+            {
+                "source": SALE_PRICE_SOURCE,
+                "sale_amount": sale_amount,
+                "regular_amount": regular_amount,
+                "discount_percent": discount_percent,
+                "currency_id": currency_id,
+                "promotion_id": _optional_string(
+                    payload.get("promotion_id") or payload.get("campaign_id")
+                ),
+                "promotion_type": _optional_string(
+                    payload.get("promotion_type") or payload.get("type")
+                ),
+                "reference_at": reference_at,
+                "synced_at": synced_at,
+            }
+        )
+    except (InvalidOperation, ValueError):
+        return None
+    return _schema_safe_current_promotion(projection)
+
+
+def _sale_price_reference_at(payload: dict[str, Any]) -> datetime | None:
+    for key in ("reference_at", "last_updated", "updated_at", "date_created"):
+        value = payload.get(key)
+        if value is None:
+            continue
+        try:
+            parsed = _parse_utc_datetime(value) if isinstance(value, str) else value
+        except ValueError:
+            continue
+        if isinstance(parsed, datetime):
+            return (
+                parsed.astimezone(UTC) if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
+            )
+    return None
 
 
 async def _resolve_seller_shipping_cost(
@@ -1415,6 +1643,9 @@ def _bounded_shipping_cost(value: Any) -> Decimal | None:
 
 
 def _canonical_item_values_equal(existing: dict[str, Any], planned: dict[str, Any]) -> bool:
+    for removable_projection in ("current_promotion", "listing_price_fixed_fee"):
+        if removable_projection in existing and removable_projection not in planned:
+            return False
     return all(
         _formula_row_values_equal(existing.get(key), value)
         for key, value in planned.items()
@@ -1471,7 +1702,7 @@ def _parse_utc_datetime(value: str, *, end_exclusive: bool = False) -> datetime:
 def _parse_order_datetime(value: str) -> datetime | None:
     try:
         return _parse_utc_datetime(value)
-    except ValueError:
+    except (InvalidOperation, ValueError):
         return None
 
 
@@ -1499,6 +1730,293 @@ def _schema_safe_numeric(value: Any) -> int | float | Decimal128 | None:
     if isinstance(value, str):
         return _parse_order_money(value)
     return None
+
+
+def _schema_safe_tags(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [tag for raw in value if (tag := str(raw).strip())]
+
+
+def _safe_decimal(value: Any) -> Decimal | None:
+    if value is None or isinstance(value, (bool, dict, list)):
+        return None
+    if isinstance(value, Decimal128):
+        decimal_value = value.to_decimal()
+    elif isinstance(value, Decimal):
+        decimal_value = value
+    else:
+        try:
+            decimal_value = Decimal(str(value))
+        except (InvalidOperation, ValueError):
+            return None
+    if not decimal_value.is_finite() or decimal_value < 0:
+        return None
+    return decimal_value
+
+
+def _listing_price_fixed_fee_params(
+    *, item_id: str, detail: dict[str, Any]
+) -> dict[str, Any] | None:
+    site_id = _optional_string(detail.get("site_id")) or _site_from_item_id(item_id)
+    category_id = _optional_string(detail.get("category_id"))
+    price = _safe_decimal(detail.get("price") or detail.get("base_price"))
+    currency_id = _optional_string(detail.get("currency_id"))
+    listing_type_id = _optional_string(detail.get("listing_type_id"))
+    shipping = detail.get("shipping")
+    shipping_values = shipping if isinstance(shipping, dict) else {}
+    shipping_mode = _optional_string(shipping_values.get("mode"))
+    logistic_type = _optional_string(shipping_values.get("logistic_type"))
+    if None in (
+        site_id,
+        category_id,
+        price,
+        currency_id,
+        listing_type_id,
+        shipping_mode,
+        logistic_type,
+    ):
+        return None
+    params: dict[str, Any] = {
+        "site_id": site_id,
+        "category_id": category_id,
+        "price": price,
+        "currency_id": str(currency_id).upper(),
+        "listing_type_id": listing_type_id,
+        "shipping_mode": shipping_mode,
+        "logistic_type": logistic_type,
+    }
+    billable_weight = _safe_decimal(
+        detail.get("billable_weight") or shipping_values.get("billable_weight")
+    )
+    if billable_weight is not None:
+        params["billable_weight"] = billable_weight
+    tags = detail.get("tags")
+    if isinstance(tags, list):
+        clean_tags = [tag for raw in tags if (tag := str(raw).strip())]
+        if clean_tags:
+            params["tags"] = clean_tags
+    return params
+
+
+def _site_from_item_id(item_id: str) -> str | None:
+    normalized = item_id.strip().upper()
+    return normalized[:3] if len(normalized) >= 3 and normalized[:3].isalpha() else None
+
+
+def _formula_row_currency_id(item: dict[str, Any]) -> str | None:
+    currency_id = _optional_string(item.get("currency_id"))
+    return currency_id.upper() if currency_id is not None else None
+
+
+def _formula_row_site_id(*, item_id: str, item: dict[str, Any]) -> str | None:
+    site_id = _optional_string(item.get("site_id")) or _site_from_item_id(item_id)
+    return site_id.upper() if site_id is not None else None
+
+
+def _schema_safe_listing_fixed_fee(value: Any) -> dict[str, Any] | None:
+    if value is None:
+        return None
+    if isinstance(value, ListingPriceFixedFeeProjection):
+        raw_projection = value.model_dump(mode="python", exclude_none=True)
+    elif isinstance(value, dict):
+        try:
+            raw_projection = ListingPriceFixedFeeProjection.model_validate(
+                _listing_fixed_fee_validation_payload(value)
+            ).model_dump(mode="python", exclude_none=True)
+        except (InvalidOperation, ValueError):
+            return None
+    else:
+        return None
+    raw_params = raw_projection["params"]
+    shipping_mode = _optional_string(raw_params.get("shipping_mode"))
+    logistic_type = _optional_string(raw_params.get("logistic_type"))
+    fixed_fee = _decimal128_or_none(raw_projection["fixed_fee"])
+    price = _decimal128_or_none(raw_params["price"])
+    if fixed_fee is None or price is None or shipping_mode is None or logistic_type is None:
+        return None
+    params: dict[str, Any] = {
+        "site_id": raw_params["site_id"],
+        "category_id": raw_params["category_id"],
+        "price": price,
+        "currency_id": raw_params["currency_id"],
+        "listing_type_id": raw_params["listing_type_id"],
+        "shipping_mode": shipping_mode,
+        "logistic_type": logistic_type,
+    }
+    if raw_params.get("billable_weight") is not None:
+        billable_weight = _decimal128_or_none(raw_params["billable_weight"])
+        if billable_weight is None:
+            return None
+        params["billable_weight"] = billable_weight
+    if raw_params.get("tags"):
+        params["tags"] = list(raw_params["tags"])
+    return {
+        "source": raw_projection["source"],
+        "fixed_fee": fixed_fee,
+        "currency_id": raw_projection["currency_id"],
+        "synced_at": raw_projection["synced_at"],
+        "params": params,
+    }
+
+
+def _decimal128_or_none(value: Any) -> Decimal128 | None:
+    try:
+        return Decimal128(value)
+    except (DecimalException, ValueError):
+        return None
+
+
+def _normalize_mongo_loaded_listing_fixed_fee_datetimes(value: dict[str, Any]) -> dict[str, Any]:
+    normalized = dict(value)
+    current = normalized.get("synced_at")
+    if isinstance(current, datetime):
+        normalized["synced_at"] = (
+            current.astimezone(UTC) if current.tzinfo is not None else current.replace(tzinfo=UTC)
+        )
+    return normalized
+
+
+def _listing_fixed_fee_validation_payload(value: dict[str, Any]) -> dict[str, Any]:
+    normalized = _normalize_mongo_loaded_listing_fixed_fee_datetimes(value)
+    raw_params = normalized.get("params")
+    params = raw_params if isinstance(raw_params, dict) else {}
+    allowed_params = {
+        key: params[key]
+        for key in (
+            "site_id",
+            "category_id",
+            "price",
+            "currency_id",
+            "listing_type_id",
+            "shipping_mode",
+            "logistic_type",
+            "billable_weight",
+            "tags",
+        )
+        if key in params
+    }
+    return {
+        key: normalized[key]
+        for key in ("source", "fixed_fee", "currency_id", "synced_at")
+        if key in normalized
+    } | {"params": allowed_params}
+
+
+def _schema_safe_current_promotion(value: Any) -> dict[str, Any] | None:
+    if value is None:
+        return None
+    if isinstance(value, PromoPriceProjection):
+        raw_projection = value.model_dump(mode="python", exclude_none=True)
+    elif isinstance(value, dict):
+        try:
+            raw_projection = PromoPriceProjection.model_validate(
+                _normalize_mongo_loaded_promo_datetimes(value)
+            ).model_dump(mode="python", exclude_none=True)
+        except ValueError:
+            return None
+    else:
+        return None
+    projection: dict[str, Any] = {
+        "source": raw_projection["source"],
+        "sale_amount": Decimal128(raw_projection["sale_amount"]),
+        "regular_amount": Decimal128(raw_projection["regular_amount"]),
+        "currency_id": raw_projection["currency_id"],
+        "reference_at": raw_projection["reference_at"],
+        "synced_at": raw_projection["synced_at"],
+    }
+    if raw_projection.get("discount_percent") is not None:
+        projection["discount_percent"] = Decimal128(raw_projection["discount_percent"])
+    for key in ("promotion_id", "promotion_type"):
+        if raw_projection.get(key) is not None:
+            projection[key] = raw_projection[key]
+    return projection
+
+
+async def _resolve_listing_price_fixed_fee_projection(
+    *,
+    gateway: MeliItemGatewayClient,
+    seller_id: str,
+    params: dict[str, Any],
+    synced_at: datetime,
+) -> dict[str, Any] | None:
+    try:
+        response = await gateway.fetch_resource(
+            seller_id=seller_id,
+            path=_listing_price_fixed_fee_path(params),
+        )
+    except (RuntimeError, GatewayRateLimitError, httpx.HTTPStatusError, httpx.RequestError):
+        return None
+    return project_listing_price_fixed_fee_projection(response, params=params, synced_at=synced_at)
+
+
+def _listing_price_fixed_fee_path(params: dict[str, Any]) -> str:
+    site_id = quote(str(params["site_id"]), safe="")
+    ordered_keys = [
+        "price",
+        "category_id",
+        "currency_id",
+        "listing_type_id",
+        "shipping_mode",
+        "logistic_type",
+        "billable_weight",
+    ]
+    query_parts = [
+        f"{key}={quote(_param_string(params[key]), safe='')}"
+        for key in ordered_keys
+        if params.get(key) is not None
+    ]
+    tags = params.get("tags")
+    if isinstance(tags, list):
+        query_parts.extend(f"tags={quote(str(tag), safe='')}" for tag in tags if str(tag).strip())
+    return f"/sites/{site_id}/listing_prices?{'&'.join(query_parts)}"
+
+
+def _param_string(value: Any) -> str:
+    decimal_value = _safe_decimal(value)
+    if decimal_value is not None:
+        return format(decimal_value, "f")
+    return str(value)
+
+
+def project_listing_price_fixed_fee_projection(
+    payload: Any, *, params: dict[str, Any], synced_at: datetime
+) -> dict[str, Any] | None:
+    if not isinstance(payload, dict):
+        return None
+    sale_fee_details = payload.get("sale_fee_details")
+    if not isinstance(sale_fee_details, dict):
+        return None
+    fixed_fee = _safe_decimal(sale_fee_details.get("fixed_fee"))
+    payload_currency = _optional_string(payload.get("currency_id") or params.get("currency_id"))
+    if fixed_fee is None or payload_currency is None:
+        return None
+    try:
+        projection = ListingPriceFixedFeeProjection.model_validate(
+            {
+                "source": LISTING_PRICE_FIXED_FEE_SOURCE,
+                "fixed_fee": fixed_fee,
+                "currency_id": payload_currency,
+                "synced_at": synced_at,
+                "params": params,
+            }
+        )
+    except (InvalidOperation, ValueError):
+        return None
+    return _schema_safe_listing_fixed_fee(projection)
+
+
+def _normalize_mongo_loaded_promo_datetimes(value: dict[str, Any]) -> dict[str, Any]:
+    normalized = dict(value)
+    for key in ("reference_at", "synced_at"):
+        current = normalized.get(key)
+        if isinstance(current, datetime):
+            normalized[key] = (
+                current.astimezone(UTC)
+                if current.tzinfo is not None
+                else current.replace(tzinfo=UTC)
+            )
+    return normalized
 
 
 def _shipping_logistic_type(shipping: Any) -> str | None:
@@ -1904,6 +2422,8 @@ async def _run_cli(args: argparse.Namespace) -> BackfillCliSummary:
                 gateway=gateway,
                 seller_id=args.seller_id,
                 dry_run=args.dry_run,
+                sale_price_enabled=bool(args.sale_price_enabled),
+                listing_fixed_fee_enabled=bool(args.listing_fixed_fee_enabled),
             )
         if args.source == "order-lines":
             return await run_order_line_identity_backfill(

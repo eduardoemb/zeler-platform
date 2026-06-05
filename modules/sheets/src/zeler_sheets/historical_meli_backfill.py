@@ -44,6 +44,13 @@ class HistoricalMeliBackfillSummary:
     orders_fetched: int
     items_fetched: int
     shipments_fetched: int
+    buyer_address_pii_mode: bool
+    output_mode: str
+    address_matched: int
+    address_populated: int
+    address_missing: int
+    address_unauthorized: int
+    redacted_errors: int
     item_detail_missing: int
     existing_orders: int
     existing_items: int
@@ -63,7 +70,26 @@ class HistoricalMeliBackfillSummary:
     shipment_ids: list[str]
 
     def as_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        summary = asdict(self)
+        if self.buyer_address_pii_mode:
+            for unsafe_key in (
+                "order_ids",
+                "item_ids",
+                "missing_item_detail_ids",
+                "shipment_ids",
+            ):
+                summary.pop(unsafe_key, None)
+        return summary
+
+
+@dataclass(frozen=True)
+class ShipmentFetchResult:
+    shipments: list[dict[str, Any]]
+    address_matched: int
+    address_populated: int
+    address_missing: int
+    address_unauthorized: int
+    redacted_errors: int
 
 
 def parse_inclusive_date_range(date_from: str, date_to: str) -> InclusiveDateRange:
@@ -91,11 +117,16 @@ async def run_historical_meli_backfill(
     date_to: str,
     dry_run: bool = True,
     approved_runtime: bool = False,
+    include_buyer_address_pii: bool = False,
     max_orders: int | None = None,
 ) -> HistoricalMeliBackfillSummary:
     seller_id = str(seller_id)
     if not dry_run and not approved_runtime:
         raise ValueError("approved_runtime is required when dry_run is false")
+    if include_buyer_address_pii and not approved_runtime:
+        raise ValueError("approved_runtime is required for buyer/address PII mode")
+    if include_buyer_address_pii and max_orders is None:
+        raise ValueError("max_orders is required for buyer/address PII mode")
     if max_orders is not None and max_orders < 1:
         raise ValueError("max-orders must be greater than zero")
 
@@ -136,13 +167,13 @@ async def run_historical_meli_backfill(
             "missing item details for "
             f"{len(missing_item_detail_ids)} item(s); refusing to write partial backfill"
         )
-    shipments = [
-        cast(
-            "dict[str, Any]",
-            await gateway.fetch_resource(seller_id=seller_id, path=f"/shipments/{shipment_id}"),
-        )
-        for shipment_id in shipment_ids
-    ]
+    shipment_fetch = await _fetch_shipments(
+        gateway=gateway,
+        seller_id=seller_id,
+        shipment_ids=shipment_ids,
+        include_buyer_address_pii=include_buyer_address_pii,
+    )
+    shipments = shipment_fetch.shipments
 
     existing_orders = await _count_existing(
         db=db, collection="orders", seller_id=seller_id, ids=order_ids
@@ -192,6 +223,13 @@ async def run_historical_meli_backfill(
         orders_fetched=len(orders),
         items_fetched=len(items),
         shipments_fetched=len(shipments),
+        buyer_address_pii_mode=include_buyer_address_pii,
+        output_mode="sanitized_aggregate" if include_buyer_address_pii else "detailed_ids",
+        address_matched=shipment_fetch.address_matched,
+        address_populated=shipment_fetch.address_populated,
+        address_missing=shipment_fetch.address_missing,
+        address_unauthorized=shipment_fetch.address_unauthorized,
+        redacted_errors=shipment_fetch.redacted_errors,
         item_detail_missing=len(missing_item_detail_ids),
         existing_orders=existing_orders,
         existing_items=existing_items,
@@ -277,6 +315,54 @@ async def _fetch_items(
     return items
 
 
+async def _fetch_shipments(
+    *,
+    gateway: HistoricalMeliGateway,
+    seller_id: str,
+    shipment_ids: Sequence[str],
+    include_buyer_address_pii: bool,
+) -> ShipmentFetchResult:
+    shipments: list[dict[str, Any]] = []
+    address_populated = 0
+    address_missing = 0
+    address_unauthorized = 0
+    redacted_errors = 0
+
+    for shipment_id in shipment_ids:
+        try:
+            resource = await gateway.fetch_resource(
+                seller_id=seller_id, path=f"/shipments/{shipment_id}"
+            )
+        except Exception:  # noqa: BLE001 - redact arbitrary gateway/client errors.
+            redacted_errors += 1
+            continue
+
+        if _is_unauthorized_resource(resource):
+            address_unauthorized += 1
+            continue
+        if not isinstance(resource, dict) or _resource_id(resource) is None:
+            redacted_errors += 1
+            continue
+
+        shipment = dict(resource)
+        if _has_receiver_address_values(shipment):
+            address_populated += 1
+        else:
+            address_missing += 1
+        if not include_buyer_address_pii:
+            shipment.pop("receiver_address", None)
+        shipments.append(shipment)
+
+    return ShipmentFetchResult(
+        shipments=shipments,
+        address_matched=len(shipment_ids),
+        address_populated=address_populated,
+        address_missing=address_missing,
+        address_unauthorized=address_unauthorized,
+        redacted_errors=redacted_errors,
+    )
+
+
 async def _count_existing(*, db: Any, collection: str, seller_id: str, ids: Sequence[str]) -> int:
     existing = 0
     for document_id in ids:
@@ -331,6 +417,49 @@ def _parse_item_detail_response(response: Any) -> list[dict[str, Any]]:
         if _resource_id(entry) is not None:
             items.append(entry)
     return items
+
+
+def _is_unauthorized_resource(resource: Any) -> bool:
+    if not isinstance(resource, dict):
+        return False
+    status = _optional_int(resource.get("status") or resource.get("code"))
+    return status in {401, 403}
+
+
+def _has_receiver_address_values(resource: dict[str, Any]) -> bool:
+    raw_address = resource.get("receiver_address")
+    if not isinstance(raw_address, dict):
+        return False
+    return any(
+        _first_address_string(*(raw_address.get(field_name) for field_name in field_names))
+        for field_names in (
+            ("receiver_name", "name"),
+            ("street_name",),
+            ("street_number",),
+            ("neighborhood",),
+            ("zip_code",),
+            ("city",),
+            ("state",),
+            ("country",),
+        )
+    )
+
+
+def _first_address_string(*values: Any) -> str | None:
+    for value in values:
+        normalized = _address_string(value)
+        if normalized is not None:
+            return normalized
+    return None
+
+
+def _address_string(value: Any) -> str | None:
+    if isinstance(value, dict):
+        return _address_string(value.get("name") or value.get("id"))
+    if value is None or isinstance(value, (list, tuple, set, bytes, bytearray)):
+        return None
+    normalized = str(value).strip()
+    return normalized or None
 
 
 def _extract_order_item_ids(order: dict[str, Any]) -> list[str]:
@@ -427,6 +556,14 @@ def build_arg_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Required with --write to confirm execution from an approved runtime context.",
     )
+    parser.add_argument(
+        "--include-buyer-address-pii",
+        action="store_true",
+        help=(
+            "Enable buyer/address PII shipment snapshot processing. Requires "
+            "--confirm-approved-runtime and --max-orders; CLI output remains count-only."
+        ),
+    )
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument(
         "--dry-run",
@@ -447,6 +584,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
 def validate_cli_safety(args: argparse.Namespace) -> None:
     if not bool(args.dry_run) and not bool(args.confirm_approved_runtime):
         raise SystemExit("--confirm-approved-runtime is required with --write")
+    if bool(args.include_buyer_address_pii) and not bool(args.confirm_approved_runtime):
+        raise SystemExit("--confirm-approved-runtime is required with --include-buyer-address-pii")
+    if bool(args.include_buyer_address_pii) and args.max_orders is None:
+        raise SystemExit("--max-orders is required with --include-buyer-address-pii")
 
 
 async def _run_cli(args: argparse.Namespace) -> HistoricalMeliBackfillSummary:
@@ -489,6 +630,7 @@ async def _run_cli(args: argparse.Namespace) -> HistoricalMeliBackfillSummary:
             date_to=str(args.date_to),
             dry_run=bool(args.dry_run),
             approved_runtime=bool(args.confirm_approved_runtime),
+            include_buyer_address_pii=bool(args.include_buyer_address_pii),
             max_orders=cast("int | None", args.max_orders),
         )
     finally:

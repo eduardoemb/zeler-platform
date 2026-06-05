@@ -212,6 +212,10 @@ def test_unknown_formula_returns_stable_formula_unknown_code() -> None:
 def test_dashboard_output_column_fixture_locks_mvp_and_deferred_columns() -> None:
     fixture = _column_fixture()
     formulas = fixture["formulas"]
+    fixed_fee_source = (
+        "sheets_item_formula_rows.current.listing_price_fixed_fee.fixed_fee from "
+        "/sites/{site}/listing_prices.sale_fee_details.fixed_fee"
+    )
     expected_dashboard = [
         "ID Publicación",
         "Título",
@@ -261,13 +265,13 @@ def test_dashboard_output_column_fixture_locks_mvp_and_deferred_columns() -> Non
             "Ventas (90 días)",
             "Envió A Cargo De",
             "Costo De Envío",
+            "Costo Por Unidad",
             "Tiene Catálogo",
+            "Precio Promo",
         ]
         assert [column["name"] for column in columns if column["status"] == "explicit_na"] == [
             "% Comisión",
             "Comisión",
-            "Costo Por Unidad",
-            "Precio Promo",
         ]
         paused_column = next(column for column in columns if column["name"] == "Días Pausada")
         assert paused_column == {
@@ -277,6 +281,18 @@ def test_dashboard_output_column_fixture_locks_mvp_and_deferred_columns() -> Non
             ),
             "status": "mvp",
             "reason": "Returns NA when observed status-history source truth is missing.",
+        }
+        unit_cost_column = next(
+            column for column in columns if column["name"] == "Costo Por Unidad"
+        )
+        assert unit_cost_column == {
+            "name": "Costo Por Unidad",
+            "source": fixed_fee_source,
+            "status": "mvp",
+            "reason": (
+                "Returns NA unless a validated persisted listing-prices fixed-fee projection "
+                "is present."
+            ),
         }
         assert "Categoría" not in [column["name"] for column in columns]
         assert "Imagen" not in [column["name"] for column in columns]
@@ -305,6 +321,10 @@ def test_dashboard_output_column_fixture_locks_mvp_and_deferred_columns() -> Non
 def test_batch_b_output_column_fixture_locks_mvp_and_deferred_columns() -> None:
     fixture = _column_fixture()
     formulas = fixture["formulas"]
+    fixed_fee_source = (
+        "sheets_item_formula_rows.current.listing_price_fixed_fee.fixed_fee from "
+        "/sites/{site}/listing_prices.sale_fee_details.fixed_fee"
+    )
     buyer_address_columns = [
         "Nombre Comprador",
         "Calle",
@@ -351,6 +371,21 @@ def test_batch_b_output_column_fixture_locks_mvp_and_deferred_columns() -> None:
         "Costo De Envío",
         "Status",
     ]
+    for formula in ["ZELERDATA_ORDENES", "ZELERDATA_ORDENESPORSKU"]:
+        unit_cost_column = next(
+            column
+            for column in formulas[formula]["columns"]
+            if column["name"] == "Costo Por Unidad"
+        )
+        assert unit_cost_column == {
+            "name": "Costo Por Unidad",
+            "source": fixed_fee_source,
+            "status": "mvp",
+            "reason": (
+                "Returns NA unless a validated persisted listing-prices fixed-fee projection "
+                "is present for the order line item."
+            ),
+        }
     assert [
         column["name"]
         for column in formulas["ZELERDATA_ORDENESPORSKU"]["optional_columns_when_compradores"]
@@ -449,10 +484,8 @@ def test_every_legacy_formula_has_an_explicit_runtime_state() -> None:
         for formula, state in runtime_states.items()
         if state.state == "unsupported"
     }
-    assert len(unsupported) == 24
-    assert unsupported["ZELERDATA_COMPRADORES"] == (
-        "Current canonical orders do not expose buyer/shipping address fields."
-    )
+    assert len(unsupported) == 23
+    assert "ZELERDATA_COMPRADORES" not in unsupported
     assert unsupported["ZELERDATA_CATALOGO"] == (
         "Catalog/buybox snapshot read model is not available in zeler-platform yet."
     )
@@ -488,14 +521,14 @@ async def test_explicit_unsupported_handlers_are_routed_and_raise_data_unavailab
     assert set(handlers) == set(unsupported_states)
 
     with pytest.raises(Exception) as exc_info:
-        await handlers["ZELERDATA_COMPRADORES"](  # type: ignore[misc]
-            _formula_context("ZELERDATA_COMPRADORES", {"id_ordenes": ["order-1"]})
+        await handlers["ZELERDATA_ENVIOSMERCADOENVIOS"](  # type: ignore[misc]
+            _formula_context("ZELERDATA_ENVIOSMERCADOENVIOS", {})
         )
 
     assert type(exc_info.value).__name__ == "FormulaDataUnavailableError"
     assert str(exc_info.value) == (
-        "ZELERDATA_COMPRADORES data is not available yet: "
-        "Current canonical orders do not expose buyer/shipping address fields."
+        "ZELERDATA_ENVIOSMERCADOENVIOS data is not available yet: "
+        "MercadoEnvios shipment/label read model is not available in zeler-platform yet."
     )
 
 

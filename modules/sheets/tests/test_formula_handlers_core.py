@@ -14,6 +14,7 @@ from zeler_sheets.formulas.dispatcher import FormulaDispatcher, FormulaExecution
 from zeler_sheets.formulas.handlers_core import build_core_formula_handlers
 from zeler_sheets.formulas.read_models import FormulaReadModelRepository
 from zeler_sheets.formulas.registry import FormulaRegistry
+from zeler_sheets.sheetseller_backfill import build_formula_row_doc
 
 
 class FakeUpdateResult:
@@ -1020,6 +1021,562 @@ async def test_dashboard_returns_minimal_current_item_table_with_optional_header
         "seller_id": "seller-1",
         "normalized_sku": {"$in": ["SKU-2", "MISSING"]},
     }
+
+
+@pytest.mark.asyncio
+async def test_dashboard_uses_listing_fixed_fee_without_seller_cost_lookup() -> None:
+    db = FakeDb()
+    db["sheets_item_formula_rows"].documents = {
+        "row-1": _dashboard_item(
+            "sku-1",
+            "SKU-1",
+            "MLA1",
+            base_price=12345.67,
+            category_id="MLA-CAT",
+            currency_id="ARS",
+            site_id="MLA",
+            listing_type_id="gold_special",
+            shipping_mode="me2",
+            logistic_type="fulfillment",
+            listing_price_fixed_fee={
+                "source": "/sites/{site}/listing_prices",
+                "fixed_fee": 1350.25,
+                "currency_id": "ARS",
+                "synced_at": datetime(2026, 6, 4, tzinfo=UTC),
+                "params": {
+                    "site_id": "MLA",
+                    "category_id": "MLA-CAT",
+                    "price": 12345.67,
+                    "currency_id": "ARS",
+                    "listing_type_id": "gold_special",
+                    "shipping_mode": "me2",
+                    "logistic_type": "fulfillment",
+                },
+            },
+        ),
+        "row-2": _dashboard_item(
+            "sku-2",
+            "SKU-2",
+            "MLA2",
+            listing_price_fixed_fee={
+                "source": "/items/{id}/sale_price",
+                "fixed_fee": 77,
+                "currency_id": "ARS",
+                "synced_at": datetime(2026, 6, 4, tzinfo=UTC),
+                "params": {},
+            },
+        ),
+        "row-3": _dashboard_item("sku-3", "SKU-3", "MLA3"),
+    }
+    db["seller_unit_costs"].documents = {
+        "cost-sku-1": _unit_cost_doc("cost-sku-1", "seller-1", "SKU-1", "12.50"),
+        "other-seller": _unit_cost_doc("other-seller", "seller-2", "SKU-2", "99"),
+    }
+    dispatcher = _core_dispatcher(db)
+
+    dashboard = await dispatcher.execute(
+        _context("ZELERDATA_DASHBOARD", {"skus": "todos", "encabezados": "si"})
+    )
+    sin_catalogo = await dispatcher.execute(
+        _context("ZELERDATA_DASHBOARDSINCATALOGO", {"skus": "todos", "encabezados": "si"})
+    )
+
+    assert [row[20] for row in dashboard.values[1:]] == [1350.25, "NA", "NA"]
+    assert [row[20] for row in sin_catalogo.values[1:]] == [1350.25, "NA", "NA"]
+    assert db["seller_unit_costs"].last_find_filter is None
+
+
+@pytest.mark.asyncio
+async def test_dashboard_returns_na_for_invalid_listing_fixed_fee_projection() -> None:
+    synced_at = datetime(2026, 6, 4, tzinfo=UTC)
+    projection = {
+        "source": "/sites/{site}/listing_prices",
+        "fixed_fee": 1350.25,
+        "currency_id": "ARS",
+        "synced_at": synced_at,
+        "params": {
+            "site_id": "MLA",
+            "category_id": "MLA-CAT",
+            "price": 12345.67,
+            "currency_id": "ARS",
+            "listing_type_id": "gold_special",
+        },
+    }
+    db = FakeDb()
+    db["sheets_item_formula_rows"].documents = {
+        "currency-mismatch": _dashboard_item(
+            "sku-1",
+            "SKU-1",
+            "MLA1",
+            base_price=12345.67,
+            category_id="MLA-CAT",
+            currency_id="ARS",
+            site_id="MLA",
+            listing_type_id="gold_special",
+            listing_price_fixed_fee=projection
+            | {"params": projection["params"] | {"currency_id": "USD"}},
+        ),
+        "price-mismatch": _dashboard_item(
+            "sku-2",
+            "SKU-2",
+            "MLA2",
+            base_price=99999,
+            category_id="MLA-CAT",
+            currency_id="ARS",
+            site_id="MLA",
+            listing_type_id="gold_special",
+            listing_price_fixed_fee=projection,
+        ),
+        "category-mismatch": _dashboard_item(
+            "sku-3",
+            "SKU-3",
+            "MLA3",
+            base_price=12345.67,
+            category_id="MLA-OTHER",
+            currency_id="ARS",
+            site_id="MLA",
+            listing_type_id="gold_special",
+            listing_price_fixed_fee=projection,
+        ),
+        "listing-type-mismatch": _dashboard_item(
+            "sku-4",
+            "SKU-4",
+            "MLA4",
+            base_price=12345.67,
+            category_id="MLA-CAT",
+            currency_id="ARS",
+            site_id="MLA",
+            listing_type_id="gold_pro",
+            listing_price_fixed_fee=projection,
+        ),
+        "missing-currency-site-basis": _dashboard_item(
+            "sku-5",
+            "SKU-5",
+            "MLA5",
+            base_price=12345.67,
+            category_id="MLA-CAT",
+            listing_type_id="gold_special",
+            listing_price_fixed_fee=projection,
+        ),
+    }
+    dispatcher = _core_dispatcher(db)
+
+    dashboard = await dispatcher.execute(
+        _context("ZELERDATA_DASHBOARD", {"skus": "todos", "encabezados": "si"})
+    )
+
+    assert [row[20] for row in dashboard.values[1:]] == ["NA", "NA", "NA", "NA", "NA"]
+
+
+@pytest.mark.asyncio
+async def test_dashboard_validates_fixed_fee_price_and_shipping_request_basis() -> None:
+    synced_at = datetime(2026, 6, 4, tzinfo=UTC)
+    projection = {
+        "source": "/sites/{site}/listing_prices",
+        "fixed_fee": 1350.25,
+        "currency_id": "ARS",
+        "synced_at": synced_at,
+        "params": {
+            "site_id": "MLA",
+            "category_id": "MLA-CAT",
+            "price": 100,
+            "currency_id": "ARS",
+            "listing_type_id": "gold_special",
+            "shipping_mode": "me2",
+            "logistic_type": "fulfillment",
+            "billable_weight": 500,
+            "tags": ["mandatory_free_shipping"],
+        },
+    }
+    matching_basis = {
+        "price": 100,
+        "base_price": 120,
+        "category_id": "MLA-CAT",
+        "currency_id": "ARS",
+        "site_id": "MLA",
+        "listing_type_id": "gold_special",
+        "shipping_mode": "me2",
+        "logistic_type": "fulfillment",
+        "billable_weight": 500,
+        "tags": ["mandatory_free_shipping"],
+    }
+    logistic_mismatch_basis = matching_basis | {
+        "logistic_type": "drop_off",
+        "shipping_logistic_type": "drop_off",
+    }
+    db = FakeDb()
+    db["sheets_item_formula_rows"].documents = {
+        "valid-price-basis": _dashboard_item(
+            "sku-1",
+            "SKU-1",
+            "MLA1",
+            **matching_basis,
+            listing_price_fixed_fee=projection,
+        ),
+        "shipping-mode-mismatch": _dashboard_item(
+            "sku-2",
+            "SKU-2",
+            "MLA2",
+            **(matching_basis | {"shipping_mode": "me1"}),
+            listing_price_fixed_fee=projection,
+        ),
+        "logistic-type-mismatch": _dashboard_item(
+            "sku-3",
+            "SKU-3",
+            "MLA3",
+            **logistic_mismatch_basis,
+            listing_price_fixed_fee=projection,
+        ),
+        "billable-weight-missing": _dashboard_item(
+            "sku-4",
+            "SKU-4",
+            "MLA4",
+            **{key: value for key, value in matching_basis.items() if key != "billable_weight"},
+            listing_price_fixed_fee=projection,
+        ),
+        "tags-mismatch": _dashboard_item(
+            "sku-5",
+            "SKU-5",
+            "MLA5",
+            **(matching_basis | {"tags": ["other_tag"]}),
+            listing_price_fixed_fee=projection,
+        ),
+        "shipping-mode-param-missing": _dashboard_item(
+            "sku-6",
+            "SKU-6",
+            "MLA6",
+            **matching_basis,
+            listing_price_fixed_fee=projection
+            | {
+                "params": {
+                    key: value
+                    for key, value in projection["params"].items()
+                    if key != "shipping_mode"
+                }
+            },
+        ),
+        "logistic-type-param-missing": _dashboard_item(
+            "sku-7",
+            "SKU-7",
+            "MLA7",
+            **matching_basis,
+            listing_price_fixed_fee=projection
+            | {
+                "params": {
+                    key: value
+                    for key, value in projection["params"].items()
+                    if key != "logistic_type"
+                }
+            },
+        ),
+        "shipping-mode-row-missing": _dashboard_item(
+            "sku-8",
+            "SKU-8",
+            "MLA8",
+            **{key: value for key, value in matching_basis.items() if key != "shipping_mode"},
+            listing_price_fixed_fee=projection,
+        ),
+        "logistic-type-row-missing": _dashboard_item(
+            "sku-9",
+            "SKU-9",
+            "MLA9",
+            **{key: value for key, value in matching_basis.items() if key != "logistic_type"},
+            listing_price_fixed_fee=projection,
+        ),
+    }
+    dispatcher = _core_dispatcher(db)
+
+    dashboard = await dispatcher.execute(
+        _context("ZELERDATA_DASHBOARD", {"skus": "todos", "encabezados": "si"})
+    )
+
+    assert [row[20] for row in dashboard.values[1:]] == [
+        1350.25,
+        "NA",
+        "NA",
+        "NA",
+        "NA",
+        "NA",
+        "NA",
+        "NA",
+        "NA",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_dashboard_returns_na_when_fixed_fee_optional_basis_params_are_missing() -> None:
+    synced_at = datetime(2026, 6, 4, tzinfo=UTC)
+    projection = {
+        "source": "/sites/{site}/listing_prices",
+        "fixed_fee": 1350.25,
+        "currency_id": "ARS",
+        "synced_at": synced_at,
+        "params": {
+            "site_id": "MLA",
+            "category_id": "MLA-CAT",
+            "price": 100,
+            "currency_id": "ARS",
+            "listing_type_id": "gold_special",
+            "shipping_mode": "me2",
+            "logistic_type": "fulfillment",
+        },
+    }
+    matching_basis = {
+        "price": 100,
+        "base_price": 120,
+        "category_id": "MLA-CAT",
+        "currency_id": "ARS",
+        "site_id": "MLA",
+        "listing_type_id": "gold_special",
+        "shipping_mode": "me2",
+        "logistic_type": "fulfillment",
+    }
+    db = FakeDb()
+    db["sheets_item_formula_rows"].documents = {
+        "billable-weight-param-missing": _dashboard_item(
+            "sku-1",
+            "SKU-1",
+            "MLA1",
+            **(matching_basis | {"billable_weight": 500}),
+            listing_price_fixed_fee=projection,
+        ),
+        "tags-param-missing": _dashboard_item(
+            "sku-2",
+            "SKU-2",
+            "MLA2",
+            **(matching_basis | {"tags": ["mandatory_free_shipping"]}),
+            listing_price_fixed_fee=projection,
+        ),
+        "optional-basis-absent": _dashboard_item(
+            "sku-3",
+            "SKU-3",
+            "MLA3",
+            **(matching_basis | {"tags": []}),
+            listing_price_fixed_fee=projection,
+        ),
+    }
+    dispatcher = _core_dispatcher(db)
+
+    dashboard = await dispatcher.execute(
+        _context("ZELERDATA_DASHBOARD", {"skus": "todos", "encabezados": "si"})
+    )
+
+    assert [row[20] for row in dashboard.values[1:]] == ["NA", "NA", 1350.25]
+
+
+@pytest.mark.asyncio
+async def test_dashboard_returns_na_for_fixed_fee_mismatch_from_backfill_row() -> None:
+    synced_at = datetime(2026, 6, 4, tzinfo=UTC)
+    db = FakeDb()
+    row = build_formula_row_doc(
+        {
+            "_id": "MLB1",
+            "seller_id": "seller-1",
+            "title": "USD MLB listing",
+            "status": "active",
+            "available_quantity": 7,
+            "price": 12345.67,
+            "base_price": 12345.67,
+            "category_id": "MLA-CAT",
+            "currency_id": "USD",
+            "site_id": "MLB",
+            "listing_type_id": "gold_special",
+            "date_created": synced_at,
+            "last_updated": synced_at,
+            "attributes": [{"id": "SELLER_SKU", "value_name": "sku-1"}],
+            "variations": [],
+            "listing_price_fixed_fee": {
+                "source": "/sites/{site}/listing_prices",
+                "fixed_fee": 1350.25,
+                "currency_id": "ARS",
+                "synced_at": synced_at,
+                "params": {
+                    "site_id": "MLA",
+                    "category_id": "MLA-CAT",
+                    "price": 12345.67,
+                    "currency_id": "ARS",
+                    "listing_type_id": "gold_special",
+                },
+            },
+        },
+        seller_id="seller-1",
+    )
+    db["sheets_item_formula_rows"].documents = {row["_id"]: row}
+    dispatcher = _core_dispatcher(db)
+
+    dashboard = await dispatcher.execute(
+        _context("ZELERDATA_DASHBOARD", {"skus": "todos", "encabezados": "si"})
+    )
+
+    assert dashboard.values[1][20] == "NA"
+
+
+def _dashboard_item(sku: str, normalized_sku: str, item_id: str, **current: Any) -> dict[str, Any]:
+    return {
+        "_id": item_id,
+        "seller_id": "seller-1",
+        "sku": sku,
+        "normalized_sku": normalized_sku,
+        "item_id": item_id,
+        "current": {"title": item_id, "base_price": 99} | current,
+    }
+
+
+def _unit_cost_doc(doc_id: str, seller_id: str, sku: str, unit_cost: str) -> dict[str, Any]:
+    return {
+        "_id": doc_id,
+        "seller_id": seller_id,
+        "normalized_sku": sku,
+        "unit_cost": unit_cost,
+        "currency": "ARS",
+        "source": "manual",
+        "status": "active",
+        "effective_from": datetime(2026, 1, 1, tzinfo=UTC),
+    }
+
+
+@pytest.mark.asyncio
+async def test_dashboard_emits_valid_persisted_promo_price_only_for_tipo_todos() -> None:
+    db = FakeDb()
+    db["sheets_item_formula_rows"].documents = {
+        "seller-1-sku-1-mla1": {
+            "_id": "seller-1-sku-1-mla1",
+            "seller_id": "seller-1",
+            "sku": "sku-1",
+            "normalized_sku": "SKU-1",
+            "item_id": "MLA1",
+            "current": {
+                "title": "Promoted listing",
+                "status": "active",
+                "available_quantity": 7,
+                "base_price": 149.90,
+                "current_promotion": {
+                    "source": "/items/{id}/sale_price",
+                    "sale_amount": 99.90,
+                    "regular_amount": 149.90,
+                    "currency_id": "MXN",
+                    "reference_at": datetime(2026, 6, 4, 12, tzinfo=UTC),
+                    "synced_at": datetime(2026, 6, 4, 12, tzinfo=UTC),
+                },
+            },
+        }
+    }
+    dispatcher = _core_dispatcher(db)
+
+    with_promo = await dispatcher.execute(
+        _context("ZELERDATA_DASHBOARD", {"skus": "todos", "tipo_precio": "todos"})
+    )
+    without_promo_column = await dispatcher.execute(
+        _context("ZELERDATA_DASHBOARD", {"skus": "todos", "tipo_precio": "base"})
+    )
+
+    assert with_promo.values[0][-1] == 99.90
+    assert len(without_promo_column.values[0]) == len(DASHBOARD_LEGACY_HEADERS)
+
+
+@pytest.mark.asyncio
+async def test_dashboard_keeps_promo_na_for_missing_or_non_discounted_projection() -> None:
+    db = FakeDb()
+    db["sheets_item_formula_rows"].documents = {
+        "seller-1-sku-1-mla1": {
+            "_id": "seller-1-sku-1-mla1",
+            "seller_id": "seller-1",
+            "sku": "sku-1",
+            "normalized_sku": "SKU-1",
+            "item_id": "MLA1",
+            "current": {
+                "title": "Missing promo",
+                "status": "active",
+                "available_quantity": 7,
+                "base_price": 149.90,
+            },
+        },
+        "seller-1-sku-2-mla2": {
+            "_id": "seller-1-sku-2-mla2",
+            "seller_id": "seller-1",
+            "sku": "sku-2",
+            "normalized_sku": "SKU-2",
+            "item_id": "MLA2",
+            "current": {
+                "title": "Non discount",
+                "status": "active",
+                "available_quantity": 7,
+                "base_price": 149.90,
+                "current_promotion": {
+                    "source": "/items/{id}/sale_price",
+                    "sale_amount": 149.90,
+                    "regular_amount": 149.90,
+                    "currency_id": "MXN",
+                    "reference_at": datetime(2026, 6, 4, 12, tzinfo=UTC),
+                    "synced_at": datetime(2026, 6, 4, 12, tzinfo=UTC),
+                },
+            },
+        },
+    }
+    dispatcher = _core_dispatcher(db)
+
+    result = await dispatcher.execute(
+        _context("ZELERDATA_DASHBOARD", {"skus": "todos", "tipo_precio": "todos"})
+    )
+
+    assert [row[-1] for row in result.values] == ["NA", "NA"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("formula_name", ["ZELERDATA_DASHBOARD", "ZELERDATA_DASHBOARDSINCATALOGO"])
+async def test_dashboard_tipo_promo_uses_promo_as_selected_price_without_extra_column(
+    formula_name: str,
+) -> None:
+    db = FakeDb()
+    db["sheets_item_formula_rows"].documents = {
+        "seller-1-sku-1-mla1": {
+            "_id": "seller-1-sku-1-mla1",
+            "seller_id": "seller-1",
+            "sku": "sku-1",
+            "normalized_sku": "SKU-1",
+            "item_id": "MLA1",
+            "current": {
+                "title": "Promoted listing",
+                "status": "active",
+                "available_quantity": 7,
+                "base_price": 149.90,
+                "current_promotion": {
+                    "source": "/items/{id}/sale_price",
+                    "sale_amount": 88.80,
+                    "regular_amount": 149.90,
+                    "currency_id": "MXN",
+                    "reference_at": datetime(2026, 6, 4, 12, tzinfo=UTC),
+                    "synced_at": datetime(2026, 6, 4, 12, tzinfo=UTC),
+                },
+            },
+        },
+        "seller-1-sku-2-mla2": {
+            "_id": "seller-1-sku-2-mla2",
+            "seller_id": "seller-1",
+            "sku": "sku-2",
+            "normalized_sku": "SKU-2",
+            "item_id": "MLA2",
+            "current": {
+                "title": "No promo listing",
+                "status": "active",
+                "available_quantity": 4,
+                "base_price": 199.90,
+            },
+        },
+    }
+    dispatcher = _core_dispatcher(db)
+
+    result = await dispatcher.execute(
+        _context(
+            formula_name,
+            {"skus": "todos", "encabezados": "si", "tipo_precio": "promo"},
+        )
+    )
+
+    assert result.values[0] == DASHBOARD_LEGACY_HEADERS
+    assert "Precio Promo" not in result.values[0]
+    assert [row[4] for row in result.values[1:]] == [88.80, "NA"]
+    assert all(len(row) == len(DASHBOARD_LEGACY_HEADERS) for row in result.values)
 
 
 @pytest.mark.asyncio

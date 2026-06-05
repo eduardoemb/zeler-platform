@@ -3,7 +3,7 @@ from __future__ import annotations
 import math
 from collections.abc import Callable, Iterable, Mapping
 from datetime import UTC, date, datetime, time, timedelta
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from bson.decimal128 import Decimal128
@@ -460,7 +460,9 @@ class CoreFormulaHandlers:
         ]
         sales_windows = await self._dashboard_sales_windows(context.seller_id, visible_rows)
         headers = list(DASHBOARD_LEGACY_HEADERS)
-        include_promo = str(context.args.get("tipo_precio") or "").strip().casefold() == "todos"
+        tipo_precio = str(context.args.get("tipo_precio") or "").strip().casefold()
+        include_promo = tipo_precio == "todos"
+        use_promo_as_selected_price = tipo_precio == "promo"
         if include_promo:
             headers.append("Precio Promo")
         values: list[list[Any]] = _header_row(context.args.get("encabezados"), headers)
@@ -476,6 +478,7 @@ class CoreFormulaHandlers:
                     sales_windows=sales_windows,
                     include_promo=include_promo,
                     today=today,
+                    use_promo_as_selected_price=use_promo_as_selected_price,
                 )
             )
 
@@ -834,6 +837,23 @@ def _dashboard_row(
     sales_windows: Mapping[int, Mapping[tuple[str, str], int]],
     include_promo: bool,
     today: date,
+    use_promo_as_selected_price: bool,
+) -> list[Any]:
+    values = _dashboard_row_base(
+        row,
+        sales_windows=sales_windows,
+        today=today,
+        use_promo_as_selected_price=use_promo_as_selected_price,
+    )
+    return [*values, _promo_price(row)] if include_promo else values
+
+
+def _dashboard_row_base(
+    row: Mapping[str, Any],
+    *,
+    sales_windows: Mapping[int, Mapping[tuple[str, str], int]],
+    today: date,
+    use_promo_as_selected_price: bool,
 ) -> list[Any]:
     key = (
         normalize_sku(row.get("normalized_sku") or row.get("sku")),
@@ -845,7 +865,7 @@ def _dashboard_row(
         _current_value(row, "title"),
         row.get("sku") or row.get("normalized_sku") or "",
         _current_value(row, "available_quantity"),
-        _current_value(row, "base_price"),
+        _promo_price(row) if use_promo_as_selected_price else _current_value(row, "base_price"),
         _current_value(row, "shipping_logistic_type"),
         _current_value(row, "permalink"),
         _listing_type_id(row),
@@ -861,9 +881,187 @@ def _dashboard_row(
         _seller_shipping_cost(row),
         NA_VALUE,
         NA_VALUE,
-        NA_VALUE,
+        _listing_fixed_fee(row),
         "Sí" if _has_catalog_product(row) else "No",
-    ] + ([NA_VALUE] if include_promo else [])
+    ]
+
+
+def _listing_fixed_fee(row: Mapping[str, Any]) -> Any:
+    current = row.get("current", {})
+    if not isinstance(current, Mapping):
+        return NA_VALUE
+    projection = current.get("listing_price_fixed_fee")
+    if not isinstance(projection, Mapping):
+        return NA_VALUE
+    if projection.get("source") != "/sites/{site}/listing_prices":
+        return NA_VALUE
+    projection_currency_id = str(projection.get("currency_id") or "").strip()
+    if not projection_currency_id:
+        return NA_VALUE
+    if projection.get("synced_at") is None:
+        return NA_VALUE
+    params = projection.get("params")
+    if not isinstance(params, Mapping):
+        return NA_VALUE
+    required_params = (
+        "site_id",
+        "category_id",
+        "price",
+        "currency_id",
+        "listing_type_id",
+        "shipping_mode",
+        "logistic_type",
+    )
+    if any(not str(params.get(key) or "").strip() for key in required_params):
+        return NA_VALUE
+    if projection_currency_id != str(params.get("currency_id") or "").strip():
+        return NA_VALUE
+    if not _fixed_fee_params_match_row_basis(row, params):
+        return NA_VALUE
+    fixed_fee = _promo_decimal(projection.get("fixed_fee"))
+    if fixed_fee is None:
+        return NA_VALUE
+    raw_fixed_fee = projection.get("fixed_fee")
+    return raw_fixed_fee.to_decimal() if isinstance(raw_fixed_fee, Decimal128) else raw_fixed_fee
+
+
+def _fixed_fee_params_match_row_basis(row: Mapping[str, Any], params: Mapping[str, Any]) -> bool:
+    current = row.get("current", {})
+    if not isinstance(current, Mapping):
+        return False
+    for current_key, param_key in (
+        ("site_id", "site_id"),
+        ("category_id", "category_id"),
+        ("currency_id", "currency_id"),
+        ("listing_type_id", "listing_type_id"),
+    ):
+        if not _fixed_fee_string_basis_matches(current, current_key, params, param_key):
+            return False
+
+    if not _fixed_fee_price_basis_matches(current, params):
+        return False
+
+    for current_key, param_key in (
+        ("shipping_mode", "shipping_mode"),
+        ("logistic_type", "logistic_type"),
+    ):
+        if param_key in params and not _fixed_fee_string_basis_matches(
+            current, current_key, params, param_key
+        ):
+            return False
+
+    if not _fixed_fee_optional_decimal_basis_matches(
+        current.get("billable_weight"), params.get("billable_weight")
+    ):
+        return False
+    return _fixed_fee_optional_tags_basis_matches(current.get("tags"), params.get("tags"))
+
+
+def _fixed_fee_string_basis_matches(
+    current: Mapping[str, Any], current_key: str, params: Mapping[str, Any], param_key: str
+) -> bool:
+    current_value = current.get(current_key)
+    param_value = params.get(param_key)
+    return (
+        _has_fixed_fee_basis(current_value)
+        and _has_fixed_fee_basis(param_value)
+        and str(current_value).strip() == str(param_value).strip()
+    )
+
+
+def _fixed_fee_price_basis_matches(current: Mapping[str, Any], params: Mapping[str, Any]) -> bool:
+    current_price = current.get("price")
+    if not _has_fixed_fee_basis(current_price) and "price" not in current:
+        current_price = current.get("base_price")
+    return _fixed_fee_decimal_basis_matches(current_price, params.get("price"))
+
+
+def _fixed_fee_decimal_basis_matches(current_value: Any, param_value: Any) -> bool:
+    current_decimal = _promo_decimal(current_value)
+    param_decimal = _promo_decimal(param_value)
+    return (
+        current_decimal is not None
+        and param_decimal is not None
+        and current_decimal == param_decimal
+    )
+
+
+def _fixed_fee_optional_decimal_basis_matches(current_value: Any, param_value: Any) -> bool:
+    if not _has_fixed_fee_basis(current_value) and not _has_fixed_fee_basis(param_value):
+        return True
+    return _fixed_fee_decimal_basis_matches(current_value, param_value)
+
+
+def _fixed_fee_optional_tags_basis_matches(current_value: Any, param_value: Any) -> bool:
+    current_tags = _fixed_fee_tags(current_value)
+    param_tags = _fixed_fee_tags(param_value)
+    if _fixed_fee_tags_are_absent(current_value, current_tags) and _fixed_fee_tags_are_absent(
+        param_value, param_tags
+    ):
+        return True
+    return _fixed_fee_tags_basis_matches(current_value, param_value)
+
+
+def _fixed_fee_tags_basis_matches(current_value: Any, param_value: Any) -> bool:
+    current_tags = _fixed_fee_tags(current_value)
+    param_tags = _fixed_fee_tags(param_value)
+    return current_tags is not None and param_tags is not None and current_tags == param_tags
+
+
+def _fixed_fee_tags_are_absent(value: Any, normalized_tags: list[str] | None) -> bool:
+    return value is None or normalized_tags == []
+
+
+def _fixed_fee_tags(value: Any) -> list[str] | None:
+    if not isinstance(value, list):
+        return None
+    return [tag for raw in value if (tag := str(raw).strip())]
+
+
+def _has_fixed_fee_basis(value: Any) -> bool:
+    return value is not None and str(value).strip() != ""
+
+
+def _promo_price(row: Mapping[str, Any]) -> Any:
+    current = row.get("current", {})
+    if not isinstance(current, Mapping):
+        return NA_VALUE
+    projection = current.get("current_promotion")
+    if not isinstance(projection, Mapping):
+        return NA_VALUE
+    if projection.get("source") != "/items/{id}/sale_price":
+        return NA_VALUE
+    if not str(projection.get("currency_id") or "").strip():
+        return NA_VALUE
+    if projection.get("reference_at") is None or projection.get("synced_at") is None:
+        return NA_VALUE
+    sale_amount = _promo_decimal(projection.get("sale_amount"))
+    regular_amount = _promo_decimal(projection.get("regular_amount"))
+    if sale_amount is None or regular_amount is None or sale_amount >= regular_amount:
+        return NA_VALUE
+    raw_sale_amount = projection.get("sale_amount")
+    return (
+        raw_sale_amount.to_decimal() if isinstance(raw_sale_amount, Decimal128) else raw_sale_amount
+    )
+
+
+def _promo_decimal(value: Any) -> Decimal | None:
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, Decimal128):
+        decimal_value = value.to_decimal()
+    elif isinstance(value, Decimal):
+        decimal_value = value
+    elif isinstance(value, int):
+        decimal_value = Decimal(value)
+    elif isinstance(value, float):
+        decimal_value = Decimal(str(value)) if math.isfinite(value) else Decimal("NaN")
+    else:
+        try:
+            decimal_value = Decimal(str(value))
+        except (InvalidOperation, ValueError):
+            return None
+    return decimal_value if decimal_value.is_finite() and decimal_value >= 0 else None
 
 
 def _seller_shipping_cost(row: Mapping[str, Any]) -> Any:

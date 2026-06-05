@@ -1,0 +1,5 @@
+[
+  {"keys": {"seller_id": 1, "normalized_sku": 1, "item_id": 1, "variation_id": 1, "status": 1, "effective_from": -1}, "options": {"name": "idx_seller_unit_costs_seller_identity_status_effective"}},
+  {"keys": {"seller_id": 1, "item_id": 1, "variation_id": 1}, "options": {"name": "idx_seller_unit_costs_seller_item_variation"}},
+  {"keys": {"seller_id": 1, "normalized_sku": 1}, "options": {"name": "idx_seller_unit_costs_seller_sku"}},
+  {"keys": {"seller_id": 1, "normalized_sku": 1, "item_id": 1, "variation_id": 1, "status": 1, "effective_from": 1}, "options": {"name": "uniq_seller_unit_costs_active_identity_effective", "unique": true, "partialFilterExpression": {"status": "active"}}}]

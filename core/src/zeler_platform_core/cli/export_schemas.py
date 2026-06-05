@@ -12,6 +12,71 @@ SELLER = {"seller_id": {"bsonType": ["string", "long", "int"]}}
 DATE = {"bsonType": "date"}
 NULLABLE_DATE = {"bsonType": ["date", "null"]}
 MONEY = {"bsonType": ["decimal", "double", "int", "long"]}
+PROMO_PRICE_PROJECTION = {
+    "additionalProperties": False,
+    "bsonType": ["object", "null"],
+    "required": [
+        "source",
+        "sale_amount",
+        "regular_amount",
+        "currency_id",
+        "reference_at",
+        "synced_at",
+    ],
+    "properties": {
+        "source": {"enum": ["/items/{id}/sale_price"]},
+        "sale_amount": MONEY,
+        "regular_amount": MONEY,
+        "discount_percent": {"bsonType": ["decimal", "double", "int", "long", "null"]},
+        "currency_id": {"bsonType": "string"},
+        "promotion_id": {"bsonType": ["string", "null"]},
+        "promotion_type": {"bsonType": ["string", "null"]},
+        "reference_at": DATE,
+        "synced_at": DATE,
+    },
+}
+LISTING_PRICE_FIXED_FEE_PARAMS = {
+    "additionalProperties": False,
+    "bsonType": "object",
+    "required": ["site_id", "category_id", "price", "currency_id", "listing_type_id"],
+    "properties": {
+        "site_id": {"bsonType": "string"},
+        "category_id": {"bsonType": "string"},
+        "price": MONEY,
+        "currency_id": {"bsonType": "string"},
+        "listing_type_id": {"bsonType": "string"},
+        "shipping_mode": {"bsonType": ["string", "null"]},
+        "logistic_type": {"bsonType": ["string", "null"]},
+        "billable_weight": {"bsonType": ["decimal", "double", "int", "long", "null"]},
+        "tags": {"bsonType": "array"},
+    },
+}
+LISTING_PRICE_FIXED_FEE_PROJECTION = {
+    "additionalProperties": False,
+    "bsonType": ["object", "null"],
+    "required": ["source", "fixed_fee", "currency_id", "synced_at", "params"],
+    "properties": {
+        "source": {"enum": ["/sites/{site}/listing_prices"]},
+        "fixed_fee": MONEY,
+        "currency_id": {"bsonType": "string"},
+        "synced_at": DATE,
+        "params": LISTING_PRICE_FIXED_FEE_PARAMS,
+    },
+}
+RECEIVER_ADDRESS_SNAPSHOT = {
+    "bsonType": ["object", "null"],
+    "additionalProperties": False,
+    "properties": {
+        "name": {"bsonType": ["string", "null"], "maxLength": 120},
+        "street_name": {"bsonType": ["string", "null"], "maxLength": 120},
+        "street_number": {"bsonType": ["string", "null"], "maxLength": 120},
+        "neighborhood": {"bsonType": ["string", "null"], "maxLength": 120},
+        "zip_code": {"bsonType": ["string", "null"], "maxLength": 120},
+        "city": {"bsonType": ["string", "null"], "maxLength": 120},
+        "state": {"bsonType": ["string", "null"], "maxLength": 120},
+        "country": {"bsonType": ["string", "null"], "maxLength": 120},
+    },
+}
 
 ENTITY_SCHEMAS: dict[str, dict[str, Any]] = {
     "meli_accounts": {
@@ -124,6 +189,10 @@ ENTITY_SCHEMAS: dict[str, dict[str, Any]] = {
             "available_quantity": {"bsonType": ["int", "long"]},
             "status": {"bsonType": "string"},
             "category_id": {"bsonType": "string"},
+            "currency_id": {"bsonType": ["string", "null"]},
+            "site_id": {"bsonType": ["string", "null"]},
+            "current_promotion": PROMO_PRICE_PROJECTION,
+            "listing_price_fixed_fee": LISTING_PRICE_FIXED_FEE_PROJECTION,
             "catalog_product_id": {"bsonType": ["string", "null"]},
             "variations": {"bsonType": "array"},
             "attributes": {"bsonType": "array"},
@@ -132,6 +201,8 @@ ENTITY_SCHEMAS: dict[str, dict[str, Any]] = {
             "inventory_id": {"bsonType": ["string", "null"]},
             "listing_type_id": {"bsonType": ["string", "null"]},
             "seller_shipping_cost": {"bsonType": ["decimal", "double", "int", "long", "null"]},
+            "billable_weight": {"bsonType": ["decimal", "double", "int", "long", "null"]},
+            "tags": {"bsonType": "array"},
             "permalink": {"bsonType": ["string", "null"]},
             "thumbnail": {"bsonType": ["string", "null"]},
             "status_observed_at": NULLABLE_DATE,
@@ -237,6 +308,7 @@ ENTITY_SCHEMAS: dict[str, dict[str, Any]] = {
             "substatus": {"bsonType": ["string", "null"]},
             "tracking_number": {"bsonType": ["string", "null"]},
             "logistic_type": {"bsonType": "string"},
+            "receiver_address": RECEIVER_ADDRESS_SNAPSHOT,
             "date_created": DATE,
             "last_updated": DATE,
             **SCHEMA_VERSION,

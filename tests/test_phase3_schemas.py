@@ -108,3 +108,53 @@ def test_ttl_indexes_are_declared_for_ephemeral_collections() -> None:
             "keys": {key: 1},
             "options": {"name": index_name, "expireAfterSeconds": seconds},
         } in indexes
+
+
+def test_shipments_schema_allows_only_minimal_receiver_address_snapshot() -> None:
+    schema = _json_schema("shipments.json")
+    properties = schema["properties"]
+    assert isinstance(properties, dict)
+    receiver_address = properties["receiver_address"]
+    assert isinstance(receiver_address, dict)
+
+    assert receiver_address["bsonType"] == ["object", "null"]
+    assert receiver_address["additionalProperties"] is False
+    allowed_fields = {
+        "name",
+        "street_name",
+        "street_number",
+        "neighborhood",
+        "zip_code",
+        "city",
+        "state",
+        "country",
+    }
+    snapshot_properties = receiver_address["properties"]
+    assert isinstance(snapshot_properties, dict)
+    assert set(snapshot_properties) == allowed_fields
+
+    for field_schema in snapshot_properties.values():
+        assert isinstance(field_schema, dict)
+        assert field_schema == {"bsonType": ["string", "null"], "maxLength": 120}
+
+
+def test_shipments_indexes_do_not_include_receiver_address_or_name_fields() -> None:
+    indexes = json.loads((INDEXES_DIR / "shipments.json").read_text(encoding="utf-8"))
+    forbidden_fragments = {
+        "receiver_address",
+        "name",
+        "street",
+        "neighborhood",
+        "zip_code",
+        "city",
+        "state",
+        "country",
+    }
+
+    for index in indexes:
+        keys = index["keys"]
+        assert isinstance(keys, dict)
+        serialized_keys = json.dumps(keys, sort_keys=True)
+        index_name = str(index.get("options", {}).get("name", ""))
+        assert all(fragment not in serialized_keys for fragment in forbidden_fragments)
+        assert all(fragment not in index_name for fragment in forbidden_fragments)

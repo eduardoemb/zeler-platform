@@ -11,6 +11,10 @@ from bson.decimal128 import Decimal128
 
 from zeler_platform_core.clients.meli_gateway_client import GatewayRateLimitError
 from zeler_platform_core.models import Order
+from zeler_sheets.formulas.dispatcher import FormulaDispatcher, FormulaExecutionContext
+from zeler_sheets.formulas.handlers_core import build_core_formula_handlers
+from zeler_sheets.formulas.read_models import FormulaReadModelRepository
+from zeler_sheets.formulas.registry import FormulaRegistry
 from zeler_sheets.sheetseller_backfill import (
     BackfillSummary,
     ItemDetailEnrichmentSummary,
@@ -24,6 +28,8 @@ from zeler_sheets.sheetseller_backfill import (
     extract_safe_order_item_identity,
     extract_seller_sku,
     merge_order_items_identity,
+    project_listing_price_fixed_fee_projection,
+    project_sale_price_projection,
     run_item_detail_enrichment,
     run_order_identity_repair,
     run_order_line_identity_backfill,
@@ -123,6 +129,8 @@ class FakeCollection:
         current = dict(self.documents[doc_id])
         for path, value in update.get("$set", {}).items():
             _set_path(current, path, value)
+        for path in update.get("$unset", {}):
+            _unset_path(current, path)
         self.documents[doc_id] = current
         return FakeReplaceResult()
 
@@ -275,6 +283,18 @@ def _set_path(document: dict[str, Any], dotted_path: str, value: Any) -> None:
         target[leaf] = value
 
 
+def _unset_path(document: dict[str, Any], dotted_path: str) -> None:
+    target: Any = document
+    parts = dotted_path.split(".")
+    for part in parts[:-1]:
+        target = target[int(part)] if isinstance(target, list) else target.get(part, {})
+    leaf = parts[-1]
+    if isinstance(target, list):
+        del target[int(leaf)]
+    elif isinstance(target, dict):
+        target.pop(leaf, None)
+
+
 class FakeGateway:
     def __init__(self, payloads: dict[str, dict[str, Any] | Exception]) -> None:
         self.payloads = payloads
@@ -340,10 +360,42 @@ def test_cli_requires_seller_id_and_defaults_to_dry_run() -> None:
     assert normalize_args.source == "orders-normalize"
     assert normalize_args.dry_run is True
     enrich_args = parser.parse_args(["--seller-id", "82453304", "--source", "items-enrich"])
+    fixed_fee_args = parser.parse_args(
+        ["--seller-id", "82453304", "--source", "items-enrich", "--enable-listing-fixed-fee"]
+    )
     assert enrich_args.source == "items-enrich"
     assert enrich_args.dry_run is True
+    assert fixed_fee_args.listing_fixed_fee_enabled is True
     with pytest.raises(SystemExit):
         parser.parse_args([])
+
+
+def test_build_formula_row_doc_includes_fixed_fee_basis_currency_and_site() -> None:
+    row = build_formula_row_doc(
+        _item_doc(
+            "MLB1",
+            attributes=[{"id": "SELLER_SKU", "value_name": "sku-1"}],
+            currency_id="USD",
+            site_id="MLB",
+        ),
+        seller_id="82453304",
+    )
+
+    assert row["current"]["currency_id"] == "USD"
+    assert row["current"]["site_id"] == "MLB"
+
+
+def test_build_formula_row_doc_derives_fixed_fee_basis_site_from_item_id() -> None:
+    row = build_formula_row_doc(
+        _item_doc(
+            "MLB1",
+            attributes=[{"id": "SELLER_SKU", "value_name": "sku-1"}],
+            currency_id="USD",
+        ),
+        seller_id="82453304",
+    )
+
+    assert row["current"]["site_id"] == "MLB"
 
 
 def test_extract_seller_sku_supports_legacy_attribute_value_shapes() -> None:
@@ -409,6 +461,8 @@ def test_read_model_docs_use_deterministic_ids_and_map_safe_current_item_fields(
             "available_quantity": 7,
             "base_price": Decimal128("123.45"),
             "category_id": "MLA-CAT",
+            "currency_id": None,
+            "site_id": "MLA",
             "date_created": NOW,
             "updated_at": NOW,
             "permalink": "https://articulo.example/MLA1",
@@ -416,6 +470,7 @@ def test_read_model_docs_use_deterministic_ids_and_map_safe_current_item_fields(
             "catalog_product_id": "MLA-CATALOG-1",
             "inventory_id": "ITEM-INV-1",
             "listing_type_id": "gold_special",
+            "logistic_type": "fulfillment",
             "shipping_logistic_type": "fulfillment",
             "shipping_payer": "Vendedor",
         },
@@ -498,6 +553,24 @@ def test_formula_row_derives_shipping_logistic_type_from_mode_and_buyer_payer() 
 
     assert formula_row["current"]["shipping_logistic_type"] == "me2"
     assert formula_row["current"]["shipping_payer"] == "Comprador"
+
+
+def test_formula_row_persists_listing_fixed_fee_shipping_and_tags_basis() -> None:
+    item = _item_doc(
+        "MLA1",
+        attributes=[{"id": "SELLER_SKU", "value_name": "abc-123"}],
+        shipping={"mode": "me2", "logistic_type": "fulfillment", "billable_weight": "250"},
+    )
+    item["billable_weight"] = "500"
+    item["tags"] = [" mandatory_free_shipping ", "", "catalog_listing"]
+
+    formula_row = build_formula_row_doc(item, seller_id="82453304")
+
+    current = formula_row["current"]
+    assert current["shipping_mode"] == "me2"
+    assert current["logistic_type"] == "fulfillment"
+    assert current["billable_weight"].to_decimal() == Decimal("500")
+    assert current["tags"] == ["mandatory_free_shipping", "catalog_listing"]
 
 
 def test_variation_sku_index_docs_use_stable_v2_ids_and_sources() -> None:
@@ -1391,12 +1464,16 @@ async def test_item_detail_enrichment_fetches_canonical_ids_and_writes_formula_f
         "available_quantity": 9,
         "status": "active",
         "category_id": "MLA-CAT-UPDATED",
+        "currency_id": None,
+        "site_id": None,
         "permalink": "https://articulo.example/MLA1",
         "thumbnail": "https://img.example/MLA1.jpg",
         "catalog_product_id": "MLA-CATALOG-1",
         "inventory_id": "INV-ITEM-1",
         "listing_type_id": "gold_special",
         "seller_shipping_cost": None,
+        "billable_weight": None,
+        "tags": [],
         "variations": [{"id": 101, "inventory_id": "INV-VAR-101"}],
         "attributes": [{"id": "SELLER_SKU", "value_name": "sku-1"}],
         "shipping": None,
@@ -1612,6 +1689,248 @@ async def test_item_detail_enrichment_keeps_cost_absent_on_shipping_request_erro
     assert "timeout" not in serialized_summary
 
 
+def test_sale_price_projection_keeps_bounded_discount_scalars_only() -> None:
+    projection = project_sale_price_projection(
+        {
+            "amount": "99.90",
+            "regular_amount": "149.90",
+            "currency_id": "MXN",
+            "promotion_id": "PROMO-1",
+            "promotion_type": "deal",
+            "metadata": {"must": "not persist"},
+            "prices": [{"must": "not persist"}],
+        },
+        synced_at=NOW,
+    )
+
+    assert projection == {
+        "source": "/items/{id}/sale_price",
+        "sale_amount": Decimal128("99.90"),
+        "regular_amount": Decimal128("149.90"),
+        "discount_percent": Decimal128("33.36"),
+        "currency_id": "MXN",
+        "promotion_id": "PROMO-1",
+        "promotion_type": "deal",
+        "reference_at": NOW,
+        "synced_at": NOW,
+    }
+    assert "metadata" not in projection
+    assert "prices" not in projection
+
+
+@pytest.mark.asyncio
+async def test_items_backfill_propagates_mongo_loaded_current_promotion_to_formula_row() -> None:
+    mongo_loaded_at = NOW.replace(tzinfo=None)
+    item = _item_doc("MLA1", attributes=[{"id": "SELLER_SKU", "value_name": "sku-1"}])
+    item["current_promotion"] = {
+        "source": "/items/{id}/sale_price",
+        "sale_amount": Decimal128("99.90"),
+        "regular_amount": Decimal128("149.90"),
+        "discount_percent": Decimal128("33.36"),
+        "currency_id": "MXN",
+        "promotion_id": "PROMO-1",
+        "promotion_type": "deal",
+        "reference_at": mongo_loaded_at,
+        "synced_at": mongo_loaded_at,
+    }
+    db = FakeDb([item])
+
+    formula_row = build_formula_row_doc(item, seller_id="82453304")
+    summary = await run_sheetseller_backfill(db=db, seller_id="82453304", dry_run=False)
+    dashboard = await _core_formula_dispatcher(db).execute(
+        _formula_context("ZELERDATA_DASHBOARD", {"skus": "todos", "tipo_precio": "todos"})
+    )
+
+    expected_projection = {
+        "source": "/items/{id}/sale_price",
+        "sale_amount": Decimal128("99.90"),
+        "regular_amount": Decimal128("149.90"),
+        "discount_percent": Decimal128("33.36"),
+        "currency_id": "MXN",
+        "promotion_id": "PROMO-1",
+        "promotion_type": "deal",
+        "reference_at": NOW,
+        "synced_at": NOW,
+    }
+    assert summary.updated == 1
+    assert formula_row["current"]["current_promotion"] == expected_projection
+    persisted_row = db["sheets_item_formula_rows"].documents["82453304:SKU-1:MLA1"]
+    assert persisted_row["current"]["current_promotion"] == expected_projection
+    assert "raw" not in persisted_row["current"]["current_promotion"]
+    assert dashboard.values[0][-1] == Decimal("99.90")
+
+
+def test_formula_row_doc_omits_absent_current_promotion_from_formula_row() -> None:
+    item = _item_doc("MLA1", attributes=[{"id": "SELLER_SKU", "value_name": "sku-1"}])
+
+    formula_row = build_formula_row_doc(item, seller_id="82453304")
+
+    assert "current_promotion" not in formula_row["current"]
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"amount": "149.90", "regular_amount": "149.90", "currency_id": "MXN"},
+        {"amount": "159.90", "regular_amount": "149.90", "currency_id": "MXN"},
+        {"amount": "99.90", "regular_amount": None, "currency_id": "MXN"},
+        {"amount": "99.90", "regular_amount": "149.90", "currency_id": ""},
+    ],
+)
+def test_sale_price_projection_returns_none_for_unusable_sources(payload: dict[str, Any]) -> None:
+    assert project_sale_price_projection(payload, synced_at=NOW) is None
+
+
+@pytest.mark.asyncio
+async def test_item_detail_enrichment_preserves_na_when_sale_price_gate_disabled() -> None:
+    canonical = _item_doc("MLA1", attributes=[{"id": "SELLER_SKU", "value_name": "sku-1"}])
+    db = FakeDb([canonical])
+    gateway = FakeItemGateway(
+        {
+            "/items?ids=MLA1": [
+                {"code": 200, "body": _item_detail("MLA1")},
+            ]
+        }
+    )
+
+    summary = await run_item_detail_enrichment(
+        db=db,
+        gateway=gateway,
+        seller_id="82453304",
+        dry_run=False,
+    )
+
+    assert gateway.calls == [("82453304", "/items?ids=MLA1")]
+    assert summary.sale_price_requested == 0
+    assert summary.sale_price_promotions_enriched == 0
+    persisted = db["items"].update_calls[0][1]["$set"]
+    assert "current_promotion" not in persisted
+
+
+@pytest.mark.asyncio
+async def test_item_detail_enrichment_fetches_gated_sale_price_projection() -> None:
+    canonical = _item_doc("MLA1", attributes=[{"id": "SELLER_SKU", "value_name": "sku-1"}])
+    db = FakeDb([canonical])
+    gateway = FakeItemGateway(
+        {
+            "/items?ids=MLA1": [{"code": 200, "body": _item_detail("MLA1")}],
+            "/items/MLA1/sale_price?context=channel_marketplace": {
+                "amount": "99.90",
+                "regular_amount": "149.90",
+                "currency_id": "MXN",
+                "promotion_id": "PROMO-1",
+                "promotion_type": "deal",
+                "raw": {"must": "not persist"},
+            },
+        }
+    )
+
+    summary = await run_item_detail_enrichment(
+        db=db,
+        gateway=gateway,
+        seller_id="82453304",
+        dry_run=False,
+        sale_price_enabled=True,
+    )
+
+    assert gateway.calls == [
+        ("82453304", "/items?ids=MLA1"),
+        ("82453304", "/items/MLA1/sale_price?context=channel_marketplace"),
+    ]
+    assert summary.sale_price_requested == 1
+    assert summary.sale_price_promotions_enriched == 1
+    current_promotion = db["items"].update_calls[0][1]["$set"]["current_promotion"]
+    assert current_promotion["sale_amount"].to_decimal() == Decimal("99.90")
+    assert current_promotion["regular_amount"].to_decimal() == Decimal("149.90")
+    assert current_promotion["source"] == "/items/{id}/sale_price"
+    assert "raw" not in current_promotion
+
+
+@pytest.mark.asyncio
+async def test_item_detail_enrichment_keeps_base_enrichment_when_sale_price_unavailable() -> None:
+    canonical = _item_doc("MLA1", attributes=[{"id": "SELLER_SKU", "value_name": "sku-1"}])
+    db = FakeDb([canonical])
+    gateway = FakeItemGateway(
+        {
+            "/items?ids=MLA1": [{"code": 200, "body": _item_detail("MLA1")}],
+            "/items/MLA1/sale_price?context=channel_marketplace": RuntimeError("unavailable"),
+        }
+    )
+
+    summary = await run_item_detail_enrichment(
+        db=db,
+        gateway=gateway,
+        seller_id="82453304",
+        dry_run=False,
+        sale_price_enabled=True,
+    )
+
+    assert summary.items_updated == 1
+    assert summary.sale_price_requested == 1
+    assert summary.sale_price_promotions_unavailable == 1
+    persisted = db["items"].update_calls[0][1]["$set"]
+    assert persisted["title"] == "Detail MLA1"
+    assert "current_promotion" not in persisted
+
+
+@pytest.mark.parametrize(
+    ("sale_price_enabled", "sale_price_payload"),
+    [
+        (False, None),
+        (True, RuntimeError("unavailable")),
+        (True, {"amount": "149.90", "regular_amount": "149.90", "currency_id": "MXN"}),
+    ],
+)
+@pytest.mark.asyncio
+async def test_item_detail_enrichment_clears_stale_promo_when_sale_price_is_unusable(
+    sale_price_enabled: bool,
+    sale_price_payload: Any,
+) -> None:
+    canonical = _item_doc("MLA1", attributes=[{"id": "SELLER_SKU", "value_name": "sku-1"}])
+    stale_promotion = {
+        "source": "/items/{id}/sale_price",
+        "sale_amount": Decimal128("99.90"),
+        "regular_amount": Decimal128("149.90"),
+        "discount_percent": Decimal128("33.36"),
+        "currency_id": "MXN",
+        "promotion_id": "PROMO-STALE",
+        "promotion_type": "deal",
+        "reference_at": NOW,
+        "synced_at": NOW,
+    }
+    canonical["current_promotion"] = stale_promotion
+    stale_formula_row = build_formula_row_doc(canonical, seller_id="82453304")
+    db = FakeDb([canonical])
+    db["sheets_item_formula_rows"].documents[stale_formula_row["_id"]] = stale_formula_row
+    detail = _item_detail("MLA1")
+    detail["attributes"] = [{"id": "SELLER_SKU", "value_name": "sku-1"}]
+    gateway_payloads: dict[str, Any | Exception] = {
+        "/items?ids=MLA1": [{"code": 200, "body": detail}],
+    }
+    if sale_price_enabled:
+        gateway_payloads["/items/MLA1/sale_price?context=channel_marketplace"] = sale_price_payload
+    gateway = FakeItemGateway(gateway_payloads)
+
+    await run_item_detail_enrichment(
+        db=db,
+        gateway=gateway,
+        seller_id="82453304",
+        dry_run=False,
+        sale_price_enabled=sale_price_enabled,
+    )
+    await run_sheetseller_backfill(db=db, seller_id="82453304", dry_run=False)
+    dashboard = await _core_formula_dispatcher(db).execute(
+        _formula_context("ZELERDATA_DASHBOARD", {"skus": "todos", "tipo_precio": "todos"})
+    )
+
+    item_update = db["items"].update_calls[0][1]
+    assert item_update.get("$unset") == {"current_promotion": ""}
+    assert "current_promotion" not in db["items"].documents["MLA1"]
+    refreshed_row = db["sheets_item_formula_rows"].documents["82453304:SKU-1:MLA1"]
+    assert "current_promotion" not in refreshed_row["current"]
+    assert dashboard.values[0][-1] == "NA"
+
+
 def test_formula_row_doc_denormalizes_seller_shipping_cost_scalar_only() -> None:
     item = _item_doc("MLA1", attributes=[{"id": "SELLER_SKU", "value_name": "sku-1"}])
     item["seller_shipping_cost"] = Decimal128("83.25")
@@ -1621,6 +1940,333 @@ def test_formula_row_doc_denormalizes_seller_shipping_cost_scalar_only() -> None
 
     assert formula_row["current"]["seller_shipping_cost"].to_decimal() == Decimal("83.25")
     assert "shipping_options" not in formula_row["current"]
+
+
+def test_listing_price_fixed_fee_projection_keeps_bounded_sanitized_fields_only() -> None:
+    projection = project_listing_price_fixed_fee_projection(
+        {
+            "sale_fee_details": {"fixed_fee": "1350.25", "gross_amount": "99999"},
+            "currency_id": "ARS",
+            "raw_payload": {"must": "not persist"},
+        },
+        params={
+            "site_id": "MLA",
+            "category_id": "MLA-CAT",
+            "price": Decimal("12345.67"),
+            "currency_id": "ARS",
+            "listing_type_id": "gold_special",
+            "shipping_mode": "me2",
+            "logistic_type": "fulfillment",
+            "billable_weight": Decimal("500"),
+            "tags": ["campaign-a"],
+        },
+        synced_at=NOW,
+    )
+
+    assert projection == {
+        "source": "/sites/{site}/listing_prices",
+        "fixed_fee": Decimal128("1350.25"),
+        "currency_id": "ARS",
+        "synced_at": NOW,
+        "params": {
+            "site_id": "MLA",
+            "category_id": "MLA-CAT",
+            "price": Decimal128("12345.67"),
+            "currency_id": "ARS",
+            "listing_type_id": "gold_special",
+            "shipping_mode": "me2",
+            "logistic_type": "fulfillment",
+            "billable_weight": Decimal128("500"),
+            "tags": ["campaign-a"],
+        },
+    }
+    assert "gross_amount" not in projection
+    assert "raw_payload" not in projection
+
+
+@pytest.mark.parametrize(
+    ("payload", "params"),
+    [
+        ({"sale_fee_details": {"fixed_fee": "NaN"}, "currency_id": "ARS"}, {"price": "123"}),
+        ({"sale_fee_details": {}, "currency_id": "ARS"}, {"price": "123"}),
+        ({"sale_fee_details": {"fixed_fee": "10"}, "currency_id": "USD"}, {"price": "123"}),
+        ({"sale_fee_details": {"fixed_fee": "10"}, "currency_id": "ARS"}, {"price": None}),
+        ({"sale_fee_details": {"fixed_fee": "1E+10000"}, "currency_id": "ARS"}, {}),
+    ],
+)
+def test_listing_price_fixed_fee_projection_returns_none_for_unusable_source(
+    payload: dict[str, Any], params: dict[str, Any]
+) -> None:
+    basis = {
+        "site_id": "MLA",
+        "category_id": "MLA-CAT",
+        "price": "123.45",
+        "currency_id": "ARS",
+        "listing_type_id": "gold_special",
+        "shipping_mode": "me2",
+        "logistic_type": "fulfillment",
+    } | params
+
+    assert project_listing_price_fixed_fee_projection(payload, params=basis, synced_at=NOW) is None
+
+
+def test_formula_row_doc_propagates_listing_fixed_fee_without_raw_payload_or_pii() -> None:
+    item = _item_doc("MLA1", attributes=[{"id": "SELLER_SKU", "value_name": "sku-1"}])
+    item["listing_price_fixed_fee"] = {
+        "source": "/sites/{site}/listing_prices",
+        "fixed_fee": Decimal128("1350.25"),
+        "currency_id": "ARS",
+        "synced_at": NOW,
+        "params": {
+            "site_id": "MLA",
+            "category_id": "MLA-CAT",
+            "price": Decimal128("12345.67"),
+            "currency_id": "ARS",
+            "listing_type_id": "gold_special",
+            "shipping_mode": "me2",
+            "logistic_type": "fulfillment",
+        },
+        "raw_payload": {"must": "not persist"},
+        "buyer": {"id": "pii"},
+    }
+
+    formula_row = build_formula_row_doc(item, seller_id="82453304")
+
+    projection = formula_row["current"]["listing_price_fixed_fee"]
+    assert projection["fixed_fee"].to_decimal() == Decimal("1350.25")
+    assert projection["source"] == "/sites/{site}/listing_prices"
+    assert "raw_payload" not in projection
+    assert "buyer" not in projection
+
+
+@pytest.mark.parametrize(
+    "projection_override",
+    [
+        {"fixed_fee": "not-a-decimal"},
+        {"params": {"price": "not-a-decimal"}},
+        {"params": {"shipping_mode": None}},
+        {"params": {"logistic_type": ""}},
+    ],
+)
+def test_formula_row_doc_drops_invalid_listing_fixed_fee_projection_without_crashing(
+    projection_override: dict[str, Any],
+) -> None:
+    item = _item_doc("MLA1", attributes=[{"id": "SELLER_SKU", "value_name": "sku-1"}])
+    projection = {
+        "source": "/sites/{site}/listing_prices",
+        "fixed_fee": Decimal128("1350.25"),
+        "currency_id": "ARS",
+        "synced_at": NOW,
+        "params": {
+            "site_id": "MLA",
+            "category_id": "MLA-CAT",
+            "price": Decimal128("12345.67"),
+            "currency_id": "ARS",
+            "listing_type_id": "gold_special",
+            "shipping_mode": "me2",
+            "logistic_type": "fulfillment",
+        },
+    }
+    if "params" in projection_override:
+        projection["params"] = projection["params"] | projection_override["params"]
+    else:
+        projection.update(projection_override)
+    item["listing_price_fixed_fee"] = projection
+
+    formula_row = build_formula_row_doc(item, seller_id="82453304")
+
+    assert "listing_price_fixed_fee" not in formula_row["current"]
+
+
+@pytest.mark.asyncio
+async def test_item_detail_enrichment_fetches_gated_listing_fixed_fee_projection() -> None:
+    canonical = _item_doc("MLA1", attributes=[{"id": "SELLER_SKU", "value_name": "sku-1"}])
+    db = FakeDb([canonical])
+    detail = _item_detail("MLA1")
+    detail.update(
+        {
+            "currency_id": "ARS",
+            "listing_type_id": "gold_special",
+            "shipping": {"mode": "me2", "logistic_type": "fulfillment", "free_shipping": False},
+        }
+    )
+    listing_price_path = (
+        "/sites/MLA/listing_prices?price=123.45&category_id=MLA-CAT&currency_id=ARS"
+        "&listing_type_id=gold_special&shipping_mode=me2&logistic_type=fulfillment"
+    )
+    gateway = FakeItemGateway(
+        {
+            "/items?ids=MLA1": [{"code": 200, "body": detail}],
+            listing_price_path: {
+                "sale_fee_details": {"fixed_fee": "1350.25"},
+                "currency_id": "ARS",
+                "raw": {"must": "not persist"},
+            },
+        }
+    )
+
+    summary = await run_item_detail_enrichment(
+        db=db,
+        gateway=gateway,
+        seller_id="82453304",
+        dry_run=False,
+        listing_fixed_fee_enabled=True,
+    )
+
+    assert gateway.calls == [
+        ("82453304", "/items?ids=MLA1"),
+        ("82453304", listing_price_path),
+    ]
+    assert summary.listing_fixed_fee_requested == 1
+    assert summary.listing_fixed_fee_enriched == 1
+    persisted = db["items"].update_calls[0][1]["$set"]["listing_price_fixed_fee"]
+    assert persisted["fixed_fee"].to_decimal() == Decimal("1350.25")
+    assert "raw" not in persisted
+
+
+@pytest.mark.asyncio
+async def test_item_detail_enrichment_clears_stale_listing_fixed_fee_failures() -> None:
+    missing_param = _item_doc("MLA1", attributes=[{"id": "SELLER_SKU", "value_name": "sku-1"}])
+    rate_limited = _item_doc("MLA2", attributes=[{"id": "SELLER_SKU", "value_name": "sku-2"}])
+    for item in (missing_param, rate_limited):
+        item["listing_price_fixed_fee"] = {
+            "source": "/sites/{site}/listing_prices",
+            "fixed_fee": Decimal128("1"),
+            "currency_id": "ARS",
+            "synced_at": NOW,
+            "params": {
+                "site_id": "MLA",
+                "category_id": "MLA-CAT",
+                "price": Decimal128("123.45"),
+                "currency_id": "ARS",
+                "listing_type_id": "gold_special",
+            },
+        }
+    db = FakeDb([missing_param, rate_limited])
+    detail_missing = _item_detail("MLA1")
+    detail_missing["currency_id"] = "ARS"
+    detail_missing["listing_type_id"] = None
+    detail_rate_limited = _item_detail("MLA2")
+    detail_rate_limited.update(
+        {
+            "currency_id": "ARS",
+            "listing_type_id": "gold_special",
+            "shipping": {"mode": "me2", "logistic_type": "fulfillment", "free_shipping": False},
+        }
+    )
+    listing_price_path = (
+        "/sites/MLA/listing_prices?price=123.45&category_id=MLA-CAT&currency_id=ARS"
+        "&listing_type_id=gold_special&shipping_mode=me2&logistic_type=fulfillment"
+    )
+    gateway = FakeItemGateway(
+        {
+            "/items?ids=MLA1,MLA2": [
+                {"code": 200, "body": detail_missing},
+                {"code": 200, "body": detail_rate_limited},
+            ],
+            listing_price_path: GatewayRateLimitError(
+                retry_after_seconds=5,
+                response=httpx.Response(
+                    429, request=httpx.Request("GET", "https://gateway.example")
+                ),
+            ),
+        }
+    )
+
+    summary = await run_item_detail_enrichment(
+        db=db,
+        gateway=gateway,
+        seller_id="82453304",
+        dry_run=False,
+        listing_fixed_fee_enabled=True,
+    )
+
+    assert summary.listing_fixed_fee_requested == 1
+    assert summary.listing_fixed_fee_missing_params == 1
+    assert summary.listing_fixed_fee_unavailable == 1
+    assert all(
+        call[1].get("$unset") == {"listing_price_fixed_fee": ""}
+        for call in db["items"].update_calls
+    )
+
+
+@pytest.mark.asyncio
+async def test_item_detail_enrichment_clears_stale_listing_fixed_fee_when_item_unchanged() -> None:
+    stale_projection = {
+        "source": "/sites/{site}/listing_prices",
+        "fixed_fee": Decimal128("1350.25"),
+        "currency_id": "ARS",
+        "synced_at": NOW,
+        "params": {
+            "site_id": "MLA",
+            "category_id": "MLA-CAT",
+            "price": Decimal128("123.45"),
+            "currency_id": "ARS",
+            "listing_type_id": "gold_special",
+            "shipping_mode": "me2",
+            "logistic_type": "fulfillment",
+        },
+    }
+    canonical = _item_doc(
+        "MLA1",
+        attributes=[{"id": "SELLER_SKU", "value_name": "sku-1"}],
+        permalink="https://articulo.example/MLA1",
+        thumbnail="https://img.example/MLA1.jpg",
+        catalog_product_id="CATALOG-MLA1",
+        inventory_id="INV-MLA1",
+        listing_type_id="gold_special",
+        shipping={"mode": "me2", "logistic_type": "fulfillment", "free_shipping": False},
+    )
+    canonical.update(
+        {
+            "title": "Detail MLA1",
+            "price": Decimal128("123.45"),
+            "base_price": Decimal128("123.45"),
+            "currency_id": "ARS",
+            "listing_price_fixed_fee": stale_projection,
+        }
+    )
+    db = FakeDb([canonical])
+    stale_formula_row = build_formula_row_doc(canonical, seller_id="82453304")
+    db["sheets_item_formula_rows"].documents[stale_formula_row["_id"]] = stale_formula_row
+    detail = _item_detail("MLA1")
+    detail.update(
+        {
+            "currency_id": "ARS",
+            "listing_type_id": "gold_special",
+            "attributes": [{"id": "SELLER_SKU", "value_name": "sku-1"}],
+            "shipping": {"mode": "me2", "logistic_type": "fulfillment", "free_shipping": False},
+        }
+    )
+    listing_price_path = (
+        "/sites/MLA/listing_prices?price=123.45&category_id=MLA-CAT&currency_id=ARS"
+        "&listing_type_id=gold_special&shipping_mode=me2&logistic_type=fulfillment"
+    )
+    gateway = FakeItemGateway(
+        {
+            "/items?ids=MLA1": [{"code": 200, "body": detail}],
+            listing_price_path: {"sale_fee_details": {"fixed_fee": "not-a-decimal"}},
+        }
+    )
+
+    summary = await run_item_detail_enrichment(
+        db=db,
+        gateway=gateway,
+        seller_id="82453304",
+        dry_run=False,
+        listing_fixed_fee_enabled=True,
+    )
+    await run_sheetseller_backfill(db=db, seller_id="82453304", dry_run=False)
+    dashboard = await _core_formula_dispatcher(db).execute(
+        _formula_context("ZELERDATA_DASHBOARD", {"skus": "todos", "tipo_precio": "todos"})
+    )
+
+    assert summary.listing_fixed_fee_unavailable == 1
+    assert db["items"].update_calls[0][1].get("$unset") == {"listing_price_fixed_fee": ""}
+    assert "listing_price_fixed_fee" not in db["items"].documents["MLA1"]
+    refreshed_row = db["sheets_item_formula_rows"].documents["82453304:SKU-1:MLA1"]
+    assert "listing_price_fixed_fee" not in refreshed_row["current"]
+    assert dashboard.values[0][20] == "NA"
 
 
 @pytest.mark.asyncio
@@ -1743,6 +2389,13 @@ async def test_item_detail_enrichment_summary_is_sanitized_and_useful() -> None:
         "shipping_options_requested": 0,
         "seller_shipping_costs_enriched": 0,
         "seller_shipping_costs_unavailable": 0,
+        "sale_price_requested": 0,
+        "sale_price_promotions_enriched": 0,
+        "sale_price_promotions_unavailable": 0,
+        "listing_fixed_fee_requested": 0,
+        "listing_fixed_fee_enriched": 0,
+        "listing_fixed_fee_unavailable": 0,
+        "listing_fixed_fee_missing_params": 0,
     }
     assert "82453304" not in str(serialized)
     assert "MLA1" not in str(serialized)
@@ -2430,6 +3083,8 @@ def _item_doc(
     thumbnail: str | None = None,
     catalog_product_id: str | None = None,
     inventory_id: str | None = None,
+    currency_id: str | None = None,
+    site_id: str | None = None,
     listing_type_id: str | None = None,
     shipping: dict[str, Any] | None = None,
     last_updated: datetime | None = None,
@@ -2453,6 +3108,8 @@ def _item_doc(
         ("thumbnail", thumbnail),
         ("catalog_product_id", catalog_product_id),
         ("inventory_id", inventory_id),
+        ("currency_id", currency_id),
+        ("site_id", site_id),
         ("listing_type_id", listing_type_id),
         ("shipping", shipping),
     ):
@@ -2518,3 +3175,24 @@ def _canonical_order_doc(
         "items": items,
         "schema_version": 1,
     }
+
+
+def _core_formula_dispatcher(db: FakeDb) -> FormulaDispatcher:
+    return FormulaDispatcher(
+        build_core_formula_handlers(
+            FormulaReadModelRepository(db=db),
+            now_fn=lambda: NOW,
+        )
+    )
+
+
+def _formula_context(formula: str, args: dict[str, Any]) -> FormulaExecutionContext:
+    return FormulaExecutionContext(
+        contract=FormulaRegistry.default().find_required(formula),
+        cuenta="HOPEMOB",
+        seller_id="82453304",
+        seller_nickname="HOPEMOB",
+        token_id=str(1),
+        args=args,
+        request_id="req-1",
+    )
