@@ -108,6 +108,19 @@ RECEIVER_ADDRESS_SNAPSHOT = {
         "country": {"bsonType": ["string", "null"], "maxLength": 120},
     },
 }
+SHIPMENT_REAL_SHIPPING_COST = {
+    "bsonType": ["object", "null"],
+    "additionalProperties": False,
+    "required": ["source", "seller_cost", "synced_at"],
+    "properties": {
+        "source": {"enum": ["/shipments/{shipment_id}/costs"]},
+        "seller_cost": MONEY,
+        "receiver_cost": {"bsonType": ["decimal", "double", "int", "long", "null"]},
+        "currency_id": {"bsonType": ["string", "null"]},
+        "matched_sender_id": {"bsonType": ["string", "null"]},
+        "synced_at": DATE,
+    },
+}
 
 ENTITY_SCHEMAS: dict[str, dict[str, Any]] = {
     "meli_accounts": {
@@ -341,6 +354,7 @@ ENTITY_SCHEMAS: dict[str, dict[str, Any]] = {
             "substatus": {"bsonType": ["string", "null"]},
             "tracking_number": {"bsonType": ["string", "null"]},
             "logistic_type": {"bsonType": "string"},
+            "real_shipping_cost": SHIPMENT_REAL_SHIPPING_COST,
             "receiver_address": RECEIVER_ADDRESS_SNAPSHOT,
             "date_created": DATE,
             "last_updated": DATE,

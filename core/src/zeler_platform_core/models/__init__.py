@@ -13,6 +13,7 @@ from zeler_platform_core.models.entities import (
     Question,
     ReceiverAddressSnapshot,
     Shipment,
+    ShipmentRealShippingCostProjection,
 )
 from zeler_platform_core.models.events import (
     BootstrapCompleted,
@@ -86,6 +87,7 @@ __all__ = [
     "RepricerRuleExecutionState",
     "SellerUnitCost",
     "Shipment",
+    "ShipmentRealShippingCostProjection",
     "User",
     "WebhookEvent",
 ]
