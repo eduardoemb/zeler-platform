@@ -1693,6 +1693,7 @@ def _canonical_item_detail_document(
         "last_meli_sync_at": synced_at,
         "schema_version": current_schema_version("items"),
     }
+    payload = normalize_status_history_datetimes(payload)
     fixed_fee = payload.get("listing_price_fixed_fee")
     if isinstance(fixed_fee, dict):
         payload["listing_price_fixed_fee"] = _normalize_mongo_loaded_listing_fixed_fee_datetimes(
