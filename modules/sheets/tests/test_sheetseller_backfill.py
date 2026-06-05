@@ -2384,6 +2384,55 @@ def test_formula_row_doc_drops_invalid_listing_fixed_fee_projection_without_cras
 
 
 @pytest.mark.asyncio
+async def test_item_detail_enrichment_dry_run_accepts_existing_fixed_fee_naive_synced_at() -> None:
+    canonical = _item_doc(
+        "MLA1",
+        attributes=[{"id": "SELLER_SKU", "value_name": "sku-1"}],
+        currency_id="ARS",
+        listing_type_id="gold_special",
+        shipping={"mode": "me2", "logistic_type": "fulfillment", "free_shipping": False},
+    )
+    canonical["listing_price_fixed_fee"] = {
+        "source": "/sites/{site}/listing_prices",
+        "fixed_fee": Decimal128("1350.25"),
+        "currency_id": "ARS",
+        "synced_at": NOW.replace(tzinfo=None),
+        "params": {
+            "site_id": "MLA",
+            "category_id": "MLA-CAT",
+            "price": Decimal128("123.45"),
+            "currency_id": "ARS",
+            "listing_type_id": "gold_special",
+            "shipping_mode": "me2",
+            "logistic_type": "fulfillment",
+        },
+    }
+    db = FakeDb([canonical])
+    detail = _item_detail("MLA1")
+    detail.update(
+        {
+            "currency_id": "ARS",
+            "listing_type_id": "gold_special",
+            "shipping": {"mode": "me2", "logistic_type": "fulfillment", "free_shipping": False},
+        }
+    )
+    gateway = FakeItemGateway({"/items?ids=MLA1": [{"code": 200, "body": detail}]})
+
+    summary = await run_item_detail_enrichment(
+        db=db,
+        gateway=gateway,
+        seller_id="82453304",
+        dry_run=True,
+    )
+
+    assert summary.items_validated == 1
+    assert summary.listing_fixed_fee_requested == 0
+    assert summary.listing_fixed_fee_enriched == 0
+    assert gateway.calls == [("82453304", "/items?ids=MLA1")]
+    assert db["items"].update_calls == []
+
+
+@pytest.mark.asyncio
 async def test_item_detail_enrichment_fetches_gated_listing_fixed_fee_projection() -> None:
     canonical = _item_doc("MLA1", attributes=[{"id": "SELLER_SKU", "value_name": "sku-1"}])
     db = FakeDb([canonical])
