@@ -12,6 +12,7 @@ class SheetsSettings(BaseSettings):
     google_oauth_redirect_uri: str
     kms_keyring: str = "zeler-platform"
     kms_google_tokens_key: str = "google-tokens"
+    kms_extension_tokens_key: str | None = None
     kms_project_id: str
     kms_location: str = "us-central1"
     google_oauth_authorize_url: str = "https://accounts.google.com/o/oauth2/v2/auth"

@@ -12,6 +12,7 @@ from zeler_platform_core.runtime.health import HealthCheck, build_health_router
 from zeler_platform_core.runtime.manifest import validate_manifest
 from zeler_platform_core.runtime.registration import register_module
 from zeler_sheets.api import build_router
+from zeler_sheets.extension_token_encryption import build_extension_token_cipher
 from zeler_sheets.google_oauth_router import build_router as build_google_oauth_router
 from zeler_sheets.sheets_config import SheetsSettings, get_settings
 
@@ -30,6 +31,11 @@ def build_app(
         app.state.kms_client = kms_client
     if settings is not None:
         app.state.settings = settings
+    if kms_client is not None and settings is not None:
+        app.state.extension_token_secret_cipher = build_extension_token_cipher(
+            kms_client=kms_client,
+            settings=settings,
+        )
     app.state.http_client_factory = http_client_factory or (lambda: httpx.AsyncClient(timeout=10.0))
     manifest = validate_manifest(Path(__file__).resolve().parents[2] / "manifest.yaml")
 

@@ -11,7 +11,7 @@ import pytest
 from bson.decimal128 import Decimal128
 from fastapi import FastAPI
 
-from zeler_sheets.extension_tokens import ExtensionTokenService, SellerScope
+from zeler_sheets.extension_tokens import ExtensionTokenService, SellerScope, hash_extension_token
 from zeler_sheets.formulas.dispatcher import FormulaExecutionResult
 
 
@@ -73,6 +73,14 @@ class FakeDb:
 
     def __getitem__(self, name: str) -> FakeCollection:
         return self.collections.setdefault(name, FakeCollection())
+
+
+class ExplodingCipher:
+    def encrypt(self, *_args: Any, **_kwargs: Any) -> dict[str, bytes | str]:
+        raise AssertionError("formula validation must not encrypt extension-token secrets")
+
+    async def decrypt(self, *_args: Any, **_kwargs: Any) -> str:
+        raise AssertionError("formula validation must not decrypt extension-token secrets")
 
 
 def _matches(doc: dict[str, Any], filter_spec: dict[str, Any]) -> bool:
@@ -190,6 +198,71 @@ async def test_execute_returns_token_error_envelopes_for_missing_and_revoked_tok
     assert revoked.status_code == 401
     assert revoked.json()["error"]["code"] == "TOKEN_REVOKED"
     assert revoked.json()["values"] == [["TOKEN_REVOKED: extension token is revoked"]]
+
+
+@pytest.mark.asyncio
+async def test_execute_rejects_deleted_token_without_revealing_secret() -> None:
+    now = datetime(2026, 5, 13, 12, 0, tzinfo=UTC)
+    app, db, token = await _app_with_token(now=now)
+    stored = next(iter(db.sheets_extension_tokens.documents.values()))
+    stored["deleted_at"] = now
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.post(
+            "/sheets/formulas:execute",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"formula": "ZELERDATA_SKU", "cuenta": "HOPEMOB", "args": {}},
+        )
+
+    assert response.status_code == 401
+    assert response.json()["error"] == {
+        "code": "TOKEN_REVOKED",
+        "message": "El token fue eliminado.",
+        "retryable": False,
+    }
+    assert response.json()["values"] == [["TOKEN_REVOKED: El token fue eliminado."]]
+    assert token not in str(response.json())
+
+
+@pytest.mark.asyncio
+async def test_execute_accepts_legacy_hash_only_token_without_decrypting() -> None:
+    now = datetime(2026, 5, 13, 12, 0, tzinfo=UTC)
+    app, db = _app(now=now)
+    app.state.extension_token_secret_cipher = ExplodingCipher()
+    legacy_token = "zs_ext_legacy-formula-material"
+    await db.sheets_extension_tokens.insert_one(
+        {
+            "_id": "sheets-ext-token-legacy-formula",
+            "label": "Legacy formula token",
+            "token_prefix": legacy_token[:18],
+            "token_hash": hash_extension_token(legacy_token, token_pepper="test-pepper"),
+            "owner_user_id": "user-1",
+            "seller_scopes": [{"seller_id": "123456789", "nickname": "HOPEMOB"}],
+            "formula_scopes": ["formulas:execute"],
+            "status": "active",
+            "expires_at": None,
+            "created_at": now,
+            "updated_at": now,
+            "rotated_at": None,
+            "revoked_at": None,
+            "last_used_at": None,
+            "schema_version": 1,
+        }
+    )
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.post(
+            "/sheets/formulas:execute",
+            headers={"Authorization": f"Bearer {legacy_token}"},
+            json={"formula": "ZELERDATA_SKU", "cuenta": "HOPEMOB", "args": {}},
+        )
+
+    assert response.status_code == 200
+    assert response.json() == {"ok": True, "values": [], "meta": {"partial_misses": 0}}
 
 
 @pytest.mark.asyncio

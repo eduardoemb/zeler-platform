@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import inspect
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any, cast
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from bson.decimal128 import Decimal128
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Request, Response
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
@@ -16,6 +17,7 @@ from pydantic import BaseModel, Field
 from zeler_platform_core.auth.jwt import verify_module_jwt
 from zeler_platform_core.auth.module_admin import authorize_module_admin
 from zeler_platform_core.models import SellerUnitCost
+from zeler_sheets.extension_token_encryption import ExtensionTokenSecretCipher
 from zeler_sheets.extension_tokens import (
     AuditHook,
     ExtensionTokenService,
@@ -74,6 +76,12 @@ class UnitCostConfigPayload(BaseModel):
 ZELER_PLATFORM_APP_ID = "zeler-platform"
 
 
+@dataclass(frozen=True)
+class ExtensionTokenAuthContext:
+    owner_user_id: str
+    allowed_seller_ids: set[str]
+
+
 class FormulaExecutePayload(BaseModel):
     formula: str
     cuenta: str | None = None
@@ -95,6 +103,7 @@ def build_router(
     clock: Callable[[], datetime] | None = None,
     extension_token_pepper: str | None = None,
     extension_token_factory: Callable[[], str] | None = None,
+    extension_token_secret_cipher: ExtensionTokenSecretCipher | None = None,
     formula_audit_hook: AuditHook | None = None,
     formula_rate_limit_hook: RateLimitHook | None = None,
     formula_dispatcher: FormulaDispatcher | FormulaDispatchCallable | None = None,
@@ -259,13 +268,20 @@ def build_router(
         owner = owner_user_id or default_owner
         if owner != default_owner:
             return JSONResponse(status_code=403, content={"error": "forbidden"})
+        context = await _extension_token_auth_context(request, claims)
+        if isinstance(context, JSONResponse):
+            return context
         service = _extension_token_service(
             request,
             now=now,
             token_pepper=extension_token_pepper,
             token_factory=extension_token_factory,
+            secret_cipher=extension_token_secret_cipher,
         )
-        tokens = await service.list_tokens(owner_user_id=owner)
+        tokens = await service.list_tokens(
+            owner_user_id=owner,
+            allowed_seller_ids=context.allowed_seller_ids,
+        )
         return JSONResponse(jsonable_encoder([token.model_dump(mode="json") for token in tokens]))
 
     @router.post("/extension-tokens", status_code=201)
@@ -295,6 +311,7 @@ def build_router(
             now=now,
             token_pepper=extension_token_pepper,
             token_factory=extension_token_factory,
+            secret_cipher=extension_token_secret_cipher,
         )
         try:
             issued = await service.create_token(
@@ -318,19 +335,26 @@ def build_router(
         if auth is not None:
             return auth
         claims = _claims(request)
+        context = await _extension_token_auth_context(request, claims)
+        if isinstance(context, JSONResponse):
+            return context
         service = _extension_token_service(
             request,
             now=now,
             token_pepper=extension_token_pepper,
             token_factory=extension_token_factory,
+            secret_cipher=extension_token_secret_cipher,
         )
         try:
             issued = await service.rotate_token(
                 token_id,
-                owner_user_id=_extension_token_owner(claims),
+                owner_user_id=context.owner_user_id,
+                allowed_seller_ids=context.allowed_seller_ids,
             )
         except KeyError:
             return JSONResponse(status_code=404, content={"error": "extension_token_not_found"})
+        except ExtensionTokenValidationError as exc:
+            return _token_management_error(exc)
         body = issued.metadata.model_dump(mode="json") | {"token_once": issued.token_once}
         return JSONResponse(jsonable_encoder(body))
 
@@ -340,20 +364,80 @@ def build_router(
         if auth is not None:
             return auth
         claims = _claims(request)
+        context = await _extension_token_auth_context(request, claims)
+        if isinstance(context, JSONResponse):
+            return context
         service = _extension_token_service(
             request,
             now=now,
             token_pepper=extension_token_pepper,
             token_factory=extension_token_factory,
+            secret_cipher=extension_token_secret_cipher,
         )
         try:
             metadata = await service.revoke_token(
                 token_id,
-                owner_user_id=_extension_token_owner(claims),
+                owner_user_id=context.owner_user_id,
+                allowed_seller_ids=context.allowed_seller_ids,
             )
         except KeyError:
             return JSONResponse(status_code=404, content={"error": "extension_token_not_found"})
+        except ExtensionTokenValidationError as exc:
+            return _token_management_error(exc)
         return JSONResponse(jsonable_encoder(metadata.model_dump(mode="json")))
+
+    @router.post("/extension-tokens/{token_id}:reveal")
+    async def reveal_extension_token(request: Request, token_id: str) -> JSONResponse:
+        auth = _authorize(request)
+        if auth is not None:
+            return auth
+        claims = _claims(request)
+        context = await _extension_token_auth_context(request, claims)
+        if isinstance(context, JSONResponse):
+            return context
+        service = _extension_token_service(
+            request,
+            now=now,
+            token_pepper=extension_token_pepper,
+            token_factory=extension_token_factory,
+            secret_cipher=extension_token_secret_cipher,
+        )
+        try:
+            revealed = await service.reveal_token(
+                token_id,
+                owner_user_id=context.owner_user_id,
+                allowed_seller_ids=context.allowed_seller_ids,
+            )
+        except ExtensionTokenValidationError as exc:
+            return _token_management_error(exc)
+        body = revealed.metadata.model_dump(mode="json") | {"token_once": revealed.token_once}
+        return JSONResponse(jsonable_encoder(body))
+
+    @router.delete("/extension-tokens/{token_id}", status_code=204)
+    async def delete_extension_token(request: Request, token_id: str) -> Response:
+        auth = _authorize(request)
+        if auth is not None:
+            return auth
+        claims = _claims(request)
+        context = await _extension_token_auth_context(request, claims)
+        if isinstance(context, JSONResponse):
+            return context
+        service = _extension_token_service(
+            request,
+            now=now,
+            token_pepper=extension_token_pepper,
+            token_factory=extension_token_factory,
+            secret_cipher=extension_token_secret_cipher,
+        )
+        try:
+            await service.delete_token(
+                token_id,
+                owner_user_id=context.owner_user_id,
+                allowed_seller_ids=context.allowed_seller_ids,
+            )
+        except ExtensionTokenValidationError as exc:
+            return _token_management_error(exc)
+        return Response(status_code=204)
 
     @router.get("/formulas/inventory")
     async def list_formula_inventory() -> JSONResponse:
@@ -426,6 +510,7 @@ def _extension_token_service(
     now: Callable[[], datetime],
     token_pepper: str | None,
     token_factory: Callable[[], str] | None,
+    secret_cipher: ExtensionTokenSecretCipher | None = None,
     audit_hook: AuditHook | None = None,
     rate_limit_hook: RateLimitHook | None = None,
 ) -> ExtensionTokenService:
@@ -436,6 +521,7 @@ def _extension_token_service(
         raise RuntimeError("extension token pepper is not configured")
     if hasattr(pepper, "get_secret_value"):
         pepper = pepper.get_secret_value()
+    cipher = secret_cipher or getattr(request.app.state, "extension_token_secret_cipher", None)
     return ExtensionTokenService(
         db=request.app.state.mongo_db,
         token_pepper=str(pepper),
@@ -443,6 +529,7 @@ def _extension_token_service(
         token_factory=token_factory,
         audit_hook=audit_hook,
         rate_limit_hook=rate_limit_hook,
+        secret_cipher=cast(ExtensionTokenSecretCipher | None, cipher),
     )
 
 
@@ -466,6 +553,7 @@ async def _execute_formula_payload(
         now=now,
         token_pepper=token_pepper,
         token_factory=token_factory,
+        secret_cipher=None,
         audit_hook=audit_hook,
         rate_limit_hook=rate_limit_hook,
     )
@@ -700,6 +788,69 @@ def _unit_cost_id(seller_id: str, payload: UnitCostConfigPayload) -> str:
 
 def _extension_token_owner(claims: Any) -> str:
     return str(getattr(claims, "platform_user_id", None) or claims.issued_by or claims.seller_id)
+
+
+async def _extension_token_auth_context(
+    request: Request,
+    claims: Any,
+) -> ExtensionTokenAuthContext | JSONResponse:
+    return ExtensionTokenAuthContext(
+        owner_user_id=_extension_token_owner(claims),
+        allowed_seller_ids=await _allowed_extension_token_seller_ids(
+            request.app.state.mongo_db,
+            claims=claims,
+        ),
+    )
+
+
+async def _allowed_extension_token_seller_ids(db: Any, *, claims: Any) -> set[str]:
+    platform_user_id = getattr(claims, "platform_user_id", None)
+    if not platform_user_id:
+        return {str(claims.seller_id)}
+    accounts = (
+        await db["meli_accounts"]
+        .find(
+            {
+                "platform_user_id": str(platform_user_id),
+                "app_id": ZELER_PLATFORM_APP_ID,
+                "status": "active",
+            }
+        )
+        .to_list(length=100)
+    )
+    return {str(account["seller_id"]) for account in accounts}
+
+
+def _token_management_error(exc: ExtensionTokenValidationError) -> JSONResponse:
+    return JSONResponse(
+        status_code=_token_management_status(exc.code),
+        content={"error": exc.code, "detail": _token_management_detail(exc.code)},
+    )
+
+
+def _token_management_status(code: str) -> int:
+    return {
+        "TOKEN_NOT_FOUND_OR_FORBIDDEN": 404,
+        "TOKEN_NOT_ACTIVE": 409,
+        "TOKEN_NOT_REVOKED": 409,
+        "TOKEN_DELETED": 409,
+        "TOKEN_EXPIRED": 409,
+        "TOKEN_SECRET_UNAVAILABLE": 409,
+    }.get(code, 400)
+
+
+def _token_management_detail(code: str) -> str:
+    return {
+        "TOKEN_NOT_FOUND_OR_FORBIDDEN": "Token no encontrado o sin permisos.",
+        "TOKEN_NOT_ACTIVE": "El token no está activo.",
+        "TOKEN_NOT_REVOKED": "Revocá el token antes de eliminarlo.",
+        "TOKEN_DELETED": "El token ya fue eliminado.",
+        "TOKEN_EXPIRED": "El token está vencido.",
+        "TOKEN_SECRET_UNAVAILABLE": (
+            "Este token no se puede revelar. Generá o rotá el token para obtener "
+            "un valor recuperable."
+        ),
+    }.get(code, "No se pudo completar la operación del token.")
 
 
 async def _canonical_seller_scopes(

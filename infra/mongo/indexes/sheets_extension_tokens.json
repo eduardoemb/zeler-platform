@@ -4,12 +4,12 @@
     "options": {"name": "uniq_sheets_extension_tokens_hash", "unique": true}
   },
   {
-    "keys": {"owner_user_id": 1, "status": 1},
-    "options": {"name": "idx_sheets_extension_tokens_owner_status"}
+    "keys": {"owner_user_id": 1, "deleted_at": 1, "status": 1},
+    "options": {"name": "idx_sheets_extension_tokens_owner_deleted_status"}
   },
   {
-    "keys": {"seller_scopes.seller_id": 1, "status": 1},
-    "options": {"name": "idx_sheets_extension_tokens_seller_status"}
+    "keys": {"seller_scopes.seller_id": 1, "deleted_at": 1, "status": 1},
+    "options": {"name": "idx_sheets_extension_tokens_seller_deleted_status"}
   },
   {
     "keys": {"expires_at": 1},
