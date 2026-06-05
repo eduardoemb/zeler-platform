@@ -1,0 +1,16 @@
+[
+  {
+    "keys": {"seller_id": 1, "item_id": 1, "observed_at": -1},
+    "options": {"name": "idx_item_status_transitions_seller_item_observed"}
+  },
+  {
+    "keys": {
+      "seller_id": 1,
+      "item_id": 1,
+      "from_status": 1,
+      "to_status": 1,
+      "observed_at": 1
+    },
+    "options": {"name": "uniq_item_status_transition_observation", "unique": true}
+  }
+]

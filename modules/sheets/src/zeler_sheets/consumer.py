@@ -23,7 +23,7 @@ from zeler_platform_core.events.idempotency import IdempotencyStore as CoreIdemp
 from zeler_platform_core.runtime.manifest import validate_manifest
 from zeler_platform_core.runtime.retry_delay import RETRY_ATTEMPT_HEADER, RetryDelayPublisher
 from zeler_platform_core.runtime.worker_health import WorkerHealthSidecar
-from zeler_sheets.event_persistence import SheetsEventPersistence
+from zeler_sheets.event_persistence import SheetsEventPersistence, StatusObservationContentionError
 from zeler_sheets.google_errors import RetryableGoogleSheetsApiError
 from zeler_sheets.google_sheets_client import make_sheets_client
 from zeler_sheets.sheets_config import SheetsSettings
@@ -41,6 +41,7 @@ MISSING_MONGO_DB_MESSAGE = "error: MONGO_DB is required"
 PERMANENT_HTTP_STATUS_CODES = {401, 403, 404, 422}
 RETRIABLE_HTTP_STATUS_CODES = {408, 429}
 DEFAULT_GATEWAY_BASE_URL = "http://gateway:8080/proxy/meli"
+DEFAULT_STATUS_CONTENTION_RETRY_DELAY_MS = 1000
 
 logger = structlog.get_logger(__name__)
 
@@ -272,6 +273,19 @@ class SheetsAmqpConsumerRunner:
                 message.body,
                 self.config.queue_name,
                 delay_ms=exc.retry_after_seconds * 1000,
+                headers=_retry_headers(message, attempt=death_count + 1),
+            )
+            await message.ack()
+            return
+        except StatusObservationContentionError as exc:
+            _log_message_requeued(event, death_count + 1, exc)
+            if self._retry_delay_publisher is None:
+                await message.nack(requeue=True)
+                return
+            await self._retry_delay_publisher.publish_delay(
+                message.body,
+                self.config.queue_name,
+                delay_ms=DEFAULT_STATUS_CONTENTION_RETRY_DELAY_MS,
                 headers=_retry_headers(message, attempt=death_count + 1),
             )
             await message.ack()

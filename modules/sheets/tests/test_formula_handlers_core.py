@@ -757,6 +757,91 @@ async def test_publicaciones_returns_minimal_current_item_table_with_optional_he
 
 
 @pytest.mark.asyncio
+async def test_publicaciones_and_dashboard_render_real_paused_days_only() -> None:
+    now = datetime(2026, 5, 13, 12, 0, tzinfo=UTC)
+    paused_since = datetime(2026, 5, 10, 8, 0, tzinfo=UTC)
+    db = FakeDb()
+    db["sheets_item_formula_rows"].documents = {
+        "seller-1-sku-1-mla1": {
+            "_id": "seller-1-sku-1-mla1",
+            "seller_id": "seller-1",
+            "sku": "sku-1",
+            "normalized_sku": "SKU-1",
+            "item_id": "MLA1",
+            "inventory_id": "INV-1",
+            "current": {
+                "title": "Observed paused listing",
+                "status": "paused",
+                "available_quantity": 0,
+                "base_price": 10,
+                "paused_since": paused_since,
+                "updated_at": datetime(2026, 5, 12, 8, 0, tzinfo=UTC),
+            },
+        },
+        "seller-1-sku-2-mla2": {
+            "_id": "seller-1-sku-2-mla2",
+            "seller_id": "seller-1",
+            "sku": "sku-2",
+            "normalized_sku": "SKU-2",
+            "item_id": "MLA2",
+            "inventory_id": "INV-2",
+            "current": {
+                "title": "Snapshot-only paused listing",
+                "status": "paused",
+                "available_quantity": 0,
+                "base_price": 20,
+                "updated_at": datetime(2026, 4, 1, 8, 0, tzinfo=UTC),
+            },
+            "updated_at": datetime(2026, 4, 1, 8, 0, tzinfo=UTC),
+        },
+    }
+    dispatcher = _core_dispatcher(db, now=now)
+
+    publicaciones = await dispatcher.execute(
+        _context("ZELERDATA_PUBLICACIONES", {"skus": "todos", "encabezados": "si"})
+    )
+    dashboard = await dispatcher.execute(
+        _context("ZELERDATA_DASHBOARD", {"skus": "todos", "encabezados": "si"})
+    )
+
+    assert publicaciones.values == _formula_table_contract(
+        [
+            PUBLICACIONES_LEGACY_HEADERS,
+            [
+                "MLA1",
+                "Observed paused listing",
+                "sku-1",
+                0,
+                10,
+                "",
+                "",
+                "",
+                "paused",
+                "INV-1",
+                "INV-1",
+                3,
+            ],
+            [
+                "MLA2",
+                "Snapshot-only paused listing",
+                "sku-2",
+                0,
+                20,
+                "",
+                "",
+                "",
+                "paused",
+                "INV-2",
+                "INV-2",
+                "NA",
+            ],
+        ]
+    )
+    dashboard_rows = dashboard.values[1:]
+    assert [row[10] for row in dashboard_rows] == [3, "NA"]
+
+
+@pytest.mark.asyncio
 async def test_dashboard_returns_minimal_current_item_table_with_optional_headers() -> None:
     db = FakeDb()
     formula_rows = db["sheets_item_formula_rows"]
@@ -1544,6 +1629,58 @@ async def test_categorias_returns_category_by_item_id_with_blanks_for_misses() -
 
 
 @pytest.mark.asyncio
+async def test_paused_days_formula_ignores_snapshot_timestamps() -> None:
+    now = datetime(2026, 5, 13, 12, 0, tzinfo=UTC)
+    paused_since = datetime(2026, 5, 10, 8, 0, tzinfo=UTC)
+    db = FakeDb()
+    formula_rows = db["sheets_item_formula_rows"]
+    formula_rows.documents = {
+        "paused-with-history": {
+            "_id": "paused-with-history",
+            "seller_id": "seller-1",
+            "normalized_sku": "SKU-1",
+            "item_id": "MLA1",
+            "current": {
+                "status": "paused",
+                "paused_since": paused_since,
+                "updated_at": datetime(2026, 5, 12, 8, 0, tzinfo=UTC),
+            },
+        },
+        "paused-snapshot-only": {
+            "_id": "paused-snapshot-only",
+            "seller_id": "seller-1",
+            "normalized_sku": "SKU-2",
+            "item_id": "MLA2",
+            "current": {
+                "status": "paused",
+                "updated_at": datetime(2026, 4, 1, 8, 0, tzinfo=UTC),
+            },
+            "updated_at": datetime(2026, 4, 1, 8, 0, tzinfo=UTC),
+            "last_updated": datetime(2026, 4, 1, 8, 0, tzinfo=UTC),
+        },
+        "active-with-paused-history": {
+            "_id": "active-with-paused-history",
+            "seller_id": "seller-1",
+            "normalized_sku": "SKU-3",
+            "item_id": "MLA3",
+            "current": {"status": "active", "paused_since": paused_since},
+        },
+    }
+    dispatcher = _core_dispatcher(db, now=now)
+
+    result = await dispatcher.execute(
+        _context("ZELERDATA_PAUSADAS", {"id_publicaciones": ["MLA1", "MLA2", "MLA3", "MLA-X"]})
+    )
+
+    assert result.values == [[3], ["NA"], ["NA"], ["NA"]]
+    assert result.meta == {"partial_misses": 3}
+    assert formula_rows.last_find_filter == {
+        "seller_id": "seller-1",
+        "item_id": {"$in": ["MLA1", "MLA2", "MLA3", "MLA-X"]},
+    }
+
+
+@pytest.mark.asyncio
 async def test_imagenes_returns_thumbnail_urls_for_item_sku_pairs_and_todos() -> None:
     db = FakeDb()
     formula_rows = db["sheets_item_formula_rows"]
@@ -1664,7 +1801,7 @@ async def test_formula_api_uses_core_handlers_and_keeps_other_formulas_data_unav
                 "args": {"id_publicaciones": "MLA1"},
             },
         )
-        not_ready = await client.post(
+        pausadas = await client.post(
             "/sheets/formulas:execute",
             headers={"Authorization": f"Bearer {token}"},
             json={
@@ -1678,15 +1815,8 @@ async def test_formula_api_uses_core_handlers_and_keeps_other_formulas_data_unav
     assert stock.json() == {"ok": True, "values": [[9]], "meta": {"partial_misses": 0}}
     assert title.status_code == 200
     assert title.json() == {"ok": True, "values": [[""]], "meta": {"partial_misses": 1}}
-    assert not_ready.status_code == 200
-    assert not_ready.json()["error"] == {
-        "code": "DATA_UNAVAILABLE",
-        "message": (
-            "ZELERDATA_PAUSADAS data is not available yet: "
-            "Historical paused-period read model is not available in zeler-platform yet."
-        ),
-        "retryable": False,
-    }
+    assert pausadas.status_code == 200
+    assert pausadas.json() == {"ok": True, "values": [["NA"]], "meta": {"partial_misses": 1}}
     assert db["sheets_item_formula_rows"].last_find_filter == {
         "seller_id": "seller-1",
         "item_id": {"$in": ["MLA1"]},

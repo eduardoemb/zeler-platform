@@ -1,0 +1,27 @@
+{
+  "$jsonSchema": {
+    "bsonType": "object",
+    "required": [
+      "_id",
+      "seller_id",
+      "item_id",
+      "from_status",
+      "to_status",
+      "observed_at",
+      "source",
+      "schema_version"
+    ],
+    "properties": {
+      "_id": {"bsonType": "string"},
+      "seller_id": {"bsonType": "string"},
+      "item_id": {"bsonType": "string"},
+      "from_status": {"bsonType": "string"},
+      "to_status": {"bsonType": "string"},
+      "observed_at": {"bsonType": "date"},
+      "source": {"enum": ["sheets_event_persistence"]},
+      "schema_version": {"bsonType": "int"}
+    }
+  },
+  "validationAction": "error",
+  "validationLevel": "strict"
+}

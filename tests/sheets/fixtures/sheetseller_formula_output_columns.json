@@ -1,7 +1,6 @@
 {
   "schema_version": 1,
   "unsupported_formulas": {
-    "ZELERDATA_PAUSADAS": {"status": "unsupported", "reason": "Historical paused-period read model is not available in zeler-platform yet."},
     "ZELERDATA_ENVIARAFULL": {"status": "unsupported", "reason": "Full replenishment recommendation read model is not available in zeler-platform yet."},
     "ZELERDATA_PUBLICACIONESDESCUIDADAS": {"status": "unsupported", "reason": "Neglected-publication history/read model is not available in zeler-platform yet."},
     "ZELERDATA_CATALOGO": {"status": "unsupported", "reason": "Catalog/buybox snapshot read model is not available in zeler-platform yet."},
@@ -56,7 +55,7 @@
         {"name": "Status", "source": "sheets_item_formula_rows.current.status", "status": "mvp"},
         {"name": "Código ML", "source": "sheets_item_formula_rows.inventory_id | current.inventory_id", "status": "mvp"},
         {"name": "ID Inventario", "source": "sheets_item_formula_rows.inventory_id | current.inventory_id", "status": "mvp"},
-        {"name": "Tiempo En Pausa", "legacy_source_note": "legacy paused-time column", "status": "explicit_na", "reason": "Requires historical paused-period read model."}
+        {"name": "Tiempo En Pausa", "source": "sheets_item_formula_rows.current.paused_since from observed status transitions", "status": "mvp", "reason": "Returns NA when observed status-history source truth is missing."}
       ]
     },
     "ZELERDATA_DASHBOARD": {
@@ -72,7 +71,7 @@
         {"name": "Tipo De Publicación", "source": "sheets_item_formula_rows.current.listing_type_id", "status": "mvp"},
         {"name": "Status", "source": "sheets_item_formula_rows.current.status", "status": "mvp"},
         {"name": "Código ML", "source": "sheets_item_formula_rows.inventory_id | current.inventory_id", "status": "mvp"},
-        {"name": "Días Pausada", "legacy_source_note": "legacy paused-days/historical state column", "status": "explicit_na", "reason": "Requires historical paused-period read model."},
+        {"name": "Días Pausada", "source": "sheets_item_formula_rows.current.paused_since from observed status transitions", "status": "mvp", "reason": "Returns NA when observed status-history source truth is missing."},
         {"name": "Ventas (7 días)", "source": "orders.items.quantity | qty by SKU/item_id/variation_id", "status": "mvp"},
         {"name": "Ventas (15 días)", "source": "orders.items.quantity | qty by SKU/item_id/variation_id", "status": "mvp"},
         {"name": "Ventas (30 días)", "source": "orders.items.quantity | qty by SKU/item_id/variation_id", "status": "mvp"},
@@ -101,7 +100,7 @@
         {"name": "Tipo De Publicación", "source": "sheets_item_formula_rows.current.listing_type_id", "status": "mvp"},
         {"name": "Status", "source": "sheets_item_formula_rows.current.status", "status": "mvp"},
         {"name": "Código ML", "source": "sheets_item_formula_rows.inventory_id | current.inventory_id", "status": "mvp"},
-        {"name": "Días Pausada", "legacy_source_note": "legacy paused-days/historical state column", "status": "explicit_na", "reason": "Requires historical paused-period read model."},
+        {"name": "Días Pausada", "source": "sheets_item_formula_rows.current.paused_since from observed status transitions", "status": "mvp", "reason": "Returns NA when observed status-history source truth is missing."},
         {"name": "Ventas (7 días)", "source": "orders.items.quantity | qty by SKU/item_id/variation_id", "status": "mvp"},
         {"name": "Ventas (15 días)", "source": "orders.items.quantity | qty by SKU/item_id/variation_id", "status": "mvp"},
         {"name": "Ventas (30 días)", "source": "orders.items.quantity | qty by SKU/item_id/variation_id", "status": "mvp"},
