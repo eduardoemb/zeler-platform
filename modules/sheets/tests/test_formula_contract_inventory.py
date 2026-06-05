@@ -270,6 +270,8 @@ def test_dashboard_output_column_fixture_locks_mvp_and_deferred_columns() -> Non
             "Ventas (90 días)",
             "Envió A Cargo De",
             "Costo De Envío",
+            "% Comisión",
+            "Comisión",
             "Costo Por Unidad",
             "Tiene Catálogo",
             "ID Carrito (7 días)",
@@ -279,10 +281,7 @@ def test_dashboard_output_column_fixture_locks_mvp_and_deferred_columns() -> Non
             "ID Carrito (90 días)",
             "Precio Promo",
         ]
-        assert [column["name"] for column in columns if column["status"] == "explicit_na"] == [
-            "% Comisión",
-            "Comisión",
-        ]
+        assert [column["name"] for column in columns if column["status"] == "explicit_na"] == []
         paused_column = next(column for column in columns if column["name"] == "Días Pausada")
         assert paused_column == {
             "name": "Días Pausada",
@@ -291,6 +290,18 @@ def test_dashboard_output_column_fixture_locks_mvp_and_deferred_columns() -> Non
             ),
             "status": "mvp",
             "reason": "Returns NA when observed status-history source truth is missing.",
+        }
+        assert next(column for column in columns if column["name"] == "% Comisión") == {
+            "name": "% Comisión",
+            "source": "sheets_item_formula_rows.current.listing_fee_projection.percentage_fee",
+            "status": "mvp",
+            "reason": "Source-backed MercadoLibre listing-price percentage fee estimate.",
+        }
+        assert next(column for column in columns if column["name"] == "Comisión") == {
+            "name": "Comisión",
+            "source": "sheets_item_formula_rows.current.listing_fee_projection.sale_fee_amount",
+            "status": "mvp",
+            "reason": "Source-backed MercadoLibre listing-price commission amount estimate.",
         }
         unit_cost_column = next(
             column for column in columns if column["name"] == "Costo Por Unidad"
@@ -338,6 +349,42 @@ def test_dashboard_output_column_fixture_locks_mvp_and_deferred_columns() -> Non
         "status": "mvp",
         "reason": "Returns NA when observed status-history source truth is missing.",
     }
+
+
+def test_commission_output_column_fixture_locks_source_backed_columns_and_runtime_support() -> None:
+    fixture = _column_fixture()
+    formulas = fixture["formulas"]
+    runtime_states = get_formula_runtime_states()
+
+    assert runtime_states["ZELERDATA_COMISION"].state == "implemented"
+    assert "ZELERDATA_COMISION" not in fixture["unsupported_formulas"]
+    assert formulas["ZELERDATA_COMISION"]["columns"] == [
+        {
+            "name": "ID Publicación",
+            "source": "sheets_item_formula_rows.item_id",
+            "status": "mvp",
+        },
+        {
+            "name": "% Comisión",
+            "source": "sheets_item_formula_rows.current.listing_fee_projection.percentage_fee",
+            "status": "mvp",
+            "reason": "Source-backed MercadoLibre listing-price percentage fee estimate.",
+        },
+        {
+            "name": "Comisión",
+            "source": "sheets_item_formula_rows.current.listing_fee_projection.sale_fee_amount",
+            "status": "mvp",
+            "reason": "Source-backed MercadoLibre listing-price commission amount estimate.",
+        },
+        {
+            "name": "Costo De Envío",
+            "source": "sheets_item_formula_rows.current.seller_shipping_cost",
+            "status": "mvp",
+            "reason": (
+                "Item-level estimated seller shipping cost only; unavailable source remains NA."
+            ),
+        },
+    ]
 
 
 def test_batch_b_output_column_fixture_locks_mvp_and_deferred_columns() -> None:
@@ -515,8 +562,9 @@ def test_every_legacy_formula_has_an_explicit_runtime_state() -> None:
         for formula, state in runtime_states.items()
         if state.state == "unsupported"
     }
-    assert len(unsupported) == 23
+    assert len(unsupported) == 22
     assert "ZELERDATA_COMPRADORES" not in unsupported
+    assert "ZELERDATA_COMISION" not in unsupported
     assert unsupported["ZELERDATA_CATALOGO"] == (
         "Catalog/buybox snapshot read model is not available in zeler-platform yet."
     )
