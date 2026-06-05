@@ -1554,16 +1554,20 @@ def _canonical_item_detail_document(
     *, existing: dict[str, Any], detail: dict[str, Any], seller_id: str, synced_at: datetime
 ) -> dict[str, Any]:
     item_id = _item_id(existing)
-    model = Item.model_validate(
-        {
-            **existing,
-            **detail,
-            "_id": item_id,
-            "seller_id": seller_id,
-            "last_meli_sync_at": synced_at,
-            "schema_version": current_schema_version("items"),
-        }
-    )
+    payload = {
+        **existing,
+        **detail,
+        "_id": item_id,
+        "seller_id": seller_id,
+        "last_meli_sync_at": synced_at,
+        "schema_version": current_schema_version("items"),
+    }
+    fixed_fee = payload.get("listing_price_fixed_fee")
+    if isinstance(fixed_fee, dict):
+        payload["listing_price_fixed_fee"] = _normalize_mongo_loaded_listing_fixed_fee_datetimes(
+            fixed_fee
+        )
+    model = Item.model_validate(payload)
     document = normalize_status_history_datetimes(model.model_dump(by_alias=True, mode="python"))
     if document.get("status_observed_at") is None:
         document.pop("status_observed_at", None)
