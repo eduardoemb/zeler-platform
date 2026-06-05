@@ -139,11 +139,6 @@ DASHBOARD_LEGACY_HEADERS = [
     "Comisión",
     "Costo Por Unidad",
     "Tiene Catálogo",
-    "ID Carrito (7 días)",
-    "ID Carrito (15 días)",
-    "ID Carrito (30 días)",
-    "ID Carrito (60 días)",
-    "ID Carrito (90 días)",
 ]
 
 COMISION_LEGACY_HEADERS = ["ID Publicación", "% Comisión", "Comisión", "Costo De Envío"]
@@ -522,17 +517,15 @@ async def test_publicaciones_dashboard_emit_na_for_deferred_fields_and_current_s
             "NA",
             "No",
             "NA",
-            "NA",
-            "NA",
-            "NA",
-            "NA",
-            "NA",
         ],
     ]
 
 
 @pytest.mark.asyncio
-async def test_dashboard_adds_per_window_latest_contributing_meli_pack_ids() -> None:
+@pytest.mark.parametrize("formula_name", ["ZELERDATA_DASHBOARD", "ZELERDATA_DASHBOARDSINCATALOGO"])
+async def test_dashboard_formulas_omit_cart_id_columns_and_keep_sales_windows_aligned(
+    formula_name: str,
+) -> None:
     now = datetime(2026, 5, 13, 12, 0, tzinfo=UTC)
     db = FakeDb()
     db["sheets_item_formula_rows"].documents = {
@@ -586,97 +579,17 @@ async def test_dashboard_adds_per_window_latest_contributing_meli_pack_ids() -> 
     dispatcher = _core_dispatcher(db, now=now)
 
     result = await dispatcher.execute(
-        _context("ZELERDATA_DASHBOARD", {"skus": "todos", "encabezados": "si"})
+        _context(formula_name, {"skus": "todos", "encabezados": "si"})
     )
 
-    assert result.values[0][-5:] == [
-        "ID Carrito (7 días)",
-        "ID Carrito (15 días)",
-        "ID Carrito (30 días)",
-        "ID Carrito (60 días)",
-        "ID Carrito (90 días)",
-    ]
-    assert result.values[1][-5:] == ["222", "222", "222", "222", "222"]
-    assert result.values[2][-5:] == ["NA", "333", "333", "333", "333"]
-
-
-@pytest.mark.asyncio
-async def test_dashboard_prioritizes_later_pack_date_before_higher_order_id() -> None:
-    now = datetime(2026, 5, 13, 12, 0, tzinfo=UTC)
-    db = FakeDb()
-    db["sheets_item_formula_rows"].documents = {
-        "seller-1-sku-1-mla1": {
-            "_id": "seller-1-sku-1-mla1",
-            "seller_id": "seller-1",
-            "sku": "sku-1",
-            "normalized_sku": "SKU-1",
-            "item_id": "MLA1",
-            "current": {"title": "First listing", "status": "active"},
-        }
-    }
-    db["orders"].documents = {
-        "999999": {
-            "_id": "999999",
-            "seller_id": "seller-1",
-            "date_created": datetime(2026, 5, 11, 10, 0, tzinfo=UTC),
-            "meli_pack_id": "older-higher-order-id",
-            "items": [{"sku": "sku-1", "item_id": "MLA1", "quantity": 1}],
-        },
-        "100": {
-            "_id": "100",
-            "seller_id": "seller-1",
-            "date_created": datetime(2026, 5, 12, 10, 0, tzinfo=UTC),
-            "meli_pack_id": "newer-lower-order-id",
-            "items": [{"sku": "sku-1", "item_id": "MLA1", "quantity": 1}],
-        },
-    }
-    dispatcher = _core_dispatcher(db, now=now)
-
-    result = await dispatcher.execute(_context("ZELERDATA_DASHBOARD", {"skus": "todos"}))
-
-    assert result.values[0][-5:] == [
-        "newer-lower-order-id",
-        "newer-lower-order-id",
-        "newer-lower-order-id",
-        "newer-lower-order-id",
-        "newer-lower-order-id",
-    ]
-
-
-@pytest.mark.asyncio
-async def test_dashboard_latest_missing_pack_id_renders_na_over_older_pack() -> None:
-    now = datetime(2026, 5, 13, 12, 0, tzinfo=UTC)
-    db = FakeDb()
-    db["sheets_item_formula_rows"].documents = {
-        "seller-1-sku-1-mla1": {
-            "_id": "seller-1-sku-1-mla1",
-            "seller_id": "seller-1",
-            "sku": "sku-1",
-            "normalized_sku": "SKU-1",
-            "item_id": "MLA1",
-            "current": {"title": "First listing", "status": "active"},
-        }
-    }
-    db["orders"].documents = {
-        "older-packed-order": {
-            "_id": "older-packed-order",
-            "seller_id": "seller-1",
-            "date_created": datetime(2026, 5, 11, 10, 0, tzinfo=UTC),
-            "meli_pack_id": "old-pack",
-            "items": [{"sku": "sku-1", "item_id": "MLA1", "quantity": 1}],
-        },
-        "newer-missing-pack-order": {
-            "_id": "newer-missing-pack-order",
-            "seller_id": "seller-1",
-            "date_created": datetime(2026, 5, 12, 10, 0, tzinfo=UTC),
-            "items": [{"sku": "sku-1", "item_id": "MLA1", "quantity": 1}],
-        },
-    }
-    dispatcher = _core_dispatcher(db, now=now)
-
-    result = await dispatcher.execute(_context("ZELERDATA_DASHBOARD", {"skus": "todos"}))
-
-    assert result.values[0][-5:] == ["NA", "NA", "NA", "NA", "NA"]
+    headers = result.values[0]
+    assert headers == DASHBOARD_LEGACY_HEADERS
+    assert not [header for header in headers if header.startswith("ID Carrito (")]
+    assert all(len(row) == len(headers) for row in result.values)
+    assert [row[11:16] for row in result.values[1:]] == [[2, 2, 2, 2, 2], [0, 3, 3, 3, 3]]
+    assert all(
+        pack_id not in row for row in result.values[1:] for pack_id in ("111", "222", "333", "999")
+    )
 
 
 @pytest.mark.asyncio
@@ -1178,11 +1091,6 @@ async def test_dashboard_returns_minimal_current_item_table_with_optional_header
                 "",
                 "",
                 "Sí",
-                "NA",
-                "NA",
-                "NA",
-                "NA",
-                "NA",
             ]
         ],
         header_rows=0,

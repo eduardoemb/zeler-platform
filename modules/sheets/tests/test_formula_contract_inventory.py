@@ -8,7 +8,12 @@ from typing import Any, cast
 
 import pytest
 
-from zeler_sheets.formulas.handlers_core import CORE_FORMULA_NAMES
+from zeler_sheets.formulas.handlers_core import (
+    CORE_FORMULA_NAMES,
+)
+from zeler_sheets.formulas.handlers_core import (
+    DASHBOARD_LEGACY_HEADERS as CORE_DASHBOARD_LEGACY_HEADERS,
+)
 from zeler_sheets.formulas.handlers_orders_questions import BATCH_B_IMPLEMENTED_FORMULAS
 from zeler_sheets.formulas.registry import FormulaRegistry
 from zeler_sheets.formulas.runtime_states import (
@@ -239,11 +244,6 @@ def test_dashboard_output_column_fixture_locks_mvp_and_deferred_columns() -> Non
         "Comisión",
         "Costo Por Unidad",
         "Tiene Catálogo",
-        "ID Carrito (7 días)",
-        "ID Carrito (15 días)",
-        "ID Carrito (30 días)",
-        "ID Carrito (60 días)",
-        "ID Carrito (90 días)",
     ]
 
     for formula in ["ZELERDATA_DASHBOARD", "ZELERDATA_DASHBOARDSINCATALOGO"]:
@@ -274,11 +274,6 @@ def test_dashboard_output_column_fixture_locks_mvp_and_deferred_columns() -> Non
             "Comisión",
             "Costo Por Unidad",
             "Tiene Catálogo",
-            "ID Carrito (7 días)",
-            "ID Carrito (15 días)",
-            "ID Carrito (30 días)",
-            "ID Carrito (60 días)",
-            "ID Carrito (90 días)",
             "Precio Promo",
         ]
         assert [column["name"] for column in columns if column["status"] == "explicit_na"] == []
@@ -316,20 +311,12 @@ def test_dashboard_output_column_fixture_locks_mvp_and_deferred_columns() -> Non
             ),
         }
         cart_columns = [column for column in columns if column["name"].startswith("ID Carrito (")]
-        assert cart_columns == [
-            {
-                "name": f"ID Carrito ({days} días)",
-                "source": (
-                    f"latest contributing orders.meli_pack_id for the {days}-day sales window"
-                ),
-                "status": "mvp",
-                "reason": "Returns NA when no contributing order line has a MercadoLibre pack_id.",
-            }
-            for days in (7, 15, 30, 60, 90)
-        ]
+        assert cart_columns == []
         assert "Categoría" not in [column["name"] for column in columns]
         assert "Imagen" not in [column["name"] for column in columns]
         assert all("source" in column or "legacy_source_note" in column for column in columns)
+
+    assert expected_dashboard == CORE_DASHBOARD_LEGACY_HEADERS
 
     assert formulas["ZELERDATA_DASHBOARDSINCATALOGO"]["compatibility_note"] == (
         "Excludes rows when current.catalog_product_id is present; richer catalog/buybox "

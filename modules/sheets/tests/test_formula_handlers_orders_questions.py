@@ -536,8 +536,27 @@ async def test_order_tables_emit_na_for_unavailable_fields_and_missing_buyers() 
     ]
 
 
+@pytest.mark.parametrize(
+    ("formula_name", "formula_args"),
+    [
+        ("ZELERDATA_ORDENES", {}),
+        ("ZELERDATA_ORDENESPORSKU", {"skus": [["sku-1"], ["sku-2"]]}),
+    ],
+)
+@pytest.mark.parametrize(
+    ("compradores", "expected_headers"),
+    [
+        ("", ORDER_LINE_LEGACY_HEADERS),
+        ("verdadero", ORDER_LINE_LEGACY_HEADERS + BUYER_ADDRESS_LEGACY_HEADERS),
+    ],
+)
 @pytest.mark.asyncio
-async def test_order_tables_render_meli_pack_id_as_id_carrito_without_fallbacks() -> None:
+async def test_order_tables_preserve_meli_pack_id_as_id_carrito_for_buyer_variants(
+    formula_name: str,
+    formula_args: dict[str, Any],
+    compradores: str,
+    expected_headers: list[str],
+) -> None:
     db = FakeDb()
     db["orders"].documents = {
         "packed-order": _order_doc(
@@ -564,30 +583,56 @@ async def test_order_tables_render_meli_pack_id_as_id_carrito_without_fallbacks(
             ],
         ),
     }
+    db["shipments"].documents = {
+        "shipment-1": {
+            "_id": "shipment-1",
+            "seller_id": "seller-1",
+            "receiver_address": {
+                "name": "SNAPSHOT_BUYER_OK",
+                "street_name": "SNAPSHOT_STREET_OK",
+                "street_number": "SNAPSHOT_NUMBER_OK",
+                "neighborhood": "SNAPSHOT_NEIGHBORHOOD_OK",
+                "zip_code": "SNAPSHOT_ZIP_OK",
+                "city": "SNAPSHOT_CITY_OK",
+                "state": "SNAPSHOT_STATE_OK",
+                "country": "SNAPSHOT_COUNTRY_OK",
+            },
+        }
+    }
     dispatcher = _order_question_dispatcher(db)
 
-    orders = await dispatcher.execute(
+    result = await dispatcher.execute(
         _context(
-            "ZELERDATA_ORDENES",
-            {"fecha_inicial": "2026-05-10", "fecha_final": "2026-05-10", "encabezados": "si"},
-        )
-    )
-    by_sku = await dispatcher.execute(
-        _context(
-            "ZELERDATA_ORDENESPORSKU",
+            formula_name,
             {
-                "skus": [["sku-1"], ["sku-2"]],
                 "fecha_inicial": "2026-05-10",
                 "fecha_final": "2026-05-10",
+                "compradores": compradores,
                 "encabezados": "si",
-            },
+            }
+            | formula_args,
         )
     )
 
-    assert [row[7] for row in orders.values[1:]] == ["123", "NA"]
-    assert [row[7] for row in by_sku.values[1:]] == ["123", "NA"]
-    assert [row[1] for row in orders.values[1:]] == ["packed-order", "missing-pack-order"]
-    assert [row[7] for row in orders.values[1:]] != ["packed-order", "shipment-2"]
+    assert result.values[0] == expected_headers
+    assert [row[7] for row in result.values[1:]] == ["123", "NA"]
+    assert [row[1] for row in result.values[1:]] == ["packed-order", "missing-pack-order"]
+    assert [row[7] for row in result.values[1:]] != ["packed-order", "shipment-2"]
+    assert all(len(row) == len(expected_headers) for row in result.values)
+    if compradores == "verdadero":
+        assert result.values[1][13:] == [
+            "SNAPSHOT_BUYER_OK",
+            "SNAPSHOT_STREET_OK",
+            "SNAPSHOT_NUMBER_OK",
+            "SNAPSHOT_NEIGHBORHOOD_OK",
+            "SNAPSHOT_ZIP_OK",
+            "SNAPSHOT_CITY_OK",
+            "SNAPSHOT_STATE_OK",
+            "SNAPSHOT_COUNTRY_OK",
+        ]
+        assert result.values[2][13:] == ["NA"] * len(BUYER_ADDRESS_LEGACY_HEADERS)
+    else:
+        assert "Nombre Comprador" not in result.values[0]
 
 
 @pytest.mark.asyncio
