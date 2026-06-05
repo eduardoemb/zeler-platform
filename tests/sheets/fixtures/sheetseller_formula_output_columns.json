@@ -81,11 +81,6 @@
         {"name": "Comisión", "source": "sheets_item_formula_rows.current.listing_fee_projection.sale_fee_amount", "status": "mvp", "reason": "Source-backed MercadoLibre listing-price commission amount estimate."},
         {"name": "Costo Por Unidad", "source": "sheets_item_formula_rows.current.listing_price_fixed_fee.fixed_fee from /sites/{site}/listing_prices.sale_fee_details.fixed_fee", "status": "mvp", "reason": "Returns NA unless a validated persisted listing-prices fixed-fee projection is present."},
         {"name": "Tiene Catálogo", "source": "sheets_item_formula_rows.current.catalog_product_id", "status": "mvp"},
-        {"name": "ID Carrito (7 días)", "source": "latest contributing orders.meli_pack_id for the 7-day sales window", "status": "mvp", "reason": "Returns NA when no contributing order line has a MercadoLibre pack_id."},
-        {"name": "ID Carrito (15 días)", "source": "latest contributing orders.meli_pack_id for the 15-day sales window", "status": "mvp", "reason": "Returns NA when no contributing order line has a MercadoLibre pack_id."},
-        {"name": "ID Carrito (30 días)", "source": "latest contributing orders.meli_pack_id for the 30-day sales window", "status": "mvp", "reason": "Returns NA when no contributing order line has a MercadoLibre pack_id."},
-        {"name": "ID Carrito (60 días)", "source": "latest contributing orders.meli_pack_id for the 60-day sales window", "status": "mvp", "reason": "Returns NA when no contributing order line has a MercadoLibre pack_id."},
-        {"name": "ID Carrito (90 días)", "source": "latest contributing orders.meli_pack_id for the 90-day sales window", "status": "mvp", "reason": "Returns NA when no contributing order line has a MercadoLibre pack_id."},
         {"name": "Precio Promo", "source": "sheets_item_formula_rows.current.current_promotion.sale_amount", "status": "mvp", "reason": "Emitted only when tipo_precio='todos' and persisted /items/{id}/sale_price projection is valid."}
       ]
     },
@@ -115,11 +110,6 @@
         {"name": "Comisión", "source": "sheets_item_formula_rows.current.listing_fee_projection.sale_fee_amount", "status": "mvp", "reason": "Source-backed MercadoLibre listing-price commission amount estimate."},
         {"name": "Costo Por Unidad", "source": "sheets_item_formula_rows.current.listing_price_fixed_fee.fixed_fee from /sites/{site}/listing_prices.sale_fee_details.fixed_fee", "status": "mvp", "reason": "Returns NA unless a validated persisted listing-prices fixed-fee projection is present."},
         {"name": "Tiene Catálogo", "source": "sheets_item_formula_rows.current.catalog_product_id", "status": "mvp"},
-        {"name": "ID Carrito (7 días)", "source": "latest contributing orders.meli_pack_id for the 7-day sales window", "status": "mvp", "reason": "Returns NA when no contributing order line has a MercadoLibre pack_id."},
-        {"name": "ID Carrito (15 días)", "source": "latest contributing orders.meli_pack_id for the 15-day sales window", "status": "mvp", "reason": "Returns NA when no contributing order line has a MercadoLibre pack_id."},
-        {"name": "ID Carrito (30 días)", "source": "latest contributing orders.meli_pack_id for the 30-day sales window", "status": "mvp", "reason": "Returns NA when no contributing order line has a MercadoLibre pack_id."},
-        {"name": "ID Carrito (60 días)", "source": "latest contributing orders.meli_pack_id for the 60-day sales window", "status": "mvp", "reason": "Returns NA when no contributing order line has a MercadoLibre pack_id."},
-        {"name": "ID Carrito (90 días)", "source": "latest contributing orders.meli_pack_id for the 90-day sales window", "status": "mvp", "reason": "Returns NA when no contributing order line has a MercadoLibre pack_id."},
         {"name": "Precio Promo", "source": "sheets_item_formula_rows.current.current_promotion.sale_amount", "status": "mvp", "reason": "Emitted only when tipo_precio='todos' and persisted /items/{id}/sale_price projection is valid."}
       ]
     },
