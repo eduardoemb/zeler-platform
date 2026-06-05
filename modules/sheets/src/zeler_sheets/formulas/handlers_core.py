@@ -33,6 +33,7 @@ CORE_FORMULA_NAMES = frozenset(
         "ZELERDATA_DIASPUBLICADA",
         "ZELERDATA_DASHBOARD",
         "ZELERDATA_DASHBOARDSINCATALOGO",
+        "ZELERDATA_COMISION",
         "ZELERDATA_IMAGENES",
         "ZELERDATA_CATEGORIAS",
     }
@@ -40,6 +41,7 @@ CORE_FORMULA_NAMES = frozenset(
 
 DASHBOARD_WINDOW_DAYS = (7, 15, 30, 60, 90)
 DASHBOARD_PACK_ID_HEADERS = [f"ID Carrito ({days} días)" for days in DASHBOARD_WINDOW_DAYS]
+LISTING_PRICE_SOURCE = "/sites/{site}/listing_prices"
 
 DASHBOARD_LEGACY_HEADERS = [
     "ID Publicación",
@@ -82,6 +84,8 @@ PUBLICACIONES_LEGACY_HEADERS = [
     "Tiempo En Pausa",
 ]
 
+COMISION_LEGACY_HEADERS = ["ID Publicación", "% Comisión", "Comisión", "Costo De Envío"]
+
 
 def build_core_formula_handlers(
     repository: FormulaReadModelRepository,
@@ -105,6 +109,7 @@ def build_core_formula_handlers(
         "ZELERDATA_DIASPUBLICADA": handlers.sheetseller_diaspublicada,
         "ZELERDATA_DASHBOARD": handlers.sheetseller_dashboard,
         "ZELERDATA_DASHBOARDSINCATALOGO": handlers.sheetseller_dashboard_sin_catalogo,
+        "ZELERDATA_COMISION": handlers.sheetseller_comision,
         "ZELERDATA_IMAGENES": handlers.sheetseller_imagenes,
         "ZELERDATA_CATEGORIAS": handlers.sheetseller_categorias,
     }
@@ -310,6 +315,34 @@ class CoreFormulaHandlers:
         self, context: FormulaExecutionContext
     ) -> FormulaExecutionResult:
         return await self._dashboard_table(context, exclude_catalog=True)
+
+    async def sheetseller_comision(
+        self, context: FormulaExecutionContext
+    ) -> FormulaExecutionResult:
+        requested_item_ids = _normalize_item_id_argument(context.args.get("id_publicaciones"))
+        rows = await self._repository.find_item_formula_rows(
+            seller_id=context.seller_id,
+            item_ids=requested_item_ids,
+        )
+        ordered_rows = _order_rows_by_requested_item_ids(rows, requested_item_ids)
+        values: list[list[Any]] = _header_row(
+            context.args.get("encabezados"), COMISION_LEGACY_HEADERS
+        )
+        header_rows = len(values)
+        matched_item_ids: set[str] = set()
+        for row in ordered_rows:
+            item_id = str(row.get("item_id") or "").strip()
+            if not item_id:
+                continue
+            values.append(_comision_row(row))
+            matched_item_ids.add(item_id)
+        return FormulaExecutionResult(
+            values=normalize_response_rows(values, header_rows=header_rows),
+            meta={
+                "partial_misses": _item_id_partial_misses(requested_item_ids, matched_item_ids),
+                "columns": "legacy_commission",
+            },
+        )
 
     async def sheetseller_imagenes(
         self, context: FormulaExecutionContext
@@ -800,6 +833,12 @@ def _partial_misses(requested_skus: list[str] | None, matched_skus: set[str]) ->
     return sum(1 for sku in dict.fromkeys(requested_skus) if sku not in matched_skus)
 
 
+def _item_id_partial_misses(requested_item_ids: list[str], matched_item_ids: set[str]) -> int:
+    return sum(
+        1 for item_id in dict.fromkeys(requested_item_ids) if item_id not in matched_item_ids
+    )
+
+
 def _image_partial_misses(
     *,
     requested_skus: list[str] | None,
@@ -924,8 +963,8 @@ def _dashboard_row_base(
         sales_windows.get(90, {}).get(key, 0),
         _current_value(row, "shipping_payer"),
         _seller_shipping_cost(row),
-        NA_VALUE,
-        NA_VALUE,
+        _listing_fee_projection_value(row, "percentage_fee"),
+        _listing_fee_projection_value(row, "sale_fee_amount"),
         _listing_fixed_fee(row),
         "Sí" if _has_catalog_product(row) else "No",
         _dashboard_pack_id(pack_windows, key, 7),
@@ -1076,6 +1115,47 @@ def _fixed_fee_tags(value: Any) -> list[str] | None:
 
 def _has_fixed_fee_basis(value: Any) -> bool:
     return value is not None and str(value).strip() != ""
+
+
+def _comision_row(row: Mapping[str, Any]) -> list[Any]:
+    return [
+        row.get("item_id") or "",
+        _listing_fee_projection_value(row, "percentage_fee"),
+        _listing_fee_projection_value(row, "sale_fee_amount"),
+        _seller_shipping_cost(row),
+    ]
+
+
+def _listing_fee_projection_value(row: Mapping[str, Any], field: str) -> Any:
+    current = row.get("current", {})
+    if not isinstance(current, Mapping):
+        return NA_VALUE
+    projection = current.get("listing_fee_projection")
+    if not isinstance(projection, Mapping):
+        return NA_VALUE
+    if projection.get("source") != LISTING_PRICE_SOURCE:
+        return NA_VALUE
+    value = _projection_decimal(projection.get(field))
+    return value if value is not None else NA_VALUE
+
+
+def _projection_decimal(value: Any) -> Decimal | None:
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, Decimal128):
+        decimal_value = value.to_decimal()
+    elif isinstance(value, Decimal):
+        decimal_value = value
+    elif isinstance(value, int):
+        decimal_value = Decimal(value)
+    elif isinstance(value, float):
+        decimal_value = Decimal(str(value)) if math.isfinite(value) else Decimal("NaN")
+    else:
+        try:
+            decimal_value = Decimal(str(value))
+        except (InvalidOperation, ValueError):
+            return None
+    return decimal_value if decimal_value.is_finite() and decimal_value >= 0 else None
 
 
 def _promo_price(row: Mapping[str, Any]) -> Any:
