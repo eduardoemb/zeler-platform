@@ -8,7 +8,6 @@
     "ZELERDATA_TIEMPOACTIVA": {"status": "unsupported", "reason": "Active-time history read model is not available in zeler-platform yet."},
     "ZELERDATA_CATALOGOSINVINCULAR": {"status": "unsupported", "reason": "Recommended catalog-linking read model is not available in zeler-platform yet."},
     "ZELERDATA_CATALOGOBUYBOX": {"status": "unsupported", "reason": "Catalog/buybox competition read model is not available in zeler-platform yet."},
-    "ZELERDATA_COMISION": {"status": "unsupported", "reason": "Commission and fee read model is not available in zeler-platform yet."},
     "ZELERDATA_DEVOLUCIONES": {"status": "unsupported", "reason": "Returns/claims read model is not available in zeler-platform yet."},
     "ZELERDATA_COMPETENCIA": {"status": "unsupported", "reason": "Competition snapshot read model is not available in zeler-platform yet."},
     "ZELERDATA_CATALOGOTIEMPO": {"status": "unsupported", "reason": "Catalog winning-time history read model is not available in zeler-platform yet."},
@@ -78,8 +77,8 @@
         {"name": "Ventas (90 días)", "source": "orders.items.quantity | qty by SKU/item_id/variation_id", "status": "mvp"},
         {"name": "Envió A Cargo De", "source": "sheets_item_formula_rows.current.shipping_payer", "status": "mvp"},
         {"name": "Costo De Envío", "source": "sheets_item_formula_rows.current.seller_shipping_cost", "status": "mvp", "reason": "Item-level estimated seller shipping cost only; unavailable validated source remains NA."},
-        {"name": "% Comisión", "legacy_source_note": "legacy commission percentage column", "status": "explicit_na", "reason": "Requires fee/commission read model."},
-        {"name": "Comisión", "legacy_source_note": "legacy commission amount column", "status": "explicit_na", "reason": "Requires fee/commission read model."},
+        {"name": "% Comisión", "source": "sheets_item_formula_rows.current.listing_fee_projection.percentage_fee", "status": "mvp", "reason": "Source-backed MercadoLibre listing-price percentage fee estimate."},
+        {"name": "Comisión", "source": "sheets_item_formula_rows.current.listing_fee_projection.sale_fee_amount", "status": "mvp", "reason": "Source-backed MercadoLibre listing-price commission amount estimate."},
         {"name": "Costo Por Unidad", "source": "sheets_item_formula_rows.current.listing_price_fixed_fee.fixed_fee from /sites/{site}/listing_prices.sale_fee_details.fixed_fee", "status": "mvp", "reason": "Returns NA unless a validated persisted listing-prices fixed-fee projection is present."},
         {"name": "Tiene Catálogo", "source": "sheets_item_formula_rows.current.catalog_product_id", "status": "mvp"},
         {"name": "ID Carrito (7 días)", "source": "latest contributing orders.meli_pack_id for the 7-day sales window", "status": "mvp", "reason": "Returns NA when no contributing order line has a MercadoLibre pack_id."},
@@ -112,8 +111,8 @@
         {"name": "Ventas (90 días)", "source": "orders.items.quantity | qty by SKU/item_id/variation_id", "status": "mvp"},
         {"name": "Envió A Cargo De", "source": "sheets_item_formula_rows.current.shipping_payer", "status": "mvp"},
         {"name": "Costo De Envío", "source": "sheets_item_formula_rows.current.seller_shipping_cost", "status": "mvp", "reason": "Item-level estimated seller shipping cost only; unavailable validated source remains NA."},
-        {"name": "% Comisión", "legacy_source_note": "legacy commission percentage column", "status": "explicit_na", "reason": "Requires fee/commission read model."},
-        {"name": "Comisión", "legacy_source_note": "legacy commission amount column", "status": "explicit_na", "reason": "Requires fee/commission read model."},
+        {"name": "% Comisión", "source": "sheets_item_formula_rows.current.listing_fee_projection.percentage_fee", "status": "mvp", "reason": "Source-backed MercadoLibre listing-price percentage fee estimate."},
+        {"name": "Comisión", "source": "sheets_item_formula_rows.current.listing_fee_projection.sale_fee_amount", "status": "mvp", "reason": "Source-backed MercadoLibre listing-price commission amount estimate."},
         {"name": "Costo Por Unidad", "source": "sheets_item_formula_rows.current.listing_price_fixed_fee.fixed_fee from /sites/{site}/listing_prices.sale_fee_details.fixed_fee", "status": "mvp", "reason": "Returns NA unless a validated persisted listing-prices fixed-fee projection is present."},
         {"name": "Tiene Catálogo", "source": "sheets_item_formula_rows.current.catalog_product_id", "status": "mvp"},
         {"name": "ID Carrito (7 días)", "source": "latest contributing orders.meli_pack_id for the 7-day sales window", "status": "mvp", "reason": "Returns NA when no contributing order line has a MercadoLibre pack_id."},
@@ -122,6 +121,16 @@
         {"name": "ID Carrito (60 días)", "source": "latest contributing orders.meli_pack_id for the 60-day sales window", "status": "mvp", "reason": "Returns NA when no contributing order line has a MercadoLibre pack_id."},
         {"name": "ID Carrito (90 días)", "source": "latest contributing orders.meli_pack_id for the 90-day sales window", "status": "mvp", "reason": "Returns NA when no contributing order line has a MercadoLibre pack_id."},
         {"name": "Precio Promo", "source": "sheets_item_formula_rows.current.current_promotion.sale_amount", "status": "mvp", "reason": "Emitted only when tipo_precio='todos' and persisted /items/{id}/sale_price projection is valid."}
+      ]
+    },
+    "ZELERDATA_COMISION": {
+      "legacy_source": "sheetsellerappindividual/addon/Publications.gs:ZELERDATA_COMISION",
+      "compatibility_note": "Uses only sanitized listing-price projection values; missing projection values render NA.",
+      "columns": [
+        {"name": "ID Publicación", "source": "sheets_item_formula_rows.item_id", "status": "mvp"},
+        {"name": "% Comisión", "source": "sheets_item_formula_rows.current.listing_fee_projection.percentage_fee", "status": "mvp", "reason": "Source-backed MercadoLibre listing-price percentage fee estimate."},
+        {"name": "Comisión", "source": "sheets_item_formula_rows.current.listing_fee_projection.sale_fee_amount", "status": "mvp", "reason": "Source-backed MercadoLibre listing-price commission amount estimate."},
+        {"name": "Costo De Envío", "source": "sheets_item_formula_rows.current.seller_shipping_cost", "status": "mvp", "reason": "Item-level estimated seller shipping cost only; unavailable source remains NA."}
       ]
     },
     "ZELERDATA_ORDENES": {

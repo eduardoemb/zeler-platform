@@ -17,6 +17,7 @@ ZelerData formulas are Google Sheets custom functions backed by the zeler-platfo
 | `ZELERDATA_CATEGORIAS` | `=ZELERDATA_CATEGORIAS("cuenta", "MLA1")` | Category by item ID. |
 | `ZELERDATA_CODIGOML` | `=ZELERDATA_CODIGOML("cuenta", "SKU-1", "MLA1")` | Inventory or ML code by SKU and item ID. |
 | `ZELERDATA_CODIGOML2SKUID` | `=ZELERDATA_CODIGOML2SKUID("cuenta", "INV-1", "si")` | Code, item ID, and SKU rows. |
+| `ZELERDATA_COMISION` | `=ZELERDATA_COMISION("cuenta", "todos", "todos", "si")` | Publication commission table backed by listing-price projections. Missing values return `NA`. |
 | `ZELERDATA_COMPRADORES` | `=ZELERDATA_COMPRADORES("cuenta", "ORDER-1", "si")` | Buyer/address table with the eight approved fields: Nombre Comprador, Calle, Número, Colonia, Código Postal, Ciudad, Estado, and País. Missing values return `NA`. |
 | `ZELERDATA_DASHBOARD` | `=ZELERDATA_DASHBOARD("cuenta", "todos", "todos", "base", "si")` | Current item dashboard table, including per-window `ID Carrito` values from contributing orders. |
 | `ZELERDATA_DASHBOARDSINCATALOGO` | `=ZELERDATA_DASHBOARDSINCATALOGO("cuenta", "todos", "todos", "base", "si")` | Dashboard table excluding catalog items, including per-window `ID Carrito` values from contributing orders. |
@@ -59,7 +60,6 @@ The formulas below are preserved as wrappers for Sheetseller-compatible contract
 | `ZELERDATA_CATALOGOBUYBOX` | returns DATA_UNAVAILABLE until a platform read model is implemented. |
 | `ZELERDATA_CATALOGOSINVINCULAR` | returns DATA_UNAVAILABLE until a platform read model is implemented. |
 | `ZELERDATA_CATALOGOTIEMPO` | returns DATA_UNAVAILABLE until a platform read model is implemented. |
-| `ZELERDATA_COMISION` | returns DATA_UNAVAILABLE until a platform read model is implemented. |
 | `ZELERDATA_COMPETENCIA` | returns DATA_UNAVAILABLE until a platform read model is implemented. |
 | `ZELERDATA_COSTOENVIOVENDEDOR` | returns DATA_UNAVAILABLE until a platform read model is implemented. |
 | `ZELERDATA_DEVOLUCIONES` | returns DATA_UNAVAILABLE until a platform read model is implemented. |

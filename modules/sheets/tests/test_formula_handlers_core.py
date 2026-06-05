@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from decimal import Decimal
 from typing import Any
 
 import httpx
 import pytest
+from bson.decimal128 import Decimal128
 from fastapi import FastAPI
 
 from zeler_sheets.extension_tokens import ExtensionTokenService, SellerScope
@@ -143,6 +145,8 @@ DASHBOARD_LEGACY_HEADERS = [
     "ID Carrito (60 días)",
     "ID Carrito (90 días)",
 ]
+
+COMISION_LEGACY_HEADERS = ["ID Publicación", "% Comisión", "Comisión", "Costo De Envío"]
 
 
 def _formula_table_contract(rows: list[list[Any]], *, header_rows: int = 1) -> list[list[Any]]:
@@ -1578,6 +1582,81 @@ async def test_dashboard_returns_na_for_fixed_fee_mismatch_from_backfill_row() -
     assert dashboard.values[1][20] == "NA"
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("formula_name", ["ZELERDATA_DASHBOARD", "ZELERDATA_DASHBOARDSINCATALOGO"])
+async def test_dashboard_commission_columns_read_listing_fee_projection_or_na(
+    formula_name: str,
+) -> None:
+    db = FakeDb()
+    db["sheets_item_formula_rows"].documents = {
+        "row-1": _dashboard_item(
+            "sku-1",
+            "SKU-1",
+            "MLA1",
+            listing_fee_projection=_listing_fee_projection_doc(
+                percentage_fee="12.50",
+                sale_fee_amount="155.99",
+            ),
+        ),
+        "row-2": _dashboard_item("sku-2", "SKU-2", "MLA2"),
+    }
+    dispatcher = _core_dispatcher(db)
+
+    result = await dispatcher.execute(
+        _context(formula_name, {"skus": "todos", "encabezados": "si"})
+    )
+
+    assert [row[18:20] for row in result.values[1:]] == [
+        [Decimal("12.50"), Decimal("155.99")],
+        ["NA", "NA"],
+    ]
+    assert all(len(row) == len(DASHBOARD_LEGACY_HEADERS) for row in result.values)
+
+
+@pytest.mark.asyncio
+async def test_comision_returns_source_backed_projection_table_with_headers_and_na() -> None:
+    db = FakeDb()
+    formula_rows = db["sheets_item_formula_rows"]
+    formula_rows.documents = {
+        "row-1": _dashboard_item(
+            "sku-1",
+            "SKU-1",
+            "MLA1",
+            listing_fee_projection=_listing_fee_projection_doc(
+                percentage_fee="12.50",
+                sale_fee_amount="155.99",
+            ),
+            seller_shipping_cost=Decimal128("83.25"),
+        ),
+        "row-2": _dashboard_item(
+            "sku-2",
+            "SKU-2",
+            "MLA2",
+            listing_fee_projection=None,
+            seller_shipping_cost=0,
+        ),
+    }
+    dispatcher = _core_dispatcher(db)
+
+    result = await dispatcher.execute(
+        _context(
+            "ZELERDATA_COMISION",
+            {"id_publicaciones": [["MLA2"], ["MLA-X"], ["MLA1"]], "encabezados": "si"},
+        )
+    )
+
+    assert result.values == [
+        COMISION_LEGACY_HEADERS,
+        ["MLA2", "NA", "NA", 0],
+        ["MLA1", Decimal("12.50"), Decimal("155.99"), Decimal("83.25")],
+    ]
+    assert result.meta == {"partial_misses": 1, "columns": "legacy_commission"}
+    assert formula_rows.last_find_filter == {
+        "seller_id": "seller-1",
+        "item_id": {"$in": ["MLA2", "MLA-X", "MLA1"]},
+    }
+
+
 def _dashboard_item(sku: str, normalized_sku: str, item_id: str, **current: Any) -> dict[str, Any]:
     return {
         "_id": item_id,
@@ -1586,6 +1665,24 @@ def _dashboard_item(sku: str, normalized_sku: str, item_id: str, **current: Any)
         "normalized_sku": normalized_sku,
         "item_id": item_id,
         "current": {"title": item_id, "base_price": 99} | current,
+    }
+
+
+def _listing_fee_projection_doc(
+    *,
+    percentage_fee: str = "12.00",
+    sale_fee_amount: str = "155.99",
+) -> dict[str, Any]:
+    return {
+        "source": "/sites/{site}/listing_prices",
+        "site_id": "MLM",
+        "currency_id": "MXN",
+        "price": Decimal128("1234.50"),
+        "listing_type_id": "gold_special",
+        "category_id": "MLM-CELLPHONES",
+        "sale_fee_amount": Decimal128(sale_fee_amount),
+        "percentage_fee": Decimal128(percentage_fee),
+        "synced_at": datetime(2026, 6, 5, 12, 0, tzinfo=UTC),
     }
 
 
