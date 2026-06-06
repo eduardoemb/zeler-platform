@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
-from collections.abc import Sequence
-from dataclasses import dataclass, field
+import os
+from collections.abc import Awaitable, Callable, Mapping, Sequence
+from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
@@ -60,6 +62,57 @@ DEFAULT_STOP_CRITERIA: tuple[str, ...] = (
     "auth_error",
     "formula_regression",
 )
+_OBSERVED_ONLY_MODELS = {"item_status_states", "item_status_transitions"}
+_HISTORICAL_MELI_MODELS = ("orders", "shipments", "items")
+_BOUNDED_REF_MODELS = {"shipments", "items"}
+_COMPLETE_FIELDS: Mapping[str, tuple[str, ...]] = {
+    "orders": ("items.0",),
+    "shipments": ("order_id", "status"),
+    "items": ("status", "last_meli_sync_at"),
+    "sheets_item_formula_rows": ("current.status", "current.price", "current.listing_type_id"),
+    "sheets_item_sku_index": ("normalized_sku", "item_id", "source"),
+    "item_status_states": ("current_status", "last_observed_at"),
+    "item_status_transitions": ("from_status", "to_status", "observed_at"),
+}
+HistoricalMeliExpectedSource = Callable[..., Awaitable[Any]]
+_DISTRIBUTION_FIELDS: Mapping[str, Mapping[str, str]] = {
+    "orders": {"status": "status"},
+    "shipments": {"status": "status"},
+    "items": {"status": "status"},
+    "sheets_item_formula_rows": {
+        "current_status": "current.status",
+        "listing_type": "current.listing_type_id",
+    },
+    "sheets_item_sku_index": {"source": "source", "identity_level": "identity_level"},
+    "item_status_states": {"current_status": "current_status"},
+    "item_status_transitions": {"from_status": "from_status", "to_status": "to_status"},
+}
+_PRESENCE_FIELDS: Mapping[str, Mapping[str, str]] = {
+    "orders": {
+        "buyer_id": "buyer_id",
+        "meli_pack_id": "meli_pack_id",
+        "shipment_id": "shipment_id",
+    },
+    "shipments": {
+        "receiver_address": "receiver_address",
+        "real_shipping_cost.seller_cost": "real_shipping_cost.seller_cost",
+    },
+    "items": {
+        "seller_shipping_cost": "seller_shipping_cost",
+        "listing_fee_projection": "listing_fee_projection",
+        "listing_price_fixed_fee": "listing_price_fixed_fee",
+        "current_promotion": "current_promotion",
+    },
+    "sheets_item_formula_rows": {
+        "sale_price": "current.price",
+        "listing_fixed_fee": "current.listing_price_fixed_fee.fixed_fee",
+        "unit_cost": "current.unit_cost",
+        "realized_shipping_cost": "current.seller_shipping_cost",
+        "realized_fee": "current.listing_fee_projection.sale_fee_amount",
+        "pack_or_cart_id": "current.pack_or_cart_id",
+        "buyer_address_presence": "current.buyer_address_presence",
+    },
+}
 
 
 @dataclass(frozen=True)
@@ -86,31 +139,77 @@ class ReconciliationRequest:
 
 
 @dataclass(frozen=True)
+class ReadModelIssue:
+    read_model: str
+    code: str
+    message: str
+
+    def to_sanitized_dict(self) -> dict[str, str]:
+        return {"code": self.code}
+
+
+@dataclass(frozen=True)
+class ExpectedReadModelCounts:
+    counts: Mapping[str, int | None]
+    refs: Mapping[str, frozenset[str]] = field(default_factory=dict, repr=False)
+    truth_mode: Mapping[str, str] = field(default_factory=dict)
+    issues: tuple[ReadModelIssue, ...] = ()
+
+
+@dataclass(frozen=True)
+class HistoricalMeliExpectedCounts:
+    counts: Mapping[str, int | None]
+    refs: Mapping[str, frozenset[str]] = field(default_factory=dict, repr=False)
+    truth_mode: Mapping[str, str] = field(default_factory=dict)
+    issues: tuple[ReadModelIssue, ...] = ()
+
+
+@dataclass(frozen=True)
 class ReadModelAggregate:
     read_model: str
-    expected_count: int
-    persisted_count: int
-    missing_count: int
-    complete_count: int = 0
+    expected_count: int | None
+    persisted_count: int | None
+    missing_count: int | None
+    complete_count: int | None = 0
     na_count: int = 0
     zero_count: int = 0
     positive_count: int = 0
     unauthorized_count: int = 0
     error_count: int = 0
+    truth_mode: str = "expected"
+    field_counts: Mapping[str, Mapping[str, int]] = field(default_factory=dict)
+    issues: tuple[ReadModelIssue, ...] = ()
 
-    def to_sanitized_dict(self) -> dict[str, int | str]:
-        return {
+    def to_sanitized_dict(self) -> dict[str, Any]:
+        sanitized: dict[str, Any] = {
             "read_model": self.read_model,
             "expected_count": self.expected_count,
             "persisted_count": self.persisted_count,
             "missing_count": self.missing_count,
             "complete_count": self.complete_count,
+        }
+        if (
+            self.truth_mode != "expected"
+            or self.expected_count is None
+            or self.missing_count is None
+            or self.field_counts
+            or self.issues
+        ):
+            sanitized["truth_mode"] = self.truth_mode
+        legacy_counters = {
             "na_count": self.na_count,
             "zero_count": self.zero_count,
             "positive_count": self.positive_count,
             "unauthorized_count": self.unauthorized_count,
             "error_count": self.error_count,
         }
+        if any(legacy_counters.values()):
+            sanitized.update(legacy_counters)
+        if self.field_counts:
+            sanitized["field_counts"] = _sorted_field_counts(self.field_counts)
+        if self.issues:
+            sanitized["issues"] = [issue.to_sanitized_dict() for issue in self.issues]
+        return sanitized
 
 
 @dataclass(frozen=True)
@@ -254,6 +353,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
 
 def validate_reconciliation_safety(args: argparse.Namespace) -> None:
+    if not str(args.seller_id).strip():
+        raise SystemExit("seller-id is required")
     if not bool(args.confirm_approved_runtime):
         raise SystemExit("--confirm-approved-runtime is required")
     if not bool(args.dry_run) and not bool(args.confirm_production_write):
@@ -267,7 +368,7 @@ def build_reconciliation_request(args: argparse.Namespace) -> ReconciliationRequ
     date_range = parse_reconciliation_date_range(str(args.date_from), str(args.date_to))
     dry_run = bool(args.dry_run)
     return ReconciliationRequest(
-        seller_id=str(args.seller_id),
+        seller_id=str(args.seller_id).strip(),
         date_range=date_range,
         dry_run=dry_run,
         approved_runtime=bool(args.confirm_approved_runtime),
@@ -275,6 +376,21 @@ def build_reconciliation_request(args: argparse.Namespace) -> ReconciliationRequ
         include_buyer_address_pii=bool(args.include_buyer_address_pii),
         max_orders=args.max_orders,
     )
+
+
+@dataclass(frozen=True)
+class RuntimeDatabase:
+    db: Any
+    client: Any = field(repr=False)
+
+    def close(self) -> None:
+        self.client.close()
+
+
+@dataclass(frozen=True)
+class RuntimeHistoricalMeliGateways:
+    gateway: Any = field(repr=False)
+    order_detail_gateway: Any = field(repr=False)
 
 
 def parse_reconciliation_date_range(date_from: str, date_to: str) -> ReconciliationDateRange:
@@ -292,11 +408,100 @@ def parse_reconciliation_date_range(date_from: str, date_to: str) -> Reconciliat
     )
 
 
-def build_empty_summary(
-    request: ReconciliationRequest,
+async def collect_expected_read_model_counts(
     *,
-    phase2_contract: Phase2RuntimeContract | None = None,
+    db: Any,
+    request: ReconciliationRequest,
+    historical_meli_source: HistoricalMeliExpectedSource | None = None,
+) -> ExpectedReadModelCounts:
+    counts: dict[str, int | None] = {
+        read_model: None
+        for read_model in (
+            *_HISTORICAL_MELI_MODELS,
+            "item_status_states",
+            "item_status_transitions",
+        )
+    }
+    refs: dict[str, frozenset[str]] = {}
+    truth_mode = {read_model: "unavailable" for read_model in _HISTORICAL_MELI_MODELS}
+    truth_mode.update(
+        {"item_status_states": "observed_only", "item_status_transitions": "observed_only"}
+    )
+    issues: list[ReadModelIssue] = []
+
+    source = historical_meli_source or _collect_historical_meli_expected_counts
+    try:
+        historical_summary = await source(db=db, request=request)
+    except Exception as exc:  # noqa: BLE001 - expected source anomalies are sanitized.
+        issue_code = _classify_expected_source_issue(exc)
+        issues.extend(
+            _issue(read_model, issue_code, "historical expected source unavailable")
+            for read_model in _HISTORICAL_MELI_MODELS
+        )
+    else:
+        historical = _historical_meli_expected_counts(historical_summary)
+        counts.update(historical.counts)
+        refs.update(historical.refs)
+        truth_mode.update(historical.truth_mode)
+        issues.extend(historical.issues)
+
+    try:
+        from zeler_sheets.sheetseller_backfill import (
+            run_order_line_identity_backfill,
+            run_sheetseller_backfill,
+        )
+
+        sheets_summary = await run_sheetseller_backfill(
+            db=db,
+            seller_id=request.seller_id,
+            dry_run=True,
+        )
+        order_line_summary = await run_order_line_identity_backfill(
+            db=db,
+            seller_id=request.seller_id,
+            dry_run=True,
+            date_from=request.date_range.date_from,
+            date_to=request.date_range.date_to,
+        )
+    except (AttributeError, ImportError, RuntimeError, TypeError, ValueError):
+        for read_model in ("sheets_item_formula_rows", "sheets_item_sku_index"):
+            counts[read_model] = None
+            truth_mode[read_model] = "unavailable"
+            issues.append(_issue(read_model, "expected_unavailable", "dry-run source unavailable"))
+    else:
+        counts["sheets_item_formula_rows"] = sheets_summary.formula_row_upserts
+        counts["sheets_item_sku_index"] = (
+            sheets_summary.sku_index_upserts + order_line_summary.sku_index_upserts
+        )
+        truth_mode["sheets_item_formula_rows"] = "expected"
+        truth_mode["sheets_item_sku_index"] = "expected"
+
+    return ExpectedReadModelCounts(
+        counts=counts,
+        refs=refs,
+        truth_mode=truth_mode,
+        issues=tuple(issues),
+    )
+
+
+async def collect_reconciliation_counts(
+    *,
+    db: Any,
+    request: ReconciliationRequest,
+    expected: ExpectedReadModelCounts,
+    read_models: Sequence[str] = READ_MODELS,
 ) -> ReconciliationSummary:
+    if not request.seller_id:
+        raise ValueError("seller-id is required")
+
+    aggregates = tuple(
+        [
+            await _collect_read_model_aggregate(
+                db=db, request=request, expected=expected, read_model=read_model
+            )
+            for read_model in read_models
+        ]
+    )
     return ReconciliationSummary(
         seller_id=request.seller_id,
         date_from=request.date_range.date_from,
@@ -304,16 +509,68 @@ def build_empty_summary(
         dry_run=request.dry_run,
         approved_runtime=request.approved_runtime,
         write_enabled=request.write_enabled,
-        aggregates=tuple(
-            ReadModelAggregate(
-                read_model=read_model,
-                expected_count=0,
-                persisted_count=0,
-                missing_count=0,
-            )
-            for read_model in READ_MODELS
-        ),
-        phase2_contract=phase2_contract,
+        aggregates=aggregates,
+    )
+
+
+def create_runtime_db() -> RuntimeDatabase:
+    mongo_uri = os.environ.get("MONGO_URI")
+    mongo_db_name = os.environ.get("MONGO_DB")
+    if not mongo_uri or not mongo_db_name:
+        raise SystemExit("runtime Mongo configuration is required")
+
+    from motor.motor_asyncio import AsyncIOMotorClient
+
+    client: AsyncIOMotorClient[Any] = AsyncIOMotorClient(mongo_uri)
+    return RuntimeDatabase(db=client[mongo_db_name], client=client)
+
+
+def create_runtime_historical_meli_gateways() -> RuntimeHistoricalMeliGateways:
+    from google.cloud import kms_v1
+
+    from zeler_platform_core.auth.meli_gateway_auth import MeliGatewayAuth
+    from zeler_platform_core.clients.meli_gateway_client import MeliGatewayClient
+    from zeler_sheets.historical_meli_backfill import (
+        DEFAULT_GATEWAY_BASE_URL,
+        DEFAULT_GATEWAY_MODULE_ID,
+        DEFAULT_ORDER_DETAIL_GATEWAY_MODULE_ID,
+    )
+
+    gateway_base_url = os.environ.get("GATEWAY_BASE_URL", DEFAULT_GATEWAY_BASE_URL)
+    kms_client = kms_v1.KeyManagementServiceClient()
+    gateway = MeliGatewayClient(
+        gateway_base_url,
+        MeliGatewayAuth(DEFAULT_GATEWAY_MODULE_ID, kms_client),
+    )
+    order_detail_gateway = gateway
+    if DEFAULT_ORDER_DETAIL_GATEWAY_MODULE_ID != DEFAULT_GATEWAY_MODULE_ID:
+        order_detail_gateway = MeliGatewayClient(
+            gateway_base_url,
+            MeliGatewayAuth(DEFAULT_ORDER_DETAIL_GATEWAY_MODULE_ID, kms_client),
+        )
+    return RuntimeHistoricalMeliGateways(
+        gateway=gateway,
+        order_detail_gateway=order_detail_gateway,
+    )
+
+
+async def _collect_historical_meli_expected_counts(
+    *, db: Any, request: ReconciliationRequest
+) -> Any:
+    from zeler_sheets.historical_meli_backfill import run_historical_meli_backfill
+
+    gateways = create_runtime_historical_meli_gateways()
+    return await run_historical_meli_backfill(
+        db=db,
+        gateway=gateways.gateway,
+        order_detail_gateway=gateways.order_detail_gateway,
+        seller_id=request.seller_id,
+        date_from=request.date_range.date_from,
+        date_to=request.date_range.date_to,
+        dry_run=True,
+        approved_runtime=request.approved_runtime,
+        include_buyer_address_pii=request.include_buyer_address_pii,
+        max_orders=request.max_orders,
     )
 
 
@@ -336,24 +593,217 @@ def build_phase2_runtime_contract(
     )
 
 
+async def _collect_read_model_aggregate(
+    *,
+    db: Any,
+    request: ReconciliationRequest,
+    expected: ExpectedReadModelCounts,
+    read_model: str,
+) -> ReadModelAggregate:
+    expected_count = expected.counts.get(read_model)
+    truth_mode = expected.truth_mode.get(
+        read_model,
+        "observed_only" if read_model in _OBSERVED_ONLY_MODELS else "expected",
+    )
+    if expected_count is None and truth_mode == "expected":
+        truth_mode = "unavailable"
+    expected_issues = tuple(issue for issue in expected.issues if issue.read_model == read_model)
+    refs = expected.refs.get(read_model)
+    if read_model in _BOUNDED_REF_MODELS and refs is None:
+        issues = (
+            *expected_issues,
+            ReadModelIssue(
+                read_model=read_model,
+                code="expected_refs_unavailable",
+                message="bounded expected refs unavailable",
+            ),
+        )
+        if not expected_issues and expected_count is None:
+            issues = (
+                ReadModelIssue(
+                    read_model=read_model,
+                    code="expected_unavailable",
+                    message="expected source unavailable",
+                ),
+                *issues,
+            )
+        return ReadModelAggregate(
+            read_model=read_model,
+            expected_count=expected_count,
+            persisted_count=None,
+            missing_count=None,
+            complete_count=None,
+            truth_mode=truth_mode,
+            issues=issues,
+        )
+
+    collection = db[read_model]
+    filter_spec = _read_model_filter(read_model, request, refs)
+    try:
+        persisted_count = await collection.count_documents(filter_spec)
+        complete_count = await _complete_count(collection, read_model, filter_spec)
+        field_counts = await _read_model_field_counts(
+            collection=collection,
+            read_model=read_model,
+            filter_spec=filter_spec,
+            persisted_count=persisted_count,
+        )
+    except Exception as exc:  # noqa: BLE001 - query details must not leak to output.
+        return ReadModelAggregate(
+            read_model=read_model,
+            expected_count=expected_count,
+            persisted_count=None,
+            missing_count=None,
+            complete_count=None,
+            truth_mode=truth_mode,
+            issues=(
+                *expected_issues,
+                ReadModelIssue(
+                    read_model=read_model,
+                    code=_classify_query_issue(exc),
+                    message="read query unavailable",
+                ),
+            ),
+        )
+    missing_count = (
+        max(expected_count - persisted_count, 0)
+        if expected_count is not None and truth_mode == "expected"
+        else None
+    )
+    issues = expected_issues
+    if expected_count is None and truth_mode == "unavailable" and not issues:
+        issues = (
+            ReadModelIssue(
+                read_model=read_model,
+                code="expected_unavailable",
+                message="expected source unavailable",
+            ),
+        )
+    return ReadModelAggregate(
+        read_model=read_model,
+        expected_count=expected_count,
+        persisted_count=persisted_count,
+        missing_count=missing_count,
+        complete_count=complete_count,
+        truth_mode=truth_mode,
+        field_counts=field_counts,
+        issues=issues,
+    )
+
+
+async def _complete_count(collection: Any, read_model: str, filter_spec: dict[str, Any]) -> int:
+    required_fields = _COMPLETE_FIELDS.get(read_model, ())
+    if not required_fields:
+        return int(await collection.count_documents(filter_spec))
+    return int(await collection.count_documents(_with_present_fields(filter_spec, required_fields)))
+
+
+async def _read_model_field_counts(
+    *,
+    collection: Any,
+    read_model: str,
+    filter_spec: dict[str, Any],
+    persisted_count: int,
+) -> dict[str, dict[str, int]]:
+    counts: dict[str, dict[str, int]] = {}
+    for output_key, field_path in _DISTRIBUTION_FIELDS.get(read_model, {}).items():
+        counts[output_key] = await _distribution_counts(collection, filter_spec, field_path)
+    for output_key, field_path in _PRESENCE_FIELDS.get(read_model, {}).items():
+        counts[output_key] = await _presence_counts(
+            collection,
+            filter_spec,
+            field_path=field_path,
+            persisted_count=persisted_count,
+        )
+    return counts
+
+
+async def _distribution_counts(
+    collection: Any, filter_spec: dict[str, Any], field_path: str
+) -> dict[str, int]:
+    cursor = collection.aggregate(
+        [
+            {"$match": filter_spec},
+            {"$group": {"_id": f"${field_path}", "count": {"$sum": 1}}},
+            {"$sort": {"_id": 1}},
+        ]
+    )
+    counts: dict[str, int] = {}
+    async for row in cursor:
+        key = "missing" if row.get("_id") is None else str(row["_id"])
+        counts[key] = int(row.get("count", 0))
+    return dict(sorted(counts.items()))
+
+
+async def _presence_counts(
+    collection: Any,
+    filter_spec: dict[str, Any],
+    *,
+    field_path: str,
+    persisted_count: int,
+) -> dict[str, int]:
+    present = await collection.count_documents(_with_present_fields(filter_spec, (field_path,)))
+    return {"missing": max(persisted_count - present, 0), "present": present}
+
+
+def _read_model_filter(
+    read_model: str,
+    request: ReconciliationRequest,
+    refs: frozenset[str] | None,
+) -> dict[str, Any]:
+    filter_spec: dict[str, Any] = {"seller_id": request.seller_id}
+    if read_model == "orders":
+        filter_spec["date_created"] = {
+            "$gte": request.date_range.start,
+            "$lt": request.date_range.end_exclusive,
+        }
+    elif read_model == "item_status_transitions":
+        filter_spec["observed_at"] = {
+            "$gte": request.date_range.start,
+            "$lt": request.date_range.end_exclusive,
+        }
+    if refs is not None:
+        filter_spec["_id"] = {"$in": sorted(refs)}
+    return filter_spec
+
+
+def _with_present_fields(filter_spec: dict[str, Any], fields: Sequence[str]) -> dict[str, Any]:
+    scoped = dict(filter_spec)
+    for field_path in fields:
+        scoped[field_path] = {"$exists": True, "$ne": None}
+    return scoped
+
+
+async def _run_cli(args: argparse.Namespace) -> ReconciliationSummary:
+    request = build_reconciliation_request(args)
+    handle = create_runtime_db()
+    try:
+        db = handle.db if isinstance(handle, RuntimeDatabase) else handle
+        expected = await collect_expected_read_model_counts(db=db, request=request)
+        summary = await collect_reconciliation_counts(db=db, request=request, expected=expected)
+        if bool(args.emit_phase2_contract):
+            summary = replace(
+                summary,
+                phase2_contract=build_phase2_runtime_contract(
+                    date_from=request.date_range.date_from,
+                    date_to=request.date_range.date_to,
+                ),
+            )
+        return summary
+    finally:
+        if callable(close := getattr(handle, "close", None)):
+            close()
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_arg_parser().parse_args(argv)
     try:
-        request = build_reconciliation_request(args)
+        summary = asyncio.run(_run_cli(args))
     except ValueError as exc:
         raise SystemExit(str(exc)) from exc
-    phase2_contract = None
-    if bool(args.emit_phase2_contract):
-        phase2_contract = build_phase2_runtime_contract(
-            date_from=request.date_range.date_from,
-            date_to=request.date_range.date_to,
-        )
-    print(
-        json.dumps(
-            build_empty_summary(request, phase2_contract=phase2_contract).to_sanitized_dict(),
-            sort_keys=True,
-        )
-    )
+    except (AttributeError, RuntimeError, TypeError) as exc:
+        raise SystemExit("query_anomaly") from exc
+    print(json.dumps(summary.to_sanitized_dict(), sort_keys=True))
     return 0
 
 
@@ -385,6 +835,110 @@ def _parse_date(value: str, *, field_name: str) -> date:
 
 def _format_utc(value: datetime) -> str:
     return value.astimezone(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def _sorted_field_counts(
+    field_counts: Mapping[str, Mapping[str, int]],
+) -> dict[str, dict[str, int]]:
+    return {field: dict(sorted(counts.items())) for field, counts in sorted(field_counts.items())}
+
+
+def _historical_meli_expected_counts(summary: Any) -> HistoricalMeliExpectedCounts:
+    counts: dict[str, int | None] = {}
+    refs: dict[str, frozenset[str]] = {}
+    truth_mode: dict[str, str] = {}
+    issues: list[ReadModelIssue] = []
+
+    order_refs = _summary_ref_set(summary, "order_ids")
+    shipment_refs = _summary_ref_set(summary, "shipment_ids")
+    item_refs = _summary_ref_set(summary, "item_ids")
+    order_count = _summary_optional_int(summary, "orders_found")
+    if order_count is None and order_refs is not None:
+        order_count = len(order_refs)
+
+    if order_count is None:
+        counts["orders"] = None
+        truth_mode["orders"] = "unavailable"
+        issues.append(_issue("orders", "expected_unavailable", "historical orders unavailable"))
+    else:
+        counts["orders"] = order_count
+        truth_mode["orders"] = "expected"
+
+    for read_model, model_refs in (("shipments", shipment_refs), ("items", item_refs)):
+        if model_refs is None:
+            counts[read_model] = None
+            truth_mode[read_model] = "unavailable"
+            issues.append(_issue(read_model, "expected_unavailable", "historical refs unavailable"))
+            continue
+        counts[read_model] = len(model_refs)
+        refs[read_model] = model_refs
+        truth_mode[read_model] = "expected"
+
+    return HistoricalMeliExpectedCounts(
+        counts=counts,
+        refs=refs,
+        truth_mode=truth_mode,
+        issues=tuple(issues),
+    )
+
+
+def _summary_ref_set(summary: Any, name: str) -> frozenset[str] | None:
+    raw = _summary_value(summary, name)
+    if raw is None:
+        return None
+    if not isinstance(raw, Sequence) or isinstance(raw, (str, bytes, bytearray)):
+        return None
+    refs = {normalized for value in raw if (normalized := str(value).strip())}
+    return frozenset(refs)
+
+
+def _summary_optional_int(summary: Any, name: str) -> int | None:
+    raw = _summary_value(summary, name)
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return None
+
+
+def _summary_value(summary: Any, name: str) -> Any:
+    if isinstance(summary, Mapping):
+        return summary.get(name)
+    return getattr(summary, name, None)
+
+
+def _classify_expected_source_issue(exc: Exception) -> str:
+    status_code = _exception_status_code(exc)
+    normalized = f"{type(exc).__name__} {exc}".lower()
+    if status_code in {401, 403} or isinstance(exc, PermissionError):
+        return "auth_error"
+    if any(marker in normalized for marker in ("unauthorized", "forbidden", "auth")):
+        return "auth_error"
+    if hasattr(exc, "retry_after_seconds") or any(
+        marker in normalized for marker in ("rate_limit", "ratelimit", "rate limit", "429")
+    ):
+        return "rate_limit"
+    if any(marker in normalized for marker in ("validator", "validation", "index")):
+        return "validator_or_index_anomaly"
+    return "expected_unavailable"
+
+
+def _classify_query_issue(exc: Exception) -> str:
+    normalized = f"{type(exc).__name__} {exc}".lower()
+    if any(marker in normalized for marker in ("validator", "validation", "index")):
+        return "validator_or_index_anomaly"
+    return "query_anomaly"
+
+
+def _exception_status_code(exc: Exception) -> int | None:
+    response = getattr(exc, "response", None)
+    status_code = getattr(response, "status_code", None)
+    if isinstance(status_code, int):
+        return status_code
+    return None
+
+
+def _issue(read_model: str, code: str, message: str) -> ReadModelIssue:
+    return ReadModelIssue(read_model=read_model, code=code, message=message)
 
 
 def _positive_int(value: str) -> int:
