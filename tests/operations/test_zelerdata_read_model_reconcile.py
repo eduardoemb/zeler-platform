@@ -1,18 +1,26 @@
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 import pytest
 from infra.operations.zelerdata_read_model_reconcile import (
     DEFAULT_PHASE2_DRY_RUN_SCOPES,
     DEFAULT_PHASE2_PREFLIGHT_TARGETS,
+    READ_MODELS,
+    ExpectedReadModelCounts,
     PrivateExportRecord,
     ReadModelAggregate,
+    ReadModelIssue,
     ReconciliationSummary,
     build_arg_parser,
     build_phase2_runtime_contract,
     build_reconciliation_request,
+    collect_expected_read_model_counts,
+    collect_reconciliation_counts,
     validate_reconciliation_safety,
 )
 
@@ -22,6 +30,133 @@ SHEETS_RUNTIME_DOCKERFILES = (
 )
 ZELERDATA_RECONCILE_HELPER = Path("infra/operations/zelerdata_read_model_reconcile.py")
 OPERATIONS_COPY_STANZA = "COPY infra/operations ./infra/operations"
+COLLECTOR_ATTR = "collect_reconciliation_counts"
+
+
+class FakeAsyncCollection:
+    def __init__(self, documents: list[dict[str, Any]]) -> None:
+        self.documents = documents
+        self.count_filters: list[dict[str, Any]] = []
+
+    async def count_documents(self, filter_spec: dict[str, Any]) -> int:
+        self.count_filters.append(filter_spec)
+        return sum(1 for document in self.documents if _matches_filter(document, filter_spec))
+
+    def aggregate(self, pipeline: list[dict[str, Any]]) -> Any:
+        rows = self.documents
+        if pipeline and "$match" in pipeline[0]:
+            rows = [row for row in rows if _matches_filter(row, pipeline[0]["$match"])]
+        group_field = pipeline[1]["$group"]["_id"].removeprefix("$")
+        grouped: dict[str, int] = {}
+        for row in rows:
+            value = _lookup(row, group_field)
+            key = "missing" if value is None else str(value)
+            grouped[key] = grouped.get(key, 0) + 1
+
+        async def cursor() -> Any:
+            for key, count in grouped.items():
+                yield {"_id": key, "count": count}
+
+        return cursor()
+
+
+class FakeAsyncDb:
+    def __init__(self, collections: dict[str, Any]) -> None:
+        self.collections = {
+            name: documents
+            if isinstance(documents, FakeAsyncCollection)
+            else FakeAsyncCollection(documents)
+            for name, documents in collections.items()
+        }
+
+    def __getitem__(self, name: str) -> FakeAsyncCollection:
+        return self.collections.setdefault(name, FakeAsyncCollection([]))
+
+
+class FailingCountCollection(FakeAsyncCollection):
+    def __init__(self, error: Exception) -> None:
+        super().__init__([])
+        self.error = error
+
+    async def count_documents(self, filter_spec: dict[str, Any]) -> int:
+        self.count_filters.append(filter_spec)
+        raise self.error
+
+
+class FakeRateLimitError(Exception):
+    retry_after_seconds = 7
+
+
+class FakeValidatorError(Exception):
+    pass
+
+
+@dataclass(frozen=True)
+class FakeHistoricalMeliSummary:
+    orders_found: int
+    order_ids: list[str]
+    shipment_ids: list[str]
+    item_ids: list[str]
+
+
+def _matches_filter(document: dict[str, Any], filter_spec: dict[str, Any]) -> bool:
+    for key, expected in filter_spec.items():
+        actual = _lookup(document, key)
+        if isinstance(expected, dict):
+            for operator, operand in expected.items():
+                if operator == "$gte" and not (actual is not None and actual >= operand):
+                    return False
+                if operator == "$lt" and not (actual is not None and actual < operand):
+                    return False
+                if operator == "$in" and actual not in operand:
+                    return False
+                exists = _lookup(document, key, missing=...) is not ...
+                if operator == "$exists" and exists != operand:
+                    return False
+                if operator == "$ne" and actual == operand:
+                    return False
+        elif actual != expected:
+            return False
+    return True
+
+
+def _lookup(document: dict[str, Any], dotted: str, *, missing: Any = None) -> Any:
+    current: Any = document
+    for part in dotted.split("."):
+        if isinstance(current, list) and part.isdigit():
+            index = int(part)
+            if index >= len(current):
+                return missing
+            current = current[index]
+            continue
+        if not isinstance(current, dict) or part not in current:
+            return missing
+        current = current[part]
+    return current
+
+
+def _request() -> Any:
+    return build_reconciliation_request(
+        build_arg_parser().parse_args(
+            [
+                "--seller-id",
+                "82453304",
+                "--date-from",
+                "2026-06-01",
+                "--date-to",
+                "2026-06-04",
+                "--confirm-approved-runtime",
+            ]
+        )
+    )
+
+
+def _dt(day: int) -> datetime:
+    return datetime(2026, 6, day, tzinfo=UTC)
+
+
+def _seller_doc(**values: Any) -> dict[str, Any]:
+    return {"seller_id": "82453304", **values}
 
 
 def test_reconciliation_request_parses_june_1_to_4_range_and_defaults_to_dry_run() -> None:
@@ -63,6 +198,11 @@ def test_reconciliation_request_rejects_local_runtime_even_for_dry_run() -> None
     with pytest.raises(SystemExit, match="--confirm-approved-runtime is required"):
         validate_reconciliation_safety(args)
 
+    args.seller_id = " "
+    args.confirm_approved_runtime = True
+    with pytest.raises(SystemExit, match="seller-id is required"):
+        validate_reconciliation_safety(args)
+
 
 def test_reconciliation_write_requires_separate_production_write_confirmation() -> None:
     parser = build_arg_parser()
@@ -98,6 +238,474 @@ def test_reconciliation_write_requires_separate_production_write_confirmation() 
 
     validate_reconciliation_safety(approved)
     assert build_reconciliation_request(approved).write_enabled is True
+
+
+@pytest.mark.asyncio
+async def test_collect_reconciliation_counts_reports_real_sanitized_aggregates() -> None:
+    db = FakeAsyncDb(
+        {
+            "orders": [
+                _seller_doc(
+                    _id="ORDER-PII-1",
+                    date_created=_dt(1),
+                    items=[{}],
+                    status="paid",
+                    shipment_id="SHIP-PII-1",
+                    meli_pack_id="PACK-PII-1",
+                    buyer_id="BUYER-PII-1",
+                ),
+                _seller_doc(_id="ORDER-PII-2", date_created=_dt(3), items=[], status="cancelled"),
+                {"_id": "OTHER", "seller_id": "other", "date_created": _dt(2), "status": "paid"},
+            ],
+            "shipments": [
+                _seller_doc(
+                    _id="SHIP-PII-1",
+                    order_id="ORDER-PII-1",
+                    status="delivered",
+                    receiver_address={"street_name": "SENTINEL STREET"},
+                    real_shipping_cost={"seller_cost": 12.5},
+                ),
+                _seller_doc(_id="SHIP-PII-2", status="ready_to_ship"),
+            ],
+            "items": [
+                _seller_doc(
+                    _id="ITEM-PII-1",
+                    status="active",
+                    seller_shipping_cost=10,
+                    listing_fee_projection={"source": "/sites/{site}/listing_prices"},
+                    listing_price_fixed_fee={"fixed_fee": 5},
+                    current_promotion={"source": "/items/{id}/sale_price"},
+                ),
+                _seller_doc(_id="ITEM-PII-2", status="paused"),
+            ],
+            "sheets_item_formula_rows": [
+                _seller_doc(
+                    _id="FORMULA-PII-1",
+                    current={
+                        "status": "active",
+                        "price": 100,
+                        "listing_type_id": "gold_special",
+                        "seller_shipping_cost": 8,
+                        "listing_fee_projection": {"source": "/sites/{site}/listing_prices"},
+                        "listing_price_fixed_fee": {"fixed_fee": 5},
+                    },
+                ),
+                _seller_doc(_id="FORMULA-PII-2", current={"status": "paused"}),
+            ],
+            "sheets_item_sku_index": [
+                _seller_doc(
+                    _id="SKU-PII-1",
+                    source="item_attribute",
+                    normalized_sku="SKU-1",
+                    item_id="ITEM-PII-1",
+                ),
+                _seller_doc(
+                    _id="SKU-PII-2",
+                    source="order_line",
+                    normalized_sku="SKU-2",
+                    item_id="ITEM-PII-2",
+                ),
+            ],
+            "item_status_states": [
+                _seller_doc(_id="STATE-PII-1", current_status="active", last_observed_at=_dt(4)),
+                _seller_doc(_id="STATE-PII-2", current_status="paused"),
+            ],
+            "item_status_transitions": [
+                _seller_doc(
+                    _id="TRANSITION-PII-1",
+                    from_status="active",
+                    to_status="paused",
+                    observed_at=_dt(2),
+                ),
+                _seller_doc(
+                    _id="TRANSITION-PII-2",
+                    from_status="paused",
+                    to_status="active",
+                    observed_at=_dt(4),
+                ),
+            ],
+        }
+    )
+
+    summary = await collect_reconciliation_counts(
+        db=db,
+        request=_request(),
+        expected=ExpectedReadModelCounts(
+            counts={
+                "orders": 3,
+                "shipments": 1,
+                "items": None,
+                "sheets_item_formula_rows": 2,
+                "sheets_item_sku_index": 2,
+                "item_status_states": None,
+                "item_status_transitions": None,
+            },
+            refs={
+                "shipments": frozenset({"SHIP-PII-1"}),
+                "items": frozenset({"ITEM-PII-1"}),
+            },
+            truth_mode={
+                "items": "unavailable",
+                "item_status_states": "observed_only",
+                "item_status_transitions": "observed_only",
+            },
+            issues=(
+                ReadModelIssue(
+                    read_model="items",
+                    code="expected_unavailable",
+                    message="expected source unavailable",
+                ),
+            ),
+        ),
+    )
+
+    output = summary.to_sanitized_dict()
+    by_model = {aggregate["read_model"]: aggregate for aggregate in output["aggregates"]}
+
+    assert set(by_model) == set(READ_MODELS)
+    assert all(aggregate["persisted_count"] > 0 for aggregate in by_model.values())
+    assert by_model["orders"] | {"field_counts": by_model["orders"]["field_counts"]} == {
+        "read_model": "orders",
+        "expected_count": 3,
+        "persisted_count": 2,
+        "missing_count": 1,
+        "complete_count": 1,
+        "truth_mode": "expected",
+        "field_counts": {
+            "buyer_id": {"missing": 1, "present": 1},
+            "meli_pack_id": {"missing": 1, "present": 1},
+            "shipment_id": {"missing": 1, "present": 1},
+            "status": {"cancelled": 1, "paid": 1},
+        },
+    }
+    assert by_model["shipments"]["field_counts"]["receiver_address"] == {
+        "missing": 0,
+        "present": 1,
+    }
+    assert by_model["items"]["expected_count"] is None
+    assert by_model["items"]["missing_count"] is None
+    assert by_model["items"]["issues"] == [{"code": "expected_unavailable"}]
+    assert by_model["sheets_item_formula_rows"]["complete_count"] == 1
+    assert by_model["sheets_item_sku_index"]["field_counts"]["source"] == {
+        "item_attribute": 1,
+        "order_line": 1,
+    }
+    assert by_model["item_status_states"]["truth_mode"] == "observed_only"
+    assert by_model["item_status_states"]["missing_count"] is None
+    assert by_model["item_status_transitions"]["expected_count"] is None
+    assert by_model["item_status_transitions"]["field_counts"]["to_status"] == {
+        "active": 1,
+        "paused": 1,
+    }
+    assert db["orders"].count_filters[0] == {
+        "seller_id": "82453304",
+        "date_created": {"$gte": _dt(1), "$lt": _dt(5)},
+    }
+    assert db["item_status_transitions"].count_filters[0] == {
+        "seller_id": "82453304",
+        "observed_at": {"$gte": _dt(1), "$lt": _dt(5)},
+    }
+    assert db["shipments"].count_filters[0] == {
+        "seller_id": "82453304",
+        "_id": {"$in": ["SHIP-PII-1"]},
+    }
+    assert db["items"].count_filters[0] == {
+        "seller_id": "82453304",
+        "_id": {"$in": ["ITEM-PII-1"]},
+    }
+    sanitized_json = json.dumps(output, sort_keys=True)
+    for forbidden in (
+        "82453304",
+        "ORDER-PII",
+        "SHIP-PII",
+        "ITEM-PII",
+        "FORMULA-PII",
+        "SKU-PII",
+        "STATE-PII",
+        "TRANSITION-PII",
+        "SENTINEL STREET",
+    ):
+        assert forbidden not in sanitized_json
+
+
+@pytest.mark.asyncio
+async def test_expected_counts_use_historical_meli_source_and_bound_refs() -> None:
+    db = FakeAsyncDb(
+        {
+            "shipments": [
+                _seller_doc(_id="SHIP-PII-1", order_id="ORDER-PII-1", status="delivered"),
+                _seller_doc(_id="SHIP-PII-2", order_id="ORDER-PII-2", status="shipped"),
+            ],
+            "items": [
+                _seller_doc(_id="ITEM-PII-1", status="active", last_meli_sync_at=_dt(2)),
+                _seller_doc(_id="ITEM-PII-2", status="paused", last_meli_sync_at=_dt(3)),
+                _seller_doc(_id="ITEM-PII-3", status="closed", last_meli_sync_at=_dt(4)),
+            ],
+        }
+    )
+    request = _request()
+    calls: dict[str, Any] = {}
+
+    async def fake_historical_source(*, db: Any, request: Any) -> FakeHistoricalMeliSummary:
+        calls["request"] = (request.seller_id, request.date_range.date_to_exclusive)
+        return FakeHistoricalMeliSummary(
+            orders_found=2,
+            order_ids=["ORDER-PII-1", "ORDER-PII-2"],
+            shipment_ids=["SHIP-PII-1"],
+            item_ids=["ITEM-PII-1", "ITEM-PII-2"],
+        )
+
+    expected = await collect_expected_read_model_counts(
+        db=db,
+        request=request,
+        historical_meli_source=fake_historical_source,
+    )
+    summary = await collect_reconciliation_counts(
+        db=db,
+        request=request,
+        expected=expected,
+        read_models=("shipments", "items"),
+    )
+
+    output = summary.to_sanitized_dict()
+    by_model = {aggregate["read_model"]: aggregate for aggregate in output["aggregates"]}
+
+    assert calls["request"] == ("82453304", "2026-06-05T00:00:00Z")
+    assert expected.counts["orders"] == 2
+    assert expected.counts["shipments"] == 1
+    assert expected.counts["items"] == 2
+    assert expected.refs["shipments"] == frozenset({"SHIP-PII-1"})
+    assert expected.refs["items"] == frozenset({"ITEM-PII-1", "ITEM-PII-2"})
+    assert by_model["shipments"] | {"field_counts": by_model["shipments"]["field_counts"]} == {
+        "read_model": "shipments",
+        "expected_count": 1,
+        "persisted_count": 1,
+        "missing_count": 0,
+        "complete_count": 1,
+        "truth_mode": "expected",
+        "field_counts": {
+            "real_shipping_cost.seller_cost": {"missing": 1, "present": 0},
+            "receiver_address": {"missing": 1, "present": 0},
+            "status": {"delivered": 1},
+        },
+    }
+    assert by_model["items"]["expected_count"] == 2
+    assert by_model["items"]["persisted_count"] == 2
+    assert by_model["items"]["missing_count"] == 0
+    assert db["shipments"].count_filters[0] == {
+        "seller_id": "82453304",
+        "_id": {"$in": ["SHIP-PII-1"]},
+    }
+    assert db["items"].count_filters[0] == {
+        "seller_id": "82453304",
+        "_id": {"$in": ["ITEM-PII-1", "ITEM-PII-2"]},
+    }
+    sanitized_json = json.dumps(output, sort_keys=True)
+    for forbidden in ("ORDER-PII", "SHIP-PII", "ITEM-PII", "82453304"):
+        assert forbidden not in sanitized_json
+
+
+@pytest.mark.asyncio
+async def test_shipments_and_items_without_expected_refs_do_not_broaden_reads() -> None:
+    db = FakeAsyncDb(
+        {
+            "shipments": [_seller_doc(_id="SHIP-PII-SELLER-WIDE", status="delivered")],
+            "items": [_seller_doc(_id="ITEM-PII-SELLER-WIDE", status="active")],
+        }
+    )
+
+    summary = await collect_reconciliation_counts(
+        db=db,
+        request=_request(),
+        expected=ExpectedReadModelCounts(
+            counts={"shipments": None, "items": None},
+            truth_mode={"shipments": "unavailable", "items": "unavailable"},
+            issues=(
+                ReadModelIssue(
+                    read_model="shipments",
+                    code="expected_unavailable",
+                    message="SENTINEL raw shipment source failure",
+                ),
+                ReadModelIssue(
+                    read_model="items",
+                    code="expected_unavailable",
+                    message="SENTINEL raw item source failure",
+                ),
+            ),
+        ),
+        read_models=("shipments", "items"),
+    )
+
+    output = summary.to_sanitized_dict()
+    by_model = {aggregate["read_model"]: aggregate for aggregate in output["aggregates"]}
+
+    assert by_model["shipments"]["persisted_count"] is None
+    assert by_model["shipments"]["complete_count"] is None
+    assert by_model["shipments"]["missing_count"] is None
+    assert {issue["code"] for issue in by_model["shipments"]["issues"]} == {
+        "expected_refs_unavailable",
+        "expected_unavailable",
+    }
+    assert by_model["items"]["persisted_count"] is None
+    assert by_model["items"]["complete_count"] is None
+    assert by_model["items"]["missing_count"] is None
+    assert {issue["code"] for issue in by_model["items"]["issues"]} == {
+        "expected_refs_unavailable",
+        "expected_unavailable",
+    }
+    assert db["shipments"].count_filters == []
+    assert db["items"].count_filters == []
+    sanitized_json = json.dumps(output, sort_keys=True)
+    for forbidden in ("SHIP-PII-SELLER-WIDE", "ITEM-PII-SELLER-WIDE", "SENTINEL"):
+        assert forbidden not in sanitized_json
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("error", "expected_code"),
+    (
+        (PermissionError("SENTINEL_TOKEN unauthorized"), "auth_error"),
+        (FakeRateLimitError("SENTINEL rate limited"), "rate_limit"),
+    ),
+)
+async def test_expected_source_auth_and_rate_limit_are_sanitized_unavailable(
+    error: Exception,
+    expected_code: str,
+) -> None:
+    async def failing_historical_source(*, db: Any, request: Any) -> FakeHistoricalMeliSummary:
+        raise error
+
+    expected = await collect_expected_read_model_counts(
+        db=FakeAsyncDb({}),
+        request=_request(),
+        historical_meli_source=failing_historical_source,
+    )
+    issue_output = [issue.to_sanitized_dict() for issue in expected.issues]
+
+    for read_model in ("orders", "shipments", "items"):
+        assert expected.counts[read_model] is None
+        assert expected.truth_mode[read_model] == "unavailable"
+        assert any(
+            issue.read_model == read_model and issue.code == expected_code
+            for issue in expected.issues
+        )
+    assert "SENTINEL" not in json.dumps(issue_output, sort_keys=True)
+
+
+@pytest.mark.asyncio
+async def test_query_and_validator_anomalies_emit_target_scoped_sanitized_issues() -> None:
+    db = FakeAsyncDb(
+        {
+            "orders": FailingCountCollection(RuntimeError("SENTINEL raw order query")),
+            "sheets_item_formula_rows": FailingCountCollection(
+                FakeValidatorError("SENTINEL validator detail")
+            ),
+        }
+    )
+
+    summary = await collect_reconciliation_counts(
+        db=db,
+        request=_request(),
+        expected=ExpectedReadModelCounts(
+            counts={"orders": 2, "sheets_item_formula_rows": 2},
+        ),
+        read_models=("orders", "sheets_item_formula_rows"),
+    )
+
+    output = summary.to_sanitized_dict()
+    by_model = {aggregate["read_model"]: aggregate for aggregate in output["aggregates"]}
+
+    assert by_model["orders"]["persisted_count"] is None
+    assert by_model["orders"]["complete_count"] is None
+    assert by_model["orders"]["issues"] == [{"code": "query_anomaly"}]
+    assert by_model["sheets_item_formula_rows"]["persisted_count"] is None
+    assert by_model["sheets_item_formula_rows"]["complete_count"] is None
+    assert by_model["sheets_item_formula_rows"]["issues"] == [
+        {"code": "validator_or_index_anomaly"}
+    ]
+    sanitized_json = json.dumps(output, sort_keys=True)
+    for forbidden in ("SENTINEL", "raw order query", "validator detail", "82453304"):
+        assert forbidden not in sanitized_json
+
+
+def test_reconciliation_cli_uses_runtime_collector_and_keeps_output_sanitized(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from infra.operations import zelerdata_read_model_reconcile
+
+    db = FakeAsyncDb({})
+    calls: dict[str, Any] = {}
+
+    async def fake_expected(*, db: Any, request: Any) -> ExpectedReadModelCounts:
+        calls["expected"] = request.date_range.date_to_exclusive
+        return ExpectedReadModelCounts(counts={"orders": None})
+
+    async def fake_collect(
+        *, db: Any, request: Any, expected: ExpectedReadModelCounts
+    ) -> ReconciliationSummary:
+        calls["collect"] = (db, request.seller_id, expected.counts["orders"])
+        return ReconciliationSummary(
+            seller_id=request.seller_id,
+            date_from=request.date_range.date_from,
+            date_to=request.date_range.date_to,
+            dry_run=True,
+            approved_runtime=True,
+            write_enabled=False,
+            aggregates=(
+                ReadModelAggregate(
+                    read_model="orders",
+                    expected_count=None,
+                    persisted_count=4,
+                    missing_count=None,
+                    complete_count=3,
+                    truth_mode="unavailable",
+                    field_counts={"buyer_id": {"present": 4}},
+                ),
+            ),
+            raw_context={"seller_id": "82453304", "access_token": "SENTINEL_TOKEN"},
+        )
+
+    monkeypatch.setattr(zelerdata_read_model_reconcile, "create_runtime_db", lambda: db)
+    monkeypatch.setattr(
+        zelerdata_read_model_reconcile,
+        "collect_expected_read_model_counts",
+        fake_expected,
+    )
+    monkeypatch.setattr(zelerdata_read_model_reconcile, COLLECTOR_ATTR, fake_collect)
+
+    result = zelerdata_read_model_reconcile.main(
+        [
+            "--seller-id",
+            "82453304",
+            "--date-from",
+            "2026-06-01",
+            "--date-to",
+            "2026-06-04",
+            "--dry-run",
+            "--confirm-approved-runtime",
+        ]
+    )
+
+    output = json.loads(capsys.readouterr().out)
+    output_json = json.dumps(output, sort_keys=True)
+
+    assert result == 0
+    assert output["aggregates"] == [
+        {
+            "read_model": "orders",
+            "expected_count": None,
+            "persisted_count": 4,
+            "missing_count": None,
+            "complete_count": 3,
+            "truth_mode": "unavailable",
+            "field_counts": {"buyer_id": {"present": 4}},
+        }
+    ]
+    assert calls["expected"] == "2026-06-05T00:00:00Z"
+    assert calls["collect"] == (db, "82453304", None)
+    assert "82453304" not in output_json
+    assert "SENTINEL_TOKEN" not in output_json
 
 
 def test_reconciliation_summary_is_aggregate_only_and_has_stop_criteria() -> None:
@@ -315,9 +923,36 @@ def test_phase2_runtime_contract_lists_dry_run_scopes_and_stop_conditions_withou
 
 
 def test_reconciliation_cli_can_emit_phase2_contract_from_approved_runtime_only(
+    monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     from infra.operations import zelerdata_read_model_reconcile
+
+    db = FakeAsyncDb({})
+
+    async def fake_expected(*, db: Any, request: Any) -> ExpectedReadModelCounts:
+        return ExpectedReadModelCounts(counts={})
+
+    async def fake_collect(
+        *, db: Any, request: Any, expected: ExpectedReadModelCounts
+    ) -> ReconciliationSummary:
+        return ReconciliationSummary(
+            seller_id=request.seller_id,
+            date_from=request.date_range.date_from,
+            date_to=request.date_range.date_to,
+            dry_run=True,
+            approved_runtime=True,
+            write_enabled=False,
+            aggregates=(),
+        )
+
+    monkeypatch.setattr(zelerdata_read_model_reconcile, "create_runtime_db", lambda: db)
+    monkeypatch.setattr(
+        zelerdata_read_model_reconcile,
+        "collect_expected_read_model_counts",
+        fake_expected,
+    )
+    monkeypatch.setattr(zelerdata_read_model_reconcile, COLLECTOR_ATTR, fake_collect)
 
     result = zelerdata_read_model_reconcile.main(
         [
