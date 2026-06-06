@@ -16,7 +16,8 @@ uv run python -m infra.operations.zelerdata_read_model_reconcile \
   --date-from 2026-06-01 \
   --date-to 2026-06-04 \
   --dry-run \
-  --confirm-approved-runtime
+  --confirm-approved-runtime \
+  --emit-phase2-contract
 ```
 
 ## Flags
@@ -32,6 +33,29 @@ uv run python -m infra.operations.zelerdata_read_model_reconcile \
 | `--confirm-production-write` | With `--write` | Confirms separate production-write authorization. This flag is not enough by itself; the user must explicitly approve the scoped write phase. |
 | `--max-orders` | Bounded trials / PII mode | Caps order processing for trial runs and is required for buyer/address PII mode. |
 | `--include-buyer-address-pii` | Exceptional | Allows bounded buyer/address processing in approved runtime; output remains count-only. |
+| `--emit-phase2-contract` | Phase 2 contract runs | Prints the read-only preflight and dry-run contract alongside the sanitized summary. |
+
+## Phase 2 read-only contract
+
+This PR2 helper contract defines what the approved runtime must collect before any write is considered. It does not execute production operations locally and it does not grant write approval.
+
+### Required preflight targets
+
+Collect sanitized aggregate counters for orders, shipments, items, sheets_item_formula_rows, sheets_item_sku_index, and status models.
+
+Each target must report expected, persisted, missing, complete, NA, 0, and >0 counts. For formula rows, include distribution checks for listing type, current status, sale price, listing fixed fee, unit cost, realized shipping cost, realized fee, pack/cart ID, and buyer/address presence.
+
+Status model checks are truth-bound: use observed `item_status_states` / `item_status_transitions` only. Do not synthesize paused/status history.
+
+### Required dry-run scopes
+
+Dry-run June 1-4 for orders, shipments, pack/cart ID, buyer/address presence-only, realized shipping, and realized fees where implemented; otherwise keep NA.
+
+### Export references
+
+Record private export IDs/counts for `orders`, `shipments`, `items`, `sheets_item_formula_rows`, `sheets_item_sku_index`, and status models. Shared logs may include only sanitized export references and document counts, not raw documents or raw IDs.
+
+Live runtime execution is pending until an approved VM/VPC/runtime command is available without deploy, push, restart, local production Mongo access, or production writes.
 
 ## Runtime boundary
 
@@ -47,7 +71,7 @@ Stop immediately and preserve only sanitized counts if any of these appear:
 - unsanitized output
 - unexpected count delta
 - unauthorized PII
-- validator error
+- validator or index anomaly
 - auth error
 - formula regression
 - missing item-detail spike
