@@ -13,7 +13,44 @@ READ_MODELS: tuple[str, ...] = (
     "items",
     "sheets_item_formula_rows",
     "sheets_item_sku_index",
-    "status_history",
+    "item_status_states",
+    "item_status_transitions",
+)
+DEFAULT_PHASE2_PREFLIGHT_TARGETS: tuple[str, ...] = READ_MODELS
+DEFAULT_PHASE2_DRY_RUN_SCOPES: tuple[str, ...] = (
+    "orders",
+    "shipments",
+    "pack_or_cart_id",
+    "buyer_address_presence_only",
+    "realized_shipping",
+    "realized_fees_where_implemented",
+)
+PHASE2_REQUIRED_COUNTERS: tuple[str, ...] = (
+    "expected_count",
+    "persisted_count",
+    "missing_count",
+    "complete_count",
+    "na_count",
+    "zero_count",
+    "positive_count",
+)
+PHASE2_FORMULA_DISTRIBUTION_FIELDS: tuple[str, ...] = (
+    "listing_type",
+    "current_status",
+    "sale_price",
+    "listing_fixed_fee",
+    "unit_cost",
+    "realized_shipping_cost",
+    "realized_fee",
+    "pack_or_cart_id",
+    "buyer_address_presence",
+)
+PHASE2_STOP_CONDITIONS: tuple[str, ...] = (
+    "unsanitized_output",
+    "unauthorized_pii",
+    "validator_or_index_anomaly",
+    "auth_error",
+    "unexpected_delta",
 )
 DEFAULT_STOP_CRITERIA: tuple[str, ...] = (
     "unsanitized_output",
@@ -77,6 +114,63 @@ class ReadModelAggregate:
 
 
 @dataclass(frozen=True)
+class Phase2PreflightTarget:
+    read_model: str
+    required_counters: tuple[str, ...] = PHASE2_REQUIRED_COUNTERS
+    distribution_fields: tuple[str, ...] = ()
+    truth_boundary: str | None = None
+
+    def to_sanitized_dict(self) -> dict[str, Any]:
+        sanitized: dict[str, Any] = {
+            "read_model": self.read_model,
+            "required_counters": list(self.required_counters),
+            "distribution_fields": list(self.distribution_fields),
+        }
+        if self.truth_boundary is not None:
+            sanitized["truth_boundary"] = self.truth_boundary
+        return sanitized
+
+
+@dataclass(frozen=True)
+class PrivateExportRecord:
+    read_model: str
+    export_ref: str
+    document_count: int
+
+    def to_sanitized_dict(self) -> dict[str, int | str]:
+        return {
+            "read_model": self.read_model,
+            "export_ref": self.export_ref,
+            "document_count": self.document_count,
+        }
+
+
+@dataclass(frozen=True)
+class Phase2RuntimeContract:
+    date_from: str
+    date_to: str
+    preflight_targets: tuple[Phase2PreflightTarget, ...]
+    dry_run_scopes: tuple[str, ...] = DEFAULT_PHASE2_DRY_RUN_SCOPES
+    private_exports: tuple[PrivateExportRecord, ...] = ()
+    stop_conditions: tuple[str, ...] = PHASE2_STOP_CONDITIONS
+    raw_context: dict[str, Any] = field(default_factory=dict, repr=False)
+
+    def to_sanitized_dict(self) -> dict[str, Any]:
+        return {
+            "phase": "phase2_read_only_runtime_preflight_dry_run",
+            "approved_runtime_only": True,
+            "production_writes_enabled": False,
+            "date_range": {"from": self.date_from, "to": self.date_to},
+            "preflight_targets": [target.to_sanitized_dict() for target in self.preflight_targets],
+            "dry_run_scopes": list(self.dry_run_scopes),
+            "buyer_address_policy": "presence_counts_only",
+            "realized_fees_policy": "only_where_read_model_support_exists_else_NA",
+            "private_exports": [export.to_sanitized_dict() for export in self.private_exports],
+            "stop_conditions": list(self.stop_conditions),
+        }
+
+
+@dataclass(frozen=True)
 class ReconciliationSummary:
     seller_id: str
     date_from: str
@@ -87,10 +181,11 @@ class ReconciliationSummary:
     aggregates: tuple[ReadModelAggregate, ...] = ()
     stop_criteria: tuple[str, ...] = DEFAULT_STOP_CRITERIA
     private_export_refs: tuple[str, ...] = ()
+    phase2_contract: Phase2RuntimeContract | None = None
     raw_context: dict[str, Any] = field(default_factory=dict, repr=False)
 
     def to_sanitized_dict(self) -> dict[str, Any]:
-        return {
+        sanitized: dict[str, Any] = {
             "seller_scope": "provided",
             "date_range": {"from": self.date_from, "to": self.date_to},
             "mode": "dry_run" if self.dry_run else "write",
@@ -100,6 +195,9 @@ class ReconciliationSummary:
             "stop_criteria": list(self.stop_criteria),
             "private_export_refs": list(self.private_export_refs),
         }
+        if self.phase2_contract is not None:
+            sanitized["phase2_contract"] = self.phase2_contract.to_sanitized_dict()
+        return sanitized
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
@@ -132,6 +230,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--include-buyer-address-pii",
         action="store_true",
         help="Allow bounded PII processing in approved runtime; output remains aggregate-only.",
+    )
+    parser.add_argument(
+        "--emit-phase2-contract",
+        action="store_true",
+        help="Include Phase 2 read-only preflight/dry-run contract in sanitized output.",
     )
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument(
@@ -189,7 +292,11 @@ def parse_reconciliation_date_range(date_from: str, date_to: str) -> Reconciliat
     )
 
 
-def build_empty_summary(request: ReconciliationRequest) -> ReconciliationSummary:
+def build_empty_summary(
+    request: ReconciliationRequest,
+    *,
+    phase2_contract: Phase2RuntimeContract | None = None,
+) -> ReconciliationSummary:
     return ReconciliationSummary(
         seller_id=request.seller_id,
         date_from=request.date_range.date_from,
@@ -206,6 +313,26 @@ def build_empty_summary(request: ReconciliationRequest) -> ReconciliationSummary
             )
             for read_model in READ_MODELS
         ),
+        phase2_contract=phase2_contract,
+    )
+
+
+def build_phase2_runtime_contract(
+    *,
+    date_from: str,
+    date_to: str,
+    private_exports: Sequence[PrivateExportRecord] = (),
+    raw_context: dict[str, Any] | None = None,
+) -> Phase2RuntimeContract:
+    date_range = parse_reconciliation_date_range(date_from, date_to)
+    return Phase2RuntimeContract(
+        date_from=date_range.date_from,
+        date_to=date_range.date_to,
+        preflight_targets=tuple(
+            _phase2_preflight_target(read_model) for read_model in DEFAULT_PHASE2_PREFLIGHT_TARGETS
+        ),
+        private_exports=tuple(private_exports),
+        raw_context=raw_context or {},
     )
 
 
@@ -215,8 +342,35 @@ def main(argv: Sequence[str] | None = None) -> int:
         request = build_reconciliation_request(args)
     except ValueError as exc:
         raise SystemExit(str(exc)) from exc
-    print(json.dumps(build_empty_summary(request).to_sanitized_dict(), sort_keys=True))
+    phase2_contract = None
+    if bool(args.emit_phase2_contract):
+        phase2_contract = build_phase2_runtime_contract(
+            date_from=request.date_range.date_from,
+            date_to=request.date_range.date_to,
+        )
+    print(
+        json.dumps(
+            build_empty_summary(request, phase2_contract=phase2_contract).to_sanitized_dict(),
+            sort_keys=True,
+        )
+    )
     return 0
+
+
+def _phase2_preflight_target(read_model: str) -> Phase2PreflightTarget:
+    distribution_fields = (
+        PHASE2_FORMULA_DISTRIBUTION_FIELDS if read_model == "sheets_item_formula_rows" else ()
+    )
+    truth_boundary = (
+        "observed transitions only; do not synthesize paused/status history"
+        if read_model in {"item_status_states", "item_status_transitions"}
+        else None
+    )
+    return Phase2PreflightTarget(
+        read_model=read_model,
+        distribution_fields=distribution_fields,
+        truth_boundary=truth_boundary,
+    )
 
 
 def _parse_date(value: str, *, field_name: str) -> date:
