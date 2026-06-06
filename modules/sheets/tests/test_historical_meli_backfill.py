@@ -11,6 +11,7 @@ from zeler_sheets.historical_meli_backfill import (
     build_arg_parser,
     parse_inclusive_date_range,
     run_historical_meli_backfill,
+    sanitize_historical_meli_summary,
     validate_cli_safety,
 )
 
@@ -407,6 +408,89 @@ async def test_buyer_address_pii_dry_run_reports_only_sanitized_aggregate_counts
     assert "SENTINEL BUYER NAME" not in output_json
     assert "SENTINEL STREET" not in output_json
     assert all(not collection.replace_calls for collection in db.collections.values())
+
+
+@pytest.mark.asyncio
+async def test_historical_backfill_operator_summary_is_sanitized_without_pii_mode() -> None:
+    summary = await run_historical_meli_backfill(
+        db=FakeDb(),
+        gateway=FakeGateway(),
+        order_detail_gateway=FakeOrderDetailGateway(),
+        seller_id="82453304",
+        date_from="2026-05-01",
+        date_to="2026-05-01",
+        dry_run=True,
+        max_orders=1,
+    )
+
+    output = summary.as_dict()
+    output_json = json.dumps(output, sort_keys=True)
+
+    assert output["output_mode"] == "sanitized_aggregate"
+    assert output["orders_found"] == 1
+    assert output["shipments_fetched"] == 1
+    assert "seller_id" not in output
+    assert "order_ids" not in output
+    assert "shipment_ids" not in output
+    assert "item_ids" not in output
+    assert "missing_item_detail_ids" not in output
+    for forbidden in (
+        "82453304",
+        "2001",
+        "3001",
+        "MLA1",
+        "SENTINEL BUYER NAME",
+        "SENTINEL STREET",
+        "raw_payload",
+        "access_token",
+        "MONGO_URI",
+    ):
+        assert forbidden not in output_json
+
+
+def test_sanitize_historical_meli_summary_converts_unsafe_payloads_to_counts() -> None:
+    raw_summary = {
+        "seller_id": "82453304",
+        "order_ids": ["2001", "2002"],
+        "item_ids": ["MLA1"],
+        "shipment_ids": ["3001"],
+        "missing_item_detail_ids": [],
+        "orders_found": 2,
+        "buyer": {"name": "SENTINEL BUYER NAME"},
+        "receiver_address": {"street_name": "SENTINEL STREET"},
+        "raw_payload": {"id": "2001", "payload": "SENTINEL PAYLOAD"},
+        "env": {"MONGO_URI": "SENTINEL_DB_URI_VALUE"},
+        "access_token": "SENTINEL_ACCESS_TOKEN_VALUE",
+        "client_secret": "SENTINEL_CLIENT_SECRET_VALUE",
+    }
+
+    sanitized = sanitize_historical_meli_summary(raw_summary)
+    sanitized_json = json.dumps(sanitized, sort_keys=True)
+
+    assert sanitized["order_count"] == 2
+    assert sanitized["item_count"] == 1
+    assert sanitized["shipment_count"] == 1
+    assert sanitized["missing_item_detail_count"] == 0
+    assert sanitized["orders_found"] == 2
+    for forbidden in (
+        "seller_id",
+        "order_ids",
+        "item_ids",
+        "shipment_ids",
+        "missing_item_detail_ids",
+        "82453304",
+        "2001",
+        "2002",
+        "3001",
+        "MLA1",
+        "SENTINEL BUYER NAME",
+        "SENTINEL STREET",
+        "SENTINEL PAYLOAD",
+        "SENTINEL_DB_URI_VALUE",
+        "SENTINEL_ACCESS_TOKEN_VALUE",
+        "SENTINEL_CLIENT_SECRET_VALUE",
+    ):
+        assert forbidden not in sanitized_json
 
 
 @pytest.mark.asyncio
