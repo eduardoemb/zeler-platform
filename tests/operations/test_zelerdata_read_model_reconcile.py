@@ -16,6 +16,13 @@ from infra.operations.zelerdata_read_model_reconcile import (
     validate_reconciliation_safety,
 )
 
+SHEETS_RUNTIME_DOCKERFILES = (
+    Path("modules/sheets/Dockerfile.api"),
+    Path("modules/sheets/Dockerfile.worker"),
+)
+ZELERDATA_RECONCILE_HELPER = Path("infra/operations/zelerdata_read_model_reconcile.py")
+OPERATIONS_COPY_STANZA = "COPY infra/operations ./infra/operations"
+
 
 def test_reconciliation_request_parses_june_1_to_4_range_and_defaults_to_dry_run() -> None:
     args = build_arg_parser().parse_args(
@@ -332,3 +339,18 @@ def test_reconciliation_cli_can_emit_phase2_contract_from_approved_runtime_only(
     assert output["phase2_contract"]["approved_runtime_only"] is True
     assert output["phase2_contract"]["dry_run_scopes"] == list(DEFAULT_PHASE2_DRY_RUN_SCOPES)
     assert "82453304" not in json.dumps(output, sort_keys=True)
+
+
+@pytest.mark.parametrize("dockerfile_path", SHEETS_RUNTIME_DOCKERFILES)
+def test_sheets_runtime_images_copy_operations_helper_for_phase2_contract(
+    dockerfile_path: Path,
+) -> None:
+    dockerfile = dockerfile_path.read_text(encoding="utf-8")
+
+    assert ZELERDATA_RECONCILE_HELPER.is_file()
+    assert OPERATIONS_COPY_STANZA in dockerfile
+    assert "COPY infra ./infra" not in dockerfile
+    assert dockerfile.index("COPY core ./core") < dockerfile.index(OPERATIONS_COPY_STANZA)
+    assert dockerfile.index(OPERATIONS_COPY_STANZA) < dockerfile.index(
+        "COPY modules/sheets ./modules/sheets"
+    )
