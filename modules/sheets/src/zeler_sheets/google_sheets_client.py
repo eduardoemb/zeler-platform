@@ -5,8 +5,8 @@ from typing import Protocol
 
 import httpx
 from google.oauth2.credentials import Credentials
-from googleapiclient.discovery import build  # type: ignore[import-untyped]
-from googleapiclient.errors import HttpError  # type: ignore[import-untyped]
+from googleapiclient.discovery import build
+from googleapiclient.errors import HttpError
 
 from zeler_sheets.google_errors import (
     GoogleSheetsApiError,

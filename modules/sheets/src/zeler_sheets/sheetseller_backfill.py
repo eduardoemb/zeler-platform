@@ -2880,11 +2880,11 @@ async def _run_cli(args: argparse.Namespace) -> BackfillCliSummary:
             )
         if args.source == "orders-repair":
             date_from, date_to = _require_order_dates(args)
-            from google.cloud import kms
+            from google.cloud import kms_v1
 
             gateway = MeliGatewayClient(
                 os.environ.get("GATEWAY_BASE_URL", DEFAULT_GATEWAY_BASE_URL),
-                MeliGatewayAuth("sheets", kms.KeyManagementServiceClient()),
+                MeliGatewayAuth("sheets", kms_v1.KeyManagementServiceClient()),
             )
             return await run_order_identity_repair(
                 db=client[mongo_db_name],
@@ -2895,11 +2895,11 @@ async def _run_cli(args: argparse.Namespace) -> BackfillCliSummary:
                 dry_run=args.dry_run,
             )
         if args.source == "items-enrich":
-            from google.cloud import kms
+            from google.cloud import kms_v1
 
             gateway = MeliGatewayClient(
                 os.environ.get("GATEWAY_BASE_URL", DEFAULT_GATEWAY_BASE_URL),
-                MeliGatewayAuth("sheets", kms.KeyManagementServiceClient()),
+                MeliGatewayAuth("sheets", kms_v1.KeyManagementServiceClient()),
             )
             return await run_item_detail_enrichment(
                 db=client[mongo_db_name],
@@ -2910,11 +2910,11 @@ async def _run_cli(args: argparse.Namespace) -> BackfillCliSummary:
                 listing_fixed_fee_enabled=bool(args.listing_fixed_fee_enabled),
             )
         if args.source == "shipments-costs":
-            from google.cloud import kms
+            from google.cloud import kms_v1
 
             gateway = MeliGatewayClient(
                 os.environ.get("GATEWAY_BASE_URL", DEFAULT_GATEWAY_BASE_URL),
-                MeliGatewayAuth("sheets", kms.KeyManagementServiceClient()),
+                MeliGatewayAuth("sheets", kms_v1.KeyManagementServiceClient()),
             )
             return await run_shipment_real_shipping_cost_enrichment(
                 db=client[mongo_db_name],

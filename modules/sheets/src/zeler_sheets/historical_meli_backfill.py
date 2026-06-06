@@ -665,12 +665,12 @@ async def _run_cli(args: argparse.Namespace) -> HistoricalMeliBackfillSummary:
     if not mongo_db_name:
         raise SystemExit("MONGO_DB is required")
 
-    from google.cloud import kms
+    from google.cloud import kms_v1
 
     client: AsyncIOMotorClient[Any] = AsyncIOMotorClient(mongo_uri)
     try:
         gateway_base_url = os.environ.get("GATEWAY_BASE_URL", DEFAULT_GATEWAY_BASE_URL)
-        kms_client = kms.KeyManagementServiceClient()
+        kms_client = kms_v1.KeyManagementServiceClient()
         gateway = MeliGatewayClient(
             gateway_base_url,
             MeliGatewayAuth(str(args.module_id), kms_client),

@@ -85,9 +85,9 @@ def reset_jwt_cache() -> None:
 def _kms_client() -> KmsSigningClient:
     global _KMS_CLIENT
     if _KMS_CLIENT is None:
-        from google.cloud import kms
+        from google.cloud import kms_v1
 
-        _KMS_CLIENT = kms.KeyManagementServiceClient()
+        _KMS_CLIENT = kms_v1.KeyManagementServiceClient()
     return _KMS_CLIENT
 
 

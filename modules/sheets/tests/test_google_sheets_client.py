@@ -6,8 +6,8 @@ from typing import Any
 from unittest.mock import Mock
 
 import pytest
-from googleapiclient.errors import HttpError  # type: ignore[import-untyped]
-from httplib2 import Response  # type: ignore[import-untyped]
+from googleapiclient.errors import HttpError
+from httplib2 import Response
 
 from zeler_sheets.google_errors import (
     GoogleSheetsApiError,

@@ -1168,7 +1168,7 @@ async def test_dashboard_uses_listing_fixed_fee_without_seller_cost_lookup() -> 
 @pytest.mark.asyncio
 async def test_dashboard_returns_na_for_invalid_listing_fixed_fee_projection() -> None:
     synced_at = datetime(2026, 6, 4, tzinfo=UTC)
-    projection = {
+    projection: dict[str, Any] = {
         "source": "/sites/{site}/listing_prices",
         "fixed_fee": 1350.25,
         "currency_id": "ARS",
@@ -1250,7 +1250,7 @@ async def test_dashboard_returns_na_for_invalid_listing_fixed_fee_projection() -
 @pytest.mark.asyncio
 async def test_dashboard_validates_fixed_fee_price_and_shipping_request_basis() -> None:
     synced_at = datetime(2026, 6, 4, tzinfo=UTC)
-    projection = {
+    projection: dict[str, Any] = {
         "source": "/sites/{site}/listing_prices",
         "fixed_fee": 1350.25,
         "currency_id": "ARS",

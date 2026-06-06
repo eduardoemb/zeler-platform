@@ -25,6 +25,14 @@ dev = [
   "respx>=0.23.1",
   "pytest-asyncio>=1.3.0",
   "types-cachetools>=6.2.0.20260408",
+  "aio-pika>=9.4.0",
+  "apscheduler>=3.11.2",
+  "google-api-python-client>=2.120.0",
+  "google-cloud-kms>=3.12.0",
+  "google-cloud-secret-manager>=2.27.0",
+  "motor>=3.7.1",
+  "pydantic-settings>=2.14.0",
+  "structlog>=24.1.0",
 ]
 
 [tool.uv.workspace]
@@ -68,6 +76,16 @@ mypy_path = [
   "$MYPY_CONFIG_FILE_DIR/modules/sheets/tests",
   "$MYPY_CONFIG_FILE_DIR/bootstrap/src",
 ]
+
+[[tool.mypy.overrides]]
+module = [
+  "google.cloud.kms",
+  "google.cloud.kms_v1",
+  "google.cloud.secretmanager",
+  "googleapiclient.*",
+  "httplib2",
+]
+ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 minversion = "8.0"

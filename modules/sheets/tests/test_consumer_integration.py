@@ -48,11 +48,7 @@ class FakeCollection:
 
     def find(self, query: dict[str, Any]) -> FakeCursor:
         return FakeCursor(
-            [
-                document
-                for document in self.documents
-                if _matches_filter(document, query)
-            ]
+            [document for document in self.documents if _matches_filter(document, query)]
         )
 
     async def replace_one(

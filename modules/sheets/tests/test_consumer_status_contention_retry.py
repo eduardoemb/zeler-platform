@@ -5,7 +5,7 @@ import json
 import sys
 import types
 from collections.abc import Iterator
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -24,7 +24,7 @@ def consumer_module(monkeypatch: pytest.MonkeyPatch) -> Iterator[Any]:
     if previous_consumer_module is not None:
         sys.modules["zeler_sheets.consumer"] = previous_consumer_module
     if previous_package_consumer is not None:
-        zeler_sheets.consumer = previous_package_consumer
+        cast(Any, zeler_sheets).consumer = previous_package_consumer
     elif hasattr(zeler_sheets, "consumer"):
         delattr(zeler_sheets, "consumer")
 
@@ -35,18 +35,19 @@ def _install_optional_runtime_stubs(monkeypatch: pytest.MonkeyPatch) -> None:
     class SheetsSettings:
         pass
 
-    sheets_config.SheetsSettings = SheetsSettings
+    cast(Any, sheets_config).SheetsSettings = SheetsSettings
     monkeypatch.setitem(sys.modules, "zeler_sheets.sheets_config", sheets_config)
 
     google_sheets_client = types.ModuleType("zeler_sheets.google_sheets_client")
-    google_sheets_client.make_sheets_client = lambda *_args, **_kwargs: object()
+    cast(Any, google_sheets_client).make_sheets_client = lambda *_args, **_kwargs: object()
     monkeypatch.setitem(sys.modules, "zeler_sheets.google_sheets_client", google_sheets_client)
 
     aio_pika = types.ModuleType("aio_pika")
-    aio_pika.ExchangeType = types.SimpleNamespace(TOPIC="topic")
-    aio_pika.DeliveryMode = types.SimpleNamespace(PERSISTENT=2)
-    aio_pika.Message = lambda **_kwargs: object()
-    aio_pika.connect_robust = None
+    aio_pika_any = cast(Any, aio_pika)
+    aio_pika_any.ExchangeType = types.SimpleNamespace(TOPIC="topic")
+    aio_pika_any.DeliveryMode = types.SimpleNamespace(PERSISTENT=2)
+    aio_pika_any.Message = lambda **_kwargs: object()
+    aio_pika_any.connect_robust = None
     monkeypatch.setitem(sys.modules, "aio_pika", aio_pika)
 
     structlog = types.ModuleType("structlog")
@@ -58,7 +59,7 @@ def _install_optional_runtime_stubs(monkeypatch: pytest.MonkeyPatch) -> None:
 
         def error(self, *_args: Any, **_kwargs: Any) -> None: ...
 
-    structlog.get_logger = lambda _name=None: _Logger()
+    cast(Any, structlog).get_logger = lambda _name=None: _Logger()
     monkeypatch.setitem(sys.modules, "structlog", structlog)
 
     motor = types.ModuleType("motor")
@@ -67,8 +68,8 @@ def _install_optional_runtime_stubs(monkeypatch: pytest.MonkeyPatch) -> None:
     class AsyncIOMotorClient:
         pass
 
-    motor_asyncio.AsyncIOMotorClient = AsyncIOMotorClient
-    motor.motor_asyncio = motor_asyncio
+    cast(Any, motor_asyncio).AsyncIOMotorClient = AsyncIOMotorClient
+    cast(Any, motor).motor_asyncio = motor_asyncio
     monkeypatch.setitem(sys.modules, "motor", motor)
     monkeypatch.setitem(sys.modules, "motor.motor_asyncio", motor_asyncio)
 
