@@ -148,7 +148,7 @@ class SheetsEventPersistence:
             )
 
             if state_write_won:
-                if status_changed:
+                if prior_status is not None and prior_status != current_status:
                     transition = _status_transition_document(
                         seller_id=seller_id,
                         item_id=item_id,
@@ -744,7 +744,7 @@ async def _replace_status_state_if_expected(
         filter_spec["last_observed_at"] = expected_last_observed_at
     filter_spec.update(_status_history_scalar_tuple_guard(prior_state))
     result = await state_collection.replace_one(filter_spec, next_state, upsert=False)
-    return result.matched_count > 0
+    return bool(result.matched_count > 0)
 
 
 def _status_first_observed_at(
