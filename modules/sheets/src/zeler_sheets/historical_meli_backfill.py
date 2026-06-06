@@ -19,6 +19,30 @@ DEFAULT_GATEWAY_MODULE_ID = "bootstrap"
 DEFAULT_ORDER_DETAIL_GATEWAY_MODULE_ID = "sheets"
 DEFAULT_ORDER_PAGE_LIMIT = 50
 ITEM_DETAIL_BATCH_SIZE = 20
+_ID_LIST_COUNT_KEYS = {
+    "order_ids": "order_count",
+    "item_ids": "item_count",
+    "missing_item_detail_ids": "missing_item_detail_count",
+    "shipment_ids": "shipment_count",
+}
+_SENSITIVE_OUTPUT_KEY_PARTS = (
+    "access_token",
+    "authorization",
+    "buyer",
+    "client_secret",
+    "connection",
+    "cookie",
+    "env",
+    "mongo_uri",
+    "oauth",
+    "payload",
+    "receiver_address",
+    "refresh_token",
+    "secret",
+    "street",
+    "token",
+)
+_UNSAFE_ID_KEYS = {"seller_id", "order_id", "shipment_id", "item_id"}
 
 
 class HistoricalMeliGateway(Protocol):
@@ -75,16 +99,23 @@ class HistoricalMeliBackfillSummary:
     shipment_ids: list[str]
 
     def as_dict(self) -> dict[str, Any]:
-        summary = asdict(self)
-        if self.buyer_address_pii_mode:
-            for unsafe_key in (
-                "order_ids",
-                "item_ids",
-                "missing_item_detail_ids",
-                "shipment_ids",
-            ):
-                summary.pop(unsafe_key, None)
-        return summary
+        return sanitize_historical_meli_summary(asdict(self))
+
+
+def sanitize_historical_meli_summary(summary: dict[str, Any]) -> dict[str, Any]:
+    sanitized: dict[str, Any] = {"seller_scope": "provided"}
+    for key, value in summary.items():
+        normalized_key = key.lower()
+        if key in _ID_LIST_COUNT_KEYS:
+            sanitized[_ID_LIST_COUNT_KEYS[key]] = _collection_count(value)
+            continue
+        if normalized_key in _UNSAFE_ID_KEYS:
+            continue
+        if _is_sensitive_output_key(normalized_key):
+            continue
+        sanitized[key] = _sanitize_summary_value(value)
+    sanitized["output_mode"] = "sanitized_aggregate"
+    return sanitized
 
 
 @dataclass(frozen=True)
@@ -232,7 +263,7 @@ async def run_historical_meli_backfill(
         items_fetched=len(items),
         shipments_fetched=len(shipments),
         buyer_address_pii_mode=include_buyer_address_pii,
-        output_mode="sanitized_aggregate" if include_buyer_address_pii else "detailed_ids",
+        output_mode="sanitized_aggregate",
         address_matched=shipment_fetch.address_matched,
         address_populated=shipment_fetch.address_populated,
         address_missing=shipment_fetch.address_missing,
@@ -555,6 +586,34 @@ def _optional_string(value: Any) -> str | None:
         return None
     normalized = str(value).strip()
     return normalized or None
+
+
+def _sanitize_summary_value(value: Any) -> Any:
+    if isinstance(value, dict):
+        child: dict[str, Any] = {}
+        for key, nested in value.items():
+            normalized_key = str(key).lower()
+            if normalized_key in _UNSAFE_ID_KEYS or _is_sensitive_output_key(normalized_key):
+                continue
+            child[str(key)] = _sanitize_summary_value(nested)
+        return child
+    if isinstance(value, list):
+        return len(value)
+    if isinstance(value, tuple | set):
+        return len(value)
+    return value
+
+
+def _is_sensitive_output_key(normalized_key: str) -> bool:
+    if normalized_key == "buyer_address_pii_mode":
+        return False
+    return any(part in normalized_key for part in _SENSITIVE_OUTPUT_KEY_PARTS)
+
+
+def _collection_count(value: Any) -> int:
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+        return len(value)
+    return 0
 
 
 def _unique_strings(values: Sequence[str | None] | Any) -> list[str]:
