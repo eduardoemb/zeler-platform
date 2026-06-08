@@ -135,7 +135,41 @@ class ReconciliationRequest:
     approved_runtime: bool
     write_enabled: bool
     include_buyer_address_pii: bool
-    max_orders: int | None
+    controls: ReconciliationControls
+
+    @property
+    def max_orders(self) -> int | None:
+        return self.controls.max_orders
+
+
+@dataclass(frozen=True)
+class ReconciliationControls:
+    max_orders: int | None = None
+    max_items: int | None = None
+    max_shipments: int | None = None
+    concurrency: int = 1
+    sleep_ms: int = 0
+    error_threshold: int | None = None
+    stop_on_rate_limit: bool = False
+    resume_after_order_id: str | None = field(default=None, repr=False)
+
+    def to_sanitized_dict(self) -> dict[str, Any]:
+        sanitized: dict[str, Any] = {}
+        for field_name in (
+            "max_orders",
+            "max_items",
+            "max_shipments",
+            "concurrency",
+            "sleep_ms",
+            "error_threshold",
+            "stop_on_rate_limit",
+        ):
+            value = getattr(self, field_name)
+            if value not in (None, False) and not (field_name in {"concurrency"} and value == 1):
+                sanitized[field_name] = value
+        if self.resume_after_order_id:
+            sanitized["resume_cursor"] = "provided"
+        return sanitized
 
 
 @dataclass(frozen=True)
@@ -284,6 +318,8 @@ class ReconciliationSummary:
     stop_criteria: tuple[str, ...] = DEFAULT_STOP_CRITERIA
     private_export_refs: tuple[str, ...] = ()
     phase2_contract: Phase2RuntimeContract | None = None
+    controls: ReconciliationControls | None = None
+    write_counts: Mapping[str, int] = field(default_factory=dict)
     raw_context: dict[str, Any] = field(default_factory=dict, repr=False)
 
     def to_sanitized_dict(self) -> dict[str, Any]:
@@ -299,6 +335,12 @@ class ReconciliationSummary:
         }
         if self.phase2_contract is not None:
             sanitized["phase2_contract"] = self.phase2_contract.to_sanitized_dict()
+        if self.controls is not None:
+            controls = self.controls.to_sanitized_dict()
+            if controls:
+                sanitized["controls"] = controls
+        if self.write_counts:
+            sanitized["write_counts"] = dict(sorted(self.write_counts.items()))
         return sanitized
 
 
@@ -317,6 +359,42 @@ def build_arg_parser() -> argparse.ArgumentParser:
         dest="max_orders",
         type=_positive_int,
         help="Optional maximum order count for bounded trial runs.",
+    )
+    parser.add_argument(
+        "--max-items",
+        type=_positive_int,
+        help="Optional maximum item count for bounded write/reconciliation trials.",
+    )
+    parser.add_argument(
+        "--max-shipments",
+        type=_positive_int,
+        help="Optional maximum shipment count for bounded write/reconciliation trials.",
+    )
+    parser.add_argument(
+        "--concurrency",
+        type=_positive_int,
+        default=1,
+        help="Maximum concurrent runtime fetch/write units. Defaults to 1.",
+    )
+    parser.add_argument(
+        "--sleep-ms",
+        type=_non_negative_int,
+        default=0,
+        help="Milliseconds to sleep between bounded write phases for rate-limit protection.",
+    )
+    parser.add_argument(
+        "--error-threshold",
+        type=_positive_int,
+        help="Stop write planning when sanitized error counts reach this threshold.",
+    )
+    parser.add_argument(
+        "--stop-on-rate-limit",
+        action="store_true",
+        help="Stop instead of continuing when the expected source reports rate limiting.",
+    )
+    parser.add_argument(
+        "--resume-after-order-id",
+        help="Private resume cursor. Output reports only whether a cursor was provided.",
     )
     parser.add_argument(
         "--confirm-approved-runtime",
@@ -377,7 +455,20 @@ def build_reconciliation_request(args: argparse.Namespace) -> ReconciliationRequ
         approved_runtime=bool(args.confirm_approved_runtime),
         write_enabled=not dry_run,
         include_buyer_address_pii=bool(args.include_buyer_address_pii),
-        max_orders=args.max_orders,
+        controls=ReconciliationControls(
+            max_orders=args.max_orders,
+            max_items=args.max_items,
+            max_shipments=args.max_shipments,
+            concurrency=args.concurrency,
+            sleep_ms=args.sleep_ms,
+            error_threshold=args.error_threshold,
+            stop_on_rate_limit=bool(args.stop_on_rate_limit),
+            resume_after_order_id=(
+                str(args.resume_after_order_id).strip()
+                if args.resume_after_order_id is not None
+                else None
+            ),
+        ),
     )
 
 
@@ -513,6 +604,7 @@ async def collect_reconciliation_counts(
         approved_runtime=request.approved_runtime,
         write_enabled=request.write_enabled,
         aggregates=aggregates,
+        controls=request.controls,
     )
 
 
@@ -574,7 +666,101 @@ async def _collect_historical_meli_expected_counts(
         approved_runtime=request.approved_runtime,
         include_buyer_address_pii=request.include_buyer_address_pii,
         max_orders=request.max_orders,
+        max_items=request.controls.max_items,
+        max_shipments=request.controls.max_shipments,
+        resume_after_order_id=request.controls.resume_after_order_id,
     )
+
+
+async def execute_reconciliation_write(
+    *, db: Any, request: ReconciliationRequest
+) -> dict[str, int]:
+    if request.dry_run or not request.write_enabled:
+        return {}
+    if not request.approved_runtime:
+        raise ValueError("approved_runtime is required for write reconciliation")
+    if request.controls.sleep_ms > 0:
+        await asyncio.sleep(request.controls.sleep_ms / 1000)
+
+    from zeler_sheets.historical_meli_backfill import run_historical_meli_backfill
+    from zeler_sheets.sheetseller_backfill import (
+        run_item_detail_enrichment,
+        run_sheetseller_backfill,
+    )
+
+    gateways = create_runtime_historical_meli_gateways()
+    summary = await run_historical_meli_backfill(
+        db=db,
+        gateway=gateways.gateway,
+        order_detail_gateway=gateways.order_detail_gateway,
+        seller_id=request.seller_id,
+        date_from=request.date_range.date_from,
+        date_to=request.date_range.date_to,
+        dry_run=False,
+        approved_runtime=request.approved_runtime,
+        include_buyer_address_pii=request.include_buyer_address_pii,
+        max_orders=request.controls.max_orders,
+        max_items=request.controls.max_items,
+        max_shipments=request.controls.max_shipments,
+        resume_after_order_id=request.controls.resume_after_order_id,
+    )
+    _enforce_write_count_safety_controls(
+        _write_counts_from_summary(summary), controls=request.controls
+    )
+    item_summaries = await _run_bounded_item_detail_enrichment(
+        db=db,
+        gateway=gateways.gateway,
+        request=request,
+        item_ids=_summary_ref_list(summary, "item_ids"),
+        enrichment_runner=run_item_detail_enrichment,
+    )
+    _enforce_write_count_safety_controls(
+        _combined_write_counts(
+            historical_summary=summary,
+            item_summaries=item_summaries,
+            formula_summary=None,
+        ),
+        controls=request.controls,
+    )
+    formula_summary = await run_sheetseller_backfill(
+        db=db,
+        seller_id=request.seller_id,
+        dry_run=False,
+    )
+    counts = _combined_write_counts(
+        historical_summary=summary,
+        item_summaries=item_summaries,
+        formula_summary=formula_summary,
+    )
+    _enforce_write_count_safety_controls(counts, controls=request.controls)
+    return counts
+
+
+async def _run_bounded_item_detail_enrichment(
+    *,
+    db: Any,
+    gateway: Any,
+    request: ReconciliationRequest,
+    item_ids: Sequence[str],
+    enrichment_runner: Callable[..., Awaitable[Any]],
+) -> tuple[Any, ...]:
+    if not item_ids:
+        return ()
+    semaphore = asyncio.Semaphore(request.controls.concurrency)
+
+    async def run_one(item_id: str) -> Any:
+        async with semaphore:
+            return await enrichment_runner(
+                db=db,
+                gateway=gateway,
+                seller_id=request.seller_id,
+                dry_run=False,
+                sale_price_enabled=True,
+                listing_fixed_fee_enabled=True,
+                item_ids=(item_id,),
+            )
+
+    return tuple(await asyncio.gather(*(run_one(item_id) for item_id in item_ids)))
 
 
 def build_phase2_runtime_contract(
@@ -813,6 +999,14 @@ async def _run_cli(args: argparse.Namespace) -> ReconciliationSummary:
         db = handle.db if isinstance(handle, RuntimeDatabase) else handle
         expected = await collect_expected_read_model_counts(db=db, request=request)
         summary = await collect_reconciliation_counts(db=db, request=request, expected=expected)
+        if request.write_enabled:
+            _enforce_write_safety_controls(summary=summary, controls=request.controls)
+            write_counts = await execute_reconciliation_write(db=db, request=request)
+            _enforce_write_count_safety_controls(write_counts, controls=request.controls)
+            summary = replace(
+                summary,
+                write_counts=write_counts,
+            )
         if bool(args.emit_phase2_contract):
             summary = replace(
                 summary,
@@ -926,6 +1120,15 @@ def _summary_ref_set(summary: Any, name: str) -> frozenset[str] | None:
     return frozenset(refs)
 
 
+def _summary_ref_list(summary: Any, name: str) -> list[str]:
+    raw = _summary_value(summary, name)
+    if raw is None:
+        return []
+    if not isinstance(raw, Sequence) or isinstance(raw, (str, bytes, bytearray)):
+        return []
+    return list(dict.fromkeys(normalized for value in raw if (normalized := str(value).strip())))
+
+
 def _summary_optional_int(summary: Any, name: str) -> int | None:
     raw = _summary_value(summary, name)
     try:
@@ -980,6 +1183,159 @@ def _positive_int(value: str) -> int:
     if parsed < 1:
         raise argparse.ArgumentTypeError("must be greater than zero")
     return parsed
+
+
+def _non_negative_int(value: str) -> int:
+    parsed = int(value)
+    if parsed < 0:
+        raise argparse.ArgumentTypeError("must be zero or greater")
+    return parsed
+
+
+def _write_counts_from_summary(summary: Any) -> dict[str, int]:
+    fields = (
+        "planned_orders",
+        "planned_items",
+        "planned_shipments",
+        "written_orders",
+        "written_items",
+        "written_shipments",
+        "item_detail_missing",
+        "redacted_errors",
+    )
+    counts: dict[str, int] = {}
+    for field_name in fields:
+        value = getattr(summary, field_name, None)
+        if isinstance(value, int):
+            counts[field_name] = value
+    return counts
+
+
+def _combined_write_counts(
+    *, historical_summary: Any, item_summaries: Sequence[Any], formula_summary: Any | None
+) -> dict[str, int]:
+    counts = _write_counts_from_summary(historical_summary)
+    counts["item_detail_items_planned"] = sum(
+        _summary_int(summary, "items_planned") for summary in item_summaries
+    )
+    counts["item_detail_items_updated"] = sum(
+        _summary_int(summary, "items_updated") for summary in item_summaries
+    )
+    diagnostics = _item_detail_diagnostic_counts(item_summaries)
+    diagnostic_total = sum(diagnostics.values())
+    if diagnostic_total:
+        counts["item_detail_diagnostics"] = diagnostic_total
+        rate_limit_total = sum(
+            count
+            for reason, count in diagnostics.items()
+            if _diagnostic_reason_is_rate_limit(reason)
+        )
+        if rate_limit_total:
+            counts["item_detail_rate_limit"] = rate_limit_total
+        counts.update(_sanitized_item_detail_diagnostic_counts(diagnostics))
+    if formula_summary is not None:
+        counts["formula_row_upserts"] = _summary_int(formula_summary, "formula_row_upserts")
+        counts["sku_index_upserts"] = _summary_int(formula_summary, "sku_index_upserts")
+    return counts
+
+
+def _item_detail_diagnostic_counts(item_summaries: Sequence[Any]) -> dict[str, int]:
+    merged: dict[str, int] = {}
+    for summary in item_summaries:
+        raw_counts = _summary_value(summary, "diagnostic_reason_counts")
+        if not isinstance(raw_counts, Mapping):
+            continue
+        for raw_reason, raw_count in raw_counts.items():
+            try:
+                count = int(raw_count)
+            except (TypeError, ValueError):
+                continue
+            if count <= 0:
+                continue
+            reason = _safe_diagnostic_reason_key(raw_reason)
+            if reason is None:
+                continue
+            merged[reason] = merged.get(reason, 0) + count
+    return dict(sorted(merged.items()))
+
+
+def _sanitized_item_detail_diagnostic_counts(
+    diagnostic_counts: Mapping[str, int],
+) -> dict[str, int]:
+    return {
+        f"item_detail_diagnostic_{reason}": count for reason, count in diagnostic_counts.items()
+    }
+
+
+def _safe_diagnostic_reason_key(value: Any) -> str | None:
+    normalized = str(value).strip().lower()
+    if not normalized:
+        return None
+    safe = "".join(character if character.isalnum() else "_" for character in normalized)
+    collapsed = "_".join(part for part in safe.split("_") if part)
+    return collapsed[:96] or None
+
+
+def _diagnostic_reason_is_rate_limit(reason: str) -> bool:
+    return any(marker in reason for marker in ("rate_limit", "rate_limited", "http_429"))
+
+
+def _summary_int(summary: Any, name: str) -> int:
+    value = _summary_value(summary, name)
+    return value if isinstance(value, int) else 0
+
+
+def _enforce_write_safety_controls(
+    *, summary: ReconciliationSummary, controls: ReconciliationControls
+) -> None:
+    if controls.stop_on_rate_limit and _summary_issue_count(summary, "rate_limit") > 0:
+        raise ValueError("rate_limit")
+    threshold = controls.error_threshold
+    if threshold is not None and _summary_error_count(summary) >= threshold:
+        raise ValueError("error_threshold")
+
+
+def _enforce_write_count_safety_controls(
+    counts: Mapping[str, int], *, controls: ReconciliationControls
+) -> None:
+    if controls.stop_on_rate_limit and _write_count_rate_limit_count(counts) > 0:
+        raise ValueError("rate_limit")
+    threshold = controls.error_threshold
+    if threshold is not None and _write_count_error_count(counts) >= threshold:
+        raise ValueError("error_threshold")
+
+
+def _write_count_error_count(counts: Mapping[str, int]) -> int:
+    return int(counts.get("redacted_errors", 0)) + int(counts.get("item_detail_diagnostics", 0))
+
+
+def _write_count_rate_limit_count(counts: Mapping[str, int]) -> int:
+    return int(counts.get("item_detail_rate_limit", 0))
+
+
+def _summary_error_count(summary: ReconciliationSummary) -> int:
+    total = 0
+    for aggregate in summary.aggregates:
+        total += aggregate.error_count
+        total += sum(
+            1
+            for issue in aggregate.issues
+            if issue.code
+            in {
+                "auth_error",
+                "expected_unavailable",
+                "query_anomaly",
+                "rate_limit",
+                "validator_or_index_anomaly",
+            }
+        )
+    return total
+
+
+def _summary_issue_count(summary: ReconciliationSummary, code: str) -> int:
+    return sum(
+        1 for aggregate in summary.aggregates for issue in aggregate.issues if issue.code == code
+    )
 
 
 if __name__ == "__main__":

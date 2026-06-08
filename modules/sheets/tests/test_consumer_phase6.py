@@ -13,6 +13,12 @@ class FakeCursor:
     def __init__(self, docs: list[dict[str, Any]]) -> None:
         self._docs = docs
 
+    def sort(self, sort_spec: list[tuple[str, int]]) -> FakeCursor:
+        docs = list(self._docs)
+        for key, direction in reversed(sort_spec):
+            docs.sort(key=lambda doc: str(_nested_value(doc, key) or ""), reverse=direction < 0)
+        return FakeCursor(docs)
+
     async def to_list(self, *, length: int | None = None) -> list[dict[str, Any]]:
         return self._docs[:length]
 
@@ -56,8 +62,14 @@ class FakeCollection:
         return FakeWriteResult(matched_count=0, modified_count=0)
 
     async def update_one(
-        self, filter_spec: dict[str, Any], update: dict[str, Any], *, upsert: bool = False
+        self,
+        filter_spec: dict[str, Any],
+        update: dict[str, Any],
+        *,
+        upsert: bool = False,
+        bypass_document_validation: bool = False,
     ) -> FakeWriteResult:
+        _ = bypass_document_validation
         for doc in self.docs:
             if _matches_filter(doc, filter_spec):
                 for path, value in update.get("$set", {}).items():
@@ -81,6 +93,10 @@ def _matches_filter(document: dict[str, Any], filter_spec: dict[str, Any]) -> bo
                 return False
             continue
         actual = _nested_value(document, key)
+        if isinstance(expected, dict) and "$in" in expected:
+            if actual not in expected["$in"]:
+                return False
+            continue
         if isinstance(expected, dict) and "$exists" in expected:
             if (actual is not None) != expected["$exists"]:
                 return False
@@ -152,7 +168,7 @@ class FakeDb:
 
 class FakeGatewayClient:
     def __init__(self) -> None:
-        self.calls: list[tuple[int, str]] = []
+        self.calls: list[tuple[Any, str]] = []
 
     async def fetch_resource(self, *, seller_id: int, path: str) -> dict[str, Any]:
         self.calls.append((seller_id, path))
@@ -168,6 +184,35 @@ class FakeGatewayClient:
             "date_created": "2026-04-20T12:30:00Z",
             "last_updated": "2026-04-24T12:30:00Z",
         }
+
+
+class EnrichmentGatewayClient(FakeGatewayClient):
+    async def fetch_resource(self, *, seller_id: int, path: str) -> dict[str, Any]:
+        self.calls.append((seller_id, path))
+        item_resource = {
+            "id": "MLA123",
+            "seller_id": str(seller_id),
+            "title": "Premium widget",
+            "status": "active",
+            "price": "149.99",
+            "base_price": "149.99",
+            "available_quantity": 7,
+            "category_id": "MLA123",
+            "site_id": "MLA",
+            "currency_id": "ARS",
+            "listing_type_id": "gold_special",
+            "shipping": {"free_shipping": True, "mode": "me2"},
+            "attributes": [{"id": "SELLER_SKU", "value_name": "sku-123"}],
+            "date_created": "2026-04-20T12:30:00Z",
+            "last_updated": "2026-04-24T12:30:00Z",
+        }
+        if path == "/items/MLA123":
+            return item_resource
+        if path == "/items?ids=MLA123":
+            return {"results": [{"code": 200, "body": item_resource}]}
+        if path == f"/users/{seller_id}/shipping_options/free?item_id=MLA123":
+            return {"coverage": {"all_country": {"list_cost": "83.25"}}}
+        raise AssertionError(path)
 
 
 class FakeSheetsClient:
@@ -275,6 +320,43 @@ async def test_supported_event_persists_even_without_export_config() -> None:
     assert gateway.calls == [(123456789, "/items/MLA123")]
     assert db["items"].docs[0]["_id"] == "MLA123"
     assert sheets.rows == []
+    assert idempotency.marked == ["items:/items/MLA123:event-1"]
+
+
+@pytest.mark.asyncio
+async def test_item_event_enrichment_wiring_refreshes_formula_rows_when_enabled() -> None:
+    gateway = EnrichmentGatewayClient()
+    sheets = FakeSheetsClient()
+    idempotency = FakeIdempotency()
+    db = FakeDb(export=None)
+    handler = SheetsEventHandler(
+        db=db,
+        gateway_client=gateway,
+        sheets_client=sheets,
+        idempotency_store=idempotency,
+        zelerdata_enrichment_enabled=True,
+    )
+
+    result = await handler.handle(
+        SheetsEvent(
+            event_id="event-1",
+            event_type="items.updated",
+            seller_id=123456789,
+            resource="/items/MLA123",
+            idempotency_key="items:/items/MLA123:event-1",
+        )
+    )
+
+    assert result == "no_export"
+    assert ("123456789", "/items?ids=MLA123") in gateway.calls
+    assert (
+        "123456789",
+        "/users/123456789/shipping_options/free?item_id=MLA123",
+    ) in gateway.calls
+    item = db["items"].docs[0]
+    assert item["seller_shipping_cost"].to_decimal().to_eng_string() == "83.25"
+    formula_row = db["sheets_item_formula_rows"].docs[0]
+    assert formula_row["current"]["seller_shipping_cost"].to_decimal().to_eng_string() == "83.25"
     assert idempotency.marked == ["items:/items/MLA123:event-1"]
 
 

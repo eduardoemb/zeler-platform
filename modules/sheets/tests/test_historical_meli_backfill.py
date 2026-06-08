@@ -890,6 +890,70 @@ async def test_historical_backfill_dry_run_reports_item_detail_misses() -> None:
 
 
 @pytest.mark.asyncio
+async def test_historical_backfill_applies_bounded_refs_after_private_resume_cursor() -> None:
+    class MultiGateway:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, str]] = []
+
+        async def fetch_resource(self, *, seller_id: str, path: str) -> Any:
+            self.calls.append((seller_id, path))
+            if path.startswith("/orders/search?"):
+                return {
+                    "results": [{"id": 2001}, {"id": 2002}, {"id": 2003}],
+                    "paging": {"total": 3, "limit": 3, "offset": 0},
+                }
+            if path == "/items?ids=MLA2":
+                return [{"code": 200, "body": {**_item_detail(), "id": "MLA2"}}]
+            if path == "/shipments/3002":
+                return {**_shipment_detail(), "id": 3002, "order_id": 2002}
+            if path == "/shipments/3002/costs":
+                return _shipment_costs_payload()
+            raise AssertionError(f"Unexpected gateway path: {path}")
+
+    class MultiOrderGateway:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, str]] = []
+
+        async def fetch_resource(self, *, seller_id: str, path: str) -> Any:
+            self.calls.append((seller_id, path))
+            order_id = path.removeprefix("/orders/")
+            if order_id not in {"2002", "2003"}:
+                raise AssertionError(f"Unexpected order detail path: {path}")
+            order = _order_detail()
+            order["id"] = int(order_id)
+            order["shipping"] = {"id": int(order_id) + 1000}
+            order["order_items"][0]["item"]["id"] = f"MLA{order_id[-1]}"
+            return order
+
+    gateway = MultiGateway()
+    order_detail_gateway = MultiOrderGateway()
+
+    summary = await run_historical_meli_backfill(
+        db=FakeDb(),
+        gateway=gateway,
+        order_detail_gateway=order_detail_gateway,
+        seller_id="82453304",
+        date_from="2026-05-01",
+        date_to="2026-05-01",
+        dry_run=True,
+        max_orders=3,
+        max_items=1,
+        max_shipments=1,
+        resume_after_order_id="2001",
+    )
+
+    gateway_paths = [path for _, path in gateway.calls]
+    assert [path for _, path in order_detail_gateway.calls] == ["/orders/2002", "/orders/2003"]
+    assert summary.order_ids == ["2002", "2003"]
+    assert summary.item_ids == ["MLA2"]
+    assert summary.shipment_ids == ["3002"]
+    assert summary.items_fetched == 1
+    assert summary.shipments_fetched == 1
+    assert "/items?ids=MLA3" not in gateway_paths
+    assert "/shipments/3003" not in gateway_paths
+
+
+@pytest.mark.asyncio
 async def test_historical_backfill_write_fails_before_mutation_when_item_details_missing() -> None:
     db = FakeDb()
     gateway = FakeGateway(return_item_detail=False)

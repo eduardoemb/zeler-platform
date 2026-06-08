@@ -121,6 +121,451 @@
       "date_created": {
         "bsonType": "date"
       },
+      "enrichment_state": {
+        "additionalProperties": false,
+        "bsonType": [
+          "object",
+          "null"
+        ],
+        "properties": {
+          "current_promotion": {
+            "additionalProperties": false,
+            "bsonType": [
+              "object",
+              "null"
+            ],
+            "properties": {
+              "basis": {
+                "additionalProperties": false,
+                "bsonType": [
+                  "object",
+                  "null"
+                ],
+                "properties": {
+                  "billable_weight": {
+                    "bsonType": [
+                      "decimal",
+                      "double",
+                      "int",
+                      "long",
+                      "null"
+                    ]
+                  },
+                  "category_id": {
+                    "bsonType": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "currency_id": {
+                    "bsonType": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "listing_type_id": {
+                    "bsonType": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "logistic_type": {
+                    "bsonType": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "price": {
+                    "bsonType": [
+                      "decimal",
+                      "double",
+                      "int",
+                      "long",
+                      "null"
+                    ]
+                  },
+                  "shipping_mode": {
+                    "bsonType": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "site_id": {
+                    "bsonType": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "tags": {
+                    "bsonType": "array"
+                  }
+                }
+              },
+              "basis_hash": {
+                "bsonType": [
+                  "string",
+                  "null"
+                ]
+              },
+              "reason": {
+                "bsonType": [
+                  "string",
+                  "null"
+                ]
+              },
+              "source": {
+                "bsonType": "string"
+              },
+              "status": {
+                "enum": [
+                  "trusted",
+                  "authoritative_absent",
+                  "unauthorized",
+                  "transient",
+                  "basis_mismatch",
+                  "malformed",
+                  "stale"
+                ]
+              },
+              "synced_at": {
+                "bsonType": "date"
+              }
+            },
+            "required": [
+              "source",
+              "status",
+              "synced_at"
+            ]
+          },
+          "listing_fee_projection": {
+            "additionalProperties": false,
+            "bsonType": [
+              "object",
+              "null"
+            ],
+            "properties": {
+              "basis": {
+                "additionalProperties": false,
+                "bsonType": [
+                  "object",
+                  "null"
+                ],
+                "properties": {
+                  "billable_weight": {
+                    "bsonType": [
+                      "decimal",
+                      "double",
+                      "int",
+                      "long",
+                      "null"
+                    ]
+                  },
+                  "category_id": {
+                    "bsonType": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "currency_id": {
+                    "bsonType": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "listing_type_id": {
+                    "bsonType": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "logistic_type": {
+                    "bsonType": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "price": {
+                    "bsonType": [
+                      "decimal",
+                      "double",
+                      "int",
+                      "long",
+                      "null"
+                    ]
+                  },
+                  "shipping_mode": {
+                    "bsonType": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "site_id": {
+                    "bsonType": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "tags": {
+                    "bsonType": "array"
+                  }
+                }
+              },
+              "basis_hash": {
+                "bsonType": [
+                  "string",
+                  "null"
+                ]
+              },
+              "reason": {
+                "bsonType": [
+                  "string",
+                  "null"
+                ]
+              },
+              "source": {
+                "bsonType": "string"
+              },
+              "status": {
+                "enum": [
+                  "trusted",
+                  "authoritative_absent",
+                  "unauthorized",
+                  "transient",
+                  "basis_mismatch",
+                  "malformed",
+                  "stale"
+                ]
+              },
+              "synced_at": {
+                "bsonType": "date"
+              }
+            },
+            "required": [
+              "source",
+              "status",
+              "synced_at"
+            ]
+          },
+          "listing_price_fixed_fee": {
+            "additionalProperties": false,
+            "bsonType": [
+              "object",
+              "null"
+            ],
+            "properties": {
+              "basis": {
+                "additionalProperties": false,
+                "bsonType": [
+                  "object",
+                  "null"
+                ],
+                "properties": {
+                  "billable_weight": {
+                    "bsonType": [
+                      "decimal",
+                      "double",
+                      "int",
+                      "long",
+                      "null"
+                    ]
+                  },
+                  "category_id": {
+                    "bsonType": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "currency_id": {
+                    "bsonType": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "listing_type_id": {
+                    "bsonType": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "logistic_type": {
+                    "bsonType": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "price": {
+                    "bsonType": [
+                      "decimal",
+                      "double",
+                      "int",
+                      "long",
+                      "null"
+                    ]
+                  },
+                  "shipping_mode": {
+                    "bsonType": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "site_id": {
+                    "bsonType": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "tags": {
+                    "bsonType": "array"
+                  }
+                }
+              },
+              "basis_hash": {
+                "bsonType": [
+                  "string",
+                  "null"
+                ]
+              },
+              "reason": {
+                "bsonType": [
+                  "string",
+                  "null"
+                ]
+              },
+              "source": {
+                "bsonType": "string"
+              },
+              "status": {
+                "enum": [
+                  "trusted",
+                  "authoritative_absent",
+                  "unauthorized",
+                  "transient",
+                  "basis_mismatch",
+                  "malformed",
+                  "stale"
+                ]
+              },
+              "synced_at": {
+                "bsonType": "date"
+              }
+            },
+            "required": [
+              "source",
+              "status",
+              "synced_at"
+            ]
+          },
+          "seller_shipping_cost": {
+            "additionalProperties": false,
+            "bsonType": [
+              "object",
+              "null"
+            ],
+            "properties": {
+              "basis": {
+                "additionalProperties": false,
+                "bsonType": [
+                  "object",
+                  "null"
+                ],
+                "properties": {
+                  "billable_weight": {
+                    "bsonType": [
+                      "decimal",
+                      "double",
+                      "int",
+                      "long",
+                      "null"
+                    ]
+                  },
+                  "category_id": {
+                    "bsonType": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "currency_id": {
+                    "bsonType": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "listing_type_id": {
+                    "bsonType": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "logistic_type": {
+                    "bsonType": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "price": {
+                    "bsonType": [
+                      "decimal",
+                      "double",
+                      "int",
+                      "long",
+                      "null"
+                    ]
+                  },
+                  "shipping_mode": {
+                    "bsonType": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "site_id": {
+                    "bsonType": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "tags": {
+                    "bsonType": "array"
+                  }
+                }
+              },
+              "basis_hash": {
+                "bsonType": [
+                  "string",
+                  "null"
+                ]
+              },
+              "reason": {
+                "bsonType": [
+                  "string",
+                  "null"
+                ]
+              },
+              "source": {
+                "bsonType": "string"
+              },
+              "status": {
+                "enum": [
+                  "trusted",
+                  "authoritative_absent",
+                  "unauthorized",
+                  "transient",
+                  "basis_mismatch",
+                  "malformed",
+                  "stale"
+                ]
+              },
+              "synced_at": {
+                "bsonType": "date"
+              }
+            },
+            "required": [
+              "source",
+              "status",
+              "synced_at"
+            ]
+          }
+        }
+      },
       "health": {
         "bsonType": [
           "double",
@@ -154,6 +599,15 @@
           "null"
         ],
         "properties": {
+          "billable_weight": {
+            "bsonType": [
+              "decimal",
+              "double",
+              "int",
+              "long",
+              "null"
+            ]
+          },
           "category_id": {
             "bsonType": "string"
           },
@@ -190,6 +644,12 @@
           "listing_type_id": {
             "bsonType": "string"
           },
+          "logistic_type": {
+            "bsonType": [
+              "string",
+              "null"
+            ]
+          },
           "meli_percentage_fee": {
             "bsonType": [
               "decimal",
@@ -223,6 +683,12 @@
               "long"
             ]
           },
+          "shipping_mode": {
+            "bsonType": [
+              "string",
+              "null"
+            ]
+          },
           "site_id": {
             "bsonType": "string"
           },
@@ -233,6 +699,9 @@
           },
           "synced_at": {
             "bsonType": "date"
+          },
+          "tags": {
+            "bsonType": "array"
           }
         },
         "required": [

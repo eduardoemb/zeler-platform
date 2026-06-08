@@ -32,7 +32,80 @@
         ]
       },
       "items": {
-        "bsonType": "array"
+        "bsonType": "array",
+        "items": {
+          "additionalProperties": false,
+          "bsonType": "object",
+          "properties": {
+            "item_id": {
+              "bsonType": "string"
+            },
+            "qty": {
+              "bsonType": [
+                "int",
+                "long"
+              ]
+            },
+            "sale_fee": {
+              "bsonType": [
+                "decimal",
+                "double",
+                "int",
+                "long",
+                "null"
+              ]
+            },
+            "sale_fee_source": {
+              "enum": [
+                "/orders/{id}",
+                null
+              ]
+            },
+            "sale_fee_synced_at": {
+              "bsonType": [
+                "date",
+                "null"
+              ]
+            },
+            "seller_custom_field": {
+              "bsonType": [
+                "string",
+                "null"
+              ]
+            },
+            "seller_sku": {
+              "bsonType": [
+                "string",
+                "null"
+              ]
+            },
+            "sku": {
+              "bsonType": [
+                "string",
+                "null"
+              ]
+            },
+            "unit_price": {
+              "bsonType": [
+                "decimal",
+                "double",
+                "int",
+                "long"
+              ]
+            },
+            "variation_id": {
+              "bsonType": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "item_id",
+            "qty",
+            "unit_price"
+          ]
+        }
       },
       "meli_pack_id": {
         "bsonType": [

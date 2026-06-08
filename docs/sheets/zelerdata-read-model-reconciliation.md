@@ -32,8 +32,22 @@ uv run python -m infra.operations.zelerdata_read_model_reconcile \
 | `--confirm-approved-runtime` | Every run | Confirms execution from the approved VM/VPC/runtime. |
 | `--confirm-production-write` | With `--write` | Confirms separate production-write authorization. This flag is not enough by itself; the user must explicitly approve the scoped write phase. |
 | `--max-orders` | Bounded trials / PII mode | Caps order processing for trial runs and is required for buyer/address PII mode. |
+| `--max-items` | Bounded write trials | Caps item reconciliation scope for staged runs. |
+| `--max-shipments` | Bounded write trials | Caps shipment reconciliation scope for staged runs. |
+| `--concurrency` | Optional | Limits concurrent runtime fetch/write units; keep low during pilot runs. |
+| `--sleep-ms` | Optional | Adds a throttle between bounded write phases to protect MercadoLibre and Mongo. |
+| `--error-threshold` | Optional | Stops when sanitized error counters reach the configured threshold. |
+| `--stop-on-rate-limit` | Optional | Stops instead of continuing when rate-limit diagnostics appear. |
+| `--resume-after-order-id` | Resume only | Private cursor for approved runtime continuation. Output reports only that a cursor was provided. |
 | `--include-buyer-address-pii` | Exceptional | Allows bounded buyer/address processing in approved runtime; output remains count-only. |
 | `--emit-phase2-contract` | Phase 2 contract runs | Prints the read-only preflight and dry-run contract alongside the sanitized summary. |
+
+## Rollout and rollback
+
+- Keep `ZELERDATA_ENRICHMENT_ENABLED` disabled until the additive models and formula readers are deployed.
+- Pilot with `ZELERDATA_ENRICHMENT_ENABLED=1`, `--dry-run`, `--max-orders`, `--max-items`, `--max-shipments`, and low `--concurrency` from the approved VM/VPC/runtime only.
+- Use `--sleep-ms`, `--error-threshold`, `--stop-on-rate-limit`, and `--resume-after-order-id` for staged continuation after sanitized counts are reviewed.
+- Rollback is `rollback-to-NA`: disable `ZELERDATA_ENRICHMENT_ENABLED` and stop reconciliation writes. Formula readers must return `NA` when trusted snapshots are absent, stale, unauthorized, malformed, or basis-mismatched.
 
 ## Phase 2 read-only contract
 

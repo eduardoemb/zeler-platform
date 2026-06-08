@@ -1,15 +1,26 @@
 from __future__ import annotations
 
+import os
 from collections.abc import Iterable
 from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol
+from urllib.parse import parse_qsl, urlsplit
 
 import httpx
 
 from zeler_bootstrap.state_machine import BootstrapStateMachine
 from zeler_platform_core.meli_timezones import resolve_meli_timezone
-from zeler_platform_core.models import Claim, Item, Message, Order, Question, Shipment
+from zeler_platform_core.models import (
+    Claim,
+    Item,
+    Message,
+    Order,
+    Question,
+    Shipment,
+    ShipmentRealShippingCostProjection,
+)
 from zeler_platform_core.models.base import current_schema_version
+from zeler_sheets.sheetseller_backfill import run_item_detail_enrichment, run_sheetseller_backfill
 
 MELI_ITEMS_BATCH_SIZE = 20
 SELLER_SKU_ATTRIBUTE_ID = "SELLER_SKU"
@@ -31,6 +42,17 @@ class BootstrapDatabase(Protocol):
 
 class BootstrapPublisher(Protocol):
     async def publish_bootstrap_completed(self, job: dict[str, Any]) -> None: ...
+
+
+class _BootstrapMeliItemGatewayAdapter:
+    def __init__(self, gateway: BootstrapGatewayClient) -> None:
+        self._gateway = gateway
+
+    async def fetch_resource(self, *, seller_id: str, path: str) -> Any:
+        _ = seller_id
+        parsed = urlsplit(path)
+        params = dict(parse_qsl(parsed.query)) or None
+        return await self._gateway.get(parsed.path, params)
 
 
 class InMemoryPublisher:
@@ -55,11 +77,15 @@ def _chunks(items: list[str], size: int) -> Iterable[list[str]]:
         yield items[index : index + size]
 
 
-def _normalize_order_items(raw_items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _normalize_order_items(
+    raw_items: list[dict[str, Any]], *, sale_fee_synced_at: Any | None = None
+) -> list[dict[str, Any]]:
     normalized: list[dict[str, Any]] = []
     for raw_item in raw_items:
         if "item_id" in raw_item and "qty" in raw_item:
-            normalized.append(raw_item)
+            order_item = dict(raw_item)
+            _copy_sale_fee_metadata(order_item, raw_item, sale_fee_synced_at=sale_fee_synced_at)
+            normalized.append(order_item)
             continue
         item = raw_item.get("item") or {}
         order_item = {
@@ -71,8 +97,20 @@ def _normalize_order_items(raw_items: list[dict[str, Any]]) -> list[dict[str, An
         _copy_optional_identity(order_item, "sku", raw_item, item)
         _copy_optional_identity(order_item, "seller_sku", raw_item, item)
         _copy_optional_identity(order_item, "seller_custom_field", raw_item, item)
+        _copy_sale_fee_metadata(order_item, raw_item, sale_fee_synced_at=sale_fee_synced_at)
         normalized.append(order_item)
     return normalized
+
+
+def _copy_sale_fee_metadata(
+    target: dict[str, Any], raw_item: dict[str, Any], *, sale_fee_synced_at: Any | None
+) -> None:
+    sale_fee = raw_item.get("sale_fee")
+    if sale_fee is None or sale_fee_synced_at is None:
+        return
+    target["sale_fee"] = sale_fee
+    target["sale_fee_source"] = "/orders/{id}"
+    target["sale_fee_synced_at"] = sale_fee_synced_at
 
 
 def _copy_optional_identity(
@@ -232,6 +270,26 @@ class ItemsStage:
             )
             if cursor is None:
                 break
+        await _populate_zelerdata_item_read_models(
+            gateway=self.gateway,
+            database=self.database,
+            seller_id=seller_id,
+        )
+
+
+async def _populate_zelerdata_item_read_models(
+    *, gateway: BootstrapGatewayClient, database: BootstrapDatabase, seller_id: str
+) -> None:
+    if _env_flag_enabled("ZELERDATA_ENRICHMENT_ENABLED"):
+        await run_item_detail_enrichment(
+            db=database,
+            gateway=_BootstrapMeliItemGatewayAdapter(gateway),
+            seller_id=seller_id,
+            dry_run=False,
+            sale_price_enabled=_env_flag_enabled("ZELERDATA_SALE_PRICE_ENABLED"),
+            listing_fixed_fee_enabled=_env_flag_enabled("ZELERDATA_LISTING_FIXED_FEE_ENABLED"),
+        )
+    await run_sheetseller_backfill(db=database, seller_id=seller_id, dry_run=False)
 
 
 class OrdersStage:
@@ -266,7 +324,15 @@ class OrdersStage:
                     "date_created": raw["date_created"],
                     "date_closed": raw.get("date_closed"),
                     "total_amount": raw["total_amount"],
-                    "items": _normalize_order_items(raw.get("items") or raw.get("order_items", [])),
+                    "items": _normalize_order_items(
+                        raw.get("items") or raw.get("order_items", []),
+                        sale_fee_synced_at=(
+                            raw.get("last_updated")
+                            or raw.get("date_closed")
+                            or raw.get("date_created")
+                            or _now()
+                        ),
+                    ),
                     "shipment_id": shipment_id,
                     "meli_pack_id": _meli_pack_id(raw),
                     "schema_version": 1,
@@ -381,16 +447,100 @@ class ShipmentsStage:
         self.database = database
 
     async def run(self, job: dict[str, Any], state_machine: BootstrapStateMachine) -> None:
+        seller_id = str(job["seller_id"])
         shipment_ids = job.get("checkpoints", {}).get("orders", {}).get("shipment_ids", [])
         written: list[str] = []
         for shipment_id in shipment_ids:
             raw = await self.gateway.get(f"/shipments/{shipment_id}")
+            shipment_cost = await _shipment_real_shipping_cost_snapshot(
+                gateway=self.gateway,
+                seller_id=seller_id,
+                shipment_id=str(raw.get("id") or shipment_id),
+                synced_at=_now(),
+            )
+            payload = {
+                **raw,
+                "_id": raw["id"],
+                "seller_id": seller_id,
+                "receiver_address": _receiver_address_snapshot(raw),
+                "schema_version": 1,
+            }
+            if shipment_cost is not None:
+                payload["real_shipping_cost"] = shipment_cost
             document = Shipment.model_validate(
-                {**raw, "_id": raw["id"], "seller_id": job["seller_id"], "schema_version": 1}
-            ).model_dump(by_alias=True, mode="json")
+                payload,
+            ).model_dump(by_alias=True, mode="json", exclude_none=True)
             await _upsert(self.database["shipments"], document)
             written.append(str(document["_id"]))
         await state_machine.update_cursor(self.name, {"shipment_ids": written})
+
+
+async def _shipment_real_shipping_cost_snapshot(
+    *,
+    gateway: BootstrapGatewayClient,
+    seller_id: str,
+    shipment_id: str,
+    synced_at: datetime,
+) -> dict[str, Any] | None:
+    try:
+        costs_payload = await gateway.get(f"/shipments/{shipment_id}/costs")
+    except Exception:  # noqa: BLE001 - shipment cost enrichment fails closed without raw output.
+        return None
+    projection = ShipmentRealShippingCostProjection.from_meli_costs_payload(
+        costs_payload,
+        seller_id=seller_id,
+        synced_at=synced_at,
+    )
+    if projection is None:
+        return None
+    return projection.model_dump(mode="json")
+
+
+def _receiver_address_snapshot(resource: dict[str, Any]) -> dict[str, Any] | None:
+    raw_address = resource.get("receiver_address")
+    if not isinstance(raw_address, dict):
+        return None
+    snapshot = {
+        "name": _first_receiver_address_string(
+            raw_address.get("receiver_name"), raw_address.get("name")
+        ),
+        "street_name": _receiver_address_string(raw_address.get("street_name")),
+        "street_number": _receiver_address_string(raw_address.get("street_number")),
+        "neighborhood": _receiver_address_string(_named_value(raw_address.get("neighborhood"))),
+        "zip_code": _receiver_address_string(raw_address.get("zip_code")),
+        "city": _receiver_address_string(_named_value(raw_address.get("city"))),
+        "state": _receiver_address_string(_named_value(raw_address.get("state"))),
+        "country": _receiver_address_string(_named_value(raw_address.get("country"))),
+    }
+    sanitized = {key: value for key, value in snapshot.items() if value is not None}
+    return sanitized or None
+
+
+def _named_value(value: Any) -> Any:
+    if isinstance(value, dict):
+        return _receiver_address_string(value.get("name")) or _receiver_address_string(
+            value.get("id")
+        )
+    return value
+
+
+def _receiver_address_string(value: Any) -> str | None:
+    if value is None or isinstance(value, (dict, list, tuple, set, bytes, bytearray)):
+        return None
+    normalized = str(value).strip()
+    return normalized or None
+
+
+def _first_receiver_address_string(*values: Any) -> str | None:
+    for value in values:
+        normalized = _receiver_address_string(value)
+        if normalized is not None:
+            return normalized
+    return None
+
+
+def _env_flag_enabled(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 class ClaimsStage:

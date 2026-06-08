@@ -8,6 +8,7 @@ dependencies = [
   "httpx>=0.28.1",
   "motor>=3.7.1",
   "zeler_platform_core",
+  "zeler-sheets",
 ]
 
 [build-system]
@@ -19,3 +20,4 @@ packages = ["src/zeler_bootstrap"]
 
 [tool.uv.sources]
 zeler_platform_core = { workspace = true }
+zeler-sheets = { workspace = true }

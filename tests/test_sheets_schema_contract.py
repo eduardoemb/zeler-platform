@@ -23,6 +23,10 @@ LISTING_FEE_PROJECTION_REQUIRED_FIELDS = [
 ]
 LISTING_FEE_PROJECTION_FIELDS = [
     *LISTING_FEE_PROJECTION_REQUIRED_FIELDS,
+    "shipping_mode",
+    "logistic_type",
+    "billable_weight",
+    "tags",
     "gross_amount",
     "fixed_fee",
     "meli_percentage_fee",
@@ -40,6 +44,12 @@ def assert_bounded_listing_fee_projection_schema(projection: dict[str, Any]) -> 
     assert properties["site_id"] == {"bsonType": "string"}
     assert properties["currency_id"] == {"bsonType": "string"}
     assert properties["price"] == {"bsonType": ["decimal", "double", "int", "long"]}
+    assert properties["shipping_mode"] == {"bsonType": ["string", "null"]}
+    assert properties["logistic_type"] == {"bsonType": ["string", "null"]}
+    assert properties["billable_weight"] == {
+        "bsonType": ["decimal", "double", "int", "long", "null"]
+    }
+    assert properties["tags"] == {"bsonType": "array"}
     assert properties["sale_fee_amount"] == {"bsonType": ["decimal", "double", "int", "long"]}
     assert properties["percentage_fee"] == {"bsonType": ["decimal", "double", "int", "long"]}
     assert "raw_payload" not in properties

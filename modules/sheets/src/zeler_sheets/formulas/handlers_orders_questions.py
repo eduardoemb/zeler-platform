@@ -840,6 +840,9 @@ class _OrderLine:
         title: str,
         quantity: Decimal,
         unit_price: Decimal | None,
+        sale_fee: Decimal | None,
+        sale_fee_source: str | None,
+        sale_fee_synced_at: datetime | None,
         variation_id: str,
         enriched: bool,
     ) -> None:
@@ -848,6 +851,9 @@ class _OrderLine:
         self.title = title
         self.quantity = quantity
         self.unit_price = unit_price
+        self.sale_fee = sale_fee
+        self.sale_fee_source = sale_fee_source
+        self.sale_fee_synced_at = sale_fee_synced_at
         self.variation_id = variation_id
         self.enriched = enriched
 
@@ -1183,6 +1189,9 @@ def _order_lines(order: Mapping[str, Any], *, sku_resolver: _OrderSkuResolver) -
                 title=_item_title(item),
                 quantity=_item_quantity(item),
                 unit_price=_item_unit_price(item),
+                sale_fee=_item_sale_fee(item),
+                sale_fee_source=_item_sale_fee_source(item),
+                sale_fee_synced_at=_optional_datetime(item.get("sale_fee_synced_at")),
                 variation_id=_item_variation_id(item),
                 enriched=resolution.enriched,
             )
@@ -1201,6 +1210,7 @@ def _order_line_row(
     include_buyer_columns: bool,
 ) -> list[Any]:
     row = item_rows.get((line.sku, line.item_id))
+    commission_percent, commission_amount, commission_unit_cost = _realized_commission_values(line)
     values = [
         _sheet_datetime(order.get("date_created"), timezone=timezone),
         _document_id(order),
@@ -1210,15 +1220,30 @@ def _order_line_row(
         _sheet_number(line.quantity),
         "" if line.unit_price is None else _sheet_number(line.unit_price),
         _order_meli_pack_id(order),
-        NA_VALUE,
-        NA_VALUE,
-        _listing_fixed_fee(row),
+        commission_percent,
+        commission_amount,
+        commission_unit_cost,
         _shipment_real_shipping_cost_value(order, real_shipping_costs),
         order.get("status") or "",
     ]
     if include_buyer_columns:
         values.extend(_buyer_address_values(_receiver_address_for_order(order, receiver_addresses)))
     return values
+
+
+def _realized_commission_values(line: _OrderLine) -> tuple[Any, Any, Any]:
+    if (
+        line.sale_fee is None
+        or line.unit_price is None
+        or line.quantity <= 0
+        or line.unit_price <= 0
+        or line.sale_fee_source != "/orders/{id}"
+        or line.sale_fee_synced_at is None
+    ):
+        return NA_VALUE, NA_VALUE, NA_VALUE
+    unit_cost = line.sale_fee / line.quantity
+    percent = (unit_cost / line.unit_price) * Decimal("100")
+    return _sheet_number(percent), _sheet_number(line.sale_fee), _sheet_number(unit_cost)
 
 
 def _order_meli_pack_id(order: Mapping[str, Any]) -> str:
@@ -1600,6 +1625,18 @@ def _item_unit_price(item: Mapping[str, Any]) -> Decimal | None:
         if value is not None:
             return _decimal(value)
     return None
+
+
+def _item_sale_fee(item: Mapping[str, Any]) -> Decimal | None:
+    return _optional_non_negative_decimal(item.get("sale_fee"))
+
+
+def _item_sale_fee_source(item: Mapping[str, Any]) -> str | None:
+    value = item.get("sale_fee_source")
+    if value is None:
+        return None
+    normalized = str(value).strip()
+    return normalized or None
 
 
 def _order_in_range(order: Mapping[str, Any], date_range: _DateRange) -> bool:

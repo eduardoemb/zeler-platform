@@ -47,6 +47,99 @@ def test_exported_items_schema_includes_listing_price_fixed_fee_projection(tmp_p
     ]
 
 
+def test_exported_items_schema_includes_enrichment_state_metadata(tmp_path: Path) -> None:
+    export_schemas(tmp_path)
+    payload = json.loads((tmp_path / "items.json").read_text(encoding="utf-8"))
+    schema = payload["$jsonSchema"]
+    enrichment_state = schema["properties"]["enrichment_state"]
+    field_state = enrichment_state["properties"]["seller_shipping_cost"]
+    basis = field_state["properties"]["basis"]
+
+    assert enrichment_state["additionalProperties"] is False
+    assert set(enrichment_state["properties"]) == {
+        "seller_shipping_cost",
+        "current_promotion",
+        "listing_fee_projection",
+        "listing_price_fixed_fee",
+    }
+    assert field_state["additionalProperties"] is False
+    assert field_state["required"] == ["source", "status", "synced_at"]
+    assert field_state["properties"]["status"] == {
+        "enum": [
+            "trusted",
+            "authoritative_absent",
+            "unauthorized",
+            "transient",
+            "basis_mismatch",
+            "malformed",
+            "stale",
+        ]
+    }
+    assert basis["additionalProperties"] is False
+    assert basis["properties"]["price"] == {
+        "bsonType": ["decimal", "double", "int", "long", "null"]
+    }
+    for forbidden_field in ("raw_payload", "response", "token", "shipping_options"):
+        assert forbidden_field not in field_state["properties"]
+        assert forbidden_field not in basis["properties"]
+
+
+def test_exported_items_schema_allows_listing_fee_projection_basis_fields(
+    tmp_path: Path,
+) -> None:
+    export_schemas(tmp_path)
+    payload = json.loads((tmp_path / "items.json").read_text(encoding="utf-8"))
+    projection = payload["$jsonSchema"]["properties"]["listing_fee_projection"]
+
+    assert projection["additionalProperties"] is False
+    assert "shipping_mode" not in projection["required"]
+    assert "logistic_type" not in projection["required"]
+    assert "billable_weight" not in projection["required"]
+    assert "tags" not in projection["required"]
+    assert projection["properties"]["shipping_mode"] == {"bsonType": ["string", "null"]}
+    assert projection["properties"]["logistic_type"] == {"bsonType": ["string", "null"]}
+    assert projection["properties"]["billable_weight"] == {
+        "bsonType": ["decimal", "double", "int", "long", "null"]
+    }
+    assert projection["properties"]["tags"] == {"bsonType": "array"}
+
+
+def test_committed_formula_row_schema_allows_listing_fee_projection_basis_fields() -> None:
+    payload = json.loads(
+        Path("infra/mongo/schemas/sheets_item_formula_rows.json").read_text(encoding="utf-8")
+    )
+    projection = payload["$jsonSchema"]["properties"]["current"]["properties"][
+        "listing_fee_projection"
+    ]
+
+    assert projection["additionalProperties"] is False
+    assert "shipping_mode" not in projection["required"]
+    assert "logistic_type" not in projection["required"]
+    assert "billable_weight" not in projection["required"]
+    assert "tags" not in projection["required"]
+    assert projection["properties"]["shipping_mode"] == {"bsonType": ["string", "null"]}
+    assert projection["properties"]["logistic_type"] == {"bsonType": ["string", "null"]}
+    assert projection["properties"]["billable_weight"] == {
+        "bsonType": ["decimal", "double", "int", "long", "null"]
+    }
+    assert projection["properties"]["tags"] == {"bsonType": "array"}
+
+
+def test_exported_orders_schema_allows_realized_order_item_sale_fee(tmp_path: Path) -> None:
+    export_schemas(tmp_path)
+    payload = json.loads((tmp_path / "orders.json").read_text(encoding="utf-8"))
+    schema = payload["$jsonSchema"]
+    order_item = schema["properties"]["items"]["items"]
+
+    assert order_item["additionalProperties"] is False
+    assert order_item["required"] == ["item_id", "qty", "unit_price"]
+    assert order_item["properties"]["sale_fee"] == {
+        "bsonType": ["decimal", "double", "int", "long", "null"]
+    }
+    assert order_item["properties"]["sale_fee_source"] == {"enum": ["/orders/{id}", None]}
+    assert order_item["properties"]["sale_fee_synced_at"] == {"bsonType": ["date", "null"]}
+
+
 def test_module_registry_schema_exposes_optional_display_identity(tmp_path: Path) -> None:
     export_schemas(tmp_path)
     payload = json.loads((tmp_path / "module_registry.json").read_text(encoding="utf-8"))

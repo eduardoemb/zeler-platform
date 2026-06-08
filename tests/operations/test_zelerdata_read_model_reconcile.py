@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -21,6 +22,7 @@ from infra.operations.zelerdata_read_model_reconcile import (
     build_reconciliation_request,
     collect_expected_read_model_counts,
     collect_reconciliation_counts,
+    execute_reconciliation_write,
     validate_reconciliation_safety,
 )
 
@@ -97,6 +99,24 @@ class FakeHistoricalMeliSummary:
     order_ids: list[str]
     shipment_ids: list[str]
     item_ids: list[str]
+    planned_orders: int = 0
+    planned_items: int = 0
+    planned_shipments: int = 0
+    written_orders: int = 0
+    written_items: int = 0
+    written_shipments: int = 0
+    item_detail_missing: int = 0
+    redacted_errors: int = 0
+
+
+@dataclass(frozen=True)
+class FakeWriteSummary:
+    items_updated: int = 0
+    items_planned: int = 0
+    batches_fetched: int = 0
+    diagnostic_reason_counts: dict[str, int] | None = None
+    formula_row_upserts: int = 0
+    sku_index_upserts: int = 0
 
 
 def _matches_filter(document: dict[str, Any], filter_spec: dict[str, Any]) -> bool:
@@ -151,6 +171,23 @@ def _request() -> Any:
     )
 
 
+def _write_request(*, extra_args: list[str] | None = None) -> Any:
+    args = [
+        "--seller-id",
+        "82453304",
+        "--date-from",
+        "2026-06-01",
+        "--date-to",
+        "2026-06-04",
+        "--confirm-approved-runtime",
+        "--write",
+        "--confirm-production-write",
+    ]
+    if extra_args:
+        args.extend(extra_args)
+    return build_reconciliation_request(build_arg_parser().parse_args(args))
+
+
 def _dt(day: int) -> datetime:
     return datetime(2026, 6, day, tzinfo=UTC)
 
@@ -191,6 +228,69 @@ def test_reconciliation_request_parses_june_1_to_4_range_and_defaults_to_dry_run
     assert request.approved_runtime is True
     assert request.write_enabled is False
     assert request.max_orders is None
+
+
+def test_reconciliation_request_records_throttle_resume_and_bounds_without_leaking_cursor() -> None:
+    args = build_arg_parser().parse_args(
+        [
+            "--seller-id",
+            "82453304",
+            "--date-from",
+            "2026-06-01",
+            "--date-to",
+            "2026-06-04",
+            "--confirm-approved-runtime",
+            "--max-orders",
+            "25",
+            "--max-items",
+            "10",
+            "--max-shipments",
+            "5",
+            "--concurrency",
+            "2",
+            "--sleep-ms",
+            "250",
+            "--error-threshold",
+            "3",
+            "--stop-on-rate-limit",
+            "--resume-after-order-id",
+            "ORDER-PII-RESUME",
+        ]
+    )
+
+    request = build_reconciliation_request(args)
+    summary = ReconciliationSummary(
+        seller_id=request.seller_id,
+        date_from=request.date_range.date_from,
+        date_to=request.date_range.date_to,
+        dry_run=request.dry_run,
+        approved_runtime=request.approved_runtime,
+        write_enabled=request.write_enabled,
+        controls=request.controls,
+    )
+    output = summary.to_sanitized_dict()
+    output_json = json.dumps(output, sort_keys=True)
+
+    assert request.controls.max_orders == 25
+    assert request.controls.max_items == 10
+    assert request.controls.max_shipments == 5
+    assert request.controls.concurrency == 2
+    assert request.controls.sleep_ms == 250
+    assert request.controls.error_threshold == 3
+    assert request.controls.stop_on_rate_limit is True
+    assert request.controls.resume_after_order_id == "ORDER-PII-RESUME"
+    assert output["controls"] == {
+        "max_orders": 25,
+        "max_items": 10,
+        "max_shipments": 5,
+        "concurrency": 2,
+        "sleep_ms": 250,
+        "error_threshold": 3,
+        "stop_on_rate_limit": True,
+        "resume_cursor": "provided",
+    }
+    assert "ORDER-PII-RESUME" not in output_json
+    assert "82453304" not in output_json
 
 
 def test_reconciliation_request_rejects_local_runtime_even_for_dry_run() -> None:
@@ -248,6 +348,431 @@ def test_reconciliation_write_requires_separate_production_write_confirmation() 
 
     validate_reconciliation_safety(approved)
     assert build_reconciliation_request(approved).write_enabled is True
+
+
+@pytest.mark.asyncio
+async def test_reconciliation_write_runs_item_enrichment_and_formula_rebuild(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from infra.operations import zelerdata_read_model_reconcile
+
+    from zeler_sheets import historical_meli_backfill, sheetseller_backfill
+
+    calls: list[tuple[Any, ...]] = []
+
+    async def fake_historical_backfill(**kwargs: Any) -> FakeHistoricalMeliSummary:
+        calls.append(("historical", kwargs["dry_run"]))
+        return FakeHistoricalMeliSummary(
+            orders_found=1,
+            order_ids=["ORDER-PII-1"],
+            shipment_ids=["SHIP-PII-1"],
+            item_ids=["ITEM-PII-1", "ITEM-PII-2"],
+            planned_orders=1,
+            planned_items=2,
+            planned_shipments=1,
+            written_orders=1,
+            written_items=2,
+            written_shipments=1,
+        )
+
+    async def fake_item_enrichment(**kwargs: Any) -> FakeWriteSummary:
+        calls.append(
+            (
+                "item_enrichment",
+                tuple(kwargs["item_ids"]),
+                kwargs["dry_run"],
+                kwargs["sale_price_enabled"],
+                kwargs["listing_fixed_fee_enabled"],
+            )
+        )
+        return FakeWriteSummary(items_updated=len(kwargs["item_ids"]), items_planned=1)
+
+    async def fake_formula_rebuild(**kwargs: Any) -> FakeWriteSummary:
+        calls.append(("formula_rebuild", kwargs["dry_run"]))
+        return FakeWriteSummary(formula_row_upserts=2, sku_index_upserts=2)
+
+    monkeypatch.setattr(
+        zelerdata_read_model_reconcile,
+        "create_runtime_historical_meli_gateways",
+        lambda: type("Gateways", (), {"gateway": object(), "order_detail_gateway": object()})(),
+    )
+    monkeypatch.setattr(
+        historical_meli_backfill,
+        "run_historical_meli_backfill",
+        fake_historical_backfill,
+    )
+    monkeypatch.setattr(sheetseller_backfill, "run_item_detail_enrichment", fake_item_enrichment)
+    monkeypatch.setattr(sheetseller_backfill, "run_sheetseller_backfill", fake_formula_rebuild)
+
+    counts = await execute_reconciliation_write(db=FakeAsyncDb({}), request=_write_request())
+
+    item_calls = [call for call in calls if call[0] == "item_enrichment"]
+    enriched_item_ids = [item_id for call in item_calls for item_id in call[1]]
+    assert calls[0] == ("historical", False)
+    assert calls[-1] == ("formula_rebuild", False)
+    assert enriched_item_ids == ["ITEM-PII-1", "ITEM-PII-2"]
+    assert all(call[2] is False and call[3] is True and call[4] is True for call in item_calls)
+    assert counts | {"formula_row_upserts": counts["formula_row_upserts"]} == {
+        "planned_orders": 1,
+        "planned_items": 2,
+        "planned_shipments": 1,
+        "written_orders": 1,
+        "written_items": 2,
+        "written_shipments": 1,
+        "item_detail_missing": 0,
+        "redacted_errors": 0,
+        "item_detail_items_planned": 2,
+        "item_detail_items_updated": 2,
+        "formula_row_upserts": 2,
+        "sku_index_upserts": 2,
+    }
+    assert "ORDER-PII-1" not in json.dumps(counts, sort_keys=True)
+    assert "ITEM-PII" not in json.dumps(counts, sort_keys=True)
+
+
+@pytest.mark.asyncio
+async def test_reconciliation_write_enforces_concurrency_for_item_enrichment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from infra.operations import zelerdata_read_model_reconcile
+
+    from zeler_sheets import historical_meli_backfill, sheetseller_backfill
+
+    active = 0
+    max_active = 0
+    item_calls: list[tuple[str, ...]] = []
+
+    async def fake_historical_backfill(**_: Any) -> FakeHistoricalMeliSummary:
+        return FakeHistoricalMeliSummary(
+            orders_found=1,
+            order_ids=["ORDER-PII-1"],
+            shipment_ids=[],
+            item_ids=["ITEM-PII-1", "ITEM-PII-2", "ITEM-PII-3"],
+        )
+
+    async def fake_item_enrichment(**kwargs: Any) -> FakeWriteSummary:
+        nonlocal active, max_active
+        active += 1
+        max_active = max(max_active, active)
+        item_calls.append(tuple(kwargs["item_ids"]))
+        await asyncio.sleep(0.01)
+        active -= 1
+        return FakeWriteSummary(items_updated=len(kwargs["item_ids"]), items_planned=1)
+
+    async def fake_formula_rebuild(**_: Any) -> FakeWriteSummary:
+        return FakeWriteSummary(formula_row_upserts=3, sku_index_upserts=3)
+
+    monkeypatch.setattr(
+        zelerdata_read_model_reconcile,
+        "create_runtime_historical_meli_gateways",
+        lambda: type("Gateways", (), {"gateway": object(), "order_detail_gateway": object()})(),
+    )
+    monkeypatch.setattr(
+        historical_meli_backfill,
+        "run_historical_meli_backfill",
+        fake_historical_backfill,
+    )
+    monkeypatch.setattr(sheetseller_backfill, "run_item_detail_enrichment", fake_item_enrichment)
+    monkeypatch.setattr(sheetseller_backfill, "run_sheetseller_backfill", fake_formula_rebuild)
+
+    await execute_reconciliation_write(
+        db=FakeAsyncDb({}),
+        request=_write_request(extra_args=["--concurrency", "2"]),
+    )
+
+    assert sorted(item_calls) == [("ITEM-PII-1",), ("ITEM-PII-2",), ("ITEM-PII-3",)]
+    assert max_active == 2
+
+
+@pytest.mark.asyncio
+async def test_reconciliation_write_stops_on_write_phase_redacted_errors_before_item_enrichment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from infra.operations import zelerdata_read_model_reconcile
+
+    from zeler_sheets import historical_meli_backfill, sheetseller_backfill
+
+    calls: list[str] = []
+
+    async def fake_historical_backfill(**_: Any) -> FakeHistoricalMeliSummary:
+        calls.append("historical")
+        return FakeHistoricalMeliSummary(
+            orders_found=1,
+            order_ids=["ORDER-PII-1"],
+            shipment_ids=[],
+            item_ids=["ITEM-PII-1"],
+            redacted_errors=2,
+        )
+
+    async def fake_item_enrichment(**_: Any) -> FakeWriteSummary:
+        calls.append("item_enrichment")
+        return FakeWriteSummary(items_updated=1, items_planned=1)
+
+    async def fake_formula_rebuild(**_: Any) -> FakeWriteSummary:
+        calls.append("formula_rebuild")
+        return FakeWriteSummary(formula_row_upserts=1, sku_index_upserts=1)
+
+    monkeypatch.setattr(
+        zelerdata_read_model_reconcile,
+        "create_runtime_historical_meli_gateways",
+        lambda: type("Gateways", (), {"gateway": object(), "order_detail_gateway": object()})(),
+    )
+    monkeypatch.setattr(
+        historical_meli_backfill,
+        "run_historical_meli_backfill",
+        fake_historical_backfill,
+    )
+    monkeypatch.setattr(sheetseller_backfill, "run_item_detail_enrichment", fake_item_enrichment)
+    monkeypatch.setattr(sheetseller_backfill, "run_sheetseller_backfill", fake_formula_rebuild)
+
+    with pytest.raises(ValueError, match="error_threshold"):
+        await execute_reconciliation_write(
+            db=FakeAsyncDb({}),
+            request=_write_request(extra_args=["--error-threshold", "2"]),
+        )
+
+    assert calls == ["historical"]
+
+
+@pytest.mark.asyncio
+async def test_reconciliation_write_stops_on_item_enrichment_rate_limit_before_formula_rebuild(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from infra.operations import zelerdata_read_model_reconcile
+
+    from zeler_sheets import historical_meli_backfill, sheetseller_backfill
+
+    calls: list[str] = []
+
+    async def fake_historical_backfill(**_: Any) -> FakeHistoricalMeliSummary:
+        calls.append("historical")
+        return FakeHistoricalMeliSummary(
+            orders_found=1,
+            order_ids=["ORDER-PII-1"],
+            shipment_ids=[],
+            item_ids=["ITEM-PII-1"],
+        )
+
+    async def fake_item_enrichment(**_: Any) -> FakeWriteSummary:
+        calls.append("item_enrichment")
+        return FakeWriteSummary(
+            items_updated=0,
+            items_planned=1,
+            diagnostic_reason_counts={"seller_shipping_cost:transient:rate_limited": 1},
+        )
+
+    async def fake_formula_rebuild(**_: Any) -> FakeWriteSummary:
+        calls.append("formula_rebuild")
+        return FakeWriteSummary(formula_row_upserts=1, sku_index_upserts=1)
+
+    monkeypatch.setattr(
+        zelerdata_read_model_reconcile,
+        "create_runtime_historical_meli_gateways",
+        lambda: type("Gateways", (), {"gateway": object(), "order_detail_gateway": object()})(),
+    )
+    monkeypatch.setattr(
+        historical_meli_backfill,
+        "run_historical_meli_backfill",
+        fake_historical_backfill,
+    )
+    monkeypatch.setattr(sheetseller_backfill, "run_item_detail_enrichment", fake_item_enrichment)
+    monkeypatch.setattr(sheetseller_backfill, "run_sheetseller_backfill", fake_formula_rebuild)
+
+    with pytest.raises(ValueError, match="rate_limit"):
+        await execute_reconciliation_write(
+            db=FakeAsyncDb({}),
+            request=_write_request(extra_args=["--stop-on-rate-limit"]),
+        )
+
+    assert calls == ["historical", "item_enrichment"]
+
+
+@pytest.mark.asyncio
+async def test_reconciliation_write_surfaces_item_enrichment_diagnostic_counts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from infra.operations import zelerdata_read_model_reconcile
+
+    from zeler_sheets import historical_meli_backfill, sheetseller_backfill
+
+    async def fake_historical_backfill(**_: Any) -> FakeHistoricalMeliSummary:
+        return FakeHistoricalMeliSummary(
+            orders_found=1,
+            order_ids=["ORDER-PII-1"],
+            shipment_ids=[],
+            item_ids=["ITEM-PII-1"],
+        )
+
+    async def fake_item_enrichment(**_: Any) -> FakeWriteSummary:
+        return FakeWriteSummary(
+            items_updated=0,
+            items_planned=1,
+            diagnostic_reason_counts={
+                "seller_shipping_cost:transient:rate_limited": 1,
+                "listing_fee_projection:malformed:source_error": 2,
+            },
+        )
+
+    async def fake_formula_rebuild(**_: Any) -> FakeWriteSummary:
+        return FakeWriteSummary(formula_row_upserts=1, sku_index_upserts=1)
+
+    monkeypatch.setattr(
+        zelerdata_read_model_reconcile,
+        "create_runtime_historical_meli_gateways",
+        lambda: type("Gateways", (), {"gateway": object(), "order_detail_gateway": object()})(),
+    )
+    monkeypatch.setattr(
+        historical_meli_backfill,
+        "run_historical_meli_backfill",
+        fake_historical_backfill,
+    )
+    monkeypatch.setattr(sheetseller_backfill, "run_item_detail_enrichment", fake_item_enrichment)
+    monkeypatch.setattr(sheetseller_backfill, "run_sheetseller_backfill", fake_formula_rebuild)
+
+    counts = await execute_reconciliation_write(db=FakeAsyncDb({}), request=_write_request())
+
+    assert counts["item_detail_diagnostics"] == 3
+    assert counts["item_detail_rate_limit"] == 1
+
+
+def test_reconciliation_write_stops_on_rate_limit_before_mutation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from infra.operations import zelerdata_read_model_reconcile
+
+    calls: dict[str, bool] = {}
+
+    async def fake_expected(**_: Any) -> ExpectedReadModelCounts:
+        return ExpectedReadModelCounts(counts={"items": None})
+
+    async def fake_collect(**_: Any) -> ReconciliationSummary:
+        return ReconciliationSummary(
+            seller_id="82453304",
+            date_from="2026-06-01",
+            date_to="2026-06-04",
+            dry_run=False,
+            approved_runtime=True,
+            write_enabled=True,
+            aggregates=(
+                ReadModelAggregate(
+                    read_model="items",
+                    expected_count=None,
+                    persisted_count=None,
+                    missing_count=None,
+                    complete_count=None,
+                    truth_mode="unavailable",
+                    issues=(
+                        ReadModelIssue(
+                            read_model="items",
+                            code="rate_limit",
+                            message="SENTINEL raw rate limit details",
+                        ),
+                    ),
+                ),
+            ),
+        )
+
+    async def fake_execute(**_: Any) -> dict[str, int]:
+        calls["execute"] = True
+        return {}
+
+    monkeypatch.setattr(
+        zelerdata_read_model_reconcile, "create_runtime_db", lambda: FakeAsyncDb({})
+    )
+    monkeypatch.setattr(
+        zelerdata_read_model_reconcile,
+        "collect_expected_read_model_counts",
+        fake_expected,
+    )
+    monkeypatch.setattr(zelerdata_read_model_reconcile, COLLECTOR_ATTR, fake_collect)
+    monkeypatch.setattr(
+        zelerdata_read_model_reconcile, "execute_reconciliation_write", fake_execute
+    )
+
+    with pytest.raises(SystemExit, match="rate_limit"):
+        zelerdata_read_model_reconcile.main(
+            [
+                "--seller-id",
+                "82453304",
+                "--date-from",
+                "2026-06-01",
+                "--date-to",
+                "2026-06-04",
+                "--confirm-approved-runtime",
+                "--write",
+                "--confirm-production-write",
+                "--stop-on-rate-limit",
+            ]
+        )
+
+    assert calls == {}
+
+
+def test_reconciliation_write_stops_when_error_threshold_is_reached(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from infra.operations import zelerdata_read_model_reconcile
+
+    calls: dict[str, bool] = {}
+
+    async def fake_expected(**_: Any) -> ExpectedReadModelCounts:
+        return ExpectedReadModelCounts(counts={"orders": 1})
+
+    async def fake_collect(**_: Any) -> ReconciliationSummary:
+        return ReconciliationSummary(
+            seller_id="82453304",
+            date_from="2026-06-01",
+            date_to="2026-06-04",
+            dry_run=False,
+            approved_runtime=True,
+            write_enabled=True,
+            aggregates=(
+                ReadModelAggregate(
+                    read_model="orders",
+                    expected_count=1,
+                    persisted_count=0,
+                    missing_count=1,
+                    complete_count=0,
+                    error_count=1,
+                ),
+            ),
+        )
+
+    async def fake_execute(**_: Any) -> dict[str, int]:
+        calls["execute"] = True
+        return {}
+
+    monkeypatch.setattr(
+        zelerdata_read_model_reconcile, "create_runtime_db", lambda: FakeAsyncDb({})
+    )
+    monkeypatch.setattr(
+        zelerdata_read_model_reconcile,
+        "collect_expected_read_model_counts",
+        fake_expected,
+    )
+    monkeypatch.setattr(zelerdata_read_model_reconcile, COLLECTOR_ATTR, fake_collect)
+    monkeypatch.setattr(
+        zelerdata_read_model_reconcile, "execute_reconciliation_write", fake_execute
+    )
+
+    with pytest.raises(SystemExit, match="error_threshold"):
+        zelerdata_read_model_reconcile.main(
+            [
+                "--seller-id",
+                "82453304",
+                "--date-from",
+                "2026-06-01",
+                "--date-to",
+                "2026-06-04",
+                "--confirm-approved-runtime",
+                "--write",
+                "--confirm-production-write",
+                "--error-threshold",
+                "1",
+            ]
+        )
+
+    assert calls == {}
 
 
 @pytest.mark.asyncio
@@ -923,6 +1448,12 @@ def test_reconciliation_runbook_documents_flags_stop_criteria_and_runtime_bounda
         "--dry-run",
         "--write",
         "--max-orders",
+        "--max-items",
+        "--max-shipments",
+        "--sleep-ms",
+        "--resume-after-order-id",
+        "ZELERDATA_ENRICHMENT_ENABLED",
+        "rollback-to-NA",
         "approved VM/VPC/runtime",
         "Do not query production Mongo locally",
         "unsanitized output",
@@ -1101,6 +1632,74 @@ def test_reconciliation_cli_can_emit_phase2_contract_from_approved_runtime_only(
     assert output["phase2_contract"]["approved_runtime_only"] is True
     assert output["phase2_contract"]["dry_run_scopes"] == list(DEFAULT_PHASE2_DRY_RUN_SCOPES)
     assert "82453304" not in json.dumps(output, sort_keys=True)
+
+
+def test_reconciliation_cli_write_executes_write_gate_and_outputs_sanitized_counts(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from infra.operations import zelerdata_read_model_reconcile
+
+    db = FakeAsyncDb({})
+    calls: dict[str, Any] = {}
+
+    async def fake_expected(*, db: Any, request: Any) -> ExpectedReadModelCounts:
+        return ExpectedReadModelCounts(counts={"orders": 1})
+
+    async def fake_collect(
+        *, db: Any, request: Any, expected: ExpectedReadModelCounts
+    ) -> ReconciliationSummary:
+        return ReconciliationSummary(
+            seller_id=request.seller_id,
+            date_from=request.date_range.date_from,
+            date_to=request.date_range.date_to,
+            dry_run=False,
+            approved_runtime=True,
+            write_enabled=True,
+            aggregates=(),
+            controls=request.controls,
+        )
+
+    async def fake_write(*, db: Any, request: Any) -> dict[str, int]:
+        calls["write"] = (db, request.write_enabled, request.controls.sleep_ms)
+        return {"planned_orders": 1, "written_orders": 1, "written_items": 1}
+
+    monkeypatch.setattr(zelerdata_read_model_reconcile, "create_runtime_db", lambda: db)
+    monkeypatch.setattr(
+        zelerdata_read_model_reconcile,
+        "collect_expected_read_model_counts",
+        fake_expected,
+    )
+    monkeypatch.setattr(zelerdata_read_model_reconcile, COLLECTOR_ATTR, fake_collect)
+    monkeypatch.setattr(zelerdata_read_model_reconcile, "execute_reconciliation_write", fake_write)
+
+    result = zelerdata_read_model_reconcile.main(
+        [
+            "--seller-id",
+            "82453304",
+            "--date-from",
+            "2026-06-01",
+            "--date-to",
+            "2026-06-04",
+            "--write",
+            "--confirm-approved-runtime",
+            "--confirm-production-write",
+            "--sleep-ms",
+            "50",
+        ]
+    )
+
+    output = json.loads(capsys.readouterr().out)
+    output_json = json.dumps(output, sort_keys=True)
+
+    assert result == 0
+    assert calls["write"] == (db, True, 50)
+    assert output["write_counts"] == {
+        "planned_orders": 1,
+        "written_items": 1,
+        "written_orders": 1,
+    }
+    assert "82453304" not in output_json
 
 
 @pytest.mark.parametrize("dockerfile_path", SHEETS_RUNTIME_DOCKERFILES)

@@ -16,6 +16,7 @@ from zeler_bootstrap.stages import (
     ItemsStage,
     MessagesStage,
     OrdersStage,
+    ShipmentsStage,
 )
 from zeler_bootstrap.state_machine import BootstrapStateMachine, InvalidTransitionError
 from zeler_platform_core.models import OrderItem
@@ -73,16 +74,87 @@ class FakeBootstrapJobs:
 class FakeCollection:
     def __init__(self) -> None:
         self.upserts: list[tuple[dict[str, Any], dict[str, Any], bool]] = []
+        self.documents: dict[str, dict[str, Any]] = {}
 
     async def update_one(
-        self, filter_spec: dict[str, Any], update: dict[str, Any], *, upsert: bool
+        self, filter_spec: dict[str, Any], update: dict[str, Any], *, upsert: bool, **_: Any
     ) -> None:
         self.upserts.append((filter_spec, update, upsert))
+        document_id = str(filter_spec.get("_id") or filter_spec.get("seller_id") or "")
+        if not document_id:
+            return
+        current = dict(self.documents.get(document_id, {}))
+        current.update(update.get("$setOnInsert", {}))
+        current.update(update.get("$set", {}))
+        for field in update.get("$unset", {}):
+            current.pop(field, None)
+        self.documents[document_id] = current
+
+    async def replace_one(
+        self, filter_spec: dict[str, Any], replacement: dict[str, Any], *, upsert: bool = False
+    ) -> Any:
+        document_id = str(replacement.get("_id") or filter_spec.get("_id") or "")
+        if document_id:
+            self.documents[document_id] = dict(replacement)
+        return type("FakeReplaceResult", (), {"matched_count": 1, "upserted_id": document_id})()
+
+    async def find_one(self, filter_spec: dict[str, Any]) -> dict[str, Any] | None:
+        for document in self.documents.values():
+            if _matches_filter(document, filter_spec):
+                return dict(document)
+        return None
+
+    def find(self, filter_spec: dict[str, Any]) -> FakeCursor:
+        documents = [
+            dict(document)
+            for document in self.documents.values()
+            if _matches_filter(document, filter_spec)
+        ]
+        return FakeCursor(documents)
+
+
+class FakeCursor:
+    def __init__(self, documents: list[dict[str, Any]]) -> None:
+        self._documents = documents
+
+    def sort(self, sort_spec: list[tuple[str, int]]) -> FakeCursor:
+        documents = list(self._documents)
+        for key, direction in reversed(sort_spec):
+            documents.sort(
+                key=lambda document: str(_nested_value(document, key) or ""),
+                reverse=direction < 0,
+            )
+        return FakeCursor(documents)
+
+    async def to_list(self, length: int | None = None) -> list[dict[str, Any]]:
+        documents = self._documents[:length] if length else self._documents
+        return [dict(document) for document in documents]
 
 
 class FakeDatabase(dict[str, FakeCollection]):
     def __getitem__(self, collection_name: str) -> FakeCollection:
         return self.setdefault(collection_name, FakeCollection())
+
+
+def _matches_filter(document: dict[str, Any], filter_spec: dict[str, Any]) -> bool:
+    for key, expected in filter_spec.items():
+        actual = _nested_value(document, key)
+        if isinstance(expected, dict) and "$in" in expected:
+            if actual not in expected["$in"]:
+                return False
+            continue
+        if actual != expected:
+            return False
+    return True
+
+
+def _nested_value(document: dict[str, Any], dotted_path: str) -> Any:
+    value: Any = document
+    for part in dotted_path.split("."):
+        if not isinstance(value, dict) or part not in value:
+            return None
+        value = value[part]
+    return value
 
 
 class FakeGateway(BootstrapGatewayClient):
@@ -462,6 +534,57 @@ async def test_orders_stage_preserves_variation_and_explicit_sku_fields() -> Non
 
 
 @pytest.mark.asyncio
+async def test_orders_stage_persists_realized_sale_fee_metadata() -> None:
+    collection = FakeBootstrapJobs()
+    collection.document["state"] = "running"
+    database = FakeDatabase()
+    gateway = FakeGateway()
+
+    async def get(path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+        gateway.calls.append((path, params))
+        if path == "/orders/search":
+            return {
+                "results": [
+                    {
+                        "id": 987,
+                        "buyer": {"id": 45},
+                        "status": "paid",
+                        "date_created": NOW,
+                        "date_closed": NOW,
+                        "total_amount": "20.00",
+                        "order_items": [
+                            {
+                                "item": {"id": "MLM1", "seller_sku": "sku-1"},
+                                "quantity": 2,
+                                "unit_price": "10.00",
+                                "sale_fee": "4.50",
+                            }
+                        ],
+                    }
+                ],
+                "paging": {"total": 1, "offset": 0, "limit": 50},
+            }
+        raise AssertionError(path)
+
+    gateway.get = get  # type: ignore[method-assign]
+    machine = BootstrapStateMachine(collection, "job-1", now_fn=lambda: NOW)
+
+    await OrdersStage(gateway, database).run(collection.document, machine)
+
+    assert database["orders"].upserts[0][1]["$set"]["items"] == [
+        {
+            "item_id": "MLM1",
+            "seller_sku": "sku-1",
+            "qty": 2,
+            "unit_price": "10.00",
+            "sale_fee": "4.50",
+            "sale_fee_source": "/orders/{id}",
+            "sale_fee_synced_at": "2026-04-24T12:00:00Z",
+        }
+    ]
+
+
+@pytest.mark.asyncio
 async def test_orders_stage_keeps_message_target_fallback_out_of_displayed_meli_pack_id() -> None:
     collection = FakeBootstrapJobs()
     collection.document["state"] = "running"
@@ -663,6 +786,124 @@ async def test_items_stage_persists_formula_detail_fields_as_schema_v2() -> None
     assert document["listing_type_id"] == "gold_special"
     assert document["variations"][0]["inventory_id"] == "VAR-INV-456"
     assert "raw_payload_blob" not in document
+
+
+@pytest.mark.asyncio
+async def test_items_stage_enriches_items_and_populates_formula_rows_for_new_seller(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    collection = FakeBootstrapJobs()
+    collection.document["state"] = "running"
+    database = FakeDatabase()
+    gateway = FakeGateway()
+    monkeypatch.setenv("ZELERDATA_ENRICHMENT_ENABLED", "1")
+
+    async def get(path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+        gateway.calls.append((path, params))
+        if path == "/users/123/items/search":
+            return {"results": ["MLM1"], "scroll_id": None, "paging": {"total": 1}}
+        if path == "/items":
+            return cast(
+                dict[str, Any],
+                [
+                    {
+                        "code": 200,
+                        "body": {
+                            "id": "MLM1",
+                            "seller_id": "123",
+                            "title": "Item MLM1",
+                            "price": "10.00",
+                            "base_price": "10.00",
+                            "available_quantity": 5,
+                            "status": "active",
+                            "category_id": "MLM-CAT",
+                            "site_id": "MLM",
+                            "currency_id": "MXN",
+                            "listing_type_id": "gold_special",
+                            "shipping": {"free_shipping": True, "mode": "me2"},
+                            "attributes": [{"id": "SELLER_SKU", "value_name": "sku-1"}],
+                            "date_created": NOW,
+                            "last_updated": NOW,
+                        },
+                    }
+                ],
+            )
+        if path == "/users/123/shipping_options/free" and params == {"item_id": "MLM1"}:
+            return {"coverage": {"all_country": {"list_cost": "83.25"}}}
+        raise AssertionError(path)
+
+    gateway.get = get  # type: ignore[method-assign]
+    machine = BootstrapStateMachine(collection, "job-1", now_fn=lambda: NOW)
+
+    await ItemsStage(gateway, database).run(collection.document, machine)
+
+    item = database["items"].documents["MLM1"]
+    assert item["seller_shipping_cost"].to_decimal().to_eng_string() == "83.25"
+    assert item["enrichment_state"]["seller_shipping_cost"]["status"] == "trusted"
+    formula_row = database["sheets_item_formula_rows"].documents["123:SKU-1:MLM1"]
+    assert formula_row["current"]["seller_shipping_cost"].to_decimal().to_eng_string() == "83.25"
+    assert formula_row["current"]["listing_type_id"] == "gold_special"
+    assert ("/users/123/shipping_options/free", {"item_id": "MLM1"}) in gateway.calls
+
+
+@pytest.mark.asyncio
+async def test_shipments_stage_persists_allowlisted_address_and_real_cost_snapshot() -> None:
+    collection = FakeBootstrapJobs()
+    collection.document["state"] = "running"
+    collection.document["checkpoints"] = {"orders": {"shipment_ids": ["654"]}}
+    database = FakeDatabase()
+    gateway = FakeGateway()
+
+    async def get(path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+        gateway.calls.append((path, params))
+        if path == "/shipments/654":
+            return {
+                "id": 654,
+                "order_id": 987,
+                "status": "ready_to_ship",
+                "logistic_type": "fulfillment",
+                "date_created": NOW,
+                "last_updated": NOW,
+                "receiver_address": {
+                    "receiver_name": " Safe Buyer ",
+                    "street_name": " Safe Street ",
+                    "street_number": 123,
+                    "city": {"name": " Safe City "},
+                    "state": {"name": " Safe State "},
+                    "country": {"name": " Safe Country "},
+                    "phone": "+54-PII-PHONE",
+                    "email": "pii@example.invalid",
+                },
+                "token": "PII-TOKEN",
+            }
+        if path == "/shipments/654/costs":
+            return {
+                "currency_id": "MXN",
+                "senders": [{"sender_id": "123", "cost": "24.50"}],
+                "receiver": {"cost": "100.00"},
+            }
+        raise AssertionError(path)
+
+    gateway.get = get  # type: ignore[method-assign]
+    machine = BootstrapStateMachine(collection, "job-1", now_fn=lambda: NOW)
+
+    await ShipmentsStage(gateway, database).run(collection.document, machine)
+
+    shipment = database["shipments"].documents["654"]
+    assert shipment["receiver_address"] == {
+        "name": "Safe Buyer",
+        "street_name": "Safe Street",
+        "street_number": "123",
+        "city": "Safe City",
+        "state": "Safe State",
+        "country": "Safe Country",
+    }
+    assert shipment["real_shipping_cost"]["seller_cost"] == "24.50"
+    serialized = repr(shipment)
+    assert "+54-PII-PHONE" not in serialized
+    assert "pii@example.invalid" not in serialized
+    assert "PII-TOKEN" not in serialized
+    assert ("/shipments/654/costs", None) in gateway.calls
 
 
 @pytest.mark.asyncio
