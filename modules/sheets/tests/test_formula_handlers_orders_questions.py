@@ -1289,9 +1289,73 @@ async def test_order_tables_use_listing_fixed_fee_projection_without_seller_cost
         )
     )
 
-    assert [row[10] for row in orders.values] == [1350.25, "NA"]
-    assert by_sku.values[0][10] == 1350.25
+    assert [row[8:11] for row in orders.values] == [["NA", "NA", "NA"], ["NA", "NA", "NA"]]
+    assert by_sku.values[0][8:11] == ["NA", "NA", "NA"]
     assert db["seller_unit_costs"].find_filters == []
+
+
+@pytest.mark.asyncio
+async def test_order_tables_render_realized_sale_fee_math_without_listing_estimates() -> None:
+    db = FakeDb()
+    db["orders"].documents = {
+        "order-1": _order_doc(
+            "order-1",
+            seller_id="seller-1",
+            status="paid",
+            date_created=datetime(2026, 5, 10, 8, 0, tzinfo=UTC),
+            total_amount=200,
+            items=[
+                {
+                    "sku": "sku-1",
+                    "item_id": "MLA1",
+                    "qty": 2,
+                    "unit_price": 100,
+                    "sale_fee": 30,
+                    "sale_fee_source": "/orders/{id}",
+                    "sale_fee_synced_at": datetime(2026, 5, 10, 8, 1, tzinfo=UTC),
+                },
+                {"sku": "sku-2", "item_id": "MLA2", "qty": 1, "unit_price": 50},
+            ],
+        )
+    }
+    db["sheets_item_formula_rows"].documents = {
+        "row-2": _order_formula_row(
+            "sku-2",
+            "SKU-2",
+            "MLA2",
+            base_price=50,
+            category_id="MLA-CAT",
+            currency_id="ARS",
+            site_id="MLA",
+            listing_type_id="gold_special",
+            listing_price_fixed_fee={
+                "source": "/sites/{site}/listing_prices",
+                "fixed_fee": 10,
+                "currency_id": "ARS",
+                "synced_at": datetime(2026, 6, 4, tzinfo=UTC),
+                "params": {
+                    "site_id": "MLA",
+                    "category_id": "MLA-CAT",
+                    "price": 50,
+                    "currency_id": "ARS",
+                    "listing_type_id": "gold_special",
+                    "shipping_mode": "me2",
+                    "logistic_type": "fulfillment",
+                },
+            },
+        )
+    }
+    dispatcher = _order_question_dispatcher(db)
+
+    result = await dispatcher.execute(
+        _context(
+            "ZELERDATA_ORDENES",
+            {"fecha_inicial": "2026-05-10", "fecha_final": "2026-05-10"},
+        )
+    )
+
+    assert result.values[0][8:11] == [15, 30, 15]
+    assert result.values[1][8:11] == ["NA", "NA", "NA"]
 
 
 @pytest.mark.asyncio
@@ -1540,17 +1604,7 @@ async def test_order_tables_validate_fixed_fee_price_and_shipping_request_basis(
         )
     )
 
-    assert [row[10] for row in result.values] == [
-        1350.25,
-        "NA",
-        "NA",
-        "NA",
-        "NA",
-        "NA",
-        "NA",
-        "NA",
-        "NA",
-    ]
+    assert [row[10] for row in result.values] == ["NA"] * 9
 
 
 @pytest.mark.asyncio
@@ -1628,7 +1682,7 @@ async def test_order_tables_return_na_when_fixed_fee_optional_basis_params_are_m
         )
     )
 
-    assert [row[10] for row in result.values] == ["NA", "NA", 1350.25]
+    assert [row[10] for row in result.values] == ["NA", "NA", "NA"]
 
 
 @pytest.mark.asyncio

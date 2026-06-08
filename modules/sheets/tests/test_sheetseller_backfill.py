@@ -1556,6 +1556,10 @@ async def test_item_detail_enrichment_enriches_free_shipping_cost_and_non_free_z
     non_free_cost = persisted_by_id["MLA2"]["seller_shipping_cost"]
     assert isinstance(non_free_cost, Decimal128)
     assert non_free_cost.to_decimal() == Decimal("0")
+    free_state = persisted_by_id["MLA1"]["enrichment_state"]["seller_shipping_cost"]
+    assert free_state["status"] == "trusted"
+    assert free_state["source"] == "/users/{seller_id}/shipping_options/free"
+    assert free_state["reason"] is None
 
 
 @pytest.mark.asyncio
@@ -1712,6 +1716,327 @@ async def test_item_detail_enrichment_keeps_cost_absent_on_shipping_request_erro
     assert "82453304" not in serialized_summary
     assert "MLA1" not in serialized_summary
     assert "timeout" not in serialized_summary
+
+
+@pytest.mark.asyncio
+async def test_item_detail_enrichment_preserves_trusted_cost_on_transient_failure() -> None:
+    item = _item_doc("MLA1")
+    item["seller_shipping_cost"] = Decimal128("83.25")
+    item["enrichment_state"] = {
+        "seller_shipping_cost": {
+            "source": "/users/{seller_id}/shipping_options/free",
+            "status": "trusted",
+            "synced_at": NOW,
+            "basis": {
+                "site_id": "MLA",
+                "category_id": "MLA-CAT",
+                "currency_id": "ARS",
+                "listing_type_id": "gold_special",
+                "price": Decimal128("123.45"),
+                "shipping_mode": "me2",
+                "logistic_type": "fulfillment",
+            },
+        }
+    }
+    db = FakeDb([item])
+    detail = _item_detail("MLA1")
+    detail["currency_id"] = "ARS"
+    detail["listing_type_id"] = "gold_special"
+    detail["shipping"] = {"mode": "me2", "free_shipping": True, "logistic_type": "fulfillment"}
+    request = httpx.Request("GET", "https://gateway.example/proxy/meli/users/82453304")
+    gateway = FakeItemGateway(
+        {
+            "/items?ids=MLA1": [{"code": 200, "body": detail}],
+            "/users/82453304/shipping_options/free?item_id=MLA1": httpx.RequestError(
+                "timeout fetching seller 82453304 shipping for item MLA1",
+                request=request,
+            ),
+        }
+    )
+
+    summary = await run_item_detail_enrichment(
+        db=db, gateway=gateway, seller_id="82453304", dry_run=False
+    )
+
+    persisted = db["items"].documents["MLA1"]
+    assert persisted["seller_shipping_cost"].to_decimal() == Decimal("83.25")
+    state = persisted["enrichment_state"]["seller_shipping_cost"]
+    assert state["status"] == "transient"
+    assert state["reason"] == "request_error"
+    assert state["source"] == "/users/{seller_id}/shipping_options/free"
+    assert summary.diagnostic_reason_counts == {"seller_shipping_cost:transient:request_error": 1}
+    serialized_summary = str(summary.as_dict())
+    assert "82453304" not in serialized_summary
+    assert "MLA1" not in serialized_summary
+    assert "timeout fetching" not in serialized_summary
+
+
+@pytest.mark.asyncio
+async def test_item_detail_enrichment_clears_seller_shipping_cost_on_transient_basis_change() -> (
+    None
+):
+    item = _item_doc("MLA1")
+    item["seller_shipping_cost"] = Decimal128("83.25")
+    item["enrichment_state"] = {
+        "seller_shipping_cost": {
+            "source": "/users/{seller_id}/shipping_options/free",
+            "status": "trusted",
+            "synced_at": NOW,
+            "basis": {
+                "site_id": "MLA",
+                "category_id": "MLA-CAT",
+                "currency_id": "ARS",
+                "listing_type_id": "gold_special",
+                "price": Decimal128("999.99"),
+                "shipping_mode": "me2",
+                "logistic_type": "fulfillment",
+            },
+        }
+    }
+    db = FakeDb([item])
+    detail = _item_detail("MLA1")
+    detail["currency_id"] = "ARS"
+    detail["listing_type_id"] = "gold_special"
+    detail["shipping"] = {"mode": "me2", "free_shipping": True, "logistic_type": "fulfillment"}
+    request = httpx.Request("GET", "https://gateway.example/proxy/meli/users/82453304")
+    gateway = FakeItemGateway(
+        {
+            "/items?ids=MLA1": [{"code": 200, "body": detail}],
+            "/users/82453304/shipping_options/free?item_id=MLA1": httpx.RequestError(
+                "timeout fetching seller 82453304 shipping for item MLA1",
+                request=request,
+            ),
+        }
+    )
+
+    summary = await run_item_detail_enrichment(
+        db=db, gateway=gateway, seller_id="82453304", dry_run=False
+    )
+
+    persisted = db["items"].documents["MLA1"]
+    assert persisted["seller_shipping_cost"] is None
+    state = persisted["enrichment_state"]["seller_shipping_cost"]
+    assert state["status"] == "basis_mismatch"
+    assert state["reason"] == "basis_changed"
+    assert summary.seller_shipping_costs_unavailable == 1
+    assert summary.diagnostic_reason_counts == {
+        "seller_shipping_cost:basis_mismatch:basis_changed": 1
+    }
+    assert "82453304" not in str(summary.as_dict())
+    assert "MLA1" not in str(summary.as_dict())
+
+
+@pytest.mark.asyncio
+async def test_item_detail_enrichment_preserves_all_snapshots_on_transient_failures() -> None:
+    current_promotion = {
+        "source": "/items/{id}/sale_price",
+        "sale_amount": Decimal128("99.90"),
+        "regular_amount": Decimal128("149.90"),
+        "discount_percent": Decimal128("33.36"),
+        "currency_id": "ARS",
+        "promotion_id": "PROMO-TRUSTED",
+        "promotion_type": "deal",
+        "reference_at": NOW,
+        "synced_at": NOW,
+    }
+    listing_fee_projection = {
+        **_listing_fee_context(shipping_mode="me2", logistic_type="fulfillment"),
+        "source": "/sites/{site}/listing_prices",
+        "sale_fee_amount": Decimal128("155.99"),
+        "percentage_fee": Decimal128("12.00"),
+        "synced_at": NOW,
+    }
+    listing_price_fixed_fee = {
+        "source": "/sites/{site}/listing_prices",
+        "fixed_fee": Decimal128("1350.25"),
+        "currency_id": "ARS",
+        "synced_at": NOW,
+        "params": {
+            "site_id": "MLA",
+            "category_id": "MLA-CAT",
+            "price": Decimal128("123.45"),
+            "currency_id": "ARS",
+            "listing_type_id": "gold_special",
+            "shipping_mode": "me2",
+            "logistic_type": "fulfillment",
+        },
+    }
+    canonical = _item_doc("MLA1", attributes=[{"id": "SELLER_SKU", "value_name": "sku-1"}])
+    canonical.update(
+        {
+            "seller_shipping_cost": Decimal128("83.25"),
+            "current_promotion": current_promotion,
+            "listing_fee_projection": listing_fee_projection,
+            "listing_price_fixed_fee": listing_price_fixed_fee,
+            "enrichment_state": {
+                "seller_shipping_cost": {
+                    "source": "/users/{seller_id}/shipping_options/free",
+                    "status": "trusted",
+                    "synced_at": NOW,
+                    "basis": {
+                        "site_id": "MLA",
+                        "category_id": "MLA-CAT",
+                        "currency_id": "ARS",
+                        "listing_type_id": "gold_special",
+                        "price": Decimal128("123.45"),
+                        "shipping_mode": "me2",
+                        "logistic_type": "fulfillment",
+                    },
+                },
+                "current_promotion": {
+                    "source": "/items/{id}/sale_price",
+                    "status": "trusted",
+                    "synced_at": NOW,
+                },
+                "listing_fee_projection": {
+                    "source": "/sites/{site}/listing_prices",
+                    "status": "trusted",
+                    "synced_at": NOW,
+                },
+                "listing_price_fixed_fee": {
+                    "source": "/sites/{site}/listing_prices",
+                    "status": "trusted",
+                    "synced_at": NOW,
+                },
+            },
+        }
+    )
+    db = FakeDb([canonical])
+    db["meli_accounts"].documents["account-1"] = {
+        "_id": "account-1",
+        "seller_id": "82453304",
+        "site_id": "MLA",
+    }
+    stale_formula_row = build_formula_row_doc(canonical, seller_id="82453304")
+    db["sheets_item_formula_rows"].documents[stale_formula_row["_id"]] = stale_formula_row
+    detail = _item_detail("MLA1")
+    detail.update(
+        {
+            "currency_id": "ARS",
+            "listing_type_id": "gold_special",
+            "attributes": [{"id": "SELLER_SKU", "value_name": "sku-1"}],
+            "shipping": {"mode": "me2", "logistic_type": "fulfillment", "free_shipping": True},
+        }
+    )
+    request = httpx.Request("GET", "https://gateway.example/proxy/meli/items/MLA1")
+    response_429 = httpx.Response(
+        429,
+        request=request,
+        json={"message": "seller 82453304 item MLA1 rate limited"},
+    )
+    listing_fee_path = (
+        "/sites/MLA/listing_prices?price=123.45&listing_type_id=gold_special"
+        "&category_id=MLA-CAT&currency_id=ARS&logistic_type=fulfillment&shipping_mode=me2"
+    )
+    listing_fixed_fee_path = (
+        "/sites/MLA/listing_prices?price=123.45&category_id=MLA-CAT&currency_id=ARS"
+        "&listing_type_id=gold_special&shipping_mode=me2&logistic_type=fulfillment"
+    )
+    gateway = FakeItemGateway(
+        {
+            "/items?ids=MLA1": [{"code": 200, "body": detail}],
+            "/users/82453304/shipping_options/free?item_id=MLA1": httpx.RequestError(
+                "timeout fetching seller 82453304 shipping for item MLA1",
+                request=request,
+            ),
+            "/items/MLA1/sale_price?context=channel_marketplace": httpx.HTTPStatusError(
+                "rate limited sale price for seller 82453304 item MLA1",
+                request=request,
+                response=response_429,
+            ),
+            listing_fee_path: httpx.HTTPStatusError(
+                "rate limited listing price for seller 82453304 item MLA1",
+                request=request,
+                response=response_429,
+            ),
+            listing_fixed_fee_path: GatewayRateLimitError(
+                retry_after_seconds=5,
+                response=response_429,
+            ),
+        }
+    )
+
+    summary = await run_item_detail_enrichment(
+        db=db,
+        gateway=gateway,
+        seller_id="82453304",
+        dry_run=False,
+        sale_price_enabled=True,
+        listing_fixed_fee_enabled=True,
+    )
+    await run_sheetseller_backfill(db=db, seller_id="82453304", dry_run=False)
+
+    persisted = db["items"].documents["MLA1"]
+    assert persisted["seller_shipping_cost"].to_decimal() == Decimal("83.25")
+    assert persisted["current_promotion"]["sale_amount"].to_decimal() == Decimal("99.90")
+    assert persisted["listing_fee_projection"]["sale_fee_amount"].to_decimal() == Decimal("155.99")
+    assert persisted["listing_price_fixed_fee"]["fixed_fee"].to_decimal() == Decimal("1350.25")
+    assert "$unset" not in db["items"].update_calls[0][1]
+    assert summary.seller_shipping_costs_unavailable == 0
+    assert summary.sale_price_promotions_unavailable == 0
+    assert summary.listing_fee_projections_unavailable == 0
+    assert summary.listing_fixed_fee_unavailable == 0
+    enrichment_state = persisted["enrichment_state"]
+    assert enrichment_state["seller_shipping_cost"]["status"] == "transient"
+    assert enrichment_state["current_promotion"]["status"] == "transient"
+    assert enrichment_state["listing_fee_projection"]["status"] == "transient"
+    assert enrichment_state["listing_price_fixed_fee"]["status"] == "transient"
+    assert summary.diagnostic_reason_counts == {
+        "seller_shipping_cost:transient:request_error": 1,
+        "current_promotion:transient:http_429": 1,
+        "listing_fee_projection:transient:http_429": 1,
+        "listing_price_fixed_fee:transient:rate_limited": 1,
+    }
+    refreshed_row = db["sheets_item_formula_rows"].documents["82453304:SKU-1:MLA1"]
+    assert refreshed_row["current"]["seller_shipping_cost"].to_decimal() == Decimal("83.25")
+    assert refreshed_row["current"]["current_promotion"]["sale_amount"].to_decimal() == Decimal(
+        "99.90"
+    )
+    assert refreshed_row["current"]["listing_fee_projection"][
+        "sale_fee_amount"
+    ].to_decimal() == Decimal("155.99")
+    assert refreshed_row["current"]["listing_price_fixed_fee"]["fixed_fee"].to_decimal() == Decimal(
+        "1350.25"
+    )
+    assert "seller 82453304" not in str(summary.as_dict())
+    assert "MLA1" not in str(summary.as_dict())
+
+
+@pytest.mark.asyncio
+async def test_item_detail_enrichment_clears_cost_on_authoritative_denial() -> None:
+    item = _item_doc("MLA1")
+    item["seller_shipping_cost"] = Decimal128("83.25")
+    db = FakeDb([item])
+    detail = _item_detail("MLA1")
+    detail["shipping"] = {"free_shipping": True, "logistic_type": "fulfillment"}
+    request = httpx.Request("GET", "https://gateway.example/proxy/meli/users/82453304")
+    response = httpx.Response(
+        403,
+        request=request,
+        json={"message": "seller 82453304 denied for item MLA1"},
+    )
+    gateway = FakeItemGateway(
+        {
+            "/items?ids=MLA1": [{"code": 200, "body": detail}],
+            "/users/82453304/shipping_options/free?item_id=MLA1": httpx.HTTPStatusError(
+                "forbidden shipping source",
+                request=request,
+                response=response,
+            ),
+        }
+    )
+
+    summary = await run_item_detail_enrichment(
+        db=db, gateway=gateway, seller_id="82453304", dry_run=False
+    )
+
+    persisted = db["items"].documents["MLA1"]
+    assert persisted["seller_shipping_cost"] is None
+    state = persisted["enrichment_state"]["seller_shipping_cost"]
+    assert state["status"] == "unauthorized"
+    assert state["reason"] == "http_403"
+    assert summary.diagnostic_reason_counts == {"seller_shipping_cost:unauthorized:http_403": 1}
+    assert "seller 82453304" not in str(summary.as_dict())
 
 
 def test_sale_price_projection_keeps_bounded_discount_scalars_only() -> None:
@@ -1898,18 +2223,79 @@ async def test_item_detail_enrichment_keeps_base_enrichment_when_sale_price_unav
     assert "current_promotion" not in persisted
 
 
+@pytest.mark.asyncio
+async def test_item_detail_enrichment_clears_stale_promo_on_authoritative_absence() -> None:
+    canonical = _item_doc("MLA1", attributes=[{"id": "SELLER_SKU", "value_name": "sku-1"}])
+    stale_promotion = {
+        "source": "/items/{id}/sale_price",
+        "sale_amount": Decimal128("99.90"),
+        "regular_amount": Decimal128("149.90"),
+        "discount_percent": Decimal128("33.36"),
+        "currency_id": "MXN",
+        "promotion_id": "PROMO-STALE",
+        "promotion_type": "deal",
+        "reference_at": NOW,
+        "synced_at": NOW,
+    }
+    canonical["current_promotion"] = stale_promotion
+    canonical["enrichment_state"] = {
+        "current_promotion": {
+            "source": "/items/{id}/sale_price",
+            "status": "trusted",
+            "synced_at": NOW,
+        }
+    }
+    stale_formula_row = build_formula_row_doc(canonical, seller_id="82453304")
+    db = FakeDb([canonical])
+    db["sheets_item_formula_rows"].documents[stale_formula_row["_id"]] = stale_formula_row
+    detail = _item_detail("MLA1")
+    detail["attributes"] = [{"id": "SELLER_SKU", "value_name": "sku-1"}]
+    gateway = FakeItemGateway(
+        {
+            "/items?ids=MLA1": [{"code": 200, "body": detail}],
+            "/items/MLA1/sale_price?context=channel_marketplace": {
+                "amount": "149.90",
+                "regular_amount": "149.90",
+                "currency_id": "MXN",
+            },
+        }
+    )
+
+    await run_item_detail_enrichment(
+        db=db,
+        gateway=gateway,
+        seller_id="82453304",
+        dry_run=False,
+        sale_price_enabled=True,
+    )
+    await run_sheetseller_backfill(db=db, seller_id="82453304", dry_run=False)
+    dashboard = await _core_formula_dispatcher(db).execute(
+        _formula_context("ZELERDATA_DASHBOARD", {"skus": "todos", "tipo_precio": "todos"})
+    )
+
+    item_update = db["items"].update_calls[0][1]
+    assert item_update.get("$unset") == {"current_promotion": ""}
+    assert "current_promotion" not in db["items"].documents["MLA1"]
+    state = db["items"].documents["MLA1"]["enrichment_state"]["current_promotion"]
+    assert state["status"] == "authoritative_absent"
+    assert state["reason"] == "no_trusted_promotion"
+    refreshed_row = db["sheets_item_formula_rows"].documents["82453304:SKU-1:MLA1"]
+    assert "current_promotion" not in refreshed_row["current"]
+    assert dashboard.values[0][-1] == "NA"
+
+
 @pytest.mark.parametrize(
-    ("sale_price_enabled", "sale_price_payload"),
+    ("sale_price_enabled", "sale_price_payload", "expected_reason"),
     [
-        (False, None),
-        (True, RuntimeError("unavailable")),
-        (True, {"amount": "149.90", "regular_amount": "149.90", "currency_id": "MXN"}),
+        (False, None, None),
+        (True, RuntimeError("unavailable"), "runtime_error"),
     ],
 )
 @pytest.mark.asyncio
-async def test_item_detail_enrichment_clears_stale_promo_when_sale_price_is_unusable(
+async def test_item_detail_enrichment_preserves_stale_promo_without_authoritative_clear(
     sale_price_enabled: bool,
     sale_price_payload: Any,
+    expected_reason: str | None,
 ) -> None:
     canonical = _item_doc("MLA1", attributes=[{"id": "SELLER_SKU", "value_name": "sku-1"}])
     stale_promotion = {
@@ -1924,6 +2310,13 @@ async def test_item_detail_enrichment_clears_stale_promo_when_sale_price_is_unus
         "synced_at": NOW,
     }
     canonical["current_promotion"] = stale_promotion
+    canonical["enrichment_state"] = {
+        "current_promotion": {
+            "source": "/items/{id}/sale_price",
+            "status": "trusted",
+            "synced_at": NOW,
+        }
+    }
     stale_formula_row = build_formula_row_doc(canonical, seller_id="82453304")
     db = FakeDb([canonical])
     db["sheets_item_formula_rows"].documents[stale_formula_row["_id"]] = stale_formula_row
@@ -1936,7 +2329,7 @@ async def test_item_detail_enrichment_clears_stale_promo_when_sale_price_is_unus
         gateway_payloads["/items/MLA1/sale_price?context=channel_marketplace"] = sale_price_payload
     gateway = FakeItemGateway(gateway_payloads)
 
-    await run_item_detail_enrichment(
+    summary = await run_item_detail_enrichment(
         db=db,
         gateway=gateway,
         seller_id="82453304",
@@ -1949,11 +2342,24 @@ async def test_item_detail_enrichment_clears_stale_promo_when_sale_price_is_unus
     )
 
     item_update = db["items"].update_calls[0][1]
-    assert item_update.get("$unset") == {"current_promotion": ""}
-    assert "current_promotion" not in db["items"].documents["MLA1"]
+    assert "$unset" not in item_update
+    persisted = db["items"].documents["MLA1"]
+    assert persisted["current_promotion"]["sale_amount"].to_decimal() == Decimal("99.90")
     refreshed_row = db["sheets_item_formula_rows"].documents["82453304:SKU-1:MLA1"]
-    assert "current_promotion" not in refreshed_row["current"]
-    assert dashboard.values[0][-1] == "NA"
+    assert refreshed_row["current"]["current_promotion"]["sale_amount"].to_decimal() == Decimal(
+        "99.90"
+    )
+    assert dashboard.values[0][-1] == Decimal("99.90")
+    state = persisted["enrichment_state"]["current_promotion"]
+    if expected_reason is None:
+        assert state["status"] == "trusted"
+        assert summary.diagnostic_reason_counts == {}
+    else:
+        assert state["status"] == "transient"
+        assert state["reason"] == expected_reason
+        assert summary.diagnostic_reason_counts == {
+            f"current_promotion:transient:{expected_reason}": 1
+        }
 
 
 def test_formula_row_doc_denormalizes_seller_shipping_cost_scalar_only() -> None:
@@ -2015,6 +2421,29 @@ def test_listing_fee_projection_context_and_path_include_documented_params() -> 
         "&shipping_mode=me2&billable_weight=500&shipping_modes=me2"
         "&shipping_modes=custom&tags=campaign-a&tags=catalog_listing"
     )
+
+
+def test_listing_fee_projection_persists_shipping_logistic_billable_and_tags_basis() -> None:
+    projection = project_listing_fee_projection(
+        {
+            "sale_fee_amount": "155.99",
+            "sale_fee_details": {"percentage_fee": "12.00"},
+            "currency_id": "ARS",
+        },
+        context=_listing_fee_context(
+            shipping_mode="me2",
+            logistic_type="fulfillment",
+            billable_weight=Decimal("500"),
+            tags=["mandatory_free_shipping"],
+        ),
+        synced_at=NOW,
+    )
+
+    assert projection is not None
+    assert projection["shipping_mode"] == "me2"
+    assert projection["logistic_type"] == "fulfillment"
+    assert projection["billable_weight"].to_decimal() == Decimal("500")
+    assert projection["tags"] == ["mandatory_free_shipping"]
 
 
 @pytest.mark.parametrize(
@@ -2188,6 +2617,10 @@ async def test_item_detail_enrichment_fetches_listing_prices_and_denormalizes_pr
     assert persisted["sale_fee_amount"].to_decimal() == Decimal("155.99")
     assert persisted["percentage_fee"].to_decimal() == Decimal("12.00")
     assert "raw" not in persisted
+    state = db["items"].documents["MLA1"]["enrichment_state"]["listing_fee_projection"]
+    assert state["status"] == "trusted"
+    assert state["source"] == "/sites/{site}/listing_prices"
+    assert state["basis"]["price"].to_decimal() == Decimal("123.45")
     refreshed_row = db["sheets_item_formula_rows"].documents["82453304:SKU-1:MLA1"]
     row_projection = refreshed_row["current"]["listing_fee_projection"]
     assert row_projection["sale_fee_amount"].to_decimal() == Decimal("155.99")
@@ -2245,6 +2678,128 @@ async def test_item_detail_enrichment_clears_stale_listing_fee_projection_failur
     )
     assert "listing_fee_projection" not in db["items"].documents["MLA1"]
     assert "listing_fee_projection" not in db["items"].documents["MLA2"]
+
+
+@pytest.mark.asyncio
+async def test_item_detail_enrichment_clears_stale_listing_fee_on_basis_mismatch() -> None:
+    stale_projection = {
+        **_listing_fee_context(price=Decimal("123.45")),
+        "source": "/sites/{site}/listing_prices",
+        "sale_fee_amount": Decimal128("155.99"),
+        "percentage_fee": Decimal128("12.00"),
+        "synced_at": NOW,
+    }
+    item = _item_doc("MLA1", attributes=[{"id": "SELLER_SKU", "value_name": "sku-1"}])
+    item["listing_fee_projection"] = stale_projection
+    db = FakeDb([item])
+    db["meli_accounts"].documents["account-1"] = {
+        "_id": "account-1",
+        "seller_id": "82453304",
+        "site_id": "MLA",
+    }
+    detail = _item_detail("MLA1")
+    detail.update({"price": "130.00", "currency_id": "ARS", "listing_type_id": "gold_special"})
+    listing_price_path = (
+        "/sites/MLA/listing_prices?price=130.00&listing_type_id=gold_special"
+        "&category_id=MLA-CAT&currency_id=ARS"
+    )
+    request = httpx.Request("GET", "https://gateway.example/proxy/meli/sites/MLA")
+    gateway = FakeItemGateway(
+        {
+            "/items?ids=MLA1": [{"code": 200, "body": detail}],
+            listing_price_path: httpx.RequestError(
+                "timeout fetching listing prices for seller 82453304 item MLA1",
+                request=request,
+            ),
+        }
+    )
+
+    summary = await run_item_detail_enrichment(
+        db=db, gateway=gateway, seller_id="82453304", dry_run=False
+    )
+
+    persisted = db["items"].documents["MLA1"]
+    assert "listing_fee_projection" not in persisted
+    state = persisted["enrichment_state"]["listing_fee_projection"]
+    assert state["status"] == "basis_mismatch"
+    assert state["reason"] == "basis_changed"
+    assert state["basis"]["price"].to_decimal() == Decimal("130.00")
+    assert summary.diagnostic_reason_counts == {
+        "listing_fee_projection:basis_mismatch:basis_changed": 1
+    }
+    assert "82453304" not in str(summary.as_dict())
+    assert "MLA1" not in str(summary.as_dict())
+
+
+@pytest.mark.asyncio
+async def test_item_detail_enrichment_clears_listing_fee_on_transient_shipping_basis_change() -> (
+    None
+):
+    stale_projection = {
+        **_listing_fee_context(
+            shipping_mode="me1",
+            logistic_type="drop_off",
+            billable_weight=Decimal("250"),
+            tags=["old_tag"],
+        ),
+        "source": "/sites/{site}/listing_prices",
+        "sale_fee_amount": Decimal128("155.99"),
+        "percentage_fee": Decimal128("12.00"),
+        "synced_at": NOW,
+    }
+    item = _item_doc("MLA1", attributes=[{"id": "SELLER_SKU", "value_name": "sku-1"}])
+    item["listing_fee_projection"] = stale_projection
+    db = FakeDb([item])
+    db["meli_accounts"].documents["account-1"] = {
+        "_id": "account-1",
+        "seller_id": "82453304",
+        "site_id": "MLA",
+    }
+    detail = _item_detail("MLA1")
+    detail.update(
+        {
+            "currency_id": "ARS",
+            "listing_type_id": "gold_special",
+            "shipping": {"mode": "me2", "logistic_type": "fulfillment"},
+            "billable_weight": "500",
+            "tags": ["mandatory_free_shipping"],
+        }
+    )
+    listing_price_path = (
+        "/sites/MLA/listing_prices?price=123.45&listing_type_id=gold_special"
+        "&category_id=MLA-CAT&currency_id=ARS&logistic_type=fulfillment"
+        "&shipping_mode=me2&billable_weight=500&tags=mandatory_free_shipping"
+    )
+    request = httpx.Request("GET", "https://gateway.example/proxy/meli/sites/MLA")
+    gateway = FakeItemGateway(
+        {
+            "/items?ids=MLA1": [{"code": 200, "body": detail}],
+            listing_price_path: httpx.RequestError(
+                "timeout fetching listing prices for seller 82453304 item MLA1",
+                request=request,
+            ),
+        }
+    )
+
+    summary = await run_item_detail_enrichment(
+        db=db, gateway=gateway, seller_id="82453304", dry_run=False
+    )
+
+    persisted = db["items"].documents["MLA1"]
+    assert "listing_fee_projection" not in persisted
+    assert db["items"].update_calls[0][1].get("$unset") == {"listing_fee_projection": ""}
+    state = persisted["enrichment_state"]["listing_fee_projection"]
+    assert state["status"] == "basis_mismatch"
+    assert state["reason"] == "basis_changed"
+    assert state["basis"]["shipping_mode"] == "me2"
+    assert state["basis"]["logistic_type"] == "fulfillment"
+    assert state["basis"]["billable_weight"].to_decimal() == Decimal("500")
+    assert state["basis"]["tags"] == ["mandatory_free_shipping"]
+    assert summary.diagnostic_reason_counts == {
+        "listing_fee_projection:basis_mismatch:basis_changed": 1
+    }
+    assert "82453304" not in str(summary.as_dict())
+    assert "MLA1" not in str(summary.as_dict())
 
 
 def test_listing_price_fixed_fee_projection_keeps_bounded_sanitized_fields_only() -> None:
@@ -2538,6 +3093,7 @@ async def test_item_detail_enrichment_clears_stale_listing_fixed_fee_failures() 
     assert summary.listing_fixed_fee_requested == 1
     assert summary.listing_fixed_fee_missing_params == 1
     assert summary.listing_fixed_fee_unavailable == 1
+    assert db["items"].update_calls
     assert all(
         call[1].get("$unset") == {"listing_price_fixed_fee": ""}
         for call in db["items"].update_calls
@@ -2773,6 +3329,7 @@ async def test_item_detail_enrichment_summary_is_sanitized_and_useful() -> None:
         "listing_fixed_fee_enriched": 0,
         "listing_fixed_fee_unavailable": 0,
         "listing_fixed_fee_missing_params": 0,
+        "diagnostic_reason_counts": {},
     }
     assert "82453304" not in str(serialized)
     assert "MLA1" not in str(serialized)

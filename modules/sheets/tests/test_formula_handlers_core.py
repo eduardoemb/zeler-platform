@@ -1522,6 +1522,136 @@ async def test_dashboard_commission_columns_read_listing_fee_projection_or_na(
 
 
 @pytest.mark.asyncio
+async def test_dashboard_commission_columns_require_matching_listing_fee_basis() -> None:
+    db = FakeDb()
+    db["sheets_item_formula_rows"].documents = {
+        "row-trusted": _dashboard_item(
+            "sku-1",
+            "SKU-1",
+            "MLM1",
+            price=Decimal128("1234.50"),
+            category_id="MLM-CELLPHONES",
+            currency_id="MXN",
+            site_id="MLM",
+            listing_type_id="gold_special",
+            listing_fee_projection=_listing_fee_projection_doc(
+                percentage_fee="12.50",
+                sale_fee_amount="155.99",
+            ),
+        ),
+        "row-stale": _dashboard_item(
+            "sku-2",
+            "SKU-2",
+            "MLM2",
+            price=Decimal128("9999.99"),
+            category_id="MLM-CELLPHONES",
+            currency_id="MXN",
+            site_id="MLM",
+            listing_type_id="gold_special",
+            listing_fee_projection=_listing_fee_projection_doc(
+                percentage_fee="12.50",
+                sale_fee_amount="155.99",
+            ),
+        ),
+    }
+    dispatcher = _core_dispatcher(db)
+
+    result = await dispatcher.execute(
+        _context("ZELERDATA_DASHBOARD", {"skus": "todos", "encabezados": "si"})
+    )
+
+    assert [row[18:20] for row in result.values[1:]] == [
+        [Decimal("12.50"), Decimal("155.99")],
+        ["NA", "NA"],
+    ]
+
+
+@pytest.mark.asyncio
+async def test_dashboard_commission_columns_require_matching_listing_fee_shipping_basis() -> None:
+    projection = _listing_fee_projection_doc(
+        percentage_fee="12.50",
+        sale_fee_amount="155.99",
+        shipping_mode="me2",
+        logistic_type="fulfillment",
+        billable_weight=Decimal128("500"),
+        tags=["mandatory_free_shipping"],
+    )
+    matching_basis = {
+        "price": Decimal128("1234.50"),
+        "category_id": "MLM-CELLPHONES",
+        "currency_id": "MXN",
+        "site_id": "MLM",
+        "listing_type_id": "gold_special",
+        "shipping_mode": "me2",
+        "logistic_type": "fulfillment",
+        "billable_weight": Decimal128("500"),
+        "tags": ["mandatory_free_shipping"],
+    }
+    db = FakeDb()
+    db["sheets_item_formula_rows"].documents = {
+        "row-trusted": _dashboard_item(
+            "sku-1",
+            "SKU-1",
+            "MLM1",
+            **matching_basis,
+            listing_fee_projection=projection,
+        ),
+        "row-shipping-mismatch": _dashboard_item(
+            "sku-2",
+            "SKU-2",
+            "MLM2",
+            **(matching_basis | {"shipping_mode": "me1"}),
+            listing_fee_projection=projection,
+        ),
+        "row-logistic-mismatch": _dashboard_item(
+            "sku-3",
+            "SKU-3",
+            "MLM3",
+            **(matching_basis | {"logistic_type": "drop_off"}),
+            listing_fee_projection=projection,
+        ),
+        "row-billable-mismatch": _dashboard_item(
+            "sku-4",
+            "SKU-4",
+            "MLM4",
+            **(matching_basis | {"billable_weight": Decimal128("250")}),
+            listing_fee_projection=projection,
+        ),
+        "row-tags-mismatch": _dashboard_item(
+            "sku-5",
+            "SKU-5",
+            "MLM5",
+            **(matching_basis | {"tags": ["other_tag"]}),
+            listing_fee_projection=projection,
+        ),
+        "row-projection-missing-shipping-basis": _dashboard_item(
+            "sku-6",
+            "SKU-6",
+            "MLM6",
+            **matching_basis,
+            listing_fee_projection=_listing_fee_projection_doc(
+                percentage_fee="12.50",
+                sale_fee_amount="155.99",
+            ),
+        ),
+    }
+    dispatcher = _core_dispatcher(db)
+
+    result = await dispatcher.execute(
+        _context("ZELERDATA_DASHBOARD", {"skus": "todos", "encabezados": "si"})
+    )
+
+    assert [row[18:20] for row in result.values[1:]] == [
+        [Decimal("12.50"), Decimal("155.99")],
+        ["NA", "NA"],
+        ["NA", "NA"],
+        ["NA", "NA"],
+        ["NA", "NA"],
+        ["NA", "NA"],
+    ]
+
+
+@pytest.mark.asyncio
 async def test_comision_returns_source_backed_projection_table_with_headers_and_na() -> None:
     db = FakeDb()
     formula_rows = db["sheets_item_formula_rows"]
@@ -1580,6 +1710,7 @@ def _listing_fee_projection_doc(
     *,
     percentage_fee: str = "12.00",
     sale_fee_amount: str = "155.99",
+    **overrides: Any,
 ) -> dict[str, Any]:
     return {
         "source": "/sites/{site}/listing_prices",
@@ -1591,6 +1722,7 @@ def _listing_fee_projection_doc(
         "sale_fee_amount": Decimal128(sale_fee_amount),
         "percentage_fee": Decimal128(percentage_fee),
         "synced_at": datetime(2026, 6, 5, 12, 0, tzinfo=UTC),
+        **overrides,
     }
 
 

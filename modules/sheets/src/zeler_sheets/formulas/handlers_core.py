@@ -1083,8 +1083,64 @@ def _listing_fee_projection_value(row: Mapping[str, Any], field: str) -> Any:
         return NA_VALUE
     if projection.get("source") != LISTING_PRICE_SOURCE:
         return NA_VALUE
+    if _listing_fee_row_has_basis(current) and not _listing_fee_projection_matches_row_basis(
+        current, projection
+    ):
+        return NA_VALUE
     value = _projection_decimal(projection.get(field))
     return value if value is not None else NA_VALUE
+
+
+def _listing_fee_row_has_basis(current: Mapping[str, Any]) -> bool:
+    return any(
+        _has_fixed_fee_basis(current.get(key))
+        for key in (
+            "site_id",
+            "category_id",
+            "currency_id",
+            "listing_type_id",
+            "price",
+            "shipping_mode",
+            "logistic_type",
+            "billable_weight",
+            "tags",
+        )
+    )
+
+
+def _listing_fee_projection_matches_row_basis(
+    current: Mapping[str, Any], projection: Mapping[str, Any]
+) -> bool:
+    for key in ("site_id", "category_id", "currency_id", "listing_type_id"):
+        current_value = current.get(key)
+        projection_value = projection.get(key)
+        if not (_has_fixed_fee_basis(current_value) and _has_fixed_fee_basis(projection_value)):
+            return False
+        if str(current_value).strip() != str(projection_value).strip():
+            return False
+    current_price = current.get("price")
+    if not _has_fixed_fee_basis(current_price):
+        return False
+    if not _fixed_fee_decimal_basis_matches(current_price, projection.get("price")):
+        return False
+    for key in ("shipping_mode", "logistic_type"):
+        if not _listing_fee_optional_string_basis_matches(current.get(key), projection.get(key)):
+            return False
+    if not _fixed_fee_optional_decimal_basis_matches(
+        current.get("billable_weight"), projection.get("billable_weight")
+    ):
+        return False
+    return _fixed_fee_optional_tags_basis_matches(current.get("tags"), projection.get("tags"))
+
+
+def _listing_fee_optional_string_basis_matches(current_value: Any, projection_value: Any) -> bool:
+    if not _has_fixed_fee_basis(current_value) and not _has_fixed_fee_basis(projection_value):
+        return True
+    return (
+        _has_fixed_fee_basis(current_value)
+        and _has_fixed_fee_basis(projection_value)
+        and str(current_value).strip() == str(projection_value).strip()
+    )
 
 
 def _projection_decimal(value: Any) -> Decimal | None:

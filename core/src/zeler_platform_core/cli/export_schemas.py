@@ -85,6 +85,10 @@ LISTING_FEE_PROJECTION = {
         "price": MONEY,
         "listing_type_id": {"bsonType": "string"},
         "category_id": {"bsonType": "string"},
+        "shipping_mode": {"bsonType": ["string", "null"]},
+        "logistic_type": {"bsonType": ["string", "null"]},
+        "billable_weight": {"bsonType": ["decimal", "double", "int", "long", "null"]},
+        "tags": {"bsonType": "array"},
         "sale_fee_amount": MONEY,
         "percentage_fee": MONEY,
         "gross_amount": NULLABLE_MONEY,
@@ -92,6 +96,71 @@ LISTING_FEE_PROJECTION = {
         "meli_percentage_fee": NULLABLE_MONEY,
         "financing_add_on_fee": NULLABLE_MONEY,
         "synced_at": DATE,
+    },
+}
+ITEM_ENRICHMENT_BASIS = {
+    "additionalProperties": False,
+    "bsonType": ["object", "null"],
+    "properties": {
+        "site_id": {"bsonType": ["string", "null"]},
+        "category_id": {"bsonType": ["string", "null"]},
+        "currency_id": {"bsonType": ["string", "null"]},
+        "listing_type_id": {"bsonType": ["string", "null"]},
+        "price": NULLABLE_MONEY,
+        "shipping_mode": {"bsonType": ["string", "null"]},
+        "logistic_type": {"bsonType": ["string", "null"]},
+        "billable_weight": NULLABLE_MONEY,
+        "tags": {"bsonType": "array"},
+    },
+}
+ITEM_ENRICHMENT_FIELD_STATE = {
+    "additionalProperties": False,
+    "bsonType": ["object", "null"],
+    "required": ["source", "status", "synced_at"],
+    "properties": {
+        "source": {"bsonType": "string"},
+        "status": {
+            "enum": [
+                "trusted",
+                "authoritative_absent",
+                "unauthorized",
+                "transient",
+                "basis_mismatch",
+                "malformed",
+                "stale",
+            ]
+        },
+        "synced_at": DATE,
+        "reason": {"bsonType": ["string", "null"]},
+        "basis_hash": {"bsonType": ["string", "null"]},
+        "basis": ITEM_ENRICHMENT_BASIS,
+    },
+}
+ITEM_ENRICHMENT_STATE = {
+    "additionalProperties": False,
+    "bsonType": ["object", "null"],
+    "properties": {
+        "seller_shipping_cost": ITEM_ENRICHMENT_FIELD_STATE,
+        "current_promotion": ITEM_ENRICHMENT_FIELD_STATE,
+        "listing_fee_projection": ITEM_ENRICHMENT_FIELD_STATE,
+        "listing_price_fixed_fee": ITEM_ENRICHMENT_FIELD_STATE,
+    },
+}
+ORDER_ITEM = {
+    "additionalProperties": False,
+    "bsonType": "object",
+    "required": ["item_id", "qty", "unit_price"],
+    "properties": {
+        "item_id": {"bsonType": "string"},
+        "variation_id": {"bsonType": ["string", "null"]},
+        "sku": {"bsonType": ["string", "null"]},
+        "seller_sku": {"bsonType": ["string", "null"]},
+        "seller_custom_field": {"bsonType": ["string", "null"]},
+        "qty": {"bsonType": ["int", "long"]},
+        "unit_price": MONEY,
+        "sale_fee": NULLABLE_MONEY,
+        "sale_fee_source": {"enum": ["/orders/{id}", None]},
+        "sale_fee_synced_at": NULLABLE_DATE,
     },
 }
 RECEIVER_ADDRESS_SNAPSHOT = {
@@ -238,6 +307,7 @@ ENTITY_SCHEMAS: dict[str, dict[str, Any]] = {
             "current_promotion": PROMO_PRICE_PROJECTION,
             "listing_price_fixed_fee": LISTING_PRICE_FIXED_FEE_PROJECTION,
             "listing_fee_projection": LISTING_FEE_PROJECTION,
+            "enrichment_state": ITEM_ENRICHMENT_STATE,
             "catalog_product_id": {"bsonType": ["string", "null"]},
             "variations": {"bsonType": "array"},
             "attributes": {"bsonType": "array"},
@@ -278,7 +348,7 @@ ENTITY_SCHEMAS: dict[str, dict[str, Any]] = {
             "date_created": DATE,
             "date_closed": NULLABLE_DATE,
             "total_amount": MONEY,
-            "items": {"bsonType": "array"},
+            "items": {"bsonType": "array", "items": ORDER_ITEM},
             "shipment_id": {"bsonType": ["string", "long", "int", "null"]},
             "meli_pack_id": {"bsonType": ["string", "long", "int", "null"]},
             "tags": {"bsonType": "array"},

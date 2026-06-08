@@ -158,6 +158,9 @@ async def run_historical_meli_backfill(
     approved_runtime: bool = False,
     include_buyer_address_pii: bool = False,
     max_orders: int | None = None,
+    max_items: int | None = None,
+    max_shipments: int | None = None,
+    resume_after_order_id: str | None = None,
 ) -> HistoricalMeliBackfillSummary:
     seller_id = str(seller_id)
     if not dry_run and not approved_runtime:
@@ -168,6 +171,10 @@ async def run_historical_meli_backfill(
         raise ValueError("max_orders is required for buyer/address PII mode")
     if max_orders is not None and max_orders < 1:
         raise ValueError("max-orders must be greater than zero")
+    if max_items is not None and max_items < 1:
+        raise ValueError("max-items must be greater than zero")
+    if max_shipments is not None and max_shipments < 1:
+        raise ValueError("max-shipments must be greater than zero")
 
     date_range = parse_inclusive_date_range(date_from, date_to)
     search_orders = await _search_orders(
@@ -176,7 +183,10 @@ async def run_historical_meli_backfill(
         date_range=date_range,
         max_orders=max_orders,
     )
-    order_ids = _unique_strings(_resource_id(order) for order in search_orders)
+    order_ids = _apply_resume_after_order_id(
+        _unique_strings(_resource_id(order) for order in search_orders),
+        resume_after_order_id=resume_after_order_id,
+    )
     orders = [
         cast(
             "dict[str, Any]",
@@ -188,14 +198,18 @@ async def run_historical_meli_backfill(
         for order_id in order_ids
     ]
 
-    item_ids = _unique_strings(
-        item_id for order in orders for item_id in _extract_order_item_ids(order)
+    item_ids = _bounded_values(
+        _unique_strings(item_id for order in orders for item_id in _extract_order_item_ids(order)),
+        limit=max_items,
     )
-    shipment_ids = _unique_strings(
-        shipment_id
-        for order in orders
-        for shipment_id in [_extract_shipment_id(order)]
-        if shipment_id
+    shipment_ids = _bounded_values(
+        _unique_strings(
+            shipment_id
+            for order in orders
+            for shipment_id in [_extract_shipment_id(order)]
+            if shipment_id
+        ),
+        limit=max_shipments,
     )
 
     items = await _fetch_items(gateway=gateway, seller_id=seller_id, item_ids=item_ids)
@@ -625,6 +639,23 @@ def _unique_strings(values: Sequence[str | None] | Any) -> list[str]:
         if normalized:
             unique.setdefault(normalized, None)
     return list(unique)
+
+
+def _bounded_values(values: list[str], *, limit: int | None) -> list[str]:
+    return values[:limit] if limit is not None else values
+
+
+def _apply_resume_after_order_id(
+    order_ids: list[str], *, resume_after_order_id: str | None
+) -> list[str]:
+    cursor = _optional_string(resume_after_order_id)
+    if cursor is None:
+        return order_ids
+    try:
+        cursor_index = order_ids.index(cursor)
+    except ValueError:
+        return order_ids
+    return order_ids[cursor_index + 1 :]
 
 
 def _chunks(values: Sequence[str], size: int) -> list[list[str]]:

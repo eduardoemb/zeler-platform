@@ -7,6 +7,7 @@ import math
 import os
 from collections.abc import Sequence
 from dataclasses import asdict, dataclass
+from dataclasses import field as dataclass_field
 from datetime import UTC, date, datetime, timedelta
 from decimal import ROUND_HALF_UP, Decimal, DecimalException, InvalidOperation
 from typing import Any, Protocol, cast
@@ -25,6 +26,17 @@ from zeler_platform_core.models import (
     ShipmentRealShippingCostProjection,
 )
 from zeler_platform_core.models.base import current_schema_version
+from zeler_sheets.enrichment import (
+    EnrichmentFailure,
+    basis_hash,
+    bounded_basis,
+    classify_fetch_exception,
+    enrichment_state,
+    increment_reason_count,
+    listing_fee_basis_matches,
+    schema_safe_enrichment_state,
+    trusted_state,
+)
 from zeler_sheets.formulas.read_models import normalize_sku
 from zeler_sheets.status_history import (
     bson_ms_utc_datetime,
@@ -48,6 +60,7 @@ SHIPMENT_REAL_SHIPPING_COST_ENRICHMENT_LIMIT = 100
 SALE_PRICE_SOURCE = "/items/{id}/sale_price"
 LISTING_PRICE_FIXED_FEE_SOURCE = "/sites/{site}/listing_prices"
 LISTING_FEE_PROJECTION_SOURCE = LISTING_PRICE_FIXED_FEE_SOURCE
+SELLER_SHIPPING_COST_SOURCE = "/users/{seller_id}/shipping_options/free"
 SALE_PRICE_CONTEXT = "channel_marketplace"
 
 
@@ -166,6 +179,7 @@ class ItemDetailEnrichmentSummary:
     listing_fixed_fee_enriched: int = 0
     listing_fixed_fee_unavailable: int = 0
     listing_fixed_fee_missing_params: int = 0
+    diagnostic_reason_counts: dict[str, int] = dataclass_field(default_factory=dict)
 
     def as_dict(self) -> dict[str, int | bool | str]:
         return asdict(self)
@@ -275,9 +289,13 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
 
 async def run_sheetseller_backfill(
-    *, db: Any, seller_id: str, dry_run: bool = True
+    *,
+    db: Any,
+    seller_id: str,
+    dry_run: bool = True,
+    item_ids: Sequence[str] | None = None,
 ) -> BackfillSummary:
-    items = await _load_seller_items(db=db, seller_id=seller_id)
+    items = await _load_seller_items(db=db, seller_id=seller_id, item_ids=item_ids)
     items_with_sku = 0
     skipped_missing_sku = 0
     variation_sku_rows = 0
@@ -413,12 +431,13 @@ async def run_item_detail_enrichment(
     batch_size: int = ITEM_DETAIL_BATCH_SIZE,
     sale_price_enabled: bool = False,
     listing_fixed_fee_enabled: bool = False,
+    item_ids: Sequence[str] | None = None,
 ) -> ItemDetailEnrichmentSummary:
     if batch_size < 1:
         msg = "batch_size must be positive"
         raise ValueError(msg)
 
-    existing_items = await _load_seller_items(db=db, seller_id=seller_id)
+    existing_items = await _load_seller_items(db=db, seller_id=seller_id, item_ids=item_ids)
     site_id = await _load_seller_site_id(db=db, seller_id=seller_id)
     existing_by_id = {_item_id(item): item for item in existing_items}
     item_ids = sorted(existing_by_id)
@@ -441,6 +460,7 @@ async def run_item_detail_enrichment(
     listing_fixed_fee_enriched = 0
     listing_fixed_fee_unavailable = 0
     listing_fixed_fee_missing_params = 0
+    diagnostic_reason_counts: dict[str, int] = {}
 
     for batch in _chunks(item_ids, batch_size):
         response = await gateway.fetch_resource(
@@ -458,42 +478,174 @@ async def run_item_detail_enrichment(
             raise RuntimeError(msg)
         for item_id in batch:
             detail = dict(by_id[item_id])
+            existing_item = existing_by_id[item_id]
+            item_enrichment_state = _existing_enrichment_state(existing_item)
             clear_current_promotion = False
             clear_listing_fixed_fee = False
             clear_listing_fee_projection = False
-            seller_shipping_cost = await _resolve_seller_shipping_cost(
-                gateway=gateway,
-                seller_id=seller_id,
-                item_id=item_id,
-                detail=detail,
-            )
             is_free_shipping = _is_seller_paid_free_shipping(detail)
             if is_free_shipping:
                 shipping_options_requested += 1
-            if seller_shipping_cost is None:
-                if is_free_shipping:
-                    seller_shipping_costs_unavailable += 1
-            else:
+            seller_shipping_cost: Any = None
+            seller_shipping_state: dict[str, Any] | None = None
+            if _is_non_free_shipping(detail):
+                seller_shipping_cost = 0
                 seller_shipping_costs_enriched += 1
+                seller_shipping_state = trusted_state(
+                    source="/items/{id}",
+                    synced_at=synced_at,
+                    basis=_item_shipping_basis(detail),
+                )
+            elif is_free_shipping:
+                try:
+                    shipping_response = await gateway.fetch_resource(
+                        seller_id=seller_id,
+                        path=_seller_shipping_options_path(seller_id=seller_id, item_id=item_id),
+                    )
+                except (
+                    RuntimeError,
+                    GatewayRateLimitError,
+                    httpx.HTTPStatusError,
+                    httpx.RequestError,
+                ) as exc:
+                    failure = classify_fetch_exception(exc)
+                    shipping_basis = _item_shipping_basis(detail)
+                    if (
+                        failure.preserve_existing
+                        and existing_item.get("seller_shipping_cost") is not None
+                    ):
+                        if not _existing_enrichment_basis_matches(
+                            existing_item,
+                            field="seller_shipping_cost",
+                            basis=shipping_basis,
+                        ):
+                            seller_shipping_costs_unavailable += 1
+                            seller_shipping_state = enrichment_state(
+                                source=SELLER_SHIPPING_COST_SOURCE,
+                                status="basis_mismatch",
+                                reason="basis_changed",
+                                synced_at=synced_at,
+                                basis=shipping_basis,
+                            )
+                            increment_reason_count(
+                                diagnostic_reason_counts,
+                                field="seller_shipping_cost",
+                                status="basis_mismatch",
+                                reason="basis_changed",
+                            )
+                        else:
+                            seller_shipping_state = enrichment_state(
+                                source=SELLER_SHIPPING_COST_SOURCE,
+                                status=failure.status,
+                                reason=failure.reason,
+                                synced_at=synced_at,
+                                basis=shipping_basis,
+                            )
+                            increment_reason_count(
+                                diagnostic_reason_counts,
+                                field="seller_shipping_cost",
+                                status=failure.status,
+                                reason=failure.reason,
+                            )
+                            seller_shipping_cost = existing_item["seller_shipping_cost"]
+                    else:
+                        seller_shipping_state = enrichment_state(
+                            source=SELLER_SHIPPING_COST_SOURCE,
+                            status=failure.status,
+                            reason=failure.reason,
+                            synced_at=synced_at,
+                            basis=shipping_basis,
+                        )
+                        increment_reason_count(
+                            diagnostic_reason_counts,
+                            field="seller_shipping_cost",
+                            status=failure.status,
+                            reason=failure.reason,
+                        )
+                        seller_shipping_costs_unavailable += 1
+                else:
+                    seller_shipping_cost = _extract_seller_shipping_cost(shipping_response)
+                    if seller_shipping_cost is None:
+                        seller_shipping_costs_unavailable += 1
+                        seller_shipping_state = enrichment_state(
+                            source=SELLER_SHIPPING_COST_SOURCE,
+                            status="malformed",
+                            reason="malformed_response",
+                            synced_at=synced_at,
+                            basis=_item_shipping_basis(detail),
+                        )
+                        increment_reason_count(
+                            diagnostic_reason_counts,
+                            field="seller_shipping_cost",
+                            status="malformed",
+                            reason="malformed_response",
+                        )
+                    else:
+                        seller_shipping_costs_enriched += 1
+                        seller_shipping_state = trusted_state(
+                            source=SELLER_SHIPPING_COST_SOURCE,
+                            synced_at=synced_at,
+                            basis=_item_shipping_basis(detail),
+                        )
+            else:
+                seller_shipping_cost = None
             detail["seller_shipping_cost"] = seller_shipping_cost
+            if seller_shipping_state is not None:
+                item_enrichment_state["seller_shipping_cost"] = seller_shipping_state
             if sale_price_enabled:
                 sale_price_requested += 1
-                current_promotion = await _resolve_sale_price_projection(
+                current_promotion, sale_price_failure = await _resolve_sale_price_projection(
                     gateway=gateway,
                     seller_id=seller_id,
                     item_id=item_id,
                     synced_at=synced_at,
                 )
                 if current_promotion is None:
-                    sale_price_promotions_unavailable += 1
-                    detail["current_promotion"] = None
-                    clear_current_promotion = True
+                    existing_promotion = existing_item.get("current_promotion")
+                    if sale_price_failure is not None:
+                        item_enrichment_state["current_promotion"] = enrichment_state(
+                            source=SALE_PRICE_SOURCE,
+                            status=sale_price_failure.status,
+                            reason=sale_price_failure.reason,
+                            synced_at=synced_at,
+                        )
+                        increment_reason_count(
+                            diagnostic_reason_counts,
+                            field="current_promotion",
+                            status=sale_price_failure.status,
+                            reason=sale_price_failure.reason,
+                        )
+                        if sale_price_failure.preserve_existing and existing_promotion is not None:
+                            detail["current_promotion"] = existing_promotion
+                        else:
+                            sale_price_promotions_unavailable += 1
+                            detail["current_promotion"] = None
+                            clear_current_promotion = "current_promotion" in existing_item
+                    else:
+                        sale_price_promotions_unavailable += 1
+                        detail["current_promotion"] = None
+                        clear_current_promotion = "current_promotion" in existing_item
+                        item_enrichment_state["current_promotion"] = enrichment_state(
+                            source=SALE_PRICE_SOURCE,
+                            status="authoritative_absent",
+                            reason="no_trusted_promotion",
+                            synced_at=synced_at,
+                        )
+                        increment_reason_count(
+                            diagnostic_reason_counts,
+                            field="current_promotion",
+                            status="authoritative_absent",
+                            reason="no_trusted_promotion",
+                        )
                 else:
                     sale_price_promotions_enriched += 1
                     detail["current_promotion"] = current_promotion
+                    item_enrichment_state["current_promotion"] = trusted_state(
+                        source=SALE_PRICE_SOURCE,
+                        synced_at=synced_at,
+                    )
             elif "current_promotion" in existing_by_id[item_id]:
-                detail["current_promotion"] = None
-                clear_current_promotion = True
+                detail["current_promotion"] = existing_by_id[item_id]["current_promotion"]
             if site_id is not None:
                 listing_fee_context = build_listing_fee_projection_context(
                     site_id=site_id, detail=detail
@@ -504,26 +656,124 @@ async def run_item_detail_enrichment(
                     clear_listing_fee_projection = (
                         "listing_fee_projection" in existing_by_id[item_id]
                     )
-                else:
-                    listing_prices_requested += 1
-                    listing_fee_projection = await _resolve_listing_fee_projection(
-                        gateway=gateway,
-                        seller_id=seller_id,
-                        context=listing_fee_context,
+                    item_enrichment_state["listing_fee_projection"] = enrichment_state(
+                        source=LISTING_FEE_PROJECTION_SOURCE,
+                        status="basis_mismatch",
+                        reason="missing_basis",
                         synced_at=synced_at,
                     )
-                    if listing_fee_projection is None:
-                        listing_fee_projections_unavailable += 1
-                        detail["listing_fee_projection"] = None
-                        clear_listing_fee_projection = (
-                            "listing_fee_projection" in existing_by_id[item_id]
+                    increment_reason_count(
+                        diagnostic_reason_counts,
+                        field="listing_fee_projection",
+                        status="basis_mismatch",
+                        reason="missing_basis",
+                    )
+                else:
+                    listing_prices_requested += 1
+                    try:
+                        listing_fee_response = await gateway.fetch_resource(
+                            seller_id=seller_id,
+                            path=listing_fee_projection_path(listing_fee_context),
                         )
+                    except (
+                        RuntimeError,
+                        GatewayRateLimitError,
+                        httpx.HTTPStatusError,
+                        httpx.RequestError,
+                    ) as exc:
+                        existing_projection = existing_item.get("listing_fee_projection")
+                        failure = classify_fetch_exception(exc)
+                        if not listing_fee_basis_matches(existing_projection, listing_fee_context):
+                            listing_fee_projections_unavailable += 1
+                            detail["listing_fee_projection"] = None
+                            clear_listing_fee_projection = "listing_fee_projection" in existing_item
+                            item_enrichment_state["listing_fee_projection"] = enrichment_state(
+                                source=LISTING_FEE_PROJECTION_SOURCE,
+                                status="basis_mismatch",
+                                reason="basis_changed",
+                                synced_at=synced_at,
+                                basis=listing_fee_context,
+                            )
+                            increment_reason_count(
+                                diagnostic_reason_counts,
+                                field="listing_fee_projection",
+                                status="basis_mismatch",
+                                reason="basis_changed",
+                            )
+                        elif failure.preserve_existing and existing_projection is not None:
+                            detail["listing_fee_projection"] = existing_projection
+                            item_enrichment_state["listing_fee_projection"] = enrichment_state(
+                                source=LISTING_FEE_PROJECTION_SOURCE,
+                                status=failure.status,
+                                reason=failure.reason,
+                                synced_at=synced_at,
+                                basis=listing_fee_context,
+                            )
+                            increment_reason_count(
+                                diagnostic_reason_counts,
+                                field="listing_fee_projection",
+                                status=failure.status,
+                                reason=failure.reason,
+                            )
+                        else:
+                            listing_fee_projections_unavailable += 1
+                            detail["listing_fee_projection"] = None
+                            clear_listing_fee_projection = "listing_fee_projection" in existing_item
+                            item_enrichment_state["listing_fee_projection"] = enrichment_state(
+                                source=LISTING_FEE_PROJECTION_SOURCE,
+                                status=failure.status,
+                                reason=failure.reason,
+                                synced_at=synced_at,
+                                basis=listing_fee_context,
+                            )
+                            increment_reason_count(
+                                diagnostic_reason_counts,
+                                field="listing_fee_projection",
+                                status=failure.status,
+                                reason=failure.reason,
+                            )
                     else:
-                        listing_fee_projections_enriched += 1
-                        detail["listing_fee_projection"] = listing_fee_projection
+                        listing_fee_projection = project_listing_fee_projection(
+                            listing_fee_response,
+                            context=listing_fee_context,
+                            synced_at=synced_at,
+                        )
+                        if listing_fee_projection is None:
+                            listing_fee_projections_unavailable += 1
+                            detail["listing_fee_projection"] = None
+                            clear_listing_fee_projection = (
+                                "listing_fee_projection" in existing_by_id[item_id]
+                            )
+                            item_enrichment_state["listing_fee_projection"] = enrichment_state(
+                                source=LISTING_FEE_PROJECTION_SOURCE,
+                                status="malformed",
+                                reason="malformed_response",
+                                synced_at=synced_at,
+                                basis=listing_fee_context,
+                            )
+                            increment_reason_count(
+                                diagnostic_reason_counts,
+                                field="listing_fee_projection",
+                                status="malformed",
+                                reason="malformed_response",
+                            )
+                        else:
+                            listing_fee_projections_enriched += 1
+                            detail["listing_fee_projection"] = listing_fee_projection
+                            item_enrichment_state["listing_fee_projection"] = trusted_state(
+                                source=LISTING_FEE_PROJECTION_SOURCE,
+                                synced_at=synced_at,
+                                basis=listing_fee_context,
+                            )
             elif "listing_fee_projection" in existing_by_id[item_id]:
                 detail["listing_fee_projection"] = None
                 clear_listing_fee_projection = True
+                item_enrichment_state["listing_fee_projection"] = enrichment_state(
+                    source=LISTING_FEE_PROJECTION_SOURCE,
+                    status="basis_mismatch",
+                    reason="missing_site",
+                    synced_at=synced_at,
+                )
             if listing_fixed_fee_enabled:
                 listing_params = _listing_price_fixed_fee_params(item_id=item_id, detail=detail)
                 if listing_params is None:
@@ -532,23 +782,75 @@ async def run_item_detail_enrichment(
                     clear_listing_fixed_fee = "listing_price_fixed_fee" in existing_by_id[item_id]
                 else:
                     listing_fixed_fee_requested += 1
-                    fixed_fee_projection = await _resolve_listing_price_fixed_fee_projection(
+                    (
+                        fixed_fee_projection,
+                        fixed_fee_failure,
+                    ) = await _resolve_listing_price_fixed_fee_projection(
                         gateway=gateway,
                         seller_id=seller_id,
                         params=listing_params,
                         synced_at=synced_at,
                     )
+                    existing_fixed_fee = existing_item.get("listing_price_fixed_fee")
                     if fixed_fee_projection is None:
-                        listing_fixed_fee_unavailable += 1
-                        detail["listing_price_fixed_fee"] = None
-                        clear_listing_fixed_fee = (
-                            "listing_price_fixed_fee" in existing_by_id[item_id]
-                        )
+                        if fixed_fee_failure is not None:
+                            item_enrichment_state["listing_price_fixed_fee"] = enrichment_state(
+                                source=LISTING_PRICE_FIXED_FEE_SOURCE,
+                                status=fixed_fee_failure.status,
+                                reason=fixed_fee_failure.reason,
+                                synced_at=synced_at,
+                                basis=listing_params,
+                            )
+                            increment_reason_count(
+                                diagnostic_reason_counts,
+                                field="listing_price_fixed_fee",
+                                status=fixed_fee_failure.status,
+                                reason=fixed_fee_failure.reason,
+                            )
+                            if (
+                                fixed_fee_failure.preserve_existing
+                                and _listing_fixed_fee_basis_matches(
+                                    existing_fixed_fee, listing_params
+                                )
+                            ):
+                                detail["listing_price_fixed_fee"] = existing_fixed_fee
+                            else:
+                                listing_fixed_fee_unavailable += 1
+                                detail["listing_price_fixed_fee"] = None
+                                clear_listing_fixed_fee = (
+                                    "listing_price_fixed_fee" in existing_by_id[item_id]
+                                )
+                        else:
+                            listing_fixed_fee_unavailable += 1
+                            detail["listing_price_fixed_fee"] = None
+                            clear_listing_fixed_fee = (
+                                "listing_price_fixed_fee" in existing_by_id[item_id]
+                            )
+                            item_enrichment_state["listing_price_fixed_fee"] = enrichment_state(
+                                source=LISTING_PRICE_FIXED_FEE_SOURCE,
+                                status="malformed",
+                                reason="malformed_response",
+                                synced_at=synced_at,
+                                basis=listing_params,
+                            )
+                            increment_reason_count(
+                                diagnostic_reason_counts,
+                                field="listing_price_fixed_fee",
+                                status="malformed",
+                                reason="malformed_response",
+                            )
                     else:
                         listing_fixed_fee_enriched += 1
                         detail["listing_price_fixed_fee"] = fixed_fee_projection
+                        item_enrichment_state["listing_price_fixed_fee"] = trusted_state(
+                            source=LISTING_PRICE_FIXED_FEE_SOURCE,
+                            synced_at=synced_at,
+                            basis=listing_params,
+                        )
+            if item_enrichment_state:
+                detail["enrichment_state"] = item_enrichment_state
             document = _canonical_item_detail_document(
-                existing=existing_by_id[item_id],
+                existing=existing_item,
                 detail=detail,
                 seller_id=seller_id,
                 synced_at=synced_at,
@@ -622,6 +924,7 @@ async def run_item_detail_enrichment(
         listing_fixed_fee_enriched=listing_fixed_fee_enriched,
         listing_fixed_fee_unavailable=listing_fixed_fee_unavailable,
         listing_fixed_fee_missing_params=listing_fixed_fee_missing_params,
+        diagnostic_reason_counts=diagnostic_reason_counts,
     )
 
 
@@ -1381,9 +1684,19 @@ def _formula_row_listing_price_shipping_basis_fields(item: dict[str, Any]) -> di
     return fields
 
 
-async def _load_seller_items(*, db: Any, seller_id: str) -> list[dict[str, Any]]:
-    cursor = db[ITEMS_COLLECTION].find({"seller_id": seller_id}).sort([("_id", 1)])
+async def _load_seller_items(
+    *, db: Any, seller_id: str, item_ids: Sequence[str] | None = None
+) -> list[dict[str, Any]]:
+    filter_spec: dict[str, Any] = {"seller_id": seller_id}
+    normalized_item_ids = _unique_non_blank_strings(item_ids or ())
+    if normalized_item_ids:
+        filter_spec["_id"] = {"$in": normalized_item_ids}
+    cursor = db[ITEMS_COLLECTION].find(filter_spec).sort([("_id", 1)])
     return cast("list[dict[str, Any]]", await cursor.to_list(length=None))
+
+
+def _unique_non_blank_strings(values: Sequence[str]) -> list[str]:
+    return list(dict.fromkeys(normalized for value in values if (normalized := str(value).strip())))
 
 
 async def _load_seller_site_id(*, db: Any, seller_id: str) -> str | None:
@@ -1722,6 +2035,11 @@ def _canonical_item_detail_document(
         document.pop("current_promotion", None)
     else:
         document["current_promotion"] = current_promotion
+    enrichment = schema_safe_enrichment_state(document.get("enrichment_state"))
+    if enrichment is None:
+        document.pop("enrichment_state", None)
+    else:
+        document["enrichment_state"] = enrichment
     return document
 
 
@@ -1731,15 +2049,15 @@ async def _resolve_sale_price_projection(
     seller_id: str,
     item_id: str,
     synced_at: datetime,
-) -> dict[str, Any] | None:
+) -> tuple[dict[str, Any] | None, EnrichmentFailure | None]:
     try:
         response = await gateway.fetch_resource(
             seller_id=seller_id,
             path=_sale_price_path(item_id),
         )
-    except (RuntimeError, GatewayRateLimitError, httpx.HTTPStatusError, httpx.RequestError):
-        return None
-    return project_sale_price_projection(response, synced_at=synced_at)
+    except (RuntimeError, GatewayRateLimitError, httpx.HTTPStatusError, httpx.RequestError) as exc:
+        return None, classify_fetch_exception(exc)
+    return project_sale_price_projection(response, synced_at=synced_at), None
 
 
 async def _resolve_shipment_real_shipping_cost_projection(
@@ -1985,6 +2303,48 @@ def _schema_safe_tags(value: Any) -> list[str]:
     return [tag for raw in value if (tag := str(raw).strip())]
 
 
+def _existing_enrichment_state(item: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    state = item.get("enrichment_state")
+    if not isinstance(state, dict):
+        return {}
+    return {str(key): dict(value) for key, value in state.items() if isinstance(value, dict)}
+
+
+def _existing_enrichment_basis_matches(
+    item: dict[str, Any], *, field: str, basis: dict[str, Any]
+) -> bool:
+    state = _existing_enrichment_state(item).get(field)
+    if state is None:
+        return False
+    expected_hash = basis_hash(basis)
+    if expected_hash is not None and state.get("basis_hash") == expected_hash:
+        return True
+    existing_basis = state.get("basis")
+    if not isinstance(existing_basis, dict):
+        return False
+    return bounded_basis(existing_basis) == bounded_basis(basis)
+
+
+def _item_shipping_basis(detail: dict[str, Any]) -> dict[str, Any]:
+    shipping = detail.get("shipping")
+    shipping_values = shipping if isinstance(shipping, dict) else {}
+    basis: dict[str, Any] = {}
+    for key, value in {
+        "site_id": detail.get("site_id") or _site_from_item_id(str(detail.get("id") or "")),
+        "category_id": detail.get("category_id"),
+        "currency_id": detail.get("currency_id"),
+        "listing_type_id": detail.get("listing_type_id"),
+        "price": detail.get("price"),
+        "shipping_mode": shipping_values.get("mode") or detail.get("shipping_mode"),
+        "logistic_type": shipping_values.get("logistic_type"),
+        "billable_weight": detail.get("billable_weight") or shipping_values.get("billable_weight"),
+        "tags": detail.get("tags"),
+    }.items():
+        if value is not None:
+            basis[key] = value
+    return basis
+
+
 def _safe_decimal(value: Any) -> Decimal | None:
     if value is None or isinstance(value, (bool, dict, list)):
         return None
@@ -2044,6 +2404,34 @@ def _listing_price_fixed_fee_params(
         if clean_tags:
             params["tags"] = clean_tags
     return params
+
+
+def _listing_fixed_fee_basis_matches(existing_projection: Any, params: dict[str, Any]) -> bool:
+    projection = _schema_safe_listing_fixed_fee(existing_projection)
+    if projection is None:
+        return False
+    existing_params = projection.get("params")
+    if not isinstance(existing_params, dict):
+        return False
+    for key in (
+        "site_id",
+        "category_id",
+        "currency_id",
+        "listing_type_id",
+        "shipping_mode",
+        "logistic_type",
+    ):
+        existing_value = _optional_string(existing_params.get(key))
+        params_value = _optional_string(params.get(key))
+        if key in {"site_id", "currency_id"}:
+            existing_value = existing_value.upper() if existing_value is not None else None
+            params_value = params_value.upper() if params_value is not None else None
+        if existing_value != params_value:
+            return False
+    for key in ("price", "billable_weight"):
+        if _safe_decimal(existing_params.get(key)) != _safe_decimal(params.get(key)):
+            return False
+    return _clean_string_list(existing_params.get("tags")) == _clean_string_list(params.get("tags"))
 
 
 def _site_from_item_id(item_id: str) -> str | None:
@@ -2137,6 +2525,16 @@ def _schema_safe_listing_fee_projection(value: Any) -> dict[str, Any] | None:
         "percentage_fee": percentage_fee,
         "synced_at": raw_projection["synced_at"],
     }
+    for key in ("shipping_mode", "logistic_type"):
+        if raw_projection.get(key) is not None:
+            projection[key] = raw_projection[key]
+    if raw_projection.get("billable_weight") is not None:
+        billable_weight = _decimal128_or_none(raw_projection["billable_weight"])
+        if billable_weight is None:
+            return None
+        projection["billable_weight"] = billable_weight
+    if raw_projection.get("tags"):
+        projection["tags"] = list(raw_projection["tags"])
     for key in (
         "gross_amount",
         "fixed_fee",
@@ -2188,6 +2586,10 @@ def _listing_fee_allowed_fields(value: dict[str, Any]) -> dict[str, Any]:
         "category_id",
         "sale_fee_amount",
         "percentage_fee",
+        "shipping_mode",
+        "logistic_type",
+        "billable_weight",
+        "tags",
         "gross_amount",
         "fixed_fee",
         "meli_percentage_fee",
@@ -2372,6 +2774,10 @@ def project_listing_fee_projection(
                 "price": context.get("price"),
                 "listing_type_id": context.get("listing_type_id"),
                 "category_id": context.get("category_id"),
+                "shipping_mode": context.get("shipping_mode"),
+                "logistic_type": context.get("logistic_type"),
+                "billable_weight": context.get("billable_weight"),
+                "tags": context.get("tags"),
                 "sale_fee_amount": sale_fee_amount,
                 "percentage_fee": percentage_fee,
                 "gross_amount": _safe_decimal(sale_fee_details.get("gross_amount")),
@@ -2398,15 +2804,18 @@ async def _resolve_listing_price_fixed_fee_projection(
     seller_id: str,
     params: dict[str, Any],
     synced_at: datetime,
-) -> dict[str, Any] | None:
+) -> tuple[dict[str, Any] | None, EnrichmentFailure | None]:
     try:
         response = await gateway.fetch_resource(
             seller_id=seller_id,
             path=_listing_price_fixed_fee_path(params),
         )
-    except (RuntimeError, GatewayRateLimitError, httpx.HTTPStatusError, httpx.RequestError):
-        return None
-    return project_listing_price_fixed_fee_projection(response, params=params, synced_at=synced_at)
+    except (RuntimeError, GatewayRateLimitError, httpx.HTTPStatusError, httpx.RequestError) as exc:
+        return None, classify_fetch_exception(exc)
+    return (
+        project_listing_price_fixed_fee_projection(response, params=params, synced_at=synced_at),
+        None,
+    )
 
 
 def _listing_price_fixed_fee_path(params: dict[str, Any]) -> str:

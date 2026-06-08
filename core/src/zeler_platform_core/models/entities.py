@@ -40,6 +40,15 @@ ShipmentLogisticType = Literal[
 ClaimStatus = Literal["opened", "closed", "mediating", "resolved"]
 ClaimStage = Literal["claim", "dispute", "recontact", "none"]
 ClaimType = Literal["mediations", "returns", "fulfillment", "cancel_purchase"]
+ItemEnrichmentStatus = Literal[
+    "trusted",
+    "authoritative_absent",
+    "unauthorized",
+    "transient",
+    "basis_mismatch",
+    "malformed",
+    "stale",
+]
 
 
 class PromoPriceProjection(UtcDatetimeMixin):
@@ -210,6 +219,10 @@ class ListingFeeProjection(UtcDatetimeMixin):
     price: Decimal
     listing_type_id: str
     category_id: str
+    shipping_mode: str | None = None
+    logistic_type: str | None = None
+    billable_weight: Decimal | None = None
+    tags: list[str] = Field(default_factory=list)
     sale_fee_amount: Decimal
     percentage_fee: Decimal
     gross_amount: Decimal | None = None
@@ -226,6 +239,7 @@ class ListingFeeProjection(UtcDatetimeMixin):
         "fixed_fee",
         "meli_percentage_fee",
         "financing_add_on_fee",
+        "billable_weight",
         mode="before",
     )
     @classmethod
@@ -267,10 +281,143 @@ class ListingFeeProjection(UtcDatetimeMixin):
             raise ValueError(msg)
         return normalized
 
+    @field_validator("shipping_mode", "logistic_type", mode="before")
+    @classmethod
+    def _coerce_optional_basis_string(cls, value: object) -> str | None:
+        if value is None:
+            return None
+        if isinstance(value, (dict, list)):
+            msg = "listing fee optional basis fields must be scalar strings"
+            raise ValueError(msg)
+        normalized = _coerce_str(value).strip()
+        return normalized or None
+
+    @field_validator("tags", mode="before")
+    @classmethod
+    def _coerce_tags(cls, value: object) -> list[str]:
+        if value is None:
+            return []
+        if not isinstance(value, list):
+            msg = "listing fee tags must be a list of strings"
+            raise ValueError(msg)
+        return [tag for raw in value if (tag := _coerce_str(raw).strip())]
+
     @field_validator("synced_at", mode="before")
     @classmethod
     def _listing_fee_synced_at_must_be_aware(cls, value: object) -> object:
         return UtcDatetimeMixin._datetime_must_be_aware(value)
+
+
+class ItemEnrichmentBasis(PriceMixin):
+    model_config = ConfigDict(arbitrary_types_allowed=True, extra="forbid")
+
+    site_id: str | None = None
+    category_id: str | None = None
+    currency_id: str | None = None
+    listing_type_id: str | None = None
+    price: Decimal | None = None
+    shipping_mode: str | None = None
+    logistic_type: str | None = None
+    billable_weight: Decimal | None = None
+    tags: list[str] = Field(default_factory=list)
+
+    @field_validator("site_id", "currency_id", mode="before")
+    @classmethod
+    def _coerce_optional_uppercase_id(cls, value: object) -> str | None:
+        if value is None:
+            return None
+        if isinstance(value, (dict, list)):
+            msg = "enrichment basis ids must be scalar strings"
+            raise ValueError(msg)
+        normalized = _coerce_str(value).strip().upper()
+        return normalized or None
+
+    @field_validator(
+        "category_id", "listing_type_id", "shipping_mode", "logistic_type", mode="before"
+    )
+    @classmethod
+    def _coerce_optional_basis_string(cls, value: object) -> str | None:
+        if value is None:
+            return None
+        if isinstance(value, (dict, list)):
+            msg = "enrichment basis fields must be scalar strings"
+            raise ValueError(msg)
+        normalized = _coerce_str(value).strip()
+        return normalized or None
+
+    @field_validator("price", "billable_weight", mode="before")
+    @classmethod
+    def _coerce_optional_basis_decimal(cls, value: object) -> Decimal | None:
+        msg = "enrichment basis numeric fields must be finite non-negative numbers"
+        if value is None:
+            return None
+        if isinstance(value, (bool, dict, list)):
+            raise ValueError(msg)
+        try:
+            parsed = value if isinstance(value, Decimal) else Decimal(str(value))
+        except (DecimalException, ValueError) as exc:
+            raise ValueError(msg) from exc
+        if not parsed.is_finite() or parsed < 0:
+            raise ValueError(msg)
+        return parsed
+
+    @field_validator("tags", mode="before")
+    @classmethod
+    def _coerce_basis_tags(cls, value: object) -> list[str]:
+        if value is None:
+            return []
+        if not isinstance(value, list):
+            msg = "enrichment basis tags must be a list of strings"
+            raise ValueError(msg)
+        return [tag for raw in value if (tag := _coerce_str(raw).strip())]
+
+
+class ItemEnrichmentFieldState(UtcDatetimeMixin):
+    model_config = ConfigDict(arbitrary_types_allowed=True, extra="forbid")
+
+    source: str
+    status: ItemEnrichmentStatus
+    synced_at: datetime
+    reason: str | None = None
+    basis_hash: str | None = None
+    basis: ItemEnrichmentBasis | None = None
+
+    @field_validator("source", mode="before")
+    @classmethod
+    def _coerce_source(cls, value: object) -> str:
+        if value is None or isinstance(value, (dict, list)):
+            msg = "enrichment source must be a non-blank string"
+            raise ValueError(msg)
+        normalized = _coerce_str(value).strip()
+        if not normalized:
+            msg = "enrichment source must be a non-blank string"
+            raise ValueError(msg)
+        return normalized
+
+    @field_validator("reason", "basis_hash", mode="before")
+    @classmethod
+    def _coerce_optional_metadata_string(cls, value: object) -> str | None:
+        if value is None:
+            return None
+        if isinstance(value, (dict, list)):
+            msg = "enrichment metadata strings must be scalar"
+            raise ValueError(msg)
+        normalized = _coerce_str(value).strip()
+        return normalized or None
+
+    @field_validator("synced_at", mode="before")
+    @classmethod
+    def _synced_at_must_be_aware(cls, value: object) -> object:
+        return UtcDatetimeMixin._datetime_must_be_aware(value)
+
+
+class ItemEnrichmentState(UtcDatetimeMixin):
+    model_config = ConfigDict(arbitrary_types_allowed=True, extra="forbid")
+
+    seller_shipping_cost: ItemEnrichmentFieldState | None = None
+    current_promotion: ItemEnrichmentFieldState | None = None
+    listing_fee_projection: ItemEnrichmentFieldState | None = None
+    listing_price_fixed_fee: ItemEnrichmentFieldState | None = None
 
 
 class Item(UtcDatetimeMixin, PriceMixin, SellerScopedDocument):
@@ -297,6 +444,7 @@ class Item(UtcDatetimeMixin, PriceMixin, SellerScopedDocument):
     current_promotion: PromoPriceProjection | None = None
     listing_price_fixed_fee: ListingPriceFixedFeeProjection | None = None
     listing_fee_projection: ListingFeeProjection | None = None
+    enrichment_state: ItemEnrichmentState | None = None
     last_meli_sync_at: datetime
     status_observed_at: datetime | None = None
     date_created: datetime
@@ -390,7 +538,7 @@ class ItemStatusState(UtcDatetimeMixin, SellerScopedDocument):
         return normalized
 
 
-class OrderItem(PriceMixin):
+class OrderItem(UtcDatetimeMixin, PriceMixin):
     item_id: str
     variation_id: str | None = None
     sku: str | None = None
@@ -398,6 +546,9 @@ class OrderItem(PriceMixin):
     seller_custom_field: str | None = None
     qty: int
     unit_price: Decimal
+    sale_fee: Decimal | None = None
+    sale_fee_source: Literal["/orders/{id}"] | None = None
+    sale_fee_synced_at: datetime | None = None
 
     @field_validator("item_id", mode="before")
     @classmethod
@@ -411,6 +562,27 @@ class OrderItem(PriceMixin):
             return None
         normalized = _coerce_str(value).strip()
         return normalized or None
+
+    @field_validator("sale_fee", mode="before")
+    @classmethod
+    def _coerce_sale_fee(cls, value: object) -> Decimal | None:
+        msg = "sale_fee must be a finite non-negative number"
+        if value is None:
+            return None
+        if isinstance(value, (bool, dict, list)):
+            raise ValueError(msg)
+        try:
+            parsed = value if isinstance(value, Decimal) else Decimal(str(value))
+        except (DecimalException, ValueError) as exc:
+            raise ValueError(msg) from exc
+        if not parsed.is_finite() or parsed < 0:
+            raise ValueError(msg)
+        return parsed
+
+    @field_validator("sale_fee_synced_at", mode="before")
+    @classmethod
+    def _sale_fee_synced_at_must_be_aware(cls, value: object) -> object:
+        return UtcDatetimeMixin._datetime_must_be_aware(value)
 
     def model_dump(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
         kwargs.setdefault("exclude_none", True)

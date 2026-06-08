@@ -2504,6 +2504,7 @@ dependencies = [
     { name = "httpx" },
     { name = "motor" },
     { name = "zeler-platform-core" },
+    { name = "zeler-sheets" },
 ]
 
 [package.metadata]
@@ -2512,6 +2513,7 @@ requires-dist = [
     { name = "httpx", specifier = ">=0.28.1" },
     { name = "motor", specifier = ">=3.7.1" },
     { name = "zeler-platform-core", editable = "core" },
+    { name = "zeler-sheets", editable = "modules/sheets" },
 ]
 
 [[package]]

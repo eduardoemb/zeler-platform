@@ -27,6 +27,7 @@ from zeler_sheets.event_persistence import SheetsEventPersistence, StatusObserva
 from zeler_sheets.google_errors import RetryableGoogleSheetsApiError
 from zeler_sheets.google_sheets_client import make_sheets_client
 from zeler_sheets.sheets_config import SheetsSettings
+from zeler_sheets.sheetseller_backfill import run_item_detail_enrichment, run_sheetseller_backfill
 
 MELI_EVENTS_EXCHANGE = "meli.events"
 SHEETS_EVENTS_QUEUE = "zeler.sheets.events"
@@ -512,12 +513,18 @@ class SheetsEventHandler:
         sheets_client: GoogleSheetsClient,
         idempotency_store: IdempotencyStore,
         event_persistence: Any | None = None,
+        zelerdata_enrichment_enabled: bool = False,
+        sale_price_enabled: bool = False,
+        listing_fixed_fee_enabled: bool = False,
     ) -> None:
         self._db = db
         self._gateway_client = gateway_client
         self._sheets_client = sheets_client
         self._idempotency_store = idempotency_store
         self._event_persistence = event_persistence or SheetsEventPersistence(db=db)
+        self._zelerdata_enrichment_enabled = zelerdata_enrichment_enabled
+        self._sale_price_enabled = sale_price_enabled
+        self._listing_fixed_fee_enabled = listing_fixed_fee_enabled
 
     async def handle(self, event: SheetsEvent) -> str:
         if await self._idempotency_store.is_duplicate(event.idempotency_key):
@@ -532,6 +539,7 @@ class SheetsEventHandler:
             seller_id=event.seller_id,
             resource=resource,
         )
+        await self._refresh_zelerdata_enrichment_if_enabled(event)
         export_config = await self._db["sheets_exports"].find_one(
             {"seller_id": str(event.seller_id), "enabled": True}
         )
@@ -550,6 +558,29 @@ class SheetsEventHandler:
         await self._idempotency_store.mark_processed(event.idempotency_key)
         return "appended"
 
+    async def _refresh_zelerdata_enrichment_if_enabled(self, event: SheetsEvent) -> None:
+        if not self._zelerdata_enrichment_enabled or not event.event_type.startswith("items."):
+            return
+        item_id = _item_id_from_resource_path(event.resource)
+        if item_id is None:
+            return
+        seller_id = str(event.seller_id)
+        await run_item_detail_enrichment(
+            db=self._db,
+            gateway=self._gateway_client,
+            seller_id=seller_id,
+            dry_run=False,
+            item_ids=(item_id,),
+            sale_price_enabled=self._sale_price_enabled,
+            listing_fixed_fee_enabled=self._listing_fixed_fee_enabled,
+        )
+        await run_sheetseller_backfill(
+            db=self._db,
+            seller_id=seller_id,
+            dry_run=False,
+            item_ids=(item_id,),
+        )
+
 
 def format_resource_row(event_type: str, resource: dict[str, Any]) -> list[str]:
     resource_id = _first_string(resource, "id", "_id", "order_id", "shipment_id")
@@ -558,6 +589,14 @@ def format_resource_row(event_type: str, resource: dict[str, Any]) -> list[str]:
     price = _first_string(resource, "price", "total_amount")
     quantity = _first_string(resource, "available_quantity", "quantity")
     return [event_type, resource_id, title, status, price, quantity]
+
+
+def _item_id_from_resource_path(resource: str) -> str | None:
+    parts = [part for part in resource.split("?")[0].split("/") if part]
+    if len(parts) >= 2 and parts[-2] == "items":
+        item_id = parts[-1].strip()
+        return item_id or None
+    return None
 
 
 def _first_string(resource: dict[str, Any], *keys: str) -> str:
@@ -606,6 +645,9 @@ async def run() -> None:
         idempotency_store=_SheetsIdempotencyAdapter(
             CoreIdempotencyStore(cast(Any, db["processed_events"]))
         ),
+        zelerdata_enrichment_enabled=_env_flag_enabled("ZELERDATA_ENRICHMENT_ENABLED"),
+        sale_price_enabled=_env_flag_enabled("ZELERDATA_SALE_PRICE_ENABLED"),
+        listing_fixed_fee_enabled=_env_flag_enabled("ZELERDATA_LISTING_FIXED_FEE_ENABLED"),
     )
     runner = SheetsAmqpConsumerRunner(
         rabbitmq_url=rabbitmq_url,
@@ -637,3 +679,7 @@ def _account_status_source_from_db(db: Any) -> AccountStatusSource:
         return cast(str | None, doc.get("status") if doc else None)
 
     return source
+
+
+def _env_flag_enabled(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}

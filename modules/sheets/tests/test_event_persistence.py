@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import UTC, datetime
+from decimal import Decimal
 from typing import Any
 
 import pytest
@@ -1379,6 +1380,159 @@ async def test_persists_item_and_refreshes_sheetseller_read_models() -> None:
 
 
 @pytest.mark.asyncio
+async def test_item_event_preserves_trusted_enrichment_and_refreshes_formula_row() -> None:
+    db = FakeDb()
+    db["items"].documents["MLA1"] = {
+        "_id": "MLA1",
+        "seller_id": "82453304",
+        "title": "Previous widget",
+        "price": Decimal128("149.99"),
+        "base_price": Decimal128("159.99"),
+        "available_quantity": 7,
+        "status": "active",
+        "category_id": "MLA123",
+        "currency_id": "ARS",
+        "site_id": "MLA",
+        "listing_type_id": "gold_special",
+        "shipping": {"mode": "me2", "logistic_type": "fulfillment"},
+        "billable_weight": Decimal128("500"),
+        "tags": ["mandatory_free_shipping"],
+        "seller_shipping_cost": Decimal128("83.25"),
+        "enrichment_state": {
+            "seller_shipping_cost": {
+                "source": "/users/{seller_id}/shipping_options/free",
+                "status": "trusted",
+                "synced_at": NOW,
+                "basis": {
+                    "site_id": "MLA",
+                    "category_id": "MLA123",
+                    "currency_id": "ARS",
+                    "listing_type_id": "gold_special",
+                    "price": Decimal128("149.99"),
+                    "shipping_mode": "me2",
+                    "logistic_type": "fulfillment",
+                    "billable_weight": Decimal128("500"),
+                    "tags": ["mandatory_free_shipping"],
+                },
+            }
+        },
+        "attributes": [{"id": "SELLER_SKU", "value_name": "sku-1"}],
+        "variations": [],
+        "last_meli_sync_at": NOW,
+        "date_created": NOW,
+        "last_updated": NOW,
+        "schema_version": 2,
+    }
+    persistence = SheetsEventPersistence(db=db, clock=lambda: NOW)
+
+    await persistence.persist(
+        event_type="items.updated",
+        seller_id=82453304,
+        resource={
+            "id": "MLA1",
+            "title": "Premium widget",
+            "price": "149.99",
+            "base_price": "159.99",
+            "available_quantity": 7,
+            "status": "active",
+            "category_id": "MLA123",
+            "currency_id": "ARS",
+            "site_id": "MLA",
+            "listing_type_id": "gold_special",
+            "shipping": {"mode": "me2", "logistic_type": "fulfillment"},
+            "billable_weight": "500",
+            "tags": ["mandatory_free_shipping"],
+            "attributes": [{"id": "SELLER_SKU", "value_name": "sku-1"}],
+            "date_created": "2026-05-01T10:00:00+00:00",
+            "last_updated": "2026-05-30T11:00:00+00:00",
+        },
+    )
+
+    item = db["items"].documents["MLA1"]
+    assert item["seller_shipping_cost"].to_decimal() == Decimal("83.25")
+    assert item["enrichment_state"]["seller_shipping_cost"]["status"] == "trusted"
+    row = db["sheets_item_formula_rows"].documents["82453304:SKU-1:MLA1"]
+    assert row["current"]["seller_shipping_cost"].to_decimal() == Decimal("83.25")
+
+
+@pytest.mark.asyncio
+async def test_item_event_clears_trusted_seller_shipping_when_basis_changes() -> None:
+    db = FakeDb()
+    db["items"].documents["MLA1"] = {
+        "_id": "MLA1",
+        "seller_id": "82453304",
+        "title": "Previous widget",
+        "price": Decimal128("149.99"),
+        "base_price": Decimal128("159.99"),
+        "available_quantity": 7,
+        "status": "active",
+        "category_id": "MLA123",
+        "currency_id": "ARS",
+        "site_id": "MLA",
+        "listing_type_id": "gold_special",
+        "shipping": {"mode": "me2", "logistic_type": "fulfillment"},
+        "billable_weight": Decimal128("500"),
+        "tags": ["mandatory_free_shipping"],
+        "seller_shipping_cost": Decimal128("83.25"),
+        "enrichment_state": {
+            "seller_shipping_cost": {
+                "source": "/users/{seller_id}/shipping_options/free",
+                "status": "trusted",
+                "synced_at": NOW,
+                "basis": {
+                    "site_id": "MLA",
+                    "category_id": "MLA123",
+                    "currency_id": "ARS",
+                    "listing_type_id": "gold_special",
+                    "price": Decimal128("149.99"),
+                    "shipping_mode": "me2",
+                    "logistic_type": "fulfillment",
+                    "billable_weight": Decimal128("500"),
+                    "tags": ["mandatory_free_shipping"],
+                },
+            }
+        },
+        "attributes": [{"id": "SELLER_SKU", "value_name": "sku-1"}],
+        "variations": [],
+        "last_meli_sync_at": NOW,
+        "date_created": NOW,
+        "last_updated": NOW,
+        "schema_version": 2,
+    }
+    persistence = SheetsEventPersistence(db=db, clock=lambda: NOW)
+
+    await persistence.persist(
+        event_type="items.updated",
+        seller_id=82453304,
+        resource={
+            "id": "MLA1",
+            "title": "Premium widget",
+            "price": "199.99",
+            "base_price": "209.99",
+            "available_quantity": 7,
+            "status": "active",
+            "category_id": "MLA123",
+            "currency_id": "ARS",
+            "site_id": "MLA",
+            "listing_type_id": "gold_special",
+            "shipping": {"mode": "me2", "logistic_type": "fulfillment"},
+            "billable_weight": "500",
+            "tags": ["mandatory_free_shipping"],
+            "attributes": [{"id": "SELLER_SKU", "value_name": "sku-1"}],
+            "date_created": "2026-05-01T10:00:00+00:00",
+            "last_updated": "2026-05-30T11:00:00+00:00",
+        },
+    )
+
+    item = db["items"].documents["MLA1"]
+    assert "seller_shipping_cost" not in item
+    assert item["enrichment_state"]["seller_shipping_cost"]["status"] == "basis_mismatch"
+    assert item["enrichment_state"]["seller_shipping_cost"]["reason"] == "basis_changed"
+    row = db["sheets_item_formula_rows"].documents["82453304:SKU-1:MLA1"]
+    assert "seller_shipping_cost" not in row["current"]
+
+
+@pytest.mark.asyncio
 async def test_persists_order_for_sheetseller_order_formulas() -> None:
     db = FakeDb()
     persistence = SheetsEventPersistence(db=db, clock=lambda: NOW)
@@ -1400,6 +1554,7 @@ async def test_persists_order_for_sheetseller_order_formulas() -> None:
                     "item": {"id": "MLA1", "seller_sku": "sku-1"},
                     "quantity": 2,
                     "unit_price": "149.95",
+                    "sale_fee": "24.50",
                 }
             ],
             "tags": ["paid"],
@@ -1415,7 +1570,15 @@ async def test_persists_order_for_sheetseller_order_formulas() -> None:
     assert order["total_amount"] == Decimal128("299.90")
     BSON.encode(order)
     assert order["items"] == [
-        {"item_id": "MLA1", "seller_sku": "sku-1", "qty": 2, "unit_price": Decimal128("149.95")}
+        {
+            "item_id": "MLA1",
+            "seller_sku": "sku-1",
+            "qty": 2,
+            "unit_price": Decimal128("149.95"),
+            "sale_fee": Decimal128("24.50"),
+            "sale_fee_source": "/orders/{id}",
+            "sale_fee_synced_at": NOW,
+        }
     ]
 
 

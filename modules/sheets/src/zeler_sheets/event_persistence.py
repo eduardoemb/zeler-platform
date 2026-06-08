@@ -4,7 +4,7 @@ from collections.abc import Callable, Sequence
 from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from typing import Any, cast
 
 from bson.decimal128 import Decimal128
@@ -12,6 +12,12 @@ from pydantic import ValidationError
 
 from zeler_platform_core.models import Item, ItemStatusState, ItemStatusTransition, Order, Shipment
 from zeler_platform_core.models.base import current_schema_version
+from zeler_sheets.enrichment import (
+    basis_hash,
+    bounded_basis,
+    enrichment_state,
+    schema_safe_enrichment_state,
+)
 from zeler_sheets.sheetseller_backfill import (
     build_formula_row_doc,
     build_order_line_formula_row_docs,
@@ -62,6 +68,13 @@ class SheetsEventPersistence:
     async def _persist_item(self, *, seller_id: str, resource: dict[str, Any]) -> None:
         observed_at = require_bson_ms_utc_datetime(self._clock())
         document = _canonical_item_document(resource, seller_id=seller_id, synced_at=observed_at)
+        existing_item = await self._db["items"].find_one(
+            {"_id": str(document["_id"]), "seller_id": seller_id}
+        )
+        document = _item_with_preserved_enrichment(
+            document,
+            cast("dict[str, Any] | None", existing_item),
+        )
         status_observation = await self._record_item_status_observation(
             document, seller_id=seller_id, observed_at=observed_at
         )
@@ -472,7 +485,10 @@ class SheetsEventPersistence:
         return cast("list[dict[str, Any]]", await cursor.to_list(length=None))
 
     async def _persist_order(self, *, seller_id: str, resource: dict[str, Any]) -> None:
-        document = _canonical_order_document(resource, seller_id=seller_id)
+        observed_at = require_bson_ms_utc_datetime(self._clock())
+        document = _canonical_order_document(
+            resource, seller_id=seller_id, sale_fee_synced_at=observed_at
+        )
         await self._db["orders"].replace_one(
             {"_id": document["_id"], "seller_id": seller_id}, document, upsert=True
         )
@@ -531,7 +547,110 @@ def _canonical_item_document(
     )
 
 
-def _canonical_order_document(resource: dict[str, Any], *, seller_id: str) -> dict[str, Any]:
+def _item_with_preserved_enrichment(
+    document: dict[str, Any], existing: dict[str, Any] | None
+) -> dict[str, Any]:
+    if existing is None:
+        return document
+    merged = dict(document)
+    preserved_any = False
+    state_changed = False
+    existing_state = schema_safe_enrichment_state(existing.get("enrichment_state"))
+    incoming_state = schema_safe_enrichment_state(merged.get("enrichment_state"))
+    merged_state = dict(incoming_state or {})
+    for field in (
+        "seller_shipping_cost",
+        "current_promotion",
+        "listing_fee_projection",
+        "listing_price_fixed_fee",
+    ):
+        if field not in merged and existing.get(field) is not None:
+            if field == "seller_shipping_cost" and not _seller_shipping_basis_matches(
+                existing_state, basis=_item_shipping_basis(merged)
+            ):
+                state = existing_state.get(field) if existing_state is not None else None
+                merged_state[field] = enrichment_state(
+                    source=_state_source(
+                        state,
+                        fallback="/users/{seller_id}/shipping_options/free",
+                    ),
+                    status="basis_mismatch",
+                    synced_at=_state_synced_at(merged, state),
+                    reason="basis_changed",
+                    basis=_item_shipping_basis(merged),
+                )
+                state_changed = True
+                continue
+            merged[field] = existing[field]
+            preserved_any = True
+            if existing_state is not None and field in existing_state and field not in merged_state:
+                merged_state[field] = existing_state[field]
+    if existing_state is not None and (preserved_any or state_changed or incoming_state is None):
+        merged_state = {**existing_state, **merged_state}
+    if merged_state:
+        merged["enrichment_state"] = merged_state
+    return merged
+
+
+def _seller_shipping_basis_matches(
+    existing_state: dict[str, Any] | None, *, basis: dict[str, Any]
+) -> bool:
+    if not basis or existing_state is None:
+        return False
+    state = existing_state.get("seller_shipping_cost")
+    if not isinstance(state, dict) or state.get("status") != "trusted":
+        return False
+    expected_hash = basis_hash(basis)
+    if expected_hash is not None and state.get("basis_hash") == expected_hash:
+        return True
+    state_basis = state.get("basis")
+    return isinstance(state_basis, dict) and bounded_basis(state_basis) == bounded_basis(basis)
+
+
+def _item_shipping_basis(item: dict[str, Any]) -> dict[str, Any]:
+    shipping = item.get("shipping")
+    shipping_values = shipping if isinstance(shipping, dict) else {}
+    basis: dict[str, Any] = {}
+    for key, value in {
+        "site_id": item.get("site_id") or _site_from_item_id(str(item.get("_id") or "")),
+        "category_id": item.get("category_id"),
+        "currency_id": item.get("currency_id"),
+        "listing_type_id": item.get("listing_type_id"),
+        "price": item.get("price"),
+        "shipping_mode": shipping_values.get("mode") or item.get("shipping_mode"),
+        "logistic_type": shipping_values.get("logistic_type"),
+        "billable_weight": item.get("billable_weight") or shipping_values.get("billable_weight"),
+        "tags": item.get("tags"),
+    }.items():
+        if value is not None:
+            basis[key] = value
+    return basis
+
+
+def _site_from_item_id(item_id: str) -> str | None:
+    normalized = item_id.strip().upper()
+    return normalized[:3] if len(normalized) >= 3 and normalized[:3].isalpha() else None
+
+
+def _state_source(state: Any, *, fallback: str) -> str:
+    if isinstance(state, dict) and isinstance(state.get("source"), str):
+        return str(state["source"])
+    return fallback
+
+
+def _state_synced_at(item: dict[str, Any], state: Any) -> datetime:
+    synced_at = item.get("last_meli_sync_at")
+    if isinstance(synced_at, datetime):
+        return synced_at
+    state_synced_at = state.get("synced_at") if isinstance(state, dict) else None
+    if isinstance(state_synced_at, datetime):
+        return state_synced_at
+    return datetime.now(UTC)
+
+
+def _canonical_order_document(
+    resource: dict[str, Any], *, seller_id: str, sale_fee_synced_at: datetime
+) -> dict[str, Any]:
     order_id = _string_id(resource.get("_id") or resource.get("id"))
     model = Order.model_validate(
         {
@@ -541,7 +660,7 @@ def _canonical_order_document(resource: dict[str, Any], *, seller_id: str) -> di
             "buyer_id": _buyer_id(resource),
             "shipment_id": _shipment_id(resource),
             "meli_pack_id": _meli_pack_id(resource),
-            "items": _order_items(resource),
+            "items": _order_items(resource, sale_fee_synced_at=sale_fee_synced_at),
             "schema_version": current_schema_version("orders"),
         }
     )
@@ -934,7 +1053,7 @@ def _bson_safe(value: Any) -> Any:
     return value
 
 
-def _order_items(resource: dict[str, Any]) -> list[dict[str, Any]]:
+def _order_items(resource: dict[str, Any], *, sale_fee_synced_at: datetime) -> list[dict[str, Any]]:
     raw_items = resource.get("items") or resource.get("order_items") or []
     if not isinstance(raw_items, Sequence) or isinstance(raw_items, (str, bytes)):
         return []
@@ -955,8 +1074,30 @@ def _order_items(resource: dict[str, Any]) -> list[dict[str, Any]]:
             value = identity.get(field)
             if value is not None:
                 normalized[field] = str(value).strip()
+        sale_fee = _safe_order_sale_fee(raw_item.get("sale_fee"))
+        if sale_fee is not None:
+            normalized["sale_fee"] = sale_fee
+            normalized["sale_fee_source"] = "/orders/{id}"
+            normalized["sale_fee_synced_at"] = sale_fee_synced_at
         items.append(normalized)
     return items
+
+
+def _safe_order_sale_fee(value: Any) -> Decimal | None:
+    if value is None or isinstance(value, (bool, dict, list)):
+        return None
+    if isinstance(value, Decimal128):
+        parsed = value.to_decimal()
+    elif isinstance(value, Decimal):
+        parsed = value
+    else:
+        try:
+            parsed = Decimal(str(value))
+        except (InvalidOperation, ValueError):
+            return None
+    if not parsed.is_finite() or parsed < 0:
+        return None
+    return parsed
 
 
 def _buyer_id(resource: dict[str, Any]) -> str:

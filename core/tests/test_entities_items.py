@@ -10,6 +10,7 @@ from zeler_platform_core.models import (
     Item,
     ListingFeeProjection,
     ListingPriceFixedFeeProjection,
+    OrderItem,
     PromoPriceProjection,
 )
 
@@ -84,6 +85,10 @@ def test_listing_fee_projection_accepts_bounded_listing_price_source() -> None:
             fixed_fee="0.00",
             meli_percentage_fee="10.00",
             financing_add_on_fee="2.00",
+            shipping_mode="me2",
+            logistic_type="fulfillment",
+            billable_weight="500",
+            tags=[" mandatory_free_shipping ", ""],
         )
     )
 
@@ -97,6 +102,10 @@ def test_listing_fee_projection_accepts_bounded_listing_price_source() -> None:
     assert projection.fixed_fee == Decimal("0.00")
     assert projection.meli_percentage_fee == Decimal("10.00")
     assert projection.financing_add_on_fee == Decimal("2.00")
+    assert projection.shipping_mode == "me2"
+    assert projection.logistic_type == "fulfillment"
+    assert projection.billable_weight == Decimal("500")
+    assert projection.tags == ["mandatory_free_shipping"]
 
 
 def test_listing_fee_projection_rejects_raw_or_realized_fee_payload_fields() -> None:
@@ -307,3 +316,127 @@ def test_item_accepts_optional_listing_fee_projection() -> None:
     assert item.listing_fee_projection is not None
     assert item.listing_fee_projection.sale_fee_amount == Decimal("155.99")
     assert item.listing_fee_projection.percentage_fee == Decimal("12.00")
+
+
+def test_item_accepts_bounded_enrichment_state_metadata() -> None:
+    item = Item.model_validate(
+        {
+            "_id": "MLA1",
+            "seller_id": 82453304,
+            "title": "Listing",
+            "price": "1299.90",
+            "base_price": "1299.90",
+            "available_quantity": 3,
+            "status": "active",
+            "category_id": "MLA1055",
+            "currency_id": "ars",
+            "last_meli_sync_at": NOW,
+            "date_created": NOW,
+            "last_updated": NOW,
+            "enrichment_state": {
+                "seller_shipping_cost": {
+                    "source": "/users/{seller_id}/shipping_options/free",
+                    "status": "trusted",
+                    "reason": None,
+                    "synced_at": NOW,
+                    "basis_hash": "sha256:shipping-basis",
+                    "basis": {
+                        "site_id": "mla",
+                        "category_id": "MLA1055",
+                        "currency_id": "ars",
+                        "listing_type_id": "gold_special",
+                        "price": "1299.90",
+                        "shipping_mode": "me2",
+                        "logistic_type": "fulfillment",
+                        "billable_weight": "500",
+                        "tags": ["mandatory_free_shipping"],
+                    },
+                },
+                "listing_fee_projection": {
+                    "source": "/sites/{site}/listing_prices",
+                    "status": "basis_mismatch",
+                    "reason": "price_changed",
+                    "synced_at": NOW,
+                    "basis_hash": None,
+                },
+            },
+        }
+    )
+
+    state = item.enrichment_state
+    assert state is not None
+    assert state.seller_shipping_cost is not None
+    assert state.seller_shipping_cost.status == "trusted"
+    assert state.seller_shipping_cost.basis is not None
+    assert state.seller_shipping_cost.basis.site_id == "MLA"
+    assert state.seller_shipping_cost.basis.currency_id == "ARS"
+    assert state.seller_shipping_cost.basis.price == Decimal("1299.90")
+    assert state.listing_fee_projection is not None
+    assert state.listing_fee_projection.status == "basis_mismatch"
+
+
+def test_enrichment_state_metadata_rejects_raw_payload_drift() -> None:
+    with pytest.raises(ValidationError) as exc_info:
+        Item.model_validate(
+            {
+                "_id": "MLA1",
+                "seller_id": 82453304,
+                "title": "Listing",
+                "price": "1299.90",
+                "base_price": "1299.90",
+                "available_quantity": 3,
+                "status": "active",
+                "category_id": "MLA1055",
+                "last_meli_sync_at": NOW,
+                "date_created": NOW,
+                "last_updated": NOW,
+                "enrichment_state": {
+                    "current_promotion": {
+                        "source": "/items/{id}/sale_price",
+                        "status": "trusted",
+                        "synced_at": NOW,
+                        "raw_payload": {"must": "not persist"},
+                    }
+                },
+            }
+        )
+
+    assert "Extra inputs are not permitted" in str(exc_info.value)
+
+
+def test_order_item_accepts_realized_sale_fee_with_source_metadata() -> None:
+    item = OrderItem.model_validate(
+        {
+            "item_id": 1234,
+            "variation_id": 5678,
+            "qty": 2,
+            "unit_price": "50.00",
+            "sale_fee": "15.50",
+            "sale_fee_source": "/orders/{id}",
+            "sale_fee_synced_at": NOW,
+        }
+    )
+
+    dumped = item.model_dump(mode="json")
+    assert item.item_id == "1234"
+    assert item.variation_id == "5678"
+    assert item.sale_fee == Decimal("15.50")
+    assert item.sale_fee_source == "/orders/{id}"
+    assert item.sale_fee_synced_at == NOW
+    assert dumped["sale_fee"] == "15.50"
+    assert dumped["sale_fee_source"] == "/orders/{id}"
+
+
+@pytest.mark.parametrize("bad_sale_fee", [Decimal("-0.01"), Decimal("NaN"), {"gross": 1}])
+def test_order_item_rejects_invalid_realized_sale_fee_values(bad_sale_fee: object) -> None:
+    with pytest.raises(ValidationError):
+        OrderItem.model_validate(
+            {
+                "item_id": 1234,
+                "qty": 2,
+                "unit_price": "50.00",
+                "sale_fee": bad_sale_fee,
+                "sale_fee_source": "/orders/{id}",
+                "sale_fee_synced_at": NOW,
+            }
+        )
