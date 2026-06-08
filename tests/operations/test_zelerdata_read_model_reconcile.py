@@ -159,6 +159,16 @@ def _seller_doc(**values: Any) -> dict[str, Any]:
     return {"seller_id": "82453304", **values}
 
 
+def _expected_order_refs() -> frozenset[str]:
+    return frozenset(
+        {
+            "ORDER-PII-ABSENT",
+            "ORDER-PII-IN-RANGE",
+            "ORDER-PII-OUT-OF-RANGE",
+        }
+    )
+
+
 def test_reconciliation_request_parses_june_1_to_4_range_and_defaults_to_dry_run() -> None:
     args = build_arg_parser().parse_args(
         [
@@ -472,6 +482,7 @@ async def test_expected_counts_use_historical_meli_source_and_bound_refs() -> No
 
     assert calls["request"] == ("82453304", "2026-06-05T00:00:00Z")
     assert expected.counts["orders"] == 2
+    assert expected.refs["orders"] == frozenset({"ORDER-PII-1", "ORDER-PII-2"})
     assert expected.counts["shipments"] == 1
     assert expected.counts["items"] == 2
     assert expected.refs["shipments"] == frozenset({"SHIP-PII-1"})
@@ -706,6 +717,122 @@ def test_reconciliation_cli_uses_runtime_collector_and_keeps_output_sanitized(
     assert calls["collect"] == (db, "82453304", None)
     assert "82453304" not in output_json
     assert "SENTINEL_TOKEN" not in output_json
+
+
+@pytest.mark.asyncio
+async def test_orders_outside_date_range_are_aggregate_drift_not_missing() -> None:
+    db = FakeAsyncDb(
+        {
+            "orders": [
+                _seller_doc(
+                    _id="ORDER-PII-IN-RANGE",
+                    date_created=_dt(2),
+                    items=[{}],
+                    status="paid",
+                ),
+                _seller_doc(
+                    _id="ORDER-PII-OUT-OF-RANGE",
+                    date_created=_dt(6),
+                    items=[{}],
+                    status="paid",
+                ),
+            ],
+        }
+    )
+
+    summary = await collect_reconciliation_counts(
+        db=db,
+        request=_request(),
+        expected=ExpectedReadModelCounts(
+            counts={"orders": 3},
+            refs={"orders": _expected_order_refs()},
+        ),
+        read_models=("orders",),
+    )
+
+    output = summary.to_sanitized_dict()
+    aggregate = output["aggregates"][0]
+    sorted_refs = sorted(_expected_order_refs())
+    bounded_id_lookup = {"seller_id": "82453304", "_id": {"$in": sorted_refs}}
+    bounded_date_lookup = {
+        **bounded_id_lookup,
+        "date_created": {"$gte": _dt(1), "$lt": _dt(5)},
+    }
+
+    assert aggregate["persisted_count"] == 1
+    assert aggregate["missing_count"] == 1
+    assert aggregate["out_of_range_by_date_created"] == 1
+    assert bounded_id_lookup in db["orders"].count_filters
+    assert bounded_date_lookup in db["orders"].count_filters
+    assert {"seller_id": "82453304"} not in db["orders"].count_filters
+
+    sanitized_json = json.dumps(output, sort_keys=True)
+    for forbidden in (*sorted_refs, "82453304"):
+        assert forbidden not in sanitized_json
+
+
+def test_order_out_of_range_counter_is_sanitized_and_non_zero_only() -> None:
+    without_drift = ReadModelAggregate(
+        read_model="orders",
+        expected_count=1,
+        persisted_count=1,
+        missing_count=0,
+        complete_count=1,
+        out_of_range_by_date_created=0,
+    ).to_sanitized_dict()
+    with_drift = ReadModelAggregate(
+        read_model="orders",
+        expected_count=3,
+        persisted_count=1,
+        missing_count=1,
+        complete_count=1,
+        out_of_range_by_date_created=1,
+    ).to_sanitized_dict()
+
+    assert "out_of_range_by_date_created" not in without_drift
+    assert with_drift["out_of_range_by_date_created"] == 1
+
+
+@pytest.mark.asyncio
+async def test_order_date_classification_preserves_unavailable_and_non_order_semantics() -> None:
+    db = FakeAsyncDb(
+        {
+            "orders": [_seller_doc(_id="ORDER-PII-SELLER-WIDE", date_created=_dt(2))],
+            "shipments": [_seller_doc(_id="SHIP-PII-PRESENT", order_id="ORDER-PII-1")],
+        }
+    )
+
+    summary = await collect_reconciliation_counts(
+        db=db,
+        request=_request(),
+        expected=ExpectedReadModelCounts(
+            counts={"orders": None, "shipments": 2},
+            refs={"shipments": frozenset({"SHIP-PII-PRESENT"})},
+            truth_mode={"orders": "unavailable", "shipments": "expected"},
+            issues=(
+                ReadModelIssue(
+                    read_model="orders",
+                    code="expected_unavailable",
+                    message="SENTINEL raw order source failure",
+                ),
+            ),
+        ),
+        read_models=("orders", "shipments"),
+    )
+
+    output = summary.to_sanitized_dict()
+    by_model = {aggregate["read_model"]: aggregate for aggregate in output["aggregates"]}
+
+    assert by_model["orders"]["expected_count"] is None
+    assert by_model["orders"]["missing_count"] is None
+    assert by_model["orders"]["truth_mode"] == "unavailable"
+    assert "out_of_range_by_date_created" not in by_model["orders"]
+    assert by_model["shipments"]["persisted_count"] == 1
+    assert by_model["shipments"]["missing_count"] == 1
+
+    sanitized_json = json.dumps(output, sort_keys=True)
+    for forbidden in ("ORDER-PII", "SHIP-PII", "82453304", "SENTINEL"):
+        assert forbidden not in sanitized_json
 
 
 def test_reconciliation_summary_is_aggregate_only_and_has_stop_criteria() -> None:

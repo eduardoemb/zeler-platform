@@ -179,6 +179,7 @@ class ReadModelAggregate:
     truth_mode: str = "expected"
     field_counts: Mapping[str, Mapping[str, int]] = field(default_factory=dict)
     issues: tuple[ReadModelIssue, ...] = ()
+    out_of_range_by_date_created: int = 0
 
     def to_sanitized_dict(self) -> dict[str, Any]:
         sanitized: dict[str, Any] = {
@@ -205,6 +206,8 @@ class ReadModelAggregate:
         }
         if any(legacy_counters.values()):
             sanitized.update(legacy_counters)
+        if self.out_of_range_by_date_created:
+            sanitized["out_of_range_by_date_created"] = self.out_of_range_by_date_created
         if self.field_counts:
             sanitized["field_counts"] = _sorted_field_counts(self.field_counts)
         if self.issues:
@@ -638,7 +641,8 @@ async def _collect_read_model_aggregate(
         )
 
     collection = db[read_model]
-    filter_spec = _read_model_filter(read_model, request, refs)
+    filter_refs = None if read_model == "orders" else refs
+    filter_spec = _read_model_filter(read_model, request, filter_refs)
     try:
         persisted_count = await collection.count_documents(filter_spec)
         complete_count = await _complete_count(collection, read_model, filter_spec)
@@ -665,11 +669,18 @@ async def _collect_read_model_aggregate(
                 ),
             ),
         )
-    missing_count = (
-        max(expected_count - persisted_count, 0)
-        if expected_count is not None and truth_mode == "expected"
-        else None
-    )
+    missing_count: int | None
+    out_of_range_by_date_created = 0
+    if read_model == "orders" and refs is not None and truth_mode == "expected":
+        missing_count, out_of_range_by_date_created = await _order_date_delta_counts(
+            collection, request, refs
+        )
+    else:
+        missing_count = (
+            max(expected_count - persisted_count, 0)
+            if expected_count is not None and truth_mode == "expected"
+            else None
+        )
     issues = expected_issues
     if expected_count is None and truth_mode == "unavailable" and not issues:
         issues = (
@@ -684,6 +695,7 @@ async def _collect_read_model_aggregate(
         expected_count=expected_count,
         persisted_count=persisted_count,
         missing_count=missing_count,
+        out_of_range_by_date_created=out_of_range_by_date_created,
         complete_count=complete_count,
         truth_mode=truth_mode,
         field_counts=field_counts,
@@ -696,6 +708,26 @@ async def _complete_count(collection: Any, read_model: str, filter_spec: dict[st
     if not required_fields:
         return int(await collection.count_documents(filter_spec))
     return int(await collection.count_documents(_with_present_fields(filter_spec, required_fields)))
+
+
+async def _order_date_delta_counts(
+    collection: Any,
+    request: ReconciliationRequest,
+    refs: frozenset[str],
+) -> tuple[int, int]:
+    if not refs:
+        return (0, 0)
+    id_filter = {"seller_id": request.seller_id, "_id": {"$in": sorted(refs)}}
+    date_filter = {
+        **id_filter,
+        "date_created": {
+            "$gte": request.date_range.start,
+            "$lt": request.date_range.end_exclusive,
+        },
+    }
+    present_by_id = int(await collection.count_documents(id_filter))
+    present_in_range = int(await collection.count_documents(date_filter))
+    return (max(len(refs) - present_by_id, 0), max(present_by_id - present_in_range, 0))
 
 
 async def _read_model_field_counts(
@@ -862,6 +894,8 @@ def _historical_meli_expected_counts(summary: Any) -> HistoricalMeliExpectedCoun
         issues.append(_issue("orders", "expected_unavailable", "historical orders unavailable"))
     else:
         counts["orders"] = order_count
+        if order_refs is not None:
+            refs["orders"] = order_refs
         truth_mode["orders"] = "expected"
 
     for read_model, model_refs in (("shipments", shipment_refs), ("items", item_refs)):
