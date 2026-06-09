@@ -1210,7 +1210,7 @@ def _order_line_row(
     include_buyer_columns: bool,
 ) -> list[Any]:
     row = item_rows.get((line.sku, line.item_id))
-    commission_percent, commission_amount, commission_unit_cost = _realized_commission_values(line)
+    commission_percent, commission_amount, _ = _realized_commission_values(line)
     values = [
         _sheet_datetime(order.get("date_created"), timezone=timezone),
         _document_id(order),
@@ -1222,7 +1222,7 @@ def _order_line_row(
         _order_meli_pack_id(order),
         commission_percent,
         commission_amount,
-        commission_unit_cost,
+        _listing_fixed_fee(row),
         _shipment_real_shipping_cost_value(order, real_shipping_costs),
         order.get("status") or "",
     ]
