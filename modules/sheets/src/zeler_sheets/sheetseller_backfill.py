@@ -64,6 +64,10 @@ SELLER_SHIPPING_COST_SOURCE = "/users/{seller_id}/shipping_options/free"
 SALE_PRICE_CONTEXT = "channel_marketplace"
 
 
+def _should_preserve_listing_price_lookup_failure(failure: EnrichmentFailure) -> bool:
+    return failure.status in {"transient", "unauthorized"}
+
+
 class MeliOrderGatewayClient(Protocol):
     async def fetch_resource(self, *, seller_id: str, path: str) -> dict[str, Any]: ...
 
@@ -700,7 +704,10 @@ async def run_item_detail_enrichment(
                                 status="basis_mismatch",
                                 reason="basis_changed",
                             )
-                        elif failure.preserve_existing and existing_projection is not None:
+                        elif (
+                            _should_preserve_listing_price_lookup_failure(failure)
+                            and existing_projection is not None
+                        ):
                             detail["listing_fee_projection"] = existing_projection
                             item_enrichment_state["listing_fee_projection"] = enrichment_state(
                                 source=LISTING_FEE_PROJECTION_SOURCE,
@@ -807,11 +814,10 @@ async def run_item_detail_enrichment(
                                 status=fixed_fee_failure.status,
                                 reason=fixed_fee_failure.reason,
                             )
-                            if (
-                                fixed_fee_failure.preserve_existing
-                                and _listing_fixed_fee_basis_matches(
-                                    existing_fixed_fee, listing_params
-                                )
+                            if _should_preserve_listing_price_lookup_failure(
+                                fixed_fee_failure
+                            ) and _listing_fixed_fee_basis_matches(
+                                existing_fixed_fee, listing_params
                             ):
                                 detail["listing_price_fixed_fee"] = existing_fixed_fee
                             else:

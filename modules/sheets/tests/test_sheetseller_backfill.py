@@ -2284,6 +2284,55 @@ async def test_item_detail_enrichment_clears_stale_promo_on_authoritative_absenc
     assert dashboard.values[0][-1] == "NA"
 
 
+@pytest.mark.asyncio
+async def test_item_detail_enrichment_clears_stale_promo_on_sale_price_403() -> None:
+    canonical = _item_doc("MLA1", attributes=[{"id": "SELLER_SKU", "value_name": "sku-1"}])
+    canonical["current_promotion"] = {
+        "source": "/items/{id}/sale_price",
+        "sale_amount": Decimal128("99.90"),
+        "regular_amount": Decimal128("149.90"),
+        "discount_percent": Decimal128("33.36"),
+        "currency_id": "MXN",
+        "promotion_id": "PROMO-STALE",
+        "promotion_type": "deal",
+        "reference_at": NOW,
+        "synced_at": NOW,
+    }
+    db = FakeDb([canonical])
+    detail = _item_detail("MLA1")
+    detail["attributes"] = [{"id": "SELLER_SKU", "value_name": "sku-1"}]
+    request = httpx.Request("GET", "https://gateway.example/proxy/meli/items/MLA1")
+    gateway = FakeItemGateway(
+        {
+            "/items?ids=MLA1": [{"code": 200, "body": detail}],
+            "/items/MLA1/sale_price?context=channel_marketplace": httpx.HTTPStatusError(
+                "forbidden sale price source",
+                request=request,
+                response=httpx.Response(403, request=request),
+            ),
+        }
+    )
+
+    summary = await run_item_detail_enrichment(
+        db=db,
+        gateway=gateway,
+        seller_id="82453304",
+        dry_run=False,
+        sale_price_enabled=True,
+    )
+
+    item_update = db["items"].update_calls[0][1]
+    persisted = db["items"].documents["MLA1"]
+    assert summary.sale_price_requested == 1
+    assert summary.sale_price_promotions_unavailable == 1
+    assert item_update.get("$unset") == {"current_promotion": ""}
+    assert "current_promotion" not in persisted
+    state = persisted["enrichment_state"]["current_promotion"]
+    assert state["status"] == "unauthorized"
+    assert state["reason"] == "http_403"
+    assert summary.diagnostic_reason_counts == {"current_promotion:unauthorized:http_403": 1}
+
+
 @pytest.mark.parametrize(
     ("sale_price_enabled", "sale_price_payload", "expected_reason"),
     [
@@ -3098,6 +3147,111 @@ async def test_item_detail_enrichment_clears_stale_listing_fixed_fee_failures() 
         call[1].get("$unset") == {"listing_price_fixed_fee": ""}
         for call in db["items"].update_calls
     )
+
+
+@pytest.mark.asyncio
+async def test_item_detail_enrichment_preserves_listing_fee_and_fixed_fee_on_403() -> None:
+    listing_fee_projection = {
+        **_listing_fee_context(shipping_mode="me2", logistic_type="fulfillment"),
+        "source": "/sites/{site}/listing_prices",
+        "sale_fee_amount": Decimal128("155.99"),
+        "percentage_fee": Decimal128("12.00"),
+        "synced_at": NOW,
+    }
+    listing_price_fixed_fee = {
+        "source": "/sites/{site}/listing_prices",
+        "fixed_fee": Decimal128("1350.25"),
+        "currency_id": "ARS",
+        "synced_at": NOW,
+        "params": {
+            "site_id": "MLA",
+            "category_id": "MLA-CAT",
+            "price": Decimal128("123.45"),
+            "currency_id": "ARS",
+            "listing_type_id": "gold_special",
+            "shipping_mode": "me2",
+            "logistic_type": "fulfillment",
+        },
+    }
+    canonical = _item_doc(
+        "MLA1",
+        attributes=[{"id": "SELLER_SKU", "value_name": "sku-1"}],
+        currency_id="ARS",
+        listing_type_id="gold_special",
+        shipping={"mode": "me2", "logistic_type": "fulfillment", "free_shipping": False},
+    )
+    canonical["listing_fee_projection"] = listing_fee_projection
+    canonical["listing_price_fixed_fee"] = listing_price_fixed_fee
+    db = FakeDb([canonical])
+    db["meli_accounts"].documents["account-1"] = {
+        "_id": "account-1",
+        "seller_id": "82453304",
+        "site_id": "MLA",
+    }
+    detail = _item_detail("MLA1")
+    detail.update(
+        {
+            "currency_id": "ARS",
+            "listing_type_id": "gold_special",
+            "attributes": [{"id": "SELLER_SKU", "value_name": "sku-1"}],
+            "shipping": {"mode": "me2", "logistic_type": "fulfillment", "free_shipping": False},
+        }
+    )
+    listing_fee_path = (
+        "/sites/MLA/listing_prices?price=123.45&listing_type_id=gold_special"
+        "&category_id=MLA-CAT&currency_id=ARS&logistic_type=fulfillment&shipping_mode=me2"
+    )
+    fixed_fee_path = (
+        "/sites/MLA/listing_prices?price=123.45&category_id=MLA-CAT&currency_id=ARS"
+        "&listing_type_id=gold_special&shipping_mode=me2&logistic_type=fulfillment"
+    )
+    gateway = FakeItemGateway(
+        {
+            "/items?ids=MLA1": [{"code": 200, "body": detail}],
+            listing_fee_path: httpx.HTTPStatusError(
+                "forbidden",
+                request=httpx.Request("GET", "https://gateway.example/listing-fee"),
+                response=httpx.Response(403),
+            ),
+            fixed_fee_path: httpx.HTTPStatusError(
+                "forbidden",
+                request=httpx.Request("GET", "https://gateway.example/fixed-fee"),
+                response=httpx.Response(403),
+            ),
+        }
+    )
+
+    summary = await run_item_detail_enrichment(
+        db=db,
+        gateway=gateway,
+        seller_id="82453304",
+        dry_run=False,
+        listing_fixed_fee_enabled=True,
+    )
+
+    persisted = db["items"].documents["MLA1"]
+    assert gateway.calls == [
+        ("82453304", "/items?ids=MLA1"),
+        ("82453304", listing_fee_path),
+        ("82453304", fixed_fee_path),
+    ]
+    assert summary.items_updated == 1
+    assert len(db["items"].update_calls) == 1
+    assert summary.listing_fee_projections_unavailable == 0
+    assert summary.listing_fixed_fee_unavailable == 0
+    assert persisted["listing_fee_projection"]["sale_fee_amount"].to_decimal() == Decimal("155.99")
+    assert persisted["listing_price_fixed_fee"]["fixed_fee"].to_decimal() == Decimal("1350.25")
+    update = db["items"].update_calls[0][1]
+    assert "$unset" not in update
+    enrichment_state = persisted["enrichment_state"]
+    assert enrichment_state["listing_fee_projection"]["status"] == "unauthorized"
+    assert enrichment_state["listing_fee_projection"]["reason"] == "http_403"
+    assert enrichment_state["listing_price_fixed_fee"]["status"] == "unauthorized"
+    assert enrichment_state["listing_price_fixed_fee"]["reason"] == "http_403"
+    assert summary.diagnostic_reason_counts == {
+        "listing_fee_projection:unauthorized:http_403": 1,
+        "listing_price_fixed_fee:unauthorized:http_403": 1,
+    }
 
 
 @pytest.mark.asyncio
