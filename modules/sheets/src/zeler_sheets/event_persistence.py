@@ -891,7 +891,7 @@ def _item_with_status_history(item: dict[str, Any], status_state: dict[str, Any]
     for field in ("status_started_at", "paused_since", "last_status_change_at"):
         if (value := bson_ms_utc_datetime(status_state.get(field))) is not None:
             enriched[field] = value
-    return enriched
+    return cast("dict[str, Any]", _bson_safe(enriched))
 
 
 def _formula_row_with_status_history(
@@ -913,7 +913,7 @@ def _formula_row_with_status_history(
         if (value := bson_ms_utc_datetime(status_state.get(field))) is not None:
             current[field] = value
     reconciled["current"] = current
-    return reconciled
+    return cast("dict[str, Any]", _bson_safe(reconciled))
 
 
 def _status_observed_at_guard(field: str, observed_at: datetime) -> dict[str, Any]:
