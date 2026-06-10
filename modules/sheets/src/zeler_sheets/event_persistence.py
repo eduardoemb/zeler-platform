@@ -344,6 +344,11 @@ class SheetsEventPersistence:
     async def _replace_formula_row_if_observation_current(
         self, formula_row_doc: dict[str, Any], *, status_state: dict[str, Any], seller_id: str
     ) -> None:
+        if not _formula_row_uses_item_status_history(formula_row_doc):
+            await self._db["sheets_item_formula_rows"].replace_one(
+                {"_id": formula_row_doc["_id"]}, formula_row_doc, upsert=True
+            )
+            return
         observed_at = _state_last_observed_at(status_state)
         if observed_at is None:
             return
@@ -438,6 +443,8 @@ class SheetsEventPersistence:
             await self._reconcile_formula_row_status_fields(cast("dict[str, Any]", formula_row_doc))
 
     async def _reconcile_formula_row_status_fields(self, formula_row_doc: dict[str, Any]) -> None:
+        if not _formula_row_uses_item_status_history(formula_row_doc):
+            return
         latest_state = _normalize_status_state(
             await self._db["item_status_states"].find_one(
                 {
@@ -897,6 +904,8 @@ def _item_with_status_history(item: dict[str, Any], status_state: dict[str, Any]
 def _formula_row_with_status_history(
     formula_row_doc: dict[str, Any], status_state: dict[str, Any]
 ) -> dict[str, Any]:
+    if not _formula_row_uses_item_status_history(formula_row_doc):
+        return formula_row_doc
     reconciled = dict(formula_row_doc)
     current = dict(reconciled.get("current") or {})
     current["status"] = status_state["current_status"]
@@ -914,6 +923,10 @@ def _formula_row_with_status_history(
             current[field] = value
     reconciled["current"] = current
     return cast("dict[str, Any]", _bson_safe(reconciled))
+
+
+def _formula_row_uses_item_status_history(formula_row_doc: dict[str, Any]) -> bool:
+    return _optional_string(formula_row_doc.get("variation_id")) is None
 
 
 def _status_observed_at_guard(field: str, observed_at: datetime) -> dict[str, Any]:

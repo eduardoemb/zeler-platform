@@ -150,8 +150,9 @@ class CoreFormulaHandlers:
         rows = await self._repository.find_item_formula_rows(
             seller_id=context.seller_id,
             skus=requested_skus,
+            limit=None,
+            sort_by="publication",
         )
-        ordered_rows = _order_rows_by_requested_skus(rows, requested_skus)
         values: list[list[Any]] = _header_row(
             context.args.get("encabezados"),
             PUBLICACIONES_LEGACY_HEADERS,
@@ -159,7 +160,7 @@ class CoreFormulaHandlers:
         header_rows = len(values)
         matched_skus: set[str] = set()
         today = _as_utc_datetime(self._now_fn()).date()
-        for row in ordered_rows:
+        for row in rows:
             item_id = row.get("item_id") or ""
             if not item_id:
                 continue
@@ -488,11 +489,10 @@ class CoreFormulaHandlers:
         rows = await self._repository.find_item_formula_rows(
             seller_id=context.seller_id,
             skus=requested_skus,
+            limit=None,
+            sort_by="publication",
         )
-        ordered_rows = _order_rows_by_requested_skus(rows, requested_skus)
-        visible_rows = [
-            row for row in ordered_rows if not exclude_catalog or not _has_catalog_product(row)
-        ]
+        visible_rows = [row for row in rows if not exclude_catalog or not _has_catalog_product(row)]
         sales_windows = await self._dashboard_sales_windows(context.seller_id, visible_rows)
         headers = list(DASHBOARD_LEGACY_HEADERS)
         tipo_precio = str(context.args.get("tipo_precio") or "").strip().casefold()
@@ -517,13 +517,13 @@ class CoreFormulaHandlers:
                 )
             )
 
-        matched_skus = {normalize_sku(row.get("normalized_sku", "")) for row in ordered_rows}
+        matched_skus = {normalize_sku(row.get("normalized_sku", "")) for row in rows}
         meta: dict[str, Any] = {
             "partial_misses": _partial_misses(requested_skus, matched_skus),
             "columns": "legacy_dashboard",
         }
         if exclude_catalog:
-            meta["excluded_catalog_rows"] = len(ordered_rows) - len(visible_rows)
+            meta["excluded_catalog_rows"] = len(rows) - len(visible_rows)
         return FormulaExecutionResult(
             values=normalize_response_rows(values, header_rows=header_rows), meta=meta
         )

@@ -1324,6 +1324,67 @@ async def test_repeated_first_seen_paused_without_truth_stays_unknown() -> None:
 
 
 @pytest.mark.asyncio
+async def test_item_event_refreshes_variation_safe_fields_without_status_overlay() -> None:
+    db = FakeDb()
+    db["item_status_states"].documents["82453304:MLA1"] = {
+        "_id": "82453304:MLA1",
+        "seller_id": "82453304",
+        "item_id": "MLA1",
+        "current_status": "paused",
+        "first_observed_at": NOW,
+        "last_observed_at": PAUSED_AT,
+        "status_started_at": PAUSED_AT,
+        "paused_since": PAUSED_AT,
+        "last_status_change_at": PAUSED_AT,
+        "schema_version": 1,
+    }
+    persistence = SheetsEventPersistence(db=db, clock=lambda: REOBSERVED_AT)
+
+    await persistence.persist(
+        event_type="items.updated",
+        seller_id=82453304,
+        resource={
+            "id": "MLA1",
+            "title": "Mixed publication",
+            "price": "149.99",
+            "base_price": "159.99",
+            "available_quantity": 99,
+            "status": "paused",
+            "category_id": "MLA123",
+            "catalog_product_id": "ITEM-CATALOG",
+            "shipping": {"logistic_type": "fulfillment", "free_shipping": True},
+            "attributes": [],
+            "variations": [
+                {
+                    "id": 101,
+                    "seller_custom_field": "active-sku",
+                    "status": "active",
+                    "available_quantity": 7,
+                    "catalog_product_id": "CAT-ACTIVE",
+                    "shipping": {"logistic_type": "cross_docking", "free_shipping": False},
+                },
+                {"id": 102, "seller_custom_field": "unknown-sku"},
+            ],
+            "date_created": "2026-05-01T10:00:00+00:00",
+            "last_updated": "2026-05-30T11:00:00+00:00",
+        },
+    )
+
+    active = db["sheets_item_formula_rows"].documents["82453304:ACTIVE-SKU:MLA1:101"]
+    unknown = db["sheets_item_formula_rows"].documents["82453304:UNKNOWN-SKU:MLA1:102"]
+    assert active["current"]["status"] == "active"
+    assert active["current"]["available_quantity"] == 7
+    assert active["current"]["catalog_product_id"] == "CAT-ACTIVE"
+    assert active["current"]["shipping_logistic_type"] == "cross_docking"
+    assert "paused_since" not in active["current"]
+    assert unknown["current"]["status"] is None
+    assert unknown["current"]["available_quantity"] is None
+    assert unknown["current"]["catalog_product_id"] is None
+    assert unknown["current"]["shipping_logistic_type"] is None
+    assert "paused_since" not in unknown["current"]
+
+
+@pytest.mark.asyncio
 async def test_persists_item_and_refreshes_sheetseller_read_models() -> None:
     db = FakeDb()
     persistence = SheetsEventPersistence(db=db, clock=lambda: NOW)
@@ -1375,8 +1436,8 @@ async def test_persists_item_and_refreshes_sheetseller_read_models() -> None:
     assert variation_row["inventory_id"] == "INV-VAR-101"
     assert variation_row["current"]["title"] == "Premium widget"
     assert variation_row["current"]["listing_type_id"] == "gold_special"
-    assert variation_row["current"]["shipping_logistic_type"] == "cross_docking"
-    assert variation_row["current"]["shipping_payer"] == "Comprador"
+    assert variation_row["current"]["shipping_logistic_type"] is None
+    assert variation_row["current"]["shipping_payer"] is None
 
 
 @pytest.mark.asyncio
@@ -1868,7 +1929,7 @@ async def test_item_without_seller_sku_refreshes_formula_rows_from_known_order_l
     assert formula_row["sku"] == "sku-1"
     assert formula_row["inventory_id"] == "INV-VAR-101"
     assert formula_row["current"]["title"] == "Premium widget updated"
-    assert formula_row["current"]["catalog_product_id"] == "CAT-1"
+    assert formula_row["current"]["catalog_product_id"] is None
     assert formula_row["current"]["inventory_id"] == "INV-VAR-101"
 
 

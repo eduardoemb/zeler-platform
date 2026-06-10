@@ -715,6 +715,182 @@ async def test_codigo_ml_to_sku_id_returns_seller_scoped_table_with_optional_hea
 
 
 @pytest.mark.asyncio
+async def test_publicaciones_and_dashboard_order_rows_by_publication_id_not_sku() -> None:
+    db = FakeDb()
+    db["sheets_item_formula_rows"].documents = {
+        "seller-1-sku-z-mla1": {
+            "_id": "seller-1-sku-z-mla1",
+            "seller_id": "seller-1",
+            "sku": "sku-z",
+            "normalized_sku": "SKU-Z",
+            "item_id": "MLA1",
+            "variation_id": "102",
+            "current": {"title": "First publication second row", "status": "active"},
+        },
+        "seller-1-sku-a-mla2": {
+            "_id": "seller-1-sku-a-mla2",
+            "seller_id": "seller-1",
+            "sku": "sku-a",
+            "normalized_sku": "SKU-A",
+            "item_id": "MLA2",
+            "variation_id": "201",
+            "current": {"title": "Second publication", "status": "active"},
+        },
+        "seller-1-sku-m-mla1": {
+            "_id": "seller-1-sku-m-mla1",
+            "seller_id": "seller-1",
+            "sku": "sku-m",
+            "normalized_sku": "SKU-M",
+            "item_id": "MLA1",
+            "variation_id": "101",
+            "current": {"title": "First publication first row", "status": "paused"},
+        },
+    }
+    dispatcher = _core_dispatcher(db)
+
+    publicaciones = await dispatcher.execute(
+        _context("ZELERDATA_PUBLICACIONES", {"skus": "todos", "encabezados": "si"})
+    )
+    dashboard = await dispatcher.execute(
+        _context("ZELERDATA_DASHBOARD", {"skus": "todos", "encabezados": "si"})
+    )
+
+    assert [row[0] for row in publicaciones.values[1:]] == ["MLA1", "MLA1", "MLA2"]
+    assert [row[2] for row in publicaciones.values[1:]] == ["sku-m", "sku-z", "sku-a"]
+    assert [row[0] for row in dashboard.values[1:]] == ["MLA1", "MLA1", "MLA2"]
+    assert [row[2] for row in dashboard.values[1:]] == ["sku-m", "sku-z", "sku-a"]
+
+
+@pytest.mark.asyncio
+async def test_publicaciones_and_dashboard_render_variation_safe_row_values() -> None:
+    now = datetime(2026, 5, 13, 12, 0, tzinfo=UTC)
+    paused_since = datetime(2026, 5, 10, 12, 0, tzinfo=UTC)
+    db = FakeDb()
+    db["sheets_item_formula_rows"].documents = {
+        "active-row": {
+            "_id": "active-row",
+            "seller_id": "seller-1",
+            "sku": "active-sku",
+            "normalized_sku": "ACTIVE-SKU",
+            "item_id": "MLA1",
+            "variation_id": "101",
+            "inventory_id": "INV-ACTIVE",
+            "current": {
+                "title": "Mixed publication",
+                "available_quantity": 9,
+                "base_price": 100,
+                "shipping_logistic_type": "fulfillment",
+                "status": "active",
+                "catalog_product_id": "CAT-ACTIVE",
+            },
+        },
+        "paused-row": {
+            "_id": "paused-row",
+            "seller_id": "seller-1",
+            "sku": "paused-sku",
+            "normalized_sku": "PAUSED-SKU",
+            "item_id": "MLA1",
+            "variation_id": "102",
+            "inventory_id": None,
+            "current": {
+                "title": "Mixed publication",
+                "available_quantity": 0,
+                "base_price": 100,
+                "shipping_logistic_type": "drop_off",
+                "status": "paused",
+                "paused_since": paused_since,
+                "catalog_product_id": None,
+            },
+        },
+        "unknown-row": {
+            "_id": "unknown-row",
+            "seller_id": "seller-1",
+            "sku": "unknown-sku",
+            "normalized_sku": "UNKNOWN-SKU",
+            "item_id": "MLA2",
+            "variation_id": "201",
+            "current": {
+                "title": "Unknown variation fields",
+                "base_price": 50,
+                "status": None,
+                "available_quantity": None,
+                "shipping_logistic_type": None,
+                "catalog_product_id": None,
+            },
+        },
+    }
+    dispatcher = _core_dispatcher(db, now=now)
+
+    publicaciones = await dispatcher.execute(
+        _context("ZELERDATA_PUBLICACIONES", {"skus": "todos", "encabezados": "si"})
+    )
+    dashboard = await dispatcher.execute(
+        _context("ZELERDATA_DASHBOARD", {"skus": "todos", "encabezados": "si"})
+    )
+
+    assert [row[2:7] for row in publicaciones.values[1:]] == [
+        ["active-sku", 9, 100, "fulfillment", "NA"],
+        ["paused-sku", 0, 100, "drop_off", "NA"],
+        ["unknown-sku", "NA", 50, "NA", "NA"],
+    ]
+    assert [row[8:12] for row in publicaciones.values[1:]] == [
+        ["active", "INV-ACTIVE", "INV-ACTIVE", "NA"],
+        ["paused", "NA", "NA", 3],
+        ["NA", "NA", "NA", "NA"],
+    ]
+    assert [row[21] for row in dashboard.values[1:]] == ["Sí", "No", "No"]
+
+
+@pytest.mark.asyncio
+async def test_publicaciones_and_dashboard_do_not_guess_variation_pause_days() -> None:
+    now = datetime(2026, 5, 13, 12, 0, tzinfo=UTC)
+    trusted_variation_paused_since = datetime(2026, 5, 10, 12, 0, tzinfo=UTC)
+    publication_level_paused_since = datetime(2026, 4, 1, 12, 0, tzinfo=UTC)
+    db = FakeDb()
+    db["sheets_item_formula_rows"].documents = {
+        "paused-with-variation-timestamp": {
+            "_id": "paused-with-variation-timestamp",
+            "seller_id": "seller-1",
+            "sku": "paused-with-timestamp",
+            "normalized_sku": "PAUSED-WITH-TIMESTAMP",
+            "item_id": "MLA1",
+            "variation_id": "101",
+            "current": {
+                "title": "Paused variation with trusted timestamp",
+                "status": "paused",
+                "paused_since": trusted_variation_paused_since,
+            },
+        },
+        "paused-without-variation-timestamp": {
+            "_id": "paused-without-variation-timestamp",
+            "seller_id": "seller-1",
+            "sku": "paused-without-timestamp",
+            "normalized_sku": "PAUSED-WITHOUT-TIMESTAMP",
+            "item_id": "MLA1",
+            "variation_id": "102",
+            # Variation rows must not inherit publication-global pause timing.
+            # If the variation payload has no paused_since, formulas render NA.
+            "current": {
+                "title": "Paused variation without trusted timestamp",
+                "status": "paused",
+                "publication_paused_since": publication_level_paused_since,
+            },
+        },
+    }
+    dispatcher = _core_dispatcher(db, now=now)
+
+    publicaciones = await dispatcher.execute(
+        _context("ZELERDATA_PUBLICACIONES", {"skus": "todos", "encabezados": "si"})
+    )
+    dashboard = await dispatcher.execute(
+        _context("ZELERDATA_DASHBOARD", {"skus": "todos", "encabezados": "si"})
+    )
+
+    assert [row[11] for row in publicaciones.values[1:]] == [3, "NA"]
+    assert [row[10] for row in dashboard.values[1:]] == [3, "NA"]
+
+
+@pytest.mark.asyncio
 async def test_publicaciones_returns_minimal_current_item_table_with_optional_headers() -> None:
     db = FakeDb()
     formula_rows = db["sheets_item_formula_rows"]
