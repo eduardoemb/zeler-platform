@@ -184,10 +184,22 @@ class ItemDetailEnrichmentSummary:
     listing_fixed_fee_enriched: int = 0
     listing_fixed_fee_unavailable: int = 0
     listing_fixed_fee_missing_params: int = 0
+    variation_details_requested: int = 0
+    variation_details_enriched: int = 0
+    variation_details_unavailable: int = 0
+    variation_details_failed: int = 0
     diagnostic_reason_counts: dict[str, int] = dataclass_field(default_factory=dict)
 
     def as_dict(self) -> dict[str, int | bool | str]:
         return asdict(self)
+
+
+@dataclass(frozen=True)
+class VariationDetailEnrichmentStats:
+    requested: int = 0
+    enriched: int = 0
+    unavailable: int = 0
+    failed: int = 0
 
 
 @dataclass(frozen=True)
@@ -465,6 +477,10 @@ async def run_item_detail_enrichment(
     listing_fixed_fee_enriched = 0
     listing_fixed_fee_unavailable = 0
     listing_fixed_fee_missing_params = 0
+    variation_details_requested = 0
+    variation_details_enriched = 0
+    variation_details_unavailable = 0
+    variation_details_failed = 0
     diagnostic_reason_counts: dict[str, int] = {}
 
     for batch in _chunks(item_ids, batch_size):
@@ -483,6 +499,16 @@ async def run_item_detail_enrichment(
             raise RuntimeError(msg)
         for item_id in batch:
             detail = dict(by_id[item_id])
+            variation_detail_stats = await _enrich_missing_variation_detail_skus(
+                gateway=gateway,
+                seller_id=seller_id,
+                item_id=item_id,
+                detail=detail,
+            )
+            variation_details_requested += variation_detail_stats.requested
+            variation_details_enriched += variation_detail_stats.enriched
+            variation_details_unavailable += variation_detail_stats.unavailable
+            variation_details_failed += variation_detail_stats.failed
             existing_item = existing_by_id[item_id]
             item_enrichment_state = _existing_enrichment_state(existing_item)
             clear_current_promotion = False
@@ -931,6 +957,10 @@ async def run_item_detail_enrichment(
         listing_fixed_fee_enriched=listing_fixed_fee_enriched,
         listing_fixed_fee_unavailable=listing_fixed_fee_unavailable,
         listing_fixed_fee_missing_params=listing_fixed_fee_missing_params,
+        variation_details_requested=variation_details_requested,
+        variation_details_enriched=variation_details_enriched,
+        variation_details_unavailable=variation_details_unavailable,
+        variation_details_failed=variation_details_failed,
         diagnostic_reason_counts=diagnostic_reason_counts,
     )
 
@@ -1687,17 +1717,23 @@ def _variation_safe_current_fields(
     variation_values = variation if isinstance(variation, dict) else {}
     shipping = variation_values.get("shipping")
     logistic_type = _variation_logistic_type(variation_values)
-    return {
-        "status": _optional_string(variation_values.get("status")),
+    fields: dict[str, Any] = {
         "available_quantity": variation_values.get("available_quantity")
         if "available_quantity" in variation_values
         else None,
-        "catalog_product_id": _optional_string(variation_values.get("catalog_product_id")),
+        "catalog_product_id": _optional_string(variation_values.get("catalog_product_id"))
+        if "catalog_product_id" in variation_values
+        else None,
         "inventory_id": inventory_id,
-        "logistic_type": logistic_type,
-        "shipping_logistic_type": logistic_type,
-        "shipping_payer": _shipping_payer(shipping) if isinstance(shipping, dict) else None,
     }
+    if (status := _optional_string(variation_values.get("status"))) is not None:
+        fields["status"] = status
+    if logistic_type is not None:
+        fields["logistic_type"] = logistic_type
+        fields["shipping_logistic_type"] = logistic_type
+    if isinstance(shipping, dict) and (shipping_payer := _shipping_payer(shipping)) is not None:
+        fields["shipping_payer"] = shipping_payer
+    return fields
 
 
 def _variation_logistic_type(variation: dict[str, Any]) -> str | None:
@@ -2060,6 +2096,12 @@ def _item_detail_batch_path(item_ids: Sequence[str]) -> str:
     return f"/items?ids={','.join(item_ids)}"
 
 
+def _variation_detail_path(*, item_id: str, variation_id: str) -> str:
+    escaped_item_id = quote(item_id, safe="")
+    escaped_variation_id = quote(variation_id, safe="")
+    return f"/items/{escaped_item_id}/variations/{escaped_variation_id}"
+
+
 def _extract_item_detail_entries(response: Any) -> list[dict[str, Any]]:
     if isinstance(response, list):
         raw_entries = response
@@ -2096,6 +2138,132 @@ def _validated_detail_entries_by_id(
             raise RuntimeError(msg)
         by_id[item_id] = body
     return by_id
+
+
+async def _enrich_missing_variation_detail_skus(
+    *, gateway: MeliItemGatewayClient, seller_id: str, item_id: str, detail: dict[str, Any]
+) -> VariationDetailEnrichmentStats:
+    variations = detail.get("variations")
+    if not isinstance(variations, Sequence) or isinstance(variations, (str, bytes)):
+        return VariationDetailEnrichmentStats()
+
+    enriched_variations: list[Any] = []
+    changed = False
+    requested = 0
+    enriched = 0
+    unavailable = 0
+    failed = 0
+    for variation in variations:
+        if not isinstance(variation, dict):
+            enriched_variations.append(variation)
+            continue
+        variation_id = _optional_string(variation.get("id") or variation.get("variation_id"))
+        if variation_id is None or resolve_variation_sku(variation).sku is not None:
+            enriched_variations.append(variation)
+            continue
+        requested += 1
+        try:
+            response = await gateway.fetch_resource(
+                seller_id=seller_id,
+                path=_variation_detail_path(item_id=item_id, variation_id=variation_id),
+            )
+        except (RuntimeError, GatewayRateLimitError, httpx.HTTPStatusError, httpx.RequestError):
+            failed += 1
+            enriched_variations.append(variation)
+            continue
+        variation_detail = _extract_variation_detail_body(response, expected_id=variation_id)
+        if variation_detail is None:
+            unavailable += 1
+            enriched_variations.append(variation)
+            continue
+        enriched_variation = _merge_safe_variation_detail_fields(variation, variation_detail)
+        if resolve_variation_sku(enriched_variation).sku is None:
+            unavailable += 1
+        elif enriched_variation != variation:
+            enriched += 1
+        changed = changed or enriched_variation != variation
+        enriched_variations.append(enriched_variation)
+
+    if changed:
+        detail["variations"] = enriched_variations
+    return VariationDetailEnrichmentStats(
+        requested=requested,
+        enriched=enriched,
+        unavailable=unavailable,
+        failed=failed,
+    )
+
+
+def _extract_variation_detail_body(response: Any, *, expected_id: str) -> dict[str, Any] | None:
+    if not isinstance(response, dict):
+        return None
+    body = response.get("body", response)
+    if not isinstance(body, dict):
+        return None
+    variation_id = _optional_string(body.get("id") or body.get("variation_id"))
+    if variation_id is not None and variation_id != expected_id:
+        return None
+    return body
+
+
+def _merge_safe_variation_detail_fields(
+    variation: dict[str, Any], variation_detail: dict[str, Any]
+) -> dict[str, Any]:
+    merged = dict(variation)
+    seller_sku_attributes = _seller_sku_attributes(variation_detail.get("attributes"))
+    if seller_sku_attributes:
+        merged["attributes"] = _upsert_seller_sku_attributes(
+            variation.get("attributes"), seller_sku_attributes
+        )
+    for field in (
+        "seller_custom_field",
+        "inventory_id",
+        "available_quantity",
+        "status",
+        "catalog_product_id",
+        "shipping",
+        "shipping_logistic_type",
+        "logistic_type",
+    ):
+        if field in variation_detail:
+            merged[field] = variation_detail[field]
+    return merged
+
+
+def _upsert_seller_sku_attributes(
+    existing_attributes: Any, seller_sku_attributes: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    preserved_attributes: list[dict[str, Any]] = []
+    if isinstance(existing_attributes, Sequence) and not isinstance(
+        existing_attributes, (str, bytes)
+    ):
+        for attribute in existing_attributes:
+            if not isinstance(attribute, dict):
+                continue
+            attribute_id = str(attribute.get("id") or "").strip().upper()
+            if attribute_id != SELLER_SKU_ATTRIBUTE_ID:
+                preserved_attributes.append(dict(attribute))
+    return [*preserved_attributes, *seller_sku_attributes]
+
+
+def _seller_sku_attributes(attributes: Any) -> list[dict[str, Any]]:
+    if not isinstance(attributes, Sequence) or isinstance(attributes, (str, bytes)):
+        return []
+    seller_sku_attributes: list[dict[str, Any]] = []
+    for attribute in attributes:
+        if not isinstance(attribute, dict):
+            continue
+        attribute_id = str(attribute.get("id") or "").strip().upper()
+        if attribute_id != SELLER_SKU_ATTRIBUTE_ID:
+            continue
+        safe_attribute: dict[str, Any] = {"id": SELLER_SKU_ATTRIBUTE_ID}
+        for key in ("value_name", "value", "name"):
+            if (value := _string_value(attribute.get(key))) is not None:
+                safe_attribute[key] = value
+                break
+        if len(safe_attribute) > 1:
+            seller_sku_attributes.append(safe_attribute)
+    return seller_sku_attributes
 
 
 def _canonical_item_detail_document(

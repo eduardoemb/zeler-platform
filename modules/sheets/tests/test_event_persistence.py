@@ -1377,10 +1377,10 @@ async def test_item_event_refreshes_variation_safe_fields_without_status_overlay
     assert active["current"]["catalog_product_id"] == "CAT-ACTIVE"
     assert active["current"]["shipping_logistic_type"] == "cross_docking"
     assert "paused_since" not in active["current"]
-    assert unknown["current"]["status"] is None
+    assert unknown["current"]["status"] == "paused"
     assert unknown["current"]["available_quantity"] is None
     assert unknown["current"]["catalog_product_id"] is None
-    assert unknown["current"]["shipping_logistic_type"] is None
+    assert unknown["current"]["shipping_logistic_type"] == "fulfillment"
     assert "paused_since" not in unknown["current"]
 
 
@@ -1436,8 +1436,8 @@ async def test_persists_item_and_refreshes_sheetseller_read_models() -> None:
     assert variation_row["inventory_id"] == "INV-VAR-101"
     assert variation_row["current"]["title"] == "Premium widget"
     assert variation_row["current"]["listing_type_id"] == "gold_special"
-    assert variation_row["current"]["shipping_logistic_type"] is None
-    assert variation_row["current"]["shipping_payer"] is None
+    assert variation_row["current"]["shipping_logistic_type"] == "cross_docking"
+    assert variation_row["current"]["shipping_payer"] == "Comprador"
 
 
 @pytest.mark.asyncio
