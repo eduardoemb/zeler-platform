@@ -14,10 +14,29 @@ STATUS_HISTORY_DATETIME_FIELDS = (
 
 
 def bson_ms_utc_datetime(value: Any) -> datetime | None:
+    aware = mongo_loaded_utc_datetime(value)
+    if aware is None:
+        return None
+    return aware.replace(microsecond=(aware.microsecond // 1000) * 1000)
+
+
+def mongo_loaded_utc_datetime(value: Any) -> datetime | None:
     if not isinstance(value, datetime):
         return None
-    aware = value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
-    return aware.replace(microsecond=(aware.microsecond // 1000) * 1000)
+    if value.tzinfo is None or value.utcoffset() is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
+
+
+def normalize_mongo_loaded_datetimes(value: Any) -> Any:
+    normalized = mongo_loaded_utc_datetime(value)
+    if normalized is not None:
+        return normalized
+    if isinstance(value, dict):
+        return {key: normalize_mongo_loaded_datetimes(nested) for key, nested in value.items()}
+    if isinstance(value, list):
+        return [normalize_mongo_loaded_datetimes(nested) for nested in value]
+    return value
 
 
 def require_bson_ms_utc_datetime(value: datetime) -> datetime:

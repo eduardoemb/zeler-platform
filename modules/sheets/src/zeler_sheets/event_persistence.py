@@ -29,6 +29,7 @@ from zeler_sheets.sheetseller_backfill import (
 from zeler_sheets.status_history import (
     STATUS_HISTORY_DATETIME_FIELDS,
     bson_ms_utc_datetime,
+    normalize_mongo_loaded_datetimes,
     normalize_status_history_datetimes,
     require_bson_ms_utc_datetime,
 )
@@ -555,8 +556,12 @@ def _item_with_preserved_enrichment(
     merged = dict(document)
     preserved_any = False
     state_changed = False
-    existing_state = schema_safe_enrichment_state(existing.get("enrichment_state"))
-    incoming_state = schema_safe_enrichment_state(merged.get("enrichment_state"))
+    existing_state = schema_safe_enrichment_state(
+        normalize_mongo_loaded_datetimes(existing.get("enrichment_state"))
+    )
+    incoming_state = schema_safe_enrichment_state(
+        normalize_mongo_loaded_datetimes(merged.get("enrichment_state"))
+    )
     merged_state = dict(incoming_state or {})
     for field in (
         "seller_shipping_cost",
@@ -581,14 +586,14 @@ def _item_with_preserved_enrichment(
                 )
                 state_changed = True
                 continue
-            merged[field] = existing[field]
+            merged[field] = normalize_mongo_loaded_datetimes(existing[field])
             preserved_any = True
             if existing_state is not None and field in existing_state and field not in merged_state:
                 merged_state[field] = existing_state[field]
     if existing_state is not None and (preserved_any or state_changed or incoming_state is None):
         merged_state = {**existing_state, **merged_state}
     if merged_state:
-        merged["enrichment_state"] = merged_state
+        merged["enrichment_state"] = normalize_mongo_loaded_datetimes(merged_state)
     return merged
 
 
