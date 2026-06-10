@@ -1456,6 +1456,94 @@ async def test_item_event_preserves_trusted_enrichment_and_refreshes_formula_row
 
 
 @pytest.mark.asyncio
+async def test_item_event_normalizes_preserved_decimal_enrichment_before_mongo_write() -> None:
+    db = FakeDb()
+    db["items"].documents["MLA1"] = {
+        "_id": "MLA1",
+        "seller_id": "82453304",
+        "title": "Previous widget",
+        "price": Decimal128("149.99"),
+        "base_price": Decimal128("159.99"),
+        "available_quantity": 7,
+        "status": "active",
+        "category_id": "MLA123",
+        "currency_id": "ARS",
+        "site_id": "MLA",
+        "listing_type_id": "gold_special",
+        "shipping": {"mode": "me2", "logistic_type": "fulfillment"},
+        "billable_weight": Decimal128("500"),
+        "tags": ["mandatory_free_shipping"],
+        "seller_shipping_cost": Decimal("83.25"),
+        "current_promotion": {
+            "source": "/items/{id}/sale_price",
+            "sale_amount": Decimal("99.90"),
+            "regular_amount": Decimal("149.90"),
+            "discount_percent": Decimal("33.36"),
+            "currency_id": "MXN",
+            "reference_at": NOW,
+            "synced_at": NOW,
+        },
+        "enrichment_state": {
+            "seller_shipping_cost": {
+                "source": "/users/{seller_id}/shipping_options/free",
+                "status": "trusted",
+                "synced_at": NOW,
+                "basis": {
+                    "site_id": "MLA",
+                    "category_id": "MLA123",
+                    "currency_id": "ARS",
+                    "listing_type_id": "gold_special",
+                    "price": Decimal("149.99"),
+                    "shipping_mode": "me2",
+                    "logistic_type": "fulfillment",
+                    "billable_weight": Decimal("500"),
+                    "tags": ["mandatory_free_shipping"],
+                },
+            }
+        },
+        "attributes": [{"id": "SELLER_SKU", "value_name": "sku-1"}],
+        "variations": [],
+        "last_meli_sync_at": NOW,
+        "date_created": NOW,
+        "last_updated": NOW,
+        "schema_version": 2,
+    }
+    persistence = SheetsEventPersistence(db=db, clock=lambda: NOW)
+
+    await persistence.persist(
+        event_type="items.updated",
+        seller_id=82453304,
+        resource={
+            "id": "MLA1",
+            "title": "Premium widget",
+            "price": "149.99",
+            "base_price": "159.99",
+            "available_quantity": 7,
+            "status": "active",
+            "category_id": "MLA123",
+            "currency_id": "ARS",
+            "site_id": "MLA",
+            "listing_type_id": "gold_special",
+            "shipping": {"mode": "me2", "logistic_type": "fulfillment"},
+            "billable_weight": "500",
+            "tags": ["mandatory_free_shipping"],
+            "attributes": [{"id": "SELLER_SKU", "value_name": "sku-1"}],
+            "date_created": "2026-05-01T10:00:00+00:00",
+            "last_updated": "2026-05-30T11:00:00+00:00",
+        },
+    )
+
+    item = db["items"].documents["MLA1"]
+    row = db["sheets_item_formula_rows"].documents["82453304:SKU-1:MLA1"]
+    BSON.encode(item)
+    BSON.encode(row)
+    assert item["seller_shipping_cost"].to_decimal() == Decimal("83.25")
+    assert item["current_promotion"]["sale_amount"].to_decimal() == Decimal("99.90")
+    assert row["current"]["seller_shipping_cost"].to_decimal() == Decimal("83.25")
+    assert row["current"]["current_promotion"]["sale_amount"].to_decimal() == Decimal("99.90")
+
+
+@pytest.mark.asyncio
 async def test_item_event_clears_trusted_seller_shipping_when_basis_changes() -> None:
     db = FakeDb()
     db["items"].documents["MLA1"] = {
