@@ -437,6 +437,27 @@ def test_batch_b_output_column_fixture_locks_mvp_and_deferred_columns() -> None:
             "status": "mvp",
             "reason": "Returns NA when the official MercadoLibre pack_id is missing.",
         }
+        commission_percent_column = next(
+            column for column in formulas[formula]["columns"] if column["name"] == "% Comisión"
+        )
+        assert commission_percent_column == {
+            "name": "% Comisión",
+            "source": "orders.items.sale_fee / orders.items.unit_price from /orders/{id}",
+            "status": "mvp",
+            "reason": (
+                "Returns MercadoLibre UI-style whole percentage label, e.g. 14%, when "
+                "persisted order fee source is available."
+            ),
+        }
+        commission_column = next(
+            column for column in formulas[formula]["columns"] if column["name"] == "Comisión"
+        )
+        assert commission_column == {
+            "name": "Comisión",
+            "source": "orders.items.sale_fee * orders.items.quantity from /orders/{id}",
+            "status": "mvp",
+            "reason": "Returns total realized MercadoLibre commission for the order item row.",
+        }
         unit_cost_column = next(
             column
             for column in formulas[formula]["columns"]

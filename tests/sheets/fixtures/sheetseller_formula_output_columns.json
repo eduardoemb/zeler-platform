@@ -135,8 +135,8 @@
         {"name": "Unidades Vendidas", "source": "orders.items.quantity | orders.items.qty", "status": "mvp"},
         {"name": "Precio", "source": "orders.items.unit_price | full_unit_price", "status": "mvp"},
         {"name": "ID Carrito", "source": "orders.meli_pack_id from MercadoLibre orders.pack_id", "status": "mvp", "reason": "Returns NA when the official MercadoLibre pack_id is missing."},
-        {"name": "% Comisión", "legacy_source_note": "legacy commission percentage column", "status": "explicit_na", "reason": "Requires fee/commission read model."},
-        {"name": "Comisión", "legacy_source_note": "legacy commission amount column", "status": "explicit_na", "reason": "Requires fee/commission read model."},
+        {"name": "% Comisión", "source": "orders.items.sale_fee / orders.items.unit_price from /orders/{id}", "status": "mvp", "reason": "Returns MercadoLibre UI-style whole percentage label, e.g. 14%, when persisted order fee source is available."},
+        {"name": "Comisión", "source": "orders.items.sale_fee * orders.items.quantity from /orders/{id}", "status": "mvp", "reason": "Returns total realized MercadoLibre commission for the order item row."},
         {"name": "Costo Por Unidad", "source": "sheets_item_formula_rows.current.listing_price_fixed_fee.fixed_fee from /sites/{site}/listing_prices.sale_fee_details.fixed_fee", "status": "mvp", "reason": "Returns NA unless a validated persisted listing-prices fixed-fee projection is present for the order line item."},
         {"name": "Costo De Envío", "legacy_source_note": "legacy shipping cost column", "status": "explicit_na", "reason": "Requires shipping/cost read model."},
         {"name": "Status", "source": "orders.status", "status": "mvp"}
@@ -164,8 +164,8 @@
         {"name": "Unidades Vendidas", "source": "orders.items.quantity | orders.items.qty", "status": "mvp"},
         {"name": "Precio", "source": "orders.items.unit_price | full_unit_price", "status": "mvp"},
         {"name": "ID Carrito", "source": "orders.meli_pack_id from MercadoLibre orders.pack_id", "status": "mvp", "reason": "Returns NA when the official MercadoLibre pack_id is missing."},
-        {"name": "% Comisión", "legacy_source_note": "legacy commission percentage column", "status": "explicit_na", "reason": "Requires fee/commission read model."},
-        {"name": "Comisión", "legacy_source_note": "legacy commission amount column", "status": "explicit_na", "reason": "Requires fee/commission read model."},
+        {"name": "% Comisión", "source": "orders.items.sale_fee / orders.items.unit_price from /orders/{id}", "status": "mvp", "reason": "Returns MercadoLibre UI-style whole percentage label, e.g. 14%, when persisted order fee source is available."},
+        {"name": "Comisión", "source": "orders.items.sale_fee * orders.items.quantity from /orders/{id}", "status": "mvp", "reason": "Returns total realized MercadoLibre commission for the order item row."},
         {"name": "Costo Por Unidad", "source": "sheets_item_formula_rows.current.listing_price_fixed_fee.fixed_fee from /sites/{site}/listing_prices.sale_fee_details.fixed_fee", "status": "mvp", "reason": "Returns NA unless a validated persisted listing-prices fixed-fee projection is present for the order line item."},
         {"name": "Costo De Envío", "legacy_source_note": "legacy shipping cost column", "status": "explicit_na", "reason": "Requires shipping/cost read model."},
         {"name": "Status", "source": "orders.status", "status": "mvp"}
