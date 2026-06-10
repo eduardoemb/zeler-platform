@@ -1242,8 +1242,12 @@ def _realized_commission_values(line: _OrderLine) -> tuple[Any, Any, Any]:
     ):
         return NA_VALUE, NA_VALUE, NA_VALUE
     unit_cost = line.sale_fee / line.quantity
-    percent = (unit_cost / line.unit_price) * Decimal("100")
+    percent = _commission_percent(line.sale_fee, line.unit_price)
     return _sheet_number(percent), _sheet_number(line.sale_fee), _sheet_number(unit_cost)
+
+
+def _commission_percent(sale_fee: Decimal, unit_price: Decimal) -> Decimal:
+    return ((sale_fee / unit_price) * Decimal("100")).quantize(Decimal("0.01"))
 
 
 def _order_meli_pack_id(order: Mapping[str, Any]) -> str:

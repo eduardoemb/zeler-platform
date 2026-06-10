@@ -968,6 +968,56 @@ async def test_ordenes_renders_output_dates_in_seller_timezone() -> None:
 
 
 @pytest.mark.asyncio
+async def test_ordenes_filters_and_renders_ui_previous_day_in_seller_timezone() -> None:
+    db = FakeDb()
+    orders = db["orders"]
+    orders.documents = {
+        "order-ui-local": _order_doc(
+            "order-ui-local",
+            seller_id="seller-1",
+            status="paid",
+            date_created=datetime(2026, 6, 1, 6, 30, 41, tzinfo=UTC),
+            total_amount=100,
+            items=[
+                {
+                    "sku": "sku-1",
+                    "item_id": "MLM1",
+                    "title": "UI local item",
+                    "quantity": 1,
+                    "unit_price": 100,
+                }
+            ],
+        )
+    }
+    dispatcher = _order_question_dispatcher(db)
+
+    previous_local_day = await dispatcher.execute(
+        _context(
+            "ZELERDATA_ORDENES",
+            {"fecha_inicial": "2026-05-31", "fecha_final": "2026-05-31"},
+            seller_timezone="America/Tijuana",
+        )
+    )
+    next_local_day = await dispatcher.execute(
+        _context(
+            "ZELERDATA_ORDENES",
+            {"fecha_inicial": "2026-06-01", "fecha_final": "2026-06-01"},
+            seller_timezone="America/Tijuana",
+        )
+    )
+
+    assert previous_local_day.values[0][0] == "2026-05-31T23:30:41-07:00"
+    assert previous_local_day.values[0][1] == "order-ui-local"
+    assert next_local_day.values == []
+    assert orders.find_filters[-1]["$or"][0] == {
+        "date_created": {
+            "$gte": datetime(2026, 6, 1, 7, 0, tzinfo=UTC),
+            "$lte": datetime(2026, 6, 2, 6, 59, 59, 999999, tzinfo=UTC),
+        }
+    }
+
+
+@pytest.mark.asyncio
 async def test_ventas_totales_falls_back_to_utc_for_missing_seller_timezone() -> None:
     db = FakeDb()
     orders = db["orders"]
@@ -1383,8 +1433,126 @@ async def test_order_tables_render_realized_sale_fee_math_and_listing_fixed_fee_
         )
     )
 
-    assert result.values[0][8:11] == [15, 30, 8]
+    assert result.values[0][8:11] == [30, 30, 8]
     assert result.values[1][8:11] == ["NA", "NA", 10]
+
+
+@pytest.mark.asyncio
+async def test_ordenes_keeps_full_commission_percent_for_multi_unit_order_item() -> None:
+    db = FakeDb()
+    db["orders"].documents = {
+        "order-1": _order_doc(
+            "order-1",
+            seller_id="seller-1",
+            status="paid",
+            date_created=datetime(2026, 6, 1, 8, 0, tzinfo=UTC),
+            total_amount=200,
+            items=[
+                {
+                    "sku": "sku-1",
+                    "item_id": "MLM1",
+                    "title": "Multi unit item",
+                    "quantity": 2,
+                    "unit_price": 100,
+                    "sale_fee": 15,
+                    "sale_fee_source": "/orders/{id}",
+                    "sale_fee_synced_at": datetime(2026, 6, 1, 8, 1, tzinfo=UTC),
+                }
+            ],
+        )
+    }
+    dispatcher = _order_question_dispatcher(db)
+
+    result = await dispatcher.execute(
+        _context(
+            "ZELERDATA_ORDENES",
+            {"fecha_inicial": "2026-06-01", "fecha_final": "2026-06-01"},
+        )
+    )
+
+    assert result.values[0][8:10] == [15, 15]
+
+
+@pytest.mark.asyncio
+async def test_ordenes_caps_commission_percent_to_two_decimal_places() -> None:
+    db = FakeDb()
+    db["orders"].documents = {
+        "order-1": _order_doc(
+            "order-1",
+            seller_id="seller-1",
+            status="paid",
+            date_created=datetime(2026, 6, 1, 8, 0, tzinfo=UTC),
+            total_amount=60,
+            items=[
+                {
+                    "sku": "sku-1",
+                    "item_id": "MLM1",
+                    "title": "Decimal commission item",
+                    "quantity": 1,
+                    "unit_price": 60,
+                    "sale_fee": Decimal("10.12345"),
+                    "sale_fee_source": "/orders/{id}",
+                    "sale_fee_synced_at": datetime(2026, 6, 1, 8, 1, tzinfo=UTC),
+                }
+            ],
+        )
+    }
+    dispatcher = _order_question_dispatcher(db)
+
+    result = await dispatcher.execute(
+        _context(
+            "ZELERDATA_ORDENES",
+            {"fecha_inicial": "2026-06-01", "fecha_final": "2026-06-01"},
+        )
+    )
+
+    assert result.values[0][8] == 16.87
+
+
+@pytest.mark.asyncio
+async def test_ordenes_repeats_full_commission_percent_for_repeated_listing_rows() -> None:
+    db = FakeDb()
+    db["orders"].documents = {
+        "order-1": _order_doc(
+            "order-1",
+            seller_id="seller-1",
+            status="paid",
+            date_created=datetime(2026, 6, 1, 8, 0, tzinfo=UTC),
+            total_amount=500,
+            items=[
+                {
+                    "sku": "sku-1",
+                    "item_id": "MLM1",
+                    "title": "Repeated listing item",
+                    "quantity": 2,
+                    "unit_price": 100,
+                    "sale_fee": 15,
+                    "sale_fee_source": "/orders/{id}",
+                    "sale_fee_synced_at": datetime(2026, 6, 1, 8, 1, tzinfo=UTC),
+                },
+                {
+                    "sku": "sku-1",
+                    "item_id": "MLM1",
+                    "title": "Repeated listing item",
+                    "quantity": 3,
+                    "unit_price": 100,
+                    "sale_fee": 15,
+                    "sale_fee_source": "/orders/{id}",
+                    "sale_fee_synced_at": datetime(2026, 6, 1, 8, 2, tzinfo=UTC),
+                },
+            ],
+        )
+    }
+    dispatcher = _order_question_dispatcher(db)
+
+    result = await dispatcher.execute(
+        _context(
+            "ZELERDATA_ORDENES",
+            {"fecha_inicial": "2026-06-01", "fecha_final": "2026-06-01"},
+        )
+    )
+
+    assert [row[8] for row in result.values] == [15, 15]
 
 
 @pytest.mark.asyncio

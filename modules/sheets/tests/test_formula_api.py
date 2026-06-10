@@ -459,6 +459,46 @@ async def test_execute_resolves_seller_timezone_from_legacy_int_meli_account_id(
 
 
 @pytest.mark.asyncio
+async def test_execute_propagates_seller_specific_meli_account_timezone() -> None:
+    now = datetime(2026, 5, 13, 12, 0, tzinfo=UTC)
+
+    def timezone_echo_handler(context: Any) -> FormulaExecutionResult:
+        return FormulaExecutionResult(
+            values=[[context.seller_timezone]],
+            meta={"seller_timezone": context.seller_timezone},
+        )
+
+    app, db, token = await _app_with_token(
+        now=now,
+        formula_dispatcher=timezone_echo_handler,
+    )
+    db["meli_accounts"].documents = {
+        "hopemob-account": {
+            "_id": "hopemob-account",
+            "seller_id": "123456789",
+            "timezone": "America/Tijuana",
+        }
+    }
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.post(
+            "/sheets/formulas:execute",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"formula": "ZELERDATA_SKU", "cuenta": "HOPEMOB", "args": {}},
+        )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "ok": True,
+        "values": [["America/Tijuana"]],
+        "meta": {"seller_timezone": "America/Tijuana"},
+    }
+    assert db["meli_accounts"].find_filters == [{"seller_id": "123456789"}]
+
+
+@pytest.mark.asyncio
 async def test_execute_uses_utc_timezone_when_meli_account_timezone_is_missing() -> None:
     now = datetime(2026, 5, 13, 12, 0, tzinfo=UTC)
 
