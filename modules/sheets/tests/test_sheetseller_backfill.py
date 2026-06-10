@@ -1456,11 +1456,81 @@ async def test_backfill_variation_rows_use_safe_fields_and_do_not_copy_item_paus
     assert active["current"]["catalog_product_id"] == "CAT-ACTIVE"
     assert active["current"]["shipping_logistic_type"] == "cross_docking"
     assert "paused_since" not in active["current"]
-    assert unknown["current"]["status"] is None
+    assert unknown["current"]["status"] == "paused"
     assert unknown["current"]["available_quantity"] is None
     assert unknown["current"]["catalog_product_id"] is None
-    assert unknown["current"]["shipping_logistic_type"] is None
+    assert unknown["current"]["shipping_logistic_type"] == "fulfillment"
     assert "paused_since" not in unknown["current"]
+
+
+def test_formula_row_variation_overlay_preserves_item_fallbacks_and_explicit_fields() -> None:
+    item = _item_doc(
+        "MLA1",
+        catalog_product_id="ITEM-CATALOG",
+        shipping={"mode": "me2", "logistic_type": "fulfillment", "free_shipping": False},
+        variations=[
+            {
+                "id": 101,
+                "attributes": [{"id": "SELLER_SKU", "value_name": "fallback-sku"}],
+                "status": None,
+                "available_quantity": 0,
+                "inventory_id": "INV-101",
+            },
+            {
+                "id": 102,
+                "attributes": [{"id": "SELLER_SKU", "value_name": "explicit-sku"}],
+                "status": "paused",
+                "available_quantity": 4,
+                "catalog_product_id": "VAR-CATALOG",
+                "shipping": {"logistic_type": "cross_docking", "free_shipping": True},
+                "inventory_id": "INV-102",
+            },
+            {
+                "id": 103,
+                "attributes": [{"id": "SELLER_SKU", "value_name": "partial-shipping-sku"}],
+                "status": "active",
+                "available_quantity": 3,
+                "shipping": {"logistic_type": "xd_drop_off"},
+                "inventory_id": "INV-103",
+            },
+        ],
+    )
+    item["status"] = "active"
+
+    fallback = build_formula_row_doc(
+        item,
+        seller_id="82453304",
+        sku="fallback-sku",
+        variation_id="101",
+        inventory_id="INV-101",
+    )
+    explicit = build_formula_row_doc(
+        item,
+        seller_id="82453304",
+        sku="explicit-sku",
+        variation_id="102",
+        inventory_id="INV-102",
+    )
+    partial_shipping = build_formula_row_doc(
+        item,
+        seller_id="82453304",
+        sku="partial-shipping-sku",
+        variation_id="103",
+        inventory_id="INV-103",
+    )
+
+    assert fallback["current"]["available_quantity"] == 0
+    assert fallback["current"]["status"] == "active"
+    assert fallback["current"]["catalog_product_id"] is None
+    assert fallback["current"]["shipping_logistic_type"] == "fulfillment"
+    assert fallback["current"]["shipping_payer"] == "Comprador"
+    assert explicit["current"]["available_quantity"] == 4
+    assert explicit["current"]["status"] == "paused"
+    assert explicit["current"]["catalog_product_id"] == "VAR-CATALOG"
+    assert explicit["current"]["shipping_logistic_type"] == "cross_docking"
+    assert explicit["current"]["shipping_payer"] == "Vendedor"
+    assert partial_shipping["current"]["shipping_logistic_type"] == "xd_drop_off"
+    assert partial_shipping["current"]["shipping_payer"] == "Comprador"
 
 
 @pytest.mark.asyncio
@@ -1655,7 +1725,8 @@ async def test_item_detail_enrichment_fetches_canonical_ids_and_writes_formula_f
                         "unexpected_raw_payload": {"secret": "must-not-persist"},
                     },
                 }
-            ]
+            ],
+            "/items/MLA1/variations/101": {"id": 101},
         }
     )
 
@@ -1672,8 +1743,13 @@ async def test_item_detail_enrichment_fetches_canonical_ids_and_writes_formula_f
         items_planned=1,
         items_updated=1,
         unchanged=0,
+        variation_details_requested=1,
+        variation_details_unavailable=1,
     )
-    assert gateway.calls == [("82453304", "/items?ids=MLA1")]
+    assert gateway.calls == [
+        ("82453304", "/items?ids=MLA1"),
+        ("82453304", "/items/MLA1/variations/101"),
+    ]
     assert db["items"].find_filters == [{"seller_id": "82453304"}]
     assert len(db["items"].update_calls) == 1
     filter_spec, update, options = db["items"].update_calls[0]
@@ -1723,6 +1799,125 @@ async def test_item_detail_enrichment_fetches_canonical_ids_and_writes_formula_f
     assert stored["inventory_id"] == "INV-ITEM-1"
     assert stored["listing_type_id"] == "gold_special"
     assert stored["schema_version"] == 2
+
+
+@pytest.mark.asyncio
+async def test_item_detail_enrichment_fetches_variation_detail_sku_for_missing_variations() -> None:
+    canonical = _item_doc(
+        "MLA1",
+        shipping={"mode": "me2", "logistic_type": "fulfillment", "free_shipping": False},
+        variations=[{"id": 101, "inventory_id": "INV-101"}],
+    )
+    db = FakeDb([canonical])
+    detail = _item_detail("MLA1")
+    detail.update(
+        {
+            "status": "active",
+            "shipping": {"mode": "me2", "logistic_type": "fulfillment", "free_shipping": False},
+            "variations": [{"id": 101, "inventory_id": "INV-101", "available_quantity": 0}],
+        }
+    )
+    detail["variations"][0]["attributes"] = [
+        {"id": "COLOR", "value_name": "Negro"},
+        {"id": "SELLER_SKU", "value_name": "   "},
+    ]
+    gateway = FakeItemGateway(
+        {
+            "/items?ids=MLA1": [{"code": 200, "body": detail}],
+            "/items/MLA1/variations/101": {
+                "id": 101,
+                "inventory_id": "INV-101",
+                "available_quantity": 0,
+                "attributes": [
+                    {"id": "SELLER_SKU", "value_name": "SAL-06-072"},
+                    {"id": "BRAND", "value_name": "Ignored detail brand"},
+                ],
+            },
+        }
+    )
+
+    summary = await run_item_detail_enrichment(
+        db=db, gateway=gateway, seller_id="82453304", dry_run=False
+    )
+    await run_sheetseller_backfill(db=db, seller_id="82453304", dry_run=False)
+
+    assert summary.items_updated == 1
+    assert gateway.calls == [
+        ("82453304", "/items?ids=MLA1"),
+        ("82453304", "/items/MLA1/variations/101"),
+    ]
+    stored_variation = db["items"].documents["MLA1"]["variations"][0]
+    assert stored_variation["attributes"] == [
+        {"id": "COLOR", "value_name": "Negro"},
+        {"id": "SELLER_SKU", "value_name": "SAL-06-072"},
+    ]
+    assert stored_variation["available_quantity"] == 0
+    assert stored_variation["inventory_id"] == "INV-101"
+    assert summary.as_dict()["variation_details_requested"] == 1
+    assert summary.as_dict()["variation_details_enriched"] == 1
+    assert summary.as_dict()["variation_details_unavailable"] == 0
+    assert summary.as_dict()["variation_details_failed"] == 0
+    sku_index = db["sheets_item_sku_index"].documents["82453304:SAL-06-072:MLA1:101"]
+    formula_row = db["sheets_item_formula_rows"].documents["82453304:SAL-06-072:MLA1:101"]
+    assert sku_index["source"] == "variation_attribute"
+    assert formula_row["current"]["available_quantity"] == 0
+    assert formula_row["current"]["status"] == "active"
+    assert formula_row["current"]["shipping_logistic_type"] == "fulfillment"
+
+
+@pytest.mark.asyncio
+async def test_item_detail_enrichment_keeps_base_item_when_variation_detail_unavailable() -> None:
+    canonical = _item_doc("MLA1", variations=[{"id": 101, "inventory_id": "INV-101"}])
+    db = FakeDb([canonical])
+    detail = _item_detail("MLA1")
+    detail["variations"] = [{"id": 101, "inventory_id": "INV-101", "available_quantity": 0}]
+    gateway = FakeItemGateway(
+        {
+            "/items?ids=MLA1": [{"code": 200, "body": detail}],
+            "/items/MLA1/variations/101": RuntimeError("variation detail unavailable"),
+        }
+    )
+
+    summary = await run_item_detail_enrichment(
+        db=db, gateway=gateway, seller_id="82453304", dry_run=False
+    )
+
+    assert summary.items_validated == 1
+    assert summary.items_updated == 1
+    assert db["items"].documents["MLA1"]["variations"] == [
+        {"id": 101, "inventory_id": "INV-101", "available_quantity": 0}
+    ]
+    assert summary.as_dict()["variation_details_requested"] == 1
+    assert summary.as_dict()["variation_details_enriched"] == 0
+    assert summary.as_dict()["variation_details_unavailable"] == 0
+    assert summary.as_dict()["variation_details_failed"] == 1
+    assert "variation detail unavailable" not in str(summary.as_dict())
+
+
+@pytest.mark.asyncio
+async def test_item_detail_enrichment_counts_unavailable_variation_detail_without_raw_payload() -> (
+    None
+):
+    canonical = _item_doc("MLA1", variations=[{"id": 101, "inventory_id": "INV-101"}])
+    db = FakeDb([canonical])
+    detail = _item_detail("MLA1")
+    detail["variations"] = [{"id": 101, "inventory_id": "INV-101", "available_quantity": 0}]
+    gateway = FakeItemGateway(
+        {
+            "/items?ids=MLA1": [{"code": 200, "body": detail}],
+            "/items/MLA1/variations/101": {"id": 999, "attributes": []},
+        }
+    )
+
+    summary = await run_item_detail_enrichment(
+        db=db, gateway=gateway, seller_id="82453304", dry_run=False
+    )
+
+    assert summary.as_dict()["variation_details_requested"] == 1
+    assert summary.as_dict()["variation_details_enriched"] == 0
+    assert summary.as_dict()["variation_details_unavailable"] == 1
+    assert summary.as_dict()["variation_details_failed"] == 0
+    assert "attributes" not in str(summary.as_dict())
 
 
 @pytest.mark.asyncio
@@ -3753,6 +3948,10 @@ async def test_item_detail_enrichment_summary_is_sanitized_and_useful() -> None:
         "listing_fixed_fee_enriched": 0,
         "listing_fixed_fee_unavailable": 0,
         "listing_fixed_fee_missing_params": 0,
+        "variation_details_requested": 0,
+        "variation_details_enriched": 0,
+        "variation_details_unavailable": 0,
+        "variation_details_failed": 0,
         "diagnostic_reason_counts": {},
     }
     assert "82453304" not in str(serialized)
