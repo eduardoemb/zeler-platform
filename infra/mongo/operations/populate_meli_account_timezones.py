@@ -17,6 +17,7 @@ from zeler_platform_core.meli_timezones import resolve_meli_timezone
 class AccountTimezoneTarget:
     seller_id: str
     site_id: str
+    timezone: str | None = None
 
 
 class PopulationWarning(TypedDict):
@@ -39,7 +40,11 @@ class PopulationSummary(TypedDict):
 
 HOPEMOB_SELLER_ID = "82453304"
 EXPLICIT_TARGETS: dict[str, AccountTimezoneTarget] = {
-    HOPEMOB_SELLER_ID: AccountTimezoneTarget(seller_id=HOPEMOB_SELLER_ID, site_id="MLM"),
+    HOPEMOB_SELLER_ID: AccountTimezoneTarget(
+        seller_id=HOPEMOB_SELLER_ID,
+        site_id="MLM",
+        timezone="America/Tijuana",
+    ),
 }
 
 
@@ -94,7 +99,7 @@ def _desired_metadata(
         resolution = resolve_meli_timezone(target.site_id)
         return {
             "site_id": target.site_id,
-            "timezone": resolution.timezone,
+            "timezone": target.timezone or resolution.timezone,
         }, _warning_for(seller_id, target.site_id)
 
     if _is_valid_timezone(document.get("timezone")):
@@ -114,7 +119,15 @@ def _changed_metadata(document: Mapping[str, object], desired: Mapping[str, str]
     }
 
 
-def populate_meli_account_timezones(mongo_uri: str, *, dry_run: bool = True) -> PopulationSummary:
+def populate_meli_account_timezones(
+    mongo_uri: str,
+    *,
+    dry_run: bool = True,
+    approved_runtime: bool = False,
+) -> PopulationSummary:
+    if not dry_run and not approved_runtime:
+        raise ValueError("approved_runtime is required when dry_run is false")
+
     client: MongoClient[Mapping[str, object]] = MongoClient(mongo_uri)
     try:
         database = client.get_default_database()
@@ -174,17 +187,32 @@ def _build_parser() -> argparse.ArgumentParser:
             "Write meli_accounts metadata updates. Never rewrites orders/items/shipments/questions."
         ),
     )
+    parser.add_argument(
+        "--confirm-approved-runtime",
+        action="store_true",
+        help="Required with --write to confirm execution from an approved runtime context.",
+    )
     return parser
+
+
+def _validate_cli_safety(args: argparse.Namespace) -> None:
+    if not bool(args.dry_run) and not bool(args.confirm_approved_runtime):
+        raise SystemExit("--confirm-approved-runtime is required with --write")
 
 
 def main(argv: Sequence[str] | None = None) -> None:
     args = _build_parser().parse_args(argv)
+    _validate_cli_safety(args)
     mongo_uri = os.environ.get("MONGO_URI")
     if not mongo_uri:
         print("error: MONGO_URI is required", file=sys.stderr)
         sys.exit(2)
 
-    summary = populate_meli_account_timezones(mongo_uri, dry_run=bool(args.dry_run))
+    summary = populate_meli_account_timezones(
+        mongo_uri,
+        dry_run=bool(args.dry_run),
+        approved_runtime=bool(args.confirm_approved_runtime),
+    )
     print(
         "meli account timezone population "
         f"{summary['status']}: scanned={summary['scanned_count']} "
