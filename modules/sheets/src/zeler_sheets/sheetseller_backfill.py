@@ -1364,13 +1364,14 @@ def build_variation_formula_row_docs(
             continue
         if inventory_id is None:
             missing_source += 1
-            continue
+        variation = _variation_by_id(item, variation_id)
         formula_row = build_formula_row_doc(
             item,
             seller_id=seller_id,
             sku=sku,
             variation_id=variation_id,
             inventory_id=inventory_id,
+            variation=variation,
         )
         row_id = str(formula_row["_id"])
         if row_id in seen_ids:
@@ -1581,6 +1582,7 @@ def build_formula_row_doc(
     sku: str | None = None,
     variation_id: str | None = None,
     inventory_id: str | None = None,
+    variation: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     resolved_sku = sku or extract_seller_sku(item)
     if resolved_sku is None:
@@ -1596,16 +1598,49 @@ def build_formula_row_doc(
     resolved_inventory_id = _optional_string(inventory_id)
     if resolved_inventory_id is None and resolved_variation_id is None:
         resolved_inventory_id = _optional_string(item.get("inventory_id"))
-    status_history_scalars = {
-        field: value
-        for field in (
-            "status_observed_at",
-            "status_started_at",
-            "paused_since",
-            "last_status_change_at",
-        )
-        if (value := bson_ms_utc_datetime(item.get(field))) is not None
+    if resolved_variation_id is not None and variation is None:
+        variation = _variation_by_id(item, resolved_variation_id)
+    status_history_scalars = _formula_row_status_history_scalars(
+        item=item,
+        variation=variation,
+        variation_id=resolved_variation_id,
+    )
+    current = {
+        "title": item.get("title"),
+        "status": item.get("status"),
+        "available_quantity": item.get("available_quantity"),
+        **({"price": _schema_safe_numeric(item.get("price"))} if "price" in item else {}),
+        "base_price": _schema_safe_numeric(item.get("base_price")),
+        "category_id": item.get("category_id"),
+        "currency_id": currency_id,
+        "site_id": site_id,
+        "date_created": date_created,
+        "updated_at": updated_at,
+        "permalink": _optional_string(item.get("permalink")),
+        "thumbnail": _optional_string(item.get("thumbnail")),
+        "catalog_product_id": _optional_string(item.get("catalog_product_id")),
+        "listing_type_id": _optional_string(item.get("listing_type_id")),
+        **(
+            {"seller_shipping_cost": _schema_safe_numeric(item.get("seller_shipping_cost"))}
+            if "seller_shipping_cost" in item
+            else {}
+        ),
+        **_formula_row_listing_fixed_fee_fields(item),
+        **_formula_row_listing_fee_projection_fields(item),
+        **_formula_row_current_promotion_fields(item),
+        "inventory_id": resolved_inventory_id,
+        **_formula_row_listing_price_shipping_basis_fields(item),
+        "shipping_logistic_type": _shipping_logistic_type(item.get("shipping")),
+        "shipping_payer": _shipping_payer(item.get("shipping")),
+        **status_history_scalars,
     }
+    if resolved_variation_id is not None:
+        current.update(
+            _variation_safe_current_fields(
+                variation=variation,
+                inventory_id=resolved_inventory_id,
+            )
+        )
     return {
         "_id": _formula_row_id(
             seller_id=seller_id,
@@ -1620,39 +1655,75 @@ def build_formula_row_doc(
         "item_id": item_id,
         "variation_id": resolved_variation_id,
         "inventory_id": resolved_inventory_id,
-        "current": {
-            "title": item.get("title"),
-            "status": item.get("status"),
-            "available_quantity": item.get("available_quantity"),
-            **({"price": _schema_safe_numeric(item.get("price"))} if "price" in item else {}),
-            "base_price": _schema_safe_numeric(item.get("base_price")),
-            "category_id": item.get("category_id"),
-            "currency_id": currency_id,
-            "site_id": site_id,
-            "date_created": date_created,
-            "updated_at": updated_at,
-            "permalink": _optional_string(item.get("permalink")),
-            "thumbnail": _optional_string(item.get("thumbnail")),
-            "catalog_product_id": _optional_string(item.get("catalog_product_id")),
-            "listing_type_id": _optional_string(item.get("listing_type_id")),
-            **(
-                {"seller_shipping_cost": _schema_safe_numeric(item.get("seller_shipping_cost"))}
-                if "seller_shipping_cost" in item
-                else {}
-            ),
-            **_formula_row_listing_fixed_fee_fields(item),
-            **_formula_row_listing_fee_projection_fields(item),
-            **_formula_row_current_promotion_fields(item),
-            "inventory_id": resolved_inventory_id,
-            **_formula_row_listing_price_shipping_basis_fields(item),
-            "shipping_logistic_type": _shipping_logistic_type(item.get("shipping")),
-            "shipping_payer": _shipping_payer(item.get("shipping")),
-            **status_history_scalars,
-        },
+        "current": current,
         "date_created": date_created,
         "updated_at": updated_at,
         "schema_version": READ_MODEL_SCHEMA_VERSION,
     }
+
+
+def _formula_row_status_history_scalars(
+    *, item: dict[str, Any], variation: dict[str, Any] | None, variation_id: str | None
+) -> dict[str, Any]:
+    source = variation if variation_id is not None else item
+    if source is None:
+        return {}
+    return {
+        field: value
+        for field in (
+            "status_observed_at",
+            "status_started_at",
+            "paused_since",
+            "last_status_change_at",
+        )
+        if (value := bson_ms_utc_datetime(source.get(field))) is not None
+    }
+
+
+def _variation_safe_current_fields(
+    *, variation: dict[str, Any] | None, inventory_id: str | None
+) -> dict[str, Any]:
+    variation_values = variation if isinstance(variation, dict) else {}
+    shipping = variation_values.get("shipping")
+    logistic_type = _variation_logistic_type(variation_values)
+    return {
+        "status": _optional_string(variation_values.get("status")),
+        "available_quantity": variation_values.get("available_quantity")
+        if "available_quantity" in variation_values
+        else None,
+        "catalog_product_id": _optional_string(variation_values.get("catalog_product_id")),
+        "inventory_id": inventory_id,
+        "logistic_type": logistic_type,
+        "shipping_logistic_type": logistic_type,
+        "shipping_payer": _shipping_payer(shipping) if isinstance(shipping, dict) else None,
+    }
+
+
+def _variation_logistic_type(variation: dict[str, Any]) -> str | None:
+    direct = _optional_string(
+        variation.get("shipping_logistic_type") or variation.get("logistic_type")
+    )
+    if direct is not None:
+        return direct
+    shipping = variation.get("shipping")
+    if not isinstance(shipping, dict):
+        return None
+    return _shipping_logistic_type(shipping)
+
+
+def _variation_by_id(item: dict[str, Any], variation_id: str) -> dict[str, Any] | None:
+    variations = item.get("variations")
+    if not isinstance(variations, Sequence) or isinstance(variations, (str, bytes)):
+        return None
+    for variation in variations:
+        if not isinstance(variation, dict):
+            continue
+        current_variation_id = _optional_string(
+            variation.get("id") or variation.get("variation_id")
+        )
+        if current_variation_id == variation_id:
+            return variation
+    return None
 
 
 def _formula_row_current_promotion_fields(item: dict[str, Any]) -> dict[str, Any]:
@@ -1752,12 +1823,13 @@ async def _replace_formula_row_from_backfill_if_current(
                 db=db,
                 formula_row_doc=formula_row_doc,
             )
-            latest_observed_at = _formula_row_status_observed_at(latest_formula_row_doc)
-            existing_observed_at = _formula_row_status_observed_at(existing)
-            if existing_observed_at is not None and (
-                latest_observed_at is None or existing_observed_at > latest_observed_at
-            ):
-                return False
+            if _formula_row_uses_item_status_history(latest_formula_row_doc):
+                latest_observed_at = _formula_row_status_observed_at(latest_formula_row_doc)
+                existing_observed_at = _formula_row_status_observed_at(existing)
+                if existing_observed_at is not None and (
+                    latest_observed_at is None or existing_observed_at > latest_observed_at
+                ):
+                    return False
             candidate = _formula_row_with_better_live_paused_scalar_tuple(
                 planned=latest_formula_row_doc,
                 existing=existing,
@@ -1810,6 +1882,8 @@ async def _formula_row_with_latest_status_state(
 def _formula_row_with_status_history(
     formula_row_doc: dict[str, Any], status_state: dict[str, Any] | None
 ) -> dict[str, Any]:
+    if not _formula_row_uses_item_status_history(formula_row_doc):
+        return formula_row_doc
     refreshed = _formula_row_without_status_history(formula_row_doc)
     if status_state is None:
         return refreshed
@@ -1824,6 +1898,10 @@ def _formula_row_with_status_history(
         if (value := bson_ms_utc_datetime(status_state.get(field))) is not None:
             current[field] = value
     return refreshed
+
+
+def _formula_row_uses_item_status_history(formula_row_doc: dict[str, Any]) -> bool:
+    return _optional_string(formula_row_doc.get("variation_id")) is None
 
 
 def _formula_row_without_status_history(formula_row_doc: dict[str, Any]) -> dict[str, Any]:
@@ -1868,6 +1946,8 @@ def _formula_row_status_observed_at(formula_row_doc: dict[str, Any] | None) -> d
 def _formula_row_with_better_live_paused_scalar_tuple(
     *, planned: dict[str, Any], existing: dict[str, Any]
 ) -> dict[str, Any]:
+    if not _formula_row_uses_item_status_history(planned):
+        return planned
     planned_observed_at = _formula_row_status_observed_at(planned)
     if (
         planned_observed_at is None
@@ -1915,12 +1995,29 @@ def _formula_row_status_history_tuple_guard(formula_row_doc: dict[str, Any]) -> 
     current = formula_row_doc.get("current")
     current_values = current if isinstance(current, dict) else {}
     guard: dict[str, Any] = {}
+    accepts_null_as_absent = not _formula_row_uses_item_status_history(formula_row_doc)
     status = _optional_string(current_values.get("status"))
-    guard["current.status"] = status if status is not None else {"$exists": False}
+    guard["current.status"] = _formula_row_absent_tuple_guard(
+        status,
+        accepts_null_as_absent=accepts_null_as_absent,
+    )
     for field in ("status_observed_at", *STATUS_HISTORY_SCALAR_FIELDS):
         value = bson_ms_utc_datetime(current_values.get(field))
-        guard[f"current.{field}"] = value if value is not None else {"$exists": False}
+        guard[f"current.{field}"] = _formula_row_absent_tuple_guard(
+            value,
+            accepts_null_as_absent=accepts_null_as_absent,
+        )
     return guard
+
+
+def _formula_row_absent_tuple_guard(
+    value: str | datetime | None, *, accepts_null_as_absent: bool
+) -> str | datetime | None | dict[str, bool]:
+    if value is not None:
+        return value
+    if accepts_null_as_absent:
+        return None
+    return {"$exists": False}
 
 
 def _status_observed_at_guard(field: str, observed_at: datetime | None) -> dict[str, Any]:

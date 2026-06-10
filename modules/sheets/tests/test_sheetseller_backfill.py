@@ -651,19 +651,20 @@ async def test_backfill_builds_enriched_formula_rows_from_deterministic_sources(
 
     summary = await run_sheetseller_backfill(db=db, seller_id="82453304", dry_run=False)
 
-    assert summary.planned == 2
-    assert summary.updated == 2
+    assert summary.planned == 3
+    assert summary.updated == 3
     assert summary.unchanged == 0
-    assert summary.skipped_missing_source == 1
+    assert summary.skipped_missing_source == 3
     assert summary.skipped_ambiguous == 0
     assert summary.errors == 0
-    assert summary.formula_rows_with_permalink == 2
-    assert summary.formula_rows_with_thumbnail == 2
-    assert summary.formula_rows_with_catalog_product_id == 2
+    assert summary.formula_rows_with_permalink == 3
+    assert summary.formula_rows_with_thumbnail == 3
+    assert summary.formula_rows_with_catalog_product_id == 1
     assert summary.formula_rows_with_inventory_id == 2
     assert sorted(db["sheets_item_formula_rows"].documents) == [
         "82453304:ITEM-SKU:MLA1",
         "82453304:VAR-101:MLA1:101",
+        "82453304:VAR-102:MLA1:102",
     ]
     variation_row = db["sheets_item_formula_rows"].documents["82453304:VAR-101:MLA1:101"]
     assert variation_row["variation_id"] == "101"
@@ -1369,25 +1370,233 @@ async def test_backfill_writes_item_and_variation_identity_rows_idempotently() -
         items_with_sku=1,
         skipped_missing_sku=0,
         sku_index_upserts=3,
-        formula_row_upserts=1,
+        formula_row_upserts=3,
         variation_sku_rows=2,
         skipped_missing_variation_sku=1,
         skipped_ambiguous_sku=0,
-        planned=1,
-        updated=1,
+        planned=3,
+        updated=3,
         unchanged=0,
-        skipped_missing_source=3,
+        skipped_missing_source=5,
         skipped_ambiguous=0,
         errors=0,
     )
     assert second.updated == 0
-    assert second.unchanged == 1
+    assert second.unchanged == 3
     assert sorted(db["sheets_item_sku_index"].documents) == [
         "82453304:ITEM-SKU:MLA1:item",
         "82453304:VAR-101:MLA1:101",
         "82453304:VAR-102:MLA1:102",
     ]
     assert len(db["sheets_item_sku_index"].replace_calls) == 6
+
+
+@pytest.mark.asyncio
+async def test_backfill_builds_no_inventory_variation_formula_rows() -> None:
+    db = FakeDb(
+        [
+            _item_doc(
+                "MLA1",
+                variations=[
+                    {
+                        "id": 101,
+                        "seller_custom_field": "paused-sku",
+                        "status": "paused",
+                        "available_quantity": 0,
+                    }
+                ],
+            )
+        ]
+    )
+
+    summary = await run_sheetseller_backfill(db=db, seller_id="82453304", dry_run=False)
+
+    assert summary.variation_sku_rows == 1
+    assert summary.formula_row_upserts == 1
+    row = db["sheets_item_formula_rows"].documents["82453304:PAUSED-SKU:MLA1:101"]
+    assert row["inventory_id"] is None
+    assert row["current"]["inventory_id"] is None
+    assert row["current"]["status"] == "paused"
+    assert row["current"]["available_quantity"] == 0
+
+
+@pytest.mark.asyncio
+async def test_backfill_variation_rows_use_safe_fields_and_do_not_copy_item_pause() -> None:
+    item = _item_doc(
+        "MLA1",
+        inventory_id="ITEM-INV",
+        catalog_product_id="ITEM-CATALOG",
+        shipping={"logistic_type": "fulfillment", "free_shipping": True},
+        variations=[
+            {
+                "id": 101,
+                "seller_custom_field": "active-sku",
+                "inventory_id": "INV-ACTIVE",
+                "status": "active",
+                "available_quantity": 7,
+                "catalog_product_id": "CAT-ACTIVE",
+                "shipping": {"logistic_type": "cross_docking", "free_shipping": False},
+            },
+            {
+                "id": 102,
+                "seller_custom_field": "unknown-sku",
+            },
+        ],
+    )
+    item["status"] = "paused"
+    item["paused_since"] = datetime(2026, 5, 10, 8, 0, tzinfo=UTC)
+    db = FakeDb([item])
+
+    await run_sheetseller_backfill(db=db, seller_id="82453304", dry_run=False)
+
+    active = db["sheets_item_formula_rows"].documents["82453304:ACTIVE-SKU:MLA1:101"]
+    unknown = db["sheets_item_formula_rows"].documents["82453304:UNKNOWN-SKU:MLA1:102"]
+    assert active["current"]["status"] == "active"
+    assert active["current"]["available_quantity"] == 7
+    assert active["current"]["catalog_product_id"] == "CAT-ACTIVE"
+    assert active["current"]["shipping_logistic_type"] == "cross_docking"
+    assert "paused_since" not in active["current"]
+    assert unknown["current"]["status"] is None
+    assert unknown["current"]["available_quantity"] is None
+    assert unknown["current"]["catalog_product_id"] is None
+    assert unknown["current"]["shipping_logistic_type"] is None
+    assert "paused_since" not in unknown["current"]
+
+
+@pytest.mark.asyncio
+async def test_backfill_preserves_trusted_variation_pause_timestamps() -> None:
+    paused_since = datetime(2026, 5, 10, 8, 0, tzinfo=UTC)
+    item = _item_doc(
+        "MLA1",
+        variations=[
+            {
+                "id": 101,
+                "seller_custom_field": "paused-sku",
+                "status": "paused",
+                "available_quantity": 0,
+                "status_started_at": paused_since,
+                "paused_since": paused_since,
+                "last_status_change_at": paused_since,
+            }
+        ],
+    )
+    item["status"] = "active"
+    db = FakeDb([item])
+
+    summary = await run_sheetseller_backfill(db=db, seller_id="82453304", dry_run=False)
+
+    row = db["sheets_item_formula_rows"].documents["82453304:PAUSED-SKU:MLA1:101"]
+    assert summary.updated == 1
+    assert row["current"]["status"] == "paused"
+    assert row["current"]["status_started_at"] == paused_since
+    assert row["current"]["paused_since"] == paused_since
+    assert row["current"]["last_status_change_at"] == paused_since
+
+
+@pytest.mark.asyncio
+async def test_backfill_repairs_legacy_variation_rows_with_item_status_history() -> None:
+    stale_item_pause = datetime(2026, 5, 10, 8, 0, tzinfo=UTC)
+    item = _item_doc(
+        "MLA1",
+        inventory_id="ITEM-INV",
+        catalog_product_id="ITEM-CATALOG",
+        shipping={"logistic_type": "fulfillment", "free_shipping": True},
+        variations=[
+            {
+                "id": 101,
+                "seller_custom_field": "active-sku",
+                "inventory_id": "INV-ACTIVE",
+                "status": "active",
+                "available_quantity": 7,
+                "catalog_product_id": "CAT-ACTIVE",
+                "shipping": {"logistic_type": "cross_docking", "free_shipping": False},
+            }
+        ],
+    )
+    item["status"] = "paused"
+    existing_row = build_formula_row_doc(
+        item,
+        seller_id="82453304",
+        sku="active-sku",
+        variation_id="101",
+        inventory_id="INV-ACTIVE",
+    )
+    existing_row["current"].update(
+        {
+            "status": "paused",
+            "available_quantity": item["available_quantity"],
+            "catalog_product_id": "ITEM-CATALOG",
+            "shipping_logistic_type": "fulfillment",
+            "status_observed_at": stale_item_pause,
+            "status_started_at": stale_item_pause,
+            "paused_since": stale_item_pause,
+            "last_status_change_at": stale_item_pause,
+        }
+    )
+    db = FakeDb([item])
+    db["sheets_item_formula_rows"].documents[str(existing_row["_id"])] = existing_row
+
+    summary = await run_sheetseller_backfill(db=db, seller_id="82453304", dry_run=False)
+
+    row = db["sheets_item_formula_rows"].documents["82453304:ACTIVE-SKU:MLA1:101"]
+    assert summary.unchanged == 0
+    assert summary.updated == 1
+    assert row["current"]["status"] == "active"
+    assert row["current"]["available_quantity"] == 7
+    assert row["current"]["catalog_product_id"] == "CAT-ACTIVE"
+    assert row["current"]["shipping_logistic_type"] == "cross_docking"
+    assert "status_observed_at" not in row["current"]
+    assert "status_started_at" not in row["current"]
+    assert "paused_since" not in row["current"]
+    assert "last_status_change_at" not in row["current"]
+
+
+@pytest.mark.asyncio
+async def test_backfill_repairs_existing_variation_row_with_explicit_null_status() -> None:
+    item = _item_doc(
+        "MLA1",
+        inventory_id="ITEM-INV",
+        catalog_product_id="ITEM-CATALOG",
+        shipping={"logistic_type": "fulfillment", "free_shipping": True},
+        variations=[
+            {
+                "id": 101,
+                "seller_custom_field": "active-sku",
+                "inventory_id": "INV-ACTIVE",
+                "status": "active",
+                "available_quantity": 7,
+                "catalog_product_id": "CAT-ACTIVE",
+                "shipping": {"logistic_type": "cross_docking", "free_shipping": False},
+            }
+        ],
+    )
+    existing_row = build_formula_row_doc(
+        item,
+        seller_id="82453304",
+        sku="active-sku",
+        variation_id="101",
+        inventory_id="INV-ACTIVE",
+    )
+    existing_row["current"].update(
+        {
+            "status": None,
+            "available_quantity": None,
+            "catalog_product_id": None,
+            "shipping_logistic_type": None,
+        }
+    )
+    db = FakeDb([item])
+    db["sheets_item_formula_rows"].documents[str(existing_row["_id"])] = existing_row
+
+    summary = await run_sheetseller_backfill(db=db, seller_id="82453304", dry_run=False)
+
+    row = db["sheets_item_formula_rows"].documents["82453304:ACTIVE-SKU:MLA1:101"]
+    assert summary.unchanged == 0
+    assert summary.updated == 1
+    assert row["current"]["status"] == "active"
+    assert row["current"]["available_quantity"] == 7
+    assert row["current"]["catalog_product_id"] == "CAT-ACTIVE"
+    assert row["current"]["shipping_logistic_type"] == "cross_docking"
 
 
 @pytest.mark.asyncio
@@ -1407,8 +1616,8 @@ async def test_backfill_dry_run_counts_variations_without_writing() -> None:
     summary = await run_sheetseller_backfill(db=db, seller_id="82453304", dry_run=True)
 
     assert summary.sku_index_upserts == 1
-    assert summary.formula_row_upserts == 0
-    assert summary.planned == 0
+    assert summary.formula_row_upserts == 1
+    assert summary.planned == 1
     assert summary.variation_sku_rows == 1
     assert summary.skipped_missing_sku == 1
     assert summary.skipped_missing_variation_sku == 1

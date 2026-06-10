@@ -65,7 +65,8 @@ class FormulaReadModelRepository:
         skus: list[str] | tuple[str, ...] | None = None,
         item_ids: list[str] | tuple[str, ...] | None = None,
         inventory_ids: list[str] | tuple[str, ...] | None = None,
-        limit: int = 500,
+        limit: int | None = 500,
+        sort_by: str = "sku",
     ) -> list[dict[str, Any]]:
         filter_spec = _seller_item_filter(
             seller_id=seller_id,
@@ -73,9 +74,12 @@ class FormulaReadModelRepository:
             item_ids=item_ids,
             inventory_ids=inventory_ids,
         )
-        cursor = self._item_formula_rows.find(filter_spec).sort(
-            [("normalized_sku", 1), ("item_id", 1)]
+        sort_spec = (
+            [("item_id", 1), ("variation_id", 1), ("normalized_sku", 1), ("_id", 1)]
+            if sort_by == "publication"
+            else [("normalized_sku", 1), ("item_id", 1)]
         )
+        cursor = self._item_formula_rows.find(filter_spec).sort(sort_spec)
         return cast("list[dict[str, Any]]", await cursor.to_list(length=limit))
 
     async def find_orders(
