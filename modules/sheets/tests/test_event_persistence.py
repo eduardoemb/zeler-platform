@@ -1605,6 +1605,69 @@ async def test_item_event_normalizes_preserved_decimal_enrichment_before_mongo_w
 
 
 @pytest.mark.asyncio
+async def test_item_event_normalizes_preserved_listing_fee_datetime_before_mongo_write() -> None:
+    naive_synced_at = datetime(2026, 6, 9, 18, 51, 7, 716000)
+    db = FakeDb()
+    db["items"].documents["MLA1"] = {
+        "_id": "MLA1",
+        "seller_id": "82453304",
+        "title": "Previous widget",
+        "price": Decimal128("149.99"),
+        "base_price": Decimal128("159.99"),
+        "available_quantity": 7,
+        "status": "active",
+        "category_id": "MLA123",
+        "currency_id": "ARS",
+        "site_id": "MLA",
+        "listing_type_id": "gold_special",
+        "attributes": [{"id": "SELLER_SKU", "value_name": "sku-1"}],
+        "listing_fee_projection": {
+            "source": "/sites/{site}/listing_prices",
+            "site_id": "MLA",
+            "currency_id": "ARS",
+            "price": Decimal128("149.99"),
+            "listing_type_id": "gold_special",
+            "category_id": "MLA123",
+            "sale_fee_amount": Decimal128("155.99"),
+            "percentage_fee": Decimal128("12.00"),
+            "synced_at": naive_synced_at,
+        },
+        "variations": [],
+        "last_meli_sync_at": NOW,
+        "date_created": NOW,
+        "last_updated": NOW,
+        "schema_version": 2,
+    }
+    persistence = SheetsEventPersistence(db=db, clock=lambda: NOW)
+
+    await persistence.persist(
+        event_type="items.updated",
+        seller_id=82453304,
+        resource={
+            "id": "MLA1",
+            "title": "Premium widget",
+            "price": "149.99",
+            "base_price": "159.99",
+            "available_quantity": 7,
+            "status": "active",
+            "category_id": "MLA123",
+            "currency_id": "ARS",
+            "site_id": "MLA",
+            "listing_type_id": "gold_special",
+            "attributes": [{"id": "SELLER_SKU", "value_name": "sku-1"}],
+            "date_created": "2026-05-01T10:00:00+00:00",
+            "last_updated": "2026-05-30T11:00:00+00:00",
+        },
+    )
+
+    item = db["items"].documents["MLA1"]
+    row = db["sheets_item_formula_rows"].documents["82453304:SKU-1:MLA1"]
+    expected_synced_at = naive_synced_at.replace(tzinfo=UTC)
+    assert item["listing_fee_projection"]["synced_at"] == expected_synced_at
+    assert row["current"]["listing_fee_projection"]["synced_at"] == expected_synced_at
+
+
+@pytest.mark.asyncio
 async def test_item_event_clears_trusted_seller_shipping_when_basis_changes() -> None:
     db = FakeDb()
     db["items"].documents["MLA1"] = {

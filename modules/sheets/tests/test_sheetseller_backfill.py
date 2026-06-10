@@ -3464,6 +3464,67 @@ async def test_item_detail_enrichment_preserves_listing_fee_and_fixed_fee_on_403
 
 
 @pytest.mark.asyncio
+async def test_item_detail_enrichment_normalizes_preserved_listing_fee_datetime() -> None:
+    naive_synced_at = datetime(2026, 6, 9, 18, 51, 7, 716000)
+    listing_fee_projection = {
+        **_listing_fee_context(shipping_mode="me2", logistic_type="fulfillment"),
+        "source": "/sites/{site}/listing_prices",
+        "sale_fee_amount": Decimal128("155.99"),
+        "percentage_fee": Decimal128("12.00"),
+        "synced_at": naive_synced_at,
+    }
+    canonical = _item_doc(
+        "MLA1",
+        attributes=[{"id": "SELLER_SKU", "value_name": "sku-1"}],
+        currency_id="ARS",
+        listing_type_id="gold_special",
+        shipping={"mode": "me2", "logistic_type": "fulfillment", "free_shipping": False},
+    )
+    canonical["listing_fee_projection"] = listing_fee_projection
+    db = FakeDb([canonical])
+    db["meli_accounts"].documents["account-1"] = {
+        "_id": "account-1",
+        "seller_id": "82453304",
+        "site_id": "MLA",
+    }
+    detail = _item_detail("MLA1")
+    detail.update(
+        {
+            "currency_id": "ARS",
+            "listing_type_id": "gold_special",
+            "attributes": [{"id": "SELLER_SKU", "value_name": "sku-1"}],
+            "shipping": {"mode": "me2", "logistic_type": "fulfillment", "free_shipping": False},
+        }
+    )
+    listing_fee_path = (
+        "/sites/MLA/listing_prices?price=123.45&listing_type_id=gold_special"
+        "&category_id=MLA-CAT&currency_id=ARS&logistic_type=fulfillment&shipping_mode=me2"
+    )
+    gateway = FakeItemGateway(
+        {
+            "/items?ids=MLA1": [{"code": 200, "body": detail}],
+            listing_fee_path: httpx.HTTPStatusError(
+                "forbidden",
+                request=httpx.Request("GET", "https://gateway.example/listing-fee"),
+                response=httpx.Response(403),
+            ),
+        }
+    )
+
+    summary = await run_item_detail_enrichment(
+        db=db,
+        gateway=gateway,
+        seller_id="82453304",
+        dry_run=False,
+    )
+
+    persisted = db["items"].documents["MLA1"]
+    expected_synced_at = naive_synced_at.replace(tzinfo=UTC)
+    assert summary.items_updated == 1
+    assert persisted["listing_fee_projection"]["synced_at"] == expected_synced_at
+
+
+@pytest.mark.asyncio
 async def test_item_detail_enrichment_clears_stale_listing_fixed_fee_when_item_unchanged() -> None:
     stale_projection = {
         "source": "/sites/{site}/listing_prices",
