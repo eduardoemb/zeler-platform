@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from datetime import UTC, datetime, time, timedelta, tzinfo
-from decimal import Decimal, InvalidOperation
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -1241,13 +1241,15 @@ def _realized_commission_values(line: _OrderLine) -> tuple[Any, Any, Any]:
         or line.sale_fee_synced_at is None
     ):
         return NA_VALUE, NA_VALUE, NA_VALUE
-    unit_cost = line.sale_fee / line.quantity
-    percent = _commission_percent(line.sale_fee, line.unit_price)
-    return _sheet_number(percent), _sheet_number(line.sale_fee), _sheet_number(unit_cost)
+    total_commission = line.sale_fee * line.quantity
+    percent = _commission_percent_label(line.sale_fee, line.unit_price)
+    return percent, _sheet_number(total_commission), _sheet_number(line.sale_fee)
 
 
-def _commission_percent(sale_fee: Decimal, unit_price: Decimal) -> Decimal:
-    return ((sale_fee / unit_price) * Decimal("100")).quantize(Decimal("0.01"))
+def _commission_percent_label(sale_fee: Decimal, unit_price: Decimal) -> str:
+    percent = (sale_fee / unit_price) * Decimal("100")
+    rounded_percent = percent.quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+    return f"{int(rounded_percent)}%"
 
 
 def _order_meli_pack_id(order: Mapping[str, Any]) -> str:

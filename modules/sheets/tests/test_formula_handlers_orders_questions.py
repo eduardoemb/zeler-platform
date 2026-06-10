@@ -1353,14 +1353,14 @@ async def test_order_tables_render_realized_sale_fee_math_and_listing_fixed_fee_
             seller_id="seller-1",
             status="paid",
             date_created=datetime(2026, 5, 10, 8, 0, tzinfo=UTC),
-            total_amount=200,
+            total_amount=Decimal("188.44"),
             items=[
                 {
                     "sku": "sku-1",
                     "item_id": "MLA1",
                     "qty": 2,
-                    "unit_price": 100,
-                    "sale_fee": 30,
+                    "unit_price": Decimal("94.22"),
+                    "sale_fee": Decimal("13.2"),
                     "sale_fee_source": "/orders/{id}",
                     "sale_fee_synced_at": datetime(2026, 5, 10, 8, 1, tzinfo=UTC),
                 },
@@ -1433,7 +1433,7 @@ async def test_order_tables_render_realized_sale_fee_math_and_listing_fixed_fee_
         )
     )
 
-    assert result.values[0][8:11] == [30, 30, 8]
+    assert result.values[0][8:11] == ["14%", 26.4, 8]
     assert result.values[1][8:11] == ["NA", "NA", 10]
 
 
@@ -1470,11 +1470,11 @@ async def test_ordenes_keeps_full_commission_percent_for_multi_unit_order_item()
         )
     )
 
-    assert result.values[0][8:10] == [15, 15]
+    assert result.values[0][8:10] == ["15%", 30]
 
 
 @pytest.mark.asyncio
-async def test_ordenes_caps_commission_percent_to_two_decimal_places() -> None:
+async def test_ordenes_formats_decimal_commission_percent_as_whole_percentage() -> None:
     db = FakeDb()
     db["orders"].documents = {
         "order-1": _order_doc(
@@ -1482,15 +1482,15 @@ async def test_ordenes_caps_commission_percent_to_two_decimal_places() -> None:
             seller_id="seller-1",
             status="paid",
             date_created=datetime(2026, 6, 1, 8, 0, tzinfo=UTC),
-            total_amount=60,
+            total_amount=Decimal("94.22"),
             items=[
                 {
                     "sku": "sku-1",
                     "item_id": "MLM1",
                     "title": "Decimal commission item",
                     "quantity": 1,
-                    "unit_price": 60,
-                    "sale_fee": Decimal("10.12345"),
+                    "unit_price": Decimal("94.22"),
+                    "sale_fee": Decimal("13.2"),
                     "sale_fee_source": "/orders/{id}",
                     "sale_fee_synced_at": datetime(2026, 6, 1, 8, 1, tzinfo=UTC),
                 }
@@ -1506,7 +1506,7 @@ async def test_ordenes_caps_commission_percent_to_two_decimal_places() -> None:
         )
     )
 
-    assert result.values[0][8] == 16.87
+    assert result.values[0][8] == "14%"
 
 
 @pytest.mark.asyncio
@@ -1552,7 +1552,7 @@ async def test_ordenes_repeats_full_commission_percent_for_repeated_listing_rows
         )
     )
 
-    assert [row[8] for row in result.values] == [15, 15]
+    assert [row[8:10] for row in result.values] == [["15%", 30], ["15%", 45]]
 
 
 @pytest.mark.asyncio
