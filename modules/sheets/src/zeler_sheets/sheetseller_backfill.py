@@ -63,6 +63,7 @@ LISTING_PRICE_FIXED_FEE_SOURCE = "/sites/{site}/listing_prices"
 LISTING_FEE_PROJECTION_SOURCE = LISTING_PRICE_FIXED_FEE_SOURCE
 SELLER_SHIPPING_COST_SOURCE = "/users/{seller_id}/shipping_options/free"
 SALE_PRICE_CONTEXT = "channel_marketplace"
+ITEM_ID_FILTER_SOURCES = frozenset({"items", "items-enrich"})
 
 
 def _should_preserve_listing_price_lookup_failure(failure: EnrichmentFailure) -> bool:
@@ -171,6 +172,7 @@ class ItemDetailEnrichmentSummary:
     items_planned: int
     items_updated: int
     unchanged: int
+    item_details_stale_unavailable: int = 0
     shipping_options_requested: int = 0
     seller_shipping_costs_enriched: int = 0
     seller_shipping_costs_unavailable: int = 0
@@ -200,6 +202,12 @@ class VariationDetailEnrichmentStats:
     enriched: int = 0
     unavailable: int = 0
     failed: int = 0
+
+
+@dataclass(frozen=True)
+class ItemDetailBatchValidation:
+    details_by_id: dict[str, dict[str, Any]]
+    stale_item_ids: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True)
@@ -241,6 +249,17 @@ def build_arg_parser() -> argparse.ArgumentParser:
         description="Backfill Sheetseller formula read models from canonical items."
     )
     parser.add_argument("--seller-id", required=True, help="Seller id to backfill.")
+    parser.add_argument(
+        "--item-id",
+        action="append",
+        dest="item_ids",
+        type=_item_id_arg,
+        default=None,
+        help=(
+            "Limit items/items-enrich to one or more seller-scoped publication IDs. "
+            "Repeat the flag or pass comma-separated IDs."
+        ),
+    )
     parser.add_argument(
         "--source",
         choices=(
@@ -462,6 +481,7 @@ async def run_item_detail_enrichment(
     write_plans: list[tuple[dict[str, Any], dict[str, Any], bool, bool, bool]] = []
     batches_fetched = 0
     details_returned = 0
+    item_details_stale_unavailable = 0
     items_validated = 0
     unchanged = 0
     shipping_options_requested = 0
@@ -491,13 +511,20 @@ async def run_item_detail_enrichment(
         batches_fetched += 1
         raw_details = _extract_item_detail_entries(response)
         details_returned += len(raw_details)
-        by_id = _validated_detail_entries_by_id(
-            raw_details, expected_ids=set(batch), seller_id=seller_id
+        validation = _validated_detail_entries_by_id(
+            raw_details,
+            expected_ids=set(batch),
+            expected_order=batch,
+            seller_id=seller_id,
         )
-        if set(by_id) != set(batch):
+        by_id = validation.details_by_id
+        item_details_stale_unavailable += len(validation.stale_item_ids)
+        if set(by_id) | set(validation.stale_item_ids) != set(batch):
             msg = "item detail batch did not return every requested item"
             raise RuntimeError(msg)
         for item_id in batch:
+            if item_id in validation.stale_item_ids:
+                continue
             detail = dict(by_id[item_id])
             variation_detail_stats = await _enrich_missing_variation_detail_skus(
                 gateway=gateway,
@@ -940,6 +967,7 @@ async def run_item_detail_enrichment(
         items_read=len(existing_items),
         batches_fetched=batches_fetched,
         item_details_returned=details_returned,
+        item_details_stale_unavailable=item_details_stale_unavailable,
         items_validated=items_validated,
         items_planned=len(write_plans),
         items_updated=items_updated,
@@ -1806,11 +1834,37 @@ async def _load_seller_items(
     if normalized_item_ids:
         filter_spec["_id"] = {"$in": normalized_item_ids}
     cursor = db[ITEMS_COLLECTION].find(filter_spec).sort([("_id", 1)])
-    return cast("list[dict[str, Any]]", await cursor.to_list(length=None))
+    items = cast("list[dict[str, Any]]", await cursor.to_list(length=None))
+    if normalized_item_ids:
+        found_item_ids = {_item_id(item) for item in items}
+        missing_count = sum(1 for item_id in normalized_item_ids if item_id not in found_item_ids)
+        if missing_count:
+            raise ValueError(_missing_item_id_filter_message(missing_count))
+    return items
 
 
 def _unique_non_blank_strings(values: Sequence[str]) -> list[str]:
     return list(dict.fromkeys(normalized for value in values if (normalized := str(value).strip())))
+
+
+def parse_item_id_filters(values: Sequence[str] | None, *, source: str | None = None) -> list[str]:
+    item_ids: list[str] = []
+    for value in values or ():
+        for raw_item_id in str(value).split(","):
+            item_id = raw_item_id.strip()
+            if not item_id:
+                raise SystemExit("--item-id values must not be blank")
+            item_ids.append(item_id)
+    normalized_item_ids = _unique_non_blank_strings(item_ids)
+    if normalized_item_ids and source is not None and source not in ITEM_ID_FILTER_SOURCES:
+        raise SystemExit("--item-id is only supported for --source items or items-enrich")
+    return normalized_item_ids
+
+
+def _missing_item_id_filter_message(missing_count: int) -> str:
+    noun = "value" if missing_count == 1 else "values"
+    verb = "was" if missing_count == 1 else "were"
+    return f"{missing_count} requested --item-id {noun} {verb} not found for seller"
 
 
 async def _load_seller_site_id(*, db: Any, seller_id: str) -> str | None:
@@ -2116,19 +2170,35 @@ def _extract_item_detail_entries(response: Any) -> list[dict[str, Any]]:
 
 
 def _validated_detail_entries_by_id(
-    entries: Sequence[dict[str, Any]], *, expected_ids: set[str], seller_id: str
-) -> dict[str, dict[str, Any]]:
+    entries: Sequence[dict[str, Any]],
+    *,
+    expected_ids: set[str],
+    seller_id: str,
+    expected_order: Sequence[str] = (),
+) -> ItemDetailBatchValidation:
     by_id: dict[str, dict[str, Any]] = {}
-    for entry in entries:
+    stale_item_ids: set[str] = set()
+    for index, entry in enumerate(entries):
         status_code = entry.get("code")
+        body = entry.get("body", entry)
+        body_values = body if isinstance(body, dict) else {}
+        item_id = _optional_string(body_values.get("id") or body_values.get("_id"))
+        if item_id is None:
+            item_id = _optional_string(entry.get("id") or entry.get("_id"))
+        if status_code is not None and int(status_code) == 404:
+            if item_id is None and index < len(expected_order):
+                item_id = expected_order[index]
+            if item_id is None or item_id not in expected_ids:
+                msg = "item detail response contained an unexpected item"
+                raise RuntimeError(msg)
+            stale_item_ids.add(item_id)
+            continue
         if status_code is not None and int(status_code) != 200:
             msg = f"item detail fetch failed with status {int(status_code)}"
             raise RuntimeError(msg)
-        body = entry.get("body", entry)
         if not isinstance(body, dict):
             msg = "item detail body must be an object"
             raise RuntimeError(msg)
-        item_id = _optional_string(body.get("id") or body.get("_id"))
         if item_id is None or item_id not in expected_ids:
             msg = "item detail response contained an unexpected item"
             raise RuntimeError(msg)
@@ -2137,7 +2207,7 @@ def _validated_detail_entries_by_id(
             msg = "item detail response seller did not match requested seller"
             raise RuntimeError(msg)
         by_id[item_id] = body
-    return by_id
+    return ItemDetailBatchValidation(details_by_id=by_id, stale_item_ids=frozenset(stale_item_ids))
 
 
 async def _enrich_missing_variation_detail_skus(
@@ -3544,6 +3614,7 @@ async def _run_cli(args: argparse.Namespace) -> BackfillCliSummary:
 
     mongo_uri = os.environ.get("MONGO_URI")
     mongo_db_name = os.environ.get("MONGO_DB")
+    item_ids = parse_item_id_filters(args.item_ids, source=str(args.source))
     if not mongo_uri:
         raise SystemExit("MONGO_URI is required")
     if not mongo_db_name:
@@ -3590,6 +3661,7 @@ async def _run_cli(args: argparse.Namespace) -> BackfillCliSummary:
                 dry_run=args.dry_run,
                 sale_price_enabled=bool(args.sale_price_enabled),
                 listing_fixed_fee_enabled=bool(args.listing_fixed_fee_enabled),
+                item_ids=item_ids,
             )
         if args.source == "shipments-costs":
             from google.cloud import kms_v1
@@ -3614,7 +3686,10 @@ async def _run_cli(args: argparse.Namespace) -> BackfillCliSummary:
                 date_to=args.date_to,
             )
         return await run_sheetseller_backfill(
-            db=client[mongo_db_name], seller_id=args.seller_id, dry_run=args.dry_run
+            db=client[mongo_db_name],
+            seller_id=args.seller_id,
+            dry_run=args.dry_run,
+            item_ids=item_ids,
         )
     finally:
         client.close()
@@ -3624,6 +3699,15 @@ def _require_order_dates(args: argparse.Namespace) -> tuple[str, str]:
     if not args.date_from or not args.date_to:
         raise SystemExit("--date-from and --date-to are required for order-scoped sources")
     return str(args.date_from), str(args.date_to)
+
+
+def _item_id_arg(value: str) -> str:
+    item_id_filter = str(value).strip()
+    if not item_id_filter:
+        raise argparse.ArgumentTypeError("must not be blank")
+    if any(not item_id.strip() for item_id in item_id_filter.split(",")):
+        raise argparse.ArgumentTypeError("comma-separated values must not contain blanks")
+    return item_id_filter
 
 
 def _positive_int_arg(value: str) -> int:

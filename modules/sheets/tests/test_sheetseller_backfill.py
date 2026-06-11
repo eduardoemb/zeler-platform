@@ -30,7 +30,9 @@ from zeler_sheets.sheetseller_backfill import (
     extract_safe_order_item_identity,
     extract_seller_sku,
     listing_fee_projection_path,
+    main,
     merge_order_items_identity,
+    parse_item_id_filters,
     project_listing_fee_projection,
     project_listing_price_fixed_fee_projection,
     project_sale_price_projection,
@@ -240,6 +242,10 @@ def _matches(doc: dict[str, Any], filter_spec: dict[str, Any]) -> bool:
                 if bool(value["$exists"]) is not exists:
                     return False
                 continue
+            if "$in" in value:
+                if actual not in value["$in"]:
+                    return False
+                continue
             if "$gte" in value and not _safe_gte(actual, value["$gte"]):
                 return False
             if "$lt" in value and not _safe_lt(actual, value["$lt"]):
@@ -391,8 +397,51 @@ def test_cli_requires_seller_id_and_defaults_to_dry_run() -> None:
     )
     assert shipment_costs_args.source == "shipments-costs"
     assert shipment_costs_args.limit == 25
+    item_filter_args = parser.parse_args(
+        [
+            "--seller-id",
+            "82453304",
+            "--source",
+            "items-enrich",
+            "--item-id",
+            "MLA1, MLA2",
+            "--item-id",
+            "MLA3",
+        ]
+    )
+    assert parse_item_id_filters(item_filter_args.item_ids) == ["MLA1", "MLA2", "MLA3"]
+    assert parse_item_id_filters(item_filter_args.item_ids, source="items") == [
+        "MLA1",
+        "MLA2",
+        "MLA3",
+    ]
     with pytest.raises(SystemExit):
         parser.parse_args([])
+    with pytest.raises(SystemExit):
+        parser.parse_args(["--seller-id", "82453304", "--item-id", ""])
+    with pytest.raises(SystemExit):
+        parser.parse_args(["--seller-id", "82453304", "--item-id", "MLA1,,MLA2"])
+    with pytest.raises(
+        SystemExit, match="--item-id is only supported for --source items or items-enrich"
+    ):
+        parse_item_id_filters(["MLA1"], source="shipments-costs")
+
+
+def test_cli_rejects_item_id_for_shipments_costs_before_runtime_work() -> None:
+    with pytest.raises(
+        SystemExit, match="--item-id is only supported for --source items or items-enrich"
+    ):
+        main(
+            [
+                "--seller-id",
+                "82453304",
+                "--source",
+                "shipments-costs",
+                "--item-id",
+                "MLA1",
+                "--write",
+            ]
+        )
 
 
 def test_build_formula_row_doc_includes_fixed_fee_basis_currency_and_site() -> None:
@@ -1237,6 +1286,50 @@ async def test_backfill_dry_run_reads_seller_items_and_reports_counts_without_wr
 
 
 @pytest.mark.asyncio
+async def test_backfill_item_id_filter_limits_items_without_processing_whole_seller() -> None:
+    db = FakeDb(
+        [
+            _item_doc("MLA1", attributes=[{"id": "SELLER_SKU", "value_name": "sku-1"}]),
+            _item_doc("MLA2", attributes=[{"id": "SELLER_SKU", "value_name": "sku-2"}]),
+            _item_doc("MLA3", attributes=[{"id": "SELLER_SKU", "value_name": "sku-3"}]),
+            _item_doc("MLB1", seller_id="999", attributes=[{"id": "SELLER_SKU", "value": "other"}]),
+        ]
+    )
+
+    summary = await run_sheetseller_backfill(
+        db=db,
+        seller_id="82453304",
+        item_ids=["MLA2"],
+        dry_run=False,
+    )
+
+    assert summary.items_read == 1
+    assert summary.items_with_sku == 1
+    assert summary.updated == 1
+    assert db["items"].find_filters == [{"seller_id": "82453304", "_id": {"$in": ["MLA2"]}}]
+    assert sorted(db["sheets_item_formula_rows"].documents) == ["82453304:SKU-2:MLA2"]
+
+
+@pytest.mark.asyncio
+async def test_backfill_item_id_filter_fails_when_requested_items_are_missing() -> None:
+    db = FakeDb([_item_doc("MLA1", attributes=[{"id": "SELLER_SKU", "value_name": "sku-1"}])])
+
+    with pytest.raises(ValueError, match="1 requested --item-id value was not found for seller"):
+        await run_sheetseller_backfill(
+            db=db,
+            seller_id="82453304",
+            item_ids=["MLA1", "MLA404"],
+            dry_run=False,
+        )
+
+    assert db["items"].find_filters == [
+        {"seller_id": "82453304", "_id": {"$in": ["MLA1", "MLA404"]}}
+    ]
+    assert db["sheets_item_sku_index"].replace_calls == []
+    assert db["sheets_item_formula_rows"].replace_calls == []
+
+
+@pytest.mark.asyncio
 async def test_backfill_write_mode_upserts_both_read_models_and_is_idempotent() -> None:
     db = FakeDb(
         [
@@ -1799,6 +1892,170 @@ async def test_item_detail_enrichment_fetches_canonical_ids_and_writes_formula_f
     assert stored["inventory_id"] == "INV-ITEM-1"
     assert stored["listing_type_id"] == "gold_special"
     assert stored["schema_version"] == 2
+
+
+@pytest.mark.asyncio
+async def test_item_detail_enrichment_continues_after_stale_item_detail_404() -> None:
+    db = FakeDb(
+        [
+            _item_doc("MLA1", attributes=[{"id": "SELLER_SKU", "value_name": "sku-1"}]),
+            _item_doc("MLA2", attributes=[{"id": "SELLER_SKU", "value_name": "stale-sku"}]),
+            _item_doc("MLA3", attributes=[{"id": "SELLER_SKU", "value_name": "sku-3"}]),
+        ]
+    )
+    gateway = FakeItemGateway(
+        {
+            "/items?ids=MLA1,MLA2,MLA3": [
+                {"code": 200, "body": _item_detail("MLA1")},
+                {"code": 404, "body": {"id": "MLA2", "message": "not_found"}},
+                {"code": 200, "body": _item_detail("MLA3")},
+            ],
+        }
+    )
+
+    summary = await run_item_detail_enrichment(
+        db=db,
+        gateway=gateway,
+        seller_id="82453304",
+        dry_run=False,
+    )
+
+    assert summary.items_read == 3
+    assert summary.item_details_returned == 3
+    assert summary.items_validated == 2
+    assert summary.items_updated == 2
+    assert summary.as_dict()["item_details_stale_unavailable"] == 1
+    assert "not_found" not in str(summary.as_dict())
+    assert [call[0]["_id"] for call in db["items"].update_calls] == ["MLA1", "MLA3"]
+    assert gateway.calls == [("82453304", "/items?ids=MLA1,MLA2,MLA3")]
+
+
+@pytest.mark.asyncio
+async def test_item_detail_enrichment_continues_after_bodyless_stale_item_detail_404() -> None:
+    db = FakeDb(
+        [
+            _item_doc("MLA1", attributes=[{"id": "SELLER_SKU", "value_name": "sku-1"}]),
+            _item_doc("MLA2", attributes=[{"id": "SELLER_SKU", "value_name": "stale-sku"}]),
+            _item_doc("MLA3", attributes=[{"id": "SELLER_SKU", "value_name": "sku-3"}]),
+        ]
+    )
+    gateway = FakeItemGateway(
+        {
+            "/items?ids=MLA1,MLA2,MLA3": [
+                {"code": 200, "body": _item_detail("MLA1")},
+                {"code": 404},
+                {"code": 200, "body": _item_detail("MLA3")},
+            ],
+        }
+    )
+
+    summary = await run_item_detail_enrichment(
+        db=db,
+        gateway=gateway,
+        seller_id="82453304",
+        dry_run=False,
+    )
+
+    assert summary.items_read == 3
+    assert summary.item_details_returned == 3
+    assert summary.items_validated == 2
+    assert summary.items_updated == 2
+    assert summary.as_dict()["item_details_stale_unavailable"] == 1
+    assert [call[0]["_id"] for call in db["items"].update_calls] == ["MLA1", "MLA3"]
+    assert sorted(db["items"].documents) == ["MLA1", "MLA2", "MLA3"]
+    assert db["items"].documents["MLA2"]["title"] == "Title MLA2"
+    assert gateway.calls == [("82453304", "/items?ids=MLA1,MLA2,MLA3")]
+
+
+@pytest.mark.asyncio
+async def test_item_detail_enrichment_rejects_200_item_detail_without_id() -> None:
+    db = FakeDb(
+        [
+            _item_doc("MLA1", attributes=[{"id": "SELLER_SKU", "value_name": "sku-1"}]),
+            _item_doc("MLA2", attributes=[{"id": "SELLER_SKU", "value_name": "sku-2"}]),
+            _item_doc("MLA3", attributes=[{"id": "SELLER_SKU", "value_name": "sku-3"}]),
+        ]
+    )
+    malformed_detail = _item_detail("MLA2")
+    malformed_detail.pop("id")
+    malformed_detail.pop("_id", None)
+    gateway = FakeItemGateway(
+        {
+            "/items?ids=MLA1,MLA2,MLA3": [
+                {"code": 200, "body": _item_detail("MLA1")},
+                {"code": 200, "body": malformed_detail},
+                {"code": 200, "body": _item_detail("MLA3")},
+            ],
+        }
+    )
+
+    with pytest.raises(RuntimeError, match="item detail response contained an unexpected item"):
+        await run_item_detail_enrichment(
+            db=db,
+            gateway=gateway,
+            seller_id="82453304",
+            dry_run=False,
+        )
+
+    assert db["items"].update_calls == []
+    assert gateway.calls == [("82453304", "/items?ids=MLA1,MLA2,MLA3")]
+
+
+@pytest.mark.asyncio
+async def test_item_detail_enrichment_item_id_filter_fetches_only_requested_items() -> None:
+    db = FakeDb(
+        [
+            _item_doc("MLA1", attributes=[{"id": "SELLER_SKU", "value_name": "sku-1"}]),
+            _item_doc("MLA2", attributes=[{"id": "SELLER_SKU", "value_name": "sku-2"}]),
+            _item_doc("MLA3", attributes=[{"id": "SELLER_SKU", "value_name": "sku-3"}]),
+        ]
+    )
+    gateway = FakeItemGateway(
+        {
+            "/items?ids=MLA1,MLA3": [
+                {"code": 200, "body": _item_detail("MLA1")},
+                {"code": 200, "body": _item_detail("MLA3")},
+            ]
+        }
+    )
+
+    summary = await run_item_detail_enrichment(
+        db=db,
+        gateway=gateway,
+        seller_id="82453304",
+        item_ids=["MLA3", "MLA1", "MLA3"],
+        dry_run=True,
+    )
+
+    assert summary.items_read == 2
+    assert summary.items_validated == 2
+    assert summary.items_planned == 2
+    assert db["items"].find_filters == [{"seller_id": "82453304", "_id": {"$in": ["MLA3", "MLA1"]}}]
+    assert gateway.calls == [("82453304", "/items?ids=MLA1,MLA3")]
+    assert db["items"].update_calls == []
+
+
+@pytest.mark.asyncio
+async def test_item_detail_enrichment_item_id_filter_fails_when_requested_items_are_missing() -> (
+    None
+):
+    db = FakeDb([_item_doc("MLA1", attributes=[{"id": "SELLER_SKU", "value_name": "sku-1"}])])
+    gateway = FakeItemGateway({})
+
+    with pytest.raises(ValueError, match="1 requested --item-id value was not found for seller"):
+        await run_item_detail_enrichment(
+            db=db,
+            gateway=gateway,
+            seller_id="82453304",
+            item_ids=["MLA1", "MLA404"],
+            dry_run=False,
+        )
+
+    assert db["items"].find_filters == [
+        {"seller_id": "82453304", "_id": {"$in": ["MLA1", "MLA404"]}}
+    ]
+    assert gateway.calls == []
+    assert db["items"].update_calls == []
 
 
 @pytest.mark.asyncio
@@ -3931,6 +4188,7 @@ async def test_item_detail_enrichment_summary_is_sanitized_and_useful() -> None:
         "items_read": 1,
         "batches_fetched": 1,
         "item_details_returned": 1,
+        "item_details_stale_unavailable": 0,
         "items_validated": 1,
         "items_planned": 1,
         "items_updated": 1,
