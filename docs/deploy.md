@@ -115,20 +115,35 @@ docker compose version
 
 **Important**: Always use Cloud Build. Never `docker build` locally on Mac.
 
+Use a temporary Cloud Build config file. Do **not** combine `--tag` with
+`--config`, and do **not** rely on `--config=-`; recent `gcloud` versions reject
+that combination or treat `-` as a literal file path. The Docker image tag lives
+in the Cloud Build YAML (`docker build -t ...` plus `images: [...]`).
+
 ```bash
-AR=us-central1-docker.pkg.dev/zeler-platform-dev/zeler-platform
+PROJECT=zeler-platform-dev
+AR=us-central1-docker.pkg.dev/${PROJECT}/zeler-platform
 TAG=rollout-v1
 
 build() {
-  local svc=$1 dockerfile=$2
-  gcloud builds submit \
-    --tag "$AR/$svc:$TAG" \
-    --config=- <<EOF
+  local svc=$1 dockerfile=$2 image cfg status
+  image="$AR/$svc:$TAG"
+  cfg=$(mktemp "${TMPDIR:-/tmp}/zeler-cloudbuild-${svc}.XXXXXX.yaml")
+
+  cat > "$cfg" <<EOF
 steps:
 - name: gcr.io/cloud-builders/docker
-  args: ['build', '-f', '$dockerfile', '-t', '$AR/$svc:$TAG', '.']
-images: ['$AR/$svc:$TAG']
+  args: ['build', '-f', '$dockerfile', '-t', '$image', '.']
+images: ['$image']
 EOF
+
+  gcloud builds submit \
+    --project "$PROJECT" \
+    --config "$cfg" \
+    .
+  status=$?
+  rm -f "$cfg"
+  return "$status"
 }
 
 # Sequential (add & after each to parallelize if build quota allows)
@@ -168,7 +183,7 @@ echo "All builds complete"
 gcloud artifacts docker images list \
   us-central1-docker.pkg.dev/zeler-platform-dev/zeler-platform \
   --project=$PROJECT
-# Expect 10 images all tagged rollout-v1
+# Expect the selected images to include the tag in $TAG.
 ```
 
 ---
