@@ -215,6 +215,25 @@ class EnrichmentGatewayClient(FakeGatewayClient):
         raise AssertionError(path)
 
 
+class PriceWebhookGatewayClient(FakeGatewayClient):
+    async def fetch_resource(self, *, seller_id: int, path: str) -> dict[str, Any]:
+        self.calls.append((seller_id, path))
+        if path != "/items/MLA123":
+            raise AssertionError(path)
+        return {
+            "id": "MLA123",
+            "title": "Canonical price widget",
+            "status": "active",
+            "price": "199.99",
+            "base_price": "249.99",
+            "available_quantity": 3,
+            "category_id": "MLA123",
+            "attributes": [{"id": "SELLER_SKU", "value_name": "sku-123"}],
+            "date_created": "2026-04-20T12:30:00Z",
+            "last_updated": "2026-04-25T12:30:00Z",
+        }
+
+
 class FakeSheetsClient:
     def __init__(self) -> None:
         self.rows: list[tuple[str, str, str, list[str], str]] = []
@@ -358,6 +377,63 @@ async def test_item_event_enrichment_wiring_refreshes_formula_rows_when_enabled(
     formula_row = db["sheets_item_formula_rows"].docs[0]
     assert formula_row["current"]["seller_shipping_cost"].to_decimal().to_eng_string() == "83.25"
     assert idempotency.marked == ["items:/items/MLA123:event-1"]
+
+
+@pytest.mark.asyncio
+async def test_item_price_updated_fetches_canonical_item_and_preserves_idempotency_key() -> None:
+    gateway = PriceWebhookGatewayClient()
+    sheets = FakeSheetsClient()
+    idempotency = FakeIdempotency()
+    db = FakeDb(export=None)
+    handler = SheetsEventHandler(
+        db=db,
+        gateway_client=gateway,
+        sheets_client=sheets,
+        idempotency_store=idempotency,
+    )
+
+    result = await handler.handle(
+        SheetsEvent(
+            event_id="event-price-1",
+            event_type="items.price_updated",
+            seller_id=123456789,
+            resource="/items/MLA123/prices",
+            idempotency_key="items_prices:/items/MLA123/prices:event-price-1",
+        )
+    )
+
+    assert result == "no_export"
+    assert gateway.calls == [(123456789, "/items/MLA123")]
+    assert db["items"].docs[0]["price"].to_decimal().to_eng_string() == "199.99"
+    assert (
+        db["sheets_item_formula_rows"].docs[0]["current"]["price"].to_decimal().to_eng_string()
+        == "199.99"
+    )
+    assert idempotency.marked == ["items_prices:/items/MLA123/prices:event-price-1"]
+
+
+@pytest.mark.asyncio
+async def test_item_price_updated_rejects_malformed_price_resource_before_fetch() -> None:
+    gateway = PriceWebhookGatewayClient()
+    handler = SheetsEventHandler(
+        db=FakeDb(export=None),
+        gateway_client=gateway,
+        sheets_client=FakeSheetsClient(),
+        idempotency_store=FakeIdempotency(),
+    )
+
+    with pytest.raises(ValueError, match="items.price_updated resource must be /items/{id}/prices"):
+        await handler.handle(
+            SheetsEvent(
+                event_id="event-price-1",
+                event_type="items.price_updated",
+                seller_id=123456789,
+                resource="/items/MLA123/price_history",
+                idempotency_key="items_prices:/items/MLA123/price_history:event-price-1",
+            )
+        )
+
+    assert gateway.calls == []
 
 
 @pytest.mark.asyncio

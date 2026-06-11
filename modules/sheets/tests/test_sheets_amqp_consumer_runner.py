@@ -7,12 +7,14 @@ from typing import Any
 import aio_pika
 import pytest
 
+from zeler_platform_core.runtime.manifest import validate_manifest
 from zeler_platform_core.runtime.retry_delay import RETRY_ATTEMPT_HEADER
 from zeler_sheets import consumer
 from zeler_sheets.consumer import (
     SHEETS_EVENTS_DLQ,
     SHEETS_EVENTS_DLX,
     SHEETS_EVENTS_QUEUE,
+    SHEETS_REPLAY_EXCHANGE,
     SheetsAmqpConsumerRunner,
     SheetsEvent,
     _sheets_event_from_message,
@@ -90,6 +92,7 @@ async def test_sheets_runner_declares_queue_with_dlx_and_binds_manifest_routing_
     assert channel.qos == [10]
     assert channel.declared_exchanges == [
         ("meli.events", runner.exchange_type_topic, True),
+        (SHEETS_REPLAY_EXCHANGE, runner.exchange_type_topic, True),
         (SHEETS_EVENTS_DLX, aio_pika.ExchangeType.DIRECT, True),
     ]
     assert channel.declared_queues == [
@@ -111,13 +114,25 @@ async def test_sheets_runner_declares_queue_with_dlx_and_binds_manifest_routing_
     assert channel.queues[SHEETS_EVENTS_DLQ].bindings == [
         (channel.exchanges[SHEETS_EVENTS_DLX], SHEETS_EVENTS_DLQ)
     ]
-    assert [routing_key for _, routing_key in channel.queues[SHEETS_EVENTS_QUEUE].bindings] == [
-        "items.*",
-        "orders.*",
-        "shipments.*",
+    assert channel.queues[SHEETS_EVENTS_QUEUE].bindings == [
+        (channel.exchanges["meli.events"], "items.*"),
+        (channel.exchanges[SHEETS_REPLAY_EXCHANGE], "items.*"),
+        (channel.exchanges["meli.events"], "orders.*"),
+        (channel.exchanges[SHEETS_REPLAY_EXCHANGE], "orders.*"),
+        (channel.exchanges["meli.events"], "shipments.*"),
+        (channel.exchanges[SHEETS_REPLAY_EXCHANGE], "shipments.*"),
+        (channel.exchanges["meli.events"], "questions.*"),
+        (channel.exchanges[SHEETS_REPLAY_EXCHANGE], "questions.*"),
     ]
     assert channel.queues[SHEETS_EVENTS_QUEUE].consumer.__self__ is runner
     assert channel.queues[SHEETS_EVENTS_QUEUE].consumer.__func__ is runner.handle_message.__func__
+
+
+def test_sheets_manifest_subscribes_to_questions_and_allows_question_fetch_scope() -> None:
+    manifest = validate_manifest("modules/sheets/manifest.yaml")
+
+    assert "questions.*" in manifest.routing_keys
+    assert "GET /questions/*" in manifest.allowed_meli_scopes
 
 
 @pytest.mark.asyncio

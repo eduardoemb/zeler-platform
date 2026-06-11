@@ -10,7 +10,14 @@ from typing import Any, cast
 from bson.decimal128 import Decimal128
 from pydantic import ValidationError
 
-from zeler_platform_core.models import Item, ItemStatusState, ItemStatusTransition, Order, Shipment
+from zeler_platform_core.models import (
+    Item,
+    ItemStatusState,
+    ItemStatusTransition,
+    Order,
+    Question,
+    Shipment,
+)
 from zeler_platform_core.models.base import current_schema_version
 from zeler_sheets.enrichment import (
     basis_hash,
@@ -65,17 +72,121 @@ class SheetsEventPersistence:
             return
         if event_type.startswith("shipments."):
             await self._persist_shipment(seller_id=str(seller_id), resource=resource)
+            return
+        if event_type.startswith("questions."):
+            await self._persist_question(seller_id=str(seller_id), resource=resource)
 
     async def _persist_item(self, *, seller_id: str, resource: dict[str, Any]) -> None:
         observed_at = require_bson_ms_utc_datetime(self._clock())
         document = _canonical_item_document(resource, seller_id=seller_id, synced_at=observed_at)
+        present_freshness_fields = _item_present_freshness_fields(resource)
         existing_item = await self._db["items"].find_one(
             {"_id": str(document["_id"]), "seller_id": seller_id}
         )
+        extra_freshness_conditions = _item_sync_fallback_freshness_conditions(
+            cast("dict[str, Any] | None", existing_item),
+            document,
+            present_freshness_fields=present_freshness_fields,
+        )
+        if existing_item is not None and not _resource_freshness_allows_write(
+            existing_item,
+            document,
+            freshness_fields=("last_updated",),
+            present_freshness_fields=present_freshness_fields,
+            extra_freshness_conditions=extra_freshness_conditions,
+        ):
+            return
         document = _item_with_preserved_enrichment(
             document,
             cast("dict[str, Any] | None", existing_item),
         )
+        if existing_item is not None and await self._legacy_status_history_blocks_item_replace(
+            cast("dict[str, Any]", existing_item),
+            document,
+            seller_id=seller_id,
+            observed_at=observed_at,
+        ):
+            await self._persist_legacy_item_with_status_observation_guard(
+                document,
+                seller_id=seller_id,
+                observed_at=observed_at,
+                present_freshness_fields=present_freshness_fields,
+            )
+            return
+
+        item_written = await _replace_resource_if_fresh(
+            self._db["items"],
+            document,
+            seller_id=seller_id,
+            freshness_fields=("last_updated",),
+            present_freshness_fields=present_freshness_fields,
+            extra_freshness_conditions=extra_freshness_conditions,
+        )
+        if not item_written:
+            return
+
+        accepted_item = await self._current_item_if_snapshot_not_superseded(
+            document,
+            seller_id=seller_id,
+            present_freshness_fields=present_freshness_fields,
+        )
+        if accepted_item is None:
+            return
+
+        latest_state = await self._record_status_side_effects_for_accepted_item(
+            accepted_item,
+            seller_id=seller_id,
+            observed_at=observed_at,
+        )
+
+        if latest_state is not None:
+            await self._reconcile_item_status_fields(
+                item_id=str(accepted_item["_id"]),
+                seller_id=seller_id,
+                item_snapshot=accepted_item,
+            )
+            item = _item_with_status_history(accepted_item, latest_state)
+        else:
+            item = accepted_item
+
+        await self._refresh_item_read_models(item, seller_id=seller_id, status_state=latest_state)
+
+    async def _legacy_status_history_blocks_item_replace(
+        self,
+        existing_item: dict[str, Any],
+        item: dict[str, Any],
+        *,
+        seller_id: str,
+        observed_at: datetime,
+    ) -> bool:
+        if _document_path_value(existing_item, "last_updated") is not None:
+            return False
+        observed_at = require_bson_ms_utc_datetime(observed_at)
+        existing_status_observed_at = _latest_item_status_history_observed_at(existing_item)
+        if existing_status_observed_at is not None and existing_status_observed_at >= observed_at:
+            return True
+        status_state = _normalize_status_state(
+            await self._db["item_status_states"].find_one(
+                {"_id": _status_state_id(seller_id, str(item["_id"]))}
+            )
+        )
+        state_observed_at = _state_last_observed_at(status_state)
+        return state_observed_at is not None and state_observed_at >= observed_at
+
+    async def _persist_legacy_item_with_status_observation_guard(
+        self,
+        document: dict[str, Any],
+        *,
+        seller_id: str,
+        observed_at: datetime,
+        present_freshness_fields: Sequence[str],
+    ) -> None:
+        if not await self._item_observation_can_mutate_status_side_effects(
+            document,
+            seller_id=seller_id,
+            present_freshness_fields=present_freshness_fields,
+        ):
+            return
         status_observation = await self._record_item_status_observation(
             document, seller_id=seller_id, observed_at=observed_at
         )
@@ -91,7 +202,10 @@ class SheetsEventPersistence:
             return
         item = _item_with_status_history(document, status_observation.state)
         item_written = await self._replace_item_if_observation_current(
-            item, seller_id=seller_id, status_state=status_observation.state
+            item,
+            seller_id=seller_id,
+            status_state=status_observation.state,
+            present_freshness_fields=present_freshness_fields,
         )
         if not item_written:
             return
@@ -107,6 +221,62 @@ class SheetsEventPersistence:
         if not _item_status_history_matches_state(item, latest_state):
             await self._reconcile_item_status_fields(item_id=str(item["_id"]), seller_id=seller_id)
         await self._refresh_item_read_models(item, seller_id=seller_id, status_state=latest_state)
+
+    async def _current_item_if_snapshot_not_superseded(
+        self,
+        item: dict[str, Any],
+        *,
+        seller_id: str,
+        present_freshness_fields: Sequence[str],
+    ) -> dict[str, Any] | None:
+        current_item = await self._db["items"].find_one(
+            {"_id": str(item["_id"]), "seller_id": seller_id}
+        )
+        if current_item is None:
+            return None
+        if not _resource_freshness_allows_write(
+            cast("dict[str, Any]", current_item),
+            item,
+            freshness_fields=("last_updated",),
+            present_freshness_fields=present_freshness_fields,
+        ):
+            return None
+        return cast("dict[str, Any]", current_item)
+
+    async def _record_status_side_effects_for_accepted_item(
+        self, item: dict[str, Any], *, seller_id: str, observed_at: datetime
+    ) -> dict[str, Any] | None:
+        status_observation = await self._record_item_status_observation(
+            item, seller_id=seller_id, observed_at=observed_at
+        )
+        if not status_observation.applied:
+            return None
+        latest_state = await self._latest_matching_item_status_state(
+            item_id=str(item["_id"]),
+            seller_id=seller_id,
+            status=item.get("status"),
+            observed_at=_state_last_observed_at(status_observation.state),
+        )
+        if latest_state is None:
+            return None
+        return latest_state
+
+    async def _item_observation_can_mutate_status_side_effects(
+        self,
+        item: dict[str, Any],
+        *,
+        seller_id: str,
+        present_freshness_fields: Sequence[str],
+    ) -> bool:
+        current_item = await self._db["items"].find_one(
+            {"_id": str(item["_id"]), "seller_id": seller_id}
+        )
+        return _resource_freshness_allows_write(
+            current_item,
+            item,
+            freshness_fields=("last_updated",),
+            present_freshness_fields=present_freshness_fields,
+        )
 
     async def _record_item_status_observation(
         self, item: dict[str, Any], *, seller_id: str, observed_at: datetime
@@ -267,7 +437,12 @@ class SheetsEventPersistence:
         return latest_state
 
     async def _replace_item_if_observation_current(
-        self, item: dict[str, Any], *, seller_id: str, status_state: dict[str, Any]
+        self,
+        item: dict[str, Any],
+        *,
+        seller_id: str,
+        status_state: dict[str, Any],
+        present_freshness_fields: Sequence[str],
     ) -> bool:
         observed_at = _state_last_observed_at(status_state)
         if observed_at is None:
@@ -284,31 +459,29 @@ class SheetsEventPersistence:
         item = _item_with_status_history(item, latest_state)
 
         collection = self._db["items"]
+        if await _insert_resource_if_absent(collection, item, seller_id=seller_id):
+            return True
         result = await collection.replace_one(
-            {
-                "_id": item["_id"],
-                "seller_id": seller_id,
-                "$or": [
-                    {"status_observed_at": {"$exists": False}},
-                    {"status_observed_at": {"$lte": observed_at}},
-                ],
-            },
+            _merge_write_guards(
+                {"_id": item["_id"], "seller_id": seller_id},
+                _status_observed_at_guard("status_observed_at", observed_at),
+                _freshness_write_guard(
+                    item,
+                    freshness_fields=("last_updated",),
+                    present_freshness_fields=present_freshness_fields,
+                ),
+            ),
             item,
             upsert=False,
         )
-        if result.matched_count > 0:
-            return True
-        insert_result = await collection.update_one(
-            {"_id": item["_id"], "seller_id": seller_id},
-            {"$setOnInsert": item},
-            upsert=True,
-        )
-        return insert_result.upserted_id is not None
+        matched_count = int(result.matched_count)
+        return matched_count > 0
 
     async def _refresh_item_read_models(
-        self, item: dict[str, Any], *, seller_id: str, status_state: dict[str, Any]
+        self, item: dict[str, Any], *, seller_id: str, status_state: dict[str, Any] | None
     ) -> None:
-        item = _item_with_status_history(item, status_state)
+        if status_state is not None:
+            item = _item_with_status_history(item, status_state)
         sku_index_docs = build_sku_index_docs(item, seller_id=seller_id)
         for sku_index_doc in sku_index_docs:
             await self._db["sheets_item_sku_index"].replace_one(
@@ -338,9 +511,14 @@ class SheetsEventPersistence:
         )
 
         for formula_row_doc in formula_row_docs:
-            await self._replace_formula_row_if_observation_current(
-                formula_row_doc, status_state=status_state, seller_id=seller_id
-            )
+            if status_state is None:
+                await self._db["sheets_item_formula_rows"].replace_one(
+                    {"_id": formula_row_doc["_id"]}, formula_row_doc, upsert=True
+                )
+            else:
+                await self._replace_formula_row_if_observation_current(
+                    formula_row_doc, status_state=status_state, seller_id=seller_id
+                )
 
     async def _replace_formula_row_if_observation_current(
         self, formula_row_doc: dict[str, Any], *, status_state: dict[str, Any], seller_id: str
@@ -404,7 +582,9 @@ class SheetsEventPersistence:
             )
             await self._reconcile_formula_row_status_fields(formula_row_doc)
 
-    async def _reconcile_item_status_fields(self, *, item_id: str, seller_id: str) -> None:
+    async def _reconcile_item_status_fields(
+        self, *, item_id: str, seller_id: str, item_snapshot: dict[str, Any] | None = None
+    ) -> None:
         latest_state = _normalize_status_state(
             await self._db["item_status_states"].find_one(
                 {"_id": _status_state_id(seller_id, item_id)}
@@ -425,12 +605,18 @@ class SheetsEventPersistence:
         update_doc: dict[str, Any] = {"$set": set_fields}
         if unset_fields:
             update_doc["$unset"] = unset_fields
-        await collection.update_one(
+        filter_spec = _merge_write_guards(
             {
                 "_id": item_id,
                 "seller_id": seller_id,
-                **_status_observed_at_guard("status_observed_at", observed_at),
             },
+            _status_observed_at_guard("status_observed_at", observed_at),
+            _freshness_write_guard(item_snapshot, freshness_fields=("last_updated",))
+            if item_snapshot is not None
+            else {},
+        )
+        await collection.update_one(
+            filter_spec,
             update_doc,
             upsert=False,
         )
@@ -497,9 +683,15 @@ class SheetsEventPersistence:
         document = _canonical_order_document(
             resource, seller_id=seller_id, sale_fee_synced_at=observed_at
         )
-        await self._db["orders"].replace_one(
-            {"_id": document["_id"], "seller_id": seller_id}, document, upsert=True
+        order_written = await _replace_resource_if_fresh(
+            self._db["orders"],
+            document,
+            seller_id=seller_id,
+            freshness_fields=("last_updated", "date_closed", "date_created"),
+            present_freshness_fields=_order_present_freshness_fields(resource),
         )
+        if not order_written:
+            return
         await self._refresh_order_line_sku_index(document, seller_id=seller_id)
 
     async def _refresh_order_line_sku_index(self, order: dict[str, Any], *, seller_id: str) -> None:
@@ -525,8 +717,24 @@ class SheetsEventPersistence:
 
     async def _persist_shipment(self, *, seller_id: str, resource: dict[str, Any]) -> None:
         document = _canonical_shipment_document(resource, seller_id=seller_id)
-        await self._db["shipments"].replace_one(
-            {"_id": document["_id"], "seller_id": seller_id}, document, upsert=True
+        await _replace_resource_if_fresh(
+            self._db["shipments"],
+            document,
+            seller_id=seller_id,
+            freshness_fields=("last_updated",),
+        )
+
+    async def _persist_question(self, *, seller_id: str, resource: dict[str, Any]) -> None:
+        document = _canonical_question_document(
+            resource,
+            seller_id=seller_id,
+            observed_at=require_bson_ms_utc_datetime(self._clock()),
+        )
+        await _replace_question_if_fresh(
+            self._db["questions"],
+            document,
+            seller_id=seller_id,
+            present_freshness_fields=_question_present_freshness_fields(resource),
         )
 
 
@@ -601,7 +809,7 @@ def _item_with_preserved_enrichment(
         merged_state = {**existing_state, **merged_state}
     if merged_state:
         merged["enrichment_state"] = normalize_mongo_loaded_datetimes(merged_state)
-    return merged
+    return cast("dict[str, Any]", _bson_safe(merged))
 
 
 def _seller_shipping_basis_matches(
@@ -664,11 +872,17 @@ def _canonical_order_document(
     resource: dict[str, Any], *, seller_id: str, sale_fee_synced_at: datetime
 ) -> dict[str, Any]:
     order_id = _string_id(resource.get("_id") or resource.get("id"))
+    last_updated = (
+        resource.get("last_updated")
+        or resource.get("date_last_updated")
+        or resource.get("updated_at")
+    )
     model = Order.model_validate(
         {
             **resource,
             "_id": order_id,
             "seller_id": seller_id,
+            "last_updated": last_updated,
             "buyer_id": _buyer_id(resource),
             "shipment_id": _shipment_id(resource),
             "meli_pack_id": _meli_pack_id(resource),
@@ -702,6 +916,288 @@ def _canonical_shipment_document(resource: dict[str, Any], *, seller_id: str) ->
         "dict[str, Any]",
         _bson_safe(model.model_dump(by_alias=True, mode="python", exclude_none=True)),
     )
+
+
+def _canonical_question_document(
+    resource: dict[str, Any], *, seller_id: str, observed_at: datetime
+) -> dict[str, Any]:
+    question_id = _string_id(resource.get("_id") or resource.get("id"))
+    date_updated = (
+        resource.get("date_updated") or resource.get("last_updated") or resource.get("updated_at")
+    )
+    model = Question.model_validate(
+        {
+            **resource,
+            "_id": question_id,
+            "seller_id": seller_id,
+            "item_id": _question_item_id(resource),
+            "text": str(resource.get("text") or ""),
+            "status": str(resource.get("status") or "UNANSWERED").upper(),
+            "from_user_id": _question_from_user_id(resource),
+            "date_created": resource.get("date_created") or observed_at,
+            "date_updated": date_updated,
+            "schema_version": current_schema_version("questions"),
+        }
+    )
+    return cast(
+        "dict[str, Any]",
+        _bson_safe(model.model_dump(by_alias=True, mode="python", exclude_none=True)),
+    )
+
+
+def _resource_freshness_allows_write(
+    existing: dict[str, Any] | None,
+    incoming: dict[str, Any],
+    *,
+    freshness_fields: Sequence[str],
+    present_freshness_fields: Sequence[str] | None = None,
+    extra_freshness_conditions: Sequence[dict[str, Any]] = (),
+) -> bool:
+    if existing is None:
+        return True
+    return any(
+        _freshness_condition_matches(existing, condition)
+        for condition in (
+            *extra_freshness_conditions,
+            *_freshness_write_conditions(
+                incoming,
+                freshness_fields=freshness_fields,
+                present_freshness_fields=present_freshness_fields,
+            ),
+        )
+    )
+
+
+def _freshness_condition_matches(document: dict[str, Any], condition: dict[str, Any]) -> bool:
+    for field, expected in condition.items():
+        actual = _document_path_value(document, field)
+        if isinstance(expected, dict) and "$exists" in expected:
+            if (actual is not None) != expected["$exists"]:
+                return False
+            continue
+        if isinstance(expected, dict) and "$lte" in expected:
+            actual_observed_at = bson_ms_utc_datetime(actual)
+            expected_observed_at = bson_ms_utc_datetime(expected["$lte"])
+            if actual_observed_at is None or expected_observed_at is None:
+                return False
+            if actual_observed_at > expected_observed_at:
+                return False
+            continue
+        if actual != expected:
+            return False
+    return True
+
+
+async def _replace_resource_if_fresh(
+    collection: Any,
+    document: dict[str, Any],
+    *,
+    seller_id: str,
+    freshness_fields: Sequence[str],
+    present_freshness_fields: Sequence[str] | None = None,
+    extra_freshness_conditions: Sequence[dict[str, Any]] = (),
+) -> bool:
+    if await _insert_resource_if_absent(collection, document, seller_id=seller_id):
+        return True
+    result = await collection.replace_one(
+        _fresh_resource_write_filter(
+            document,
+            seller_id=seller_id,
+            freshness_fields=freshness_fields,
+            present_freshness_fields=present_freshness_fields,
+            extra_freshness_conditions=extra_freshness_conditions,
+        ),
+        document,
+        upsert=False,
+    )
+    matched_count = int(result.matched_count)
+    return matched_count > 0
+
+
+async def _insert_resource_if_absent(
+    collection: Any, document: dict[str, Any], *, seller_id: str
+) -> bool:
+    insert_result = await collection.update_one(
+        {"_id": document["_id"], "seller_id": seller_id},
+        {"$setOnInsert": document},
+        upsert=True,
+    )
+    return insert_result.upserted_id is not None
+
+
+def _fresh_resource_write_filter(
+    document: dict[str, Any],
+    *,
+    seller_id: str,
+    freshness_fields: Sequence[str],
+    present_freshness_fields: Sequence[str] | None = None,
+    extra_freshness_conditions: Sequence[dict[str, Any]] = (),
+) -> dict[str, Any]:
+    filter_spec: dict[str, Any] = {"_id": document["_id"], "seller_id": seller_id}
+    return _merge_write_guards(
+        filter_spec,
+        _freshness_write_guard(
+            document,
+            freshness_fields=freshness_fields,
+            present_freshness_fields=present_freshness_fields,
+            extra_freshness_conditions=extra_freshness_conditions,
+        ),
+    )
+
+
+def _freshness_write_guard(
+    document: dict[str, Any],
+    *,
+    freshness_fields: Sequence[str],
+    present_freshness_fields: Sequence[str] | None = None,
+    extra_freshness_conditions: Sequence[dict[str, Any]] = (),
+) -> dict[str, Any]:
+    freshness_conditions = [
+        *extra_freshness_conditions,
+        *_freshness_write_conditions(
+            document,
+            freshness_fields=freshness_fields,
+            present_freshness_fields=present_freshness_fields,
+        ),
+    ]
+    return {"$or": freshness_conditions} if freshness_conditions else {}
+
+
+def _freshness_write_conditions(
+    document: dict[str, Any],
+    *,
+    freshness_fields: Sequence[str],
+    present_freshness_fields: Sequence[str] | None = None,
+) -> list[dict[str, Any]]:
+    conditions: list[dict[str, Any]] = []
+    missing_prior_fields: dict[str, Any] = {}
+    present_fields = set(present_freshness_fields) if present_freshness_fields is not None else None
+    for field in freshness_fields:
+        incoming_observed_at = (
+            bson_ms_utc_datetime(_document_path_value(document, field))
+            if present_fields is None or field in present_fields
+            else None
+        )
+        if incoming_observed_at is None:
+            missing_prior_fields = {**missing_prior_fields, field: {"$exists": False}}
+            continue
+        conditions.append({**missing_prior_fields, field: {"$lte": incoming_observed_at}})
+        missing_prior_fields = {**missing_prior_fields, field: {"$exists": False}}
+    if missing_prior_fields:
+        conditions.append(dict(missing_prior_fields))
+    return conditions
+
+
+async def _replace_question_if_fresh(
+    collection: Any,
+    document: dict[str, Any],
+    *,
+    seller_id: str,
+    present_freshness_fields: Sequence[str],
+) -> bool:
+    if await _insert_resource_if_absent(collection, document, seller_id=seller_id):
+        return True
+    result = await collection.replace_one(
+        _question_write_filter(
+            document,
+            seller_id=seller_id,
+            present_freshness_fields=present_freshness_fields,
+        ),
+        document,
+        upsert=False,
+    )
+    matched_count = int(result.matched_count)
+    return matched_count > 0
+
+
+def _question_write_filter(
+    document: dict[str, Any], *, seller_id: str, present_freshness_fields: Sequence[str]
+) -> dict[str, Any]:
+    return _fresh_resource_write_filter(
+        document,
+        seller_id=seller_id,
+        freshness_fields=("answer.date_created", "date_updated", "date_created"),
+        present_freshness_fields=present_freshness_fields,
+    )
+
+
+def _merge_write_guards(base_filter: dict[str, Any], *guards: dict[str, Any]) -> dict[str, Any]:
+    filter_spec = dict(base_filter)
+    and_guards = [guard for guard in guards if guard]
+    if not and_guards:
+        return filter_spec
+    if len(and_guards) == 1:
+        filter_spec.update(and_guards[0])
+        return filter_spec
+    filter_spec["$and"] = and_guards
+    return filter_spec
+
+
+def _order_present_freshness_fields(resource: dict[str, Any]) -> tuple[str, ...]:
+    fields: list[str] = []
+    if any(
+        resource.get(field) is not None
+        for field in ("last_updated", "date_last_updated", "updated_at")
+    ):
+        fields.append("last_updated")
+    if resource.get("date_closed") is not None:
+        fields.append("date_closed")
+    if resource.get("date_created") is not None:
+        fields.append("date_created")
+    return tuple(fields)
+
+
+def _item_present_freshness_fields(resource: dict[str, Any]) -> tuple[str, ...]:
+    if any(resource.get(field) is not None for field in ("last_updated", "updated_at")):
+        return ("last_updated",)
+    return ()
+
+
+def _item_sync_fallback_freshness_conditions(
+    existing: dict[str, Any] | None,
+    incoming: dict[str, Any],
+    *,
+    present_freshness_fields: Sequence[str],
+) -> tuple[dict[str, Any], ...]:
+    if existing is None or "last_updated" not in present_freshness_fields:
+        return ()
+    existing_last_updated = bson_ms_utc_datetime(existing.get("last_updated"))
+    existing_last_sync = bson_ms_utc_datetime(existing.get("last_meli_sync_at"))
+    incoming_last_updated = bson_ms_utc_datetime(incoming.get("last_updated"))
+    if existing_last_updated is None or existing_last_sync is None or incoming_last_updated is None:
+        return ()
+    if existing_last_updated != existing_last_sync:
+        return ()
+    if incoming_last_updated >= existing_last_updated:
+        return ()
+    return (
+        {
+            "last_updated": existing.get("last_updated"),
+            "last_meli_sync_at": existing.get("last_meli_sync_at"),
+        },
+    )
+
+
+def _question_present_freshness_fields(resource: dict[str, Any]) -> tuple[str, ...]:
+    fields: list[str] = []
+    if _document_path_value(resource, "answer.date_created") is not None:
+        fields.append("answer.date_created")
+    if any(
+        resource.get(field) is not None for field in ("date_updated", "last_updated", "updated_at")
+    ):
+        fields.append("date_updated")
+    if resource.get("date_created") is not None:
+        fields.append("date_created")
+    return tuple(fields)
+
+
+def _document_path_value(document: dict[str, Any], dotted_path: str) -> Any:
+    value: Any = document
+    for part in dotted_path.split("."):
+        if not isinstance(value, dict):
+            return None
+        value = value.get(part)
+    return value
 
 
 def _status_transition_document(
@@ -1006,6 +1502,15 @@ def _state_last_observed_at(state: dict[str, Any] | None) -> datetime | None:
     return bson_ms_utc_datetime(state.get("last_observed_at"))
 
 
+def _latest_item_status_history_observed_at(item: dict[str, Any]) -> datetime | None:
+    observed_values = [
+        observed_at
+        for field in ("status_observed_at", "status_started_at", "last_status_change_at")
+        if (observed_at := bson_ms_utc_datetime(item.get(field))) is not None
+    ]
+    return max(observed_values) if observed_values else None
+
+
 def _observation_is_older_than_state(
     *, observed_at: datetime, state: dict[str, Any] | None
 ) -> bool:
@@ -1147,6 +1652,20 @@ def _shipment_order_id(resource: dict[str, Any]) -> str:
     if isinstance(order, dict):
         return _string_id(order.get("id") or order.get("order_id"))
     return _string_id(resource.get("order_id"))
+
+
+def _question_item_id(resource: dict[str, Any]) -> str:
+    item = resource.get("item")
+    if isinstance(item, dict):
+        return _string_id(item.get("id") or item.get("item_id"))
+    return _string_id(resource.get("item_id"))
+
+
+def _question_from_user_id(resource: dict[str, Any]) -> str:
+    from_user = resource.get("from")
+    if isinstance(from_user, dict):
+        return _string_id(from_user.get("id") or from_user.get("user_id"))
+    return _string_id(resource.get("from_user_id") or resource.get("user_id"))
 
 
 def _receiver_address_snapshot(resource: dict[str, Any]) -> dict[str, Any] | None:

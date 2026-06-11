@@ -6,6 +6,11 @@
       "durable": true
     },
     {
+      "name": "zeler.sheets.replay",
+      "type": "topic",
+      "durable": true
+    },
+    {
       "name": "zeler.repricer.items.dlx",
       "type": "direct",
       "durable": true
@@ -645,6 +650,31 @@
       "source": "meli.events",
       "destination": "zeler.sheets.events",
       "routing_key": "shipments.*"
+    },
+    {
+      "source": "meli.events",
+      "destination": "zeler.sheets.events",
+      "routing_key": "questions.*"
+    },
+    {
+      "source": "zeler.sheets.replay",
+      "destination": "zeler.sheets.events",
+      "routing_key": "items.*"
+    },
+    {
+      "source": "zeler.sheets.replay",
+      "destination": "zeler.sheets.events",
+      "routing_key": "orders.*"
+    },
+    {
+      "source": "zeler.sheets.replay",
+      "destination": "zeler.sheets.events",
+      "routing_key": "shipments.*"
+    },
+    {
+      "source": "zeler.sheets.replay",
+      "destination": "zeler.sheets.events",
+      "routing_key": "questions.*"
     },
     {
       "source": "zeler.sheets.orders.dlx",

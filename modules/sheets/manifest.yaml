@@ -4,6 +4,7 @@ subscribed_events:
   - items.*
   - orders.*
   - shipments.*
+  - questions.*
 owned_collections:
   - sheets_exports
   - sheets_sync_jobs
@@ -16,4 +17,5 @@ allowed_meli_scopes:
   - GET /users/*/shipping_options/free
   - GET /orders/*
   - GET /shipments/*
+  - GET /questions/*
 health_endpoint: /health

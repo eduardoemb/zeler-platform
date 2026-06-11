@@ -38,5 +38,24 @@ def test_retired_fulldock_env_templates_are_absent() -> None:
     assert [name for name in RETIRED_FULLDOCK_TEMPLATES if (ENV_DIR / name).exists()] == []
 
 
+def test_sheets_worker_declares_zelerdata_freshness_flags_and_sanitized_vm_check() -> None:
+    template = _read("sheets-worker.env.template")
+    secrets_script = (ROOT / "infra" / "gce" / "zeler-platform-secrets.sh").read_text(
+        encoding="utf-8"
+    )
+    deploy_doc = (ROOT / "docs" / "deploy.md").read_text(encoding="utf-8")
+    required_flags = {
+        "ZELERDATA_ENRICHMENT_ENABLED=true",
+        "ZELERDATA_SALE_PRICE_ENABLED=true",
+        "ZELERDATA_LISTING_FIXED_FEE_ENABLED=true",
+    }
+
+    assert required_flags <= set(template.splitlines())
+    assert all(flag in secrets_script for flag in required_flags)
+    assert all(flag in deploy_doc for flag in required_flags)
+    assert "VM-only sanitized ZELERDATA flag check" in deploy_doc
+    assert "Do not print secret values" in deploy_doc
+
+
 def _read(name: str) -> str:
     return (ENV_DIR / name).read_text(encoding="utf-8")

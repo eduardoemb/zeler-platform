@@ -30,12 +30,13 @@ from zeler_sheets.sheets_config import SheetsSettings
 from zeler_sheets.sheetseller_backfill import run_item_detail_enrichment, run_sheetseller_backfill
 
 MELI_EVENTS_EXCHANGE = "meli.events"
+SHEETS_REPLAY_EXCHANGE = "zeler.sheets.replay"
 SHEETS_EVENTS_QUEUE = "zeler.sheets.events"
 SHEETS_EVENTS_DLX = "zeler.sheets.events.dlx"
 SHEETS_EVENTS_DLQ = f"{SHEETS_EVENTS_QUEUE}.dlq"
 SHEETS_DELIVERY_LIMIT = 5
 DEFAULT_PREFETCH_COUNT = 10
-SHEETS_DEFAULT_ROUTING_KEYS = ("items.*", "orders.*", "shipments.*")
+SHEETS_DEFAULT_ROUTING_KEYS = ("items.*", "orders.*", "shipments.*", "questions.*")
 MISSING_RABBITMQ_URL_MESSAGE = "error: RABBITMQ_URL is required"
 MISSING_MONGO_URI_MESSAGE = "error: MONGO_URI is required"
 MISSING_MONGO_DB_MESSAGE = "error: MONGO_DB is required"
@@ -140,6 +141,7 @@ AccountStatusSource = Callable[[int], Any]
 class SheetsAmqpConsumerConfig:
     rabbitmq_url: str
     exchange_name: str = MELI_EVENTS_EXCHANGE
+    replay_exchange_name: str = SHEETS_REPLAY_EXCHANGE
     queue_name: str = SHEETS_EVENTS_QUEUE
     dead_letter_exchange: str = SHEETS_EVENTS_DLX
     delivery_limit: int = SHEETS_DELIVERY_LIMIT
@@ -192,6 +194,11 @@ class SheetsAmqpConsumerRunner:
             aio_pika.ExchangeType.TOPIC,
             durable=True,
         )
+        replay_exchange = await channel.declare_exchange(
+            self.config.replay_exchange_name,
+            aio_pika.ExchangeType.TOPIC,
+            durable=True,
+        )
         dead_letter_exchange = await channel.declare_exchange(
             self.config.dead_letter_exchange,
             aio_pika.ExchangeType.DIRECT,
@@ -214,6 +221,7 @@ class SheetsAmqpConsumerRunner:
         )
         for routing_key in self.config.routing_keys:
             await queue.bind(exchange, routing_key=routing_key)
+            await queue.bind(replay_exchange, routing_key=routing_key)
         if self._retry_delay_publisher is None:
             self._retry_delay_publisher = RetryDelayPublisher(channel)
         await queue.consume(self.handle_message)
@@ -488,20 +496,29 @@ def _sheets_idempotency_key(message: Any, payload: dict[str, Any]) -> str:
 
 
 class CoreIdempotencyStoreLike(Protocol):
-    async def is_duplicate(self, key: str) -> bool: ...
+    async def is_duplicate(
+        self, key: str, *, module_id: str, consumer_id: str | None = None
+    ) -> bool: ...
 
-    async def mark_processed(self, key: str, *, module_id: str) -> bool: ...
+    async def mark_processed(
+        self, key: str, *, module_id: str, consumer_id: str | None = None
+    ) -> bool: ...
 
 
 class _SheetsIdempotencyAdapter:
-    def __init__(self, store: CoreIdempotencyStoreLike) -> None:
+    def __init__(
+        self, store: CoreIdempotencyStoreLike, *, consumer_id: str = SHEETS_EVENTS_QUEUE
+    ) -> None:
         self._store = store
+        self._consumer_id = consumer_id
 
     async def is_duplicate(self, key: str) -> bool:
-        return await self._store.is_duplicate(key)
+        return await self._store.is_duplicate(
+            key, module_id="sheets", consumer_id=self._consumer_id
+        )
 
     async def mark_processed(self, key: str) -> None:
-        await self._store.mark_processed(key, module_id="sheets")
+        await self._store.mark_processed(key, module_id="sheets", consumer_id=self._consumer_id)
 
 
 class SheetsEventHandler:
@@ -530,16 +547,17 @@ class SheetsEventHandler:
         if await self._idempotency_store.is_duplicate(event.idempotency_key):
             return "duplicate"
 
+        fetch_path = _fetch_resource_path_for_event(event)
         resource = await self._gateway_client.fetch_resource(
             seller_id=event.seller_id,
-            path=event.resource,
+            path=fetch_path,
         )
         await self._event_persistence.persist(
             event_type=event.event_type,
             seller_id=event.seller_id,
             resource=resource,
         )
-        await self._refresh_zelerdata_enrichment_if_enabled(event)
+        await self._refresh_zelerdata_enrichment_if_enabled(_event_with_resource(event, fetch_path))
         export_config = await self._db["sheets_exports"].find_one(
             {"seller_id": str(event.seller_id), "enabled": True}
         )
@@ -597,6 +615,34 @@ def _item_id_from_resource_path(resource: str) -> str | None:
         item_id = parts[-1].strip()
         return item_id or None
     return None
+
+
+def _fetch_resource_path_for_event(event: SheetsEvent) -> str:
+    if event.event_type == "items.price_updated":
+        return _canonical_item_path_from_prices_resource(event.resource)
+    return event.resource
+
+
+def _canonical_item_path_from_prices_resource(resource: str) -> str:
+    parts = [part.strip() for part in resource.split("?", 1)[0].split("/") if part.strip()]
+    if len(parts) == 2 and parts[0] == "items":
+        return f"/items/{parts[1]}"
+    if len(parts) == 3 and parts[0] == "items" and parts[2] == "prices":
+        return f"/items/{parts[1]}"
+    msg = "items.price_updated resource must be /items/{id}/prices"
+    raise ValueError(msg)
+
+
+def _event_with_resource(event: SheetsEvent, resource: str) -> SheetsEvent:
+    if resource == event.resource:
+        return event
+    return SheetsEvent(
+        event_id=event.event_id,
+        event_type=event.event_type,
+        seller_id=event.seller_id,
+        resource=resource,
+        idempotency_key=event.idempotency_key,
+    )
 
 
 def _first_string(resource: dict[str, Any], *keys: str) -> str:

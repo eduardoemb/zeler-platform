@@ -33,6 +33,70 @@ def _item_resource(status: str) -> dict[str, Any]:
     }
 
 
+def _item_resource_at(*, title: str, price: str, last_updated: str) -> dict[str, Any]:
+    return {
+        **_item_resource("active"),
+        "title": title,
+        "price": price,
+        "base_price": price,
+        "last_updated": last_updated,
+    }
+
+
+def _order_resource_at(
+    *, status: str, total_amount: str, date_closed: str | None, last_updated: str | None = None
+) -> dict[str, Any]:
+    resource: dict[str, Any] = {
+        "id": 2001,
+        "status": status,
+        "date_created": "2026-05-29T10:00:00+00:00",
+        "total_amount": total_amount,
+        "buyer": {"id": 123},
+        "shipping": {"id": 555},
+        "order_items": [
+            {
+                "item": {"id": "MLA1", "seller_sku": "sku-1"},
+                "quantity": 1,
+                "unit_price": total_amount,
+            }
+        ],
+    }
+    if date_closed is not None:
+        resource["date_closed"] = date_closed
+    if last_updated is not None:
+        resource["last_updated"] = last_updated
+    return resource
+
+
+def _shipment_resource_at(*, status: str, substatus: str, last_updated: str) -> dict[str, Any]:
+    return {
+        "id": 3001,
+        "order_id": 2001,
+        "status": status,
+        "substatus": substatus,
+        "tracking_number": "TRACK-1",
+        "logistic_type": "fulfillment",
+        "date_created": "2026-05-29T10:00:00+00:00",
+        "last_updated": last_updated,
+    }
+
+
+def _question_resource(
+    *, status: str, text: str = "Is this available?", answer: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    resource: dict[str, Any] = {
+        "id": "Q1",
+        "item_id": "MLA1",
+        "text": text,
+        "status": status,
+        "from": {"id": 987654321},
+        "date_created": "2026-05-29T10:00:00+00:00",
+    }
+    if answer is not None:
+        resource["answer"] = answer
+    return resource
+
+
 class FakeReplaceResult:
     def __init__(
         self, *, matched_count: int = 1, modified_count: int = 1, upserted_id: str | None = None
@@ -148,6 +212,14 @@ class SupersedingReplaceCollection(FakeCollection):
             self._supersede()
         return await super().replace_one(filter_spec, replacement, upsert=upsert)
 
+    async def update_one(
+        self, filter_spec: dict[str, Any], update: dict[str, Any], *, upsert: bool = False
+    ) -> FakeReplaceResult:
+        if upsert and "$setOnInsert" in update and not self._superseded:
+            self._superseded = True
+            self._supersede()
+        return await super().update_one(filter_spec, update, upsert=upsert)
+
 
 class CorrectingStatusBeforeReplaceCollection(FakeCollection):
     def __init__(self, *, corrected_state_fields: dict[str, Any]) -> None:
@@ -218,6 +290,63 @@ class SupersedingFindThenReplaceCollection(FakeCollection):
         return await super().update_one(filter_spec, update, upsert=upsert)
 
 
+class InterleavedInsertBeforeUpsertCollection(FakeCollection):
+    def __init__(self, *, interleaved_document: dict[str, Any]) -> None:
+        super().__init__()
+        self._interleaved_document = dict(interleaved_document)
+        self._interleaved = False
+
+    async def update_one(
+        self, filter_spec: dict[str, Any], update: dict[str, Any], *, upsert: bool = False
+    ) -> FakeReplaceResult:
+        if upsert and "$setOnInsert" in update and not self._interleaved:
+            self._interleaved = True
+            self.documents[str(self._interleaved_document["_id"])] = dict(
+                self._interleaved_document
+            )
+        return await super().update_one(filter_spec, update, upsert=upsert)
+
+
+class FreshItemAfterInitialReadCollection(FakeCollection):
+    def __init__(self, *, fresh_document: dict[str, Any]) -> None:
+        super().__init__()
+        self._fresh_document = dict(fresh_document)
+        self._read_count = 0
+        self._inserted = False
+
+    def _insert_fresh_document(self) -> None:
+        if not self._inserted:
+            self._inserted = True
+            self.documents[str(self._fresh_document["_id"])] = dict(self._fresh_document)
+
+    async def find_one(self, filter_spec: dict[str, Any]) -> dict[str, Any] | None:
+        self._read_count += 1
+        if self._read_count > 1:
+            self._insert_fresh_document()
+        return await super().find_one(filter_spec)
+
+    async def update_one(
+        self, filter_spec: dict[str, Any], update: dict[str, Any], *, upsert: bool = False
+    ) -> FakeReplaceResult:
+        self._insert_fresh_document()
+        return await super().update_one(filter_spec, update, upsert=upsert)
+
+
+class FreshItemBeforeReplaceCollection(FakeCollection):
+    def __init__(self, *, initial_document: dict[str, Any], fresh_document: dict[str, Any]) -> None:
+        super().__init__([initial_document])
+        self._fresh_document = dict(fresh_document)
+        self._interleaved = False
+
+    async def replace_one(
+        self, filter_spec: dict[str, Any], replacement: dict[str, Any], *, upsert: bool = False
+    ) -> FakeReplaceResult:
+        if not self._interleaved and filter_spec.get("_id") == self._fresh_document["_id"]:
+            self._interleaved = True
+            self.documents[str(self._fresh_document["_id"])] = dict(self._fresh_document)
+        return await super().replace_one(filter_spec, replacement, upsert=upsert)
+
+
 class CorrectingStatusStateAfterWriteCollection(FakeCollection):
     def __init__(self, *, corrected_state_fields: dict[str, Any]) -> None:
         super().__init__()
@@ -245,6 +374,10 @@ def _matches_filter(document: dict[str, Any], filter_spec: dict[str, Any]) -> bo
     for key, expected in filter_spec.items():
         if key == "$or":
             if not any(_matches_filter(document, option) for option in expected):
+                return False
+            continue
+        if key == "$and":
+            if not all(_matches_filter(document, option) for option in expected):
                 return False
             continue
         actual = _nested_value(document, key)
@@ -382,6 +515,733 @@ class FakeDb:
 
     def __getitem__(self, name: str) -> FakeCollection:
         return self.collections.setdefault(name, FakeCollection())
+
+
+@pytest.mark.asyncio
+async def test_item_order_and_shipment_read_models_create_update_and_ignore_stale_resources() -> (
+    None
+):
+    moments = iter(
+        [
+            datetime(2026, 5, 30, 12, 0, tzinfo=UTC),
+            datetime(2026, 5, 31, 12, 0, tzinfo=UTC),
+            datetime(2026, 6, 1, 12, 0, tzinfo=UTC),
+            datetime(2026, 6, 2, 12, 0, tzinfo=UTC),
+            datetime(2026, 6, 3, 12, 0, tzinfo=UTC),
+            datetime(2026, 6, 4, 12, 0, tzinfo=UTC),
+        ]
+    )
+    db = FakeDb()
+    persistence = SheetsEventPersistence(db=db, clock=lambda: next(moments))
+
+    await persistence.persist(
+        event_type="items.updated",
+        seller_id=82453304,
+        resource=_item_resource_at(
+            title="Initial widget",
+            price="149.99",
+            last_updated="2026-05-30T11:00:00+00:00",
+        ),
+    )
+    await persistence.persist(
+        event_type="items.updated",
+        seller_id=82453304,
+        resource=_item_resource_at(
+            title="Current widget",
+            price="199.99",
+            last_updated="2026-05-31T11:00:00+00:00",
+        ),
+    )
+    await persistence.persist(
+        event_type="items.updated",
+        seller_id=82453304,
+        resource=_item_resource_at(
+            title="Stale widget",
+            price="99.99",
+            last_updated="2026-05-29T11:00:00+00:00",
+        ),
+    )
+    await persistence.persist(
+        event_type="orders.updated",
+        seller_id=82453304,
+        resource=_order_resource_at(
+            status="paid",
+            total_amount="299.90",
+            date_closed="2026-05-29T10:05:00+00:00",
+        ),
+    )
+    await persistence.persist(
+        event_type="orders.updated",
+        seller_id=82453304,
+        resource=_order_resource_at(
+            status="cancelled",
+            total_amount="299.90",
+            date_closed="2026-05-30T10:05:00+00:00",
+        ),
+    )
+    await persistence.persist(
+        event_type="orders.updated",
+        seller_id=82453304,
+        resource=_order_resource_at(
+            status="paid",
+            total_amount="199.90",
+            date_closed="2026-05-28T10:05:00+00:00",
+        ),
+    )
+    await persistence.persist(
+        event_type="shipments.updated",
+        seller_id=82453304,
+        resource=_shipment_resource_at(
+            status="ready_to_ship",
+            substatus="printed",
+            last_updated="2026-05-30T11:00:00+00:00",
+        ),
+    )
+    await persistence.persist(
+        event_type="shipments.updated",
+        seller_id=82453304,
+        resource=_shipment_resource_at(
+            status="shipped",
+            substatus="in_transit",
+            last_updated="2026-05-31T11:00:00+00:00",
+        ),
+    )
+    await persistence.persist(
+        event_type="shipments.updated",
+        seller_id=82453304,
+        resource=_shipment_resource_at(
+            status="ready_to_ship",
+            substatus="printed",
+            last_updated="2026-05-29T11:00:00+00:00",
+        ),
+    )
+
+    item = db["items"].documents["MLA1"]
+    assert item["title"] == "Current widget"
+    assert item["price"] == Decimal128("199.99")
+    formula_row = db["sheets_item_formula_rows"].documents["82453304:SKU-1:MLA1"]
+    assert formula_row["current"]["title"] == "Current widget"
+    assert formula_row["current"]["price"] == Decimal128("199.99")
+
+    order = db["orders"].documents["2001"]
+    assert order["status"] == "cancelled"
+    assert order["date_closed"] == datetime(2026, 5, 30, 10, 5, tzinfo=UTC)
+    assert order["total_amount"] == Decimal128("299.90")
+
+    shipment = db["shipments"].documents["3001"]
+    assert shipment["status"] == "shipped"
+    assert shipment["substatus"] == "in_transit"
+    assert shipment["last_updated"] == datetime(2026, 5, 31, 11, 0, tzinfo=UTC)
+
+
+@pytest.mark.asyncio
+async def test_order_atomic_freshness_filter_rejects_interleaved_stale_replace() -> None:
+    stale_order = {
+        "_id": "2001",
+        "seller_id": "82453304",
+        "status": "paid",
+        "date_created": datetime(2026, 5, 29, 10, 0, tzinfo=UTC),
+        "date_closed": datetime(2026, 5, 29, 10, 5, tzinfo=UTC),
+        "total_amount": Decimal128("199.90"),
+    }
+    fresh_order = {
+        **stale_order,
+        "status": "cancelled",
+        "date_closed": datetime(2026, 5, 30, 10, 5, tzinfo=UTC),
+        "total_amount": Decimal128("299.90"),
+    }
+    db = FakeDb()
+    db.collections["orders"] = SupersedingFindThenReplaceCollection(
+        stale=stale_order, superseding=fresh_order
+    )
+    persistence = SheetsEventPersistence(db=db, clock=lambda: NOW)
+
+    await persistence.persist(
+        event_type="orders.updated",
+        seller_id=82453304,
+        resource=_order_resource_at(
+            status="paid",
+            total_amount="199.90",
+            date_closed="2026-05-29T10:05:00+00:00",
+        ),
+    )
+
+    order = db["orders"].documents["2001"]
+    assert order["status"] == "cancelled"
+    assert order["date_closed"] == datetime(2026, 5, 30, 10, 5, tzinfo=UTC)
+    assert order["total_amount"] == Decimal128("299.90")
+    assert db["sheets_item_sku_index"].documents == {}
+
+
+@pytest.mark.asyncio
+async def test_shipment_atomic_freshness_filter_rejects_interleaved_stale_replace() -> None:
+    stale_shipment = {
+        "_id": "3001",
+        "seller_id": "82453304",
+        "order_id": "2001",
+        "status": "ready_to_ship",
+        "substatus": "printed",
+        "last_updated": datetime(2026, 5, 30, 11, 0, tzinfo=UTC),
+    }
+    fresh_shipment = {
+        **stale_shipment,
+        "status": "shipped",
+        "substatus": "in_transit",
+        "last_updated": datetime(2026, 5, 31, 11, 0, tzinfo=UTC),
+    }
+    db = FakeDb()
+    db.collections["shipments"] = SupersedingFindThenReplaceCollection(
+        stale=stale_shipment, superseding=fresh_shipment
+    )
+    persistence = SheetsEventPersistence(db=db, clock=lambda: NOW)
+
+    await persistence.persist(
+        event_type="shipments.updated",
+        seller_id=82453304,
+        resource=_shipment_resource_at(
+            status="ready_to_ship",
+            substatus="printed",
+            last_updated="2026-05-30T11:00:00+00:00",
+        ),
+    )
+
+    shipment = db["shipments"].documents["3001"]
+    assert shipment["status"] == "shipped"
+    assert shipment["substatus"] == "in_transit"
+    assert shipment["last_updated"] == datetime(2026, 5, 31, 11, 0, tzinfo=UTC)
+
+
+@pytest.mark.asyncio
+async def test_question_atomic_freshness_filter_rejects_interleaved_stale_replace() -> None:
+    stale_question = {
+        "_id": "Q1",
+        "seller_id": "82453304",
+        "item_id": "MLA1",
+        "text": "Is this available?",
+        "status": "UNANSWERED",
+        "from_user_id": "987654321",
+        "date_created": datetime(2026, 5, 29, 10, 0, tzinfo=UTC),
+        "schema_version": 1,
+    }
+    fresh_question = {
+        **stale_question,
+        "text": "Is this still available?",
+        "status": "ANSWERED",
+        "answer": {
+            "text": "Yes, it is available.",
+            "date_created": datetime(2026, 5, 30, 10, 0, tzinfo=UTC),
+            "status": "ACTIVE",
+        },
+    }
+    db = FakeDb()
+    db.collections["questions"] = SupersedingFindThenReplaceCollection(
+        stale=stale_question, superseding=fresh_question
+    )
+    persistence = SheetsEventPersistence(db=db, clock=lambda: NOW)
+
+    await persistence.persist(
+        event_type="questions.new",
+        seller_id=82453304,
+        resource=_question_resource(status="UNANSWERED"),
+    )
+
+    question = db["questions"].documents["Q1"]
+    assert question["status"] == "ANSWERED"
+    assert question["text"] == "Is this still available?"
+    assert question["answer"]["date_created"] == datetime(2026, 5, 30, 10, 0, tzinfo=UTC)
+
+
+@pytest.mark.asyncio
+async def test_item_insert_race_promotes_fresh_snapshot_over_interleaved_stale_insert() -> None:
+    stale_item = {
+        "_id": "MLA1",
+        "seller_id": "82453304",
+        "title": "Stale widget",
+        "price": Decimal128("99.99"),
+        "base_price": Decimal128("99.99"),
+        "available_quantity": 7,
+        "status": "active",
+        "category_id": "MLA123",
+        "attributes": [{"id": "SELLER_SKU", "value_name": "sku-1"}],
+        "date_created": datetime(2026, 5, 1, 10, 0, tzinfo=UTC),
+        "last_updated": datetime(2026, 5, 29, 11, 0, tzinfo=UTC),
+        "last_meli_sync_at": NOW,
+        "schema_version": 2,
+    }
+    db = FakeDb()
+    db.collections["items"] = InterleavedInsertBeforeUpsertCollection(
+        interleaved_document=stale_item
+    )
+    persistence = SheetsEventPersistence(db=db, clock=lambda: NOW)
+
+    await persistence.persist(
+        event_type="items.updated",
+        seller_id=82453304,
+        resource=_item_resource_at(
+            title="Fresh widget",
+            price="199.99",
+            last_updated="2026-05-31T11:00:00+00:00",
+        ),
+    )
+
+    item = db["items"].documents["MLA1"]
+    assert item["title"] == "Fresh widget"
+    assert item["price"] == Decimal128("199.99")
+    assert item["last_updated"] == datetime(2026, 5, 31, 11, 0, tzinfo=UTC)
+
+
+@pytest.mark.asyncio
+async def test_stale_legacy_item_does_not_write_status_side_effects() -> None:
+    fresh_last_updated = datetime(2026, 5, 31, 11, 0, tzinfo=UTC)
+    db = FakeDb()
+    db["items"].documents["MLA1"] = {
+        "_id": "MLA1",
+        "seller_id": "82453304",
+        "title": "Fresh widget",
+        "price": Decimal128("199.99"),
+        "base_price": Decimal128("199.99"),
+        "available_quantity": 7,
+        "status": "active",
+        "category_id": "MLA123",
+        "attributes": [{"id": "SELLER_SKU", "value_name": "sku-1"}],
+        "date_created": datetime(2026, 5, 1, 10, 0, tzinfo=UTC),
+        "last_updated": fresh_last_updated,
+        "last_meli_sync_at": NOW,
+        "schema_version": 2,
+    }
+    formula_row: dict[str, Any] = {
+        "_id": "82453304:SKU-1:MLA1",
+        "seller_id": "82453304",
+        "item_id": "MLA1",
+        "sku": "sku-1",
+        "normalized_sku": "SKU-1",
+        "current": {"title": "Fresh widget", "status": "active"},
+    }
+    sku_index: dict[str, Any] = {
+        "_id": "82453304:SKU-1:MLA1",
+        "seller_id": "82453304",
+        "item_id": "MLA1",
+        "sku": "sku-1",
+        "normalized_sku": "SKU-1",
+    }
+    db["sheets_item_formula_rows"].documents[formula_row["_id"]] = dict(formula_row)
+    db["sheets_item_sku_index"].documents[sku_index["_id"]] = dict(sku_index)
+    stale_resource = {
+        **_item_resource("paused"),
+        "title": "Stale widget",
+        "price": "99.99",
+        "base_price": "99.99",
+        "last_updated": "2026-05-30T11:00:00+00:00",
+    }
+    persistence = SheetsEventPersistence(db=db, clock=lambda: PAUSED_AT)
+
+    await persistence.persist(
+        event_type="items.updated", seller_id=82453304, resource=stale_resource
+    )
+
+    item = db["items"].documents["MLA1"]
+    assert item["title"] == "Fresh widget"
+    assert item["status"] == "active"
+    assert item["last_updated"] == fresh_last_updated
+    assert "status_observed_at" not in item
+    assert db["item_status_states"].documents == {}
+    assert db["item_status_transitions"].documents == {}
+    assert db["sheets_item_formula_rows"].documents == {formula_row["_id"]: formula_row}
+    assert db["sheets_item_sku_index"].documents == {sku_index["_id"]: sku_index}
+
+
+@pytest.mark.asyncio
+async def test_stale_interleaved_item_does_not_mutate_status_side_effects() -> None:
+    active_state: dict[str, Any] = {
+        "_id": "82453304:MLA1",
+        "seller_id": "82453304",
+        "item_id": "MLA1",
+        "current_status": "active",
+        "first_observed_at": NOW,
+        "last_observed_at": NOW,
+        "status_started_at": NOW,
+        "last_status_change_at": NOW,
+        "schema_version": 1,
+    }
+    fresh_item: dict[str, Any] = {
+        "_id": "MLA1",
+        "seller_id": "82453304",
+        "title": "Fresh widget",
+        "price": Decimal128("199.99"),
+        "base_price": Decimal128("199.99"),
+        "available_quantity": 7,
+        "status": "active",
+        "category_id": "MLA123",
+        "attributes": [{"id": "SELLER_SKU", "value_name": "sku-1"}],
+        "date_created": datetime(2026, 5, 1, 10, 0, tzinfo=UTC),
+        "last_updated": datetime(2026, 5, 31, 11, 0, tzinfo=UTC),
+        "last_meli_sync_at": NOW,
+        "schema_version": 2,
+    }
+    db = FakeDb()
+    db.collections["items"] = FreshItemAfterInitialReadCollection(fresh_document=fresh_item)
+    db["item_status_states"].documents["82453304:MLA1"] = dict(active_state)
+    persistence = SheetsEventPersistence(db=db, clock=lambda: PAUSED_AT)
+
+    await persistence.persist(
+        event_type="items.updated",
+        seller_id=82453304,
+        resource={
+            **_item_resource("paused"),
+            "title": "Stale widget",
+            "price": "99.99",
+            "base_price": "99.99",
+            "last_updated": "2026-05-30T11:00:00+00:00",
+        },
+    )
+
+    assert db["items"].documents["MLA1"] == fresh_item
+    assert db["item_status_states"].documents["82453304:MLA1"] == active_state
+    assert db["item_status_transitions"].documents == {}
+
+
+@pytest.mark.asyncio
+async def test_stale_item_status_side_effects_wait_for_canonical_acceptance() -> None:
+    active_state: dict[str, Any] = {
+        "_id": "82453304:MLA1",
+        "seller_id": "82453304",
+        "item_id": "MLA1",
+        "current_status": "active",
+        "first_observed_at": NOW,
+        "last_observed_at": NOW,
+        "status_started_at": NOW,
+        "last_status_change_at": NOW,
+        "schema_version": 1,
+    }
+    initial_item: dict[str, Any] = {
+        "_id": "MLA1",
+        "seller_id": "82453304",
+        "title": "Initial widget",
+        "price": Decimal128("149.99"),
+        "base_price": Decimal128("159.99"),
+        "available_quantity": 7,
+        "status": "active",
+        "category_id": "MLA123",
+        "attributes": [{"id": "SELLER_SKU", "value_name": "sku-1"}],
+        "date_created": datetime(2026, 5, 1, 10, 0, tzinfo=UTC),
+        "last_updated": datetime(2026, 5, 29, 11, 0, tzinfo=UTC),
+        "last_meli_sync_at": NOW,
+        "schema_version": 2,
+    }
+    fresh_item: dict[str, Any] = {
+        **initial_item,
+        "title": "Fresh widget",
+        "price": Decimal128("199.99"),
+        "base_price": Decimal128("199.99"),
+        "last_updated": datetime(2026, 5, 31, 11, 0, tzinfo=UTC),
+    }
+    formula_row: dict[str, Any] = {
+        "_id": "82453304:SKU-1:MLA1",
+        "seller_id": "82453304",
+        "item_id": "MLA1",
+        "sku": "sku-1",
+        "normalized_sku": "SKU-1",
+        "current": {
+            "title": "Fresh widget",
+            "status": "active",
+            "updated_at": datetime(2026, 5, 31, 11, 0, tzinfo=UTC),
+        },
+    }
+    sku_index: dict[str, Any] = {
+        "_id": "82453304:SKU-1:MLA1",
+        "seller_id": "82453304",
+        "item_id": "MLA1",
+        "sku": "sku-1",
+        "normalized_sku": "SKU-1",
+        "updated_at": datetime(2026, 5, 31, 11, 0, tzinfo=UTC),
+    }
+    db = FakeDb()
+    db.collections["items"] = FreshItemBeforeReplaceCollection(
+        initial_document=initial_item, fresh_document=fresh_item
+    )
+    db["item_status_states"].documents["82453304:MLA1"] = dict(active_state)
+    db["sheets_item_formula_rows"].documents[formula_row["_id"]] = dict(formula_row)
+    db["sheets_item_sku_index"].documents[sku_index["_id"]] = dict(sku_index)
+    persistence = SheetsEventPersistence(db=db, clock=lambda: PAUSED_AT)
+
+    await persistence.persist(
+        event_type="items.updated",
+        seller_id=82453304,
+        resource={
+            **_item_resource("paused"),
+            "title": "Stale widget",
+            "price": "99.99",
+            "base_price": "99.99",
+            "last_updated": "2026-05-30T11:00:00+00:00",
+        },
+    )
+
+    assert db["items"].documents["MLA1"] == fresh_item
+    assert db["item_status_states"].documents["82453304:MLA1"] == active_state
+    assert db["item_status_transitions"].documents == {}
+    assert db["sheets_item_formula_rows"].documents == {formula_row["_id"]: formula_row}
+    assert db["sheets_item_sku_index"].documents == {sku_index["_id"]: sku_index}
+
+
+@pytest.mark.asyncio
+async def test_fresh_item_write_is_not_blocked_by_stale_status_observation() -> None:
+    stale_status_state: dict[str, Any] = {
+        "_id": "82453304:MLA1",
+        "seller_id": "82453304",
+        "item_id": "MLA1",
+        "current_status": "paused",
+        "first_observed_at": NOW,
+        "last_observed_at": PAUSED_AT,
+        "status_started_at": PAUSED_AT,
+        "paused_since": PAUSED_AT,
+        "last_status_change_at": PAUSED_AT,
+        "schema_version": 1,
+    }
+    db = FakeDb()
+    db["items"].documents["MLA1"] = {
+        "_id": "MLA1",
+        "seller_id": "82453304",
+        "title": "Initial widget",
+        "price": Decimal128("149.99"),
+        "base_price": Decimal128("159.99"),
+        "available_quantity": 7,
+        "status": "active",
+        "category_id": "MLA123",
+        "attributes": [{"id": "SELLER_SKU", "value_name": "sku-1"}],
+        "date_created": datetime(2026, 5, 1, 10, 0, tzinfo=UTC),
+        "last_updated": datetime(2026, 5, 30, 11, 0, tzinfo=UTC),
+        "last_meli_sync_at": NOW,
+        "schema_version": 2,
+    }
+    db["item_status_states"].documents["82453304:MLA1"] = dict(stale_status_state)
+    persistence = SheetsEventPersistence(db=db, clock=lambda: NOW)
+
+    await persistence.persist(
+        event_type="items.updated",
+        seller_id=82453304,
+        resource=_item_resource_at(
+            title="Fresh widget",
+            price="199.99",
+            last_updated="2026-05-31T11:00:00+00:00",
+        ),
+    )
+
+    item = db["items"].documents["MLA1"]
+    assert item["title"] == "Fresh widget"
+    assert item["price"] == Decimal128("199.99")
+    assert item["status"] == "active"
+    assert item["last_updated"] == datetime(2026, 5, 31, 11, 0, tzinfo=UTC)
+    row = db["sheets_item_formula_rows"].documents["82453304:SKU-1:MLA1"]
+    assert row["current"]["title"] == "Fresh widget"
+    assert row["current"]["status"] == "active"
+    assert row["current"]["updated_at"] == datetime(2026, 5, 31, 11, 0, tzinfo=UTC)
+    assert len(db["sheets_item_sku_index"].documents) == 1
+    sku_index = next(iter(db["sheets_item_sku_index"].documents.values()))
+    assert sku_index["updated_at"] == datetime(2026, 5, 31, 11, 0, tzinfo=UTC)
+    assert db["item_status_states"].documents["82453304:MLA1"] == stale_status_state
+    assert db["item_status_transitions"].documents == {}
+
+
+@pytest.mark.asyncio
+async def test_order_missing_freshness_fields_cannot_regress_closed_order() -> None:
+    db = FakeDb()
+    db["orders"].documents["2001"] = {
+        "_id": "2001",
+        "seller_id": "82453304",
+        "buyer_id": "123",
+        "shipment_id": "555",
+        "status": "cancelled",
+        "date_created": datetime(2026, 5, 29, 10, 0, tzinfo=UTC),
+        "date_closed": datetime(2026, 5, 30, 10, 5, tzinfo=UTC),
+        "last_updated": datetime(2026, 5, 30, 10, 10, tzinfo=UTC),
+        "total_amount": Decimal128("299.90"),
+        "items": [],
+        "schema_version": 1,
+    }
+    persistence = SheetsEventPersistence(db=db, clock=lambda: NOW)
+
+    await persistence.persist(
+        event_type="orders.updated",
+        seller_id=82453304,
+        resource=_order_resource_at(
+            status="paid",
+            total_amount="199.90",
+            date_closed=None,
+        ),
+    )
+
+    order = db["orders"].documents["2001"]
+    assert order["status"] == "cancelled"
+    assert order["total_amount"] == Decimal128("299.90")
+    assert order["date_closed"] == datetime(2026, 5, 30, 10, 5, tzinfo=UTC)
+
+
+@pytest.mark.asyncio
+async def test_order_status_only_update_uses_last_updated_as_monotonic_freshness() -> None:
+    db = FakeDb()
+    db["orders"].documents["2001"] = {
+        "_id": "2001",
+        "seller_id": "82453304",
+        "buyer_id": "123",
+        "shipment_id": "555",
+        "status": "paid",
+        "date_created": datetime(2026, 5, 29, 10, 0, tzinfo=UTC),
+        "date_closed": datetime(2026, 5, 29, 10, 5, tzinfo=UTC),
+        "last_updated": datetime(2026, 5, 29, 10, 6, tzinfo=UTC),
+        "total_amount": Decimal128("299.90"),
+        "items": [],
+        "schema_version": 1,
+    }
+    persistence = SheetsEventPersistence(db=db, clock=lambda: NOW)
+
+    await persistence.persist(
+        event_type="orders.updated",
+        seller_id=82453304,
+        resource=_order_resource_at(
+            status="confirmed",
+            total_amount="299.90",
+            date_closed="2026-05-29T10:05:00+00:00",
+            last_updated="2026-05-29T10:07:00+00:00",
+        ),
+    )
+
+    order = db["orders"].documents["2001"]
+    assert order["status"] == "confirmed"
+    assert order["date_closed"] == datetime(2026, 5, 29, 10, 5, tzinfo=UTC)
+    assert order["last_updated"] == datetime(2026, 5, 29, 10, 7, tzinfo=UTC)
+
+
+@pytest.mark.asyncio
+async def test_empty_resource_insert_races_promote_fresh_orders_shipments_and_questions() -> None:
+    db = FakeDb()
+    db.collections["orders"] = InterleavedInsertBeforeUpsertCollection(
+        interleaved_document={
+            "_id": "2001",
+            "seller_id": "82453304",
+            "buyer_id": "123",
+            "shipment_id": "555",
+            "status": "paid",
+            "date_created": datetime(2026, 5, 29, 10, 0, tzinfo=UTC),
+            "date_closed": datetime(2026, 5, 29, 10, 5, tzinfo=UTC),
+            "last_updated": datetime(2026, 5, 29, 10, 6, tzinfo=UTC),
+            "total_amount": Decimal128("199.90"),
+            "items": [],
+            "schema_version": 1,
+        }
+    )
+    db.collections["shipments"] = InterleavedInsertBeforeUpsertCollection(
+        interleaved_document={
+            "_id": "3001",
+            "seller_id": "82453304",
+            "order_id": "2001",
+            "status": "ready_to_ship",
+            "substatus": "printed",
+            "tracking_number": "TRACK-1",
+            "logistic_type": "fulfillment",
+            "date_created": datetime(2026, 5, 29, 10, 0, tzinfo=UTC),
+            "last_updated": datetime(2026, 5, 30, 11, 0, tzinfo=UTC),
+            "schema_version": 1,
+        }
+    )
+    db.collections["questions"] = InterleavedInsertBeforeUpsertCollection(
+        interleaved_document={
+            "_id": "Q1",
+            "seller_id": "82453304",
+            "item_id": "MLA1",
+            "text": "Is this available?",
+            "status": "UNANSWERED",
+            "from_user_id": "987654321",
+            "date_created": datetime(2026, 5, 29, 10, 0, tzinfo=UTC),
+            "schema_version": 1,
+        }
+    )
+    persistence = SheetsEventPersistence(db=db, clock=lambda: NOW)
+
+    await persistence.persist(
+        event_type="orders.updated",
+        seller_id=82453304,
+        resource=_order_resource_at(
+            status="cancelled",
+            total_amount="299.90",
+            date_closed="2026-05-30T10:05:00+00:00",
+            last_updated="2026-05-30T10:10:00+00:00",
+        ),
+    )
+    await persistence.persist(
+        event_type="shipments.updated",
+        seller_id=82453304,
+        resource=_shipment_resource_at(
+            status="shipped",
+            substatus="in_transit",
+            last_updated="2026-05-31T11:00:00+00:00",
+        ),
+    )
+    await persistence.persist(
+        event_type="questions.new",
+        seller_id=82453304,
+        resource=_question_resource(
+            status="ANSWERED",
+            text="Is this still available?",
+            answer={
+                "text": "Yes, it is available.",
+                "status": "ACTIVE",
+                "date_created": "2026-05-30T10:00:00+00:00",
+            },
+        ),
+    )
+
+    assert db["orders"].documents["2001"]["status"] == "cancelled"
+    assert db["orders"].documents["2001"]["total_amount"] == Decimal128("299.90")
+    assert db["shipments"].documents["3001"]["status"] == "shipped"
+    assert db["shipments"].documents["3001"]["last_updated"] == datetime(
+        2026, 5, 31, 11, 0, tzinfo=UTC
+    )
+    assert db["questions"].documents["Q1"]["status"] == "ANSWERED"
+    assert db["questions"].documents["Q1"]["answer"]["date_created"] == datetime(
+        2026, 5, 30, 10, 0, tzinfo=UTC
+    )
+
+
+@pytest.mark.asyncio
+async def test_question_webhook_creates_and_updates_formula_facing_read_model() -> None:
+    db = FakeDb()
+    persistence = SheetsEventPersistence(db=db, clock=lambda: NOW)
+
+    await persistence.persist(
+        event_type="questions.new",
+        seller_id=82453304,
+        resource=_question_resource(status="UNANSWERED"),
+    )
+    await persistence.persist(
+        event_type="questions.new",
+        seller_id=82453304,
+        resource=_question_resource(
+            status="ANSWERED",
+            text="Is this still available?",
+            answer={
+                "text": "Yes, it is available.",
+                "status": "ACTIVE",
+                "date_created": "2026-05-30T10:00:00+00:00",
+            },
+        ),
+    )
+
+    question = db["questions"].documents["Q1"]
+    assert question == {
+        "_id": "Q1",
+        "seller_id": "82453304",
+        "item_id": "MLA1",
+        "text": "Is this still available?",
+        "status": "ANSWERED",
+        "from_user_id": "987654321",
+        "date_created": datetime(2026, 5, 29, 10, 0, tzinfo=UTC),
+        "answer": {
+            "text": "Yes, it is available.",
+            "date_created": datetime(2026, 5, 30, 10, 0, tzinfo=UTC),
+            "status": "ACTIVE",
+        },
+        "schema_version": 1,
+    }
 
 
 @pytest.mark.asyncio
@@ -1481,7 +2341,7 @@ async def test_item_event_preserves_trusted_enrichment_and_refreshes_formula_row
         "variations": [],
         "last_meli_sync_at": NOW,
         "date_created": NOW,
-        "last_updated": NOW,
+        "last_updated": datetime(2026, 5, 29, 11, 0, tzinfo=UTC),
         "schema_version": 2,
     }
     persistence = SheetsEventPersistence(db=db, clock=lambda: NOW)
@@ -1708,7 +2568,7 @@ async def test_item_event_clears_trusted_seller_shipping_when_basis_changes() ->
         "variations": [],
         "last_meli_sync_at": NOW,
         "date_created": NOW,
-        "last_updated": NOW,
+        "last_updated": datetime(2026, 5, 29, 11, 0, tzinfo=UTC),
         "schema_version": 2,
     }
     persistence = SheetsEventPersistence(db=db, clock=lambda: NOW)

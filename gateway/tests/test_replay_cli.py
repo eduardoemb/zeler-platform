@@ -5,17 +5,26 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
+from infra.rabbitmq.topology import EXCHANGE, QUEUE_BINDINGS, SHEETS_REPLAY_QUEUE_BINDINGS
 
 from zeler_gateway.cli.replay_events import (
     ALLOWED_TOPICS,
+    DEFAULT_TOPICS,
+    SHEETS_FRESHNESS_TOPICS,
+    SHEETS_REPLAY_EXCHANGE,
+    TOPIC_REQUIRED_GATE_QUEUES,
+    TOPIC_ROUTING_KEYS,
     PlanOptions,
     QueueSnapshot,
+    ReplayAbortError,
     ReplayConfigError,
     ReplayPlan,
     TopicPlanCount,
+    _routing_key_matches,
     build_rabbit_remediation_report,
     build_replay_plan,
     evaluate_rabbit_gates,
+    execute_replay_plan,
     format_replay_output,
     parse_replay_args,
 )
@@ -49,6 +58,12 @@ class FakeCursor:
         return self.documents.pop(0)
 
 
+class FakeUpdateResult:
+    def __init__(self, *, matched_count: int, modified_count: int) -> None:
+        self.matched_count = matched_count
+        self.modified_count = modified_count
+
+
 class FakeWebhookEvents:
     def __init__(self, documents: list[dict[str, Any]]) -> None:
         self.documents = documents
@@ -76,9 +91,14 @@ class FakeWebhookEvents:
             and document.get("published_at") is query.get("published_at")
         )
 
-    async def update_one(self, filter_: dict[str, Any], update: dict[str, Any]) -> object:
+    async def update_one(self, filter_: dict[str, Any], update: dict[str, Any]) -> FakeUpdateResult:
         self.update_calls.append((filter_, update))
-        raise AssertionError("dry-run planning must not write to MongoDB")
+        for document in self.documents:
+            if all(document.get(key) == value for key, value in filter_.items()):
+                for key, value in update.get("$set", {}).items():
+                    document[key] = value
+                return FakeUpdateResult(matched_count=1, modified_count=1)
+        return FakeUpdateResult(matched_count=0, modified_count=0)
 
 
 class FakeDatabase:
@@ -88,6 +108,73 @@ class FakeDatabase:
     def __getitem__(self, collection_name: str) -> FakeWebhookEvents:
         assert collection_name == "webhook_events"
         return self.webhook_events
+
+
+class RecordingPublisher:
+    def __init__(self) -> None:
+        self.published: list[tuple[str | None, str, dict[str, Any], dict[str, str]]] = []
+
+    async def publish(
+        self, routing_key: str, payload: dict[str, Any], headers: dict[str, str]
+    ) -> None:
+        self.published.append((None, routing_key, payload, headers))
+
+    async def publish_to_exchange(
+        self,
+        exchange_name: str,
+        routing_key: str,
+        payload: dict[str, Any],
+        headers: dict[str, str],
+    ) -> None:
+        self.published.append((exchange_name, routing_key, payload, headers))
+
+
+class ReturnedPublishPublisher:
+    def __init__(self) -> None:
+        self.published: list[tuple[str, str, dict[str, Any], dict[str, str]]] = []
+
+    async def publish(
+        self, routing_key: str, payload: dict[str, Any], headers: dict[str, str]
+    ) -> None:
+        await self.publish_to_exchange("", routing_key, payload, headers)
+
+    async def publish_to_exchange(
+        self,
+        exchange_name: str,
+        routing_key: str,
+        payload: dict[str, Any],
+        headers: dict[str, str],
+    ) -> None:
+        self.published.append((exchange_name, routing_key, payload, headers))
+        raise RuntimeError("unroutable mandatory publish returned by broker")
+
+
+class AlwaysTransientPublisher:
+    def __init__(self) -> None:
+        self.publish_attempts: list[tuple[str, str, dict[str, Any], dict[str, str]]] = []
+
+    async def publish(
+        self, routing_key: str, payload: dict[str, Any], headers: dict[str, str]
+    ) -> None:
+        await self.publish_to_exchange("", routing_key, payload, headers)
+
+    async def publish_to_exchange(
+        self,
+        exchange_name: str,
+        routing_key: str,
+        payload: dict[str, Any],
+        headers: dict[str, str],
+    ) -> None:
+        self.publish_attempts.append((exchange_name, routing_key, payload, headers))
+        raise ConnectionError("broker temporarily unavailable")
+
+
+class RecordingFailureLedger:
+    def __init__(self) -> None:
+        self.rows: list[dict[str, Any]] = []
+
+    def write(self, row: dict[str, Any]) -> None:
+        self.rows.append(row)
 
 
 def _event(
@@ -108,6 +195,37 @@ def _event(
         "source_ip": "127.0.0.1",
         "schema_version": 1,
     }
+
+
+def _healthy_queue_snapshot(queue_name: str) -> QueueSnapshot:
+    bindings = tuple(
+        {"source": EXCHANGE, "destination": queue_name, "routing_key": routing_key}
+        for routing_key in QUEUE_BINDINGS[queue_name]
+    ) + tuple(
+        {
+            "source": SHEETS_REPLAY_EXCHANGE,
+            "destination": queue_name,
+            "routing_key": routing_key,
+        }
+        for routing_key in SHEETS_REPLAY_QUEUE_BINDINGS.get(queue_name, ())
+    )
+    return QueueSnapshot(
+        name=queue_name,
+        ready=0,
+        unacked=0,
+        consumers=1,
+        dlq_ready=0,
+        routing_keys=tuple(QUEUE_BINDINGS[queue_name]),
+        bindings=bindings,
+    )
+
+
+def _expected_fanout_queues(routing_key: str) -> tuple[str, ...]:
+    return tuple(
+        queue_name
+        for queue_name, binding_keys in QUEUE_BINDINGS.items()
+        if any(_routing_key_matches(binding_key, routing_key) for binding_key in binding_keys)
+    )
 
 
 def _coalescing_baseline() -> list[dict[str, Any]]:
@@ -150,7 +268,7 @@ def test_safety_cli_defaults_to_dry_run_and_validates_execute_run_id() -> None:
 
     assert dry_run.execute is False
     assert dry_run.run_id.startswith("dry-run-")
-    assert dry_run.topics == tuple(ALLOWED_TOPICS)
+    assert dry_run.topics == DEFAULT_TOPICS
     assert dry_run.rate_per_sec == 1.0
     assert dry_run.concurrency == 1
     assert dry_run.dedupe_policy == "latest-per-resource"
@@ -188,11 +306,435 @@ def test_safety_cli_validates_allowlist_limits_rate_and_concurrency() -> None:
     assert options.rabbit_management_url == "http://rabbitmq.local/api/queues"
 
     with pytest.raises(ReplayConfigError, match="unsupported topic"):
-        parse_replay_args(["--topics", "items"])
+        parse_replay_args(["--topics", "claims"])
     with pytest.raises(ReplayConfigError, match="rate-per-sec must be"):
         parse_replay_args(["--rate-per-sec", "2"])
     with pytest.raises(ReplayConfigError, match="concurrency must be 1"):
         parse_replay_args(["--concurrency", "2"])
+
+
+def test_sheets_replay_topics_are_dry_run_first_and_require_execute_gate_source() -> None:
+    options = parse_replay_args(["--topics", "items,orders_v2,shipments,questions,items_prices"])
+
+    assert options.execute is False
+    assert options.topics == ("items", "orders_v2", "shipments", "questions", "items_prices")
+
+    with pytest.raises(ReplayConfigError, match="Rabbit management gate source"):
+        parse_replay_args(["--execute", "--run-id", "ops-sheets", "--topics", "items"])
+
+
+def test_sheets_replay_topics_gate_only_sheets_replay_queue(tmp_path: Any) -> None:
+    options = parse_replay_args(
+        [
+            "--execute",
+            "--run-id",
+            "ops-sheets",
+            "--topics",
+            "items,orders_v2,shipments,questions,items_prices",
+            "--rabbit-management-export",
+            str(tmp_path / "rabbit-export.json"),
+        ]
+    )
+    required_queues = sorted(
+        {queue_name for topic in options.topics for queue_name in TOPIC_REQUIRED_GATE_QUEUES[topic]}
+    )
+    decision = evaluate_rabbit_gates(
+        [_healthy_queue_snapshot(queue_name) for queue_name in required_queues],
+        options.topics,
+        options,
+    )
+
+    assert decision.allowed is True
+    assert decision.reason == "ok"
+    assert required_queues == ["zeler.sheets.events"]
+
+
+def test_sheets_replay_execute_gate_rejects_old_meli_events_only_binding(tmp_path: Any) -> None:
+    options = parse_replay_args(
+        [
+            "--execute",
+            "--run-id",
+            "ops-sheets",
+            "--topics",
+            "items",
+            "--rabbit-management-export",
+            str(tmp_path / "rabbit-export.json"),
+        ]
+    )
+    snapshot = QueueSnapshot(
+        name="zeler.sheets.events",
+        ready=0,
+        unacked=0,
+        consumers=1,
+        dlq_ready=0,
+        routing_keys=("items.*",),
+        bindings=(
+            {"source": EXCHANGE, "destination": "zeler.sheets.events", "routing_key": "items.*"},
+        ),
+    )
+
+    decision = evaluate_rabbit_gates([snapshot], ("items",), options)
+
+    assert decision.allowed is False
+    assert decision.reason == "wrong_binding"
+    assert "zeler.sheets.replay" in decision.detail
+
+
+def test_sheets_replay_execute_gate_accepts_sheets_replay_binding(tmp_path: Any) -> None:
+    options = parse_replay_args(
+        [
+            "--execute",
+            "--run-id",
+            "ops-sheets",
+            "--topics",
+            "items",
+            "--rabbit-management-export",
+            str(tmp_path / "rabbit-export.json"),
+        ]
+    )
+    snapshot = QueueSnapshot(
+        name="zeler.sheets.events",
+        ready=0,
+        unacked=0,
+        consumers=1,
+        dlq_ready=0,
+        routing_keys=("items.*",),
+        bindings=(
+            {
+                "source": SHEETS_REPLAY_EXCHANGE,
+                "destination": "zeler.sheets.events",
+                "routing_key": "items.*",
+            },
+        ),
+    )
+
+    decision = evaluate_rabbit_gates([snapshot], ("items",), options)
+
+    assert decision.allowed is True
+    assert decision.reason == "ok"
+
+
+def test_sheets_replay_execute_gate_does_not_require_shared_meli_events_fanout() -> None:
+    assert {topic: TOPIC_REQUIRED_GATE_QUEUES[topic] for topic in SHEETS_FRESHNESS_TOPICS} == {
+        topic: ("zeler.sheets.events",) for topic in SHEETS_FRESHNESS_TOPICS
+    }
+    assert _expected_fanout_queues(TOPIC_ROUTING_KEYS["items_prices"]) != ("zeler.sheets.events",)
+
+
+@pytest.mark.parametrize(
+    ("topic", "missing_queue"),
+    [
+        ("items", "zeler.sheets.events"),
+        ("items_prices", "zeler.sheets.events"),
+        ("orders_v2", "zeler.sheets.events"),
+        ("questions", "zeler.sheets.events"),
+    ],
+)
+def test_sheets_replay_gate_blocks_when_sheets_replay_queue_is_missing(
+    topic: str, missing_queue: str
+) -> None:
+    options = parse_replay_args(["--topics", topic])
+    snapshots = [
+        _healthy_queue_snapshot(queue_name)
+        for queue_name in TOPIC_REQUIRED_GATE_QUEUES[topic]
+        if queue_name != missing_queue
+    ]
+
+    decision = evaluate_rabbit_gates(snapshots, (topic,), options)
+
+    assert decision.allowed is False
+    assert decision.reason == "missing_consumer"
+    assert decision.detail == f"active consumer path {missing_queue}"
+
+
+def test_sheets_replay_execute_gate_blocks_when_routing_keys_are_unavailable(
+    tmp_path: Any,
+) -> None:
+    topic = "items"
+    snapshots = [
+        _healthy_queue_snapshot(queue_name) for queue_name in TOPIC_REQUIRED_GATE_QUEUES[topic]
+    ]
+    snapshots[0] = QueueSnapshot(
+        name=snapshots[0].name,
+        ready=0,
+        unacked=0,
+        consumers=1,
+        dlq_ready=0,
+        routing_keys=(),
+    )
+    options = parse_replay_args(
+        [
+            "--execute",
+            "--run-id",
+            "ops-sheets",
+            "--topics",
+            topic,
+            "--rabbit-management-export",
+            str(tmp_path / "rabbit-export.json"),
+        ]
+    )
+
+    decision = evaluate_rabbit_gates(snapshots, (topic,), options)
+
+    assert decision.allowed is False
+    assert decision.reason == "binding_unavailable"
+    assert decision.detail == f"active consumer path {snapshots[0].name}"
+
+
+@pytest.mark.asyncio
+async def test_execute_sheets_replay_publishes_to_sheets_replay_exchange_only_without_global_mark(
+    tmp_path: Any,
+) -> None:
+    database = FakeDatabase(
+        [_event("price-1", topic="items_prices", resource="/items/MLA1/prices")]
+    )
+    plan = await build_replay_plan(
+        database,
+        PlanOptions(
+            run_id="ops-sheets",
+            topics=("items_prices",),
+            expected_counts={"items_prices": 1},
+        ),
+    )
+    options = parse_replay_args(
+        [
+            "--execute",
+            "--run-id",
+            "ops-sheets",
+            "--topics",
+            "items_prices",
+            "--rabbit-management-export",
+            str(tmp_path / "rabbit-export.json"),
+        ]
+    )
+    publisher = RecordingPublisher()
+    ledger = RecordingFailureLedger()
+
+    await execute_replay_plan(
+        database,
+        plan,
+        publisher=publisher,
+        options=options,
+        ledger=ledger,
+        gate_provider=lambda: [_healthy_queue_snapshot("zeler.sheets.events")],
+    )
+
+    assert len(publisher.published) == 1
+    exchange_name, routing_key, payload, headers = publisher.published[0]
+    assert exchange_name == SHEETS_REPLAY_EXCHANGE
+    assert routing_key == "items.price_updated"
+    assert payload["event_type"] == "items.price_updated"
+    assert "exchange" not in headers
+    assert database.webhook_events.update_calls == []
+    assert database.webhook_events.documents[0]["published_at"] is None
+    assert ledger.rows[0]["status"] == "published"
+    assert ledger.rows[0]["run_id"] == "ops-sheets"
+    assert ledger.rows[0]["_id"] == "price-1"
+
+
+@pytest.mark.asyncio
+async def test_execute_main_exchange_replay_marks_global_published(
+    tmp_path: Any,
+) -> None:
+    database = FakeDatabase([_event("price-1")])
+    plan = await build_replay_plan(
+        database,
+        PlanOptions(
+            run_id="ops-main",
+            topics=("price_suggestion",),
+            expected_counts={"price_suggestion": 1},
+        ),
+    )
+    options = parse_replay_args(
+        [
+            "--execute",
+            "--run-id",
+            "ops-main",
+            "--topics",
+            "price_suggestion",
+            "--rabbit-management-export",
+            str(tmp_path / "rabbit-export.json"),
+        ]
+    )
+    publisher = RecordingPublisher()
+
+    await execute_replay_plan(
+        database,
+        plan,
+        publisher=publisher,
+        options=options,
+        gate_provider=lambda: [
+            QueueSnapshot(
+                name="zeler.repricer.items",
+                ready=0,
+                unacked=0,
+                consumers=1,
+                dlq_ready=0,
+                routing_keys=("price_suggestion.updated",),
+            )
+        ],
+    )
+
+    assert len(database.webhook_events.update_calls) == 1
+    update_filter, update_doc = database.webhook_events.update_calls[0]
+    assert update_filter == {"_id": "price-1", "published_at": None}
+    assert update_doc["$set"]["published_at"] <= datetime.now(UTC)
+    assert update_doc["$set"]["classification"] == "price_suggestion.updated"
+    assert update_doc["$set"]["replay_run_id"] == "ops-main"
+
+
+@pytest.mark.asyncio
+async def test_execute_replay_plan_blocks_before_publish_when_required_binding_is_absent(
+    tmp_path: Any,
+) -> None:
+    database = FakeDatabase([_event("item-1", topic="items", resource="/items/MLA1")])
+    plan = await build_replay_plan(
+        database,
+        PlanOptions(
+            run_id="ops-sheets",
+            topics=("items",),
+            expected_counts={"items": 1},
+        ),
+    )
+    options = parse_replay_args(
+        [
+            "--execute",
+            "--run-id",
+            "ops-sheets",
+            "--topics",
+            "items",
+            "--rabbit-management-export",
+            str(tmp_path / "rabbit-export.json"),
+        ]
+    )
+    snapshots = [
+        _healthy_queue_snapshot(queue_name) for queue_name in TOPIC_REQUIRED_GATE_QUEUES["items"]
+    ]
+    snapshots[-1] = QueueSnapshot(
+        name="zeler.sheets.events",
+        ready=0,
+        unacked=0,
+        consumers=1,
+        dlq_ready=0,
+        routing_keys=("orders.*",),
+        bindings=(
+            {
+                "source": SHEETS_REPLAY_EXCHANGE,
+                "destination": "zeler.sheets.events",
+                "routing_key": "orders.*",
+            },
+        ),
+    )
+    publisher = RecordingPublisher()
+
+    with pytest.raises(ReplayAbortError, match="zeler.sheets.events"):
+        await execute_replay_plan(
+            database,
+            plan,
+            publisher=publisher,
+            options=options,
+            gate_provider=lambda: snapshots,
+        )
+
+    assert publisher.published == []
+    assert database.webhook_events.update_calls == []
+
+
+@pytest.mark.asyncio
+async def test_execute_sheets_replay_returned_publish_fails_without_marking_mongo(
+    tmp_path: Any,
+) -> None:
+    database = FakeDatabase([_event("item-1", topic="items", resource="/items/MLA1")])
+    plan = await build_replay_plan(
+        database,
+        PlanOptions(
+            run_id="ops-sheets",
+            topics=("items",),
+            expected_counts={"items": 1},
+        ),
+    )
+    options = parse_replay_args(
+        [
+            "--execute",
+            "--run-id",
+            "ops-sheets",
+            "--topics",
+            "items",
+            "--rabbit-management-export",
+            str(tmp_path / "rabbit-export.json"),
+        ]
+    )
+    publisher = ReturnedPublishPublisher()
+
+    with pytest.raises(ReplayAbortError, match="publish failed"):
+        await execute_replay_plan(
+            database,
+            plan,
+            publisher=publisher,
+            options=options,
+            gate_provider=lambda: [_healthy_queue_snapshot("zeler.sheets.events")],
+        )
+
+    assert [published[1] for published in publisher.published] == ["items.updated"]
+    assert database.webhook_events.update_calls == []
+
+
+@pytest.mark.asyncio
+async def test_execute_sheets_replay_abort_after_exhausted_transient_publish_retries(
+    tmp_path: Any,
+) -> None:
+    database = FakeDatabase(
+        [
+            _event("item-1", topic="items", resource="/items/MLA1", minutes=0),
+            _event("item-2", topic="items", resource="/items/MLA2", minutes=1),
+        ]
+    )
+    plan = await build_replay_plan(
+        database,
+        PlanOptions(
+            run_id="ops-sheets",
+            topics=("items",),
+            expected_counts={"items": 2},
+        ),
+    )
+    options = parse_replay_args(
+        [
+            "--execute",
+            "--run-id",
+            "ops-sheets",
+            "--topics",
+            "items",
+            "--rabbit-management-export",
+            str(tmp_path / "rabbit-export.json"),
+            "--max-publish-attempts",
+            "2",
+        ]
+    )
+    publisher = AlwaysTransientPublisher()
+    ledger = RecordingFailureLedger()
+
+    with pytest.raises(ReplayAbortError, match="publish failed for event item-1"):
+        await execute_replay_plan(
+            database,
+            plan,
+            publisher=publisher,
+            options=options,
+            ledger=ledger,
+            gate_provider=lambda: [_healthy_queue_snapshot("zeler.sheets.events")],
+        )
+
+    assert [attempt[2]["event_id"] for attempt in publisher.publish_attempts] == [
+        "item-1",
+        "item-1",
+    ]
+    assert database.webhook_events.update_calls == []
+    assert all(document["published_at"] is None for document in database.webhook_events.documents)
+    assert len(ledger.rows) == 1
+    assert ledger.rows[0]["_id"] == "item-1"
+    assert ledger.rows[0]["status"] == "failed"
+    assert ledger.rows[0]["attempt"] == 2
+    assert ledger.rows[0]["error_class"] == "ConnectionError"
+    assert "temporarily unavailable" in ledger.rows[0]["error"]
 
 
 def test_stock_locations_topic_is_retired_with_fulldock() -> None:
@@ -335,6 +877,51 @@ async def test_safety_dry_run_plan_reads_only_and_omits_raw_fields() -> None:
     assert [event.id for event in plan.skipped] == ["older"]
     assert "raw_body" not in plan.to_sanitized_dict()["selected"][0]
     assert "source_ip" not in plan.to_sanitized_dict()["selected"][0]
+
+
+@pytest.mark.asyncio
+async def test_sheets_dry_run_plan_reads_only_and_routes_freshness_topics_to_sheets_queue() -> None:
+    database = FakeDatabase(
+        [
+            _event("item-1", topic="items", resource="/items/MLA1"),
+            _event("order-1", topic="orders_v2", resource="/orders/2001"),
+            _event("shipment-1", topic="shipments", resource="/shipments/3001"),
+            _event("question-1", topic="questions", resource="/questions/Q1"),
+            _event("price-1", topic="items_prices", resource="/items/MLA1/prices"),
+        ]
+    )
+
+    plan = await build_replay_plan(
+        database,
+        PlanOptions(
+            run_id="dry-run-sheets",
+            topics=("items", "orders_v2", "shipments", "questions", "items_prices"),
+            expected_counts={
+                "items": 1,
+                "orders_v2": 1,
+                "shipments": 1,
+                "questions": 1,
+                "items_prices": 1,
+            },
+        ),
+    )
+
+    assert database.webhook_events.update_calls == []
+    by_id = {event.id: event for event in plan.selected}
+    assert {event_id: event.routing_key for event_id, event in by_id.items()} == {
+        "item-1": "items.updated",
+        "order-1": "orders.updated",
+        "shipment-1": "shipments.updated",
+        "question-1": "questions.new",
+        "price-1": "items.price_updated",
+    }
+    assert {event_id: event.idempotency_key for event_id, event in by_id.items()} == {
+        "item-1": "items:/items/MLA1:item-1",
+        "order-1": "orders_v2:/orders/2001:order-1",
+        "shipment-1": "shipments:/shipments/3001:shipment-1",
+        "question-1": "questions:/questions/Q1:question-1",
+        "price-1": "items_prices:/items/MLA1/prices:price-1",
+    }
 
 
 @pytest.mark.asyncio

@@ -133,7 +133,10 @@ write sheets-worker \
   "GOOGLE_OAUTH_CLIENT_SECRET=$GOOGLE_CLIENT_SECRET" \
   "GOOGLE_OAUTH_REDIRECT_URI=https://sheets.zeler.ai/oauth/google/callback" \
   "KMS_GOOGLE_TOKENS_KEY=google-tokens" \
-  "GATEWAY_BASE_URL=$GATEWAY_PROXY_BASE_URL"
+  "GATEWAY_BASE_URL=$GATEWAY_PROXY_BASE_URL" \
+  "ZELERDATA_ENRICHMENT_ENABLED=true" \
+  "ZELERDATA_SALE_PRICE_ENABLED=true" \
+  "ZELERDATA_LISTING_FIXED_FEE_ENABLED=true"
 
 # ---------------------------------------------------------------------------
 # Workers that call gateway proxy with minted JWT/KMS auth
