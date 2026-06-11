@@ -25,15 +25,19 @@ from zeler_repricer.consumer import (
 
 class FakeCoreIdempotencyStore:
     def __init__(self) -> None:
-        self.duplicate_keys: list[str] = []
-        self.marked: list[tuple[str, str]] = []
+        self.duplicate_keys: list[tuple[str, str, str | None]] = []
+        self.marked: list[tuple[str, str, str | None]] = []
 
-    async def is_duplicate(self, key: str) -> bool:
-        self.duplicate_keys.append(key)
+    async def is_duplicate(
+        self, key: str, *, module_id: str, consumer_id: str | None = None
+    ) -> bool:
+        self.duplicate_keys.append((key, module_id, consumer_id))
         return False
 
-    async def mark_processed(self, key: str, *, module_id: str) -> bool:
-        self.marked.append((key, module_id))
+    async def mark_processed(
+        self, key: str, *, module_id: str, consumer_id: str | None = None
+    ) -> bool:
+        self.marked.append((key, module_id, consumer_id))
         return True
 
 
@@ -44,7 +48,7 @@ async def test_idempotency_adapter_partials_module_id_for_repricer() -> None:
 
     await adapter.mark_processed("idem-1")
 
-    assert core_store.marked == [("idem-1", "repricer")]
+    assert core_store.marked == [("idem-1", "repricer", "zeler.repricer.items")]
 
 
 @pytest.mark.asyncio
@@ -54,7 +58,20 @@ async def test_idempotency_adapter_delegates_duplicate_check_for_repricer() -> N
 
     assert await adapter.is_duplicate("idem-2") is False
 
-    assert core_store.duplicate_keys == ["idem-2"]
+    assert core_store.duplicate_keys == [("idem-2", "repricer", "zeler.repricer.items")]
+
+
+@pytest.mark.asyncio
+async def test_idempotency_adapter_can_scope_repricer_fanout_by_consumer_queue() -> None:
+    core_store = FakeCoreIdempotencyStore()
+    adapter = _RepricerIdempotencyAdapter(
+        core_store,
+        consumer_id="zeler.repricer.items_prices",
+    )
+
+    await adapter.mark_processed("idem-price")
+
+    assert core_store.marked == [("idem-price", "repricer", "zeler.repricer.items_prices")]
 
 
 @pytest.mark.asyncio

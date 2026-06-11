@@ -24,15 +24,19 @@ from zeler_autoreply.consumer import (
 
 class FakeCoreIdempotencyStore:
     def __init__(self) -> None:
-        self.duplicate_keys: list[str] = []
-        self.marked: list[tuple[str, str]] = []
+        self.duplicate_keys: list[tuple[str, str, str | None]] = []
+        self.marked: list[tuple[str, str, str | None]] = []
 
-    async def is_duplicate(self, key: str) -> bool:
-        self.duplicate_keys.append(key)
+    async def is_duplicate(
+        self, key: str, *, module_id: str, consumer_id: str | None = None
+    ) -> bool:
+        self.duplicate_keys.append((key, module_id, consumer_id))
         return False
 
-    async def mark_processed(self, key: str, *, module_id: str) -> bool:
-        self.marked.append((key, module_id))
+    async def mark_processed(
+        self, key: str, *, module_id: str, consumer_id: str | None = None
+    ) -> bool:
+        self.marked.append((key, module_id, consumer_id))
         return True
 
 
@@ -43,7 +47,7 @@ async def test_idempotency_adapter_partials_module_id_for_autoreply() -> None:
 
     await adapter.mark_processed("idem-1")
 
-    assert core_store.marked == [("idem-1", "autoreply")]
+    assert core_store.marked == [("idem-1", "autoreply", "zeler.autoreply.events")]
 
 
 @pytest.mark.asyncio
@@ -53,7 +57,7 @@ async def test_idempotency_adapter_delegates_duplicate_check_for_autoreply() -> 
 
     assert await adapter.is_duplicate("idem-2") is False
 
-    assert core_store.duplicate_keys == ["idem-2"]
+    assert core_store.duplicate_keys == [("idem-2", "autoreply", "zeler.autoreply.events")]
 
 
 @pytest.mark.asyncio

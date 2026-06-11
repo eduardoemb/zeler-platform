@@ -97,6 +97,7 @@ class UtcDatetimeMixin(BaseModel):
         "last_meli_sync_at",
         "date_created",
         "date_closed",
+        "date_updated",
         "last_updated",
         "read_at",
         "received_at",

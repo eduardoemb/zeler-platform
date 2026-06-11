@@ -324,7 +324,14 @@ def test_rabbit_gate_state_loads_sanitized_management_export(tmp_path: Path) -> 
                         "dlq_ready": 0,
                         "routing_keys": ["price_suggestion.updated"],
                     }
-                ]
+                ],
+                "bindings": [
+                    {
+                        "source": "meli.events",
+                        "destination": "zeler.repricer.items",
+                        "routing_key": "price_suggestion.updated",
+                    }
+                ],
             }
         ),
         encoding="utf-8",
@@ -340,6 +347,13 @@ def test_rabbit_gate_state_loads_sanitized_management_export(tmp_path: Path) -> 
             consumers=2,
             dlq_ready=0,
             routing_keys=("price_suggestion.updated",),
+            bindings=(
+                {
+                    "source": "meli.events",
+                    "destination": "zeler.repricer.items",
+                    "routing_key": "price_suggestion.updated",
+                },
+            ),
             healthy=True,
         )
     ]

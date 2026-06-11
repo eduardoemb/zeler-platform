@@ -15,19 +15,22 @@ from uuid import uuid4
 from motor.motor_asyncio import AsyncIOMotorClient
 
 from zeler_gateway.config import Settings
-from zeler_gateway.webhooks.classifier import classify_webhook_event
+from zeler_gateway.webhooks.classifier import build_event_envelope, classify_webhook_event
 from zeler_gateway.webhooks.publisher import (
     AioPikaWebhookPublisher,
     WebhookPublisher,
     publish_webhook_event,
 )
 
-ALLOWED_TOPICS = ("price_suggestion", "user-products-families")
+DEFAULT_TOPICS = ("price_suggestion", "user-products-families")
+SHEETS_FRESHNESS_TOPICS = ("items", "orders_v2", "shipments", "questions", "items_prices")
+SHEETS_REPLAY_EXCHANGE = "zeler.sheets.replay"
+ALLOWED_TOPICS = (*DEFAULT_TOPICS, *SHEETS_FRESHNESS_TOPICS)
 BASELINE_COUNTS = {
     "price_suggestion": 35,
     "user-products-families": 5,
 }
-COALESCED_TOPICS = {"price_suggestion"}
+COALESCED_TOPICS = {"price_suggestion", *SHEETS_FRESHNESS_TOPICS}
 WEBHOOK_EVENTS_PROJECTION = {
     "_id": 1,
     "topic": 1,
@@ -40,6 +43,11 @@ WEBHOOK_EVENTS_PROJECTION = {
 DEFAULT_MAX_TIME_MS = 5000
 TOPIC_REQUIRED_GATE_QUEUES = {
     "price_suggestion": ("zeler.repricer.items",),
+    "items": ("zeler.sheets.events",),
+    "orders_v2": ("zeler.sheets.events",),
+    "shipments": ("zeler.sheets.events",),
+    "questions": ("zeler.sheets.events",),
+    "items_prices": ("zeler.sheets.events",),
 }
 TOPIC_NO_GO_REASONS = {
     "user-products-families": (
@@ -54,6 +62,11 @@ LEGACY_REMEDIATION_QUEUES = {
 TOPIC_ROUTING_KEYS = {
     "price_suggestion": "price_suggestion.updated",
     "user-products-families": "user_products.families_updated",
+    "items": "items.updated",
+    "orders_v2": "orders.updated",
+    "shipments": "shipments.updated",
+    "questions": "questions.new",
+    "items_prices": "items.price_updated",
 }
 
 DedupePolicy = Literal["latest-per-resource", "none", "replay-all"]
@@ -157,6 +170,9 @@ class ReplayPlan:
         }
 
 
+RabbitBinding = dict[str, str]
+
+
 @dataclass(frozen=True)
 class QueueSnapshot:
     name: str
@@ -165,6 +181,7 @@ class QueueSnapshot:
     consumers: int
     dlq_ready: int
     routing_keys: tuple[str, ...] = ()
+    bindings: tuple[RabbitBinding, ...] = ()
     healthy: bool = True
     recent_errors: tuple[str, ...] = ()
 
@@ -295,7 +312,7 @@ def parse_replay_args(argv: list[str] | None = None) -> CliOptions:
     parser = argparse.ArgumentParser(description="Safely plan or replay stored Meli webhook events")
     parser.add_argument("--execute", action="store_true")
     parser.add_argument("--run-id")
-    parser.add_argument("--topics", default=",".join(ALLOWED_TOPICS))
+    parser.add_argument("--topics", default=",".join(DEFAULT_TOPICS))
     parser.add_argument("--limit", action="append", default=[])
     parser.add_argument("--rate-per-sec", type=float, default=1.0)
     parser.add_argument("--concurrency", type=int, default=1)
@@ -661,30 +678,89 @@ def _is_transient_publish_error(exc: BaseException) -> bool:
     return isinstance(exc, (ConnectionError, TimeoutError, OSError))
 
 
-def _queue_snapshot_from_export(queue: dict[str, Any]) -> QueueSnapshot:
+async def _publish_planned_event(
+    event: PlannedEvent, *, publisher: WebhookPublisher, trace_id: str
+) -> None:
+    if event.topic in SHEETS_FRESHNESS_TOPICS:
+        publish_to_exchange = getattr(publisher, "publish_to_exchange", None)
+        if publish_to_exchange is None:
+            raise ReplayConfigError(
+                "Sheets replay requires a publisher with explicit exchange support"
+            )
+        await publish_to_exchange(
+            SHEETS_REPLAY_EXCHANGE,
+            event.routing_key,
+            build_event_envelope(event.event, trace_id=trace_id),
+            {"idempotency_key": event.idempotency_key},
+        )
+        return
+    await publish_webhook_event(event.event, publisher=publisher, trace_id=trace_id)
+
+
+def _binding_snapshot_from_export(
+    binding: dict[str, Any], *, default_destination: str | None = None
+) -> RabbitBinding | None:
+    source = binding.get("source") or binding.get("exchange")
+    destination = binding.get("destination") or binding.get("queue") or default_destination
+    routing_key = binding.get("routing_key")
+    if source is None or destination is None or routing_key is None:
+        return None
+    return {
+        "source": str(source),
+        "destination": str(destination),
+        "routing_key": str(routing_key),
+    }
+
+
+def _queue_snapshot_from_export(
+    queue: dict[str, Any], *, bindings: Sequence[RabbitBinding] = ()
+) -> QueueSnapshot:
+    queue_name = str(queue["name"])
+    queue_bindings = tuple(
+        binding for binding in bindings if binding.get("destination") == queue_name
+    ) + tuple(
+        parsed
+        for raw_binding in queue.get("bindings", ())
+        if (parsed := _binding_snapshot_from_export(raw_binding, default_destination=queue_name))
+        is not None
+    )
+    routing_keys = tuple(str(key) for key in queue.get("routing_keys", ()))
+    if not routing_keys:
+        routing_keys = tuple(binding["routing_key"] for binding in queue_bindings)
     return QueueSnapshot(
-        name=str(queue["name"]),
+        name=queue_name,
         ready=int(queue.get("messages_ready", queue.get("ready", 0))),
         unacked=int(queue.get("messages_unacknowledged", queue.get("unacked", 0))),
         consumers=int(queue.get("consumers", 0)),
         dlq_ready=int(queue.get("dlq_ready", queue.get("dlq", 0))),
-        routing_keys=tuple(str(key) for key in queue.get("routing_keys", ())),
+        routing_keys=routing_keys,
+        bindings=queue_bindings,
         healthy=bool(queue.get("healthy", True)),
         recent_errors=tuple(str(error) for error in queue.get("recent_errors", ())),
+    )
+
+
+def _bindings_from_export(payload: dict[str, Any]) -> tuple[RabbitBinding, ...]:
+    return tuple(
+        parsed
+        for raw_binding in payload.get("bindings", ())
+        if (parsed := _binding_snapshot_from_export(raw_binding)) is not None
     )
 
 
 def load_rabbit_gate_state_from_export(path: Path) -> list[QueueSnapshot]:
     payload = json.loads(path.read_text(encoding="utf-8"))
     queues = payload if isinstance(payload, list) else payload.get("queues", [])
-    return [_queue_snapshot_from_export(queue) for queue in queues]
+    bindings = () if isinstance(payload, list) else _bindings_from_export(payload)
+    return [_queue_snapshot_from_export(queue, bindings=bindings) for queue in queues]
 
 
 def load_rabbit_gate_state_from_management_url(url: str) -> list[QueueSnapshot]:
     with urlopen(url, timeout=10) as response:  # noqa: S310 - operator-supplied local/management URL
         payload = json.loads(response.read().decode("utf-8"))
     queues = payload if isinstance(payload, list) else payload.get("queues", [])
-    return [_queue_snapshot_from_export(queue) for queue in queues]
+    bindings = () if isinstance(payload, list) else _bindings_from_export(payload)
+    return [_queue_snapshot_from_export(queue, bindings=bindings) for queue in queues]
 
 
 def _ensure_execute_gate_source(
@@ -716,6 +792,26 @@ def _rabbit_gate_provider_from_options(options: CliOptions) -> RabbitGateProvide
     raise ReplayConfigError("Rabbit management gate source is required when --execute is set")
 
 
+def _required_binding_source_exchange(topic: str) -> str | None:
+    if topic in SHEETS_FRESHNESS_TOPICS:
+        return SHEETS_REPLAY_EXCHANGE
+    return None
+
+
+def _binding_proves_route(
+    binding: RabbitBinding,
+    *,
+    source: str,
+    destination: str,
+    routing_key: str,
+) -> bool:
+    return (
+        binding.get("source") == source
+        and binding.get("destination") == destination
+        and _routing_key_matches(binding.get("routing_key", ""), routing_key)
+    )
+
+
 def evaluate_rabbit_gates(
     snapshots: Sequence[QueueSnapshot], topics: Sequence[str], options: CliOptions
 ) -> GateDecision:
@@ -728,6 +824,7 @@ def evaluate_rabbit_gates(
         if topic in TOPIC_NO_GO_REASONS:
             return GateDecision(False, "topic_no_go", TOPIC_NO_GO_REASONS[topic])
         required_routing_key = TOPIC_ROUTING_KEYS[topic]
+        required_binding_source = _required_binding_source_exchange(topic)
         for queue_name in TOPIC_REQUIRED_GATE_QUEUES.get(topic, ()):
             snapshot = by_name.get(queue_name)
             detail = f"active consumer path {queue_name}"
@@ -747,6 +844,29 @@ def evaluate_rabbit_gates(
                 )
             ):
                 return GateDecision(False, "consumer_health_failed", detail)
+            if options.execute and required_binding_source is not None:
+                if not snapshot.bindings:
+                    return GateDecision(False, "binding_unavailable", detail)
+                if not any(
+                    _binding_proves_route(
+                        binding,
+                        source=required_binding_source,
+                        destination=queue_name,
+                        routing_key=required_routing_key,
+                    )
+                    for binding in snapshot.bindings
+                ):
+                    return GateDecision(
+                        False,
+                        "wrong_binding",
+                        (
+                            f"{detail}; requires {required_binding_source} -> "
+                            f"{queue_name} for {required_routing_key}"
+                        ),
+                    )
+                continue
+            if options.execute and not snapshot.routing_keys:
+                return GateDecision(False, "routing_unavailable", detail)
             if snapshot.routing_keys and not any(
                 _routing_key_matches(binding_key, required_routing_key)
                 for binding_key in snapshot.routing_keys
@@ -833,9 +953,11 @@ async def execute_replay_plan(
 
         last_error: BaseException | None = None
         published = False
+        publish_attempts = 0
         for attempt in range(1, options.max_publish_attempts + 1):
+            publish_attempts = attempt
             try:
-                await publish_webhook_event(event.event, publisher=publisher, trace_id=plan.run_id)
+                await _publish_planned_event(event, publisher=publisher, trace_id=plan.run_id)
                 published = True
                 break
             except Exception as exc:  # noqa: BLE001 - ledger needs sanitized class for all failures
@@ -851,12 +973,16 @@ async def execute_replay_plan(
                     event,
                     run_id=plan.run_id,
                     status="failed",
-                    attempt=options.max_publish_attempts,
+                    attempt=publish_attempts,
                     error_class=error.__class__.__name__,
                     error=error,
                 ),
             )
-            continue
+            message = (
+                f"publish failed for event {event.id} after "
+                f"{publish_attempts} attempt(s): {_sanitize_error(error)}"
+            )
+            raise ReplayAbortError(message) from None
 
         published_at = _utc_now()
         update_result = await collection.update_one(

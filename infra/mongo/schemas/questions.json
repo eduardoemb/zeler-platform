@@ -18,6 +18,12 @@
       "date_created": {
         "bsonType": "date"
       },
+      "date_updated": {
+        "bsonType": [
+          "date",
+          "null"
+        ]
+      },
       "from_user_id": {
         "bsonType": [
           "string",

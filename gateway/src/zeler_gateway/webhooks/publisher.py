@@ -22,6 +22,45 @@ class WebhookPublisher(Protocol):
     ) -> None: ...
 
 
+class WebhookPublishError(RuntimeError):
+    pass
+
+
+class WebhookPublishReturnedError(WebhookPublishError):
+    pass
+
+
+class WebhookPublishRejectedError(WebhookPublishError):
+    pass
+
+
+def _is_returned_publish_result(publish_result: Any) -> bool:
+    delivery = getattr(publish_result, "delivery", None)
+    return publish_result.__class__.__name__ == "DeliveredMessage" or (
+        delivery is not None
+        and (
+            delivery.__class__.__name__ == "Return"
+            or (hasattr(delivery, "reply_code") and hasattr(delivery, "reply_text"))
+        )
+    )
+
+
+def _raise_for_publish_result(publish_result: Any, *, exchange_name: str, routing_key: str) -> None:
+    if publish_result is None:
+        return
+    result_name = publish_result.__class__.__name__
+    if result_name in {"Nack", "Reject"}:
+        raise WebhookPublishRejectedError(
+            f"RabbitMQ rejected webhook publish to {exchange_name!r} "
+            f"with routing key {routing_key!r}"
+        )
+    if _is_returned_publish_result(publish_result):
+        raise WebhookPublishReturnedError(
+            f"RabbitMQ returned mandatory webhook publish to {exchange_name!r} "
+            f"with routing key {routing_key!r}"
+        )
+
+
 class AioPikaWebhookPublisher:
     def __init__(self, *, rabbitmq_url: str, exchange_name: str = MELI_EVENTS_EXCHANGE) -> None:
         self.rabbitmq_url = rabbitmq_url
@@ -30,13 +69,34 @@ class AioPikaWebhookPublisher:
     async def publish(
         self, routing_key: str, payload: dict[str, Any], headers: dict[str, str]
     ) -> None:
+        await self._publish_to_exchange(self.exchange_name, routing_key, payload, headers)
+
+    async def publish_to_exchange(
+        self,
+        exchange_name: str,
+        routing_key: str,
+        payload: dict[str, Any],
+        headers: dict[str, str],
+    ) -> None:
+        await self._publish_to_exchange(exchange_name, routing_key, payload, headers)
+
+    async def _publish_to_exchange(
+        self,
+        exchange_name: str,
+        routing_key: str,
+        payload: dict[str, Any],
+        headers: dict[str, str],
+    ) -> None:
         import aio_pika
 
         connection = await aio_pika.connect_robust(self.rabbitmq_url)
         async with connection:
-            channel = await connection.channel(publisher_confirms=True)
+            channel = await connection.channel(
+                publisher_confirms=True,
+                on_return_raises=True,
+            )
             exchange = await channel.declare_exchange(
-                self.exchange_name,
+                exchange_name,
                 aio_pika.ExchangeType.TOPIC,
                 durable=True,
             )
@@ -47,7 +107,14 @@ class AioPikaWebhookPublisher:
                 headers=cast(Any, headers),
                 message_id=str(payload["event_id"]),
             )
-            await exchange.publish(message, routing_key=routing_key)
+            publish_result = await exchange.publish(
+                message, routing_key=routing_key, mandatory=True
+            )
+            _raise_for_publish_result(
+                publish_result,
+                exchange_name=exchange_name,
+                routing_key=routing_key,
+            )
 
 
 def _fallback_event_id(event: dict[str, Any]) -> str:

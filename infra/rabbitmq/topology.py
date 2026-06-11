@@ -5,18 +5,23 @@ from pathlib import Path
 from typing import Any
 
 EXCHANGE = "meli.events"
+SHEETS_REPLAY_EXCHANGE = "zeler.sheets.replay"
 
 QUEUE_BINDINGS = {
     "zeler.repricer.items": ["items.*"],
     "zeler.repricer.items_prices": ["items.price_updated"],
     "zeler.repricer.price_suggestion": ["price_suggestion.*"],
     "zeler.repricer.sweep": ["repricer.sweep.requested"],
-    "zeler.sheets.events": ["items.*", "orders.*", "shipments.*"],
+    "zeler.sheets.events": ["items.*", "orders.*", "shipments.*", "questions.*"],
     "zeler.sheets.orders": ["orders.*"],
     "zeler.sheets.user_products": ["user_products.*"],
     "zeler.autoreply.events": ["questions.new", "messages.new"],
     "zeler.publicador.questions": ["questions.*"],
     "zeler.publicador.messages": ["messages.*"],
+}
+
+SHEETS_REPLAY_QUEUE_BINDINGS = {
+    "zeler.sheets.events": ["items.*", "orders.*", "shipments.*", "questions.*"],
 }
 
 ACTIVE_QUEUE_DEAD_LETTER_ROUTING_KEYS = {
@@ -38,7 +43,10 @@ def _queue(name: str, arguments: dict[str, Any] | None = None) -> dict[str, Any]
 
 
 def build_topology_definitions() -> dict[str, Any]:
-    exchanges: list[dict[str, Any]] = [{"name": EXCHANGE, "type": "topic", "durable": True}]
+    exchanges: list[dict[str, Any]] = [
+        {"name": EXCHANGE, "type": "topic", "durable": True},
+        {"name": SHEETS_REPLAY_EXCHANGE, "type": "topic", "durable": True},
+    ]
     queues: list[dict[str, Any]] = []
     bindings: list[dict[str, Any]] = []
 
@@ -78,6 +86,14 @@ def build_topology_definitions() -> dict[str, Any]:
         for routing_key in routing_keys:
             bindings.append(
                 {"source": EXCHANGE, "destination": queue_name, "routing_key": routing_key}
+            )
+        for routing_key in SHEETS_REPLAY_QUEUE_BINDINGS.get(queue_name, ()):
+            bindings.append(
+                {
+                    "source": SHEETS_REPLAY_EXCHANGE,
+                    "destination": queue_name,
+                    "routing_key": routing_key,
+                }
             )
     queues.append(_queue("webhooks.unknown.dlq"))
     bindings.append(

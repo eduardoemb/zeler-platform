@@ -594,6 +594,7 @@ class Order(UtcDatetimeMixin, PriceMixin, SellerScopedDocument):
     status: OrderStatus
     date_created: datetime
     date_closed: datetime | None = None
+    last_updated: datetime | None = None
     total_amount: Decimal
     items: list[OrderItem] = Field(default_factory=list)
     shipment_id: str | None = None
@@ -628,6 +629,7 @@ class Question(UtcDatetimeMixin, SellerScopedDocument):
     answer: QuestionAnswer | None = None
     from_user_id: str
     date_created: datetime
+    date_updated: datetime | None = None
 
     @field_validator("item_id", "from_user_id", mode="before")
     @classmethod

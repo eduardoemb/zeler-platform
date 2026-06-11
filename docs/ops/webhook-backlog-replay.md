@@ -11,12 +11,17 @@ mark MongoDB documents unless the business owner explicitly approves a specific
 - `--execute` also requires an operator-provided `--run-id`.
 - `--execute` fails closed unless exactly one RabbitMQ gate source is provided:
   `--rabbit-management-export` or `--rabbit-management-url`.
-- Allowed topics are only `price_suggestion` and `user-products-families`.
-  Fulldock is decommissioned, so `stock-locations` is no longer an allowed replay topic.
-- Default dedupe is `latest-per-resource`, which coalesces `price_suggestion` and
-  to the newest event per `(topic, user_id, resource)`.
+- Allowed topics are `price_suggestion`, `user-products-families`, and Sheets
+  freshness topics: `items`, `orders_v2`, `shipments`, `questions`, and
+  `items_prices`. Fulldock is decommissioned, so `stock-locations` is not allowed.
+- Default dedupe is `latest-per-resource`, which coalesces `price_suggestion`
+  and Sheets freshness topics to the newest event per `(topic, user_id, resource)`.
 - Active RabbitMQ gates are topic-specific: `price_suggestion` gates only on
   `zeler.repricer.items`.
+- Sheets freshness replay publishes through exchange `zeler.sheets.replay` and
+  gates on explicit proof of `zeler.sheets.replay -> zeler.sheets.events` binding
+  source, routing key, and destination queue. Execute mode fails closed if binding
+  data is missing or only old `meli.events -> zeler.sheets.events` bindings exist.
 - `user-products-families` is a no-go. There is no defined Sheets
   `user_products.*` handler/consumer path, and `--allow-user-products-families`
   cannot convert undefined behavior into functional replay safety.
@@ -53,9 +58,11 @@ VM deployment. Do not deploy, restart, or rebuild as part of replay planning.
    topics and compare with the baseline: `35 price_suggestion`,
    `5 user-products-families`.
 2. Recount corrupt required fields and duplicates. Expected corrupt count is `0`.
-3. Export RabbitMQ queue state for active and fanout queues plus DLQs:
-    - `zeler.repricer.items`, `zeler.repricer.price_suggestion`
-    - `zeler.sheets.events`, `zeler.sheets.user_products`
+3. Export RabbitMQ queue state and binding data for active queues plus DLQs:
+     - `zeler.repricer.items`, `zeler.repricer.price_suggestion`
+     - `zeler.sheets.events`, `zeler.sheets.user_products`
+     - bindings proving `zeler.sheets.replay -> zeler.sheets.events` for
+       `items.*`, `orders.*`, `shipments.*`, and `questions.*`
 4. Confirm required active consumers, routing keys, and recent logs have no
     `worker.message.requeued`, `worker.message.dlq`, 429, or 5xx spikes.
 5. Keep all preflight commands read-only. Do not purge queues.
@@ -73,6 +80,21 @@ Do not purge, delete, requeue, bind, unbind, publish, replay, deploy, build, or
 otherwise mutate RabbitMQ/topology from the gate report. Capture a sanitized
 export, verify `zeler.repricer.items` is healthy, and get explicit operator
 approval for the exact follow-up remediation command.
+
+### Sheets freshness replay readiness gate
+
+Sheets freshness topics (`items`, `orders_v2`, `shipments`, `questions`, and
+`items_prices`) replay to the active Sheets queue `zeler.sheets.events` through
+exchange `zeler.sheets.replay`, not the normal webhook exchange. The RabbitMQ
+gate must prove all three parts before execute: source exchange
+`zeler.sheets.replay`, destination queue `zeler.sheets.events`, and a binding key
+that matches the topic route (`items.*`, `orders.*`, `shipments.*`, or
+`questions.*`).
+
+A sanitized export that only lists queue routing keys, or only old
+`meli.events -> zeler.sheets.events` bindings, is not sufficient for execute.
+Dry-run remains safe and can still produce the Mongo replay plan, but approved
+execute must use an export/URL that includes binding source data.
 
 ### Fulldock stock-location queue note (archived)
 
@@ -133,8 +155,11 @@ python -m zeler_gateway.cli.replay_events \
   --abort-file /tmp/webhook-replay/ABORT
 ```
 
-The runner publishes through exchange `meli.events` and marks MongoDB only after
-publish confirmation. It updates with the guard
+The runner publishes `price_suggestion` through exchange `meli.events`. Sheets
+freshness replay uses an explicit internal publish path to exchange
+`zeler.sheets.replay`; normal webhook message headers cannot override the
+configured publisher exchange. MongoDB is marked only after publish confirmation.
+It updates with the guard
 `{_id: <event>, published_at: None}` and records `replay_run_id`.
 Execution will not start without the RabbitMQ gate export/URL, and the same gate
 source is re-read before every message.
@@ -147,6 +172,8 @@ Stop immediately on any of these:
 - DLQ count grows above the approved delta.
 - Required consumer is missing or unhealthy.
 - Routing key does not match the expected topic route.
+- Sheets replay binding source data is missing or does not prove
+  `zeler.sheets.replay -> zeler.sheets.events`.
 - Worker logs show requeue/DLQ, 429, or 5xx spikes.
 - Stock-location logs show gateway `out_of_scope`, 403, 429 requeue spikes,
   unexpected `malformed_resource`, `missing_mapping`, or `resource_not_found`

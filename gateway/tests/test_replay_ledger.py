@@ -97,7 +97,7 @@ class RecordingLedger:
         self.rows.append(row)
 
 
-def _options() -> CliOptions:
+def _options(*, max_publish_attempts: int = 2) -> CliOptions:
     return CliOptions(
         execute=True,
         run_id="ops-20260428-price",
@@ -106,6 +106,7 @@ def _options() -> CliOptions:
         rate_per_sec=1,
         concurrency=1,
         dedupe_policy="latest-per-resource",
+        max_publish_attempts=max_publish_attempts,
     )
 
 
@@ -189,21 +190,51 @@ async def test_publish_failure_is_sanitized_and_leaves_document_unmarked() -> No
     publisher = RecordingPublisher(ConnectionError("connection reset with amqp://secret"))
     ledger = RecordingLedger()
 
-    await execute_replay_plan(
-        database,
-        plan,
-        publisher=publisher,
-        options=_options(),
-        ledger=ledger,
-        gate_provider=_healthy_gate_state,
-    )
+    with pytest.raises(ReplayAbortError) as exc_info:
+        await execute_replay_plan(
+            database,
+            plan,
+            publisher=publisher,
+            options=_options(),
+            ledger=ledger,
+            gate_provider=_healthy_gate_state,
+        )
 
+    assert exc_info.value.__cause__ is None
+    assert "secret" not in str(exc_info.value)
     assert database.webhook_events.update_calls == []
     assert ledger.rows[0]["status"] == "failed"
     assert ledger.rows[0]["error_class"] == "ConnectionError"
     assert "secret" not in ledger.rows[0]["error"]
     assert len(publisher.calls) == 2
     assert ledger.rows[0]["attempt"] == 2
+
+
+@pytest.mark.asyncio
+async def test_non_transient_publish_failure_records_actual_attempt_count() -> None:
+    database = FakeDatabase([_event()])
+    plan = await _plan(database)
+    publisher = RecordingPublisher(ValueError("invalid event with amqp://secret"))
+    ledger = RecordingLedger()
+
+    with pytest.raises(ReplayAbortError) as exc_info:
+        await execute_replay_plan(
+            database,
+            plan,
+            publisher=publisher,
+            options=_options(max_publish_attempts=5),
+            ledger=ledger,
+            gate_provider=_healthy_gate_state,
+        )
+
+    assert exc_info.value.__cause__ is None
+    assert "secret" not in str(exc_info.value)
+    assert database.webhook_events.update_calls == []
+    assert len(publisher.calls) == 1
+    assert ledger.rows[0]["status"] == "failed"
+    assert ledger.rows[0]["attempt"] == 1
+    assert ledger.rows[0]["error_class"] == "ValueError"
+    assert "secret" not in ledger.rows[0]["error"]
 
 
 @pytest.mark.asyncio

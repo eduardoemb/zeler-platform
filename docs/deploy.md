@@ -713,6 +713,26 @@ done
 EOF
 ```
 
+### VM-only sanitized ZELERDATA flag check
+
+Do not print secret values or raw env files. From the approved VM/runtime context only, verify the
+Sheets worker has the freshness flags set by printing key names with present/missing status only:
+
+```bash
+gcloud compute ssh platform-vm --tunnel-through-iap --zone=$ZONE --project=$PROJECT \
+  --command='for k in ZELERDATA_ENRICHMENT_ENABLED ZELERDATA_SALE_PRICE_ENABLED ZELERDATA_LISTING_FIXED_FEE_ENABLED; do
+    sudo grep -q "^${k}=true$" /opt/zeler-platform/env/sheets-worker.env \
+      && printf "%s=set\n" "$k" \
+      || printf "%s=missing\n" "$k"
+  done'
+```
+
+Expected keys:
+
+- `ZELERDATA_ENRICHMENT_ENABLED=true`
+- `ZELERDATA_SALE_PRICE_ENABLED=true`
+- `ZELERDATA_LISTING_FIXED_FEE_ENABLED=true`
+
 ### Mongo internal-only (must be unreachable from outside VM)
 
 ```bash

@@ -472,20 +472,29 @@ def _autoreply_idempotency_key(message: Any, payload: dict[str, Any]) -> str:
 
 
 class CoreIdempotencyStoreLike(Protocol):
-    async def is_duplicate(self, key: str) -> bool: ...
+    async def is_duplicate(
+        self, key: str, *, module_id: str, consumer_id: str | None = None
+    ) -> bool: ...
 
-    async def mark_processed(self, key: str, *, module_id: str) -> bool: ...
+    async def mark_processed(
+        self, key: str, *, module_id: str, consumer_id: str | None = None
+    ) -> bool: ...
 
 
 class _AutoreplyIdempotencyAdapter:
-    def __init__(self, store: CoreIdempotencyStoreLike) -> None:
+    def __init__(
+        self, store: CoreIdempotencyStoreLike, *, consumer_id: str = AUTOREPLY_EVENTS_QUEUE
+    ) -> None:
         self._store = store
+        self._consumer_id = consumer_id
 
     async def is_duplicate(self, key: str) -> bool:
-        return await self._store.is_duplicate(key)
+        return await self._store.is_duplicate(
+            key, module_id="autoreply", consumer_id=self._consumer_id
+        )
 
     async def mark_processed(self, key: str) -> None:
-        await self._store.mark_processed(key, module_id="autoreply")
+        await self._store.mark_processed(key, module_id="autoreply", consumer_id=self._consumer_id)
 
 
 class AutoreplyEventHandler:

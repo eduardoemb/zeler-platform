@@ -107,6 +107,12 @@
           ]
         }
       },
+      "last_updated": {
+        "bsonType": [
+          "date",
+          "null"
+        ]
+      },
       "meli_pack_id": {
         "bsonType": [
           "string",
