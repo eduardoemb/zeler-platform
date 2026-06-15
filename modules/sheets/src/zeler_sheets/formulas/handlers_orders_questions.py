@@ -712,6 +712,11 @@ class OrderQuestionFormulaHandlers:
         hour_range = _hour_range(
             context.args.get("horario_inicial"), context.args.get("horario_final")
         )
+        await self._repository.require_questions_read_model_productive(
+            seller_id=context.seller_id,
+            date_to=date_range.end,
+            formula=context.contract.name,
+        )
         questions = await self._repository.find_questions(
             seller_id=context.seller_id,
             date_from=date_range.start,
@@ -738,6 +743,11 @@ class OrderQuestionFormulaHandlers:
             context.args.get("fecha_inicio"),
             context.args.get("fecha_final"),
             timezone=_context_timezone(context),
+        )
+        await self._repository.require_questions_read_model_productive(
+            seller_id=context.seller_id,
+            date_to=date_range.end,
+            formula=context.contract.name,
         )
         questions = await self._repository.find_questions(
             seller_id=context.seller_id,

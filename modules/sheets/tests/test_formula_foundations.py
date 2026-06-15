@@ -222,16 +222,11 @@ async def test_item_formula_repository_uses_seller_scoped_sku_and_item_filters()
     }
 
 
-def test_unbuilt_historical_and_catalog_formulas_raise_data_unavailable() -> None:
+def test_historical_and_catalog_formulas_are_no_longer_batch_gated() -> None:
     registry = FormulaRegistry.default()
 
-    with pytest.raises(Exception) as historical:
-        require_formula_read_model_available(registry.find_required("ZELERDATA_PAUSADAS"))
-    with pytest.raises(Exception) as catalog:
-        require_formula_read_model_available(registry.find_required("ZELERDATA_CATALOGO"))
-
-    assert "ZELERDATA_PAUSADAS data is not available yet" in str(historical.value)
-    assert "ZELERDATA_CATALOGO data is not available yet" in str(catalog.value)
+    require_formula_read_model_available(registry.find_required("ZELERDATA_PAUSADAS"))
+    require_formula_read_model_available(registry.find_required("ZELERDATA_CATALOGO"))
 
 
 @pytest.mark.asyncio

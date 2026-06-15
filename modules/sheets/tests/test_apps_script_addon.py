@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
+import subprocess
 from pathlib import Path
 from typing import Any, cast
 
@@ -12,6 +14,8 @@ CONTRACT_PATH = REPO_ROOT / "tests" / "sheets" / "fixtures" / "sheetseller_formu
 ADDON_DIR = REPO_ROOT / "modules" / "sheets" / "apps_script" / "sheetseller"
 MARKETPLACE_DOC_PATH = REPO_ROOT / "docs" / "sheets" / "zelerdata-marketplace-publication.md"
 FORMULAS_DOC_PATH = REPO_ROOT / "docs" / "sheets" / "zelerdata-formulas.md"
+OPS_ROLLOUT_DOC_PATH = REPO_ROOT / "docs" / "ops" / "zelerdata-seller-data-matrix-rollout.md"
+DEPRECATED_SELLER_DATA_FORMULAS = {"ZELERDATA_COMPETENCIA", "ZELERDATA_ENVIARAFULL"}
 
 
 def _contracts() -> list[dict[str, Any]]:
@@ -197,7 +201,7 @@ def test_formula_api_envelopes_are_converted_to_sheets_safe_2d_values() -> None:
     assert "Sheetseller" not in client_source
 
 
-def test_all_53_zelerdata_formula_wrappers_preserve_names_and_parameter_order() -> None:
+def test_all_active_zelerdata_formula_wrappers_preserve_names_and_parameter_order() -> None:
     formulas_source = _read_addon_file("Formulas.gs")
 
     wrapper_names = re.findall(r"^function\s+([A-Za-z0-9_]+)\s*\(", formulas_source, re.MULTILINE)
@@ -222,6 +226,40 @@ def test_all_53_zelerdata_formula_wrappers_preserve_names_and_parameter_order() 
         assert _function_arguments(formulas_source, canonical_name.lower()) == arguments
     assert "SHEETSELLER_" not in formulas_source
     assert "sheetseller_" not in formulas_source
+
+
+def test_apps_script_formula_wrappers_are_parseable_javascript() -> None:
+    node = shutil.which("node")
+    assert node is not None, "node is required to parse Apps Script wrapper syntax"
+
+    result = subprocess.run(  # noqa: S603 - fixed node executable and local wrapper path.
+        [
+            node,
+            "-e",
+            (
+                "const fs = require('fs');"
+                "const source = fs.readFileSync(process.argv[1], 'utf8');"
+                "new Function(source);"
+            ),
+            str(ADDON_DIR / "Formulas.gs"),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_deprecated_seller_data_formulas_have_no_active_apps_script_wrappers() -> None:
+    formulas_source = _read_addon_file("Formulas.gs")
+
+    for formula_name in DEPRECATED_SELLER_DATA_FORMULAS:
+        assert not re.search(rf"^function\s+{formula_name}\s*\(", formulas_source, re.MULTILINE)
+        assert not re.search(
+            rf"^function\s+{formula_name.lower()}\s*\(", formulas_source, re.MULTILINE
+        )
+        assert f'zelerdataExecute_("{formula_name}"' not in formulas_source
 
 
 def test_canonical_formula_wrappers_expose_google_sheets_autocomplete_jsdoc() -> None:
@@ -397,16 +435,64 @@ def test_formula_docs_list_supported_examples_and_stable_error_expectations() ->
         assert error_code in docs
 
 
+def test_formula_docs_examples_match_current_wrapper_signatures() -> None:
+    docs = _read_project_file(FORMULAS_DOC_PATH)
+
+    assert (
+        '=ZELERDATA_SEMANASCONSTOCK("cuenta", "todos", "todos", "2026-01-01", "2026-01-31", "si")'
+        in docs
+    )
+    assert '=ZELERDATA_OBTENER_CATALOGO("cuenta")' in docs
+    assert '=ZELERDATA_OBTENER_CATALOGO("cuenta", "si")' not in docs
+
+
 def test_formula_docs_document_every_deferred_formula_as_intentionally_unavailable() -> None:
     docs = _read_project_file(FORMULAS_DOC_PATH)
     supported_section = _markdown_section(docs, "Supported formulas")
     deferred_section = _markdown_section(docs, "Deferred formulas")
 
     unsupported = _unsupported_formula_names()
-    assert unsupported
+    assert unsupported == []
     assert _documented_formula_names(deferred_section) == set(unsupported)
     assert _documented_formula_names(supported_section).isdisjoint(unsupported)
-    assert "returns DATA_UNAVAILABLE until a platform read model is implemented" in deferred_section
+    assert _documented_formula_names(deferred_section).isdisjoint(DEPRECATED_SELLER_DATA_FORMULAS)
+    assert _documented_formula_names(supported_section).isdisjoint(DEPRECATED_SELLER_DATA_FORMULAS)
+    assert "No active Seller Data formula is deferred currently" in deferred_section
+    assert "DATA_UNAVAILABLE until that read model exists" in deferred_section
+
+
+def test_ops_rollout_doc_covers_seller_data_matrix_freshness_and_rollback() -> None:
+    docs = _read_project_file(OPS_ROLLOUT_DOC_PATH)
+
+    for phrase in [
+        "read-model freshness",
+        "sheets_read_model_freshness",
+        "DATA_UNAVAILABLE",
+        "Rollback",
+        "No production Mongo validation from local assistant context",
+        "item_formula_rows",
+        "orders",
+        "shipments",
+        "claims",
+        "item_status_states",
+        "catalog_product_snapshots",
+    ]:
+        assert phrase in docs
+
+
+def test_ops_rollout_doc_scopes_freshness_guards_to_gated_matrix_domains() -> None:
+    docs = _read_project_file(OPS_ROLLOUT_DOC_PATH)
+
+    assert "every active Seller Data formula" not in docs
+    assert "freshness-gated formula" in docs
+    assert "For formulas governed by this checklist" in docs
+    assert "Pre-existing core/order formulas" in docs
+    for formula_name in [
+        "ZELERDATA_ORDENES",
+        "ZELERDATA_VENTASTOTALES",
+        "ZELERDATA_DASHBOARD",
+    ]:
+        assert formula_name in docs
 
 
 def test_review_artifacts_do_not_contain_private_pilot_copy_or_secret_like_values() -> None:

@@ -119,16 +119,6 @@ function ZELERDATA_CODIGOML(cuenta, skus, id_publicaciones) {
   return zelerdataExecute_("ZELERDATA_CODIGOML", cuenta, { skus: skus, id_publicaciones: id_publicaciones });
 }
 /**
- * Devuelve cantidades recomendadas para enviar a Full.
- * @param {string|number} cuenta Cuenta ZelerData o vendedor autorizado.
- * @param {string|number|Object[][]} codes Código, lista o rango de códigos.
- * @return {Object[][]} Tabla de recomendaciones de envío a Full.
- * @customfunction
- */
-function ZELERDATA_ENVIARAFULL(cuenta, codes) {
-  return zelerdataExecute_("ZELERDATA_ENVIARAFULL", cuenta, { codes: codes });
-}
-/**
  * Convierte códigos ML o de inventario a IDs de publicación y SKUs.
  * @param {string|number} cuenta Cuenta ZelerData o vendedor autorizado.
  * @param {string|number|Object[][]} codigo_ml Código ML, lista o rango de códigos.
@@ -227,6 +217,16 @@ function ZELERDATA_CATALOGOBUYBOX(cuenta, tipo_precio="base", encabezados="") {
   return zelerdataExecute_("ZELERDATA_CATALOGOBUYBOX", cuenta, { tipo_precio: tipo_precio, encabezados: encabezados });
 }
 /**
+ * Devuelve una tabla enriquecida de catálogo con atributos fijos.
+ * @param {string|number} cuenta Cuenta ZelerData o vendedor autorizado.
+ * @param {string} encabezados Use "si" para incluir encabezados; vacío para omitirlos.
+ * @return {Object[][]} Tabla completa de catálogo.
+ * @customfunction
+ */
+function ZELERDATA_CATALOGO_COMPLETO(cuenta, encabezados="") {
+  return zelerdataExecute_("ZELERDATA_CATALOGO_COMPLETO", cuenta, { encabezados: encabezados });
+}
+/**
  * Devuelve comisiones, cargos y costos de envío por publicación.
  * @param {string|number} cuenta Cuenta ZelerData o vendedor autorizado.
  * @param {string|number|Object[][]} id_publicaciones ID de publicación, lista o rango.
@@ -249,17 +249,6 @@ function ZELERDATA_COMISION(cuenta, id_publicaciones, encabezados="") {
  */
 function ZELERDATA_DEVOLUCIONES(cuenta, fecha_inicio, fecha_final, id_publicaciones="todos", encabezados="") {
   return zelerdataExecute_("ZELERDATA_DEVOLUCIONES", cuenta, { fecha_inicio: fecha_inicio, fecha_final: fecha_final, id_publicaciones: id_publicaciones, encabezados: encabezados });
-}
-/**
- * Devuelve información de competidores por publicación.
- * @param {string|number} cuenta Cuenta ZelerData o vendedor autorizado.
- * @param {string|number|Object[][]} id_publicaciones ID de publicación, lista o rango; use "todos" para incluir todas.
- * @param {string} encabezados Use "si" para incluir encabezados; vacío para omitirlos.
- * @return {Object[][]} Tabla de competencia.
- * @customfunction
- */
-function ZELERDATA_COMPETENCIA(cuenta, id_publicaciones="todos", encabezados="") {
-  return zelerdataExecute_("ZELERDATA_COMPETENCIA", cuenta, { id_publicaciones: id_publicaciones, encabezados: encabezados });
 }
 /**
  * Devuelve métricas de tiempo en catálogo para un rango de fechas.
@@ -644,9 +633,6 @@ function zelerdata_pausadas(cuenta, id_publicaciones) {
 function zelerdata_codigoml(cuenta, skus, id_publicaciones) {
   return ZELERDATA_CODIGOML(cuenta, skus, id_publicaciones);
 }
-function zelerdata_enviarafull(cuenta, codes) {
-  return ZELERDATA_ENVIARAFULL(cuenta, codes);
-}
 function zelerdata_codigoml2skuid(cuenta, codigo_ml, encabezados="") {
   return ZELERDATA_CODIGOML2SKUID(cuenta, codigo_ml, encabezados);
 }
@@ -674,14 +660,14 @@ function zelerdata_catalogosinvincular(cuenta, encabezados="") {
 function zelerdata_catalogobuybox(cuenta, tipo_precio="base", encabezados="") {
   return ZELERDATA_CATALOGOBUYBOX(cuenta, tipo_precio, encabezados);
 }
+function zelerdata_catalogo_completo(cuenta, encabezados="") {
+  return ZELERDATA_CATALOGO_COMPLETO(cuenta, encabezados);
+}
 function zelerdata_comision(cuenta, id_publicaciones, encabezados="") {
   return ZELERDATA_COMISION(cuenta, id_publicaciones, encabezados);
 }
 function zelerdata_devoluciones(cuenta, fecha_inicio, fecha_final, id_publicaciones="todos", encabezados="") {
   return ZELERDATA_DEVOLUCIONES(cuenta, fecha_inicio, fecha_final, id_publicaciones, encabezados);
-}
-function zelerdata_competencia(cuenta, id_publicaciones="todos", encabezados="") {
-  return ZELERDATA_COMPETENCIA(cuenta, id_publicaciones, encabezados);
 }
 function zelerdata_catalogotiempo(cuenta, fecha_inicial, fecha_final, id_publicaciones="todos", encabezados="") {
   return ZELERDATA_CATALOGOTIEMPO(cuenta, fecha_inicial, fecha_final, id_publicaciones, encabezados);

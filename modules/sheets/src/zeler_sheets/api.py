@@ -32,7 +32,19 @@ from zeler_sheets.formulas.dispatcher import (
     FormulaExecutionResult,
 )
 from zeler_sheets.formulas.handlers_core import build_core_formula_handlers
+from zeler_sheets.formulas.handlers_item_shipping_catalog import (
+    build_item_shipping_catalog_formula_handlers,
+)
 from zeler_sheets.formulas.handlers_orders_questions import build_order_question_formula_handlers
+from zeler_sheets.formulas.handlers_quality_calculator import (
+    build_quality_calculator_formula_handlers,
+)
+from zeler_sheets.formulas.handlers_remaining_phase4 import (
+    build_remaining_phase4_formula_handlers,
+)
+from zeler_sheets.formulas.handlers_returns_histories_withdrawals import (
+    build_returns_histories_withdrawals_formula_handlers,
+)
 from zeler_sheets.formulas.read_models import FormulaReadModelRepository
 from zeler_sheets.formulas.registry import FormulaRegistry
 from zeler_sheets.formulas.runtime_states import (
@@ -645,7 +657,11 @@ def _runtime_dispatcher(
     repository = FormulaReadModelRepository(db=request.app.state.mongo_db)
     return FormulaDispatcher(
         build_core_formula_handlers(repository, now_fn=now)
+        | build_item_shipping_catalog_formula_handlers(repository, now_fn=now)
         | build_order_question_formula_handlers(repository, now_fn=now)
+        | build_quality_calculator_formula_handlers(repository, now_fn=now)
+        | build_remaining_phase4_formula_handlers(repository, now_fn=now)
+        | build_returns_histories_withdrawals_formula_handlers(repository, now_fn=now)
         | build_explicit_unsupported_formula_handlers()
     )
 

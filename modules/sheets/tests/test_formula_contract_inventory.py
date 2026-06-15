@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from typing import Any, cast
+from unicodedata import normalize
 
 import pytest
 
@@ -14,7 +15,28 @@ from zeler_sheets.formulas.handlers_core import (
 from zeler_sheets.formulas.handlers_core import (
     DASHBOARD_LEGACY_HEADERS as CORE_DASHBOARD_LEGACY_HEADERS,
 )
+from zeler_sheets.formulas.handlers_item_shipping_catalog import (
+    ITEM_SHIPPING_CATALOG_IMPLEMENTED_FORMULAS,
+)
 from zeler_sheets.formulas.handlers_orders_questions import BATCH_B_IMPLEMENTED_FORMULAS
+from zeler_sheets.formulas.handlers_quality_calculator import (
+    CALCULADORA_HEADERS,
+    CALIDAD_HEADERS,
+    QUALITY_CALCULATOR_IMPLEMENTED_FORMULAS,
+)
+from zeler_sheets.formulas.handlers_remaining_phase4 import (
+    CATALOGO_HEADERS,
+    CATALOGOTIEMPO_HEADERS,
+    PRECIO_HISTORICO_HEADERS,
+    REMAINING_PHASE4_IMPLEMENTED_FORMULAS,
+    RETIROS_HEADERS,
+    TIEMPO_STOCK_ACTIVO_HEADERS,
+    TIEMPOS_SIN_STOCK_HEADERS,
+)
+from zeler_sheets.formulas.handlers_returns_histories_withdrawals import (
+    RETURNS_HISTORIES_WITHDRAWALS_IMPLEMENTED_FORMULAS,
+)
+from zeler_sheets.formulas.matrix_contracts import get_matrix_contract
 from zeler_sheets.formulas.registry import FormulaRegistry
 from zeler_sheets.formulas.runtime_states import (
     build_explicit_unsupported_formula_handlers,
@@ -48,7 +70,6 @@ EXPECTED_FORMULA_SUFFIXES = [
     "STATUS",
     "PAUSADAS",
     "CODIGOML",
-    "ENVIARAFULL",
     "CODIGOML2SKUID",
     "DIASPUBLICADA",
     "PUBLICACIONESDESCUIDADAS",
@@ -58,9 +79,9 @@ EXPECTED_FORMULA_SUFFIXES = [
     "TIEMPOACTIVA",
     "CATALOGOSINVINCULAR",
     "CATALOGOBUYBOX",
+    "CATALOGO_COMPLETO",
     "COMISION",
     "DEVOLUCIONES",
-    "COMPETENCIA",
     "CATALOGOTIEMPO",
     "PRECIOHISTORICO",
     "TIEMPOSTOCKACTIVO",
@@ -92,6 +113,7 @@ EXPECTED_FORMULA_SUFFIXES = [
     "PREGUNTASKPI",
 ]
 EXPECTED_FORMULA_NAMES = [f"ZELERDATA_{suffix}" for suffix in EXPECTED_FORMULA_SUFFIXES]
+DEPRECATED_FORMULA_NAMES = {"ZELERDATA_COMPETENCIA", "ZELERDATA_ENVIARAFULL"}
 
 EXPECTED_ERROR_CODES = [
     "TOKEN_MISSING",
@@ -105,6 +127,25 @@ EXPECTED_ERROR_CODES = [
 ]
 
 RANGE_INPUT_CASES = ["scalar", "row_range", "column_range", "rectangular_range"]
+CATALOGOBUYBOX_VISIBLE_HEADERS = [
+    "TITULO",
+    "ID PUBLICACION",
+    "ID CATALOGO",
+    "STOCK ACTUAL",
+    "STATUS",
+    "PRECIO",
+    "PRECIO GANADOR",
+    "# DE GANADORES",
+    "UNICO COMPETIDOR",
+]
+CATALOGO_COMPLETO_VISIBLE_HEADERS = [
+    "TITULO",
+    "DESCRIPCION",
+    "IMAGEN",
+    "MARCA",
+    "MODELO",
+    "GTIN",
+]
 
 
 def _fixture() -> dict[str, Any]:
@@ -117,16 +158,37 @@ def _column_fixture() -> dict[str, Any]:
     return cast("dict[str, Any]", loaded)
 
 
-def test_fixture_locks_all_53_zelerdata_formula_names_in_order() -> None:
+def _is_uppercase_without_accents(value: str) -> bool:
+    return value == normalize("NFKD", value).encode("ascii", "ignore").decode("ascii").upper()
+
+
+def test_fixture_locks_final_active_zelerdata_formula_names_in_order() -> None:
     fixture = _fixture()
     contracts = fixture["contracts"]
 
     assert [contract["name"] for contract in contracts] == EXPECTED_FORMULA_NAMES
-    assert len({contract["name"] for contract in contracts}) == 53
+    assert len({contract["name"] for contract in contracts}) == 52
     assert fixture["stable_error_codes"] == EXPECTED_ERROR_CODES
     assert all(contract["name"].startswith("ZELERDATA_") for contract in contracts)
     assert all("SHEETSELLER" not in contract["name"] for contract in contracts)
     assert all("sheetseller" not in contract["name"] for contract in contracts)
+    assert DEPRECATED_FORMULA_NAMES.isdisjoint({contract["name"] for contract in contracts})
+
+
+def test_matrix_contract_module_locks_active_deprecated_and_new_inventory() -> None:
+    from zeler_sheets.formulas.matrix_contracts import (
+        ACTIVE_FORMULA_NAMES,
+        DEPRECATED_FORMULAS,
+        get_matrix_contract,
+    )
+
+    assert list(ACTIVE_FORMULA_NAMES) == EXPECTED_FORMULA_NAMES
+    assert set(DEPRECATED_FORMULAS) == DEPRECATED_FORMULA_NAMES
+    assert DEPRECATED_FORMULAS["ZELERDATA_COMPETENCIA"].replacement is None
+    assert DEPRECATED_FORMULAS["ZELERDATA_ENVIARAFULL"].replacement is None
+    catalogo_completo = get_matrix_contract("ZELERDATA_CATALOGO_COMPLETO")
+    assert catalogo_completo.signature == '(cuenta, encabezados="")'
+    assert catalogo_completo.visible_headers == tuple(CATALOGO_COMPLETO_VISIBLE_HEADERS)
 
 
 def test_registry_matches_the_contract_fixture_exactly() -> None:
@@ -137,6 +199,13 @@ def test_registry_matches_the_contract_fixture_exactly() -> None:
     assert [contract.to_json_dict() for contract in registry.list_contracts()] == fixture[
         "contracts"
     ]
+
+
+def test_removed_seller_data_formulas_are_not_registry_contracts() -> None:
+    registry = FormulaRegistry.default()
+
+    for deprecated_formula in DEPRECATED_FORMULA_NAMES:
+        assert registry.find(deprecated_formula) is None
 
 
 def test_representative_signatures_defaults_batches_and_outputs_are_preserved() -> None:
@@ -211,7 +280,23 @@ def test_unknown_formula_returns_stable_formula_unknown_code() -> None:
     assert registry.find("ZELERDATA_NO_EXISTE") is None
     assert registry.find("SHEETSELLER_SKU") is None
     assert registry.find("sheetseller_sku") is None
+    assert registry.find("ZELERDATA_COMPETENCIA") is None
+    assert registry.find("ZELERDATA_ENVIARAFULL") is None
     assert registry.unknown_formula_error_code == "FORMULA_UNKNOWN"
+
+
+def test_catalog_matrix_headers_are_uppercase_no_accent_and_buybox_visible_order() -> None:
+    from zeler_sheets.formulas.matrix_contracts import get_matrix_contract
+
+    catalogobuybox_headers = get_matrix_contract("ZELERDATA_CATALOGOBUYBOX").visible_headers
+    catalogo_completo_headers = get_matrix_contract("ZELERDATA_CATALOGO_COMPLETO").visible_headers
+    obtener_catalogo_headers = get_matrix_contract("ZELERDATA_OBTENER_CATALOGO").visible_headers
+
+    assert list(catalogobuybox_headers) == CATALOGOBUYBOX_VISIBLE_HEADERS
+    assert list(catalogo_completo_headers) == CATALOGO_COMPLETO_VISIBLE_HEADERS
+    assert list(obtener_catalogo_headers) == ["TITULO", "DESCRIPCION", "IMAGEN"]
+    for header in [*catalogobuybox_headers, *catalogo_completo_headers, *obtener_catalogo_headers]:
+        assert _is_uppercase_without_accents(header), header
 
 
 def test_dashboard_output_column_fixture_locks_mvp_and_deferred_columns() -> None:
@@ -555,31 +640,102 @@ def test_batch_b_output_column_fixture_locks_mvp_and_deferred_columns() -> None:
     assert formulas["ZELERDATA_PRODUCTOSINVENTA"]["columns"][-1]["status"] == "mvp"
 
 
+def test_catalog_foundation_fixture_locks_new_and_corrected_contract_columns() -> None:
+    fixture = _column_fixture()
+    formulas = fixture["formulas"]
+
+    assert [
+        column["name"] for column in formulas["ZELERDATA_CATALOGOBUYBOX"]["columns"]
+    ] == CATALOGOBUYBOX_VISIBLE_HEADERS
+    assert [
+        column["name"] for column in formulas["ZELERDATA_CATALOGO_COMPLETO"]["columns"]
+    ] == CATALOGO_COMPLETO_VISIBLE_HEADERS
+    assert formulas["ZELERDATA_CATALOGOBUYBOX"]["compatibility_note"] == (
+        "Values must follow the visible header order; legacy row order inverted ID "
+        "PUBLICACION and ID CATALOGO."
+    )
+    for formula in ["ZELERDATA_CATALOGOBUYBOX", "ZELERDATA_CATALOGO_COMPLETO"]:
+        for column in formulas[formula]["columns"]:
+            assert _is_uppercase_without_accents(column["name"]), column
+
+
+def test_quality_calculator_fixture_locks_modern_columns() -> None:
+    fixture = _column_fixture()
+    formulas = fixture["formulas"]
+
+    calidad_headers = [column["name"] for column in formulas["ZELERDATA_CALIDAD"]["columns"]]
+    calculadora_headers = [
+        column["name"] for column in formulas["ZELERDATA_CALCULADORA"]["columns"]
+    ]
+
+    assert calidad_headers == CALIDAD_HEADERS
+    assert calculadora_headers == CALCULADORA_HEADERS
+    assert list(get_matrix_contract("ZELERDATA_CALIDAD").visible_headers) == CALIDAD_HEADERS
+    assert list(get_matrix_contract("ZELERDATA_CALCULADORA").visible_headers) == CALCULADORA_HEADERS
+    assert "PRECIO SUGERIDO" not in calidad_headers
+    for header in [*calidad_headers, *calculadora_headers]:
+        assert _is_uppercase_without_accents(header), header
+
+
+def test_remaining_phase4_fixture_locks_headers_and_runtime_support() -> None:
+    fixture = _column_fixture()
+    formulas = fixture["formulas"]
+
+    expected_headers = {
+        "ZELERDATA_CATALOGO": CATALOGO_HEADERS,
+        "ZELERDATA_TIEMPOSINSTOCK": TIEMPOS_SIN_STOCK_HEADERS,
+        "ZELERDATA_TIEMPOSTOCKACTIVO": TIEMPO_STOCK_ACTIVO_HEADERS,
+        "ZELERDATA_PRECIOHISTORICO": PRECIO_HISTORICO_HEADERS,
+        "ZELERDATA_CATALOGOTIEMPO": CATALOGOTIEMPO_HEADERS,
+        "ZELERDATA_RETIROS": RETIROS_HEADERS,
+    }
+
+    for formula, headers in expected_headers.items():
+        assert [column["name"] for column in formulas[formula]["columns"]] == headers
+        assert list(get_matrix_contract(formula).visible_headers) == headers
+        for header in headers:
+            assert _is_uppercase_without_accents(header), header
+
+    assert "ZELERDATA_SEMANASCONSTOCK" in formulas
+    assert "ZELERDATA_CATALOGO" not in fixture["unsupported_formulas"]
+
+
 def test_every_legacy_formula_has_an_explicit_runtime_state() -> None:
     registry = FormulaRegistry.default()
     runtime_states = get_formula_runtime_states()
     contract_names = {contract.name for contract in registry.list_contracts()}
 
     assert set(runtime_states) == contract_names
-    assert {
-        formula for formula, state in runtime_states.items() if state.state == "implemented"
-    } == CORE_FORMULA_NAMES | BATCH_B_IMPLEMENTED_FORMULAS
+    assert DEPRECATED_FORMULA_NAMES.isdisjoint(runtime_states)
+    assert (
+        {formula for formula, state in runtime_states.items() if state.state == "implemented"}
+        == CORE_FORMULA_NAMES
+        | BATCH_B_IMPLEMENTED_FORMULAS
+        | ITEM_SHIPPING_CATALOG_IMPLEMENTED_FORMULAS
+        | RETURNS_HISTORIES_WITHDRAWALS_IMPLEMENTED_FORMULAS
+        | QUALITY_CALCULATOR_IMPLEMENTED_FORMULAS
+        | REMAINING_PHASE4_IMPLEMENTED_FORMULAS
+    )
 
     unsupported = {
         formula: state.reason
         for formula, state in runtime_states.items()
         if state.state == "unsupported"
     }
-    assert len(unsupported) == 22
+    assert unsupported == {}
     assert "ZELERDATA_COMPRADORES" not in unsupported
     assert "ZELERDATA_COMISION" not in unsupported
-    assert unsupported["ZELERDATA_CATALOGO"] == (
-        "Catalog/buybox snapshot read model is not available in zeler-platform yet."
-    )
-    assert unsupported["ZELERDATA_COSTOENVIOVENDEDOR"] == (
-        "Seller-paid shipping cost read model is not available in zeler-platform yet."
-    )
-    assert all(reason for reason in unsupported.values())
+    assert "ZELERDATA_COMPETENCIA" not in unsupported
+    assert "ZELERDATA_ENVIARAFULL" not in unsupported
+    assert "ZELERDATA_CATALOGO_COMPLETO" not in unsupported
+    assert "ZELERDATA_COSTOENVIOVENDEDOR" not in unsupported
+    assert "ZELERDATA_DEVOLUCIONES" not in unsupported
+    assert "ZELERDATA_PUBLICACIONESDESCUIDADAS" not in unsupported
+    assert "ZELERDATA_TIEMPOACTIVA" not in unsupported
+    assert "ZELERDATA_CALIDAD" not in unsupported
+    assert "ZELERDATA_CALCULADORA" not in unsupported
+    for formula in REMAINING_PHASE4_IMPLEMENTED_FORMULAS:
+        assert runtime_states[formula].state == "implemented"
 
 
 def test_output_fixture_documents_every_explicitly_unsupported_formula_blocker() -> None:
@@ -589,6 +745,7 @@ def test_output_fixture_documents_every_explicitly_unsupported_formula_blocker()
         for formula, state in get_formula_runtime_states().items()
         if state.state == "unsupported"
     }
+    assert unsupported_states == {}
 
     assert fixture["unsupported_formulas"] == {
         formula: {"status": "unsupported", "reason": reason}
@@ -606,17 +763,8 @@ async def test_explicit_unsupported_handlers_are_routed_and_raise_data_unavailab
     }
 
     assert set(handlers) == set(unsupported_states)
-
-    with pytest.raises(Exception) as exc_info:
-        await handlers["ZELERDATA_ENVIOSMERCADOENVIOS"](  # type: ignore[misc]
-            _formula_context("ZELERDATA_ENVIOSMERCADOENVIOS", {})
-        )
-
-    assert type(exc_info.value).__name__ == "FormulaDataUnavailableError"
-    assert str(exc_info.value) == (
-        "ZELERDATA_ENVIOSMERCADOENVIOS data is not available yet: "
-        "MercadoEnvios shipment/label read model is not available in zeler-platform yet."
-    )
+    assert DEPRECATED_FORMULA_NAMES.isdisjoint(handlers)
+    assert handlers == {}
 
 
 def _formula_context(formula: str, args: dict[str, Any]) -> Any:

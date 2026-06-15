@@ -12,7 +12,11 @@ import pytest
 from fastapi import FastAPI
 
 from zeler_sheets.extension_tokens import ExtensionTokenService, SellerScope
-from zeler_sheets.formulas.dispatcher import FormulaDispatcher, FormulaExecutionContext
+from zeler_sheets.formulas.dispatcher import (
+    FormulaDataUnavailableError,
+    FormulaDispatcher,
+    FormulaExecutionContext,
+)
 from zeler_sheets.formulas.handlers_orders_questions import (
     _OrderSkuResolver,
     build_order_question_formula_handlers,
@@ -2849,8 +2853,67 @@ async def test_productos_sin_venta_returns_current_items_without_recent_sales() 
 
 
 @pytest.mark.asyncio
+async def test_preguntas_blocks_productive_output_until_questions_read_model_is_fresh() -> None:
+    db = FakeDb()
+    db["questions"].documents = {
+        "q-stale": _question_doc(
+            "q-stale",
+            seller_id="seller-1",
+            status="ANSWERED",
+            date_created="2026-05-10T17:45:00Z",
+            answer={"text": "Yes", "date_created": "2026-05-10T18:00:00Z"},
+        )
+    }
+    dispatcher = _order_question_dispatcher(db)
+
+    with pytest.raises(FormulaDataUnavailableError, match="Questions read model"):
+        await dispatcher.execute(
+            _context(
+                "ZELERDATA_PREGUNTAS",
+                {
+                    "fecha_inicial": "2026-05-10",
+                    "fecha_final": "2026-05-10",
+                    "horario_inicial": "00:00",
+                    "horario_final": "23:59",
+                },
+            )
+        )
+
+
+@pytest.mark.asyncio
+async def test_preguntas_kpi_blocks_stale_questions_freshness_marker() -> None:
+    db = FakeDb()
+    _mark_questions_fresh(
+        db,
+        fresh_until=datetime(2026, 5, 10, 23, 59, 59, 999999, tzinfo=UTC),
+    )
+    db["questions"].documents = {
+        "q1": _question_doc(
+            "q1",
+            seller_id="seller-1",
+            status="ANSWERED",
+            date_created=datetime(2026, 5, 11, 11, 0, tzinfo=UTC),
+            answer={"date_created": datetime(2026, 5, 11, 13, 0, tzinfo=UTC)},
+        )
+    }
+    dispatcher = _order_question_dispatcher(db)
+
+    with pytest.raises(FormulaDataUnavailableError, match="Questions read model"):
+        await dispatcher.execute(
+            _context(
+                "ZELERDATA_PREGUNTASKPI",
+                {"fecha_inicio": "2026-05-10", "fecha_final": "2026-05-11"},
+            )
+        )
+
+
+@pytest.mark.asyncio
 async def test_preguntas_returns_question_table_with_date_and_hour_filters() -> None:
     db = FakeDb()
+    _mark_questions_fresh(
+        db,
+        fresh_until=datetime(2026, 5, 10, 23, 59, 59, 999999, tzinfo=UTC),
+    )
     questions = db["questions"]
     questions.documents = {
         "q1": _question_doc(
@@ -2933,6 +2996,10 @@ async def test_preguntas_returns_question_table_with_date_and_hour_filters() -> 
 @pytest.mark.asyncio
 async def test_preguntas_kpi_returns_canonical_question_counts_with_optional_headers() -> None:
     db = FakeDb()
+    _mark_questions_fresh(
+        db,
+        fresh_until=datetime(2026, 5, 11, 23, 59, 59, 999999, tzinfo=UTC),
+    )
     questions = db["questions"]
     questions.documents = {
         "q1": _question_doc(
@@ -2992,6 +3059,10 @@ async def test_preguntas_kpi_returns_canonical_question_counts_with_optional_hea
 @pytest.mark.asyncio
 async def test_preguntas_kpi_matches_production_iso_string_dates() -> None:
     db = FakeDb()
+    _mark_questions_fresh(
+        db,
+        fresh_until=datetime(2025, 10, 27, 23, 59, 59, 999999, tzinfo=UTC),
+    )
     questions = db["questions"]
     questions.documents = {
         "q1": _question_doc(
@@ -3222,6 +3293,24 @@ def _question_doc(
         "from_user_id": from_user_id,
         "date_created": date_created,
         "answer": answer,
+        "schema_version": 1,
+    }
+
+
+def _mark_questions_fresh(
+    db: FakeDb,
+    *,
+    seller_id: str = "seller-1",
+    fresh_until: datetime,
+    state: str = "fresh",
+) -> None:
+    db["sheets_read_model_freshness"].documents[f"{seller_id}:questions"] = {
+        "_id": f"{seller_id}:questions",
+        "seller_id": seller_id,
+        "read_model": "questions",
+        "state": state,
+        "fresh_until": fresh_until,
+        "updated_at": datetime(2026, 5, 30, 12, 0, tzinfo=UTC),
         "schema_version": 1,
     }
 

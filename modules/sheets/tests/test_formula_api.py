@@ -13,6 +13,7 @@ from fastapi import FastAPI
 
 from zeler_sheets.extension_tokens import ExtensionTokenService, SellerScope, hash_extension_token
 from zeler_sheets.formulas.dispatcher import FormulaExecutionResult
+from zeler_sheets.formulas.read_models import ITEM_FORMULA_ROWS_READ_MODEL
 
 
 class FakeUpdateResult:
@@ -283,6 +284,15 @@ async def test_execute_returns_forbidden_unknown_and_bad_argument_envelopes() ->
             headers={"Authorization": f"Bearer {token}"},
             json={"formula": "SHEETSELLER_SKU", "cuenta": "HOPEMOB", "args": {}},
         )
+        deprecated = await client.post(
+            "/sheets/formulas:execute",
+            headers={"Authorization": f"Bearer {token}"},
+            json={
+                "formula": "ZELERDATA_COMPETENCIA",
+                "cuenta": "HOPEMOB",
+                "args": {"id_publicaciones": "todos"},
+            },
+        )
         bad_argument = await client.post(
             "/sheets/formulas:execute",
             headers={"Authorization": f"Bearer {token}"},
@@ -299,6 +309,12 @@ async def test_execute_returns_forbidden_unknown_and_bad_argument_envelopes() ->
     assert unknown.json()["error"] == {
         "code": "FORMULA_UNKNOWN",
         "message": "unknown formula SHEETSELLER_SKU",
+        "retryable": False,
+    }
+    assert deprecated.status_code == 200
+    assert deprecated.json()["error"] == {
+        "code": "FORMULA_UNKNOWN",
+        "message": "unknown formula ZELERDATA_COMPETENCIA",
         "retryable": False,
     }
     assert bad_argument.status_code == 400
@@ -566,6 +582,168 @@ async def test_execute_serializes_mongo_decimal_values_as_json_numbers() -> None
 
 
 @pytest.mark.asyncio
+async def test_execute_questions_returns_data_unavailable_without_freshness_marker() -> None:
+    now = datetime(2026, 5, 13, 12, 0, tzinfo=UTC)
+    app, _db, token = await _app_with_token(now=now)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.post(
+            "/sheets/formulas:execute",
+            headers={"Authorization": f"Bearer {token}"},
+            json={
+                "formula": "ZELERDATA_PREGUNTAS",
+                "cuenta": "HOPEMOB",
+                "args": {
+                    "fecha_inicial": "2026-05-10",
+                    "fecha_final": "2026-05-10",
+                    "horario_inicial": "00:00",
+                    "horario_final": "23:59",
+                },
+            },
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ok"] is False
+    assert body["error"] == {
+        "code": "DATA_UNAVAILABLE",
+        "message": (
+            "ZELERDATA_PREGUNTAS data is not available yet: Questions read model has "
+            "not passed freshness/reconciliation for the requested range."
+        ),
+        "retryable": False,
+    }
+    assert body["values"] == [[f"DATA_UNAVAILABLE: {body['error']['message']}"]]
+
+
+@pytest.mark.asyncio
+async def test_execute_retiros_requires_fresh_read_model_marker() -> None:
+    now = datetime(2026, 5, 13, 12, 0, tzinfo=UTC)
+    app, _db, token = await _app_with_token(now=now)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.post(
+            "/sheets/formulas:execute",
+            headers={"Authorization": f"Bearer {token}"},
+            json={
+                "formula": "ZELERDATA_RETIROS",
+                "cuenta": "HOPEMOB",
+                "args": {
+                    "fecha_inicial": "2026-05-01",
+                    "fecha_final": "2026-05-31",
+                    "encabezados": "si",
+                },
+            },
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ok"] is False
+    assert body["error"]["code"] == "DATA_UNAVAILABLE"
+    assert body["error"]["message"] == (
+        "ZELERDATA_RETIROS data is not available yet: Read model "
+        "full_withdrawals has not passed freshness/reconciliation for the requested range."
+    )
+    assert body["values"] == [[f"DATA_UNAVAILABLE: {body['error']['message']}"]]
+
+
+@pytest.mark.asyncio
+async def test_execute_calidad_requires_fresh_item_read_model_marker() -> None:
+    now = datetime(2026, 5, 13, 12, 0, tzinfo=UTC)
+    app, _db, token = await _app_with_token(now=now)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.post(
+            "/sheets/formulas:execute",
+            headers={"Authorization": f"Bearer {token}"},
+            json={
+                "formula": "ZELERDATA_CALIDAD",
+                "cuenta": "HOPEMOB",
+                "args": {"encabezados": "si"},
+            },
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ok"] is False
+    assert body["error"]["code"] == "DATA_UNAVAILABLE"
+    assert body["error"]["message"] == (
+        "ZELERDATA_CALIDAD data is not available yet: Read model "
+        "item_formula_rows has not passed freshness/reconciliation for the requested range."
+    )
+    assert body["values"] == [[f"DATA_UNAVAILABLE: {body['error']['message']}"]]
+
+
+@pytest.mark.asyncio
+async def test_execute_calidad_uses_default_runtime_handler() -> None:
+    now = datetime(2026, 5, 13, 12, 0, tzinfo=UTC)
+    app, db, token = await _app_with_token(now=now)
+    db["sheets_read_model_freshness"].documents[f"123456789:{ITEM_FORMULA_ROWS_READ_MODEL}"] = {
+        "_id": f"123456789:{ITEM_FORMULA_ROWS_READ_MODEL}",
+        "seller_id": "123456789",
+        "read_model": ITEM_FORMULA_ROWS_READ_MODEL,
+        "state": "fresh",
+        "fresh_until": now,
+        "reconciled_until": now,
+        "updated_at": now,
+        "schema_version": 1,
+    }
+    db["sheets_item_formula_rows"].documents = {
+        "123456789:SKU-1:MLA1": {
+            "_id": "123456789:SKU-1:MLA1",
+            "seller_id": "123456789",
+            "item_id": "MLA1",
+            "sku": "SKU-1",
+            "normalized_sku": "SKU-1",
+            "current": {
+                "title": "Quality item",
+                "status": "active",
+                "permalink": "https://meli.example/MLA1",
+                "available_quantity": 4,
+                "listing_type_id": "gold_special",
+                "health": 0.82,
+            },
+        }
+    }
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.post(
+            "/sheets/formulas:execute",
+            headers={"Authorization": f"Bearer {token}"},
+            json={
+                "formula": "ZELERDATA_CALIDAD",
+                "cuenta": "HOPEMOB",
+                "args": {"encabezados": "si"},
+            },
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ok"] is True
+    assert body["values"][0][:4] == ["ID PUBLICACION", "SKU", "TITULO", "STATUS"]
+    assert body["values"][1][:9] == [
+        "MLA1",
+        "SKU-1",
+        "Quality item",
+        "active",
+        "https://meli.example/MLA1",
+        4,
+        "gold_special",
+        0.82,
+        "good",
+    ]
+    assert body["meta"] == {"rows_count": 1, "columns": "modern_quality_projection"}
+
+
+@pytest.mark.asyncio
 async def test_formula_inventory_route_exposes_all_registered_contracts() -> None:
     app, _db = _app()
 
@@ -576,14 +754,34 @@ async def test_formula_inventory_route_exposes_all_registered_contracts() -> Non
 
     assert response.status_code == 200
     contracts = response.json()["formulas"]
-    assert len(contracts) == 53
+    assert len(contracts) == 52
     assert contracts[0]["name"] == "ZELERDATA_PUBLICACIONES"
     assert contracts[0]["status"] == "implemented"
     by_name = {contract["name"]: contract for contract in contracts}
+    assert "ZELERDATA_COMPETENCIA" not in by_name
+    assert "ZELERDATA_ENVIARAFULL" not in by_name
+    assert by_name["ZELERDATA_CATALOGO_COMPLETO"] == by_name["ZELERDATA_CATALOGO_COMPLETO"] | {
+        "status": "implemented"
+    }
+    assert by_name["ZELERDATA_CATALOGO"]["status"] == "implemented"
     assert by_name["ZELERDATA_DIASDESDEULTIMAVENTA"]["status"] == "implemented"
     assert by_name["ZELERDATA_COMPRADORES"] == by_name["ZELERDATA_COMPRADORES"] | {
         "status": "implemented"
     }
+    assert by_name["ZELERDATA_DEVOLUCIONES"]["status"] == "implemented"
+    assert by_name["ZELERDATA_PUBLICACIONESDESCUIDADAS"]["status"] == "implemented"
+    assert by_name["ZELERDATA_TIEMPOACTIVA"]["status"] == "implemented"
+    assert by_name["ZELERDATA_CALIDAD"]["status"] == "implemented"
+    assert by_name["ZELERDATA_CALCULADORA"]["status"] == "implemented"
+    for formula in [
+        "ZELERDATA_CATALOGOTIEMPO",
+        "ZELERDATA_PRECIOHISTORICO",
+        "ZELERDATA_RETIROS",
+        "ZELERDATA_SEMANASCONSTOCK",
+        "ZELERDATA_TIEMPOSINSTOCK",
+        "ZELERDATA_TIEMPOSTOCKACTIVO",
+    ]:
+        assert by_name[formula]["status"] == "implemented"
     assert response.json()["error_codes"] == [
         "TOKEN_MISSING",
         "TOKEN_REVOKED",

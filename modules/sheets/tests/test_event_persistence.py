@@ -1245,6 +1245,55 @@ async def test_question_webhook_creates_and_updates_formula_facing_read_model() 
 
 
 @pytest.mark.asyncio
+async def test_question_webhook_advances_formula_freshness_marker_only_after_accepted_write() -> (
+    None
+):
+    moments = iter([NOW, PAUSED_AT, REOBSERVED_AT])
+    db = FakeDb()
+    persistence = SheetsEventPersistence(db=db, clock=lambda: next(moments))
+
+    await persistence.persist(
+        event_type="questions.new",
+        seller_id=82453304,
+        resource={
+            **_question_resource(status="UNANSWERED"),
+            "date_created": "2026-05-29T10:00:00Z",
+        },
+    )
+    await persistence.persist(
+        event_type="questions.new",
+        seller_id=82453304,
+        resource={
+            **_question_resource(status="UNANSWERED"),
+            "date_created": "2026-05-31T10:00:00Z",
+        },
+    )
+    await persistence.persist(
+        event_type="questions.new",
+        seller_id=82453304,
+        resource={
+            **_question_resource(status="UNANSWERED"),
+            "date_created": "2026-05-28T10:00:00Z",
+        },
+    )
+
+    assert db["questions"].documents["Q1"]["date_created"] == datetime(
+        2026, 5, 31, 10, 0, tzinfo=UTC
+    )
+    assert db["sheets_read_model_freshness"].documents["82453304:questions"] == {
+        "_id": "82453304:questions",
+        "seller_id": "82453304",
+        "read_model": "questions",
+        "state": "fresh",
+        "fresh_until": PAUSED_AT,
+        "last_event_synced_at": PAUSED_AT,
+        "updated_at": PAUSED_AT,
+        "source": "questions_event_persistence",
+        "schema_version": 1,
+    }
+
+
+@pytest.mark.asyncio
 async def test_observed_transition_writes_history_state_and_formula_scalars() -> None:
     moments = iter([NOW, PAUSED_AT])
     db = FakeDb()

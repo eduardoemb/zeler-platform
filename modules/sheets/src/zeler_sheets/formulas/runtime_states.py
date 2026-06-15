@@ -13,7 +13,19 @@ from zeler_sheets.formulas.dispatcher import (
     FormulaHandler,
 )
 from zeler_sheets.formulas.handlers_core import CORE_FORMULA_NAMES
+from zeler_sheets.formulas.handlers_item_shipping_catalog import (
+    ITEM_SHIPPING_CATALOG_IMPLEMENTED_FORMULAS,
+)
 from zeler_sheets.formulas.handlers_orders_questions import BATCH_B_IMPLEMENTED_FORMULAS
+from zeler_sheets.formulas.handlers_quality_calculator import (
+    QUALITY_CALCULATOR_IMPLEMENTED_FORMULAS,
+)
+from zeler_sheets.formulas.handlers_remaining_phase4 import (
+    REMAINING_PHASE4_IMPLEMENTED_FORMULAS,
+)
+from zeler_sheets.formulas.handlers_returns_histories_withdrawals import (
+    RETURNS_HISTORIES_WITHDRAWALS_IMPLEMENTED_FORMULAS,
+)
 from zeler_sheets.formulas.registry import FormulaRegistry
 
 FormulaRuntimeStateName = Literal["implemented", "unsupported"]
@@ -25,34 +37,18 @@ class FormulaRuntimeState:
     reason: str
 
 
-UNSUPPORTED_FORMULA_REASONS: Mapping[str, str] = {
-    "ZELERDATA_ENVIARAFULL": "Full replenishment recommendation read model is not available in zeler-platform yet.",
-    "ZELERDATA_PUBLICACIONESDESCUIDADAS": "Neglected-publication history/read model is not available in zeler-platform yet.",
-    "ZELERDATA_CATALOGO": "Catalog/buybox snapshot read model is not available in zeler-platform yet.",
-    "ZELERDATA_TIEMPOSINSTOCK": "Stock history read model is not available in zeler-platform yet.",
-    "ZELERDATA_TIEMPOACTIVA": "Active-time history read model is not available in zeler-platform yet.",
-    "ZELERDATA_CATALOGOSINVINCULAR": "Recommended catalog-linking read model is not available in zeler-platform yet.",
-    "ZELERDATA_CATALOGOBUYBOX": "Catalog/buybox competition read model is not available in zeler-platform yet.",
-    "ZELERDATA_DEVOLUCIONES": "Returns/claims read model is not available in zeler-platform yet.",
-    "ZELERDATA_COMPETENCIA": "Competition snapshot read model is not available in zeler-platform yet.",
-    "ZELERDATA_CATALOGOTIEMPO": "Catalog winning-time history read model is not available in zeler-platform yet.",
-    "ZELERDATA_PRECIOHISTORICO": "Price history read model is not available in zeler-platform yet.",
-    "ZELERDATA_TIEMPOSTOCKACTIVO": "Stock-available history read model is not available in zeler-platform yet.",
-    "ZELERDATA_CALIDAD": "Listing quality/health read model is not available in zeler-platform yet.",
-    "ZELERDATA_CALCULADORA": "Cost/category/catalog calculator read model is not available in zeler-platform yet.",
-    "ZELERDATA_RETIROS": "Full withdrawals read model is not available in zeler-platform yet.",
-    "ZELERDATA_SEMANASCONSTOCK": "Weekly stock-presence history read model is not available in zeler-platform yet.",
-    "ZELERDATA_MEDIDASGENERAL": "Measurement read model is not available in zeler-platform yet.",
-    "ZELERDATA_MEDIDAS": "Measurement read model is not available in zeler-platform yet.",
-    "ZELERDATA_SUPERMERCADO": "Supermarket/regular listing flag read model is not available in zeler-platform yet.",
-    "ZELERDATA_OBTENER_CATALOGO": "Catalog collection read model is not available in zeler-platform yet.",
-    "ZELERDATA_COSTOENVIOVENDEDOR": "Seller-paid shipping cost read model is not available in zeler-platform yet.",
-    "ZELERDATA_ENVIOSMERCADOENVIOS": "MercadoEnvios shipment/label read model is not available in zeler-platform yet.",
-}
+UNSUPPORTED_FORMULA_REASONS: Mapping[str, str] = {}
 
 
 def get_formula_runtime_states() -> dict[str, FormulaRuntimeState]:
-    implemented = CORE_FORMULA_NAMES | BATCH_B_IMPLEMENTED_FORMULAS
+    implemented = (
+        CORE_FORMULA_NAMES
+        | BATCH_B_IMPLEMENTED_FORMULAS
+        | ITEM_SHIPPING_CATALOG_IMPLEMENTED_FORMULAS
+        | RETURNS_HISTORIES_WITHDRAWALS_IMPLEMENTED_FORMULAS
+        | QUALITY_CALCULATOR_IMPLEMENTED_FORMULAS
+        | REMAINING_PHASE4_IMPLEMENTED_FORMULAS
+    )
     registry = FormulaRegistry.default()
     states: dict[str, FormulaRuntimeState] = {}
     for contract in registry.list_contracts():
