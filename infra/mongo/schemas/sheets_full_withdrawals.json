@@ -1,0 +1,88 @@
+{
+  "$jsonSchema": {
+    "additionalProperties": false,
+    "bsonType": "object",
+    "properties": {
+      "_id": {
+        "bsonType": "string"
+      },
+      "created_at": {
+        "bsonType": "date"
+      },
+      "delivered_at": {
+        "bsonType": [
+          "date",
+          "null"
+        ]
+      },
+      "inventory_id": {
+        "bsonType": [
+          "string",
+          "null"
+        ]
+      },
+      "item_id": {
+        "bsonType": [
+          "string",
+          "null"
+        ]
+      },
+      "requested_quantity": {
+        "bsonType": [
+          "int",
+          "long",
+          "null"
+        ]
+      },
+      "schema_version": {
+        "bsonType": "int"
+      },
+      "seller_id": {
+        "bsonType": [
+          "string",
+          "long",
+          "int"
+        ]
+      },
+      "sku": {
+        "bsonType": [
+          "string",
+          "null"
+        ]
+      },
+      "source": {
+        "enum": [
+          "sheets_event_persistence",
+          "sheets_backfill",
+          "historical_meli_backfill",
+          "manual_reconciliation"
+        ]
+      },
+      "title": {
+        "bsonType": [
+          "string",
+          "null"
+        ]
+      },
+      "withdrawal_detail_id": {
+        "bsonType": [
+          "string",
+          "null"
+        ]
+      },
+      "withdrawal_id": {
+        "bsonType": "string"
+      }
+    },
+    "required": [
+      "_id",
+      "seller_id",
+      "withdrawal_id",
+      "created_at",
+      "source",
+      "schema_version"
+    ]
+  },
+  "validationAction": "error",
+  "validationLevel": "strict"
+}

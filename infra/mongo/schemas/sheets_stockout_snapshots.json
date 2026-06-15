@@ -1,0 +1,109 @@
+{
+  "$jsonSchema": {
+    "additionalProperties": false,
+    "bsonType": "object",
+    "properties": {
+      "_id": {
+        "bsonType": "string"
+      },
+      "current_stock": {
+        "bsonType": [
+          "int",
+          "long",
+          "null"
+        ]
+      },
+      "item_id": {
+        "bsonType": "string"
+      },
+      "logistic_type": {
+        "bsonType": [
+          "string",
+          "null"
+        ]
+      },
+      "normalized_sku": {
+        "bsonType": [
+          "string",
+          "null"
+        ]
+      },
+      "observed_at": {
+        "bsonType": "date"
+      },
+      "out_of_stock_since": {
+        "bsonType": [
+          "date",
+          "null"
+        ]
+      },
+      "price": {
+        "bsonType": [
+          "decimal",
+          "double",
+          "int",
+          "long",
+          "null"
+        ]
+      },
+      "schema_version": {
+        "bsonType": "int"
+      },
+      "seller_id": {
+        "bsonType": [
+          "string",
+          "long",
+          "int"
+        ]
+      },
+      "sku": {
+        "bsonType": [
+          "string",
+          "null"
+        ]
+      },
+      "source": {
+        "enum": [
+          "sheets_event_persistence",
+          "sheets_backfill",
+          "historical_meli_backfill",
+          "manual_reconciliation"
+        ]
+      },
+      "status": {
+        "bsonType": [
+          "string",
+          "null"
+        ]
+      },
+      "stock_state": {
+        "bsonType": [
+          "string",
+          "null"
+        ]
+      },
+      "title": {
+        "bsonType": [
+          "string",
+          "null"
+        ]
+      },
+      "url": {
+        "bsonType": [
+          "string",
+          "null"
+        ]
+      }
+    },
+    "required": [
+      "_id",
+      "seller_id",
+      "item_id",
+      "observed_at",
+      "source",
+      "schema_version"
+    ]
+  },
+  "validationAction": "error",
+  "validationLevel": "strict"
+}

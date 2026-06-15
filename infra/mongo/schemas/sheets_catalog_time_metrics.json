@@ -1,0 +1,88 @@
+{
+  "$jsonSchema": {
+    "additionalProperties": false,
+    "bsonType": "object",
+    "properties": {
+      "_id": {
+        "bsonType": "string"
+      },
+      "available_hours": {
+        "bsonType": [
+          "decimal",
+          "double",
+          "int",
+          "long"
+        ]
+      },
+      "date_from": {
+        "bsonType": "date"
+      },
+      "date_to": {
+        "bsonType": "date"
+      },
+      "item_id": {
+        "bsonType": "string"
+      },
+      "schema_version": {
+        "bsonType": "int"
+      },
+      "seller_id": {
+        "bsonType": [
+          "string",
+          "long",
+          "int"
+        ]
+      },
+      "source": {
+        "enum": [
+          "sheets_event_persistence",
+          "sheets_backfill",
+          "historical_meli_backfill",
+          "manual_reconciliation"
+        ]
+      },
+      "title": {
+        "bsonType": [
+          "string",
+          "null"
+        ]
+      },
+      "url": {
+        "bsonType": [
+          "string",
+          "null"
+        ]
+      },
+      "winning_hours": {
+        "bsonType": [
+          "decimal",
+          "double",
+          "int",
+          "long"
+        ]
+      },
+      "winning_percent": {
+        "bsonType": [
+          "decimal",
+          "double",
+          "int",
+          "long",
+          "null"
+        ]
+      }
+    },
+    "required": [
+      "_id",
+      "seller_id",
+      "item_id",
+      "date_from",
+      "date_to",
+      "winning_hours",
+      "available_hours",
+      "source",
+      "schema_version"
+    ]
+  },
+  "validationAction": "error",
+  "validationLevel": "strict"
+}

@@ -1,0 +1,132 @@
+{
+  "$jsonSchema": {
+    "additionalProperties": false,
+    "bsonType": "object",
+    "properties": {
+      "_id": {
+        "bsonType": "string"
+      },
+      "available_quantity": {
+        "bsonType": [
+          "int",
+          "long",
+          "null"
+        ]
+      },
+      "buybox_status": {
+        "bsonType": [
+          "string",
+          "null"
+        ]
+      },
+      "catalog_product_id": {
+        "bsonType": "string"
+      },
+      "catalog_url": {
+        "bsonType": [
+          "string",
+          "null"
+        ]
+      },
+      "competitor_count": {
+        "bsonType": [
+          "int",
+          "long",
+          "null"
+        ]
+      },
+      "item_id": {
+        "bsonType": "string"
+      },
+      "only_competitor": {
+        "bsonType": [
+          "string",
+          "bool",
+          "null"
+        ]
+      },
+      "price": {
+        "bsonType": [
+          "decimal",
+          "double",
+          "int",
+          "long",
+          "null"
+        ]
+      },
+      "price_to_win": {
+        "bsonType": [
+          "decimal",
+          "double",
+          "int",
+          "long",
+          "null"
+        ]
+      },
+      "schema_version": {
+        "bsonType": "int"
+      },
+      "seller_id": {
+        "bsonType": [
+          "string",
+          "long",
+          "int"
+        ]
+      },
+      "snapshot_at": {
+        "bsonType": "date"
+      },
+      "source": {
+        "enum": [
+          "sheets_event_persistence",
+          "sheets_backfill",
+          "historical_meli_backfill",
+          "manual_reconciliation"
+        ]
+      },
+      "title": {
+        "bsonType": [
+          "string",
+          "null"
+        ]
+      },
+      "winning_price": {
+        "bsonType": [
+          "decimal",
+          "double",
+          "int",
+          "long",
+          "null"
+        ]
+      },
+      "winning_time_percent": {
+        "bsonType": [
+          "decimal",
+          "double",
+          "int",
+          "long",
+          "null"
+        ]
+      },
+      "winning_user_id": {
+        "bsonType": [
+          "string",
+          "long",
+          "int",
+          "null"
+        ]
+      }
+    },
+    "required": [
+      "_id",
+      "seller_id",
+      "item_id",
+      "catalog_product_id",
+      "snapshot_at",
+      "source",
+      "schema_version"
+    ]
+  },
+  "validationAction": "error",
+  "validationLevel": "strict"
+}

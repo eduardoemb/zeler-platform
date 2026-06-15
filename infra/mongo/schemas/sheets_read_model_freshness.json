@@ -1,0 +1,67 @@
+{
+  "$jsonSchema": {
+    "additionalProperties": false,
+    "bsonType": "object",
+    "properties": {
+      "_id": {
+        "bsonType": "string"
+      },
+      "fresh_until": {
+        "bsonType": "date"
+      },
+      "last_event_synced_at": {
+        "bsonType": [
+          "date",
+          "null"
+        ]
+      },
+      "read_model": {
+        "bsonType": "string"
+      },
+      "reconciled_until": {
+        "bsonType": [
+          "date",
+          "null"
+        ]
+      },
+      "schema_version": {
+        "bsonType": "int"
+      },
+      "seller_id": {
+        "bsonType": [
+          "string",
+          "long",
+          "int"
+        ]
+      },
+      "source": {
+        "bsonType": [
+          "string",
+          "null"
+        ]
+      },
+      "state": {
+        "enum": [
+          "fresh",
+          "reconciled",
+          "stale",
+          "failed"
+        ]
+      },
+      "updated_at": {
+        "bsonType": "date"
+      }
+    },
+    "required": [
+      "_id",
+      "seller_id",
+      "read_model",
+      "state",
+      "fresh_until",
+      "updated_at",
+      "schema_version"
+    ]
+  },
+  "validationAction": "error",
+  "validationLevel": "strict"
+}

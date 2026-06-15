@@ -1,0 +1,76 @@
+{
+  "$jsonSchema": {
+    "additionalProperties": false,
+    "bsonType": "object",
+    "properties": {
+      "_id": {
+        "bsonType": "string"
+      },
+      "attributes": {
+        "bsonType": [
+          "array",
+          "object",
+          "null"
+        ]
+      },
+      "catalog_product_id": {
+        "bsonType": "string"
+      },
+      "description": {
+        "bsonType": [
+          "string",
+          "null"
+        ]
+      },
+      "image_url": {
+        "bsonType": [
+          "string",
+          "null"
+        ]
+      },
+      "permalink": {
+        "bsonType": [
+          "string",
+          "null"
+        ]
+      },
+      "schema_version": {
+        "bsonType": "int"
+      },
+      "seller_id": {
+        "bsonType": [
+          "string",
+          "long",
+          "int"
+        ]
+      },
+      "snapshot_at": {
+        "bsonType": "date"
+      },
+      "source": {
+        "enum": [
+          "sheets_event_persistence",
+          "sheets_backfill",
+          "historical_meli_backfill",
+          "manual_reconciliation"
+        ]
+      },
+      "title": {
+        "bsonType": [
+          "string",
+          "null"
+        ]
+      }
+    },
+    "required": [
+      "_id",
+      "seller_id",
+      "catalog_product_id",
+      "snapshot_at",
+      "source",
+      "schema_version"
+    ]
+  },
+  "validationAction": "error",
+  "validationLevel": "strict"
+}
