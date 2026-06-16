@@ -1294,6 +1294,70 @@ async def test_question_webhook_advances_formula_freshness_marker_only_after_acc
 
 
 @pytest.mark.asyncio
+async def test_question_webhook_does_not_mutate_reconciled_freshness_marker() -> None:
+    db = FakeDb()
+    reconciled_marker = {
+        "_id": "82453304:questions",
+        "seller_id": "82453304",
+        "read_model": "questions",
+        "state": "reconciled",
+        "fresh_until": datetime(2026, 6, 5, tzinfo=UTC),
+        "reconciled_until": datetime(2026, 6, 5, tzinfo=UTC),
+        "last_event_synced_at": datetime(2026, 6, 1, tzinfo=UTC),
+        "updated_at": datetime(2026, 6, 5, tzinfo=UTC),
+        "source": "zelerdata_read_model_reconcile",
+        "schema_version": 1,
+    }
+    db["sheets_read_model_freshness"].documents["82453304:questions"] = dict(reconciled_marker)
+    persistence = SheetsEventPersistence(db=db, clock=lambda: REOBSERVED_AT)
+
+    await persistence.persist(
+        event_type="questions.new",
+        seller_id=82453304,
+        resource={
+            **_question_resource(status="UNANSWERED"),
+            "date_created": "2026-06-07T10:00:00Z",
+        },
+    )
+
+    assert db["sheets_read_model_freshness"].documents["82453304:questions"] == reconciled_marker
+
+
+@pytest.mark.asyncio
+async def test_question_webhook_does_not_race_over_reconciled_freshness_marker() -> None:
+    db = FakeDb()
+    reconciled_marker = {
+        "_id": "82453304:questions",
+        "seller_id": "82453304",
+        "read_model": "questions",
+        "state": "reconciled",
+        "fresh_until": datetime(2026, 6, 5, tzinfo=UTC),
+        "reconciled_until": datetime(2026, 6, 5, tzinfo=UTC),
+        "last_event_synced_at": datetime(2026, 6, 1, tzinfo=UTC),
+        "updated_at": datetime(2026, 6, 5, tzinfo=UTC),
+        "source": "zelerdata_read_model_reconcile",
+        "schema_version": 1,
+    }
+    db.collections["sheets_read_model_freshness"] = SupersedingReplaceCollection(
+        supersede=lambda: db["sheets_read_model_freshness"].documents.__setitem__(
+            "82453304:questions", dict(reconciled_marker)
+        )
+    )
+    persistence = SheetsEventPersistence(db=db, clock=lambda: REOBSERVED_AT)
+
+    await persistence.persist(
+        event_type="questions.new",
+        seller_id=82453304,
+        resource={
+            **_question_resource(status="UNANSWERED"),
+            "date_created": "2026-06-07T10:00:00Z",
+        },
+    )
+
+    assert db["sheets_read_model_freshness"].documents["82453304:questions"] == reconciled_marker
+
+
+@pytest.mark.asyncio
 async def test_observed_transition_writes_history_state_and_formula_scalars() -> None:
     moments = iter([NOW, PAUSED_AT])
     db = FakeDb()
