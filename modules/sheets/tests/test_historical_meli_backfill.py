@@ -32,6 +32,17 @@ class FakeCursor:
     async def to_list(self, *, length: int | None = None) -> list[dict[str, Any]]:
         return self._documents[:length]
 
+    def __aiter__(self) -> FakeCursor:
+        self._index = 0
+        return self
+
+    async def __anext__(self) -> dict[str, Any]:
+        if self._index >= len(self._documents):
+            raise StopAsyncIteration
+        document = self._documents[self._index]
+        self._index += 1
+        return dict(document)
+
 
 class FakeCollection:
     def __init__(self) -> None:
@@ -75,7 +86,10 @@ class FakeCollection:
                 return dict(document)
         return None
 
-    def find(self, filter_spec: dict[str, Any]) -> FakeCursor:
+    def find(
+        self, filter_spec: dict[str, Any], projection: dict[str, int] | None = None
+    ) -> FakeCursor:
+        del projection
         documents = [
             document
             for document in self.documents.values()
@@ -93,6 +107,10 @@ def _matches_filter(document: dict[str, Any], filter_spec: dict[str, Any]) -> bo
         actual = _nested_value(document, key)
         if isinstance(expected, dict) and "$exists" in expected:
             if (actual is not None) != expected["$exists"]:
+                return False
+            continue
+        if isinstance(expected, dict) and "$ne" in expected:
+            if actual == expected["$ne"]:
                 return False
             continue
         if isinstance(expected, dict) and "$lte" in expected:
@@ -176,6 +194,10 @@ class FakeGateway:
             return [{"code": 200, "body": _item_detail()}]
         if path == "/items?ids=MLA1":
             return [{"code": 404, "body": {"message": "not found"}}]
+        if path == "/products/CAT-MLA1":
+            return _catalog_product_detail()
+        if path == "/items/MLA1/price_to_win?version=v2":
+            return _price_to_win_detail()
         if path == "/shipments/3001" and self.unauthorized_shipment:
             return {
                 "status": 403,
@@ -713,6 +735,58 @@ async def test_historical_backfill_reconciles_claims_bounded_by_order_scope() ->
 
 
 @pytest.mark.asyncio
+async def test_historical_backfill_reconciles_catalog_product_and_buybox_snapshots() -> None:
+    db = FakeDb()
+    gateway = FakeGateway()
+
+    summary = await run_historical_meli_backfill(
+        db=db,
+        gateway=gateway,
+        order_detail_gateway=FakeOrderDetailGateway(),
+        seller_id="82453304",
+        date_from="2026-05-01",
+        date_to="2026-05-01",
+        dry_run=False,
+        approved_runtime=True,
+        max_orders=1,
+        include_catalog_snapshots=True,
+    )
+
+    assert summary.catalog_product_snapshots_found == 1
+    assert summary.catalog_product_snapshots_fetched == 1
+    assert summary.catalog_buybox_snapshots_found == 1
+    assert summary.catalog_buybox_snapshots_fetched == 1
+    assert summary.written_catalog_product_snapshots == 1
+    assert summary.written_catalog_buybox_snapshots == 1
+    assert (
+        "82453304",
+        "/products/CAT-MLA1",
+    ) in gateway.calls
+    assert (
+        "82453304",
+        "/items/MLA1/price_to_win?version=v2",
+    ) in gateway.calls
+    product = db["sheets_catalog_product_snapshots"].documents["82453304:CAT-MLA1"]
+    assert product["source"] == "historical_meli_backfill"
+    assert product["catalog_product_id"] == "CAT-MLA1"
+    assert product["title"] == "Catalog product"
+    assert product["description"] == "Complete catalog description"
+    assert product["image_url"] == "https://img.example/catalog-product.jpg"
+    assert product["attributes"] == [{"id": "BRAND", "value_name": "Acme"}]
+    buybox = db["sheets_catalog_buybox_snapshots"].documents["82453304:MLA1"]
+    assert buybox["source"] == "historical_meli_backfill"
+    assert buybox["item_id"] == "MLA1"
+    assert buybox["catalog_product_id"] == "CAT-MLA1"
+    assert buybox["title"] == "Catalog buybox item"
+    assert buybox["available_quantity"] == 7
+    assert buybox["buybox_status"] == "winning"
+    assert buybox["price"] == 120
+    assert buybox["winning_price"] == 118
+    assert buybox["competitor_count"] == 2
+    assert buybox["only_competitor"] == "No"
+
+
+@pytest.mark.asyncio
 async def test_historical_backfill_dedupes_shipment_cost_fetches_and_persists_projection() -> None:
     class SharedShipmentGateway:
         def __init__(self) -> None:
@@ -1123,9 +1197,35 @@ def _item_detail() -> dict[str, Any]:
         "thumbnail": "https://img.example/MLA1.jpg",
         "inventory_id": "INV-ITEM-1",
         "attributes": [{"id": "SELLER_SKU", "value_name": "sku-1"}],
+        "catalog_product_id": "CAT-MLA1",
         "variations": [],
         "date_created": "2026-05-01T10:00:00+00:00",
         "last_updated": "2026-05-01T11:00:00+00:00",
+    }
+
+
+def _catalog_product_detail() -> dict[str, Any]:
+    return {
+        "id": "CAT-MLA1",
+        "name": "Catalog product",
+        "description": "Complete catalog description",
+        "pictures": [{"url": "https://img.example/catalog-product.jpg"}],
+        "attributes": [{"id": "BRAND", "value_name": "Acme"}],
+        "permalink": "https://catalog.example/CAT-MLA1",
+    }
+
+
+def _price_to_win_detail() -> dict[str, Any]:
+    return {
+        "item_id": "MLA1",
+        "catalog_product_id": "CAT-MLA1",
+        "title": "Catalog buybox item",
+        "available_quantity": 7,
+        "status": "winning",
+        "current_price": 120,
+        "price_to_win": 118,
+        "competitors": [{"item_id": "MLA2"}, {"item_id": "MLA3"}],
+        "only_competitor": "No",
     }
 
 

@@ -31,6 +31,8 @@ _ID_LIST_COUNT_KEYS = {
     "shipment_ids": "shipment_count",
     "question_ids": "question_count",
     "claim_ids": "claim_count",
+    "catalog_product_ids": "catalog_product_count",
+    "catalog_buybox_item_ids": "catalog_buybox_item_count",
 }
 _SENSITIVE_OUTPUT_KEY_PARTS = (
     "access_token",
@@ -81,6 +83,10 @@ class HistoricalMeliBackfillSummary:
     questions_fetched: int
     claims_found: int
     claims_fetched: int
+    catalog_product_snapshots_found: int
+    catalog_product_snapshots_fetched: int
+    catalog_buybox_snapshots_found: int
+    catalog_buybox_snapshots_fetched: int
     buyer_address_pii_mode: bool
     output_mode: str
     address_matched: int
@@ -97,27 +103,37 @@ class HistoricalMeliBackfillSummary:
     existing_shipments: int
     existing_questions: int
     existing_claims: int
+    existing_catalog_product_snapshots: int
+    existing_catalog_buybox_snapshots: int
     missing_orders: int
     missing_items: int
     missing_shipments: int
     missing_questions: int
     missing_claims: int
+    missing_catalog_product_snapshots: int
+    missing_catalog_buybox_snapshots: int
     planned_orders: int
     planned_items: int
     planned_shipments: int
     planned_questions: int
     planned_claims: int
+    planned_catalog_product_snapshots: int
+    planned_catalog_buybox_snapshots: int
     written_orders: int
     written_items: int
     written_shipments: int
     written_questions: int
     written_claims: int
+    written_catalog_product_snapshots: int
+    written_catalog_buybox_snapshots: int
     order_ids: list[str]
     item_ids: list[str]
     missing_item_detail_ids: list[str]
     shipment_ids: list[str]
     question_ids: list[str]
     claim_ids: list[str]
+    catalog_product_ids: list[str]
+    catalog_buybox_item_ids: list[str]
 
     def as_dict(self) -> dict[str, Any]:
         return sanitize_historical_meli_summary(asdict(self))
@@ -152,6 +168,12 @@ class ShipmentFetchResult:
     shipment_real_shipping_costs_unavailable: int
 
 
+@dataclass(frozen=True)
+class CatalogSnapshotSource:
+    item_id: str
+    catalog_product_id: str
+
+
 def parse_inclusive_date_range(date_from: str, date_to: str) -> InclusiveDateRange:
     start_date = _parse_cli_date(date_from, field_name="date-from")
     end_date = _parse_cli_date(date_to, field_name="date-to")
@@ -184,6 +206,7 @@ async def run_historical_meli_backfill(
     resume_after_order_id: str | None = None,
     include_questions: bool = False,
     include_claims: bool = False,
+    include_catalog_snapshots: bool = False,
 ) -> HistoricalMeliBackfillSummary:
     seller_id = str(seller_id)
     if not dry_run and not approved_runtime:
@@ -254,6 +277,9 @@ async def run_historical_meli_backfill(
             date_range=date_range,
         )
     claim_ids = _unique_strings(_resource_id(claim) for claim in claims)
+    catalog_scope: list[CatalogSnapshotSource] = []
+    catalog_product_snapshots: list[dict[str, Any]] = []
+    catalog_buybox_snapshots: list[dict[str, Any]] = []
     shipment_ids = _bounded_values(
         _unique_strings(
             shipment_id
@@ -272,6 +298,27 @@ async def run_historical_meli_backfill(
             "missing item details for "
             f"{len(missing_item_detail_ids)} item(s); refusing to write partial backfill"
         )
+    if include_catalog_snapshots:
+        catalog_scope = _merge_catalog_snapshot_sources(
+            await _catalog_snapshot_source_rows(db=db, seller_id=seller_id),
+            _catalog_snapshot_source_rows_from_resources(items),
+        )
+        catalog_product_snapshots = await _fetch_catalog_product_snapshots(
+            gateway=gateway,
+            seller_id=seller_id,
+            catalog_product_ids=_unique_strings(row.catalog_product_id for row in catalog_scope),
+        )
+        catalog_buybox_snapshots = await _fetch_catalog_buybox_snapshots(
+            gateway=gateway,
+            seller_id=seller_id,
+            source_rows=catalog_scope,
+        )
+    catalog_product_ids = _unique_strings(
+        snapshot.get("catalog_product_id") for snapshot in catalog_product_snapshots
+    )
+    catalog_buybox_item_ids = _unique_strings(
+        snapshot.get("item_id") for snapshot in catalog_buybox_snapshots
+    )
     shipment_fetch = await _fetch_shipments(
         gateway=gateway,
         seller_id=seller_id,
@@ -295,17 +342,42 @@ async def run_historical_meli_backfill(
     existing_claims = await _count_existing(
         db=db, collection="claims", seller_id=seller_id, ids=claim_ids
     )
+    existing_catalog_product_snapshots = await _count_existing(
+        db=db,
+        collection="sheets_catalog_product_snapshots",
+        seller_id=seller_id,
+        ids=[
+            _catalog_product_snapshot_id(seller_id, catalog_id)
+            for catalog_id in catalog_product_ids
+        ],
+    )
+    existing_catalog_buybox_snapshots = await _count_existing(
+        db=db,
+        collection="sheets_catalog_buybox_snapshots",
+        seller_id=seller_id,
+        ids=[
+            _catalog_buybox_snapshot_id(seller_id, item_id) for item_id in catalog_buybox_item_ids
+        ],
+    )
 
     missing_orders = len(order_ids) - existing_orders
     missing_items = len(item_ids) - existing_items
     missing_shipments = len(shipment_ids) - existing_shipments
     missing_questions = len(question_ids) - existing_questions
     missing_claims = len(claim_ids) - existing_claims
+    missing_catalog_product_snapshots = (
+        len(catalog_product_ids) - existing_catalog_product_snapshots
+    )
+    missing_catalog_buybox_snapshots = (
+        len(catalog_buybox_item_ids) - existing_catalog_buybox_snapshots
+    )
     written_orders = 0
     written_items = 0
     written_shipments = 0
     written_questions = 0
     written_claims = 0
+    written_catalog_product_snapshots = 0
+    written_catalog_buybox_snapshots = 0
 
     if not dry_run:
         persistence = SheetsEventPersistence(db=db)
@@ -337,6 +409,20 @@ async def run_historical_meli_backfill(
                 upsert=True,
             )
             written_claims += 1
+        for snapshot in catalog_product_snapshots:
+            await db["sheets_catalog_product_snapshots"].replace_one(
+                {"_id": snapshot["_id"], "seller_id": seller_id},
+                snapshot,
+                upsert=True,
+            )
+            written_catalog_product_snapshots += 1
+        for snapshot in catalog_buybox_snapshots:
+            await db["sheets_catalog_buybox_snapshots"].replace_one(
+                {"_id": snapshot["_id"], "seller_id": seller_id},
+                snapshot,
+                upsert=True,
+            )
+            written_catalog_buybox_snapshots += 1
 
     status = "dry_run_complete" if dry_run else "write_complete"
     return HistoricalMeliBackfillSummary(
@@ -355,6 +441,12 @@ async def run_historical_meli_backfill(
         questions_fetched=len(questions),
         claims_found=len(claim_ids),
         claims_fetched=len(claims),
+        catalog_product_snapshots_found=len(
+            _unique_strings(row.catalog_product_id for row in catalog_scope)
+        ),
+        catalog_product_snapshots_fetched=len(catalog_product_snapshots),
+        catalog_buybox_snapshots_found=len(catalog_scope),
+        catalog_buybox_snapshots_fetched=len(catalog_buybox_snapshots),
         buyer_address_pii_mode=include_buyer_address_pii,
         output_mode="sanitized_aggregate",
         address_matched=shipment_fetch.address_matched,
@@ -375,27 +467,37 @@ async def run_historical_meli_backfill(
         existing_shipments=existing_shipments,
         existing_questions=existing_questions,
         existing_claims=existing_claims,
+        existing_catalog_product_snapshots=existing_catalog_product_snapshots,
+        existing_catalog_buybox_snapshots=existing_catalog_buybox_snapshots,
         missing_orders=missing_orders,
         missing_items=missing_items,
         missing_shipments=missing_shipments,
         missing_questions=missing_questions,
         missing_claims=missing_claims,
+        missing_catalog_product_snapshots=missing_catalog_product_snapshots,
+        missing_catalog_buybox_snapshots=missing_catalog_buybox_snapshots,
         planned_orders=len(orders),
         planned_items=len(items),
         planned_shipments=len(shipments),
         planned_questions=len(questions),
         planned_claims=len(claims),
+        planned_catalog_product_snapshots=len(catalog_product_snapshots),
+        planned_catalog_buybox_snapshots=len(catalog_buybox_snapshots),
         written_orders=written_orders,
         written_items=written_items,
         written_shipments=written_shipments,
         written_questions=written_questions,
         written_claims=written_claims,
+        written_catalog_product_snapshots=written_catalog_product_snapshots,
+        written_catalog_buybox_snapshots=written_catalog_buybox_snapshots,
         order_ids=order_ids,
         item_ids=item_ids,
         missing_item_detail_ids=missing_item_detail_ids,
         shipment_ids=shipment_ids,
         question_ids=question_ids,
         claim_ids=claim_ids,
+        catalog_product_ids=catalog_product_ids,
+        catalog_buybox_item_ids=catalog_buybox_item_ids,
     )
 
 
@@ -505,6 +607,76 @@ def _claim_page_results(page: Any) -> list[dict[str, Any]]:
     return [claim for claim in data if isinstance(claim, dict)]
 
 
+async def _catalog_snapshot_source_rows(*, db: Any, seller_id: str) -> list[CatalogSnapshotSource]:
+    cursor = db["items"].find(
+        {
+            "seller_id": seller_id,
+            "catalog_product_id": {"$exists": True, "$ne": None},
+        },
+        {"_id": 1, "catalog_product_id": 1},
+    )
+    rows: list[CatalogSnapshotSource] = []
+    async for item in cursor:
+        item_id = _optional_string(item.get("_id") or item.get("id"))
+        catalog_product_id = _optional_string(item.get("catalog_product_id"))
+        if item_id is None or catalog_product_id is None:
+            continue
+        rows.append(CatalogSnapshotSource(item_id=item_id, catalog_product_id=catalog_product_id))
+    return rows
+
+
+def _catalog_snapshot_source_rows_from_resources(
+    resources: Sequence[dict[str, Any]],
+) -> list[CatalogSnapshotSource]:
+    rows: list[CatalogSnapshotSource] = []
+    for resource in resources:
+        item_id = _resource_id(resource)
+        catalog_product_id = _optional_string(resource.get("catalog_product_id"))
+        if item_id is None or catalog_product_id is None:
+            continue
+        rows.append(CatalogSnapshotSource(item_id=item_id, catalog_product_id=catalog_product_id))
+    return rows
+
+
+def _merge_catalog_snapshot_sources(
+    *groups: Sequence[CatalogSnapshotSource],
+) -> list[CatalogSnapshotSource]:
+    by_item_id: dict[str, CatalogSnapshotSource] = {}
+    for group in groups:
+        for row in group:
+            by_item_id.setdefault(row.item_id, row)
+    return list(by_item_id.values())
+
+
+async def _fetch_catalog_product_snapshots(
+    *, gateway: HistoricalMeliGateway, seller_id: str, catalog_product_ids: Sequence[str]
+) -> list[dict[str, Any]]:
+    snapshots: list[dict[str, Any]] = []
+    for catalog_product_id in catalog_product_ids:
+        resource = await gateway.fetch_resource(
+            seller_id=seller_id, path=f"/products/{catalog_product_id}"
+        )
+        snapshot = _catalog_product_snapshot(resource, seller_id=seller_id)
+        if snapshot is not None:
+            snapshots.append(snapshot)
+    return snapshots
+
+
+async def _fetch_catalog_buybox_snapshots(
+    *, gateway: HistoricalMeliGateway, seller_id: str, source_rows: Sequence[CatalogSnapshotSource]
+) -> list[dict[str, Any]]:
+    snapshots: list[dict[str, Any]] = []
+    for row in source_rows:
+        resource = await gateway.fetch_resource(
+            seller_id=seller_id,
+            path=f"/items/{row.item_id}/price_to_win?version=v2",
+        )
+        snapshot = _catalog_buybox_snapshot(resource, seller_id=seller_id, source=row)
+        if snapshot is not None:
+            snapshots.append(snapshot)
+    return snapshots
+
+
 def _canonical_claim_document(claim: dict[str, Any], *, seller_id: str) -> dict[str, Any]:
     document: dict[str, Any] = {
         "_id": _resource_id(claim),
@@ -525,6 +697,108 @@ def _canonical_claim_document(claim: dict[str, Any], *, seller_id: str) -> dict[
         {key: value for key, value in document.items() if value is not None}
     )
     return model.model_dump(by_alias=True, mode="python", exclude_none=True)
+
+
+def _catalog_product_snapshot(resource: Any, *, seller_id: str) -> dict[str, Any] | None:
+    if not isinstance(resource, dict):
+        return None
+    catalog_product_id = _resource_id(resource) or _optional_string(
+        resource.get("catalog_product_id")
+    )
+    if catalog_product_id is None:
+        return None
+    return {
+        "_id": _catalog_product_snapshot_id(seller_id, catalog_product_id),
+        "seller_id": seller_id,
+        "catalog_product_id": catalog_product_id,
+        "title": _optional_string(resource.get("title") or resource.get("name")),
+        "description": _catalog_description(resource),
+        "image_url": _catalog_image_url(resource),
+        "attributes": resource.get("attributes"),
+        "permalink": _optional_string(resource.get("permalink") or resource.get("url")),
+        "snapshot_at": datetime.now(UTC),
+        "source": "historical_meli_backfill",
+        "schema_version": 1,
+    }
+
+
+def _catalog_buybox_snapshot(
+    resource: Any, *, seller_id: str, source: CatalogSnapshotSource
+) -> dict[str, Any] | None:
+    if not isinstance(resource, dict):
+        return None
+    item_id = _optional_string(resource.get("item_id") or source.item_id)
+    catalog_product_id = _optional_string(
+        resource.get("catalog_product_id") or source.catalog_product_id
+    )
+    if item_id is None or catalog_product_id is None:
+        return None
+    return {
+        "_id": _catalog_buybox_snapshot_id(seller_id, item_id),
+        "seller_id": seller_id,
+        "item_id": item_id,
+        "catalog_product_id": catalog_product_id,
+        "title": _optional_string(resource.get("title") or resource.get("item_title")),
+        "available_quantity": _optional_int(resource.get("available_quantity")),
+        "buybox_status": _optional_string(
+            resource.get("buybox_status") or resource.get("status") or resource.get("winner_status")
+        ),
+        "price": _first_non_null(resource, "price", "current_price", "item_price"),
+        "winning_price": _first_non_null(resource, "winning_price", "price_to_win"),
+        "price_to_win": _first_non_null(resource, "price_to_win", "winning_price"),
+        "competitor_count": _catalog_competitor_count(resource),
+        "only_competitor": resource.get("only_competitor"),
+        "snapshot_at": datetime.now(UTC),
+        "source": "historical_meli_backfill",
+        "schema_version": 1,
+    }
+
+
+def _catalog_product_snapshot_id(seller_id: str, catalog_product_id: str) -> str:
+    return f"{seller_id}:{catalog_product_id}"
+
+
+def _catalog_buybox_snapshot_id(seller_id: str, item_id: str) -> str:
+    return f"{seller_id}:{item_id}"
+
+
+def _catalog_description(resource: dict[str, Any]) -> str | None:
+    description = resource.get("description")
+    if isinstance(description, dict):
+        return _optional_string(description.get("plain_text") or description.get("text"))
+    return _optional_string(description)
+
+
+def _catalog_image_url(resource: dict[str, Any]) -> str | None:
+    direct = _optional_string(resource.get("image_url") or resource.get("thumbnail"))
+    if direct is not None:
+        return direct
+    pictures = resource.get("pictures")
+    if isinstance(pictures, Sequence) and not isinstance(pictures, (str, bytes)):
+        for picture in pictures:
+            if isinstance(picture, dict) and (
+                url := _optional_string(picture.get("url") or picture.get("secure_url"))
+            ):
+                return url
+    return None
+
+
+def _first_non_null(resource: dict[str, Any], *keys: str) -> Any:
+    for key in keys:
+        value = resource.get(key)
+        if value is not None:
+            return value
+    return None
+
+
+def _catalog_competitor_count(resource: dict[str, Any]) -> int | None:
+    explicit = _optional_int(resource.get("competitor_count") or resource.get("winner_count"))
+    if explicit is not None:
+        return explicit
+    competitors = resource.get("competitors") or resource.get("offers")
+    if isinstance(competitors, Sequence) and not isinstance(competitors, (str, bytes)):
+        return len(competitors)
+    return None
 
 
 def _explicit_returned_quantity(claim: dict[str, Any]) -> int | None:
