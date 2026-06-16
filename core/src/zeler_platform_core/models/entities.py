@@ -840,14 +840,24 @@ class Shipment(UtcDatetimeMixin, SellerScopedDocument):
 
 class Claim(UtcDatetimeMixin, SellerScopedDocument):
     buyer_id: str | None = None
+    item_id: str | None = None
     order_id: str
+    returned_quantity: int | None = None
     status: ClaimStatus
     stage: ClaimStage
     type: ClaimType
     date_created: datetime
     resolution: dict[str, Any] | None = None
 
-    @field_validator("buyer_id", "order_id", mode="before")
+    @field_validator("buyer_id", "item_id", "order_id", mode="before")
     @classmethod
     def _coerce_ids(cls, value: object) -> object:
         return None if value is None else _coerce_str(value)
+
+    @field_validator("returned_quantity")
+    @classmethod
+    def _positive_returned_quantity(cls, value: int | None) -> int | None:
+        if value is not None and value < 1:
+            msg = "returned_quantity must be positive"
+            raise ValueError(msg)
+        return value

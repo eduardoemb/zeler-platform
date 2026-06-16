@@ -526,9 +526,7 @@ def _questions_freshness_marker_covers(marker: Any, *, date_from: Any, date_to: 
     )
 
 
-def read_model_reconciliation_marker_covers(
-    marker: Any, *, date_from: Any, date_to: Any
-) -> bool:
+def read_model_reconciliation_marker_covers(marker: Any, *, date_from: Any, date_to: Any) -> bool:
     if not isinstance(marker, dict):
         return False
     if str(marker.get("state") or "").strip().casefold() != RECONCILED_READ_MODEL_STATE:

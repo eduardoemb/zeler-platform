@@ -10,7 +10,11 @@ from datetime import UTC, date, datetime, timedelta
 from typing import Any, Protocol, cast
 from urllib.parse import urlencode
 
-from zeler_platform_core.models import ShipmentRealShippingCostProjection
+from zeler_platform_core.models import (
+    Claim,
+    ShipmentRealShippingCostProjection,
+    current_schema_version,
+)
 from zeler_sheets.event_persistence import SheetsEventPersistence
 from zeler_sheets.sheetseller_backfill import _schema_safe_shipment_real_shipping_cost_projection
 
@@ -27,6 +31,7 @@ _ID_LIST_COUNT_KEYS = {
     "missing_question_detail_ids": "missing_question_detail_count",
     "shipment_ids": "shipment_count",
     "question_ids": "question_count",
+    "claim_ids": "claim_count",
 }
 _SENSITIVE_OUTPUT_KEY_PARTS = (
     "access_token",
@@ -75,6 +80,8 @@ class HistoricalMeliBackfillSummary:
     shipments_fetched: int
     questions_found: int
     questions_fetched: int
+    claims_found: int
+    claims_fetched: int
     buyer_address_pii_mode: bool
     output_mode: str
     address_matched: int
@@ -91,24 +98,29 @@ class HistoricalMeliBackfillSummary:
     existing_items: int
     existing_shipments: int
     existing_questions: int
+    existing_claims: int
     missing_orders: int
     missing_items: int
     missing_shipments: int
     missing_questions: int
+    missing_claims: int
     planned_orders: int
     planned_items: int
     planned_shipments: int
     planned_questions: int
+    planned_claims: int
     written_orders: int
     written_items: int
     written_shipments: int
     written_questions: int
+    written_claims: int
     order_ids: list[str]
     item_ids: list[str]
     missing_item_detail_ids: list[str]
     missing_question_detail_ids: list[str]
     shipment_ids: list[str]
     question_ids: list[str]
+    claim_ids: list[str]
 
     def as_dict(self) -> dict[str, Any]:
         return sanitize_historical_meli_summary(asdict(self))
@@ -174,6 +186,7 @@ async def run_historical_meli_backfill(
     max_shipments: int | None = None,
     resume_after_order_id: str | None = None,
     include_questions: bool = False,
+    include_claims: bool = False,
 ) -> HistoricalMeliBackfillSummary:
     seller_id = str(seller_id)
     if not dry_run and not approved_runtime:
@@ -256,6 +269,15 @@ async def run_historical_meli_backfill(
                 *missing_question_detail_ids,
             ]
         )
+    claims: list[dict[str, Any]] = []
+    if include_claims:
+        claims = await _search_claims_for_orders(
+            gateway=gateway,
+            seller_id=seller_id,
+            order_ids=order_ids,
+            date_range=date_range,
+        )
+    claim_ids = _unique_strings(_resource_id(claim) for claim in claims)
     shipment_ids = _bounded_values(
         _unique_strings(
             shipment_id
@@ -294,15 +316,20 @@ async def run_historical_meli_backfill(
     existing_questions = await _count_existing(
         db=db, collection="questions", seller_id=seller_id, ids=question_ids
     )
+    existing_claims = await _count_existing(
+        db=db, collection="claims", seller_id=seller_id, ids=claim_ids
+    )
 
     missing_orders = len(order_ids) - existing_orders
     missing_items = len(item_ids) - existing_items
     missing_shipments = len(shipment_ids) - existing_shipments
     missing_questions = len(question_ids) - existing_questions
+    missing_claims = len(claim_ids) - existing_claims
     written_orders = 0
     written_items = 0
     written_shipments = 0
     written_questions = 0
+    written_claims = 0
 
     if not dry_run:
         persistence = SheetsEventPersistence(db=db)
@@ -326,6 +353,14 @@ async def run_historical_meli_backfill(
                 event_type="questions.updated", seller_id=seller_id, resource=question
             )
             written_questions += 1
+        for claim in claims:
+            document = _canonical_claim_document(claim, seller_id=seller_id)
+            await db["claims"].replace_one(
+                {"_id": document["_id"], "seller_id": seller_id},
+                document,
+                upsert=True,
+            )
+            written_claims += 1
 
     status = "dry_run_complete" if dry_run else "write_complete"
     return HistoricalMeliBackfillSummary(
@@ -342,6 +377,8 @@ async def run_historical_meli_backfill(
         shipments_fetched=len(shipments),
         questions_found=len(question_ids),
         questions_fetched=len(questions),
+        claims_found=len(claim_ids),
+        claims_fetched=len(claims),
         buyer_address_pii_mode=include_buyer_address_pii,
         output_mode="sanitized_aggregate",
         address_matched=shipment_fetch.address_matched,
@@ -362,24 +399,29 @@ async def run_historical_meli_backfill(
         existing_items=existing_items,
         existing_shipments=existing_shipments,
         existing_questions=existing_questions,
+        existing_claims=existing_claims,
         missing_orders=missing_orders,
         missing_items=missing_items,
         missing_shipments=missing_shipments,
         missing_questions=missing_questions,
+        missing_claims=missing_claims,
         planned_orders=len(orders),
         planned_items=len(items),
         planned_shipments=len(shipments),
         planned_questions=len(questions),
+        planned_claims=len(claims),
         written_orders=written_orders,
         written_items=written_items,
         written_shipments=written_shipments,
         written_questions=written_questions,
+        written_claims=written_claims,
         order_ids=order_ids,
         item_ids=item_ids,
         missing_item_detail_ids=missing_item_detail_ids,
         missing_question_detail_ids=missing_question_detail_ids,
         shipment_ids=shipment_ids,
         question_ids=question_ids,
+        claim_ids=claim_ids,
     )
 
 
@@ -457,6 +499,69 @@ def _build_question_search_path(*, seller_id: str, offset: int) -> str:
         }
     )
     return f"/questions/search?{query}"
+
+
+async def _search_claims_for_orders(
+    *,
+    gateway: HistoricalMeliGateway,
+    seller_id: str,
+    order_ids: Sequence[str],
+    date_range: InclusiveDateRange,
+) -> list[dict[str, Any]]:
+    claims: list[dict[str, Any]] = []
+    for order_id in order_ids:
+        page = await gateway.fetch_resource(
+            seller_id=seller_id,
+            path=f"/post-purchase/v1/claims/search?{urlencode({'order_id': order_id})}",
+        )
+        for claim in _claim_page_results(page):
+            normalized = dict(claim)
+            normalized.setdefault("order_id", order_id)
+            if _resource_in_date_range(normalized, date_range=date_range):
+                claims.append(normalized)
+    return claims
+
+
+def _claim_page_results(page: Any) -> list[dict[str, Any]]:
+    if not isinstance(page, dict):
+        return []
+    data = page.get("data")
+    if not isinstance(data, list):
+        return []
+    return [claim for claim in data if isinstance(claim, dict)]
+
+
+def _canonical_claim_document(claim: dict[str, Any], *, seller_id: str) -> dict[str, Any]:
+    document: dict[str, Any] = {
+        "_id": _resource_id(claim),
+        "seller_id": seller_id,
+        "buyer_id": claim.get("buyer_id"),
+        "item_id": claim.get("item_id"),
+        "order_id": claim.get("order_id") or claim.get("resource_id"),
+        "status": claim.get("status"),
+        "stage": claim.get("stage"),
+        "type": claim.get("type"),
+        "date_created": claim.get("date_created"),
+        "resolution": claim.get("resolution"),
+        "schema_version": current_schema_version("claims"),
+    }
+    if (returned_quantity := _explicit_returned_quantity(claim)) is not None:
+        document["returned_quantity"] = returned_quantity
+    model = Claim.model_validate(
+        {key: value for key, value in document.items() if value is not None}
+    )
+    return model.model_dump(by_alias=True, mode="python", exclude_none=True)
+
+
+def _explicit_returned_quantity(claim: dict[str, Any]) -> int | None:
+    value = claim.get("returned_quantity")
+    if value is None:
+        return None
+    try:
+        quantity = int(value)
+    except (TypeError, ValueError):
+        return None
+    return quantity if quantity > 0 else None
 
 
 async def _fetch_question_details(

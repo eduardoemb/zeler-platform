@@ -83,8 +83,8 @@ async def test_devoluciones_groups_return_claims_by_item_and_sku() -> None:
     _mark_read_model_fresh(db, CLAIMS_READ_MODEL)
     _mark_read_model_fresh(db, ORDERS_READ_MODEL)
     db["claims"].documents = {
-        "claim-1": _claim_doc("CLAIM-1", order_id="ORDER-1", days_ago=2),
-        "claim-2": _claim_doc("CLAIM-2", order_id="ORDER-2", days_ago=1),
+        "claim-1": _claim_doc("CLAIM-1", order_id="ORDER-1", days_ago=2, returned_quantity=1),
+        "claim-2": _claim_doc("CLAIM-2", order_id="ORDER-2", days_ago=1, returned_quantity=1),
         "claim-cancelled": _claim_doc(
             "CLAIM-CANCELLED", order_id="ORDER-CANCELLED", days_ago=1, status="cancelled"
         ),
@@ -138,7 +138,7 @@ async def test_devoluciones_groups_return_claims_by_item_and_sku() -> None:
 
     assert result.values == [
         ["ID PUBLICACION", "SKU", "UNIDADES DEVUELTAS", "TITULO"],
-        ["MLA1", "SKU-1", 3, "Returned item"],
+        ["MLA1", "SKU-1", 2, "Returned item"],
     ]
     assert result.meta == {
         "claims_count": 2,
@@ -146,6 +146,40 @@ async def test_devoluciones_groups_return_claims_by_item_and_sku() -> None:
         "rows_count": 1,
         "columns": "legacy_returns",
     }
+
+
+@pytest.mark.asyncio
+async def test_devoluciones_blocks_when_returned_quantity_is_not_explicit() -> None:
+    db = FakeDb()
+    _mark_read_model_fresh(db, CLAIMS_READ_MODEL)
+    _mark_read_model_fresh(db, ORDERS_READ_MODEL)
+    db["claims"].documents = {
+        "claim-1": _claim_doc("CLAIM-1", order_id="ORDER-1", days_ago=2),
+    }
+    db["orders"].documents = {
+        "ORDER-1": _order_doc(
+            "ORDER-1",
+            sku="sku-1",
+            item_id="MLA1",
+            title="Returned item",
+            quantity=2,
+        ),
+    }
+    dispatcher = _dispatcher(db)
+
+    with pytest.raises(FormulaDataUnavailableError, match="ZELERDATA_DEVOLUCIONES") as error:
+        await dispatcher.execute(
+            _context(
+                "ZELERDATA_DEVOLUCIONES",
+                {
+                    "fecha_inicio": "2026-06-01",
+                    "fecha_final": "2026-06-15",
+                    "id_publicaciones": ["MLA1"],
+                },
+            )
+        )
+
+    assert "returned quantity" in str(error.value)
 
 
 @pytest.mark.asyncio
@@ -385,8 +419,9 @@ def _claim_doc(
     days_ago: int,
     status: str = "opened",
     claim_type: str = "returns",
+    returned_quantity: int | None = None,
 ) -> dict[str, Any]:
-    return {
+    document = {
         "_id": claim_id,
         "seller_id": "seller-1",
         "order_id": order_id,
@@ -396,6 +431,9 @@ def _claim_doc(
         "date_created": NOW - timedelta(days=days_ago),
         "schema_version": 1,
     }
+    if returned_quantity is not None:
+        document["returned_quantity"] = returned_quantity
+    return document
 
 
 def _order_doc(

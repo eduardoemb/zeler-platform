@@ -185,6 +185,30 @@ class FakeGateway:
             return _shipment_detail()
         if path == "/shipments/3001/costs":
             return self.shipment_costs_payload
+        if path == "/post-purchase/v1/claims/search?order_id=2001":
+            return {
+                "data": [
+                    {
+                        "id": "CLAIM-1",
+                        "order_id": "2001",
+                        "item_id": "MLA1",
+                        "status": "closed",
+                        "stage": "claim",
+                        "type": "returns",
+                        "date_created": "2026-05-01T12:00:00+00:00",
+                        "returned_quantity": 1,
+                    },
+                    {
+                        "id": "CLAIM-OUT-OF-RANGE",
+                        "order_id": "2001",
+                        "status": "closed",
+                        "stage": "claim",
+                        "type": "returns",
+                        "date_created": "2026-05-02T12:00:00+00:00",
+                        "returned_quantity": 1,
+                    },
+                ]
+            }
         raise AssertionError(f"Unexpected gateway path: {path}")
 
 
@@ -644,6 +668,48 @@ async def test_historical_backfill_reconciles_question_details_for_formula_readi
     assert ("82453304", "/questions/Q1") in gateway.calls
     assert ("82453304", "/questions/Q3") in gateway.calls
     assert "Q3" not in db["questions"].documents
+
+
+@pytest.mark.asyncio
+async def test_historical_backfill_reconciles_claims_bounded_by_order_scope() -> None:
+    db = FakeDb()
+    gateway = FakeGateway()
+
+    summary = await run_historical_meli_backfill(
+        db=db,
+        gateway=gateway,
+        order_detail_gateway=FakeOrderDetailGateway(),
+        seller_id="82453304",
+        date_from="2026-05-01",
+        date_to="2026-05-01",
+        dry_run=False,
+        approved_runtime=True,
+        max_orders=1,
+        include_claims=True,
+    )
+
+    assert summary.claims_found == 1
+    assert summary.claims_fetched == 1
+    assert summary.planned_claims == 1
+    assert summary.written_claims == 1
+    assert summary.claim_ids == ["CLAIM-1"]
+    assert db["claims"].documents["CLAIM-1"] == {
+        "_id": "CLAIM-1",
+        "seller_id": "82453304",
+        "order_id": "2001",
+        "item_id": "MLA1",
+        "status": "closed",
+        "stage": "claim",
+        "type": "returns",
+        "date_created": datetime(2026, 5, 1, 12, 0, tzinfo=UTC),
+        "returned_quantity": 1,
+        "schema_version": 1,
+    }
+    assert (
+        "82453304",
+        "/post-purchase/v1/claims/search?order_id=2001",
+    ) in gateway.calls
+    assert "CLAIM-OUT-OF-RANGE" not in db["claims"].documents
 
 
 @pytest.mark.asyncio

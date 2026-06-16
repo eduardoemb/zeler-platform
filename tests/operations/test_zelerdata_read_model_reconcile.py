@@ -132,12 +132,16 @@ class FakeHistoricalMeliSummary:
     questions_found: int | None = None
     question_ids: list[str] | None = None
     question_detail_missing: int = 0
+    claims_found: int | None = None
+    claim_ids: list[str] | None = None
     planned_orders: int = 0
     planned_items: int = 0
     planned_shipments: int = 0
+    planned_claims: int = 0
     written_orders: int = 0
     written_items: int = 0
     written_shipments: int = 0
+    written_claims: int = 0
     item_detail_missing: int = 0
     redacted_errors: int = 0
 
@@ -1340,6 +1344,70 @@ async def test_missing_question_detail_blocks_reconciled_marker_with_sanitized_i
     assert "RAW QUESTION BODY" not in serialized
     assert "RAW ANSWER" not in serialized
     assert "BUYER-PII" not in serialized
+
+
+@pytest.mark.asyncio
+async def test_claims_expected_counts_are_bounded_by_historical_order_scope() -> None:
+    async def fake_historical_source(*, db: Any, request: Any) -> FakeHistoricalMeliSummary:
+        return FakeHistoricalMeliSummary(
+            orders_found=2,
+            order_ids=["ORDER-PII-1", "ORDER-PII-2"],
+            shipment_ids=[],
+            item_ids=[],
+            claims_found=2,
+            claim_ids=["CLAIM-PII-1", "CLAIM-PII-2"],
+        )
+
+    expected = await collect_expected_read_model_counts(
+        db=FakeAsyncDb({}),
+        request=_request(),
+        historical_meli_source=fake_historical_source,
+    )
+
+    assert expected.counts["claims"] == 2
+    assert expected.refs["claims"] == frozenset({"CLAIM-PII-1", "CLAIM-PII-2"})
+    assert expected.truth_mode["claims"] == "expected"
+
+
+@pytest.mark.asyncio
+async def test_unknown_returned_quantity_keeps_claims_marker_unwritten() -> None:
+    db = FakeAsyncDb(
+        {
+            "claims": [
+                _seller_doc(
+                    _id="CLAIM-PII-1",
+                    date_created=_dt(2),
+                    order_id="ORDER-PII-1",
+                    status="closed",
+                    returned_quantity=1,
+                ),
+                _seller_doc(
+                    _id="CLAIM-PII-2",
+                    date_created=_dt(3),
+                    order_id="ORDER-PII-2",
+                    status="closed",
+                ),
+            ]
+        }
+    )
+    request = _write_request()
+
+    summary = await collect_reconciliation_counts(
+        db=db,
+        request=request,
+        expected=ExpectedReadModelCounts(counts={"claims": 2}),
+        read_models=("claims",),
+    )
+    counts = await write_complete_read_model_freshness_markers(
+        db=db, request=request, summary=summary
+    )
+
+    aggregate = summary.to_sanitized_dict()["aggregates"][0]
+    assert aggregate["persisted_count"] == 2
+    assert aggregate["complete_count"] == 1
+    assert aggregate["missing_count"] == 0
+    assert counts == {}
+    assert db["sheets_read_model_freshness"].documents == []
 
 
 def test_reconciled_marker_requires_reconciled_state_and_enclosing_range() -> None:
