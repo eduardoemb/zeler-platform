@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from infra.mongo.validator_contract import validate_document_against_schema
 from infra.operations.zelerdata_read_model_reconcile import (
     DEFAULT_PHASE2_DRY_RUN_SCOPES,
     DEFAULT_PHASE2_PREFLIGHT_TARGETS,
@@ -36,6 +37,7 @@ SHEETS_RUNTIME_DOCKERFILES = (
 ZELERDATA_RECONCILE_HELPER = Path("infra/operations/zelerdata_read_model_reconcile.py")
 OPERATIONS_COPY_STANZA = "COPY infra/operations ./infra/operations"
 COLLECTOR_ATTR = "collect_reconciliation_counts"
+ROOT = Path(__file__).resolve().parents[2]
 
 
 class FakeAsyncCollection:
@@ -1138,39 +1140,93 @@ async def test_complete_write_records_shared_reconciliation_marker_after_coverag
     markers = db["sheets_read_model_freshness"].documents
     assert {marker["read_model"] for marker in markers} == {"questions", "claims"}
     assert all(marker["state"] == "reconciled" for marker in markers)
+    validator = json.loads(
+        (ROOT / "infra/mongo/schemas/sheets_read_model_freshness.json").read_text()
+    )
+    schema = validator["$jsonSchema"]
+    allowed_fields = set(schema["properties"])
+    required_fields = set(schema["required"])
+    forbidden_fields = {
+        "coverage",
+        "expected_count",
+        "persisted_count",
+        "complete_count",
+        "reconciled_at",
+    }
+    for marker in markers:
+        validation = validate_document_against_schema(marker, validator)
+        assert validation.valid is True
+        assert required_fields <= set(marker)
+        assert set(marker) <= allowed_fields
+        assert forbidden_fields.isdisjoint(marker)
+        assert marker["fresh_until"] == request.date_range.end_exclusive
+        assert marker["updated_at"].tzinfo == UTC
+        assert marker["last_event_synced_at"] == request.date_range.start
     assert all(marker["reconciled_until"] == request.date_range.end_exclusive for marker in markers)
     assert "catalog_buybox_snapshots" not in {marker["read_model"] for marker in markers}
 
 
-def test_reconciled_marker_requires_reconciled_state_and_coverage_until_requested_date() -> None:
+def test_reconciled_marker_requires_reconciled_state_and_enclosing_range() -> None:
     stale_reconciled = {
         "state": "reconciled",
+        "last_event_synced_at": datetime(2026, 6, 1, tzinfo=UTC),
         "reconciled_until": datetime(2026, 6, 3, 23, 59, 59, tzinfo=UTC),
     }
     event_fresh_only = {
         "state": "fresh",
+        "last_event_synced_at": datetime(2026, 6, 1, tzinfo=UTC),
         "fresh_until": datetime(2026, 6, 5, tzinfo=UTC),
+    }
+    late_start_reconciled = {
+        "state": "reconciled",
+        "last_event_synced_at": datetime(2026, 6, 3, tzinfo=UTC),
+        "fresh_until": datetime(2026, 6, 5, tzinfo=UTC),
+        "reconciled_until": datetime(2026, 6, 5, tzinfo=UTC),
     }
     complete_reconciled = {
         "state": "reconciled",
+        "last_event_synced_at": datetime(2026, 6, 1, tzinfo=UTC),
+        "fresh_until": datetime(2026, 6, 5, tzinfo=UTC),
         "reconciled_until": datetime(2026, 6, 5, tzinfo=UTC),
     }
 
     assert (
         read_model_reconciliation_marker_covers(
-            stale_reconciled, date_to=datetime(2026, 6, 4, 23, 59, 59, tzinfo=UTC)
+            stale_reconciled,
+            date_from=datetime(2026, 6, 1, tzinfo=UTC),
+            date_to=datetime(2026, 6, 4, 23, 59, 59, tzinfo=UTC),
         )
         is False
     )
     assert (
         read_model_reconciliation_marker_covers(
-            event_fresh_only, date_to=datetime(2026, 6, 4, 23, 59, 59, tzinfo=UTC)
+            event_fresh_only,
+            date_from=datetime(2026, 6, 1, tzinfo=UTC),
+            date_to=datetime(2026, 6, 4, 23, 59, 59, tzinfo=UTC),
         )
         is False
     )
     assert (
         read_model_reconciliation_marker_covers(
-            complete_reconciled, date_to=datetime(2026, 6, 4, 23, 59, 59, tzinfo=UTC)
+            late_start_reconciled,
+            date_from=datetime(2026, 6, 1, tzinfo=UTC),
+            date_to=datetime(2026, 6, 4, 23, 59, 59, tzinfo=UTC),
+        )
+        is False
+    )
+    assert (
+        read_model_reconciliation_marker_covers(
+            late_start_reconciled,
+            date_from=datetime(2026, 6, 3, tzinfo=UTC),
+            date_to=datetime(2026, 6, 4, 23, 59, 59, tzinfo=UTC),
+        )
+        is True
+    )
+    assert (
+        read_model_reconciliation_marker_covers(
+            complete_reconciled,
+            date_from=datetime(2026, 6, 1, tzinfo=UTC),
+            date_to=datetime(2026, 6, 4, 23, 59, 59, tzinfo=UTC),
         )
         is True
     )
@@ -1184,7 +1240,9 @@ def test_partial_marker_keeps_formula_read_model_data_unavailable() -> None:
 
     assert (
         read_model_reconciliation_marker_covers(
-            partial_marker, date_to=datetime(2026, 6, 4, tzinfo=UTC)
+            partial_marker,
+            date_from=datetime(2026, 6, 1, tzinfo=UTC),
+            date_to=datetime(2026, 6, 4, tzinfo=UTC),
         )
         is False
     )

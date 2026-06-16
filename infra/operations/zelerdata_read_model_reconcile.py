@@ -918,6 +918,7 @@ async def write_complete_read_model_freshness_markers(
         if not _aggregate_has_complete_scoped_coverage(aggregate):
             continue
         marker_id = f"{request.seller_id}:{aggregate.read_model}"
+        updated_at = datetime.now(UTC)
         await collection.update_one(
             {"_id": marker_id, "seller_id": request.seller_id, "read_model": aggregate.read_model},
             {
@@ -926,15 +927,11 @@ async def write_complete_read_model_freshness_markers(
                     "seller_id": request.seller_id,
                     "read_model": aggregate.read_model,
                     "state": "reconciled",
-                    "coverage": {
-                        "date_from": request.date_range.date_from,
-                        "date_to": request.date_range.date_to,
-                    },
-                    "expected_count": aggregate.expected_count,
-                    "persisted_count": aggregate.persisted_count,
-                    "complete_count": aggregate.complete_count,
-                    "reconciled_at": datetime.now(UTC),
+                    "fresh_until": request.date_range.end_exclusive,
                     "reconciled_until": request.date_range.end_exclusive,
+                    "last_event_synced_at": request.date_range.start,
+                    "updated_at": updated_at,
+                    "source": "zelerdata_read_model_reconcile",
                     "schema_version": 1,
                 }
             },
