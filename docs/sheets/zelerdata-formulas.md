@@ -41,14 +41,14 @@ ZelerData formulas are Google Sheets custom functions backed by the zeler-platfo
 | `ZELERDATA_OBTENER_CATALOGO` | `=ZELERDATA_OBTENER_CATALOGO("cuenta")` | Legacy-simple catalog rows: TITULO, DESCRIPCION, IMAGEN as `=IMAGE("url")`. |
 | `ZELERDATA_ORDENES` | `=ZELERDATA_ORDENES("cuenta", "2026-01-01", "2026-01-31", "todos", "", "si")` | Orders table for a date range; `ID Carrito` comes only from MercadoLibre `orders.pack_id`. |
 | `ZELERDATA_ORDENESPORSKU` | `=ZELERDATA_ORDENESPORSKU("cuenta", "SKU-1", "2026-01-01", "2026-01-31", "todos", "", "si")` | Orders filtered by SKU and date range; `ID Carrito` comes only from MercadoLibre `orders.pack_id`. |
-| `ZELERDATA_PAUSADAS` | `=ZELERDATA_PAUSADAS("cuenta", "MLA1")` | Paused days from observed status transitions only; missing pause source returns `NA`. |
+| `ZELERDATA_PAUSADAS` | `=ZELERDATA_PAUSADAS("cuenta", "MLA1")` | Paused days for the current paused period. If Mercado Libre does not inform when the listing became paused, Zeler counts from the first accepted synchronization where it observed the listing paused; missing current basis returns `NA`. |
 | `ZELERDATA_PRECIO` | `=ZELERDATA_PRECIO("cuenta", "SKU-1", "MLA1", "base")` | Selected price by SKU and item ID. |
 | `ZELERDATA_PRECIOHISTORICO` | `=ZELERDATA_PRECIOHISTORICO("cuenta", "todos", "base", "si")` | Latest local price/status history pairs per publication. |
 | `ZELERDATA_PREGUNTAS` | `=ZELERDATA_PREGUNTAS("cuenta", "2026-01-01", "2026-01-31", "00:00", "23:59", "si")` | Questions and answers table for a date and time range. |
 | `ZELERDATA_PREGUNTASKPI` | `=ZELERDATA_PREGUNTASKPI("cuenta", "2026-01-01", "2026-01-31", "si")` | Question KPI table for a date range. |
 | `ZELERDATA_PRODUCTOSINVENTA` | `=ZELERDATA_PRODUCTOSINVENTA("cuenta", 30, "si")` | Products without sales for the selected day range. |
-| `ZELERDATA_PUBLICACIONES` | `=ZELERDATA_PUBLICACIONES("cuenta", "todos", "todos", "base", "", "si")` | Current publication table. |
-| `ZELERDATA_PUBLICACIONESDESCUIDADAS` | `=ZELERDATA_PUBLICACIONESDESCUIDADAS("cuenta", "base", "si")` | Full paused out-of-stock publications older than 10 days, from current item rows and unavailable-detail fields. |
+| `ZELERDATA_PUBLICACIONES` | `=ZELERDATA_PUBLICACIONES("cuenta", "todos", "todos", "base", "", "si")` | Current publication table. Pause-duration columns use the same Zeler-observed current pause basis as `ZELERDATA_PAUSADAS`. |
+| `ZELERDATA_PUBLICACIONESDESCUIDADAS` | `=ZELERDATA_PUBLICACIONESDESCUIDADAS("cuenta", "base", "si")` | Full paused out-of-stock publications older than 10 days, using the shared Zeler-observed current pause basis from current item rows and unavailable-detail fields. |
 | `ZELERDATA_RETIROS` | `=ZELERDATA_RETIROS("cuenta", "2026-01-01", "2026-01-31", "si")` | Full withdrawal operation rows from the local fulfillment withdrawal read model. |
 | `ZELERDATA_SEMANASCONSTOCK` | `=ZELERDATA_SEMANASCONSTOCK("cuenta", "todos", "todos", "2026-01-01", "2026-01-31", "si")` | Weekly dynamic stock-presence matrix from local stock time metrics; cells emit `Con stock` or `Sin stock`. |
 | `ZELERDATA_SKU` | `=ZELERDATA_SKU("cuenta")` | Unique SKU list. |
@@ -70,6 +70,8 @@ ZelerData formulas are Google Sheets custom functions backed by the zeler-platfo
 ## Readiness gates
 
 These formulas are supported only after their read-model freshness markers prove the requested seller scope. When the required marker is missing, stale, failed, partial, or outside the requested range, the Formula API returns `DATA_UNAVAILABLE` instead of guessing values.
+
+Pause-duration outputs are not historical Mercado Libre truth unless Mercado Libre provides that source. For the current fallback, Zeler counts from the first synchronization where it observed the current continuous paused period; when the listing leaves `paused`, that basis is cleared and a later pause starts a new counter.
 
 | Formula | Required proof |
 |---|---|

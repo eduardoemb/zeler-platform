@@ -15,6 +15,7 @@ from zeler_sheets.formulas.dispatcher import (
 )
 from zeler_sheets.formulas.output_normalization import NA_VALUE, normalize_response_rows
 from zeler_sheets.formulas.read_models import FormulaReadModelRepository, normalize_sku
+from zeler_sheets.status_history import effective_paused_days
 
 CORE_FORMULA_NAMES = frozenset(
     {
@@ -239,7 +240,7 @@ class CoreFormulaHandlers:
         values: list[list[Any]] = []
         misses = 0
         for item_id in item_ids:
-            paused_days = _paused_days(rows_by_item_id.get(item_id), today=today)
+            paused_days = effective_paused_days(rows_by_item_id.get(item_id), today=today)
             if paused_days is None:
                 misses += 1
                 values.append([NA_VALUE])
@@ -857,7 +858,7 @@ def _listing_type_id(row: Mapping[str, Any]) -> Any:
 
 def _publicaciones_row(row: Mapping[str, Any], *, today: date) -> list[Any]:
     inventory_code = _inventory_code(row)
-    paused_days = _paused_days(row, today=today)
+    paused_days = effective_paused_days(row, today=today)
     return [
         row.get("item_id") or "",
         _current_value(row, "title"),
@@ -902,7 +903,7 @@ def _dashboard_row_base(
         normalize_sku(row.get("normalized_sku") or row.get("sku")),
         str(row.get("item_id") or ""),
     )
-    paused_days = _paused_days(row, today=today)
+    paused_days = effective_paused_days(row, today=today)
     return [
         row.get("item_id") or "",
         _current_value(row, "title"),
@@ -1218,20 +1219,6 @@ def _seller_shipping_cost(row: Mapping[str, Any]) -> Any:
     if isinstance(value, float):
         return value if math.isfinite(value) and value >= 0 else NA_VALUE
     return NA_VALUE
-
-
-def _paused_days(row: Mapping[str, Any] | None, *, today: date) -> int | None:
-    if row is None:
-        return None
-    current = row.get("current", {})
-    if not isinstance(current, Mapping):
-        return None
-    if str(current.get("status") or "").strip().casefold() != "paused":
-        return None
-    paused_since = _optional_datetime(current.get("paused_since"))
-    if paused_since is None:
-        return None
-    return max((today - paused_since.date()).days, 0)
 
 
 def _last_days_start(now: datetime, days: int) -> datetime:

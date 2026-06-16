@@ -23,6 +23,7 @@ from infra.operations.zelerdata_read_model_reconcile import (
     build_reconciliation_request,
     collect_expected_read_model_counts,
     collect_reconciliation_counts,
+    execute_observed_pause_basis_repair,
     execute_reconciliation_write,
     validate_reconciliation_safety,
     write_complete_read_model_freshness_markers,
@@ -409,6 +410,181 @@ def test_reconciliation_write_requires_separate_production_write_confirmation() 
 
     validate_reconciliation_safety(approved)
     assert build_reconciliation_request(approved).write_enabled is True
+
+
+def test_observed_pause_basis_repair_write_requires_explicit_max_items() -> None:
+    parser = build_arg_parser()
+    unbounded_repair = parser.parse_args(
+        [
+            "--seller-id",
+            "82453304",
+            "--date-from",
+            "2026-06-01",
+            "--date-to",
+            "2026-06-04",
+            "--confirm-approved-runtime",
+            "--write",
+            "--confirm-production-write",
+            "--repair-observed-pause-basis",
+        ]
+    )
+
+    with pytest.raises(
+        SystemExit,
+        match="--max-items is required with --repair-observed-pause-basis --write",
+    ):
+        validate_reconciliation_safety(unbounded_repair)
+
+    bounded_repair = parser.parse_args(
+        [
+            "--seller-id",
+            "82453304",
+            "--date-from",
+            "2026-06-01",
+            "--date-to",
+            "2026-06-04",
+            "--confirm-approved-runtime",
+            "--write",
+            "--confirm-production-write",
+            "--repair-observed-pause-basis",
+            "--max-items",
+            "25",
+        ]
+    )
+
+    validate_reconciliation_safety(bounded_repair)
+
+
+def test_reconciliation_request_parses_observed_pause_basis_repair_dry_run_flag() -> None:
+    args = build_arg_parser().parse_args(
+        [
+            "--seller-id",
+            "82453304",
+            "--date-from",
+            "2026-06-01",
+            "--date-to",
+            "2026-06-04",
+            "--confirm-approved-runtime",
+            "--repair-observed-pause-basis",
+        ]
+    )
+
+    request = build_reconciliation_request(args)
+
+    assert request.dry_run is True
+    assert request.write_enabled is False
+    assert request.repair_observed_pause_basis is True
+
+
+@pytest.mark.asyncio
+async def test_observed_pause_basis_repair_reports_sanitized_dry_run_counts() -> None:
+    @dataclass(frozen=True)
+    class FakeRepairSummary:
+        dry_run: bool = True
+        candidate_states: int = 2
+        states_planned: int = 2
+        states_updated: int = 0
+        candidate_formula_rows: int = 3
+        formula_rows_planned: int = 3
+        formula_rows_updated: int = 0
+        basis_from_existing_status_timestamp: int = 1
+        basis_from_repair_time: int = 1
+
+        def as_dict(self) -> dict[str, int | bool | str]:
+            return {
+                "seller_id": "82453304",
+                "dry_run": self.dry_run,
+                "candidate_states": self.candidate_states,
+                "states_planned": self.states_planned,
+                "states_updated": self.states_updated,
+                "candidate_formula_rows": self.candidate_formula_rows,
+                "formula_rows_planned": self.formula_rows_planned,
+                "formula_rows_updated": self.formula_rows_updated,
+                "basis_from_existing_status_timestamp": self.basis_from_existing_status_timestamp,
+                "basis_from_repair_time": self.basis_from_repair_time,
+            }
+
+    async def fake_repair_runner(**kwargs: Any) -> FakeRepairSummary:
+        assert kwargs["seller_id"] == "82453304"
+        assert kwargs["dry_run"] is True
+        assert kwargs["limit"] is None
+        return FakeRepairSummary()
+
+    counts = await execute_observed_pause_basis_repair(
+        db=FakeAsyncDb({}), request=_request(), repair_runner=fake_repair_runner
+    )
+
+    assert counts == {
+        "observed_pause_basis_candidate_states": 2,
+        "observed_pause_basis_states_planned": 2,
+        "observed_pause_basis_states_updated": 0,
+        "observed_pause_basis_candidate_formula_rows": 3,
+        "observed_pause_basis_formula_rows_planned": 3,
+        "observed_pause_basis_formula_rows_updated": 0,
+        "observed_pause_basis_from_existing_status_timestamp": 1,
+        "observed_pause_basis_from_repair_time": 1,
+    }
+    assert "82453304" not in json.dumps(counts, sort_keys=True)
+
+
+@pytest.mark.asyncio
+async def test_observed_pause_basis_repair_write_uses_approved_bounded_request() -> None:
+    async def fake_repair_runner(**kwargs: Any) -> Any:
+        assert kwargs["seller_id"] == "82453304"
+        assert kwargs["dry_run"] is False
+        assert kwargs["limit"] == 10
+
+        class Summary:
+            def as_dict(self) -> dict[str, int | bool | str]:
+                return {
+                    "seller_id": "82453304",
+                    "dry_run": False,
+                    "candidate_states": 1,
+                    "states_planned": 1,
+                    "states_updated": 1,
+                    "candidate_formula_rows": 1,
+                    "formula_rows_planned": 1,
+                    "formula_rows_updated": 1,
+                    "basis_from_existing_status_timestamp": 0,
+                    "basis_from_repair_time": 1,
+                }
+
+        return Summary()
+
+    counts = await execute_observed_pause_basis_repair(
+        db=FakeAsyncDb({}),
+        request=_write_request(extra_args=["--repair-observed-pause-basis", "--max-items", "10"]),
+        repair_runner=fake_repair_runner,
+    )
+
+    assert counts["observed_pause_basis_states_updated"] == 1
+    assert counts["observed_pause_basis_formula_rows_updated"] == 1
+
+
+@pytest.mark.asyncio
+async def test_observed_pause_basis_repair_write_rejects_unbounded_request_before_runner() -> None:
+    base = _write_request(extra_args=["--repair-observed-pause-basis", "--max-items", "1"])
+    unsafe_request = base.__class__(
+        seller_id=base.seller_id,
+        date_range=base.date_range,
+        dry_run=False,
+        approved_runtime=True,
+        write_enabled=True,
+        include_buyer_address_pii=False,
+        controls=base.controls.__class__(),
+        repair_observed_pause_basis=True,
+    )
+
+    async def fake_repair_runner(**kwargs: Any) -> Any:
+        raise AssertionError(f"repair runner should not be called: {kwargs!r}")
+
+    with pytest.raises(
+        ValueError,
+        match="--max-items is required with --repair-observed-pause-basis --write",
+    ):
+        await execute_observed_pause_basis_repair(
+            db=FakeAsyncDb({}), request=unsafe_request, repair_runner=fake_repair_runner
+        )
 
 
 def test_reconciliation_write_blocks_unapproved_request_before_marker_write() -> None:

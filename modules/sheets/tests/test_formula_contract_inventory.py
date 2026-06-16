@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -379,10 +380,15 @@ def test_dashboard_output_column_fixture_locks_mvp_and_deferred_columns() -> Non
         assert paused_column == {
             "name": "Días Pausada",
             "source": (
-                "sheets_item_formula_rows.current.paused_since from observed status transitions"
+                "sheets_item_formula_rows.current.paused_since as the effective current "
+                "pause basis observed by Zeler"
             ),
             "status": "mvp",
-            "reason": "Returns NA when observed status-history source truth is missing.",
+            "reason": (
+                "Counts from the first synchronization where Zeler observed the current "
+                "paused period when Mercado Libre does not provide pause-start history; "
+                "returns NA outside current paused rows or when the basis is missing."
+            ),
         }
         assert next(column for column in columns if column["name"] == "% Comisión") == {
             "name": "% Comisión",
@@ -429,11 +435,23 @@ def test_dashboard_output_column_fixture_locks_mvp_and_deferred_columns() -> Non
     assert pause_time_column == {
         "name": "Tiempo En Pausa",
         "source": (
-            "sheets_item_formula_rows.current.paused_since from observed status transitions"
+            "sheets_item_formula_rows.current.paused_since as the effective current "
+            "pause basis observed by Zeler"
         ),
         "status": "mvp",
-        "reason": "Returns NA when observed status-history source truth is missing.",
+        "reason": (
+            "Counts from the first synchronization where Zeler observed the current paused "
+            "period when Mercado Libre does not provide pause-start history; returns NA "
+            "outside current paused rows or when the basis is missing."
+        ),
     }
+
+    assert formulas["ZELERDATA_PUBLICACIONESDESCUIDADAS"]["compatibility_note"] == (
+        "Uses current seller-scoped item rows only: full paused out-of-stock listings with "
+        "the shared effective paused-days basis older than 10 days. If Mercado Libre does "
+        "not report when a listing became paused, Zeler counts from the first accepted "
+        "synchronization where it observed the listing paused."
+    )
 
 
 def test_commission_output_column_fixture_locks_source_backed_columns_and_runtime_support() -> None:
@@ -767,7 +785,11 @@ def test_formula_api_default_dispatcher_wires_every_implemented_runtime_formula(
     }
     request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(mongo_db=FakeDb())))
 
-    dispatcher = _runtime_dispatcher(request, None, now=lambda: None)  # type: ignore[arg-type]
+    dispatcher = _runtime_dispatcher(
+        request,  # type: ignore[arg-type]
+        None,
+        now=lambda: datetime.now(UTC),
+    )
 
     assert isinstance(dispatcher, FormulaDispatcher)
     handlers = dispatcher._handlers  # noqa: SLF001 - regression locks API dispatcher wiring.

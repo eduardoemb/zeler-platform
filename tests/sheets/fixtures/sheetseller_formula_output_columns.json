@@ -30,7 +30,7 @@
         {"name": "Status", "source": "sheets_item_formula_rows.current.status", "status": "mvp"},
         {"name": "Código ML", "source": "sheets_item_formula_rows.inventory_id | current.inventory_id", "status": "mvp"},
         {"name": "ID Inventario", "source": "sheets_item_formula_rows.inventory_id | current.inventory_id", "status": "mvp"},
-        {"name": "Tiempo En Pausa", "source": "sheets_item_formula_rows.current.paused_since from observed status transitions", "status": "mvp", "reason": "Returns NA when observed status-history source truth is missing."}
+        {"name": "Tiempo En Pausa", "source": "sheets_item_formula_rows.current.paused_since as the effective current pause basis observed by Zeler", "status": "mvp", "reason": "Counts from the first synchronization where Zeler observed the current paused period when Mercado Libre does not provide pause-start history; returns NA outside current paused rows or when the basis is missing."}
       ]
     },
     "ZELERDATA_DASHBOARD": {
@@ -46,7 +46,7 @@
         {"name": "Tipo De Publicación", "source": "sheets_item_formula_rows.current.listing_type_id", "status": "mvp"},
         {"name": "Status", "source": "sheets_item_formula_rows.current.status", "status": "mvp"},
         {"name": "Código ML", "source": "sheets_item_formula_rows.inventory_id | current.inventory_id", "status": "mvp"},
-        {"name": "Días Pausada", "source": "sheets_item_formula_rows.current.paused_since from observed status transitions", "status": "mvp", "reason": "Returns NA when observed status-history source truth is missing."},
+        {"name": "Días Pausada", "source": "sheets_item_formula_rows.current.paused_since as the effective current pause basis observed by Zeler", "status": "mvp", "reason": "Counts from the first synchronization where Zeler observed the current paused period when Mercado Libre does not provide pause-start history; returns NA outside current paused rows or when the basis is missing."},
         {"name": "Ventas (7 días)", "source": "orders.items.quantity | qty by SKU/item_id/variation_id", "status": "mvp"},
         {"name": "Ventas (15 días)", "source": "orders.items.quantity | qty by SKU/item_id/variation_id", "status": "mvp"},
         {"name": "Ventas (30 días)", "source": "orders.items.quantity | qty by SKU/item_id/variation_id", "status": "mvp"},
@@ -75,7 +75,7 @@
         {"name": "Tipo De Publicación", "source": "sheets_item_formula_rows.current.listing_type_id", "status": "mvp"},
         {"name": "Status", "source": "sheets_item_formula_rows.current.status", "status": "mvp"},
         {"name": "Código ML", "source": "sheets_item_formula_rows.inventory_id | current.inventory_id", "status": "mvp"},
-        {"name": "Días Pausada", "source": "sheets_item_formula_rows.current.paused_since from observed status transitions", "status": "mvp", "reason": "Returns NA when observed status-history source truth is missing."},
+        {"name": "Días Pausada", "source": "sheets_item_formula_rows.current.paused_since as the effective current pause basis observed by Zeler", "status": "mvp", "reason": "Counts from the first synchronization where Zeler observed the current paused period when Mercado Libre does not provide pause-start history; returns NA outside current paused rows or when the basis is missing."},
         {"name": "Ventas (7 días)", "source": "orders.items.quantity | qty by SKU/item_id/variation_id", "status": "mvp"},
         {"name": "Ventas (15 días)", "source": "orders.items.quantity | qty by SKU/item_id/variation_id", "status": "mvp"},
         {"name": "Ventas (30 días)", "source": "orders.items.quantity | qty by SKU/item_id/variation_id", "status": "mvp"},
@@ -293,7 +293,7 @@
     },
     "ZELERDATA_PUBLICACIONESDESCUIDADAS": {
       "legacy_source": "sheetsellerappindividual/addon/Publications.gs:SHEETSELLER_PUBLICACIONESDESCUIDADAS",
-      "compatibility_note": "Uses current seller-scoped item rows only: Full paused out-of-stock listings with paused_since/status_started_at older than 10 days.",
+      "compatibility_note": "Uses current seller-scoped item rows only: full paused out-of-stock listings with the shared effective paused-days basis older than 10 days. If Mercado Libre does not report when a listing became paused, Zeler counts from the first accepted synchronization where it observed the listing paused.",
       "columns": [
         {"name": "ID PUBLICACION", "source": "sheets_item_formula_rows.item_id", "status": "mvp"},
         {"name": "TITULO", "source": "sheets_item_formula_rows.current.title", "status": "mvp"},

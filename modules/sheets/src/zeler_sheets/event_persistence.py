@@ -1300,7 +1300,8 @@ def _status_state_document(
         "last_observed_at": observed_at,
         "schema_version": current_schema_version("item_status_states"),
     }
-    if status_changed:
+    entering_paused_without_prior_state = prior_state is None and current_status == "paused"
+    if status_changed or entering_paused_without_prior_state:
         state_payload["status_started_at"] = observed_at
         state_payload["last_status_change_at"] = observed_at
         if current_status == "paused":
