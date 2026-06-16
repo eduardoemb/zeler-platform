@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, cast
 from unicodedata import normalize
 
@@ -114,6 +115,18 @@ EXPECTED_FORMULA_SUFFIXES = [
 ]
 EXPECTED_FORMULA_NAMES = [f"ZELERDATA_{suffix}" for suffix in EXPECTED_FORMULA_SUFFIXES]
 DEPRECATED_FORMULA_NAMES = {"ZELERDATA_COMPETENCIA", "ZELERDATA_ENVIARAFULL"}
+RUNTIME_SMOKE_ANOMALY_FORMULAS = {
+    "ZELERDATA_PUBLICACIONESDESCUIDADAS",
+    "ZELERDATA_SUPERMERCADO",
+    "ZELERDATA_MEDIDASGENERAL",
+    "ZELERDATA_MEDIDAS",
+    "ZELERDATA_TIEMPOACTIVA",
+    "ZELERDATA_CATALOGOSINVINCULAR",
+    "ZELERDATA_CALIDAD",
+    "ZELERDATA_CALCULADORA",
+    "ZELERDATA_COSTOENVIOVENDEDOR",
+    "ZELERDATA_ENVIOSMERCADOENVIOS",
+}
 
 EXPECTED_ERROR_CODES = [
     "TOKEN_MISSING",
@@ -736,6 +749,32 @@ def test_every_legacy_formula_has_an_explicit_runtime_state() -> None:
     assert "ZELERDATA_CALCULADORA" not in unsupported
     for formula in REMAINING_PHASE4_IMPLEMENTED_FORMULAS:
         assert runtime_states[formula].state == "implemented"
+
+
+def test_formula_api_default_dispatcher_wires_every_implemented_runtime_formula() -> None:
+    from zeler_sheets.api import _runtime_dispatcher
+    from zeler_sheets.formulas.dispatcher import FormulaDispatcher
+
+    class FakeDb:
+        def __getitem__(self, _name: str) -> object:
+            return object()
+
+    runtime_states = get_formula_runtime_states()
+    implemented = {
+        formula
+        for formula, runtime_state in runtime_states.items()
+        if runtime_state.state == "implemented"
+    }
+    request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(mongo_db=FakeDb())))
+
+    dispatcher = _runtime_dispatcher(request, None, now=lambda: None)  # type: ignore[arg-type]
+
+    assert isinstance(dispatcher, FormulaDispatcher)
+    handlers = dispatcher._handlers  # noqa: SLF001 - regression locks API dispatcher wiring.
+    assert implemented >= RUNTIME_SMOKE_ANOMALY_FORMULAS
+    assert sorted(implemented - set(handlers)) == []
+    assert sorted(RUNTIME_SMOKE_ANOMALY_FORMULAS - set(handlers)) == []
+    assert sorted(set(build_explicit_unsupported_formula_handlers()) & implemented) == []
 
 
 def test_output_fixture_documents_every_explicitly_unsupported_formula_blocker() -> None:
