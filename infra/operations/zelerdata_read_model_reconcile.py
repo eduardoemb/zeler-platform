@@ -190,9 +190,13 @@ class ReadModelIssue:
     read_model: str
     code: str
     message: str
+    count: int | None = None
 
-    def to_sanitized_dict(self) -> dict[str, str]:
-        return {"code": self.code}
+    def to_sanitized_dict(self) -> dict[str, int | str]:
+        sanitized: dict[str, int | str] = {"code": self.code}
+        if self.count is not None:
+            sanitized["count"] = self.count
+        return sanitized
 
 
 @dataclass(frozen=True)
@@ -922,6 +926,7 @@ async def write_complete_read_model_freshness_markers(
         if not _aggregate_has_complete_scoped_coverage(aggregate):
             continue
         marker_id = f"{request.seller_id}:{aggregate.read_model}"
+        updated_at = datetime.now(UTC)
         await collection.update_one(
             {"_id": marker_id, "seller_id": request.seller_id, "read_model": aggregate.read_model},
             {
@@ -930,15 +935,11 @@ async def write_complete_read_model_freshness_markers(
                     "seller_id": request.seller_id,
                     "read_model": aggregate.read_model,
                     "state": "reconciled",
-                    "coverage": {
-                        "date_from": request.date_range.date_from,
-                        "date_to": request.date_range.date_to,
-                    },
-                    "expected_count": aggregate.expected_count,
-                    "persisted_count": aggregate.persisted_count,
-                    "complete_count": aggregate.complete_count,
-                    "reconciled_at": datetime.now(UTC),
+                    "fresh_until": request.date_range.end_exclusive,
                     "reconciled_until": request.date_range.end_exclusive,
+                    "last_event_synced_at": request.date_range.start,
+                    "updated_at": updated_at,
+                    "source": "zelerdata_read_model_reconcile",
                     "schema_version": 1,
                 }
             },
@@ -1196,6 +1197,7 @@ def _historical_meli_expected_counts(summary: Any) -> HistoricalMeliExpectedCoun
 
     question_refs = _summary_ref_set(summary, "question_ids")
     question_count = _summary_optional_int(summary, "questions_found")
+    question_detail_missing = _summary_optional_int(summary, "question_detail_missing") or 0
     if question_count is None and question_refs is not None:
         question_count = len(question_refs)
     if question_count is None:
@@ -1209,6 +1211,15 @@ def _historical_meli_expected_counts(summary: Any) -> HistoricalMeliExpectedCoun
         if question_refs is not None:
             refs["questions"] = question_refs
         truth_mode["questions"] = "expected"
+    if question_detail_missing > 0:
+        issues.append(
+            _issue(
+                "questions",
+                "question_detail_missing",
+                "historical question detail coverage incomplete",
+                count=question_detail_missing,
+            )
+        )
 
     claim_refs = _summary_ref_set(summary, "claim_ids")
     claim_count = _summary_optional_int(summary, "claims_found")
@@ -1296,8 +1307,8 @@ def _exception_status_code(exc: Exception) -> int | None:
     return None
 
 
-def _issue(read_model: str, code: str, message: str) -> ReadModelIssue:
-    return ReadModelIssue(read_model=read_model, code=code, message=message)
+def _issue(read_model: str, code: str, message: str, *, count: int | None = None) -> ReadModelIssue:
+    return ReadModelIssue(read_model=read_model, code=code, message=message, count=count)
 
 
 def _positive_int(value: str) -> int:
@@ -1327,12 +1338,15 @@ def _write_counts_from_summary(summary: Any) -> dict[str, int]:
         "written_questions",
         "written_claims",
         "item_detail_missing",
+        "question_detail_missing",
         "redacted_errors",
     )
     counts: dict[str, int] = {}
     for field_name in fields:
         value = getattr(summary, field_name, None)
-        if field_name in {"planned_claims", "written_claims"} and value == 0:
+        if (field_name == "question_detail_missing" and value == 0) or (
+            field_name in {"planned_claims", "written_claims"} and value == 0
+        ):
             continue
         if isinstance(value, int):
             counts[field_name] = value
@@ -1434,7 +1448,11 @@ def _enforce_write_count_safety_controls(
 
 
 def _write_count_error_count(counts: Mapping[str, int]) -> int:
-    return int(counts.get("redacted_errors", 0)) + int(counts.get("item_detail_diagnostics", 0))
+    return (
+        int(counts.get("redacted_errors", 0))
+        + int(counts.get("item_detail_diagnostics", 0))
+        + int(counts.get("question_detail_missing", 0))
+    )
 
 
 def _write_count_rate_limit_count(counts: Mapping[str, int]) -> int:
@@ -1452,6 +1470,7 @@ def _summary_error_count(summary: ReconciliationSummary) -> int:
             in {
                 "auth_error",
                 "expected_unavailable",
+                "question_detail_missing",
                 "query_anomaly",
                 "rate_limit",
                 "validator_or_index_anomaly",

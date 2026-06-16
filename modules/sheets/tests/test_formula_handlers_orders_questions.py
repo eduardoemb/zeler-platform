@@ -2967,6 +2967,7 @@ async def test_preguntas_returns_question_table_with_date_and_hour_filters() -> 
     _mark_questions_fresh(
         db,
         fresh_until=datetime(2026, 5, 10, 23, 59, 59, 999999, tzinfo=UTC),
+        last_event_synced_at=datetime(2026, 5, 10, tzinfo=UTC),
         state="reconciled",
     )
     questions = db["questions"]
@@ -3054,6 +3055,7 @@ async def test_preguntas_kpi_returns_canonical_question_counts_with_optional_hea
     _mark_questions_fresh(
         db,
         fresh_until=datetime(2026, 5, 11, 23, 59, 59, 999999, tzinfo=UTC),
+        last_event_synced_at=datetime(2026, 5, 10, tzinfo=UTC),
         state="reconciled",
     )
     questions = db["questions"]
@@ -3118,6 +3120,7 @@ async def test_preguntas_kpi_matches_production_iso_string_dates() -> None:
     _mark_questions_fresh(
         db,
         fresh_until=datetime(2025, 10, 27, 23, 59, 59, 999999, tzinfo=UTC),
+        last_event_synced_at=datetime(2025, 9, 26, tzinfo=UTC),
         state="reconciled",
     )
     questions = db["questions"]
@@ -3359,6 +3362,7 @@ def _mark_questions_fresh(
     *,
     seller_id: str = "seller-1",
     fresh_until: datetime,
+    last_event_synced_at: datetime | None = None,
     state: str = "fresh",
 ) -> None:
     db["sheets_read_model_freshness"].documents[f"{seller_id}:questions"] = {
@@ -3367,6 +3371,7 @@ def _mark_questions_fresh(
         "read_model": "questions",
         "state": state,
         "fresh_until": fresh_until,
+        "last_event_synced_at": last_event_synced_at,
         "reconciled_until": fresh_until if state == "reconciled" else None,
         "updated_at": datetime(2026, 5, 30, 12, 0, tzinfo=UTC),
         "schema_version": 1,

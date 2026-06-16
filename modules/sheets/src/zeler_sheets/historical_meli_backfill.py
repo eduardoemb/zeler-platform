@@ -28,6 +28,7 @@ _ID_LIST_COUNT_KEYS = {
     "order_ids": "order_count",
     "item_ids": "item_count",
     "missing_item_detail_ids": "missing_item_detail_count",
+    "missing_question_detail_ids": "missing_question_detail_count",
     "shipment_ids": "shipment_count",
     "question_ids": "question_count",
     "claim_ids": "claim_count",
@@ -92,6 +93,7 @@ class HistoricalMeliBackfillSummary:
     shipment_real_shipping_costs_enriched: int
     shipment_real_shipping_costs_unavailable: int
     item_detail_missing: int
+    question_detail_missing: int
     existing_orders: int
     existing_items: int
     existing_shipments: int
@@ -115,6 +117,7 @@ class HistoricalMeliBackfillSummary:
     order_ids: list[str]
     item_ids: list[str]
     missing_item_detail_ids: list[str]
+    missing_question_detail_ids: list[str]
     shipment_ids: list[str]
     question_ids: list[str]
     claim_ids: list[str]
@@ -226,6 +229,7 @@ async def run_historical_meli_backfill(
         limit=max_items,
     )
     question_ids: list[str] = []
+    missing_question_detail_ids: list[str] = []
     questions: list[dict[str, Any]] = []
     if include_questions:
         question_search_results = await _search_questions(
@@ -236,15 +240,35 @@ async def run_historical_meli_backfill(
         search_question_ids = _unique_strings(
             _resource_id(question) for question in question_search_results
         )
+        known_in_range_search_question_ids = _unique_strings(
+            _resource_id(question)
+            for question in question_search_results
+            if _optional_datetime(question.get("date_created")) is not None
+        )
         fetched_questions = await _fetch_question_details(
             gateway=gateway, seller_id=seller_id, question_ids=search_question_ids
+        )
+        fetched_detail_ids = set(
+            _unique_strings(_resource_id(question) for question in fetched_questions)
         )
         questions = [
             question
             for question in fetched_questions
             if _resource_in_date_range(question, date_range=date_range)
         ]
-        question_ids = _unique_strings(_resource_id(question) for question in questions)
+        fetched_question_ids = _unique_strings(_resource_id(question) for question in questions)
+        missing_question_detail_ids = [
+            question_id
+            for question_id in search_question_ids
+            if question_id not in fetched_detail_ids
+        ]
+        question_ids = _unique_strings(
+            [
+                *known_in_range_search_question_ids,
+                *fetched_question_ids,
+                *missing_question_detail_ids,
+            ]
+        )
     claims: list[dict[str, Any]] = []
     if include_claims:
         claims = await _search_claims_for_orders(
@@ -370,6 +394,7 @@ async def run_historical_meli_backfill(
             shipment_fetch.shipment_real_shipping_costs_unavailable
         ),
         item_detail_missing=len(missing_item_detail_ids),
+        question_detail_missing=len(missing_question_detail_ids),
         existing_orders=existing_orders,
         existing_items=existing_items,
         existing_shipments=existing_shipments,
@@ -393,6 +418,7 @@ async def run_historical_meli_backfill(
         order_ids=order_ids,
         item_ids=item_ids,
         missing_item_detail_ids=missing_item_detail_ids,
+        missing_question_detail_ids=missing_question_detail_ids,
         shipment_ids=shipment_ids,
         question_ids=question_ids,
         claim_ids=claim_ids,
@@ -529,6 +555,8 @@ def _canonical_claim_document(claim: dict[str, Any], *, seller_id: str) -> dict[
 
 def _explicit_returned_quantity(claim: dict[str, Any]) -> int | None:
     value = claim.get("returned_quantity")
+    if value is None:
+        return None
     try:
         quantity = int(value)
     except (TypeError, ValueError):
@@ -541,10 +569,13 @@ async def _fetch_question_details(
 ) -> list[dict[str, Any]]:
     questions: list[dict[str, Any]] = []
     for question_id in question_ids:
-        resource = await gateway.fetch_resource(
-            seller_id=seller_id, path=f"/questions/{question_id}"
-        )
-        if isinstance(resource, dict) and _resource_id(resource) is not None:
+        try:
+            resource = await gateway.fetch_resource(
+                seller_id=seller_id, path=f"/questions/{question_id}"
+            )
+        except Exception:  # noqa: BLE001, S112 - failures are counted by missing ids.
+            continue
+        if isinstance(resource, dict) and _resource_id(resource) == question_id:
             questions.append(resource)
     return questions
 

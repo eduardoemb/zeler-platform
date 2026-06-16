@@ -714,6 +714,7 @@ class OrderQuestionFormulaHandlers:
         )
         await self._repository.require_questions_read_model_productive(
             seller_id=context.seller_id,
+            date_from=date_range.start,
             date_to=date_range.end,
             formula=context.contract.name,
         )
@@ -746,6 +747,7 @@ class OrderQuestionFormulaHandlers:
         )
         await self._repository.require_questions_read_model_productive(
             seller_id=context.seller_id,
+            date_from=date_range.start,
             date_to=date_range.end,
             formula=context.contract.name,
         )

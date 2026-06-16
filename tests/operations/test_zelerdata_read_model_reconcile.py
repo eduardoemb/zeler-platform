@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from infra.mongo.validator_contract import validate_document_against_schema
 from infra.operations.zelerdata_read_model_reconcile import (
     DEFAULT_PHASE2_DRY_RUN_SCOPES,
     DEFAULT_PHASE2_PREFLIGHT_TARGETS,
@@ -36,6 +37,7 @@ SHEETS_RUNTIME_DOCKERFILES = (
 ZELERDATA_RECONCILE_HELPER = Path("infra/operations/zelerdata_read_model_reconcile.py")
 OPERATIONS_COPY_STANZA = "COPY infra/operations ./infra/operations"
 COLLECTOR_ATTR = "collect_reconciliation_counts"
+ROOT = Path(__file__).resolve().parents[2]
 
 
 class FakeAsyncCollection:
@@ -47,6 +49,12 @@ class FakeAsyncCollection:
     async def count_documents(self, filter_spec: dict[str, Any]) -> int:
         self.count_filters.append(filter_spec)
         return sum(1 for document in self.documents if _matches_filter(document, filter_spec))
+
+    async def find_one(self, filter_spec: dict[str, Any]) -> dict[str, Any] | None:
+        for document in self.documents:
+            if _matches_filter(document, filter_spec):
+                return dict(document)
+        return None
 
     def aggregate(self, pipeline: list[dict[str, Any]]) -> Any:
         rows = self.documents
@@ -123,6 +131,7 @@ class FakeHistoricalMeliSummary:
     item_ids: list[str]
     questions_found: int | None = None
     question_ids: list[str] | None = None
+    question_detail_missing: int = 0
     claims_found: int | None = None
     claim_ids: list[str] | None = None
     planned_orders: int = 0
@@ -1150,6 +1159,28 @@ async def test_complete_write_records_shared_reconciliation_marker_after_coverag
     markers = db["sheets_read_model_freshness"].documents
     assert {marker["read_model"] for marker in markers} == {"questions", "claims"}
     assert all(marker["state"] == "reconciled" for marker in markers)
+    validator = json.loads(
+        (ROOT / "infra/mongo/schemas/sheets_read_model_freshness.json").read_text()
+    )
+    schema = validator["$jsonSchema"]
+    allowed_fields = set(schema["properties"])
+    required_fields = set(schema["required"])
+    forbidden_fields = {
+        "coverage",
+        "expected_count",
+        "persisted_count",
+        "complete_count",
+        "reconciled_at",
+    }
+    for marker in markers:
+        validation = validate_document_against_schema(marker, validator)
+        assert validation.valid is True
+        assert required_fields <= set(marker)
+        assert set(marker) <= allowed_fields
+        assert forbidden_fields.isdisjoint(marker)
+        assert marker["fresh_until"] == request.date_range.end_exclusive
+        assert marker["updated_at"].tzinfo == UTC
+        assert marker["last_event_synced_at"] == request.date_range.start
     assert all(marker["reconciled_until"] == request.date_range.end_exclusive for marker in markers)
     assert "catalog_buybox_snapshots" not in {marker["read_model"] for marker in markers}
 
@@ -1224,6 +1255,98 @@ async def test_questions_expected_counts_come_from_historical_question_coverage(
 
 
 @pytest.mark.asyncio
+async def test_missing_question_detail_blocks_reconciled_marker_with_sanitized_issue() -> None:
+    class QuestionGapGateway:
+        async def fetch_resource(self, *, seller_id: str, path: str) -> Any:
+            if path.startswith("/orders/search?"):
+                return {"results": [], "paging": {"total": 0, "limit": 50, "offset": 0}}
+            if path.startswith("/questions/search?"):
+                return {
+                    "questions": [
+                        {"id": "Q1", "date_created": "2026-06-02T10:00:00Z"},
+                        {"id": "Q2", "date_created": "2026-06-02T10:01:00Z"},
+                    ],
+                    "paging": {"total": 2, "limit": 50, "offset": 0},
+                }
+            if path == "/questions/Q1":
+                return {
+                    "id": "Q1",
+                    "date_created": "2026-06-02T10:00:00Z",
+                    "status": "ANSWERED",
+                    "item_id": "ITEM-PII-1",
+                    "text": "RAW QUESTION BODY MUST NOT LEAK",
+                    "from": {"id": "BUYER-PII-1"},
+                    "answer": {"text": "RAW ANSWER MUST NOT LEAK"},
+                }
+            if path == "/questions/Q2":
+                return {"message": "detail missing without question id"}
+            raise AssertionError(f"Unexpected gateway path: {path}")
+
+    async def historical_source(*, db: Any, request: Any) -> Any:
+        from zeler_sheets.historical_meli_backfill import run_historical_meli_backfill
+
+        gateway = QuestionGapGateway()
+        return await run_historical_meli_backfill(
+            db=db,
+            gateway=gateway,
+            order_detail_gateway=gateway,
+            seller_id=request.seller_id,
+            date_from=request.date_range.date_from,
+            date_to=request.date_range.date_to,
+            dry_run=True,
+            approved_runtime=request.approved_runtime,
+            include_questions=True,
+        )
+
+    db = FakeAsyncDb(
+        {
+            "questions": [
+                _seller_doc(
+                    _id="Q1",
+                    date_created=_dt(2),
+                    status="ANSWERED",
+                    item_id="ITEM-PII-1",
+                    text="Persisted body must not leak",
+                    from_user_id="BUYER-PII-1",
+                )
+            ]
+        }
+    )
+    request = _write_request()
+
+    expected = await collect_expected_read_model_counts(
+        db=db,
+        request=request,
+        historical_meli_source=historical_source,
+    )
+    summary = await collect_reconciliation_counts(
+        db=db,
+        request=request,
+        expected=expected,
+        read_models=("questions",),
+    )
+    marker_counts = await write_complete_read_model_freshness_markers(
+        db=db, request=request, summary=summary
+    )
+
+    output = summary.to_sanitized_dict()
+    aggregate = output["aggregates"][0]
+    serialized = json.dumps(output, sort_keys=True)
+
+    assert expected.counts["questions"] == 2
+    assert expected.refs["questions"] == frozenset({"Q1", "Q2"})
+    assert aggregate["expected_count"] == 2
+    assert aggregate["persisted_count"] == 1
+    assert aggregate["missing_count"] == 1
+    assert aggregate["issues"] == [{"code": "question_detail_missing", "count": 1}]
+    assert marker_counts == {}
+    assert db["sheets_read_model_freshness"].documents == []
+    assert "RAW QUESTION BODY" not in serialized
+    assert "RAW ANSWER" not in serialized
+    assert "BUYER-PII" not in serialized
+
+
+@pytest.mark.asyncio
 async def test_claims_expected_counts_are_bounded_by_historical_order_scope() -> None:
     async def fake_historical_source(*, db: Any, request: Any) -> FakeHistoricalMeliSummary:
         return FakeHistoricalMeliSummary(
@@ -1287,35 +1410,67 @@ async def test_unknown_returned_quantity_keeps_claims_marker_unwritten() -> None
     assert db["sheets_read_model_freshness"].documents == []
 
 
-def test_reconciled_marker_requires_reconciled_state_and_coverage_until_requested_date() -> None:
+def test_reconciled_marker_requires_reconciled_state_and_enclosing_range() -> None:
     stale_reconciled = {
         "state": "reconciled",
+        "last_event_synced_at": datetime(2026, 6, 1, tzinfo=UTC),
         "reconciled_until": datetime(2026, 6, 3, 23, 59, 59, tzinfo=UTC),
     }
     event_fresh_only = {
         "state": "fresh",
+        "last_event_synced_at": datetime(2026, 6, 1, tzinfo=UTC),
         "fresh_until": datetime(2026, 6, 5, tzinfo=UTC),
+    }
+    late_start_reconciled = {
+        "state": "reconciled",
+        "last_event_synced_at": datetime(2026, 6, 3, tzinfo=UTC),
+        "fresh_until": datetime(2026, 6, 5, tzinfo=UTC),
+        "reconciled_until": datetime(2026, 6, 5, tzinfo=UTC),
     }
     complete_reconciled = {
         "state": "reconciled",
+        "last_event_synced_at": datetime(2026, 6, 1, tzinfo=UTC),
+        "fresh_until": datetime(2026, 6, 5, tzinfo=UTC),
         "reconciled_until": datetime(2026, 6, 5, tzinfo=UTC),
     }
 
     assert (
         read_model_reconciliation_marker_covers(
-            stale_reconciled, date_to=datetime(2026, 6, 4, 23, 59, 59, tzinfo=UTC)
+            stale_reconciled,
+            date_from=datetime(2026, 6, 1, tzinfo=UTC),
+            date_to=datetime(2026, 6, 4, 23, 59, 59, tzinfo=UTC),
         )
         is False
     )
     assert (
         read_model_reconciliation_marker_covers(
-            event_fresh_only, date_to=datetime(2026, 6, 4, 23, 59, 59, tzinfo=UTC)
+            event_fresh_only,
+            date_from=datetime(2026, 6, 1, tzinfo=UTC),
+            date_to=datetime(2026, 6, 4, 23, 59, 59, tzinfo=UTC),
         )
         is False
     )
     assert (
         read_model_reconciliation_marker_covers(
-            complete_reconciled, date_to=datetime(2026, 6, 4, 23, 59, 59, tzinfo=UTC)
+            late_start_reconciled,
+            date_from=datetime(2026, 6, 1, tzinfo=UTC),
+            date_to=datetime(2026, 6, 4, 23, 59, 59, tzinfo=UTC),
+        )
+        is False
+    )
+    assert (
+        read_model_reconciliation_marker_covers(
+            late_start_reconciled,
+            date_from=datetime(2026, 6, 3, tzinfo=UTC),
+            date_to=datetime(2026, 6, 4, 23, 59, 59, tzinfo=UTC),
+        )
+        is True
+    )
+    assert (
+        read_model_reconciliation_marker_covers(
+            complete_reconciled,
+            date_from=datetime(2026, 6, 1, tzinfo=UTC),
+            date_to=datetime(2026, 6, 4, 23, 59, 59, tzinfo=UTC),
         )
         is True
     )
@@ -1329,7 +1484,9 @@ def test_partial_marker_keeps_formula_read_model_data_unavailable() -> None:
 
     assert (
         read_model_reconciliation_marker_covers(
-            partial_marker, date_to=datetime(2026, 6, 4, tzinfo=UTC)
+            partial_marker,
+            date_from=datetime(2026, 6, 1, tzinfo=UTC),
+            date_to=datetime(2026, 6, 4, tzinfo=UTC),
         )
         is False
     )
