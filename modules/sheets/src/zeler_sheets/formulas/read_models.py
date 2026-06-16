@@ -514,7 +514,7 @@ def normalize_sku(sku: Any) -> str:
 
 
 def _questions_freshness_marker_covers(marker: Any, *, date_to: Any) -> bool:
-    return _read_model_freshness_marker_covers(marker, date_to=date_to)
+    return read_model_reconciliation_marker_covers(marker, date_to=date_to)
 
 
 def read_model_reconciliation_marker_covers(marker: Any, *, date_to: Any) -> bool:

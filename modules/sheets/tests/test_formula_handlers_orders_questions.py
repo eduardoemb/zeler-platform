@@ -2908,11 +2908,66 @@ async def test_preguntas_kpi_blocks_stale_questions_freshness_marker() -> None:
 
 
 @pytest.mark.asyncio
+async def test_preguntas_blocks_event_fresh_marker_without_historical_reconciliation() -> None:
+    db = FakeDb()
+    _mark_questions_fresh(
+        db,
+        fresh_until=datetime(2026, 5, 10, 23, 59, 59, 999999, tzinfo=UTC),
+    )
+    db["questions"].documents = {
+        "q1": _question_doc(
+            "q1",
+            seller_id="seller-1",
+            status="ANSWERED",
+            date_created=datetime(2026, 5, 10, 11, 0, tzinfo=UTC),
+            answer={"text": "Yes", "date_created": datetime(2026, 5, 10, 11, 5, tzinfo=UTC)},
+        )
+    }
+    dispatcher = _order_question_dispatcher(db)
+
+    with pytest.raises(FormulaDataUnavailableError, match="Questions read model"):
+        await dispatcher.execute(
+            _context(
+                "ZELERDATA_PREGUNTAS",
+                {"fecha_inicial": "2026-05-10", "fecha_final": "2026-05-10"},
+            )
+        )
+
+
+@pytest.mark.asyncio
+async def test_preguntas_kpi_blocks_event_fresh_marker_without_historical_reconciliation() -> None:
+    db = FakeDb()
+    _mark_questions_fresh(
+        db,
+        fresh_until=datetime(2026, 5, 10, 23, 59, 59, 999999, tzinfo=UTC),
+    )
+    db["questions"].documents = {
+        "q1": _question_doc(
+            "q1",
+            seller_id="seller-1",
+            status="ANSWERED",
+            date_created=datetime(2026, 5, 10, 11, 0, tzinfo=UTC),
+            answer={"date_created": datetime(2026, 5, 10, 11, 5, tzinfo=UTC)},
+        )
+    }
+    dispatcher = _order_question_dispatcher(db)
+
+    with pytest.raises(FormulaDataUnavailableError, match="Questions read model"):
+        await dispatcher.execute(
+            _context(
+                "ZELERDATA_PREGUNTASKPI",
+                {"fecha_inicio": "2026-05-10", "fecha_final": "2026-05-10"},
+            )
+        )
+
+
+@pytest.mark.asyncio
 async def test_preguntas_returns_question_table_with_date_and_hour_filters() -> None:
     db = FakeDb()
     _mark_questions_fresh(
         db,
         fresh_until=datetime(2026, 5, 10, 23, 59, 59, 999999, tzinfo=UTC),
+        state="reconciled",
     )
     questions = db["questions"]
     questions.documents = {
@@ -2999,6 +3054,7 @@ async def test_preguntas_kpi_returns_canonical_question_counts_with_optional_hea
     _mark_questions_fresh(
         db,
         fresh_until=datetime(2026, 5, 11, 23, 59, 59, 999999, tzinfo=UTC),
+        state="reconciled",
     )
     questions = db["questions"]
     questions.documents = {
@@ -3062,6 +3118,7 @@ async def test_preguntas_kpi_matches_production_iso_string_dates() -> None:
     _mark_questions_fresh(
         db,
         fresh_until=datetime(2025, 10, 27, 23, 59, 59, 999999, tzinfo=UTC),
+        state="reconciled",
     )
     questions = db["questions"]
     questions.documents = {
@@ -3310,6 +3367,7 @@ def _mark_questions_fresh(
         "read_model": "questions",
         "state": state,
         "fresh_until": fresh_until,
+        "reconciled_until": fresh_until if state == "reconciled" else None,
         "updated_at": datetime(2026, 5, 30, 12, 0, tzinfo=UTC),
         "schema_version": 1,
     }

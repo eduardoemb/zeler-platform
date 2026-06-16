@@ -159,6 +159,19 @@ class FakeGateway:
         self.calls.append((seller_id, path))
         if path.startswith("/orders/search?"):
             return {"results": [{"id": 2001}], "paging": {"total": 1, "limit": 50, "offset": 0}}
+        if path.startswith("/questions/search?"):
+            return {
+                "questions": [{"id": "Q1"}, {"id": "Q2"}, {"id": "Q3"}],
+                "paging": {"total": 3, "limit": 50, "offset": 0},
+            }
+        if path == "/questions/Q1":
+            return _question_detail("Q1", status="ANSWERED", answer_text="Yes")
+        if path == "/questions/Q2":
+            return _question_detail("Q2", status="UNANSWERED")
+        if path == "/questions/Q3":
+            return _question_detail(
+                "Q3", status="UNANSWERED", date_created="2026-05-02T10:00:00+00:00"
+            )
         if path == "/items?ids=MLA1" and self.return_item_detail:
             return [{"code": 200, "body": _item_detail()}]
         if path == "/items?ids=MLA1":
@@ -558,6 +571,7 @@ async def test_historical_backfill_write_persists_canonical_docs_and_read_models
         dry_run=False,
         approved_runtime=True,
         max_orders=1,
+        include_questions=True,
     )
 
     assert summary.as_dict()["status"] == "write_complete"
@@ -594,6 +608,42 @@ async def test_historical_backfill_write_persists_canonical_docs_and_read_models
     formula_row = db["sheets_item_formula_rows"].documents["82453304:SKU-1:MLA1"]
     assert formula_row["current"]["title"] == "Premium widget"
     assert formula_row["current"]["inventory_id"] == "INV-ITEM-1"
+
+
+@pytest.mark.asyncio
+async def test_historical_backfill_reconciles_question_details_for_formula_readiness() -> None:
+    db = FakeDb()
+    gateway = FakeGateway()
+
+    summary = await run_historical_meli_backfill(
+        db=db,
+        gateway=gateway,
+        order_detail_gateway=FakeOrderDetailGateway(),
+        seller_id="82453304",
+        date_from="2026-05-01",
+        date_to="2026-05-01",
+        dry_run=False,
+        approved_runtime=True,
+        max_orders=1,
+        include_questions=True,
+    )
+
+    assert summary.questions_found == 2
+    assert summary.questions_fetched == 2
+    assert summary.planned_questions == 2
+    assert summary.written_questions == 2
+    assert summary.question_ids == ["Q1", "Q2"]
+    assert db["questions"].documents["Q1"]["answer"]["text"] == "Yes"
+    assert db["questions"].documents["Q1"]["answer"]["date_created"] == datetime(
+        2026, 5, 1, 10, 5, tzinfo=UTC
+    )
+    assert (
+        "82453304",
+        "/questions/search?api_version=4&seller_id=82453304&offset=0&limit=50",
+    ) in gateway.calls
+    assert ("82453304", "/questions/Q1") in gateway.calls
+    assert ("82453304", "/questions/Q3") in gateway.calls
+    assert "Q3" not in db["questions"].documents
 
 
 @pytest.mark.asyncio
@@ -1011,6 +1061,30 @@ def _item_detail() -> dict[str, Any]:
         "date_created": "2026-05-01T10:00:00+00:00",
         "last_updated": "2026-05-01T11:00:00+00:00",
     }
+
+
+def _question_detail(
+    question_id: str,
+    *,
+    status: str,
+    answer_text: str | None = None,
+    date_created: str = "2026-05-01T10:00:00+00:00",
+) -> dict[str, Any]:
+    question: dict[str, Any] = {
+        "id": question_id,
+        "item_id": "MLA1",
+        "text": f"Question {question_id}",
+        "status": status,
+        "from": {"id": 987654321},
+        "date_created": date_created,
+    }
+    if answer_text is not None:
+        question["answer"] = {
+            "text": answer_text,
+            "date_created": "2026-05-01T10:05:00+00:00",
+            "status": "ACTIVE",
+        }
+    return question
 
 
 def _shipment_detail() -> dict[str, Any]:

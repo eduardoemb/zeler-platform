@@ -121,6 +121,8 @@ class FakeHistoricalMeliSummary:
     order_ids: list[str]
     shipment_ids: list[str]
     item_ids: list[str]
+    questions_found: int | None = None
+    question_ids: list[str] | None = None
     planned_orders: int = 0
     planned_items: int = 0
     planned_shipments: int = 0
@@ -143,6 +145,10 @@ class FakeWriteSummary:
 
 def _matches_filter(document: dict[str, Any], filter_spec: dict[str, Any]) -> bool:
     for key, expected in filter_spec.items():
+        if key == "$or":
+            if not any(_matches_filter(document, branch) for branch in expected):
+                return False
+            continue
         actual = _lookup(document, key)
         if isinstance(expected, dict):
             for operator, operand in expected.items():
@@ -878,7 +884,9 @@ async def test_collect_reconciliation_counts_reports_real_sanitized_aggregates()
                     date_created=_dt(2),
                     status="ANSWERED",
                     item_id="ITEM-PII-1",
-                    answer={"date_created": _dt(3)},
+                    text="Still available?",
+                    from_user_id="BUYER-PII-1",
+                    answer={"text": "Yes", "date_created": _dt(3)},
                 ),
             ],
             "claims": [
@@ -1140,6 +1148,75 @@ async def test_complete_write_records_shared_reconciliation_marker_after_coverag
     assert all(marker["state"] == "reconciled" for marker in markers)
     assert all(marker["reconciled_until"] == request.date_range.end_exclusive for marker in markers)
     assert "catalog_buybox_snapshots" not in {marker["read_model"] for marker in markers}
+
+
+@pytest.mark.asyncio
+async def test_questions_answer_detail_gaps_keep_coverage_partial_and_marker_unwritten() -> None:
+    db = FakeAsyncDb(
+        {
+            "questions": [
+                _seller_doc(
+                    _id="QUESTION-PII-ANSWERED-COMPLETE",
+                    date_created=_dt(2),
+                    status="ANSWERED",
+                    item_id="ITEM-PII-1",
+                    text="Still available?",
+                    from_user_id="BUYER-PII-1",
+                    answer={"text": "Yes", "date_created": _dt(2)},
+                ),
+                _seller_doc(
+                    _id="QUESTION-PII-ANSWERED-INCOMPLETE",
+                    date_created=_dt(3),
+                    status="ANSWERED",
+                    item_id="ITEM-PII-2",
+                    text="Ships today?",
+                    from_user_id="BUYER-PII-2",
+                    answer={"date_created": _dt(3)},
+                ),
+            ]
+        }
+    )
+    request = _write_request()
+
+    summary = await collect_reconciliation_counts(
+        db=db,
+        request=request,
+        expected=ExpectedReadModelCounts(counts={"questions": 2}),
+        read_models=("questions",),
+    )
+    counts = await write_complete_read_model_freshness_markers(
+        db=db, request=request, summary=summary
+    )
+
+    aggregate = summary.to_sanitized_dict()["aggregates"][0]
+    assert aggregate["persisted_count"] == 2
+    assert aggregate["complete_count"] == 1
+    assert aggregate["missing_count"] == 0
+    assert counts == {}
+    assert db["sheets_read_model_freshness"].documents == []
+
+
+@pytest.mark.asyncio
+async def test_questions_expected_counts_come_from_historical_question_coverage() -> None:
+    async def fake_historical_source(*, db: Any, request: Any) -> FakeHistoricalMeliSummary:
+        return FakeHistoricalMeliSummary(
+            orders_found=0,
+            order_ids=[],
+            shipment_ids=[],
+            item_ids=[],
+            questions_found=2,
+            question_ids=["QUESTION-PII-1", "QUESTION-PII-2"],
+        )
+
+    expected = await collect_expected_read_model_counts(
+        db=FakeAsyncDb({}),
+        request=_request(),
+        historical_meli_source=fake_historical_source,
+    )
+
+    assert expected.counts["questions"] == 2
+    assert expected.refs["questions"] == frozenset({"QUESTION-PII-1", "QUESTION-PII-2"})
+    assert expected.truth_mode["questions"] == "expected"
 
 
 def test_reconciled_marker_requires_reconciled_state_and_coverage_until_requested_date() -> None:

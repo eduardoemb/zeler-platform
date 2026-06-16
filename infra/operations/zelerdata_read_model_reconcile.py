@@ -67,7 +67,7 @@ DEFAULT_STOP_CRITERIA: tuple[str, ...] = (
     "formula_regression",
 )
 _OBSERVED_ONLY_MODELS = {"item_status_states", "item_status_transitions"}
-_HISTORICAL_MELI_MODELS = ("orders", "shipments", "items")
+_HISTORICAL_MELI_MODELS = ("orders", "shipments", "items", "questions")
 _BOUNDED_REF_MODELS = {"shipments", "items"}
 _READ_MODEL_COLLECTIONS: Mapping[str, str] = {
     "catalog_product_snapshots": "sheets_catalog_product_snapshots",
@@ -78,7 +78,7 @@ _COMPLETE_FIELDS: Mapping[str, tuple[str, ...]] = {
     "orders": ("items.0",),
     "shipments": ("order_id", "status"),
     "items": ("status", "last_meli_sync_at"),
-    "questions": ("date_created", "status", "item_id", "answer.date_created"),
+    "questions": ("date_created", "status", "item_id", "text", "from_user_id"),
     "claims": ("date_created", "order_id", "status", "returned_quantity"),
     "catalog_product_snapshots": ("catalog_product_id",),
     "catalog_buybox_snapshots": ("item_id", "catalog_product_id"),
@@ -682,6 +682,7 @@ async def _collect_historical_meli_expected_counts(
         max_items=request.controls.max_items,
         max_shipments=request.controls.max_shipments,
         resume_after_order_id=request.controls.resume_after_order_id,
+        include_questions=True,
     )
 
 
@@ -716,6 +717,7 @@ async def execute_reconciliation_write(
         max_items=request.controls.max_items,
         max_shipments=request.controls.max_shipments,
         resume_after_order_id=request.controls.resume_after_order_id,
+        include_questions=True,
     )
     _enforce_write_count_safety_controls(
         _write_counts_from_summary(summary), controls=request.controls
@@ -957,10 +959,24 @@ def _aggregate_has_complete_scoped_coverage(aggregate: ReadModelAggregate) -> bo
 
 
 async def _complete_count(collection: Any, read_model: str, filter_spec: dict[str, Any]) -> int:
+    if read_model == "questions":
+        return await _complete_questions_count(collection, filter_spec)
     required_fields = _COMPLETE_FIELDS.get(read_model, ())
     if not required_fields:
         return int(await collection.count_documents(filter_spec))
     return int(await collection.count_documents(_with_present_fields(filter_spec, required_fields)))
+
+
+async def _complete_questions_count(collection: Any, filter_spec: dict[str, Any]) -> int:
+    complete_filter = _with_present_fields(
+        filter_spec,
+        _COMPLETE_FIELDS["questions"],
+    )
+    complete_filter["$or"] = [
+        {"status": {"$ne": "ANSWERED"}},
+        _with_present_fields({}, ("answer.text", "answer.date_created")),
+    ]
+    return int(await collection.count_documents(complete_filter))
 
 
 async def _order_date_delta_counts(
@@ -1176,6 +1192,22 @@ def _historical_meli_expected_counts(summary: Any) -> HistoricalMeliExpectedCoun
         refs[read_model] = model_refs
         truth_mode[read_model] = "expected"
 
+    question_refs = _summary_ref_set(summary, "question_ids")
+    question_count = _summary_optional_int(summary, "questions_found")
+    if question_count is None and question_refs is not None:
+        question_count = len(question_refs)
+    if question_count is None:
+        counts["questions"] = None
+        truth_mode["questions"] = "unavailable"
+        issues.append(
+            _issue("questions", "expected_unavailable", "historical questions unavailable")
+        )
+    else:
+        counts["questions"] = question_count
+        if question_refs is not None:
+            refs["questions"] = question_refs
+        truth_mode["questions"] = "expected"
+
     return HistoricalMeliExpectedCounts(
         counts=counts,
         refs=refs,
@@ -1271,9 +1303,11 @@ def _write_counts_from_summary(summary: Any) -> dict[str, int]:
         "planned_orders",
         "planned_items",
         "planned_shipments",
+        "planned_questions",
         "written_orders",
         "written_items",
         "written_shipments",
+        "written_questions",
         "item_detail_missing",
         "redacted_errors",
     )

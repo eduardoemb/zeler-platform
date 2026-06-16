@@ -18,12 +18,14 @@ DEFAULT_GATEWAY_BASE_URL = "http://gateway:8080/proxy/meli"
 DEFAULT_GATEWAY_MODULE_ID = "bootstrap"
 DEFAULT_ORDER_DETAIL_GATEWAY_MODULE_ID = "sheets"
 DEFAULT_ORDER_PAGE_LIMIT = 50
+DEFAULT_QUESTION_PAGE_LIMIT = 50
 ITEM_DETAIL_BATCH_SIZE = 20
 _ID_LIST_COUNT_KEYS = {
     "order_ids": "order_count",
     "item_ids": "item_count",
     "missing_item_detail_ids": "missing_item_detail_count",
     "shipment_ids": "shipment_count",
+    "question_ids": "question_count",
 }
 _SENSITIVE_OUTPUT_KEY_PARTS = (
     "access_token",
@@ -70,6 +72,8 @@ class HistoricalMeliBackfillSummary:
     orders_fetched: int
     items_fetched: int
     shipments_fetched: int
+    questions_found: int
+    questions_fetched: int
     buyer_address_pii_mode: bool
     output_mode: str
     address_matched: int
@@ -84,19 +88,24 @@ class HistoricalMeliBackfillSummary:
     existing_orders: int
     existing_items: int
     existing_shipments: int
+    existing_questions: int
     missing_orders: int
     missing_items: int
     missing_shipments: int
+    missing_questions: int
     planned_orders: int
     planned_items: int
     planned_shipments: int
+    planned_questions: int
     written_orders: int
     written_items: int
     written_shipments: int
+    written_questions: int
     order_ids: list[str]
     item_ids: list[str]
     missing_item_detail_ids: list[str]
     shipment_ids: list[str]
+    question_ids: list[str]
 
     def as_dict(self) -> dict[str, Any]:
         return sanitize_historical_meli_summary(asdict(self))
@@ -161,6 +170,7 @@ async def run_historical_meli_backfill(
     max_items: int | None = None,
     max_shipments: int | None = None,
     resume_after_order_id: str | None = None,
+    include_questions: bool = False,
 ) -> HistoricalMeliBackfillSummary:
     seller_id = str(seller_id)
     if not dry_run and not approved_runtime:
@@ -202,6 +212,26 @@ async def run_historical_meli_backfill(
         _unique_strings(item_id for order in orders for item_id in _extract_order_item_ids(order)),
         limit=max_items,
     )
+    question_ids: list[str] = []
+    questions: list[dict[str, Any]] = []
+    if include_questions:
+        question_search_results = await _search_questions(
+            gateway=gateway,
+            seller_id=seller_id,
+            date_range=date_range,
+        )
+        search_question_ids = _unique_strings(
+            _resource_id(question) for question in question_search_results
+        )
+        fetched_questions = await _fetch_question_details(
+            gateway=gateway, seller_id=seller_id, question_ids=search_question_ids
+        )
+        questions = [
+            question
+            for question in fetched_questions
+            if _resource_in_date_range(question, date_range=date_range)
+        ]
+        question_ids = _unique_strings(_resource_id(question) for question in questions)
     shipment_ids = _bounded_values(
         _unique_strings(
             shipment_id
@@ -237,13 +267,18 @@ async def run_historical_meli_backfill(
     existing_shipments = await _count_existing(
         db=db, collection="shipments", seller_id=seller_id, ids=shipment_ids
     )
+    existing_questions = await _count_existing(
+        db=db, collection="questions", seller_id=seller_id, ids=question_ids
+    )
 
     missing_orders = len(order_ids) - existing_orders
     missing_items = len(item_ids) - existing_items
     missing_shipments = len(shipment_ids) - existing_shipments
+    missing_questions = len(question_ids) - existing_questions
     written_orders = 0
     written_items = 0
     written_shipments = 0
+    written_questions = 0
 
     if not dry_run:
         persistence = SheetsEventPersistence(db=db)
@@ -262,6 +297,11 @@ async def run_historical_meli_backfill(
                 event_type="shipments.updated", seller_id=seller_id, resource=shipment
             )
             written_shipments += 1
+        for question in questions:
+            await persistence.persist(
+                event_type="questions.updated", seller_id=seller_id, resource=question
+            )
+            written_questions += 1
 
     status = "dry_run_complete" if dry_run else "write_complete"
     return HistoricalMeliBackfillSummary(
@@ -276,6 +316,8 @@ async def run_historical_meli_backfill(
         orders_fetched=len(orders),
         items_fetched=len(items),
         shipments_fetched=len(shipments),
+        questions_found=len(question_ids),
+        questions_fetched=len(questions),
         buyer_address_pii_mode=include_buyer_address_pii,
         output_mode="sanitized_aggregate",
         address_matched=shipment_fetch.address_matched,
@@ -294,19 +336,24 @@ async def run_historical_meli_backfill(
         existing_orders=existing_orders,
         existing_items=existing_items,
         existing_shipments=existing_shipments,
+        existing_questions=existing_questions,
         missing_orders=missing_orders,
         missing_items=missing_items,
         missing_shipments=missing_shipments,
+        missing_questions=missing_questions,
         planned_orders=len(orders),
         planned_items=len(items),
         planned_shipments=len(shipments),
+        planned_questions=len(questions),
         written_orders=written_orders,
         written_items=written_items,
         written_shipments=written_shipments,
+        written_questions=written_questions,
         order_ids=order_ids,
         item_ids=item_ids,
         missing_item_detail_ids=missing_item_detail_ids,
         shipment_ids=shipment_ids,
+        question_ids=question_ids,
     )
 
 
@@ -343,6 +390,60 @@ async def _search_orders(
         if total is not None and offset >= total:
             break
     return orders
+
+
+async def _search_questions(
+    *,
+    gateway: HistoricalMeliGateway,
+    seller_id: str,
+    date_range: InclusiveDateRange,
+) -> list[dict[str, Any]]:
+    questions: list[dict[str, Any]] = []
+    offset = 0
+    while True:
+        page = await gateway.fetch_resource(
+            seller_id=seller_id,
+            path=_build_question_search_path(seller_id=seller_id, offset=offset),
+        )
+        page_questions = [
+            question
+            for question in _question_page_results(page)
+            if _resource_in_date_range(question, date_range=date_range)
+        ]
+        questions.extend(page_questions)
+        paging = page.get("paging", {}) if isinstance(page, dict) else {}
+        total = _optional_int(paging.get("total")) if isinstance(paging, dict) else None
+        if len(_question_page_results(page)) < DEFAULT_QUESTION_PAGE_LIMIT:
+            break
+        offset += DEFAULT_QUESTION_PAGE_LIMIT
+        if total is not None and offset >= total:
+            break
+    return questions
+
+
+def _build_question_search_path(*, seller_id: str, offset: int) -> str:
+    query = urlencode(
+        {
+            "api_version": "4",
+            "seller_id": seller_id,
+            "offset": str(offset),
+            "limit": str(DEFAULT_QUESTION_PAGE_LIMIT),
+        }
+    )
+    return f"/questions/search?{query}"
+
+
+async def _fetch_question_details(
+    *, gateway: HistoricalMeliGateway, seller_id: str, question_ids: Sequence[str]
+) -> list[dict[str, Any]]:
+    questions: list[dict[str, Any]] = []
+    for question_id in question_ids:
+        resource = await gateway.fetch_resource(
+            seller_id=seller_id, path=f"/questions/{question_id}"
+        )
+        if isinstance(resource, dict) and _resource_id(resource) is not None:
+            questions.append(resource)
+    return questions
 
 
 def _build_order_search_path(
@@ -504,6 +605,20 @@ def _page_results(page: Any) -> list[dict[str, Any]]:
     return [result for result in results if isinstance(result, dict)]
 
 
+def _question_page_results(page: Any) -> list[dict[str, Any]]:
+    if not isinstance(page, dict):
+        return []
+    questions = page.get("questions")
+    if not isinstance(questions, list):
+        return []
+    return [question for question in questions if isinstance(question, dict)]
+
+
+def _resource_in_date_range(resource: dict[str, Any], *, date_range: InclusiveDateRange) -> bool:
+    created = _optional_datetime(resource.get("date_created"))
+    return created is None or date_range.start <= created < date_range.end_exclusive
+
+
 def _parse_item_detail_response(response: Any) -> list[dict[str, Any]]:
     if isinstance(response, dict):
         body = response.get("body") if "body" in response else response
@@ -600,6 +715,24 @@ def _optional_string(value: Any) -> str | None:
         return None
     normalized = str(value).strip()
     return normalized or None
+
+
+def _optional_datetime(value: Any) -> datetime | None:
+    if isinstance(value, datetime):
+        parsed = value
+    elif isinstance(value, str):
+        normalized = value.strip()
+        if not normalized:
+            return None
+        try:
+            parsed = datetime.fromisoformat(normalized.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    else:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
 
 
 def _sanitize_summary_value(value: Any) -> Any:
