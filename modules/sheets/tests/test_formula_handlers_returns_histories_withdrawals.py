@@ -149,7 +149,7 @@ async def test_devoluciones_groups_return_claims_by_item_and_sku() -> None:
 
 
 @pytest.mark.asyncio
-async def test_devoluciones_blocks_when_returned_quantity_is_not_explicit() -> None:
+async def test_devoluciones_derives_missing_returned_quantity_from_single_order_line() -> None:
     db = FakeDb()
     _mark_read_model_fresh(db, CLAIMS_READ_MODEL)
     _mark_read_model_fresh(db, ORDERS_READ_MODEL)
@@ -167,6 +167,126 @@ async def test_devoluciones_blocks_when_returned_quantity_is_not_explicit() -> N
     }
     dispatcher = _dispatcher(db)
 
+    result = await dispatcher.execute(
+        _context(
+            "ZELERDATA_DEVOLUCIONES",
+            {
+                "fecha_inicio": "2026-06-01",
+                "fecha_final": "2026-06-15",
+                "id_publicaciones": ["MLA1"],
+                "encabezados": "si",
+            },
+        )
+    )
+
+    assert result.values == [
+        ["ID PUBLICACION", "SKU", "UNIDADES DEVUELTAS", "TITULO"],
+        ["MLA1", "SKU-1", 2, "Returned item"],
+    ]
+
+
+@pytest.mark.asyncio
+async def test_devoluciones_derives_missing_returned_quantity_from_raw_order_items_line() -> None:
+    db = FakeDb()
+    _mark_read_model_fresh(db, CLAIMS_READ_MODEL)
+    _mark_read_model_fresh(db, ORDERS_READ_MODEL)
+    db["claims"].documents = {
+        "claim-1": _claim_doc("CLAIM-1", order_id="ORDER-1", days_ago=2, item_id="MLA1"),
+    }
+    db["orders"].documents = {
+        "ORDER-1": {
+            "_id": "ORDER-1",
+            "seller_id": "seller-1",
+            "date_created": NOW - timedelta(days=1),
+            "status": "paid",
+            "order_items": [
+                {
+                    "item": {
+                        "id": "MLA1",
+                        "title": "Raw returned item",
+                        "seller_sku": "raw-sku-1",
+                    },
+                    "quantity": 4,
+                }
+            ],
+        },
+    }
+    dispatcher = _dispatcher(db)
+
+    result = await dispatcher.execute(
+        _context(
+            "ZELERDATA_DEVOLUCIONES",
+            {
+                "fecha_inicio": "2026-06-01",
+                "fecha_final": "2026-06-15",
+                "id_publicaciones": ["MLA1"],
+                "encabezados": "si",
+            },
+        )
+    )
+
+    assert result.values == [
+        ["ID PUBLICACION", "SKU", "UNIDADES DEVUELTAS", "TITULO"],
+        ["MLA1", "RAW-SKU-1", 4, "Raw returned item"],
+    ]
+
+
+@pytest.mark.asyncio
+async def test_devoluciones_derives_missing_returned_quantity_from_matching_order_line() -> None:
+    db = FakeDb()
+    _mark_read_model_fresh(db, CLAIMS_READ_MODEL)
+    _mark_read_model_fresh(db, ORDERS_READ_MODEL)
+    db["claims"].documents = {
+        "claim-1": _claim_doc("CLAIM-1", order_id="ORDER-1", days_ago=2, item_id="MLA2"),
+    }
+    db["orders"].documents = {
+        "ORDER-1": _order_doc_from_lines(
+            "ORDER-1",
+            [
+                {"sku": "sku-1", "item_id": "MLA1", "title": "First item", "quantity": 1},
+                {"sku": "sku-2", "item_id": "MLA2", "title": "Second item", "quantity": 3},
+            ],
+        ),
+    }
+    dispatcher = _dispatcher(db)
+
+    result = await dispatcher.execute(
+        _context(
+            "ZELERDATA_DEVOLUCIONES",
+            {
+                "fecha_inicio": "2026-06-01",
+                "fecha_final": "2026-06-15",
+                "id_publicaciones": ["MLA2"],
+                "encabezados": "si",
+            },
+        )
+    )
+
+    assert result.values == [
+        ["ID PUBLICACION", "SKU", "UNIDADES DEVUELTAS", "TITULO"],
+        ["MLA2", "SKU-2", 3, "Second item"],
+    ]
+
+
+@pytest.mark.asyncio
+async def test_devoluciones_blocks_missing_quantity_with_ambiguous_order_scope() -> None:
+    db = FakeDb()
+    _mark_read_model_fresh(db, CLAIMS_READ_MODEL)
+    _mark_read_model_fresh(db, ORDERS_READ_MODEL)
+    db["claims"].documents = {
+        "claim-1": _claim_doc("CLAIM-1", order_id="ORDER-1", days_ago=2),
+    }
+    db["orders"].documents = {
+        "ORDER-1": _order_doc_from_lines(
+            "ORDER-1",
+            [
+                {"sku": "sku-1", "item_id": "MLA1", "title": "First item", "quantity": 1},
+                {"sku": "sku-2", "item_id": "MLA2", "title": "Second item", "quantity": 3},
+            ],
+        ),
+    }
+    dispatcher = _dispatcher(db)
+
     with pytest.raises(FormulaDataUnavailableError, match="ZELERDATA_DEVOLUCIONES") as error:
         await dispatcher.execute(
             _context(
@@ -179,7 +299,38 @@ async def test_devoluciones_blocks_when_returned_quantity_is_not_explicit() -> N
             )
         )
 
-    assert "returned quantity" in str(error.value)
+    assert "scoped order line" in str(error.value)
+
+
+@pytest.mark.asyncio
+async def test_devoluciones_fails_closed_when_claim_order_is_absent() -> None:
+    db = FakeDb()
+    _mark_read_model_fresh(db, CLAIMS_READ_MODEL)
+    _mark_read_model_fresh(db, ORDERS_READ_MODEL)
+    db["claims"].documents = {
+        "claim-1": _claim_doc(
+            "CLAIM-1",
+            order_id="ORDER-MISSING",
+            days_ago=2,
+            item_id="MLA1",
+            returned_quantity=1,
+        ),
+    }
+    dispatcher = _dispatcher(db)
+
+    with pytest.raises(FormulaDataUnavailableError, match="ZELERDATA_DEVOLUCIONES") as error:
+        await dispatcher.execute(
+            _context(
+                "ZELERDATA_DEVOLUCIONES",
+                {
+                    "fecha_inicio": "2026-06-01",
+                    "fecha_final": "2026-06-15",
+                    "id_publicaciones": ["MLA1"],
+                },
+            )
+        )
+
+    assert "matching order" in str(error.value)
 
 
 @pytest.mark.asyncio
@@ -420,6 +571,7 @@ def _claim_doc(
     status: str = "opened",
     claim_type: str = "returns",
     returned_quantity: int | None = None,
+    item_id: str | None = None,
 ) -> dict[str, Any]:
     document = {
         "_id": claim_id,
@@ -431,6 +583,8 @@ def _claim_doc(
         "date_created": NOW - timedelta(days=days_ago),
         "schema_version": 1,
     }
+    if item_id is not None:
+        document["item_id"] = item_id
     if returned_quantity is not None:
         document["returned_quantity"] = returned_quantity
     return document
@@ -457,6 +611,16 @@ def _order_doc(
                 "quantity": quantity,
             }
         ],
+    }
+
+
+def _order_doc_from_lines(order_id: str, lines: list[dict[str, Any]]) -> dict[str, Any]:
+    return {
+        "_id": order_id,
+        "seller_id": "seller-1",
+        "date_created": NOW - timedelta(days=1),
+        "status": "paid",
+        "items": lines,
     }
 
 

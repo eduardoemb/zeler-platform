@@ -177,6 +177,12 @@ class CatalogSnapshotSource:
     catalog_product_id: str
 
 
+@dataclass(frozen=True)
+class ClaimOrderLine:
+    item_id: str
+    quantity: int
+
+
 def parse_inclusive_date_range(date_from: str, date_to: str) -> InclusiveDateRange:
     start_date = _parse_cli_date(date_from, field_name="date-from")
     end_date = _parse_cli_date(date_to, field_name="date-to")
@@ -300,6 +306,16 @@ async def run_historical_meli_backfill(
             order_ids=order_ids,
             date_range=date_range,
         )
+        orders_by_id = {
+            order_id: order for order in orders if (order_id := _resource_id(order)) is not None
+        }
+        claims = [
+            _claim_with_resolved_returned_quantity(
+                claim,
+                order=orders_by_id.get(_optional_string(claim.get("order_id")) or ""),
+            )
+            for claim in claims
+        ]
     claim_ids = _unique_strings(_resource_id(claim) for claim in claims)
     catalog_scope: list[CatalogSnapshotSource] = []
     catalog_product_snapshots: list[dict[str, Any]] = []
@@ -619,7 +635,9 @@ async def _search_claims_for_orders(
         for claim in _claim_page_results(page):
             normalized = dict(claim)
             normalized.setdefault("order_id", order_id)
-            if _resource_in_date_range(normalized, date_range=date_range):
+            if _is_return_claim(normalized) and _resource_in_date_range(
+                normalized, date_range=date_range
+            ):
                 claims.append(normalized)
     return claims
 
@@ -723,6 +741,59 @@ def _canonical_claim_document(claim: dict[str, Any], *, seller_id: str) -> dict[
         {key: value for key, value in document.items() if value is not None}
     )
     return model.model_dump(by_alias=True, mode="python", exclude_none=True)
+
+
+def _claim_with_resolved_returned_quantity(
+    claim: dict[str, Any], *, order: dict[str, Any] | None
+) -> dict[str, Any]:
+    explicit_returned_quantity = _explicit_returned_quantity(claim)
+    line = _scoped_claim_order_line(claim, order) if order is not None else None
+    if line is None:
+        unresolved = dict(claim)
+        unresolved.pop("item_id", None)
+        unresolved.pop("returned_quantity", None)
+        return unresolved
+    scoped = {**claim, "item_id": line.item_id}
+    scoped["returned_quantity"] = explicit_returned_quantity or line.quantity
+    return scoped
+
+
+def _scoped_claim_order_line(claim: dict[str, Any], order: dict[str, Any]) -> ClaimOrderLine | None:
+    lines = _claim_order_lines(order)
+    claim_item_id = _optional_string(claim.get("item_id"))
+    if claim_item_id is not None:
+        scoped_lines = [line for line in lines if line.item_id == claim_item_id]
+        return scoped_lines[0] if len(scoped_lines) == 1 else None
+    return lines[0] if len(lines) == 1 else None
+
+
+def _claim_order_lines(order: dict[str, Any]) -> list[ClaimOrderLine]:
+    raw_items = order.get("order_items") or order.get("items") or []
+    if not isinstance(raw_items, Sequence) or isinstance(raw_items, (str, bytes)):
+        return []
+    lines: list[ClaimOrderLine] = []
+    for raw_item in raw_items:
+        if not isinstance(raw_item, dict):
+            continue
+        item = raw_item.get("item")
+        item_id = (
+            _resource_id(item)
+            if isinstance(item, dict)
+            else _optional_string(raw_item.get("item_id"))
+        )
+        quantity = _optional_int(raw_item.get("quantity") or raw_item.get("qty"))
+        if item_id is None or quantity is None or quantity < 1:
+            continue
+        lines.append(ClaimOrderLine(item_id=item_id, quantity=quantity))
+    return lines
+
+
+def _is_return_claim(claim: dict[str, Any]) -> bool:
+    return _normalized_claim_type(claim.get("type")) in {"return", "returns"}
+
+
+def _normalized_claim_type(value: Any) -> str:
+    return str(value or "").strip().casefold()
 
 
 def _catalog_product_snapshot(resource: Any, *, seller_id: str) -> dict[str, Any] | None:
