@@ -167,11 +167,13 @@ class FakeGateway:
         return_item_detail: bool = True,
         unauthorized_shipment: bool = False,
         shipment_costs_payload: Any | None = None,
+        claim_payloads: list[dict[str, Any]] | None = None,
     ) -> None:
         self.calls: list[tuple[str, str]] = []
         self.return_item_detail = return_item_detail
         self.unauthorized_shipment = unauthorized_shipment
         self.shipment_costs_payload = shipment_costs_payload or _shipment_costs_payload()
+        self.claim_payloads = claim_payloads
 
     async def fetch_resource(self, *, seller_id: str, path: str) -> Any:
         self.calls.append((seller_id, path))
@@ -209,7 +211,9 @@ class FakeGateway:
             return self.shipment_costs_payload
         if path == "/post-purchase/v1/claims/search?order_id=2001":
             return {
-                "data": [
+                "data": self.claim_payloads
+                if self.claim_payloads is not None
+                else [
                     {
                         "id": "CLAIM-1",
                         "order_id": "2001",
@@ -235,14 +239,20 @@ class FakeGateway:
 
 
 class FakeOrderDetailGateway:
-    def __init__(self, *, order_status: str = "paid") -> None:
+    def __init__(
+        self,
+        *,
+        order_status: str = "paid",
+        order_items: list[dict[str, Any]] | None = None,
+    ) -> None:
         self.calls: list[tuple[str, str]] = []
         self.order_status = order_status
+        self.order_items = order_items
 
     async def fetch_resource(self, *, seller_id: str, path: str) -> Any:
         self.calls.append((seller_id, path))
         if path == "/orders/2001":
-            return _order_detail(status=self.order_status)
+            return _order_detail(status=self.order_status, order_items=self.order_items)
         raise AssertionError(f"Unexpected order detail gateway path: {path}")
 
 
@@ -735,6 +745,223 @@ async def test_historical_backfill_reconciles_claims_bounded_by_order_scope() ->
 
 
 @pytest.mark.asyncio
+async def test_historical_backfill_derives_claim_returned_quantity_from_scoped_order_line() -> None:
+    db = FakeDb()
+    gateway = FakeGateway(
+        claim_payloads=[
+            {
+                "id": "CLAIM-1",
+                "order_id": "2001",
+                "item_id": "MLA1",
+                "status": "closed",
+                "stage": "claim",
+                "type": "returns",
+                "date_created": "2026-05-01T12:00:00+00:00",
+            }
+        ]
+    )
+
+    await run_historical_meli_backfill(
+        db=db,
+        gateway=gateway,
+        order_detail_gateway=FakeOrderDetailGateway(),
+        seller_id="82453304",
+        date_from="2026-05-01",
+        date_to="2026-05-01",
+        dry_run=False,
+        approved_runtime=True,
+        max_orders=1,
+        include_claims=True,
+    )
+
+    assert db["claims"].documents["CLAIM-1"]["returned_quantity"] == 2
+
+
+@pytest.mark.asyncio
+async def test_historical_backfill_skips_explicit_returned_quantity_without_scope() -> None:
+    db = FakeDb()
+    gateway = FakeGateway(
+        claim_payloads=[
+            {
+                "id": "CLAIM-1",
+                "order_id": "2001",
+                "status": "closed",
+                "stage": "claim",
+                "type": "returns",
+                "date_created": "2026-05-01T12:00:00+00:00",
+                "returned_quantity": 7,
+            }
+        ]
+    )
+    order_detail_gateway = FakeOrderDetailGateway(
+        order_items=[
+            {
+                "item": {"id": "MLA1", "seller_sku": "sku-1"},
+                "quantity": 2,
+                "unit_price": "149.95",
+            },
+            {
+                "item": {"id": "MLA2", "seller_sku": "sku-2"},
+                "quantity": 3,
+                "unit_price": "99.95",
+            },
+        ]
+    )
+
+    await run_historical_meli_backfill(
+        db=db,
+        gateway=gateway,
+        order_detail_gateway=order_detail_gateway,
+        seller_id="82453304",
+        date_from="2026-05-01",
+        date_to="2026-05-01",
+        dry_run=False,
+        approved_runtime=True,
+        max_orders=1,
+        max_items=1,
+        include_claims=True,
+    )
+
+    claim = db["claims"].documents["CLAIM-1"]
+    assert "returned_quantity" not in claim
+    assert "item_id" not in claim
+
+
+@pytest.mark.asyncio
+async def test_historical_backfill_drops_claim_scope_fields_when_item_mismatches_order() -> None:
+    db = FakeDb()
+    gateway = FakeGateway(
+        claim_payloads=[
+            {
+                "id": "CLAIM-1",
+                "order_id": "2001",
+                "item_id": "MLA-NOT-IN-ORDER",
+                "status": "closed",
+                "stage": "claim",
+                "type": "returns",
+                "date_created": "2026-05-01T12:00:00+00:00",
+                "returned_quantity": 7,
+            }
+        ]
+    )
+    order_detail_gateway = FakeOrderDetailGateway(
+        order_items=[
+            {
+                "item": {"id": "MLA1", "seller_sku": "sku-1"},
+                "quantity": 2,
+                "unit_price": "149.95",
+            },
+            {
+                "item": {"id": "MLA2", "seller_sku": "sku-2"},
+                "quantity": 3,
+                "unit_price": "99.95",
+            },
+        ]
+    )
+
+    await run_historical_meli_backfill(
+        db=db,
+        gateway=gateway,
+        order_detail_gateway=order_detail_gateway,
+        seller_id="82453304",
+        date_from="2026-05-01",
+        date_to="2026-05-01",
+        dry_run=False,
+        approved_runtime=True,
+        max_orders=1,
+        max_items=1,
+        include_claims=True,
+    )
+
+    claim = db["claims"].documents["CLAIM-1"]
+    assert "item_id" not in claim
+    assert "returned_quantity" not in claim
+
+
+@pytest.mark.asyncio
+async def test_historical_backfill_keeps_explicit_quantity_after_scope_resolution() -> None:
+    db = FakeDb()
+    gateway = FakeGateway(
+        claim_payloads=[
+            {
+                "id": "CLAIM-1",
+                "order_id": "2001",
+                "status": "closed",
+                "stage": "claim",
+                "type": "returns",
+                "date_created": "2026-05-01T12:00:00+00:00",
+                "returned_quantity": 7,
+            }
+        ]
+    )
+
+    await run_historical_meli_backfill(
+        db=db,
+        gateway=gateway,
+        order_detail_gateway=FakeOrderDetailGateway(),
+        seller_id="82453304",
+        date_from="2026-05-01",
+        date_to="2026-05-01",
+        dry_run=False,
+        approved_runtime=True,
+        max_orders=1,
+        include_claims=True,
+    )
+
+    claim = db["claims"].documents["CLAIM-1"]
+    assert claim["returned_quantity"] == 7
+    assert claim["item_id"] == "MLA1"
+
+
+@pytest.mark.asyncio
+async def test_historical_backfill_filters_non_return_claim_types() -> None:
+    db = FakeDb()
+    gateway = FakeGateway(
+        claim_payloads=[
+            {
+                "id": "CLAIM-RETURN",
+                "order_id": "2001",
+                "item_id": "MLA1",
+                "status": "closed",
+                "stage": "claim",
+                "type": "returns",
+                "date_created": "2026-05-01T12:00:00+00:00",
+            },
+            {
+                "id": "CLAIM-MEDIATION",
+                "order_id": "2001",
+                "item_id": "MLA1",
+                "status": "closed",
+                "stage": "claim",
+                "type": "mediations",
+                "date_created": "2026-05-01T12:00:00+00:00",
+                "returned_quantity": 1,
+            },
+        ]
+    )
+
+    summary = await run_historical_meli_backfill(
+        db=db,
+        gateway=gateway,
+        order_detail_gateway=FakeOrderDetailGateway(),
+        seller_id="82453304",
+        date_from="2026-05-01",
+        date_to="2026-05-01",
+        dry_run=False,
+        approved_runtime=True,
+        max_orders=1,
+        include_claims=True,
+    )
+
+    assert summary.claims_found == 1
+    assert summary.planned_claims == 1
+    assert summary.written_claims == 1
+    assert summary.claim_ids == ["CLAIM-RETURN"]
+    assert set(db["claims"].documents) == {"CLAIM-RETURN"}
+    assert db["claims"].documents["CLAIM-RETURN"]["returned_quantity"] == 2
+
+
+@pytest.mark.asyncio
 async def test_historical_backfill_reconciles_catalog_product_and_buybox_snapshots() -> None:
     db = FakeDb()
     gateway = FakeGateway()
@@ -1164,7 +1391,9 @@ async def test_historical_backfill_write_fails_before_mutation_when_item_details
     assert all(not collection.replace_calls for collection in db.collections.values())
 
 
-def _order_detail(*, status: str = "paid") -> dict[str, Any]:
+def _order_detail(
+    *, status: str = "paid", order_items: list[dict[str, Any]] | None = None
+) -> dict[str, Any]:
     return {
         "id": 2001,
         "status": status,
@@ -1173,7 +1402,8 @@ def _order_detail(*, status: str = "paid") -> dict[str, Any]:
         "total_amount": "299.90",
         "buyer": {"id": 123},
         "shipping": {"id": 3001},
-        "order_items": [
+        "order_items": order_items
+        or [
             {
                 "item": {"id": "MLA1", "seller_sku": "sku-1"},
                 "quantity": 2,

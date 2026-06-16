@@ -192,6 +192,8 @@ def _matches_filter(document: dict[str, Any], filter_spec: dict[str, Any]) -> bo
                     return False
                 if operator == "$in" and actual not in operand:
                     return False
+                if operator == "$nin" and actual in operand:
+                    return False
                 exists = _lookup(document, key, missing=...) is not ...
                 if operator == "$exists" and exists != operand:
                     return False
@@ -1103,6 +1105,7 @@ async def test_collect_reconciliation_counts_reports_real_sanitized_aggregates()
                     _id="CLAIM-PII-1",
                     date_created=_dt(2),
                     order_id="ORDER-PII-1",
+                    item_id="MLA1",
                     status="closed",
                     returned_quantity=1,
                 ),
@@ -1725,6 +1728,7 @@ async def test_unknown_returned_quantity_keeps_claims_marker_unwritten() -> None
                     _id="CLAIM-PII-1",
                     date_created=_dt(2),
                     order_id="ORDER-PII-1",
+                    item_id="MLA1",
                     status="closed",
                     returned_quantity=1,
                 ),
@@ -1751,6 +1755,109 @@ async def test_unknown_returned_quantity_keeps_claims_marker_unwritten() -> None
 
     aggregate = summary.to_sanitized_dict()["aggregates"][0]
     assert aggregate["persisted_count"] == 2
+    assert aggregate["complete_count"] == 1
+    assert aggregate["missing_count"] == 0
+    assert counts == {}
+    assert db["sheets_read_model_freshness"].documents == []
+
+
+@pytest.mark.asyncio
+async def test_missing_claim_item_id_prevents_complete_count() -> None:
+    db = FakeAsyncDb(
+        {
+            "claims": [
+                _seller_doc(
+                    _id="CLAIM-PII-1",
+                    date_created=_dt(2),
+                    order_id="ORDER-PII-1",
+                    item_id="MLA1",
+                    status="closed",
+                    returned_quantity=1,
+                ),
+                _seller_doc(
+                    _id="CLAIM-PII-2",
+                    date_created=_dt(3),
+                    order_id="ORDER-PII-2",
+                    status="closed",
+                    returned_quantity=1,
+                ),
+            ]
+        }
+    )
+    request = _write_request()
+
+    summary = await collect_reconciliation_counts(
+        db=db,
+        request=request,
+        expected=ExpectedReadModelCounts(counts={"claims": 2}),
+        read_models=("claims",),
+    )
+    counts = await write_complete_read_model_freshness_markers(
+        db=db, request=request, summary=summary
+    )
+
+    aggregate = summary.to_sanitized_dict()["aggregates"][0]
+    assert aggregate["persisted_count"] == 2
+    assert aggregate["complete_count"] == 1
+    assert aggregate["missing_count"] == 0
+    assert counts == {}
+    assert db["sheets_read_model_freshness"].documents == []
+
+
+@pytest.mark.asyncio
+async def test_empty_claim_scope_fields_and_zero_quantity_are_incomplete() -> None:
+    db = FakeAsyncDb(
+        {
+            "claims": [
+                _seller_doc(
+                    _id="CLAIM-COMPLETE",
+                    date_created=_dt(2),
+                    order_id="ORDER-PII-1",
+                    item_id="MLA1",
+                    status="closed",
+                    returned_quantity=1,
+                ),
+                _seller_doc(
+                    _id="CLAIM-EMPTY-ITEM",
+                    date_created=_dt(2),
+                    order_id="ORDER-PII-2",
+                    item_id="",
+                    status="closed",
+                    returned_quantity=1,
+                ),
+                _seller_doc(
+                    _id="CLAIM-EMPTY-ORDER-STATUS",
+                    date_created=_dt(3),
+                    order_id="",
+                    item_id="MLA2",
+                    status="",
+                    returned_quantity=1,
+                ),
+                _seller_doc(
+                    _id="CLAIM-ZERO-QUANTITY",
+                    date_created=_dt(4),
+                    order_id="ORDER-PII-3",
+                    item_id="MLA3",
+                    status="closed",
+                    returned_quantity=0,
+                ),
+            ]
+        }
+    )
+    request = _write_request()
+
+    summary = await collect_reconciliation_counts(
+        db=db,
+        request=request,
+        expected=ExpectedReadModelCounts(counts={"claims": 4}),
+        read_models=("claims",),
+    )
+    counts = await write_complete_read_model_freshness_markers(
+        db=db, request=request, summary=summary
+    )
+
+    aggregate = summary.to_sanitized_dict()["aggregates"][0]
+    assert aggregate["persisted_count"] == 4
     assert aggregate["complete_count"] == 1
     assert aggregate["missing_count"] == 0
     assert counts == {}

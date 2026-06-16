@@ -117,30 +117,27 @@ class ReturnsHistoriesWithdrawalsFormulaHandlers:
         for claim in productive_claims:
             order = orders_by_id.get(_order_id(claim))
             if order is None:
-                continue
-            returned_quantity = _explicit_returned_quantity(claim)
-            if returned_quantity is None:
                 raise FormulaDataUnavailableError(
                     context.contract.name,
-                    "returned quantity must be explicit for reconciled return claims",
+                    "return claim must have a matching order for scoped returned quantity",
                 )
-            lines = _claim_order_lines(claim, order)
-            if not lines:
+            line = _claim_order_line(claim, order)
+            if line is None:
                 raise FormulaDataUnavailableError(
                     context.contract.name,
                     "returned quantity must be tied to a scoped order line",
                 )
-            for line in lines:
-                if requested_set and line.item_id not in requested_set:
-                    continue
-                key = (line.item_id, line.sku)
-                aggregate = aggregates.setdefault(
-                    key,
-                    _ReturnAggregate(item_id=line.item_id, sku=line.sku, title=line.title),
-                )
-                aggregate.quantity += returned_quantity
-                if not aggregate.title and line.title:
-                    aggregate.title = line.title
+            returned_quantity = _explicit_returned_quantity(claim) or line.quantity
+            if requested_set and line.item_id not in requested_set:
+                continue
+            key = (line.item_id, line.sku)
+            aggregate = aggregates.setdefault(
+                key,
+                _ReturnAggregate(item_id=line.item_id, sku=line.sku, title=line.title),
+            )
+            aggregate.quantity += returned_quantity
+            if not aggregate.title and line.title:
+                aggregate.title = line.title
 
         values: list[list[Any]] = _header_row(context.args.get("encabezados"), DEVOLUCIONES_HEADERS)
         header_rows = len(values)
@@ -264,16 +261,17 @@ def _document_id(document: Mapping[str, Any]) -> str:
     return str(document.get("_id") or document.get("id") or "").strip()
 
 
-def _claim_order_lines(claim: Mapping[str, Any], order: Mapping[str, Any]) -> list[_OrderLine]:
+def _claim_order_line(claim: Mapping[str, Any], order: Mapping[str, Any]) -> _OrderLine | None:
     lines = _order_lines(order)
     claim_item_id = str(claim.get("item_id") or "").strip()
     if claim_item_id:
-        return [line for line in lines if line.item_id == claim_item_id]
-    return lines if len(lines) == 1 else []
+        scoped_lines = [line for line in lines if line.item_id == claim_item_id]
+        return scoped_lines[0] if len(scoped_lines) == 1 else None
+    return lines[0] if len(lines) == 1 else None
 
 
 def _order_lines(order: Mapping[str, Any]) -> list[_OrderLine]:
-    raw_items = order.get("items") or []
+    raw_items = order.get("items") or order.get("order_items") or []
     if not isinstance(raw_items, Iterable) or isinstance(raw_items, (str, bytes)):
         return []
     lines: list[_OrderLine] = []

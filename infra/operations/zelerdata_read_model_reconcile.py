@@ -89,7 +89,7 @@ _COMPLETE_FIELDS: Mapping[str, tuple[str, ...]] = {
     "shipments": ("order_id", "status"),
     "items": ("status", "last_meli_sync_at"),
     "questions": ("date_created", "status", "item_id", "text", "from_user_id"),
-    "claims": ("date_created", "order_id", "status", "returned_quantity"),
+    "claims": ("date_created", "order_id", "item_id", "status", "returned_quantity"),
     "catalog_product_snapshots": (
         "catalog_product_id",
         "title",
@@ -1040,6 +1040,8 @@ def _aggregate_has_complete_scoped_coverage(aggregate: ReadModelAggregate) -> bo
 async def _complete_count(collection: Any, read_model: str, filter_spec: dict[str, Any]) -> int:
     if read_model == "questions":
         return await _complete_questions_count(collection, filter_spec)
+    if read_model == "claims":
+        return int(await collection.count_documents(_complete_claims_filter(filter_spec)))
     required_fields = _COMPLETE_FIELDS.get(read_model, ())
     if not required_fields:
         return int(await collection.count_documents(filter_spec))
@@ -1056,6 +1058,14 @@ async def _complete_questions_count(collection: Any, filter_spec: dict[str, Any]
         _with_present_fields({}, ("answer.text", "answer.date_created")),
     ]
     return int(await collection.count_documents(complete_filter))
+
+
+def _complete_claims_filter(filter_spec: dict[str, Any]) -> dict[str, Any]:
+    complete_filter = _with_present_fields(filter_spec, ("date_created",))
+    for field_path in ("order_id", "item_id", "status"):
+        complete_filter[field_path] = {"$exists": True, "$nin": [None, ""]}
+    complete_filter["returned_quantity"] = {"$gte": 1}
+    return complete_filter
 
 
 async def _order_date_delta_counts(
