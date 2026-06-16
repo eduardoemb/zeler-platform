@@ -724,6 +724,7 @@ async def _collect_historical_meli_expected_counts(
         resume_after_order_id=request.controls.resume_after_order_id,
         include_questions=True,
         include_claims=True,
+        include_catalog_snapshots=True,
     )
 
 
@@ -760,6 +761,7 @@ async def execute_reconciliation_write(
         resume_after_order_id=request.controls.resume_after_order_id,
         include_questions=True,
         include_claims=True,
+        include_catalog_snapshots=True,
     )
     _enforce_write_count_safety_controls(
         _write_counts_from_summary(summary), controls=request.controls
