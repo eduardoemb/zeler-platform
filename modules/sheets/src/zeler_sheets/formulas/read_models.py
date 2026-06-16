@@ -40,6 +40,7 @@ STOCKOUT_SNAPSHOTS_READ_MODEL = "stockout_snapshots"
 QUESTIONS_FRESHNESS_UNAVAILABLE_REASON = (
     "Questions read model has not passed freshness/reconciliation for the requested range."
 )
+RECONCILED_READ_MODEL_STATE = "reconciled"
 PRODUCTIVE_READ_MODEL_STATES = frozenset({"fresh", "reconciled"})
 UNBUILT_BATCH_MARKERS: frozenset[str] = frozenset()
 SHIPMENT_RECEIVER_ADDRESS_PROJECTION = {
@@ -514,6 +515,20 @@ def normalize_sku(sku: Any) -> str:
 
 def _questions_freshness_marker_covers(marker: Any, *, date_to: Any) -> bool:
     return _read_model_freshness_marker_covers(marker, date_to=date_to)
+
+
+def read_model_reconciliation_marker_covers(marker: Any, *, date_to: Any) -> bool:
+    if not isinstance(marker, dict):
+        return False
+    if str(marker.get("state") or "").strip().casefold() != RECONCILED_READ_MODEL_STATE:
+        return False
+    requested_until = _safe_utc_datetime(date_to)
+    reconciled_until = _safe_utc_datetime(marker.get("reconciled_until"))
+    return (
+        requested_until is not None
+        and reconciled_until is not None
+        and reconciled_until >= requested_until
+    )
 
 
 def _read_model_freshness_marker_covers(marker: Any, *, date_to: Any) -> bool:

@@ -13,6 +13,10 @@ READ_MODELS: tuple[str, ...] = (
     "orders",
     "shipments",
     "items",
+    "questions",
+    "claims",
+    "catalog_product_snapshots",
+    "catalog_buybox_snapshots",
     "sheets_item_formula_rows",
     "sheets_item_sku_index",
     "item_status_states",
@@ -65,10 +69,19 @@ DEFAULT_STOP_CRITERIA: tuple[str, ...] = (
 _OBSERVED_ONLY_MODELS = {"item_status_states", "item_status_transitions"}
 _HISTORICAL_MELI_MODELS = ("orders", "shipments", "items")
 _BOUNDED_REF_MODELS = {"shipments", "items"}
+_READ_MODEL_COLLECTIONS: Mapping[str, str] = {
+    "catalog_product_snapshots": "sheets_catalog_product_snapshots",
+    "catalog_buybox_snapshots": "sheets_catalog_buybox_snapshots",
+}
+_RECONCILED_MARKER_MODELS = {"questions", "claims"}
 _COMPLETE_FIELDS: Mapping[str, tuple[str, ...]] = {
     "orders": ("items.0",),
     "shipments": ("order_id", "status"),
     "items": ("status", "last_meli_sync_at"),
+    "questions": ("date_created", "status", "item_id", "answer.date_created"),
+    "claims": ("date_created", "order_id", "status", "returned_quantity"),
+    "catalog_product_snapshots": ("catalog_product_id",),
+    "catalog_buybox_snapshots": ("item_id", "catalog_product_id"),
     "sheets_item_formula_rows": ("current.status", "current.price", "current.listing_type_id"),
     "sheets_item_sku_index": ("normalized_sku", "item_id", "source"),
     "item_status_states": ("current_status", "last_observed_at"),
@@ -826,7 +839,7 @@ async def _collect_read_model_aggregate(
             issues=issues,
         )
 
-    collection = db[read_model]
+    collection = db[_read_model_collection_name(read_model)]
     filter_refs = None if read_model == "orders" else refs
     filter_spec = _read_model_filter(read_model, request, filter_refs)
     try:
@@ -886,6 +899,60 @@ async def _collect_read_model_aggregate(
         truth_mode=truth_mode,
         field_counts=field_counts,
         issues=issues,
+    )
+
+
+async def write_complete_read_model_freshness_markers(
+    *, db: Any, request: ReconciliationRequest, summary: ReconciliationSummary
+) -> dict[str, int]:
+    if request.dry_run or not request.write_enabled:
+        return {}
+    if not request.approved_runtime:
+        raise ValueError("approved_runtime is required for marker write")
+
+    written = 0
+    collection = db["sheets_read_model_freshness"]
+    for aggregate in summary.aggregates:
+        if aggregate.read_model not in _RECONCILED_MARKER_MODELS:
+            continue
+        if not _aggregate_has_complete_scoped_coverage(aggregate):
+            continue
+        marker_id = f"{request.seller_id}:{aggregate.read_model}"
+        await collection.update_one(
+            {"_id": marker_id, "seller_id": request.seller_id, "read_model": aggregate.read_model},
+            {
+                "$set": {
+                    "_id": marker_id,
+                    "seller_id": request.seller_id,
+                    "read_model": aggregate.read_model,
+                    "state": "reconciled",
+                    "coverage": {
+                        "date_from": request.date_range.date_from,
+                        "date_to": request.date_range.date_to,
+                    },
+                    "expected_count": aggregate.expected_count,
+                    "persisted_count": aggregate.persisted_count,
+                    "complete_count": aggregate.complete_count,
+                    "reconciled_at": datetime.now(UTC),
+                    "reconciled_until": request.date_range.end_exclusive,
+                    "schema_version": 1,
+                }
+            },
+            upsert=True,
+        )
+        written += 1
+    return {"freshness_markers_written": written} if written else {}
+
+
+def _aggregate_has_complete_scoped_coverage(aggregate: ReadModelAggregate) -> bool:
+    return (
+        aggregate.expected_count is not None
+        and aggregate.persisted_count == aggregate.expected_count
+        and aggregate.complete_count is not None
+        and aggregate.complete_count >= aggregate.expected_count
+        and aggregate.missing_count == 0
+        and not aggregate.issues
+        and aggregate.error_count == 0
     )
 
 
@@ -970,7 +1037,7 @@ def _read_model_filter(
     refs: frozenset[str] | None,
 ) -> dict[str, Any]:
     filter_spec: dict[str, Any] = {"seller_id": request.seller_id}
-    if read_model == "orders":
+    if read_model in {"orders", "questions", "claims"}:
         filter_spec["date_created"] = {
             "$gte": request.date_range.start,
             "$lt": request.date_range.end_exclusive,
@@ -983,6 +1050,10 @@ def _read_model_filter(
     if refs is not None:
         filter_spec["_id"] = {"$in": sorted(refs)}
     return filter_spec
+
+
+def _read_model_collection_name(read_model: str) -> str:
+    return _READ_MODEL_COLLECTIONS.get(read_model, read_model)
 
 
 def _with_present_fields(filter_spec: dict[str, Any], fields: Sequence[str]) -> dict[str, Any]:
@@ -1003,9 +1074,12 @@ async def _run_cli(args: argparse.Namespace) -> ReconciliationSummary:
             _enforce_write_safety_controls(summary=summary, controls=request.controls)
             write_counts = await execute_reconciliation_write(db=db, request=request)
             _enforce_write_count_safety_controls(write_counts, controls=request.controls)
+            marker_counts = await write_complete_read_model_freshness_markers(
+                db=db, request=request, summary=summary
+            )
             summary = replace(
                 summary,
-                write_counts=write_counts,
+                write_counts={**write_counts, **marker_counts},
             )
         if bool(args.emit_phase2_contract):
             summary = replace(

@@ -24,7 +24,10 @@ from infra.operations.zelerdata_read_model_reconcile import (
     collect_reconciliation_counts,
     execute_reconciliation_write,
     validate_reconciliation_safety,
+    write_complete_read_model_freshness_markers,
 )
+
+from zeler_sheets.formulas.read_models import read_model_reconciliation_marker_covers
 
 SHEETS_RUNTIME_DOCKERFILES = (
     Path("modules/sheets/Dockerfile.api"),
@@ -39,6 +42,7 @@ class FakeAsyncCollection:
     def __init__(self, documents: list[dict[str, Any]]) -> None:
         self.documents = documents
         self.count_filters: list[dict[str, Any]] = []
+        self.updates: list[tuple[dict[str, Any], dict[str, Any], bool]] = []
 
     async def count_documents(self, filter_spec: dict[str, Any]) -> int:
         self.count_filters.append(filter_spec)
@@ -60,6 +64,24 @@ class FakeAsyncCollection:
                 yield {"_id": key, "count": count}
 
         return cursor()
+
+    async def update_one(
+        self,
+        filter_spec: dict[str, Any],
+        update_spec: dict[str, Any],
+        *,
+        upsert: bool = False,
+    ) -> Any:
+        self.updates.append((filter_spec, update_spec, upsert))
+        if upsert:
+            replacement = dict(update_spec.get("$set", {}))
+            replacement.setdefault("_id", filter_spec.get("_id"))
+            self.documents.append(replacement)
+        return type(
+            "UpdateResult",
+            (),
+            {"modified_count": 1, "upserted_id": filter_spec.get("_id")},
+        )()
 
 
 class FakeAsyncDb:
@@ -348,6 +370,43 @@ def test_reconciliation_write_requires_separate_production_write_confirmation() 
 
     validate_reconciliation_safety(approved)
     assert build_reconciliation_request(approved).write_enabled is True
+
+
+def test_reconciliation_write_blocks_unapproved_request_before_marker_write() -> None:
+    request = _write_request()
+    unsafe_request = request.__class__(
+        seller_id=request.seller_id,
+        date_range=request.date_range,
+        dry_run=False,
+        approved_runtime=False,
+        write_enabled=True,
+        include_buyer_address_pii=False,
+        controls=request.controls,
+    )
+    summary = ReconciliationSummary(
+        seller_id=request.seller_id,
+        date_from=request.date_range.date_from,
+        date_to=request.date_range.date_to,
+        dry_run=False,
+        approved_runtime=False,
+        write_enabled=True,
+        aggregates=(
+            ReadModelAggregate(
+                read_model="questions",
+                expected_count=1,
+                persisted_count=1,
+                missing_count=0,
+                complete_count=1,
+            ),
+        ),
+    )
+
+    with pytest.raises(ValueError, match="approved_runtime"):
+        asyncio.run(
+            write_complete_read_model_freshness_markers(
+                db=FakeAsyncDb({}), request=unsafe_request, summary=summary
+            )
+        )
 
 
 @pytest.mark.asyncio
@@ -813,6 +872,34 @@ async def test_collect_reconciliation_counts_reports_real_sanitized_aggregates()
                 ),
                 _seller_doc(_id="ITEM-PII-2", status="paused"),
             ],
+            "questions": [
+                _seller_doc(
+                    _id="QUESTION-PII-1",
+                    date_created=_dt(2),
+                    status="ANSWERED",
+                    item_id="ITEM-PII-1",
+                    answer={"date_created": _dt(3)},
+                ),
+            ],
+            "claims": [
+                _seller_doc(
+                    _id="CLAIM-PII-1",
+                    date_created=_dt(2),
+                    order_id="ORDER-PII-1",
+                    status="closed",
+                    returned_quantity=1,
+                ),
+            ],
+            "sheets_catalog_product_snapshots": [
+                _seller_doc(_id="PRODUCT-PII-1", catalog_product_id="CATALOG-PII-1"),
+            ],
+            "sheets_catalog_buybox_snapshots": [
+                _seller_doc(
+                    _id="BUYBOX-PII-1",
+                    item_id="ITEM-PII-1",
+                    catalog_product_id="CATALOG-PII-1",
+                ),
+            ],
             "sheets_item_formula_rows": [
                 _seller_doc(
                     _id="FORMULA-PII-1",
@@ -870,6 +957,10 @@ async def test_collect_reconciliation_counts_reports_real_sanitized_aggregates()
                 "orders": 3,
                 "shipments": 1,
                 "items": None,
+                "questions": 1,
+                "claims": 1,
+                "catalog_product_snapshots": 1,
+                "catalog_buybox_snapshots": 1,
                 "sheets_item_formula_rows": 2,
                 "sheets_item_sku_index": 2,
                 "item_status_states": None,
@@ -920,6 +1011,12 @@ async def test_collect_reconciliation_counts_reports_real_sanitized_aggregates()
     assert by_model["items"]["expected_count"] is None
     assert by_model["items"]["missing_count"] is None
     assert by_model["items"]["issues"] == [{"code": "expected_unavailable"}]
+    assert by_model["questions"]["persisted_count"] == 1
+    assert by_model["questions"]["complete_count"] == 1
+    assert by_model["claims"]["persisted_count"] == 1
+    assert by_model["claims"]["complete_count"] == 1
+    assert by_model["catalog_product_snapshots"]["persisted_count"] == 1
+    assert by_model["catalog_buybox_snapshots"]["persisted_count"] == 1
     assert by_model["sheets_item_formula_rows"]["complete_count"] == 1
     assert by_model["sheets_item_sku_index"]["field_counts"]["source"] == {
         "item_attribute": 1,
@@ -954,6 +1051,9 @@ async def test_collect_reconciliation_counts_reports_real_sanitized_aggregates()
         "ORDER-PII",
         "SHIP-PII",
         "ITEM-PII",
+        "QUESTION-PII",
+        "CLAIM-PII",
+        "CATALOG-PII",
         "FORMULA-PII",
         "SKU-PII",
         "STATE-PII",
@@ -961,6 +1061,200 @@ async def test_collect_reconciliation_counts_reports_real_sanitized_aggregates()
         "SENTINEL STREET",
     ):
         assert forbidden not in sanitized_json
+
+
+@pytest.mark.asyncio
+async def test_dry_run_or_incomplete_coverage_does_not_write_reconciliation_markers() -> None:
+    db = FakeAsyncDb({})
+    request = _request()
+    partial_summary = ReconciliationSummary(
+        seller_id=request.seller_id,
+        date_from=request.date_range.date_from,
+        date_to=request.date_range.date_to,
+        dry_run=True,
+        approved_runtime=True,
+        write_enabled=False,
+        aggregates=(
+            ReadModelAggregate(
+                read_model="questions",
+                expected_count=2,
+                persisted_count=1,
+                missing_count=1,
+                complete_count=1,
+            ),
+        ),
+    )
+
+    counts = await write_complete_read_model_freshness_markers(
+        db=db, request=request, summary=partial_summary
+    )
+
+    assert counts == {}
+    assert db["sheets_read_model_freshness"].updates == []
+
+
+@pytest.mark.asyncio
+async def test_complete_write_records_shared_reconciliation_marker_after_coverage() -> None:
+    db = FakeAsyncDb({})
+    request = _write_request()
+    summary = ReconciliationSummary(
+        seller_id=request.seller_id,
+        date_from=request.date_range.date_from,
+        date_to=request.date_range.date_to,
+        dry_run=False,
+        approved_runtime=True,
+        write_enabled=True,
+        aggregates=(
+            ReadModelAggregate(
+                read_model="questions",
+                expected_count=2,
+                persisted_count=2,
+                missing_count=0,
+                complete_count=2,
+            ),
+            ReadModelAggregate(
+                read_model="claims",
+                expected_count=1,
+                persisted_count=1,
+                missing_count=0,
+                complete_count=1,
+            ),
+            ReadModelAggregate(
+                read_model="catalog_buybox_snapshots",
+                expected_count=None,
+                persisted_count=1,
+                missing_count=None,
+                complete_count=1,
+                truth_mode="source_deferred",
+            ),
+        ),
+    )
+
+    counts = await write_complete_read_model_freshness_markers(
+        db=db, request=request, summary=summary
+    )
+
+    assert counts == {"freshness_markers_written": 2}
+    markers = db["sheets_read_model_freshness"].documents
+    assert {marker["read_model"] for marker in markers} == {"questions", "claims"}
+    assert all(marker["state"] == "reconciled" for marker in markers)
+    assert all(marker["reconciled_until"] == request.date_range.end_exclusive for marker in markers)
+    assert "catalog_buybox_snapshots" not in {marker["read_model"] for marker in markers}
+
+
+def test_reconciled_marker_requires_reconciled_state_and_coverage_until_requested_date() -> None:
+    stale_reconciled = {
+        "state": "reconciled",
+        "reconciled_until": datetime(2026, 6, 3, 23, 59, 59, tzinfo=UTC),
+    }
+    event_fresh_only = {
+        "state": "fresh",
+        "fresh_until": datetime(2026, 6, 5, tzinfo=UTC),
+    }
+    complete_reconciled = {
+        "state": "reconciled",
+        "reconciled_until": datetime(2026, 6, 5, tzinfo=UTC),
+    }
+
+    assert (
+        read_model_reconciliation_marker_covers(
+            stale_reconciled, date_to=datetime(2026, 6, 4, 23, 59, 59, tzinfo=UTC)
+        )
+        is False
+    )
+    assert (
+        read_model_reconciliation_marker_covers(
+            event_fresh_only, date_to=datetime(2026, 6, 4, 23, 59, 59, tzinfo=UTC)
+        )
+        is False
+    )
+    assert (
+        read_model_reconciliation_marker_covers(
+            complete_reconciled, date_to=datetime(2026, 6, 4, 23, 59, 59, tzinfo=UTC)
+        )
+        is True
+    )
+
+
+def test_partial_marker_keeps_formula_read_model_data_unavailable() -> None:
+    partial_marker = {
+        "state": "partial",
+        "reconciled_until": datetime(2026, 6, 5, tzinfo=UTC),
+    }
+
+    assert (
+        read_model_reconciliation_marker_covers(
+            partial_marker, date_to=datetime(2026, 6, 4, tzinfo=UTC)
+        )
+        is False
+    )
+
+
+def test_write_failure_after_partial_rows_does_not_publish_freshness_marker(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from infra.operations import zelerdata_read_model_reconcile
+
+    db = FakeAsyncDb({})
+    partial_rows: list[str] = []
+
+    async def fake_expected(*, db: Any, request: Any) -> ExpectedReadModelCounts:
+        return ExpectedReadModelCounts(counts={"questions": 1})
+
+    async def fake_collect(
+        *, db: Any, request: Any, expected: ExpectedReadModelCounts
+    ) -> ReconciliationSummary:
+        return ReconciliationSummary(
+            seller_id=request.seller_id,
+            date_from=request.date_range.date_from,
+            date_to=request.date_range.date_to,
+            dry_run=False,
+            approved_runtime=True,
+            write_enabled=True,
+            aggregates=(
+                ReadModelAggregate(
+                    read_model="questions",
+                    expected_count=1,
+                    persisted_count=1,
+                    missing_count=0,
+                    complete_count=1,
+                ),
+            ),
+            controls=request.controls,
+        )
+
+    async def failing_write(*, db: Any, request: Any) -> dict[str, int]:
+        partial_rows.append("questions")
+        raise ValueError("query_anomaly")
+
+    monkeypatch.setattr(zelerdata_read_model_reconcile, "create_runtime_db", lambda: db)
+    monkeypatch.setattr(
+        zelerdata_read_model_reconcile,
+        "collect_expected_read_model_counts",
+        fake_expected,
+    )
+    monkeypatch.setattr(zelerdata_read_model_reconcile, COLLECTOR_ATTR, fake_collect)
+    monkeypatch.setattr(
+        zelerdata_read_model_reconcile, "execute_reconciliation_write", failing_write
+    )
+
+    with pytest.raises(SystemExit, match="query_anomaly"):
+        zelerdata_read_model_reconcile.main(
+            [
+                "--seller-id",
+                "82453304",
+                "--date-from",
+                "2026-06-01",
+                "--date-to",
+                "2026-06-04",
+                "--write",
+                "--confirm-approved-runtime",
+                "--confirm-production-write",
+            ]
+        )
+
+    assert partial_rows == ["questions"]
+    assert db["sheets_read_model_freshness"].documents == []
 
 
 @pytest.mark.asyncio
