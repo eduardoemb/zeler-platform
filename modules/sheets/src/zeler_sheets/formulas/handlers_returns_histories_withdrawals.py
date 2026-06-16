@@ -8,6 +8,7 @@ from typing import Any
 from bson.decimal128 import Decimal128
 
 from zeler_sheets.formulas.dispatcher import (
+    FormulaDataUnavailableError,
     FormulaExecutionContext,
     FormulaExecutionResult,
     FormulaHandler,
@@ -116,7 +117,19 @@ class ReturnsHistoriesWithdrawalsFormulaHandlers:
             order = orders_by_id.get(_order_id(claim))
             if order is None:
                 continue
-            for line in _order_lines(order):
+            returned_quantity = _explicit_returned_quantity(claim)
+            if returned_quantity is None:
+                raise FormulaDataUnavailableError(
+                    context.contract.name,
+                    "returned quantity must be explicit for reconciled return claims",
+                )
+            lines = _claim_order_lines(claim, order)
+            if not lines:
+                raise FormulaDataUnavailableError(
+                    context.contract.name,
+                    "returned quantity must be tied to a scoped order line",
+                )
+            for line in lines:
                 if requested_set and line.item_id not in requested_set:
                     continue
                 key = (line.item_id, line.sku)
@@ -124,7 +137,7 @@ class ReturnsHistoriesWithdrawalsFormulaHandlers:
                     key,
                     _ReturnAggregate(item_id=line.item_id, sku=line.sku, title=line.title),
                 )
-                aggregate.quantity += line.quantity
+                aggregate.quantity += returned_quantity
                 if not aggregate.title and line.title:
                     aggregate.title = line.title
 
@@ -241,8 +254,21 @@ def _order_id(claim: Mapping[str, Any]) -> str:
     return str(claim.get("order_id") or "").strip()
 
 
+def _explicit_returned_quantity(claim: Mapping[str, Any]) -> int | None:
+    quantity = _positive_int(claim.get("returned_quantity"))
+    return quantity if quantity > 0 else None
+
+
 def _document_id(document: Mapping[str, Any]) -> str:
     return str(document.get("_id") or document.get("id") or "").strip()
+
+
+def _claim_order_lines(claim: Mapping[str, Any], order: Mapping[str, Any]) -> list[_OrderLine]:
+    lines = _order_lines(order)
+    claim_item_id = str(claim.get("item_id") or "").strip()
+    if claim_item_id:
+        return [line for line in lines if line.item_id == claim_item_id]
+    return lines if len(lines) == 1 else []
 
 
 def _order_lines(order: Mapping[str, Any]) -> list[_OrderLine]:

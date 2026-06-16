@@ -67,7 +67,7 @@ DEFAULT_STOP_CRITERIA: tuple[str, ...] = (
     "formula_regression",
 )
 _OBSERVED_ONLY_MODELS = {"item_status_states", "item_status_transitions"}
-_HISTORICAL_MELI_MODELS = ("orders", "shipments", "items", "questions")
+_HISTORICAL_MELI_MODELS = ("orders", "shipments", "items", "questions", "claims")
 _BOUNDED_REF_MODELS = {"shipments", "items"}
 _READ_MODEL_COLLECTIONS: Mapping[str, str] = {
     "catalog_product_snapshots": "sheets_catalog_product_snapshots",
@@ -683,6 +683,7 @@ async def _collect_historical_meli_expected_counts(
         max_shipments=request.controls.max_shipments,
         resume_after_order_id=request.controls.resume_after_order_id,
         include_questions=True,
+        include_claims=True,
     )
 
 
@@ -718,6 +719,7 @@ async def execute_reconciliation_write(
         max_shipments=request.controls.max_shipments,
         resume_after_order_id=request.controls.resume_after_order_id,
         include_questions=True,
+        include_claims=True,
     )
     _enforce_write_count_safety_controls(
         _write_counts_from_summary(summary), controls=request.controls
@@ -1208,6 +1210,20 @@ def _historical_meli_expected_counts(summary: Any) -> HistoricalMeliExpectedCoun
             refs["questions"] = question_refs
         truth_mode["questions"] = "expected"
 
+    claim_refs = _summary_ref_set(summary, "claim_ids")
+    claim_count = _summary_optional_int(summary, "claims_found")
+    if claim_count is None and claim_refs is not None:
+        claim_count = len(claim_refs)
+    if claim_count is None:
+        counts["claims"] = None
+        truth_mode["claims"] = "unavailable"
+        issues.append(_issue("claims", "expected_unavailable", "historical claims unavailable"))
+    else:
+        counts["claims"] = claim_count
+        if claim_refs is not None:
+            refs["claims"] = claim_refs
+        truth_mode["claims"] = "expected"
+
     return HistoricalMeliExpectedCounts(
         counts=counts,
         refs=refs,
@@ -1304,16 +1320,20 @@ def _write_counts_from_summary(summary: Any) -> dict[str, int]:
         "planned_items",
         "planned_shipments",
         "planned_questions",
+        "planned_claims",
         "written_orders",
         "written_items",
         "written_shipments",
         "written_questions",
+        "written_claims",
         "item_detail_missing",
         "redacted_errors",
     )
     counts: dict[str, int] = {}
     for field_name in fields:
         value = getattr(summary, field_name, None)
+        if field_name in {"planned_claims", "written_claims"} and value == 0:
+            continue
         if isinstance(value, int):
             counts[field_name] = value
     return counts
