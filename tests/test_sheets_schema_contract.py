@@ -32,6 +32,103 @@ LISTING_FEE_PROJECTION_FIELDS = [
     "meli_percentage_fee",
     "financing_add_on_fee",
 ]
+REMAINING_PHASE4_READ_MODEL_REQUIRED_FIELDS = {
+    "sheets_read_model_freshness": [
+        "seller_id",
+        "read_model",
+        "state",
+        "fresh_until",
+        "updated_at",
+        "schema_version",
+    ],
+    "sheets_catalog_buybox_snapshots": [
+        "seller_id",
+        "item_id",
+        "catalog_product_id",
+        "snapshot_at",
+        "source",
+        "schema_version",
+    ],
+    "sheets_catalog_product_snapshots": [
+        "seller_id",
+        "catalog_product_id",
+        "snapshot_at",
+        "source",
+        "schema_version",
+    ],
+    "sheets_catalog_time_metrics": [
+        "seller_id",
+        "item_id",
+        "date_from",
+        "date_to",
+        "winning_hours",
+        "available_hours",
+        "source",
+        "schema_version",
+    ],
+    "sheets_full_withdrawals": [
+        "seller_id",
+        "withdrawal_id",
+        "created_at",
+        "source",
+        "schema_version",
+    ],
+    "sheets_price_history_snapshots": [
+        "seller_id",
+        "item_id",
+        "prices",
+        "snapshot_at",
+        "source",
+        "schema_version",
+    ],
+    "sheets_stock_time_metrics": [
+        "seller_id",
+        "item_id",
+        "date_from",
+        "date_to",
+        "total_hours",
+        "source",
+        "schema_version",
+    ],
+    "sheets_stockout_snapshots": [
+        "seller_id",
+        "item_id",
+        "observed_at",
+        "source",
+        "schema_version",
+    ],
+}
+REMAINING_PHASE4_INDEX_NAMES = {
+    "sheets_read_model_freshness": [
+        "uniq_sheets_read_model_freshness_seller_model",
+        "idx_sheets_read_model_freshness_seller_state_until",
+    ],
+    "sheets_catalog_buybox_snapshots": [
+        "idx_sheets_catalog_buybox_snapshots_seller_item",
+        "idx_sheets_catalog_buybox_snapshots_seller_catalog",
+    ],
+    "sheets_catalog_product_snapshots": [
+        "idx_sheets_catalog_product_snapshots_seller_catalog",
+    ],
+    "sheets_catalog_time_metrics": [
+        "idx_sheets_catalog_time_metrics_seller_item_range",
+    ],
+    "sheets_full_withdrawals": [
+        "idx_sheets_full_withdrawals_seller_created",
+        "idx_sheets_full_withdrawals_seller_withdrawal",
+    ],
+    "sheets_price_history_snapshots": [
+        "idx_sheets_price_history_snapshots_seller_item",
+    ],
+    "sheets_stock_time_metrics": [
+        "idx_sheets_stock_time_metrics_seller_item_range",
+        "idx_sheets_stock_time_metrics_seller_sku_range",
+    ],
+    "sheets_stockout_snapshots": [
+        "idx_sheets_stockout_snapshots_seller_item",
+        "idx_sheets_stockout_snapshots_seller_state_observed",
+    ],
+}
 
 
 def assert_bounded_listing_fee_projection_schema(projection: dict[str, Any]) -> None:
@@ -283,6 +380,57 @@ def test_sheets_formula_foundation_validators_reject_missing_required_fields() -
         result = validate_document_against_schema({"_id": "doc-1"}, validator)
         assert result.valid is False
         assert result.missing_required_fields == missing_fields
+
+
+def test_remaining_phase4_read_model_schemas_are_exported_and_bounded() -> None:
+    for collection, missing_fields in REMAINING_PHASE4_READ_MODEL_REQUIRED_FIELDS.items():
+        assert collection in ENTITY_SCHEMAS
+        validator = json.loads((ROOT / "infra/mongo/schemas" / f"{collection}.json").read_text())
+        schema = validator["$jsonSchema"]
+
+        result = validate_document_against_schema({"_id": "doc-1"}, validator)
+
+        assert result.valid is False
+        assert result.missing_required_fields == missing_fields
+        assert schema["additionalProperties"] is False
+        if collection != "sheets_read_model_freshness":
+            assert schema["properties"]["source"] == {
+                "enum": [
+                    "sheets_event_persistence",
+                    "sheets_backfill",
+                    "historical_meli_backfill",
+                    "manual_reconciliation",
+                ]
+            }
+
+
+def test_catalog_snapshot_schemas_support_formula_handler_fields() -> None:
+    product_schema = json.loads(
+        (ROOT / "infra/mongo/schemas/sheets_catalog_product_snapshots.json").read_text()
+    )["$jsonSchema"]
+    buybox_schema = json.loads(
+        (ROOT / "infra/mongo/schemas/sheets_catalog_buybox_snapshots.json").read_text()
+    )["$jsonSchema"]
+
+    assert product_schema["additionalProperties"] is False
+    assert product_schema["properties"]["attributes"] == {"bsonType": ["array", "object", "null"]}
+    assert buybox_schema["additionalProperties"] is False
+    assert buybox_schema["properties"]["title"] == {"bsonType": ["string", "null"]}
+    assert buybox_schema["properties"]["available_quantity"] == {
+        "bsonType": ["int", "long", "null"]
+    }
+    assert buybox_schema["properties"]["price"] == {
+        "bsonType": ["decimal", "double", "int", "long", "null"]
+    }
+    assert buybox_schema["properties"]["competitor_count"] == {"bsonType": ["int", "long", "null"]}
+    assert "winner_count" not in buybox_schema["properties"]
+
+
+def test_remaining_phase4_read_model_indexes_match_formula_access_patterns() -> None:
+    for collection, expected_names in REMAINING_PHASE4_INDEX_NAMES.items():
+        indexes = json.loads((ROOT / "infra/mongo/indexes" / f"{collection}.json").read_text())
+
+        assert [index["options"]["name"] for index in indexes] == expected_names
 
 
 def test_seller_unit_costs_validator_and_indexes_match_contract() -> None:

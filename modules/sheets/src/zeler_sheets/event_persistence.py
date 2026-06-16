@@ -25,6 +25,11 @@ from zeler_sheets.enrichment import (
     enrichment_state,
     schema_safe_enrichment_state,
 )
+from zeler_sheets.formulas.read_models import (
+    QUESTIONS_READ_MODEL,
+    READ_MODEL_FRESHNESS_COLLECTION,
+    read_model_freshness_id,
+)
 from zeler_sheets.sheetseller_backfill import (
     build_formula_row_doc,
     build_order_line_formula_row_docs,
@@ -725,17 +730,55 @@ class SheetsEventPersistence:
         )
 
     async def _persist_question(self, *, seller_id: str, resource: dict[str, Any]) -> None:
+        observed_at = require_bson_ms_utc_datetime(self._clock())
         document = _canonical_question_document(
             resource,
             seller_id=seller_id,
-            observed_at=require_bson_ms_utc_datetime(self._clock()),
+            observed_at=observed_at,
         )
-        await _replace_question_if_fresh(
+        question_written = await _replace_question_if_fresh(
             self._db["questions"],
             document,
             seller_id=seller_id,
             present_freshness_fields=_question_present_freshness_fields(resource),
         )
+        if question_written:
+            await self._mark_questions_read_model_freshness(
+                seller_id=seller_id,
+                question=document,
+                observed_at=observed_at,
+            )
+
+    async def _mark_questions_read_model_freshness(
+        self, *, seller_id: str, question: dict[str, Any], observed_at: datetime
+    ) -> None:
+        if bson_ms_utc_datetime(question.get("date_created")) is None:
+            return
+        collection = self._db[READ_MODEL_FRESHNESS_COLLECTION]
+        marker_id = read_model_freshness_id(seller_id, QUESTIONS_READ_MODEL)
+        existing = await collection.find_one({"_id": marker_id, "seller_id": seller_id})
+        existing_fresh_until = (
+            bson_ms_utc_datetime(existing.get("fresh_until"))
+            if isinstance(existing, dict)
+            else None
+        )
+        fresh_until = max(
+            value for value in (existing_fresh_until, observed_at) if value is not None
+        )
+        existing_state = str(existing.get("state") or "") if isinstance(existing, dict) else ""
+        marker = {
+            **(existing if isinstance(existing, dict) else {}),
+            "_id": marker_id,
+            "seller_id": seller_id,
+            "read_model": QUESTIONS_READ_MODEL,
+            "state": "reconciled" if existing_state == "reconciled" else "fresh",
+            "fresh_until": fresh_until,
+            "last_event_synced_at": observed_at,
+            "updated_at": observed_at,
+            "source": "questions_event_persistence",
+            "schema_version": 1,
+        }
+        await collection.replace_one({"_id": marker_id}, marker, upsert=True)
 
 
 def _canonical_item_document(

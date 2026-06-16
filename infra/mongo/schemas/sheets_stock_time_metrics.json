@@ -1,0 +1,129 @@
+{
+  "$jsonSchema": {
+    "additionalProperties": false,
+    "bsonType": "object",
+    "properties": {
+      "_id": {
+        "bsonType": "string"
+      },
+      "active_stock_hours": {
+        "bsonType": [
+          "decimal",
+          "double",
+          "int",
+          "long",
+          "null"
+        ]
+      },
+      "active_stock_percent": {
+        "bsonType": [
+          "decimal",
+          "double",
+          "int",
+          "long",
+          "null"
+        ]
+      },
+      "date_from": {
+        "bsonType": "date"
+      },
+      "date_to": {
+        "bsonType": "date"
+      },
+      "item_id": {
+        "bsonType": "string"
+      },
+      "normalized_sku": {
+        "bsonType": [
+          "string",
+          "null"
+        ]
+      },
+      "schema_version": {
+        "bsonType": "int"
+      },
+      "seller_id": {
+        "bsonType": [
+          "string",
+          "long",
+          "int"
+        ]
+      },
+      "sku": {
+        "bsonType": [
+          "string",
+          "null"
+        ]
+      },
+      "source": {
+        "enum": [
+          "sheets_event_persistence",
+          "sheets_backfill",
+          "historical_meli_backfill",
+          "manual_reconciliation"
+        ]
+      },
+      "title": {
+        "bsonType": [
+          "string",
+          "null"
+        ]
+      },
+      "total_hours": {
+        "bsonType": [
+          "decimal",
+          "double",
+          "int",
+          "long"
+        ]
+      },
+      "url": {
+        "bsonType": [
+          "string",
+          "null"
+        ]
+      },
+      "weeks": {
+        "bsonType": "array",
+        "items": {
+          "additionalProperties": false,
+          "bsonType": "object",
+          "properties": {
+            "end_day": {
+              "bsonType": [
+                "int",
+                "long"
+              ]
+            },
+            "has_stock": {
+              "bsonType": "bool"
+            },
+            "start_day": {
+              "bsonType": [
+                "int",
+                "long"
+              ]
+            }
+          },
+          "required": [
+            "start_day",
+            "end_day",
+            "has_stock"
+          ]
+        }
+      }
+    },
+    "required": [
+      "_id",
+      "seller_id",
+      "item_id",
+      "date_from",
+      "date_to",
+      "total_hours",
+      "source",
+      "schema_version"
+    ]
+  },
+  "validationAction": "error",
+  "validationLevel": "strict"
+}

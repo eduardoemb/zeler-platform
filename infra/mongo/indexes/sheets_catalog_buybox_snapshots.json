@@ -1,0 +1,10 @@
+[
+  {
+    "keys": {"seller_id": 1, "item_id": 1},
+    "options": {"name": "idx_sheets_catalog_buybox_snapshots_seller_item"}
+  },
+  {
+    "keys": {"seller_id": 1, "catalog_product_id": 1},
+    "options": {"name": "idx_sheets_catalog_buybox_snapshots_seller_catalog"}
+  }
+]

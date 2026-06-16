@@ -1,29 +1,6 @@
 {
   "schema_version": 1,
-  "unsupported_formulas": {
-    "ZELERDATA_ENVIARAFULL": {"status": "unsupported", "reason": "Full replenishment recommendation read model is not available in zeler-platform yet."},
-    "ZELERDATA_PUBLICACIONESDESCUIDADAS": {"status": "unsupported", "reason": "Neglected-publication history/read model is not available in zeler-platform yet."},
-    "ZELERDATA_CATALOGO": {"status": "unsupported", "reason": "Catalog/buybox snapshot read model is not available in zeler-platform yet."},
-    "ZELERDATA_TIEMPOSINSTOCK": {"status": "unsupported", "reason": "Stock history read model is not available in zeler-platform yet."},
-    "ZELERDATA_TIEMPOACTIVA": {"status": "unsupported", "reason": "Active-time history read model is not available in zeler-platform yet."},
-    "ZELERDATA_CATALOGOSINVINCULAR": {"status": "unsupported", "reason": "Recommended catalog-linking read model is not available in zeler-platform yet."},
-    "ZELERDATA_CATALOGOBUYBOX": {"status": "unsupported", "reason": "Catalog/buybox competition read model is not available in zeler-platform yet."},
-    "ZELERDATA_DEVOLUCIONES": {"status": "unsupported", "reason": "Returns/claims read model is not available in zeler-platform yet."},
-    "ZELERDATA_COMPETENCIA": {"status": "unsupported", "reason": "Competition snapshot read model is not available in zeler-platform yet."},
-    "ZELERDATA_CATALOGOTIEMPO": {"status": "unsupported", "reason": "Catalog winning-time history read model is not available in zeler-platform yet."},
-    "ZELERDATA_PRECIOHISTORICO": {"status": "unsupported", "reason": "Price history read model is not available in zeler-platform yet."},
-    "ZELERDATA_TIEMPOSTOCKACTIVO": {"status": "unsupported", "reason": "Stock-available history read model is not available in zeler-platform yet."},
-    "ZELERDATA_CALIDAD": {"status": "unsupported", "reason": "Listing quality/health read model is not available in zeler-platform yet."},
-    "ZELERDATA_CALCULADORA": {"status": "unsupported", "reason": "Cost/category/catalog calculator read model is not available in zeler-platform yet."},
-    "ZELERDATA_RETIROS": {"status": "unsupported", "reason": "Full withdrawals read model is not available in zeler-platform yet."},
-    "ZELERDATA_SEMANASCONSTOCK": {"status": "unsupported", "reason": "Weekly stock-presence history read model is not available in zeler-platform yet."},
-    "ZELERDATA_MEDIDASGENERAL": {"status": "unsupported", "reason": "Measurement read model is not available in zeler-platform yet."},
-    "ZELERDATA_MEDIDAS": {"status": "unsupported", "reason": "Measurement read model is not available in zeler-platform yet."},
-    "ZELERDATA_SUPERMERCADO": {"status": "unsupported", "reason": "Supermarket/regular listing flag read model is not available in zeler-platform yet."},
-    "ZELERDATA_OBTENER_CATALOGO": {"status": "unsupported", "reason": "Catalog collection read model is not available in zeler-platform yet."},
-    "ZELERDATA_COSTOENVIOVENDEDOR": {"status": "unsupported", "reason": "Seller-paid shipping cost read model is not available in zeler-platform yet."},
-    "ZELERDATA_ENVIOSMERCADOENVIOS": {"status": "unsupported", "reason": "MercadoEnvios shipment/label read model is not available in zeler-platform yet."}
-  },
+  "unsupported_formulas": {},
   "formulas": {
     "ZELERDATA_CODIGOML2SKUID": {
       "legacy_source": "sheetsellerappindividual/addon/Publications.gs:ZELERDATA_CODIGOML2SKUID",
@@ -113,6 +90,187 @@
         {"name": "Precio Promo", "source": "sheets_item_formula_rows.current.current_promotion.sale_amount", "status": "mvp", "reason": "Emitted only when tipo_precio='todos' and persisted /items/{id}/sale_price projection is valid."}
       ]
     },
+    "ZELERDATA_CATALOGO": {
+      "legacy_source": "sheetsellerappindividual/addon/Publications.gs:SHEETSELLER_CATALOGO",
+      "compatibility_note": "Legacy 24-column catalog matrix from current item rows, catalog buybox snapshots, and local order sales windows.",
+      "columns": [
+        {"name": "ID CATALOGO", "source": "sheets_item_formula_rows.current.catalog_product_id", "status": "mvp"},
+        {"name": "URL CATALOGO", "source": "sheets_catalog_buybox_snapshots.catalog_url", "status": "mvp"},
+        {"name": "ID PUBLICACION", "source": "sheets_item_formula_rows.item_id", "status": "mvp"},
+        {"name": "URL", "source": "sheets_item_formula_rows.current.permalink", "status": "mvp"},
+        {"name": "TITULO", "source": "sheets_item_formula_rows.current.title", "status": "mvp"},
+        {"name": "SKU", "source": "sheets_item_formula_rows.sku | normalized_sku", "status": "mvp"},
+        {"name": "CODIGO ML", "source": "sheets_item_formula_rows.inventory_id | current.inventory_id", "status": "mvp"},
+        {"name": "ENVIO A CARGO DE", "source": "sheets_item_formula_rows.current.shipping_payer", "status": "mvp"},
+        {"name": "STOCK ACTUAL", "source": "sheets_item_formula_rows.current.available_quantity", "status": "mvp"},
+        {"name": "VENTAS 7 DIAS", "source": "orders.items.quantity over last 7 days", "status": "mvp"},
+        {"name": "VENTAS 15 DIAS", "source": "orders.items.quantity over last 15 days", "status": "mvp"},
+        {"name": "VENTAS 30 DIAS", "source": "orders.items.quantity over last 30 days", "status": "mvp"},
+        {"name": "VENTAS 60 DIAS", "source": "orders.items.quantity over last 60 days", "status": "mvp"},
+        {"name": "VENTAS 90 DIAS", "source": "orders.items.quantity over last 90 days", "status": "mvp"},
+        {"name": "VENTAS 365 DIAS", "source": "orders.items.quantity over last 365 days", "status": "mvp"},
+        {"name": "STATUS PUBLICACION CATALOGO", "source": "sheets_item_formula_rows.current.status", "status": "mvp"},
+        {"name": "STATUS WINNER CATALOGO", "source": "sheets_catalog_buybox_snapshots.buybox_status", "status": "mvp"},
+        {"name": "% TIEMPO GANANDO CATALOGO SOBRE EL COMPETIDO", "source": "sheets_catalog_buybox_snapshots.winning_time_percent", "status": "mvp"},
+        {"name": "PRECIO GANADOR CATALOGO", "source": "sheets_catalog_buybox_snapshots.winning_price", "status": "mvp"},
+        {"name": "MI PRECIO ACTUAL CATALOGO", "source": "sheets_item_formula_rows.current.base_price | price", "status": "mvp"},
+        {"name": "USUARIO GANADOR CATALOGO", "source": "sheets_catalog_buybox_snapshots.winning_user_id", "status": "mvp"},
+        {"name": "COMPARTIENDO CATALOGO CON USUARIOS", "source": "sheets_catalog_buybox_snapshots.competitor_count", "status": "mvp"},
+        {"name": "PRICE TO WIN", "source": "sheets_catalog_buybox_snapshots.price_to_win", "status": "mvp"},
+        {"name": "UNICO COMPETIDOR", "source": "sheets_catalog_buybox_snapshots.only_competitor", "status": "mvp"}
+      ]
+    },
+    "ZELERDATA_TIEMPOSINSTOCK": {
+      "legacy_source": "sheetsellerappindividual/addon/Publications.gs:SHEETSELLER_TIEMPOSINSTOCK",
+      "compatibility_note": "Current out-of-stock duration rows from local stockout snapshots.",
+      "columns": [
+        {"name": "ID PUBLICACION", "source": "sheets_stockout_snapshots.item_id", "status": "mvp"},
+        {"name": "TITULO", "source": "sheets_stockout_snapshots.title", "status": "mvp"},
+        {"name": "SKU", "source": "sheets_stockout_snapshots.sku | normalized_sku", "status": "mvp"},
+        {"name": "PRECIO", "source": "sheets_stockout_snapshots.base_price | price", "status": "mvp"},
+        {"name": "LOGISTICA", "source": "sheets_stockout_snapshots.logistic_type", "status": "mvp"},
+        {"name": "URL", "source": "sheets_stockout_snapshots.url | permalink", "status": "mvp"},
+        {"name": "STATUS", "source": "sheets_stockout_snapshots.status", "status": "mvp"},
+        {"name": "TIEMPO SIN STOCK", "source": "sheets_stockout_snapshots.out_of_stock_since", "status": "mvp"}
+      ]
+    },
+    "ZELERDATA_TIEMPOSTOCKACTIVO": {
+      "legacy_source": "sheetsellerappindividual/addon/Publications.gs:SHEETSELLER_TIEMPOSTOCKACTIVO",
+      "compatibility_note": "Active-stock time metrics from bounded local stock/status history summaries.",
+      "columns": [
+        {"name": "ID PUBLICACION", "source": "sheets_stock_time_metrics.item_id", "status": "mvp"},
+        {"name": "SKU", "source": "sheets_stock_time_metrics.sku | normalized_sku", "status": "mvp"},
+        {"name": "TITULO", "source": "sheets_stock_time_metrics.title", "status": "mvp"},
+        {"name": "URL", "source": "sheets_stock_time_metrics.url", "status": "mvp"},
+        {"name": "TIEMPO ACTIVA", "source": "sheets_stock_time_metrics.active_stock_hours", "status": "mvp"},
+        {"name": "TIEMPO TOTAL", "source": "sheets_stock_time_metrics.total_hours", "status": "mvp"},
+        {"name": "% TIEMPO ACTIVA", "source": "sheets_stock_time_metrics.active_stock_percent", "status": "mvp"}
+      ]
+    },
+    "ZELERDATA_SEMANASCONSTOCK": {
+      "legacy_source": "sheetsellerappindividual/addon/Publications.gs:SHEETSELLER_SEMANASCONSTOCK",
+      "compatibility_note": "Weekly dynamic headers are derived from local stock time metric week buckets and cells emit Con stock/Sin stock.",
+      "columns": [
+        {"name": "ID PUBLICACION", "source": "sheets_stock_time_metrics.item_id", "status": "mvp"},
+        {"name": "SKU", "source": "sheets_stock_time_metrics.sku | normalized_sku", "status": "mvp"},
+        {"name": "TITULO", "source": "sheets_stock_time_metrics.title", "status": "mvp"},
+        {"name": "SEMANAS DINAMICAS", "source": "sheets_stock_time_metrics.weeks[].has_stock", "status": "mvp"}
+      ]
+    },
+    "ZELERDATA_PRECIOHISTORICO": {
+      "legacy_source": "sheetsellerappindividual/addon/Publications.gs:SHEETSELLER_PRECIOHISTORICO",
+      "compatibility_note": "Latest three local price/status history pairs per publication.",
+      "columns": [
+        {"name": "ID PUBLICACION", "source": "sheets_price_history_snapshots.item_id", "status": "mvp"},
+        {"name": "TITULO", "source": "sheets_price_history_snapshots.title", "status": "mvp"},
+        {"name": "PRECIO 1", "source": "sheets_price_history_snapshots.prices[0].price", "status": "mvp"},
+        {"name": "STATUS 1", "source": "sheets_price_history_snapshots.prices[0].status", "status": "mvp"},
+        {"name": "PRECIO 2", "source": "sheets_price_history_snapshots.prices[1].price", "status": "mvp"},
+        {"name": "STATUS 2", "source": "sheets_price_history_snapshots.prices[1].status", "status": "mvp"},
+        {"name": "PRECIO 3", "source": "sheets_price_history_snapshots.prices[2].price", "status": "mvp"},
+        {"name": "STATUS 3", "source": "sheets_price_history_snapshots.prices[2].status", "status": "mvp"}
+      ]
+    },
+    "ZELERDATA_CATALOGOTIEMPO": {
+      "legacy_source": "sheetsellerappindividual/addon/Publications.gs:SHEETSELLER_CATALOGOTIEMPO",
+      "compatibility_note": "Catalog winning-time metrics from local catalog time summaries; no formula-time historical Meli calls.",
+      "columns": [
+        {"name": "ID PUBLICACION", "source": "sheets_catalog_time_metrics.item_id", "status": "mvp"},
+        {"name": "TITULO", "source": "sheets_catalog_time_metrics.title", "status": "mvp"},
+        {"name": "URL", "source": "sheets_catalog_time_metrics.url", "status": "mvp"},
+        {"name": "TIEMPO GANANDO CATALOGO EN HORAS", "source": "sheets_catalog_time_metrics.winning_hours", "status": "mvp"},
+        {"name": "TOTAL DE HORAS DISPONIBLE EN CATALOGO", "source": "sheets_catalog_time_metrics.available_hours", "status": "mvp"},
+        {"name": "% DE TIEMPO GANANDO CATALOGO", "source": "sheets_catalog_time_metrics.winning_percent", "status": "mvp"}
+      ]
+    },
+    "ZELERDATA_RETIROS": {
+      "legacy_source": "sheetsellerappindividual/addon/Publications.gs:SHEETSELLER_RETIROS",
+      "compatibility_note": "Full withdrawal operation rows from local fulfillment withdrawal read model.",
+      "columns": [
+        {"name": "ID PRINCIPAL RETIRO", "source": "sheets_full_withdrawals.withdrawal_id", "status": "mvp"},
+        {"name": "ID SECUNDARIO RETIRO", "source": "sheets_full_withdrawals.withdrawal_detail_id", "status": "mvp"},
+        {"name": "CODIGO ML", "source": "sheets_full_withdrawals.inventory_id", "status": "mvp"},
+        {"name": "ID PUBLICACION", "source": "sheets_full_withdrawals.item_id", "status": "mvp"},
+        {"name": "SKU", "source": "sheets_full_withdrawals.sku", "status": "mvp"},
+        {"name": "TITULO", "source": "sheets_full_withdrawals.title", "status": "mvp"},
+        {"name": "UNIDADES SOLICITADAS", "source": "sheets_full_withdrawals.requested_quantity", "status": "mvp"},
+        {"name": "FECHA DE CREACION", "source": "sheets_full_withdrawals.created_at", "status": "mvp"},
+        {"name": "FECHA DE ENTREGA", "source": "sheets_full_withdrawals.delivered_at", "status": "mvp"}
+      ]
+    },
+    "ZELERDATA_CALIDAD": {
+      "legacy_source": "sheetsellerappindividual/addon/Publications.gs:SHEETSELLER_CALIDAD",
+      "compatibility_note": "Modern quality projection from local item rows; legacy PRECIO SUGERIDO is intentionally not exposed.",
+      "columns": [
+        {"name": "ID PUBLICACION", "source": "sheets_item_formula_rows.item_id", "status": "mvp"},
+        {"name": "SKU", "source": "sheets_item_formula_rows.sku | normalized_sku", "status": "mvp"},
+        {"name": "TITULO", "source": "sheets_item_formula_rows.current.title", "status": "mvp"},
+        {"name": "STATUS", "source": "sheets_item_formula_rows.current.status", "status": "mvp"},
+        {"name": "URL", "source": "sheets_item_formula_rows.current.permalink | url", "status": "mvp"},
+        {"name": "STOCK ACTUAL", "source": "sheets_item_formula_rows.current.available_quantity", "status": "mvp"},
+        {"name": "TIPO DE PUBLICACION", "source": "sheets_item_formula_rows.current.listing_type_id", "status": "mvp"},
+        {"name": "PUNTAJE CALIDAD", "source": "sheets_item_formula_rows.current.quality_projection.score | current.health", "status": "mvp"},
+        {"name": "NIVEL CALIDAD", "source": "sheets_item_formula_rows.current.quality_projection.level | score bucket", "status": "mvp"},
+        {"name": "CALCULADO EN", "source": "sheets_item_formula_rows.current.quality_projection.calculated_at", "status": "mvp"},
+        {"name": "ESTADO GTIN", "source": "sheets_item_formula_rows.current.quality_projection.components.gtin.status", "status": "mvp"},
+        {"name": "PUNTAJE GTIN", "source": "sheets_item_formula_rows.current.quality_projection.components.gtin.score", "status": "mvp"},
+        {"name": "ESTADO IMAGENES", "source": "sheets_item_formula_rows.current.quality_projection.components.images.status", "status": "mvp"},
+        {"name": "PUNTAJE IMAGENES", "source": "sheets_item_formula_rows.current.quality_projection.components.images.score", "status": "mvp"},
+        {"name": "ESTADO TITULO", "source": "sheets_item_formula_rows.current.quality_projection.components.title.status", "status": "mvp"},
+        {"name": "PUNTAJE TITULO", "source": "sheets_item_formula_rows.current.quality_projection.components.title.score", "status": "mvp"},
+        {"name": "ESTADO MERCADO ENVIOS", "source": "sheets_item_formula_rows.current.quality_projection.components.shipping.status", "status": "mvp"},
+        {"name": "PUNTAJE MERCADO ENVIOS", "source": "sheets_item_formula_rows.current.quality_projection.components.shipping.score", "status": "mvp"},
+        {"name": "ACCIONES PENDIENTES", "source": "sheets_item_formula_rows.current.quality_projection.pending_actions", "status": "mvp"}
+      ]
+    },
+    "ZELERDATA_CALCULADORA": {
+      "legacy_source": "sheetsellerappindividual/addon/Publications.gs:SHEETSELLER_CALCULADORA",
+      "compatibility_note": "Modern cost projection from local item rows; missing cost source cells return NA rather than guessed values.",
+      "columns": [
+        {"name": "ID PUBLICACION", "source": "sheets_item_formula_rows.item_id", "status": "mvp"},
+        {"name": "SKU", "source": "sheets_item_formula_rows.sku | normalized_sku", "status": "mvp"},
+        {"name": "TITULO", "source": "sheets_item_formula_rows.current.title", "status": "mvp"},
+        {"name": "DIVISA", "source": "sheets_item_formula_rows.current.currency_id", "status": "mvp"},
+        {"name": "PRECIO", "source": "sheets_item_formula_rows.current.price | base_price | current_promotion.sale_amount", "status": "mvp"},
+        {"name": "COSTO ENVIO VENDEDOR", "source": "sheets_item_formula_rows.current.seller_shipping_cost", "status": "mvp"},
+        {"name": "COMISION", "source": "sheets_item_formula_rows.current.listing_fee_projection.sale_fee_amount", "status": "mvp"},
+        {"name": "% COMISION", "source": "sheets_item_formula_rows.current.listing_fee_projection.percentage_fee", "status": "mvp"},
+        {"name": "COSTO FIJO POR UNIDAD", "source": "sheets_item_formula_rows.current.listing_price_fixed_fee.fixed_fee", "status": "mvp"},
+        {"name": "CATEGORIA", "source": "sheets_item_formula_rows.current.category_id", "status": "mvp"},
+        {"name": "CATALOGO", "source": "sheets_item_formula_rows.current.catalog_product_id", "status": "mvp"},
+        {"name": "LOGISTICA", "source": "sheets_item_formula_rows.current.shipping_logistic_type", "status": "mvp"},
+        {"name": "TIPO DE PUBLICACION", "source": "sheets_item_formula_rows.current.listing_type_id", "status": "mvp"},
+        {"name": "TOTAL COSTOS", "source": "computed seller_shipping_cost + sale_fee_amount + fixed_fee", "status": "mvp"},
+        {"name": "NETO ESTIMADO", "source": "computed selected price - total costs", "status": "mvp"}
+      ]
+    },
+    "ZELERDATA_CATALOGOBUYBOX": {
+      "legacy_source": "sheetsellerappindividual/addon/Publications.gs:SHEETSELLER_CATALOGOBUYBOX",
+      "compatibility_note": "Values must follow the visible header order; legacy row order inverted ID PUBLICACION and ID CATALOGO.",
+      "columns": [
+        {"name": "TITULO", "source": "sheets_catalog_buybox_snapshots.title", "status": "mvp"},
+        {"name": "ID PUBLICACION", "source": "sheets_catalog_buybox_snapshots.item_id", "status": "mvp"},
+        {"name": "ID CATALOGO", "source": "sheets_catalog_buybox_snapshots.catalog_product_id", "status": "mvp"},
+        {"name": "STOCK ACTUAL", "source": "sheets_catalog_buybox_snapshots.available_quantity", "status": "mvp"},
+        {"name": "STATUS", "source": "sheets_catalog_buybox_snapshots.buybox_status", "status": "mvp"},
+        {"name": "PRECIO", "source": "sheets_catalog_buybox_snapshots.price", "status": "mvp"},
+        {"name": "PRECIO GANADOR", "source": "sheets_catalog_buybox_snapshots.winning_price", "status": "mvp"},
+        {"name": "# DE GANADORES", "source": "sheets_catalog_buybox_snapshots.winner_count", "status": "mvp"},
+        {"name": "UNICO COMPETIDOR", "source": "sheets_catalog_buybox_snapshots.only_competitor", "status": "mvp"}
+      ]
+    },
+    "ZELERDATA_CATALOGO_COMPLETO": {
+      "legacy_source": "new ZelerData contract; keeps ZELERDATA_OBTENER_CATALOGO legacy-simple",
+      "compatibility_note": "Stable enriched catalog contract with fixed MARCA, MODELO, and GTIN columns only.",
+      "columns": [
+        {"name": "TITULO", "source": "sheets_catalog_product_snapshots.title", "status": "mvp"},
+        {"name": "DESCRIPCION", "source": "sheets_catalog_product_snapshots.description", "status": "mvp"},
+        {"name": "IMAGEN", "source": "sheets_catalog_product_snapshots.image_url", "status": "mvp"},
+        {"name": "MARCA", "source": "sheets_catalog_product_snapshots.attributes.BRAND", "status": "mvp"},
+        {"name": "MODELO", "source": "sheets_catalog_product_snapshots.attributes.MODEL", "status": "mvp"},
+        {"name": "GTIN", "source": "sheets_catalog_product_snapshots.attributes.GTIN", "status": "mvp"}
+      ]
+    },
     "ZELERDATA_COMISION": {
       "legacy_source": "sheetsellerappindividual/addon/Publications.gs:ZELERDATA_COMISION",
       "compatibility_note": "Uses only sanitized listing-price projection values; missing projection values render NA.",
@@ -121,6 +279,41 @@
         {"name": "% Comisión", "source": "sheets_item_formula_rows.current.listing_fee_projection.percentage_fee", "status": "mvp", "reason": "Source-backed MercadoLibre listing-price percentage fee estimate."},
         {"name": "Comisión", "source": "sheets_item_formula_rows.current.listing_fee_projection.sale_fee_amount", "status": "mvp", "reason": "Source-backed MercadoLibre listing-price commission amount estimate."},
         {"name": "Costo De Envío", "source": "sheets_item_formula_rows.current.seller_shipping_cost", "status": "mvp", "reason": "Item-level estimated seller shipping cost only; unavailable source remains NA."}
+      ]
+    },
+    "ZELERDATA_DEVOLUCIONES": {
+      "legacy_source": "sheetsellerappindividual/addon/Publications.gs:SHEETSELLER_DEVOLUCIONES",
+      "compatibility_note": "Groups non-cancelled return claims by item ID and SKU, joined to canonical orders for title and returned quantity.",
+      "columns": [
+        {"name": "ID PUBLICACION", "source": "claims.order_id -> orders.items.item_id", "status": "mvp"},
+        {"name": "SKU", "source": "claims.order_id -> orders.items SKU fields", "status": "mvp"},
+        {"name": "UNIDADES DEVUELTAS", "source": "sum orders.items.quantity for non-cancelled returns", "status": "mvp"},
+        {"name": "TITULO", "source": "claims.order_id -> orders.items.title", "status": "mvp"}
+      ]
+    },
+    "ZELERDATA_PUBLICACIONESDESCUIDADAS": {
+      "legacy_source": "sheetsellerappindividual/addon/Publications.gs:SHEETSELLER_PUBLICACIONESDESCUIDADAS",
+      "compatibility_note": "Uses current seller-scoped item rows only: Full paused out-of-stock listings with paused_since/status_started_at older than 10 days.",
+      "columns": [
+        {"name": "ID PUBLICACION", "source": "sheets_item_formula_rows.item_id", "status": "mvp"},
+        {"name": "TITULO", "source": "sheets_item_formula_rows.current.title", "status": "mvp"},
+        {"name": "SKU", "source": "sheets_item_formula_rows.sku | normalized_sku", "status": "mvp"},
+        {"name": "STOCK ACTUAL", "source": "sheets_item_formula_rows.current.available_quantity", "status": "mvp"},
+        {"name": "STOCK A RETIRAR", "source": "sheets_item_formula_rows.current.unavailable_details.quantity", "status": "mvp"},
+        {"name": "MOTIVO DE RETIRO", "source": "sheets_item_formula_rows.current.unavailable_details.reason", "status": "mvp"},
+        {"name": "PRECIO", "source": "sheets_item_formula_rows.current.base_price | promo_price", "status": "mvp"},
+        {"name": "LOGISTICA", "source": "sheets_item_formula_rows.current.shipping_logistic_type", "status": "mvp"},
+        {"name": "URL", "source": "sheets_item_formula_rows.current.permalink", "status": "mvp"},
+        {"name": "TIPO DE PUBLICACION", "source": "sheets_item_formula_rows.current.listing_type_id", "status": "mvp"},
+        {"name": "STATUS", "source": "sheets_item_formula_rows.current.status", "status": "mvp"},
+        {"name": "CODIGO ML", "source": "sheets_item_formula_rows.inventory_id | current.inventory_id", "status": "mvp"}
+      ]
+    },
+    "ZELERDATA_TIEMPOACTIVA": {
+      "legacy_source": "sheetsellerappindividual/addon/Publications.gs:SHEETSELLER_TIEMPOACTIVA",
+      "compatibility_note": "Lookup rows use item_status_states status_started_at/first_observed_at only when current_status is active; missing/non-active rows return NA.",
+      "columns": [
+        {"name": "TIEMPO ACTIVA", "source": "item_status_states.status_started_at for active status", "status": "mvp"}
       ]
     },
     "ZELERDATA_ORDENES": {
