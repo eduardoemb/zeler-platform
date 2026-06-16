@@ -68,20 +68,50 @@ DEFAULT_STOP_CRITERIA: tuple[str, ...] = (
 )
 _OBSERVED_ONLY_MODELS = {"item_status_states", "item_status_transitions"}
 _HISTORICAL_MELI_MODELS = ("orders", "shipments", "items", "questions", "claims")
-_BOUNDED_REF_MODELS = {"shipments", "items"}
+_BOUNDED_REF_MODELS = {
+    "shipments",
+    "items",
+    "catalog_product_snapshots",
+    "catalog_buybox_snapshots",
+}
 _READ_MODEL_COLLECTIONS: Mapping[str, str] = {
     "catalog_product_snapshots": "sheets_catalog_product_snapshots",
     "catalog_buybox_snapshots": "sheets_catalog_buybox_snapshots",
 }
-_RECONCILED_MARKER_MODELS = {"questions", "claims"}
+_RECONCILED_MARKER_MODELS = {
+    "questions",
+    "claims",
+    "catalog_product_snapshots",
+    "catalog_buybox_snapshots",
+}
 _COMPLETE_FIELDS: Mapping[str, tuple[str, ...]] = {
     "orders": ("items.0",),
     "shipments": ("order_id", "status"),
     "items": ("status", "last_meli_sync_at"),
     "questions": ("date_created", "status", "item_id", "text", "from_user_id"),
     "claims": ("date_created", "order_id", "status", "returned_quantity"),
-    "catalog_product_snapshots": ("catalog_product_id",),
-    "catalog_buybox_snapshots": ("item_id", "catalog_product_id"),
+    "catalog_product_snapshots": (
+        "catalog_product_id",
+        "title",
+        "description",
+        "image_url",
+        "attributes",
+        "snapshot_at",
+        "source",
+    ),
+    "catalog_buybox_snapshots": (
+        "item_id",
+        "catalog_product_id",
+        "title",
+        "available_quantity",
+        "buybox_status",
+        "price",
+        "winning_price",
+        "competitor_count",
+        "only_competitor",
+        "snapshot_at",
+        "source",
+    ),
     "sheets_item_formula_rows": ("current.status", "current.price", "current.listing_type_id"),
     "sheets_item_sku_index": ("normalized_sku", "item_id", "source"),
     "item_status_states": ("current_status", "last_observed_at"),
@@ -587,6 +617,12 @@ async def collect_expected_read_model_counts(
         truth_mode["sheets_item_formula_rows"] = "expected"
         truth_mode["sheets_item_sku_index"] = "expected"
 
+    catalog_expected = await _collect_catalog_expected_counts(db=db, seller_id=request.seller_id)
+    counts.update(catalog_expected.counts)
+    refs.update(catalog_expected.refs)
+    truth_mode.update(catalog_expected.truth_mode)
+    issues.extend(catalog_expected.issues)
+
     return ExpectedReadModelCounts(
         counts=counts,
         refs=refs,
@@ -1067,7 +1103,12 @@ def _read_model_filter(
             "$lt": request.date_range.end_exclusive,
         }
     if refs is not None:
-        filter_spec["_id"] = {"$in": sorted(refs)}
+        if read_model == "catalog_product_snapshots":
+            filter_spec["catalog_product_id"] = {"$in": sorted(refs)}
+        elif read_model == "catalog_buybox_snapshots":
+            filter_spec["item_id"] = {"$in": sorted(refs)}
+        else:
+            filter_spec["_id"] = {"$in": sorted(refs)}
     return filter_spec
 
 
@@ -1093,11 +1134,15 @@ async def _run_cli(args: argparse.Namespace) -> ReconciliationSummary:
             _enforce_write_safety_controls(summary=summary, controls=request.controls)
             write_counts = await execute_reconciliation_write(db=db, request=request)
             _enforce_write_count_safety_controls(write_counts, controls=request.controls)
+            expected = await collect_expected_read_model_counts(db=db, request=request)
+            refreshed_summary = await collect_reconciliation_counts(
+                db=db, request=request, expected=expected
+            )
             marker_counts = await write_complete_read_model_freshness_markers(
-                db=db, request=request, summary=summary
+                db=db, request=request, summary=refreshed_summary
             )
             summary = replace(
-                summary,
+                refreshed_summary,
                 write_counts={**write_counts, **marker_counts},
             )
         if bool(args.emit_phase2_contract):
@@ -1243,6 +1288,61 @@ def _historical_meli_expected_counts(summary: Any) -> HistoricalMeliExpectedCoun
     )
 
 
+async def _collect_catalog_expected_counts(*, db: Any, seller_id: str) -> ExpectedReadModelCounts:
+    catalog_product_ids: dict[str, None] = {}
+    catalog_item_ids: dict[str, None] = {}
+    try:
+        cursor = db["items"].find(
+            {
+                "seller_id": seller_id,
+                "catalog_product_id": {"$exists": True, "$ne": None},
+            },
+            {"_id": 1, "catalog_product_id": 1},
+        )
+        async for item in cursor:
+            item_id = str(item.get("_id") or item.get("id") or "").strip()
+            catalog_product_id = str(item.get("catalog_product_id") or "").strip()
+            if not item_id or not catalog_product_id:
+                continue
+            catalog_item_ids.setdefault(item_id, None)
+            catalog_product_ids.setdefault(catalog_product_id, None)
+    except Exception:  # noqa: BLE001 - expected source anomalies are sanitized.
+        return ExpectedReadModelCounts(
+            counts={
+                "catalog_product_snapshots": None,
+                "catalog_buybox_snapshots": None,
+            },
+            truth_mode={
+                "catalog_product_snapshots": "unavailable",
+                "catalog_buybox_snapshots": "unavailable",
+            },
+            issues=(
+                _issue(
+                    "catalog_product_snapshots",
+                    "expected_unavailable",
+                    "catalog source unavailable",
+                ),
+                _issue(
+                    "catalog_buybox_snapshots", "expected_unavailable", "catalog source unavailable"
+                ),
+            ),
+        )
+    return ExpectedReadModelCounts(
+        counts={
+            "catalog_product_snapshots": len(catalog_product_ids),
+            "catalog_buybox_snapshots": len(catalog_item_ids),
+        },
+        refs={
+            "catalog_product_snapshots": frozenset(catalog_product_ids),
+            "catalog_buybox_snapshots": frozenset(catalog_item_ids),
+        },
+        truth_mode={
+            "catalog_product_snapshots": "expected",
+            "catalog_buybox_snapshots": "expected",
+        },
+    )
+
+
 def _summary_ref_set(summary: Any, name: str) -> frozenset[str] | None:
     raw = _summary_value(summary, name)
     if raw is None:
@@ -1332,11 +1432,15 @@ def _write_counts_from_summary(summary: Any) -> dict[str, int]:
         "planned_shipments",
         "planned_questions",
         "planned_claims",
+        "planned_catalog_product_snapshots",
+        "planned_catalog_buybox_snapshots",
         "written_orders",
         "written_items",
         "written_shipments",
         "written_questions",
         "written_claims",
+        "written_catalog_product_snapshots",
+        "written_catalog_buybox_snapshots",
         "item_detail_missing",
         "question_detail_missing",
         "redacted_errors",
