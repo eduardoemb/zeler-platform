@@ -21,6 +21,26 @@ contract expands later.
    markers for each productive read model before announcing availability.
 3. Run a small authenticated formula smoke with sanitized output; do not query or
    print production Mongo values from the local assistant environment.
+4. For `PREGUNTAS`, `PREGUNTASKPI`, `DEVOLUCIONES`, `CATALOGO_COMPLETO`, and
+   `CATALOGOBUYBOX`, use dry-run first and require explicit write authorization
+   before publishing reconciliation markers.
+
+## Missing-formula reconciliation chain
+
+This rollout depends on the final chained PR sequence for
+`zelerdata-missing-formula-read-models`:
+
+| PR | Boundary |
+|---|---|
+| #107 | Foundation/safety: dry-run default, explicit write confirmation, sanitized output, and fail-closed marker semantics. |
+| #109 | Questions/KPI: historical `questions` reconciliation for `PREGUNTAS` and `PREGUNTASKPI`. |
+| #111 | Claims/returns: `claims` plus `orders` reconciliation for `DEVOLUCIONES`, with explicit `returned_quantity` only. |
+| #114 | Catalog readiness: source/SLA contracts and marker publication for catalog product and buybox snapshots. |
+| #115 | Catalog writes: product snapshots from `/products/{catalog_product_id}` and buybox snapshots from `/items/{item_id}/price_to_win?version=v2`. |
+| Final docs/verification PR | Runtime-only runbook, sanitized smoke intent, rollback notes, and root quality-gate evidence. |
+
+The chain strategy is stacked-to-main. Each PR should remain reviewable on its
+own boundary; this rollout doc does not authorize production execution.
 
 ## Read-model freshness checklist
 
@@ -29,11 +49,11 @@ contract expands later.
 | Matrix item formulas | `item_formula_rows` marker covers the formula request time. |
 | Matrix order/sales dependencies | `orders` marker covers the formula request time or requested `fecha_final`. |
 | Shipment labels/costs | `shipments` marker covers the formula request time. |
-| Return claims | `claims` marker covers requested `fecha_final`; `DEVOLUCIONES` also requires `orders`. |
+| Return claims | `claims` marker covers requested `fecha_final`; `DEVOLUCIONES` also requires approved/reconciled `orders` scope and explicit `returned_quantity`. |
 | Item status history | `item_status_states` marker covers the formula request time. |
-| Questions | `questions` marker is `fresh` or `reconciled` through the requested range. |
-| Catalog product snapshots | `catalog_product_snapshots` marker covers the formula request time. |
-| Catalog buybox | `catalog_buybox_snapshots` marker covers the formula request time. |
+| Questions | `questions` marker is historically `reconciled` through the requested range; event-only freshness does not unlock `PREGUNTAS` or `PREGUNTASKPI`. |
+| Catalog product snapshots | `catalog_product_snapshots` marker covers the formula request time and is sourced from scoped item rows with `catalog_product_id` via `/products/{catalog_product_id}`. |
+| Catalog buybox | `catalog_buybox_snapshots` marker covers the formula request time and is sourced from scoped item rows via `/items/{item_id}/price_to_win?version=v2`. |
 | Stockout rows | `stockout_snapshots` marker covers the formula request time. |
 | Stock time metrics | `stock_time_metrics` marker covers requested `fecha_final`. |
 | Price history | `price_history_snapshots` marker covers the formula request time. |
@@ -46,14 +66,26 @@ or outside the requested range, the Formula API must return stable
 
 ## Rollback
 
-Rollback is domain-safe: disable the affected read-model marker or revert the
-domain handler/runtime exposure so the formula returns `DATA_UNAVAILABLE` again.
-Do not delete persisted read-model collections during rollback; preserving data
-allows investigation and a later reconciliation replay.
+Rollback is domain-safe and marker-first: stop active reconciliation runs, mark
+the affected read-model freshness marker `stale` or `failed` from the approved
+runtime, then rerun corrected reconciliation when ready. Do not delete persisted
+read-model collections during rollback; preserving data allows investigation and
+a later reconciliation replay. Formulas remain `DATA_UNAVAILABLE` until complete
+`reconciled` markers exist for the requested scope.
+
+## Smoke evidence
+
+Use pilot seller `82453304` only as the known operational smoke seller. Smoke
+notes may include the command shape, bounded seller/range description,
+read-model names, marker states, and aggregate counters. They must not include
+secrets, tokens, OAuth codes, cookies, connection strings, raw production env
+values, raw Mongo documents, raw payloads, buyer/address PII, or raw production
+data values.
 
 ## Safety boundaries
 
 - No production Mongo validation from local assistant context.
+- Production validation or repair must run only from the approved VM/VPC/runtime-container context.
 - No formula-time MercadoLibre calls.
 - Do not bypass OAuth or manually patch seller data.
 - Keep rollout evidence sanitized: counts, marker states, and timestamps only.

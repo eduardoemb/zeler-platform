@@ -67,6 +67,17 @@ ZelerData formulas are Google Sheets custom functions backed by the zeler-platfo
 | `ZELERDATA_VENTASTOTALES` | `=ZELERDATA_VENTASTOTALES("cuenta", "2026-01-01", "2026-01-31", "todos")` | Total sales amount for a date range. |
 | `ZELERDATA_VENTASYSTOCK` | `=ZELERDATA_VENTASYSTOCK("cuenta", "SKU-1", "MLA1", "si")` | 7/15/30-day sales and current stock. |
 
+## Readiness gates
+
+These formulas are supported only after their read-model freshness markers prove the requested seller scope. When the required marker is missing, stale, failed, partial, or outside the requested range, the Formula API returns `DATA_UNAVAILABLE` instead of guessing values.
+
+| Formula | Required proof |
+|---|---|
+| `ZELERDATA_PREGUNTAS` / `ZELERDATA_PREGUNTASKPI` | Historical `questions` reconciliation for the requested date range and required answer/detail fields. Event-only freshness is not enough. |
+| `ZELERDATA_DEVOLUCIONES` | `claims` coverage tied to approved/reconciled `orders`; returned quantities must come from explicit positive `returned_quantity`. |
+| `ZELERDATA_CATALOGO_COMPLETO` | `catalog_product_snapshots` from scoped item rows with `catalog_product_id`, fetched from `/products/{catalog_product_id}`. |
+| `ZELERDATA_CATALOGOBUYBOX` | `catalog_buybox_snapshots` from scoped item rows, fetched from `/items/{item_id}/price_to_win?version=v2`. |
+
 `ID Carrito` is an order-formula-only column in `ZELERDATA_ORDENES` and `ZELERDATA_ORDENESPORSKU`. Values are never derived from order id, shipment id, message pack fallbacks, buyer data, fees, shipping costs, promo price, or status history. Missing official MercadoLibre `orders.pack_id` values display as `NA`. Historical May rows can still show `NA` if persisted read models do not have `meli_pack_id`; any refresh/backfill for those rows requires separate operational authorization and is not part of this hotfix.
 
 ## Deferred formulas

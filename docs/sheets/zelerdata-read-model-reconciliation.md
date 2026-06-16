@@ -1,12 +1,26 @@
 # ZelerData read-model reconciliation
 
-Use this runbook to plan the June 1-4 ZelerData read-model reconciliation with sanitized, aggregate-only output. It documents the helper contracts only; it does not authorize production writes or local production Mongo access.
+Use this runbook to plan ZelerData read-model reconciliation with sanitized, aggregate-only output. It documents the helper contracts only; it does not authorize production writes or local production Mongo access.
 
 ## Quick path
 
-1. Run only from an approved VM/VPC/runtime, never from the local assistant environment.
-2. Start with `--dry-run` and `--confirm-approved-runtime`.
-3. Stop before any write unless a separate production-write authorization explicitly allows `--write --confirm-production-write`.
+1. Run only from the approved VM/VPC/runtime container, never from the local assistant environment.
+2. Start with `--dry-run` and `--confirm-approved-runtime`; review sanitized counters and issue codes only.
+3. Stop before any write unless a separate production-write authorization explicitly allows `--write --confirm-production-write` for the exact seller/range.
+4. Roll back by stopping runs and marking affected freshness markers `stale`/`failed` from the approved runtime; formulas stay `DATA_UNAVAILABLE` until complete markers exist again.
+
+## Chain context
+
+This final docs/verification slice closes the chained `zelerdata-missing-formula-read-models` work. Review boundaries are:
+
+| PR | Boundary |
+|---|---|
+| #107 | Foundation/safety contracts for dry-run, write authorization, sanitized output, and shared marker semantics. |
+| #109 | `PREGUNTAS`/`PREGUNTASKPI` questions reconciliation and historical freshness gates. |
+| #111 | `DEVOLUCIONES` claims/order reconciliation and explicit returned-quantity semantics. |
+| #114 | Catalog readiness contracts for source mapping, required fields, and marker publication. |
+| #115 | Catalog product and buybox snapshot writes from approved source rows. |
+| Final docs/verification PR | Operator runbooks, smoke intent, rollback notes, and root quality-gate evidence. |
 
 ## Command shape
 
@@ -42,12 +56,38 @@ uv run python -m infra.operations.zelerdata_read_model_reconcile \
 | `--include-buyer-address-pii` | Exceptional | Allows bounded buyer/address processing in approved runtime; output remains count-only. |
 | `--emit-phase2-contract` | Phase 2 contract runs | Prints the read-only preflight and dry-run contract alongside the sanitized summary. |
 
+## Formula/read-model mapping
+
+| Formula | Required read model | Source and readiness rule |
+|---|---|---|
+| `ZELERDATA_PREGUNTAS` | `questions` | Historical search/detail reconciliation must prove the requested date range and required answer/detail fields. Event-only freshness is not enough. |
+| `ZELERDATA_PREGUNTASKPI` | `questions` | Same historical reconciled marker requirement as `PREGUNTAS`; do not infer counts or dates from events alone. |
+| `ZELERDATA_DEVOLUCIONES` | `claims` plus `orders` | Claim coverage must be bounded by approved/reconciled order scope. Returned units use explicit positive `returned_quantity` only; unknown or unmapped quantities keep the formula unavailable. |
+| `ZELERDATA_CATALOGO_COMPLETO` | `catalog_product_snapshots` | Expected rows come from scoped item rows with distinct `catalog_product_id`; snapshots are fetched from `/products/{catalog_product_id}`. |
+| `ZELERDATA_CATALOGOBUYBOX` | `catalog_buybox_snapshots` | Expected rows come from scoped item rows with `catalog_product_id`; buybox snapshots are fetched from `/items/{item_id}/price_to_win?version=v2`. |
+
+`NA` is valid only for optional cells inside an otherwise ready formula row. Missing, stale, failed, or partial read models must produce stable `DATA_UNAVAILABLE` for the affected formula.
+
 ## Rollout and rollback
 
 - Keep `ZELERDATA_ENRICHMENT_ENABLED` disabled until the additive models and formula readers are deployed.
 - Pilot with `ZELERDATA_ENRICHMENT_ENABLED=1`, `--dry-run`, `--max-orders`, `--max-items`, `--max-shipments`, and low `--concurrency` from the approved VM/VPC/runtime only.
 - Use `--sleep-ms`, `--error-threshold`, `--stop-on-rate-limit`, and `--resume-after-order-id` for staged continuation after sanitized counts are reviewed.
-- Rollback is `rollback-to-NA`: disable `ZELERDATA_ENRICHMENT_ENABLED` and stop reconciliation writes. Formula readers must return `NA` when trusted snapshots are absent, stale, unauthorized, malformed, or basis-mismatched.
+- Rollback is fail-closed: stop reconciliation runs, mark/read affected freshness markers as `stale` or `failed` from the approved runtime, and rerun corrected reconciliation only after the cause is understood. The older `rollback-to-NA` label now means marker rollback to formula-level `DATA_UNAVAILABLE`; it does not authorize serving guessed `NA` rows. Formula readers must return `DATA_UNAVAILABLE` when trusted markers are absent, stale, failed, partial, unauthorized, malformed, or basis-mismatched.
+
+## Sanitized smoke intent
+
+Use pilot seller `82453304` only as the known operational smoke seller. Shared evidence must keep the seller/range scope descriptive and sanitized: command shape, read-model names, marker states, aggregate counters, and issue codes are allowed; raw production rows, raw IDs, tokens, cookies, env values, OAuth codes, connection strings, buyer/address PII, and payloads are not.
+
+An acceptable smoke note looks like:
+
+```text
+Scope: pilot seller 82453304, bounded date range approved for this run
+Mode: dry-run, approved VM/runtime only
+Read models: questions, claims, catalog_product_snapshots, catalog_buybox_snapshots
+Result: no writes; sanitized expected/persisted/complete/missing counters reviewed
+Next gate: explicit write authorization required before --write
+```
 
 ## Phase 2 read-only contract
 
@@ -73,7 +113,7 @@ Live runtime execution is pending until an approved VM/VPC/runtime command is av
 
 ## Runtime boundary
 
-- Do not query production Mongo locally.
+- Do not query production Mongo locally; production Mongo validation or repair belongs only inside the approved VM/VPC/runtime-container context.
 - Do not print connection strings, OAuth codes, cookies, credentials, env values, raw documents, or raw payloads.
 - Operator output must contain aggregate counters only: expected, persisted, missing, complete, `NA`, `0`, `>0`, unauthorized, and error counts.
 - Use private export references only as approved sanitized references; do not print raw collection documents or raw IDs.
