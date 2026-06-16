@@ -803,6 +803,8 @@ def _catalog_competitor_count(resource: dict[str, Any]) -> int | None:
 
 def _explicit_returned_quantity(claim: dict[str, Any]) -> int | None:
     value = claim.get("returned_quantity")
+    if value is None:
+        return None
     try:
         quantity = int(value)
     except (TypeError, ValueError):
