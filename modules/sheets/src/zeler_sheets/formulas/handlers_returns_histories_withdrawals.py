@@ -22,6 +22,7 @@ from zeler_sheets.formulas.read_models import (
     FormulaReadModelRepository,
     normalize_sku,
 )
+from zeler_sheets.status_history import effective_paused_days
 
 RETURNS_HISTORIES_WITHDRAWALS_IMPLEMENTED_FORMULAS = frozenset(
     {
@@ -331,14 +332,8 @@ def _is_neglected_full_publication(row: Mapping[str, Any], *, now: datetime) -> 
         return False
     if not _is_full_logistic(current):
         return False
-    paused_since = _first_datetime(
-        current.get("paused_since"),
-        current.get("status_started_at"),
-        current.get("last_status_change_at"),
-    )
-    if paused_since is None:
-        return False
-    return (now.date() - paused_since.date()).days > NEGLECTED_PUBLICATION_THRESHOLD_DAYS
+    paused_days = effective_paused_days(row, today=now.date())
+    return paused_days is not None and paused_days > NEGLECTED_PUBLICATION_THRESHOLD_DAYS
 
 
 def _neglected_publication_row(row: Mapping[str, Any], *, tipo_precio: Any) -> list[Any]:

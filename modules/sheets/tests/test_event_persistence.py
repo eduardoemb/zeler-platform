@@ -1358,6 +1358,55 @@ async def test_question_webhook_does_not_race_over_reconciled_freshness_marker()
 
 
 @pytest.mark.asyncio
+async def test_first_observed_paused_seeds_current_pause_basis_and_repause_resets() -> None:
+    repaused_at = datetime(2026, 6, 5, 9, 0, tzinfo=UTC)
+    moments = iter([PAUSED_AT, REOBSERVED_AT, repaused_at])
+    db = FakeDb()
+    persistence = SheetsEventPersistence(db=db, clock=lambda: next(moments))
+
+    await persistence.persist(
+        event_type="items.updated", seller_id=82453304, resource=_item_resource("paused")
+    )
+
+    state = db["item_status_states"].documents["82453304:MLA1"]
+    row = db["sheets_item_formula_rows"].documents["82453304:SKU-1:MLA1"]
+    assert state["current_status"] == "paused"
+    assert state["status_started_at"] == PAUSED_AT
+    assert state["paused_since"] == PAUSED_AT
+    assert state["last_status_change_at"] == PAUSED_AT
+    assert row["current"]["paused_since"] == PAUSED_AT
+    assert db["item_status_transitions"].documents == {}
+
+    await persistence.persist(
+        event_type="items.updated", seller_id=82453304, resource=_item_resource("active")
+    )
+
+    active_state = db["item_status_states"].documents["82453304:MLA1"]
+    active_row = db["sheets_item_formula_rows"].documents["82453304:SKU-1:MLA1"]
+    assert active_state["current_status"] == "active"
+    assert active_state["status_started_at"] == REOBSERVED_AT
+    assert active_state["last_status_change_at"] == REOBSERVED_AT
+    assert "paused_since" not in active_state
+    assert "paused_since" not in active_row["current"]
+
+    await persistence.persist(
+        event_type="items.updated", seller_id=82453304, resource=_item_resource("paused")
+    )
+
+    repaused_state = db["item_status_states"].documents["82453304:MLA1"]
+    repaused_row = db["sheets_item_formula_rows"].documents["82453304:SKU-1:MLA1"]
+    assert repaused_state["current_status"] == "paused"
+    assert repaused_state["paused_since"] == repaused_at
+    assert repaused_state["status_started_at"] == repaused_at
+    assert repaused_state["last_status_change_at"] == repaused_at
+    assert repaused_row["current"]["paused_since"] == repaused_at
+    assert sorted(
+        (transition["from_status"], transition["to_status"])
+        for transition in db["item_status_transitions"].documents.values()
+    ) == [("active", "paused"), ("paused", "active")]
+
+
+@pytest.mark.asyncio
 async def test_observed_transition_writes_history_state_and_formula_scalars() -> None:
     moments = iter([NOW, PAUSED_AT])
     db = FakeDb()
@@ -2229,16 +2278,16 @@ async def test_existing_item_snapshot_without_status_state_does_not_create_trans
     state = db["item_status_states"].documents["82453304:MLA1"]
     assert state["current_status"] == "paused"
     assert state["first_observed_at"] == PAUSED_AT
-    assert "status_started_at" not in state
-    assert "paused_since" not in state
-    assert "last_status_change_at" not in state
+    assert state["status_started_at"] == PAUSED_AT
+    assert state["paused_since"] == PAUSED_AT
+    assert state["last_status_change_at"] == PAUSED_AT
     row = db["sheets_item_formula_rows"].documents["82453304:SKU-1:MLA1"]
     assert row["current"]["status"] == "paused"
-    assert "paused_since" not in row["current"]
+    assert row["current"]["paused_since"] == PAUSED_AT
 
 
 @pytest.mark.asyncio
-async def test_first_seen_paused_item_preserves_unknown_pause_start() -> None:
+async def test_first_seen_paused_item_uses_observed_pause_start() -> None:
     db = FakeDb()
     persistence = SheetsEventPersistence(db=db, clock=lambda: NOW)
 
@@ -2251,19 +2300,19 @@ async def test_first_seen_paused_item_preserves_unknown_pause_start() -> None:
     assert state["current_status"] == "paused"
     assert state["first_observed_at"] == NOW
     assert state["last_observed_at"] == NOW
-    assert "status_started_at" not in state
-    assert "paused_since" not in state
-    assert "last_status_change_at" not in state
+    assert state["status_started_at"] == NOW
+    assert state["paused_since"] == NOW
+    assert state["last_status_change_at"] == NOW
 
     row = db["sheets_item_formula_rows"].documents["82453304:SKU-1:MLA1"]
     assert row["current"]["status"] == "paused"
-    assert "status_started_at" not in row["current"]
-    assert "paused_since" not in row["current"]
-    assert "last_status_change_at" not in row["current"]
+    assert row["current"]["status_started_at"] == NOW
+    assert row["current"]["paused_since"] == NOW
+    assert row["current"]["last_status_change_at"] == NOW
 
 
 @pytest.mark.asyncio
-async def test_repeated_first_seen_paused_without_truth_stays_unknown() -> None:
+async def test_repeated_first_seen_paused_preserves_earliest_observed_pause_start() -> None:
     moments = iter([REOBSERVED_AT, PAUSED_AT])
     db = FakeDb()
     persistence = SheetsEventPersistence(db=db, clock=lambda: next(moments))
@@ -2280,20 +2329,20 @@ async def test_repeated_first_seen_paused_without_truth_stays_unknown() -> None:
     assert state["current_status"] == "paused"
     assert state["first_observed_at"] == REOBSERVED_AT
     assert state["last_observed_at"] == REOBSERVED_AT
-    assert "status_started_at" not in state
-    assert "paused_since" not in state
-    assert "last_status_change_at" not in state
+    assert state["status_started_at"] == PAUSED_AT
+    assert state["paused_since"] == PAUSED_AT
+    assert state["last_status_change_at"] == PAUSED_AT
 
     item = db["items"].documents["MLA1"]
     assert item["status"] == "paused"
-    assert "status_started_at" not in item
-    assert "paused_since" not in item
-    assert "last_status_change_at" not in item
+    assert item["status_started_at"] == PAUSED_AT
+    assert item["paused_since"] == PAUSED_AT
+    assert item["last_status_change_at"] == PAUSED_AT
     row = db["sheets_item_formula_rows"].documents["82453304:SKU-1:MLA1"]
     assert row["current"]["status"] == "paused"
-    assert "status_started_at" not in row["current"]
-    assert "paused_since" not in row["current"]
-    assert "last_status_change_at" not in row["current"]
+    assert row["current"]["status_started_at"] == PAUSED_AT
+    assert row["current"]["paused_since"] == PAUSED_AT
+    assert row["current"]["last_status_change_at"] == PAUSED_AT
 
 
 @pytest.mark.asyncio

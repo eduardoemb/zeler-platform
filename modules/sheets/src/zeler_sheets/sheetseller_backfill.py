@@ -63,7 +63,7 @@ LISTING_PRICE_FIXED_FEE_SOURCE = "/sites/{site}/listing_prices"
 LISTING_FEE_PROJECTION_SOURCE = LISTING_PRICE_FIXED_FEE_SOURCE
 SELLER_SHIPPING_COST_SOURCE = "/users/{seller_id}/shipping_options/free"
 SALE_PRICE_CONTEXT = "channel_marketplace"
-ITEM_ID_FILTER_SOURCES = frozenset({"items", "items-enrich"})
+ITEM_ID_FILTER_SOURCES = frozenset({"items", "items-enrich", "observed-pause-basis-repair"})
 
 
 def _should_preserve_listing_price_lookup_failure(failure: EnrichmentFailure) -> bool:
@@ -234,6 +234,23 @@ class OrderIdentityMergeStats:
     skipped_unmatched_lines: int = 0
 
 
+@dataclass(frozen=True)
+class ObservedPauseBasisRepairSummary:
+    seller_id: str
+    dry_run: bool
+    candidate_states: int
+    states_planned: int
+    states_updated: int
+    candidate_formula_rows: int
+    formula_rows_planned: int
+    formula_rows_updated: int
+    basis_from_existing_status_timestamp: int
+    basis_from_repair_time: int
+
+    def as_dict(self) -> dict[str, int | bool | str]:
+        return asdict(self)
+
+
 BackfillCliSummary = (
     BackfillSummary
     | ItemDetailEnrichmentSummary
@@ -241,6 +258,7 @@ BackfillCliSummary = (
     | OrderLineIdentityBackfillSummary
     | OrderIdentityRepairSummary
     | OrderNormalizationSummary
+    | ObservedPauseBasisRepairSummary
 )
 
 
@@ -256,7 +274,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
         type=_item_id_arg,
         default=None,
         help=(
-            "Limit items/items-enrich to one or more seller-scoped publication IDs. "
+            "Limit items, items-enrich, or observed-pause-basis-repair to one or more "
+            "seller-scoped publication IDs. "
             "Repeat the flag or pass comma-separated IDs."
         ),
     )
@@ -269,6 +288,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
             "order-lines",
             "orders-repair",
             "orders-normalize",
+            "observed-pause-basis-repair",
         ),
         default="items",
         help="Read-model source to backfill (default: items).",
@@ -315,10 +335,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--limit",
         type=_positive_int_arg,
-        default=SHIPMENT_REAL_SHIPPING_COST_ENRICHMENT_LIMIT,
+        default=None,
         help=(
             "Maximum persisted shipments to inspect for shipments-costs enrichment "
-            f"(default: {SHIPMENT_REAL_SHIPPING_COST_ENRICHMENT_LIMIT})."
+            f"(default: {SHIPMENT_REAL_SHIPPING_COST_ENRICHMENT_LIMIT}); required with "
+            "--source observed-pause-basis-repair --write."
         ),
     )
     return parser
@@ -455,6 +476,145 @@ async def run_sheetseller_backfill(
         formula_rows_with_catalog_product_id=formula_rows_with_catalog_product_id,
         formula_rows_with_inventory_id=formula_rows_with_inventory_id,
         skipped_ambiguous_formula_identity=skipped_ambiguous_formula_identity,
+    )
+
+
+async def run_observed_pause_basis_repair(
+    *,
+    db: Any,
+    seller_id: str,
+    dry_run: bool = True,
+    repair_time: datetime | None = None,
+    item_ids: Sequence[str] | None = None,
+    limit: int | None = None,
+) -> ObservedPauseBasisRepairSummary:
+    if not dry_run and (limit is None or limit < 1):
+        raise ValueError("limit is required for observed pause-basis repair writes")
+    basis_time = require_bson_ms_utc_datetime(repair_time or datetime.now(UTC))
+    item_id_filter = _unique_non_blank_strings(item_ids or ())
+    state_filter = _missing_observed_pause_basis_filter(
+        seller_id=seller_id,
+        status_field="current_status",
+        basis_field="paused_since",
+        item_field="item_id",
+        item_ids=item_id_filter,
+    )
+    state_collection = db[ITEM_STATUS_STATES_COLLECTION]
+    formula_rows_collection = db[ITEM_FORMULA_ROWS_COLLECTION]
+    state_cursor = state_collection.find(state_filter).sort([("item_id", 1), ("_id", 1)])
+    states = await state_cursor.to_list(length=limit)
+    basis_by_item: dict[str, tuple[datetime, str]] = {}
+    basis_from_existing_status_timestamp = 0
+    basis_from_repair_time = 0
+    for state in states:
+        item_id = _optional_string(state.get("item_id"))
+        if item_id is None:
+            continue
+        basis, source = _observed_pause_basis_repair_value(state, repair_time=basis_time)
+        basis_by_item[item_id] = (basis, source)
+        if source == "repair_time":
+            basis_from_repair_time += 1
+        else:
+            basis_from_existing_status_timestamp += 1
+
+    formula_row_filter = _missing_observed_pause_basis_filter(
+        seller_id=seller_id,
+        status_field="current.status",
+        basis_field="current.paused_since",
+        item_field="item_id",
+        item_ids=item_id_filter,
+    )
+    formula_row_cursor = formula_rows_collection.find(formula_row_filter).sort(
+        [("item_id", 1), ("_id", 1)]
+    )
+    formula_rows = [
+        row
+        for row in await formula_row_cursor.to_list(length=limit)
+        if _formula_row_uses_item_status_history(row)
+    ]
+    formula_item_ids_missing_basis = sorted(
+        {
+            item_id
+            for row in formula_rows
+            if (item_id := _optional_string(row.get("item_id"))) is not None
+            and item_id not in basis_by_item
+        }
+    )
+    if formula_item_ids_missing_basis:
+        existing_state_filter = _paused_status_state_filter(
+            seller_id=seller_id,
+            item_ids=formula_item_ids_missing_basis,
+        )
+        existing_state_cursor = state_collection.find(existing_state_filter).sort(
+            [("item_id", 1), ("_id", 1)]
+        )
+        existing_states = await existing_state_cursor.to_list(
+            length=len(formula_item_ids_missing_basis)
+        )
+        for state in existing_states:
+            item_id = _optional_string(state.get("item_id"))
+            if item_id is None or item_id in basis_by_item:
+                continue
+            existing_basis = _existing_observed_pause_basis_value(state)
+            if existing_basis is None:
+                continue
+            basis_by_item[item_id] = existing_basis
+            basis_from_existing_status_timestamp += 1
+    for row in formula_rows:
+        item_id = _optional_string(row.get("item_id"))
+        if item_id is None or item_id in basis_by_item:
+            continue
+        basis_by_item[item_id] = (basis_time, "repair_time")
+        basis_from_repair_time += 1
+
+    states_updated = 0
+    formula_rows_updated = 0
+    if not dry_run:
+        for state in states:
+            item_id = _optional_string(state.get("item_id"))
+            if item_id is None:
+                continue
+            basis = basis_by_item[item_id][0]
+            result = await state_collection.update_one(
+                {
+                    "_id": state["_id"],
+                    "current_status": "paused",
+                    "$or": [{"paused_since": {"$exists": False}}, {"paused_since": None}],
+                },
+                {"$set": _pause_basis_scalar_fields(basis)},
+                upsert=False,
+            )
+            states_updated += int(getattr(result, "modified_count", 0) or 0)
+        for row in formula_rows:
+            item_id = _optional_string(row.get("item_id"))
+            if item_id is None:
+                continue
+            basis = basis_by_item[item_id][0]
+            result = await formula_rows_collection.update_one(
+                {
+                    "_id": row["_id"],
+                    "current.status": "paused",
+                    "$or": [
+                        {"current.paused_since": {"$exists": False}},
+                        {"current.paused_since": None},
+                    ],
+                },
+                {"$set": _pause_basis_scalar_fields(basis, prefix="current.")},
+                upsert=False,
+            )
+            formula_rows_updated += int(getattr(result, "modified_count", 0) or 0)
+
+    return ObservedPauseBasisRepairSummary(
+        seller_id=seller_id,
+        dry_run=dry_run,
+        candidate_states=len(states),
+        states_planned=len(states),
+        states_updated=states_updated,
+        candidate_formula_rows=len(formula_rows),
+        formula_rows_planned=len(formula_rows),
+        formula_rows_updated=formula_rows_updated,
+        basis_from_existing_status_timestamp=basis_from_existing_status_timestamp,
+        basis_from_repair_time=basis_from_repair_time,
     )
 
 
@@ -1470,6 +1630,62 @@ async def load_item_status_states_by_item(*, db: Any, seller_id: str) -> dict[st
     }
 
 
+def _missing_observed_pause_basis_filter(
+    *,
+    seller_id: str,
+    status_field: str,
+    basis_field: str,
+    item_field: str,
+    item_ids: Sequence[str],
+) -> dict[str, Any]:
+    filter_spec: dict[str, Any] = {
+        "seller_id": seller_id,
+        status_field: "paused",
+        "$or": [{basis_field: {"$exists": False}}, {basis_field: None}],
+    }
+    if item_ids:
+        filter_spec[item_field] = {"$in": list(item_ids)}
+    return filter_spec
+
+
+def _paused_status_state_filter(*, seller_id: str, item_ids: Sequence[str]) -> dict[str, Any]:
+    return {
+        "seller_id": seller_id,
+        "current_status": "paused",
+        "item_id": {"$in": list(item_ids)},
+    }
+
+
+def _observed_pause_basis_repair_value(
+    state: dict[str, Any], *, repair_time: datetime
+) -> tuple[datetime, str]:
+    if (existing_basis := _existing_observed_pause_basis_value(state)) is not None:
+        return existing_basis
+    return repair_time, "repair_time"
+
+
+def _existing_observed_pause_basis_value(state: dict[str, Any]) -> tuple[datetime, str] | None:
+    for field in (
+        "paused_since",
+        "status_started_at",
+        "last_status_change_at",
+        "first_observed_at",
+        "last_observed_at",
+    ):
+        value = bson_ms_utc_datetime(state.get(field))
+        if value is not None:
+            return value, field
+    return None
+
+
+def _pause_basis_scalar_fields(basis: datetime, *, prefix: str = "") -> dict[str, datetime]:
+    return {
+        f"{prefix}status_started_at": basis,
+        f"{prefix}paused_since": basis,
+        f"{prefix}last_status_change_at": basis,
+    }
+
+
 def build_order_line_formula_row_docs(
     item: dict[str, Any], *, order_line_identities: Sequence[dict[str, Any]], seller_id: str
 ) -> list[dict[str, Any]]:
@@ -1857,7 +2073,10 @@ def parse_item_id_filters(values: Sequence[str] | None, *, source: str | None = 
             item_ids.append(item_id)
     normalized_item_ids = _unique_non_blank_strings(item_ids)
     if normalized_item_ids and source is not None and source not in ITEM_ID_FILTER_SOURCES:
-        raise SystemExit("--item-id is only supported for --source items or items-enrich")
+        raise SystemExit(
+            "--item-id is only supported for --source items, items-enrich, "
+            "or observed-pause-basis-repair"
+        )
     return normalized_item_ids
 
 
@@ -3615,6 +3834,7 @@ async def _run_cli(args: argparse.Namespace) -> BackfillCliSummary:
     mongo_uri = os.environ.get("MONGO_URI")
     mongo_db_name = os.environ.get("MONGO_DB")
     item_ids = parse_item_id_filters(args.item_ids, source=str(args.source))
+    _validate_cli_safety(args)
     if not mongo_uri:
         raise SystemExit("MONGO_URI is required")
     if not mongo_db_name:
@@ -3675,7 +3895,7 @@ async def _run_cli(args: argparse.Namespace) -> BackfillCliSummary:
                 gateway=gateway,
                 seller_id=args.seller_id,
                 dry_run=args.dry_run,
-                limit=cast("int", args.limit),
+                limit=cast("int", args.limit or SHIPMENT_REAL_SHIPPING_COST_ENRICHMENT_LIMIT),
             )
         if args.source == "order-lines":
             return await run_order_line_identity_backfill(
@@ -3684,6 +3904,14 @@ async def _run_cli(args: argparse.Namespace) -> BackfillCliSummary:
                 dry_run=args.dry_run,
                 date_from=args.date_from,
                 date_to=args.date_to,
+            )
+        if args.source == "observed-pause-basis-repair":
+            return await run_observed_pause_basis_repair(
+                db=client[mongo_db_name],
+                seller_id=args.seller_id,
+                dry_run=args.dry_run,
+                item_ids=item_ids,
+                limit=args.limit,
             )
         return await run_sheetseller_backfill(
             db=client[mongo_db_name],
@@ -3699,6 +3927,15 @@ def _require_order_dates(args: argparse.Namespace) -> tuple[str, str]:
     if not args.date_from or not args.date_to:
         raise SystemExit("--date-from and --date-to are required for order-scoped sources")
     return str(args.date_from), str(args.date_to)
+
+
+def _validate_cli_safety(args: argparse.Namespace) -> None:
+    if (
+        args.source == "observed-pause-basis-repair"
+        and not bool(args.dry_run)
+        and args.limit is None
+    ):
+        raise SystemExit("--limit is required with --source observed-pause-basis-repair --write")
 
 
 def _item_id_arg(value: str) -> str:

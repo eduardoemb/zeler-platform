@@ -270,6 +270,45 @@ async def test_publicaciones_descuidadas_uses_current_full_out_of_stock_paused_r
 
 
 @pytest.mark.asyncio
+async def test_publicaciones_descuidadas_requires_effective_observed_pause_basis() -> None:
+    db = FakeDb()
+    _mark_read_model_fresh(db, ITEM_FORMULA_ROWS_READ_MODEL)
+    db["sheets_item_formula_rows"].documents = {
+        "seller-1:SKU-1:MLA1": _item_row(
+            item_id="MLA1",
+            sku="sku-1",
+            title="Effective pause basis",
+            status="paused",
+            available_quantity=0,
+            paused_since=NOW - timedelta(days=11),
+            logistic_type="fulfillment",
+        ),
+        "seller-1:SKU-2:MLA2": _item_row(
+            item_id="MLA2",
+            sku="sku-2",
+            title="Legacy scalar only",
+            status="paused",
+            available_quantity=0,
+            paused_since=NOW - timedelta(days=11),
+            logistic_type="fulfillment",
+        ),
+    }
+    stale_scalar_only = db["sheets_item_formula_rows"].documents["seller-1:SKU-2:MLA2"]
+    stale_scalar_only["current"]["status_started_at"] = stale_scalar_only["current"].pop(
+        "paused_since"
+    )
+
+    dispatcher = _dispatcher(db)
+
+    result = await dispatcher.execute(
+        _context("ZELERDATA_PUBLICACIONESDESCUIDADAS", {"encabezados": "si"})
+    )
+
+    assert [row[0] for row in result.values[1:]] == ["MLA1"]
+    assert result.meta["rows_count"] == 1
+
+
+@pytest.mark.asyncio
 async def test_tiempoactiva_uses_item_status_state_history_not_current_row_guessing() -> None:
     db = FakeDb()
     _mark_read_model_fresh(db, ITEM_STATUS_STATES_READ_MODEL)

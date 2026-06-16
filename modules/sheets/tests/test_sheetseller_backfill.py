@@ -37,6 +37,7 @@ from zeler_sheets.sheetseller_backfill import (
     project_listing_price_fixed_fee_projection,
     project_sale_price_projection,
     run_item_detail_enrichment,
+    run_observed_pause_basis_repair,
     run_order_identity_repair,
     run_order_line_identity_backfill,
     run_order_normalization,
@@ -415,22 +416,25 @@ def test_cli_requires_seller_id_and_defaults_to_dry_run() -> None:
         "MLA2",
         "MLA3",
     ]
+    assert parse_item_id_filters(
+        item_filter_args.item_ids, source="observed-pause-basis-repair"
+    ) == [
+        "MLA1",
+        "MLA2",
+        "MLA3",
+    ]
     with pytest.raises(SystemExit):
         parser.parse_args([])
     with pytest.raises(SystemExit):
         parser.parse_args(["--seller-id", "82453304", "--item-id", ""])
     with pytest.raises(SystemExit):
         parser.parse_args(["--seller-id", "82453304", "--item-id", "MLA1,,MLA2"])
-    with pytest.raises(
-        SystemExit, match="--item-id is only supported for --source items or items-enrich"
-    ):
+    with pytest.raises(SystemExit, match="items, items-enrich, or observed-pause-basis-repair"):
         parse_item_id_filters(["MLA1"], source="shipments-costs")
 
 
 def test_cli_rejects_item_id_for_shipments_costs_before_runtime_work() -> None:
-    with pytest.raises(
-        SystemExit, match="--item-id is only supported for --source items or items-enrich"
-    ):
+    with pytest.raises(SystemExit, match="items, items-enrich, or observed-pause-basis-repair"):
         main(
             [
                 "--seller-id",
@@ -439,6 +443,22 @@ def test_cli_rejects_item_id_for_shipments_costs_before_runtime_work() -> None:
                 "shipments-costs",
                 "--item-id",
                 "MLA1",
+                "--write",
+            ]
+        )
+
+
+def test_cli_rejects_observed_pause_basis_repair_write_without_explicit_limit() -> None:
+    with pytest.raises(
+        SystemExit,
+        match="--limit is required with --source observed-pause-basis-repair --write",
+    ):
+        main(
+            [
+                "--seller-id",
+                "82453304",
+                "--source",
+                "observed-pause-basis-repair",
                 "--write",
             ]
         )
@@ -1156,6 +1176,142 @@ async def test_backfill_without_status_state_strips_legacy_item_status_history_s
     assert "status_started_at" not in row["current"]
     assert "paused_since" not in row["current"]
     assert "last_status_change_at" not in row["current"]
+
+
+@pytest.mark.asyncio
+async def test_observed_pause_basis_repair_dry_run_reports_candidates_without_mutation() -> None:
+    first_observed_at = datetime(2026, 5, 10, 8, 0, tzinfo=UTC)
+    repair_time = datetime(2026, 6, 16, 12, 0, tzinfo=UTC)
+    item = _item_doc("MLA1", attributes=[{"id": "SELLER_SKU", "value_name": "sku-1"}])
+    item["status"] = "paused"
+    db = FakeDb([item])
+    db["item_status_states"].documents["82453304:MLA1"] = {
+        "_id": "82453304:MLA1",
+        "seller_id": "82453304",
+        "item_id": "MLA1",
+        "current_status": "paused",
+        "first_observed_at": first_observed_at,
+        "last_observed_at": first_observed_at,
+        "schema_version": 1,
+    }
+    formula_row = build_formula_row_doc(item, seller_id="82453304")
+    db["sheets_item_formula_rows"].documents[str(formula_row["_id"])] = formula_row
+
+    summary = await run_observed_pause_basis_repair(
+        db=db,
+        seller_id="82453304",
+        dry_run=True,
+        repair_time=repair_time,
+    )
+
+    assert summary.as_dict() == {
+        "seller_id": "82453304",
+        "dry_run": True,
+        "candidate_states": 1,
+        "states_planned": 1,
+        "states_updated": 0,
+        "candidate_formula_rows": 1,
+        "formula_rows_planned": 1,
+        "formula_rows_updated": 0,
+        "basis_from_existing_status_timestamp": 1,
+        "basis_from_repair_time": 0,
+    }
+    state = db["item_status_states"].documents["82453304:MLA1"]
+    row = db["sheets_item_formula_rows"].documents["82453304:SKU-1:MLA1"]
+    assert "paused_since" not in state
+    assert "paused_since" not in row["current"]
+
+
+@pytest.mark.asyncio
+async def test_observed_pause_basis_repair_write_uses_repair_time_when_no_basis_exists() -> None:
+    repair_time = datetime(2026, 6, 16, 12, 0, tzinfo=UTC)
+    item = _item_doc("MLA1", attributes=[{"id": "SELLER_SKU", "value_name": "sku-1"}])
+    item["status"] = "paused"
+    db = FakeDb([item])
+    db["item_status_states"].documents["82453304:MLA1"] = {
+        "_id": "82453304:MLA1",
+        "seller_id": "82453304",
+        "item_id": "MLA1",
+        "current_status": "paused",
+        "schema_version": 1,
+    }
+    formula_row = build_formula_row_doc(item, seller_id="82453304")
+    db["sheets_item_formula_rows"].documents[str(formula_row["_id"])] = formula_row
+
+    summary = await run_observed_pause_basis_repair(
+        db=db,
+        seller_id="82453304",
+        dry_run=False,
+        repair_time=repair_time,
+        limit=10,
+    )
+
+    assert summary.basis_from_repair_time == 1
+    assert summary.states_updated == 1
+    assert summary.formula_rows_updated == 1
+    state = db["item_status_states"].documents["82453304:MLA1"]
+    row = db["sheets_item_formula_rows"].documents["82453304:SKU-1:MLA1"]
+    assert state["status_started_at"] == repair_time
+    assert state["paused_since"] == repair_time
+    assert state["last_status_change_at"] == repair_time
+    assert row["current"]["status_started_at"] == repair_time
+    assert row["current"]["paused_since"] == repair_time
+    assert row["current"]["last_status_change_at"] == repair_time
+
+
+@pytest.mark.asyncio
+async def test_observed_pause_basis_repair_write_requires_explicit_limit() -> None:
+    with pytest.raises(
+        ValueError,
+        match="limit is required for observed pause-basis repair writes",
+    ):
+        await run_observed_pause_basis_repair(
+            db=FakeDb([]),
+            seller_id="82453304",
+            dry_run=False,
+        )
+
+
+@pytest.mark.asyncio
+async def test_observed_pause_basis_repair_uses_existing_state_basis_for_formula_row() -> None:
+    paused_since = datetime(2026, 5, 10, 8, 0, tzinfo=UTC)
+    repair_time = datetime(2026, 6, 16, 12, 0, tzinfo=UTC)
+    item = _item_doc("MLA1", attributes=[{"id": "SELLER_SKU", "value_name": "sku-1"}])
+    item["status"] = "paused"
+    db = FakeDb([item])
+    db["item_status_states"].documents["82453304:MLA1"] = {
+        "_id": "82453304:MLA1",
+        "seller_id": "82453304",
+        "item_id": "MLA1",
+        "current_status": "paused",
+        "last_observed_at": paused_since,
+        "status_started_at": paused_since,
+        "paused_since": paused_since,
+        "last_status_change_at": paused_since,
+        "schema_version": 1,
+    }
+    formula_row = build_formula_row_doc(item, seller_id="82453304")
+    db["sheets_item_formula_rows"].documents[str(formula_row["_id"])] = formula_row
+
+    summary = await run_observed_pause_basis_repair(
+        db=db,
+        seller_id="82453304",
+        dry_run=False,
+        repair_time=repair_time,
+        limit=10,
+    )
+
+    row = db["sheets_item_formula_rows"].documents["82453304:SKU-1:MLA1"]
+    assert summary.candidate_states == 0
+    assert summary.states_updated == 0
+    assert summary.candidate_formula_rows == 1
+    assert summary.formula_rows_updated == 1
+    assert summary.basis_from_existing_status_timestamp == 1
+    assert summary.basis_from_repair_time == 0
+    assert row["current"]["status_started_at"] == paused_since
+    assert row["current"]["paused_since"] == paused_since
+    assert row["current"]["last_status_change_at"] == paused_since
+    assert row["current"]["paused_since"] != repair_time
 
 
 @pytest.mark.asyncio

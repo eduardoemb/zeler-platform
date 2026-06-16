@@ -8,6 +8,7 @@ Use this runbook to plan ZelerData read-model reconciliation with sanitized, agg
 2. Start with `--dry-run` and `--confirm-approved-runtime`; review sanitized counters and issue codes only.
 3. Stop before any write unless a separate production-write authorization explicitly allows `--write --confirm-production-write` for the exact seller/range.
 4. Roll back by stopping runs and marking affected freshness markers `stale`/`failed` from the approved runtime; formulas stay `DATA_UNAVAILABLE` until complete markers exist again.
+5. For observed pause-basis repair, start with `--repair-observed-pause-basis --dry-run`; write mode is a later approved runtime action only.
 
 ## Chain context
 
@@ -34,6 +35,19 @@ uv run python -m infra.operations.zelerdata_read_model_reconcile \
   --emit-phase2-contract
 ```
 
+Observed pause-basis repair dry-run:
+
+```bash
+uv run python -m infra.operations.zelerdata_read_model_reconcile \
+  --seller-id <seller> \
+  --date-from 2026-06-01 \
+  --date-to 2026-06-04 \
+  --dry-run \
+  --confirm-approved-runtime \
+  --repair-observed-pause-basis \
+  --max-items 100
+```
+
 ## Flags
 
 | Flag | Required | Purpose |
@@ -55,6 +69,7 @@ uv run python -m infra.operations.zelerdata_read_model_reconcile \
 | `--resume-after-order-id` | Resume only | Private cursor for approved runtime continuation. Output reports only that a cursor was provided. |
 | `--include-buyer-address-pii` | Exceptional | Allows bounded buyer/address processing in approved runtime; output remains count-only. |
 | `--emit-phase2-contract` | Phase 2 contract runs | Prints the read-only preflight and dry-run contract alongside the sanitized summary. |
+| `--repair-observed-pause-basis` | Optional repair scope | Plans or runs bounded repair for current paused rows missing `paused_since`. Dry-run mutates nothing and reports sanitized aggregate counters only. Write mode still requires `--write --confirm-production-write` plus explicit scoped approval. |
 
 ## Formula/read-model mapping
 
@@ -100,6 +115,8 @@ Collect sanitized aggregate counters for orders, shipments, items, sheets_item_f
 Each target must report expected, persisted, missing, complete, NA, 0, and >0 counts. For formula rows, include distribution checks for listing type, current status, sale price, listing fixed fee, unit cost, realized shipping cost, realized fee, pack/cart ID, and buyer/address presence.
 
 Status model checks are truth-bound: use observed `item_status_states` / `item_status_transitions` only. Do not synthesize paused/status history.
+
+Observed pause-basis repair is intentionally bounded. It uses an existing reliable current status timestamp when present; otherwise it uses the repair execution time as a Zeler-observed basis. It must never be described as the historical Mercado Libre pause date.
 
 ### Required dry-run scopes
 

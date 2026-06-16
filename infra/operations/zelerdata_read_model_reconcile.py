@@ -179,6 +179,7 @@ class ReconciliationRequest:
     write_enabled: bool
     include_buyer_address_pii: bool
     controls: ReconciliationControls
+    repair_observed_pause_basis: bool = False
 
     @property
     def max_orders(self) -> int | None:
@@ -367,6 +368,7 @@ class ReconciliationSummary:
     phase2_contract: Phase2RuntimeContract | None = None
     controls: ReconciliationControls | None = None
     write_counts: Mapping[str, int] = field(default_factory=dict)
+    repair_counts: Mapping[str, int] = field(default_factory=dict)
     raw_context: dict[str, Any] = field(default_factory=dict, repr=False)
 
     def to_sanitized_dict(self) -> dict[str, Any]:
@@ -388,6 +390,8 @@ class ReconciliationSummary:
                 sanitized["controls"] = controls
         if self.write_counts:
             sanitized["write_counts"] = dict(sorted(self.write_counts.items()))
+        if self.repair_counts:
+            sanitized["repair_counts"] = dict(sorted(self.repair_counts.items()))
         return sanitized
 
 
@@ -463,6 +467,14 @@ def build_arg_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Include Phase 2 read-only preflight/dry-run contract in sanitized output.",
     )
+    parser.add_argument(
+        "--repair-observed-pause-basis",
+        action="store_true",
+        help=(
+            "Plan or run bounded observed pause-basis repair for current paused rows missing "
+            "paused_since. Dry-run reports sanitized counters only."
+        ),
+    )
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument(
         "--dry-run",
@@ -487,6 +499,8 @@ def validate_reconciliation_safety(args: argparse.Namespace) -> None:
         raise SystemExit("--confirm-approved-runtime is required")
     if not bool(args.dry_run) and not bool(args.confirm_production_write):
         raise SystemExit("--confirm-production-write is required with --write")
+    if not bool(args.dry_run) and bool(args.repair_observed_pause_basis) and args.max_items is None:
+        raise SystemExit("--max-items is required with --repair-observed-pause-basis --write")
     if bool(args.include_buyer_address_pii) and args.max_orders is None:
         raise SystemExit("--max-orders is required with --include-buyer-address-pii")
 
@@ -516,6 +530,7 @@ def build_reconciliation_request(args: argparse.Namespace) -> ReconciliationRequ
                 else None
             ),
         ),
+        repair_observed_pause_basis=bool(args.repair_observed_pause_basis),
     )
 
 
@@ -793,6 +808,29 @@ async def execute_reconciliation_write(
     )
     _enforce_write_count_safety_controls(counts, controls=request.controls)
     return counts
+
+
+async def execute_observed_pause_basis_repair(
+    *,
+    db: Any,
+    request: ReconciliationRequest,
+    repair_runner: Callable[..., Awaitable[Any]] | None = None,
+) -> dict[str, int]:
+    if request.write_enabled and not request.approved_runtime:
+        raise ValueError("approved_runtime is required for observed pause-basis repair")
+    if request.write_enabled and request.controls.max_items is None:
+        raise ValueError("--max-items is required with --repair-observed-pause-basis --write")
+    if repair_runner is None:
+        from zeler_sheets.sheetseller_backfill import run_observed_pause_basis_repair
+
+        repair_runner = run_observed_pause_basis_repair
+    summary = await repair_runner(
+        db=db,
+        seller_id=request.seller_id,
+        dry_run=request.dry_run or not request.write_enabled,
+        limit=request.controls.max_items,
+    )
+    return _observed_pause_basis_repair_counts(summary)
 
 
 async def _run_bounded_item_detail_enrichment(
@@ -1132,10 +1170,17 @@ async def _run_cli(args: argparse.Namespace) -> ReconciliationSummary:
         db = handle.db if isinstance(handle, RuntimeDatabase) else handle
         expected = await collect_expected_read_model_counts(db=db, request=request)
         summary = await collect_reconciliation_counts(db=db, request=request, expected=expected)
+        repair_counts: dict[str, int] = {}
+        if request.repair_observed_pause_basis and not request.write_enabled:
+            repair_counts = await execute_observed_pause_basis_repair(db=db, request=request)
+            summary = replace(summary, repair_counts=repair_counts)
         if request.write_enabled:
             _enforce_write_safety_controls(summary=summary, controls=request.controls)
             write_counts = await execute_reconciliation_write(db=db, request=request)
             _enforce_write_count_safety_controls(write_counts, controls=request.controls)
+            if request.repair_observed_pause_basis:
+                repair_counts = await execute_observed_pause_basis_repair(db=db, request=request)
+                _enforce_write_count_safety_controls(repair_counts, controls=request.controls)
             expected = await collect_expected_read_model_counts(db=db, request=request)
             refreshed_summary = await collect_reconciliation_counts(
                 db=db, request=request, expected=expected
@@ -1146,6 +1191,7 @@ async def _run_cli(args: argparse.Namespace) -> ReconciliationSummary:
             summary = replace(
                 refreshed_summary,
                 write_counts={**write_counts, **marker_counts},
+                repair_counts=repair_counts,
             )
         if bool(args.emit_phase2_contract):
             summary = replace(
@@ -1457,6 +1503,27 @@ def _write_counts_from_summary(summary: Any) -> dict[str, int]:
         if isinstance(value, int):
             counts[field_name] = value
     return counts
+
+
+def _observed_pause_basis_repair_counts(summary: Any) -> dict[str, int]:
+    raw = summary.as_dict() if callable(getattr(summary, "as_dict", None)) else {}
+    field_map = {
+        "candidate_states": "observed_pause_basis_candidate_states",
+        "states_planned": "observed_pause_basis_states_planned",
+        "states_updated": "observed_pause_basis_states_updated",
+        "candidate_formula_rows": "observed_pause_basis_candidate_formula_rows",
+        "formula_rows_planned": "observed_pause_basis_formula_rows_planned",
+        "formula_rows_updated": "observed_pause_basis_formula_rows_updated",
+        "basis_from_existing_status_timestamp": (
+            "observed_pause_basis_from_existing_status_timestamp"
+        ),
+        "basis_from_repair_time": "observed_pause_basis_from_repair_time",
+    }
+    return {
+        output_field: value
+        for input_field, output_field in field_map.items()
+        if isinstance(value := raw.get(input_field), int) and not isinstance(value, bool)
+    }
 
 
 def _combined_write_counts(

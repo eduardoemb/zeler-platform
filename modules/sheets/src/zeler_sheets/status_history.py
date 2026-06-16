@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from collections.abc import Mapping
+from datetime import UTC, date, datetime
 from typing import Any
 
 STATUS_HISTORY_DATETIME_FIELDS = (
@@ -57,3 +58,28 @@ def normalize_status_history_datetimes(document: dict[str, Any]) -> dict[str, An
     if isinstance(current, dict):
         normalized["current"] = normalize_status_history_datetimes(current)
     return normalized
+
+
+def effective_pause_start(current_or_state: Mapping[str, Any] | None) -> datetime | None:
+    if current_or_state is None:
+        return None
+    record = _status_history_record(current_or_state)
+    if _status_value(record) != "paused":
+        return None
+    return bson_ms_utc_datetime(record.get("paused_since"))
+
+
+def effective_paused_days(current_or_state: Mapping[str, Any] | None, *, today: date) -> int | None:
+    pause_start = effective_pause_start(current_or_state)
+    if pause_start is None:
+        return None
+    return max((today - pause_start.date()).days, 0)
+
+
+def _status_history_record(current_or_state: Mapping[str, Any]) -> Mapping[str, Any]:
+    current = current_or_state.get("current")
+    return current if isinstance(current, Mapping) else current_or_state
+
+
+def _status_value(record: Mapping[str, Any]) -> str:
+    return str(record.get("current_status") or record.get("status") or "").strip().casefold()

@@ -17,6 +17,7 @@ from zeler_sheets.formulas.handlers_core import build_core_formula_handlers
 from zeler_sheets.formulas.read_models import FormulaReadModelRepository
 from zeler_sheets.formulas.registry import FormulaRegistry
 from zeler_sheets.sheetseller_backfill import build_formula_row_doc
+from zeler_sheets.status_history import effective_paused_days
 
 
 class FakeUpdateResult:
@@ -712,6 +713,59 @@ async def test_codigo_ml_to_sku_id_returns_seller_scoped_table_with_optional_hea
         "seller_id": "seller-1",
         "inventory_id": {"$in": ["INV-1"]},
     }
+
+
+@pytest.mark.asyncio
+async def test_pause_duration_formulas_share_effective_observed_pause_basis() -> None:
+    now = datetime(2026, 5, 13, 12, 0, tzinfo=UTC)
+    observed_pause_basis = datetime(2026, 5, 8, 9, 0, tzinfo=UTC)
+    db = FakeDb()
+    db["sheets_item_formula_rows"].documents = {
+        "seller-1-sku-1-mla1": {
+            "_id": "seller-1-sku-1-mla1",
+            "seller_id": "seller-1",
+            "sku": "sku-1",
+            "normalized_sku": "SKU-1",
+            "item_id": "MLA1",
+            "inventory_id": "INV-1",
+            "current": {
+                "title": "Observed paused listing",
+                "status": "paused",
+                "available_quantity": 0,
+                "base_price": 10,
+                "paused_since": observed_pause_basis,
+                "catalog_product_id": None,
+            },
+        }
+    }
+    dispatcher = _core_dispatcher(db, now=now)
+
+    assert (
+        effective_paused_days(
+            next(iter(db["sheets_item_formula_rows"].documents.values())), today=now.date()
+        )
+        == 5
+    )
+    pausadas = await dispatcher.execute(
+        _context("ZELERDATA_PAUSADAS", {"id_publicaciones": "MLA1"})
+    )
+    publicaciones = await dispatcher.execute(
+        _context("ZELERDATA_PUBLICACIONES", {"skus": "todos", "encabezados": "si"})
+    )
+    dashboard = await dispatcher.execute(
+        _context("ZELERDATA_DASHBOARD", {"skus": "todos", "encabezados": "si"})
+    )
+    dashboard_sin_catalogo = await dispatcher.execute(
+        _context(
+            "ZELERDATA_DASHBOARDSINCATALOGO",
+            {"skus": "todos", "encabezados": "si"},
+        )
+    )
+
+    assert pausadas.values == [[5]]
+    assert publicaciones.values[1][11] == 5
+    assert dashboard.values[1][10] == 5
+    assert dashboard_sin_catalogo.values[1][10] == 5
 
 
 @pytest.mark.asyncio
