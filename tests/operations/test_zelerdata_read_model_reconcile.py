@@ -65,6 +65,26 @@ class FakeAsyncCollection:
 
         return cursor()
 
+    def find(self, filter_spec: dict[str, Any], projection: dict[str, int] | None = None) -> Any:
+        del projection
+
+        async def cursor() -> Any:
+            for document in self.documents:
+                if _matches_filter(document, filter_spec):
+                    yield dict(document)
+
+        return cursor()
+
+    async def distinct(self, field_name: str, filter_spec: dict[str, Any]) -> list[Any]:
+        values: dict[Any, None] = {}
+        for document in self.documents:
+            if not _matches_filter(document, filter_spec):
+                continue
+            value = _lookup(document, field_name)
+            if value is not None and str(value).strip():
+                values.setdefault(value, None)
+        return list(values)
+
     async def update_one(
         self,
         filter_spec: dict[str, Any],
@@ -981,6 +1001,8 @@ async def test_collect_reconciliation_counts_reports_real_sanitized_aggregates()
             refs={
                 "shipments": frozenset({"SHIP-PII-1"}),
                 "items": frozenset({"ITEM-PII-1"}),
+                "catalog_product_snapshots": frozenset({"CATALOG-PII-1"}),
+                "catalog_buybox_snapshots": frozenset({"ITEM-PII-1"}),
             },
             truth_mode={
                 "items": "unavailable",
@@ -1244,6 +1266,155 @@ async def test_claims_expected_counts_are_bounded_by_historical_order_scope() ->
     assert expected.counts["claims"] == 2
     assert expected.refs["claims"] == frozenset({"CLAIM-PII-1", "CLAIM-PII-2"})
     assert expected.truth_mode["claims"] == "expected"
+
+
+@pytest.mark.asyncio
+async def test_catalog_expected_counts_come_from_scoped_items_with_catalog_product_id() -> None:
+    async def fake_historical_source(*, db: Any, request: Any) -> FakeHistoricalMeliSummary:
+        return FakeHistoricalMeliSummary(orders_found=0, order_ids=[], shipment_ids=[], item_ids=[])
+
+    db = FakeAsyncDb(
+        {
+            "items": [
+                _seller_doc(_id="ITEM-PII-1", catalog_product_id="CATALOG-PII-1"),
+                _seller_doc(_id="ITEM-PII-2", catalog_product_id="CATALOG-PII-1"),
+                _seller_doc(_id="ITEM-PII-3", catalog_product_id="CATALOG-PII-2"),
+                _seller_doc(_id="ITEM-PII-NO-CATALOG", catalog_product_id=""),
+                {"_id": "ITEM-OTHER", "seller_id": "other", "catalog_product_id": "CAT-OTHER"},
+            ],
+        }
+    )
+
+    expected = await collect_expected_read_model_counts(
+        db=db, request=_request(), historical_meli_source=fake_historical_source
+    )
+
+    assert expected.counts["catalog_product_snapshots"] == 2
+    assert expected.refs["catalog_product_snapshots"] == frozenset(
+        {"CATALOG-PII-1", "CATALOG-PII-2"}
+    )
+    assert expected.counts["catalog_buybox_snapshots"] == 3
+    assert expected.refs["catalog_buybox_snapshots"] == frozenset(
+        {"ITEM-PII-1", "ITEM-PII-2", "ITEM-PII-3"}
+    )
+    assert expected.truth_mode["catalog_product_snapshots"] == "expected"
+    assert expected.truth_mode["catalog_buybox_snapshots"] == "expected"
+
+
+@pytest.mark.asyncio
+async def test_incomplete_catalog_snapshots_keep_markers_unwritten() -> None:
+    db = FakeAsyncDb(
+        {
+            "sheets_catalog_product_snapshots": [
+                _seller_doc(
+                    _id="PRODUCT-PII-1",
+                    catalog_product_id="CATALOG-PII-1",
+                    title="Catalog title",
+                    description="Catalog description",
+                    image_url="https://img.example/catalog.jpg",
+                    attributes={"BRAND": "Acme"},
+                    snapshot_at=_dt(2),
+                    source="historical_meli_backfill",
+                ),
+                _seller_doc(_id="PRODUCT-PII-2", catalog_product_id="CATALOG-PII-2"),
+            ],
+            "sheets_catalog_buybox_snapshots": [
+                _seller_doc(
+                    _id="BUYBOX-PII-1",
+                    item_id="ITEM-PII-1",
+                    catalog_product_id="CATALOG-PII-1",
+                    title="Item one",
+                    available_quantity=7,
+                    buybox_status="winning",
+                    price=120,
+                    winning_price=118,
+                    competitor_count=2,
+                    only_competitor="No",
+                    snapshot_at=_dt(2),
+                    source="historical_meli_backfill",
+                ),
+                _seller_doc(
+                    _id="BUYBOX-PII-2",
+                    item_id="ITEM-PII-2",
+                    catalog_product_id="CATALOG-PII-2",
+                    title="Item two",
+                    available_quantity=5,
+                    buybox_status="competing",
+                    price=130,
+                    winning_price=125,
+                    only_competitor="No",
+                ),
+            ],
+        }
+    )
+    request = _write_request()
+
+    summary = await collect_reconciliation_counts(
+        db=db,
+        request=request,
+        expected=ExpectedReadModelCounts(
+            counts={"catalog_product_snapshots": 2, "catalog_buybox_snapshots": 2},
+            refs={
+                "catalog_product_snapshots": frozenset({"CATALOG-PII-1", "CATALOG-PII-2"}),
+                "catalog_buybox_snapshots": frozenset({"ITEM-PII-1", "ITEM-PII-2"}),
+            },
+        ),
+        read_models=("catalog_product_snapshots", "catalog_buybox_snapshots"),
+    )
+    counts = await write_complete_read_model_freshness_markers(
+        db=db, request=request, summary=summary
+    )
+
+    by_model = {
+        aggregate["read_model"]: aggregate
+        for aggregate in summary.to_sanitized_dict()["aggregates"]
+    }
+    assert by_model["catalog_product_snapshots"]["complete_count"] == 1
+    assert by_model["catalog_buybox_snapshots"]["complete_count"] == 1
+    assert by_model["catalog_product_snapshots"]["missing_count"] == 0
+    assert by_model["catalog_buybox_snapshots"]["missing_count"] == 0
+    assert counts == {}
+    assert db["sheets_read_model_freshness"].documents == []
+
+
+@pytest.mark.asyncio
+async def test_complete_catalog_snapshot_coverage_writes_readiness_markers() -> None:
+    db = FakeAsyncDb({})
+    request = _write_request()
+    summary = ReconciliationSummary(
+        seller_id=request.seller_id,
+        date_from=request.date_range.date_from,
+        date_to=request.date_range.date_to,
+        dry_run=False,
+        approved_runtime=True,
+        write_enabled=True,
+        aggregates=(
+            ReadModelAggregate(
+                read_model="catalog_product_snapshots",
+                expected_count=2,
+                persisted_count=2,
+                missing_count=0,
+                complete_count=2,
+            ),
+            ReadModelAggregate(
+                read_model="catalog_buybox_snapshots",
+                expected_count=3,
+                persisted_count=3,
+                missing_count=0,
+                complete_count=3,
+            ),
+        ),
+    )
+
+    counts = await write_complete_read_model_freshness_markers(
+        db=db, request=request, summary=summary
+    )
+
+    assert counts == {"freshness_markers_written": 2}
+    assert {marker["read_model"] for marker in db["sheets_read_model_freshness"].documents} == {
+        "catalog_product_snapshots",
+        "catalog_buybox_snapshots",
+    }
 
 
 @pytest.mark.asyncio
@@ -2083,7 +2254,11 @@ def test_reconciliation_cli_write_executes_write_gate_and_outputs_sanitized_coun
     calls: dict[str, Any] = {}
 
     async def fake_expected(*, db: Any, request: Any) -> ExpectedReadModelCounts:
-        return ExpectedReadModelCounts(counts={"orders": 1})
+        expected_calls = calls.setdefault("expected", [])
+        expected_calls.append("after_write" if "write" in calls else "before_write")
+        return ExpectedReadModelCounts(
+            counts={"orders": 1, "catalog_product_snapshots": 1 if "write" in calls else 0}
+        )
 
     async def fake_collect(
         *, db: Any, request: Any, expected: ExpectedReadModelCounts
@@ -2132,6 +2307,7 @@ def test_reconciliation_cli_write_executes_write_gate_and_outputs_sanitized_coun
     output_json = json.dumps(output, sort_keys=True)
 
     assert result == 0
+    assert calls["expected"] == ["before_write", "after_write"]
     assert calls["write"] == (db, True, 50)
     assert output["write_counts"] == {
         "planned_orders": 1,
