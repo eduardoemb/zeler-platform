@@ -418,6 +418,7 @@ class FormulaReadModelRepository:
         self,
         *,
         seller_id: str,
+        date_from: Any,
         date_to: Any,
         formula: str,
     ) -> None:
@@ -428,7 +429,11 @@ class FormulaReadModelRepository:
                 "read_model": QUESTIONS_READ_MODEL,
             }
         )
-        if not _questions_freshness_marker_covers(marker, date_to=date_to):
+        if not _questions_freshness_marker_covers(
+            marker,
+            date_from=date_from,
+            date_to=date_to,
+        ):
             raise FormulaDataUnavailableError(formula, QUESTIONS_FRESHNESS_UNAVAILABLE_REASON)
 
     async def require_read_model_productive(
@@ -513,8 +518,12 @@ def normalize_sku(sku: Any) -> str:
     return str(sku).strip().upper()
 
 
-def _questions_freshness_marker_covers(marker: Any, *, date_to: Any) -> bool:
-    return _read_model_freshness_marker_covers(marker, date_to=date_to)
+def _questions_freshness_marker_covers(marker: Any, *, date_from: Any, date_to: Any) -> bool:
+    return read_model_reconciliation_marker_covers(
+        marker,
+        date_from=date_from,
+        date_to=date_to,
+    )
 
 
 def read_model_reconciliation_marker_covers(

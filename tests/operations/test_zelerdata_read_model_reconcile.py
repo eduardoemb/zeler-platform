@@ -50,6 +50,12 @@ class FakeAsyncCollection:
         self.count_filters.append(filter_spec)
         return sum(1 for document in self.documents if _matches_filter(document, filter_spec))
 
+    async def find_one(self, filter_spec: dict[str, Any]) -> dict[str, Any] | None:
+        for document in self.documents:
+            if _matches_filter(document, filter_spec):
+                return dict(document)
+        return None
+
     def aggregate(self, pipeline: list[dict[str, Any]]) -> Any:
         rows = self.documents
         if pipeline and "$match" in pipeline[0]:
@@ -123,6 +129,9 @@ class FakeHistoricalMeliSummary:
     order_ids: list[str]
     shipment_ids: list[str]
     item_ids: list[str]
+    questions_found: int | None = None
+    question_ids: list[str] | None = None
+    question_detail_missing: int = 0
     planned_orders: int = 0
     planned_items: int = 0
     planned_shipments: int = 0
@@ -145,6 +154,10 @@ class FakeWriteSummary:
 
 def _matches_filter(document: dict[str, Any], filter_spec: dict[str, Any]) -> bool:
     for key, expected in filter_spec.items():
+        if key == "$or":
+            if not any(_matches_filter(document, branch) for branch in expected):
+                return False
+            continue
         actual = _lookup(document, key)
         if isinstance(expected, dict):
             for operator, operand in expected.items():
@@ -880,7 +893,9 @@ async def test_collect_reconciliation_counts_reports_real_sanitized_aggregates()
                     date_created=_dt(2),
                     status="ANSWERED",
                     item_id="ITEM-PII-1",
-                    answer={"date_created": _dt(3)},
+                    text="Still available?",
+                    from_user_id="BUYER-PII-1",
+                    answer={"text": "Yes", "date_created": _dt(3)},
                 ),
             ],
             "claims": [
@@ -1164,6 +1179,167 @@ async def test_complete_write_records_shared_reconciliation_marker_after_coverag
         assert marker["last_event_synced_at"] == request.date_range.start
     assert all(marker["reconciled_until"] == request.date_range.end_exclusive for marker in markers)
     assert "catalog_buybox_snapshots" not in {marker["read_model"] for marker in markers}
+
+
+@pytest.mark.asyncio
+async def test_questions_answer_detail_gaps_keep_coverage_partial_and_marker_unwritten() -> None:
+    db = FakeAsyncDb(
+        {
+            "questions": [
+                _seller_doc(
+                    _id="QUESTION-PII-ANSWERED-COMPLETE",
+                    date_created=_dt(2),
+                    status="ANSWERED",
+                    item_id="ITEM-PII-1",
+                    text="Still available?",
+                    from_user_id="BUYER-PII-1",
+                    answer={"text": "Yes", "date_created": _dt(2)},
+                ),
+                _seller_doc(
+                    _id="QUESTION-PII-ANSWERED-INCOMPLETE",
+                    date_created=_dt(3),
+                    status="ANSWERED",
+                    item_id="ITEM-PII-2",
+                    text="Ships today?",
+                    from_user_id="BUYER-PII-2",
+                    answer={"date_created": _dt(3)},
+                ),
+            ]
+        }
+    )
+    request = _write_request()
+
+    summary = await collect_reconciliation_counts(
+        db=db,
+        request=request,
+        expected=ExpectedReadModelCounts(counts={"questions": 2}),
+        read_models=("questions",),
+    )
+    counts = await write_complete_read_model_freshness_markers(
+        db=db, request=request, summary=summary
+    )
+
+    aggregate = summary.to_sanitized_dict()["aggregates"][0]
+    assert aggregate["persisted_count"] == 2
+    assert aggregate["complete_count"] == 1
+    assert aggregate["missing_count"] == 0
+    assert counts == {}
+    assert db["sheets_read_model_freshness"].documents == []
+
+
+@pytest.mark.asyncio
+async def test_questions_expected_counts_come_from_historical_question_coverage() -> None:
+    async def fake_historical_source(*, db: Any, request: Any) -> FakeHistoricalMeliSummary:
+        return FakeHistoricalMeliSummary(
+            orders_found=0,
+            order_ids=[],
+            shipment_ids=[],
+            item_ids=[],
+            questions_found=2,
+            question_ids=["QUESTION-PII-1", "QUESTION-PII-2"],
+        )
+
+    expected = await collect_expected_read_model_counts(
+        db=FakeAsyncDb({}),
+        request=_request(),
+        historical_meli_source=fake_historical_source,
+    )
+
+    assert expected.counts["questions"] == 2
+    assert expected.refs["questions"] == frozenset({"QUESTION-PII-1", "QUESTION-PII-2"})
+    assert expected.truth_mode["questions"] == "expected"
+
+
+@pytest.mark.asyncio
+async def test_missing_question_detail_blocks_reconciled_marker_with_sanitized_issue() -> None:
+    class QuestionGapGateway:
+        async def fetch_resource(self, *, seller_id: str, path: str) -> Any:
+            if path.startswith("/orders/search?"):
+                return {"results": [], "paging": {"total": 0, "limit": 50, "offset": 0}}
+            if path.startswith("/questions/search?"):
+                return {
+                    "questions": [
+                        {"id": "Q1", "date_created": "2026-06-02T10:00:00Z"},
+                        {"id": "Q2", "date_created": "2026-06-02T10:01:00Z"},
+                    ],
+                    "paging": {"total": 2, "limit": 50, "offset": 0},
+                }
+            if path == "/questions/Q1":
+                return {
+                    "id": "Q1",
+                    "date_created": "2026-06-02T10:00:00Z",
+                    "status": "ANSWERED",
+                    "item_id": "ITEM-PII-1",
+                    "text": "RAW QUESTION BODY MUST NOT LEAK",
+                    "from": {"id": "BUYER-PII-1"},
+                    "answer": {"text": "RAW ANSWER MUST NOT LEAK"},
+                }
+            if path == "/questions/Q2":
+                return {"message": "detail missing without question id"}
+            raise AssertionError(f"Unexpected gateway path: {path}")
+
+    async def historical_source(*, db: Any, request: Any) -> Any:
+        from zeler_sheets.historical_meli_backfill import run_historical_meli_backfill
+
+        gateway = QuestionGapGateway()
+        return await run_historical_meli_backfill(
+            db=db,
+            gateway=gateway,
+            order_detail_gateway=gateway,
+            seller_id=request.seller_id,
+            date_from=request.date_range.date_from,
+            date_to=request.date_range.date_to,
+            dry_run=True,
+            approved_runtime=request.approved_runtime,
+            include_questions=True,
+        )
+
+    db = FakeAsyncDb(
+        {
+            "questions": [
+                _seller_doc(
+                    _id="Q1",
+                    date_created=_dt(2),
+                    status="ANSWERED",
+                    item_id="ITEM-PII-1",
+                    text="Persisted body must not leak",
+                    from_user_id="BUYER-PII-1",
+                )
+            ]
+        }
+    )
+    request = _write_request()
+
+    expected = await collect_expected_read_model_counts(
+        db=db,
+        request=request,
+        historical_meli_source=historical_source,
+    )
+    summary = await collect_reconciliation_counts(
+        db=db,
+        request=request,
+        expected=expected,
+        read_models=("questions",),
+    )
+    marker_counts = await write_complete_read_model_freshness_markers(
+        db=db, request=request, summary=summary
+    )
+
+    output = summary.to_sanitized_dict()
+    aggregate = output["aggregates"][0]
+    serialized = json.dumps(output, sort_keys=True)
+
+    assert expected.counts["questions"] == 2
+    assert expected.refs["questions"] == frozenset({"Q1", "Q2"})
+    assert aggregate["expected_count"] == 2
+    assert aggregate["persisted_count"] == 1
+    assert aggregate["missing_count"] == 1
+    assert aggregate["issues"] == [{"code": "question_detail_missing", "count": 1}]
+    assert marker_counts == {}
+    assert db["sheets_read_model_freshness"].documents == []
+    assert "RAW QUESTION BODY" not in serialized
+    assert "RAW ANSWER" not in serialized
+    assert "BUYER-PII" not in serialized
 
 
 def test_reconciled_marker_requires_reconciled_state_and_enclosing_range() -> None:

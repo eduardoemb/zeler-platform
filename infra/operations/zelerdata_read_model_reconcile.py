@@ -67,7 +67,7 @@ DEFAULT_STOP_CRITERIA: tuple[str, ...] = (
     "formula_regression",
 )
 _OBSERVED_ONLY_MODELS = {"item_status_states", "item_status_transitions"}
-_HISTORICAL_MELI_MODELS = ("orders", "shipments", "items")
+_HISTORICAL_MELI_MODELS = ("orders", "shipments", "items", "questions")
 _BOUNDED_REF_MODELS = {"shipments", "items"}
 _READ_MODEL_COLLECTIONS: Mapping[str, str] = {
     "catalog_product_snapshots": "sheets_catalog_product_snapshots",
@@ -78,7 +78,7 @@ _COMPLETE_FIELDS: Mapping[str, tuple[str, ...]] = {
     "orders": ("items.0",),
     "shipments": ("order_id", "status"),
     "items": ("status", "last_meli_sync_at"),
-    "questions": ("date_created", "status", "item_id", "answer.date_created"),
+    "questions": ("date_created", "status", "item_id", "text", "from_user_id"),
     "claims": ("date_created", "order_id", "status", "returned_quantity"),
     "catalog_product_snapshots": ("catalog_product_id",),
     "catalog_buybox_snapshots": ("item_id", "catalog_product_id"),
@@ -190,9 +190,13 @@ class ReadModelIssue:
     read_model: str
     code: str
     message: str
+    count: int | None = None
 
-    def to_sanitized_dict(self) -> dict[str, str]:
-        return {"code": self.code}
+    def to_sanitized_dict(self) -> dict[str, int | str]:
+        sanitized: dict[str, int | str] = {"code": self.code}
+        if self.count is not None:
+            sanitized["count"] = self.count
+        return sanitized
 
 
 @dataclass(frozen=True)
@@ -682,6 +686,7 @@ async def _collect_historical_meli_expected_counts(
         max_items=request.controls.max_items,
         max_shipments=request.controls.max_shipments,
         resume_after_order_id=request.controls.resume_after_order_id,
+        include_questions=True,
     )
 
 
@@ -716,6 +721,7 @@ async def execute_reconciliation_write(
         max_items=request.controls.max_items,
         max_shipments=request.controls.max_shipments,
         resume_after_order_id=request.controls.resume_after_order_id,
+        include_questions=True,
     )
     _enforce_write_count_safety_controls(
         _write_counts_from_summary(summary), controls=request.controls
@@ -954,10 +960,24 @@ def _aggregate_has_complete_scoped_coverage(aggregate: ReadModelAggregate) -> bo
 
 
 async def _complete_count(collection: Any, read_model: str, filter_spec: dict[str, Any]) -> int:
+    if read_model == "questions":
+        return await _complete_questions_count(collection, filter_spec)
     required_fields = _COMPLETE_FIELDS.get(read_model, ())
     if not required_fields:
         return int(await collection.count_documents(filter_spec))
     return int(await collection.count_documents(_with_present_fields(filter_spec, required_fields)))
+
+
+async def _complete_questions_count(collection: Any, filter_spec: dict[str, Any]) -> int:
+    complete_filter = _with_present_fields(
+        filter_spec,
+        _COMPLETE_FIELDS["questions"],
+    )
+    complete_filter["$or"] = [
+        {"status": {"$ne": "ANSWERED"}},
+        _with_present_fields({}, ("answer.text", "answer.date_created")),
+    ]
+    return int(await collection.count_documents(complete_filter))
 
 
 async def _order_date_delta_counts(
@@ -1173,6 +1193,32 @@ def _historical_meli_expected_counts(summary: Any) -> HistoricalMeliExpectedCoun
         refs[read_model] = model_refs
         truth_mode[read_model] = "expected"
 
+    question_refs = _summary_ref_set(summary, "question_ids")
+    question_count = _summary_optional_int(summary, "questions_found")
+    question_detail_missing = _summary_optional_int(summary, "question_detail_missing") or 0
+    if question_count is None and question_refs is not None:
+        question_count = len(question_refs)
+    if question_count is None:
+        counts["questions"] = None
+        truth_mode["questions"] = "unavailable"
+        issues.append(
+            _issue("questions", "expected_unavailable", "historical questions unavailable")
+        )
+    else:
+        counts["questions"] = question_count
+        if question_refs is not None:
+            refs["questions"] = question_refs
+        truth_mode["questions"] = "expected"
+    if question_detail_missing > 0:
+        issues.append(
+            _issue(
+                "questions",
+                "question_detail_missing",
+                "historical question detail coverage incomplete",
+                count=question_detail_missing,
+            )
+        )
+
     return HistoricalMeliExpectedCounts(
         counts=counts,
         refs=refs,
@@ -1245,8 +1291,10 @@ def _exception_status_code(exc: Exception) -> int | None:
     return None
 
 
-def _issue(read_model: str, code: str, message: str) -> ReadModelIssue:
-    return ReadModelIssue(read_model=read_model, code=code, message=message)
+def _issue(
+    read_model: str, code: str, message: str, *, count: int | None = None
+) -> ReadModelIssue:
+    return ReadModelIssue(read_model=read_model, code=code, message=message, count=count)
 
 
 def _positive_int(value: str) -> int:
@@ -1268,15 +1316,20 @@ def _write_counts_from_summary(summary: Any) -> dict[str, int]:
         "planned_orders",
         "planned_items",
         "planned_shipments",
+        "planned_questions",
         "written_orders",
         "written_items",
         "written_shipments",
+        "written_questions",
         "item_detail_missing",
+        "question_detail_missing",
         "redacted_errors",
     )
     counts: dict[str, int] = {}
     for field_name in fields:
         value = getattr(summary, field_name, None)
+        if field_name == "question_detail_missing" and value == 0:
+            continue
         if isinstance(value, int):
             counts[field_name] = value
     return counts
@@ -1377,7 +1430,11 @@ def _enforce_write_count_safety_controls(
 
 
 def _write_count_error_count(counts: Mapping[str, int]) -> int:
-    return int(counts.get("redacted_errors", 0)) + int(counts.get("item_detail_diagnostics", 0))
+    return (
+        int(counts.get("redacted_errors", 0))
+        + int(counts.get("item_detail_diagnostics", 0))
+        + int(counts.get("question_detail_missing", 0))
+    )
 
 
 def _write_count_rate_limit_count(counts: Mapping[str, int]) -> int:
@@ -1395,6 +1452,7 @@ def _summary_error_count(summary: ReconciliationSummary) -> int:
             in {
                 "auth_error",
                 "expected_unavailable",
+                "question_detail_missing",
                 "query_anomaly",
                 "rate_limit",
                 "validator_or_index_anomaly",
