@@ -766,6 +766,8 @@ class SheetsEventPersistence:
             value for value in (existing_fresh_until, observed_at) if value is not None
         )
         existing_state = str(existing.get("state") or "") if isinstance(existing, dict) else ""
+        if existing_state == "reconciled":
+            return
         marker = {
             **(existing if isinstance(existing, dict) else {}),
             "_id": marker_id,
@@ -778,7 +780,16 @@ class SheetsEventPersistence:
             "source": "questions_event_persistence",
             "schema_version": 1,
         }
-        await collection.replace_one({"_id": marker_id}, marker, upsert=True)
+        result = await collection.replace_one(
+            {
+                "_id": marker_id,
+                "$or": [{"state": {"$exists": False}}, {"state": "fresh"}],
+            },
+            marker,
+            upsert=False,
+        )
+        if result.matched_count == 0 and existing is None:
+            await collection.update_one({"_id": marker_id}, {"$setOnInsert": marker}, upsert=True)
 
 
 def _canonical_item_document(
