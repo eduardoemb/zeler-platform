@@ -376,7 +376,7 @@ class ExtensionTokenService:
         if doc.get("status") != "active":
             raise ExtensionTokenValidationError("TOKEN_REVOKED", "extension token is revoked")
         expires_at = doc.get("expires_at")
-        if expires_at is not None and expires_at <= self._now():
+        if expires_at is not None and _is_expired(expires_at, now=self._now()):
             raise ExtensionTokenValidationError("TOKEN_REVOKED", "extension token expired")
 
     def _validate_revealable(self, doc: dict[str, Any]) -> None:
@@ -385,7 +385,7 @@ class ExtensionTokenService:
         if doc.get("status") != "active":
             raise _lifecycle_error(TOKEN_NOT_ACTIVE)
         expires_at = doc.get("expires_at")
-        if expires_at is not None and expires_at <= self._now():
+        if expires_at is not None and _is_expired(expires_at, now=self._now()):
             raise _lifecycle_error(TOKEN_EXPIRED)
 
     async def _enforce_rate_limit(
@@ -460,6 +460,16 @@ def _metadata_from_doc(doc: dict[str, Any]) -> ExtensionTokenMetadata:
 
 def _metadata_payload(doc: dict[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in doc.items() if key not in METADATA_EXCLUDED_FIELDS}
+
+
+def _is_expired(expires_at: datetime, *, now: datetime) -> bool:
+    return _as_utc(expires_at) <= _as_utc(now)
+
+
+def _as_utc(value: datetime) -> datetime:
+    if value.tzinfo is None or value.tzinfo.utcoffset(value) is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
 
 
 def _has_recoverable_secret(doc: dict[str, Any]) -> bool:

@@ -521,6 +521,36 @@ async def test_reveal_rejects_revoked_deleted_and_expired_tokens_with_stable_cod
 
 
 @pytest.mark.asyncio
+async def test_reveal_rejects_naive_expired_token_from_mongo_with_stable_code() -> None:
+    now = datetime(2026, 5, 13, 12, 0, tzinfo=UTC)
+    db = FakeDb()
+    service = _service(
+        db,
+        now=now,
+        token_values=["expired-secret"],
+        secret_cipher=FakeExtensionTokenCipher(),
+    )
+    expired = await service.create_token(
+        owner_user_id="user-1",
+        label="Expired",
+        seller_scopes=[SellerScope(seller_id="123456789", nickname="HOPEMOB")],
+        expires_at=now - timedelta(seconds=1),
+    )
+    db.sheets_extension_tokens.documents[expired.metadata.id]["expires_at"] = (
+        now - timedelta(seconds=1)
+    ).replace(tzinfo=None)
+
+    with pytest.raises(ExtensionTokenValidationError) as exc_info:
+        await service.reveal_token(
+            expired.metadata.id,
+            owner_user_id="user-1",
+            allowed_seller_ids={"123456789"},
+        )
+
+    assert exc_info.value.code == "TOKEN_EXPIRED"
+
+
+@pytest.mark.asyncio
 async def test_list_tokens_filters_deleted_seller_scope_and_secret_fields() -> None:
     now = datetime(2026, 5, 13, 12, 0, tzinfo=UTC)
     db = FakeDb()
@@ -609,6 +639,30 @@ async def test_validate_token_enforces_seller_scope_and_records_audit_without_se
     assert audit_events[-1]["outcome"] == "denied"
     assert audit_events[-1]["error_code"] == "SELLER_FORBIDDEN"
     assert "valid-secret-material" not in repr(audit_events[-1])
+
+
+@pytest.mark.asyncio
+async def test_validate_token_accepts_naive_future_expires_at_from_mongo() -> None:
+    now = datetime(2026, 5, 13, 12, 0, tzinfo=UTC)
+    db = FakeDb()
+    service = _service(db, now=now, token_values=["naive-future-secret"])
+    issued = await service.create_token(
+        owner_user_id="user-1",
+        label="Formula access",
+        seller_scopes=[SellerScope(seller_id="123456789", nickname="HOPEMOB")],
+        expires_at=now + timedelta(minutes=5),
+    )
+    db.sheets_extension_tokens.documents[issued.metadata.id]["expires_at"] = (
+        now + timedelta(minutes=5)
+    ).replace(tzinfo=None)
+
+    validation = await service.validate_token(
+        issued.token_once,
+        cuenta="HOPEMOB",
+        formula="SHEETSELLER_STOCK",
+    )
+
+    assert validation.token_id == issued.metadata.id
 
 
 @pytest.mark.asyncio
