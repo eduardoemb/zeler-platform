@@ -1696,7 +1696,7 @@ async def test_catalog_expected_counts_come_from_scoped_items_with_catalog_produ
 
 
 @pytest.mark.asyncio
-async def test_incomplete_catalog_snapshots_keep_markers_unwritten() -> None:
+async def test_catalog_product_optional_display_fields_do_not_block_marker_readiness() -> None:
     db = FakeAsyncDb(
         {
             "sheets_catalog_product_snapshots": [
@@ -1704,26 +1704,128 @@ async def test_incomplete_catalog_snapshots_keep_markers_unwritten() -> None:
                     _id="PRODUCT-PII-1",
                     catalog_product_id="CATALOG-PII-1",
                     title="Catalog title",
-                    description="Catalog description",
-                    image_url="https://img.example/catalog.jpg",
                     attributes={"BRAND": "Acme"},
                     snapshot_at=_dt(2),
                     source="historical_meli_backfill",
                 ),
-                _seller_doc(_id="PRODUCT-PII-2", catalog_product_id="CATALOG-PII-2"),
+                _seller_doc(
+                    _id="PRODUCT-PII-2",
+                    catalog_product_id="CATALOG-PII-2",
+                    title="Catalog title two",
+                    description=None,
+                    image_url=None,
+                    attributes={},
+                    snapshot_at=_dt(2),
+                    source="historical_meli_backfill",
+                ),
+            ],
+        }
+    )
+    request = _write_request()
+
+    summary = await collect_reconciliation_counts(
+        db=db,
+        request=request,
+        expected=ExpectedReadModelCounts(
+            counts={"catalog_product_snapshots": 2},
+            refs={"catalog_product_snapshots": frozenset({"CATALOG-PII-1", "CATALOG-PII-2"})},
+        ),
+        read_models=("catalog_product_snapshots",),
+    )
+    counts = await write_complete_read_model_freshness_markers(
+        db=db, request=request, summary=summary
+    )
+
+    aggregate = summary.to_sanitized_dict()["aggregates"][0]
+    assert aggregate["persisted_count"] == 2
+    assert aggregate["complete_count"] == 2
+    assert aggregate["missing_count"] == 0
+    assert counts == {"freshness_markers_written": 1}
+    assert db["sheets_read_model_freshness"].documents[0]["read_model"] == (
+        "catalog_product_snapshots"
+    )
+
+
+@pytest.mark.asyncio
+async def test_catalog_buybox_optional_numeric_and_display_fields_do_not_block_readiness() -> None:
+    db = FakeAsyncDb(
+        {
+            "sheets_catalog_buybox_snapshots": [
+                _seller_doc(
+                    _id="BUYBOX-PII-2",
+                    item_id="ITEM-PII-2",
+                    catalog_product_id="CATALOG-PII-2",
+                    buybox_status="competing",
+                    snapshot_at=_dt(2),
+                    source="historical_meli_backfill",
+                ),
+                _seller_doc(
+                    _id="BUYBOX-PII-3",
+                    item_id="ITEM-PII-3",
+                    catalog_product_id="CATALOG-PII-3",
+                    title=None,
+                    available_quantity=None,
+                    buybox_status="not_winning",
+                    price=None,
+                    winning_price=None,
+                    competitor_count=None,
+                    only_competitor=None,
+                    snapshot_at=_dt(3),
+                    source="historical_meli_backfill",
+                ),
+            ],
+        }
+    )
+    request = _write_request()
+
+    summary = await collect_reconciliation_counts(
+        db=db,
+        request=request,
+        expected=ExpectedReadModelCounts(
+            counts={"catalog_buybox_snapshots": 2},
+            refs={
+                "catalog_buybox_snapshots": frozenset({"ITEM-PII-2", "ITEM-PII-3"}),
+            },
+        ),
+        read_models=("catalog_buybox_snapshots",),
+    )
+    counts = await write_complete_read_model_freshness_markers(
+        db=db, request=request, summary=summary
+    )
+
+    aggregate = summary.to_sanitized_dict()["aggregates"][0]
+    assert aggregate["persisted_count"] == 2
+    assert aggregate["complete_count"] == 2
+    assert aggregate["missing_count"] == 0
+    assert counts == {"freshness_markers_written": 1}
+    assert db["sheets_read_model_freshness"].documents[0]["read_model"] == (
+        "catalog_buybox_snapshots"
+    )
+
+
+@pytest.mark.asyncio
+async def test_missing_catalog_required_snapshot_fields_keep_markers_unwritten() -> None:
+    db = FakeAsyncDb(
+        {
+            "sheets_catalog_product_snapshots": [
+                _seller_doc(
+                    _id="PRODUCT-PII-1",
+                    catalog_product_id="CATALOG-PII-1",
+                    snapshot_at=_dt(2),
+                    source="historical_meli_backfill",
+                ),
+                _seller_doc(
+                    _id="PRODUCT-PII-2",
+                    catalog_product_id="CATALOG-PII-2",
+                    source="historical_meli_backfill",
+                ),
             ],
             "sheets_catalog_buybox_snapshots": [
                 _seller_doc(
                     _id="BUYBOX-PII-1",
                     item_id="ITEM-PII-1",
                     catalog_product_id="CATALOG-PII-1",
-                    title="Item one",
-                    available_quantity=7,
                     buybox_status="winning",
-                    price=120,
-                    winning_price=118,
-                    competitor_count=2,
-                    only_competitor="No",
                     snapshot_at=_dt(2),
                     source="historical_meli_backfill",
                 ),
@@ -1731,12 +1833,7 @@ async def test_incomplete_catalog_snapshots_keep_markers_unwritten() -> None:
                     _id="BUYBOX-PII-2",
                     item_id="ITEM-PII-2",
                     catalog_product_id="CATALOG-PII-2",
-                    title="Item two",
-                    available_quantity=5,
-                    buybox_status="competing",
-                    price=130,
-                    winning_price=125,
-                    only_competitor="No",
+                    snapshot_at=_dt(2),
                 ),
             ],
         }
