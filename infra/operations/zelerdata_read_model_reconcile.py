@@ -547,6 +547,7 @@ class RuntimeDatabase:
 class RuntimeHistoricalMeliGateways:
     gateway: Any = field(repr=False)
     order_detail_gateway: Any = field(repr=False)
+    catalog_gateway: Any = field(repr=False)
 
 
 def parse_reconciliation_date_range(date_from: str, date_to: str) -> ReconciliationDateRange:
@@ -694,6 +695,7 @@ def create_runtime_historical_meli_gateways() -> RuntimeHistoricalMeliGateways:
     from zeler_platform_core.auth.meli_gateway_auth import MeliGatewayAuth
     from zeler_platform_core.clients.meli_gateway_client import MeliGatewayClient
     from zeler_sheets.historical_meli_backfill import (
+        DEFAULT_CATALOG_GATEWAY_MODULE_ID,
         DEFAULT_GATEWAY_BASE_URL,
         DEFAULT_GATEWAY_MODULE_ID,
         DEFAULT_ORDER_DETAIL_GATEWAY_MODULE_ID,
@@ -711,10 +713,24 @@ def create_runtime_historical_meli_gateways() -> RuntimeHistoricalMeliGateways:
             gateway_base_url,
             MeliGatewayAuth(DEFAULT_ORDER_DETAIL_GATEWAY_MODULE_ID, kms_client),
         )
+    if DEFAULT_CATALOG_GATEWAY_MODULE_ID == DEFAULT_GATEWAY_MODULE_ID:
+        catalog_gateway = gateway
+    elif DEFAULT_CATALOG_GATEWAY_MODULE_ID == DEFAULT_ORDER_DETAIL_GATEWAY_MODULE_ID:
+        catalog_gateway = order_detail_gateway
+    else:
+        catalog_gateway = MeliGatewayClient(
+            gateway_base_url,
+            MeliGatewayAuth(DEFAULT_CATALOG_GATEWAY_MODULE_ID, kms_client),
+        )
     return RuntimeHistoricalMeliGateways(
         gateway=gateway,
         order_detail_gateway=order_detail_gateway,
+        catalog_gateway=catalog_gateway,
     )
+
+
+def _runtime_catalog_gateway(gateways: RuntimeHistoricalMeliGateways) -> Any:
+    return getattr(gateways, "catalog_gateway", gateways.order_detail_gateway)
 
 
 async def _collect_historical_meli_expected_counts(
@@ -727,6 +743,7 @@ async def _collect_historical_meli_expected_counts(
         db=db,
         gateway=gateways.gateway,
         order_detail_gateway=gateways.order_detail_gateway,
+        catalog_gateway=_runtime_catalog_gateway(gateways),
         seller_id=request.seller_id,
         date_from=request.date_range.date_from,
         date_to=request.date_range.date_to,
@@ -764,6 +781,7 @@ async def execute_reconciliation_write(
         db=db,
         gateway=gateways.gateway,
         order_detail_gateway=gateways.order_detail_gateway,
+        catalog_gateway=_runtime_catalog_gateway(gateways),
         seller_id=request.seller_id,
         date_from=request.date_range.date_from,
         date_to=request.date_range.date_to,

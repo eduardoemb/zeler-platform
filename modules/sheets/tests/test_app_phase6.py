@@ -44,12 +44,21 @@ def test_sheets_manifest_validates_owned_collections_and_readonly_scopes() -> No
     assert manifest.allowed_meli_scopes == [
         "GET /items",
         "GET /items/*",
+        "GET /products/*",
         "GET /sites/*/listing_prices",
         "GET /users/*/shipping_options/free",
         "GET /orders/*",
         "GET /shipments/*",
         "GET /questions/*",
     ]
+    assert _scope_matches(
+        method="GET", path="/products/CAT-PII-1", allowed_scopes=manifest.allowed_meli_scopes
+    )
+    assert _scope_matches(
+        method="GET",
+        path="/products/CAT-PII-1/items",
+        allowed_scopes=manifest.allowed_meli_scopes,
+    )
     assert _scope_matches(
         method="GET", path="/shipments/3001/costs", allowed_scopes=manifest.allowed_meli_scopes
     )
@@ -86,6 +95,7 @@ async def test_sheets_startup_registers_manifest_and_health_ready() -> None:
         "allowed_meli_scopes": [
             "GET /items",
             "GET /items/*",
+            "GET /products/*",
             "GET /sites/*/listing_prices",
             "GET /users/*/shipping_options/free",
             "GET /orders/*",
