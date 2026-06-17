@@ -252,6 +252,98 @@ def _write_request(*, extra_args: list[str] | None = None) -> Any:
     return build_reconciliation_request(build_arg_parser().parse_args(args))
 
 
+@pytest.mark.asyncio
+async def test_expected_counts_passes_catalog_gateway_to_historical_backfill(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from infra.operations import zelerdata_read_model_reconcile
+
+    from zeler_sheets import historical_meli_backfill
+
+    primary_gateway = object()
+    order_detail_gateway = object()
+    catalog_gateway = object()
+    captured_catalog_gateway: dict[str, Any] = {}
+
+    async def fake_historical_backfill(**kwargs: Any) -> FakeHistoricalMeliSummary:
+        captured_catalog_gateway["value"] = kwargs["catalog_gateway"]
+        assert kwargs["gateway"] is primary_gateway
+        assert kwargs["order_detail_gateway"] is order_detail_gateway
+        return FakeHistoricalMeliSummary(orders_found=0, order_ids=[], shipment_ids=[], item_ids=[])
+
+    monkeypatch.setattr(
+        zelerdata_read_model_reconcile,
+        "create_runtime_historical_meli_gateways",
+        lambda: type(
+            "Gateways",
+            (),
+            {
+                "gateway": primary_gateway,
+                "order_detail_gateway": order_detail_gateway,
+                "catalog_gateway": catalog_gateway,
+            },
+        )(),
+    )
+    monkeypatch.setattr(
+        historical_meli_backfill, "run_historical_meli_backfill", fake_historical_backfill
+    )
+
+    await zelerdata_read_model_reconcile._collect_historical_meli_expected_counts(
+        db=FakeAsyncDb({}), request=_request()
+    )
+
+    assert captured_catalog_gateway["value"] is catalog_gateway
+
+
+@pytest.mark.asyncio
+async def test_reconciliation_write_passes_catalog_gateway_to_historical_backfill(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from infra.operations import zelerdata_read_model_reconcile
+
+    from zeler_sheets import historical_meli_backfill, sheetseller_backfill
+
+    primary_gateway = object()
+    order_detail_gateway = object()
+    catalog_gateway = object()
+    captured_catalog_gateway: dict[str, Any] = {}
+
+    async def fake_historical_backfill(**kwargs: Any) -> FakeHistoricalMeliSummary:
+        captured_catalog_gateway["value"] = kwargs["catalog_gateway"]
+        assert kwargs["gateway"] is primary_gateway
+        assert kwargs["order_detail_gateway"] is order_detail_gateway
+        return FakeHistoricalMeliSummary(orders_found=0, order_ids=[], shipment_ids=[], item_ids=[])
+
+    async def fake_item_enrichment(**_: Any) -> FakeWriteSummary:
+        return FakeWriteSummary()
+
+    async def fake_formula_rebuild(**_: Any) -> FakeWriteSummary:
+        return FakeWriteSummary()
+
+    monkeypatch.setattr(
+        zelerdata_read_model_reconcile,
+        "create_runtime_historical_meli_gateways",
+        lambda: type(
+            "Gateways",
+            (),
+            {
+                "gateway": primary_gateway,
+                "order_detail_gateway": order_detail_gateway,
+                "catalog_gateway": catalog_gateway,
+            },
+        )(),
+    )
+    monkeypatch.setattr(
+        historical_meli_backfill, "run_historical_meli_backfill", fake_historical_backfill
+    )
+    monkeypatch.setattr(sheetseller_backfill, "run_item_detail_enrichment", fake_item_enrichment)
+    monkeypatch.setattr(sheetseller_backfill, "run_sheetseller_backfill", fake_formula_rebuild)
+
+    await execute_reconciliation_write(db=FakeAsyncDb({}), request=_write_request())
+
+    assert captured_catalog_gateway["value"] is catalog_gateway
+
+
 def _dt(day: int) -> datetime:
     return datetime(2026, 6, day, tzinfo=UTC)
 

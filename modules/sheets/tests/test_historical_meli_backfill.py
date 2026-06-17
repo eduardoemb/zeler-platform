@@ -256,6 +256,19 @@ class FakeOrderDetailGateway:
         raise AssertionError(f"Unexpected order detail gateway path: {path}")
 
 
+class FakeCatalogGateway:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str]] = []
+
+    async def fetch_resource(self, *, seller_id: str, path: str) -> Any:
+        self.calls.append((seller_id, path))
+        if path == "/products/CAT-MLA1":
+            return _catalog_product_detail()
+        if path == "/items/MLA1/price_to_win?version=v2":
+            return _price_to_win_detail()
+        raise AssertionError(f"Unexpected catalog gateway path: {path}")
+
+
 def test_parse_inclusive_date_range_uses_exclusive_next_day() -> None:
     parsed = parse_inclusive_date_range("2026-05-01", "2026-05-01")
 
@@ -965,11 +978,13 @@ async def test_historical_backfill_filters_non_return_claim_types() -> None:
 async def test_historical_backfill_reconciles_catalog_product_and_buybox_snapshots() -> None:
     db = FakeDb()
     gateway = FakeGateway()
+    catalog_gateway = FakeCatalogGateway()
 
     summary = await run_historical_meli_backfill(
         db=db,
         gateway=gateway,
         order_detail_gateway=FakeOrderDetailGateway(),
+        catalog_gateway=catalog_gateway,
         seller_id="82453304",
         date_from="2026-05-01",
         date_to="2026-05-01",
@@ -985,14 +1000,22 @@ async def test_historical_backfill_reconciles_catalog_product_and_buybox_snapsho
     assert summary.catalog_buybox_snapshots_fetched == 1
     assert summary.written_catalog_product_snapshots == 1
     assert summary.written_catalog_buybox_snapshots == 1
+    primary_paths = [path for _, path in gateway.calls]
+    catalog_paths = [path for _, path in catalog_gateway.calls]
     assert (
         "82453304",
         "/products/CAT-MLA1",
-    ) in gateway.calls
+    ) in catalog_gateway.calls
     assert (
         "82453304",
         "/items/MLA1/price_to_win?version=v2",
-    ) in gateway.calls
+    ) in catalog_gateway.calls
+    assert catalog_paths == [
+        "/products/CAT-MLA1",
+        "/items/MLA1/price_to_win?version=v2",
+    ]
+    assert "/products/CAT-MLA1" not in primary_paths
+    assert "/items/MLA1/price_to_win?version=v2" not in primary_paths
     product = db["sheets_catalog_product_snapshots"].documents["82453304:CAT-MLA1"]
     assert product["source"] == "historical_meli_backfill"
     assert product["catalog_product_id"] == "CAT-MLA1"

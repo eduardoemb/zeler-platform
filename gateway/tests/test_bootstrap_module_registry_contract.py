@@ -31,4 +31,10 @@ def test_bootstrap_module_registry_seed_authorizes_bootstrap_read_paths() -> Non
     assert _scope_matches(
         method="GET", path="/post-purchase/v1/claims/search", allowed_scopes=scopes
     )
+    assert "GET /products/*" not in scopes
+    assert not _scope_matches(method="GET", path="/products/CAT-PII-1", allowed_scopes=scopes)
+    assert not _scope_matches(method="GET", path="/products/CAT-PII-1/items", allowed_scopes=scopes)
+    assert not _scope_matches(
+        method="GET", path="/items/ITEM-PII-1/price_to_win?version=v2", allowed_scopes=scopes
+    )
     assert not _scope_matches(method="POST", path="/items/MLA123", allowed_scopes=scopes)

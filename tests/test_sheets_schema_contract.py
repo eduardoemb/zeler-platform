@@ -706,3 +706,12 @@ def test_sheets_manifest_allows_listing_prices_scope() -> None:
     manifest = validate_manifest("modules/sheets/manifest.yaml")
 
     assert "GET /sites/*/listing_prices" in manifest.allowed_meli_scopes
+
+
+def test_sheets_manifest_allows_catalog_product_scope() -> None:
+    from zeler_platform_core.runtime.manifest import validate_manifest
+
+    manifest = validate_manifest("modules/sheets/manifest.yaml")
+
+    assert "GET /products/*" in manifest.allowed_meli_scopes
+    assert "POST /products/*" not in manifest.allowed_meli_scopes

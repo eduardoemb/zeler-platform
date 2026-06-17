@@ -21,6 +21,7 @@ from zeler_sheets.sheetseller_backfill import _schema_safe_shipment_real_shippin
 DEFAULT_GATEWAY_BASE_URL = "http://gateway:8080/proxy/meli"
 DEFAULT_GATEWAY_MODULE_ID = "bootstrap"
 DEFAULT_ORDER_DETAIL_GATEWAY_MODULE_ID = "sheets"
+DEFAULT_CATALOG_GATEWAY_MODULE_ID = "sheets"
 DEFAULT_ORDER_PAGE_LIMIT = 50
 DEFAULT_QUESTION_PAGE_LIMIT = 50
 ITEM_DETAIL_BATCH_SIZE = 20
@@ -203,6 +204,7 @@ async def run_historical_meli_backfill(
     db: Any,
     gateway: HistoricalMeliGateway,
     order_detail_gateway: HistoricalMeliGateway,
+    catalog_gateway: HistoricalMeliGateway | None = None,
     seller_id: str,
     date_from: str,
     date_to: str,
@@ -230,6 +232,7 @@ async def run_historical_meli_backfill(
         raise ValueError("max-items must be greater than zero")
     if max_shipments is not None and max_shipments < 1:
         raise ValueError("max-shipments must be greater than zero")
+    catalog_gateway = catalog_gateway or order_detail_gateway
 
     date_range = parse_inclusive_date_range(date_from, date_to)
     search_orders = await _search_orders(
@@ -344,12 +347,12 @@ async def run_historical_meli_backfill(
             _catalog_snapshot_source_rows_from_resources(items),
         )
         catalog_product_snapshots = await _fetch_catalog_product_snapshots(
-            gateway=gateway,
+            gateway=catalog_gateway,
             seller_id=seller_id,
             catalog_product_ids=_unique_strings(row.catalog_product_id for row in catalog_scope),
         )
         catalog_buybox_snapshots = await _fetch_catalog_buybox_snapshots(
-            gateway=gateway,
+            gateway=catalog_gateway,
             seller_id=seller_id,
             source_rows=catalog_scope,
         )
@@ -1314,6 +1317,14 @@ def build_arg_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--catalog-module-id",
+        default=DEFAULT_CATALOG_GATEWAY_MODULE_ID,
+        help=(
+            "Gateway admin client module id for /products/* and /items/*/price_to_win reads. "
+            f"Defaults to {DEFAULT_CATALOG_GATEWAY_MODULE_ID!r}."
+        ),
+    )
+    parser.add_argument(
         "--confirm-approved-runtime",
         action="store_true",
         help="Required with --write to confirm execution from an approved runtime context.",
@@ -1373,20 +1384,33 @@ async def _run_cli(args: argparse.Namespace) -> HistoricalMeliBackfillSummary:
     try:
         gateway_base_url = os.environ.get("GATEWAY_BASE_URL", DEFAULT_GATEWAY_BASE_URL)
         kms_client = kms_v1.KeyManagementServiceClient()
-        gateway = MeliGatewayClient(
-            gateway_base_url,
-            MeliGatewayAuth(str(args.module_id), kms_client),
-        )
-        order_detail_gateway = gateway
-        if str(args.order_detail_module_id) != str(args.module_id):
-            order_detail_gateway = MeliGatewayClient(
+        gateway_module_id = str(args.module_id)
+        order_detail_module_id = str(args.order_detail_module_id)
+        catalog_module_id = str(args.catalog_module_id)
+
+        def gateway_for_module(module_id: str) -> MeliGatewayClient:
+            return MeliGatewayClient(
                 gateway_base_url,
-                MeliGatewayAuth(str(args.order_detail_module_id), kms_client),
+                MeliGatewayAuth(module_id, kms_client),
             )
+
+        gateway = gateway_for_module(gateway_module_id)
+        order_detail_gateway = (
+            gateway
+            if order_detail_module_id == gateway_module_id
+            else gateway_for_module(order_detail_module_id)
+        )
+        if catalog_module_id == gateway_module_id:
+            catalog_gateway = gateway
+        elif catalog_module_id == order_detail_module_id:
+            catalog_gateway = order_detail_gateway
+        else:
+            catalog_gateway = gateway_for_module(catalog_module_id)
         return await run_historical_meli_backfill(
             db=client[mongo_db_name],
             gateway=gateway,
             order_detail_gateway=order_detail_gateway,
+            catalog_gateway=catalog_gateway,
             seller_id=str(args.seller_id),
             date_from=str(args.date_from),
             date_to=str(args.date_to),
