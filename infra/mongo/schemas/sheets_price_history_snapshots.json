@@ -9,12 +9,26 @@
       "item_id": {
         "bsonType": "string"
       },
+      "observation_basis": {
+        "enum": [
+          "current_observed",
+          "event_observed",
+          "zeler_first_observed"
+        ]
+      },
       "prices": {
         "bsonType": "array",
         "items": {
           "additionalProperties": false,
           "bsonType": "object",
           "properties": {
+            "observation_basis": {
+              "enum": [
+                "current_observed",
+                "event_observed",
+                "zeler_first_observed"
+              ]
+            },
             "observed_at": {
               "bsonType": "date"
             },
@@ -33,7 +47,8 @@
           "required": [
             "price",
             "status",
-            "observed_at"
+            "observed_at",
+            "observation_basis"
           ]
         }
       },
@@ -72,6 +87,7 @@
       "prices",
       "snapshot_at",
       "source",
+      "observation_basis",
       "schema_version"
     ]
   },

@@ -8,6 +8,7 @@ from typing import Any
 import pytest
 from bson import BSON
 from bson.decimal128 import Decimal128
+from pymongo.errors import DuplicateKeyError
 
 from zeler_platform_core.models import ItemStatusState, ItemStatusTransition
 from zeler_sheets.event_persistence import SheetsEventPersistence, StatusObservationContentionError
@@ -106,6 +107,11 @@ class FakeReplaceResult:
         self.upserted_id = upserted_id
 
 
+class FakeInsertResult:
+    def __init__(self, inserted_id: str) -> None:
+        self.inserted_id = inserted_id
+
+
 class FakeCursor:
     def __init__(self, documents: list[dict[str, Any]]) -> None:
         self._documents = documents
@@ -134,6 +140,13 @@ class FakeCollection:
             self.documents[document_id] = dict(replacement)
             return FakeReplaceResult(matched_count=0, modified_count=0, upserted_id=document_id)
         return FakeReplaceResult(matched_count=0, modified_count=0)
+
+    async def insert_one(self, document: dict[str, Any]) -> FakeInsertResult:
+        document_id = str(document["_id"])
+        if document_id in self.documents:
+            raise DuplicateKeyError("duplicate key")
+        self.documents[document_id] = dict(document)
+        return FakeInsertResult(document_id)
 
     async def update_one(
         self, filter_spec: dict[str, Any], update: dict[str, Any], *, upsert: bool = False
@@ -507,6 +520,72 @@ def test_status_history_models_accept_forward_only_transition_state_documents() 
         ItemStatusTransition.model_validate(
             transition_payload | {"source": "sheets_item_detail_enrichment"}
         )
+
+
+@pytest.mark.asyncio
+async def test_accepted_item_events_project_observed_price_history_and_stockout_state() -> None:
+    moments = iter(
+        [
+            datetime(2026, 6, 17, 10, 0, tzinfo=UTC),
+            datetime(2026, 6, 17, 11, 0, tzinfo=UTC),
+            datetime(2026, 6, 17, 12, 0, tzinfo=UTC),
+        ]
+    )
+    db = FakeDb()
+    persistence = SheetsEventPersistence(db=db, clock=lambda: next(moments))
+
+    await persistence.persist(
+        event_type="items.updated",
+        seller_id=82453304,
+        resource={
+            **_item_resource_at(
+                title="Premium widget",
+                price="149.99",
+                last_updated="2026-06-17T09:59:00+00:00",
+            ),
+            "available_quantity": 7,
+        },
+    )
+    await persistence.persist(
+        event_type="items.updated",
+        seller_id=82453304,
+        resource={
+            **_item_resource_at(
+                title="Premium widget",
+                price="129.99",
+                last_updated="2026-06-17T10:59:00+00:00",
+            ),
+            "available_quantity": 0,
+            "status": "paused",
+        },
+    )
+    await persistence.persist(
+        event_type="items.updated",
+        seller_id=82453304,
+        resource={
+            **_item_resource_at(
+                title="Premium widget",
+                price="129.99",
+                last_updated="2026-06-17T11:59:00+00:00",
+            ),
+            "available_quantity": 0,
+            "status": "paused",
+        },
+    )
+
+    price_document = db["sheets_price_history_snapshots"].documents["82453304:MLA1"]
+    stockout_document = db["sheets_stockout_snapshots"].documents["82453304:MLA1"]
+    assert [entry["price"].to_decimal() for entry in price_document["prices"]] == [
+        Decimal("129.99"),
+        Decimal("149.99"),
+    ]
+    assert price_document["prices"][0]["observation_basis"] == "event_observed"
+    assert price_document["source"] == "sheets_event_persistence"
+    assert stockout_document["stock_state"] == "out_of_stock"
+    assert stockout_document["current_stock"] == 0
+    assert stockout_document["out_of_stock_since"] == datetime(2026, 6, 17, 11, 0, tzinfo=UTC)
+    assert stockout_document["observed_at"] == datetime(2026, 6, 17, 12, 0, tzinfo=UTC)
+    assert stockout_document["observation_basis"] == "event_observed"
 
 
 class FakeDb:

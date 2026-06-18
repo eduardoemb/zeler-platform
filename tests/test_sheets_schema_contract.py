@@ -79,6 +79,7 @@ REMAINING_PHASE4_READ_MODEL_REQUIRED_FIELDS = {
         "prices",
         "snapshot_at",
         "source",
+        "observation_basis",
         "schema_version",
     ],
     "sheets_stock_time_metrics": [
@@ -95,6 +96,7 @@ REMAINING_PHASE4_READ_MODEL_REQUIRED_FIELDS = {
         "item_id",
         "observed_at",
         "source",
+        "observation_basis",
         "schema_version",
     ],
 }

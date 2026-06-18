@@ -537,15 +537,13 @@ def read_model_reconciliation_marker_covers(marker: Any, *, date_from: Any, date
         marker.get("date_from"),
         marker.get("last_event_synced_at"),
     )
-    reconciled_until = _latest_utc_datetime(
-        marker.get("fresh_until"),
-        marker.get("reconciled_until"),
-    )
+    reconciled_until = _safe_utc_datetime(marker.get("reconciled_until"))
     return (
         requested_from is not None
         and requested_until is not None
         and coverage_start is not None
         and reconciled_until is not None
+        and reconciled_until >= coverage_start
         and coverage_start <= requested_from
         and reconciled_until >= requested_until
     )

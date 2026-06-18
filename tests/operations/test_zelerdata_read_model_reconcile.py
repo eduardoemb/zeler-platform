@@ -102,6 +102,16 @@ class FakeAsyncCollection:
         upsert: bool = False,
     ) -> Any:
         self.updates.append((filter_spec, update_spec, upsert))
+        for document in self.documents:
+            if not _matches_filter(document, filter_spec):
+                continue
+            if "$set" in update_spec:
+                document.update(dict(update_spec["$set"]))
+            return type(
+                "UpdateResult",
+                (),
+                {"modified_count": 1, "upserted_id": None},
+            )()
         if upsert:
             replacement = dict(update_spec.get("$set", {}))
             replacement.setdefault("_id", filter_spec.get("_id"))
@@ -177,6 +187,14 @@ class FakeWriteSummary:
     sku_index_upserts: int = 0
 
 
+@dataclass(frozen=True)
+class FakeObservedSeedSummary:
+    price_snapshots_planned: int = 0
+    price_snapshots_updated: int = 0
+    stockout_snapshots_planned: int = 0
+    stockout_snapshots_updated: int = 0
+
+
 def _matches_filter(document: dict[str, Any], filter_spec: dict[str, Any]) -> bool:
     for key, expected in filter_spec.items():
         if key == "$or":
@@ -250,6 +268,33 @@ def _write_request(*, extra_args: list[str] | None = None) -> Any:
     if extra_args:
         args.extend(extra_args)
     return build_reconciliation_request(build_arg_parser().parse_args(args))
+
+
+def _complete_price_stockout_summary(request: Any) -> ReconciliationSummary:
+    return ReconciliationSummary(
+        seller_id=request.seller_id,
+        date_from=request.date_range.date_from,
+        date_to=request.date_range.date_to,
+        dry_run=False,
+        approved_runtime=True,
+        write_enabled=True,
+        aggregates=(
+            ReadModelAggregate(
+                read_model="price_history_snapshots",
+                expected_count=1,
+                persisted_count=1,
+                missing_count=0,
+                complete_count=1,
+            ),
+            ReadModelAggregate(
+                read_model="stockout_snapshots",
+                expected_count=1,
+                persisted_count=1,
+                missing_count=0,
+                complete_count=1,
+            ),
+        ),
+    )
 
 
 @pytest.mark.asyncio
@@ -342,6 +387,133 @@ async def test_reconciliation_write_passes_catalog_gateway_to_historical_backfil
     await execute_reconciliation_write(db=FakeAsyncDb({}), request=_write_request())
 
     assert captured_catalog_gateway["value"] is catalog_gateway
+
+
+@pytest.mark.asyncio
+async def test_reconciliation_write_passes_max_items_to_observed_seed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from infra.operations import zelerdata_read_model_reconcile
+
+    from zeler_sheets import (
+        historical_meli_backfill,
+        remaining_read_model_writers,
+        sheetseller_backfill,
+    )
+
+    captured_observed_seed_kwargs: dict[str, Any] = {}
+
+    async def fake_historical_backfill(**_: Any) -> FakeHistoricalMeliSummary:
+        return FakeHistoricalMeliSummary(orders_found=0, order_ids=[], shipment_ids=[], item_ids=[])
+
+    async def fake_item_enrichment(**_: Any) -> FakeWriteSummary:
+        return FakeWriteSummary()
+
+    async def fake_formula_rebuild(**_: Any) -> FakeWriteSummary:
+        return FakeWriteSummary()
+
+    async def fake_observed_seed(
+        *, db: Any, seller_id: str, dry_run: bool, max_items: int | None
+    ) -> FakeObservedSeedSummary:
+        captured_observed_seed_kwargs.update(
+            {"db": db, "seller_id": seller_id, "dry_run": dry_run, "max_items": max_items}
+        )
+        return FakeObservedSeedSummary()
+
+    monkeypatch.setattr(
+        zelerdata_read_model_reconcile,
+        "create_runtime_historical_meli_gateways",
+        lambda: type(
+            "Gateways",
+            (),
+            {"gateway": object(), "order_detail_gateway": object(), "catalog_gateway": object()},
+        )(),
+    )
+    monkeypatch.setattr(
+        historical_meli_backfill, "run_historical_meli_backfill", fake_historical_backfill
+    )
+    monkeypatch.setattr(sheetseller_backfill, "run_item_detail_enrichment", fake_item_enrichment)
+    monkeypatch.setattr(sheetseller_backfill, "run_sheetseller_backfill", fake_formula_rebuild)
+    monkeypatch.setattr(
+        remaining_read_model_writers,
+        "run_remaining_observed_read_model_seed",
+        fake_observed_seed,
+    )
+
+    db = FakeAsyncDb({})
+    await execute_reconciliation_write(
+        db=db, request=_write_request(extra_args=["--max-items", "2"])
+    )
+
+    assert captured_observed_seed_kwargs == {
+        "db": db,
+        "seller_id": "82453304",
+        "dry_run": False,
+        "max_items": 2,
+    }
+
+
+@pytest.mark.parametrize(
+    "extra_args",
+    [
+        ["--max-orders", "1"],
+        ["--max-shipments", "1"],
+        ["--resume-after-order-id", "ORDER-PII-RESUME"],
+    ],
+    ids=("max-orders", "max-shipments", "resume-after-order-id"),
+)
+@pytest.mark.asyncio
+async def test_non_item_bounded_write_controls_skip_observed_seed(
+    monkeypatch: pytest.MonkeyPatch, extra_args: list[str]
+) -> None:
+    from infra.operations import zelerdata_read_model_reconcile
+
+    from zeler_sheets import (
+        historical_meli_backfill,
+        remaining_read_model_writers,
+        sheetseller_backfill,
+    )
+
+    async def fake_historical_backfill(**_: Any) -> FakeHistoricalMeliSummary:
+        return FakeHistoricalMeliSummary(orders_found=0, order_ids=[], shipment_ids=[], item_ids=[])
+
+    async def fake_item_enrichment(**_: Any) -> FakeWriteSummary:
+        return FakeWriteSummary()
+
+    async def fake_formula_rebuild(**_: Any) -> FakeWriteSummary:
+        return FakeWriteSummary()
+
+    async def forbidden_observed_seed(**kwargs: Any) -> FakeObservedSeedSummary:
+        raise AssertionError(
+            f"observed seed should be skipped for unsafe bounded controls: {kwargs!r}"
+        )
+
+    monkeypatch.setattr(
+        zelerdata_read_model_reconcile,
+        "create_runtime_historical_meli_gateways",
+        lambda: type(
+            "Gateways",
+            (),
+            {"gateway": object(), "order_detail_gateway": object(), "catalog_gateway": object()},
+        )(),
+    )
+    monkeypatch.setattr(
+        historical_meli_backfill, "run_historical_meli_backfill", fake_historical_backfill
+    )
+    monkeypatch.setattr(sheetseller_backfill, "run_item_detail_enrichment", fake_item_enrichment)
+    monkeypatch.setattr(sheetseller_backfill, "run_sheetseller_backfill", fake_formula_rebuild)
+    monkeypatch.setattr(
+        remaining_read_model_writers,
+        "run_remaining_observed_read_model_seed",
+        forbidden_observed_seed,
+    )
+
+    counts = await execute_reconciliation_write(
+        db=FakeAsyncDb({}), request=_write_request(extra_args=extra_args)
+    )
+
+    assert "price_history_snapshots_updated" not in counts
+    assert "stockout_snapshots_updated" not in counts
 
 
 def _dt(day: int) -> datetime:
@@ -1277,6 +1449,11 @@ async def test_collect_reconciliation_counts_reports_real_sanitized_aggregates()
                 "sheets_item_sku_index": 2,
                 "item_status_states": None,
                 "item_status_transitions": None,
+                "price_history_snapshots": 0,
+                "stockout_snapshots": 0,
+                "stock_time_metrics": None,
+                "catalog_time_metrics": None,
+                "full_withdrawals": None,
             },
             refs={
                 "shipments": frozenset({"SHIP-PII-1"}),
@@ -1288,12 +1465,32 @@ async def test_collect_reconciliation_counts_reports_real_sanitized_aggregates()
                 "items": "unavailable",
                 "item_status_states": "observed_only",
                 "item_status_transitions": "observed_only",
+                "price_history_snapshots": "observed_current",
+                "stockout_snapshots": "observed_current",
+                "stock_time_metrics": "source_deferred",
+                "catalog_time_metrics": "source_deferred",
+                "full_withdrawals": "source_deferred",
             },
             issues=(
                 ReadModelIssue(
                     read_model="items",
                     code="expected_unavailable",
                     message="expected source unavailable",
+                ),
+                ReadModelIssue(
+                    read_model="stock_time_metrics",
+                    code="source_deferred",
+                    message="stock time source deferred",
+                ),
+                ReadModelIssue(
+                    read_model="catalog_time_metrics",
+                    code="source_deferred",
+                    message="catalog time source deferred",
+                ),
+                ReadModelIssue(
+                    read_model="full_withdrawals",
+                    code="source_deferred",
+                    message="withdrawals source deferred",
                 ),
             ),
         ),
@@ -1303,7 +1500,18 @@ async def test_collect_reconciliation_counts_reports_real_sanitized_aggregates()
     by_model = {aggregate["read_model"]: aggregate for aggregate in output["aggregates"]}
 
     assert set(by_model) == set(READ_MODELS)
-    assert all(aggregate["persisted_count"] > 0 for aggregate in by_model.values())
+    intentionally_empty = {
+        "price_history_snapshots",
+        "stockout_snapshots",
+        "stock_time_metrics",
+        "catalog_time_metrics",
+        "full_withdrawals",
+    }
+    assert all(
+        aggregate["persisted_count"] > 0
+        for read_model, aggregate in by_model.items()
+        if read_model not in intentionally_empty
+    )
     assert by_model["orders"] | {"field_counts": by_model["orders"]["field_counts"]} == {
         "read_model": "orders",
         "expected_count": 3,
@@ -1476,6 +1684,964 @@ async def test_complete_write_records_shared_reconciliation_marker_after_coverag
         assert marker["last_event_synced_at"] == request.date_range.start
     assert all(marker["reconciled_until"] == request.date_range.end_exclusive for marker in markers)
     assert "catalog_buybox_snapshots" not in {marker["read_model"] for marker in markers}
+
+
+@pytest.mark.asyncio
+async def test_questions_reconciliation_marker_records_requested_range_through_final_day() -> None:
+    db = FakeAsyncDb({})
+    request = _write_request(extra_args=["--date-to", "2026-06-17"])
+    summary = ReconciliationSummary(
+        seller_id=request.seller_id,
+        date_from=request.date_range.date_from,
+        date_to=request.date_range.date_to,
+        dry_run=False,
+        approved_runtime=True,
+        write_enabled=True,
+        aggregates=(
+            ReadModelAggregate(
+                read_model="questions",
+                expected_count=1,
+                persisted_count=1,
+                missing_count=0,
+                complete_count=1,
+            ),
+        ),
+    )
+
+    counts = await write_complete_read_model_freshness_markers(
+        db=db, request=request, summary=summary
+    )
+
+    marker = db["sheets_read_model_freshness"].documents[0]
+    assert counts == {"freshness_markers_written": 1}
+    assert marker["date_from"] == datetime(2026, 6, 1, tzinfo=UTC)
+    assert marker["fresh_until"] == datetime(2026, 6, 18, tzinfo=UTC)
+    assert marker["reconciled_until"] == datetime(2026, 6, 18, tzinfo=UTC)
+    assert read_model_reconciliation_marker_covers(
+        marker,
+        date_from=datetime(2026, 6, 1, tzinfo=UTC),
+        date_to=datetime(2026, 6, 17, 23, 59, 59, tzinfo=UTC),
+    )
+    assert (
+        validate_document_against_schema(
+            marker,
+            json.loads((ROOT / "infra/mongo/schemas/sheets_read_model_freshness.json").read_text()),
+        ).valid
+        is True
+    )
+
+
+@pytest.mark.asyncio
+async def test_narrower_marker_write_preserves_wider_existing_reconciled_coverage() -> None:
+    existing_date_from = datetime(2026, 5, 1, tzinfo=UTC)
+    existing_fresh_until = datetime(2026, 6, 30, tzinfo=UTC)
+    existing_collection = FakeAsyncCollection(
+        [
+            _seller_doc(
+                _id="82453304:questions",
+                read_model="questions",
+                state="reconciled",
+                date_from=existing_date_from,
+                fresh_until=existing_fresh_until,
+                reconciled_until=existing_fresh_until,
+                last_event_synced_at=existing_date_from,
+                updated_at=_dt(1),
+                source="zelerdata_read_model_reconcile",
+                schema_version=1,
+            )
+        ]
+    )
+    db = FakeAsyncDb({"sheets_read_model_freshness": existing_collection})
+    request = _write_request()
+    summary = ReconciliationSummary(
+        seller_id=request.seller_id,
+        date_from=request.date_range.date_from,
+        date_to=request.date_range.date_to,
+        dry_run=False,
+        approved_runtime=True,
+        write_enabled=True,
+        aggregates=(
+            ReadModelAggregate(
+                read_model="questions",
+                expected_count=1,
+                persisted_count=1,
+                missing_count=0,
+                complete_count=1,
+            ),
+        ),
+    )
+
+    counts = await write_complete_read_model_freshness_markers(
+        db=db, request=request, summary=summary
+    )
+
+    assert counts == {"freshness_markers_written": 1}
+    _, update_spec, _ = existing_collection.updates[-1]
+    assert update_spec["$set"]["date_from"] == existing_date_from
+    assert update_spec["$set"]["fresh_until"] == existing_fresh_until
+    assert update_spec["$set"]["reconciled_until"] == existing_fresh_until
+
+
+@pytest.mark.asyncio
+async def test_legacy_marker_without_date_from_preserves_last_event_synced_coverage() -> None:
+    existing_coverage_start = datetime(2026, 5, 1, tzinfo=UTC)
+    existing_fresh_until = datetime(2026, 6, 30, tzinfo=UTC)
+    existing_collection = FakeAsyncCollection(
+        [
+            _seller_doc(
+                _id="82453304:questions",
+                read_model="questions",
+                state="reconciled",
+                fresh_until=existing_fresh_until,
+                reconciled_until=existing_fresh_until,
+                last_event_synced_at=existing_coverage_start,
+                updated_at=_dt(1),
+                source="zelerdata_read_model_reconcile",
+                schema_version=1,
+            )
+        ]
+    )
+    db = FakeAsyncDb({"sheets_read_model_freshness": existing_collection})
+    request = _write_request()
+    summary = ReconciliationSummary(
+        seller_id=request.seller_id,
+        date_from=request.date_range.date_from,
+        date_to=request.date_range.date_to,
+        dry_run=False,
+        approved_runtime=True,
+        write_enabled=True,
+        aggregates=(
+            ReadModelAggregate(
+                read_model="questions",
+                expected_count=1,
+                persisted_count=1,
+                missing_count=0,
+                complete_count=1,
+            ),
+        ),
+    )
+
+    counts = await write_complete_read_model_freshness_markers(
+        db=db, request=request, summary=summary
+    )
+
+    marker = existing_collection.documents[0]
+    assert counts == {"freshness_markers_written": 1}
+    assert marker["date_from"] == existing_coverage_start
+    assert marker["last_event_synced_at"] == existing_coverage_start
+    assert marker["fresh_until"] == existing_fresh_until
+    assert marker["reconciled_until"] == existing_fresh_until
+
+
+@pytest.mark.asyncio
+async def test_disjoint_earlier_marker_write_does_not_claim_gap_before_later_marker() -> None:
+    existing_date_from = datetime(2026, 6, 10, tzinfo=UTC)
+    existing_fresh_until = datetime(2026, 6, 20, tzinfo=UTC)
+    existing_collection = FakeAsyncCollection(
+        [
+            _seller_doc(
+                _id="82453304:questions",
+                read_model="questions",
+                state="reconciled",
+                date_from=existing_date_from,
+                fresh_until=existing_fresh_until,
+                reconciled_until=existing_fresh_until,
+                last_event_synced_at=existing_date_from,
+                updated_at=_dt(10),
+                source="zelerdata_read_model_reconcile",
+                schema_version=1,
+            )
+        ]
+    )
+    db = FakeAsyncDb({"sheets_read_model_freshness": existing_collection})
+    request = _write_request()
+    summary = ReconciliationSummary(
+        seller_id=request.seller_id,
+        date_from=request.date_range.date_from,
+        date_to=request.date_range.date_to,
+        dry_run=False,
+        approved_runtime=True,
+        write_enabled=True,
+        aggregates=(
+            ReadModelAggregate(
+                read_model="questions",
+                expected_count=1,
+                persisted_count=1,
+                missing_count=0,
+                complete_count=1,
+            ),
+        ),
+    )
+
+    counts = await write_complete_read_model_freshness_markers(
+        db=db, request=request, summary=summary
+    )
+
+    marker = existing_collection.documents[0]
+    assert counts == {}
+    assert existing_collection.updates == []
+    assert marker["date_from"] == existing_date_from
+    assert marker["fresh_until"] == existing_fresh_until
+    assert marker["reconciled_until"] == existing_fresh_until
+    assert not read_model_reconciliation_marker_covers(
+        marker,
+        date_from=request.date_range.start,
+        date_to=request.date_range.end_exclusive,
+    )
+
+
+@pytest.mark.asyncio
+async def test_inconsistent_legacy_marker_boundaries_do_not_overclaim_coverage() -> None:
+    existing_collection = FakeAsyncCollection(
+        [
+            _seller_doc(
+                _id="82453304:questions",
+                read_model="questions",
+                state="reconciled",
+                date_from=datetime(2026, 6, 10, tzinfo=UTC),
+                fresh_until=datetime(2026, 6, 20, tzinfo=UTC),
+                reconciled_until=datetime(2026, 6, 5, tzinfo=UTC),
+                last_event_synced_at=datetime(2026, 6, 1, tzinfo=UTC),
+                updated_at=_dt(10),
+                source="zelerdata_read_model_reconcile",
+                schema_version=1,
+            )
+        ]
+    )
+    db = FakeAsyncDb({"sheets_read_model_freshness": existing_collection})
+    request = _write_request()
+    summary = ReconciliationSummary(
+        seller_id=request.seller_id,
+        date_from=request.date_range.date_from,
+        date_to=request.date_range.date_to,
+        dry_run=False,
+        approved_runtime=True,
+        write_enabled=True,
+        aggregates=(
+            ReadModelAggregate(
+                read_model="questions",
+                expected_count=1,
+                persisted_count=1,
+                missing_count=0,
+                complete_count=1,
+            ),
+        ),
+    )
+
+    counts = await write_complete_read_model_freshness_markers(
+        db=db, request=request, summary=summary
+    )
+
+    marker = existing_collection.documents[0]
+    assert counts == {}
+    assert existing_collection.updates == []
+    assert marker["date_from"] == datetime(2026, 6, 10, tzinfo=UTC)
+    assert marker["fresh_until"] == datetime(2026, 6, 20, tzinfo=UTC)
+    assert marker["reconciled_until"] == datetime(2026, 6, 5, tzinfo=UTC)
+
+
+@pytest.mark.parametrize(
+    ("existing_date_from", "case_name"),
+    [
+        (datetime(2026, 6, 3, tzinfo=UTC), "overlapping"),
+        (datetime(2026, 6, 5, tzinfo=UTC), "contiguous"),
+    ],
+    ids=lambda value: value if isinstance(value, str) else value.isoformat(),
+)
+@pytest.mark.asyncio
+async def test_overlapping_or_contiguous_marker_write_merges_without_gaps(
+    existing_date_from: datetime, case_name: str
+) -> None:
+    del case_name
+    existing_fresh_until = datetime(2026, 6, 20, tzinfo=UTC)
+    existing_collection = FakeAsyncCollection(
+        [
+            _seller_doc(
+                _id="82453304:questions",
+                read_model="questions",
+                state="reconciled",
+                date_from=existing_date_from,
+                fresh_until=existing_fresh_until,
+                reconciled_until=existing_fresh_until,
+                last_event_synced_at=existing_date_from,
+                updated_at=_dt(10),
+                source="zelerdata_read_model_reconcile",
+                schema_version=1,
+            )
+        ]
+    )
+    db = FakeAsyncDb({"sheets_read_model_freshness": existing_collection})
+    request = _write_request()
+    summary = ReconciliationSummary(
+        seller_id=request.seller_id,
+        date_from=request.date_range.date_from,
+        date_to=request.date_range.date_to,
+        dry_run=False,
+        approved_runtime=True,
+        write_enabled=True,
+        aggregates=(
+            ReadModelAggregate(
+                read_model="questions",
+                expected_count=1,
+                persisted_count=1,
+                missing_count=0,
+                complete_count=1,
+            ),
+        ),
+    )
+
+    counts = await write_complete_read_model_freshness_markers(
+        db=db, request=request, summary=summary
+    )
+
+    assert counts == {"freshness_markers_written": 1}
+    _, update_spec, _ = existing_collection.updates[-1]
+    assert update_spec["$set"]["date_from"] == request.date_range.start
+    assert update_spec["$set"]["fresh_until"] == existing_fresh_until
+    assert update_spec["$set"]["reconciled_until"] == existing_fresh_until
+
+
+@pytest.mark.asyncio
+async def test_price_stockout_markers_do_not_write_for_wrong_item_refs() -> None:
+    from infra.operations import zelerdata_read_model_reconcile
+
+    db = FakeAsyncDb(
+        {
+            "sheets_item_formula_rows": [
+                _seller_doc(
+                    _id="82453304:SKU-EXPECTED:MLA-EXPECTED",
+                    item_id="MLA-EXPECTED",
+                    sku="sku-expected",
+                    normalized_sku="SKU-EXPECTED",
+                    current={
+                        "title": "Expected item",
+                        "status": "active",
+                        "price": 149.99,
+                        "available_quantity": 0,
+                    },
+                    updated_at=_dt(4),
+                    schema_version=2,
+                )
+            ],
+            "sheets_price_history_snapshots": [
+                _seller_doc(
+                    _id="82453304:MLA-WRONG",
+                    item_id="MLA-WRONG",
+                    prices=[
+                        {
+                            "price": 149.99,
+                            "status": "active",
+                            "observed_at": _dt(4),
+                            "observation_basis": "current_observed",
+                        }
+                    ],
+                    snapshot_at=_dt(4),
+                    source="sheets_backfill",
+                    observation_basis="current_observed",
+                    schema_version=1,
+                )
+            ],
+            "sheets_stockout_snapshots": [
+                _seller_doc(
+                    _id="82453304:MLA-WRONG",
+                    item_id="MLA-WRONG",
+                    observed_at=_dt(4),
+                    source="sheets_backfill",
+                    observation_basis="zeler_first_observed",
+                    stock_state="out_of_stock",
+                    current_stock=0,
+                    out_of_stock_since=_dt(4),
+                    schema_version=1,
+                )
+            ],
+        }
+    )
+    request = _write_request()
+    expected = await zelerdata_read_model_reconcile._collect_remaining_observed_expected_counts(
+        db=db,
+        seller_id=request.seller_id,
+    )
+
+    summary = await collect_reconciliation_counts(
+        db=db,
+        request=request,
+        expected=expected,
+        read_models=("price_history_snapshots", "stockout_snapshots"),
+    )
+    counts = await write_complete_read_model_freshness_markers(
+        db=db, request=request, summary=summary
+    )
+
+    by_model = {aggregate.read_model: aggregate for aggregate in summary.aggregates}
+    assert expected.refs == {
+        "price_history_snapshots": frozenset({"MLA-EXPECTED"}),
+        "stockout_snapshots": frozenset({"MLA-EXPECTED"}),
+    }
+    assert by_model["price_history_snapshots"].persisted_count == 0
+    assert by_model["stockout_snapshots"].persisted_count == 0
+    assert counts == {}
+    assert db["sheets_read_model_freshness"].documents == []
+
+
+@pytest.mark.asyncio
+async def test_collect_expected_counts_merges_observed_refs_and_keeps_marker_bounded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from zeler_sheets import sheetseller_backfill
+
+    async def fake_historical_source(*, db: Any, request: Any) -> FakeHistoricalMeliSummary:
+        return FakeHistoricalMeliSummary(orders_found=0, order_ids=[], shipment_ids=[], item_ids=[])
+
+    async def fake_formula_rebuild(**_: Any) -> FakeWriteSummary:
+        return FakeWriteSummary(formula_row_upserts=1)
+
+    async def fake_order_line_backfill(**_: Any) -> FakeWriteSummary:
+        return FakeWriteSummary()
+
+    monkeypatch.setattr(sheetseller_backfill, "run_sheetseller_backfill", fake_formula_rebuild)
+    monkeypatch.setattr(
+        sheetseller_backfill, "run_order_line_identity_backfill", fake_order_line_backfill
+    )
+    db = FakeAsyncDb(
+        {
+            "sheets_item_formula_rows": [
+                _seller_doc(
+                    _id="82453304:SKU-EXPECTED:MLA-EXPECTED",
+                    item_id="MLA-EXPECTED",
+                    sku="sku-expected",
+                    normalized_sku="SKU-EXPECTED",
+                    current={
+                        "title": "Expected item",
+                        "status": "active",
+                        "price": 149.99,
+                        "available_quantity": 0,
+                    },
+                    updated_at=_dt(4),
+                    schema_version=2,
+                )
+            ],
+            "sheets_price_history_snapshots": [
+                _seller_doc(
+                    _id="82453304:MLA-WRONG",
+                    item_id="MLA-WRONG",
+                    prices=[
+                        {
+                            "price": 149.99,
+                            "status": "active",
+                            "observed_at": _dt(4),
+                            "observation_basis": "current_observed",
+                        }
+                    ],
+                    snapshot_at=_dt(4),
+                    source="sheets_backfill",
+                    observation_basis="current_observed",
+                    schema_version=1,
+                )
+            ],
+            "sheets_stockout_snapshots": [
+                _seller_doc(
+                    _id="82453304:MLA-WRONG",
+                    item_id="MLA-WRONG",
+                    observed_at=_dt(4),
+                    source="sheets_backfill",
+                    observation_basis="zeler_first_observed",
+                    stock_state="out_of_stock",
+                    current_stock=0,
+                    out_of_stock_since=_dt(4),
+                    schema_version=1,
+                )
+            ],
+        }
+    )
+    request = _write_request()
+
+    expected = await collect_expected_read_model_counts(
+        db=db,
+        request=request,
+        historical_meli_source=fake_historical_source,
+    )
+    summary = await collect_reconciliation_counts(
+        db=db,
+        request=request,
+        expected=expected,
+        read_models=("price_history_snapshots", "stockout_snapshots"),
+    )
+    counts = await write_complete_read_model_freshness_markers(
+        db=db, request=request, summary=summary
+    )
+
+    by_model = {aggregate.read_model: aggregate for aggregate in summary.aggregates}
+    assert expected.refs["price_history_snapshots"] == frozenset({"MLA-EXPECTED"})
+    assert expected.refs["stockout_snapshots"] == frozenset({"MLA-EXPECTED"})
+    assert db["sheets_price_history_snapshots"].count_filters[0] == {
+        "seller_id": "82453304",
+        "item_id": {"$in": ["MLA-EXPECTED"]},
+    }
+    assert db["sheets_stockout_snapshots"].count_filters[0] == {
+        "seller_id": "82453304",
+        "item_id": {"$in": ["MLA-EXPECTED"]},
+    }
+    assert by_model["price_history_snapshots"].persisted_count == 0
+    assert by_model["stockout_snapshots"].persisted_count == 0
+    assert counts == {}
+    assert db["sheets_read_model_freshness"].documents == []
+
+
+@pytest.mark.asyncio
+async def test_observed_price_stockout_ready_and_deferred_models_blocked() -> None:
+    db = FakeAsyncDb(
+        {
+            "sheets_price_history_snapshots": [
+                _seller_doc(
+                    _id="82453304:MLA1",
+                    item_id="MLA1",
+                    prices=[
+                        {
+                            "price": 149.99,
+                            "status": "active",
+                            "observed_at": _dt(4),
+                            "observation_basis": "current_observed",
+                        }
+                    ],
+                    snapshot_at=_dt(4),
+                    source="sheets_backfill",
+                    observation_basis="current_observed",
+                    schema_version=1,
+                )
+            ],
+            "sheets_stockout_snapshots": [
+                _seller_doc(
+                    _id="82453304:MLA1",
+                    item_id="MLA1",
+                    observed_at=_dt(4),
+                    source="sheets_backfill",
+                    observation_basis="zeler_first_observed",
+                    stock_state="out_of_stock",
+                    current_stock=0,
+                    out_of_stock_since=_dt(4),
+                    schema_version=1,
+                )
+            ],
+        }
+    )
+    request = _write_request()
+    expected = ExpectedReadModelCounts(
+        counts={
+            "price_history_snapshots": 1,
+            "stockout_snapshots": 1,
+            "stock_time_metrics": None,
+            "catalog_time_metrics": None,
+            "full_withdrawals": None,
+        },
+        truth_mode={
+            "price_history_snapshots": "observed_current",
+            "stockout_snapshots": "observed_current",
+            "stock_time_metrics": "source_deferred",
+            "catalog_time_metrics": "source_deferred",
+            "full_withdrawals": "source_deferred",
+        },
+        refs={
+            "price_history_snapshots": frozenset({"MLA1"}),
+            "stockout_snapshots": frozenset({"MLA1"}),
+        },
+        issues=(
+            ReadModelIssue(
+                read_model="stock_time_metrics",
+                code="source_deferred",
+                message="stock time requires accepted semantics",
+            ),
+            ReadModelIssue(
+                read_model="catalog_time_metrics",
+                code="source_deferred",
+                message="catalog time requires approved interval source",
+            ),
+            ReadModelIssue(
+                read_model="full_withdrawals",
+                code="source_deferred",
+                message="full withdrawals require approved source/import",
+            ),
+        ),
+    )
+
+    summary = await collect_reconciliation_counts(
+        db=db,
+        request=request,
+        expected=expected,
+        read_models=(
+            "price_history_snapshots",
+            "stockout_snapshots",
+            "stock_time_metrics",
+            "catalog_time_metrics",
+            "full_withdrawals",
+        ),
+    )
+    counts = await write_complete_read_model_freshness_markers(
+        db=db, request=request, summary=summary
+    )
+
+    output = summary.to_sanitized_dict()
+    by_model = {aggregate["read_model"]: aggregate for aggregate in output["aggregates"]}
+    assert counts == {"freshness_markers_written": 2}
+    assert {marker["read_model"] for marker in db["sheets_read_model_freshness"].documents} == {
+        "price_history_snapshots",
+        "stockout_snapshots",
+    }
+    assert by_model["price_history_snapshots"]["complete_count"] == 1
+    assert by_model["stockout_snapshots"]["complete_count"] == 1
+    assert by_model["stock_time_metrics"]["truth_mode"] == "source_deferred"
+    assert by_model["stock_time_metrics"]["issues"] == [{"code": "source_deferred"}]
+    assert by_model["catalog_time_metrics"]["truth_mode"] == "source_deferred"
+    assert by_model["full_withdrawals"]["truth_mode"] == "source_deferred"
+
+
+@pytest.mark.parametrize(
+    "extra_args",
+    [
+        ["--max-items", "1"],
+        ["--max-orders", "1"],
+        ["--max-shipments", "1"],
+    ],
+    ids=("max-items", "max-orders", "max-shipments"),
+)
+@pytest.mark.asyncio
+async def test_bounded_write_controls_skip_global_price_stockout_freshness_markers(
+    extra_args: list[str],
+) -> None:
+    db = FakeAsyncDb({})
+    request = _write_request(extra_args=extra_args)
+    summary = _complete_price_stockout_summary(request)
+
+    counts = await write_complete_read_model_freshness_markers(
+        db=db, request=request, summary=summary
+    )
+
+    assert counts == {}
+    assert db["sheets_read_model_freshness"].documents == []
+    assert db["sheets_read_model_freshness"].updates == []
+
+
+@pytest.mark.asyncio
+async def test_unbounded_complete_price_stockout_coverage_writes_global_freshness_markers() -> None:
+    db = FakeAsyncDb({})
+    request = _write_request()
+    summary = _complete_price_stockout_summary(request)
+
+    counts = await write_complete_read_model_freshness_markers(
+        db=db, request=request, summary=summary
+    )
+
+    markers = db["sheets_read_model_freshness"].documents
+    assert counts == {"freshness_markers_written": 2}
+    assert {marker["_id"] for marker in markers} == {
+        "82453304:price_history_snapshots",
+        "82453304:stockout_snapshots",
+    }
+    assert {marker["read_model"] for marker in markers} == {
+        "price_history_snapshots",
+        "stockout_snapshots",
+    }
+    assert all(marker["date_from"] == request.date_range.start for marker in markers)
+    assert all(marker["fresh_until"] == request.date_range.end_exclusive for marker in markers)
+
+
+@pytest.mark.asyncio
+async def test_bounded_write_does_not_mutate_existing_wider_price_stockout_markers() -> None:
+    existing_date_from = datetime(2026, 5, 1, tzinfo=UTC)
+    existing_fresh_until = datetime(2026, 6, 30, tzinfo=UTC)
+    existing_collection = FakeAsyncCollection(
+        [
+            _seller_doc(
+                _id="82453304:price_history_snapshots",
+                read_model="price_history_snapshots",
+                state="reconciled",
+                date_from=existing_date_from,
+                fresh_until=existing_fresh_until,
+                reconciled_until=existing_fresh_until,
+                last_event_synced_at=existing_date_from,
+                updated_at=_dt(1),
+                source="zelerdata_read_model_reconcile",
+                schema_version=1,
+            ),
+            _seller_doc(
+                _id="82453304:stockout_snapshots",
+                read_model="stockout_snapshots",
+                state="reconciled",
+                date_from=existing_date_from,
+                fresh_until=existing_fresh_until,
+                reconciled_until=existing_fresh_until,
+                last_event_synced_at=existing_date_from,
+                updated_at=_dt(1),
+                source="zelerdata_read_model_reconcile",
+                schema_version=1,
+            ),
+        ]
+    )
+    db = FakeAsyncDb({"sheets_read_model_freshness": existing_collection})
+    request = _write_request(extra_args=["--max-items", "1"])
+    summary = _complete_price_stockout_summary(request)
+
+    counts = await write_complete_read_model_freshness_markers(
+        db=db, request=request, summary=summary
+    )
+
+    assert counts == {}
+    assert existing_collection.updates == []
+    for marker in existing_collection.documents:
+        assert marker["date_from"] == existing_date_from
+        assert marker["fresh_until"] == existing_fresh_until
+        assert marker["reconciled_until"] == existing_fresh_until
+
+
+@pytest.mark.asyncio
+async def test_multi_entry_price_doc_missing_any_basis_is_incomplete() -> None:
+    db = FakeAsyncDb(
+        {
+            "sheets_price_history_snapshots": [
+                _seller_doc(
+                    _id="82453304:MLA1",
+                    item_id="MLA1",
+                    prices=[
+                        {
+                            "price": 149.99,
+                            "status": "active",
+                            "observed_at": _dt(4),
+                            "observation_basis": "current_observed",
+                        },
+                        {
+                            "price": 129.99,
+                            "status": "paused",
+                            "observed_at": _dt(3),
+                        },
+                    ],
+                    snapshot_at=_dt(4),
+                    source="sheets_backfill",
+                    observation_basis="current_observed",
+                    schema_version=1,
+                )
+            ],
+        }
+    )
+    request = _write_request()
+    summary = await collect_reconciliation_counts(
+        db=db,
+        request=request,
+        expected=ExpectedReadModelCounts(
+            counts={"price_history_snapshots": 1},
+            truth_mode={"price_history_snapshots": "observed_current"},
+            refs={"price_history_snapshots": frozenset({"MLA1"})},
+        ),
+        read_models=("price_history_snapshots",),
+    )
+    counts = await write_complete_read_model_freshness_markers(
+        db=db, request=request, summary=summary
+    )
+
+    aggregate = summary.aggregates[0]
+    assert aggregate.persisted_count == 1
+    assert aggregate.complete_count == 0
+    assert counts == {}
+    assert db["sheets_read_model_freshness"].documents == []
+
+
+@pytest.mark.asyncio
+async def test_legacy_invalid_price_doc_is_incomplete_and_cannot_write_marker() -> None:
+    db = FakeAsyncDb(
+        {
+            "sheets_price_history_snapshots": [
+                _seller_doc(
+                    _id="82453304:MLA1",
+                    item_id="MLA1",
+                    prices=[
+                        {
+                            "price": "149.99",
+                            "status": "active",
+                            "observed_at": "2026-06-04T00:00:00Z",
+                            "observation_basis": "legacy_scrape",
+                        }
+                    ],
+                    snapshot_at="2026-06-04T00:00:00Z",
+                    source="legacy_sheetseller",
+                    observation_basis="legacy_scrape",
+                    schema_version=1,
+                )
+            ],
+        }
+    )
+    request = _write_request()
+
+    summary = await collect_reconciliation_counts(
+        db=db,
+        request=request,
+        expected=ExpectedReadModelCounts(
+            counts={"price_history_snapshots": 1},
+            truth_mode={"price_history_snapshots": "observed_current"},
+            refs={"price_history_snapshots": frozenset({"MLA1"})},
+        ),
+        read_models=("price_history_snapshots",),
+    )
+    counts = await write_complete_read_model_freshness_markers(
+        db=db, request=request, summary=summary
+    )
+
+    aggregate = summary.aggregates[0]
+    assert aggregate.persisted_count == 1
+    assert aggregate.complete_count == 0
+    assert counts == {}
+    assert db["sheets_read_model_freshness"].documents == []
+
+
+@pytest.mark.asyncio
+async def test_legacy_invalid_stockout_doc_is_incomplete_and_cannot_write_marker() -> None:
+    db = FakeAsyncDb(
+        {
+            "sheets_stockout_snapshots": [
+                _seller_doc(
+                    _id="82453304:MLA1",
+                    item_id="MLA1",
+                    observed_at="2026-06-04T00:00:00Z",
+                    source="legacy_sheetseller",
+                    observation_basis="legacy_scrape",
+                    status="active",
+                    stock_state="out_of_stock",
+                    current_stock=0,
+                    out_of_stock_since="2026-06-04T00:00:00Z",
+                    schema_version=1,
+                )
+            ],
+        }
+    )
+    request = _write_request()
+
+    summary = await collect_reconciliation_counts(
+        db=db,
+        request=request,
+        expected=ExpectedReadModelCounts(
+            counts={"stockout_snapshots": 1},
+            truth_mode={"stockout_snapshots": "observed_current"},
+            refs={"stockout_snapshots": frozenset({"MLA1"})},
+        ),
+        read_models=("stockout_snapshots",),
+    )
+    counts = await write_complete_read_model_freshness_markers(
+        db=db, request=request, summary=summary
+    )
+
+    aggregate = summary.aggregates[0]
+    assert aggregate.persisted_count == 1
+    assert aggregate.complete_count == 0
+    assert counts == {}
+    assert db["sheets_read_model_freshness"].documents == []
+
+
+@pytest.mark.asyncio
+async def test_inconsistent_stockout_rows_are_incomplete_and_cannot_write_marker() -> None:
+    db = FakeAsyncDb(
+        {
+            "sheets_stockout_snapshots": [
+                _seller_doc(
+                    _id="82453304:MLA1",
+                    item_id="MLA1",
+                    observed_at=_dt(4),
+                    source="sheets_backfill",
+                    observation_basis="current_observed",
+                    status="active",
+                    stock_state="out_of_stock",
+                    current_stock=3,
+                    out_of_stock_since=_dt(4),
+                    schema_version=1,
+                ),
+                _seller_doc(
+                    _id="82453304:MLA2",
+                    item_id="MLA2",
+                    observed_at=_dt(4),
+                    source="sheets_backfill",
+                    observation_basis="current_observed",
+                    status="active",
+                    stock_state="in_stock",
+                    current_stock=0,
+                    out_of_stock_since=None,
+                    schema_version=1,
+                ),
+            ],
+        }
+    )
+    request = _write_request()
+
+    summary = await collect_reconciliation_counts(
+        db=db,
+        request=request,
+        expected=ExpectedReadModelCounts(
+            counts={"stockout_snapshots": 2},
+            truth_mode={"stockout_snapshots": "observed_current"},
+            refs={"stockout_snapshots": frozenset({"MLA1", "MLA2"})},
+        ),
+        read_models=("stockout_snapshots",),
+    )
+    counts = await write_complete_read_model_freshness_markers(
+        db=db, request=request, summary=summary
+    )
+
+    aggregate = summary.aggregates[0]
+    assert aggregate.persisted_count == 2
+    assert aggregate.complete_count == 0
+    assert counts == {}
+    assert db["sheets_read_model_freshness"].documents == []
+
+
+@pytest.mark.asyncio
+async def test_valid_stockout_rows_count_complete_and_can_write_marker() -> None:
+    db = FakeAsyncDb(
+        {
+            "sheets_stockout_snapshots": [
+                _seller_doc(
+                    _id="82453304:MLA1",
+                    item_id="MLA1",
+                    observed_at=_dt(4),
+                    source="sheets_backfill",
+                    observation_basis="current_observed",
+                    status="active",
+                    stock_state="out_of_stock",
+                    current_stock=0,
+                    out_of_stock_since=_dt(4),
+                    schema_version=1,
+                ),
+                _seller_doc(
+                    _id="82453304:MLA2",
+                    item_id="MLA2",
+                    observed_at=_dt(4),
+                    source="sheets_backfill",
+                    observation_basis="current_observed",
+                    status="active",
+                    stock_state="in_stock",
+                    current_stock=5,
+                    out_of_stock_since=None,
+                    schema_version=1,
+                ),
+            ],
+        }
+    )
+    request = _write_request()
+
+    summary = await collect_reconciliation_counts(
+        db=db,
+        request=request,
+        expected=ExpectedReadModelCounts(
+            counts={"stockout_snapshots": 2},
+            truth_mode={"stockout_snapshots": "observed_current"},
+            refs={"stockout_snapshots": frozenset({"MLA1", "MLA2"})},
+        ),
+        read_models=("stockout_snapshots",),
+    )
+    counts = await write_complete_read_model_freshness_markers(
+        db=db, request=request, summary=summary
+    )
+
+    aggregate = summary.aggregates[0]
+    marker = db["sheets_read_model_freshness"].documents[0]
+    assert aggregate.persisted_count == 2
+    assert aggregate.complete_count == 2
+    assert counts == {"freshness_markers_written": 1}
+    assert marker["read_model"] == "stockout_snapshots"
 
 
 @pytest.mark.asyncio
@@ -2114,6 +3280,51 @@ def test_reconciled_marker_requires_reconciled_state_and_enclosing_range() -> No
             complete_reconciled,
             date_from=datetime(2026, 6, 1, tzinfo=UTC),
             date_to=datetime(2026, 6, 4, 23, 59, 59, tzinfo=UTC),
+        )
+        is True
+    )
+
+
+def test_reconciled_marker_requires_coherent_authoritative_interval() -> None:
+    inconsistent_reconciled = {
+        "state": "reconciled",
+        "date_from": datetime(2026, 6, 10, tzinfo=UTC),
+        "reconciled_until": datetime(2026, 6, 5, tzinfo=UTC),
+        "fresh_until": datetime(2026, 6, 20, tzinfo=UTC),
+    }
+    missing_reconciled_until = {
+        "state": "reconciled",
+        "date_from": datetime(2026, 6, 10, tzinfo=UTC),
+        "fresh_until": datetime(2026, 6, 20, tzinfo=UTC),
+    }
+    complete_reconciled = {
+        "state": "reconciled",
+        "date_from": datetime(2026, 6, 10, tzinfo=UTC),
+        "reconciled_until": datetime(2026, 6, 20, tzinfo=UTC),
+        "fresh_until": datetime(2026, 6, 20, tzinfo=UTC),
+    }
+
+    assert (
+        read_model_reconciliation_marker_covers(
+            inconsistent_reconciled,
+            date_from=datetime(2026, 6, 10, tzinfo=UTC),
+            date_to=datetime(2026, 6, 15, tzinfo=UTC),
+        )
+        is False
+    )
+    assert (
+        read_model_reconciliation_marker_covers(
+            missing_reconciled_until,
+            date_from=datetime(2026, 6, 10, tzinfo=UTC),
+            date_to=datetime(2026, 6, 15, tzinfo=UTC),
+        )
+        is False
+    )
+    assert (
+        read_model_reconciliation_marker_covers(
+            complete_reconciled,
+            date_from=datetime(2026, 6, 10, tzinfo=UTC),
+            date_to=datetime(2026, 6, 15, tzinfo=UTC),
         )
         is True
     )
