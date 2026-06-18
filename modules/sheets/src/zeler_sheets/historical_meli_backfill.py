@@ -278,7 +278,7 @@ async def run_historical_meli_backfill(
             if _optional_datetime(question.get("date_created")) is not None
         )
         fetched_questions = await _fetch_question_details(
-            gateway=gateway, seller_id=seller_id, question_ids=search_question_ids
+            gateway=order_detail_gateway, seller_id=seller_id, question_ids=search_question_ids
         )
         fetched_detail_ids = set(
             _unique_strings(_resource_id(question) for question in fetched_questions)
