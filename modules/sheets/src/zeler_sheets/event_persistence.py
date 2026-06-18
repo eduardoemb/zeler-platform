@@ -30,6 +30,10 @@ from zeler_sheets.formulas.read_models import (
     READ_MODEL_FRESHNESS_COLLECTION,
     read_model_freshness_id,
 )
+from zeler_sheets.remaining_read_model_writers import (
+    record_price_history_observation,
+    record_stockout_observation,
+)
 from zeler_sheets.sheetseller_backfill import (
     build_formula_row_doc,
     build_order_line_formula_row_docs,
@@ -154,7 +158,12 @@ class SheetsEventPersistence:
         else:
             item = accepted_item
 
-        await self._refresh_item_read_models(item, seller_id=seller_id, status_state=latest_state)
+        await self._refresh_item_read_models(
+            item,
+            seller_id=seller_id,
+            status_state=latest_state,
+            observed_at=observed_at,
+        )
 
     async def _legacy_status_history_blocks_item_replace(
         self,
@@ -225,7 +234,12 @@ class SheetsEventPersistence:
             return
         if not _item_status_history_matches_state(item, latest_state):
             await self._reconcile_item_status_fields(item_id=str(item["_id"]), seller_id=seller_id)
-        await self._refresh_item_read_models(item, seller_id=seller_id, status_state=latest_state)
+        await self._refresh_item_read_models(
+            item,
+            seller_id=seller_id,
+            status_state=latest_state,
+            observed_at=observed_at,
+        )
 
     async def _current_item_if_snapshot_not_superseded(
         self,
@@ -483,10 +497,31 @@ class SheetsEventPersistence:
         return matched_count > 0
 
     async def _refresh_item_read_models(
-        self, item: dict[str, Any], *, seller_id: str, status_state: dict[str, Any] | None
+        self,
+        item: dict[str, Any],
+        *,
+        seller_id: str,
+        status_state: dict[str, Any] | None,
+        observed_at: datetime,
     ) -> None:
         if status_state is not None:
             item = _item_with_status_history(item, status_state)
+        await record_price_history_observation(
+            self._db,
+            item,
+            seller_id=seller_id,
+            observed_at=observed_at,
+            source="sheets_event_persistence",
+            observation_basis="event_observed",
+        )
+        await record_stockout_observation(
+            self._db,
+            item,
+            seller_id=seller_id,
+            observed_at=observed_at,
+            source="sheets_event_persistence",
+            observation_basis="event_observed",
+        )
         sku_index_docs = build_sku_index_docs(item, seller_id=seller_id)
         for sku_index_doc in sku_index_docs:
             await self._db["sheets_item_sku_index"].replace_one(

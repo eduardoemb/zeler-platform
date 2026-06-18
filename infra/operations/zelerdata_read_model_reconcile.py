@@ -4,9 +4,10 @@ import argparse
 import asyncio
 import json
 import os
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime, timedelta
+from decimal import Decimal
 from typing import Any
 
 READ_MODELS: tuple[str, ...] = (
@@ -21,6 +22,11 @@ READ_MODELS: tuple[str, ...] = (
     "sheets_item_sku_index",
     "item_status_states",
     "item_status_transitions",
+    "price_history_snapshots",
+    "stockout_snapshots",
+    "stock_time_metrics",
+    "catalog_time_metrics",
+    "full_withdrawals",
 )
 DEFAULT_PHASE2_PREFLIGHT_TARGETS: tuple[str, ...] = READ_MODELS
 DEFAULT_PHASE2_DRY_RUN_SCOPES: tuple[str, ...] = (
@@ -66,23 +72,48 @@ DEFAULT_STOP_CRITERIA: tuple[str, ...] = (
     "auth_error",
     "formula_regression",
 )
-_OBSERVED_ONLY_MODELS = {"item_status_states", "item_status_transitions"}
+_OBSERVED_ONLY_MODELS = {
+    "item_status_states",
+    "item_status_transitions",
+    "price_history_snapshots",
+    "stockout_snapshots",
+}
+_OBSERVED_SNAPSHOT_SOURCES = frozenset(
+    {
+        "sheets_event_persistence",
+        "sheets_backfill",
+        "historical_meli_backfill",
+        "manual_reconciliation",
+    }
+)
+_OBSERVATION_BASES = frozenset({"current_observed", "event_observed", "zeler_first_observed"})
+_STOCK_STATES = frozenset({"in_stock", "out_of_stock"})
+_SOURCE_DEFERRED_MODELS = {"stock_time_metrics", "catalog_time_metrics", "full_withdrawals"}
 _HISTORICAL_MELI_MODELS = ("orders", "shipments", "items", "questions", "claims")
 _BOUNDED_REF_MODELS = {
     "shipments",
     "items",
     "catalog_product_snapshots",
     "catalog_buybox_snapshots",
+    "price_history_snapshots",
+    "stockout_snapshots",
 }
 _READ_MODEL_COLLECTIONS: Mapping[str, str] = {
     "catalog_product_snapshots": "sheets_catalog_product_snapshots",
     "catalog_buybox_snapshots": "sheets_catalog_buybox_snapshots",
+    "price_history_snapshots": "sheets_price_history_snapshots",
+    "stockout_snapshots": "sheets_stockout_snapshots",
+    "stock_time_metrics": "sheets_stock_time_metrics",
+    "catalog_time_metrics": "sheets_catalog_time_metrics",
+    "full_withdrawals": "sheets_full_withdrawals",
 }
 _RECONCILED_MARKER_MODELS = {
     "questions",
     "claims",
     "catalog_product_snapshots",
     "catalog_buybox_snapshots",
+    "price_history_snapshots",
+    "stockout_snapshots",
 }
 _COMPLETE_FIELDS: Mapping[str, tuple[str, ...]] = {
     "orders": ("items.0",),
@@ -106,6 +137,25 @@ _COMPLETE_FIELDS: Mapping[str, tuple[str, ...]] = {
     "sheets_item_sku_index": ("normalized_sku", "item_id", "source"),
     "item_status_states": ("current_status", "last_observed_at"),
     "item_status_transitions": ("from_status", "to_status", "observed_at"),
+    "price_history_snapshots": (
+        "prices.0.price",
+        "prices.0.status",
+        "prices.0.observed_at",
+        "prices.0.observation_basis",
+        "snapshot_at",
+        "source",
+        "observation_basis",
+    ),
+    "stockout_snapshots": (
+        "observed_at",
+        "source",
+        "observation_basis",
+        "stock_state",
+        "current_stock",
+    ),
+    "stock_time_metrics": ("date_from", "date_to", "total_hours", "source"),
+    "catalog_time_metrics": ("date_from", "date_to", "available_hours", "source"),
+    "full_withdrawals": ("withdrawal_id", "created_at", "source"),
 }
 HistoricalMeliExpectedSource = Callable[..., Awaitable[Any]]
 _DISTRIBUTION_FIELDS: Mapping[str, Mapping[str, str]] = {
@@ -119,6 +169,18 @@ _DISTRIBUTION_FIELDS: Mapping[str, Mapping[str, str]] = {
     "sheets_item_sku_index": {"source": "source", "identity_level": "identity_level"},
     "item_status_states": {"current_status": "current_status"},
     "item_status_transitions": {"from_status": "from_status", "to_status": "to_status"},
+    "price_history_snapshots": {
+        "source": "source",
+        "observation_basis": "observation_basis",
+    },
+    "stockout_snapshots": {
+        "stock_state": "stock_state",
+        "source": "source",
+        "observation_basis": "observation_basis",
+    },
+    "stock_time_metrics": {"source": "source"},
+    "catalog_time_metrics": {"source": "source"},
+    "full_withdrawals": {"source": "source"},
 }
 _PRESENCE_FIELDS: Mapping[str, Mapping[str, str]] = {
     "orders": {
@@ -567,12 +629,26 @@ async def collect_expected_read_model_counts(
             *_HISTORICAL_MELI_MODELS,
             "item_status_states",
             "item_status_transitions",
+            "price_history_snapshots",
+            "stockout_snapshots",
+            "stock_time_metrics",
+            "catalog_time_metrics",
+            "full_withdrawals",
         )
     }
     refs: dict[str, frozenset[str]] = {}
     truth_mode = {read_model: "unavailable" for read_model in _HISTORICAL_MELI_MODELS}
     truth_mode.update(
         {"item_status_states": "observed_only", "item_status_transitions": "observed_only"}
+    )
+    truth_mode.update(
+        {
+            "price_history_snapshots": "observed_current",
+            "stockout_snapshots": "observed_current",
+            "stock_time_metrics": "source_deferred",
+            "catalog_time_metrics": "source_deferred",
+            "full_withdrawals": "source_deferred",
+        }
     )
     issues: list[ReadModelIssue] = []
 
@@ -628,6 +704,14 @@ async def collect_expected_read_model_counts(
     refs.update(catalog_expected.refs)
     truth_mode.update(catalog_expected.truth_mode)
     issues.extend(catalog_expected.issues)
+
+    observed_expected = await _collect_remaining_observed_expected_counts(
+        db=db, seller_id=request.seller_id, max_items=request.controls.max_items
+    )
+    counts.update(observed_expected.counts)
+    refs.update(observed_expected.refs)
+    truth_mode.update(observed_expected.truth_mode)
+    issues.extend(observed_expected.issues)
 
     return ExpectedReadModelCounts(
         counts=counts,
@@ -761,6 +845,7 @@ async def execute_reconciliation_write(
         await asyncio.sleep(request.controls.sleep_ms / 1000)
 
     from zeler_sheets.historical_meli_backfill import run_historical_meli_backfill
+    from zeler_sheets.remaining_read_model_writers import run_remaining_observed_read_model_seed
     from zeler_sheets.sheetseller_backfill import (
         run_item_detail_enrichment,
         run_sheetseller_backfill,
@@ -801,6 +886,7 @@ async def execute_reconciliation_write(
             historical_summary=summary,
             item_summaries=item_summaries,
             formula_summary=None,
+            observed_summary=None,
         ),
         controls=request.controls,
     )
@@ -809,10 +895,19 @@ async def execute_reconciliation_write(
         seller_id=request.seller_id,
         dry_run=False,
     )
+    observed_summary = None
+    if _observed_seed_write_is_safely_scoped(request.controls):
+        observed_summary = await run_remaining_observed_read_model_seed(
+            db=db,
+            seller_id=request.seller_id,
+            dry_run=False,
+            max_items=request.controls.max_items,
+        )
     counts = _combined_write_counts(
         historical_summary=summary,
         item_summaries=item_summaries,
         formula_summary=formula_summary,
+        observed_summary=observed_summary,
     )
     _enforce_write_count_safety_controls(counts, controls=request.controls)
     return counts
@@ -969,7 +1064,7 @@ async def _collect_read_model_aggregate(
     else:
         missing_count = (
             max(expected_count - persisted_count, 0)
-            if expected_count is not None and truth_mode == "expected"
+            if expected_count is not None and truth_mode in {"expected", "observed_current"}
             else None
         )
     issues = expected_issues
@@ -999,6 +1094,8 @@ async def write_complete_read_model_freshness_markers(
 ) -> dict[str, int]:
     if request.dry_run or not request.write_enabled:
         return {}
+    if _has_bounded_reconciliation_controls(request.controls):
+        return {}
     if not request.approved_runtime:
         raise ValueError("approved_runtime is required for marker write")
 
@@ -1009,19 +1106,43 @@ async def write_complete_read_model_freshness_markers(
             continue
         if not _aggregate_has_complete_scoped_coverage(aggregate):
             continue
+        if aggregate.read_model in {"price_history_snapshots", "stockout_snapshots"} and (
+            aggregate.expected_count is None or aggregate.expected_count <= 0
+        ):
+            continue
         marker_id = f"{request.seller_id}:{aggregate.read_model}"
         updated_at = datetime.now(UTC)
+        filter_spec = {
+            "_id": marker_id,
+            "seller_id": request.seller_id,
+            "read_model": aggregate.read_model,
+        }
+        existing_marker = await collection.find_one(filter_spec)
+        if not _marker_range_can_merge(
+            existing_marker,
+            requested_start=request.date_range.start,
+            requested_end=request.date_range.end_exclusive,
+        ):
+            continue
+        date_from, reconciled_until = _merged_marker_authoritative_range(
+            existing_marker,
+            requested_start=request.date_range.start,
+            requested_end=request.date_range.end_exclusive,
+        )
+        fresh_until = reconciled_until
+        last_event_synced_at = date_from
         await collection.update_one(
-            {"_id": marker_id, "seller_id": request.seller_id, "read_model": aggregate.read_model},
+            filter_spec,
             {
                 "$set": {
                     "_id": marker_id,
                     "seller_id": request.seller_id,
                     "read_model": aggregate.read_model,
                     "state": "reconciled",
-                    "fresh_until": request.date_range.end_exclusive,
-                    "reconciled_until": request.date_range.end_exclusive,
-                    "last_event_synced_at": request.date_range.start,
+                    "date_from": date_from,
+                    "fresh_until": fresh_until,
+                    "reconciled_until": reconciled_until,
+                    "last_event_synced_at": last_event_synced_at,
                     "updated_at": updated_at,
                     "source": "zelerdata_read_model_reconcile",
                     "schema_version": 1,
@@ -1045,15 +1166,183 @@ def _aggregate_has_complete_scoped_coverage(aggregate: ReadModelAggregate) -> bo
     )
 
 
+def _has_bounded_reconciliation_controls(controls: ReconciliationControls) -> bool:
+    for field_name, value in vars(controls).items():
+        if not (field_name.startswith(("max_", "limit_")) or field_name.startswith("resume_")):
+            continue
+        if value is not None and value is not False:
+            return True
+    return False
+
+
+def _observed_seed_write_is_safely_scoped(controls: ReconciliationControls) -> bool:
+    if controls.max_items is not None:
+        return True
+    return not any(
+        value is not None and value is not False
+        for value in (
+            controls.max_orders,
+            controls.max_shipments,
+            controls.resume_after_order_id,
+        )
+    )
+
+
+def _merged_marker_authoritative_range(
+    existing_marker: Any,
+    *,
+    requested_start: datetime,
+    requested_end: datetime,
+) -> tuple[datetime, datetime]:
+    existing_range = _marker_coverage_range(existing_marker)
+    if existing_range is None:
+        return requested_start, requested_end
+    existing_start, existing_end = existing_range
+    return min(existing_start, requested_start), max(existing_end, requested_end)
+
+
+def _marker_range_can_merge(
+    existing_marker: Any, *, requested_start: datetime, requested_end: datetime
+) -> bool:
+    existing_range = _marker_coverage_range(existing_marker)
+    if existing_range is None:
+        return True
+    existing_start, existing_end = existing_range
+    if existing_end < existing_start:
+        return False
+    return requested_start <= existing_end and existing_start <= requested_end
+
+
+def _marker_coverage_range(existing_marker: Any) -> tuple[datetime, datetime] | None:
+    if not (isinstance(existing_marker, Mapping) and existing_marker.get("state") == "reconciled"):
+        return None
+    date_from = existing_marker.get("date_from")
+    start = _coerce_utc_datetime(date_from)
+    if date_from is None:
+        start = _coerce_utc_datetime(existing_marker.get("last_event_synced_at"))
+    end = _coerce_utc_datetime(existing_marker.get("reconciled_until"))
+    if end is None:
+        end = _coerce_utc_datetime(existing_marker.get("fresh_until"))
+    if start is None or end is None:
+        return None
+    return (start, end)
+
+
 async def _complete_count(collection: Any, read_model: str, filter_spec: dict[str, Any]) -> int:
     if read_model == "questions":
         return await _complete_questions_count(collection, filter_spec)
     if read_model == "claims":
         return int(await collection.count_documents(_complete_claims_filter(filter_spec)))
+    if read_model == "price_history_snapshots":
+        return await _complete_price_history_count(collection, filter_spec)
+    if read_model == "stockout_snapshots":
+        return await _complete_stockout_count(collection, filter_spec)
     required_fields = _COMPLETE_FIELDS.get(read_model, ())
     if not required_fields:
         return int(await collection.count_documents(filter_spec))
     return int(await collection.count_documents(_with_present_fields(filter_spec, required_fields)))
+
+
+async def _complete_price_history_count(collection: Any, filter_spec: dict[str, Any]) -> int:
+    complete = 0
+    async for document in _matching_documents(collection, filter_spec):
+        complete += int(_price_history_snapshot_is_complete(document))
+    return complete
+
+
+async def _complete_stockout_count(collection: Any, filter_spec: dict[str, Any]) -> int:
+    complete = 0
+    async for document in _matching_documents(collection, filter_spec):
+        complete += int(_stockout_snapshot_is_complete(document))
+    return complete
+
+
+async def _matching_documents(collection: Any, filter_spec: dict[str, Any]) -> AsyncIterator[Any]:
+    cursor = collection.find(filter_spec)
+    if callable(to_list := getattr(cursor, "to_list", None)):
+        for document in await to_list(length=None):
+            yield document
+        return
+    async for document in cursor:
+        yield document
+
+
+def _price_history_snapshot_is_complete(document: Any) -> bool:
+    if not isinstance(document, Mapping):
+        return False
+    if not _is_datetime_like(document.get("snapshot_at")):
+        return False
+    if not _allowed_observed_source(document.get("source")):
+        return False
+    if not _allowed_observation_basis(document.get("observation_basis")):
+        return False
+    prices = document.get("prices")
+    if not isinstance(prices, Sequence) or isinstance(prices, (str, bytes, bytearray)):
+        return False
+    if not prices:
+        return False
+    return all(_price_entry_is_complete(entry) for entry in prices)
+
+
+def _price_entry_is_complete(entry: Any) -> bool:
+    if not isinstance(entry, Mapping):
+        return False
+    return (
+        _numeric_observed_price(entry.get("price"))
+        and _is_present(entry.get("status"))
+        and _is_datetime_like(entry.get("observed_at"))
+        and _allowed_observation_basis(entry.get("observation_basis"))
+    )
+
+
+def _stockout_snapshot_is_complete(document: Any) -> bool:
+    if not isinstance(document, Mapping):
+        return False
+    if not _is_datetime_like(document.get("observed_at")):
+        return False
+    out_since = document.get("out_of_stock_since")
+    if out_since is not None and not _is_datetime_like(out_since):
+        return False
+    if not _allowed_observed_source(document.get("source")):
+        return False
+    if not _allowed_observation_basis(document.get("observation_basis")):
+        return False
+    stock_state = str(document.get("stock_state") or "").strip()
+    if stock_state not in _STOCK_STATES:
+        return False
+    current_stock = document.get("current_stock")
+    if not isinstance(current_stock, int) or isinstance(current_stock, bool) or current_stock < 0:
+        return False
+    if stock_state == "out_of_stock" and current_stock != 0:
+        return False
+    if stock_state == "in_stock" and current_stock == 0:
+        return False
+    status = document.get("status")
+    return status is None or _is_present(status)
+
+
+def _allowed_observed_source(value: Any) -> bool:
+    return str(value or "").strip() in _OBSERVED_SNAPSHOT_SOURCES
+
+
+def _allowed_observation_basis(value: Any) -> bool:
+    return str(value or "").strip() in _OBSERVATION_BASES
+
+
+def _is_datetime_like(value: Any) -> bool:
+    return isinstance(value, datetime)
+
+
+def _numeric_observed_price(value: Any) -> bool:
+    if value is None or isinstance(value, (bool, str, bytes, bytearray, Mapping)):
+        return False
+    if value.__class__.__name__ == "Decimal128":
+        return True
+    return isinstance(value, (int, float, Decimal))
+
+
+def _is_present(value: Any) -> bool:
+    return value is not None and not (isinstance(value, str) and not value.strip())
 
 
 async def _complete_questions_count(collection: Any, filter_spec: dict[str, Any]) -> int:
@@ -1163,7 +1452,11 @@ def _read_model_filter(
     if refs is not None:
         if read_model == "catalog_product_snapshots":
             filter_spec["catalog_product_id"] = {"$in": sorted(refs)}
-        elif read_model == "catalog_buybox_snapshots":
+        elif read_model in {
+            "catalog_buybox_snapshots",
+            "price_history_snapshots",
+            "stockout_snapshots",
+        }:
             filter_spec["item_id"] = {"$in": sorted(refs)}
         else:
             filter_spec["_id"] = {"$in": sorted(refs)}
@@ -1241,11 +1534,13 @@ def _phase2_preflight_target(read_model: str) -> Phase2PreflightTarget:
     distribution_fields = (
         PHASE2_FORMULA_DISTRIBUTION_FIELDS if read_model == "sheets_item_formula_rows" else ()
     )
-    truth_boundary = (
-        "observed transitions only; do not synthesize paused/status history"
-        if read_model in {"item_status_states", "item_status_transitions"}
-        else None
-    )
+    truth_boundary = None
+    if read_model in {"item_status_states", "item_status_transitions"}:
+        truth_boundary = "observed transitions only; do not synthesize paused/status history"
+    elif read_model in {"price_history_snapshots", "stockout_snapshots"}:
+        truth_boundary = "current/go-forward observed only; do not synthesize history"
+    elif read_model in _SOURCE_DEFERRED_MODELS:
+        truth_boundary = "source-deferred; do not publish readiness without approved source"
     return Phase2PreflightTarget(
         read_model=read_model,
         distribution_fields=distribution_fields,
@@ -1265,6 +1560,18 @@ def _parse_date(value: str, *, field_name: str) -> date:
 
 def _format_utc(value: datetime) -> str:
     return value.astimezone(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def _coerce_utc_datetime(value: Any) -> datetime | None:
+    if isinstance(value, datetime):
+        return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
+    if isinstance(value, str):
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        return parsed.replace(tzinfo=UTC) if parsed.tzinfo is None else parsed.astimezone(UTC)
+    return None
 
 
 def _sorted_field_counts(
@@ -1409,6 +1716,93 @@ async def _collect_catalog_expected_counts(*, db: Any, seller_id: str) -> Expect
     )
 
 
+async def _collect_remaining_observed_expected_counts(
+    *, db: Any, seller_id: str, max_items: int | None = None
+) -> ExpectedReadModelCounts:
+    try:
+        from zeler_sheets.remaining_read_model_writers import (
+            run_remaining_observed_read_model_seed,
+        )
+
+        summary = await run_remaining_observed_read_model_seed(
+            db=db,
+            seller_id=seller_id,
+            dry_run=True,
+            max_items=max_items,
+        )
+    except Exception:  # noqa: BLE001 - expected source anomalies are sanitized.
+        return ExpectedReadModelCounts(
+            counts={
+                "price_history_snapshots": None,
+                "stockout_snapshots": None,
+                "stock_time_metrics": None,
+                "catalog_time_metrics": None,
+                "full_withdrawals": None,
+            },
+            truth_mode={
+                "price_history_snapshots": "unavailable",
+                "stockout_snapshots": "unavailable",
+                "stock_time_metrics": "source_deferred",
+                "catalog_time_metrics": "source_deferred",
+                "full_withdrawals": "source_deferred",
+            },
+            issues=(
+                _issue(
+                    "price_history_snapshots",
+                    "expected_unavailable",
+                    "current observed price source unavailable",
+                ),
+                _issue(
+                    "stockout_snapshots",
+                    "expected_unavailable",
+                    "current observed stockout source unavailable",
+                ),
+                *_deferred_source_issues(),
+            ),
+        )
+    return ExpectedReadModelCounts(
+        counts={
+            "price_history_snapshots": summary.price_snapshots_planned,
+            "stockout_snapshots": summary.stockout_snapshots_planned,
+            "stock_time_metrics": None,
+            "catalog_time_metrics": None,
+            "full_withdrawals": None,
+        },
+        truth_mode={
+            "price_history_snapshots": "observed_current",
+            "stockout_snapshots": "observed_current",
+            "stock_time_metrics": "source_deferred",
+            "catalog_time_metrics": "source_deferred",
+            "full_withdrawals": "source_deferred",
+        },
+        refs={
+            "price_history_snapshots": frozenset(summary.price_item_ids),
+            "stockout_snapshots": frozenset(summary.stockout_item_ids),
+        },
+        issues=_deferred_source_issues(),
+    )
+
+
+def _deferred_source_issues() -> tuple[ReadModelIssue, ...]:
+    return (
+        _issue(
+            "stock_time_metrics",
+            "source_deferred",
+            "stock time metrics require accepted source semantics",
+        ),
+        _issue(
+            "catalog_time_metrics",
+            "source_deferred",
+            "catalog time metrics require approved interval source",
+        ),
+        _issue(
+            "full_withdrawals",
+            "source_deferred",
+            "full withdrawals require approved source/import",
+        ),
+    )
+
+
 def _summary_ref_set(summary: Any, name: str) -> frozenset[str] | None:
     raw = _summary_value(summary, name)
     if raw is None:
@@ -1545,7 +1939,11 @@ def _observed_pause_basis_repair_counts(summary: Any) -> dict[str, int]:
 
 
 def _combined_write_counts(
-    *, historical_summary: Any, item_summaries: Sequence[Any], formula_summary: Any | None
+    *,
+    historical_summary: Any,
+    item_summaries: Sequence[Any],
+    formula_summary: Any | None,
+    observed_summary: Any | None,
 ) -> dict[str, int]:
     counts = _write_counts_from_summary(historical_summary)
     counts["item_detail_items_planned"] = sum(
@@ -1569,6 +1967,15 @@ def _combined_write_counts(
     if formula_summary is not None:
         counts["formula_row_upserts"] = _summary_int(formula_summary, "formula_row_upserts")
         counts["sku_index_upserts"] = _summary_int(formula_summary, "sku_index_upserts")
+    if observed_summary is not None:
+        for output_field, summary_field in {
+            "price_history_snapshots_planned": "price_snapshots_planned",
+            "price_history_snapshots_updated": "price_snapshots_updated",
+            "stockout_snapshots_planned": "stockout_snapshots_planned",
+            "stockout_snapshots_updated": "stockout_snapshots_updated",
+        }.items():
+            if value := _summary_int(observed_summary, summary_field):
+                counts[output_field] = value
     return counts
 
 

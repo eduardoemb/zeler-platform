@@ -28,6 +28,13 @@
           "null"
         ]
       },
+      "observation_basis": {
+        "enum": [
+          "current_observed",
+          "event_observed",
+          "zeler_first_observed"
+        ]
+      },
       "observed_at": {
         "bsonType": "date"
       },
@@ -101,6 +108,7 @@
       "item_id",
       "observed_at",
       "source",
+      "observation_basis",
       "schema_version"
     ]
   },

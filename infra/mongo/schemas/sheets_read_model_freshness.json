@@ -6,6 +6,12 @@
       "_id": {
         "bsonType": "string"
       },
+      "date_from": {
+        "bsonType": [
+          "date",
+          "null"
+        ]
+      },
       "fresh_until": {
         "bsonType": "date"
       },

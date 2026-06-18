@@ -198,14 +198,16 @@ READ_MODEL_PROJECTOR_SOURCE = {
         "manual_reconciliation",
     ]
 }
+OBSERVED_READ_MODEL_BASIS = {"enum": ["current_observed", "event_observed", "zeler_first_observed"]}
 PRICE_HISTORY_ENTRY = {
     "additionalProperties": False,
     "bsonType": "object",
-    "required": ["price", "status", "observed_at"],
+    "required": ["price", "status", "observed_at", "observation_basis"],
     "properties": {
         "price": MONEY,
         "status": {"bsonType": "string"},
         "observed_at": DATE,
+        "observation_basis": OBSERVED_READ_MODEL_BASIS,
     },
 }
 STOCK_WEEK_BUCKET = {
@@ -478,6 +480,7 @@ ENTITY_SCHEMAS: dict[str, dict[str, Any]] = {
             "read_model": {"bsonType": "string"},
             "state": {"enum": ["fresh", "reconciled", "stale", "failed"]},
             "fresh_until": DATE,
+            "date_from": NULLABLE_DATE,
             "reconciled_until": NULLABLE_DATE,
             "last_event_synced_at": NULLABLE_DATE,
             "updated_at": DATE,
@@ -604,6 +607,7 @@ ENTITY_SCHEMAS: dict[str, dict[str, Any]] = {
             "prices",
             "snapshot_at",
             "source",
+            "observation_basis",
             "schema_version",
         ],
         "properties": {
@@ -614,6 +618,7 @@ ENTITY_SCHEMAS: dict[str, dict[str, Any]] = {
             "prices": {"bsonType": "array", "items": PRICE_HISTORY_ENTRY},
             "snapshot_at": DATE,
             "source": READ_MODEL_PROJECTOR_SOURCE,
+            "observation_basis": OBSERVED_READ_MODEL_BASIS,
             **SCHEMA_VERSION,
         },
     },
@@ -655,6 +660,7 @@ ENTITY_SCHEMAS: dict[str, dict[str, Any]] = {
             "item_id",
             "observed_at",
             "source",
+            "observation_basis",
             "schema_version",
         ],
         "properties": {
@@ -673,6 +679,7 @@ ENTITY_SCHEMAS: dict[str, dict[str, Any]] = {
             "out_of_stock_since": NULLABLE_DATE,
             "observed_at": DATE,
             "source": READ_MODEL_PROJECTOR_SOURCE,
+            "observation_basis": OBSERVED_READ_MODEL_BASIS,
             **SCHEMA_VERSION,
         },
     },
