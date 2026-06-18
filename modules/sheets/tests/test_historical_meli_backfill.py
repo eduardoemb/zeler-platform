@@ -253,6 +253,14 @@ class FakeOrderDetailGateway:
         self.calls.append((seller_id, path))
         if path == "/orders/2001":
             return _order_detail(status=self.order_status, order_items=self.order_items)
+        if path == "/questions/Q1":
+            return _question_detail("Q1", status="ANSWERED", answer_text="Yes")
+        if path == "/questions/Q2":
+            return _question_detail("Q2", status="UNANSWERED")
+        if path == "/questions/Q3":
+            return _question_detail(
+                "Q3", status="UNANSWERED", date_created="2026-05-02T10:00:00+00:00"
+            )
         raise AssertionError(f"Unexpected order detail gateway path: {path}")
 
 
@@ -626,6 +634,38 @@ async def test_historical_backfill_fetches_order_details_through_separate_gatewa
 
 
 @pytest.mark.asyncio
+async def test_historical_backfill_fetches_question_details_through_detail_gateway() -> None:
+    db = FakeDb()
+    gateway = FakeGateway()
+    detail_gateway = FakeOrderDetailGateway()
+
+    summary = await run_historical_meli_backfill(
+        db=db,
+        gateway=gateway,
+        order_detail_gateway=detail_gateway,
+        seller_id="82453304",
+        date_from="2026-05-01",
+        date_to="2026-05-01",
+        dry_run=True,
+        max_orders=1,
+        include_questions=True,
+    )
+
+    assert summary.questions_found == 2
+    assert (
+        "82453304",
+        "/questions/search?api_version=4&seller_id=82453304&offset=0&limit=50",
+    ) in gateway.calls
+    assert ("82453304", "/questions/Q1") in detail_gateway.calls
+    assert ("82453304", "/questions/Q2") in detail_gateway.calls
+    assert ("82453304", "/questions/Q3") in detail_gateway.calls
+    primary_paths = [path for _, path in gateway.calls]
+    assert "/questions/Q1" not in primary_paths
+    assert "/questions/Q2" not in primary_paths
+    assert "/questions/Q3" not in primary_paths
+
+
+@pytest.mark.asyncio
 async def test_historical_backfill_write_persists_canonical_docs_and_read_models() -> None:
     db = FakeDb()
     gateway = FakeGateway()
@@ -683,11 +723,12 @@ async def test_historical_backfill_write_persists_canonical_docs_and_read_models
 async def test_historical_backfill_reconciles_question_details_for_formula_readiness() -> None:
     db = FakeDb()
     gateway = FakeGateway()
+    detail_gateway = FakeOrderDetailGateway()
 
     summary = await run_historical_meli_backfill(
         db=db,
         gateway=gateway,
-        order_detail_gateway=FakeOrderDetailGateway(),
+        order_detail_gateway=detail_gateway,
         seller_id="82453304",
         date_from="2026-05-01",
         date_to="2026-05-01",
@@ -710,8 +751,10 @@ async def test_historical_backfill_reconciles_question_details_for_formula_readi
         "82453304",
         "/questions/search?api_version=4&seller_id=82453304&offset=0&limit=50",
     ) in gateway.calls
-    assert ("82453304", "/questions/Q1") in gateway.calls
-    assert ("82453304", "/questions/Q3") in gateway.calls
+    assert ("82453304", "/questions/Q1") in detail_gateway.calls
+    assert ("82453304", "/questions/Q3") in detail_gateway.calls
+    assert "/questions/Q1" not in [path for _, path in gateway.calls]
+    assert "/questions/Q3" not in [path for _, path in gateway.calls]
     assert "Q3" not in db["questions"].documents
 
 
