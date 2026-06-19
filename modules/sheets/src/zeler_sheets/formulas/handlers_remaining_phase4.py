@@ -236,10 +236,11 @@ class RemainingPhase4FormulaHandlers:
         self, context: FormulaExecutionContext
     ) -> FormulaExecutionResult:
         date_from = _day_start(_parse_date(context.args.get("fecha_inicial")))
-        date_to = _day_end(_parse_date(context.args.get("fecha_final")))
-        await self._repository.require_read_model_productive(
+        date_to = _day_after(_parse_date(context.args.get("fecha_final")))
+        await self._repository.require_read_model_reconciled_range(
             seller_id=context.seller_id,
             read_model=STOCK_TIME_METRICS_READ_MODEL,
+            date_from=date_from,
             date_to=date_to,
             formula=context.contract.name,
         )
@@ -265,10 +266,11 @@ class RemainingPhase4FormulaHandlers:
         self, context: FormulaExecutionContext
     ) -> FormulaExecutionResult:
         date_from = _day_start(_parse_date(context.args.get("fecha_inicial")))
-        date_to = _day_end(_parse_date(context.args.get("fecha_final")))
-        await self._repository.require_read_model_productive(
+        date_to = _day_after(_parse_date(context.args.get("fecha_final")))
+        await self._repository.require_read_model_reconciled_range(
             seller_id=context.seller_id,
             read_model=STOCK_TIME_METRICS_READ_MODEL,
+            date_from=date_from,
             date_to=date_to,
             formula=context.contract.name,
         )
@@ -324,10 +326,11 @@ class RemainingPhase4FormulaHandlers:
         self, context: FormulaExecutionContext
     ) -> FormulaExecutionResult:
         date_from = _day_start(_parse_date(context.args.get("fecha_inicial")))
-        date_to = _day_end(_parse_date(context.args.get("fecha_final")))
-        await self._repository.require_read_model_productive(
+        date_to = _day_after(_parse_date(context.args.get("fecha_final")))
+        await self._repository.require_read_model_reconciled_range(
             seller_id=context.seller_id,
             read_model=CATALOG_TIME_METRICS_READ_MODEL,
+            date_from=date_from,
             date_to=date_to,
             formula=context.contract.name,
         )
@@ -351,10 +354,11 @@ class RemainingPhase4FormulaHandlers:
 
     async def sheetseller_retiros(self, context: FormulaExecutionContext) -> FormulaExecutionResult:
         date_from = _day_start(_parse_date(context.args.get("fecha_inicial")))
-        date_to = _day_end(_parse_date(context.args.get("fecha_final")))
-        await self._repository.require_read_model_productive(
+        date_to = _day_after(_parse_date(context.args.get("fecha_final")))
+        await self._repository.require_read_model_reconciled_range(
             seller_id=context.seller_id,
             read_model=FULL_WITHDRAWALS_READ_MODEL,
+            date_from=date_from,
             date_to=date_to,
             formula=context.contract.name,
         )
@@ -708,6 +712,11 @@ def _day_start(value: datetime) -> datetime:
 def _day_end(value: datetime) -> datetime:
     parsed = _as_utc_datetime(value)
     return datetime.combine(parsed.date(), time.max, tzinfo=UTC)
+
+
+def _day_after(value: datetime) -> datetime:
+    parsed = _as_utc_datetime(value)
+    return datetime.combine(parsed.date() + timedelta(days=1), time.min, tzinfo=UTC)
 
 
 def _first_datetime(*values: Any) -> datetime | None:

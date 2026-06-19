@@ -198,7 +198,12 @@ READ_MODEL_PROJECTOR_SOURCE = {
         "manual_reconciliation",
     ]
 }
+SOURCE_GATED_PROJECTOR_SOURCE = {
+    "enum": [*READ_MODEL_PROJECTOR_SOURCE["enum"], "legacy_history_import"]
+}
 OBSERVED_READ_MODEL_BASIS = {"enum": ["current_observed", "event_observed", "zeler_first_observed"]}
+SOURCE_GATED_HISTORY_BASIS = {"enum": ["legacy_imported", "observed_only"]}
+NULLABLE_SOURCE_GATED_HISTORY_BASIS = {"enum": ["legacy_imported", "observed_only", None]}
 PRICE_HISTORY_ENTRY = {
     "additionalProperties": False,
     "bsonType": "object",
@@ -485,6 +490,7 @@ ENTITY_SCHEMAS: dict[str, dict[str, Any]] = {
             "last_event_synced_at": NULLABLE_DATE,
             "updated_at": DATE,
             "source": {"bsonType": ["string", "null"]},
+            "coverage_basis": NULLABLE_SOURCE_GATED_HISTORY_BASIS,
             **SCHEMA_VERSION,
         },
     },
@@ -555,6 +561,8 @@ ENTITY_SCHEMAS: dict[str, dict[str, Any]] = {
             "winning_hours",
             "available_hours",
             "source",
+            "history_basis",
+            "coverage_basis",
             "schema_version",
         ],
         "properties": {
@@ -568,7 +576,9 @@ ENTITY_SCHEMAS: dict[str, dict[str, Any]] = {
             "winning_hours": MONEY,
             "available_hours": MONEY,
             "winning_percent": NULLABLE_MONEY,
-            "source": READ_MODEL_PROJECTOR_SOURCE,
+            "source": SOURCE_GATED_PROJECTOR_SOURCE,
+            "history_basis": SOURCE_GATED_HISTORY_BASIS,
+            "coverage_basis": SOURCE_GATED_HISTORY_BASIS,
             **SCHEMA_VERSION,
         },
     },
@@ -580,6 +590,8 @@ ENTITY_SCHEMAS: dict[str, dict[str, Any]] = {
             "withdrawal_id",
             "created_at",
             "source",
+            "history_basis",
+            "coverage_basis",
             "schema_version",
         ],
         "properties": {
@@ -594,7 +606,9 @@ ENTITY_SCHEMAS: dict[str, dict[str, Any]] = {
             "requested_quantity": {"bsonType": ["int", "long", "null"]},
             "created_at": DATE,
             "delivered_at": NULLABLE_DATE,
-            "source": READ_MODEL_PROJECTOR_SOURCE,
+            "source": SOURCE_GATED_PROJECTOR_SOURCE,
+            "history_basis": SOURCE_GATED_HISTORY_BASIS,
+            "coverage_basis": SOURCE_GATED_HISTORY_BASIS,
             **SCHEMA_VERSION,
         },
     },
@@ -632,6 +646,8 @@ ENTITY_SCHEMAS: dict[str, dict[str, Any]] = {
             "date_to",
             "total_hours",
             "source",
+            "history_basis",
+            "coverage_basis",
             "schema_version",
         ],
         "properties": {
@@ -648,7 +664,9 @@ ENTITY_SCHEMAS: dict[str, dict[str, Any]] = {
             "total_hours": MONEY,
             "active_stock_percent": NULLABLE_MONEY,
             "weeks": {"bsonType": "array", "items": STOCK_WEEK_BUCKET},
-            "source": READ_MODEL_PROJECTOR_SOURCE,
+            "source": SOURCE_GATED_PROJECTOR_SOURCE,
+            "history_basis": SOURCE_GATED_HISTORY_BASIS,
+            "coverage_basis": SOURCE_GATED_HISTORY_BASIS,
             **SCHEMA_VERSION,
         },
     },
