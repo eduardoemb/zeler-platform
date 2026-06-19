@@ -6,6 +6,12 @@
       "_id": {
         "bsonType": "string"
       },
+      "coverage_basis": {
+        "enum": [
+          "legacy_imported",
+          "observed_only"
+        ]
+      },
       "created_at": {
         "bsonType": "date"
       },
@@ -13,6 +19,12 @@
         "bsonType": [
           "date",
           "null"
+        ]
+      },
+      "history_basis": {
+        "enum": [
+          "legacy_imported",
+          "observed_only"
         ]
       },
       "inventory_id": {
@@ -55,7 +67,8 @@
           "sheets_event_persistence",
           "sheets_backfill",
           "historical_meli_backfill",
-          "manual_reconciliation"
+          "manual_reconciliation",
+          "legacy_history_import"
         ]
       },
       "title": {
@@ -80,6 +93,8 @@
       "withdrawal_id",
       "created_at",
       "source",
+      "history_basis",
+      "coverage_basis",
       "schema_version"
     ]
   },

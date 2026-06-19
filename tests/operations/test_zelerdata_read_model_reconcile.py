@@ -195,6 +195,22 @@ class FakeObservedSeedSummary:
     stockout_snapshots_updated: int = 0
 
 
+@dataclass(frozen=True)
+class FakeSourceGatedSummary:
+    stock_time_metrics_planned: int = 1
+    stock_time_metrics_updated: int = 1
+    catalog_time_metrics_planned: int = 1
+    catalog_time_metrics_updated: int = 1
+    full_withdrawals_planned: int = 1
+    full_withdrawals_updated: int = 1
+    stock_time_item_ids: list[str] | None = None
+    catalog_time_item_ids: list[str] | None = None
+    full_withdrawal_ids: list[str] | None = None
+    coverage_basis: dict[str, str] | None = None
+    coverage_complete: dict[str, bool] | None = None
+    source_inventory_counts: dict[str, int] | None = None
+
+
 def _matches_filter(document: dict[str, Any], filter_spec: dict[str, Any]) -> bool:
     for key, expected in filter_spec.items():
         if key == "$or":
@@ -514,6 +530,181 @@ async def test_non_item_bounded_write_controls_skip_observed_seed(
 
     assert "price_history_snapshots_updated" not in counts
     assert "stockout_snapshots_updated" not in counts
+
+
+@pytest.mark.parametrize(
+    "extra_args",
+    [
+        ["--max-orders", "1"],
+        ["--max-shipments", "1"],
+        ["--resume-after-order-id", "ORDER-PII-RESUME"],
+    ],
+    ids=("max-orders", "max-shipments", "resume-after-order-id"),
+)
+@pytest.mark.asyncio
+async def test_non_item_bounded_write_controls_skip_source_gated_import(
+    monkeypatch: pytest.MonkeyPatch, extra_args: list[str]
+) -> None:
+    from infra.operations import zelerdata_read_model_reconcile
+
+    from zeler_sheets import (
+        historical_meli_backfill,
+        sheetseller_backfill,
+        source_gated_read_model_writers,
+    )
+
+    async def fake_historical_backfill(**_: Any) -> FakeHistoricalMeliSummary:
+        return FakeHistoricalMeliSummary(orders_found=0, order_ids=[], shipment_ids=[], item_ids=[])
+
+    async def fake_item_enrichment(**_: Any) -> FakeWriteSummary:
+        return FakeWriteSummary()
+
+    async def fake_formula_rebuild(**_: Any) -> FakeWriteSummary:
+        return FakeWriteSummary()
+
+    async def forbidden_source_gated_import(**kwargs: Any) -> FakeSourceGatedSummary:
+        raise AssertionError(
+            f"source-gated import should be skipped for non-item bounded write controls: {kwargs!r}"
+        )
+
+    monkeypatch.setattr(
+        zelerdata_read_model_reconcile,
+        "create_runtime_historical_meli_gateways",
+        lambda: type(
+            "Gateways",
+            (),
+            {"gateway": object(), "order_detail_gateway": object(), "catalog_gateway": object()},
+        )(),
+    )
+    monkeypatch.setattr(
+        historical_meli_backfill, "run_historical_meli_backfill", fake_historical_backfill
+    )
+    monkeypatch.setattr(sheetseller_backfill, "run_item_detail_enrichment", fake_item_enrichment)
+    monkeypatch.setattr(sheetseller_backfill, "run_sheetseller_backfill", fake_formula_rebuild)
+    monkeypatch.setattr(
+        source_gated_read_model_writers,
+        "run_source_gated_read_model_import",
+        forbidden_source_gated_import,
+    )
+
+    counts = await execute_reconciliation_write(
+        db=FakeAsyncDb({}), request=_write_request(extra_args=extra_args)
+    )
+
+    assert counts["source_gated_import_skipped_bounded_controls"] == 1
+    assert "stock_time_metrics_updated" not in counts
+    assert "catalog_time_metrics_updated" not in counts
+    assert "full_withdrawals_updated" not in counts
+
+
+@pytest.mark.parametrize(
+    "extra_args",
+    [
+        ["--max-orders", "1"],
+        ["--max-shipments", "1"],
+        ["--resume-after-order-id", "ORDER-PII-RESUME"],
+    ],
+    ids=("max-orders", "max-shipments", "resume-after-order-id"),
+)
+@pytest.mark.asyncio
+async def test_non_item_bounded_source_gated_expected_counts_and_markers_are_skipped(
+    monkeypatch: pytest.MonkeyPatch, extra_args: list[str]
+) -> None:
+    from infra.operations import zelerdata_read_model_reconcile
+
+    from zeler_sheets import source_gated_read_model_writers
+
+    source_gated_import_calls: list[dict[str, Any]] = []
+
+    async def fake_source_gated_import(**kwargs: Any) -> FakeSourceGatedSummary:
+        source_gated_import_calls.append(kwargs)
+        return FakeSourceGatedSummary(
+            stock_time_item_ids=["MLA1"],
+            catalog_time_item_ids=["MLA1"],
+            full_withdrawal_ids=["82453304:RET-1:PKG-1:INV-1"],
+            coverage_basis={
+                "stock_time_metrics": "legacy_imported",
+                "catalog_time_metrics": "legacy_imported",
+                "full_withdrawals": "legacy_imported",
+            },
+            coverage_complete={
+                "stock_time_metrics": True,
+                "catalog_time_metrics": True,
+                "full_withdrawals": True,
+            },
+            source_inventory_counts={
+                "stock_time_metrics": 1,
+                "catalog_time_metrics": 1,
+                "full_withdrawals": 1,
+            },
+        )
+
+    monkeypatch.setattr(
+        source_gated_read_model_writers,
+        "run_source_gated_read_model_import",
+        fake_source_gated_import,
+    )
+
+    db = FakeAsyncDb({})
+    request = _write_request(extra_args=extra_args)
+    expected = await zelerdata_read_model_reconcile._collect_source_gated_expected_counts(
+        db=db, request=request
+    )
+    summary = ReconciliationSummary(
+        seller_id=request.seller_id,
+        date_from=request.date_range.date_from,
+        date_to=request.date_range.date_to,
+        dry_run=False,
+        approved_runtime=True,
+        write_enabled=True,
+        aggregates=(
+            ReadModelAggregate(
+                read_model="stock_time_metrics",
+                expected_count=1,
+                persisted_count=1,
+                missing_count=0,
+                complete_count=1,
+                truth_mode="legacy_imported",
+            ),
+            ReadModelAggregate(
+                read_model="catalog_time_metrics",
+                expected_count=1,
+                persisted_count=1,
+                missing_count=0,
+                complete_count=1,
+                truth_mode="legacy_imported",
+            ),
+            ReadModelAggregate(
+                read_model="full_withdrawals",
+                expected_count=1,
+                persisted_count=1,
+                missing_count=0,
+                complete_count=1,
+                truth_mode="legacy_imported",
+            ),
+        ),
+    )
+    marker_counts = await write_complete_read_model_freshness_markers(
+        db=db, request=request, summary=summary
+    )
+
+    assert source_gated_import_calls == []
+    assert expected.counts == {
+        "stock_time_metrics": None,
+        "catalog_time_metrics": None,
+        "full_withdrawals": None,
+    }
+    assert expected.truth_mode == {
+        "stock_time_metrics": "source_deferred",
+        "catalog_time_metrics": "source_deferred",
+        "full_withdrawals": "source_deferred",
+    }
+    assert {issue.code for issue in expected.issues} == {
+        "source_gated_import_skipped_bounded_controls"
+    }
+    assert marker_counts == {}
+    assert db["sheets_read_model_freshness"].documents == []
+    assert db["sheets_read_model_freshness"].updates == []
 
 
 def _dt(day: int) -> datetime:
@@ -2002,6 +2193,58 @@ async def test_overlapping_or_contiguous_marker_write_merges_without_gaps(
 
 
 @pytest.mark.asyncio
+async def test_source_gated_interval_marker_write_does_not_merge_broader_existing_range() -> None:
+    existing_fresh_until = datetime(2026, 7, 1, tzinfo=UTC)
+    existing_collection = FakeAsyncCollection(
+        [
+            _seller_doc(
+                _id="82453304:stock_time_metrics",
+                read_model="stock_time_metrics",
+                state="reconciled",
+                date_from=datetime(2026, 6, 1, tzinfo=UTC),
+                fresh_until=existing_fresh_until,
+                reconciled_until=existing_fresh_until,
+                last_event_synced_at=datetime(2026, 6, 1, tzinfo=UTC),
+                coverage_basis="legacy_imported",
+                updated_at=_dt(1),
+                source="zelerdata_read_model_reconcile",
+                schema_version=1,
+            )
+        ]
+    )
+    db = FakeAsyncDb({"sheets_read_model_freshness": existing_collection})
+    request = _write_request()
+    summary = ReconciliationSummary(
+        seller_id=request.seller_id,
+        date_from=request.date_range.date_from,
+        date_to=request.date_range.date_to,
+        dry_run=False,
+        approved_runtime=True,
+        write_enabled=True,
+        aggregates=(
+            ReadModelAggregate(
+                read_model="stock_time_metrics",
+                expected_count=1,
+                persisted_count=1,
+                missing_count=0,
+                complete_count=1,
+                truth_mode="legacy_imported",
+            ),
+        ),
+    )
+
+    counts = await write_complete_read_model_freshness_markers(
+        db=db, request=request, summary=summary
+    )
+
+    assert counts == {"freshness_markers_written": 1}
+    _, update_spec, _ = existing_collection.updates[-1]
+    assert update_spec["$set"]["date_from"] == request.date_range.start
+    assert update_spec["$set"]["fresh_until"] == request.date_range.end_exclusive
+    assert update_spec["$set"]["reconciled_until"] == request.date_range.end_exclusive
+
+
+@pytest.mark.asyncio
 async def test_price_stockout_markers_do_not_write_for_wrong_item_refs() -> None:
     from infra.operations import zelerdata_read_model_reconcile
 
@@ -2292,6 +2535,71 @@ async def test_observed_price_stockout_ready_and_deferred_models_blocked() -> No
     assert by_model["stock_time_metrics"]["issues"] == [{"code": "source_deferred"}]
     assert by_model["catalog_time_metrics"]["truth_mode"] == "source_deferred"
     assert by_model["full_withdrawals"]["truth_mode"] == "source_deferred"
+
+
+@pytest.mark.asyncio
+async def test_source_gated_interval_aggregates_require_exact_reconcile_interval_rows() -> None:
+    db = FakeAsyncDb(
+        {
+            "sheets_stock_time_metrics": [
+                _seller_doc(
+                    _id="82453304:MLA1:SKU1:2026-06-01:2026-07-01",
+                    item_id="MLA1",
+                    sku="SKU1",
+                    normalized_sku="SKU1",
+                    date_from=datetime(2026, 6, 1, tzinfo=UTC),
+                    date_to=datetime(2026, 7, 1, tzinfo=UTC),
+                    total_hours=720,
+                    active_stock_hours=720,
+                    source="legacy_history_import",
+                    history_basis="legacy_imported",
+                    coverage_basis="legacy_imported",
+                )
+            ],
+            "sheets_catalog_time_metrics": [
+                _seller_doc(
+                    _id="82453304:MLA1:2026-06-01:2026-07-01",
+                    item_id="MLA1",
+                    date_from=datetime(2026, 6, 1, tzinfo=UTC),
+                    date_to=datetime(2026, 7, 1, tzinfo=UTC),
+                    available_hours=720,
+                    winning_hours=720,
+                    source="legacy_history_import",
+                    history_basis="legacy_imported",
+                    coverage_basis="legacy_imported",
+                )
+            ],
+        }
+    )
+    request = _write_request()
+
+    summary = await collect_reconciliation_counts(
+        db=db,
+        request=request,
+        expected=ExpectedReadModelCounts(
+            counts={"stock_time_metrics": 1, "catalog_time_metrics": 1},
+            truth_mode={
+                "stock_time_metrics": "legacy_imported",
+                "catalog_time_metrics": "legacy_imported",
+            },
+            refs={
+                "stock_time_metrics": frozenset({"MLA1"}),
+                "catalog_time_metrics": frozenset({"MLA1"}),
+            },
+        ),
+        read_models=("stock_time_metrics", "catalog_time_metrics"),
+    )
+    counts = await write_complete_read_model_freshness_markers(
+        db=db, request=request, summary=summary
+    )
+
+    by_model = {aggregate.read_model: aggregate for aggregate in summary.aggregates}
+    assert by_model["stock_time_metrics"].persisted_count == 0
+    assert by_model["stock_time_metrics"].complete_count == 0
+    assert by_model["catalog_time_metrics"].persisted_count == 0
+    assert by_model["catalog_time_metrics"].complete_count == 0
+    assert counts == {}
+    assert db["sheets_read_model_freshness"].documents == []
 
 
 @pytest.mark.parametrize(
@@ -3330,6 +3638,37 @@ def test_reconciled_marker_requires_coherent_authoritative_interval() -> None:
     )
 
 
+def test_reconciled_marker_exact_interval_rejects_enclosing_subranges() -> None:
+    broad_reconciled = {
+        "state": "reconciled",
+        "date_from": datetime(2026, 6, 1, tzinfo=UTC),
+        "fresh_until": datetime(2026, 7, 1, tzinfo=UTC),
+        "reconciled_until": datetime(2026, 7, 1, tzinfo=UTC),
+        "coverage_basis": "legacy_imported",
+    }
+
+    assert read_model_reconciliation_marker_covers(
+        broad_reconciled,
+        date_from=datetime(2026, 6, 1, tzinfo=UTC),
+        date_to=datetime(2026, 7, 1, tzinfo=UTC),
+        coverage_basis="legacy_imported",
+        exact_interval=True,
+    )
+    assert not read_model_reconciliation_marker_covers(
+        broad_reconciled,
+        date_from=datetime(2026, 6, 1, tzinfo=UTC),
+        date_to=datetime(2026, 6, 5, tzinfo=UTC),
+        coverage_basis="legacy_imported",
+        exact_interval=True,
+    )
+    assert read_model_reconciliation_marker_covers(
+        broad_reconciled,
+        date_from=datetime(2026, 6, 1, tzinfo=UTC),
+        date_to=datetime(2026, 6, 5, tzinfo=UTC),
+        coverage_basis="legacy_imported",
+    )
+
+
 def test_partial_marker_keeps_formula_read_model_data_unavailable() -> None:
     partial_marker = {
         "state": "partial",
@@ -4170,3 +4509,211 @@ def test_sheets_runtime_images_copy_operations_helper_for_phase2_contract(
     assert dockerfile.index(OPERATIONS_COPY_STANZA) < dockerfile.index(
         "COPY modules/sheets ./modules/sheets"
     )
+
+
+@pytest.mark.asyncio
+async def test_source_gated_complete_legacy_coverage_writes_interval_markers() -> None:
+    db = FakeAsyncDb(
+        {
+            "sheets_stock_time_metrics": [
+                _seller_doc(
+                    _id="82453304:MLA1:SKU1:2026-06-01:2026-06-05",
+                    item_id="MLA1",
+                    sku="SKU1",
+                    normalized_sku="SKU1",
+                    date_from=_dt(1),
+                    date_to=_dt(5),
+                    active_stock_hours=48,
+                    total_hours=96,
+                    source="legacy_history_import",
+                    history_basis="legacy_imported",
+                    coverage_basis="legacy_imported",
+                    schema_version=1,
+                )
+            ],
+            "sheets_catalog_time_metrics": [
+                _seller_doc(
+                    _id="82453304:MLA1:2026-06-01:2026-06-05",
+                    item_id="MLA1",
+                    date_from=_dt(1),
+                    date_to=_dt(5),
+                    winning_hours=24,
+                    available_hours=96,
+                    source="legacy_history_import",
+                    history_basis="legacy_imported",
+                    coverage_basis="legacy_imported",
+                    schema_version=1,
+                )
+            ],
+            "sheets_full_withdrawals": [
+                _seller_doc(
+                    _id="82453304:RET-1:PKG-1:INV-1",
+                    withdrawal_id="RET-1",
+                    withdrawal_detail_id="PKG-1",
+                    created_at=_dt(2),
+                    source="legacy_history_import",
+                    history_basis="legacy_imported",
+                    coverage_basis="legacy_imported",
+                    schema_version=1,
+                )
+            ],
+        }
+    )
+    request = _write_request()
+    expected = ExpectedReadModelCounts(
+        counts={
+            "stock_time_metrics": 1,
+            "catalog_time_metrics": 1,
+            "full_withdrawals": 1,
+        },
+        refs={
+            "stock_time_metrics": frozenset({"MLA1"}),
+            "catalog_time_metrics": frozenset({"MLA1"}),
+            "full_withdrawals": frozenset({"82453304:RET-1:PKG-1:INV-1"}),
+        },
+        truth_mode={
+            "stock_time_metrics": "legacy_imported",
+            "catalog_time_metrics": "legacy_imported",
+            "full_withdrawals": "legacy_imported",
+        },
+    )
+
+    summary = await collect_reconciliation_counts(
+        db=db,
+        request=request,
+        expected=expected,
+        read_models=("stock_time_metrics", "catalog_time_metrics", "full_withdrawals"),
+    )
+    counts = await write_complete_read_model_freshness_markers(
+        db=db, request=request, summary=summary
+    )
+
+    assert counts == {"freshness_markers_written": 3}
+    assert {marker["read_model"] for marker in db["sheets_read_model_freshness"].documents} == {
+        "stock_time_metrics",
+        "catalog_time_metrics",
+        "full_withdrawals",
+    }
+    assert all(
+        marker["coverage_basis"] == "legacy_imported"
+        for marker in db["sheets_read_model_freshness"].documents
+    )
+
+
+@pytest.mark.asyncio
+async def test_source_gated_observed_only_coverage_does_not_write_interval_markers() -> None:
+    db = FakeAsyncDb(
+        {
+            "sheets_stock_time_metrics": [
+                _seller_doc(
+                    _id="82453304:MLA1:SKU1:2026-06-03:2026-06-05",
+                    item_id="MLA1",
+                    sku="SKU1",
+                    normalized_sku="SKU1",
+                    date_from=_dt(3),
+                    date_to=_dt(5),
+                    active_stock_hours=48,
+                    total_hours=48,
+                    source="sheets_backfill",
+                    history_basis="observed_only",
+                    coverage_basis="observed_only",
+                    schema_version=1,
+                )
+            ]
+        }
+    )
+    request = _write_request()
+    summary = ReconciliationSummary(
+        seller_id=request.seller_id,
+        date_from=request.date_range.date_from,
+        date_to=request.date_range.date_to,
+        dry_run=False,
+        approved_runtime=True,
+        write_enabled=True,
+        aggregates=(
+            ReadModelAggregate(
+                read_model="stock_time_metrics",
+                expected_count=1,
+                persisted_count=1,
+                missing_count=0,
+                complete_count=1,
+                truth_mode="observed_only",
+            ),
+        ),
+    )
+
+    counts = await write_complete_read_model_freshness_markers(
+        db=db, request=request, summary=summary
+    )
+
+    assert counts == {}
+    assert db["sheets_read_model_freshness"].documents == []
+
+
+@pytest.mark.asyncio
+async def test_partial_source_gated_stock_inventory_does_not_write_interval_marker() -> None:
+    from infra.operations import zelerdata_read_model_reconcile
+
+    db = FakeAsyncDb(
+        {
+            "item_history_projection": [
+                {
+                    "_id": "covered-stock-source",
+                    "seller_id": "82453304",
+                    "item_id": "MLA1",
+                    "variations_history": {
+                        "SKU1": [
+                            {"status2": "active", "changed_at": _dt(1)},
+                        ]
+                    },
+                },
+                {
+                    "_id": "uncovered-stock-source",
+                    "seller_id": "82453304",
+                    "item_id": "MLA2",
+                    "variations_history": {
+                        "SKU2": [
+                            {"status2": "active", "changed_at": _dt(3)},
+                        ]
+                    },
+                },
+            ],
+            "sheets_stock_time_metrics": [
+                _seller_doc(
+                    _id="82453304:MLA1:SKU1:2026-06-01:2026-06-05",
+                    item_id="MLA1",
+                    sku="SKU1",
+                    normalized_sku="SKU1",
+                    date_from=_dt(1),
+                    date_to=_dt(5),
+                    active_stock_hours=96,
+                    total_hours=96,
+                    source="legacy_history_import",
+                    history_basis="legacy_imported",
+                    coverage_basis="legacy_imported",
+                    schema_version=1,
+                )
+            ],
+        }
+    )
+    request = _write_request()
+
+    expected = await zelerdata_read_model_reconcile._collect_source_gated_expected_counts(
+        db=db, request=request
+    )
+    summary = await collect_reconciliation_counts(
+        db=db,
+        request=request,
+        expected=expected,
+        read_models=("stock_time_metrics",),
+    )
+    counts = await write_complete_read_model_freshness_markers(
+        db=db, request=request, summary=summary
+    )
+
+    stock_aggregate = summary.aggregates[0]
+    assert expected.counts["stock_time_metrics"] is None
+    assert stock_aggregate.truth_mode != "legacy_imported"
+    assert {issue.code for issue in stock_aggregate.issues} == {"source_history_incomplete"}
+    assert counts == {}
+    assert db["sheets_read_model_freshness"].documents == []

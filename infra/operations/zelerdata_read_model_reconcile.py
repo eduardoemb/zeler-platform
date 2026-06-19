@@ -89,6 +89,18 @@ _OBSERVED_SNAPSHOT_SOURCES = frozenset(
 _OBSERVATION_BASES = frozenset({"current_observed", "event_observed", "zeler_first_observed"})
 _STOCK_STATES = frozenset({"in_stock", "out_of_stock"})
 _SOURCE_DEFERRED_MODELS = {"stock_time_metrics", "catalog_time_metrics", "full_withdrawals"}
+_SOURCE_GATED_MODELS = frozenset(_SOURCE_DEFERRED_MODELS)
+_SOURCE_GATED_INTERVAL_AGGREGATE_MODELS = frozenset({"stock_time_metrics", "catalog_time_metrics"})
+_SOURCE_GATED_LEGACY_MODE = "legacy_imported"
+_SOURCE_GATED_OBSERVED_MODE = "observed_only"
+_SOURCE_GATED_SOURCES = frozenset(
+    {
+        "legacy_history_import",
+        "sheets_backfill",
+        "historical_meli_backfill",
+        "manual_reconciliation",
+    }
+)
 _HISTORICAL_MELI_MODELS = ("orders", "shipments", "items", "questions", "claims")
 _BOUNDED_REF_MODELS = {
     "shipments",
@@ -114,6 +126,9 @@ _RECONCILED_MARKER_MODELS = {
     "catalog_buybox_snapshots",
     "price_history_snapshots",
     "stockout_snapshots",
+    "stock_time_metrics",
+    "catalog_time_metrics",
+    "full_withdrawals",
 }
 _COMPLETE_FIELDS: Mapping[str, tuple[str, ...]] = {
     "orders": ("items.0",),
@@ -153,9 +168,29 @@ _COMPLETE_FIELDS: Mapping[str, tuple[str, ...]] = {
         "stock_state",
         "current_stock",
     ),
-    "stock_time_metrics": ("date_from", "date_to", "total_hours", "source"),
-    "catalog_time_metrics": ("date_from", "date_to", "available_hours", "source"),
-    "full_withdrawals": ("withdrawal_id", "created_at", "source"),
+    "stock_time_metrics": (
+        "date_from",
+        "date_to",
+        "total_hours",
+        "source",
+        "history_basis",
+        "coverage_basis",
+    ),
+    "catalog_time_metrics": (
+        "date_from",
+        "date_to",
+        "available_hours",
+        "source",
+        "history_basis",
+        "coverage_basis",
+    ),
+    "full_withdrawals": (
+        "withdrawal_id",
+        "created_at",
+        "source",
+        "history_basis",
+        "coverage_basis",
+    ),
 }
 HistoricalMeliExpectedSource = Callable[..., Awaitable[Any]]
 _DISTRIBUTION_FIELDS: Mapping[str, Mapping[str, str]] = {
@@ -178,9 +213,9 @@ _DISTRIBUTION_FIELDS: Mapping[str, Mapping[str, str]] = {
         "source": "source",
         "observation_basis": "observation_basis",
     },
-    "stock_time_metrics": {"source": "source"},
-    "catalog_time_metrics": {"source": "source"},
-    "full_withdrawals": {"source": "source"},
+    "stock_time_metrics": {"source": "source", "coverage_basis": "coverage_basis"},
+    "catalog_time_metrics": {"source": "source", "coverage_basis": "coverage_basis"},
+    "full_withdrawals": {"source": "source", "coverage_basis": "coverage_basis"},
 }
 _PRESENCE_FIELDS: Mapping[str, Mapping[str, str]] = {
     "orders": {
@@ -713,6 +748,13 @@ async def collect_expected_read_model_counts(
     truth_mode.update(observed_expected.truth_mode)
     issues.extend(observed_expected.issues)
 
+    source_gated_expected = await _collect_source_gated_expected_counts(db=db, request=request)
+    counts.update(source_gated_expected.counts)
+    refs.update(source_gated_expected.refs)
+    truth_mode.update(source_gated_expected.truth_mode)
+    issues = [issue for issue in issues if issue.read_model not in _SOURCE_GATED_MODELS]
+    issues.extend(source_gated_expected.issues)
+
     return ExpectedReadModelCounts(
         counts=counts,
         refs=refs,
@@ -850,6 +892,7 @@ async def execute_reconciliation_write(
         run_item_detail_enrichment,
         run_sheetseller_backfill,
     )
+    from zeler_sheets.source_gated_read_model_writers import run_source_gated_read_model_import
 
     gateways = create_runtime_historical_meli_gateways()
     summary = await run_historical_meli_backfill(
@@ -887,6 +930,7 @@ async def execute_reconciliation_write(
             item_summaries=item_summaries,
             formula_summary=None,
             observed_summary=None,
+            source_gated_summary=None,
         ),
         controls=request.controls,
     )
@@ -903,12 +947,28 @@ async def execute_reconciliation_write(
             dry_run=False,
             max_items=request.controls.max_items,
         )
+    source_gated_summary = None
+    source_gated_import_skipped = False
+    if _source_gated_import_is_safely_scoped(request.controls):
+        source_gated_summary = await run_source_gated_read_model_import(
+            db=db,
+            seller_id=request.seller_id,
+            date_from=request.date_range.start,
+            date_to=request.date_range.end_exclusive,
+            dry_run=False,
+            max_items=request.controls.max_items,
+        )
+    else:
+        source_gated_import_skipped = True
     counts = _combined_write_counts(
         historical_summary=summary,
         item_summaries=item_summaries,
         formula_summary=formula_summary,
         observed_summary=observed_summary,
+        source_gated_summary=source_gated_summary,
     )
+    if source_gated_import_skipped:
+        counts["source_gated_import_skipped_bounded_controls"] = 1
     _enforce_write_count_safety_controls(counts, controls=request.controls)
     return counts
 
@@ -1064,7 +1124,8 @@ async def _collect_read_model_aggregate(
     else:
         missing_count = (
             max(expected_count - persisted_count, 0)
-            if expected_count is not None and truth_mode in {"expected", "observed_current"}
+            if expected_count is not None
+            and truth_mode in {"expected", "observed_current", _SOURCE_GATED_LEGACY_MODE}
             else None
         )
     issues = expected_issues
@@ -1117,44 +1178,50 @@ async def write_complete_read_model_freshness_markers(
             "seller_id": request.seller_id,
             "read_model": aggregate.read_model,
         }
-        existing_marker = await collection.find_one(filter_spec)
-        if not _marker_range_can_merge(
-            existing_marker,
-            requested_start=request.date_range.start,
-            requested_end=request.date_range.end_exclusive,
-        ):
-            continue
-        date_from, reconciled_until = _merged_marker_authoritative_range(
-            existing_marker,
-            requested_start=request.date_range.start,
-            requested_end=request.date_range.end_exclusive,
-        )
+        if aggregate.read_model in _SOURCE_GATED_INTERVAL_AGGREGATE_MODELS:
+            date_from = request.date_range.start
+            reconciled_until = request.date_range.end_exclusive
+        else:
+            existing_marker = await collection.find_one(filter_spec)
+            if not _marker_range_can_merge(
+                existing_marker,
+                requested_start=request.date_range.start,
+                requested_end=request.date_range.end_exclusive,
+            ):
+                continue
+            date_from, reconciled_until = _merged_marker_authoritative_range(
+                existing_marker,
+                requested_start=request.date_range.start,
+                requested_end=request.date_range.end_exclusive,
+            )
         fresh_until = reconciled_until
         last_event_synced_at = date_from
-        await collection.update_one(
-            filter_spec,
-            {
-                "$set": {
-                    "_id": marker_id,
-                    "seller_id": request.seller_id,
-                    "read_model": aggregate.read_model,
-                    "state": "reconciled",
-                    "date_from": date_from,
-                    "fresh_until": fresh_until,
-                    "reconciled_until": reconciled_until,
-                    "last_event_synced_at": last_event_synced_at,
-                    "updated_at": updated_at,
-                    "source": "zelerdata_read_model_reconcile",
-                    "schema_version": 1,
-                }
-            },
-            upsert=True,
-        )
+        marker_fields: dict[str, Any] = {
+            "_id": marker_id,
+            "seller_id": request.seller_id,
+            "read_model": aggregate.read_model,
+            "state": "reconciled",
+            "date_from": date_from,
+            "fresh_until": fresh_until,
+            "reconciled_until": reconciled_until,
+            "last_event_synced_at": last_event_synced_at,
+            "updated_at": updated_at,
+            "source": "zelerdata_read_model_reconcile",
+            "schema_version": 1,
+        }
+        if aggregate.read_model in _SOURCE_GATED_MODELS:
+            marker_fields["coverage_basis"] = _SOURCE_GATED_LEGACY_MODE
+        await collection.update_one(filter_spec, {"$set": marker_fields}, upsert=True)
         written += 1
     return {"freshness_markers_written": written} if written else {}
 
 
 def _aggregate_has_complete_scoped_coverage(aggregate: ReadModelAggregate) -> bool:
+    if (
+        aggregate.read_model in _SOURCE_GATED_MODELS
+        and aggregate.truth_mode != _SOURCE_GATED_LEGACY_MODE
+    ):
+        return False
     return (
         aggregate.expected_count is not None
         and aggregate.persisted_count == aggregate.expected_count
@@ -1176,9 +1243,15 @@ def _has_bounded_reconciliation_controls(controls: ReconciliationControls) -> bo
 
 
 def _observed_seed_write_is_safely_scoped(controls: ReconciliationControls) -> bool:
-    if controls.max_items is not None:
-        return True
-    return not any(
+    return not _has_non_item_bounded_reconciliation_controls(controls)
+
+
+def _source_gated_import_is_safely_scoped(controls: ReconciliationControls) -> bool:
+    return not _has_non_item_bounded_reconciliation_controls(controls)
+
+
+def _has_non_item_bounded_reconciliation_controls(controls: ReconciliationControls) -> bool:
+    return any(
         value is not None and value is not False
         for value in (
             controls.max_orders,
@@ -1237,6 +1310,8 @@ async def _complete_count(collection: Any, read_model: str, filter_spec: dict[st
         return await _complete_price_history_count(collection, filter_spec)
     if read_model == "stockout_snapshots":
         return await _complete_stockout_count(collection, filter_spec)
+    if read_model in _SOURCE_GATED_MODELS:
+        return await _complete_source_gated_count(collection, read_model, filter_spec)
     required_fields = _COMPLETE_FIELDS.get(read_model, ())
     if not required_fields:
         return int(await collection.count_documents(filter_spec))
@@ -1254,6 +1329,15 @@ async def _complete_stockout_count(collection: Any, filter_spec: dict[str, Any])
     complete = 0
     async for document in _matching_documents(collection, filter_spec):
         complete += int(_stockout_snapshot_is_complete(document))
+    return complete
+
+
+async def _complete_source_gated_count(
+    collection: Any, read_model: str, filter_spec: dict[str, Any]
+) -> int:
+    complete = 0
+    async for document in _matching_documents(collection, filter_spec):
+        complete += int(_source_gated_document_is_complete(document, read_model=read_model))
     return complete
 
 
@@ -1319,6 +1403,36 @@ def _stockout_snapshot_is_complete(document: Any) -> bool:
         return False
     status = document.get("status")
     return status is None or _is_present(status)
+
+
+def _source_gated_document_is_complete(document: Any, *, read_model: str) -> bool:
+    if not isinstance(document, Mapping):
+        return False
+    if str(document.get("source") or "").strip() not in _SOURCE_GATED_SOURCES:
+        return False
+    if str(document.get("history_basis") or "").strip() not in {
+        _SOURCE_GATED_LEGACY_MODE,
+        _SOURCE_GATED_OBSERVED_MODE,
+    }:
+        return False
+    if str(document.get("coverage_basis") or "").strip() not in {
+        _SOURCE_GATED_LEGACY_MODE,
+        _SOURCE_GATED_OBSERVED_MODE,
+    }:
+        return False
+    if read_model in {"stock_time_metrics", "catalog_time_metrics"}:
+        if not _is_datetime_like(document.get("date_from")) or not _is_datetime_like(
+            document.get("date_to")
+        ):
+            return False
+        if read_model == "stock_time_metrics":
+            return _numeric_observed_price(document.get("total_hours"))
+        return _numeric_observed_price(document.get("available_hours"))
+    if read_model == "full_withdrawals":
+        return _is_present(document.get("withdrawal_id")) and _is_datetime_like(
+            document.get("created_at")
+        )
+    return False
 
 
 def _allowed_observed_source(value: Any) -> bool:
@@ -1449,6 +1563,14 @@ def _read_model_filter(
             "$gte": request.date_range.start,
             "$lt": request.date_range.end_exclusive,
         }
+    elif read_model in _SOURCE_GATED_INTERVAL_AGGREGATE_MODELS:
+        filter_spec["date_from"] = request.date_range.start
+        filter_spec["date_to"] = request.date_range.end_exclusive
+    elif read_model == "full_withdrawals":
+        filter_spec["created_at"] = {
+            "$gte": request.date_range.start,
+            "$lt": request.date_range.end_exclusive,
+        }
     if refs is not None:
         if read_model == "catalog_product_snapshots":
             filter_spec["catalog_product_id"] = {"$in": sorted(refs)}
@@ -1456,6 +1578,8 @@ def _read_model_filter(
             "catalog_buybox_snapshots",
             "price_history_snapshots",
             "stockout_snapshots",
+            "stock_time_metrics",
+            "catalog_time_metrics",
         }:
             filter_spec["item_id"] = {"$in": sorted(refs)}
         else:
@@ -1783,6 +1907,145 @@ async def _collect_remaining_observed_expected_counts(
     )
 
 
+async def _collect_source_gated_expected_counts(
+    *, db: Any, request: ReconciliationRequest
+) -> ExpectedReadModelCounts:
+    if not _source_gated_import_is_safely_scoped(request.controls):
+        return _source_gated_import_skipped_expected_counts()
+    try:
+        from zeler_sheets.source_gated_read_model_writers import (
+            run_source_gated_read_model_import,
+        )
+
+        summary = await run_source_gated_read_model_import(
+            db=db,
+            seller_id=request.seller_id,
+            date_from=request.date_range.start,
+            date_to=request.date_range.end_exclusive,
+            dry_run=True,
+            max_items=request.controls.max_items,
+        )
+    except Exception:  # noqa: BLE001 - source inventory failures must stay sanitized.
+        return ExpectedReadModelCounts(
+            counts={read_model: None for read_model in _SOURCE_GATED_MODELS},
+            truth_mode={read_model: "source_deferred" for read_model in _SOURCE_GATED_MODELS},
+            issues=_deferred_source_issues(),
+        )
+
+    planned_by_model = {
+        "stock_time_metrics": _summary_optional_int(summary, "stock_time_metrics_planned") or 0,
+        "catalog_time_metrics": _summary_optional_int(summary, "catalog_time_metrics_planned") or 0,
+        "full_withdrawals": _summary_optional_int(summary, "full_withdrawals_planned") or 0,
+    }
+    basis_by_model = _summary_coverage_basis(summary)
+    source_inventory_counts = _summary_source_inventory_counts(summary)
+    coverage_complete = _summary_coverage_complete(summary)
+    counts: dict[str, int | None] = {}
+    refs: dict[str, frozenset[str]] = {}
+    truth_mode: dict[str, str] = {}
+    issues: list[ReadModelIssue] = []
+    for read_model in _SOURCE_GATED_MODELS:
+        basis = basis_by_model.get(read_model, _SOURCE_GATED_OBSERVED_MODE)
+        planned = planned_by_model[read_model]
+        inventory_count = source_inventory_counts.get(read_model, planned)
+        complete = coverage_complete.get(read_model, basis == _SOURCE_GATED_LEGACY_MODE)
+        is_complete_legacy = basis == _SOURCE_GATED_LEGACY_MODE and complete and planned > 0
+        truth_mode[read_model] = basis if is_complete_legacy else _SOURCE_GATED_OBSERVED_MODE
+        counts[read_model] = planned if is_complete_legacy else None
+        if is_complete_legacy:
+            continue
+        if inventory_count > 0:
+            issues.append(
+                _issue(
+                    read_model,
+                    "source_history_incomplete",
+                    "legacy imported history does not cover requested interval",
+                )
+            )
+        else:
+            issues.append(
+                _issue(
+                    read_model,
+                    "source_history_absent",
+                    "legacy imported history unavailable for requested interval",
+                )
+            )
+
+    refs.update(_source_gated_refs(summary))
+    return ExpectedReadModelCounts(
+        counts=counts,
+        refs=refs,
+        truth_mode=truth_mode,
+        issues=tuple(issues),
+    )
+
+
+def _source_gated_import_skipped_expected_counts() -> ExpectedReadModelCounts:
+    return ExpectedReadModelCounts(
+        counts={read_model: None for read_model in _SOURCE_GATED_MODELS},
+        truth_mode={read_model: "source_deferred" for read_model in _SOURCE_GATED_MODELS},
+        issues=tuple(
+            _issue(
+                read_model,
+                "source_gated_import_skipped_bounded_controls",
+                "source-gated import skipped for non-item bounded reconciliation controls",
+            )
+            for read_model in _SOURCE_GATED_MODELS
+        ),
+    )
+
+
+def _summary_coverage_basis(summary: Any) -> dict[str, str]:
+    raw = _summary_value(summary, "coverage_basis")
+    if not isinstance(raw, Mapping):
+        return {}
+    return {
+        str(read_model): str(basis)
+        for read_model, basis in raw.items()
+        if str(read_model) in _SOURCE_GATED_MODELS and str(basis)
+    }
+
+
+def _summary_source_inventory_counts(summary: Any) -> dict[str, int]:
+    raw = _summary_value(summary, "source_inventory_counts")
+    if not isinstance(raw, Mapping):
+        return {}
+    counts: dict[str, int] = {}
+    for read_model, value in raw.items():
+        model = str(read_model)
+        if model not in _SOURCE_GATED_MODELS:
+            continue
+        try:
+            count = int(value)
+        except (TypeError, ValueError):
+            continue
+        counts[model] = max(count, 0)
+    return counts
+
+
+def _summary_coverage_complete(summary: Any) -> dict[str, bool]:
+    raw = _summary_value(summary, "coverage_complete")
+    if not isinstance(raw, Mapping):
+        return {}
+    return {
+        str(read_model): bool(complete)
+        for read_model, complete in raw.items()
+        if str(read_model) in _SOURCE_GATED_MODELS
+    }
+
+
+def _source_gated_refs(summary: Any) -> dict[str, frozenset[str]]:
+    refs: dict[str, frozenset[str]] = {}
+    for read_model, field_name in {
+        "stock_time_metrics": "stock_time_item_ids",
+        "catalog_time_metrics": "catalog_time_item_ids",
+        "full_withdrawals": "full_withdrawal_ids",
+    }.items():
+        if (model_refs := _summary_ref_set(summary, field_name)) is not None:
+            refs[read_model] = model_refs
+    return refs
+
+
 def _deferred_source_issues() -> tuple[ReadModelIssue, ...]:
     return (
         _issue(
@@ -1944,6 +2207,7 @@ def _combined_write_counts(
     item_summaries: Sequence[Any],
     formula_summary: Any | None,
     observed_summary: Any | None,
+    source_gated_summary: Any | None,
 ) -> dict[str, int]:
     counts = _write_counts_from_summary(historical_summary)
     counts["item_detail_items_planned"] = sum(
@@ -1975,6 +2239,17 @@ def _combined_write_counts(
             "stockout_snapshots_updated": "stockout_snapshots_updated",
         }.items():
             if value := _summary_int(observed_summary, summary_field):
+                counts[output_field] = value
+    if source_gated_summary is not None:
+        for output_field, summary_field in {
+            "stock_time_metrics_planned": "stock_time_metrics_planned",
+            "stock_time_metrics_updated": "stock_time_metrics_updated",
+            "catalog_time_metrics_planned": "catalog_time_metrics_planned",
+            "catalog_time_metrics_updated": "catalog_time_metrics_updated",
+            "full_withdrawals_planned": "full_withdrawals_planned",
+            "full_withdrawals_updated": "full_withdrawals_updated",
+        }.items():
+            if value := _summary_int(source_gated_summary, summary_field):
                 counts[output_field] = value
     return counts
 

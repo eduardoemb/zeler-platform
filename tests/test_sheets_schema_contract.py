@@ -64,6 +64,8 @@ REMAINING_PHASE4_READ_MODEL_REQUIRED_FIELDS = {
         "winning_hours",
         "available_hours",
         "source",
+        "history_basis",
+        "coverage_basis",
         "schema_version",
     ],
     "sheets_full_withdrawals": [
@@ -71,6 +73,8 @@ REMAINING_PHASE4_READ_MODEL_REQUIRED_FIELDS = {
         "withdrawal_id",
         "created_at",
         "source",
+        "history_basis",
+        "coverage_basis",
         "schema_version",
     ],
     "sheets_price_history_snapshots": [
@@ -89,6 +93,8 @@ REMAINING_PHASE4_READ_MODEL_REQUIRED_FIELDS = {
         "date_to",
         "total_hours",
         "source",
+        "history_basis",
+        "coverage_basis",
         "schema_version",
     ],
     "sheets_stockout_snapshots": [
@@ -396,14 +402,19 @@ def test_remaining_phase4_read_model_schemas_are_exported_and_bounded() -> None:
         assert result.missing_required_fields == missing_fields
         assert schema["additionalProperties"] is False
         if collection != "sheets_read_model_freshness":
-            assert schema["properties"]["source"] == {
-                "enum": [
-                    "sheets_event_persistence",
-                    "sheets_backfill",
-                    "historical_meli_backfill",
-                    "manual_reconciliation",
-                ]
-            }
+            expected_source_enum = [
+                "sheets_event_persistence",
+                "sheets_backfill",
+                "historical_meli_backfill",
+                "manual_reconciliation",
+            ]
+            if collection in {
+                "sheets_stock_time_metrics",
+                "sheets_catalog_time_metrics",
+                "sheets_full_withdrawals",
+            }:
+                expected_source_enum.append("legacy_history_import")
+            assert schema["properties"]["source"] == {"enum": expected_source_enum}
 
 
 def test_catalog_snapshot_schemas_support_formula_handler_fields() -> None:
@@ -426,6 +437,38 @@ def test_catalog_snapshot_schemas_support_formula_handler_fields() -> None:
     }
     assert buybox_schema["properties"]["competitor_count"] == {"bsonType": ["int", "long", "null"]}
     assert "winner_count" not in buybox_schema["properties"]
+
+
+def test_source_gated_read_models_require_truthful_history_and_coverage_basis() -> None:
+    freshness = _validator_payload(ENTITY_SCHEMAS["sheets_read_model_freshness"])["$jsonSchema"]
+    assert freshness["additionalProperties"] is False
+    assert freshness["properties"]["coverage_basis"] == {
+        "enum": ["legacy_imported", "observed_only", None]
+    }
+
+    for collection in (
+        "sheets_stock_time_metrics",
+        "sheets_catalog_time_metrics",
+        "sheets_full_withdrawals",
+    ):
+        schema = _validator_payload(ENTITY_SCHEMAS[collection])["$jsonSchema"]
+        assert "history_basis" in schema["required"]
+        assert "coverage_basis" in schema["required"]
+        assert schema["properties"]["source"] == {
+            "enum": [
+                "sheets_event_persistence",
+                "sheets_backfill",
+                "historical_meli_backfill",
+                "manual_reconciliation",
+                "legacy_history_import",
+            ]
+        }
+        assert schema["properties"]["history_basis"] == {
+            "enum": ["legacy_imported", "observed_only"]
+        }
+        assert schema["properties"]["coverage_basis"] == {
+            "enum": ["legacy_imported", "observed_only"]
+        }
 
 
 def test_remaining_phase4_read_model_indexes_match_formula_access_patterns() -> None:

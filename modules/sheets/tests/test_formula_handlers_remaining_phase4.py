@@ -232,7 +232,12 @@ async def test_catalogo_requires_fresh_item_rows_and_orders_markers(
 async def test_stock_history_formulas_use_local_stock_read_models() -> None:
     db = FakeDb()
     _mark_read_model_fresh(db, STOCKOUT_SNAPSHOTS_READ_MODEL)
-    _mark_read_model_fresh(db, STOCK_TIME_METRICS_READ_MODEL)
+    _mark_read_model_fresh(
+        db,
+        STOCK_TIME_METRICS_READ_MODEL,
+        date_from=datetime(2026, 6, 1, tzinfo=UTC),
+        fresh_until=datetime(2026, 6, 15, tzinfo=UTC),
+    )
     db["sheets_stockout_snapshots"].documents = {
         "seller-1:MLA1": {
             "_id": "seller-1:MLA1",
@@ -267,7 +272,7 @@ async def test_stock_history_formulas_use_local_stock_read_models() -> None:
             "title": "Stock item",
             "url": "https://meli.example/MLA1",
             "date_from": datetime(2026, 6, 1, tzinfo=UTC),
-            "date_to": datetime(2026, 6, 14, 23, 59, tzinfo=UTC),
+            "date_to": datetime(2026, 6, 15, tzinfo=UTC),
             "active_stock_hours": Decimal("36"),
             "total_hours": Decimal("72"),
             "active_stock_percent": Decimal("50"),
@@ -350,7 +355,12 @@ async def test_stock_history_formulas_use_local_stock_read_models() -> None:
 async def test_price_and_catalog_time_formulas_use_local_history_read_models() -> None:
     db = FakeDb()
     _mark_read_model_fresh(db, PRICE_HISTORY_SNAPSHOTS_READ_MODEL)
-    _mark_read_model_fresh(db, CATALOG_TIME_METRICS_READ_MODEL)
+    _mark_read_model_fresh(
+        db,
+        CATALOG_TIME_METRICS_READ_MODEL,
+        date_from=datetime(2026, 6, 1, tzinfo=UTC),
+        fresh_until=datetime(2026, 6, 15, tzinfo=UTC),
+    )
     db["sheets_price_history_snapshots"].documents = {
         "seller-1:MLA1": {
             "_id": "seller-1:MLA1",
@@ -372,7 +382,7 @@ async def test_price_and_catalog_time_formulas_use_local_history_read_models() -
             "title": "Catalog winner",
             "url": "https://meli.example/MLA1",
             "date_from": datetime(2026, 6, 1, tzinfo=UTC),
-            "date_to": datetime(2026, 6, 14, 23, 59, tzinfo=UTC),
+            "date_to": datetime(2026, 6, 15, tzinfo=UTC),
             "winning_hours": Decimal("12"),
             "available_hours": Decimal("24"),
             "winning_percent": Decimal("50"),
@@ -530,6 +540,97 @@ async def test_remaining_phase4_formulas_require_fresh_read_model_marker(
 @pytest.mark.parametrize(
     ("formula", "args", "read_model"),
     [
+        (
+            "ZELERDATA_TIEMPOSTOCKACTIVO",
+            {"fecha_inicial": "2026-06-01", "fecha_final": "2026-06-14"},
+            STOCK_TIME_METRICS_READ_MODEL,
+        ),
+        (
+            "ZELERDATA_SEMANASCONSTOCK",
+            {"fecha_inicial": "2026-06-01", "fecha_final": "2026-06-14"},
+            STOCK_TIME_METRICS_READ_MODEL,
+        ),
+        (
+            "ZELERDATA_CATALOGOTIEMPO",
+            {"fecha_inicial": "2026-06-01", "fecha_final": "2026-06-14"},
+            CATALOG_TIME_METRICS_READ_MODEL,
+        ),
+        (
+            "ZELERDATA_RETIROS",
+            {"fecha_inicial": "2026-06-01", "fecha_final": "2026-06-30"},
+            FULL_WITHDRAWALS_READ_MODEL,
+        ),
+    ],
+)
+async def test_source_gated_formulas_require_interval_marker_coverage_from_range_start(
+    formula: str, args: dict[str, Any], read_model: str
+) -> None:
+    db = FakeDb()
+    db["sheets_read_model_freshness"].documents[f"seller-1:{read_model}"] = {
+        "_id": f"seller-1:{read_model}",
+        "seller_id": "seller-1",
+        "read_model": read_model,
+        "state": "reconciled",
+        "date_from": datetime(2026, 6, 5, tzinfo=UTC),
+        "fresh_until": datetime(2026, 7, 1, tzinfo=UTC),
+        "reconciled_until": datetime(2026, 7, 1, tzinfo=UTC),
+        "last_event_synced_at": datetime(2026, 6, 5, tzinfo=UTC),
+        "coverage_basis": "observed_only",
+        "updated_at": NOW,
+        "schema_version": 1,
+    }
+    dispatcher = _dispatcher(db)
+
+    with pytest.raises(FormulaDataUnavailableError, match=formula) as error:
+        await dispatcher.execute(_context(formula, args))
+
+    assert read_model in str(error.value)
+    assert "freshness/reconciliation" in str(error.value)
+
+
+@pytest.mark.asyncio
+async def test_interval_aggregate_formula_rejects_broader_marker_and_metric_row() -> None:
+    db = FakeDb()
+    _mark_read_model_fresh(
+        db,
+        STOCK_TIME_METRICS_READ_MODEL,
+        date_from=datetime(2026, 6, 1, tzinfo=UTC),
+        fresh_until=datetime(2026, 7, 1, tzinfo=UTC),
+    )
+    db["sheets_stock_time_metrics"].documents = {
+        "seller-1:MLA1:SKU1:2026-06-01:2026-07-01": {
+            "_id": "seller-1:MLA1:SKU1:2026-06-01:2026-07-01",
+            "seller_id": "seller-1",
+            "item_id": "MLA1",
+            "sku": "sku-1",
+            "normalized_sku": "SKU-1",
+            "date_from": datetime(2026, 6, 1, tzinfo=UTC),
+            "date_to": datetime(2026, 7, 1, tzinfo=UTC),
+            "active_stock_hours": Decimal("720"),
+            "total_hours": Decimal("720"),
+            "active_stock_percent": Decimal("100"),
+            "weeks": [{"start_day": 1, "end_day": 30, "has_stock": True}],
+        }
+    }
+    dispatcher = _dispatcher(db)
+
+    with pytest.raises(FormulaDataUnavailableError, match="ZELERDATA_TIEMPOSTOCKACTIVO"):
+        await dispatcher.execute(
+            _context(
+                "ZELERDATA_TIEMPOSTOCKACTIVO",
+                {
+                    "fecha_inicial": "2026-06-01",
+                    "fecha_final": "2026-06-14",
+                    "id_publicaciones": "todos",
+                },
+            )
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("formula", "args", "read_model"),
+    [
         ("ZELERDATA_CATALOGO", {"tipo_precio": "base"}, CATALOG_BUYBOX_SNAPSHOTS_READ_MODEL),
         ("ZELERDATA_TIEMPOSINSTOCK", {"tipo_precio": "base"}, STOCKOUT_SNAPSHOTS_READ_MODEL),
         (
@@ -581,14 +682,24 @@ def _mark_read_model_fresh(
     read_model: str,
     *,
     fresh_until: datetime = NOW + timedelta(days=1),
+    date_from: datetime | None = None,
 ) -> None:
+    source_gated = {
+        STOCK_TIME_METRICS_READ_MODEL,
+        CATALOG_TIME_METRICS_READ_MODEL,
+        FULL_WITHDRAWALS_READ_MODEL,
+    }
+    source_gated_date_from = date_from or NOW - timedelta(days=400)
     db["sheets_read_model_freshness"].documents[f"seller-1:{read_model}"] = {
         "_id": f"seller-1:{read_model}",
         "seller_id": "seller-1",
         "read_model": read_model,
-        "state": "fresh",
+        "state": "reconciled" if read_model in source_gated else "fresh",
         "fresh_until": fresh_until,
+        "date_from": source_gated_date_from if read_model in source_gated else None,
         "reconciled_until": fresh_until,
+        "last_event_synced_at": source_gated_date_from if read_model in source_gated else None,
+        "coverage_basis": "legacy_imported" if read_model in source_gated else None,
         "updated_at": NOW,
         "schema_version": 1,
     }

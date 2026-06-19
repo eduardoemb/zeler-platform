@@ -6,6 +6,13 @@
       "_id": {
         "bsonType": "string"
       },
+      "coverage_basis": {
+        "enum": [
+          "legacy_imported",
+          "observed_only",
+          null
+        ]
+      },
       "date_from": {
         "bsonType": [
           "date",

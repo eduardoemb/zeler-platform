@@ -37,6 +37,9 @@ QUESTIONS_READ_MODEL = "questions"
 SHIPMENTS_READ_MODEL = "shipments"
 STOCK_TIME_METRICS_READ_MODEL = "stock_time_metrics"
 STOCKOUT_SNAPSHOTS_READ_MODEL = "stockout_snapshots"
+INTERVAL_AGGREGATE_READ_MODELS = frozenset(
+    {CATALOG_TIME_METRICS_READ_MODEL, STOCK_TIME_METRICS_READ_MODEL}
+)
 QUESTIONS_FRESHNESS_UNAVAILABLE_REASON = (
     "Questions read model has not passed freshness/reconciliation for the requested range."
 )
@@ -255,7 +258,7 @@ class FormulaReadModelRepository:
         item_ids: list[str] | tuple[str, ...] | None = None,
         limit: int = 1000,
     ) -> list[dict[str, Any]]:
-        filter_spec = _seller_overlap_filter(
+        filter_spec = _seller_exact_interval_filter(
             seller_id=seller_id,
             date_from=date_from,
             date_to=date_to,
@@ -300,7 +303,7 @@ class FormulaReadModelRepository:
         skus: list[str] | tuple[str, ...] | None = None,
         limit: int = 1000,
     ) -> list[dict[str, Any]]:
-        filter_spec = _seller_overlap_filter(
+        filter_spec = _seller_exact_interval_filter(
             seller_id=seller_id,
             date_from=date_from,
             date_to=date_to,
@@ -326,7 +329,7 @@ class FormulaReadModelRepository:
     ) -> list[dict[str, Any]]:
         filter_spec: dict[str, Any] = {
             "seller_id": seller_id,
-            "created_at": {"$gte": date_from, "$lte": date_to},
+            "created_at": {"$gte": date_from, "$lt": date_to},
         }
         cursor = self._full_withdrawals.find(filter_spec).sort(
             [("created_at", 1), ("withdrawal_id", 1), ("withdrawal_detail_id", 1), ("_id", 1)]
@@ -458,6 +461,35 @@ class FormulaReadModelRepository:
             )
             raise FormulaDataUnavailableError(formula, reason)
 
+    async def require_read_model_reconciled_range(
+        self,
+        *,
+        seller_id: str,
+        read_model: str,
+        date_from: Any,
+        date_to: Any,
+        formula: str,
+    ) -> None:
+        marker = await self._read_model_freshness.find_one(
+            {
+                "_id": read_model_freshness_id(seller_id, read_model),
+                "seller_id": seller_id,
+                "read_model": read_model,
+            }
+        )
+        if not read_model_reconciliation_marker_covers(
+            marker,
+            date_from=date_from,
+            date_to=date_to,
+            coverage_basis="legacy_imported",
+            exact_interval=read_model in INTERVAL_AGGREGATE_READ_MODELS,
+        ):
+            reason = (
+                f"Read model {read_model} has not passed freshness/reconciliation "
+                "for the requested range."
+            )
+            raise FormulaDataUnavailableError(formula, reason)
+
     async def find_unit_costs(
         self,
         *,
@@ -526,10 +558,22 @@ def _questions_freshness_marker_covers(marker: Any, *, date_from: Any, date_to: 
     )
 
 
-def read_model_reconciliation_marker_covers(marker: Any, *, date_from: Any, date_to: Any) -> bool:
+def read_model_reconciliation_marker_covers(
+    marker: Any,
+    *,
+    date_from: Any,
+    date_to: Any,
+    coverage_basis: str | None = None,
+    exact_interval: bool = False,
+) -> bool:
     if not isinstance(marker, dict):
         return False
     if str(marker.get("state") or "").strip().casefold() != RECONCILED_READ_MODEL_STATE:
+        return False
+    if (
+        coverage_basis is not None
+        and str(marker.get("coverage_basis") or "").strip() != coverage_basis
+    ):
         return False
     requested_from = _safe_utc_datetime(date_from)
     requested_until = _safe_utc_datetime(date_to)
@@ -538,15 +582,17 @@ def read_model_reconciliation_marker_covers(marker: Any, *, date_from: Any, date
         marker.get("last_event_synced_at"),
     )
     reconciled_until = _safe_utc_datetime(marker.get("reconciled_until"))
-    return (
-        requested_from is not None
-        and requested_until is not None
-        and coverage_start is not None
-        and reconciled_until is not None
-        and reconciled_until >= coverage_start
-        and coverage_start <= requested_from
-        and reconciled_until >= requested_until
-    )
+    if (
+        requested_from is None
+        or requested_until is None
+        or coverage_start is None
+        or reconciled_until is None
+        or reconciled_until < coverage_start
+    ):
+        return False
+    if exact_interval:
+        return coverage_start == requested_from and reconciled_until == requested_until
+    return coverage_start <= requested_from and reconciled_until >= requested_until
 
 
 def _read_model_freshness_marker_covers(marker: Any, *, date_to: Any) -> bool:
@@ -642,7 +688,7 @@ def _seller_date_filter(*, seller_id: str, date_from: Any, date_to: Any) -> dict
     }
 
 
-def _seller_overlap_filter(
+def _seller_exact_interval_filter(
     *,
     seller_id: str,
     date_from: Any,
@@ -651,8 +697,8 @@ def _seller_overlap_filter(
 ) -> dict[str, Any]:
     filter_spec: dict[str, Any] = {
         "seller_id": seller_id,
-        "date_from": {"$lte": date_to},
-        "date_to": {"$gte": date_from},
+        "date_from": date_from,
+        "date_to": date_to,
     }
     if item_ids:
         filter_spec["item_id"] = {"$in": [str(item_id) for item_id in item_ids]}
