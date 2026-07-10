@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, replace
+from typing import Any
 
 import pytest
 from infra.rabbitmq import sheets_devoluciones_topology as topology_module
@@ -56,7 +57,13 @@ class FakeBroker:
         self.deleted_queues: list[str] = []
         self.deleted_exchanges: list[str] = []
 
-    async def inspect_queue(self, queue_name: str) -> QueueState | None:
+    async def inspect_queue(
+        self,
+        queue_name: str,
+        *,
+        timeout: float | None = None,
+    ) -> QueueState | None:
+        del timeout
         self.calls.append(f"inspect:{queue_name}")
         state = self.states.get(queue_name)
         if state is None:
@@ -145,6 +152,20 @@ class FakeRuntime:
         self.calls.append("stop_worker")
         self.stopped = True
         self.healthy = False
+
+
+@dataclass
+class FakeMonotonicClock:
+    now: float = 0.0
+
+    def __call__(self) -> float:
+        return self.now
+
+    def advance(self, seconds: float) -> None:
+        self.now += seconds
+
+    async def sleep(self, seconds: float) -> None:
+        self.advance(seconds)
 
 
 def _state(*, ready: int = 0, unacked: int = 0, consumers: int = 0) -> QueueState:
@@ -333,7 +354,13 @@ async def test_cli_boundary_sanitizes_operation_and_cleanup_errors_together(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     class OperationAndCloseFailBroker(FakeBroker):
-        async def inspect_queue(self, queue_name: str) -> QueueState | None:
+        async def inspect_queue(
+            self,
+            queue_name: str,
+            *,
+            timeout: float | None = None,
+        ) -> QueueState | None:
+            del timeout
             raise RuntimeError(f"raw-operation-sentinel:{queue_name}")
 
         async def close(self) -> None:
@@ -356,6 +383,42 @@ async def test_cli_boundary_sanitizes_operation_and_cleanup_errors_together(
     assert json.loads(output) == {"ok": False, "error_code": "topology_safety_gate_failed"}
     assert "raw-operation-sentinel" not in output
     assert "raw-cleanup-sentinel" not in output
+    assert "secret" not in output
+
+
+@pytest.mark.asyncio
+async def test_cli_timeout_emits_only_sanitized_convergence_counts(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    async def connect(**_kwargs: object) -> FakeBroker:
+        return FakeBroker()
+
+    async def fail_with_timeout(*_args: object, **_kwargs: object) -> object:
+        raise TopologySafetyError(
+            "SENTINEL raw broker timeout",
+            sanitized_counts={
+                "consumer_convergence_attempts": 31,
+                "consumer_convergence_duration_seconds": 60,
+            },
+        )
+
+    monkeypatch.setenv("RABBITMQ_URL", "amqps://operator:secret@rabbit.invalid/tenant")
+    monkeypatch.setattr(topology_module.RabbitMqBroker, "connect", connect)
+    monkeypatch.setattr(topology_module, "run_topology_command", fail_with_timeout)
+    args = _build_parser().parse_args(["rollback", "--execute", "--format", "json"])
+
+    exit_code = await _main_async(args)
+    output = capsys.readouterr().out
+
+    assert exit_code == 1
+    assert json.loads(output) == {
+        "ok": False,
+        "error_code": "topology_safety_gate_failed",
+        "consumer_convergence_attempts": 31,
+        "consumer_convergence_duration_seconds": 60,
+    }
+    assert "SENTINEL" not in output
     assert "secret" not in output
 
 
@@ -667,6 +730,7 @@ async def test_rollback_stales_first_then_stops_unbinds_and_confirm_quarantines(
 @pytest.mark.asyncio
 async def test_rollback_refuses_drain_or_delete_with_unacked_claims() -> None:
     calls: list[str] = []
+    now = 0.0
     broker = FakeBroker(
         states={
             CLAIMS_QUEUE: _state(unacked=1),
@@ -679,7 +743,14 @@ async def test_rollback_refuses_drain_or_delete_with_unacked_claims() -> None:
         calls.append("stale_readiness")
         return 1
 
-    with pytest.raises(TopologySafetyError, match="unacknowledged"):
+    def monotonic() -> float:
+        return now
+
+    async def sleep(seconds: float) -> None:
+        nonlocal now
+        now += seconds
+
+    with pytest.raises(TopologySafetyError) as captured:
         await run_topology_command(
             "rollback",
             execute=True,
@@ -688,10 +759,354 @@ async def test_rollback_refuses_drain_or_delete_with_unacked_claims() -> None:
             runtime=FakeRuntime(stopped=False, calls=calls),
             stale_readiness=stale_readiness,
             fence_operations=_fence_none,
+            monotonic=monotonic,
+            sleep=sleep,
         )
 
+    assert captured.value.sanitized_counts["consumer_convergence_duration_seconds"] == 60
     assert CLAIMS_QUEUE not in broker.deleted_queues
     assert not any(call.startswith(f"get:{CLAIMS_QUEUE}") for call in calls)
+
+
+@pytest.mark.asyncio
+async def test_rollback_waits_for_delayed_consumer_convergence_before_drain() -> None:
+    calls: list[str] = []
+
+    class DelayedConvergenceBroker(FakeBroker):
+        def __init__(self) -> None:
+            super().__init__(
+                states={CLAIMS_QUEUE: _state(ready=1, consumers=1)},
+                messages={CLAIMS_QUEUE: [b"delayed-claim"]},
+                calls=calls,
+            )
+            self.claims_inspections = 0
+
+        async def inspect_queue(
+            self,
+            queue_name: str,
+            *,
+            timeout: float | None = None,
+        ) -> QueueState | None:
+            del timeout
+            if queue_name == CLAIMS_QUEUE:
+                self.claims_inspections += 1
+                self.states[CLAIMS_QUEUE] = _state(
+                    ready=1,
+                    consumers=1 if self.claims_inspections < 3 else 0,
+                )
+            return await super().inspect_queue(queue_name)
+
+    now = 0.0
+    sleep_calls: list[float] = []
+
+    def monotonic() -> float:
+        return now
+
+    async def sleep(seconds: float) -> None:
+        nonlocal now
+        sleep_calls.append(seconds)
+        now += seconds
+
+    broker = DelayedConvergenceBroker()
+
+    async def stale_readiness() -> int:
+        calls.append("stale_readiness")
+        return 0
+
+    report = await run_topology_command(
+        "rollback",
+        execute=True,
+        broker=broker,
+        runtime=FakeRuntime(stopped=False, calls=calls),
+        stale_readiness=stale_readiness,
+        fence_operations=_fence_none,
+        monotonic=monotonic,
+        sleep=sleep,
+    )
+
+    assert report.summary["consumer_convergence_attempts"] == 3
+    assert report.summary["consumer_convergence_duration_seconds"] == 4
+    assert sleep_calls == [2.0, 2.0]
+    zero_inspection = [
+        index for index, call in enumerate(calls) if call == f"inspect:{CLAIMS_QUEUE}"
+    ][2]
+    first_drain = calls.index(f"get:{CLAIMS_QUEUE}:delayed-claim")
+    assert zero_inspection < first_drain
+
+
+@pytest.mark.asyncio
+async def test_rollback_cli_fails_when_safe_sweep_finishes_after_absolute_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    calls: list[str] = []
+    clock = FakeMonotonicClock()
+
+    class LateSafeBroker(FakeBroker):
+        def __init__(self) -> None:
+            super().__init__(
+                states={CLAIMS_QUEUE: _state(ready=1)},
+                messages={CLAIMS_QUEUE: [b"must-remain-after-deadline"]},
+                calls=calls,
+            )
+            self.inspection_timeouts: list[float | None] = []
+
+        async def inspect_queue(
+            self,
+            queue_name: str,
+            *,
+            timeout: float | None = None,
+        ) -> QueueState | None:
+            self.inspection_timeouts.append(timeout)
+            clock.advance(9.0)
+            return await super().inspect_queue(queue_name)
+
+    broker = LateSafeBroker()
+    broker.bindings.update(
+        {
+            (LIVE_EXCHANGE, CLAIMS_QUEUE, CLAIMS_ROUTING_KEY),
+            (REPLAY_EXCHANGE, CLAIMS_QUEUE, CLAIMS_ROUTING_KEY),
+        }
+    )
+    runtime = FakeRuntime(stopped=False, calls=calls)
+    original_run_topology_command = topology_module.run_topology_command
+
+    async def connect(**_kwargs: object) -> LateSafeBroker:
+        return broker
+
+    async def run_with_clock(command: str, **kwargs: Any) -> Any:
+        return await original_run_topology_command(
+            command,
+            **kwargs,
+            monotonic=clock,
+            sleep=clock.sleep,
+        )
+
+    async def stale_readiness() -> int:
+        calls.append("stale_readiness")
+        return 1
+
+    async def fence_operations() -> int:
+        calls.append("fence_operations")
+        return 0
+
+    monkeypatch.setenv("RABBITMQ_URL", "amqps://operator:secret@rabbit.invalid/tenant")
+    monkeypatch.setattr(topology_module.RabbitMqBroker, "connect", connect)
+    monkeypatch.setattr(topology_module, "DockerEngineRuntime", lambda **_kwargs: runtime)
+    monkeypatch.setattr(topology_module, "run_topology_command", run_with_clock)
+    monkeypatch.setattr(topology_module, "stale_devoluciones_readiness", stale_readiness)
+    monkeypatch.setattr(
+        topology_module,
+        "fence_active_devoluciones_operations",
+        fence_operations,
+    )
+    args = _build_parser().parse_args(
+        ["rollback", "--execute", "--delete-dedicated", "--format", "json"]
+    )
+
+    exit_code = await _main_async(args)
+    output = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 1
+    assert output == {
+        "ok": False,
+        "error_code": "topology_safety_gate_failed",
+        "consumer_convergence_attempts": 1,
+        "consumer_convergence_duration_seconds": 63,
+    }
+    assert broker.inspection_timeouts == [60.0, 51.0, 42.0, 33.0, 24.0, 15.0, 6.0]
+    assert runtime.stopped is True
+    assert calls.count("stale_readiness") == 2
+    assert broker.bindings == set()
+    assert broker.messages[CLAIMS_QUEUE][0].body == b"must-remain-after-deadline"
+    assert broker.deleted_queues == []
+    assert broker.deleted_exchanges == []
+    assert not any(call.startswith(("get:", "confirm:", "ack:", "delete_")) for call in calls)
+    assert "secret" not in json.dumps(output, sort_keys=True)
+
+
+@pytest.mark.asyncio
+async def test_rollback_slow_safe_sweep_uses_remaining_budget_and_succeeds() -> None:
+    calls: list[str] = []
+    clock = FakeMonotonicClock()
+
+    class WithinBudgetBroker(FakeBroker):
+        def __init__(self) -> None:
+            super().__init__(
+                states={CLAIMS_QUEUE: _state(ready=1)},
+                messages={CLAIMS_QUEUE: [b"within-budget"]},
+                calls=calls,
+            )
+            self.exchanges.add(CLAIMS_DLX)
+            self.inspection_timeouts: list[float | None] = []
+
+        async def inspect_queue(
+            self,
+            queue_name: str,
+            *,
+            timeout: float | None = None,
+        ) -> QueueState | None:
+            self.inspection_timeouts.append(timeout)
+            clock.advance(5.0)
+            return await super().inspect_queue(queue_name)
+
+    broker = WithinBudgetBroker()
+
+    async def stale_readiness() -> int:
+        calls.append("stale_readiness")
+        return 0
+
+    report = await run_topology_command(
+        "rollback",
+        execute=True,
+        delete_dedicated=True,
+        broker=broker,
+        runtime=FakeRuntime(stopped=False, calls=calls),
+        stale_readiness=stale_readiness,
+        fence_operations=_fence_none,
+        monotonic=clock,
+        sleep=clock.sleep,
+    )
+
+    assert report.ok is True
+    assert report.summary["consumer_convergence_attempts"] == 1
+    assert report.summary["consumer_convergence_duration_seconds"] == 35
+    assert broker.inspection_timeouts[:7] == [60.0, 55.0, 50.0, 45.0, 40.0, 35.0, 30.0]
+    assert broker.inspection_timeouts[7:] == [None]
+    assert f"get:{CLAIMS_QUEUE}:within-budget" in calls
+    assert broker.deleted_queues == [CLAIMS_QUEUE]
+    assert broker.deleted_exchanges == [CLAIMS_DLX]
+
+
+@pytest.mark.asyncio
+async def test_rollback_checks_deadline_before_every_management_inspection() -> None:
+    calls: list[str] = []
+    clock = FakeMonotonicClock()
+
+    class DeadlineBroker(FakeBroker):
+        def __init__(self) -> None:
+            super().__init__(
+                states={CLAIMS_QUEUE: _state(ready=1)},
+                messages={CLAIMS_QUEUE: [b"uninspected-after-deadline"]},
+                calls=calls,
+            )
+            self.inspection_timeouts: list[float | None] = []
+
+        async def inspect_queue(
+            self,
+            queue_name: str,
+            *,
+            timeout: float | None = None,
+        ) -> QueueState | None:
+            self.inspection_timeouts.append(timeout)
+            clock.advance(10.0)
+            return await super().inspect_queue(queue_name)
+
+    broker = DeadlineBroker()
+    runtime = FakeRuntime(stopped=False, calls=calls)
+
+    async def stale_readiness() -> int:
+        calls.append("stale_readiness")
+        return 1
+
+    with pytest.raises(TopologySafetyError) as captured:
+        await run_topology_command(
+            "rollback",
+            execute=True,
+            delete_dedicated=True,
+            broker=broker,
+            runtime=runtime,
+            stale_readiness=stale_readiness,
+            fence_operations=_fence_none,
+            monotonic=clock,
+            sleep=clock.sleep,
+        )
+
+    assert captured.value.sanitized_counts == {
+        "consumer_convergence_attempts": 1,
+        "consumer_convergence_duration_seconds": 60,
+    }
+    assert broker.inspection_timeouts == [60.0, 50.0, 40.0, 30.0, 20.0, 10.0]
+    assert f"inspect:{CLAIMS_QUEUE}" not in calls
+    assert runtime.stopped is True
+    assert calls.count("stale_readiness") == 2
+    assert broker.deleted_queues == []
+    assert not any(call.startswith(("get:", "confirm:", "ack:", "delete_")) for call in calls)
+
+
+@pytest.mark.asyncio
+async def test_rabbit_management_inspection_uses_supplied_remaining_timeout() -> None:
+    captured: dict[str, object] = {}
+
+    class FakeResponse:
+        status_code = 404
+
+    class FakeHttpClient:
+        async def get(self, path: str, *, timeout: float) -> FakeResponse:
+            captured.update(path=path, timeout=timeout)
+            return FakeResponse()
+
+    broker = topology_module.RabbitMqBroker(
+        amqp_url="amqps://operator:secret@rabbit.invalid/tenant",
+        management_url="https://rabbit.invalid",
+    )
+    broker._http = FakeHttpClient()  # type: ignore[assignment]
+
+    state = await broker.inspect_queue(CLAIMS_QUEUE, timeout=7.25)
+
+    assert state is None
+    assert captured["timeout"] == 7.25
+    assert "secret" not in str(captured)
+
+
+@pytest.mark.asyncio
+async def test_rollback_consumer_convergence_timeout_fails_closed_without_drain_or_delete() -> None:
+    calls: list[str] = []
+    broker = FakeBroker(
+        states={CLAIMS_QUEUE: _state(ready=1, unacked=1, consumers=1)},
+        messages={CLAIMS_QUEUE: [b"must-remain"]},
+        calls=calls,
+    )
+    runtime = FakeRuntime(stopped=False, calls=calls)
+    now = 0.0
+
+    def monotonic() -> float:
+        return now
+
+    async def sleep(seconds: float) -> None:
+        nonlocal now
+        now += seconds
+
+    async def stale_readiness() -> int:
+        calls.append("stale_readiness")
+        return 1
+
+    with pytest.raises(TopologySafetyError) as captured:
+        await run_topology_command(
+            "rollback",
+            execute=True,
+            delete_dedicated=True,
+            broker=broker,
+            runtime=runtime,
+            stale_readiness=stale_readiness,
+            fence_operations=_fence_none,
+            monotonic=monotonic,
+            sleep=sleep,
+        )
+
+    assert captured.value.sanitized_counts == {
+        "consumer_convergence_attempts": 31,
+        "consumer_convergence_duration_seconds": 60,
+    }
+    assert runtime.stopped is True
+    assert calls.count("stale_readiness") == 2
+    assert calls.index(f"unbind:{LIVE_EXCHANGE}:{CLAIMS_QUEUE}:{CLAIMS_ROUTING_KEY}") < calls.index(
+        f"inspect:{CLAIMS_QUEUE}"
+    )
+    assert broker.messages[CLAIMS_QUEUE][0].body == b"must-remain"
+    assert broker.deleted_queues == []
+    assert broker.deleted_exchanges == []
+    assert not any(call.startswith(("get:", "confirm:", "ack:", "delete_")) for call in calls)
 
 
 @pytest.mark.asyncio

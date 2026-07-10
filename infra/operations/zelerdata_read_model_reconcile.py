@@ -329,6 +329,20 @@ class ReadModelIssue:
 
 
 @dataclass(frozen=True)
+class MandatorySourceGate:
+    read_model: str
+    authoritative: bool
+    issue_codes: tuple[str, ...] = ()
+
+    def to_sanitized_dict(self) -> dict[str, Any]:
+        return {
+            "read_model": self.read_model,
+            "authoritative": self.authoritative,
+            "issue_codes": list(self.issue_codes),
+        }
+
+
+@dataclass(frozen=True)
 class ExpectedReadModelCounts:
     counts: Mapping[str, int | None]
     refs: Mapping[str, frozenset[str]] = field(default_factory=dict, repr=False)
@@ -469,6 +483,7 @@ class ReconciliationSummary:
     private_export_refs: tuple[str, ...] = ()
     phase2_contract: Phase2RuntimeContract | None = None
     controls: ReconciliationControls | None = None
+    mandatory_source_gate: MandatorySourceGate | None = None
     write_counts: Mapping[str, int] = field(default_factory=dict)
     repair_counts: Mapping[str, int] = field(default_factory=dict)
     raw_context: dict[str, Any] = field(default_factory=dict, repr=False)
@@ -490,6 +505,8 @@ class ReconciliationSummary:
             controls = self.controls.to_sanitized_dict()
             if controls:
                 sanitized["controls"] = controls
+        if self.mandatory_source_gate is not None:
+            sanitized["mandatory_source_gate"] = self.mandatory_source_gate.to_sanitized_dict()
         if self.write_counts:
             sanitized["write_counts"] = dict(sorted(self.write_counts.items()))
         if self.repair_counts:
@@ -1781,6 +1798,11 @@ async def _run_cli(args: argparse.Namespace) -> ReconciliationSummary:
         db = handle.db if isinstance(handle, RuntimeDatabase) else handle
         expected = await collect_expected_read_model_counts(db=db, request=request)
         summary = await collect_reconciliation_counts(db=db, request=request, expected=expected)
+        if request.dry_run:
+            summary = replace(
+                summary,
+                mandatory_source_gate=_claims_authoritative_source_gate(expected),
+            )
         repair_counts: dict[str, int] = {}
         if request.repair_observed_pause_basis and not request.write_enabled:
             repair_counts = await execute_observed_pause_basis_repair(db=db, request=request)
@@ -1871,7 +1893,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     except (AttributeError, RuntimeError, TypeError) as exc:
         raise SystemExit("query_anomaly") from exc
     print(json.dumps(summary.to_sanitized_dict(), sort_keys=True))
-    return 0
+    gate = summary.mandatory_source_gate
+    return int(summary.dry_run and (gate is None or not gate.authoritative))
 
 
 def _phase2_preflight_target(read_model: str) -> Phase2PreflightTarget:
@@ -1922,6 +1945,40 @@ def _sorted_field_counts(
     field_counts: Mapping[str, Mapping[str, int]],
 ) -> dict[str, dict[str, int]]:
     return {field: dict(sorted(counts.items())) for field, counts in sorted(field_counts.items())}
+
+
+def _claims_authoritative_source_gate(
+    expected: ExpectedReadModelCounts,
+) -> MandatorySourceGate:
+    issue_codes = {issue.code for issue in expected.issues if issue.read_model == "claims"}
+    expected_count = expected.counts.get("claims")
+    expected_refs = expected.refs.get("claims")
+    if (
+        isinstance(expected_count, bool)
+        or not isinstance(expected_count, int)
+        or expected_count < 0
+    ):
+        issue_codes.add("expected_count_unavailable")
+    if expected_refs is None:
+        issue_codes.add("expected_refs_unavailable")
+    elif (
+        isinstance(expected_count, int)
+        and not isinstance(expected_count, bool)
+        and len(expected_refs) != expected_count
+    ):
+        issue_codes.add("expected_refs_count_mismatch")
+    if expected.truth_mode.get("claims") != "expected":
+        issue_codes.add("truth_mode_unavailable")
+    if not expected.source_fingerprint:
+        issue_codes.add("source_fingerprint_unavailable")
+    if not expected.read_model_fingerprint:
+        issue_codes.add("read_model_fingerprint_unavailable")
+    ordered_codes = tuple(sorted(issue_codes))
+    return MandatorySourceGate(
+        read_model="claims",
+        authoritative=not ordered_codes,
+        issue_codes=ordered_codes,
+    )
 
 
 def _historical_meli_expected_counts(summary: Any) -> HistoricalMeliExpectedCounts:
@@ -2334,6 +2391,10 @@ def _summary_value(summary: Any, name: str) -> Any:
 def _classify_expected_source_issue(exc: Exception) -> str:
     status_code = _exception_status_code(exc)
     normalized = f"{type(exc).__name__} {exc}".lower()
+    if type(exc).__name__ == "ClaimProjectionError":
+        return "claim_projection_error"
+    if type(exc).__name__ == "ClaimInventoryError":
+        return "claim_inventory_unstable"
     if status_code in {401, 403} or isinstance(exc, PermissionError):
         return "auth_error"
     if any(marker in normalized for marker in ("unauthorized", "forbidden", "auth")):
