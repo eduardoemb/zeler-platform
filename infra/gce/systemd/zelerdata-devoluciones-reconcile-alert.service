@@ -1,0 +1,9 @@
+[Unit]
+Description=Emit a sanitized alert for failed ZELERDATA DEVOLUCIONES reconciliation
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/logger --priority daemon.err --tag zelerdata-devoluciones-alert "DEVOLUCIONES_RECONCILIATION_FAILED; inspect with journalctl -u zelerdata-devoluciones-reconcile.service"
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=zelerdata-devoluciones-alert

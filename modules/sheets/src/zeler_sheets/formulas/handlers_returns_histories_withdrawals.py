@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Mapping, Sequence
-from datetime import UTC, date, datetime, time
+from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
@@ -15,10 +15,8 @@ from zeler_sheets.formulas.dispatcher import (
 )
 from zeler_sheets.formulas.output_normalization import NA_VALUE, normalize_response_rows
 from zeler_sheets.formulas.read_models import (
-    CLAIMS_READ_MODEL,
     ITEM_FORMULA_ROWS_READ_MODEL,
     ITEM_STATUS_STATES_READ_MODEL,
-    ORDERS_READ_MODEL,
     FormulaReadModelRepository,
     normalize_sku,
 )
@@ -79,36 +77,41 @@ class ReturnsHistoriesWithdrawalsFormulaHandlers:
         self, context: FormulaExecutionContext
     ) -> FormulaExecutionResult:
         date_from = _day_start(_parse_date(context.args.get("fecha_inicio")))
-        date_to = _day_end(_parse_date(context.args.get("fecha_final")))
-        await self._repository.require_read_model_productive(
+        date_to = _next_day_start(_parse_date(context.args.get("fecha_final")))
+        read_snapshot = await self._repository.require_devoluciones_reconciled_range(
             seller_id=context.seller_id,
-            read_model=CLAIMS_READ_MODEL,
+            date_from=date_from,
             date_to=date_to,
-            formula=context.contract.name,
-        )
-        await self._repository.require_read_model_productive(
-            seller_id=context.seller_id,
-            read_model=ORDERS_READ_MODEL,
-            date_to=date_to,
+            now=_as_utc_datetime(self._now_fn()),
             formula=context.contract.name,
         )
         requested_item_ids = _normalize_optional_item_ids(
             context.args.get("id_publicaciones", "todos")
         )
-        claims = await self._repository.find_return_claims(
+        claims = await self._repository.find_devoluciones_claims(
             seller_id=context.seller_id,
             date_from=date_from,
             date_to=date_to,
-            limit=5000,
         )
-        productive_claims = [claim for claim in claims if not _is_cancelled_return_claim(claim)]
+        productive_claims = [
+            claim
+            for claim in claims
+            if claim.get("productive") is not False and not _is_cancelled_return_claim(claim)
+        ]
         order_ids = list(
             dict.fromkeys(order_id for claim in productive_claims if (order_id := _order_id(claim)))
         )
-        orders = await self._repository.find_orders_by_ids(
+        orders = await self._repository.find_devoluciones_orders(
             seller_id=context.seller_id,
             order_ids=order_ids,
-            limit=max(1000, len(order_ids)),
+        )
+        await self._repository.validate_devoluciones_read_snapshot(
+            seller_id=context.seller_id,
+            date_from=date_from,
+            date_to=date_to,
+            now=_as_utc_datetime(self._now_fn()),
+            formula=context.contract.name,
+            snapshot=read_snapshot,
         )
         orders_by_id = {_document_id(order): order for order in orders}
         requested_set = set(requested_item_ids or [])
@@ -127,7 +130,12 @@ class ReturnsHistoriesWithdrawalsFormulaHandlers:
                     context.contract.name,
                     "returned quantity must be tied to a scoped order line",
                 )
-            returned_quantity = _explicit_returned_quantity(claim) or line.quantity
+            returned_quantity = _explicit_returned_quantity(claim)
+            if returned_quantity is None:
+                raise FormulaDataUnavailableError(
+                    context.contract.name,
+                    "returned quantity must come from the canonical v2 return projection",
+                )
             if requested_set and line.item_id not in requested_set:
                 continue
             key = (line.item_id, line.sku)
@@ -515,9 +523,9 @@ def _day_start(value: datetime) -> datetime:
     return datetime.combine(parsed.date(), time.min, tzinfo=UTC)
 
 
-def _day_end(value: datetime) -> datetime:
+def _next_day_start(value: datetime) -> datetime:
     parsed = _as_utc_datetime(value)
-    return datetime.combine(parsed.date(), time.max, tzinfo=UTC)
+    return datetime.combine(parsed.date() + timedelta(days=1), time.min, tzinfo=UTC)
 
 
 def _first_datetime(*values: Any) -> datetime | None:

@@ -26,6 +26,14 @@ class FakeMessage:
 class FakeExchange:
     def __init__(self) -> None:
         self.bindings: list[tuple[FakeQueue, str]] = []
+        self.published: list[tuple[Any, str, bool]] = []
+        self.publish_error: Exception | None = None
+
+    async def publish(self, message: Any, routing_key: str, *, mandatory: bool = False) -> bool:
+        self.published.append((message, routing_key, mandatory))
+        if self.publish_error is not None:
+            raise self.publish_error
+        return True
 
 
 class FakeQueue:
@@ -46,9 +54,11 @@ class FakeChannel:
         self.exchanges: dict[str, FakeExchange] = {}
         self.queues: dict[str, FakeQueue] = {}
         self.exchange = FakeExchange()
+        self.default_exchange = FakeExchange()
         self.queue = FakeQueue()
         self.declared_exchanges: list[tuple[str, Any, bool]] = []
         self.declared_queues: list[tuple[str, bool, dict[str, object]]] = []
+        self.passive_queues: list[str] = []
 
     async def set_qos(self, *, prefetch_count: int) -> None:
         self.qos.append(prefetch_count)
@@ -62,9 +72,17 @@ class FakeChannel:
         return exchange
 
     async def declare_queue(
-        self, name: str, *, durable: bool, arguments: dict[str, object]
+        self,
+        name: str,
+        *,
+        durable: bool = False,
+        arguments: dict[str, object] | None = None,
+        passive: bool = False,
     ) -> FakeQueue:
-        self.declared_queues.append((name, durable, arguments))
+        if passive:
+            self.passive_queues.append(name)
+        else:
+            self.declared_queues.append((name, durable, arguments or {}))
         queue = self.queues.setdefault(name, FakeQueue())
         self.queue = queue
         return queue
@@ -73,9 +91,11 @@ class FakeChannel:
 class FakeConnection:
     def __init__(self) -> None:
         self.channel_obj = FakeChannel()
+        self.channel_kwargs: list[dict[str, object]] = []
         self.closed = False
 
-    async def channel(self) -> FakeChannel:
+    async def channel(self, **kwargs: object) -> FakeChannel:
+        self.channel_kwargs.append(dict(kwargs))
         return self.channel_obj
 
     async def close(self) -> None:

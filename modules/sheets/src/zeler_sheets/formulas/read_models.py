@@ -1,9 +1,14 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal, DecimalException
 from typing import Any, cast
 
+from zeler_sheets.devoluciones_reconciliation import (
+    read_devoluciones_claims_keyset,
+    read_devoluciones_orders_by_id_keyset,
+)
 from zeler_sheets.formulas.dispatcher import FormulaDataUnavailableError
 from zeler_sheets.formulas.schemas import FormulaContract
 from zeler_sheets.unit_costs import UnitCostLookup, resolve_unit_cost
@@ -28,6 +33,7 @@ CATALOG_BUYBOX_SNAPSHOTS_READ_MODEL = "catalog_buybox_snapshots"
 CATALOG_PRODUCT_SNAPSHOTS_READ_MODEL = "catalog_product_snapshots"
 CATALOG_TIME_METRICS_READ_MODEL = "catalog_time_metrics"
 CLAIMS_READ_MODEL = "claims"
+DEVOLUCIONES_READ_MODEL = "devoluciones"
 FULL_WITHDRAWALS_READ_MODEL = "full_withdrawals"
 ITEM_FORMULA_ROWS_READ_MODEL = "item_formula_rows"
 ITEM_STATUS_STATES_READ_MODEL = "item_status_states"
@@ -63,8 +69,15 @@ SHIPMENT_REAL_SHIPPING_COST_PROJECTION = {
 }
 
 
+@dataclass(frozen=True)
+class DevolucionesReadSnapshot:
+    revision: str
+    proof_fingerprint: str
+
+
 class FormulaReadModelRepository:
     def __init__(self, *, db: Any) -> None:
+        self._db = db
         self._item_formula_rows = db[ITEM_FORMULA_ROWS_COLLECTION]
         self._item_sku_index = db[ITEM_SKU_INDEX_COLLECTION]
         self._catalog_buybox_snapshots = db[CATALOG_BUYBOX_SNAPSHOTS_COLLECTION]
@@ -175,6 +188,32 @@ class FormulaReadModelRepository:
         filter_spec["type"] = {"$in": ["returns", "return"]}
         cursor = self._claims.find(filter_spec).sort([("date_created", 1), ("_id", 1)])
         return cast("list[dict[str, Any]]", await cursor.to_list(length=limit))
+
+    async def find_devoluciones_claims(
+        self,
+        *,
+        seller_id: str,
+        date_from: datetime,
+        date_to: datetime,
+    ) -> list[dict[str, Any]]:
+        return await read_devoluciones_claims_keyset(
+            db=self._db,
+            seller_id=seller_id,
+            date_from=date_from,
+            date_to=date_to,
+        )
+
+    async def find_devoluciones_orders(
+        self,
+        *,
+        seller_id: str,
+        order_ids: list[str] | tuple[str, ...],
+    ) -> list[dict[str, Any]]:
+        return await read_devoluciones_orders_by_id_keyset(
+            db=self._db,
+            seller_id=seller_id,
+            order_ids=order_ids,
+        )
 
     async def find_item_status_states(
         self,
@@ -490,6 +529,69 @@ class FormulaReadModelRepository:
             )
             raise FormulaDataUnavailableError(formula, reason)
 
+    async def require_devoluciones_reconciled_range(
+        self,
+        *,
+        seller_id: str,
+        date_from: datetime,
+        date_to: datetime,
+        now: datetime,
+        formula: str,
+    ) -> DevolucionesReadSnapshot:
+        marker = await self._read_model_freshness.find_one(
+            {
+                "_id": read_model_freshness_id(seller_id, DEVOLUCIONES_READ_MODEL),
+                "seller_id": seller_id,
+                "read_model": DEVOLUCIONES_READ_MODEL,
+                "state": RECONCILED_READ_MODEL_STATE,
+                "$expr": {"$gt": ["$valid_until", "$$NOW"]},
+            }
+        )
+        if not devoluciones_reconciliation_marker_covers(
+            marker,
+            date_from=date_from,
+            date_to=date_to,
+            now=now,
+        ):
+            _raise_devoluciones_snapshot_unavailable(formula)
+        revision = str(marker.get("revision") or "").strip()
+        proof_fingerprint = str(marker.get("proof_fingerprint") or "").strip()
+        if not revision or not proof_fingerprint:
+            _raise_devoluciones_snapshot_unavailable(formula)
+        return DevolucionesReadSnapshot(
+            revision=revision,
+            proof_fingerprint=proof_fingerprint,
+        )
+
+    async def validate_devoluciones_read_snapshot(
+        self,
+        *,
+        seller_id: str,
+        date_from: datetime,
+        date_to: datetime,
+        now: datetime,
+        formula: str,
+        snapshot: DevolucionesReadSnapshot,
+    ) -> None:
+        marker = await self._read_model_freshness.find_one(
+            {
+                "_id": read_model_freshness_id(seller_id, DEVOLUCIONES_READ_MODEL),
+                "seller_id": seller_id,
+                "read_model": DEVOLUCIONES_READ_MODEL,
+                "state": RECONCILED_READ_MODEL_STATE,
+                "revision": snapshot.revision,
+                "proof_fingerprint": snapshot.proof_fingerprint,
+                "$expr": {"$gt": ["$valid_until", "$$NOW"]},
+            }
+        )
+        if not devoluciones_reconciliation_marker_covers(
+            marker,
+            date_from=date_from,
+            date_to=date_to,
+            now=now,
+        ):
+            _raise_devoluciones_snapshot_unavailable(formula)
+
     async def find_unit_costs(
         self,
         *,
@@ -529,6 +631,14 @@ def require_formula_read_model_available(contract: FormulaContract) -> None:
     batches = set(contract.batch.split("/"))
     if batches & UNBUILT_BATCH_MARKERS:
         raise FormulaDataUnavailableError(contract.name)
+
+
+def _raise_devoluciones_snapshot_unavailable(formula: str) -> None:
+    raise FormulaDataUnavailableError(
+        formula,
+        "The joint devoluciones claims/orders freshness/reconciliation snapshot changed, does "
+        "not enclose the requested range, or has expired.",
+    )
 
 
 def read_model_freshness_id(seller_id: str, read_model: str) -> str:
@@ -593,6 +703,45 @@ def read_model_reconciliation_marker_covers(
     if exact_interval:
         return coverage_start == requested_from and reconciled_until == requested_until
     return coverage_start <= requested_from and reconciled_until >= requested_until
+
+
+def devoluciones_reconciliation_marker_covers(
+    marker: Any,
+    *,
+    date_from: Any,
+    date_to: Any,
+    now: Any,
+) -> bool:
+    if not isinstance(marker, dict):
+        return False
+    if marker.get("read_model") != DEVOLUCIONES_READ_MODEL:
+        return False
+    if str(marker.get("state") or "").strip().casefold() != RECONCILED_READ_MODEL_STATE:
+        return False
+    requested_from = _safe_utc_datetime(date_from)
+    requested_until = _safe_utc_datetime(date_to)
+    coverage_start = _safe_utc_datetime(marker.get("date_from"))
+    reconciled_until = _safe_utc_datetime(marker.get("reconciled_until"))
+    fresh_until = _safe_utc_datetime(marker.get("fresh_until"))
+    last_event_synced_at = _safe_utc_datetime(marker.get("last_event_synced_at"))
+    valid_until = _safe_utc_datetime(marker.get("valid_until"))
+    current_time = _safe_utc_datetime(now)
+    return bool(
+        requested_from is not None
+        and requested_until is not None
+        and requested_from < requested_until
+        and coverage_start is not None
+        and reconciled_until is not None
+        and fresh_until == reconciled_until
+        and last_event_synced_at == coverage_start
+        and marker.get("source") == "zelerdata_devoluciones_joint_reconcile"
+        and coverage_start < reconciled_until
+        and coverage_start <= requested_from
+        and reconciled_until >= requested_until
+        and valid_until is not None
+        and current_time is not None
+        and valid_until > current_time
+    )
 
 
 def _read_model_freshness_marker_covers(marker: Any, *, date_to: Any) -> bool:

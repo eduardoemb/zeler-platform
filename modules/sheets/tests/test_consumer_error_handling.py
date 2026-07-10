@@ -6,6 +6,7 @@ import httpx
 import pytest
 
 from zeler_platform_core.clients.meli_gateway_client import GatewayRateLimitError
+from zeler_platform_core.devoluciones_readiness import DevolucionesLeaseConflictError
 from zeler_platform_core.runtime.retry_delay import RETRY_ATTEMPT_HEADER
 from zeler_sheets import consumer
 from zeler_sheets.consumer import SheetsAmqpConsumerRunner, SheetsEvent
@@ -86,6 +87,27 @@ class FakeRetryDelayPublisher:
                 "headers": headers,
             }
         )
+
+
+@pytest.mark.asyncio
+async def test_devoluciones_lease_conflict_is_requeued_instead_of_sent_to_dlq(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    log_spy = LogSpy()
+    monkeypatch.setattr(consumer, "logger", log_spy, raising=False)
+    runner = SheetsAmqpConsumerRunner(
+        rabbitmq_url="amqp://unit-test",
+        handler=FakeHandler(error=DevolucionesLeaseConflictError("lease is owned")),
+    )
+    message = FakeMessage(_valid_payload(resource="/post-purchase/v1/claims/519988001"))
+
+    await runner.handle_message(message)
+
+    assert message.acked is False
+    assert message.nacks == [True]
+    assert log_spy.warning_calls[0][0] == "worker.message.requeued"
+    assert log_spy.warning_calls[0][1]["error_type"] == "DevolucionesLeaseConflictError"
+    assert log_spy.error_calls == []
 
 
 @pytest.mark.asyncio

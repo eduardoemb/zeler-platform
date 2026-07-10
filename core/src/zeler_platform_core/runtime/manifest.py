@@ -38,12 +38,28 @@ class ManifestConflictError(ValueError):
     """Raised when a module manifest violates platform ownership boundaries."""
 
 
+class PassiveConsumer(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    queue_name: str = Field(min_length=1)
+    routing_keys: list[str] = Field(min_length=1)
+    externally_bound: bool = True
+
+    @field_validator("routing_keys")
+    @classmethod
+    def _routing_keys_must_be_non_blank(cls, value: list[str]) -> list[str]:
+        if any(not item.strip() for item in value):
+            raise ValueError("passive consumer routing keys must be non-blank strings")
+        return value
+
+
 class ModuleManifest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     name: str = Field(min_length=1)
     version: str = Field(min_length=1)
     subscribed_events: list[str] = Field(default_factory=list)
+    passive_consumers: list[PassiveConsumer] = Field(default_factory=list)
     owned_collections: list[str] = Field(min_length=1)
     allowed_meli_scopes: list[str] = Field(min_length=1)
     health_endpoint: str = Field(min_length=1)

@@ -1,0 +1,12 @@
+[Unit]
+Description=Renew closed-range ZELERDATA DEVOLUCIONES readiness before its lease expires
+
+[Timer]
+OnCalendar=*-*-* *:00,10,20,30,40,50:00 UTC
+RandomizedDelaySec=1m
+AccuracySec=30s
+Persistent=true
+Unit=zelerdata-devoluciones-reconcile.service
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,97 @@
+{
+  "$jsonSchema": {
+    "additionalProperties": false,
+    "bsonType": "object",
+    "properties": {
+      "_id": {
+        "bsonType": "string"
+      },
+      "attempt_token": {
+        "bsonType": "string"
+      },
+      "checkpoint": {
+        "bsonType": [
+          "object",
+          "null"
+        ]
+      },
+      "error_code": {
+        "bsonType": [
+          "string",
+          "null"
+        ]
+      },
+      "fence": {
+        "bsonType": [
+          "int",
+          "long"
+        ],
+        "minimum": 1
+      },
+      "finished_at": {
+        "bsonType": [
+          "date",
+          "null"
+        ]
+      },
+      "heartbeat_at": {
+        "bsonType": "date"
+      },
+      "lease_until": {
+        "bsonType": "date"
+      },
+      "operation_id": {
+        "bsonType": "string"
+      },
+      "schema_version": {
+        "bsonType": "int"
+      },
+      "scope": {
+        "bsonType": "string"
+      },
+      "seller_id": {
+        "bsonType": [
+          "string",
+          "long",
+          "int"
+        ]
+      },
+      "source_fingerprint": {
+        "bsonType": [
+          "string",
+          "null"
+        ]
+      },
+      "started_at": {
+        "bsonType": "date"
+      },
+      "state": {
+        "enum": [
+          "running",
+          "succeeded",
+          "failed",
+          "released"
+        ]
+      },
+      "updated_at": {
+        "bsonType": "date"
+      }
+    },
+    "required": [
+      "_id",
+      "seller_id",
+      "scope",
+      "operation_id",
+      "attempt_token",
+      "fence",
+      "state",
+      "lease_until",
+      "heartbeat_at",
+      "started_at",
+      "updated_at",
+      "schema_version"
+    ]
+  },
+  "validationAction": "error",
+  "validationLevel": "strict"
+}

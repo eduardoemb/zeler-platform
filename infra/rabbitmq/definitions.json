@@ -36,11 +36,6 @@
       "durable": true
     },
     {
-      "name": "zeler.sheets.orders.dlx",
-      "type": "direct",
-      "durable": true
-    },
-    {
       "name": "zeler.sheets.user_products.dlx",
       "type": "direct",
       "durable": true
@@ -317,58 +312,6 @@
     },
     {
       "name": "zeler.sheets.events.retry.10m",
-      "durable": true,
-      "arguments": {
-        "x-message-ttl": 600000,
-        "x-dead-letter-exchange": "meli.events"
-      }
-    },
-    {
-      "name": "zeler.sheets.orders.dlq",
-      "durable": true,
-      "arguments": {}
-    },
-    {
-      "name": "zeler.sheets.orders",
-      "durable": true,
-      "arguments": {
-        "x-dead-letter-exchange": "zeler.sheets.orders.dlx"
-      }
-    },
-    {
-      "name": "zeler.sheets.orders.retry.1s",
-      "durable": true,
-      "arguments": {
-        "x-message-ttl": 1000,
-        "x-dead-letter-exchange": "meli.events"
-      }
-    },
-    {
-      "name": "zeler.sheets.orders.retry.5s",
-      "durable": true,
-      "arguments": {
-        "x-message-ttl": 5000,
-        "x-dead-letter-exchange": "meli.events"
-      }
-    },
-    {
-      "name": "zeler.sheets.orders.retry.30s",
-      "durable": true,
-      "arguments": {
-        "x-message-ttl": 30000,
-        "x-dead-letter-exchange": "meli.events"
-      }
-    },
-    {
-      "name": "zeler.sheets.orders.retry.2m",
-      "durable": true,
-      "arguments": {
-        "x-message-ttl": 120000,
-        "x-dead-letter-exchange": "meli.events"
-      }
-    },
-    {
-      "name": "zeler.sheets.orders.retry.10m",
       "durable": true,
       "arguments": {
         "x-message-ttl": 600000,
@@ -675,16 +618,6 @@
       "source": "zeler.sheets.replay",
       "destination": "zeler.sheets.events",
       "routing_key": "questions.*"
-    },
-    {
-      "source": "zeler.sheets.orders.dlx",
-      "destination": "zeler.sheets.orders.dlq",
-      "routing_key": "zeler.sheets.orders"
-    },
-    {
-      "source": "meli.events",
-      "destination": "zeler.sheets.orders",
-      "routing_key": "orders.*"
     },
     {
       "source": "zeler.sheets.user_products.dlx",

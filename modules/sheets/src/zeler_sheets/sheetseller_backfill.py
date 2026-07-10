@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
 import json
 import math
 import os
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
+from contextlib import nullcontext
 from dataclasses import asdict, dataclass
 from dataclasses import field as dataclass_field
 from datetime import UTC, date, datetime, timedelta
@@ -18,6 +20,16 @@ from bson.decimal128 import Decimal128
 from pymongo.errors import DuplicateKeyError
 
 from zeler_platform_core.clients.meli_gateway_client import GatewayRateLimitError
+from zeler_platform_core.devoluciones_readiness import (
+    DevolucionesLeaseLostError,
+    DevolucionesOperationContext,
+    acquire_devoluciones_operation,
+    finish_devoluciones_operation,
+    guarded_devoluciones_write,
+    maintain_devoluciones_heartbeat,
+    new_devoluciones_attempt_token,
+    stable_devoluciones_operation_id,
+)
 from zeler_platform_core.models import (
     Item,
     ListingFeeProjection,
@@ -1304,6 +1316,94 @@ async def run_order_line_identity_backfill(
     )
 
 
+async def _acquire_order_write_operation(
+    *,
+    db: Any,
+    seller_id: str,
+    writer_kind: str,
+    date_from: str,
+    date_to: str,
+    source_fingerprint: str,
+) -> DevolucionesOperationContext:
+    return await acquire_devoluciones_operation(
+        db=db,
+        seller_id=str(seller_id),
+        scope="devoluciones",
+        operation_id=stable_devoluciones_operation_id(
+            writer_kind, f"{seller_id}:{date_from}:{date_to}"
+        ),
+        attempt_token=new_devoluciones_attempt_token(),
+        source_fingerprint=source_fingerprint,
+    )
+
+
+def _order_write_source_fingerprint(
+    *,
+    writer_kind: str,
+    seller_id: str,
+    date_from: str,
+    date_to: str,
+    orders: Sequence[dict[str, Any]],
+    repair_inputs: Sequence[Any] = (),
+) -> str:
+    source = {
+        "writer_kind": writer_kind,
+        "seller_id": str(seller_id),
+        "date_from": date_from,
+        "date_to": date_to,
+        "orders": _order_fingerprint_value(orders),
+        "repair_inputs": _order_fingerprint_value(repair_inputs),
+    }
+    encoded = json.dumps(
+        source,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _order_fingerprint_value(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return {
+            str(key): _order_fingerprint_value(item)
+            for key, item in sorted(value.items(), key=lambda pair: str(pair[0]))
+        }
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+        return [_order_fingerprint_value(item) for item in value]
+    if isinstance(value, datetime):
+        normalized = value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
+        return {"$datetime": normalized.isoformat(timespec="microseconds")}
+    if isinstance(value, date):
+        return {"$date": value.isoformat()}
+    if isinstance(value, (Decimal, Decimal128)):
+        return {"$decimal": str(value)}
+    if isinstance(value, bytes):
+        return {"$bytes": value.hex()}
+    if value is None or isinstance(value, (bool, int, str)):
+        return value
+    if isinstance(value, float):
+        return value if math.isfinite(value) else {"$float": str(value)}
+    return {"$type": type(value).__qualname__, "$value": str(value)}
+
+
+def _remaining_order_write_plans(
+    *,
+    orders: Sequence[dict[str, Any]],
+    write_plans: Sequence[tuple[dict[str, Any], Any]],
+    checkpoint: dict[str, Any],
+    repair: str,
+) -> list[tuple[dict[str, Any], Any]]:
+    checkpoint_order_id = str(checkpoint.get("order_id") or "").strip()
+    if not checkpoint_order_id:
+        return list(write_plans)
+    order_ids = [str(order.get("_id") or order.get("id") or "") for order in orders]
+    if checkpoint.get("repair") != repair or checkpoint_order_id not in order_ids:
+        raise DevolucionesLeaseLostError(f"{repair} checkpoint is outside source inventory")
+    remaining_ids = set(order_ids[order_ids.index(checkpoint_order_id) + 1 :])
+    return [plan for plan in write_plans if str(plan[0]["_id"]) in remaining_ids]
+
+
 async def run_order_identity_repair(
     *,
     db: Any,
@@ -1312,6 +1412,7 @@ async def run_order_identity_repair(
     date_from: str,
     date_to: str,
     dry_run: bool = True,
+    operation: DevolucionesOperationContext | None = None,
 ) -> OrderIdentityRepairSummary:
     orders = await _load_seller_orders(
         db=db, seller_id=seller_id, date_from=date_from, date_to=date_to
@@ -1327,6 +1428,7 @@ async def run_order_identity_repair(
     skipped_unmatched_lines = 0
     orders_collection = db[ORDERS_COLLECTION]
     write_plans: list[tuple[dict[str, Any], list[dict[str, Any]]]] = []
+    identity_source_inputs: list[dict[str, Any]] = []
 
     for order in orders:
         existing_items = _order_line_items(order)
@@ -1343,6 +1445,12 @@ async def run_order_identity_repair(
             for raw_item in _order_line_items(payload)
             if _has_safe_identity_fields(identity := extract_safe_order_item_identity(raw_item))
         ]
+        identity_source_inputs.append(
+            {
+                "order_id": order_id,
+                "enriched_items": enriched_items,
+            }
+        )
         enriched_order_lines += len(enriched_items)
         if enriched_items:
             orders_with_safe_identity += 1
@@ -1356,15 +1464,83 @@ async def run_order_identity_repair(
         if stats.identity_fields_added > 0:
             write_plans.append(({"_id": order["_id"], "seller_id": seller_id}, merged_items))
 
-    if not dry_run:
-        for filter_spec, merged_items in write_plans:
-            await orders_collection.update_one(
-                filter_spec,
-                {"$set": {"items": merged_items}},
-                upsert=False,
-                bypass_document_validation=True,
+    owns_operation = False
+    source_fingerprint = _order_write_source_fingerprint(
+        writer_kind="order_identity_repair",
+        seller_id=seller_id,
+        date_from=date_from,
+        date_to=date_to,
+        orders=orders,
+        repair_inputs=identity_source_inputs,
+    )
+    if not dry_run and operation is None:
+        operation = await _acquire_order_write_operation(
+            db=db,
+            seller_id=seller_id,
+            writer_kind="order_identity_repair",
+            date_from=date_from,
+            date_to=date_to,
+            source_fingerprint=source_fingerprint,
+        )
+        owns_operation = True
+    try:
+        if not dry_run:
+            if operation is None:
+                raise ValueError("operation is required for order identity repair writes")
+            if owns_operation and operation.source_fingerprint != source_fingerprint:
+                raise DevolucionesLeaseLostError(
+                    "order identity source fingerprint changed before writes"
+                )
+            plans_to_write = (
+                _remaining_order_write_plans(
+                    orders=orders,
+                    write_plans=write_plans,
+                    checkpoint=operation.checkpoint,
+                    repair="identity",
+                )
+                if owns_operation
+                else list(write_plans)
             )
-            orders_updated += 1
+            heartbeat_scope = (
+                maintain_devoluciones_heartbeat(db=db, operation=operation)
+                if owns_operation
+                else nullcontext()
+            )
+            async with heartbeat_scope:
+                for filter_spec, merged_items in plans_to_write:
+
+                    async def write(
+                        session: Any,
+                        filter_spec: dict[str, Any] = filter_spec,
+                        merged_items: list[dict[str, Any]] = merged_items,
+                    ) -> None:
+                        await orders_collection.update_one(
+                            filter_spec,
+                            {"$set": {"items": merged_items}},
+                            upsert=False,
+                            bypass_document_validation=True,
+                            **({"session": session} if session is not None else {}),
+                        )
+
+                    await guarded_devoluciones_write(
+                        db=db,
+                        operation=operation,
+                        seller_id=seller_id,
+                        checkpoint={"order_id": str(filter_spec["_id"]), "repair": "identity"},
+                        writer=write,
+                    )
+                    orders_updated += 1
+    except Exception:
+        if owns_operation and operation is not None:
+            await finish_devoluciones_operation(
+                db=db,
+                operation=operation,
+                succeeded=False,
+                error_code="order_identity_repair_failed",
+            )
+        raise
+    if owns_operation and operation is not None:
+        await finish_devoluciones_operation(db=db, operation=operation, succeeded=True)
 
     return OrderIdentityRepairSummary(
         seller_id=seller_id,
@@ -1391,6 +1567,7 @@ async def run_order_normalization(
     date_from: str,
     date_to: str,
     dry_run: bool = True,
+    operation: DevolucionesOperationContext | None = None,
 ) -> OrderNormalizationSummary:
     orders = await _load_seller_orders(
         db=db, seller_id=seller_id, date_from=date_from, date_to=date_to
@@ -1453,15 +1630,85 @@ async def run_order_normalization(
         write_plans.append(({"_id": order["_id"], "seller_id": seller_id}, set_fields))
 
     orders_updated = 0
-    if not dry_run:
-        for filter_spec, set_fields in write_plans:
-            await orders_collection.update_one(
-                filter_spec,
-                {"$set": set_fields},
-                upsert=False,
-                bypass_document_validation=False,
+    owns_operation = False
+    source_fingerprint = _order_write_source_fingerprint(
+        writer_kind="order_normalization",
+        seller_id=seller_id,
+        date_from=date_from,
+        date_to=date_to,
+        orders=orders,
+    )
+    if not dry_run and operation is None:
+        operation = await _acquire_order_write_operation(
+            db=db,
+            seller_id=seller_id,
+            writer_kind="order_normalization",
+            date_from=date_from,
+            date_to=date_to,
+            source_fingerprint=source_fingerprint,
+        )
+        owns_operation = True
+    try:
+        if not dry_run:
+            if operation is None:
+                raise ValueError("operation is required for order normalization writes")
+            if owns_operation and operation.source_fingerprint != source_fingerprint:
+                raise DevolucionesLeaseLostError(
+                    "order normalization source fingerprint changed before writes"
+                )
+            plans_to_write = (
+                _remaining_order_write_plans(
+                    orders=orders,
+                    write_plans=write_plans,
+                    checkpoint=operation.checkpoint,
+                    repair="normalization",
+                )
+                if owns_operation
+                else list(write_plans)
             )
-            orders_updated += 1
+            heartbeat_scope = (
+                maintain_devoluciones_heartbeat(db=db, operation=operation)
+                if owns_operation
+                else nullcontext()
+            )
+            async with heartbeat_scope:
+                for filter_spec, set_fields in plans_to_write:
+
+                    async def write(
+                        session: Any,
+                        filter_spec: dict[str, Any] = filter_spec,
+                        set_fields: dict[str, Any] = set_fields,
+                    ) -> None:
+                        await orders_collection.update_one(
+                            filter_spec,
+                            {"$set": set_fields},
+                            upsert=False,
+                            bypass_document_validation=False,
+                            **({"session": session} if session is not None else {}),
+                        )
+
+                    await guarded_devoluciones_write(
+                        db=db,
+                        operation=operation,
+                        seller_id=seller_id,
+                        checkpoint={
+                            "order_id": str(filter_spec["_id"]),
+                            "repair": "normalization",
+                        },
+                        writer=write,
+                    )
+                    orders_updated += 1
+    except Exception:
+        if owns_operation and operation is not None:
+            await finish_devoluciones_operation(
+                db=db,
+                operation=operation,
+                succeeded=False,
+                error_code="order_normalization_failed",
+            )
+        raise
+    if owns_operation and operation is not None:
+        await finish_devoluciones_operation(db=db, operation=operation, succeeded=True)
 
     return OrderNormalizationSummary(
         seller_id=seller_id,

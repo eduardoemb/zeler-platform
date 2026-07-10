@@ -1,0 +1,15 @@
+{
+  "id": "RETURN-519988001",
+  "status": "ready_to_ship",
+  "subtype": "return_partial",
+  "last_updated": "2026-06-15T12:10:00.000Z",
+  "orders": [
+    {
+      "order_id": "2001",
+      "item_id": "MLA1",
+      "context_type": "total",
+      "return_quantity": "2.0",
+      "total_quantity": 5
+    }
+  ]
+}

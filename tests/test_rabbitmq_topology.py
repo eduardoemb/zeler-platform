@@ -29,7 +29,6 @@ def test_topology_declares_meli_events_topic_exchange_and_module_queues() -> Non
     for queue_name in [
         "zeler.repricer.items",
         "zeler.repricer.items_prices",
-        "zeler.sheets.orders",
         "zeler.publicador.questions",
         "zeler.publicador.messages",
         "zeler.autoreply.events",
@@ -47,7 +46,7 @@ def test_topology_bindings_include_supported_module_routing_keys() -> None:
 
     assert ("zeler.repricer.items", "items.*") in bindings
     assert ("zeler.repricer.items_prices", "items.price_updated") in bindings
-    assert ("zeler.sheets.orders", "orders.*") in bindings
+    assert not any(destination.startswith("zeler.sheets.orders") for destination, _ in bindings)
     assert ("zeler.publicador.questions", "questions.*") in bindings
     assert ("zeler.publicador.messages", "messages.*") in bindings
     assert not any(destination.startswith("zeler.fulldock") for destination, _ in bindings)
@@ -98,6 +97,9 @@ def test_topology_includes_new_queues() -> None:
     assert "zeler.repricer.price_suggestion" in queue_names
     assert "zeler.sheets.user_products" in queue_names
     assert "webhooks.unknown.dlq" in queue_names
+    assert "zeler.sheets.events" in queue_names
+    assert "zeler.sheets.events.dlq" in queue_names
+    assert not any(queue_name.startswith("zeler.sheets.orders") for queue_name in queue_names)
     assert not any(queue_name.startswith("zeler.fulldock") for queue_name in queue_names)
 
 

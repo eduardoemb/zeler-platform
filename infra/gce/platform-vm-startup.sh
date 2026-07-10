@@ -10,9 +10,10 @@
 #   6. Authenticate Docker to Artifact Registry (us-central1)
 #   7. Create /opt/zeler-platform/ directory layout
 #   8. Install safe Docker root-disk maintenance scripts + timer
-#   9. Write & enable the zeler-platform-secrets.service systemd unit
-#   10. Write the secrets helper script to /opt/zeler-platform/
-#   11. Touch /opt/zeler-platform/.startup-complete as a readiness sentinel
+#   9. Install the explicit DEVOLUCIONES topology wrapper without executing it
+#   10. Write & enable the zeler-platform-secrets.service systemd unit
+#   11. Write the secrets helper script to /opt/zeler-platform/
+#   12. Touch /opt/zeler-platform/.startup-complete as a readiness sentinel
 #
 # Idempotent: safe to re-run on re-provision (each step checks before acting).
 # Logs appended to /var/log/platform-startup.log.
@@ -264,6 +265,189 @@ UNIT
 systemctl daemon-reload
 systemctl enable --now zeler-docker-maintenance.timer
 echo "Safe Docker maintenance scripts and zeler-docker-maintenance.timer installed"
+
+# -------------------------------------------------------------------------
+# 6c. Explicit DEVOLUCIONES topology wrapper (installation only)
+# -------------------------------------------------------------------------
+cat > /opt/zeler-platform/zelerdata-devoluciones-topology.sh << 'SCRIPT'
+#!/usr/bin/env bash
+set -euo pipefail
+
+PLATFORM_ROOT=${ZELER_PLATFORM_ROOT:-/opt/zeler-platform}
+COMPOSE_FILE=${ZELER_COMPOSE_FILE:-$PLATFORM_ROOT/docker-compose.yml}
+
+cd "$PLATFORM_ROOT"
+
+run_topology() {
+  /usr/bin/docker compose --file "$COMPOSE_FILE" run --rm --no-deps -T \
+    --user 0:0 \
+    --volume /var/run/docker.sock:/var/run/docker.sock \
+    --entrypoint /app/.venv/bin/python \
+    sheets-worker -m infra.rabbitmq.sheets_devoluciones_topology "$@"
+}
+
+command=${1:-}
+if [[ "$command" == "bind-claims" && " $* " == *" --execute "* ]]; then
+  set +e
+  run_topology "$@"
+  status=$?
+  set -e
+  if (( status != 0 )); then
+    run_topology rollback --execute --failure-triggered || true
+  fi
+  exit "$status"
+fi
+
+run_topology "$@"
+SCRIPT
+chmod 0755 /opt/zeler-platform/zelerdata-devoluciones-topology.sh
+echo "Installed zelerdata-devoluciones-topology.sh; no topology command was executed"
+
+# -------------------------------------------------------------------------
+# 6d. DEVOLUCIONES closed-window reconciliation (installed, not enabled)
+# -------------------------------------------------------------------------
+cat > /opt/zeler-platform/zelerdata-devoluciones-reconcile.sh << 'SCRIPT'
+#!/usr/bin/env bash
+set -euo pipefail
+umask 077
+
+PLATFORM_ROOT=${ZELER_PLATFORM_ROOT:-/opt/zeler-platform}
+COMPOSE_FILE=${ZELER_COMPOSE_FILE:-$PLATFORM_ROOT/docker-compose.yml}
+APPROVED_SELLER_ID=82453304
+CONFIGURED_SELLER_ID=${ZELERDATA_DEVOLUCIONES_SELLER_ID:-}
+SELLER_ID=$APPROVED_SELLER_ID
+ACCEPTED_RANGE_START=2026-06-01
+ACCEPTED_BASELINE_THROUGH=2026-07-09
+RANGE_START=${ZELERDATA_DEVOLUCIONES_RANGE_START:-2026-06-01}
+ACCEPTED_THROUGH=${ZELERDATA_DEVOLUCIONES_ACCEPTED_THROUGH:-2026-07-09}
+CLOSED_DATE_TO=$(/usr/bin/date -u -d "yesterday" +%F)
+OUTPUT_FILE=$(/usr/bin/mktemp)
+MAX_ATTEMPTS=2
+
+cleanup() {
+  /usr/bin/rm -f "$OUTPUT_FILE"
+}
+
+log_event() {
+  local priority=$1
+  local event=$2
+  /usr/bin/logger \
+    --priority "$priority" \
+    --tag zelerdata-devoluciones-reconcile \
+    "event=$event diagnostics=sanitized"
+}
+
+valid_utc_date() {
+  local value=$1
+  [[ "$value" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] &&
+    [[ "$(/usr/bin/date -u -d "$value" +%F 2>/dev/null)" == "$value" ]]
+}
+
+trap cleanup EXIT
+
+if [[ "$CONFIGURED_SELLER_ID" != "$APPROVED_SELLER_ID" ]]; then
+  log_event daemon.err runtime_seller_invalid
+  exit 64
+fi
+
+if ! valid_utc_date "$RANGE_START" ||
+  ! valid_utc_date "$ACCEPTED_THROUGH" ||
+  [[ "$RANGE_START" > "$ACCEPTED_THROUGH" ]] ||
+  [[ "$RANGE_START" > "$ACCEPTED_RANGE_START" ]] ||
+  [[ "$ACCEPTED_THROUGH" < "$ACCEPTED_BASELINE_THROUGH" ]] ||
+  [[ "$ACCEPTED_THROUGH" > "$CLOSED_DATE_TO" ]]; then
+  log_event daemon.err runtime_config_invalid
+  exit 64
+fi
+
+if [[ ! -d "$PLATFORM_ROOT" || ! -f "$COMPOSE_FILE" ]]; then
+  log_event daemon.err runtime_path_missing
+  exit 66
+fi
+
+cd "$PLATFORM_ROOT"
+
+attempt=1
+while ((attempt <= MAX_ATTEMPTS)); do
+  if /usr/bin/timeout --signal=TERM --kill-after=30s 3m \
+    /usr/bin/docker compose --file "$COMPOSE_FILE" exec -T --workdir /app sheets-worker \
+      /app/.venv/bin/python -m infra.operations.zelerdata_read_model_reconcile \
+      --seller-id "$SELLER_ID" \
+      --date-from "$RANGE_START" \
+      --date-to "$CLOSED_DATE_TO" \
+      --write \
+      --confirm-approved-runtime \
+      --confirm-production-write >"$OUTPUT_FILE" 2>&1; then
+    log_event daemon.info reconciliation_succeeded
+    exit 0
+  else
+    status=$?
+  fi
+
+  if ((attempt == MAX_ATTEMPTS)); then
+    log_event daemon.err reconciliation_failed
+    exit "$status"
+  fi
+
+  log_event daemon.warning reconciliation_retry_scheduled
+  /usr/bin/sleep 60
+  ((attempt += 1))
+done
+SCRIPT
+chmod 0755 /opt/zeler-platform/zelerdata-devoluciones-reconcile.sh
+
+cat > /etc/systemd/system/zelerdata-devoluciones-reconcile.service << 'UNIT'
+[Unit]
+Description=Renew the enclosing closed UTC range for ZELERDATA DEVOLUCIONES
+Wants=network-online.target
+Requires=docker.service
+After=docker.service network-online.target
+OnFailure=zelerdata-devoluciones-reconcile-alert.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/zeler-platform
+Environment=ZELERDATA_DEVOLUCIONES_RANGE_START=2026-06-01
+Environment=ZELERDATA_DEVOLUCIONES_ACCEPTED_THROUGH=2026-07-09
+EnvironmentFile=-/etc/zeler-platform/zelerdata-devoluciones-reconcile.env
+Environment=ZELERDATA_DEVOLUCIONES_SELLER_ID=82453304
+ExecStart=/opt/zeler-platform/zelerdata-devoluciones-reconcile.sh
+TimeoutStartSec=8m
+Restart=no
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=zelerdata-devoluciones-reconcile
+UNIT
+
+cat > /etc/systemd/system/zelerdata-devoluciones-reconcile.timer << 'UNIT'
+[Unit]
+Description=Renew closed-range ZELERDATA DEVOLUCIONES readiness before its lease expires
+
+[Timer]
+OnCalendar=*-*-* *:00,10,20,30,40,50:00 UTC
+RandomizedDelaySec=1m
+AccuracySec=30s
+Persistent=true
+Unit=zelerdata-devoluciones-reconcile.service
+
+[Install]
+WantedBy=timers.target
+UNIT
+
+cat > /etc/systemd/system/zelerdata-devoluciones-reconcile-alert.service << 'UNIT'
+[Unit]
+Description=Emit a sanitized alert for failed ZELERDATA DEVOLUCIONES reconciliation
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/logger --priority daemon.err --tag zelerdata-devoluciones-alert "DEVOLUCIONES_RECONCILIATION_FAILED; inspect with journalctl -u zelerdata-devoluciones-reconcile.service"
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=zelerdata-devoluciones-alert
+UNIT
+
+systemctl daemon-reload
+echo "Installed DEVOLUCIONES reconciliation wrapper, units, and alert; timer remains disabled"
 
 # -------------------------------------------------------------------------
 # 7. Systemd unit: zeler-platform-secrets.service

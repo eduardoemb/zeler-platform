@@ -23,9 +23,16 @@ from zeler_gateway.webhooks.publisher import (
 )
 
 DEFAULT_TOPICS = ("price_suggestion", "user-products-families")
-SHEETS_FRESHNESS_TOPICS = ("items", "orders_v2", "shipments", "questions", "items_prices")
+SHEETS_FRESHNESS_TOPICS = (
+    "items",
+    "orders_v2",
+    "shipments",
+    "questions",
+    "items_prices",
+)
+SHEETS_CLAIMS_TOPICS = ("post_purchase",)
 SHEETS_REPLAY_EXCHANGE = "zeler.sheets.replay"
-ALLOWED_TOPICS = (*DEFAULT_TOPICS, *SHEETS_FRESHNESS_TOPICS)
+ALLOWED_TOPICS = (*DEFAULT_TOPICS, *SHEETS_FRESHNESS_TOPICS, *SHEETS_CLAIMS_TOPICS)
 BASELINE_COUNTS = {
     "price_suggestion": 35,
     "user-products-families": 5,
@@ -38,6 +45,8 @@ WEBHOOK_EVENTS_PROJECTION = {
     "resource": 1,
     "received_at": 1,
     "published_at": 1,
+    "actions": 1,
+    "raw_body": 1,
     "schema_version": 1,
 }
 DEFAULT_MAX_TIME_MS = 5000
@@ -48,6 +57,7 @@ TOPIC_REQUIRED_GATE_QUEUES = {
     "shipments": ("zeler.sheets.events",),
     "questions": ("zeler.sheets.events",),
     "items_prices": ("zeler.sheets.events",),
+    "post_purchase": ("zeler.sheets.claims",),
 }
 TOPIC_NO_GO_REASONS = {
     "user-products-families": (
@@ -67,6 +77,7 @@ TOPIC_ROUTING_KEYS = {
     "shipments": "shipments.updated",
     "questions": "questions.new",
     "items_prices": "items.price_updated",
+    "post_purchase": "claims.updated",
 }
 
 DedupePolicy = Literal["latest-per-resource", "none", "replay-all"]
@@ -405,7 +416,7 @@ def _planned_event(event: dict[str, Any], *, skip_reason: str | None = None) -> 
         id=str(event["_id"]),
         topic=str(event["topic"]),
         user_id=int(event["user_id"]),
-        resource=str(event["resource"]),
+        resource=classified.resource,
         received_at=event["received_at"],
         routing_key=classified.routing_key,
         idempotency_key=classified.idempotency_key,
@@ -681,7 +692,7 @@ def _is_transient_publish_error(exc: BaseException) -> bool:
 async def _publish_planned_event(
     event: PlannedEvent, *, publisher: WebhookPublisher, trace_id: str
 ) -> None:
-    if event.topic in SHEETS_FRESHNESS_TOPICS:
+    if event.topic in (*SHEETS_FRESHNESS_TOPICS, *SHEETS_CLAIMS_TOPICS):
         publish_to_exchange = getattr(publisher, "publish_to_exchange", None)
         if publish_to_exchange is None:
             raise ReplayConfigError(
@@ -793,7 +804,7 @@ def _rabbit_gate_provider_from_options(options: CliOptions) -> RabbitGateProvide
 
 
 def _required_binding_source_exchange(topic: str) -> str | None:
-    if topic in SHEETS_FRESHNESS_TOPICS:
+    if topic in (*SHEETS_FRESHNESS_TOPICS, *SHEETS_CLAIMS_TOPICS):
         return SHEETS_REPLAY_EXCHANGE
     return None
 

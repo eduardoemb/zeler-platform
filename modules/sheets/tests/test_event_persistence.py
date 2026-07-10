@@ -1,15 +1,19 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
+from uuid import uuid4
 
 import pytest
 from bson import BSON
 from bson.decimal128 import Decimal128
 from pymongo.errors import DuplicateKeyError
 
+import zeler_sheets.event_persistence as event_persistence_module
+from zeler_platform_core.devoluciones_readiness import DevolucionesOperationContext
 from zeler_platform_core.models import ItemStatusState, ItemStatusTransition
 from zeler_sheets.event_persistence import SheetsEventPersistence, StatusObservationContentionError
 
@@ -17,6 +21,34 @@ NOW = datetime(2026, 5, 30, 12, 0, tzinfo=UTC)
 PAUSED_AT = datetime(2026, 6, 2, 9, 30, tzinfo=UTC)
 REOBSERVED_AT = datetime(2026, 6, 3, 10, 0, tzinfo=UTC)
 MICROSECOND_OBSERVED_AT = datetime(2026, 6, 2, 9, 30, 0, 987654, tzinfo=UTC)
+
+
+@pytest.fixture(autouse=True)
+def _fenced_order_test_harness(monkeypatch: pytest.MonkeyPatch) -> None:
+    original_persist = SheetsEventPersistence.persist
+
+    async def persist_with_operation(self: SheetsEventPersistence, **kwargs: Any) -> None:
+        if str(kwargs.get("event_type", "")).startswith("orders."):
+            kwargs.setdefault(
+                "operation",
+                DevolucionesOperationContext(
+                    seller_id=str(kwargs["seller_id"]),
+                    scope="devoluciones",
+                    operation_id="unit-test-operation",
+                    attempt_token=uuid4().hex,
+                    fence=1,
+                    owns_lease=True,
+                ),
+            )
+        await original_persist(self, **kwargs)
+
+    async def guarded_write(**kwargs: Any) -> None:
+        result = kwargs["writer"](None)
+        if inspect.isawaitable(result):
+            await result
+
+    monkeypatch.setattr(SheetsEventPersistence, "persist", persist_with_operation)
+    monkeypatch.setattr(event_persistence_module, "guarded_devoluciones_write", guarded_write)
 
 
 def _item_resource(status: str) -> dict[str, Any]:
@@ -56,7 +88,11 @@ def _order_resource_at(
         "shipping": {"id": 555},
         "order_items": [
             {
-                "item": {"id": "MLA1", "seller_sku": "sku-1"},
+                "item": {
+                    "id": "MLA1",
+                    "seller_sku": "sku-1",
+                    "title": "Formula-visible order title",
+                },
                 "quantity": 1,
                 "unit_price": total_amount,
             }
@@ -706,6 +742,7 @@ async def test_item_order_and_shipment_read_models_create_update_and_ignore_stal
     assert order["status"] == "cancelled"
     assert order["date_closed"] == datetime(2026, 5, 30, 10, 5, tzinfo=UTC)
     assert order["total_amount"] == Decimal128("299.90")
+    assert order["items"][0]["title"] == "Formula-visible order title"
 
     shipment = db["shipments"].documents["3001"]
     assert shipment["status"] == "shipped"

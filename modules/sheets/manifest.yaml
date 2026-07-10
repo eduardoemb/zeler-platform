@@ -5,6 +5,11 @@ subscribed_events:
   - orders.*
   - shipments.*
   - questions.*
+passive_consumers:
+  - queue_name: zeler.sheets.claims
+    routing_keys:
+      - claims.updated
+    externally_bound: true
 owned_collections:
   - sheets_exports
   - sheets_sync_jobs
@@ -17,6 +22,9 @@ allowed_meli_scopes:
   - GET /sites/*/listing_prices
   - GET /users/*/shipping_options/free
   - GET /orders/*
+  - GET /post-purchase/v1/claims/search
+  - GET /post-purchase/v1/claims/*
+  - GET /post-purchase/v2/claims/*/returns
   - GET /shipments/*
   - GET /questions/*
 health_endpoint: /health

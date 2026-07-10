@@ -110,6 +110,7 @@ REMAINING_PHASE4_INDEX_NAMES = {
     "sheets_read_model_freshness": [
         "uniq_sheets_read_model_freshness_seller_model",
         "idx_sheets_read_model_freshness_seller_state_until",
+        "idx_sheets_read_model_freshness_seller_state_valid_until",
     ],
     "sheets_catalog_buybox_snapshots": [
         "idx_sheets_catalog_buybox_snapshots_seller_item",

@@ -2,5 +2,6 @@
   {"keys":{"seller_id":1,"date_created":-1},"options":{"name":"idx_orders_seller_date_created"}},
   {"keys":{"seller_id":1,"status":1,"date_created":-1},"options":{"name":"idx_orders_seller_status_date_created"}},
   {"keys":{"shipment_id":1},"options":{"name":"idx_orders_shipment_id_sparse","sparse":true}},
-  {"keys":{"buyer_id":1},"options":{"name":"idx_orders_buyer_id"}}
+  {"keys":{"buyer_id":1},"options":{"name":"idx_orders_buyer_id"}},
+  {"keys":{"seller_id":1,"_id":1},"options":{"name":"idx_orders_seller_id_keyset"}}
 ]

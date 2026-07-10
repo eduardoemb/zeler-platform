@@ -7,6 +7,7 @@ import signal
 import sys
 import time
 from collections.abc import Callable
+from contextlib import nullcontext
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -19,10 +20,23 @@ from motor.motor_asyncio import AsyncIOMotorClient
 
 from zeler_platform_core.auth.meli_gateway_auth import MeliGatewayAuth
 from zeler_platform_core.clients.meli_gateway_client import GatewayRateLimitError, MeliGatewayClient
+from zeler_platform_core.devoluciones_readiness import (
+    DevolucionesLeaseConflictError,
+    DevolucionesLeaseLostError,
+    DevolucionesOperationContext,
+    acquire_devoluciones_operation,
+    finish_devoluciones_operation,
+    invalidate_devoluciones_readiness,
+    maintain_devoluciones_heartbeat,
+    new_devoluciones_attempt_token,
+    stable_devoluciones_operation_id,
+)
 from zeler_platform_core.events.idempotency import IdempotencyStore as CoreIdempotencyStore
 from zeler_platform_core.runtime.manifest import validate_manifest
 from zeler_platform_core.runtime.retry_delay import RETRY_ATTEMPT_HEADER, RetryDelayPublisher
 from zeler_platform_core.runtime.worker_health import WorkerHealthSidecar
+from zeler_sheets.claim_projection import project_claim
+from zeler_sheets.devoluciones_reconciliation import GatewayDevolucionesSource
 from zeler_sheets.event_persistence import SheetsEventPersistence, StatusObservationContentionError
 from zeler_sheets.google_errors import RetryableGoogleSheetsApiError
 from zeler_sheets.google_sheets_client import make_sheets_client
@@ -34,6 +48,7 @@ SHEETS_REPLAY_EXCHANGE = "zeler.sheets.replay"
 SHEETS_EVENTS_QUEUE = "zeler.sheets.events"
 SHEETS_EVENTS_DLX = "zeler.sheets.events.dlx"
 SHEETS_EVENTS_DLQ = f"{SHEETS_EVENTS_QUEUE}.dlq"
+SHEETS_CLAIMS_QUEUE = "zeler.sheets.claims"
 SHEETS_DELIVERY_LIMIT = 5
 DEFAULT_PREFETCH_COUNT = 10
 SHEETS_DEFAULT_ROUTING_KEYS = ("items.*", "orders.*", "shipments.*", "questions.*")
@@ -44,6 +59,13 @@ PERMANENT_HTTP_STATUS_CODES = {401, 403, 404, 422}
 RETRIABLE_HTTP_STATUS_CODES = {408, 429}
 DEFAULT_GATEWAY_BASE_URL = "http://gateway:8080/proxy/meli"
 DEFAULT_STATUS_CONTENTION_RETRY_DELAY_MS = 1000
+CLAIMS_RETRY_DELAYS = (
+    (1_000, "1s"),
+    (5_000, "5s"),
+    (30_000, "30s"),
+    (120_000, "2m"),
+    (600_000, "10m"),
+)
 
 logger = structlog.get_logger(__name__)
 
@@ -147,6 +169,7 @@ class SheetsAmqpConsumerConfig:
     delivery_limit: int = SHEETS_DELIVERY_LIMIT
     prefetch_count: int = DEFAULT_PREFETCH_COUNT
     routing_keys: tuple[str, ...] = SHEETS_DEFAULT_ROUTING_KEYS
+    passive_queue_names: tuple[str, ...] = (SHEETS_CLAIMS_QUEUE,)
 
 
 class SheetsAmqpConsumerRunner:
@@ -167,6 +190,7 @@ class SheetsAmqpConsumerRunner:
         account_status_source: AccountStatusSource | None = None,
     ) -> None:
         routing_keys = _sheets_routing_keys_from_manifest(manifest_path)
+        passive_queue_names = _sheets_passive_queue_names_from_manifest(manifest_path)
         self.config = SheetsAmqpConsumerConfig(
             rabbitmq_url=rabbitmq_url,
             exchange_name=exchange_name,
@@ -175,19 +199,22 @@ class SheetsAmqpConsumerRunner:
             delivery_limit=delivery_limit,
             prefetch_count=prefetch_count,
             routing_keys=routing_keys,
+            passive_queue_names=passive_queue_names,
         )
         self._handler = handler
         self._retry_delay_publisher = retry_delay_publisher
         self._account_status_source = account_status_source
         self._account_status_cache: dict[int, tuple[str | None, float]] = {}
         self._connection: Any | None = None
+        self._channel: Any | None = None
         self.is_ready = False
         self.last_heartbeat_at: datetime | None = None
 
     async def start(self) -> None:
         connection = await aio_pika.connect_robust(self.config.rabbitmq_url)
         self._connection = connection
-        channel = await connection.channel()
+        channel = await connection.channel(on_return_raises=True)
+        self._channel = channel
         await channel.set_qos(prefetch_count=self.config.prefetch_count)
         exchange = await channel.declare_exchange(
             self.config.exchange_name,
@@ -225,17 +252,27 @@ class SheetsAmqpConsumerRunner:
         if self._retry_delay_publisher is None:
             self._retry_delay_publisher = RetryDelayPublisher(channel)
         await queue.consume(self.handle_message)
+        for passive_queue_name in self.config.passive_queue_names:
+            passive_queue = await channel.declare_queue(passive_queue_name, passive=True)
+            await passive_queue.consume(self.handle_claims_message)
         self.is_ready = True
 
     async def close(self) -> None:
         if self._connection is not None:
             await self._connection.close()
             self._connection = None
+            self._channel = None
         self.is_ready = False
 
     async def handle_message(self, message: Any) -> None:
+        await self._handle_message(message, queue_name=self.config.queue_name)
+
+    async def handle_claims_message(self, message: Any) -> None:
+        await self._handle_message(message, queue_name=SHEETS_CLAIMS_QUEUE)
+
+    async def _handle_message(self, message: Any, *, queue_name: str) -> None:
         self.last_heartbeat_at = datetime.now(UTC)
-        death_count = _delivery_attempt_count(message, queue_name=self.config.queue_name)
+        death_count = _delivery_attempt_count(message, queue_name=queue_name)
         event: SheetsEvent | None = None
         if death_count >= self.config.delivery_limit:
             event = _event_context_from_message(message)
@@ -257,12 +294,19 @@ class SheetsAmqpConsumerRunner:
                 exc,
                 retry_after=exc.retry_after_seconds,
             )
+            if await self._retry_claims_transient(
+                message,
+                queue_name=queue_name,
+                death_count=death_count,
+                delay_ms=exc.retry_after_seconds * 1000,
+            ):
+                return
             if self._retry_delay_publisher is None:
                 await message.nack(requeue=True)
                 return
-            await self._retry_delay_publisher.publish_delay(
+            await self._publish_retry_delay(
                 message.body,
-                self.config.queue_name,
+                queue_name=queue_name,
                 delay_ms=exc.retry_after_seconds * 1000,
                 headers=_retry_headers(message, attempt=death_count + 1),
             )
@@ -275,12 +319,19 @@ class SheetsAmqpConsumerRunner:
                 exc,
                 retry_after=exc.retry_after_seconds,
             )
+            if await self._retry_claims_transient(
+                message,
+                queue_name=queue_name,
+                death_count=death_count,
+                delay_ms=exc.retry_after_seconds * 1000,
+            ):
+                return
             if self._retry_delay_publisher is None:
                 await message.nack(requeue=True)
                 return
-            await self._retry_delay_publisher.publish_delay(
+            await self._publish_retry_delay(
                 message.body,
-                self.config.queue_name,
+                queue_name=queue_name,
                 delay_ms=exc.retry_after_seconds * 1000,
                 headers=_retry_headers(message, attempt=death_count + 1),
             )
@@ -288,16 +339,33 @@ class SheetsAmqpConsumerRunner:
             return
         except StatusObservationContentionError as exc:
             _log_message_requeued(event, death_count + 1, exc)
+            if await self._retry_claims_transient(
+                message,
+                queue_name=queue_name,
+                death_count=death_count,
+                delay_ms=DEFAULT_STATUS_CONTENTION_RETRY_DELAY_MS,
+            ):
+                return
             if self._retry_delay_publisher is None:
                 await message.nack(requeue=True)
                 return
-            await self._retry_delay_publisher.publish_delay(
+            await self._publish_retry_delay(
                 message.body,
-                self.config.queue_name,
+                queue_name=queue_name,
                 delay_ms=DEFAULT_STATUS_CONTENTION_RETRY_DELAY_MS,
                 headers=_retry_headers(message, attempt=death_count + 1),
             )
             await message.ack()
+            return
+        except (DevolucionesLeaseConflictError, DevolucionesLeaseLostError) as exc:
+            _log_message_requeued(event, death_count + 1, exc)
+            if await self._retry_claims_transient(
+                message,
+                queue_name=queue_name,
+                death_count=death_count,
+            ):
+                return
+            await message.nack(requeue=True)
             return
         except httpx.HTTPStatusError as exc:
             status_code = exc.response.status_code
@@ -312,11 +380,23 @@ class SheetsAmqpConsumerRunner:
                     exc,
                     status_code=status_code,
                 )
+                if await self._retry_claims_transient(
+                    message,
+                    queue_name=queue_name,
+                    death_count=death_count,
+                ):
+                    return
                 await message.nack(requeue=True)
                 return
             raise
         except (httpx.ConnectError, httpx.TimeoutException) as exc:
             _log_message_requeued(event, death_count + 1, exc)
+            if await self._retry_claims_transient(
+                message,
+                queue_name=queue_name,
+                death_count=death_count,
+            ):
+                return
             await message.nack(requeue=True)
             return
         except json.JSONDecodeError as exc:
@@ -333,6 +413,64 @@ class SheetsAmqpConsumerRunner:
             return
         _log_message_ack(event, death_count + 1)
         await message.ack()
+
+    async def _retry_claims_transient(
+        self,
+        message: Any,
+        *,
+        queue_name: str,
+        death_count: int,
+        delay_ms: int = 0,
+    ) -> bool:
+        if queue_name != SHEETS_CLAIMS_QUEUE:
+            return False
+        attempt = death_count + 1
+        try:
+            await self._publish_retry_delay(
+                message.body,
+                queue_name=queue_name,
+                delay_ms=max(delay_ms, _claims_retry_delay_ms(attempt)),
+                headers=_retry_headers(message, attempt=attempt),
+            )
+        except Exception:  # noqa: BLE001 - preserve the source on any unroutable retry.
+            await message.nack(requeue=True)
+            return True
+        await message.ack()
+        return True
+
+    async def _publish_retry_delay(
+        self,
+        message_body: bytes,
+        *,
+        queue_name: str,
+        delay_ms: int,
+        headers: dict[str, object],
+    ) -> None:
+        if queue_name != SHEETS_CLAIMS_QUEUE:
+            retry_delay_publisher = self._retry_delay_publisher
+            if retry_delay_publisher is None:
+                raise RuntimeError("retry publisher requires an active channel")
+            await retry_delay_publisher.publish_delay(
+                message_body,
+                queue_name,
+                delay_ms=delay_ms,
+                headers=headers,
+            )
+            return
+        if self._channel is None:
+            raise RuntimeError("claims retry publisher requires an active channel")
+        retry_queue_name = _claims_retry_queue_name(delay_ms)
+        confirmed = await self._channel.default_exchange.publish(
+            aio_pika.Message(
+                body=message_body,
+                delivery_mode=aio_pika.DeliveryMode.PERSISTENT,
+                headers=cast(Any, headers),
+            ),
+            routing_key=retry_queue_name,
+            mandatory=True,
+        )
+        if confirmed is False:
+            raise RuntimeError("claims retry publish was not confirmed")
 
     async def _account_is_paused(self, seller_id: int) -> bool:
         if self._account_status_source is None:
@@ -456,6 +594,18 @@ def _retry_headers(message: Any, *, attempt: int) -> dict[str, object]:
     return retry_headers
 
 
+def _claims_retry_queue_name(delay_ms: int) -> str:
+    for threshold_ms, delay_name in CLAIMS_RETRY_DELAYS:
+        if delay_ms <= threshold_ms:
+            return f"{SHEETS_CLAIMS_QUEUE}.retry.{delay_name}"
+    return f"{SHEETS_CLAIMS_QUEUE}.retry.{CLAIMS_RETRY_DELAYS[-1][1]}"
+
+
+def _claims_retry_delay_ms(attempt: int) -> int:
+    index = min(max(attempt, 1), len(CLAIMS_RETRY_DELAYS)) - 1
+    return CLAIMS_RETRY_DELAYS[index][0]
+
+
 def _event_context_from_message(message: Any) -> SheetsEvent | None:
     try:
         return _sheets_event_from_message(message)
@@ -468,6 +618,17 @@ def _sheets_routing_keys_from_manifest(manifest_path: str | Path | None) -> tupl
         return SHEETS_DEFAULT_ROUTING_KEYS
     manifest = validate_manifest(manifest_path)
     return tuple(manifest.routing_keys)
+
+
+def _sheets_passive_queue_names_from_manifest(
+    manifest_path: str | Path | None,
+) -> tuple[str, ...]:
+    if manifest_path is None:
+        return (SHEETS_CLAIMS_QUEUE,)
+    manifest = validate_manifest(manifest_path)
+    return tuple(
+        passive.queue_name for passive in manifest.passive_consumers if passive.externally_bound
+    )
 
 
 def _sheets_event_from_message(message: Any) -> SheetsEvent:
@@ -543,20 +704,109 @@ class SheetsEventHandler:
         self._sale_price_enabled = sale_price_enabled
         self._listing_fixed_fee_enabled = listing_fixed_fee_enabled
 
-    async def handle(self, event: SheetsEvent) -> str:
+    async def handle(
+        self,
+        event: SheetsEvent,
+        *,
+        operation: DevolucionesOperationContext | None = None,
+    ) -> str:
         if await self._idempotency_store.is_duplicate(event.idempotency_key):
             return "duplicate"
 
         fetch_path = _fetch_resource_path_for_event(event)
-        resource = await self._gateway_client.fetch_resource(
-            seller_id=event.seller_id,
-            path=fetch_path,
+        owns_operation = operation is None and event.event_type.startswith(("orders.", "claims."))
+        if owns_operation:
+            invalidate_on_acquire = event.event_type.startswith("claims.")
+            operation = await acquire_devoluciones_operation(
+                db=self._db,
+                seller_id=str(event.seller_id),
+                scope="devoluciones",
+                operation_id=stable_devoluciones_operation_id("event", event.idempotency_key),
+                attempt_token=new_devoluciones_attempt_token(),
+                source_fingerprint=event.idempotency_key,
+                invalidate_readiness=invalidate_on_acquire,
+            )
+        heartbeat_scope = (
+            maintain_devoluciones_heartbeat(db=self._db, operation=operation)
+            if owns_operation and operation is not None
+            else nullcontext()
         )
-        await self._event_persistence.persist(
-            event_type=event.event_type,
-            seller_id=event.seller_id,
-            resource=resource,
-        )
+        async with heartbeat_scope:
+            try:
+                if owns_operation and event.event_type.startswith("orders."):
+                    if operation is None:
+                        raise ValueError("operation is required for order event projection")
+                    try:
+                        relevant_order = await _order_event_references_devoluciones(
+                            db=self._db,
+                            seller_id=str(event.seller_id),
+                            resource_path=fetch_path,
+                        )
+                    except Exception:
+                        await invalidate_devoluciones_readiness(
+                            db=self._db,
+                            operation=operation,
+                            source="devoluciones_event_relevance_unknown",
+                        )
+                        raise
+                    if relevant_order:
+                        await invalidate_devoluciones_readiness(
+                            db=self._db,
+                            operation=operation,
+                            source="devoluciones_relevant_order_event",
+                        )
+                resource = await self._gateway_client.fetch_resource(
+                    seller_id=event.seller_id,
+                    path=fetch_path,
+                )
+                if event.event_type.startswith("claims."):
+                    if operation is None:
+                        raise ValueError("operation is required for claim event projection")
+                    source = GatewayDevolucionesSource(self._gateway_client)
+                    claim_id = str(resource.get("id") or resource.get("_id") or "").strip()
+                    returns = await source.get_returns(
+                        seller_id=str(event.seller_id), claim_id=claim_id
+                    )
+                    order_id = str(resource.get("order_id") or resource.get("resource_id") or "")
+                    order = await source.get_order(
+                        seller_id=str(event.seller_id), order_id=order_id
+                    )
+                    await self._event_persistence.persist(
+                        event_type="orders.updated",
+                        seller_id=event.seller_id,
+                        resource=order,
+                        operation=operation,
+                    )
+                    resource = await project_claim(
+                        db=self._db,
+                        seller_id=str(event.seller_id),
+                        claim=resource,
+                        returns=returns,
+                        order=order,
+                        operation=operation,
+                    )
+                else:
+                    await self._event_persistence.persist(
+                        event_type=event.event_type,
+                        seller_id=event.seller_id,
+                        resource=resource,
+                        operation=operation,
+                    )
+            except Exception:
+                if owns_operation and operation is not None:
+                    await finish_devoluciones_operation(
+                        db=self._db,
+                        operation=operation,
+                        succeeded=False,
+                        error_code="event_projection_failed",
+                    )
+                raise
+            if owns_operation and operation is not None:
+                await finish_devoluciones_operation(
+                    db=self._db,
+                    operation=operation,
+                    succeeded=True,
+                )
         await self._refresh_zelerdata_enrichment_if_enabled(_event_with_resource(event, fetch_path))
         export_config = await self._db["sheets_exports"].find_one(
             {"seller_id": str(event.seller_id), "enabled": True}
@@ -598,6 +848,25 @@ class SheetsEventHandler:
             dry_run=False,
             item_ids=(item_id,),
         )
+
+
+async def _order_event_references_devoluciones(
+    *, db: Any, seller_id: str, resource_path: str
+) -> bool:
+    order_id = resource_path.removeprefix("/orders/").split("/", 1)[0].strip()
+    if not order_id:
+        raise ValueError("order event resource is missing order identity")
+    order_ids: list[Any] = [order_id]
+    if order_id.isdigit():
+        order_ids.append(int(order_id))
+    referenced_claim = await db["claims"].find_one(
+        {
+            "seller_id": seller_id,
+            "order_id": {"$in": order_ids},
+            "type": {"$in": ["returns", "return", "mediations"]},
+        }
+    )
+    return referenced_claim is not None
 
 
 def format_resource_row(event_type: str, resource: dict[str, Any]) -> list[str]:

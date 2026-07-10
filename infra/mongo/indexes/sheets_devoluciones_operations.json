@@ -1,0 +1,10 @@
+[
+  {
+    "keys": {"seller_id": 1, "scope": 1},
+    "options": {"name": "uniq_sheets_devoluciones_operation_scope", "unique": true}
+  },
+  {
+    "keys": {"state": 1, "lease_until": 1},
+    "options": {"name": "idx_sheets_devoluciones_operations_state_lease"}
+  }
+]

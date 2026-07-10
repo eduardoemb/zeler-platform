@@ -10,6 +10,10 @@ from typing import Any, cast
 from bson.decimal128 import Decimal128
 from pydantic import ValidationError
 
+from zeler_platform_core.devoluciones_readiness import (
+    DevolucionesOperationContext,
+    guarded_devoluciones_write,
+)
 from zeler_platform_core.models import (
     Item,
     ItemStatusState,
@@ -71,13 +75,22 @@ class SheetsEventPersistence:
         self._clock = clock or (lambda: datetime.now(UTC))
 
     async def persist(
-        self, *, event_type: str, seller_id: int | str, resource: dict[str, Any]
+        self,
+        *,
+        event_type: str,
+        seller_id: int | str,
+        resource: dict[str, Any],
+        operation: DevolucionesOperationContext | None = None,
     ) -> None:
         if event_type.startswith("items."):
             await self._persist_item(seller_id=str(seller_id), resource=resource)
             return
         if event_type.startswith("orders."):
-            await self._persist_order(seller_id=str(seller_id), resource=resource)
+            if operation is None:
+                raise ValueError("operation is required for covered order writes")
+            await self._persist_order(
+                seller_id=str(seller_id), resource=resource, operation=operation
+            )
             return
         if event_type.startswith("shipments."):
             await self._persist_shipment(seller_id=str(seller_id), resource=resource)
@@ -718,30 +731,60 @@ class SheetsEventPersistence:
         )
         return cast("list[dict[str, Any]]", await cursor.to_list(length=None))
 
-    async def _persist_order(self, *, seller_id: str, resource: dict[str, Any]) -> None:
+    async def _persist_order(
+        self,
+        *,
+        seller_id: str,
+        resource: dict[str, Any],
+        operation: DevolucionesOperationContext,
+    ) -> None:
         observed_at = require_bson_ms_utc_datetime(self._clock())
         document = _canonical_order_document(
             resource, seller_id=seller_id, sale_fee_synced_at=observed_at
         )
-        order_written = await _replace_resource_if_fresh(
-            self._db["orders"],
-            document,
-            seller_id=seller_id,
-            freshness_fields=("last_updated", "date_closed", "date_created"),
-            present_freshness_fields=_order_present_freshness_fields(resource),
-        )
-        if not order_written:
-            return
-        await self._refresh_order_line_sku_index(document, seller_id=seller_id)
 
-    async def _refresh_order_line_sku_index(self, order: dict[str, Any], *, seller_id: str) -> None:
+        async def write(session: Any) -> None:
+            order_written = await _replace_resource_if_fresh(
+                self._db["orders"],
+                document,
+                seller_id=seller_id,
+                freshness_fields=("last_updated", "date_closed", "date_created"),
+                present_freshness_fields=_order_present_freshness_fields(resource),
+                session=session,
+            )
+            if order_written:
+                await self._refresh_order_line_sku_index(
+                    document, seller_id=seller_id, session=session
+                )
+
+        await guarded_devoluciones_write(
+            db=self._db,
+            operation=operation,
+            seller_id=seller_id,
+            checkpoint={
+                "order_id": document["_id"],
+                "last_updated": document.get("last_updated"),
+            },
+            writer=write,
+        )
+
+    async def _refresh_order_line_sku_index(
+        self, order: dict[str, Any], *, seller_id: str, session: Any = None
+    ) -> None:
         collection = self._db["sheets_item_sku_index"]
         for sku_index_doc in build_order_line_sku_index_docs(order, seller_id=seller_id):
-            if await self._has_conflicting_order_line_identity(sku_index_doc):
+            if await self._has_conflicting_order_line_identity(sku_index_doc, session=session):
                 continue
-            await collection.replace_one({"_id": sku_index_doc["_id"]}, sku_index_doc, upsert=True)
+            await collection.replace_one(
+                {"_id": sku_index_doc["_id"]},
+                sku_index_doc,
+                upsert=True,
+                **_session_kwargs(session),
+            )
 
-    async def _has_conflicting_order_line_identity(self, sku_index_doc: dict[str, Any]) -> bool:
+    async def _has_conflicting_order_line_identity(
+        self, sku_index_doc: dict[str, Any], *, session: Any = None
+    ) -> bool:
         collection = self._db["sheets_item_sku_index"]
         cursor = collection.find(
             {
@@ -749,7 +792,8 @@ class SheetsEventPersistence:
                 "item_id": sku_index_doc["item_id"],
                 "variation_id": sku_index_doc.get("variation_id"),
                 "source": "order_line",
-            }
+            },
+            **_session_kwargs(session),
         )
         existing_docs = await cursor.to_list(length=None)
         normalized_sku = sku_index_doc.get("normalized_sku")
@@ -1085,8 +1129,9 @@ async def _replace_resource_if_fresh(
     freshness_fields: Sequence[str],
     present_freshness_fields: Sequence[str] | None = None,
     extra_freshness_conditions: Sequence[dict[str, Any]] = (),
+    session: Any = None,
 ) -> bool:
-    if await _insert_resource_if_absent(collection, document, seller_id=seller_id):
+    if await _insert_resource_if_absent(collection, document, seller_id=seller_id, session=session):
         return True
     result = await collection.replace_one(
         _fresh_resource_write_filter(
@@ -1098,20 +1143,26 @@ async def _replace_resource_if_fresh(
         ),
         document,
         upsert=False,
+        **_session_kwargs(session),
     )
     matched_count = int(result.matched_count)
     return matched_count > 0
 
 
 async def _insert_resource_if_absent(
-    collection: Any, document: dict[str, Any], *, seller_id: str
+    collection: Any, document: dict[str, Any], *, seller_id: str, session: Any = None
 ) -> bool:
     insert_result = await collection.update_one(
         {"_id": document["_id"], "seller_id": seller_id},
         {"$setOnInsert": document},
         upsert=True,
+        **_session_kwargs(session),
     )
     return insert_result.upserted_id is not None
+
+
+def _session_kwargs(session: Any) -> dict[str, Any]:
+    return {"session": session} if session is not None else {}
 
 
 def _fresh_resource_write_filter(
@@ -1683,6 +1734,11 @@ def _order_items(resource: dict[str, Any], *, sale_fee_synced_at: datetime) -> l
             "qty": raw_item.get("qty", raw_item.get("quantity", 1)),
             "unit_price": raw_item.get("unit_price", 0),
         }
+        nested_item = raw_item.get("item")
+        title = nested_item.get("title") if isinstance(nested_item, dict) else None
+        title = raw_item.get("title") or title
+        if title is not None and str(title).strip():
+            normalized["title"] = str(title).strip()
         for field in ("variation_id", "sku", "seller_sku", "seller_custom_field"):
             value = identity.get(field)
             if value is not None:

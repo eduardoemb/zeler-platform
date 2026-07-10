@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -11,6 +13,8 @@ from zeler_gateway.webhooks.classifier import (
     classify_webhook_event,
 )
 from zeler_gateway.webhooks.publisher import publish_webhook_event
+
+FIXTURES = Path(__file__).parent / "fixtures" / "post_purchase"
 
 
 class RecordingPublisher:
@@ -173,3 +177,79 @@ async def test_publish_uses_meli_events_exchange_contract() -> None:
             {"idempotency_key": "questions:/questions/9:notif-5", "exchange": "meli.events"},
         )
     ]
+
+
+@pytest.mark.parametrize(
+    ("fixture_name", "claim_id"),
+    [("claims.json", "519988001"), ("claims_actions.json", "519988002")],
+)
+def test_post_purchase_claim_variants_normalize_to_parent_claim(
+    fixture_name: str, claim_id: str
+) -> None:
+    event = json.loads((FIXTURES / fixture_name).read_text(encoding="utf-8"))
+
+    classified = classify_webhook_event(event)
+    envelope = build_event_envelope(event, trace_id="replay-contract")
+
+    assert classified.routing_key == "claims.updated"
+    assert classified.event_type == "claims.updated"
+    assert classified.idempotency_key == (
+        f"post_purchase:/post-purchase/v1/claims/{claim_id}:{event['_id']}"
+    )
+    assert envelope["resource"] == f"/post-purchase/v1/claims/{claim_id}"
+    assert envelope["event_type"] == "claims.updated"
+    assert not ({"fresh_until", "reconciled_until", "valid_until"} & envelope.keys())
+
+
+@pytest.mark.parametrize(
+    ("fixture_name", "claim_id"),
+    [("claims.json", "519988001"), ("claims_actions.json", "519988002")],
+)
+def test_stored_live_webhook_shape_reads_actions_from_raw_body(
+    fixture_name: str, claim_id: str
+) -> None:
+    payload = json.loads((FIXTURES / fixture_name).read_text(encoding="utf-8"))
+    stored_event = {
+        "_id": payload["_id"],
+        "topic": payload["topic"],
+        "resource": payload["resource"],
+        "user_id": payload["user_id"],
+        "received_at": datetime(2026, 7, 9, tzinfo=UTC),
+        "raw_body": payload,
+        "schema_version": 1,
+    }
+
+    classified = classify_webhook_event(stored_event)
+
+    assert classified.routing_key == "claims.updated"
+    assert classified.resource == f"/post-purchase/v1/claims/{claim_id}"
+
+
+@pytest.mark.parametrize(
+    "event",
+    [
+        {
+            "_id": "legacy-claims",
+            "topic": "claims",
+            "resource": "/claims/519988001",
+            "user_id": 82453304,
+        },
+        {
+            "_id": "wrong-action",
+            "topic": "post_purchase",
+            "resource": "/post-purchase/v1/claims/519988001",
+            "actions": ["claims_actions"],
+            "user_id": 82453304,
+        },
+        {
+            "_id": "wrong-resource",
+            "topic": "post_purchase",
+            "resource": "/post-purchase/v1/claims/519988001/detail",
+            "actions": ["claims"],
+            "user_id": 82453304,
+        },
+    ],
+)
+def test_unproven_claim_notification_contracts_are_rejected(event: dict[str, Any]) -> None:
+    with pytest.raises(UnknownWebhookTopicError):
+        classify_webhook_event(event)

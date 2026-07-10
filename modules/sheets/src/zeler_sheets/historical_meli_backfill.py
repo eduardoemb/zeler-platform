@@ -5,15 +5,27 @@ import asyncio
 import json
 import os
 from collections.abc import Sequence
+from contextlib import nullcontext
 from dataclasses import asdict, dataclass
 from datetime import UTC, date, datetime, timedelta
 from typing import Any, Protocol, cast
 from urllib.parse import urlencode
 
-from zeler_platform_core.models import (
-    Claim,
-    ShipmentRealShippingCostProjection,
-    current_schema_version,
+from zeler_platform_core.devoluciones_readiness import (
+    DevolucionesLeaseLostError,
+    DevolucionesOperationContext,
+    acquire_devoluciones_operation,
+    finish_devoluciones_operation,
+    maintain_devoluciones_heartbeat,
+    new_devoluciones_attempt_token,
+    stable_devoluciones_operation_id,
+)
+from zeler_platform_core.models import ShipmentRealShippingCostProjection
+from zeler_sheets.claim_projection import persist_claim_projection
+from zeler_sheets.devoluciones_reconciliation import (
+    DevolucionesSource,
+    GatewayDevolucionesSource,
+    collect_devoluciones_snapshot,
 )
 from zeler_sheets.event_persistence import SheetsEventPersistence
 from zeler_sheets.sheetseller_backfill import _schema_safe_shipment_real_shipping_cost_projection
@@ -76,6 +88,8 @@ class HistoricalMeliBackfillSummary:
     date_from: str
     date_to: str
     date_to_exclusive: str
+    claim_source_fingerprint: str | None
+    claim_read_model_fingerprint: str | None
     max_orders: int | None
     orders_found: int
     orders_fetched: int
@@ -178,12 +192,6 @@ class CatalogSnapshotSource:
     catalog_product_id: str
 
 
-@dataclass(frozen=True)
-class ClaimOrderLine:
-    item_id: str
-    quantity: int
-
-
 def parse_inclusive_date_range(date_from: str, date_to: str) -> InclusiveDateRange:
     start_date = _parse_cli_date(date_from, field_name="date-from")
     end_date = _parse_cli_date(date_to, field_name="date-to")
@@ -218,6 +226,8 @@ async def run_historical_meli_backfill(
     include_questions: bool = False,
     include_claims: bool = False,
     include_catalog_snapshots: bool = False,
+    operation: DevolucionesOperationContext | None = None,
+    devoluciones_source: DevolucionesSource | None = None,
 ) -> HistoricalMeliBackfillSummary:
     seller_id = str(seller_id)
     if not dry_run and not approved_runtime:
@@ -302,23 +312,24 @@ async def run_historical_meli_backfill(
             ]
         )
     claims: list[dict[str, Any]] = []
+    claim_source_fingerprint: str | None = None
+    claim_read_model_fingerprint: str | None = None
     if include_claims:
-        claims = await _search_claims_for_orders(
-            gateway=gateway,
+        resolved_source = devoluciones_source or GatewayDevolucionesSource(order_detail_gateway)
+        devoluciones_snapshot = await collect_devoluciones_snapshot(
+            source=resolved_source,
             seller_id=seller_id,
-            order_ids=order_ids,
-            date_range=date_range,
+            start=date_range.start,
+            end=date_range.end_exclusive,
         )
-        orders_by_id = {
-            order_id: order for order in orders if (order_id := _resource_id(order)) is not None
-        }
-        claims = [
-            _claim_with_resolved_returned_quantity(
-                claim,
-                order=orders_by_id.get(_optional_string(claim.get("order_id")) or ""),
-            )
-            for claim in claims
-        ]
+        claims = list(devoluciones_snapshot.projections)
+        claim_source_fingerprint = devoluciones_snapshot.source_fingerprint
+        claim_read_model_fingerprint = devoluciones_snapshot.read_model_fingerprint
+        orders_by_id = {_resource_id(order): order for order in orders}
+        for hydrated_order in devoluciones_snapshot.orders:
+            orders_by_id[_resource_id(hydrated_order)] = hydrated_order
+        orders = list(orders_by_id.values())
+        order_ids = _unique_strings(_resource_id(order) for order in orders)
     claim_ids = _unique_strings(_resource_id(claim) for claim in claims)
     catalog_scope: list[CatalogSnapshotSource] = []
     catalog_product_snapshots: list[dict[str, Any]] = []
@@ -423,49 +434,90 @@ async def run_historical_meli_backfill(
     written_catalog_buybox_snapshots = 0
 
     if not dry_run:
-        persistence = SheetsEventPersistence(db=db)
-        for order in orders:
-            await persistence.persist(
-                event_type="orders.updated", seller_id=seller_id, resource=order
+        owns_operation = operation is None
+        if operation is None:
+            operation = await acquire_devoluciones_operation(
+                db=db,
+                seller_id=seller_id,
+                scope="devoluciones",
+                operation_id=stable_devoluciones_operation_id(
+                    "historical_meli_backfill",
+                    f"{seller_id}:{date_range.date_from}:{date_range.date_to}",
+                ),
+                attempt_token=new_devoluciones_attempt_token(),
+                source_fingerprint=claim_source_fingerprint,
             )
-            written_orders += 1
-        for item in items:
-            await persistence.persist(
-                event_type="items.updated", seller_id=seller_id, resource=item
+        if (
+            claim_source_fingerprint is not None
+            and operation.source_fingerprint != claim_source_fingerprint
+        ):
+            raise DevolucionesLeaseLostError(
+                "claim source fingerprint changed before historical writes"
             )
-            written_items += 1
-        for shipment in shipments:
-            await persistence.persist(
-                event_type="shipments.updated", seller_id=seller_id, resource=shipment
+        claims_to_write = _remaining_claims_after_checkpoint(claims, operation.checkpoint)
+        try:
+            heartbeat_scope = (
+                maintain_devoluciones_heartbeat(db=db, operation=operation)
+                if owns_operation
+                else nullcontext()
             )
-            written_shipments += 1
-        for question in questions:
-            await persistence.persist(
-                event_type="questions.updated", seller_id=seller_id, resource=question
-            )
-            written_questions += 1
-        for claim in claims:
-            document = _canonical_claim_document(claim, seller_id=seller_id)
-            await db["claims"].replace_one(
-                {"_id": document["_id"], "seller_id": seller_id},
-                document,
-                upsert=True,
-            )
-            written_claims += 1
-        for snapshot in catalog_product_snapshots:
-            await db["sheets_catalog_product_snapshots"].replace_one(
-                {"_id": snapshot["_id"], "seller_id": seller_id},
-                snapshot,
-                upsert=True,
-            )
-            written_catalog_product_snapshots += 1
-        for snapshot in catalog_buybox_snapshots:
-            await db["sheets_catalog_buybox_snapshots"].replace_one(
-                {"_id": snapshot["_id"], "seller_id": seller_id},
-                snapshot,
-                upsert=True,
-            )
-            written_catalog_buybox_snapshots += 1
+            async with heartbeat_scope:
+                persistence = SheetsEventPersistence(db=db)
+                for order in orders:
+                    await persistence.persist(
+                        event_type="orders.updated",
+                        seller_id=seller_id,
+                        resource=order,
+                        operation=operation,
+                    )
+                    written_orders += 1
+                for item in items:
+                    await persistence.persist(
+                        event_type="items.updated", seller_id=seller_id, resource=item
+                    )
+                    written_items += 1
+                for shipment in shipments:
+                    await persistence.persist(
+                        event_type="shipments.updated", seller_id=seller_id, resource=shipment
+                    )
+                    written_shipments += 1
+                for question in questions:
+                    await persistence.persist(
+                        event_type="questions.updated", seller_id=seller_id, resource=question
+                    )
+                    written_questions += 1
+                for claim in claims_to_write:
+                    await persist_claim_projection(
+                        db=db,
+                        document=claim,
+                        operation=operation,
+                    )
+                    written_claims += 1
+                for snapshot in catalog_product_snapshots:
+                    await db["sheets_catalog_product_snapshots"].replace_one(
+                        {"_id": snapshot["_id"], "seller_id": seller_id},
+                        snapshot,
+                        upsert=True,
+                    )
+                    written_catalog_product_snapshots += 1
+                for snapshot in catalog_buybox_snapshots:
+                    await db["sheets_catalog_buybox_snapshots"].replace_one(
+                        {"_id": snapshot["_id"], "seller_id": seller_id},
+                        snapshot,
+                        upsert=True,
+                    )
+                    written_catalog_buybox_snapshots += 1
+        except Exception:
+            if owns_operation:
+                await finish_devoluciones_operation(
+                    db=db,
+                    operation=operation,
+                    succeeded=False,
+                    error_code="historical_backfill_failed",
+                )
+            raise
+        if owns_operation:
+            await finish_devoluciones_operation(db=db, operation=operation, succeeded=True)
 
     status = "dry_run_complete" if dry_run else "write_complete"
     return HistoricalMeliBackfillSummary(
@@ -475,6 +527,8 @@ async def run_historical_meli_backfill(
         date_from=date_range.date_from,
         date_to=date_range.date_to,
         date_to_exclusive=_meli_datetime(date_range.end_exclusive),
+        claim_source_fingerprint=claim_source_fingerprint,
+        claim_read_model_fingerprint=claim_read_model_fingerprint,
         max_orders=max_orders,
         orders_found=len(order_ids),
         orders_fetched=len(orders),
@@ -544,6 +598,18 @@ async def run_historical_meli_backfill(
         catalog_product_ids=catalog_product_ids,
         catalog_buybox_item_ids=catalog_buybox_item_ids,
     )
+
+
+def _remaining_claims_after_checkpoint(
+    claims: list[dict[str, Any]], checkpoint: dict[str, Any]
+) -> list[dict[str, Any]]:
+    checkpoint_claim_id = str(checkpoint.get("claim_id") or "").strip()
+    if not checkpoint_claim_id:
+        return claims
+    for index, claim in enumerate(claims):
+        if _resource_id(claim) == checkpoint_claim_id:
+            return claims[index + 1 :]
+    return claims
 
 
 async def _search_orders(
@@ -622,38 +688,6 @@ def _build_question_search_path(*, seller_id: str, offset: int) -> str:
     return f"/questions/search?{query}"
 
 
-async def _search_claims_for_orders(
-    *,
-    gateway: HistoricalMeliGateway,
-    seller_id: str,
-    order_ids: Sequence[str],
-    date_range: InclusiveDateRange,
-) -> list[dict[str, Any]]:
-    claims: list[dict[str, Any]] = []
-    for order_id in order_ids:
-        page = await gateway.fetch_resource(
-            seller_id=seller_id,
-            path=f"/post-purchase/v1/claims/search?{urlencode({'order_id': order_id})}",
-        )
-        for claim in _claim_page_results(page):
-            normalized = dict(claim)
-            normalized.setdefault("order_id", order_id)
-            if _is_return_claim(normalized) and _resource_in_date_range(
-                normalized, date_range=date_range
-            ):
-                claims.append(normalized)
-    return claims
-
-
-def _claim_page_results(page: Any) -> list[dict[str, Any]]:
-    if not isinstance(page, dict):
-        return []
-    data = page.get("data")
-    if not isinstance(data, list):
-        return []
-    return [claim for claim in data if isinstance(claim, dict)]
-
-
 async def _catalog_snapshot_source_rows(*, db: Any, seller_id: str) -> list[CatalogSnapshotSource]:
     cursor = db["items"].find(
         {
@@ -722,81 +756,6 @@ async def _fetch_catalog_buybox_snapshots(
         if snapshot is not None:
             snapshots.append(snapshot)
     return snapshots
-
-
-def _canonical_claim_document(claim: dict[str, Any], *, seller_id: str) -> dict[str, Any]:
-    document: dict[str, Any] = {
-        "_id": _resource_id(claim),
-        "seller_id": seller_id,
-        "buyer_id": claim.get("buyer_id"),
-        "item_id": claim.get("item_id"),
-        "order_id": claim.get("order_id") or claim.get("resource_id"),
-        "status": claim.get("status"),
-        "stage": claim.get("stage"),
-        "type": claim.get("type"),
-        "date_created": claim.get("date_created"),
-        "resolution": claim.get("resolution"),
-        "schema_version": current_schema_version("claims"),
-    }
-    if (returned_quantity := _explicit_returned_quantity(claim)) is not None:
-        document["returned_quantity"] = returned_quantity
-    model = Claim.model_validate(
-        {key: value for key, value in document.items() if value is not None}
-    )
-    return model.model_dump(by_alias=True, mode="python", exclude_none=True)
-
-
-def _claim_with_resolved_returned_quantity(
-    claim: dict[str, Any], *, order: dict[str, Any] | None
-) -> dict[str, Any]:
-    explicit_returned_quantity = _explicit_returned_quantity(claim)
-    line = _scoped_claim_order_line(claim, order) if order is not None else None
-    if line is None:
-        unresolved = dict(claim)
-        unresolved.pop("item_id", None)
-        unresolved.pop("returned_quantity", None)
-        return unresolved
-    scoped = {**claim, "item_id": line.item_id}
-    scoped["returned_quantity"] = explicit_returned_quantity or line.quantity
-    return scoped
-
-
-def _scoped_claim_order_line(claim: dict[str, Any], order: dict[str, Any]) -> ClaimOrderLine | None:
-    lines = _claim_order_lines(order)
-    claim_item_id = _optional_string(claim.get("item_id"))
-    if claim_item_id is not None:
-        scoped_lines = [line for line in lines if line.item_id == claim_item_id]
-        return scoped_lines[0] if len(scoped_lines) == 1 else None
-    return lines[0] if len(lines) == 1 else None
-
-
-def _claim_order_lines(order: dict[str, Any]) -> list[ClaimOrderLine]:
-    raw_items = order.get("order_items") or order.get("items") or []
-    if not isinstance(raw_items, Sequence) or isinstance(raw_items, (str, bytes)):
-        return []
-    lines: list[ClaimOrderLine] = []
-    for raw_item in raw_items:
-        if not isinstance(raw_item, dict):
-            continue
-        item = raw_item.get("item")
-        item_id = (
-            _resource_id(item)
-            if isinstance(item, dict)
-            else _optional_string(raw_item.get("item_id"))
-        )
-        quantity = _optional_int(raw_item.get("quantity") or raw_item.get("qty"))
-        if item_id is None or quantity is None or quantity < 1:
-            continue
-        lines.append(ClaimOrderLine(item_id=item_id, quantity=quantity))
-    return lines
-
-
-def _is_return_claim(claim: dict[str, Any]) -> bool:
-    return _normalized_claim_type(claim.get("type")) in {"return", "returns"}
-
-
-def _normalized_claim_type(value: Any) -> str:
-    return str(value or "").strip().casefold()
 
 
 def _catalog_product_snapshot(resource: Any, *, seller_id: str) -> dict[str, Any] | None:
@@ -899,17 +858,6 @@ def _catalog_competitor_count(resource: dict[str, Any]) -> int | None:
     if isinstance(competitors, Sequence) and not isinstance(competitors, (str, bytes)):
         return len(competitors)
     return None
-
-
-def _explicit_returned_quantity(claim: dict[str, Any]) -> int | None:
-    value = claim.get("returned_quantity")
-    if value is None:
-        return None
-    try:
-        quantity = int(value)
-    except (TypeError, ValueError):
-        return None
-    return quantity if quantity > 0 else None
 
 
 async def _fetch_question_details(
