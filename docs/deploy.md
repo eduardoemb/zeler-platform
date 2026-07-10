@@ -628,6 +628,15 @@ day. The accepted production interval is exactly
 scheduled job then extends the same enclosing range; it never replaces it with
 a yesterday-only marker.
 
+> **WU8 rollout-gate correction (2026-07-10):** The first exact dry-run was
+> rejected before reconciliation because its command omitted the required
+> runtime confirmation. Every reviewed dry-run and authorized-write command
+> below now includes exactly one `--confirm-approved-runtime`. Rollback also
+> works when the worker environment omits `MONGO_DB`: it derives the database
+> name from the default database in `MONGO_URI`. This does not require a new
+> secret or a manual host edit, and sanitized topology output never prints the
+> URI or derived database name.
+
 ### 1. Pre-mutation gates
 
 Stop immediately unless the approved target, seller, image digest, indexes,
@@ -713,13 +722,15 @@ prints environment values.
 
 ### 4. Run the dry-run and authorized write gates
 
-Use only the frozen worker runtime. The dry-run omits all write confirmations:
+Use only the frozen worker runtime. The dry-run confirms the approved runtime
+but omits the production-write confirmation:
 
 ```bash
 sudo docker compose --file /opt/zeler-platform/docker-compose.yml \
   exec -T --workdir /app sheets-worker \
   /app/.venv/bin/python -m infra.operations.zelerdata_read_model_reconcile \
-  --seller-id 82453304 --date-from 2026-06-01 --date-to 2026-07-09
+  --seller-id 82453304 --date-from 2026-06-01 --date-to 2026-07-09 \
+  --dry-run --confirm-approved-runtime
 ```
 
 Review the sanitized dry-run result. Only after it passes, run the same command
