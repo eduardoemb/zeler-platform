@@ -3,12 +3,14 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import math
 import os
+import time
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, NoReturn, Protocol
 from urllib.parse import quote, unquote, urlparse
 
 import aio_pika
@@ -40,10 +42,21 @@ RETRY_DELAYS_MS = {
 DEFAULT_MANAGEMENT_URL = "http://127.0.0.1:15672"
 DEFAULT_DOCKER_SOCKET = Path("/var/run/docker.sock")
 SHEETS_WORKER_SERVICE = "sheets-worker"
+ROLLBACK_CONVERGENCE_POLL_SECONDS = 2.0
+ROLLBACK_CONVERGENCE_TIMEOUT_SECONDS = 60.0
 
 
 class TopologySafetyError(RuntimeError):
     """Raised when a topology transition cannot prove its safety gates."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        sanitized_counts: dict[str, int] | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.sanitized_counts = dict(sanitized_counts or {})
 
 
 def resolve_management_url(amqp_url: str, *, explicit_url: str | None) -> str:
@@ -93,7 +106,12 @@ class TopologyReport:
 
 
 class TopologyBroker(Protocol):
-    async def inspect_queue(self, queue_name: str) -> QueueState | None: ...
+    async def inspect_queue(
+        self,
+        queue_name: str,
+        *,
+        timeout: float | None = None,
+    ) -> QueueState | None: ...
 
     async def declare_exchange(self, name: str, exchange_type: str) -> None: ...
 
@@ -130,6 +148,8 @@ class _CommandMetrics:
     drained_messages: int = 0
     deleted_queues: int = 0
     deleted_exchanges: int = 0
+    consumer_convergence_attempts: int = 0
+    consumer_convergence_duration_seconds: int = 0
 
 
 def _retry_queue_names(queue_name: str) -> tuple[str, ...]:
@@ -165,6 +185,8 @@ async def run_topology_command(
     fence_operations: Callable[[], Awaitable[int]] | None = None,
     delete_dedicated: bool = False,
     failure_triggered: bool = False,
+    monotonic: Callable[[], float] = time.monotonic,
+    sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
 ) -> TopologyReport:
     if command == "plan":
         if execute:
@@ -194,12 +216,18 @@ async def run_topology_command(
             fence_operations=fence_operations,
             delete_dedicated=delete_dedicated,
             metrics=metrics,
+            monotonic=monotonic,
+            sleep=sleep,
         )
         summary = {
             **_metrics_summary(metrics),
             "readiness_markers_staled": staled,
             "operations_fenced": fenced,
             "failure_triggered": int(failure_triggered),
+            "consumer_convergence_attempts": metrics.consumer_convergence_attempts,
+            "consumer_convergence_duration_seconds": (
+                metrics.consumer_convergence_duration_seconds
+            ),
         }
     return TopologyReport(
         command=command,
@@ -326,6 +354,8 @@ async def _rollback(
     fence_operations: Callable[[], Awaitable[int]],
     delete_dedicated: bool,
     metrics: _CommandMetrics,
+    monotonic: Callable[[], float],
+    sleep: Callable[[float], Awaitable[None]],
 ) -> tuple[int, int]:
     first_staled = await stale_readiness()
     metrics.mutations += 1
@@ -337,13 +367,12 @@ async def _rollback(
         metrics.mutations += 1
         await _unbind_claims(broker, metrics)
 
-        existing_queues: list[str] = []
-        for queue_name in _rollback_queue_names():
-            state = await broker.inspect_queue(queue_name)
-            if state is None:
-                continue
-            _require_no_inflight(queue_name, state)
-            existing_queues.append(queue_name)
+        existing_queues = await _wait_for_rollback_consumer_convergence(
+            broker,
+            metrics=metrics,
+            monotonic=monotonic,
+            sleep=sleep,
+        )
 
         if existing_queues:
             await broker.declare_queue(QUARANTINE_QUEUE, {})
@@ -364,6 +393,91 @@ async def _rollback(
         final_staled = await stale_readiness()
         metrics.mutations += 1
     return first_staled + final_staled, fenced
+
+
+async def _wait_for_rollback_consumer_convergence(
+    broker: TopologyBroker,
+    *,
+    metrics: _CommandMetrics,
+    monotonic: Callable[[], float],
+    sleep: Callable[[float], Awaitable[None]],
+) -> list[str]:
+    started_at = monotonic()
+    deadline = started_at + ROLLBACK_CONVERGENCE_TIMEOUT_SECONDS
+    attempts = 0
+    while True:
+        attempts += 1
+        existing_queues: list[str] = []
+        unsafe = False
+        for queue_name in _rollback_queue_names():
+            inspected_at = monotonic()
+            remaining = deadline - inspected_at
+            if remaining <= 0:
+                _raise_convergence_timeout(
+                    metrics,
+                    attempts=attempts,
+                    elapsed=inspected_at - started_at,
+                )
+            try:
+                state = await broker.inspect_queue(queue_name, timeout=remaining)
+            except Exception as exc:
+                failed_at = monotonic()
+                if failed_at >= deadline or isinstance(exc, (TimeoutError, httpx.TimeoutException)):
+                    _raise_convergence_timeout(
+                        metrics,
+                        attempts=attempts,
+                        elapsed=failed_at - started_at,
+                        cause=exc,
+                    )
+                raise
+            if state is None:
+                continue
+            existing_queues.append(queue_name)
+            unsafe = unsafe or bool(state.unacked or state.consumers)
+
+        swept_at = monotonic()
+        elapsed = max(swept_at - started_at, 0.0)
+        _record_convergence_metrics(metrics, attempts=attempts, elapsed=elapsed)
+        if swept_at >= deadline:
+            _raise_convergence_timeout(
+                metrics,
+                attempts=attempts,
+                elapsed=elapsed,
+            )
+        if not unsafe:
+            return existing_queues
+        await sleep(min(ROLLBACK_CONVERGENCE_POLL_SECONDS, deadline - swept_at))
+
+
+def _record_convergence_metrics(
+    metrics: _CommandMetrics,
+    *,
+    attempts: int,
+    elapsed: float,
+) -> None:
+    metrics.consumer_convergence_attempts = attempts
+    metrics.consumer_convergence_duration_seconds = math.ceil(max(elapsed, 0.0))
+
+
+def _raise_convergence_timeout(
+    metrics: _CommandMetrics,
+    *,
+    attempts: int,
+    elapsed: float,
+    cause: Exception | None = None,
+) -> NoReturn:
+    _record_convergence_metrics(metrics, attempts=attempts, elapsed=elapsed)
+    counts = {
+        "consumer_convergence_attempts": metrics.consumer_convergence_attempts,
+        "consumer_convergence_duration_seconds": metrics.consumer_convergence_duration_seconds,
+    }
+    error = TopologySafetyError(
+        "claims consumer convergence timed out",
+        sanitized_counts=counts,
+    )
+    if cause is not None:
+        raise error from cause
+    raise error
 
 
 async def _unbind_claims(broker: TopologyBroker, metrics: _CommandMetrics) -> None:
@@ -470,9 +584,17 @@ class RabbitMqBroker:
     def _encoded(name: str) -> str:
         return quote(name, safe="")
 
-    async def inspect_queue(self, queue_name: str) -> QueueState | None:
-        response = await self._http.get(
-            f"/api/queues/{self._encoded_vhost}/{self._encoded(queue_name)}"
+    async def inspect_queue(
+        self,
+        queue_name: str,
+        *,
+        timeout: float | None = None,
+    ) -> QueueState | None:
+        path = f"/api/queues/{self._encoded_vhost}/{self._encoded(queue_name)}"
+        response = (
+            await self._http.get(path)
+            if timeout is None
+            else await self._http.get(path, timeout=timeout)
         )
         if response.status_code == 404:
             return None
@@ -806,11 +928,16 @@ async def _main_async(args: argparse.Namespace) -> int:
         cleanup_started = True
         await broker.close()
         broker = None
-    except Exception:  # noqa: BLE001 - sanitize every CLI boundary failure.
+    except Exception as exc:  # noqa: BLE001 - sanitize every CLI boundary failure.
         if broker is not None and not cleanup_started:
             with suppress(Exception):  # Cleanup details must stay sanitized.
                 await broker.close()
-        _render_error(args.format, "topology_safety_gate_failed")
+        sanitized_counts = exc.sanitized_counts if isinstance(exc, TopologySafetyError) else None
+        _render_error(
+            args.format,
+            "topology_safety_gate_failed",
+            sanitized_counts=sanitized_counts,
+        )
         return 1
     if args.format == "json":
         print(json.dumps(asdict(report), indent=2), end="\n")
@@ -819,14 +946,38 @@ async def _main_async(args: argparse.Namespace) -> int:
     return 0
 
 
-def _render_error(output_format: str, error_code: str) -> None:
+def _render_error(
+    output_format: str,
+    error_code: str,
+    *,
+    sanitized_counts: dict[str, int] | None = None,
+) -> None:
+    allowed_counts = {
+        key: int(value)
+        for key, value in (sanitized_counts or {}).items()
+        if key
+        in {
+            "consumer_convergence_attempts",
+            "consumer_convergence_duration_seconds",
+        }
+        and isinstance(value, int)
+        and not isinstance(value, bool)
+        and value >= 0
+    }
     if output_format == "json":
-        print(json.dumps({"ok": False, "error_code": error_code}, indent=2), end="\n")
+        print(
+            json.dumps({"ok": False, "error_code": error_code, **allowed_counts}, indent=2),
+            end="\n",
+        )
     else:
+        count_lines = "".join(
+            f"- {key}: {value}\n" for key, value in sorted(allowed_counts.items())
+        )
         print(
             "# Sheets DEVOLUCIONES Topology\n\n"
             "- ok: false\n"
             f"- error_code: {error_code}\n"
+            f"{count_lines}"
             "- secrecy: credentials and message payloads are never rendered.\n",
             end="",
         )
