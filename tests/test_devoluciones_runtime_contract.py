@@ -4,6 +4,12 @@ import tomllib
 from pathlib import Path
 
 import pytest
+from infra.operations.zelerdata_read_model_reconcile import (
+    build_arg_parser as build_reconciliation_arg_parser,
+)
+from infra.operations.zelerdata_read_model_reconcile import (
+    build_reconciliation_request,
+)
 from infra.rabbitmq.sheets_devoluciones_topology import _build_parser
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -24,6 +30,12 @@ FORMULA_DOC = ROOT / "docs" / "sheets" / "zelerdata-formulas.md"
 
 def _read(path: Path) -> str:
     return path.read_text(encoding="utf-8")
+
+
+def _bash_blocks(markdown: str) -> tuple[str, ...]:
+    return tuple(
+        fenced.split("```", 1)[0] for fenced in markdown.split("```bash")[1:] if "```" in fenced
+    )
 
 
 def test_sheets_runtime_keeps_motor_and_proves_frozen_reconcile_interpreter() -> None:
@@ -54,6 +66,8 @@ def test_topology_wrapper_uses_packaged_worker_one_shot_without_host_python() ->
     assert "--volume /var/run/docker.sock:/var/run/docker.sock" in wrapper
     assert "--entrypoint /app/.venv/bin/python" in wrapper
     assert "sheets-worker -m infra.rabbitmq.sheets_devoluciones_topology" in wrapper
+    assert "MONGO_URI" not in wrapper
+    assert "MONGO_DB" not in wrapper
 
 
 @pytest.mark.parametrize(
@@ -256,6 +270,96 @@ def test_deploy_runbook_orders_topology_acceptance_and_timer_activation() -> Non
     assert "pip install" not in section
     assert "uv run" not in section
     assert "MONGO_URI=" not in section
+
+
+def test_exact_merged_wu8_dry_run_reproduces_runtime_confirmation_rejection() -> None:
+    args = build_reconciliation_arg_parser().parse_args(
+        [
+            "--seller-id",
+            "82453304",
+            "--date-from",
+            "2026-06-01",
+            "--date-to",
+            "2026-07-09",
+        ]
+    )
+
+    with pytest.raises(SystemExit, match="--confirm-approved-runtime is required"):
+        build_reconciliation_request(args)
+
+
+def test_deploy_runbook_dry_run_and_write_commands_confirm_runtime_exactly_once() -> None:
+    deploy_section = (
+        _read(DEPLOY_DOC)
+        .split(
+            "## 5d. ZELERDATA DEVOLUCIONES ordered rollout and scheduled reconciliation",
+            1,
+        )[1]
+        .split("---", 1)[0]
+    )
+    reconciliation_commands = tuple(
+        block
+        for block in _bash_blocks(deploy_section)
+        if "infra.operations.zelerdata_read_model_reconcile" in block
+    )
+
+    assert len(reconciliation_commands) == 2
+    dry_run, authorized_write = reconciliation_commands
+    assert "--dry-run" in dry_run
+    assert "--write" not in dry_run
+    assert dry_run.count("--confirm-approved-runtime") == 1
+    assert "--write" in authorized_write
+    assert "--confirm-production-write" in authorized_write
+    assert authorized_write.count("--confirm-approved-runtime") == 1
+
+
+def test_deploy_runbook_records_the_wu8_gate_corrections() -> None:
+    deploy_section = (
+        _read(DEPLOY_DOC)
+        .split(
+            "## 5d. ZELERDATA DEVOLUCIONES ordered rollout and scheduled reconciliation",
+            1,
+        )[1]
+        .split("---", 1)[0]
+    )
+    normalized_section = " ".join(deploy_section.replace("> ", "").split())
+
+    assert "WU8 rollout-gate correction" in normalized_section
+    assert "rejected before reconciliation" in normalized_section
+    assert "exactly one `--confirm-approved-runtime`" in normalized_section
+    assert (
+        "derives the database name from the default database in `MONGO_URI`" in normalized_section
+    )
+    assert "does not require a new secret or a manual host edit" in normalized_section
+    assert "never prints the URI or derived database name" in normalized_section
+
+
+def test_every_reviewed_operator_command_confirms_runtime_exactly_once() -> None:
+    reconciliation_runbook = _read(RECONCILIATION_DOC)
+    documented_commands = tuple(
+        block
+        for path in (DEPLOY_DOC, RECONCILIATION_DOC)
+        for block in _bash_blocks(_read(path))
+        if "infra.operations.zelerdata_read_model_reconcile" in block
+    )
+    wrapper_invocation = (
+        _read(RECONCILE_WRAPPER)
+        .split(
+            "/app/.venv/bin/python -m infra.operations.zelerdata_read_model_reconcile",
+            1,
+        )[1]
+        .split('>"$OUTPUT_FILE"', 1)[0]
+    )
+
+    assert len(documented_commands) == 4
+    assert all(command.count("--confirm-approved-runtime") == 1 for command in documented_commands)
+    assert wrapper_invocation.count("--confirm-approved-runtime") == 1
+    assert wrapper_invocation.count("--confirm-production-write") == 1
+    assert "`--write --confirm-production-write`" not in reconciliation_runbook
+    assert (
+        "`--repair-observed-pause-basis --dry-run --confirm-approved-runtime`"
+        in reconciliation_runbook
+    )
 
 
 def test_deploy_runbook_has_exact_non_activating_artifact_install_path() -> None:

@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, replace
 
 import pytest
+from infra.rabbitmq import sheets_devoluciones_topology as topology_module
 from infra.rabbitmq.sheets_devoluciones_topology import (
     CLAIMS_DLQ,
     CLAIMS_DLX,
@@ -177,6 +179,99 @@ def test_management_url_is_derived_without_credentials_or_accepts_explicit_overr
         resolve_management_url(amqp_url, explicit_url="https://management.example.test/base")
         == "https://management.example.test/base"
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("operation", "collection_name"),
+    [
+        (topology_module.stale_devoluciones_readiness, "sheets_read_model_freshness"),
+        (
+            topology_module.fence_active_devoluciones_operations,
+            "sheets_devoluciones_operations",
+        ),
+    ],
+)
+async def test_rollback_database_mutations_work_when_worker_runtime_has_no_mongo_db(
+    operation: Callable[[], Awaitable[int]],
+    collection_name: str,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    calls: list[object] = []
+
+    class FakeCollection:
+        async def update_many(self, filter_spec: object, update: object) -> object:
+            calls.append(("update_many", filter_spec, update))
+            return type("UpdateResult", (), {"modified_count": 2})()
+
+    class FakeDatabase:
+        def __getitem__(self, collection_name: str) -> FakeCollection:
+            calls.append(("collection", collection_name))
+            return FakeCollection()
+
+    class FakeMongoClient:
+        def __init__(self, mongo_uri: str, **kwargs: object) -> None:
+            calls.append(("client", kwargs))
+
+        def __getitem__(self, database_name: str) -> FakeDatabase:
+            calls.append(("database", database_name))
+            return FakeDatabase()
+
+        def close(self) -> None:
+            calls.append("close")
+
+    monkeypatch.setenv(
+        "MONGO_URI",
+        "mongodb://runtime-user:runtime-secret@mongo:27017/zeler_platform_prod"
+        "?replicaSet=rs0&authSource=admin",
+    )
+    monkeypatch.delenv("MONGO_DB", raising=False)
+    monkeypatch.setattr(topology_module, "AsyncIOMotorClient", FakeMongoClient)
+
+    modified = await operation()
+    output = capsys.readouterr().out
+
+    assert modified == 2
+    assert ("database", "zeler_platform_prod") in calls
+    assert ("collection", collection_name) in calls
+    assert calls[-1] == "close"
+    assert "runtime-secret" not in output
+
+
+def test_rollback_database_resolution_preserves_existing_explicit_contract() -> None:
+    database_name = topology_module._resolve_runtime_mongo_database_name(
+        mongo_uri="mongodb://mongo:27017/?replicaSet=rs0",
+        explicit_database="zeler_platform_explicit",
+    )
+
+    assert database_name == "zeler_platform_explicit"
+
+
+@pytest.mark.asyncio
+async def test_rollback_cli_sanitizes_uri_without_a_database_target(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    async def connect(**_kwargs: object) -> FakeBroker:
+        return FakeBroker()
+
+    monkeypatch.setenv("RABBITMQ_URL", "amqps://operator:broker-secret@rabbit.invalid/tenant")
+    monkeypatch.setenv(
+        "MONGO_URI",
+        "mongodb://runtime-user:mongo-secret@mongo:27017/?replicaSet=rs0&authSource=admin",
+    )
+    monkeypatch.delenv("MONGO_DB", raising=False)
+    monkeypatch.setattr(topology_module.RabbitMqBroker, "connect", connect)
+    args = _build_parser().parse_args(["rollback", "--execute", "--format", "json"])
+
+    exit_code = await _main_async(args)
+    output = capsys.readouterr().out
+
+    assert exit_code == 1
+    assert json.loads(output) == {"ok": False, "error_code": "topology_safety_gate_failed"}
+    assert "mongo-secret" not in output
+    assert "broker-secret" not in output
 
 
 @pytest.mark.asyncio

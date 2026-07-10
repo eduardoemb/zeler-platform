@@ -14,6 +14,8 @@ from urllib.parse import quote, unquote, urlparse
 import aio_pika
 import httpx
 from motor.motor_asyncio import AsyncIOMotorClient
+from pymongo.errors import ConfigurationError, InvalidURI
+from pymongo.uri_parser import parse_uri
 
 LIVE_EXCHANGE = "meli.events"
 REPLAY_EXCHANGE = "zeler.sheets.replay"
@@ -680,9 +682,10 @@ class DockerEngineRuntime:
 
 async def stale_devoluciones_readiness() -> int:
     mongo_uri = os.environ.get("MONGO_URI")
-    mongo_db = os.environ.get("MONGO_DB")
-    if not mongo_uri or not mongo_db:
-        raise TopologySafetyError("rollback requires MONGO_URI and MONGO_DB")
+    mongo_db = _resolve_runtime_mongo_database_name(
+        mongo_uri=mongo_uri,
+        explicit_database=os.environ.get("MONGO_DB"),
+    )
     client: AsyncIOMotorClient[Any] = AsyncIOMotorClient(
         mongo_uri,
         serverSelectionTimeoutMS=5_000,
@@ -709,11 +712,30 @@ async def stale_devoluciones_readiness() -> int:
         client.close()
 
 
+def _resolve_runtime_mongo_database_name(
+    *,
+    mongo_uri: str | None,
+    explicit_database: str | None,
+) -> str:
+    if not mongo_uri:
+        raise TopologySafetyError("rollback requires MongoDB runtime configuration")
+    if explicit_database and explicit_database.strip():
+        return explicit_database.strip()
+    try:
+        database = parse_uri(mongo_uri).get("database")
+    except (ConfigurationError, InvalidURI, ValueError) as exc:
+        raise TopologySafetyError("rollback MongoDB runtime configuration is invalid") from exc
+    if not isinstance(database, str) or not database.strip():
+        raise TopologySafetyError("rollback MongoDB database target is missing")
+    return database
+
+
 async def fence_active_devoluciones_operations() -> int:
     mongo_uri = os.environ.get("MONGO_URI")
-    mongo_db = os.environ.get("MONGO_DB")
-    if not mongo_uri or not mongo_db:
-        raise TopologySafetyError("rollback requires MONGO_URI and MONGO_DB")
+    mongo_db = _resolve_runtime_mongo_database_name(
+        mongo_uri=mongo_uri,
+        explicit_database=os.environ.get("MONGO_DB"),
+    )
     client: AsyncIOMotorClient[Any] = AsyncIOMotorClient(
         mongo_uri,
         serverSelectionTimeoutMS=5_000,

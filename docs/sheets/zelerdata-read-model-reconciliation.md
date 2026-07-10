@@ -6,9 +6,9 @@ Use this runbook to plan ZelerData read-model reconciliation with sanitized, agg
 
 1. Run only from the approved VM/VPC/runtime container, never from the local assistant environment.
 2. Start with `--dry-run` and `--confirm-approved-runtime`; review sanitized counters and issue codes only.
-3. Stop before any write unless a separate production-write authorization explicitly allows `--write --confirm-production-write` for the exact seller/range.
+3. Stop before any write unless a separate production-write authorization explicitly allows `--write --confirm-approved-runtime --confirm-production-write` for the exact seller/range.
 4. Roll back by stopping runs and marking affected freshness markers `stale`/`failed` from the approved runtime; formulas stay `DATA_UNAVAILABLE` until complete markers exist again.
-5. For observed pause-basis repair, start with `--repair-observed-pause-basis --dry-run`; write mode is a later approved runtime action only.
+5. For observed pause-basis repair, start with `--repair-observed-pause-basis --dry-run --confirm-approved-runtime`; write mode is a later approved runtime action only.
 
 ## Chain context
 
@@ -117,7 +117,7 @@ verified idempotent facts. Never roll back a successful release automatically.
 | `--resume-after-order-id` | Resume only | Private cursor for approved runtime continuation. Output reports only that a cursor was provided. |
 | `--include-buyer-address-pii` | Exceptional | Allows bounded buyer/address processing in approved runtime; output remains count-only. |
 | `--emit-phase2-contract` | Phase 2 contract runs | Prints the read-only preflight and dry-run contract alongside the sanitized summary. |
-| `--repair-observed-pause-basis` | Optional repair scope | Plans or runs bounded repair for current paused rows missing `paused_since`. Dry-run mutates nothing and reports sanitized aggregate counters only. Write mode still requires `--write --confirm-production-write` plus explicit scoped approval. |
+| `--repair-observed-pause-basis` | Optional repair scope | Plans or runs bounded repair for current paused rows missing `paused_since`. Dry-run mutates nothing and reports sanitized aggregate counters only. Write mode still requires `--write --confirm-approved-runtime --confirm-production-write` plus explicit scoped approval. |
 
 ## Formula/read-model mapping
 
@@ -134,7 +134,7 @@ verified idempotent facts. Never roll back a successful release automatically.
 ## Rollout and rollback
 
 - Keep `ZELERDATA_ENRICHMENT_ENABLED` disabled until the additive models and formula readers are deployed.
-- Pilot with `ZELERDATA_ENRICHMENT_ENABLED=1`, `--dry-run`, `--max-orders`, `--max-items`, `--max-shipments`, and low `--concurrency` from the approved VM/VPC/runtime only.
+- Pilot with `ZELERDATA_ENRICHMENT_ENABLED=1`, `--dry-run`, `--confirm-approved-runtime`, `--max-orders`, `--max-items`, `--max-shipments`, and low `--concurrency` from the approved VM/VPC/runtime only.
 - Use `--sleep-ms`, `--error-threshold`, `--stop-on-rate-limit`, and `--resume-after-order-id` for staged continuation after sanitized counts are reviewed.
 - Rollback is fail-closed: stop reconciliation runs, mark/read affected freshness markers as `stale` or `failed` from the approved runtime, and rerun corrected reconciliation only after the cause is understood. The older `rollback-to-NA` label now means marker rollback to formula-level `DATA_UNAVAILABLE`; it does not authorize serving guessed `NA` rows. Formula readers must return `DATA_UNAVAILABLE` when trusted markers are absent, stale, failed, partial, unauthorized, malformed, or basis-mismatched.
 
