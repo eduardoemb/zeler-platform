@@ -273,6 +273,57 @@ def test_verified_low_cost_without_order_row_is_complete_non_productive() -> Non
     assert "returned_quantity" not in projection
 
 
+def test_verified_low_cost_null_orders_has_complete_non_productive_projection() -> None:
+    projection = build_claim_projection(
+        seller_id="82453304",
+        claim=_claim(),
+        returns=_fixture("low_cost_orders_null.json"),
+        order=_order(),
+    )
+
+    assert projection == {
+        "schema_version": 1,
+        "_id": "519988001",
+        "seller_id": "82453304",
+        "buyer_id": "90001",
+        "item_id": "MLA1",
+        "order_id": "2001",
+        "claim_version": 3,
+        "last_updated": datetime(2026, 6, 15, 12, 5, tzinfo=UTC),
+        "return_id": "RETURN-LOW-COST-1",
+        "return_last_updated": datetime(2026, 6, 16, 9, 10, tzinfo=UTC),
+        "return_status": "closed",
+        "return_subtype": "low_cost",
+        "return_quantity_basis": "verified_low_cost_no_row",
+        "productive": False,
+        "status": "closed",
+        "stage": "claim",
+        "type": "returns",
+        "date_created": datetime(2026, 6, 15, 12, 0, tzinfo=UTC),
+    }
+
+
+@pytest.mark.parametrize(
+    "returns",
+    [
+        {**_fixture("return_v2.json"), "orders": None},
+        {**_fixture("low_cost.json"), "orders": {"unexpected": "shape"}},
+        {key: value for key, value in _fixture("low_cost.json").items() if key != "orders"},
+    ],
+    ids=("productive-null", "low-cost-non-list", "low-cost-missing"),
+)
+def test_projection_rejects_unverified_null_or_non_list_orders(
+    returns: dict[str, Any],
+) -> None:
+    with pytest.raises(ClaimProjectionError, match="orders must be a list"):
+        build_claim_projection(
+            seller_id="82453304",
+            claim=_claim(),
+            returns=returns,
+            order=_order(),
+        )
+
+
 @pytest.mark.parametrize("return_quantity", [None, 0, -1, "1.5", True])
 def test_projection_never_falls_back_from_invalid_return_quantity(return_quantity: Any) -> None:
     returns = _fixture("return_v2.json")
@@ -568,6 +619,36 @@ async def test_hydrated_source_proof_changes_when_formula_visible_facts_drift() 
     assert variation_drift.read_model_fingerprint != baseline.read_model_fingerprint
     assert sku_drift.read_model_fingerprint != baseline.read_model_fingerprint
     assert title_drift.read_model_fingerprint != baseline.read_model_fingerprint
+
+
+@pytest.mark.asyncio
+async def test_low_cost_null_orders_produces_complete_snapshot_proof_fingerprints() -> None:
+    source = HydratingSource()
+    source.returns["519988002"] = _fixture("low_cost_orders_null.json")
+
+    snapshot = await reconciliation_module.collect_devoluciones_snapshot(
+        source=source,
+        seller_id="82453304",
+        start=START,
+        end=END,
+    )
+
+    assert len(snapshot.projections) == 2
+    assert snapshot.projections[1]["productive"] is False
+    assert snapshot.projections[1]["return_quantity_basis"] == "verified_low_cost_no_row"
+    assert "returned_quantity" not in snapshot.projections[1]
+    assert (
+        snapshot.inventory.fingerprint
+        == "ffb186c7f3fa4cb44462c6c9723cbbcc6b8456f1892e40b837752e4295e33b68"
+    )
+    assert (
+        snapshot.source_fingerprint
+        == "28af151c4cd83d5c29e6fdb90b8febbd413245d6641d5c8ce29663383435ad88"
+    )
+    assert (
+        snapshot.read_model_fingerprint
+        == "21e6d32ec1580e541d46a073c9dcad960e3dcd2c984c60f361535c430de3d61b"
+    )
 
 
 def _persisted_readiness_order(source_order: dict[str, Any]) -> dict[str, Any]:

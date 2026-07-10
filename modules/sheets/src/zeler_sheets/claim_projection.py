@@ -26,7 +26,10 @@ def build_claim_projection(
     seller_id = str(seller_id)
     _validate_claim_respondent(claim, seller_id=seller_id)
     _validate_order_seller(order, seller_id=seller_id)
+    return_subtype = _optional_text(returns.get("subtype"))
     return_rows = returns.get("orders")
+    if return_subtype == "low_cost" and "orders" in returns and return_rows is None:
+        return_rows = []
     if not isinstance(return_rows, list):
         raise ClaimProjectionError("v2 returns orders must be a list")
 
@@ -40,7 +43,6 @@ def build_claim_projection(
         and (item_id is None or _optional_identity(row.get("item_id")) == item_id)
     ]
 
-    return_subtype = _optional_text(returns.get("subtype"))
     return_context_type: str | None = None
     if not matching_rows and return_subtype == "low_cost" and not return_rows:
         productive = False
