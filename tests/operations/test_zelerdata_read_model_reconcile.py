@@ -37,6 +37,8 @@ from infra.operations.zelerdata_read_model_reconcile import (
 )
 
 from zeler_platform_core.devoluciones_readiness import DevolucionesOperationContext
+from zeler_sheets.claim_projection import ClaimProjectionError
+from zeler_sheets.devoluciones_reconciliation import ClaimInventoryError
 from zeler_sheets.formulas.read_models import read_model_reconciliation_marker_covers
 
 SHEETS_RUNTIME_DOCKERFILES = (
@@ -4056,6 +4058,153 @@ async def test_expected_source_auth_and_rate_limit_are_sanitized_unavailable(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("error", "expected_code"),
+    (
+        (ClaimProjectionError("SENTINEL raw projection"), "claim_projection_error"),
+        (ClaimInventoryError("SENTINEL fingerprint drift"), "claim_inventory_unstable"),
+    ),
+)
+async def test_expected_source_preserves_sanitized_claim_failure_category(
+    error: Exception,
+    expected_code: str,
+) -> None:
+    async def failing_historical_source(*, db: Any, request: Any) -> FakeHistoricalMeliSummary:
+        raise error
+
+    expected = await collect_expected_read_model_counts(
+        db=FakeAsyncDb({}),
+        request=_request(),
+        historical_meli_source=failing_historical_source,
+    )
+    issue_output = [issue.to_sanitized_dict() for issue in expected.issues]
+
+    assert any(
+        issue.read_model == "claims" and issue.code == expected_code for issue in expected.issues
+    )
+    assert "SENTINEL" not in json.dumps(issue_output, sort_keys=True)
+
+
+def _authoritative_claims_expected() -> ExpectedReadModelCounts:
+    return ExpectedReadModelCounts(
+        counts={"claims": 1},
+        refs={"claims": frozenset({"claim-1"})},
+        truth_mode={"claims": "expected"},
+        source_fingerprint="source-proof",
+        read_model_fingerprint="read-model-proof",
+    )
+
+
+@pytest.mark.parametrize(
+    ("expected", "issue_code"),
+    (
+        (
+            ExpectedReadModelCounts(
+                counts={},
+                refs={"claims": frozenset({"claim-1"})},
+                truth_mode={"claims": "expected"},
+                source_fingerprint="source-proof",
+                read_model_fingerprint="read-model-proof",
+            ),
+            "expected_count_unavailable",
+        ),
+        (
+            ExpectedReadModelCounts(
+                counts={"claims": 1},
+                truth_mode={"claims": "expected"},
+                source_fingerprint="source-proof",
+                read_model_fingerprint="read-model-proof",
+            ),
+            "expected_refs_unavailable",
+        ),
+        (
+            ExpectedReadModelCounts(
+                counts={"claims": 1},
+                refs={"claims": frozenset({"claim-1"})},
+                truth_mode={"claims": "expected"},
+                read_model_fingerprint="read-model-proof",
+            ),
+            "source_fingerprint_unavailable",
+        ),
+        (
+            ExpectedReadModelCounts(
+                counts={"claims": 1},
+                refs={"claims": frozenset({"claim-1"})},
+                truth_mode={"claims": "expected"},
+                source_fingerprint="source-proof",
+            ),
+            "read_model_fingerprint_unavailable",
+        ),
+        (
+            ExpectedReadModelCounts(
+                counts={"claims": 1},
+                refs={"claims": frozenset({"claim-1"})},
+                truth_mode={"claims": "expected"},
+                source_fingerprint="source-proof",
+                read_model_fingerprint="read-model-proof",
+                issues=(
+                    ReadModelIssue(
+                        read_model="claims",
+                        code="claim_projection_error",
+                        message="SENTINEL raw projection failure",
+                    ),
+                ),
+            ),
+            "claim_projection_error",
+        ),
+        (
+            ExpectedReadModelCounts(
+                counts={"claims": 2},
+                refs={"claims": frozenset({"claim-1"})},
+                truth_mode={"claims": "expected"},
+                source_fingerprint="source-proof",
+                read_model_fingerprint="read-model-proof",
+            ),
+            "expected_refs_count_mismatch",
+        ),
+        (
+            ExpectedReadModelCounts(
+                counts={"claims": 1},
+                refs={"claims": frozenset({"claim-1"})},
+                truth_mode={"claims": "unavailable"},
+                source_fingerprint="source-proof",
+                read_model_fingerprint="read-model-proof",
+                issues=(
+                    ReadModelIssue(
+                        read_model="claims",
+                        code="claim_inventory_unstable",
+                        message="SENTINEL raw inventory drift",
+                    ),
+                ),
+            ),
+            "claim_inventory_unstable",
+        ),
+    ),
+)
+def test_mandatory_claims_source_gate_rejects_every_incomplete_proof(
+    expected: ExpectedReadModelCounts,
+    issue_code: str,
+) -> None:
+    gate = reconcile_operation_module._claims_authoritative_source_gate(expected)
+
+    assert gate.authoritative is False
+    assert issue_code in gate.issue_codes
+    assert "SENTINEL" not in json.dumps(gate.to_sanitized_dict(), sort_keys=True)
+
+
+def test_mandatory_claims_source_gate_accepts_complete_authoritative_proof() -> None:
+    gate = reconcile_operation_module._claims_authoritative_source_gate(
+        _authoritative_claims_expected()
+    )
+
+    assert gate.to_sanitized_dict() == {
+        "read_model": "claims",
+        "authoritative": True,
+        "issue_codes": [],
+    }
+
+
+@pytest.mark.asyncio
 async def test_query_and_validator_anomalies_emit_target_scoped_sanitized_issues() -> None:
     db = FakeAsyncDb(
         {
@@ -4153,7 +4302,7 @@ def test_reconciliation_cli_uses_runtime_collector_and_keeps_output_sanitized(
     output = json.loads(capsys.readouterr().out)
     output_json = json.dumps(output, sort_keys=True)
 
-    assert result == 0
+    assert result == 1
     assert output["aggregates"] == [
         {
             "read_model": "orders",
@@ -4167,8 +4316,81 @@ def test_reconciliation_cli_uses_runtime_collector_and_keeps_output_sanitized(
     ]
     assert calls["expected"] == "2026-06-05T00:00:00Z"
     assert calls["collect"] == (db, "82453304", None)
+    assert output["mandatory_source_gate"] == {
+        "read_model": "claims",
+        "authoritative": False,
+        "issue_codes": [
+            "expected_count_unavailable",
+            "expected_refs_unavailable",
+            "read_model_fingerprint_unavailable",
+            "source_fingerprint_unavailable",
+            "truth_mode_unavailable",
+        ],
+    }
     assert "82453304" not in output_json
     assert "SENTINEL_TOKEN" not in output_json
+
+
+def test_reconciliation_cli_returns_zero_for_complete_authoritative_claims_proof(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from infra.operations import zelerdata_read_model_reconcile
+
+    async def fake_expected(*, db: Any, request: Any) -> ExpectedReadModelCounts:
+        return _authoritative_claims_expected()
+
+    async def fake_collect(
+        *, db: Any, request: Any, expected: ExpectedReadModelCounts
+    ) -> ReconciliationSummary:
+        return ReconciliationSummary(
+            seller_id=request.seller_id,
+            date_from=request.date_range.date_from,
+            date_to=request.date_range.date_to,
+            dry_run=True,
+            approved_runtime=True,
+            write_enabled=False,
+            aggregates=(
+                ReadModelAggregate(
+                    read_model="claims",
+                    expected_count=1,
+                    persisted_count=1,
+                    missing_count=0,
+                    complete_count=1,
+                ),
+            ),
+        )
+
+    monkeypatch.setattr(
+        zelerdata_read_model_reconcile, "create_runtime_db", lambda: FakeAsyncDb({})
+    )
+    monkeypatch.setattr(
+        zelerdata_read_model_reconcile,
+        "collect_expected_read_model_counts",
+        fake_expected,
+    )
+    monkeypatch.setattr(zelerdata_read_model_reconcile, COLLECTOR_ATTR, fake_collect)
+
+    result = zelerdata_read_model_reconcile.main(
+        [
+            "--seller-id",
+            "82453304",
+            "--date-from",
+            "2026-06-01",
+            "--date-to",
+            "2026-06-04",
+            "--dry-run",
+            "--confirm-approved-runtime",
+        ]
+    )
+    output = json.loads(capsys.readouterr().out)
+
+    assert result == 0
+    assert output["mandatory_source_gate"] == {
+        "read_model": "claims",
+        "authoritative": True,
+        "issue_codes": [],
+    }
 
 
 @pytest.mark.asyncio
@@ -4555,9 +4777,10 @@ def test_reconciliation_cli_can_emit_phase2_contract_from_approved_runtime_only(
 
     output = json.loads(capsys.readouterr().out)
 
-    assert result == 0
+    assert result == 1
     assert output["phase2_contract"]["approved_runtime_only"] is True
     assert output["phase2_contract"]["dry_run_scopes"] == list(DEFAULT_PHASE2_DRY_RUN_SCOPES)
+    assert output["mandatory_source_gate"]["authoritative"] is False
     assert "82453304" not in json.dumps(output, sort_keys=True)
 
 
