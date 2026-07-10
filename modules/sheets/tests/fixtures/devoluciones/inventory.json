@@ -1,0 +1,17 @@
+{
+  "data": [
+    {
+      "id": "519988001",
+      "last_updated": "2026-06-15T12:05:00.000Z",
+      "date_created": "2026-06-15T12:00:00.000Z",
+      "type": "returns"
+    },
+    {
+      "id": "519988002",
+      "last_updated": "2026-06-16T09:05:00.000Z",
+      "date_created": "2026-06-16T09:00:00.000Z",
+      "type": "mediations"
+    }
+  ],
+  "paging": {"offset": 0, "limit": 100, "total": 2}
+}

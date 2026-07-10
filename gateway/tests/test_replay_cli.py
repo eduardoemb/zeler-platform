@@ -197,6 +197,27 @@ def _event(
     }
 
 
+def _post_purchase_event(event_id: str, *, actions: list[str], resource: str) -> dict[str, Any]:
+    return {
+        **_event(event_id, topic="post_purchase", resource=resource),
+        "actions": actions,
+    }
+
+
+def _stored_post_purchase_event(
+    event_id: str, *, actions: list[str], resource: str
+) -> dict[str, Any]:
+    event = _event(event_id, topic="post_purchase", resource=resource)
+    event["raw_body"] = {
+        "_id": event_id,
+        "topic": "post_purchase",
+        "resource": resource,
+        "user_id": event["user_id"],
+        "actions": actions,
+    }
+    return event
+
+
 def _healthy_queue_snapshot(queue_name: str) -> QueueSnapshot:
     bindings = tuple(
         {"source": EXCHANGE, "destination": queue_name, "routing_key": routing_key}
@@ -321,6 +342,75 @@ def test_sheets_replay_topics_are_dry_run_first_and_require_execute_gate_source(
 
     with pytest.raises(ReplayConfigError, match="Rabbit management gate source"):
         parse_replay_args(["--execute", "--run-id", "ops-sheets", "--topics", "items"])
+
+
+@pytest.mark.asyncio
+async def test_post_purchase_replay_normalizes_both_proven_variants_without_global_mark() -> None:
+    database = FakeDatabase(
+        [
+            _post_purchase_event(
+                "claim-event-1",
+                actions=["claims"],
+                resource="/post-purchase/v1/claims/519988001",
+            ),
+            _post_purchase_event(
+                "claim-event-2",
+                actions=["claims_actions"],
+                resource="/post-purchase/v1/claims/519988002/actions-history",
+            ),
+        ]
+    )
+
+    plan = await build_replay_plan(
+        database,
+        PlanOptions(
+            run_id="dry-run-claims",
+            topics=("post_purchase",),
+            expected_counts={"post_purchase": 2},
+        ),
+    )
+
+    assert [event.routing_key for event in plan.selected] == ["claims.updated", "claims.updated"]
+    assert [event.resource for event in plan.selected] == [
+        "/post-purchase/v1/claims/519988001",
+        "/post-purchase/v1/claims/519988002",
+    ]
+    assert database.webhook_events.update_calls == []
+
+
+@pytest.mark.asyncio
+async def test_post_purchase_replay_projects_raw_body_for_stored_production_shape() -> None:
+    database = FakeDatabase(
+        [
+            _stored_post_purchase_event(
+                "claim-event-1",
+                actions=["claims"],
+                resource="/post-purchase/v1/claims/519988001",
+            ),
+            _stored_post_purchase_event(
+                "claim-event-2",
+                actions=["claims_actions"],
+                resource="/post-purchase/v1/claims/519988002/actions-history",
+            ),
+        ]
+    )
+
+    plan = await build_replay_plan(
+        database,
+        PlanOptions(
+            run_id="dry-run-stored-claims",
+            topics=("post_purchase",),
+            expected_counts={"post_purchase": 2},
+        ),
+    )
+
+    assert [event.resource for event in plan.selected] == [
+        "/post-purchase/v1/claims/519988001",
+        "/post-purchase/v1/claims/519988002",
+    ]
+    projection = database.webhook_events.find_calls[0]["projection"]
+    assert projection["raw_body"] == 1
+    assert projection["actions"] == 1
 
 
 def test_sheets_replay_topics_gate_only_sheets_replay_queue(tmp_path: Any) -> None:
@@ -862,6 +952,8 @@ async def test_safety_dry_run_plan_reads_only_and_omits_raw_fields() -> None:
                 "resource": 1,
                 "received_at": 1,
                 "published_at": 1,
+                "actions": 1,
+                "raw_body": 1,
                 "schema_version": 1,
             },
         }

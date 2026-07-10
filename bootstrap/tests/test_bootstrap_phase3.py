@@ -1,11 +1,16 @@
 from __future__ import annotations
 
+import inspect
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime
+from types import SimpleNamespace
 from typing import Any, cast
+from uuid import uuid4
 
 import httpx
 import pytest
 
+import zeler_bootstrap.stages as stages_module
 from zeler_bootstrap.runner import BootstrapDagRunner, BootstrapStage, build_default_stages
 from zeler_bootstrap.stages import (
     MELI_ITEMS_BATCH_SIZE,
@@ -19,9 +24,57 @@ from zeler_bootstrap.stages import (
     ShipmentsStage,
 )
 from zeler_bootstrap.state_machine import BootstrapStateMachine, InvalidTransitionError
+from zeler_platform_core.devoluciones_readiness import (
+    DevolucionesLeaseLostError,
+    DevolucionesOperationContext,
+)
 from zeler_platform_core.models import OrderItem
+from zeler_sheets.devoluciones_reconciliation import VerifiedClaimInventory
 
 NOW = datetime(2026, 4, 24, 12, 0, tzinfo=UTC)
+
+
+@pytest.fixture(autouse=True)
+def _bootstrap_fencing_test_harness(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def acquire(**kwargs: Any) -> DevolucionesOperationContext:
+        return DevolucionesOperationContext(
+            seller_id=str(kwargs["seller_id"]),
+            scope="devoluciones",
+            operation_id=str(kwargs["operation_id"]),
+            attempt_token=uuid4().hex,
+            fence=1,
+            owns_lease=True,
+            source_fingerprint=kwargs.get("source_fingerprint"),
+        )
+
+    async def finish(**kwargs: Any) -> None:
+        del kwargs
+
+    async def guarded_write(**kwargs: Any) -> None:
+        result = kwargs["writer"](None)
+        if inspect.isawaitable(result):
+            await result
+
+    async def empty_claim_inventory(**kwargs: Any) -> Any:
+        del kwargs
+        return SimpleNamespace(
+            projections=(),
+            orders=(),
+            inventory=VerifiedClaimInventory(entries=(), fingerprint="0" * 64),
+            source_fingerprint="1" * 64,
+            read_model_fingerprint="2" * 64,
+        )
+
+    @asynccontextmanager
+    async def heartbeat(**kwargs: Any) -> Any:
+        del kwargs
+        yield
+
+    monkeypatch.setattr(stages_module, "acquire_devoluciones_operation", acquire)
+    monkeypatch.setattr(stages_module, "finish_devoluciones_operation", finish)
+    monkeypatch.setattr(stages_module, "guarded_devoluciones_write", guarded_write)
+    monkeypatch.setattr(stages_module, "collect_devoluciones_snapshot", empty_claim_inventory)
+    monkeypatch.setattr(stages_module, "maintain_devoluciones_heartbeat", heartbeat, raising=False)
 
 
 class FakeBootstrapJobs:
@@ -38,7 +91,7 @@ class FakeBootstrapJobs:
             "schema_version": 1,
         }
 
-    async def find_one(self, filter_spec: dict[str, Any]) -> dict[str, Any] | None:
+    async def find_one(self, filter_spec: dict[str, Any], **_: Any) -> dict[str, Any] | None:
         if filter_spec.get("_id") == self.document["_id"]:
             return self.document.copy()
         return None
@@ -77,18 +130,28 @@ class FakeCollection:
         self.documents: dict[str, dict[str, Any]] = {}
 
     async def update_one(
-        self, filter_spec: dict[str, Any], update: dict[str, Any], *, upsert: bool, **_: Any
-    ) -> None:
+        self, filter_spec: dict[str, Any], update: Any, *, upsert: bool = False, **_: Any
+    ) -> Any:
         self.upserts.append((filter_spec, update, upsert))
         document_id = str(filter_spec.get("_id") or filter_spec.get("seller_id") or "")
         if not document_id:
-            return
+            return type("FakeUpdateResult", (), {"matched_count": 0, "upserted_id": None})()
         current = dict(self.documents.get(document_id, {}))
-        current.update(update.get("$setOnInsert", {}))
-        current.update(update.get("$set", {}))
-        for field in update.get("$unset", {}):
-            current.pop(field, None)
+        update_stages = update if isinstance(update, list) else [update]
+        for update_stage in update_stages:
+            current.update(update_stage.get("$setOnInsert", {}))
+            current.update(update_stage.get("$set", {}))
+            for field in update_stage.get("$unset", {}):
+                current.pop(field, None)
         self.documents[document_id] = current
+        return type(
+            "FakeUpdateResult",
+            (),
+            {
+                "matched_count": 1 if current else 0,
+                "upserted_id": document_id if upsert else None,
+            },
+        )()
 
     async def replace_one(
         self, filter_spec: dict[str, Any], replacement: dict[str, Any], *, upsert: bool = False
@@ -98,7 +161,7 @@ class FakeCollection:
             self.documents[document_id] = dict(replacement)
         return type("FakeReplaceResult", (), {"matched_count": 1, "upserted_id": document_id})()
 
-    async def find_one(self, filter_spec: dict[str, Any]) -> dict[str, Any] | None:
+    async def find_one(self, filter_spec: dict[str, Any], **_: Any) -> dict[str, Any] | None:
         for document in self.documents.values():
             if _matches_filter(document, filter_spec):
                 return dict(document)
@@ -131,7 +194,35 @@ class FakeCursor:
         return [dict(document) for document in documents]
 
 
+class FakeTransaction:
+    async def __aenter__(self) -> FakeTransaction:
+        return self
+
+    async def __aexit__(self, *_: Any) -> None:
+        return None
+
+
+class FakeSession:
+    def start_transaction(self) -> FakeTransaction:
+        return FakeTransaction()
+
+    async def __aenter__(self) -> FakeSession:
+        return self
+
+    async def __aexit__(self, *_: Any) -> None:
+        return None
+
+
+class FakeClient:
+    def start_session(self) -> FakeSession:
+        return FakeSession()
+
+
 class FakeDatabase(dict[str, FakeCollection]):
+    def __init__(self) -> None:
+        super().__init__()
+        self.client = FakeClient()
+
     def __getitem__(self, collection_name: str) -> FakeCollection:
         return self.setdefault(collection_name, FakeCollection())
 
@@ -251,19 +342,8 @@ class FakeGateway(BootstrapGatewayClient):
             }
         if path == "/post-purchase/v1/claims/search":
             return {
-                "data": [
-                    {
-                        "id": 222,
-                        "seller_id": 123,
-                        "buyer_id": 45,
-                        "resource": "order",
-                        "resource_id": 987,
-                        "status": "opened",
-                        "stage": "claim",
-                        "type": "mediations",
-                        "date_created": NOW,
-                    }
-                ]
+                "data": [],
+                "paging": {"offset": 0, "limit": 100, "total": 0},
             }
         raise AssertionError(f"unexpected gateway path: {path}")
 
@@ -385,16 +465,96 @@ async def test_default_bootstrap_stages_fetch_paginate_upsert_and_emit_completio
     assert database["messages"].upserts[0][1]["$set"]["from_user_id"] == "1"
     assert database["messages"].upserts[0][1]["$set"]["to_user_id"] == "2"
     assert database["shipments"].upserts[0][0] == {"_id": "654"}
-    assert database["claims"].upserts[0][0] == {"_id": "222"}
-    assert database["claims"].upserts[0][1]["$set"]["order_id"] == "987"
-    assert database["claims"].upserts[0][1]["$set"]["date_created"] == NOW
-    assert ("/post-purchase/v1/claims/search", {"order_id": "987"}) in gateway.calls
+    assert database["claims"].upserts == []
+    assert all(
+        params != {"order_id": "987"}
+        for path, params in gateway.calls
+        if path == "/post-purchase/v1/claims/search"
+    )
     assert publisher.events == [
         {
             "event_type": "BootstrapCompleted",
             "payload": {"job_id": "job-1", "seller_id": "123"},
         }
     ]
+
+
+@pytest.mark.asyncio
+async def test_claims_stage_persists_hydrated_old_order_with_same_operation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    operation = DevolucionesOperationContext(
+        seller_id="123",
+        scope="devoluciones",
+        operation_id="bootstrap-claims",
+        attempt_token=uuid4().hex,
+        fence=1,
+        owns_lease=True,
+        source_fingerprint="hydrated-nine",
+    )
+    projection = {
+        "_id": "CLAIM-OLD",
+        "seller_id": "123",
+        "order_id": "1999",
+        "item_id": "MLM1",
+        "returned_quantity": 1,
+        "claim_version": 9,
+        "last_updated": NOW,
+        "return_last_updated": NOW,
+        "productive": True,
+        "status": "closed",
+        "stage": "claim",
+        "type": "returns",
+        "date_created": NOW,
+        "schema_version": 1,
+    }
+    snapshot = SimpleNamespace(
+        projections=(projection,),
+        orders=({"id": 1999, "seller": {"id": "123"}, "order_items": []},),
+        inventory=VerifiedClaimInventory(entries=(), fingerprint="inventory-nine"),
+        source_fingerprint="hydrated-nine",
+        read_model_fingerprint="local-proof-nine",
+    )
+    persistence_calls: list[dict[str, Any]] = []
+
+    async def collect(**kwargs: Any) -> Any:
+        del kwargs
+        return snapshot
+
+    async def guarded_write(**kwargs: Any) -> None:
+        await kwargs["writer"](None)
+
+    class RecordingPersistence:
+        def __init__(self, *, db: Any) -> None:
+            del db
+
+        async def persist(self, **kwargs: Any) -> None:
+            persistence_calls.append(kwargs)
+
+    monkeypatch.setattr(stages_module, "collect_devoluciones_snapshot", collect, raising=False)
+    monkeypatch.setattr(
+        stages_module,
+        "SheetsEventPersistence",
+        RecordingPersistence,
+        raising=False,
+    )
+    monkeypatch.setattr("zeler_sheets.claim_projection.guarded_devoluciones_write", guarded_write)
+    collection = FakeBootstrapJobs()
+    collection.document["state"] = "running"
+    machine = BootstrapStateMachine(collection, "job-1", now_fn=lambda: NOW)
+    database = FakeDatabase()
+
+    await ClaimsStage(FakeGateway(), database).run(
+        collection.document,
+        machine,
+        operation=operation,
+    )
+
+    assert len(persistence_calls) == 1
+    assert persistence_calls[0]["event_type"] == "orders.updated"
+    assert persistence_calls[0]["resource"]["id"] == 1999
+    assert persistence_calls[0]["operation"] is operation
+    assert database["claims"].documents["CLAIM-OLD"]["order_id"] == "1999"
 
 
 @pytest.mark.asyncio
@@ -938,27 +1098,200 @@ async def test_messages_stage_skips_missing_pack_conversations() -> None:
 
 
 @pytest.mark.asyncio
-async def test_claims_stage_skips_missing_claim_search_results() -> None:
+async def test_claims_stage_records_stable_empty_authoritative_inventory() -> None:
     collection = FakeBootstrapJobs()
     collection.document["state"] = "running"
     collection.document["checkpoints"] = {"orders": {"order_ids": ["987"]}}
     database = FakeDatabase()
     gateway = FakeGateway()
 
-    async def get(path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
-        gateway.calls.append((path, params))
-        request = httpx.Request("GET", f"https://gateway.zeler.ai{path}")
-        response = httpx.Response(404, request=request)
-        raise httpx.HTTPStatusError("not found", request=request, response=response)
-
-    gateway.get = get  # type: ignore[method-assign]
     machine = BootstrapStateMachine(collection, "job-1", now_fn=lambda: NOW)
 
     await ClaimsStage(gateway, database).run(collection.document, machine)
 
-    assert gateway.calls == [("/post-purchase/v1/claims/search", {"order_id": "987"})]
+    assert gateway.calls == []
     assert database["claims"].upserts == []
     assert collection.document["checkpoints"]["claims"] == {
         "claim_ids": [],
-        "missing_claim_searches": ["987"],
+        "missing_claim_searches": [],
     }
+
+
+@pytest.mark.asyncio
+async def test_claims_stage_root_maintains_heartbeat_until_release(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+
+    @asynccontextmanager
+    async def heartbeat(**kwargs: Any) -> Any:
+        assert len(str(kwargs["operation"].source_fingerprint)) == 64
+        calls.append("enter")
+        try:
+            yield
+        finally:
+            calls.append("exit")
+
+    monkeypatch.setattr(stages_module, "maintain_devoluciones_heartbeat", heartbeat)
+    collection = FakeBootstrapJobs()
+    collection.document["state"] = "running"
+
+    await ClaimsStage(FakeGateway(), FakeDatabase()).run(
+        collection.document,
+        BootstrapStateMachine(collection, "job-1", now_fn=lambda: NOW),
+    )
+
+    assert calls == ["enter", "exit"]
+
+
+@pytest.mark.asyncio
+async def test_claims_stage_takeover_uses_complete_hydrated_source_fingerprint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: list[str] = []
+    snapshot = SimpleNamespace(
+        projections=(),
+        orders=(),
+        inventory=VerifiedClaimInventory(entries=(), fingerprint="inventory-only"),
+        source_fingerprint="inventory-plus-hydrated-facts",
+        read_model_fingerprint="hydrated-facts",
+    )
+
+    async def collect(**kwargs: Any) -> Any:
+        del kwargs
+        return snapshot
+
+    async def acquire(**kwargs: Any) -> DevolucionesOperationContext:
+        captured.append(str(kwargs["source_fingerprint"]))
+        return DevolucionesOperationContext(
+            seller_id="123",
+            scope="devoluciones",
+            operation_id="bootstrap-claims",
+            attempt_token=uuid4().hex,
+            fence=1,
+            owns_lease=True,
+            source_fingerprint=str(kwargs["source_fingerprint"]),
+        )
+
+    @asynccontextmanager
+    async def heartbeat(**kwargs: Any) -> Any:
+        del kwargs
+        yield
+
+    async def finish(**kwargs: Any) -> None:
+        del kwargs
+
+    monkeypatch.setattr(stages_module, "collect_devoluciones_snapshot", collect)
+    monkeypatch.setattr(stages_module, "acquire_devoluciones_operation", acquire)
+    monkeypatch.setattr(stages_module, "maintain_devoluciones_heartbeat", heartbeat)
+    monkeypatch.setattr(stages_module, "finish_devoluciones_operation", finish)
+    collection = FakeBootstrapJobs()
+    collection.document["state"] = "running"
+
+    await ClaimsStage(FakeGateway(), FakeDatabase()).run(
+        collection.document,
+        BootstrapStateMachine(collection, "job-1", now_fn=lambda: NOW),
+    )
+
+    assert captured == ["inventory-plus-hydrated-facts"]
+
+
+@pytest.mark.asyncio
+async def test_orders_stage_owned_root_fingerprints_heartbeats_and_resumes_checkpoint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, Any]] = []
+    fingerprints: list[str] = []
+
+    async def acquire(**kwargs: Any) -> DevolucionesOperationContext:
+        fingerprint = str(kwargs["source_fingerprint"])
+        fingerprints.append(fingerprint)
+        calls.append(("acquire", fingerprint))
+        return DevolucionesOperationContext(
+            seller_id="123",
+            scope="devoluciones",
+            operation_id="bootstrap-orders",
+            attempt_token=uuid4().hex,
+            fence=1,
+            owns_lease=True,
+            source_fingerprint=fingerprint,
+            checkpoint={"stage": "orders", "order_id": "101"},
+        )
+
+    @asynccontextmanager
+    async def heartbeat(**kwargs: Any) -> Any:
+        calls.append(("heartbeat_enter", kwargs["operation"].operation_id))
+        try:
+            yield
+        finally:
+            calls.append(("heartbeat_exit", kwargs["operation"].operation_id))
+
+    async def guarded_write(**kwargs: Any) -> None:
+        calls.append(("write", dict(kwargs["checkpoint"])))
+        await kwargs["writer"](None)
+
+    async def finish(**kwargs: Any) -> None:
+        calls.append(("finish", kwargs["succeeded"]))
+
+    monkeypatch.setattr(stages_module, "acquire_devoluciones_operation", acquire)
+    monkeypatch.setattr(stages_module, "maintain_devoluciones_heartbeat", heartbeat)
+    monkeypatch.setattr(stages_module, "guarded_devoluciones_write", guarded_write)
+    monkeypatch.setattr(stages_module, "finish_devoluciones_operation", finish)
+
+    gateway = FakeGateway()
+
+    async def get(path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+        gateway.calls.append((path, params))
+        assert path == "/orders/search"
+        return {
+            "results": [
+                {
+                    "id": order_id,
+                    "buyer": {"id": 45},
+                    "status": "paid",
+                    "date_created": NOW,
+                    "last_updated": NOW,
+                    "total_amount": "10.00",
+                    "order_items": [
+                        {"item": {"id": f"MLM{order_id}"}, "quantity": 1, "unit_price": "10"}
+                    ],
+                }
+                for order_id in (101, 102)
+            ],
+            "paging": {"total": 2, "offset": 0, "limit": 50},
+        }
+
+    gateway.get = get  # type: ignore[method-assign]
+    collection = FakeBootstrapJobs()
+    collection.document["state"] = "running"
+    database = FakeDatabase()
+    machine = BootstrapStateMachine(collection, "job-1", now_fn=lambda: NOW)
+
+    await OrdersStage(gateway, database).run(collection.document, machine)
+
+    assert len(fingerprints) == 1
+    assert len(fingerprints[0]) == 64
+    assert list(database["orders"].documents) == ["102"]
+    assert calls == [
+        ("acquire", fingerprints[0]),
+        ("heartbeat_enter", "bootstrap-orders"),
+        ("write", {"stage": "orders", "order_id": "102"}),
+        ("heartbeat_exit", "bootstrap-orders"),
+        ("finish", True),
+    ]
+    assert collection.document["checkpoints"]["orders"]["order_ids"] == ["101", "102"]
+
+
+def test_orders_stage_rejects_checkpoint_outside_stable_source_inventory() -> None:
+    results = [{"id": 101}, {"id": 102}]
+
+    with pytest.raises(DevolucionesLeaseLostError, match="outside source inventory"):
+        stages_module._remaining_orders_stage_ids(
+            results,
+            {"stage": "claims", "order_id": "101"},
+        )
+
+    assert stages_module._remaining_orders_stage_ids(
+        results,
+        {"stage": "orders", "order_id": "101"},
+    ) == {"102"}

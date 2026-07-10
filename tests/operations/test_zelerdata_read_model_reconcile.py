@@ -2,13 +2,16 @@ from __future__ import annotations
 
 import asyncio
 import json
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 import pytest
 from infra.mongo.validator_contract import validate_document_against_schema
+from infra.operations import zelerdata_read_model_reconcile as reconcile_operation_module
 from infra.operations.zelerdata_read_model_reconcile import (
     DEFAULT_PHASE2_DRY_RUN_SCOPES,
     DEFAULT_PHASE2_PREFLIGHT_TARGETS,
@@ -24,11 +27,16 @@ from infra.operations.zelerdata_read_model_reconcile import (
     collect_expected_read_model_counts,
     collect_reconciliation_counts,
     execute_observed_pause_basis_repair,
-    execute_reconciliation_write,
     validate_reconciliation_safety,
-    write_complete_read_model_freshness_markers,
+)
+from infra.operations.zelerdata_read_model_reconcile import (
+    execute_reconciliation_write as _execute_reconciliation_write,
+)
+from infra.operations.zelerdata_read_model_reconcile import (
+    write_complete_read_model_freshness_markers as _write_complete_read_model_freshness_markers,
 )
 
+from zeler_platform_core.devoluciones_readiness import DevolucionesOperationContext
 from zeler_sheets.formulas.read_models import read_model_reconciliation_marker_covers
 
 SHEETS_RUNTIME_DOCKERFILES = (
@@ -39,6 +47,56 @@ ZELERDATA_RECONCILE_HELPER = Path("infra/operations/zelerdata_read_model_reconci
 OPERATIONS_COPY_STANZA = "COPY infra/operations ./infra/operations"
 COLLECTOR_ATTR = "collect_reconciliation_counts"
 ROOT = Path(__file__).resolve().parents[2]
+
+
+def _operation() -> DevolucionesOperationContext:
+    return DevolucionesOperationContext(
+        seller_id="82453304",
+        scope="devoluciones",
+        operation_id="operations-unit-test",
+        attempt_token=uuid4().hex,
+        fence=1,
+        owns_lease=True,
+    )
+
+
+async def execute_reconciliation_write(**kwargs: Any) -> dict[str, int]:
+    kwargs.setdefault("operation", _operation())
+    return await _execute_reconciliation_write(**kwargs)
+
+
+async def write_complete_read_model_freshness_markers(**kwargs: Any) -> dict[str, int]:
+    kwargs.setdefault("operation", _operation())
+    return await _write_complete_read_model_freshness_markers(**kwargs)
+
+
+@pytest.fixture(autouse=True)
+def _reconciliation_root_fencing_test_harness(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def acquire(**kwargs: Any) -> DevolucionesOperationContext:
+        return DevolucionesOperationContext(
+            seller_id=str(kwargs["seller_id"]),
+            scope="devoluciones",
+            operation_id=str(kwargs["operation_id"]),
+            attempt_token=uuid4().hex,
+            fence=1,
+            owns_lease=True,
+        )
+
+    async def finish(**kwargs: Any) -> None:
+        del kwargs
+
+    async def guarded_write(**kwargs: Any) -> None:
+        await kwargs["writer"](None)
+
+    @asynccontextmanager
+    async def heartbeat(**kwargs: Any) -> Any:
+        del kwargs
+        yield
+
+    monkeypatch.setattr(reconcile_operation_module, "acquire_devoluciones_operation", acquire)
+    monkeypatch.setattr(reconcile_operation_module, "finish_devoluciones_operation", finish)
+    monkeypatch.setattr(reconcile_operation_module, "guarded_devoluciones_write", guarded_write)
+    monkeypatch.setattr(reconcile_operation_module, "maintain_devoluciones_heartbeat", heartbeat)
 
 
 class FakeAsyncCollection:
@@ -175,6 +233,8 @@ class FakeHistoricalMeliSummary:
     written_claims: int = 0
     item_detail_missing: int = 0
     redacted_errors: int = 0
+    claim_source_fingerprint: str | None = None
+    claim_read_model_fingerprint: str | None = None
 
 
 @dataclass(frozen=True)
@@ -185,6 +245,25 @@ class FakeWriteSummary:
     diagnostic_reason_counts: dict[str, int] | None = None
     formula_row_upserts: int = 0
     sku_index_upserts: int = 0
+
+
+def test_historical_expected_counts_preserve_source_and_local_proof_fingerprints() -> None:
+    expected = reconcile_operation_module._historical_meli_expected_counts(
+        FakeHistoricalMeliSummary(
+            orders_found=1,
+            order_ids=["order-1"],
+            shipment_ids=[],
+            item_ids=["MLA1"],
+            claims_found=1,
+            claim_ids=["claim-1"],
+            claim_source_fingerprint="hydrated-source-proof",
+            claim_read_model_fingerprint="local-comparable-proof",
+        )
+    )
+
+    assert expected.source_fingerprint == "hydrated-source-proof"
+    assert expected.read_model_fingerprint == "local-comparable-proof"
+    assert expected.refs["claims"] == frozenset({"claim-1"})
 
 
 @dataclass(frozen=True)
@@ -1826,13 +1905,6 @@ async def test_complete_write_records_shared_reconciliation_marker_after_coverag
                 complete_count=2,
             ),
             ReadModelAggregate(
-                read_model="claims",
-                expected_count=1,
-                persisted_count=1,
-                missing_count=0,
-                complete_count=1,
-            ),
-            ReadModelAggregate(
                 read_model="catalog_buybox_snapshots",
                 expected_count=None,
                 persisted_count=1,
@@ -1847,9 +1919,9 @@ async def test_complete_write_records_shared_reconciliation_marker_after_coverag
         db=db, request=request, summary=summary
     )
 
-    assert counts == {"freshness_markers_written": 2}
+    assert counts == {"freshness_markers_written": 1}
     markers = db["sheets_read_model_freshness"].documents
-    assert {marker["read_model"] for marker in markers} == {"questions", "claims"}
+    assert {marker["read_model"] for marker in markers} == {"questions"}
     assert all(marker["state"] == "reconciled" for marker in markers)
     validator = json.loads(
         (ROOT / "infra/mongo/schemas/sheets_read_model_freshness.json").read_text()
@@ -2999,6 +3071,89 @@ async def test_questions_answer_detail_gaps_keep_coverage_partial_and_marker_unw
 
 
 @pytest.mark.asyncio
+async def test_devoluciones_nine_claim_regression_proves_9_9_9_0_coverage() -> None:
+    db = FakeAsyncDb(
+        {
+            "claims": [
+                _seller_doc(
+                    _id=f"CLAIM-{index}",
+                    date_created=_dt(index),
+                    order_id=f"ORDER-{index}",
+                    item_id=f"MLA{index}",
+                    status="closed",
+                    type="returns",
+                    productive=True,
+                    returned_quantity=1,
+                )
+                for index in range(1, 10)
+            ]
+        }
+    )
+    request = _write_request(extra_args=["--date-to", "2026-06-10"])
+
+    summary = await collect_reconciliation_counts(
+        db=db,
+        request=request,
+        expected=ExpectedReadModelCounts(
+            counts={"claims": 9},
+            refs={"claims": frozenset(f"CLAIM-{index}" for index in range(1, 10))},
+        ),
+        read_models=("claims",),
+    )
+    aggregate = summary.aggregates[0]
+    assert (
+        aggregate.expected_count,
+        aggregate.persisted_count,
+        aggregate.complete_count,
+        aggregate.missing_count,
+    ) == (9, 9, 9, 0)
+
+
+@pytest.mark.asyncio
+async def test_devoluciones_claim_aggregate_excludes_unrelated_claim_types() -> None:
+    db = FakeAsyncDb(
+        {
+            "claims": [
+                _seller_doc(
+                    _id="RETURN-1",
+                    date_created=_dt(2),
+                    order_id="ORDER-1",
+                    item_id="MLA1",
+                    status="closed",
+                    type="returns",
+                    productive=True,
+                    returned_quantity=1,
+                ),
+                _seller_doc(
+                    _id="CANCEL-1",
+                    date_created=_dt(2),
+                    order_id="ORDER-2",
+                    item_id="MLA2",
+                    status="closed",
+                    type="cancel_purchase",
+                    productive=False,
+                ),
+            ]
+        }
+    )
+    request = _write_request()
+
+    summary = await collect_reconciliation_counts(
+        db=db,
+        request=request,
+        expected=ExpectedReadModelCounts(
+            counts={"claims": 1}, refs={"claims": frozenset({"RETURN-1"})}
+        ),
+        read_models=("claims",),
+    )
+
+    aggregate = summary.aggregates[0]
+    assert aggregate.persisted_count == 1
+    assert aggregate.complete_count == 1
+    assert aggregate.missing_count == 0
+
+
+@pytest.mark.asyncio
 async def test_questions_expected_counts_come_from_historical_question_coverage() -> None:
     async def fake_historical_source(*, db: Any, request: Any) -> FakeHistoricalMeliSummary:
         return FakeHistoricalMeliSummary(
@@ -3383,7 +3538,7 @@ async def test_complete_catalog_snapshot_coverage_writes_readiness_markers() -> 
 
 
 @pytest.mark.asyncio
-async def test_unknown_returned_quantity_keeps_claims_marker_unwritten() -> None:
+async def test_unknown_returned_quantity_is_incomplete_in_claim_aggregate() -> None:
     db = FakeAsyncDb(
         {
             "claims": [
@@ -3412,16 +3567,10 @@ async def test_unknown_returned_quantity_keeps_claims_marker_unwritten() -> None
         expected=ExpectedReadModelCounts(counts={"claims": 2}),
         read_models=("claims",),
     )
-    counts = await write_complete_read_model_freshness_markers(
-        db=db, request=request, summary=summary
-    )
-
     aggregate = summary.to_sanitized_dict()["aggregates"][0]
     assert aggregate["persisted_count"] == 2
     assert aggregate["complete_count"] == 1
     assert aggregate["missing_count"] == 0
-    assert counts == {}
-    assert db["sheets_read_model_freshness"].documents == []
 
 
 @pytest.mark.asyncio
@@ -3455,16 +3604,10 @@ async def test_missing_claim_item_id_prevents_complete_count() -> None:
         expected=ExpectedReadModelCounts(counts={"claims": 2}),
         read_models=("claims",),
     )
-    counts = await write_complete_read_model_freshness_markers(
-        db=db, request=request, summary=summary
-    )
-
     aggregate = summary.to_sanitized_dict()["aggregates"][0]
     assert aggregate["persisted_count"] == 2
     assert aggregate["complete_count"] == 1
     assert aggregate["missing_count"] == 0
-    assert counts == {}
-    assert db["sheets_read_model_freshness"].documents == []
 
 
 @pytest.mark.asyncio
@@ -3515,16 +3658,10 @@ async def test_empty_claim_scope_fields_and_zero_quantity_are_incomplete() -> No
         expected=ExpectedReadModelCounts(counts={"claims": 4}),
         read_models=("claims",),
     )
-    counts = await write_complete_read_model_freshness_markers(
-        db=db, request=request, summary=summary
-    )
-
     aggregate = summary.to_sanitized_dict()["aggregates"][0]
     assert aggregate["persisted_count"] == 4
     assert aggregate["complete_count"] == 1
     assert aggregate["missing_count"] == 0
-    assert counts == {}
-    assert db["sheets_read_model_freshness"].documents == []
 
 
 def test_reconciled_marker_requires_reconciled_state_and_enclosing_range() -> None:
@@ -3718,7 +3855,8 @@ def test_write_failure_after_partial_rows_does_not_publish_freshness_marker(
             controls=request.controls,
         )
 
-    async def failing_write(*, db: Any, request: Any) -> dict[str, int]:
+    async def failing_write(*, db: Any, request: Any, operation: Any) -> dict[str, int]:
+        del operation
         partial_rows.append("questions")
         raise ValueError("query_anomaly")
 
@@ -4453,7 +4591,8 @@ def test_reconciliation_cli_write_executes_write_gate_and_outputs_sanitized_coun
             controls=request.controls,
         )
 
-    async def fake_write(*, db: Any, request: Any) -> dict[str, int]:
+    async def fake_write(*, db: Any, request: Any, operation: Any) -> dict[str, int]:
+        del operation
         calls["write"] = (db, request.write_enabled, request.controls.sleep_ms)
         return {"planned_orders": 1, "written_orders": 1, "written_items": 1}
 

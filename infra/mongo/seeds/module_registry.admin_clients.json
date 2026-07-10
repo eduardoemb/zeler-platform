@@ -20,6 +20,39 @@
       "schema_version": 1
     },
     {
+      "_id": "sheets",
+      "version": "0.1.0",
+      "allowed_meli_scopes": [
+        "GET /items",
+        "GET /items/*",
+        "GET /products/*",
+        "GET /sites/*/listing_prices",
+        "GET /users/*/shipping_options/free",
+        "GET /orders/*",
+        "GET /post-purchase/v1/claims/search",
+        "GET /post-purchase/v1/claims/*",
+        "GET /post-purchase/v2/claims/*/returns",
+        "GET /shipments/*",
+        "GET /questions/*"
+      ],
+      "routing_keys": [
+        "items.*",
+        "orders.*",
+        "shipments.*",
+        "questions.*",
+        "claims.updated"
+      ],
+      "owned_collections": [
+        "sheets_exports",
+        "sheets_sync_jobs",
+        "google_oauth_tokens",
+        "seller_unit_costs"
+      ],
+      "health_endpoint": "/health",
+      "status": "enabled",
+      "schema_version": 1
+    },
+    {
       "_id": "bootstrap",
       "version": "0.1.0",
       "allowed_meli_scopes": [
@@ -27,10 +60,13 @@
         "GET /users/*/items/search",
         "GET /items",
         "GET /orders/search",
+        "GET /orders/*",
         "GET /questions/search",
         "GET /messages/packs/*",
         "GET /shipments/*",
-        "GET /post-purchase/v1/claims/search"
+        "GET /post-purchase/v1/claims/search",
+        "GET /post-purchase/v1/claims/*",
+        "GET /post-purchase/v2/claims/*/returns"
       ],
       "routing_keys": [],
       "owned_collections": [],

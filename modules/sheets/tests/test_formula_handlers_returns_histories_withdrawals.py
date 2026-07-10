@@ -66,6 +66,19 @@ class FakeCollection:
         )
 
 
+class MutatingFindCollection(FakeCollection):
+    def __init__(self, *, mutate: Any) -> None:
+        super().__init__()
+        self._mutate = mutate
+
+    def find(
+        self, filter_spec: dict[str, Any], projection: dict[str, int] | None = None
+    ) -> FakeCursor:
+        cursor = super().find(filter_spec, projection)
+        self._mutate()
+        return cursor
+
+
 class FakeDb:
     def __init__(self) -> None:
         self.collections: dict[str, FakeCollection] = {}
@@ -80,8 +93,7 @@ NOW = datetime(2026, 6, 15, 12, 0, tzinfo=UTC)
 @pytest.mark.asyncio
 async def test_devoluciones_groups_return_claims_by_item_and_sku() -> None:
     db = FakeDb()
-    _mark_read_model_fresh(db, CLAIMS_READ_MODEL)
-    _mark_read_model_fresh(db, ORDERS_READ_MODEL)
+    _mark_devoluciones_reconciled(db)
     db["claims"].documents = {
         "claim-1": _claim_doc("CLAIM-1", order_id="ORDER-1", days_ago=2, returned_quantity=1),
         "claim-2": _claim_doc("CLAIM-2", order_id="ORDER-2", days_ago=1, returned_quantity=1),
@@ -149,10 +161,9 @@ async def test_devoluciones_groups_return_claims_by_item_and_sku() -> None:
 
 
 @pytest.mark.asyncio
-async def test_devoluciones_derives_missing_returned_quantity_from_single_order_line() -> None:
+async def test_devoluciones_never_falls_back_to_single_order_line_quantity() -> None:
     db = FakeDb()
-    _mark_read_model_fresh(db, CLAIMS_READ_MODEL)
-    _mark_read_model_fresh(db, ORDERS_READ_MODEL)
+    _mark_devoluciones_reconciled(db)
     db["claims"].documents = {
         "claim-1": _claim_doc("CLAIM-1", order_id="ORDER-1", days_ago=2),
     }
@@ -167,29 +178,25 @@ async def test_devoluciones_derives_missing_returned_quantity_from_single_order_
     }
     dispatcher = _dispatcher(db)
 
-    result = await dispatcher.execute(
-        _context(
-            "ZELERDATA_DEVOLUCIONES",
-            {
-                "fecha_inicio": "2026-06-01",
-                "fecha_final": "2026-06-15",
-                "id_publicaciones": ["MLA1"],
-                "encabezados": "si",
-            },
+    with pytest.raises(FormulaDataUnavailableError, match="ZELERDATA_DEVOLUCIONES") as error:
+        await dispatcher.execute(
+            _context(
+                "ZELERDATA_DEVOLUCIONES",
+                {
+                    "fecha_inicio": "2026-06-01",
+                    "fecha_final": "2026-06-15",
+                    "id_publicaciones": ["MLA1"],
+                    "encabezados": "si",
+                },
+            )
         )
-    )
-
-    assert result.values == [
-        ["ID PUBLICACION", "SKU", "UNIDADES DEVUELTAS", "TITULO"],
-        ["MLA1", "SKU-1", 2, "Returned item"],
-    ]
+    assert "returned quantity" in str(error.value)
 
 
 @pytest.mark.asyncio
-async def test_devoluciones_derives_missing_returned_quantity_from_raw_order_items_line() -> None:
+async def test_devoluciones_never_falls_back_to_raw_order_item_quantity() -> None:
     db = FakeDb()
-    _mark_read_model_fresh(db, CLAIMS_READ_MODEL)
-    _mark_read_model_fresh(db, ORDERS_READ_MODEL)
+    _mark_devoluciones_reconciled(db)
     db["claims"].documents = {
         "claim-1": _claim_doc("CLAIM-1", order_id="ORDER-1", days_ago=2, item_id="MLA1"),
     }
@@ -213,29 +220,25 @@ async def test_devoluciones_derives_missing_returned_quantity_from_raw_order_ite
     }
     dispatcher = _dispatcher(db)
 
-    result = await dispatcher.execute(
-        _context(
-            "ZELERDATA_DEVOLUCIONES",
-            {
-                "fecha_inicio": "2026-06-01",
-                "fecha_final": "2026-06-15",
-                "id_publicaciones": ["MLA1"],
-                "encabezados": "si",
-            },
+    with pytest.raises(FormulaDataUnavailableError, match="ZELERDATA_DEVOLUCIONES") as error:
+        await dispatcher.execute(
+            _context(
+                "ZELERDATA_DEVOLUCIONES",
+                {
+                    "fecha_inicio": "2026-06-01",
+                    "fecha_final": "2026-06-15",
+                    "id_publicaciones": ["MLA1"],
+                    "encabezados": "si",
+                },
+            )
         )
-    )
-
-    assert result.values == [
-        ["ID PUBLICACION", "SKU", "UNIDADES DEVUELTAS", "TITULO"],
-        ["MLA1", "RAW-SKU-1", 4, "Raw returned item"],
-    ]
+    assert "returned quantity" in str(error.value)
 
 
 @pytest.mark.asyncio
-async def test_devoluciones_derives_missing_returned_quantity_from_matching_order_line() -> None:
+async def test_devoluciones_never_falls_back_to_matching_order_line_quantity() -> None:
     db = FakeDb()
-    _mark_read_model_fresh(db, CLAIMS_READ_MODEL)
-    _mark_read_model_fresh(db, ORDERS_READ_MODEL)
+    _mark_devoluciones_reconciled(db)
     db["claims"].documents = {
         "claim-1": _claim_doc("CLAIM-1", order_id="ORDER-1", days_ago=2, item_id="MLA2"),
     }
@@ -250,29 +253,25 @@ async def test_devoluciones_derives_missing_returned_quantity_from_matching_orde
     }
     dispatcher = _dispatcher(db)
 
-    result = await dispatcher.execute(
-        _context(
-            "ZELERDATA_DEVOLUCIONES",
-            {
-                "fecha_inicio": "2026-06-01",
-                "fecha_final": "2026-06-15",
-                "id_publicaciones": ["MLA2"],
-                "encabezados": "si",
-            },
+    with pytest.raises(FormulaDataUnavailableError, match="ZELERDATA_DEVOLUCIONES") as error:
+        await dispatcher.execute(
+            _context(
+                "ZELERDATA_DEVOLUCIONES",
+                {
+                    "fecha_inicio": "2026-06-01",
+                    "fecha_final": "2026-06-15",
+                    "id_publicaciones": ["MLA2"],
+                    "encabezados": "si",
+                },
+            )
         )
-    )
-
-    assert result.values == [
-        ["ID PUBLICACION", "SKU", "UNIDADES DEVUELTAS", "TITULO"],
-        ["MLA2", "SKU-2", 3, "Second item"],
-    ]
+    assert "returned quantity" in str(error.value)
 
 
 @pytest.mark.asyncio
 async def test_devoluciones_blocks_missing_quantity_with_ambiguous_order_scope() -> None:
     db = FakeDb()
-    _mark_read_model_fresh(db, CLAIMS_READ_MODEL)
-    _mark_read_model_fresh(db, ORDERS_READ_MODEL)
+    _mark_devoluciones_reconciled(db)
     db["claims"].documents = {
         "claim-1": _claim_doc("CLAIM-1", order_id="ORDER-1", days_ago=2),
     }
@@ -305,8 +304,7 @@ async def test_devoluciones_blocks_missing_quantity_with_ambiguous_order_scope()
 @pytest.mark.asyncio
 async def test_devoluciones_fails_closed_when_claim_order_is_absent() -> None:
     db = FakeDb()
-    _mark_read_model_fresh(db, CLAIMS_READ_MODEL)
-    _mark_read_model_fresh(db, ORDERS_READ_MODEL)
+    _mark_devoluciones_reconciled(db)
     db["claims"].documents = {
         "claim-1": _claim_doc(
             "CLAIM-1",
@@ -331,6 +329,53 @@ async def test_devoluciones_fails_closed_when_claim_order_is_absent() -> None:
         )
 
     assert "matching order" in str(error.value)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("interleaving", ["stale", "republished"])
+async def test_devoluciones_revalidates_marker_revision_after_fact_reads(
+    interleaving: str,
+) -> None:
+    db = FakeDb()
+    _mark_devoluciones_reconciled(db)
+    marker = db["sheets_read_model_freshness"].documents["seller-1:devoluciones"]
+
+    def mutate_marker() -> None:
+        if interleaving == "stale":
+            marker["state"] = "stale"
+            marker["valid_until"] = NOW
+        else:
+            marker["revision"] = "attempt-republished"
+            marker["proof_fingerprint"] = "proof-republished"
+
+    claims = MutatingFindCollection(mutate=mutate_marker)
+    claims.documents = {
+        "claim-1": _claim_doc(
+            "CLAIM-1",
+            order_id="ORDER-1",
+            days_ago=2,
+            returned_quantity=1,
+            item_id="MLA1",
+        )
+    }
+    db.collections["claims"] = claims
+    db["orders"].documents = {
+        "ORDER-1": _order_doc(
+            "ORDER-1",
+            sku="sku-1",
+            item_id="MLA1",
+            title="Returned item",
+            quantity=1,
+        )
+    }
+
+    with pytest.raises(FormulaDataUnavailableError, match="ZELERDATA_DEVOLUCIONES"):
+        await _dispatcher(db).execute(
+            _context(
+                "ZELERDATA_DEVOLUCIONES",
+                {"fecha_inicio": "2026-06-01", "fecha_final": "2026-06-15"},
+            )
+        )
 
 
 @pytest.mark.asyncio
@@ -502,7 +547,7 @@ async def test_tiempoactiva_uses_item_status_state_history_not_current_row_guess
         (
             "ZELERDATA_DEVOLUCIONES",
             {"fecha_inicio": "2026-06-01", "fecha_final": "2026-06-15"},
-            CLAIMS_READ_MODEL,
+            "devoluciones",
         ),
         ("ZELERDATA_PUBLICACIONESDESCUIDADAS", {}, ITEM_FORMULA_ROWS_READ_MODEL),
         ("ZELERDATA_TIEMPOACTIVA", {"id_publicaciones": ["MLA1"]}, ITEM_STATUS_STATES_READ_MODEL),
@@ -527,7 +572,7 @@ async def test_returns_histories_formulas_require_fresh_read_model_marker(
         (
             "ZELERDATA_DEVOLUCIONES",
             {"fecha_inicio": "2026-06-01", "fecha_final": "2026-06-15"},
-            CLAIMS_READ_MODEL,
+            "devoluciones",
         ),
         ("ZELERDATA_PUBLICACIONESDESCUIDADAS", {}, ITEM_FORMULA_ROWS_READ_MODEL),
         ("ZELERDATA_TIEMPOACTIVA", {"id_publicaciones": ["MLA1"]}, ITEM_STATUS_STATES_READ_MODEL),
@@ -537,7 +582,10 @@ async def test_returns_histories_formulas_reject_stale_read_model_marker(
     formula: str, args: dict[str, Any], read_model: str
 ) -> None:
     db = FakeDb()
-    _mark_read_model_fresh(db, read_model, fresh_until=NOW - timedelta(days=1))
+    if formula == "ZELERDATA_DEVOLUCIONES":
+        _mark_devoluciones_reconciled(db, valid_until=NOW)
+    else:
+        _mark_read_model_fresh(db, read_model, fresh_until=NOW - timedelta(days=1))
     dispatcher = _dispatcher(db)
 
     with pytest.raises(FormulaDataUnavailableError, match=formula) as error:
@@ -548,7 +596,7 @@ async def test_returns_histories_formulas_reject_stale_read_model_marker(
 
 
 @pytest.mark.asyncio
-async def test_devoluciones_requires_fresh_orders_after_claims_are_fresh() -> None:
+async def test_devoluciones_requires_joint_marker_when_legacy_claim_marker_is_fresh() -> None:
     db = FakeDb()
     _mark_read_model_fresh(db, CLAIMS_READ_MODEL)
     dispatcher = _dispatcher(db)
@@ -561,8 +609,174 @@ async def test_devoluciones_requires_fresh_orders_after_claims_are_fresh() -> No
             )
         )
 
-    assert ORDERS_READ_MODEL in str(error.value)
-    assert "freshness/reconciliation" in str(error.value)
+    assert "joint" in str(error.value)
+
+
+@pytest.mark.asyncio
+async def test_devoluciones_uses_only_enclosing_unexpired_joint_marker() -> None:
+    db = FakeDb()
+    _mark_devoluciones_reconciled(db)
+    db["claims"].documents = {
+        "claim-1": _claim_doc(
+            "CLAIM-1",
+            order_id="ORDER-1",
+            days_ago=1,
+            item_id="MLA1",
+            returned_quantity=1,
+        )
+    }
+    db["orders"].documents = {
+        "ORDER-1": _order_doc(
+            "ORDER-1",
+            sku="sku-1",
+            item_id="MLA1",
+            title="Returned item",
+            quantity=1,
+        )
+    }
+
+    result = await _dispatcher(db).execute(
+        _context(
+            "ZELERDATA_DEVOLUCIONES",
+            {"fecha_inicio": "2026-06-01", "fecha_final": "2026-06-15"},
+        )
+    )
+
+    assert result.values == [["MLA1", "SKU-1", 1, "Returned item"]]
+    assert db["sheets_read_model_freshness"].last_find_filter == {
+        "_id": "seller-1:devoluciones",
+        "seller_id": "seller-1",
+        "read_model": "devoluciones",
+        "state": "reconciled",
+        "revision": "attempt-original",
+        "proof_fingerprint": "proof-original",
+        "$expr": {"$gt": ["$valid_until", "$$NOW"]},
+    }
+
+
+@pytest.mark.parametrize(
+    ("marker_changes", "reason"),
+    [
+        ({"date_from": datetime(2026, 6, 2, tzinfo=UTC)}, "late"),
+        ({"reconciled_until": datetime(2026, 6, 15, tzinfo=UTC)}, "early"),
+        ({"date_from": datetime(2026, 6, 20, tzinfo=UTC)}, "disjoint"),
+        ({"valid_until": NOW}, "expired"),
+        ({"state": "stale"}, "stale"),
+        ({"reconciled_until": None}, "uncertain"),
+        ({"fresh_until": datetime(2026, 6, 15, tzinfo=UTC)}, "inconsistent"),
+        ({"source": "legacy_marker"}, "wrong-source"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_devoluciones_rejects_late_disjoint_expired_or_uncertain_joint_marker(
+    marker_changes: dict[str, Any], reason: str
+) -> None:
+    db = FakeDb()
+    _mark_devoluciones_reconciled(db, **marker_changes)
+
+    with pytest.raises(FormulaDataUnavailableError, match="ZELERDATA_DEVOLUCIONES"):
+        await _dispatcher(db).execute(
+            _context(
+                "ZELERDATA_DEVOLUCIONES",
+                {"fecha_inicio": "2026-06-01", "fecha_final": "2026-06-15"},
+            )
+        )
+
+    assert reason
+
+
+@pytest.mark.asyncio
+async def test_devoluciones_rejects_separate_legacy_claim_and_order_markers() -> None:
+    db = FakeDb()
+    _mark_read_model_fresh(db, CLAIMS_READ_MODEL)
+    _mark_read_model_fresh(db, ORDERS_READ_MODEL)
+
+    with pytest.raises(FormulaDataUnavailableError, match="ZELERDATA_DEVOLUCIONES") as error:
+        await _dispatcher(db).execute(
+            _context(
+                "ZELERDATA_DEVOLUCIONES",
+                {"fecha_inicio": "2026-06-01", "fecha_final": "2026-06-15"},
+            )
+        )
+
+    assert "joint" in str(error.value)
+
+
+@pytest.mark.asyncio
+async def test_devoluciones_claim_range_is_half_open_at_next_utc_midnight() -> None:
+    db = FakeDb()
+    _mark_devoluciones_reconciled(db)
+    db["claims"].documents = {
+        "included": _claim_doc(
+            "INCLUDED",
+            order_id="ORDER-1",
+            days_ago=0,
+            item_id="MLA1",
+            returned_quantity=1,
+        ),
+        "excluded": {
+            **_claim_doc(
+                "EXCLUDED",
+                order_id="ORDER-2",
+                days_ago=0,
+                item_id="MLA2",
+                returned_quantity=9,
+            ),
+            "date_created": datetime(2026, 6, 16, tzinfo=UTC),
+        },
+    }
+    db["orders"].documents = {
+        "ORDER-1": _order_doc("ORDER-1", sku="sku-1", item_id="MLA1", title="Included", quantity=1),
+        "ORDER-2": _order_doc("ORDER-2", sku="sku-2", item_id="MLA2", title="Excluded", quantity=1),
+    }
+
+    result = await _dispatcher(db).execute(
+        _context(
+            "ZELERDATA_DEVOLUCIONES",
+            {"fecha_inicio": "2026-06-01", "fecha_final": "2026-06-15"},
+        )
+    )
+
+    assert result.values == [["MLA1", "SKU-1", 1, "Included"]]
+
+
+@pytest.mark.asyncio
+async def test_devoluciones_formula_has_no_silent_five_thousand_cap() -> None:
+    db = FakeDb()
+    _mark_devoluciones_reconciled(db)
+    db["claims"].documents = {
+        f"claim-{index:05d}": {
+            **_claim_doc(
+                f"CLAIM-{index:05d}",
+                order_id=f"ORDER-{index:05d}",
+                days_ago=1,
+                item_id="MLA1",
+                returned_quantity=1,
+            ),
+            "date_created": NOW - timedelta(days=1) + timedelta(microseconds=index),
+        }
+        for index in range(5001)
+    }
+    db["orders"].documents = {
+        f"ORDER-{index:05d}": _order_doc(
+            f"ORDER-{index:05d}",
+            sku="sku-1",
+            item_id="MLA1",
+            title="Returned item",
+            quantity=1,
+        )
+        for index in range(5001)
+    }
+
+    result = await _dispatcher(db).execute(
+        _context(
+            "ZELERDATA_DEVOLUCIONES",
+            {"fecha_inicio": "2026-06-01", "fecha_final": "2026-06-15"},
+        )
+    )
+
+    assert result.values == [["MLA1", "SKU-1", 5001, "Returned item"]]
+    assert result.meta["claims_count"] == 5001
 
 
 def _dispatcher(db: FakeDb) -> FormulaDispatcher:
@@ -588,6 +802,27 @@ def _mark_read_model_fresh(
         "updated_at": NOW,
         "schema_version": 1,
     }
+
+
+def _mark_devoluciones_reconciled(db: FakeDb, **changes: Any) -> None:
+    marker = {
+        "_id": "seller-1:devoluciones",
+        "seller_id": "seller-1",
+        "read_model": "devoluciones",
+        "state": "reconciled",
+        "date_from": datetime(2026, 6, 1, tzinfo=UTC),
+        "fresh_until": datetime(2026, 6, 16, tzinfo=UTC),
+        "reconciled_until": datetime(2026, 6, 16, tzinfo=UTC),
+        "last_event_synced_at": datetime(2026, 6, 1, tzinfo=UTC),
+        "valid_until": NOW + timedelta(minutes=30),
+        "updated_at": NOW,
+        "source": "zelerdata_devoluciones_joint_reconcile",
+        "revision": "attempt-original",
+        "proof_fingerprint": "proof-original",
+        "schema_version": 1,
+    }
+    marker.update(changes)
+    db["sheets_read_model_freshness"].documents["seller-1:devoluciones"] = marker
 
 
 def _context(formula: str, args: dict[str, Any]) -> FormulaExecutionContext:
@@ -704,8 +939,19 @@ def _item_row(
 
 def _matches(doc: dict[str, Any], filter_spec: dict[str, Any]) -> bool:
     for key, expected in filter_spec.items():
+        if key == "$and":
+            if not all(_matches(doc, branch) for branch in expected):
+                return False
+            continue
         if key == "$or":
             if not any(_matches(doc, branch) for branch in expected):
+                return False
+            continue
+        if key == "$expr":
+            left, right = expected["$gt"]
+            left_value = _dotted_value(doc, str(left).removeprefix("$"))
+            right_value = NOW if right == "$$NOW" else right
+            if left_value is None or left_value <= right_value:
                 return False
             continue
         value = _dotted_value(doc, key)
@@ -716,6 +962,10 @@ def _matches(doc: dict[str, Any], filter_spec: dict[str, Any]) -> bool:
                 if "$ne" in expected and value == expected["$ne"]:
                     return False
                 if "$gte" in expected and value < expected["$gte"]:
+                    return False
+                if "$gt" in expected and value <= expected["$gt"]:
+                    return False
+                if "$lt" in expected and value >= expected["$lt"]:
                     return False
                 if "$lte" in expected and value > expected["$lte"]:
                     return False

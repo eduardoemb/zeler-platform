@@ -26,7 +26,9 @@ This final docs/verification slice closes the chained `zelerdata-missing-formula
 ## Command shape
 
 ```bash
-uv run python -m infra.operations.zelerdata_read_model_reconcile \
+sudo docker compose --file /opt/zeler-platform/docker-compose.yml \
+  exec -T --workdir /app sheets-worker \
+  /app/.venv/bin/python -m infra.operations.zelerdata_read_model_reconcile \
   --seller-id <seller> \
   --date-from 2026-06-01 \
   --date-to 2026-06-04 \
@@ -38,7 +40,9 @@ uv run python -m infra.operations.zelerdata_read_model_reconcile \
 Observed pause-basis repair dry-run:
 
 ```bash
-uv run python -m infra.operations.zelerdata_read_model_reconcile \
+sudo docker compose --file /opt/zeler-platform/docker-compose.yml \
+  exec -T --workdir /app sheets-worker \
+  /app/.venv/bin/python -m infra.operations.zelerdata_read_model_reconcile \
   --seller-id <seller> \
   --date-from 2026-06-01 \
   --date-to 2026-06-04 \
@@ -47,6 +51,50 @@ uv run python -m infra.operations.zelerdata_read_model_reconcile \
   --repair-observed-pause-basis \
   --max-items 100
 ```
+
+## DEVOLUCIONES production range and lease
+
+`ZELERDATA_DEVOLUCIONES` readiness is one exact non-unioned `devoluciones` marker
+covering claims and the joined orders. It has a 30-minute marker lease.
+Formula readers fail closed when the marker expires or does not enclose the
+requested range; separate claims/orders markers cannot be combined.
+
+For the pilot, scheduled reconciliation always verifies 2026-06-01 through the previous closed UTC day.
+It must not shrink accepted coverage. The service
+defaults make `2026-06-01` the historical start and `2026-07-09` the minimum
+accepted-through date; reviewed non-secret overrides may live in
+`/etc/zeler-platform/zelerdata-devoluciones-reconcile.env`. Overrides may only
+widen the accepted coverage. Invalid, reversed, shrinking, or open ranges fail
+without invoking the reconciliation command.
+
+The timer runs every 10 minutes, with at most one minute of random delay. The
+service has an eight-minute outer timeout and performs one bounded retry: two
+three-minute attempts separated by one minute. `Persistent=true` provides catch-up after downtime, and
+`OnFailure` invokes a sanitized journald alert. Missing wrapper, compose, or
+container paths fail visibly; they are not skipped by a path condition.
+
+Production rollout order is `plan → prestart → worker health → bind-claims`,
+then frozen-runtime dry-run, authorized write, and acceptance. The initial
+accepted half-open interval is
+`[2026-06-01T00:00:00Z, 2026-07-10T00:00:00Z)` and must report
+`expected/persisted/complete/missing = 9/9/9/0`. Capture an authenticated formula
+smoke or sanitized operator evidence with timestamp, exact inputs/result, and
+request/correlation ID. If neither is available, record
+`OPERATOR_EVIDENCE_PENDING`; do not report success.
+
+Enable scheduling last, after all acceptance evidence passes:
+
+```bash
+sudo systemctl enable --now zelerdata-devoluciones-reconcile.timer
+sudo journalctl -u zelerdata-devoluciones-reconcile.service \
+  -u zelerdata-devoluciones-reconcile-alert.service --since "30 minutes ago" \
+  --no-pager
+```
+
+Use **failure-conditional rollback** only after a failed deployment, topology,
+write, formula, or timer gate. Disable the timer, stale readiness through the
+topology rollback, restore the prior worker runtime/routing/schedule, and retain
+verified idempotent facts. Never roll back a successful release automatically.
 
 ## Flags
 
@@ -77,7 +125,7 @@ uv run python -m infra.operations.zelerdata_read_model_reconcile \
 |---|---|---|
 | `ZELERDATA_PREGUNTAS` | `questions` | Historical search/detail reconciliation must prove the requested date range and required answer/detail fields. Event-only freshness is not enough. |
 | `ZELERDATA_PREGUNTASKPI` | `questions` | Same historical reconciled marker requirement as `PREGUNTAS`; do not infer counts or dates from events alone. |
-| `ZELERDATA_DEVOLUCIONES` | `claims` plus `orders` | Claim coverage must be bounded by approved/reconciled order scope. Returned units use explicit positive `returned_quantity` only; unknown or unmapped quantities keep the formula unavailable. |
+| `ZELERDATA_DEVOLUCIONES` | Joint `devoluciones` marker over `claims` plus `orders` | One unexpired enclosing marker must prove the exact closed range. Returned units use explicit positive `return_quantity` only; unknown or unmapped quantities keep the formula unavailable. |
 | `ZELERDATA_CATALOGO_COMPLETO` | `catalog_product_snapshots` | Expected rows come from scoped item rows with distinct `catalog_product_id`; snapshots are fetched from `/products/{catalog_product_id}`. |
 | `ZELERDATA_CATALOGOBUYBOX` | `catalog_buybox_snapshots` | Expected rows come from scoped item rows with `catalog_product_id`; buybox snapshots are fetched from `/items/{item_id}/price_to_win?version=v2`. |
 

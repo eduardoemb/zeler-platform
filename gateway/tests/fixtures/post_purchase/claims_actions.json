@@ -1,0 +1,8 @@
+{
+  "_id": "post-purchase-claims-actions-1",
+  "topic": "post_purchase",
+  "resource": "/post-purchase/v1/claims/519988002/actions-history",
+  "user_id": 82453304,
+  "actions": ["claims_actions"],
+  "schema_version": 1
+}

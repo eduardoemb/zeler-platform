@@ -10,6 +10,16 @@ from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
+from zeler_platform_core.devoluciones_readiness import (
+    DevolucionesOperationContext,
+    acquire_devoluciones_operation,
+    finish_devoluciones_operation,
+    guarded_devoluciones_write,
+    maintain_devoluciones_heartbeat,
+    new_devoluciones_attempt_token,
+    stable_devoluciones_operation_id,
+)
+
 READ_MODELS: tuple[str, ...] = (
     "orders",
     "shipments",
@@ -93,6 +103,7 @@ _SOURCE_GATED_MODELS = frozenset(_SOURCE_DEFERRED_MODELS)
 _SOURCE_GATED_INTERVAL_AGGREGATE_MODELS = frozenset({"stock_time_metrics", "catalog_time_metrics"})
 _SOURCE_GATED_LEGACY_MODE = "legacy_imported"
 _SOURCE_GATED_OBSERVED_MODE = "observed_only"
+DEVOLUCIONES_MARKER_VALIDITY = timedelta(minutes=30)
 _SOURCE_GATED_SOURCES = frozenset(
     {
         "legacy_history_import",
@@ -323,6 +334,8 @@ class ExpectedReadModelCounts:
     refs: Mapping[str, frozenset[str]] = field(default_factory=dict, repr=False)
     truth_mode: Mapping[str, str] = field(default_factory=dict)
     issues: tuple[ReadModelIssue, ...] = ()
+    source_fingerprint: str | None = None
+    read_model_fingerprint: str | None = None
 
 
 @dataclass(frozen=True)
@@ -331,6 +344,8 @@ class HistoricalMeliExpectedCounts:
     refs: Mapping[str, frozenset[str]] = field(default_factory=dict, repr=False)
     truth_mode: Mapping[str, str] = field(default_factory=dict)
     issues: tuple[ReadModelIssue, ...] = ()
+    source_fingerprint: str | None = None
+    read_model_fingerprint: str | None = None
 
 
 @dataclass(frozen=True)
@@ -686,6 +701,8 @@ async def collect_expected_read_model_counts(
         }
     )
     issues: list[ReadModelIssue] = []
+    source_fingerprint: str | None = None
+    read_model_fingerprint: str | None = None
 
     source = historical_meli_source or _collect_historical_meli_expected_counts
     try:
@@ -702,6 +719,8 @@ async def collect_expected_read_model_counts(
         refs.update(historical.refs)
         truth_mode.update(historical.truth_mode)
         issues.extend(historical.issues)
+        source_fingerprint = historical.source_fingerprint
+        read_model_fingerprint = historical.read_model_fingerprint
 
     try:
         from zeler_sheets.sheetseller_backfill import (
@@ -760,6 +779,8 @@ async def collect_expected_read_model_counts(
         refs=refs,
         truth_mode=truth_mode,
         issues=tuple(issues),
+        source_fingerprint=source_fingerprint,
+        read_model_fingerprint=read_model_fingerprint,
     )
 
 
@@ -877,7 +898,10 @@ async def _collect_historical_meli_expected_counts(
 
 
 async def execute_reconciliation_write(
-    *, db: Any, request: ReconciliationRequest
+    *,
+    db: Any,
+    request: ReconciliationRequest,
+    operation: DevolucionesOperationContext,
 ) -> dict[str, int]:
     if request.dry_run or not request.write_enabled:
         return {}
@@ -913,6 +937,7 @@ async def execute_reconciliation_write(
         include_questions=True,
         include_claims=True,
         include_catalog_snapshots=True,
+        operation=operation,
     )
     _enforce_write_count_safety_controls(
         _write_counts_from_summary(summary), controls=request.controls
@@ -1151,7 +1176,12 @@ async def _collect_read_model_aggregate(
 
 
 async def write_complete_read_model_freshness_markers(
-    *, db: Any, request: ReconciliationRequest, summary: ReconciliationSummary
+    *,
+    db: Any,
+    request: ReconciliationRequest,
+    summary: ReconciliationSummary,
+    expected: ExpectedReadModelCounts | None = None,
+    operation: DevolucionesOperationContext,
 ) -> dict[str, int]:
     if request.dry_run or not request.write_enabled:
         return {}
@@ -1159,61 +1189,207 @@ async def write_complete_read_model_freshness_markers(
         return {}
     if not request.approved_runtime:
         raise ValueError("approved_runtime is required for marker write")
+    current_utc_day = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
+    if request.date_range.end_exclusive > current_utc_day:
+        raise ValueError("DEVOLUCIONES readiness requires a closed UTC range")
 
     written = 0
-    collection = db["sheets_read_model_freshness"]
-    for aggregate in summary.aggregates:
-        if aggregate.read_model not in _RECONCILED_MARKER_MODELS:
-            continue
-        if not _aggregate_has_complete_scoped_coverage(aggregate):
-            continue
-        if aggregate.read_model in {"price_history_snapshots", "stockout_snapshots"} and (
-            aggregate.expected_count is None or aggregate.expected_count <= 0
-        ):
-            continue
-        marker_id = f"{request.seller_id}:{aggregate.read_model}"
-        updated_at = datetime.now(UTC)
-        filter_spec = {
-            "_id": marker_id,
-            "seller_id": request.seller_id,
-            "read_model": aggregate.read_model,
-        }
-        if aggregate.read_model in _SOURCE_GATED_INTERVAL_AGGREGATE_MODELS:
-            date_from = request.date_range.start
-            reconciled_until = request.date_range.end_exclusive
-        else:
-            existing_marker = await collection.find_one(filter_spec)
-            if not _marker_range_can_merge(
-                existing_marker,
-                requested_start=request.date_range.start,
-                requested_end=request.date_range.end_exclusive,
+    devoluciones_written = 0
+
+    async def write(session: Any) -> None:
+        nonlocal devoluciones_written, written
+        collection = db["sheets_read_model_freshness"]
+        session_kwargs = {"session": session} if session is not None else {}
+        for aggregate in summary.aggregates:
+            if aggregate.read_model not in _RECONCILED_MARKER_MODELS:
+                continue
+            if aggregate.read_model == "claims":
+                continue
+            if not _aggregate_has_complete_scoped_coverage(aggregate):
+                continue
+            if aggregate.read_model in {"price_history_snapshots", "stockout_snapshots"} and (
+                aggregate.expected_count is None or aggregate.expected_count <= 0
             ):
                 continue
-            date_from, reconciled_until = _merged_marker_authoritative_range(
-                existing_marker,
-                requested_start=request.date_range.start,
-                requested_end=request.date_range.end_exclusive,
+            marker_id = f"{request.seller_id}:{aggregate.read_model}"
+            updated_at = datetime.now(UTC)
+            filter_spec = {
+                "_id": marker_id,
+                "seller_id": request.seller_id,
+                "read_model": aggregate.read_model,
+            }
+            if aggregate.read_model in _SOURCE_GATED_INTERVAL_AGGREGATE_MODELS:
+                date_from = request.date_range.start
+                reconciled_until = request.date_range.end_exclusive
+            else:
+                existing_marker = await collection.find_one(filter_spec, **session_kwargs)
+                if not _marker_range_can_merge(
+                    existing_marker,
+                    requested_start=request.date_range.start,
+                    requested_end=request.date_range.end_exclusive,
+                ):
+                    continue
+                date_from, reconciled_until = _merged_marker_authoritative_range(
+                    existing_marker,
+                    requested_start=request.date_range.start,
+                    requested_end=request.date_range.end_exclusive,
+                )
+            marker_fields: dict[str, Any] = {
+                "_id": marker_id,
+                "seller_id": request.seller_id,
+                "read_model": aggregate.read_model,
+                "state": "reconciled",
+                "date_from": date_from,
+                "fresh_until": reconciled_until,
+                "reconciled_until": reconciled_until,
+                "last_event_synced_at": date_from,
+                "updated_at": updated_at,
+                "source": "zelerdata_read_model_reconcile",
+                "schema_version": 1,
+            }
+            if aggregate.read_model in _SOURCE_GATED_MODELS:
+                marker_fields["coverage_basis"] = _SOURCE_GATED_LEGACY_MODE
+            await collection.update_one(
+                filter_spec,
+                {"$set": marker_fields},
+                upsert=True,
+                **session_kwargs,
             )
-        fresh_until = reconciled_until
-        last_event_synced_at = date_from
-        marker_fields: dict[str, Any] = {
-            "_id": marker_id,
-            "seller_id": request.seller_id,
-            "read_model": aggregate.read_model,
-            "state": "reconciled",
-            "date_from": date_from,
-            "fresh_until": fresh_until,
-            "reconciled_until": reconciled_until,
-            "last_event_synced_at": last_event_synced_at,
-            "updated_at": updated_at,
-            "source": "zelerdata_read_model_reconcile",
-            "schema_version": 1,
-        }
-        if aggregate.read_model in _SOURCE_GATED_MODELS:
-            marker_fields["coverage_basis"] = _SOURCE_GATED_LEGACY_MODE
-        await collection.update_one(filter_spec, {"$set": marker_fields}, upsert=True)
-        written += 1
-    return {"freshness_markers_written": written} if written else {}
+            written += 1
+
+        claims_aggregate = next(
+            (aggregate for aggregate in summary.aggregates if aggregate.read_model == "claims"),
+            None,
+        )
+        if claims_aggregate is None:
+            return
+        if not _request_encloses_required_devoluciones_coverage(
+            request=request,
+            operation=operation,
+        ):
+            return
+        expected_claim_ids, expected_read_model_fingerprint = _validated_devoluciones_marker_inputs(
+            expected=expected,
+            aggregate=claims_aggregate,
+            operation=operation,
+        )
+        from zeler_sheets.devoluciones_reconciliation import verify_devoluciones_read_model
+
+        await verify_devoluciones_read_model(
+            db=db,
+            seller_id=request.seller_id,
+            date_from=request.date_range.start,
+            date_to=request.date_range.end_exclusive,
+            expected_claim_ids=expected_claim_ids,
+            expected_read_model_fingerprint=expected_read_model_fingerprint,
+            session=session,
+        )
+        marker_id = f"{request.seller_id}:devoluciones"
+        await collection.update_one(
+            {
+                "_id": marker_id,
+                "seller_id": request.seller_id,
+                "read_model": "devoluciones",
+            },
+            [
+                {
+                    "$set": {
+                        "_id": marker_id,
+                        "seller_id": request.seller_id,
+                        "read_model": "devoluciones",
+                        "state": "reconciled",
+                        "date_from": request.date_range.start,
+                        "fresh_until": request.date_range.end_exclusive,
+                        "reconciled_until": request.date_range.end_exclusive,
+                        "last_event_synced_at": request.date_range.start,
+                        "valid_until": {
+                            "$dateAdd": {
+                                "startDate": "$$NOW",
+                                "unit": "second",
+                                "amount": int(DEVOLUCIONES_MARKER_VALIDITY.total_seconds()),
+                            }
+                        },
+                        "updated_at": "$$NOW",
+                        "source": "zelerdata_devoluciones_joint_reconcile",
+                        "revision": operation.attempt_token,
+                        "proof_fingerprint": expected_read_model_fingerprint,
+                        "schema_version": 1,
+                    }
+                }
+            ],
+            upsert=True,
+            **session_kwargs,
+        )
+        devoluciones_written = 1
+
+    await guarded_devoluciones_write(
+        db=db,
+        operation=operation,
+        seller_id=request.seller_id,
+        checkpoint={
+            "phase": "marker_publication",
+            "date_from": request.date_range.date_from,
+            "date_to": request.date_range.date_to,
+        },
+        writer=write,
+    )
+    counts: dict[str, int] = {}
+    if written:
+        counts["freshness_markers_written"] = written
+    if devoluciones_written:
+        counts["devoluciones_markers_written"] = devoluciones_written
+    return counts
+
+
+def _request_encloses_required_devoluciones_coverage(
+    *,
+    request: ReconciliationRequest,
+    operation: DevolucionesOperationContext,
+) -> bool:
+    required_start = operation.required_coverage_start
+    required_end = operation.required_coverage_end
+    if required_start is None and required_end is None:
+        return True
+    if required_start is None or required_end is None or required_start >= required_end:
+        return False
+    return (
+        request.date_range.start <= required_start
+        and request.date_range.end_exclusive >= required_end
+    )
+
+
+def _validated_devoluciones_marker_inputs(
+    *,
+    expected: ExpectedReadModelCounts | None,
+    aggregate: ReadModelAggregate,
+    operation: DevolucionesOperationContext,
+) -> tuple[frozenset[str], str]:
+    if expected is None:
+        raise RuntimeError("authoritative DEVOLUCIONES expected inventory is required")
+    expected_count = expected.counts.get("claims")
+    expected_ids = expected.refs.get("claims")
+    if (
+        isinstance(expected_count, bool)
+        or not isinstance(expected_count, int)
+        or expected_count < 0
+        or expected_ids is None
+        or len(expected_ids) != expected_count
+        or expected.truth_mode.get("claims") != "expected"
+        or not expected.source_fingerprint
+        or not expected.read_model_fingerprint
+        or expected.source_fingerprint != operation.source_fingerprint
+        or any(issue.read_model == "claims" for issue in expected.issues)
+    ):
+        raise RuntimeError("authoritative DEVOLUCIONES source proof is incomplete")
+    if (
+        aggregate.expected_count != expected_count
+        or aggregate.persisted_count != expected_count
+        or aggregate.missing_count != 0
+        or aggregate.issues
+        or aggregate.error_count != 0
+    ):
+        raise RuntimeError("DEVOLUCIONES claims reconciliation is incomplete")
+    return expected_ids, expected.read_model_fingerprint
 
 
 def _aggregate_has_complete_scoped_coverage(aggregate: ReadModelAggregate) -> bool:
@@ -1611,23 +1787,67 @@ async def _run_cli(args: argparse.Namespace) -> ReconciliationSummary:
             summary = replace(summary, repair_counts=repair_counts)
         if request.write_enabled:
             _enforce_write_safety_controls(summary=summary, controls=request.controls)
-            write_counts = await execute_reconciliation_write(db=db, request=request)
-            _enforce_write_count_safety_controls(write_counts, controls=request.controls)
-            if request.repair_observed_pause_basis:
-                repair_counts = await execute_observed_pause_basis_repair(db=db, request=request)
-                _enforce_write_count_safety_controls(repair_counts, controls=request.controls)
-            expected = await collect_expected_read_model_counts(db=db, request=request)
-            refreshed_summary = await collect_reconciliation_counts(
-                db=db, request=request, expected=expected
+            operation_id = stable_devoluciones_operation_id(
+                "reconciliation",
+                (
+                    f"{request.seller_id}:{request.date_range.date_from}:"
+                    f"{request.date_range.date_to}:write"
+                ),
             )
-            marker_counts = await write_complete_read_model_freshness_markers(
-                db=db, request=request, summary=refreshed_summary
+            operation = await acquire_devoluciones_operation(
+                db=db,
+                seller_id=request.seller_id,
+                scope="devoluciones",
+                operation_id=operation_id,
+                attempt_token=new_devoluciones_attempt_token(),
+                source_fingerprint=expected.source_fingerprint,
             )
-            summary = replace(
-                refreshed_summary,
-                write_counts={**write_counts, **marker_counts},
-                repair_counts=repair_counts,
-            )
+            async with maintain_devoluciones_heartbeat(db=db, operation=operation):
+                try:
+                    write_counts = await execute_reconciliation_write(
+                        db=db, request=request, operation=operation
+                    )
+                    _enforce_write_count_safety_controls(write_counts, controls=request.controls)
+                    if request.repair_observed_pause_basis:
+                        repair_counts = await execute_observed_pause_basis_repair(
+                            db=db, request=request
+                        )
+                        _enforce_write_count_safety_controls(
+                            repair_counts, controls=request.controls
+                        )
+                    expected = await collect_expected_read_model_counts(db=db, request=request)
+                    if expected.source_fingerprint != operation.source_fingerprint:
+                        raise RuntimeError(
+                            "claim source fingerprint changed before marker publication"
+                        )
+                    refreshed_summary = await collect_reconciliation_counts(
+                        db=db, request=request, expected=expected
+                    )
+                    marker_counts = await write_complete_read_model_freshness_markers(
+                        db=db,
+                        request=request,
+                        summary=refreshed_summary,
+                        expected=expected,
+                        operation=operation,
+                    )
+                    summary = replace(
+                        refreshed_summary,
+                        write_counts={**write_counts, **marker_counts},
+                        repair_counts=repair_counts,
+                    )
+                except Exception:
+                    await finish_devoluciones_operation(
+                        db=db,
+                        operation=operation,
+                        succeeded=False,
+                        error_code="reconciliation_failed",
+                    )
+                    raise
+                await finish_devoluciones_operation(
+                    db=db,
+                    operation=operation,
+                    succeeded=True,
+                )
         if bool(args.emit_phase2_contract):
             summary = replace(
                 summary,
@@ -1782,6 +2002,18 @@ def _historical_meli_expected_counts(summary: Any) -> HistoricalMeliExpectedCoun
         refs=refs,
         truth_mode=truth_mode,
         issues=tuple(issues),
+        source_fingerprint=(
+            str(value).strip()
+            if (value := _summary_value(summary, "claim_source_fingerprint")) is not None
+            and str(value).strip()
+            else None
+        ),
+        read_model_fingerprint=(
+            str(value).strip()
+            if (value := _summary_value(summary, "claim_read_model_fingerprint")) is not None
+            and str(value).strip()
+            else None
+        ),
     )
 
 

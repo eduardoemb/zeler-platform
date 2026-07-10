@@ -38,8 +38,8 @@ class FakeQueue:
 
 
 class FakeChannel:
-    def __init__(self, queue: FakeQueue) -> None:
-        self.queue = queue
+    def __init__(self) -> None:
+        self.queues: dict[str, FakeQueue] = {}
 
     async def set_qos(self, *, prefetch_count: int) -> None:
         return None
@@ -47,17 +47,19 @@ class FakeChannel:
     async def declare_exchange(self, *args: Any, **kwargs: Any) -> object:
         return object()
 
-    async def declare_queue(self, *args: Any, **kwargs: Any) -> FakeQueue:
-        return self.queue
+    async def declare_queue(self, name: str, **kwargs: Any) -> FakeQueue:
+        return self.queues.setdefault(name, FakeQueue())
 
 
 class FakeConnection:
-    def __init__(self, queue: FakeQueue) -> None:
-        self.queue = queue
+    def __init__(self) -> None:
+        self.channel_obj = FakeChannel()
+        self.channel_kwargs: list[dict[str, Any]] = []
         self.closed = False
 
-    async def channel(self) -> FakeChannel:
-        return FakeChannel(self.queue)
+    async def channel(self, **kwargs: Any) -> FakeChannel:
+        self.channel_kwargs.append(dict(kwargs))
+        return self.channel_obj
 
     async def close(self) -> None:
         self.closed = True
@@ -75,10 +77,10 @@ RUNNERS = (
 async def test_consumer_sets_is_ready_after_consume_starts(
     monkeypatch: pytest.MonkeyPatch, module_name: str, runner_cls: type[Any]
 ) -> None:
-    queue = FakeQueue()
+    connection = FakeConnection()
 
     async def connect_robust(url: str) -> FakeConnection:
-        return FakeConnection(queue)
+        return connection
 
     module = __import__(module_name, fromlist=["aio_pika"])
     monkeypatch.setattr(module.aio_pika, "connect_robust", connect_robust)
@@ -87,7 +89,15 @@ async def test_consumer_sets_is_ready_after_consume_starts(
     await runner.start()
 
     assert runner.is_ready is True
-    assert queue.consumer == runner.handle_message
+    assert connection.channel_kwargs == (
+        [{"on_return_raises": True}] if module_name == "zeler_sheets.consumer" else [{}]
+    )
+    assert connection.channel_obj.queues[runner.config.queue_name].consumer == runner.handle_message
+    if module_name == "zeler_sheets.consumer":
+        assert (
+            connection.channel_obj.queues["zeler.sheets.claims"].consumer
+            == runner.handle_claims_message
+        )
     await runner.close()
     assert runner.is_ready is False
 

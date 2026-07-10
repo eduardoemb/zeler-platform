@@ -619,6 +619,185 @@ or restore the previous Vercel runtime env and redeploy the app.
 
 ---
 
+## 5d. ZELERDATA DEVOLUCIONES ordered rollout and scheduled reconciliation
+
+This runbook is for the approved pilot seller `82453304`. It preserves one
+exact, non-unioned closed range from 2026-06-01 through the previous closed UTC
+day. The accepted production interval is exactly
+`[2026-06-01T00:00:00Z, 2026-07-10T00:00:00Z)` for the initial rollout. The
+scheduled job then extends the same enclosing range; it never replaces it with
+a yesterday-only marker.
+
+### 1. Pre-mutation gates
+
+Stop immediately unless the approved target, seller, image digest, indexes,
+worker environment, and topology plan are all confirmed with sanitized output.
+The Sheets module must retain `motor`, and its worker image must contain the
+frozen `/app/.venv/bin/python` interpreter and reconciliation module. The
+runtime requires these exact gateway scopes:
+
+- `GET /post-purchase/v1/claims/search`
+- `GET /post-purchase/v1/claims/*`
+- `GET /post-purchase/v2/claims/*/returns`
+- `GET /orders/*`
+
+Build production images only through the approved Cloud Build path. Never
+install packages while the reconciliation service is running.
+
+### 2. Install artifacts without activation
+
+From an approved checkout, copy these files to a temporary directory on the VM:
+
+- `infra/gce/zelerdata-devoluciones-reconcile.sh`
+- `infra/gce/zelerdata-devoluciones-topology.sh`
+- `infra/gce/systemd/zelerdata-devoluciones-reconcile.service`
+- `infra/gce/systemd/zelerdata-devoluciones-reconcile.timer`
+- `infra/gce/systemd/zelerdata-devoluciones-reconcile-alert.service`
+
+Then install the exact reviewed artifacts:
+
+```bash
+sudo install -m 0755 /tmp/zelerdata-devoluciones-topology.sh \
+  /opt/zeler-platform/zelerdata-devoluciones-topology.sh
+sudo install -m 0755 /tmp/zelerdata-devoluciones-reconcile.sh \
+  /opt/zeler-platform/zelerdata-devoluciones-reconcile.sh
+sudo install -m 0644 /tmp/zelerdata-devoluciones-reconcile.service \
+  /etc/systemd/system/zelerdata-devoluciones-reconcile.service
+sudo install -m 0644 /tmp/zelerdata-devoluciones-reconcile.timer \
+  /etc/systemd/system/zelerdata-devoluciones-reconcile.timer
+sudo install -m 0644 /tmp/zelerdata-devoluciones-reconcile-alert.service \
+  /etc/systemd/system/zelerdata-devoluciones-reconcile-alert.service
+sudo systemctl daemon-reload
+sudo systemctl is-enabled zelerdata-devoluciones-reconcile.timer || true
+```
+
+The expected pre-acceptance state is `disabled`. Do not start or enable the
+timer in this step. The checked-in service defaults are seller `82453304`,
+historical range start `2026-06-01`, and accepted-through date `2026-07-09`.
+An optional `/etc/zeler-platform/zelerdata-devoluciones-reconcile.env` may
+override only reviewed, non-secret range configuration. Overrides may widen
+coverage earlier or advance the accepted-through date; they cannot move the
+accepted start later or the baseline accepted end earlier. Invalid or open
+ranges fail with a sanitized `runtime_config_invalid` journal event.
+The environment file cannot override the approved seller: systemd reapplies
+`82453304` after loading it, and the wrapper validates the value before running.
+
+### 3. Deploy and order the topology cutover
+
+Apply the reviewed schemas/indexes and deploy the approved image before
+topology mutation. Run the topology sequence in this order:
+
+```bash
+sudo /opt/zeler-platform/zelerdata-devoluciones-topology.sh plan
+cd /opt/zeler-platform
+sudo docker compose stop sheets-worker
+sudo /opt/zeler-platform/zelerdata-devoluciones-topology.sh prestart --execute
+sudo docker compose up -d sheets-worker
+sudo docker compose ps sheets-worker
+sudo /opt/zeler-platform/zelerdata-devoluciones-topology.sh bind-claims --execute
+```
+
+The required order is `plan` → stopped-worker `prestart --execute` → worker
+health/passive claims consumer → `bind-claims --execute`. Do not bind claims if
+the worker health gate fails. The topology wrapper never depends on a host
+virtualenv. It runs the packaged `infra.rabbitmq` module through an exact
+`docker compose run --rm --no-deps -T` one-shot using the frozen worker
+interpreter; therefore `prestart` remains runnable while the long-lived worker
+is stopped. The sudo-controlled ephemeral topology one-shot adds `--user 0:0`
+only so its process can open the root-owned host Docker socket needed for
+worker health/stop gates. This is the entire privilege boundary: the persistent
+worker remains `appuser` (UID 1001) and receives neither a root user override nor
+`privileged` mode. The persistent worker never mounts the Docker socket. Topology
+output and failures remain sanitized; the wrapper never enables shell tracing or
+prints environment values.
+
+### 4. Run the dry-run and authorized write gates
+
+Use only the frozen worker runtime. The dry-run omits all write confirmations:
+
+```bash
+sudo docker compose --file /opt/zeler-platform/docker-compose.yml \
+  exec -T --workdir /app sheets-worker \
+  /app/.venv/bin/python -m infra.operations.zelerdata_read_model_reconcile \
+  --seller-id 82453304 --date-from 2026-06-01 --date-to 2026-07-09
+```
+
+Review the sanitized dry-run result. Only after it passes, run the same command
+with all write gates:
+
+```bash
+sudo docker compose --file /opt/zeler-platform/docker-compose.yml \
+  exec -T --workdir /app sheets-worker \
+  /app/.venv/bin/python -m infra.operations.zelerdata_read_model_reconcile \
+  --seller-id 82453304 --date-from 2026-06-01 --date-to 2026-07-09 \
+  --write --confirm-approved-runtime --confirm-production-write
+```
+
+### Acceptance gate
+
+Do not activate scheduling until every item below passes:
+
+1. Sanitized reconciliation evidence reports
+   `expected/persisted/complete/missing = 9/9/9/0` for the exact initial
+   interval.
+2. The database contains one exact non-unioned `devoluciones` marker enclosing
+   the accepted interval with a 30-minute marker lease. Never combine disjoint
+   markers or infer broader coverage.
+3. Dispatcher-equivalent formula proof succeeds for the exact accepted dates.
+4. Capture either an authenticated app/formula smoke or sanitized operator
+   evidence containing timestamp, seller, exact formula/date inputs, result,
+   no-error state, and request/correlation ID. If neither path is available,
+   record `OPERATOR_EVIDENCE_PENDING`; do not hang and do not pass acceptance.
+
+Enable the timer LAST, only after all four acceptance checks pass:
+
+```bash
+sudo systemctl enable --now zelerdata-devoluciones-reconcile.timer
+```
+
+The timer runs every 10 minutes with at most one minute of random delay. The
+service has an eight-minute outer timeout and one bounded retry: two three-minute
+attempts separated by one minute, followed by an `OnFailure` alert. This keeps successful renewal inside the 30-minute marker
+lease while providing natural catch-up after downtime through `Persistent=true`.
+Every run re-verifies 2026-06-01 through the previous closed UTC day, so it
+must not shrink accepted coverage.
+
+### Monitoring
+
+Use sanitized systemd evidence; never print environment files or credentials:
+
+```bash
+sudo systemctl list-timers zelerdata-devoluciones-reconcile.timer
+sudo systemctl status zelerdata-devoluciones-reconcile.timer --no-pager
+sudo journalctl -u zelerdata-devoluciones-reconcile.service \
+  -u zelerdata-devoluciones-reconcile-alert.service --since "30 minutes ago" \
+  --no-pager
+```
+
+Alert on `DEVOLUCIONES_RECONCILIATION_FAILED`, `runtime_config_invalid`,
+`runtime_path_missing`, or the absence of a successful renewal before the
+30-minute marker lease expires.
+
+### Failure-conditional rollback
+
+This is a **failure-conditional rollback**. Never roll back a successful
+release automatically. If and only if deployment, topology, write, formula, or
+timer acceptance fails:
+
+1. Disable the timer if it was activated.
+2. Run `sudo /opt/zeler-platform/zelerdata-devoluciones-topology.sh rollback --execute`
+   so readiness becomes stale before routing changes. Rollback stops the worker,
+   fences active reconciliation operations, completes topology cleanup, and
+   invalidates readiness again so an in-flight republish cannot survive.
+3. Restore the prior worker image and prior schedule/routing as documented by
+   the approved release record.
+4. Retain verified idempotent claim/order facts; do not delete proven data.
+5. Confirm the joint marker remains stale and capture sanitized failure
+   evidence. A rehearsal must be non-destructive or must restore the candidate
+   and repeat the full acceptance gate.
+
+---
+
 ## 6. Rollback
 
 ### Rollback a bad image

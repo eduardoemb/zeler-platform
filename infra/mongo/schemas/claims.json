@@ -17,8 +17,29 @@
           "null"
         ]
       },
+      "claim_version": {
+        "bsonType": [
+          "int",
+          "long",
+          "null"
+        ]
+      },
       "date_created": {
         "bsonType": "date"
+      },
+      "item_id": {
+        "bsonType": [
+          "string",
+          "long",
+          "int",
+          "null"
+        ]
+      },
+      "last_updated": {
+        "bsonType": [
+          "date",
+          "null"
+        ]
       },
       "order_id": {
         "bsonType": [
@@ -27,11 +48,64 @@
           "int"
         ]
       },
+      "productive": {
+        "bsonType": [
+          "bool",
+          "null"
+        ]
+      },
       "resolution": {
         "bsonType": [
           "object",
           "null"
         ]
+      },
+      "return_context_type": {
+        "bsonType": [
+          "string",
+          "null"
+        ]
+      },
+      "return_id": {
+        "bsonType": [
+          "string",
+          "long",
+          "int",
+          "null"
+        ]
+      },
+      "return_last_updated": {
+        "bsonType": [
+          "date",
+          "null"
+        ]
+      },
+      "return_quantity_basis": {
+        "enum": [
+          "v2_return_order",
+          "verified_low_cost_no_row",
+          null
+        ]
+      },
+      "return_status": {
+        "bsonType": [
+          "string",
+          "null"
+        ]
+      },
+      "return_subtype": {
+        "bsonType": [
+          "string",
+          "null"
+        ]
+      },
+      "returned_quantity": {
+        "bsonType": [
+          "int",
+          "long",
+          "null"
+        ],
+        "minimum": 1
       },
       "schema_version": {
         "bsonType": "int"
@@ -50,7 +124,12 @@
         "bsonType": "string"
       },
       "type": {
-        "bsonType": "string"
+        "enum": [
+          "mediations",
+          "returns",
+          "fulfillment",
+          "cancel_purchase"
+        ]
       }
     },
     "required": [

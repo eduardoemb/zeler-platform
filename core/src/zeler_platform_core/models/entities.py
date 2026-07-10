@@ -541,6 +541,7 @@ class ItemStatusState(UtcDatetimeMixin, SellerScopedDocument):
 class OrderItem(UtcDatetimeMixin, PriceMixin):
     item_id: str
     variation_id: str | None = None
+    title: str | None = None
     sku: str | None = None
     seller_sku: str | None = None
     seller_custom_field: str | None = None
@@ -555,7 +556,9 @@ class OrderItem(UtcDatetimeMixin, PriceMixin):
     def _coerce_item_id(cls, value: object) -> str:
         return _coerce_str(value)
 
-    @field_validator("variation_id", "sku", "seller_sku", "seller_custom_field", mode="before")
+    @field_validator(
+        "variation_id", "title", "sku", "seller_sku", "seller_custom_field", mode="before"
+    )
     @classmethod
     def _coerce_optional_identity(cls, value: object) -> object:
         if value is None:
@@ -843,13 +846,22 @@ class Claim(UtcDatetimeMixin, SellerScopedDocument):
     item_id: str | None = None
     order_id: str
     returned_quantity: int | None = None
+    claim_version: int | None = None
+    last_updated: datetime | None = None
+    return_id: str | None = None
+    return_last_updated: datetime | None = None
+    return_status: str | None = None
+    return_subtype: str | None = None
+    return_context_type: str | None = None
+    return_quantity_basis: Literal["v2_return_order", "verified_low_cost_no_row"] | None = None
+    productive: bool | None = None
     status: ClaimStatus
     stage: ClaimStage
     type: ClaimType
     date_created: datetime
     resolution: dict[str, Any] | None = None
 
-    @field_validator("buyer_id", "item_id", "order_id", mode="before")
+    @field_validator("buyer_id", "item_id", "order_id", "return_id", mode="before")
     @classmethod
     def _coerce_ids(cls, value: object) -> object:
         return None if value is None else _coerce_str(value)
@@ -861,3 +873,8 @@ class Claim(UtcDatetimeMixin, SellerScopedDocument):
             msg = "returned_quantity must be positive"
             raise ValueError(msg)
         return value
+
+    @field_validator("type", mode="before")
+    @classmethod
+    def _canonical_claim_type(cls, value: object) -> object:
+        return "returns" if value == "return" else value

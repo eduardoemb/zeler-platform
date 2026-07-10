@@ -6,5 +6,9 @@
   {
     "keys": {"seller_id": 1, "state": 1, "fresh_until": -1},
     "options": {"name": "idx_sheets_read_model_freshness_seller_state_until"}
+  },
+  {
+    "keys": {"seller_id": 1, "state": 1, "valid_until": 1},
+    "options": {"name": "idx_sheets_read_model_freshness_seller_state_valid_until"}
   }
 ]

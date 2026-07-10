@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 from collections.abc import Iterable
+from contextlib import nullcontext
 from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol
 from urllib.parse import parse_qsl, urlsplit
@@ -9,9 +12,18 @@ from urllib.parse import parse_qsl, urlsplit
 import httpx
 
 from zeler_bootstrap.state_machine import BootstrapStateMachine
+from zeler_platform_core.devoluciones_readiness import (
+    DevolucionesLeaseLostError,
+    DevolucionesOperationContext,
+    acquire_devoluciones_operation,
+    finish_devoluciones_operation,
+    guarded_devoluciones_write,
+    maintain_devoluciones_heartbeat,
+    new_devoluciones_attempt_token,
+    stable_devoluciones_operation_id,
+)
 from zeler_platform_core.meli_timezones import resolve_meli_timezone
 from zeler_platform_core.models import (
-    Claim,
     Item,
     Message,
     Order,
@@ -20,6 +32,12 @@ from zeler_platform_core.models import (
     ShipmentRealShippingCostProjection,
 )
 from zeler_platform_core.models.base import current_schema_version
+from zeler_sheets.claim_projection import persist_claim_projection
+from zeler_sheets.devoluciones_reconciliation import (
+    GatewayDevolucionesSource,
+    collect_devoluciones_snapshot,
+)
+from zeler_sheets.event_persistence import SheetsEventPersistence
 from zeler_sheets.sheetseller_backfill import run_item_detail_enrichment, run_sheetseller_backfill
 
 MELI_ITEMS_BATCH_SIZE = 20
@@ -68,8 +86,11 @@ class InMemoryPublisher:
         )
 
 
-async def _upsert(collection: BootstrapCollection, document: dict[str, Any]) -> None:
-    await collection.update_one({"_id": document["_id"]}, {"$set": document}, upsert=True)
+async def _upsert(
+    collection: BootstrapCollection, document: dict[str, Any], *, session: Any = None
+) -> None:
+    kwargs = {"session": session} if session is not None else {}
+    await collection.update_one({"_id": document["_id"]}, {"$set": document}, upsert=True, **kwargs)
 
 
 def _chunks(items: list[str], size: int) -> Iterable[list[str]]:
@@ -94,6 +115,7 @@ def _normalize_order_items(
             "unit_price": raw_item.get("unit_price"),
         }
         _copy_optional_identity(order_item, "variation_id", raw_item, item)
+        _copy_optional_identity(order_item, "title", raw_item, item)
         _copy_optional_identity(order_item, "sku", raw_item, item)
         _copy_optional_identity(order_item, "seller_sku", raw_item, item)
         _copy_optional_identity(order_item, "seller_custom_field", raw_item, item)
@@ -302,49 +324,109 @@ class OrdersStage:
         self.database = database
         self.days = days
 
-    async def run(self, job: dict[str, Any], state_machine: BootstrapStateMachine) -> None:
+    async def run(
+        self,
+        job: dict[str, Any],
+        state_machine: BootstrapStateMachine,
+        operation: DevolucionesOperationContext | None = None,
+    ) -> None:
         seller_id = str(job["seller_id"])
         date_from = (_now() - timedelta(days=self.days)).isoformat()
         page = await self.gateway.get(
             "/orders/search", {"seller": seller_id, "date_from": date_from}
         )
+        results = [raw for raw in page.get("results", []) if isinstance(raw, dict)]
+        source_fingerprint = _orders_stage_source_fingerprint(results)
         order_ids: list[str] = []
         shipment_ids: list[str] = []
         message_targets: list[dict[str, str]] = []
-        for raw in page.get("results", []):
-            shipment_id = raw.get("shipment_id") or raw.get("shipping", {}).get("id")
-            order_id = str(raw["id"])
-            pack_id = raw.get("pack_id") or order_id
-            order = Order.model_validate(
-                {
-                    "_id": raw["id"],
-                    "seller_id": seller_id,
-                    "buyer_id": raw.get("buyer_id") or raw.get("buyer", {}).get("id"),
-                    "status": raw["status"],
-                    "date_created": raw["date_created"],
-                    "date_closed": raw.get("date_closed"),
-                    "total_amount": raw["total_amount"],
-                    "items": _normalize_order_items(
-                        raw.get("items") or raw.get("order_items", []),
-                        sale_fee_synced_at=(
-                            raw.get("last_updated")
-                            or raw.get("date_closed")
-                            or raw.get("date_created")
-                            or _now()
-                        ),
-                    ),
-                    "shipment_id": shipment_id,
-                    "meli_pack_id": _meli_pack_id(raw),
-                    "schema_version": 1,
-                }
+        owns_operation = operation is None
+        if operation is None:
+            operation = await _acquire_bootstrap_stage_operation(
+                database=self.database,
+                job=job,
+                stage=self.name,
+                source_fingerprint=source_fingerprint,
             )
-            document = order.model_dump(by_alias=True, mode="json")
-            document["items"] = [_without_none_values(item) for item in document.get("items", [])]
-            await _upsert(self.database["orders"], document)
-            order_ids.append(order.id)
-            message_targets.append({"pack_id": str(pack_id), "order_id": order.id})
-            if order.shipment_id is not None:
-                shipment_ids.append(order.shipment_id)
+        try:
+            if owns_operation and operation.source_fingerprint != source_fingerprint:
+                raise DevolucionesLeaseLostError(
+                    "order source fingerprint changed before bootstrap writes"
+                )
+            remaining_order_ids = (
+                _remaining_orders_stage_ids(results, operation.checkpoint)
+                if owns_operation
+                else {str(raw["id"]) for raw in results}
+            )
+            heartbeat_scope = (
+                maintain_devoluciones_heartbeat(db=self.database, operation=operation)
+                if owns_operation
+                else nullcontext()
+            )
+            async with heartbeat_scope:
+                for raw in results:
+                    shipment_id = raw.get("shipment_id") or raw.get("shipping", {}).get("id")
+                    order_id = str(raw["id"])
+                    pack_id = raw.get("pack_id") or order_id
+                    order = Order.model_validate(
+                        {
+                            "_id": raw["id"],
+                            "seller_id": seller_id,
+                            "buyer_id": raw.get("buyer_id") or raw.get("buyer", {}).get("id"),
+                            "status": raw["status"],
+                            "date_created": raw["date_created"],
+                            "date_closed": raw.get("date_closed"),
+                            "total_amount": raw["total_amount"],
+                            "items": _normalize_order_items(
+                                raw.get("items") or raw.get("order_items", []),
+                                sale_fee_synced_at=(
+                                    raw.get("last_updated")
+                                    or raw.get("date_closed")
+                                    or raw.get("date_created")
+                                    or _now()
+                                ),
+                            ),
+                            "shipment_id": shipment_id,
+                            "meli_pack_id": _meli_pack_id(raw),
+                            "schema_version": 1,
+                        }
+                    )
+                    document = order.model_dump(by_alias=True, mode="json")
+                    document["items"] = [
+                        _without_none_values(item) for item in document.get("items", [])
+                    ]
+
+                    if order.id in remaining_order_ids:
+
+                        async def write(session: Any, document: dict[str, Any] = document) -> None:
+                            await _upsert(self.database["orders"], document, session=session)
+
+                        await guarded_devoluciones_write(
+                            db=self.database,
+                            operation=operation,
+                            seller_id=seller_id,
+                            checkpoint={"stage": self.name, "order_id": order.id},
+                            writer=write,
+                        )
+                    order_ids.append(order.id)
+                    message_targets.append({"pack_id": str(pack_id), "order_id": order.id})
+                    if order.shipment_id is not None:
+                        shipment_ids.append(order.shipment_id)
+        except Exception:
+            if owns_operation:
+                await finish_devoluciones_operation(
+                    db=self.database,
+                    operation=operation,
+                    succeeded=False,
+                    error_code="bootstrap_orders_failed",
+                )
+            raise
+        if owns_operation:
+            await finish_devoluciones_operation(
+                db=self.database,
+                operation=operation,
+                succeeded=True,
+            )
         await state_machine.update_cursor(
             self.name,
             {
@@ -353,6 +435,30 @@ class OrdersStage:
                 "message_targets": message_targets,
             },
         )
+
+
+def _orders_stage_source_fingerprint(results: list[dict[str, Any]]) -> str:
+    rows = sorted(
+        (
+            str(raw.get("id") or ""),
+            str(raw.get("last_updated") or raw.get("date_closed") or raw.get("date_created") or ""),
+        )
+        for raw in results
+    )
+    encoded = json.dumps(rows, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _remaining_orders_stage_ids(
+    results: list[dict[str, Any]], checkpoint: dict[str, Any]
+) -> set[str]:
+    order_ids = [str(raw["id"]) for raw in results]
+    checkpoint_order_id = str(checkpoint.get("order_id") or "").strip()
+    if not checkpoint_order_id:
+        return set(order_ids)
+    if checkpoint.get("stage") != "orders" or checkpoint_order_id not in order_ids:
+        raise DevolucionesLeaseLostError("bootstrap order checkpoint is outside source inventory")
+    return set(order_ids[order_ids.index(checkpoint_order_id) + 1 :])
 
 
 class QuestionsStage:
@@ -550,33 +656,98 @@ class ClaimsStage:
         self.gateway = gateway
         self.database = database
 
-    async def run(self, job: dict[str, Any], state_machine: BootstrapStateMachine) -> None:
-        order_ids: Iterable[str] = job.get("checkpoints", {}).get("orders", {}).get("order_ids", [])
+    async def run(
+        self,
+        job: dict[str, Any],
+        state_machine: BootstrapStateMachine,
+        operation: DevolucionesOperationContext | None = None,
+    ) -> None:
+        seller_id = str(job["seller_id"])
+        end = _now()
+        start = end - timedelta(days=90)
+        snapshot = await collect_devoluciones_snapshot(
+            source=GatewayDevolucionesSource(_BootstrapMeliItemGatewayAdapter(self.gateway)),
+            seller_id=seller_id,
+            start=start,
+            end=end,
+        )
+        projections = list(snapshot.projections)
+        source_fingerprint = snapshot.source_fingerprint
+        owns_operation = operation is None
+        if operation is None:
+            operation = await _acquire_bootstrap_stage_operation(
+                database=self.database,
+                job=job,
+                stage=self.name,
+                source_fingerprint=source_fingerprint,
+            )
+        if operation.source_fingerprint != source_fingerprint:
+            raise DevolucionesLeaseLostError(
+                "claim source fingerprint changed before bootstrap writes"
+            )
         claim_ids: list[str] = []
-        missing_claim_searches: list[str] = []
-        for order_id in order_ids:
-            try:
-                page = await self.gateway.get(
-                    "/post-purchase/v1/claims/search", {"order_id": str(order_id)}
+        try:
+            heartbeat_scope = (
+                maintain_devoluciones_heartbeat(db=self.database, operation=operation)
+                if owns_operation
+                else nullcontext()
+            )
+            async with heartbeat_scope:
+                persistence = SheetsEventPersistence(db=self.database)
+                for order in snapshot.orders:
+                    await persistence.persist(
+                        event_type="orders.updated",
+                        seller_id=seller_id,
+                        resource=order,
+                        operation=operation,
+                    )
+                checkpoint_claim_id = str(operation.checkpoint.get("claim_id") or "").strip()
+                checkpoint_seen = not checkpoint_claim_id
+                for document in projections:
+                    claim_id = str(document["_id"])
+                    if not checkpoint_seen:
+                        checkpoint_seen = claim_id == checkpoint_claim_id
+                        continue
+                    await persist_claim_projection(
+                        db=self.database,
+                        document=document,
+                        operation=operation,
+                    )
+                    claim_ids.append(claim_id)
+        except Exception:
+            if owns_operation:
+                await finish_devoluciones_operation(
+                    db=self.database,
+                    operation=operation,
+                    succeeded=False,
+                    error_code="bootstrap_claims_failed",
                 )
-            except httpx.HTTPStatusError as exc:
-                if exc.response.status_code == 404:
-                    missing_claim_searches.append(str(order_id))
-                    continue
-                raise
-            for raw in page.get("data", []):
-                document = Claim.model_validate(
-                    {
-                        **raw,
-                        "_id": raw["id"],
-                        "seller_id": job["seller_id"],
-                        "order_id": raw.get("order_id") or raw.get("resource_id") or order_id,
-                        "schema_version": 1,
-                    }
-                ).model_dump(by_alias=True, mode="python")
-                await _upsert(self.database["claims"], document)
-                claim_ids.append(str(document["_id"]))
+            raise
+        if owns_operation:
+            await finish_devoluciones_operation(
+                db=self.database,
+                operation=operation,
+                succeeded=True,
+            )
         await state_machine.update_cursor(
             self.name,
-            {"claim_ids": claim_ids, "missing_claim_searches": missing_claim_searches},
+            {"claim_ids": claim_ids, "missing_claim_searches": []},
         )
+
+
+async def _acquire_bootstrap_stage_operation(
+    *,
+    database: BootstrapDatabase,
+    job: dict[str, Any],
+    stage: str,
+    source_fingerprint: str | None = None,
+) -> DevolucionesOperationContext:
+    stable_source_id = f"{job.get('_id')}:{stage}"
+    return await acquire_devoluciones_operation(
+        db=database,
+        seller_id=str(job["seller_id"]),
+        scope="devoluciones",
+        operation_id=stable_devoluciones_operation_id("bootstrap", stable_source_id),
+        attempt_token=new_devoluciones_attempt_token(),
+        source_fingerprint=source_fingerprint,
+    )

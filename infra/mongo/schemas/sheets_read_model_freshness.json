@@ -28,12 +28,24 @@
           "null"
         ]
       },
+      "proof_fingerprint": {
+        "bsonType": [
+          "string",
+          "null"
+        ]
+      },
       "read_model": {
         "bsonType": "string"
       },
       "reconciled_until": {
         "bsonType": [
           "date",
+          "null"
+        ]
+      },
+      "revision": {
+        "bsonType": [
+          "string",
           "null"
         ]
       },
@@ -63,6 +75,12 @@
       },
       "updated_at": {
         "bsonType": "date"
+      },
+      "valid_until": {
+        "bsonType": [
+          "date",
+          "null"
+        ]
       }
     },
     "required": [

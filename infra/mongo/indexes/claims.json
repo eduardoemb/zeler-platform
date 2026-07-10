@@ -1,4 +1,5 @@
 [
   {"keys":{"seller_id":1,"status":1,"date_created":-1},"options":{"name":"idx_claims_seller_status_date_created"}},
-  {"keys":{"order_id":1},"options":{"name":"idx_claims_order_id"}}
+  {"keys":{"order_id":1},"options":{"name":"idx_claims_order_id"}},
+  {"keys":{"seller_id":1,"type":1,"date_created":1,"_id":1},"options":{"name":"idx_claims_seller_type_date_id"}}
 ]

@@ -228,6 +228,11 @@ async def _write_audit_log(
 
 
 def _scope_matches(*, method: str, path: str, allowed_scopes: list[str]) -> bool:
+    normalized_path = path.split("?", 1)[0]
+    if normalized_path.startswith("/post-purchase/v1/claims/") and normalized_path.endswith(
+        "/detail"
+    ):
+        return False
     requested = f"{method.upper()} {path}"
     return any(fnmatchcase(requested, scope) for scope in allowed_scopes)
 

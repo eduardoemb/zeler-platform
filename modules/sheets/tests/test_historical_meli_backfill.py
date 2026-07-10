@@ -1,12 +1,20 @@
 from __future__ import annotations
 
+import inspect
 import json
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from typing import Any
+from uuid import uuid4
 
 import pytest
 from bson.decimal128 import Decimal128
 
+import zeler_sheets.claim_projection as claim_projection_module
+import zeler_sheets.event_persistence as event_persistence_module
+import zeler_sheets.historical_meli_backfill as historical_backfill_module
+from zeler_platform_core.devoluciones_readiness import DevolucionesOperationContext
+from zeler_sheets.claim_projection import ClaimProjectionError
 from zeler_sheets.historical_meli_backfill import (
     build_arg_parser,
     parse_inclusive_date_range,
@@ -14,6 +22,42 @@ from zeler_sheets.historical_meli_backfill import (
     sanitize_historical_meli_summary,
     validate_cli_safety,
 )
+
+
+@pytest.fixture(autouse=True)
+def _historical_fencing_test_harness(monkeypatch: pytest.MonkeyPatch) -> None:
+    operation = DevolucionesOperationContext(
+        seller_id="82453304",
+        scope="devoluciones",
+        operation_id="historical-unit-test",
+        attempt_token=uuid4().hex,
+        fence=1,
+        owns_lease=True,
+    )
+
+    async def acquire(**kwargs: Any) -> DevolucionesOperationContext:
+        operation.seller_id = str(kwargs["seller_id"])
+        operation.source_fingerprint = kwargs.get("source_fingerprint")
+        return operation
+
+    async def finish(**kwargs: Any) -> None:
+        del kwargs
+
+    async def guarded_write(**kwargs: Any) -> None:
+        result = kwargs["writer"](None)
+        if inspect.isawaitable(result):
+            await result
+
+    @asynccontextmanager
+    async def heartbeat(**kwargs: Any) -> Any:
+        del kwargs
+        yield
+
+    monkeypatch.setattr(historical_backfill_module, "acquire_devoluciones_operation", acquire)
+    monkeypatch.setattr(historical_backfill_module, "finish_devoluciones_operation", finish)
+    monkeypatch.setattr(historical_backfill_module, "maintain_devoluciones_heartbeat", heartbeat)
+    monkeypatch.setattr(event_persistence_module, "guarded_devoluciones_write", guarded_write)
+    monkeypatch.setattr(claim_projection_module, "guarded_devoluciones_write", guarded_write)
 
 
 class FakeReplaceResult:
@@ -275,6 +319,96 @@ class FakeCatalogGateway:
         if path == "/items/MLA1/price_to_win?version=v2":
             return _price_to_win_detail()
         raise AssertionError(f"Unexpected catalog gateway path: {path}")
+
+
+class FakeAuthoritativeClaimsSource:
+    def __init__(
+        self,
+        claims: list[dict[str, Any]],
+        *,
+        order_items: list[dict[str, Any]] | None = None,
+    ) -> None:
+        self.claims = [dict(claim) for claim in claims]
+        self.order_items = order_items
+        self.search_calls: list[dict[str, str | int]] = []
+
+    async def search_claims(
+        self, *, seller_id: str, params: dict[str, str | int]
+    ) -> dict[str, Any]:
+        del seller_id
+        self.search_calls.append(dict(params))
+        in_range = [
+            claim
+            for claim in self.claims
+            if str(claim.get("date_created", "")).startswith("2026-05-01")
+        ]
+        return {
+            "data": [
+                {
+                    "id": claim["id"],
+                    "last_updated": claim.get("last_updated", "2026-05-01T12:05:00+00:00"),
+                    "date_created": claim["date_created"],
+                    "type": claim["type"],
+                }
+                for claim in in_range
+            ],
+            "paging": {"offset": 0, "limit": 100, "total": len(in_range)},
+        }
+
+    async def get_claim(self, *, seller_id: str, claim_id: str) -> dict[str, Any]:
+        claim = next(claim for claim in self.claims if str(claim["id"]) == claim_id)
+        return {
+            **claim,
+            "claim_version": 1,
+            "last_updated": claim.get("last_updated", "2026-05-01T12:05:00+00:00"),
+            "players": [
+                {"user_id": seller_id, "role": "respondent", "type": "seller"},
+                {"user_id": "buyer-1", "role": "complainant", "type": "buyer"},
+            ],
+            "related_entities": claim.get("related_entities", []),
+        }
+
+    async def get_returns(self, *, seller_id: str, claim_id: str) -> dict[str, Any]:
+        del seller_id, claim_id
+        return {
+            "id": "return-1",
+            "status": "closed",
+            "subtype": "return_partial",
+            "last_updated": "2026-05-01T12:06:00+00:00",
+            "orders": [
+                {
+                    "order_id": "2001",
+                    "item_id": "MLA1",
+                    "context_type": "total",
+                    "return_quantity": "2.0",
+                    "total_quantity": 2,
+                }
+            ],
+        }
+
+    async def get_order(self, *, seller_id: str, order_id: str) -> dict[str, Any]:
+        assert order_id == "2001"
+        return {
+            **_order_detail(order_items=self.order_items),
+            "seller": {"id": seller_id},
+        }
+
+
+def _authoritative_claims_source(
+    gateway: FakeGateway, *, order_items: list[dict[str, Any]] | None = None
+) -> FakeAuthoritativeClaimsSource:
+    claims = gateway.claim_payloads or [
+        {
+            "id": "CLAIM-1",
+            "order_id": "2001",
+            "item_id": "MLA1",
+            "status": "closed",
+            "stage": "claim",
+            "type": "returns",
+            "date_created": "2026-05-01T12:00:00+00:00",
+        }
+    ]
+    return FakeAuthoritativeClaimsSource(claims, order_items=order_items)
 
 
 def test_parse_inclusive_date_range_uses_exclusive_next_day() -> None:
@@ -774,6 +908,7 @@ async def test_historical_backfill_reconciles_claims_bounded_by_order_scope() ->
         approved_runtime=True,
         max_orders=1,
         include_claims=True,
+        devoluciones_source=_authoritative_claims_source(gateway),
     )
 
     assert summary.claims_found == 1
@@ -781,23 +916,66 @@ async def test_historical_backfill_reconciles_claims_bounded_by_order_scope() ->
     assert summary.planned_claims == 1
     assert summary.written_claims == 1
     assert summary.claim_ids == ["CLAIM-1"]
-    assert db["claims"].documents["CLAIM-1"] == {
-        "_id": "CLAIM-1",
-        "seller_id": "82453304",
-        "order_id": "2001",
+    assert summary.claim_source_fingerprint
+    assert summary.claim_read_model_fingerprint
+    assert summary.claim_source_fingerprint != summary.claim_read_model_fingerprint
+    claim = db["claims"].documents["CLAIM-1"]
+    assert claim["seller_id"] == "82453304"
+    assert claim["order_id"] == "2001"
+    assert claim["item_id"] == "MLA1"
+    assert claim["type"] == "returns"
+    assert claim["returned_quantity"] == 2
+    assert claim["return_quantity_basis"] == "v2_return_order"
+    assert all("order_id=2001" not in path for _, path in gateway.calls)
+    assert "CLAIM-OUT-OF-RANGE" not in db["claims"].documents
+
+
+@pytest.mark.asyncio
+async def test_historical_backfill_persists_old_orders_hydrated_from_claim_inventory() -> None:
+    class OldOrderClaimsSource(FakeAuthoritativeClaimsSource):
+        async def get_returns(self, *, seller_id: str, claim_id: str) -> dict[str, Any]:
+            payload = await super().get_returns(seller_id=seller_id, claim_id=claim_id)
+            payload["orders"][0]["order_id"] = "1999"
+            return payload
+
+        async def get_order(self, *, seller_id: str, order_id: str) -> dict[str, Any]:
+            assert order_id == "1999"
+            return {
+                **_order_detail(),
+                "id": 1999,
+                "seller": {"id": seller_id},
+            }
+
+    db = FakeDb()
+    claim = {
+        "id": "CLAIM-OLD-ORDER",
+        "order_id": "1999",
         "item_id": "MLA1",
         "status": "closed",
         "stage": "claim",
         "type": "returns",
-        "date_created": datetime(2026, 5, 1, 12, 0, tzinfo=UTC),
-        "returned_quantity": 1,
-        "schema_version": 1,
+        "date_created": "2026-05-01T12:00:00+00:00",
     }
-    assert (
-        "82453304",
-        "/post-purchase/v1/claims/search?order_id=2001",
-    ) in gateway.calls
-    assert "CLAIM-OUT-OF-RANGE" not in db["claims"].documents
+
+    summary = await run_historical_meli_backfill(
+        db=db,
+        gateway=FakeGateway(),
+        order_detail_gateway=FakeOrderDetailGateway(),
+        seller_id="82453304",
+        date_from="2026-05-01",
+        date_to="2026-05-01",
+        dry_run=False,
+        approved_runtime=True,
+        max_orders=1,
+        include_claims=True,
+        devoluciones_source=OldOrderClaimsSource([claim]),
+    )
+
+    assert summary.claims_found == 1
+    assert summary.orders_found == 2
+    assert summary.written_orders == 2
+    assert set(db["orders"].documents) == {"1999", "2001"}
+    assert db["claims"].documents["CLAIM-OLD-ORDER"]["order_id"] == "1999"
 
 
 @pytest.mark.asyncio
@@ -828,6 +1006,7 @@ async def test_historical_backfill_derives_claim_returned_quantity_from_scoped_o
         approved_runtime=True,
         max_orders=1,
         include_claims=True,
+        devoluciones_source=_authoritative_claims_source(gateway),
     )
 
     assert db["claims"].documents["CLAIM-1"]["returned_quantity"] == 2
@@ -876,11 +1055,14 @@ async def test_historical_backfill_skips_explicit_returned_quantity_without_scop
         max_orders=1,
         max_items=1,
         include_claims=True,
+        devoluciones_source=_authoritative_claims_source(
+            gateway, order_items=order_detail_gateway.order_items
+        ),
     )
 
     claim = db["claims"].documents["CLAIM-1"]
-    assert "returned_quantity" not in claim
-    assert "item_id" not in claim
+    assert claim["returned_quantity"] == 2
+    assert claim["item_id"] == "MLA1"
 
 
 @pytest.mark.asyncio
@@ -915,23 +1097,25 @@ async def test_historical_backfill_drops_claim_scope_fields_when_item_mismatches
         ]
     )
 
-    await run_historical_meli_backfill(
-        db=db,
-        gateway=gateway,
-        order_detail_gateway=order_detail_gateway,
-        seller_id="82453304",
-        date_from="2026-05-01",
-        date_to="2026-05-01",
-        dry_run=False,
-        approved_runtime=True,
-        max_orders=1,
-        max_items=1,
-        include_claims=True,
-    )
+    with pytest.raises(ClaimProjectionError, match="unique order/item"):
+        await run_historical_meli_backfill(
+            db=db,
+            gateway=gateway,
+            order_detail_gateway=order_detail_gateway,
+            seller_id="82453304",
+            date_from="2026-05-01",
+            date_to="2026-05-01",
+            dry_run=False,
+            approved_runtime=True,
+            max_orders=1,
+            max_items=1,
+            include_claims=True,
+            devoluciones_source=_authoritative_claims_source(
+                gateway, order_items=order_detail_gateway.order_items
+            ),
+        )
 
-    claim = db["claims"].documents["CLAIM-1"]
-    assert "item_id" not in claim
-    assert "returned_quantity" not in claim
+    assert db["claims"].documents == {}
 
 
 @pytest.mark.asyncio
@@ -962,10 +1146,11 @@ async def test_historical_backfill_keeps_explicit_quantity_after_scope_resolutio
         approved_runtime=True,
         max_orders=1,
         include_claims=True,
+        devoluciones_source=_authoritative_claims_source(gateway),
     )
 
     claim = db["claims"].documents["CLAIM-1"]
-    assert claim["returned_quantity"] == 7
+    assert claim["returned_quantity"] == 2
     assert claim["item_id"] == "MLA1"
 
 
@@ -1007,6 +1192,7 @@ async def test_historical_backfill_filters_non_return_claim_types() -> None:
         approved_runtime=True,
         max_orders=1,
         include_claims=True,
+        devoluciones_source=_authoritative_claims_source(gateway),
     )
 
     assert summary.claims_found == 1

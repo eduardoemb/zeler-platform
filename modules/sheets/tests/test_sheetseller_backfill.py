@@ -1,15 +1,23 @@
 from __future__ import annotations
 
+import inspect
+from contextlib import asynccontextmanager
 from copy import deepcopy
 from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
+from uuid import uuid4
 
 import httpx
 import pytest
 from bson.decimal128 import Decimal128
 
+import zeler_sheets.sheetseller_backfill as sheetseller_backfill_module
 from zeler_platform_core.clients.meli_gateway_client import GatewayRateLimitError
+from zeler_platform_core.devoluciones_readiness import (
+    DevolucionesLeaseLostError,
+    DevolucionesOperationContext,
+)
 from zeler_platform_core.models import Order
 from zeler_sheets.formulas.dispatcher import FormulaDispatcher, FormulaExecutionContext
 from zeler_sheets.formulas.handlers_core import build_core_formula_handlers
@@ -46,6 +54,38 @@ from zeler_sheets.sheetseller_backfill import (
 )
 
 NOW = datetime(2026, 5, 13, 12, 0, tzinfo=UTC)
+
+
+@pytest.fixture(autouse=True)
+def _order_writer_fencing_test_harness(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def acquire(**kwargs: Any) -> DevolucionesOperationContext:
+        return DevolucionesOperationContext(
+            seller_id=str(kwargs["seller_id"]),
+            scope="devoluciones",
+            operation_id=str(kwargs["operation_id"]),
+            attempt_token=uuid4().hex,
+            fence=1,
+            owns_lease=True,
+            source_fingerprint=kwargs.get("source_fingerprint"),
+        )
+
+    async def finish(**kwargs: Any) -> None:
+        del kwargs
+
+    async def guarded_write(**kwargs: Any) -> None:
+        result = kwargs["writer"](None)
+        if inspect.isawaitable(result):
+            await result
+
+    @asynccontextmanager
+    async def heartbeat(**kwargs: Any) -> Any:
+        del kwargs
+        yield
+
+    monkeypatch.setattr(sheetseller_backfill_module, "acquire_devoluciones_operation", acquire)
+    monkeypatch.setattr(sheetseller_backfill_module, "finish_devoluciones_operation", finish)
+    monkeypatch.setattr(sheetseller_backfill_module, "guarded_devoluciones_write", guarded_write)
+    monkeypatch.setattr(sheetseller_backfill_module, "maintain_devoluciones_heartbeat", heartbeat)
 
 
 class FakeReplaceResult:
@@ -5222,6 +5262,336 @@ async def test_order_normalization_converted_documents_validate_against_order_mo
     assert model.date_closed == datetime(2025, 4, 30, 12, 5, tzinfo=UTC)
     assert model.total_amount == Decimal("20.50")
     assert model.items[0].unit_price == Decimal("10.25")
+
+
+@pytest.mark.asyncio
+async def test_order_identity_repair_owned_root_fingerprints_heartbeats_and_resumes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db = FakeDb(
+        [],
+        orders=[
+            _order_doc(
+                order_id,
+                date_created=datetime(2025, 4, 30, 12, tzinfo=UTC),
+                items=[{"item_id": item_id, "qty": 1, "unit_price": "10.00"}],
+            )
+            for order_id, item_id in (("order-1", "MLA1"), ("order-2", "MLA2"))
+        ],
+    )
+    gateway = FakeGateway(
+        {
+            f"/orders/order-{index}": {
+                "order_items": [
+                    {
+                        "item": {"id": f"MLA{index}", "variation_id": 100 + index},
+                        "seller_custom_field": f"custom-{index}",
+                    }
+                ]
+            }
+            for index in (1, 2)
+        }
+    )
+    fingerprints: list[str] = []
+    calls: list[tuple[str, Any]] = []
+
+    async def acquire(**kwargs: Any) -> DevolucionesOperationContext:
+        fingerprint = str(kwargs["source_fingerprint"])
+        fingerprints.append(fingerprint)
+        return DevolucionesOperationContext(
+            seller_id="82453304",
+            scope="devoluciones",
+            operation_id="identity-repair",
+            attempt_token=uuid4().hex,
+            fence=1,
+            owns_lease=True,
+            source_fingerprint=fingerprint,
+            checkpoint={"repair": "identity", "order_id": "order-1"},
+        )
+
+    @asynccontextmanager
+    async def heartbeat(**kwargs: Any) -> Any:
+        calls.append(("heartbeat_enter", kwargs["operation"].operation_id))
+        try:
+            yield
+        finally:
+            calls.append(("heartbeat_exit", kwargs["operation"].operation_id))
+
+    async def guarded_write(**kwargs: Any) -> None:
+        calls.append(("write", dict(kwargs["checkpoint"])))
+
+    monkeypatch.setattr(sheetseller_backfill_module, "acquire_devoluciones_operation", acquire)
+    monkeypatch.setattr(
+        sheetseller_backfill_module, "maintain_devoluciones_heartbeat", heartbeat, raising=False
+    )
+    monkeypatch.setattr(sheetseller_backfill_module, "guarded_devoluciones_write", guarded_write)
+
+    for _ in range(2):
+        summary = await run_order_identity_repair(
+            db=db,
+            gateway=gateway,
+            seller_id="82453304",
+            date_from="2025-04-30",
+            date_to="2025-05-01",
+            dry_run=False,
+        )
+        assert summary.orders_updated == 1
+
+    assert len(fingerprints[0]) == 64
+    assert fingerprints == [fingerprints[0], fingerprints[0]]
+    assert calls == [
+        ("heartbeat_enter", "identity-repair"),
+        ("write", {"order_id": "order-2", "repair": "identity"}),
+        ("heartbeat_exit", "identity-repair"),
+        ("heartbeat_enter", "identity-repair"),
+        ("write", {"order_id": "order-2", "repair": "identity"}),
+        ("heartbeat_exit", "identity-repair"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_order_normalization_owned_root_fingerprints_heartbeats_and_resumes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db = FakeDb(
+        [],
+        orders=[
+            _canonical_order_doc(
+                order_id,
+                date_created="2025-04-30T12:00:00.000+00:00",
+                total_amount="10.00",
+                items=[{"item_id": item_id, "qty": 1, "unit_price": "10.00"}],
+            )
+            for order_id, item_id in (("order-1", "MLA1"), ("order-2", "MLA2"))
+        ],
+    )
+    fingerprints: list[str] = []
+    calls: list[tuple[str, Any]] = []
+
+    async def acquire(**kwargs: Any) -> DevolucionesOperationContext:
+        fingerprint = str(kwargs["source_fingerprint"])
+        fingerprints.append(fingerprint)
+        return DevolucionesOperationContext(
+            seller_id="82453304",
+            scope="devoluciones",
+            operation_id="normalization",
+            attempt_token=uuid4().hex,
+            fence=1,
+            owns_lease=True,
+            source_fingerprint=fingerprint,
+            checkpoint={"repair": "normalization", "order_id": "order-1"},
+        )
+
+    @asynccontextmanager
+    async def heartbeat(**kwargs: Any) -> Any:
+        calls.append(("heartbeat_enter", kwargs["operation"].operation_id))
+        try:
+            yield
+        finally:
+            calls.append(("heartbeat_exit", kwargs["operation"].operation_id))
+
+    async def guarded_write(**kwargs: Any) -> None:
+        calls.append(("write", dict(kwargs["checkpoint"])))
+
+    monkeypatch.setattr(sheetseller_backfill_module, "acquire_devoluciones_operation", acquire)
+    monkeypatch.setattr(
+        sheetseller_backfill_module, "maintain_devoluciones_heartbeat", heartbeat, raising=False
+    )
+    monkeypatch.setattr(sheetseller_backfill_module, "guarded_devoluciones_write", guarded_write)
+
+    for _ in range(2):
+        summary = await run_order_normalization(
+            db=db,
+            seller_id="82453304",
+            date_from="2025-04-30",
+            date_to="2025-05-01",
+            dry_run=False,
+        )
+        assert summary.orders_updated == 1
+
+    assert len(fingerprints[0]) == 64
+    assert fingerprints == [fingerprints[0], fingerprints[0]]
+    assert calls == [
+        ("heartbeat_enter", "normalization"),
+        ("write", {"order_id": "order-2", "repair": "normalization"}),
+        ("heartbeat_exit", "normalization"),
+        ("heartbeat_enter", "normalization"),
+        ("write", {"order_id": "order-2", "repair": "normalization"}),
+        ("heartbeat_exit", "normalization"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_order_identity_takeover_restarts_when_same_ids_have_changed_remote_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db = FakeDb(
+        [],
+        orders=[
+            _order_doc(
+                order_id,
+                date_created=datetime(2025, 4, 30, 12, tzinfo=UTC),
+                items=[{"item_id": item_id, "qty": 1, "unit_price": "10.00"}],
+            )
+            for order_id, item_id in (("order-1", "MLA1"), ("order-2", "MLA2"))
+        ],
+    )
+    gateway = FakeGateway(
+        {
+            f"/orders/order-{index}": {
+                "order_items": [
+                    {
+                        "item": {"id": f"MLA{index}", "variation_id": 100 + index},
+                        "seller_custom_field": f"custom-{index}",
+                    }
+                ]
+            }
+            for index in (1, 2)
+        }
+    )
+    fingerprints: list[str] = []
+    writes: list[str] = []
+
+    async def acquire(**kwargs: Any) -> DevolucionesOperationContext:
+        fingerprint = str(kwargs["source_fingerprint"])
+        checkpoint = (
+            {"repair": "identity", "order_id": "order-1"}
+            if not fingerprints or fingerprint == fingerprints[0]
+            else {}
+        )
+        fingerprints.append(fingerprint)
+        return DevolucionesOperationContext(
+            seller_id="82453304",
+            scope="devoluciones",
+            operation_id="identity-repair",
+            attempt_token=uuid4().hex,
+            fence=len(fingerprints),
+            owns_lease=True,
+            source_fingerprint=fingerprint,
+            checkpoint=checkpoint,
+        )
+
+    async def guarded_write(**kwargs: Any) -> None:
+        writes.append(str(kwargs["checkpoint"]["order_id"]))
+
+    monkeypatch.setattr(sheetseller_backfill_module, "acquire_devoluciones_operation", acquire)
+    monkeypatch.setattr(sheetseller_backfill_module, "guarded_devoluciones_write", guarded_write)
+
+    await run_order_identity_repair(
+        db=db,
+        gateway=gateway,
+        seller_id="82453304",
+        date_from="2025-04-30",
+        date_to="2025-05-01",
+        dry_run=False,
+    )
+    gateway.payloads["/orders/order-1"] = {
+        "order_items": [
+            {
+                "item": {"id": "MLA1", "variation_id": 999},
+                "seller_custom_field": "custom-1",
+            }
+        ]
+    }
+    await run_order_identity_repair(
+        db=db,
+        gateway=gateway,
+        seller_id="82453304",
+        date_from="2025-04-30",
+        date_to="2025-05-01",
+        dry_run=False,
+    )
+
+    assert fingerprints[1] != fingerprints[0]
+    assert writes == ["order-2", "order-1", "order-2"]
+
+
+@pytest.mark.asyncio
+async def test_order_normalization_takeover_restarts_when_same_ids_have_changed_content(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db = FakeDb(
+        [],
+        orders=[
+            _canonical_order_doc(
+                order_id,
+                date_created="2025-04-30T12:00:00.000+00:00",
+                total_amount="10.00",
+                items=[{"item_id": item_id, "qty": 1, "unit_price": "10.00"}],
+            )
+            for order_id, item_id in (("order-1", "MLA1"), ("order-2", "MLA2"))
+        ],
+    )
+    fingerprints: list[str] = []
+    writes: list[str] = []
+
+    async def acquire(**kwargs: Any) -> DevolucionesOperationContext:
+        fingerprint = str(kwargs["source_fingerprint"])
+        checkpoint = (
+            {"repair": "normalization", "order_id": "order-1"}
+            if not fingerprints or fingerprint == fingerprints[0]
+            else {}
+        )
+        fingerprints.append(fingerprint)
+        return DevolucionesOperationContext(
+            seller_id="82453304",
+            scope="devoluciones",
+            operation_id="normalization",
+            attempt_token=uuid4().hex,
+            fence=len(fingerprints),
+            owns_lease=True,
+            source_fingerprint=fingerprint,
+            checkpoint=checkpoint,
+        )
+
+    async def guarded_write(**kwargs: Any) -> None:
+        writes.append(str(kwargs["checkpoint"]["order_id"]))
+
+    monkeypatch.setattr(sheetseller_backfill_module, "acquire_devoluciones_operation", acquire)
+    monkeypatch.setattr(sheetseller_backfill_module, "guarded_devoluciones_write", guarded_write)
+
+    await run_order_normalization(
+        db=db,
+        seller_id="82453304",
+        date_from="2025-04-30",
+        date_to="2025-05-01",
+        dry_run=False,
+    )
+    db["orders"].documents["order-1"]["total_amount"] = "11.00"
+    await run_order_normalization(
+        db=db,
+        seller_id="82453304",
+        date_from="2025-04-30",
+        date_to="2025-05-01",
+        dry_run=False,
+    )
+
+    assert fingerprints[1] != fingerprints[0]
+    assert writes == ["order-2", "order-1", "order-2"]
+
+
+@pytest.mark.parametrize("repair", ["identity", "normalization"])
+def test_standalone_order_root_rejects_foreign_checkpoint(repair: str) -> None:
+    orders = [{"_id": "order-1"}, {"_id": "order-2"}]
+    plans: list[tuple[dict[str, Any], dict[str, Any]]] = [
+        ({"_id": "order-1"}, {}),
+        ({"_id": "order-2"}, {}),
+    ]
+
+    with pytest.raises(DevolucionesLeaseLostError, match="outside source inventory"):
+        sheetseller_backfill_module._remaining_order_write_plans(
+            orders=orders,
+            write_plans=plans,
+            checkpoint={"repair": "other", "order_id": "order-1"},
+            repair=repair,
+        )
+
+    assert sheetseller_backfill_module._remaining_order_write_plans(
+        orders=orders,
+        write_plans=plans,
+        checkpoint={"repair": repair, "order_id": "order-1"},
+        repair=repair,
+    ) == [({"_id": "order-2"}, {})]
 
 
 def _item_doc(

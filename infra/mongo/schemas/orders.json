@@ -85,6 +85,12 @@
                 "null"
               ]
             },
+            "title": {
+              "bsonType": [
+                "string",
+                "null"
+              ]
+            },
             "unit_price": {
               "bsonType": [
                 "decimal",

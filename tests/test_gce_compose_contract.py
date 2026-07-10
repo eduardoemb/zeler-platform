@@ -24,6 +24,7 @@ SECRETS_SCRIPT = INFRA_GCE / "zeler-platform-secrets.sh"
 STARTUP_SCRIPT = INFRA_GCE / "platform-vm-startup.sh"
 DOCKER_MAINTENANCE_SCRIPT = INFRA_GCE / "docker-maintenance.sh"
 DOCKER_DEPLOY_PREFLIGHT_SCRIPT = INFRA_GCE / "docker-deploy-preflight.sh"
+DEVOLUCIONES_TOPOLOGY_WRAPPER = INFRA_GCE / "zelerdata-devoluciones-topology.sh"
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -210,6 +211,17 @@ class TestComposeServices:
         assert "platform_default" in networks, (
             f"Top-level network 'platform_default' not declared; got: {list(networks.keys())}"
         )
+
+    def test_sheets_worker_has_local_healthcheck_and_restart_safe_policy(self) -> None:
+        sheets_worker = load_compose()["services"]["sheets-worker"]
+
+        assert sheets_worker["restart"] == "unless-stopped"
+        healthcheck = sheets_worker["healthcheck"]
+        assert healthcheck["test"][0:2] == ["CMD", "python"]
+        assert "http://127.0.0.1:8080/health" in healthcheck["test"][3]
+        assert healthcheck["interval"] == "10s"
+        assert healthcheck["timeout"] == "3s"
+        assert healthcheck["retries"] == 6
 
 
 # ===========================================================================
@@ -465,6 +477,27 @@ class TestDockerRootDiskSafeguards:
         assert "zeler-docker-maintenance.service" in text
         assert "zeler-docker-maintenance.timer" in text
         assert "systemctl enable --now zeler-docker-maintenance.timer" in text
+
+    def test_exact_devoluciones_topology_wrapper_is_installed_without_startup_mutation(
+        self,
+    ) -> None:
+        wrapper = DEVOLUCIONES_TOPOLOGY_WRAPPER.read_text()
+        startup = STARTUP_SCRIPT.read_text()
+
+        assert "set -euo pipefail" in wrapper
+        assert 'cd "$PLATFORM_ROOT"' in wrapper
+        assert "/opt/zeler-platform/.venv/bin/python" not in wrapper
+        assert 'docker compose --file "$COMPOSE_FILE" run --rm --no-deps -T' in wrapper
+        assert "--user 0:0" in wrapper
+        assert "--entrypoint /app/.venv/bin/python" in wrapper
+        assert "/var/run/docker.sock:/var/run/docker.sock" in wrapper
+        assert "-m infra.rabbitmq.sheets_devoluciones_topology" in wrapper
+        assert '[[ "$command" == "bind-claims"' in wrapper
+        assert "rollback --execute --failure-triggered" in wrapper
+        assert "/opt/zeler-platform/zelerdata-devoluciones-topology.sh" in startup
+        assert wrapper.strip() in startup
+        assert "prestart --execute" not in startup
+        assert "bind-claims --execute" not in startup
 
     def test_deploy_runbook_runs_preflight_before_single_service_pull(self) -> None:
         text = (PROJECT_ROOT / "docs" / "deploy.md").read_text()

@@ -76,9 +76,28 @@ Pause-duration outputs are not historical Mercado Libre truth unless Mercado Lib
 | Formula | Required proof |
 |---|---|
 | `ZELERDATA_PREGUNTAS` / `ZELERDATA_PREGUNTASKPI` | Historical `questions` reconciliation for the requested date range and required answer/detail fields. Event-only freshness is not enough. |
-| `ZELERDATA_DEVOLUCIONES` | `claims` coverage tied to approved/reconciled `orders`; returned quantities must come from explicit positive `returned_quantity`. |
+| `ZELERDATA_DEVOLUCIONES` | One joint `devoluciones` marker over `claims` and `orders`; returned quantities must come from explicit positive integral `return_quantity`. |
 | `ZELERDATA_CATALOGO_COMPLETO` | `catalog_product_snapshots` from scoped item rows with `catalog_product_id`, fetched from `/products/{catalog_product_id}`. |
 | `ZELERDATA_CATALOGOBUYBOX` | `catalog_buybox_snapshots` from scoped item rows, fetched from `/items/{item_id}/price_to_win?version=v2`. |
+
+### DEVOLUCIONES joint readiness
+
+`ZELERDATA_DEVOLUCIONES` reads claims and their orders only behind one joint
+`devoluciones` marker. The marker has a 30-minute lease and must enclose the
+requested half-open UTC range. Claims and orders markers are not unioned, and a
+narrower scheduled run must never replace previously accepted coverage.
+
+Initial production acceptance for the approved account uses
+`[2026-06-01T00:00:00Z, 2026-07-10T00:00:00Z)` and requires
+`expected/persisted/complete/missing = 9/9/9/0`. Acceptance also requires
+dispatcher-equivalent formula proof plus either an authenticated smoke or
+sanitized operator evidence containing the timestamp, exact formula/date
+inputs, result, no-error state, and request/correlation ID. If that evidence is
+unavailable, record `OPERATOR_EVIDENCE_PENDING`; do not infer readiness.
+
+An absent, expired, malformed, non-enclosing, ambiguous, or drifted joint marker
+returns stable `DATA_UNAVAILABLE`. Formula execution must not query
+MercadoLibre, widen coverage, or synthesize returned quantities.
 
 `ID Carrito` is an order-formula-only column in `ZELERDATA_ORDENES` and `ZELERDATA_ORDENESPORSKU`. Values are never derived from order id, shipment id, message pack fallbacks, buyer data, fees, shipping costs, promo price, or status history. Missing official MercadoLibre `orders.pack_id` values display as `NA`. Historical May rows can still show `NA` if persisted read models do not have `meli_pack_id`; any refresh/backfill for those rows requires separate operational authorization and is not part of this hotfix.
 
