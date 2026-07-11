@@ -10,6 +10,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 CANONICAL_SHEETS_SCOPES = (
     "GET /items",
@@ -113,12 +114,10 @@ def extract_cloud_build_id(artifact_document: Mapping[str, Any], *, image_ref: s
     subjects = statement.get("subject")
     expected_digest = image_match.group("digest")
     expected_repository = image_match.group("repository")
-    if not isinstance(subjects, list) or not any(
-        isinstance(subject, Mapping)
-        and subject.get("name") == expected_repository
-        and isinstance(subject.get("digest"), Mapping)
-        and subject["digest"].get("sha256") == expected_digest
-        for subject in subjects
+    if not _single_subject_binds_image(
+        subjects,
+        expected_repository=expected_repository,
+        expected_digest=expected_digest,
     ):
         raise RollbackSafetyError("Artifact Registry subject digest binding is invalid")
     metadata = run_details.get("metadata") if isinstance(run_details, Mapping) else None
@@ -299,6 +298,54 @@ def _required_image_ref(image_ref: str) -> re.Match[str]:
     if match is None:
         raise RollbackSafetyError("immutable Artifact Registry image reference is invalid")
     return match
+
+
+def _single_subject_binds_image(
+    subjects: Any,
+    *,
+    expected_repository: str,
+    expected_digest: str,
+) -> bool:
+    if not isinstance(subjects, list) or len(subjects) != 1:
+        return False
+    subject = subjects[0]
+    if not isinstance(subject, Mapping):
+        return False
+    digest = subject.get("digest")
+    subject_name = subject.get("name")
+    return (
+        isinstance(digest, Mapping)
+        and digest.get("sha256") == expected_digest
+        and isinstance(subject_name, str)
+        and _normalized_slsa_subject_repository(subject_name, expected_repository)
+        == expected_repository
+    )
+
+
+def _normalized_slsa_subject_repository(subject_name: str, expected_repository: str) -> str | None:
+    if subject_name == expected_repository:
+        return subject_name
+    parsed = urlparse(subject_name)
+    if (
+        parsed.scheme != "https"
+        or not parsed.netloc
+        or parsed.params
+        or parsed.query
+        or parsed.fragment
+    ):
+        return None
+    expected_host, separator, _expected_path = expected_repository.partition("/")
+    if (
+        not separator
+        or parsed.netloc != expected_host
+        or not expected_host.endswith("-docker.pkg.dev")
+    ):
+        return None
+    subject_path = parsed.path.lstrip("/")
+    repository_path, tag_separator, tag = subject_path.rpartition(":")
+    if not tag_separator or not repository_path or not tag:
+        return None
+    return f"{parsed.netloc}/{repository_path}"
 
 
 def _required_image_id(image_id: str) -> None:

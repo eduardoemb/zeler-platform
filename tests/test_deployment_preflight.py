@@ -373,6 +373,27 @@ def _provenance_rows(artifact: dict[str, Any]) -> list[dict[str, Any]]:
     return cast(list[dict[str, Any]], artifact["provenance_summary"]["provenance"])
 
 
+def _slsa_v1_statement(artifact: dict[str, Any]) -> dict[str, Any]:
+    statement = _provenance_rows(artifact)[0]["build"]["inTotoSlsaProvenanceV1"]
+    return cast(dict[str, Any], statement)
+
+
+def _slsa_subject(name: str, digest: str | None = None) -> dict[str, Any]:
+    subject: dict[str, Any] = {"name": name}
+    if digest is not None:
+        subject["digest"] = {"sha256": digest}
+    return subject
+
+
+def _set_slsa_subjects(artifact: dict[str, Any], subjects: list[dict[str, Any]]) -> None:
+    _slsa_v1_statement(artifact)["subject"] = subjects
+
+
+def _tagged_artifact_registry_subject_name(image_ref: str, tag: str = "build-123") -> str:
+    repository, _digest = image_ref.split("@sha256:", 1)
+    return f"https://{repository}:{tag}"
+
+
 def _cloud_build(build_id: str = "build-123") -> dict[str, Any]:
     return {
         "id": build_id,
@@ -468,6 +489,79 @@ def test_external_gcloud_provenance_accepts_verified_slsa_v1_with_extra_intoto()
 
     assert verified.build_id == "build-123"
     assert verified.source_commit == CONNECTED_SOURCE_COMMIT
+
+
+def test_external_gcloud_provenance_accepts_tagged_artifact_registry_subject_url() -> None:
+    image_ref = (
+        "us-central1-docker.pkg.dev/zeler-platform-dev/zeler-platform/sheets-api@sha256:" + "a" * 64
+    )
+    artifact = _gcloud_provenance(image_ref)
+    _provenance_rows(artifact).append(_non_v1_intoto_row())
+    _set_slsa_subjects(
+        artifact,
+        [_slsa_subject(_tagged_artifact_registry_subject_name(image_ref), "a" * 64)],
+    )
+    build = _connected_cloud_build()
+
+    assert extract_cloud_build_id(artifact, image_ref=image_ref) == "build-123"
+    verified = verify_gcloud_provenance(
+        image_ref=image_ref,
+        artifact_document=artifact,
+        build_document=build,
+        expected_source_commit=CONNECTED_SOURCE_COMMIT,
+        expected_connected_repository=CONNECTED_REPOSITORY,
+    )
+
+    assert verified.build_id == "build-123"
+    assert verified.source_commit == CONNECTED_SOURCE_COMMIT
+
+
+@pytest.mark.parametrize(
+    ("mutation", "expected"),
+    [
+        ("tagged_wrong_digest", "subject digest"),
+        ("tagged_wrong_repository", "subject digest"),
+        ("tagged_missing_digest", "subject digest"),
+        ("multiple_subjects", "subject digest"),
+        ("non_artifact_registry_url", "subject digest"),
+        ("tag_only_no_digest", "subject digest"),
+    ],
+)
+def test_tagged_slsa_subject_fails_closed_on_untrusted_binding(
+    mutation: str, expected: str
+) -> None:
+    image_ref = (
+        "us-central1-docker.pkg.dev/zeler-platform-dev/zeler-platform/sheets-api@sha256:" + "a" * 64
+    )
+    repository, digest = image_ref.split("@sha256:", 1)
+    artifact = _gcloud_provenance(image_ref)
+    tagged_subject = _tagged_artifact_registry_subject_name(image_ref)
+    if mutation == "tagged_wrong_digest":
+        subjects = [_slsa_subject(tagged_subject, "f" * 64)]
+    elif mutation == "tagged_wrong_repository":
+        wrong_repository = repository.replace("/sheets-api", "/gateway")
+        subjects = [_slsa_subject(f"https://{wrong_repository}:build-123", digest)]
+    elif mutation == "tagged_missing_digest":
+        subjects = [_slsa_subject(tagged_subject)]
+    elif mutation == "multiple_subjects":
+        subjects = [
+            _slsa_subject(repository, digest),
+            _slsa_subject(tagged_subject, digest),
+        ]
+    elif mutation == "non_artifact_registry_url":
+        subjects = [
+            _slsa_subject(
+                "https://registry.example.invalid/zeler-platform/sheets-api:build-123", digest
+            )
+        ]
+    elif mutation == "tag_only_no_digest":
+        subjects = [_slsa_subject(f"{repository}:build-123")]
+    else:  # pragma: no cover - parametrization guard
+        raise AssertionError(f"Unhandled mutation: {mutation}")
+    _set_slsa_subjects(artifact, subjects)
+
+    with pytest.raises(RollbackSafetyError, match=expected):
+        extract_cloud_build_id(artifact, image_ref=image_ref)
 
 
 @pytest.mark.parametrize(
