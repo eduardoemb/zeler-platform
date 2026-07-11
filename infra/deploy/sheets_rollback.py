@@ -137,9 +137,16 @@ def verify_gcloud_provenance(
     build_document: Mapping[str, Any],
     expected_source_commit: str,
     expected_connected_repository: str | None = None,
+    expected_cloud_build_project_id: str | None = None,
+    expected_cloud_build_project_number: str | None = None,
 ) -> VerifiedGcloudProvenance:
     invocation_id = extract_cloud_build_id(artifact_document, image_ref=image_ref)
-    build_id = _trusted_cloud_build_invocation_id(invocation_id, build_document)
+    build_id = _trusted_cloud_build_invocation_id(
+        invocation_id,
+        build_document,
+        expected_project_id=expected_cloud_build_project_id,
+        expected_project_number=expected_cloud_build_project_number,
+    )
     if build_id is None or build_document.get("status") != "SUCCESS":
         raise RollbackSafetyError("Cloud Build result is not a successful trusted build")
     if _COMMIT_PATTERN.fullmatch(expected_source_commit) is None:
@@ -177,12 +184,22 @@ def verify_gcloud_provenance(
 def _trusted_cloud_build_invocation_id(
     invocation_id: str,
     build_document: Mapping[str, Any],
+    *,
+    expected_project_id: str | None = None,
+    expected_project_number: str | None = None,
 ) -> str | None:
     build_id = build_document.get("id")
     if not isinstance(build_id, str) or not build_id.strip():
         return None
     if invocation_id == build_id:
-        return build_id
+        if _trusted_raw_cloud_build_invocation_id(
+            build_id,
+            build_document,
+            expected_project_id=expected_project_id,
+            expected_project_number=expected_project_number,
+        ):
+            return build_id
+        return None
     parsed = urlparse(invocation_id)
     if (
         parsed.scheme != "https"
@@ -209,10 +226,91 @@ def _trusted_cloud_build_invocation_id(
         or resource_build_id != build_id
     ):
         return None
-    expected_name = f"projects/{project}/locations/{location}/builds/{resource_build_id}"
-    if build_document.get("name") != expected_name or build_document.get("projectId") != project:
+    build_name = _cloud_build_name_parts(build_document.get("name"))
+    if build_name is None:
+        return None
+    name_project, name_location, name_build_id = build_name
+    if name_location != location or name_build_id != resource_build_id:
+        return None
+    build_project_id = build_document.get("projectId")
+    if not isinstance(build_project_id, str) or not build_project_id.strip():
+        return None
+    if not _trusted_cloud_build_project_reference(
+        invocation_project=project,
+        build_project_id=build_project_id,
+        build_name_project=name_project,
+        expected_project_id=expected_project_id,
+        expected_project_number=expected_project_number,
+    ):
         return None
     return resource_build_id
+
+
+def _trusted_raw_cloud_build_invocation_id(
+    build_id: str,
+    build_document: Mapping[str, Any],
+    *,
+    expected_project_id: str | None,
+    expected_project_number: str | None,
+) -> bool:
+    build_name = _cloud_build_name_parts(build_document.get("name"))
+    if build_name is None:
+        return False
+    name_project, _name_location, name_build_id = build_name
+    if name_build_id != build_id:
+        return False
+    build_project_id = build_document.get("projectId")
+    if not isinstance(build_project_id, str) or not build_project_id.strip():
+        return False
+    return _trusted_cloud_build_project_reference(
+        invocation_project=build_project_id,
+        build_project_id=build_project_id,
+        build_name_project=name_project,
+        expected_project_id=expected_project_id,
+        expected_project_number=expected_project_number,
+    )
+
+
+def _cloud_build_name_parts(name: Any) -> tuple[str, str, str] | None:
+    if not isinstance(name, str):
+        return None
+    parts = name.split("/")
+    if (
+        len(parts) != 6
+        or parts[0] != "projects"
+        or parts[2] != "locations"
+        or parts[4] != "builds"
+        or not parts[1]
+        or not parts[3]
+        or not parts[5]
+    ):
+        return None
+    return parts[1], parts[3], parts[5]
+
+
+def _trusted_cloud_build_project_reference(
+    *,
+    invocation_project: str,
+    build_project_id: str,
+    build_name_project: str,
+    expected_project_id: str | None,
+    expected_project_number: str | None,
+) -> bool:
+    if expected_project_id is None and expected_project_number is None:
+        return build_project_id == invocation_project and build_name_project == invocation_project
+    if (
+        not isinstance(expected_project_id, str)
+        or not expected_project_id.strip()
+        or not isinstance(expected_project_number, str)
+        or not expected_project_number.isdigit()
+    ):
+        return False
+    expected_project_references = {expected_project_id, expected_project_number}
+    return (
+        invocation_project == expected_project_id
+        and build_project_id == expected_project_id
+        and build_name_project in expected_project_references
+    )
 
 
 def _connected_repository_commit(
@@ -429,6 +527,8 @@ def _build_parser() -> argparse.ArgumentParser:
     verify.add_argument("--image-ref", required=True)
     verify.add_argument("--source-commit", required=True)
     verify.add_argument("--connected-repository")
+    verify.add_argument("--expected-project-id")
+    verify.add_argument("--expected-project-number")
     runtime = subparsers.add_parser("verify-runtime")
     runtime.add_argument("--repo-digests", type=Path, required=True)
     runtime.add_argument("--health", type=Path, required=True)
@@ -532,6 +632,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             build_document=build_document,
             expected_source_commit=args.source_commit,
             expected_connected_repository=args.connected_repository,
+            expected_cloud_build_project_id=args.expected_project_id,
+            expected_cloud_build_project_number=args.expected_project_number,
         )
     except (OSError, ValueError, RollbackSafetyError) as exc:
         raise SystemExit(str(exc)) from exc

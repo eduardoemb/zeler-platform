@@ -237,7 +237,17 @@ verify_sheets_rollback_attestation() {
     echo "ERROR: rollback-compatible API source commit is invalid." >&2
     exit 1
   fi
-  local artifact_file build_file config_file probe_file build_id image_id
+  local artifact_file build_file config_file probe_file build_id image_id gcloud_project_id gcloud_project_number
+  gcloud_project_id=$("$GCLOUD_BIN" config get-value project 2>/dev/null)
+  if [[ ! "$gcloud_project_id" =~ ^[a-z][a-z0-9-]{4,28}[a-z0-9]$ ]]; then
+    echo "ERROR: trusted gcloud project id is missing or invalid." >&2
+    exit 1
+  fi
+  gcloud_project_number=$("$GCLOUD_BIN" projects describe "$gcloud_project_id" --format='value(projectNumber)')
+  if [[ ! "$gcloud_project_number" =~ ^[0-9]+$ ]]; then
+    echo "ERROR: trusted gcloud project number is missing or invalid." >&2
+    exit 1
+  fi
   artifact_file=$(mktemp)
   build_file=$(mktemp)
   config_file=$(mktemp)
@@ -257,6 +267,8 @@ verify_sheets_rollback_attestation() {
       --build "$build_file" \
       --image-ref "$image_ref" \
       --source-commit "$source_commit" \
+      --expected-project-id "$gcloud_project_id" \
+      --expected-project-number "$gcloud_project_number" \
       --connected-repository "$connected_repository"
   else
     PYTHONPATH="$PLATFORM_ROOT" "$PYTHON_BIN" -m infra.deploy.sheets_rollback \
@@ -264,7 +276,9 @@ verify_sheets_rollback_attestation() {
       --artifact-provenance "$artifact_file" \
       --build "$build_file" \
       --image-ref "$image_ref" \
-      --source-commit "$source_commit"
+      --source-commit "$source_commit" \
+      --expected-project-id "$gcloud_project_id" \
+      --expected-project-number "$gcloud_project_number"
   fi
 
   "$DOCKER_BIN" pull "$image_ref" >/dev/null
