@@ -148,6 +148,11 @@ Sheets manifest. The old 8/4 writer is prohibited.
 
 Run `infra/gce/docker-deploy-preflight.sh` with `SHEETS_ROLLBACK_PREFLIGHT=1`, an exact Artifact
 Registry `repo@sha256` image reference, and the expected source commit. Repository JSON alone is not authority.
+For Cloud Build v2 connected-repository builds, also set `SHEETS_ROLLBACK_CONNECTED_REPOSITORY`
+to the expected repository resource. The preflight accepts the commit from either legacy
+`sourceProvenance.resolvedRepoSource.commitSha` or from Cloud Build v2
+`source.connectedRepository.revision`, but the v2 path passes only when
+`source.connectedRepository.repository` matches the expected resource exactly.
 The preflight queries trusted external authority with
 `gcloud artifacts docker images describe IMAGE@sha256 --show-provenance --format=json`, extracts the
 build identity, then runs `gcloud builds describe BUILD_ID --format=json`. It requires a successful

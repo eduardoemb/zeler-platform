@@ -40,6 +40,7 @@ verify_sheets_rollback_attestation() {
   require_digest "prior gateway" "${SHEETS_PRIOR_GATEWAY_DIGEST:-}"
   local image_ref=${SHEETS_ROLLBACK_API_IMAGE_REF:-}
   local source_commit=${SHEETS_ROLLBACK_SOURCE_COMMIT:-}
+  local connected_repository=${SHEETS_ROLLBACK_CONNECTED_REPOSITORY:-}
   if [[ ! "$image_ref" =~ ^[a-z0-9.-]+/[a-z0-9._/-]+@sha256:[0-9a-f]{64}$ ]]; then
     echo "ERROR: rollback-compatible API Artifact Registry image reference is invalid." >&2
     exit 1
@@ -68,12 +69,22 @@ verify_sheets_rollback_attestation() {
     -m infra.deploy.sheets_rollback extract-build-id \
     --artifact-provenance "$artifact_file" --image-ref "$image_ref")
   "$GCLOUD_BIN" builds describe "$build_id" --format=json > "$build_file"
-  PYTHONPATH="$PLATFORM_ROOT" "$PYTHON_BIN" -m infra.deploy.sheets_rollback \
-    verify-gcloud \
-    --artifact-provenance "$artifact_file" \
-    --build "$build_file" \
-    --image-ref "$image_ref" \
-    --source-commit "$source_commit"
+  if [[ -n "$connected_repository" ]]; then
+    PYTHONPATH="$PLATFORM_ROOT" "$PYTHON_BIN" -m infra.deploy.sheets_rollback \
+      verify-gcloud \
+      --artifact-provenance "$artifact_file" \
+      --build "$build_file" \
+      --image-ref "$image_ref" \
+      --source-commit "$source_commit" \
+      --connected-repository "$connected_repository"
+  else
+    PYTHONPATH="$PLATFORM_ROOT" "$PYTHON_BIN" -m infra.deploy.sheets_rollback \
+      verify-gcloud \
+      --artifact-provenance "$artifact_file" \
+      --build "$build_file" \
+      --image-ref "$image_ref" \
+      --source-commit "$source_commit"
+  fi
 
   "$DOCKER_BIN" pull "$image_ref" >/dev/null
   image_id=$("$DOCKER_BIN" image inspect "$image_ref" --format '{{.Id}}')

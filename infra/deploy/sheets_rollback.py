@@ -125,10 +125,18 @@ def verify_gcloud_provenance(
     artifact_document: Mapping[str, Any],
     build_document: Mapping[str, Any],
     expected_source_commit: str,
+    expected_connected_repository: str | None = None,
 ) -> VerifiedGcloudProvenance:
     build_id = extract_cloud_build_id(artifact_document, image_ref=image_ref)
     if build_document.get("id") != build_id or build_document.get("status") != "SUCCESS":
         raise RollbackSafetyError("Cloud Build result is not a successful trusted build")
+    if _COMMIT_PATTERN.fullmatch(expected_source_commit) is None:
+        raise RollbackSafetyError("Cloud Build source commit is invalid")
+    connected_commit = _connected_repository_commit(
+        build_document,
+        expected_connected_repository=expected_connected_repository,
+        expected_source_commit=expected_source_commit,
+    )
     source_provenance = build_document.get("sourceProvenance")
     resolved_source = (
         source_provenance.get("resolvedRepoSource")
@@ -138,10 +146,12 @@ def verify_gcloud_provenance(
     source_commit = (
         resolved_source.get("commitSha") if isinstance(resolved_source, Mapping) else None
     )
-    if (
-        _COMMIT_PATTERN.fullmatch(expected_source_commit) is None
-        or source_commit != expected_source_commit
-    ):
+    if isinstance(source_commit, str) and source_commit.strip():
+        if source_commit != expected_source_commit:
+            raise RollbackSafetyError("Cloud Build source commit is invalid")
+    elif connected_commit is not None:
+        source_commit = connected_commit
+    else:
         raise RollbackSafetyError("Cloud Build source commit is invalid")
     return VerifiedGcloudProvenance(
         image_ref=image_ref,
@@ -150,6 +160,35 @@ def verify_gcloud_provenance(
         entrypoint=("zeler_sheets.app:make_app", "--factory"),
         registry_fingerprint=canonical_sheets_registration_fingerprint(),
     )
+
+
+def _connected_repository_commit(
+    build_document: Mapping[str, Any],
+    *,
+    expected_connected_repository: str | None,
+    expected_source_commit: str,
+) -> str | None:
+    source = build_document.get("source")
+    if not isinstance(source, Mapping) or "connectedRepository" not in source:
+        return None
+    if set(source) != {"connectedRepository"}:
+        raise RollbackSafetyError("Cloud Build connected repository source is ambiguous")
+    connected_repository = source.get("connectedRepository")
+    if not isinstance(connected_repository, Mapping):
+        raise RollbackSafetyError("Cloud Build connected repository source is invalid")
+    repository = connected_repository.get("repository")
+    if (
+        expected_connected_repository is None
+        or not isinstance(repository, str)
+        or repository != expected_connected_repository
+    ):
+        raise RollbackSafetyError("Cloud Build connected repository is invalid")
+    revision = connected_repository.get("revision")
+    if not isinstance(revision, str) or not revision.strip():
+        raise RollbackSafetyError("Cloud Build connected repository revision is missing")
+    if revision != expected_source_commit:
+        raise RollbackSafetyError("Cloud Build source commit is invalid")
+    return revision
 
 
 def verify_image_runtime_contract(
@@ -288,6 +327,7 @@ def _build_parser() -> argparse.ArgumentParser:
     verify.add_argument("--build", type=Path, required=True)
     verify.add_argument("--image-ref", required=True)
     verify.add_argument("--source-commit", required=True)
+    verify.add_argument("--connected-repository")
     runtime = subparsers.add_parser("verify-runtime")
     runtime.add_argument("--repo-digests", type=Path, required=True)
     runtime.add_argument("--health", type=Path, required=True)
@@ -390,6 +430,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             artifact_document=artifact_document,
             build_document=build_document,
             expected_source_commit=args.source_commit,
+            expected_connected_repository=args.connected_repository,
         )
     except (OSError, ValueError, RollbackSafetyError) as exc:
         raise SystemExit(str(exc)) from exc
