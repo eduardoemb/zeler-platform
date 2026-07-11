@@ -4,6 +4,7 @@ import argparse
 import asyncio
 import json
 import os
+import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime, timedelta
@@ -15,6 +16,7 @@ from zeler_platform_core.devoluciones_readiness import (
     acquire_devoluciones_operation,
     finish_devoluciones_operation,
     guarded_devoluciones_write,
+    heartbeat_devoluciones_operation,
     maintain_devoluciones_heartbeat,
     new_devoluciones_attempt_token,
     stable_devoluciones_operation_id,
@@ -277,6 +279,7 @@ class ReconciliationRequest:
     write_enabled: bool
     include_buyer_address_pii: bool
     controls: ReconciliationControls
+    read_model: str = "all"
     repair_observed_pause_basis: bool = False
 
     @property
@@ -312,6 +315,131 @@ class ReconciliationControls:
         if self.resume_after_order_id:
             sanitized["resume_cursor"] = "provided"
         return sanitized
+
+
+@dataclass(frozen=True)
+class ScheduledRunSample:
+    duration_seconds: float
+    succeeded: bool
+    source_fingerprint: str
+    read_model_fingerprint: str
+    campaign_id: str = "default"
+    physical_attempts: int = 0
+
+    def to_sanitized_dict(self) -> dict[str, Any]:
+        return {
+            "duration_seconds": round(self.duration_seconds, 3),
+            "succeeded": self.succeeded,
+            "source_fingerprint": self.source_fingerprint,
+            "read_model_fingerprint": self.read_model_fingerprint,
+            "campaign_id": self.campaign_id,
+            "physical_attempts": self.physical_attempts,
+        }
+
+
+@dataclass(frozen=True)
+class TimingCampaignResult:
+    accepted: bool
+    consecutive_runs: int
+    p95_seconds: float | None
+    reason: str
+    hard_limit_seconds: float = 180.0
+    p95_limit_seconds: float = 150.0
+
+
+def evaluate_timing_campaign(
+    samples: Sequence[ScheduledRunSample],
+) -> TimingCampaignResult:
+    campaign: list[ScheduledRunSample] = []
+    campaign_id: str | None = None
+    disqualified = False
+    disqualification_reason = "campaign_disqualified"
+    fingerprint: tuple[str, str] | None = None
+    for sample in samples:
+        if sample.campaign_id != campaign_id:
+            campaign_id = sample.campaign_id
+            campaign = []
+            disqualified = False
+            disqualification_reason = "campaign_disqualified"
+            fingerprint = None
+        if disqualified:
+            continue
+        current_fingerprint = (sample.source_fingerprint, sample.read_model_fingerprint)
+        if (
+            not sample.succeeded
+            or sample.duration_seconds >= 180.0
+            or sample.physical_attempts > 64
+        ):
+            campaign = []
+            disqualified = True
+            if sample.duration_seconds >= 180.0:
+                disqualification_reason = "hard_budget_exceeded"
+            elif sample.physical_attempts > 64:
+                disqualification_reason = "source_budget_exceeded"
+            continue
+        if fingerprint is not None and current_fingerprint != fingerprint:
+            campaign = []
+            disqualified = True
+            continue
+        fingerprint = current_fingerprint
+        campaign.append(sample)
+
+    if disqualified:
+        return TimingCampaignResult(False, 0, None, disqualification_reason)
+    if len(campaign) < 20:
+        return TimingCampaignResult(
+            accepted=False,
+            consecutive_runs=len(campaign),
+            p95_seconds=None,
+            reason="campaign_incomplete",
+        )
+    from infra.operations.zelerdata_campaign_state import nearest_rank_p95
+
+    durations = [sample.duration_seconds for sample in campaign[-20:]]
+    p95 = nearest_rank_p95(durations)
+    if any(duration >= 180.0 for duration in durations):
+        return TimingCampaignResult(False, 20, p95, "hard_budget_exceeded")
+    if p95 >= 150.0:
+        return TimingCampaignResult(False, 20, p95, "p95_budget_exceeded")
+    return TimingCampaignResult(True, 20, p95, "accepted")
+
+
+@dataclass(frozen=True)
+class FocusedRuntimeEvidence:
+    duration_seconds: float
+    source_calls: Mapping[str, int]
+    succeeded: bool = False
+    source_fingerprint: str = ""
+    read_model_fingerprint: str = ""
+    campaign_id: str = "unassigned"
+    process_deadline_seconds: float = 165.0
+    shell_stop_seconds: float = 175.0
+
+    def to_sanitized_dict(self) -> dict[str, Any]:
+        return {
+            "duration_seconds": round(self.duration_seconds, 3),
+            "source_calls": dict(self.source_calls),
+            "succeeded": self.succeeded,
+            "campaign_id": self.campaign_id,
+            "process_deadline_seconds": self.process_deadline_seconds,
+            "shell_stop_seconds": self.shell_stop_seconds,
+        }
+
+
+def scheduled_sample_from_summary(summary: ReconciliationSummary) -> ScheduledRunSample:
+    evidence = summary.runtime_evidence
+    if evidence is None:
+        raise ValueError("scheduled runtime evidence is required")
+    marker_written = summary.write_counts.get("devoluciones_markers_written") == 1
+    succeeded = bool(evidence.succeeded and summary.write_enabled and marker_written)
+    return ScheduledRunSample(
+        duration_seconds=evidence.duration_seconds,
+        succeeded=succeeded,
+        source_fingerprint=evidence.source_fingerprint,
+        read_model_fingerprint=evidence.read_model_fingerprint,
+        campaign_id=evidence.campaign_id,
+        physical_attempts=int(evidence.source_calls.get("T", 0)),
+    )
 
 
 @dataclass(frozen=True)
@@ -486,6 +614,7 @@ class ReconciliationSummary:
     mandatory_source_gate: MandatorySourceGate | None = None
     write_counts: Mapping[str, int] = field(default_factory=dict)
     repair_counts: Mapping[str, int] = field(default_factory=dict)
+    runtime_evidence: FocusedRuntimeEvidence | None = None
     raw_context: dict[str, Any] = field(default_factory=dict, repr=False)
 
     def to_sanitized_dict(self) -> dict[str, Any]:
@@ -511,6 +640,9 @@ class ReconciliationSummary:
             sanitized["write_counts"] = dict(sorted(self.write_counts.items()))
         if self.repair_counts:
             sanitized["repair_counts"] = dict(sorted(self.repair_counts.items()))
+        if self.runtime_evidence is not None:
+            sanitized["runtime_evidence"] = self.runtime_evidence.to_sanitized_dict()
+            sanitized["scheduled_run"] = scheduled_sample_from_summary(self).to_sanitized_dict()
         return sanitized
 
 
@@ -523,6 +655,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--seller-id", required=True, help="Seller id to reconcile.")
     parser.add_argument("--date-from", required=True, help="Inclusive start date (YYYY-MM-DD).")
     parser.add_argument("--date-to", required=True, help="Inclusive end date (YYYY-MM-DD).")
+    parser.add_argument(
+        "--read-model",
+        choices=("all", "devoluciones"),
+        default="all",
+        help="Use the focused claims-first DEVOLUCIONES path when set to devoluciones.",
+    )
     parser.add_argument(
         "--max-orders",
         "--limit",
@@ -622,6 +760,8 @@ def validate_reconciliation_safety(args: argparse.Namespace) -> None:
         raise SystemExit("--max-items is required with --repair-observed-pause-basis --write")
     if bool(args.include_buyer_address_pii) and args.max_orders is None:
         raise SystemExit("--max-orders is required with --include-buyer-address-pii")
+    if str(args.read_model) == "devoluciones" and int(args.concurrency) > 4:
+        raise SystemExit("--concurrency must not exceed 4 for devoluciones")
 
 
 def build_reconciliation_request(args: argparse.Namespace) -> ReconciliationRequest:
@@ -635,6 +775,7 @@ def build_reconciliation_request(args: argparse.Namespace) -> ReconciliationRequ
         approved_runtime=bool(args.confirm_approved_runtime),
         write_enabled=not dry_run,
         include_buyer_address_pii=bool(args.include_buyer_address_pii),
+        read_model=str(args.read_model),
         controls=ReconciliationControls(
             max_orders=args.max_orders,
             max_items=args.max_items,
@@ -1199,6 +1340,7 @@ async def write_complete_read_model_freshness_markers(
     summary: ReconciliationSummary,
     expected: ExpectedReadModelCounts | None = None,
     operation: DevolucionesOperationContext,
+    publication_guard: Callable[[], None] | None = None,
 ) -> dict[str, int]:
     if request.dry_run or not request.write_enabled:
         return {}
@@ -1292,6 +1434,8 @@ async def write_complete_read_model_freshness_markers(
         )
         from zeler_sheets.devoluciones_reconciliation import verify_devoluciones_read_model
 
+        if publication_guard is not None:
+            publication_guard()
         await verify_devoluciones_read_model(
             db=db,
             seller_id=request.seller_id,
@@ -1301,7 +1445,11 @@ async def write_complete_read_model_freshness_markers(
             expected_read_model_fingerprint=expected_read_model_fingerprint,
             session=session,
         )
+        if publication_guard is not None:
+            publication_guard()
         marker_id = f"{request.seller_id}:devoluciones"
+        if publication_guard is not None:
+            publication_guard()
         await collection.update_one(
             {
                 "_id": marker_id,
@@ -1337,19 +1485,62 @@ async def write_complete_read_model_freshness_markers(
             upsert=True,
             **session_kwargs,
         )
+        if publication_guard is not None:
+            try:
+                publication_guard()
+            except Exception:
+                await collection.update_one(
+                    {
+                        "_id": marker_id,
+                        "seller_id": request.seller_id,
+                        "read_model": "devoluciones",
+                        "revision": operation.attempt_token,
+                    },
+                    {
+                        "$set": {
+                            "state": "stale",
+                            "valid_until": datetime.now(UTC),
+                            "updated_at": datetime.now(UTC),
+                        }
+                    },
+                    upsert=False,
+                    **session_kwargs,
+                )
+                raise
         devoluciones_written = 1
 
-    await guarded_devoluciones_write(
-        db=db,
-        operation=operation,
-        seller_id=request.seller_id,
-        checkpoint={
-            "phase": "marker_publication",
-            "date_from": request.date_range.date_from,
-            "date_to": request.date_range.date_to,
-        },
-        writer=write,
-    )
+    try:
+        await guarded_devoluciones_write(
+            db=db,
+            operation=operation,
+            seller_id=request.seller_id,
+            checkpoint={
+                "phase": "marker_publication",
+                "date_from": request.date_range.date_from,
+                "date_to": request.date_range.date_to,
+            },
+            writer=write,
+        )
+        if publication_guard is not None:
+            publication_guard()
+    except Exception:
+        if publication_guard is not None:
+            await db["sheets_read_model_freshness"].update_one(
+                {
+                    "_id": f"{request.seller_id}:devoluciones",
+                    "seller_id": request.seller_id,
+                    "read_model": "devoluciones",
+                },
+                {
+                    "$set": {
+                        "state": "stale",
+                        "valid_until": datetime.now(UTC),
+                        "updated_at": datetime.now(UTC),
+                    }
+                },
+                upsert=False,
+            )
+        raise
     counts: dict[str, int] = {}
     if written:
         counts["freshness_markers_written"] = written
@@ -1668,7 +1859,28 @@ def _complete_claims_filter(filter_spec: dict[str, Any]) -> dict[str, Any]:
     complete_filter = _with_present_fields(filter_spec, ("date_created",))
     for field_path in ("order_id", "item_id", "status"):
         complete_filter[field_path] = {"$exists": True, "$nin": [None, ""]}
-    complete_filter["returned_quantity"] = {"$gte": 1}
+    complete_filter["$or"] = [
+        {
+            "productive": True,
+            "returned_quantity": {"$gte": 1},
+            "return_quantity_basis": "v2_return_order",
+        },
+        {
+            "productive": False,
+            "return_subtype": "low_cost",
+            "return_quantity_basis": "verified_low_cost_no_row",
+            "returned_quantity": {"$exists": False},
+        },
+        {
+            "productive": {"$exists": False},
+            "returned_quantity": {"$gte": 1},
+        },
+        {
+            "productive": True,
+            "return_quantity_basis": {"$exists": False},
+            "returned_quantity": {"$gte": 1},
+        },
+    ]
     return complete_filter
 
 
@@ -1791,11 +2003,188 @@ def _with_present_fields(filter_spec: dict[str, Any], fields: Sequence[str]) -> 
     return scoped
 
 
+def _focused_expected_counts(snapshot: Any) -> ExpectedReadModelCounts:
+    return ExpectedReadModelCounts(
+        counts={"claims": len(snapshot.expected_claim_ids)},
+        refs={"claims": snapshot.expected_claim_ids},
+        truth_mode={"claims": "expected"},
+        source_fingerprint=snapshot.source_fingerprint,
+        read_model_fingerprint=snapshot.read_model_fingerprint,
+    )
+
+
+async def run_focused_devoluciones_reconciliation(
+    *,
+    db: Any,
+    request: ReconciliationRequest,
+    source: Any | None = None,
+    campaign_id: str | None = None,
+    monotonic: Callable[[], float] = time.monotonic,
+    now: Callable[[], datetime] = lambda: datetime.now(UTC),
+) -> ReconciliationSummary:
+    from zeler_sheets.devoluciones_reconciliation import (
+        GatewayDevolucionesSource,
+        SourceCallRecorder,
+        collect_devoluciones_snapshot,
+        require_snapshot_publication_age,
+        revalidate_devoluciones_snapshot,
+        write_devoluciones_snapshot,
+    )
+
+    started = monotonic()
+    absolute_deadline = started + 165.0
+    recorder = SourceCallRecorder(max_total=64)
+    resolved_campaign_id = campaign_id or os.environ.get(
+        "ZELERDATA_DEVOLUCIONES_CAMPAIGN_ID", "unassigned"
+    )
+    if source is None:
+        gateways = create_runtime_historical_meli_gateways()
+        source = GatewayDevolucionesSource(gateways.order_detail_gateway, single_attempt=True)
+
+    snapshot = await collect_devoluciones_snapshot(
+        source=source,
+        seller_id=request.seller_id,
+        start=request.date_range.start,
+        end=request.date_range.end_exclusive,
+        recorder=recorder,
+        absolute_deadline=absolute_deadline,
+        monotonic=monotonic,
+    )
+    expected = _focused_expected_counts(snapshot)
+    summary = await collect_reconciliation_counts(
+        db=db,
+        request=request,
+        expected=expected,
+        read_models=("claims",),
+    )
+    if request.dry_run:
+        return replace(
+            summary,
+            mandatory_source_gate=_claims_authoritative_source_gate(expected),
+            runtime_evidence=FocusedRuntimeEvidence(
+                monotonic() - started,
+                recorder.counts,
+                source_fingerprint=snapshot.source_fingerprint,
+                read_model_fingerprint=snapshot.read_model_fingerprint,
+                campaign_id=resolved_campaign_id,
+            ),
+        )
+
+    _enforce_write_safety_controls(summary=summary, controls=request.controls)
+    operation = await acquire_devoluciones_operation(
+        db=db,
+        seller_id=request.seller_id,
+        scope="devoluciones",
+        operation_id=stable_devoluciones_operation_id(
+            "focused_reconciliation",
+            f"{request.seller_id}:{request.date_range.date_from}:{request.date_range.date_to}",
+        ),
+        attempt_token=new_devoluciones_attempt_token(),
+        source_fingerprint=snapshot.source_fingerprint,
+    )
+    acquisition_age = now() - snapshot.captured_at
+    if acquisition_age < timedelta(0) or acquisition_age > timedelta(seconds=30):
+        await finish_devoluciones_operation(
+            db=db,
+            operation=operation,
+            succeeded=False,
+            error_code="snapshot_acquisition_age_invalid",
+        )
+        raise RuntimeError("focused DEVOLUCIONES snapshot acquisition age exceeded")
+
+    async with maintain_devoluciones_heartbeat(db=db, operation=operation):
+        try:
+            revalidation_heartbeat = _devoluciones_heartbeat_adapter(
+                db=db,
+                operation=operation,
+            )
+            _require_focused_deadline(monotonic=monotonic, absolute_deadline=absolute_deadline)
+            write_counts = await write_devoluciones_snapshot(
+                db=db,
+                snapshot=snapshot,
+                operation=operation,
+            )
+            await revalidate_devoluciones_snapshot(
+                source=source,
+                snapshot=snapshot,
+                operation=operation,
+                absolute_deadline=absolute_deadline,
+                recorder=recorder,
+                heartbeat=revalidation_heartbeat,
+                monotonic=monotonic,
+                now=now,
+            )
+            refreshed_summary = await collect_reconciliation_counts(
+                db=db,
+                request=request,
+                expected=expected,
+                read_models=("claims",),
+            )
+            _require_focused_deadline(monotonic=monotonic, absolute_deadline=absolute_deadline)
+            require_snapshot_publication_age(snapshot=snapshot, current_time=now())
+
+            def publication_guard() -> None:
+                _require_focused_deadline(
+                    monotonic=monotonic,
+                    absolute_deadline=absolute_deadline,
+                )
+                require_snapshot_publication_age(snapshot=snapshot, current_time=now())
+
+            marker_counts = await write_complete_read_model_freshness_markers(
+                db=db,
+                request=request,
+                summary=refreshed_summary,
+                expected=expected,
+                operation=operation,
+                publication_guard=publication_guard,
+            )
+            publication_guard()
+        except Exception:
+            await finish_devoluciones_operation(
+                db=db,
+                operation=operation,
+                succeeded=False,
+                error_code="focused_reconciliation_failed",
+            )
+            raise
+        await finish_devoluciones_operation(db=db, operation=operation, succeeded=True)
+
+    return replace(
+        refreshed_summary,
+        write_counts={**write_counts, **marker_counts},
+        mandatory_source_gate=_claims_authoritative_source_gate(expected),
+        runtime_evidence=FocusedRuntimeEvidence(
+            monotonic() - started,
+            recorder.counts,
+            succeeded=True,
+            source_fingerprint=snapshot.source_fingerprint,
+            read_model_fingerprint=snapshot.read_model_fingerprint,
+            campaign_id=resolved_campaign_id,
+        ),
+    )
+
+
+def _devoluciones_heartbeat_adapter(
+    *, db: Any, operation: DevolucionesOperationContext
+) -> Callable[[], Awaitable[None]]:
+    async def heartbeat() -> None:
+        await heartbeat_devoluciones_operation(db=db, operation=operation)
+
+    return heartbeat
+
+
+def _require_focused_deadline(*, monotonic: Callable[[], float], absolute_deadline: float) -> None:
+    if monotonic() >= absolute_deadline:
+        raise RuntimeError("focused DEVOLUCIONES process deadline exceeded")
+
+
 async def _run_cli(args: argparse.Namespace) -> ReconciliationSummary:
     request = build_reconciliation_request(args)
     handle = create_runtime_db()
     try:
         db = handle.db if isinstance(handle, RuntimeDatabase) else handle
+        if request.read_model == "devoluciones":
+            return await run_focused_devoluciones_reconciliation(db=db, request=request)
         expected = await collect_expected_read_model_counts(db=db, request=request)
         summary = await collect_reconciliation_counts(db=db, request=request, expected=expected)
         if request.dry_run:
