@@ -49,6 +49,9 @@ PROHIBITED_OLD_API_DIGEST = (
     "sha256:8da8ab2b0b092825e6b3f362ea92e375a52e25a7a3cb78c2af0828844ddb00b6"
 )
 _COMMIT_PATTERN = re.compile(r"[0-9a-f]{40}")
+_CLOUD_BUILD_UUID_PATTERN = re.compile(
+    r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+)
 _IMAGE_REF_PATTERN = re.compile(
     r"(?P<repository>[a-z0-9.-]+/[a-z0-9._/-]+)@sha256:(?P<digest>[0-9a-f]{64})"
 )
@@ -135,8 +138,9 @@ def verify_gcloud_provenance(
     expected_source_commit: str,
     expected_connected_repository: str | None = None,
 ) -> VerifiedGcloudProvenance:
-    build_id = extract_cloud_build_id(artifact_document, image_ref=image_ref)
-    if build_document.get("id") != build_id or build_document.get("status") != "SUCCESS":
+    invocation_id = extract_cloud_build_id(artifact_document, image_ref=image_ref)
+    build_id = _trusted_cloud_build_invocation_id(invocation_id, build_document)
+    if build_id is None or build_document.get("status") != "SUCCESS":
         raise RollbackSafetyError("Cloud Build result is not a successful trusted build")
     if _COMMIT_PATTERN.fullmatch(expected_source_commit) is None:
         raise RollbackSafetyError("Cloud Build source commit is invalid")
@@ -168,6 +172,47 @@ def verify_gcloud_provenance(
         entrypoint=("zeler_sheets.app:make_app", "--factory"),
         registry_fingerprint=canonical_sheets_registration_fingerprint(),
     )
+
+
+def _trusted_cloud_build_invocation_id(
+    invocation_id: str,
+    build_document: Mapping[str, Any],
+) -> str | None:
+    build_id = build_document.get("id")
+    if not isinstance(build_id, str) or not build_id.strip():
+        return None
+    if invocation_id == build_id:
+        return build_id
+    parsed = urlparse(invocation_id)
+    if (
+        parsed.scheme != "https"
+        or parsed.netloc != "cloudbuild.googleapis.com"
+        or parsed.params
+        or parsed.query
+        or parsed.fragment
+    ):
+        return None
+    parts = parsed.path.strip("/").split("/")
+    if (
+        len(parts) != 7
+        or parts[0] != "v1"
+        or parts[1] != "projects"
+        or parts[3] != "locations"
+        or parts[5] != "builds"
+    ):
+        return None
+    project, location, resource_build_id = parts[2], parts[4], parts[6]
+    if (
+        not project
+        or not location
+        or _CLOUD_BUILD_UUID_PATTERN.fullmatch(resource_build_id) is None
+        or resource_build_id != build_id
+    ):
+        return None
+    expected_name = f"projects/{project}/locations/{location}/builds/{resource_build_id}"
+    if build_document.get("name") != expected_name or build_document.get("projectId") != project:
+        return None
+    return resource_build_id
 
 
 def _connected_repository_commit(
