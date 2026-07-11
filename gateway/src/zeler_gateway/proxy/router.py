@@ -21,7 +21,7 @@ from zeler_gateway.observability.metrics import (
     record_rate_limit_hit,
 )
 from zeler_gateway.proxy.rate_limit import RateLimitCounter, RateLimitExceeded
-from zeler_gateway.proxy.retry import send_with_retry
+from zeler_gateway.proxy.retry import send_single_attempt, send_with_retry
 from zeler_gateway.tokens.encryption import EncryptedToken, decrypt_token
 from zeler_platform_core.auth.jwt import (
     ExpiredJWTError,
@@ -305,6 +305,8 @@ async def _forward_to_meli(
             params=list(request.query_params.multi_items()),
             headers=headers,
         )
+        if request.headers.get("X-Zeler-Proxy-Retry") == "disabled":
+            return await send_single_attempt(client, upstream_request)
         sleep_fn = getattr(request.app.state, "proxy_retry_sleep", None)
         if sleep_fn is None:
             return await send_with_retry(client, upstream_request)
@@ -329,10 +331,14 @@ def _upstream_headers(request: Request, *, access_token: str) -> dict[str, str]:
 
 
 def _response_headers(response: httpx.Response) -> dict[str, str]:
+    headers: dict[str, str] = {}
     content_type = response.headers.get("content-type")
-    if content_type is None:
-        return {}
-    return {"Content-Type": content_type}
+    if content_type is not None:
+        headers["Content-Type"] = content_type
+    upstream_attempts = response.headers.get("X-Zeler-Upstream-Attempts")
+    if upstream_attempts is not None:
+        headers["X-Zeler-Upstream-Attempts"] = upstream_attempts
+    return headers
 
 
 def _json_error(

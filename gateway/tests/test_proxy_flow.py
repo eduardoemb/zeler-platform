@@ -238,6 +238,27 @@ async def test_proxy_retries_transient_upstream_502(
 
 
 @pytest.mark.asyncio
+async def test_focused_proxy_call_disables_hidden_upstream_retry(
+    proxy_client: httpx.AsyncClient, proxy_db: Any
+) -> None:
+    _, database = proxy_db
+    _seed_account(database)
+
+    with respx.mock(assert_all_called=True) as respx_mock:
+        upstream = respx_mock.get("https://api.mercadolibre.com/items/MLA123").mock(
+            side_effect=[httpx.Response(502), httpx.Response(200, json={"id": "unexpected"})]
+        )
+        response = await proxy_client.get(
+            "/proxy/meli/items/MLA123",
+            headers={**_auth_header(), "X-Zeler-Proxy-Retry": "disabled"},
+        )
+
+    assert response.status_code == 502
+    assert upstream.call_count == 1
+    assert response.headers["X-Zeler-Upstream-Attempts"] == "1"
+
+
+@pytest.mark.asyncio
 async def test_proxy_call_during_refresh_returns_503_after_timeout(
     proxy_client: httpx.AsyncClient, proxy_db: Any
 ) -> None:

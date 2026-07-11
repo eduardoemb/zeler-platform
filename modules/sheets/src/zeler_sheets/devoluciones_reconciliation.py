@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import re
-from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+import time
+from collections.abc import Awaitable, Callable, Mapping, Sequence
+from copy import deepcopy
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
+from enum import StrEnum
 from typing import Any, Protocol, cast
 from urllib.parse import urlencode
 
@@ -17,8 +21,19 @@ class MeliGatewayResourceClient(Protocol):
 class GatewayDevolucionesSource:
     """Read the proven DEVOLUCIONES source contract through the gateway proxy."""
 
-    def __init__(self, client: MeliGatewayResourceClient) -> None:
+    def __init__(self, client: MeliGatewayResourceClient, *, single_attempt: bool = False) -> None:
         self._client = client
+        self._single_attempt = single_attempt
+
+    async def _fetch(self, *, seller_id: str, path: str) -> dict[str, Any]:
+        if self._single_attempt:
+            fetch_once = getattr(self._client, "fetch_resource_once", None)
+            if fetch_once is None:
+                raise RuntimeError(
+                    "focused gateway client does not enforce single-attempt metadata"
+                )
+            return cast("dict[str, Any]", await fetch_once(seller_id=seller_id, path=path))
+        return await self._client.fetch_resource(seller_id=seller_id, path=path)
 
     async def search_claims(
         self, *, seller_id: str, params: Mapping[str, str | int]
@@ -30,22 +45,22 @@ class GatewayDevolucionesSource:
         if isinstance(offset, bool) or not isinstance(offset, int) or not 0 <= offset < 9999:
             raise ValueError("offset must be an integer between 0 and 9998")
         path = f"/post-purchase/v1/claims/search?{urlencode(params)}"
-        return await self._client.fetch_resource(seller_id=seller_id, path=path)
+        return await self._fetch(seller_id=seller_id, path=path)
 
     async def get_claim(self, *, seller_id: str, claim_id: str) -> dict[str, Any]:
-        return await self._client.fetch_resource(
+        return await self._fetch(
             seller_id=seller_id,
             path=f"/post-purchase/v1/claims/{_numeric_id(claim_id, field='claim_id')}",
         )
 
     async def get_returns(self, *, seller_id: str, claim_id: str) -> dict[str, Any]:
-        return await self._client.fetch_resource(
+        return await self._fetch(
             seller_id=seller_id,
             path=f"/post-purchase/v2/claims/{_numeric_id(claim_id, field='claim_id')}/returns",
         )
 
     async def get_order(self, *, seller_id: str, order_id: str) -> dict[str, Any]:
-        return await self._client.fetch_resource(
+        return await self._fetch(
             seller_id=seller_id,
             path=f"/orders/{_numeric_id(order_id, field='order_id')}",
         )
@@ -71,6 +86,90 @@ class DevolucionesReadModelVerificationError(RuntimeError):
     pass
 
 
+class SourceCallBudgetError(RuntimeError):
+    pass
+
+
+class FrozenDict(dict[str, Any]):
+    def _immutable(self, *_: Any, **__: Any) -> None:
+        raise TypeError("snapshot mappings are immutable")
+
+    __setitem__ = _immutable
+    __delitem__ = _immutable
+    clear = _immutable
+    pop = _immutable
+    popitem = _immutable  # type: ignore[assignment]
+    setdefault = _immutable
+    update = _immutable
+    __ior__ = _immutable  # type: ignore[assignment]
+
+    def __deepcopy__(self, memo: dict[int, Any]) -> dict[str, Any]:
+        return {key: deepcopy(value, memo) for key, value in self.items()}
+
+
+class FrozenList(list[Any]):
+    def _immutable(self, *_: Any, **__: Any) -> None:
+        raise TypeError("snapshot sequences are immutable")
+
+    __setitem__ = _immutable
+    __delitem__ = _immutable
+    append = _immutable
+    clear = _immutable
+    extend = _immutable
+    insert = _immutable
+    pop = _immutable
+    remove = _immutable
+    reverse = _immutable
+    sort = _immutable
+    __iadd__ = _immutable  # type: ignore[assignment]
+    __imul__ = _immutable  # type: ignore[assignment]
+
+    def __deepcopy__(self, memo: dict[int, Any]) -> list[Any]:
+        return [deepcopy(value, memo) for value in self]
+
+
+@dataclass(slots=True)
+class SourceCallRecorder:
+    max_total: int = 64
+    claim_pages: int = 0
+    claim_and_return_details: int = 0
+    order_details: int = 0
+
+    def __post_init__(self) -> None:
+        if self.max_total < 1:
+            raise ValueError("source call budget must be positive")
+
+    @property
+    def total(self) -> int:
+        return self.claim_pages + self.claim_and_return_details + self.order_details
+
+    @property
+    def counts(self) -> dict[str, int]:
+        return {
+            "P": self.claim_pages,
+            "R": self.claim_and_return_details,
+            "O": self.order_details,
+            "T": self.total,
+        }
+
+    def charge(self, call_kind: str) -> None:
+        if call_kind == "claim_search":
+            self.claim_pages += 1
+        elif call_kind in {"claim_detail", "return_detail"}:
+            self.claim_and_return_details += 1
+        elif call_kind == "order_detail":
+            self.order_details += 1
+        else:
+            raise ValueError("unknown source call kind")
+        if self.total > self.max_total:
+            raise SourceCallBudgetError("source physical-attempt budget exceeded")
+
+
+class InventoryRelevance(StrEnum):
+    EXCLUDED_TERMINAL_CANCELLATION = "excluded_terminal_cancellation"
+    HYDRATE_CANDIDATE = "hydrate_candidate"
+
+
 class ClaimInventorySource(Protocol):
     async def search_claims(
         self, *, seller_id: str, params: dict[str, str | int]
@@ -90,7 +189,21 @@ class ClaimInventoryEntry:
     claim_id: str
     last_updated: str
     date_created: str | None
-    source: dict[str, Any]
+    source: Mapping[str, Any]
+    trusted_type: str = field(init=False)
+    trusted_status: str = field(init=False)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "trusted_type",
+            _normalized_relevance_value(self.source.get("type")),
+        )
+        object.__setattr__(
+            self,
+            "trusted_status",
+            _normalized_relevance_value(self.source.get("status")),
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -100,12 +213,33 @@ class VerifiedClaimInventory:
 
 
 @dataclass(frozen=True, slots=True)
+class InventoryExclusionEvidence:
+    claim_id: str
+    last_updated: str
+    reason: str
+
+
+@dataclass(frozen=True, slots=True)
 class CollectedDevolucionesSnapshot:
-    projections: tuple[dict[str, Any], ...]
-    orders: tuple[dict[str, Any], ...]
+    seller_id: str
+    start: datetime
+    end: datetime
+    captured_at: datetime
+    projections: tuple[Mapping[str, Any], ...]
+    orders: tuple[Mapping[str, Any], ...]
     inventory: VerifiedClaimInventory
+    expected_claim_ids: frozenset[str]
     source_fingerprint: str
     read_model_fingerprint: str
+    exclusions: tuple[InventoryExclusionEvidence, ...] = ()
+    exclusion_fingerprint: str = ""
+    counters: Mapping[str, int] = field(default_factory=FrozenDict)
+
+    def claim_documents(self) -> list[dict[str, Any]]:
+        return [cast("dict[str, Any]", _deep_thaw(row)) for row in self.projections]
+
+    def order_documents(self) -> list[dict[str, Any]]:
+        return [cast("dict[str, Any]", _deep_thaw(row)) for row in self.orders]
 
 
 @dataclass(frozen=True, slots=True)
@@ -366,13 +500,33 @@ async def verify_claim_inventory(
     start: datetime,
     end: datetime,
     limit: int = MAX_CLAIM_SEARCH_LIMIT,
+    recorder: SourceCallRecorder | None = None,
+    absolute_deadline: float | None = None,
+    monotonic: Callable[[], float] = time.monotonic,
+    heartbeat: Callable[[], Awaitable[None]] | None = None,
 ) -> VerifiedClaimInventory:
     start, end = _validated_utc_range(start, end)
     first = await _inventory_pass(
-        source=source, seller_id=str(seller_id), start=start, end=end, limit=limit
+        source=source,
+        seller_id=str(seller_id),
+        start=start,
+        end=end,
+        limit=limit,
+        recorder=recorder,
+        absolute_deadline=absolute_deadline,
+        monotonic=monotonic,
+        heartbeat=heartbeat,
     )
     second = await _inventory_pass(
-        source=source, seller_id=str(seller_id), start=start, end=end, limit=limit
+        source=source,
+        seller_id=str(seller_id),
+        start=start,
+        end=end,
+        limit=limit,
+        recorder=recorder,
+        absolute_deadline=absolute_deadline,
+        monotonic=monotonic,
+        heartbeat=heartbeat,
     )
     first_fingerprint = _inventory_fingerprint(first)
     second_fingerprint = _inventory_fingerprint(second)
@@ -394,7 +548,7 @@ async def collect_devoluciones_projections(
         start=start,
         end=end,
     )
-    return list(snapshot.projections), snapshot.inventory
+    return snapshot.claim_documents(), snapshot.inventory
 
 
 async def collect_devoluciones_snapshot(
@@ -403,27 +557,84 @@ async def collect_devoluciones_snapshot(
     seller_id: str,
     start: datetime,
     end: datetime,
+    captured_at: datetime | None = None,
+    recorder: SourceCallRecorder | None = None,
+    absolute_deadline: float | None = None,
+    monotonic: Callable[[], float] = time.monotonic,
+    heartbeat: Callable[[], Awaitable[None]] | None = None,
 ) -> CollectedDevolucionesSnapshot:
     from zeler_sheets.claim_projection import build_claim_projection
 
+    normalized_start, normalized_end = _validated_utc_range(start, end)
     inventory = await verify_claim_inventory(
         source=source,
         seller_id=seller_id,
-        start=start,
-        end=end,
+        start=normalized_start,
+        end=normalized_end,
+        recorder=recorder,
+        absolute_deadline=absolute_deadline,
+        monotonic=monotonic,
+        heartbeat=heartbeat,
     )
     projections: list[dict[str, Any]] = []
     orders_by_id: dict[str, dict[str, Any]] = {}
+    exclusions: list[InventoryExclusionEvidence] = []
     for entry in inventory.entries:
-        claim = await source.get_claim(seller_id=seller_id, claim_id=entry.claim_id)
-        if not _is_return_candidate(claim):
+        if classify_inventory_relevance(entry) is InventoryRelevance.EXCLUDED_TERMINAL_CANCELLATION:
+            exclusions.append(
+                InventoryExclusionEvidence(
+                    claim_id=entry.claim_id,
+                    last_updated=entry.last_updated,
+                    reason="terminal_cancellation",
+                )
+            )
             continue
-        returns = await source.get_returns(seller_id=seller_id, claim_id=entry.claim_id)
+        await _before_source_attempt(
+            "claim_detail",
+            recorder=recorder,
+            absolute_deadline=absolute_deadline,
+            monotonic=monotonic,
+            heartbeat=heartbeat,
+        )
+        claim = await _bounded_source_call(
+            source.get_claim(seller_id=seller_id, claim_id=entry.claim_id),
+            absolute_deadline=absolute_deadline,
+            monotonic=monotonic,
+        )
+        if not _is_return_candidate(claim):
+            raise ClaimInventoryError(
+                "hydrated claim candidate is unresolved and cannot be excluded"
+            )
+        await _before_source_attempt(
+            "return_detail",
+            recorder=recorder,
+            absolute_deadline=absolute_deadline,
+            monotonic=monotonic,
+            heartbeat=heartbeat,
+        )
+        returns = await _bounded_source_call(
+            source.get_returns(seller_id=seller_id, claim_id=entry.claim_id),
+            absolute_deadline=absolute_deadline,
+            monotonic=monotonic,
+        )
         order_id = str(claim.get("order_id") or claim.get("resource_id") or "").strip()
         if not order_id:
             raise ClaimInventoryError("return claim is missing order identity")
-        order = await source.get_order(seller_id=seller_id, order_id=order_id)
-        orders_by_id[order_id] = dict(order)
+        order = orders_by_id.get(order_id)
+        if order is None:
+            await _before_source_attempt(
+                "order_detail",
+                recorder=recorder,
+                absolute_deadline=absolute_deadline,
+                monotonic=monotonic,
+                heartbeat=heartbeat,
+            )
+            order = await _bounded_source_call(
+                source.get_order(seller_id=seller_id, order_id=order_id),
+                absolute_deadline=absolute_deadline,
+                monotonic=monotonic,
+            )
+            orders_by_id[order_id] = dict(order)
         projections.append(
             build_claim_projection(
                 seller_id=seller_id,
@@ -437,16 +648,137 @@ async def collect_devoluciones_snapshot(
         claims=projections,
         orders=tuple(orders_by_id.values()),
     )
+    exclusion_fingerprint = _exclusion_fingerprint(exclusions)
+    captured = _utc_datetime(captured_at or datetime.now(UTC), field="snapshot captured_at")
+    frozen_projections = tuple(cast("Mapping[str, Any]", _deep_freeze(row)) for row in projections)
+    frozen_orders = tuple(
+        cast("Mapping[str, Any]", _deep_freeze(row)) for row in orders_by_id.values()
+    )
     return CollectedDevolucionesSnapshot(
-        projections=tuple(projections),
-        orders=tuple(orders_by_id.values()),
+        seller_id=str(seller_id),
+        start=normalized_start,
+        end=normalized_end,
+        captured_at=captured,
+        projections=frozen_projections,
+        orders=frozen_orders,
         inventory=inventory,
+        expected_claim_ids=frozenset(
+            _required_text(projection.get("_id"), field="claim identity")
+            for projection in projections
+        ),
         source_fingerprint=_hydrated_source_fingerprint(
             inventory_fingerprint=inventory.fingerprint,
             read_model_fingerprint=read_model_fingerprint,
+            exclusion_fingerprint=exclusion_fingerprint if exclusions else None,
         ),
         read_model_fingerprint=read_model_fingerprint,
+        exclusions=tuple(exclusions),
+        exclusion_fingerprint=exclusion_fingerprint,
+        counters=FrozenDict(
+            {
+                "inventory_candidates": len(inventory.entries),
+                "hydrated_candidates": len(inventory.entries) - len(exclusions),
+                "excluded_terminal_cancellations": len(exclusions),
+                "productive_claims": sum(
+                    projection.get("productive") is True for projection in projections
+                ),
+                "non_productive_claims": sum(
+                    projection.get("productive") is False for projection in projections
+                ),
+                **(recorder.counts if recorder is not None else {}),
+            }
+        ),
     )
+
+
+async def revalidate_devoluciones_snapshot(
+    *,
+    source: DevolucionesSource,
+    snapshot: CollectedDevolucionesSnapshot,
+    operation: Any,
+    absolute_deadline: float,
+    recorder: SourceCallRecorder,
+    heartbeat: Callable[[], Awaitable[None]],
+    monotonic: Callable[[], float] = time.monotonic,
+    now: Callable[[], datetime] = lambda: datetime.now(UTC),
+) -> CollectedDevolucionesSnapshot:
+    invalid_owner = (
+        operation.seller_id != snapshot.seller_id
+        or not operation.owns_lease
+        or operation.lease_lost
+    )
+    if invalid_owner:
+        raise DevolucionesReadModelVerificationError("root operation does not own snapshot scope")
+    if operation.source_fingerprint != snapshot.source_fingerprint:
+        raise DevolucionesReadModelVerificationError("root operation source fingerprint changed")
+    require_snapshot_publication_age(snapshot=snapshot, current_time=now())
+
+    current = await collect_devoluciones_snapshot(
+        source=source,
+        seller_id=snapshot.seller_id,
+        start=snapshot.start,
+        end=snapshot.end,
+        captured_at=now(),
+        recorder=recorder,
+        absolute_deadline=absolute_deadline,
+        monotonic=monotonic,
+        heartbeat=heartbeat,
+    )
+    if (
+        current.source_fingerprint != snapshot.source_fingerprint
+        or current.read_model_fingerprint != snapshot.read_model_fingerprint
+        or current.inventory.fingerprint != snapshot.inventory.fingerprint
+        or current.exclusion_fingerprint != snapshot.exclusion_fingerprint
+        or current.expected_claim_ids != snapshot.expected_claim_ids
+    ):
+        raise DevolucionesReadModelVerificationError(
+            "DEVOLUCIONES source or read-model fingerprint changed during targeted revalidation"
+        )
+    require_snapshot_publication_age(snapshot=snapshot, current_time=now())
+    await heartbeat()
+    return current
+
+
+def require_snapshot_publication_age(
+    *, snapshot: CollectedDevolucionesSnapshot, current_time: datetime
+) -> None:
+    publication_age = _utc_datetime(current_time, field="publication time") - snapshot.captured_at
+    if publication_age < timedelta(0) or publication_age > timedelta(seconds=150):
+        raise DevolucionesReadModelVerificationError("snapshot publication age is invalid")
+
+
+async def write_devoluciones_snapshot(
+    *,
+    db: Any,
+    snapshot: CollectedDevolucionesSnapshot,
+    operation: Any,
+) -> dict[str, int]:
+    if operation.seller_id != snapshot.seller_id or not operation.owns_lease:
+        raise DevolucionesReadModelVerificationError("root operation does not own snapshot scope")
+    if operation.source_fingerprint != snapshot.source_fingerprint:
+        raise DevolucionesReadModelVerificationError("root operation source fingerprint changed")
+
+    from zeler_sheets.claim_projection import persist_claim_projection
+    from zeler_sheets.event_persistence import SheetsEventPersistence
+
+    persistence = SheetsEventPersistence(db=db)
+    for frozen_order in snapshot.orders:
+        await persistence.persist(
+            event_type="orders.updated",
+            seller_id=snapshot.seller_id,
+            resource=cast("dict[str, Any]", _deep_thaw(frozen_order)),
+            operation=operation,
+        )
+    for frozen_claim in snapshot.projections:
+        await persist_claim_projection(
+            db=db,
+            document=cast("dict[str, Any]", _deep_thaw(frozen_claim)),
+            operation=operation,
+        )
+    return {
+        "written_orders": len(snapshot.orders),
+        "written_claims": len(snapshot.projections),
+    }
 
 
 async def _inventory_pass(
@@ -456,6 +788,10 @@ async def _inventory_pass(
     start: datetime,
     end: datetime,
     limit: int,
+    recorder: SourceCallRecorder | None,
+    absolute_deadline: float | None,
+    monotonic: Callable[[], float],
+    heartbeat: Callable[[], Awaitable[None]] | None,
 ) -> list[ClaimInventoryEntry]:
     entries = await _inventory_window(
         source=source,
@@ -463,6 +799,10 @@ async def _inventory_pass(
         start=start,
         end=end,
         limit=limit,
+        recorder=recorder,
+        absolute_deadline=absolute_deadline,
+        monotonic=monotonic,
+        heartbeat=heartbeat,
     )
     claim_ids = [entry.claim_id for entry in entries]
     if len(claim_ids) != len(set(claim_ids)):
@@ -477,6 +817,10 @@ async def _inventory_window(
     start: datetime,
     end: datetime,
     limit: int,
+    recorder: SourceCallRecorder | None,
+    absolute_deadline: float | None,
+    monotonic: Callable[[], float],
+    heartbeat: Callable[[], Awaitable[None]] | None,
 ) -> list[ClaimInventoryEntry]:
     offset = 0
     stable_total: int | None = None
@@ -490,8 +834,19 @@ async def _inventory_window(
             offset=offset,
             limit=limit,
         )
+        await _before_source_attempt(
+            "claim_search",
+            recorder=recorder,
+            absolute_deadline=absolute_deadline,
+            monotonic=monotonic,
+            heartbeat=heartbeat,
+        )
         try:
-            payload = await source.search_claims(seller_id=seller_id, params=params)
+            payload = await _bounded_source_call(
+                source.search_claims(seller_id=seller_id, params=params),
+                absolute_deadline=absolute_deadline,
+                monotonic=monotonic,
+            )
         except Exception as exc:
             raise ClaimInventoryError("claim inventory source request failed") from exc
         data, response_offset, _, total = _validated_page(payload, requested_offset=offset)
@@ -509,6 +864,10 @@ async def _inventory_window(
                 start=start,
                 end=midpoint,
                 limit=limit,
+                recorder=recorder,
+                absolute_deadline=absolute_deadline,
+                monotonic=monotonic,
+                heartbeat=heartbeat,
             )
             right = await _inventory_window(
                 source=source,
@@ -516,6 +875,10 @@ async def _inventory_window(
                 start=midpoint,
                 end=end,
                 limit=limit,
+                recorder=recorder,
+                absolute_deadline=absolute_deadline,
+                monotonic=monotonic,
+                heartbeat=heartbeat,
             )
             return [*left, *right]
         for raw_entry in data:
@@ -526,6 +889,8 @@ async def _inventory_window(
             entries.append(entry)
         next_offset = response_offset + len(data)
         if next_offset == total:
+            if heartbeat is not None:
+                await heartbeat()
             return entries
         if next_offset > total:
             raise ClaimInventoryError("claim inventory page exceeds stable total")
@@ -534,6 +899,44 @@ async def _inventory_window(
         if next_offset >= MAX_CLAIM_SEARCH_OFFSET:
             raise ClaimInventoryError("claim inventory offset cap reached before terminal page")
         offset = next_offset
+
+
+async def _before_source_attempt(
+    call_kind: str,
+    *,
+    recorder: SourceCallRecorder | None,
+    absolute_deadline: float | None,
+    monotonic: Callable[[], float],
+    heartbeat: Callable[[], Awaitable[None]] | None,
+) -> None:
+    if heartbeat is not None:
+        await heartbeat()
+    if absolute_deadline is not None and monotonic() >= absolute_deadline:
+        raise SourceCallBudgetError("source process deadline reached before physical attempt")
+    if recorder is not None:
+        recorder.charge(call_kind)
+
+
+async def _bounded_source_call(
+    awaitable: Awaitable[dict[str, Any]],
+    *,
+    absolute_deadline: float | None,
+    monotonic: Callable[[], float],
+) -> dict[str, Any]:
+    if absolute_deadline is None:
+        return await awaitable
+    remaining = absolute_deadline - monotonic()
+    if remaining <= 0:
+        if hasattr(awaitable, "close"):
+            cast(Any, awaitable).close()
+        raise SourceCallBudgetError("source process deadline reached before physical attempt")
+    try:
+        async with asyncio.timeout(remaining):
+            return await awaitable
+    except TimeoutError as exc:
+        raise SourceCallBudgetError(
+            "source process deadline expired during physical attempt"
+        ) from exc
 
 
 def _validated_page(
@@ -570,14 +973,46 @@ def _inventory_entry(raw_entry: Mapping[str, Any]) -> ClaimInventoryEntry:
         claim_id=claim_id,
         last_updated=last_updated,
         date_created=str(date_created) if date_created is not None else None,
-        source=dict(raw_entry),
+        source=cast("Mapping[str, Any]", _deep_freeze(raw_entry)),
     )
 
 
 def _inventory_fingerprint(entries: Sequence[ClaimInventoryEntry]) -> str:
-    rows = [(entry.claim_id, entry.last_updated) for entry in entries]
+    rows = [
+        (
+            entry.claim_id,
+            entry.last_updated,
+            entry.date_created,
+            entry.trusted_type,
+            entry.trusted_status,
+        )
+        for entry in entries
+    ]
     encoded = json.dumps(rows, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
+
+
+def classify_inventory_relevance(entry: ClaimInventoryEntry) -> InventoryRelevance:
+    if entry.trusted_type == "cancel_purchase" and entry.trusted_status == "closed":
+        return InventoryRelevance.EXCLUDED_TERMINAL_CANCELLATION
+    return InventoryRelevance.HYDRATE_CANDIDATE
+
+
+def _normalized_relevance_value(value: Any) -> str:
+    return str(value or "").strip().lower()
+
+
+def _exclusion_fingerprint(exclusions: Sequence[InventoryExclusionEvidence]) -> str:
+    return _fingerprint_payload(
+        [
+            {
+                "claim_id": exclusion.claim_id,
+                "last_updated": exclusion.last_updated,
+                "reason": exclusion.reason,
+            }
+            for exclusion in exclusions
+        ]
+    )
 
 
 def devoluciones_read_model_fingerprint(
@@ -696,13 +1131,19 @@ def devoluciones_read_model_fingerprint(
     return _fingerprint_payload(rows)
 
 
-def _hydrated_source_fingerprint(*, inventory_fingerprint: str, read_model_fingerprint: str) -> str:
-    return _fingerprint_payload(
-        {
-            "inventory_fingerprint": inventory_fingerprint,
-            "read_model_fingerprint": read_model_fingerprint,
-        }
-    )
+def _hydrated_source_fingerprint(
+    *,
+    inventory_fingerprint: str,
+    read_model_fingerprint: str,
+    exclusion_fingerprint: str | None = None,
+) -> str:
+    payload = {
+        "inventory_fingerprint": inventory_fingerprint,
+        "read_model_fingerprint": read_model_fingerprint,
+    }
+    if exclusion_fingerprint is not None:
+        payload["exclusion_fingerprint"] = exclusion_fingerprint
+    return _fingerprint_payload(payload)
 
 
 def _fingerprint_payload(payload: Any) -> str:
@@ -710,6 +1151,22 @@ def _fingerprint_payload(payload: Any) -> str:
         "utf-8"
     )
     return hashlib.sha256(encoded).hexdigest()
+
+
+def _deep_freeze(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return FrozenDict({str(key): _deep_freeze(item) for key, item in value.items()})
+    if isinstance(value, list | tuple):
+        return FrozenList(_deep_freeze(item) for item in value)
+    return value
+
+
+def _deep_thaw(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return {str(key): _deep_thaw(item) for key, item in value.items()}
+    if isinstance(value, tuple | list):
+        return [_deep_thaw(item) for item in value]
+    return value
 
 
 def _fingerprint_datetime(value: Any, *, field: str) -> str:

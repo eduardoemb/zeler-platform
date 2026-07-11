@@ -19,6 +19,12 @@ RETRYABLE_EXCEPTIONS = (
 )
 
 
+async def send_single_attempt(client: httpx.AsyncClient, request: httpx.Request) -> httpx.Response:
+    response = await client.send(request)
+    response.headers["X-Zeler-Upstream-Attempts"] = "1"
+    return response
+
+
 async def send_with_retry(
     client: httpx.AsyncClient,
     request: httpx.Request,

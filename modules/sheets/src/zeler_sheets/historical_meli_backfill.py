@@ -322,11 +322,11 @@ async def run_historical_meli_backfill(
             start=date_range.start,
             end=date_range.end_exclusive,
         )
-        claims = list(devoluciones_snapshot.projections)
+        claims = devoluciones_snapshot.claim_documents()
         claim_source_fingerprint = devoluciones_snapshot.source_fingerprint
         claim_read_model_fingerprint = devoluciones_snapshot.read_model_fingerprint
         orders_by_id = {_resource_id(order): order for order in orders}
-        for hydrated_order in devoluciones_snapshot.orders:
+        for hydrated_order in devoluciones_snapshot.order_documents():
             orders_by_id[_resource_id(hydrated_order)] = hydrated_order
         orders = list(orders_by_id.values())
         order_ids = _unique_strings(_resource_id(order) for order in orders)

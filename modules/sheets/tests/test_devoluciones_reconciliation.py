@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import asyncio
 import json
+import time
+from collections.abc import Mapping
 from copy import deepcopy
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from uuid import uuid4
 
 import pytest
@@ -21,10 +24,15 @@ from zeler_sheets.claim_projection import (
 from zeler_sheets.devoluciones_reconciliation import (
     ClaimInventoryError,
     DevolucionesReadModelVerificationError,
+    InventoryRelevance,
+    SourceCallBudgetError,
+    SourceCallRecorder,
     claim_inventory_search_params,
+    classify_inventory_relevance,
     collect_devoluciones_projections,
     read_devoluciones_claims_keyset,
     read_devoluciones_orders_by_id_keyset,
+    revalidate_devoluciones_snapshot,
     verify_claim_inventory,
     verify_devoluciones_read_model,
 )
@@ -38,6 +46,14 @@ def _fixture(name: str) -> dict[str, Any]:
     payload = json.loads((FIXTURES / name).read_text(encoding="utf-8"))
     assert isinstance(payload, dict)
     return payload
+
+
+def _mutable_copy(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return {key: _mutable_copy(item) for key, item in value.items()}
+    if isinstance(value, tuple | list):
+        return [_mutable_copy(item) for item in value]
+    return deepcopy(value)
 
 
 class ScriptedInventorySource:
@@ -173,6 +189,22 @@ async def test_inventory_rejects_duplicates_total_drift_and_second_pass_drift() 
     with pytest.raises(ClaimInventoryError, match="duplicate"):
         await verify_claim_inventory(
             source=ScriptedInventorySource([duplicate_page]),
+            seller_id="82453304",
+            start=START,
+            end=END,
+        )
+
+
+@pytest.mark.asyncio
+async def test_inventory_rejects_relevance_drift_with_same_identity_and_timestamp() -> None:
+    first = _fixture("inventory.json")
+    opposite = deepcopy(first)
+    first["data"][0].update({"type": "cancel_purchase", "status": "closed"})
+    opposite["data"][0].update({"type": "returns", "status": "opened"})
+
+    with pytest.raises(ClaimInventoryError, match="fingerprint"):
+        await verify_claim_inventory(
+            source=ScriptedInventorySource([first, opposite]),
             seller_id="82453304",
             start=START,
             end=END,
@@ -545,6 +577,360 @@ class HydratingSource(ScriptedInventorySource):
         return deepcopy(self.orders[order_id])
 
 
+@pytest.mark.parametrize(
+    ("inventory_type", "inventory_status", "expected"),
+    [
+        (
+            "cancel_purchase",
+            "closed",
+            InventoryRelevance.EXCLUDED_TERMINAL_CANCELLATION,
+        ),
+        ("cancel_purchase", "opened", InventoryRelevance.HYDRATE_CANDIDATE),
+        ("returns", "closed", InventoryRelevance.HYDRATE_CANDIDATE),
+        ("mediations", "closed", InventoryRelevance.HYDRATE_CANDIDATE),
+        (None, "closed", InventoryRelevance.HYDRATE_CANDIDATE),
+        ("unknown", None, InventoryRelevance.HYDRATE_CANDIDATE),
+    ],
+)
+def test_inventory_relevance_is_closed_and_only_terminal_cancellation_excludes(
+    inventory_type: str | None,
+    inventory_status: str | None,
+    expected: InventoryRelevance,
+) -> None:
+    entry = reconciliation_module.ClaimInventoryEntry(
+        claim_id="519988002",
+        last_updated="2026-06-16T09:05:00.000Z",
+        date_created="2026-06-16T09:00:00.000Z",
+        source={"id": "519988002", "type": inventory_type, "status": inventory_status},
+    )
+
+    assert classify_inventory_relevance(entry) is expected
+
+
+@pytest.mark.asyncio
+async def test_terminal_cancellation_excludes_before_detail_with_stable_evidence() -> None:
+    source = HydratingSource()
+    for page in source.responses:
+        page["data"][1].update({"type": "cancel_purchase", "status": "closed"})
+    source.claims.pop("519988002")
+
+    first = await reconciliation_module.collect_devoluciones_snapshot(
+        source=source,
+        seller_id="82453304",
+        start=START,
+        end=END,
+    )
+    second_source = HydratingSource()
+    for page in second_source.responses:
+        page["data"][1].update({"type": "cancel_purchase", "status": "closed"})
+    second_source.claims.pop("519988002")
+    second = await reconciliation_module.collect_devoluciones_snapshot(
+        source=second_source,
+        seller_id="82453304",
+        start=START,
+        end=END,
+    )
+
+    assert [projection["_id"] for projection in first.projections] == ["519988001"]
+    assert ("claim", "519988002") not in source.hydration_calls
+    assert first.exclusions == (
+        reconciliation_module.InventoryExclusionEvidence(
+            claim_id="519988002",
+            last_updated="2026-06-16T09:05:00.000Z",
+            reason="terminal_cancellation",
+        ),
+    )
+    assert first.counters == {
+        "inventory_candidates": 2,
+        "hydrated_candidates": 1,
+        "excluded_terminal_cancellations": 1,
+        "productive_claims": 1,
+        "non_productive_claims": 0,
+    }
+    assert first.inventory.fingerprint == second.inventory.fingerprint
+    assert first.exclusion_fingerprint == second.exclusion_fingerprint
+
+
+@pytest.mark.asyncio
+async def test_uncertain_inventory_candidate_hydrates_and_fails_closed_on_detail_error() -> None:
+    source = HydratingSource()
+    for page in source.responses:
+        page["data"][1].update({"type": "cancel_purchase", "status": "opened"})
+    source.claims.pop("519988002")
+
+    with pytest.raises(KeyError):
+        await reconciliation_module.collect_devoluciones_snapshot(
+            source=source,
+            seller_id="82453304",
+            start=START,
+            end=END,
+        )
+
+    assert ("claim", "519988002") in source.hydration_calls
+
+
+@pytest.mark.parametrize(
+    ("claim_type", "status"),
+    [
+        ("unknown", "closed"),
+        (None, "closed"),
+        ("cancel_purchase", "opened"),
+        ("warranty", "closed"),
+        ("mediations", "closed"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_hydrated_uncertain_candidate_never_disappears_fail_open(
+    claim_type: str | None,
+    status: str,
+) -> None:
+    source = HydratingSource()
+    source.claims["519988002"].update(
+        {"type": claim_type, "status": status, "related_entities": []}
+    )
+
+    with pytest.raises(ClaimInventoryError, match="unresolved"):
+        await reconciliation_module.collect_devoluciones_snapshot(
+            source=source,
+            seller_id="82453304",
+            start=START,
+            end=END,
+        )
+
+    assert ("claim", "519988002") in source.hydration_calls
+    assert ("returns", "519988002") not in source.hydration_calls
+    assert ("order", "1999") not in source.hydration_calls
+
+
+class FocusedSourceSpy(HydratingSource):
+    async def search_orders(self, **_: Any) -> Any:
+        raise AssertionError("broad order-date search is forbidden")
+
+    async def search_questions(self, **_: Any) -> Any:
+        raise AssertionError("question hydration is forbidden")
+
+    async def get_item(self, **_: Any) -> Any:
+        raise AssertionError("item hydration is forbidden")
+
+    async def get_shipment(self, **_: Any) -> Any:
+        raise AssertionError("shipment hydration is forbidden")
+
+    async def get_catalog_product(self, **_: Any) -> Any:
+        raise AssertionError("catalog hydration is forbidden")
+
+
+@pytest.mark.asyncio
+async def test_focused_snapshot_is_immutable_claims_first_and_referenced_orders_only() -> None:
+    source = FocusedSourceSpy()
+    source.claims["519988002"]["order_id"] = "2001"
+    source.claims["519988002"]["item_id"] = "MLA1"
+    source.returns["519988002"] = {
+        **source.returns["519988002"],
+        "orders": None,
+    }
+    captured_at = datetime(2026, 7, 10, 12, tzinfo=UTC)
+
+    snapshot = await reconciliation_module.collect_devoluciones_snapshot(
+        source=source,
+        seller_id="82453304",
+        start=START,
+        end=END,
+        captured_at=captured_at,
+    )
+
+    assert snapshot.seller_id == "82453304"
+    assert snapshot.start == START
+    assert snapshot.end == END
+    assert snapshot.captured_at == captured_at
+    assert snapshot.expected_claim_ids == frozenset({"519988001", "519988002"})
+    assert [call[0] for call in source.hydration_calls] == [
+        "claim",
+        "returns",
+        "order",
+        "claim",
+        "returns",
+    ]
+    assert len(snapshot.orders) == 1
+    with pytest.raises(TypeError):
+        snapshot.projections[0]["status"] = "mutated"  # type: ignore[index]
+    with pytest.raises(TypeError):
+        snapshot.orders[0]["items"][0]["quantity"] = 999
+    source_fingerprint = snapshot.source_fingerprint
+    read_model_fingerprint = snapshot.read_model_fingerprint
+    projection = cast(Any, snapshot.projections[0])
+    inventory_source = cast(Any, snapshot.inventory.entries[0].source)
+    with pytest.raises(TypeError, match="immutable"):
+        projection |= {"status": "mutated"}
+    with pytest.raises(TypeError, match="immutable"):
+        inventory_source |= {"type": "cancel_purchase"}
+    assert snapshot.source_fingerprint == source_fingerprint
+    assert snapshot.read_model_fingerprint == read_model_fingerprint
+
+
+def test_source_call_recorder_charges_physical_attempts_before_send_and_caps_total() -> None:
+    recorder = SourceCallRecorder(max_total=3)
+
+    recorder.charge("claim_search")
+    recorder.charge("claim_detail")
+    recorder.charge("order_detail")
+
+    assert recorder.counts == {"P": 1, "R": 1, "O": 1, "T": 3}
+    with pytest.raises(SourceCallBudgetError, match="64|budget"):
+        recorder.charge("return_detail")
+    assert recorder.counts == {"P": 1, "R": 2, "O": 1, "T": 4}
+
+
+@pytest.mark.asyncio
+async def test_source_attempt_deadline_cancels_gateway_call_and_keeps_failure_charged() -> None:
+    class SlowSource:
+        async def search_claims(self, **_: Any) -> dict[str, Any]:
+            await asyncio.sleep(0.05)
+            return {"data": [], "paging": {"offset": 0, "limit": 100, "total": 0}}
+
+    recorder = SourceCallRecorder(max_total=64)
+    deadline = time.monotonic() + 0.005
+
+    with pytest.raises(ClaimInventoryError, match="source request failed") as exc_info:
+        await verify_claim_inventory(
+            source=SlowSource(),
+            seller_id="82453304",
+            start=START,
+            end=END,
+            recorder=recorder,
+            absolute_deadline=deadline,
+        )
+
+    assert isinstance(exc_info.value.__cause__, SourceCallBudgetError)
+    assert recorder.counts == {"P": 1, "R": 0, "O": 0, "T": 1}
+
+
+@pytest.mark.asyncio
+async def test_failed_physical_attempt_and_deadline_are_recorded_fail_closed() -> None:
+    source = HydratingSource()
+    source.claims.pop("519988001")
+    recorder = SourceCallRecorder()
+    heartbeat_calls: list[int] = []
+
+    async def heartbeat() -> None:
+        heartbeat_calls.append(recorder.total)
+
+    with pytest.raises(KeyError):
+        await reconciliation_module.collect_devoluciones_snapshot(
+            source=source,
+            seller_id="82453304",
+            start=START,
+            end=END,
+            recorder=recorder,
+            absolute_deadline=11.0,
+            monotonic=lambda: 10.0,
+            heartbeat=heartbeat,
+        )
+
+    assert recorder.counts == {"P": 2, "R": 1, "O": 0, "T": 3}
+    assert heartbeat_calls
+
+    untouched = HydratingSource()
+    with pytest.raises(SourceCallBudgetError, match="deadline"):
+        await reconciliation_module.collect_devoluciones_snapshot(
+            source=untouched,
+            seller_id="82453304",
+            start=START,
+            end=END,
+            recorder=SourceCallRecorder(),
+            absolute_deadline=10.0,
+            monotonic=lambda: 10.0,
+        )
+    assert untouched.calls == []
+
+
+@pytest.mark.asyncio
+async def test_targeted_revalidation_uses_root_context_and_rejects_fingerprint_drift() -> None:
+    recorder = SourceCallRecorder()
+    source = HydratingSource()
+    snapshot = await reconciliation_module.collect_devoluciones_snapshot(
+        source=source,
+        seller_id="82453304",
+        start=START,
+        end=END,
+        recorder=recorder,
+        captured_at=datetime(2026, 7, 10, 12, tzinfo=UTC),
+        absolute_deadline=100.0,
+        monotonic=lambda: 1.0,
+    )
+    operation = _operation()
+    operation.source_fingerprint = snapshot.source_fingerprint
+    heartbeat_calls: list[str] = []
+
+    async def heartbeat() -> None:
+        heartbeat_calls.append(operation.operation_id)
+
+    proof = await revalidate_devoluciones_snapshot(
+        source=HydratingSource(),
+        snapshot=snapshot,
+        operation=operation,
+        absolute_deadline=100.0,
+        recorder=recorder,
+        heartbeat=heartbeat,
+        monotonic=lambda: 2.0,
+        now=lambda: datetime(2026, 7, 10, 12, 1, tzinfo=UTC),
+    )
+
+    assert proof.source_fingerprint == snapshot.source_fingerprint
+    assert proof.read_model_fingerprint == snapshot.read_model_fingerprint
+    assert recorder.counts == {"P": 4, "R": 8, "O": 4, "T": 16}
+    assert heartbeat_calls == [operation.operation_id] * len(heartbeat_calls)
+    assert len(heartbeat_calls) >= 2
+
+    drifted = HydratingSource()
+    drifted.returns["519988001"]["orders"][0]["return_quantity"] = 3
+    with pytest.raises(DevolucionesReadModelVerificationError, match="changed"):
+        await revalidate_devoluciones_snapshot(
+            source=drifted,
+            snapshot=snapshot,
+            operation=operation,
+            absolute_deadline=200.0,
+            recorder=SourceCallRecorder(),
+            heartbeat=heartbeat,
+            monotonic=lambda: 3.0,
+            now=lambda: datetime(2026, 7, 10, 12, 2, tzinfo=UTC),
+        )
+
+
+@pytest.mark.asyncio
+async def test_targeted_revalidation_rechecks_publication_age_after_hydration() -> None:
+    snapshot = await reconciliation_module.collect_devoluciones_snapshot(
+        source=HydratingSource(),
+        seller_id="82453304",
+        start=START,
+        end=END,
+        captured_at=datetime(2026, 7, 10, 12, tzinfo=UTC),
+    )
+    operation = _operation()
+    operation.source_fingerprint = snapshot.source_fingerprint
+    clock = iter(
+        (
+            datetime(2026, 7, 10, 12, 2, 29, tzinfo=UTC),
+            datetime(2026, 7, 10, 12, 2, 31, tzinfo=UTC),
+            datetime(2026, 7, 10, 12, 2, 31, tzinfo=UTC),
+        )
+    )
+
+    async def heartbeat(**_: Any) -> None:
+        return None
+
+    with pytest.raises(DevolucionesReadModelVerificationError, match="publication age"):
+        await revalidate_devoluciones_snapshot(
+            source=HydratingSource(),
+            snapshot=snapshot,
+            operation=operation,
+            absolute_deadline=200.0,
+            recorder=SourceCallRecorder(),
+            heartbeat=heartbeat,
+            monotonic=lambda: 3.0,
+            now=lambda: next(clock),
+        )
+
+
 @pytest.mark.asyncio
 async def test_collection_hydrates_return_mediation_and_old_order_from_claim_inventory() -> None:
     source = HydratingSource()
@@ -639,11 +1025,11 @@ async def test_low_cost_null_orders_produces_complete_snapshot_proof_fingerprint
     assert "returned_quantity" not in snapshot.projections[1]
     assert (
         snapshot.inventory.fingerprint
-        == "ffb186c7f3fa4cb44462c6c9723cbbcc6b8456f1892e40b837752e4295e33b68"
+        == "5d37b9ec4bce4cbabccbf657ec8a48df056ac0c9d7f7ee6e648c49744978ce41"
     )
     assert (
         snapshot.source_fingerprint
-        == "28af151c4cd83d5c29e6fdb90b8febbd413245d6641d5c8ce29663383435ad88"
+        == "11b1f26e4dddd2148852b452eeabbab44fcc64134dcbda534aecc6588094d3e8"
     )
     assert (
         snapshot.read_model_fingerprint
@@ -690,8 +1076,8 @@ async def test_joint_verifier_rejects_local_facts_that_differ_from_hydrated_proo
         start=START,
         end=END,
     )
-    claims = [deepcopy(projection) for projection in snapshot.projections]
-    orders = [_persisted_readiness_order(order) for order in snapshot.orders]
+    claims = [_mutable_copy(projection) for projection in snapshot.projections]
+    orders = [_persisted_readiness_order(_mutable_copy(order)) for order in snapshot.orders]
     if drift == "return-quantity":
         claims[0]["returned_quantity"] += 1
     elif drift == "order-variation":
@@ -713,7 +1099,7 @@ async def test_joint_verifier_rejects_local_facts_that_differ_from_hydrated_proo
 
 
 @pytest.mark.asyncio
-async def test_collection_skips_unrelated_claim_type_without_fabricating_return() -> None:
+async def test_hydrated_unrelated_claim_type_fails_closed_without_fabricating_return() -> None:
     source = HydratingSource()
     source.claims["519988002"] = {
         **source.claims["519988002"],
@@ -721,14 +1107,14 @@ async def test_collection_skips_unrelated_claim_type_without_fabricating_return(
         "related_entities": [],
     }
 
-    projections, _ = await collect_devoluciones_projections(
-        source=source,
-        seller_id="82453304",
-        start=START,
-        end=END,
-    )
+    with pytest.raises(ClaimInventoryError, match="unresolved"):
+        await collect_devoluciones_projections(
+            source=source,
+            seller_id="82453304",
+            start=START,
+            end=END,
+        )
 
-    assert [projection["_id"] for projection in projections] == ["519988001"]
     assert ("returns", "519988002") not in source.hydration_calls
 
 

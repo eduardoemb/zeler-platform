@@ -45,6 +45,45 @@ async def test_fetch_resource_gets_json_from_proxy_with_seller_jwt() -> None:
 
 
 @pytest.mark.asyncio
+async def test_focused_fetch_disables_proxy_retry_and_requires_attempt_metadata() -> None:
+    seen_requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen_requests.append(request)
+        return httpx.Response(
+            200,
+            json={"id": "MLM123"},
+            headers={"X-Zeler-Upstream-Attempts": "1"},
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http_client:
+        client = MeliGatewayClient(
+            "http://gateway:8080/proxy/meli",
+            StubMeliGatewayAuth("seller-jwt"),  # type: ignore[arg-type]
+            http_client=http_client,
+        )
+        payload = await client.fetch_resource_once(seller_id="82453304", path="/items/MLM123")
+
+    assert payload == {"id": "MLM123"}
+    assert seen_requests[0].headers["x-zeler-proxy-retry"] == "disabled"
+
+
+@pytest.mark.asyncio
+async def test_focused_fetch_fails_closed_without_actual_attempt_metadata() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"id": "MLM123"})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http_client:
+        client = MeliGatewayClient(
+            "http://gateway:8080/proxy/meli",
+            StubMeliGatewayAuth("seller-jwt"),  # type: ignore[arg-type]
+            http_client=http_client,
+        )
+        with pytest.raises(RuntimeError, match="attempt metadata"):
+            await client.fetch_resource_once(seller_id="82453304", path="/items/MLM123")
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("base_url", "path"),
     [
