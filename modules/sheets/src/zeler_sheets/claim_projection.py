@@ -44,6 +44,7 @@ def build_claim_projection(
     ]
 
     return_context_type: str | None = None
+    has_authoritative_v2_return_order = False
     if not matching_rows and return_subtype == "low_cost" and not return_rows:
         productive = False
         returned_quantity = None
@@ -57,12 +58,15 @@ def build_claim_projection(
         returned_quantity = _positive_integral_return_quantity(row.get("return_quantity"))
         productive = True
         return_quantity_basis = "v2_return_order"
+        has_authoritative_v2_return_order = True
         return_context_type = _optional_text(row.get("context_type"))
 
     claim_type = str(claim.get("type") or "")
     if claim_type not in {"return", "returns", "mediations"}:
         raise ClaimProjectionError("claim is not a return or return-linked mediation")
-    if claim_type == "mediations" and not _has_related_return(claim):
+    if claim_type == "mediations" and not (
+        _has_related_return(claim) or has_authoritative_v2_return_order
+    ):
         raise ClaimProjectionError("mediation is not linked to a return")
 
     model_payload: dict[str, Any] = {

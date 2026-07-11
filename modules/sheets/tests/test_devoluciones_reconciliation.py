@@ -292,6 +292,33 @@ def test_productive_return_uses_unique_positive_integral_v2_quantity(claim_type:
     assert projection["claim_version"] == 3
 
 
+@pytest.mark.parametrize("missing_related_entities", [False, True])
+def test_productive_mediation_without_related_return_uses_authoritative_v2_order_row(
+    missing_related_entities: bool,
+) -> None:
+    claim = _claim(claim_type="mediations")
+    claim["claimed_quantity"] = 99
+    claim["returned_quantity"] = 88
+    if missing_related_entities:
+        claim.pop("related_entities")
+    else:
+        claim["related_entities"] = []
+
+    projection = build_claim_projection(
+        seller_id="82453304",
+        claim=claim,
+        returns=_fixture("return_v2.json"),
+        order=_order(),
+    )
+
+    assert projection["type"] == "returns"
+    assert projection["order_id"] == "2001"
+    assert projection["item_id"] == "MLA1"
+    assert projection["returned_quantity"] == 2
+    assert projection["return_quantity_basis"] == "v2_return_order"
+    assert projection["productive"] is True
+
+
 def test_verified_low_cost_without_order_row_is_complete_non_productive() -> None:
     projection = build_claim_projection(
         seller_id="82453304",
@@ -577,6 +604,30 @@ class HydratingSource(ScriptedInventorySource):
         return deepcopy(self.orders[order_id])
 
 
+def _use_mediation_without_related_v2_return_order(
+    source: HydratingSource, *, missing_related_entities: bool = False
+) -> None:
+    mediation = source.claims["519988002"]
+    mediation.update(
+        {
+            "type": "mediations",
+            "status": "closed",
+            "order_id": "1999",
+            "item_id": "MLA2",
+            "claimed_quantity": 99,
+            "returned_quantity": 88,
+        }
+    )
+    if missing_related_entities:
+        mediation.pop("related_entities", None)
+    else:
+        mediation["related_entities"] = []
+    returns = _fixture("return_v2.json")
+    returns["id"] = "RETURN-519988002"
+    returns["orders"][0].update({"order_id": "1999", "item_id": "MLA2", "return_quantity": "1.0"})
+    source.returns["519988002"] = returns
+
+
 @pytest.mark.parametrize(
     ("inventory_type", "inventory_status", "expected"),
     [
@@ -651,6 +702,35 @@ async def test_terminal_cancellation_excludes_before_detail_with_stable_evidence
     assert first.exclusion_fingerprint == second.exclusion_fingerprint
 
 
+@pytest.mark.parametrize("missing_related_entities", [False, True])
+@pytest.mark.asyncio
+async def test_mediation_without_related_return_hydrates_from_authoritative_v2_order_row(
+    missing_related_entities: bool,
+) -> None:
+    source = HydratingSource()
+    _use_mediation_without_related_v2_return_order(
+        source, missing_related_entities=missing_related_entities
+    )
+
+    snapshot = await reconciliation_module.collect_devoluciones_snapshot(
+        source=source,
+        seller_id="82453304",
+        start=START,
+        end=END,
+    )
+
+    mediation = next(
+        projection for projection in snapshot.projections if projection["_id"] == "519988002"
+    )
+    assert mediation["productive"] is True
+    assert mediation["returned_quantity"] == 1
+    assert mediation["return_quantity_basis"] == "v2_return_order"
+    assert mediation["order_id"] == "1999"
+    assert mediation["item_id"] == "MLA2"
+    assert ("returns", "519988002") in source.hydration_calls
+    assert ("order", "1999") in source.hydration_calls
+
+
 @pytest.mark.asyncio
 async def test_uncertain_inventory_candidate_hydrates_and_fails_closed_on_detail_error() -> None:
     source = HydratingSource()
@@ -676,7 +756,6 @@ async def test_uncertain_inventory_candidate_hydrates_and_fails_closed_on_detail
         (None, "closed"),
         ("cancel_purchase", "opened"),
         ("warranty", "closed"),
-        ("mediations", "closed"),
     ],
 )
 @pytest.mark.asyncio
@@ -698,6 +777,151 @@ async def test_hydrated_uncertain_candidate_never_disappears_fail_open(
         )
 
     assert ("claim", "519988002") in source.hydration_calls
+    assert ("returns", "519988002") not in source.hydration_calls
+    assert ("order", "1999") not in source.hydration_calls
+
+
+@pytest.mark.asyncio
+async def test_mediation_without_related_and_no_v2_return_rows_fails_closed_after_probe() -> None:
+    source = HydratingSource()
+    _use_mediation_without_related_v2_return_order(source)
+    source.returns["519988002"]["orders"] = []
+
+    with pytest.raises(ClaimProjectionError, match="unique order/item"):
+        await reconciliation_module.collect_devoluciones_snapshot(
+            source=source,
+            seller_id="82453304",
+            start=START,
+            end=END,
+        )
+
+    assert ("returns", "519988002") in source.hydration_calls
+
+
+class ReturnsAccessFailureSource(HydratingSource):
+    def __init__(self, status_code: int) -> None:
+        super().__init__()
+        self.status_code = status_code
+
+    async def get_returns(self, *, seller_id: str, claim_id: str) -> dict[str, Any]:
+        if claim_id != "519988002":
+            return await super().get_returns(seller_id=seller_id, claim_id=claim_id)
+        self.hydration_calls.append(("returns", claim_id))
+        raise ClaimInventoryError(f"v2 returns http {self.status_code}")
+
+
+@pytest.mark.parametrize("status_code", [401, 403, 404])
+@pytest.mark.asyncio
+async def test_mediation_without_related_fails_closed_on_v2_returns_access_failure(
+    status_code: int,
+) -> None:
+    source = ReturnsAccessFailureSource(status_code)
+    _use_mediation_without_related_v2_return_order(source)
+
+    with pytest.raises(ClaimInventoryError, match=f"v2 returns http {status_code}"):
+        await reconciliation_module.collect_devoluciones_snapshot(
+            source=source,
+            seller_id="82453304",
+            start=START,
+            end=END,
+        )
+
+    assert ("returns", "519988002") in source.hydration_calls
+    assert ("order", "1999") not in source.hydration_calls
+
+
+class MissingReferencedOrderSource(HydratingSource):
+    async def get_order(self, *, seller_id: str, order_id: str) -> dict[str, Any]:
+        if order_id != "1999":
+            return await super().get_order(seller_id=seller_id, order_id=order_id)
+        self.hydration_calls.append(("order", order_id))
+        raise ClaimInventoryError("referenced order missing")
+
+
+@pytest.mark.asyncio
+async def test_mediation_without_related_fails_closed_when_referenced_order_is_missing() -> None:
+    source = MissingReferencedOrderSource()
+    _use_mediation_without_related_v2_return_order(source)
+
+    with pytest.raises(ClaimInventoryError, match="referenced order missing"):
+        await reconciliation_module.collect_devoluciones_snapshot(
+            source=source,
+            seller_id="82453304",
+            start=START,
+            end=END,
+        )
+
+    assert ("order", "1999") in source.hydration_calls
+
+
+@pytest.mark.asyncio
+async def test_mediation_without_related_fails_closed_on_seller_mismatch() -> None:
+    source = HydratingSource()
+    _use_mediation_without_related_v2_return_order(source)
+    source.orders["1999"] = _order(item_id="MLA2", seller_id=999) | {"id": 1999}
+
+    with pytest.raises(ClaimProjectionError, match="order seller"):
+        await reconciliation_module.collect_devoluciones_snapshot(
+            source=source,
+            seller_id="82453304",
+            start=START,
+            end=END,
+        )
+
+    assert ("order", "1999") in source.hydration_calls
+
+
+@pytest.mark.asyncio
+async def test_mediation_without_related_fails_closed_on_order_item_mismatch() -> None:
+    source = HydratingSource()
+    _use_mediation_without_related_v2_return_order(source)
+    source.orders["1999"] = _order(item_id="MLA-OTHER") | {"id": 1999}
+
+    with pytest.raises(ClaimProjectionError, match="unique matching item"):
+        await reconciliation_module.collect_devoluciones_snapshot(
+            source=source,
+            seller_id="82453304",
+            start=START,
+            end=END,
+        )
+
+    assert ("order", "1999") in source.hydration_calls
+
+
+@pytest.mark.asyncio
+async def test_mediation_without_related_never_uses_claim_or_order_quantity_substitutes() -> None:
+    source = HydratingSource()
+    _use_mediation_without_related_v2_return_order(source)
+    source.returns["519988002"]["orders"][0].pop("return_quantity")
+
+    with pytest.raises(ClaimProjectionError, match="return_quantity"):
+        await reconciliation_module.collect_devoluciones_snapshot(
+            source=source,
+            seller_id="82453304",
+            start=START,
+            end=END,
+        )
+
+    assert ("order", "1999") in source.hydration_calls
+
+
+@pytest.mark.parametrize("claim_type", ["cancel_purchase", "cancel_sale", "warranty"])
+@pytest.mark.asyncio
+async def test_cancel_and_non_return_hydrated_claims_do_not_become_productive_from_v2_returns(
+    claim_type: str,
+) -> None:
+    source = HydratingSource()
+    _use_mediation_without_related_v2_return_order(source)
+    source.claims["519988002"].update({"type": claim_type, "status": "closed"})
+
+    with pytest.raises(ClaimInventoryError, match="unresolved"):
+        await reconciliation_module.collect_devoluciones_snapshot(
+            source=source,
+            seller_id="82453304",
+            start=START,
+            end=END,
+        )
+
     assert ("returns", "519988002") not in source.hydration_calls
     assert ("order", "1999") not in source.hydration_calls
 

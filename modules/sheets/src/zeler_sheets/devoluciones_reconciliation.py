@@ -1264,12 +1264,7 @@ def _is_return_candidate(claim: Mapping[str, Any]) -> bool:
     claim_type = str(claim.get("type") or "")
     if claim_type in {"return", "returns"}:
         return True
-    if claim_type != "mediations":
-        return False
-    related = claim.get("related_entities")
-    return isinstance(related, list) and any(
-        isinstance(entity, Mapping) and entity.get("type") == "return" for entity in related
-    )
+    return claim_type == "mediations"
 
 
 def _validated_utc_range(start: datetime, end: datetime) -> tuple[datetime, datetime]:
