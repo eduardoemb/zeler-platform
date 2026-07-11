@@ -1,0 +1,401 @@
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+import re
+import tempfile
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+CANONICAL_SHEETS_SCOPES = (
+    "GET /items",
+    "GET /items/*",
+    "GET /products/*",
+    "GET /sites/*/listing_prices",
+    "GET /users/*/shipping_options/free",
+    "GET /orders/*",
+    "GET /post-purchase/v1/claims/search",
+    "GET /post-purchase/v1/claims/*",
+    "GET /post-purchase/v2/claims/*/returns",
+    "GET /shipments/*",
+    "GET /questions/*",
+)
+CANONICAL_SHEETS_ROUTING_KEYS = (
+    "items.*",
+    "orders.*",
+    "shipments.*",
+    "questions.*",
+    "claims.updated",
+)
+ROLLBACK_COMPATIBLE_ALLOWED_TREE = (
+    "core/src/zeler_platform_core/runtime/manifest.py",
+    "core/src/zeler_platform_core/runtime/registration.py",
+    "modules/sheets/manifest.yaml",
+)
+ROLLBACK_HEALTH_CONTRACT = (
+    "container_healthy",
+    "mongo_ready",
+    "rabbitmq_ready",
+    "sheets_health_200",
+    "startup_registration_exact_fingerprint",
+    "clean_restart_exact_fingerprint",
+)
+PROHIBITED_OLD_API_DIGEST = (
+    "sha256:8da8ab2b0b092825e6b3f362ea92e375a52e25a7a3cb78c2af0828844ddb00b6"
+)
+_COMMIT_PATTERN = re.compile(r"[0-9a-f]{40}")
+_IMAGE_REF_PATTERN = re.compile(
+    r"(?P<repository>[a-z0-9.-]+/[a-z0-9._/-]+)@sha256:(?P<digest>[0-9a-f]{64})"
+)
+_CANONICAL_FULL_REGISTRATION_FINGERPRINT = (
+    "3a80a26a340151c5a8a2fca1cbece0f0c4d3974e3695885bce488745c08cda38"
+)
+
+
+class RollbackSafetyError(RuntimeError):
+    pass
+
+
+@dataclass(frozen=True)
+class VerifiedGcloudProvenance:
+    image_ref: str
+    build_id: str
+    source_commit: str
+    entrypoint: tuple[str, str]
+    registry_fingerprint: str
+
+
+def canonical_sheets_registration_fingerprint() -> str:
+    return _CANONICAL_FULL_REGISTRATION_FINGERPRINT
+
+
+def extract_cloud_build_id(artifact_document: Mapping[str, Any], *, image_ref: str) -> str:
+    image_match = _required_image_ref(image_ref)
+    summary = artifact_document.get("image_summary")
+    if not isinstance(summary, Mapping) or summary.get("fully_qualified_digest") != image_ref:
+        raise RollbackSafetyError("Artifact Registry digest binding is invalid")
+    provenance_summary = artifact_document.get("provenance_summary")
+    provenance_rows = (
+        provenance_summary.get("provenance") if isinstance(provenance_summary, Mapping) else None
+    )
+    if not isinstance(provenance_rows, list) or len(provenance_rows) != 1:
+        raise RollbackSafetyError("Artifact Registry provenance is missing or ambiguous")
+    row = provenance_rows[0]
+    build = row.get("build") if isinstance(row, Mapping) else None
+    statement = build.get("inTotoSlsaProvenanceV1") if isinstance(build, Mapping) else None
+    if (
+        not isinstance(statement, Mapping)
+        or statement.get("_type") != "https://in-toto.io/Statement/v1"
+        or statement.get("predicateType") != "https://slsa.dev/provenance/v1"
+    ):
+        raise RollbackSafetyError("Artifact Registry provenance is invalid")
+    predicate = statement.get("predicate")
+    run_details = predicate.get("runDetails") if isinstance(predicate, Mapping) else None
+    builder = run_details.get("builder") if isinstance(run_details, Mapping) else None
+    builder_id = builder.get("id") if isinstance(builder, Mapping) else None
+    if not isinstance(builder_id, str) or not builder_id.startswith(
+        "https://cloudbuild.googleapis.com/"
+    ):
+        raise RollbackSafetyError("trusted Cloud Build builder is invalid")
+    subjects = statement.get("subject")
+    expected_digest = image_match.group("digest")
+    expected_repository = image_match.group("repository")
+    if not isinstance(subjects, list) or not any(
+        isinstance(subject, Mapping)
+        and subject.get("name") == expected_repository
+        and isinstance(subject.get("digest"), Mapping)
+        and subject["digest"].get("sha256") == expected_digest
+        for subject in subjects
+    ):
+        raise RollbackSafetyError("Artifact Registry subject digest binding is invalid")
+    metadata = run_details.get("metadata") if isinstance(run_details, Mapping) else None
+    build_id = metadata.get("invocationId") if isinstance(metadata, Mapping) else None
+    if not isinstance(build_id, str) or not build_id.strip():
+        raise RollbackSafetyError("Cloud Build identity is missing")
+    return build_id
+
+
+def verify_gcloud_provenance(
+    *,
+    image_ref: str,
+    artifact_document: Mapping[str, Any],
+    build_document: Mapping[str, Any],
+    expected_source_commit: str,
+) -> VerifiedGcloudProvenance:
+    build_id = extract_cloud_build_id(artifact_document, image_ref=image_ref)
+    if build_document.get("id") != build_id or build_document.get("status") != "SUCCESS":
+        raise RollbackSafetyError("Cloud Build result is not a successful trusted build")
+    source_provenance = build_document.get("sourceProvenance")
+    resolved_source = (
+        source_provenance.get("resolvedRepoSource")
+        if isinstance(source_provenance, Mapping)
+        else None
+    )
+    source_commit = (
+        resolved_source.get("commitSha") if isinstance(resolved_source, Mapping) else None
+    )
+    if (
+        _COMMIT_PATTERN.fullmatch(expected_source_commit) is None
+        or source_commit != expected_source_commit
+    ):
+        raise RollbackSafetyError("Cloud Build source commit is invalid")
+    return VerifiedGcloudProvenance(
+        image_ref=image_ref,
+        build_id=build_id,
+        source_commit=expected_source_commit,
+        entrypoint=("zeler_sheets.app:make_app", "--factory"),
+        registry_fingerprint=canonical_sheets_registration_fingerprint(),
+    )
+
+
+def verify_image_runtime_contract(
+    *,
+    image_ref: str,
+    image_id: str,
+    source_commit: str,
+    image_config: Mapping[str, Any],
+    probe_document: Mapping[str, Any],
+) -> dict[str, Any]:
+    _required_image_ref(image_ref)
+    _required_image_id(image_id)
+    if _COMMIT_PATTERN.fullmatch(source_commit) is None:
+        raise RollbackSafetyError("runtime image source commit is invalid")
+    command_parts: list[str] = []
+    for field in ("Entrypoint", "Cmd"):
+        value = image_config.get(field)
+        if value is None:
+            continue
+        if not isinstance(value, list) or not all(isinstance(part, str) for part in value):
+            raise RollbackSafetyError("runtime image entrypoint config is invalid")
+        command_parts.extend(value)
+    command = " ".join(command_parts)
+    if (
+        re.search(
+            r"(?:^|\s)(?:/app/)?\.venv/bin/uvicorn\s+zeler_sheets\.app:make_app\s+--factory(?:\s|$)",
+            command,
+        )
+        is None
+    ):
+        raise RollbackSafetyError("runtime image entrypoint contract is invalid")
+    expected_probe = {
+        "entrypoint_import": True,
+        "module_id": "sheets",
+        "registry_fingerprint": canonical_sheets_registration_fingerprint(),
+        "scope_count": len(CANONICAL_SHEETS_SCOPES),
+        "routing_key_count": len(CANONICAL_SHEETS_ROUTING_KEYS),
+    }
+    if dict(probe_document) != expected_probe:
+        raise RollbackSafetyError("runtime image no-secret contract probe is invalid")
+    return {
+        "schema_version": 1,
+        "image_ref": image_ref,
+        "image_id": image_id,
+        "source_commit": source_commit,
+        "entrypoint": "zeler_sheets.app:make_app --factory",
+        "registry_fingerprint": canonical_sheets_registration_fingerprint(),
+        "scope_count": len(CANONICAL_SHEETS_SCOPES),
+        "routing_key_count": len(CANONICAL_SHEETS_ROUTING_KEYS),
+        "image_config_sha256": _sha256_json(image_config),
+        "probe_sha256": _sha256_json(probe_document),
+    }
+
+
+def verify_running_image_binding(
+    *,
+    target_image_ref: str,
+    container_image_id: str,
+    expected_image_id: str,
+    image_repo_digests: Sequence[str],
+) -> None:
+    _required_image_ref(target_image_ref)
+    _required_image_id(container_image_id)
+    _required_image_id(expected_image_id)
+    if container_image_id != expected_image_id:
+        raise RollbackSafetyError("running container does not use the verified image object")
+    if target_image_ref not in image_repo_digests:
+        raise RollbackSafetyError("verified image object RepoDigest does not match target")
+
+
+def verify_runtime_binding(
+    *,
+    image_ref: str,
+    repo_digests: Sequence[str],
+    health_document: Mapping[str, Any],
+) -> None:
+    _required_image_ref(image_ref)
+    if image_ref not in repo_digests:
+        raise RollbackSafetyError("running Sheets API RepoDigest does not match verified image")
+    checks = health_document.get("checks")
+    registry = checks.get("registry") if isinstance(checks, Mapping) else None
+    mongo = checks.get("mongo") if isinstance(checks, Mapping) else None
+    rabbitmq = checks.get("rabbitmq") if isinstance(checks, Mapping) else None
+    if (
+        health_document.get("ready") is not True
+        or not isinstance(registry, Mapping)
+        or registry.get("ok") is not True
+        or registry.get("detail") != "registry_fingerprint_match"
+        or not isinstance(mongo, Mapping)
+        or mongo.get("ok") is not True
+        or not isinstance(rabbitmq, Mapping)
+        or rabbitmq.get("ok") is not True
+    ):
+        raise RollbackSafetyError("Sheets API runtime health or registry fingerprint is invalid")
+
+
+def _required_image_ref(image_ref: str) -> re.Match[str]:
+    match = _IMAGE_REF_PATTERN.fullmatch(image_ref)
+    if match is None:
+        raise RollbackSafetyError("immutable Artifact Registry image reference is invalid")
+    return match
+
+
+def _required_image_id(image_id: str) -> None:
+    if re.fullmatch(r"sha256:[0-9a-f]{64}", image_id) is None:
+        raise RollbackSafetyError("Docker image object identity is invalid")
+
+
+def _sha256_json(value: Mapping[str, Any]) -> str:
+    encoded = json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _atomic_json_write(path: Path, document: Mapping[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            json.dump(document, handle, sort_keys=True, separators=(",", ":"))
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser()
+    subparsers = parser.add_subparsers(dest="command", required=True)
+    extract = subparsers.add_parser("extract-build-id")
+    extract.add_argument("--artifact-provenance", type=Path, required=True)
+    extract.add_argument("--image-ref", required=True)
+    verify = subparsers.add_parser("verify-gcloud")
+    verify.add_argument("--artifact-provenance", type=Path, required=True)
+    verify.add_argument("--build", type=Path, required=True)
+    verify.add_argument("--image-ref", required=True)
+    verify.add_argument("--source-commit", required=True)
+    runtime = subparsers.add_parser("verify-runtime")
+    runtime.add_argument("--repo-digests", type=Path, required=True)
+    runtime.add_argument("--health", type=Path, required=True)
+    runtime.add_argument("--image-ref", required=True)
+    image_contract = subparsers.add_parser("verify-image-contract")
+    image_contract.add_argument("--image-config", type=Path, required=True)
+    image_contract.add_argument("--probe", type=Path, required=True)
+    image_contract.add_argument("--image-ref", required=True)
+    image_contract.add_argument("--image-id", required=True)
+    image_contract.add_argument("--source-commit", required=True)
+    image_contract.add_argument("--proof-out", type=Path, required=True)
+    release = subparsers.add_parser("verify-release-proof")
+    release.add_argument("--proof", type=Path, required=True)
+    release.add_argument("--image-ref", required=True)
+    release.add_argument("--image-id", required=True)
+    release.add_argument("--source-commit", required=True)
+    running = subparsers.add_parser("verify-running-binding")
+    running.add_argument("--repo-digests", type=Path, required=True)
+    running.add_argument("--image-ref", required=True)
+    running.add_argument("--container-image-id", required=True)
+    running.add_argument("--expected-image-id", required=True)
+    return parser
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    args = _build_parser().parse_args(argv)
+    try:
+        if args.command == "verify-running-binding":
+            repo_digests = json.loads(args.repo_digests.read_text(encoding="utf-8"))
+            if not isinstance(repo_digests, list) or not all(
+                isinstance(value, str) for value in repo_digests
+            ):
+                raise RollbackSafetyError("image RepoDigest evidence is invalid")
+            verify_running_image_binding(
+                target_image_ref=args.image_ref,
+                container_image_id=args.container_image_id,
+                expected_image_id=args.expected_image_id,
+                image_repo_digests=repo_digests,
+            )
+            print("running container image object and RepoDigest: verified")
+            return 0
+        if args.command == "verify-image-contract":
+            image_config = json.loads(args.image_config.read_text(encoding="utf-8"))
+            probe = json.loads(args.probe.read_text(encoding="utf-8"))
+            if not isinstance(image_config, Mapping) or not isinstance(probe, Mapping):
+                raise RollbackSafetyError("runtime image contract evidence is invalid")
+            proof = verify_image_runtime_contract(
+                image_ref=args.image_ref,
+                image_id=args.image_id,
+                source_commit=args.source_commit,
+                image_config=image_config,
+                probe_document=probe,
+            )
+            _atomic_json_write(args.proof_out, proof)
+            print("runtime image config and no-secret contract probe: verified")
+            return 0
+        if args.command == "verify-release-proof":
+            proof = json.loads(args.proof.read_text(encoding="utf-8"))
+            if (
+                not isinstance(proof, Mapping)
+                or proof.get("schema_version") != 1
+                or proof.get("image_ref") != args.image_ref
+                or proof.get("image_id") != args.image_id
+                or proof.get("source_commit") != args.source_commit
+                or proof.get("registry_fingerprint") != canonical_sheets_registration_fingerprint()
+                or proof.get("scope_count") != len(CANONICAL_SHEETS_SCOPES)
+                or proof.get("routing_key_count") != len(CANONICAL_SHEETS_ROUTING_KEYS)
+            ):
+                raise RollbackSafetyError("runtime release proof is invalid")
+            _required_image_id(args.image_id)
+            print("runtime release proof: verified")
+            return 0
+        if args.command == "verify-runtime":
+            repo_digests = json.loads(args.repo_digests.read_text(encoding="utf-8"))
+            health_document = json.loads(args.health.read_text(encoding="utf-8"))
+            if (
+                not isinstance(repo_digests, list)
+                or not all(isinstance(value, str) for value in repo_digests)
+                or not isinstance(health_document, Mapping)
+            ):
+                raise RollbackSafetyError("runtime binding evidence is invalid")
+            verify_runtime_binding(
+                image_ref=args.image_ref,
+                repo_digests=repo_digests,
+                health_document=health_document,
+            )
+            print("running Sheets API digest and health: verified")
+            return 0
+        artifact_document = json.loads(args.artifact_provenance.read_text(encoding="utf-8"))
+        if not isinstance(artifact_document, Mapping):
+            raise RollbackSafetyError("Artifact Registry provenance document is invalid")
+        if args.command == "extract-build-id":
+            print(extract_cloud_build_id(artifact_document, image_ref=args.image_ref))
+            return 0
+        build_document = json.loads(args.build.read_text(encoding="utf-8"))
+        if not isinstance(build_document, Mapping):
+            raise RollbackSafetyError("Cloud Build document is invalid")
+        verify_gcloud_provenance(
+            image_ref=args.image_ref,
+            artifact_document=artifact_document,
+            build_document=build_document,
+            expected_source_commit=args.source_commit,
+        )
+    except (OSError, ValueError, RollbackSafetyError) as exc:
+        raise SystemExit(str(exc)) from exc
+    print("Artifact Registry and Cloud Build provenance: verified")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
