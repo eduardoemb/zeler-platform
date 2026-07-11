@@ -4,7 +4,7 @@ import json
 import os
 import subprocess
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 from infra.deploy.preflight import (
@@ -358,6 +358,21 @@ def _gcloud_provenance(
     }
 
 
+def _non_v1_intoto_row() -> dict[str, Any]:
+    return {
+        "build": {
+            "intotoStatement": {
+                "_type": "https://in-toto.io/Statement/v0.1",
+                "predicateType": "https://slsa.dev/provenance/v0.2",
+            }
+        }
+    }
+
+
+def _provenance_rows(artifact: dict[str, Any]) -> list[dict[str, Any]]:
+    return cast(list[dict[str, Any]], artifact["provenance_summary"]["provenance"])
+
+
 def _cloud_build(build_id: str = "build-123") -> dict[str, Any]:
     return {
         "id": build_id,
@@ -432,6 +447,112 @@ def test_external_gcloud_provenance_accepts_connected_repository_source() -> Non
     assert verified.source_commit == CONNECTED_SOURCE_COMMIT
     assert verified.entrypoint == ("zeler_sheets.app:make_app", "--factory")
     assert verified.registry_fingerprint == canonical_sheets_registration_fingerprint()
+
+
+def test_external_gcloud_provenance_accepts_verified_slsa_v1_with_extra_intoto() -> None:
+    image_ref = (
+        "us-central1-docker.pkg.dev/zeler-platform-dev/zeler-platform/sheets-api@sha256:" + "a" * 64
+    )
+    artifact = _gcloud_provenance(image_ref)
+    _provenance_rows(artifact).append(_non_v1_intoto_row())
+    build = _connected_cloud_build()
+
+    assert extract_cloud_build_id(artifact, image_ref=image_ref) == "build-123"
+    verified = verify_gcloud_provenance(
+        image_ref=image_ref,
+        artifact_document=artifact,
+        build_document=build,
+        expected_source_commit=CONNECTED_SOURCE_COMMIT,
+        expected_connected_repository=CONNECTED_REPOSITORY,
+    )
+
+    assert verified.build_id == "build-123"
+    assert verified.source_commit == CONNECTED_SOURCE_COMMIT
+
+
+@pytest.mark.parametrize(
+    "rows",
+    [
+        [],
+        [_non_v1_intoto_row()],
+        [_non_v1_intoto_row(), _non_v1_intoto_row()],
+    ],
+)
+def test_external_gcloud_provenance_fails_closed_without_exactly_one_slsa_v1_row(
+    rows: list[dict[str, Any]],
+) -> None:
+    image_ref = (
+        "us-central1-docker.pkg.dev/zeler-platform-dev/zeler-platform/sheets-api@sha256:" + "a" * 64
+    )
+    artifact = _gcloud_provenance(image_ref)
+    artifact["provenance_summary"]["provenance"] = rows
+
+    with pytest.raises(RollbackSafetyError, match="provenance"):
+        extract_cloud_build_id(artifact, image_ref=image_ref)
+
+
+def test_external_gcloud_provenance_fails_closed_on_duplicate_slsa_v1_rows() -> None:
+    image_ref = (
+        "us-central1-docker.pkg.dev/zeler-platform-dev/zeler-platform/sheets-api@sha256:" + "a" * 64
+    )
+    artifact = _gcloud_provenance(image_ref)
+    duplicate = _gcloud_provenance(image_ref, build_id="build-456")["provenance_summary"][
+        "provenance"
+    ][0]
+    _provenance_rows(artifact).append(duplicate)
+
+    with pytest.raises(RollbackSafetyError, match="ambiguous"):
+        extract_cloud_build_id(artifact, image_ref=image_ref)
+
+
+def test_external_gcloud_provenance_fails_closed_on_invalid_slsa_v1_row_with_extra_intoto() -> None:
+    image_ref = (
+        "us-central1-docker.pkg.dev/zeler-platform-dev/zeler-platform/sheets-api@sha256:" + "a" * 64
+    )
+    artifact = _gcloud_provenance(image_ref)
+    _provenance_rows(artifact).append(_non_v1_intoto_row())
+    artifact["provenance_summary"]["provenance"][0]["build"]["inTotoSlsaProvenanceV1"][
+        "predicateType"
+    ] = "https://slsa.dev/provenance/v0.2"
+
+    with pytest.raises(RollbackSafetyError, match="invalid"):
+        extract_cloud_build_id(artifact, image_ref=image_ref)
+
+
+@pytest.mark.parametrize(
+    ("mutation", "expected"),
+    [
+        ("digest", "digest"),
+        ("build", "successful trusted build"),
+        ("source", "source commit"),
+    ],
+)
+def test_verified_slsa_v1_row_with_extra_intoto_still_fails_closed_on_wrong_authority(
+    mutation: str, expected: str
+) -> None:
+    image_ref = (
+        "us-central1-docker.pkg.dev/zeler-platform-dev/zeler-platform/sheets-api@sha256:" + "a" * 64
+    )
+    artifact = _gcloud_provenance(image_ref)
+    _provenance_rows(artifact).append(_non_v1_intoto_row())
+    build = _connected_cloud_build()
+    if mutation == "digest":
+        artifact["provenance_summary"]["provenance"][0]["build"]["inTotoSlsaProvenanceV1"][
+            "subject"
+        ][0]["digest"]["sha256"] = "f" * 64
+    elif mutation == "build":
+        build["id"] = "different-build"
+    elif mutation == "source":
+        build["source"]["connectedRepository"]["revision"] = "f" * 40
+
+    with pytest.raises(RollbackSafetyError, match=expected):
+        verify_gcloud_provenance(
+            image_ref=image_ref,
+            artifact_document=artifact,
+            build_document=build,
+            expected_source_commit=CONNECTED_SOURCE_COMMIT,
+            expected_connected_repository=CONNECTED_REPOSITORY,
+        )
 
 
 def test_provenance_full_registration_fingerprint_tracks_canonical_manifest() -> None:
