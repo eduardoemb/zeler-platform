@@ -82,9 +82,18 @@ def extract_cloud_build_id(artifact_document: Mapping[str, Any], *, image_ref: s
     provenance_rows = (
         provenance_summary.get("provenance") if isinstance(provenance_summary, Mapping) else None
     )
-    if not isinstance(provenance_rows, list) or len(provenance_rows) != 1:
+    if not isinstance(provenance_rows, list):
         raise RollbackSafetyError("Artifact Registry provenance is missing or ambiguous")
-    row = provenance_rows[0]
+    slsa_v1_rows = [
+        row
+        for row in provenance_rows
+        if isinstance(row, Mapping)
+        and isinstance(row.get("build"), Mapping)
+        and "inTotoSlsaProvenanceV1" in row["build"]
+    ]
+    if len(slsa_v1_rows) != 1:
+        raise RollbackSafetyError("Artifact Registry provenance is missing or ambiguous")
+    row = slsa_v1_rows[0]
     build = row.get("build") if isinstance(row, Mapping) else None
     statement = build.get("inTotoSlsaProvenanceV1") if isinstance(build, Mapping) else None
     if (
