@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
@@ -174,6 +175,63 @@ async def test_registration_upserts_module_registry_doc() -> None:
         "status": "enabled",
         "schema_version": 1,
     }
+
+
+@pytest.mark.asyncio
+async def test_sheets_registration_converges_seed_startup_and_restart_to_exact_11_5() -> None:
+    root = Path(__file__).resolve().parents[2]
+    manifest = validate_manifest(root / "modules" / "sheets" / "manifest.yaml")
+    seed = json.loads(
+        (root / "infra" / "mongo" / "seeds" / "module_registry.admin_clients.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    seeded_sheets = next(row for row in seed["documents"] if row["_id"] == "sheets")
+    db = FakeAsyncDb()
+    db.module_registry.documents["sheets"] = {
+        **seeded_sheets,
+        "allowed_meli_scopes": seeded_sheets["allowed_meli_scopes"][:8],
+        "routing_keys": seeded_sheets["routing_keys"][:4],
+    }
+
+    await register_module(manifest, db)
+    first_start = db.module_registry.documents["sheets"]
+    await register_module(manifest, db)
+    crash_restart = db.module_registry.documents["sheets"]
+
+    assert manifest.routing_keys == [
+        "items.*",
+        "orders.*",
+        "shipments.*",
+        "questions.*",
+        "claims.updated",
+    ]
+    assert len(manifest.allowed_meli_scopes) == 11
+    assert first_start == crash_restart
+    assert first_start["allowed_meli_scopes"] == seeded_sheets["allowed_meli_scopes"]
+    assert first_start["routing_keys"] == seeded_sheets["routing_keys"]
+    assert len(first_start["allowed_meli_scopes"]) == 11
+    assert len(first_start["routing_keys"]) == 5
+
+
+def test_manifest_routing_union_is_stable_and_deduplicated() -> None:
+    manifest = ModuleManifest(
+        name="sheets",
+        version="0.1.0",
+        subscribed_events=["items.*", "claims.updated"],
+        passive_consumers=[
+            {
+                "queue_name": "zeler.sheets.claims",
+                "routing_keys": ["claims.updated", "orders.*"],
+                "externally_bound": True,
+            }
+        ],
+        owned_collections=["sheets_exports"],
+        allowed_meli_scopes=["GET /items/*"],
+        health_endpoint="/health",
+    )
+
+    assert manifest.routing_keys == ["items.*", "claims.updated", "orders.*"]
 
 
 @pytest.mark.asyncio

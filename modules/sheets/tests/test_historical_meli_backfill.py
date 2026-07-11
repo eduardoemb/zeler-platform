@@ -15,6 +15,7 @@ import zeler_sheets.event_persistence as event_persistence_module
 import zeler_sheets.historical_meli_backfill as historical_backfill_module
 from zeler_platform_core.devoluciones_readiness import DevolucionesOperationContext
 from zeler_sheets.claim_projection import ClaimProjectionError
+from zeler_sheets.devoluciones_reconciliation import ClaimInventoryError
 from zeler_sheets.historical_meli_backfill import (
     build_arg_parser,
     parse_inclusive_date_range,
@@ -1155,7 +1156,7 @@ async def test_historical_backfill_keeps_explicit_quantity_after_scope_resolutio
 
 
 @pytest.mark.asyncio
-async def test_historical_backfill_filters_non_return_claim_types() -> None:
+async def test_historical_backfill_fails_closed_on_unresolved_non_return_claim() -> None:
     db = FakeDb()
     gateway = FakeGateway(
         claim_payloads=[
@@ -1181,26 +1182,22 @@ async def test_historical_backfill_filters_non_return_claim_types() -> None:
         ]
     )
 
-    summary = await run_historical_meli_backfill(
-        db=db,
-        gateway=gateway,
-        order_detail_gateway=FakeOrderDetailGateway(),
-        seller_id="82453304",
-        date_from="2026-05-01",
-        date_to="2026-05-01",
-        dry_run=False,
-        approved_runtime=True,
-        max_orders=1,
-        include_claims=True,
-        devoluciones_source=_authoritative_claims_source(gateway),
-    )
+    with pytest.raises(ClaimInventoryError, match="unresolved"):
+        await run_historical_meli_backfill(
+            db=db,
+            gateway=gateway,
+            order_detail_gateway=FakeOrderDetailGateway(),
+            seller_id="82453304",
+            date_from="2026-05-01",
+            date_to="2026-05-01",
+            dry_run=False,
+            approved_runtime=True,
+            max_orders=1,
+            include_claims=True,
+            devoluciones_source=_authoritative_claims_source(gateway),
+        )
 
-    assert summary.claims_found == 1
-    assert summary.planned_claims == 1
-    assert summary.written_claims == 1
-    assert summary.claim_ids == ["CLAIM-RETURN"]
-    assert set(db["claims"].documents) == {"CLAIM-RETURN"}
-    assert db["claims"].documents["CLAIM-RETURN"]["returned_quantity"] == 2
+    assert db["claims"].documents == {}
 
 
 @pytest.mark.asyncio

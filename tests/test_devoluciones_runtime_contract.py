@@ -1,9 +1,15 @@
 from __future__ import annotations
 
+import base64
+import json
+import os
+import re
+import subprocess
 import tomllib
 from pathlib import Path
 
 import pytest
+from infra.operations.zelerdata_campaign_state import CampaignStateStore
 from infra.operations.zelerdata_read_model_reconcile import (
     build_arg_parser as build_reconciliation_arg_parser,
 )
@@ -17,6 +23,7 @@ SHEETS_PYPROJECT = ROOT / "modules" / "sheets" / "pyproject.toml"
 SHEETS_WORKER_DOCKERFILE = ROOT / "modules" / "sheets" / "Dockerfile.worker"
 STARTUP = ROOT / "infra" / "gce" / "platform-vm-startup.sh"
 RECONCILE_WRAPPER = ROOT / "infra" / "gce" / "zelerdata-devoluciones-reconcile.sh"
+TIMER_ENABLE_WRAPPER = ROOT / "infra" / "gce" / "zelerdata-devoluciones-enable-timer.sh"
 TOPOLOGY_WRAPPER = ROOT / "infra" / "gce" / "zelerdata-devoluciones-topology.sh"
 COMPOSE_FILE = ROOT / "infra" / "gce" / "docker-compose.yml"
 SYSTEMD_DIR = ROOT / "infra" / "gce" / "systemd"
@@ -35,6 +42,133 @@ def _read(path: Path) -> str:
 def _bash_blocks(markdown: str) -> tuple[str, ...]:
     return tuple(
         fenced.split("```", 1)[0] for fenced in markdown.split("```bash")[1:] if "```" in fenced
+    )
+
+
+def _write_executable(path: Path, content: str) -> Path:
+    path.write_text(content, encoding="utf-8")
+    path.chmod(0o755)
+    return path
+
+
+def _scheduled_wrapper_test_env(
+    *, tmp_path: Path, output: str, status: int
+) -> tuple[dict[str, str], Path, Path]:
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+    logger_file = tmp_path / "journald.log"
+    campaign_state_file = tmp_path / "campaign-state.json"
+    mktemp_count_file = tmp_path / "mktemp-count"
+    epoch_file = tmp_path / "epoch"
+    compose_file = tmp_path / "docker-compose.yml"
+    compose_file.write_text("services: {}\n", encoding="utf-8")
+    date_bin = _write_executable(
+        bin_dir / "date",
+        f"""#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$*" == *"+%s"* ]]; then
+  if [[ -f "{epoch_file}" ]]; then
+    echo 110
+  else
+    : > "{epoch_file}"
+    echo 100
+  fi
+elif [[ "$*" == *"yesterday"* ]]; then
+  echo 2026-07-10
+else
+  for value in "$@"; do
+    if [[ "$value" =~ ^[0-9]{{4}}-[0-9]{{2}}-[0-9]{{2}}$ ]]; then
+      echo "$value"
+      exit 0
+    fi
+  done
+  exit 1
+fi
+""",
+    )
+    docker_bin = _write_executable(
+        bin_dir / "docker",
+        """#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$FAKE_DOCKER_OUTPUT"
+exit "$FAKE_DOCKER_STATUS"
+""",
+    )
+    timeout_bin = _write_executable(
+        bin_dir / "timeout",
+        """#!/usr/bin/env bash
+set -euo pipefail
+shift 3
+exec "$@"
+""",
+    )
+    logger_bin = _write_executable(
+        bin_dir / "logger",
+        """#!/usr/bin/env bash
+set -euo pipefail
+if [[ "${FAKE_LOGGER_FAIL:-0}" == "1" ]]; then
+  exit 72
+fi
+printf '%s\n' "$*" >> "$FAKE_LOGGER_FILE"
+""",
+    )
+    mktemp_bin = _write_executable(
+        bin_dir / "mktemp",
+        f"""#!/usr/bin/env bash
+set -euo pipefail
+count=0
+if [[ -f "{mktemp_count_file}" ]]; then
+  count=$(cat "{mktemp_count_file}")
+fi
+count=$((count + 1))
+printf '%s' "$count" > "{mktemp_count_file}"
+if [[ "${{FAKE_MKTEMP_FAIL_AT:-0}}" == "$count" ]]; then
+  exit 73
+fi
+TMPDIR="$TMPDIR" /usr/bin/mktemp
+""",
+    )
+    python_bin = _write_executable(
+        bin_dir / "python",
+        """#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$*" == *"zelerdata_scheduled_evidence"* && "${FAKE_PARSER_FAIL:-0}" == "1" ]]; then
+  exit 65
+fi
+if [[ "$*" == *"zelerdata_campaign_state"* && "${FAKE_STATE_WRITER_FAIL:-0}" == "1" ]]; then
+  exit 70
+fi
+exec /usr/bin/python3 "$@"
+""",
+    )
+    return (
+        {
+            **os.environ,
+            "TMPDIR": str(output_dir),
+            "ZELER_PLATFORM_ROOT": str(ROOT),
+            "ZELER_COMPOSE_FILE": str(compose_file),
+            "ZELERDATA_DEVOLUCIONES_SELLER_ID": "82453304",
+            "ZELERDATA_DEVOLUCIONES_CAMPAIGN_ID": "campaign-generated-001",
+            "ZELERDATA_DEVOLUCIONES_CAMPAIGN_STATE_FILE": str(campaign_state_file),
+            "ZELER_DATE_BIN": str(date_bin),
+            "ZELER_DOCKER_BIN": str(docker_bin),
+            "ZELER_TIMEOUT_BIN": str(timeout_bin),
+            "ZELER_LOGGER_BIN": str(logger_bin),
+            "ZELER_MKTEMP_BIN": str(mktemp_bin),
+            "ZELER_PYTHON_BIN": str(python_bin),
+            "ZELER_RM_BIN": "/bin/rm",
+            "FAKE_DOCKER_OUTPUT": output,
+            "FAKE_DOCKER_STATUS": str(status),
+            "FAKE_LOGGER_FILE": str(logger_file),
+            "FAKE_LOGGER_FAIL": "0",
+            "FAKE_MKTEMP_FAIL_AT": "0",
+            "FAKE_PARSER_FAIL": "0",
+            "FAKE_STATE_WRITER_FAIL": "0",
+        },
+        output_dir,
+        logger_file,
     )
 
 
@@ -124,15 +258,12 @@ def test_reconcile_wrapper_renews_the_enclosing_closed_range_with_frozen_python(
     assert "ACCEPTED_BASELINE_THROUGH=2026-07-09" in wrapper
     assert "RANGE_START=${ZELERDATA_DEVOLUCIONES_RANGE_START:-2026-06-01}" in wrapper
     assert "ACCEPTED_THROUGH=${ZELERDATA_DEVOLUCIONES_ACCEPTED_THROUGH:-2026-07-09}" in wrapper
-    assert 'CLOSED_DATE_TO=$(/usr/bin/date -u -d "yesterday" +%F)' in wrapper
+    assert 'CLOSED_DATE_TO=$("$DATE_BIN" -u -d "yesterday" +%F)' in wrapper
     assert '"$RANGE_START" > "$ACCEPTED_THROUGH"' in wrapper
     assert '"$RANGE_START" > "$ACCEPTED_RANGE_START"' in wrapper
     assert '"$ACCEPTED_THROUGH" < "$ACCEPTED_BASELINE_THROUGH"' in wrapper
     assert '"$ACCEPTED_THROUGH" > "$CLOSED_DATE_TO"' in wrapper
-    assert (
-        '/usr/bin/docker compose --file "$COMPOSE_FILE" exec -T --workdir /app sheets-worker'
-        in wrapper
-    )
+    assert '"$DOCKER_BIN" compose --file "$COMPOSE_FILE" exec -T --workdir /app' in wrapper
     assert "/app/.venv/bin/python" in wrapper
     assert "-m infra.operations.zelerdata_read_model_reconcile" in wrapper
     assert '--date-from "$RANGE_START"' in wrapper
@@ -142,18 +273,214 @@ def test_reconcile_wrapper_renews_the_enclosing_closed_range_with_frozen_python(
     assert "--confirm-approved-runtime" in wrapper
     assert "--confirm-production-write" in wrapper
     assert "runtime_config_invalid" in wrapper
-    assert "MAX_ATTEMPTS=2" in wrapper
-    assert "/usr/bin/timeout --signal=TERM --kill-after=30s 3m" in wrapper
-    assert "reconciliation_retry_scheduled" in wrapper
-    assert "/usr/bin/sleep 60" in wrapper
+    assert "MAX_ATTEMPTS" not in wrapper
+    assert '"$TIMEOUT_BIN" --signal=TERM --kill-after=30s 175s' in wrapper
+    assert wrapper.count('"$TIMEOUT_BIN"') == 1
+    assert wrapper.count("infra.operations.zelerdata_read_model_reconcile") == 1
+    assert "--read-model devoluciones" in wrapper
+    assert "CAMPAIGN_ID=${ZELERDATA_DEVOLUCIONES_CAMPAIGN_ID:-}" in wrapper
+    assert "FINAL_REASON=runtime_config_invalid" in wrapper
+    assert '--env "ZELERDATA_DEVOLUCIONES_CAMPAIGN_ID=$CAMPAIGN_ID"' in wrapper
+    assert "reconciliation_retry_scheduled" not in wrapper
+    assert "/usr/bin/sleep" not in wrapper
     assert "reconciliation_failed" in wrapper
     assert "mktemp" in wrapper
     assert 'cat "$OUTPUT_FILE"' not in wrapper
     assert "uv run" not in wrapper
     assert "pip install" not in wrapper
-    assert "python3" not in wrapper
-    assert "/usr/bin/python" not in wrapper
+    assert "infra.operations.zelerdata_scheduled_evidence" in wrapper
+    assert "PYTHON_BIN=${ZELER_PYTHON_BIN:-/usr/bin/python3}" in wrapper
     assert "set -x" not in wrapper
+
+
+@pytest.mark.parametrize(
+    ("process_status", "raw_output", "expected_returncode", "outcome", "reason"),
+    [
+        (
+            0,
+            json.dumps(
+                {
+                    "scheduled_run": {
+                        "duration_seconds": 100.25,
+                        "succeeded": True,
+                        "source_fingerprint": "source-fingerprint",
+                        "read_model_fingerprint": "read-model-fingerprint",
+                        "campaign_id": "campaign-generated-001",
+                        "physical_attempts": 16,
+                    },
+                    "runtime_evidence": {"source_calls": {"P": 4, "R": 8, "O": 4, "T": 16}},
+                    "token": "TOP_SECRET_SENTINEL",
+                    "seller_id": "RAW_PII_SENTINEL",
+                }
+            ),
+            0,
+            "success",
+            "candidate_sample_recorded",
+        ),
+        (
+            42,
+            "TOP_SECRET_SENTINEL RAW_PII_SENTINEL",
+            42,
+            "failure",
+            "process_failed_evidence_missing",
+        ),
+        (124, "", 124, "failure", "timeout_evidence_missing"),
+        (0, "TOP_SECRET_SENTINEL malformed", 65, "failure", "evidence_invalid"),
+    ],
+)
+def test_scheduled_wrapper_publishes_allowlisted_evidence_before_cleanup(
+    tmp_path: Path,
+    process_status: int,
+    raw_output: str,
+    expected_returncode: int,
+    outcome: str,
+    reason: str,
+) -> None:
+    env, output_dir, logger_file = _scheduled_wrapper_test_env(
+        tmp_path=tmp_path,
+        output=raw_output,
+        status=process_status,
+    )
+
+    completed = subprocess.run(  # noqa: S603 - executes repository-owned wrapper.
+        ["/bin/bash", str(RECONCILE_WRAPPER)],
+        cwd=ROOT,
+        env=env,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == expected_returncode
+    evidence_lines = [line for line in completed.stdout.splitlines() if line.strip()]
+    assert len(evidence_lines) == 1
+    evidence = json.loads(evidence_lines[0])
+    assert set(evidence) == {
+        "campaign_disqualified",
+        "campaign_id",
+        "counters",
+        "duration_seconds",
+        "event",
+        "outcome",
+        "physical_attempts",
+        "read_model_fingerprint_hash",
+        "reason",
+        "reset_required",
+        "schema_version",
+        "source_fingerprint_hash",
+    }
+    assert evidence["campaign_id"] == "campaign-generated-001"
+    assert evidence["outcome"] == outcome
+    assert evidence["reason"] == reason
+    assert evidence["campaign_disqualified"] is (outcome == "failure")
+    assert evidence["reset_required"] is (outcome == "failure")
+    assert set(evidence["counters"]) == {"O", "P", "R", "T"}
+    if outcome == "success":
+        assert evidence["physical_attempts"] == 16
+        assert evidence["counters"] == {"O": 4, "P": 4, "R": 8, "T": 16}
+        assert re.fullmatch(r"[0-9a-f]{64}", evidence["source_fingerprint_hash"])
+        assert re.fullmatch(r"[0-9a-f]{64}", evidence["read_model_fingerprint_hash"])
+        assert "source-fingerprint" not in evidence_lines[0]
+        assert "read-model-fingerprint" not in evidence_lines[0]
+    else:
+        assert evidence["physical_attempts"] is None
+    assert "TOP_SECRET_SENTINEL" not in completed.stdout + completed.stderr
+    assert "RAW_PII_SENTINEL" not in completed.stdout + completed.stderr
+    journal = logger_file.read_text(encoding="utf-8")
+    assert evidence_lines[0] in journal
+    assert "TOP_SECRET_SENTINEL" not in journal
+    assert "RAW_PII_SENTINEL" not in journal
+    assert list(output_dir.iterdir()) == []
+    campaign_state = json.loads(
+        Path(env["ZELERDATA_DEVOLUCIONES_CAMPAIGN_STATE_FILE"]).read_text(encoding="utf-8")
+    )
+    if outcome == "failure":
+        assert "campaign-generated-001" in campaign_state["disqualified_campaign_ids"]
+    else:
+        assert len(campaign_state["campaigns"]["campaign-generated-001"]["durations"]) == 1
+
+
+@pytest.mark.parametrize(
+    ("mutation", "reason"),
+    [
+        ({"ZELERDATA_DEVOLUCIONES_SELLER_ID": "wrong"}, "runtime_seller_invalid"),
+        ({"ZELERDATA_DEVOLUCIONES_CAMPAIGN_ID": "invalid campaign"}, "runtime_config_invalid"),
+        ({"ZELER_COMPOSE_FILE": "/missing/docker-compose.yml"}, "runtime_path_missing"),
+    ],
+)
+def test_scheduled_wrapper_central_exit_emits_exactly_one_early_failure_record(
+    tmp_path: Path,
+    mutation: dict[str, str],
+    reason: str,
+) -> None:
+    env, output_dir, logger_file = _scheduled_wrapper_test_env(
+        tmp_path=tmp_path,
+        output="TOP_SECRET_SENTINEL",
+        status=0,
+    )
+    env.update(mutation)
+
+    completed = subprocess.run(  # noqa: S603 - executes repository-owned wrapper.
+        ["/bin/bash", str(RECONCILE_WRAPPER)],
+        cwd=ROOT,
+        env=env,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    records = [json.loads(line) for line in completed.stdout.splitlines() if line.strip()]
+    assert completed.returncode != 0
+    assert len(records) == 1
+    assert records[0]["outcome"] == "failure"
+    assert records[0]["reason"] == reason
+    assert records[0]["campaign_disqualified"] is True
+    assert records[0]["reset_required"] is True
+    assert "TOP_SECRET_SENTINEL" not in completed.stdout + completed.stderr
+    assert logger_file.read_text(encoding="utf-8").count("event=scheduled_run evidence=") == 1
+    assert list(output_dir.iterdir()) == []
+
+
+@pytest.mark.parametrize(
+    ("mutation", "reason"),
+    [
+        ({"FAKE_MKTEMP_FAIL_AT": "1"}, "mktemp_failed"),
+        ({"FAKE_PARSER_FAIL": "1"}, "evidence_invalid"),
+        ({"FAKE_LOGGER_FAIL": "1"}, "journald_failed"),
+        ({"FAKE_STATE_WRITER_FAIL": "1"}, "state_writer_failed"),
+    ],
+)
+def test_scheduled_wrapper_tooling_failures_emit_one_minimal_disqualification(
+    tmp_path: Path,
+    mutation: dict[str, str],
+    reason: str,
+) -> None:
+    env, output_dir, _ = _scheduled_wrapper_test_env(
+        tmp_path=tmp_path,
+        output="TOP_SECRET_RAW_OUTPUT",
+        status=0,
+    )
+    env.update(mutation)
+    env["TOP_SECRET_RAW_ENV"] = "DO_NOT_PRINT_ME"  # noqa: S105 - leak sentinel, not a secret.
+
+    completed = subprocess.run(  # noqa: S603 - repository-owned wrapper.
+        ["/bin/bash", str(RECONCILE_WRAPPER)],
+        cwd=ROOT,
+        env=env,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    records = [json.loads(line) for line in completed.stdout.splitlines() if line.strip()]
+    assert completed.returncode != 0
+    assert len(records) == 1
+    assert records[0]["reason"] == reason
+    assert records[0]["campaign_disqualified"] is True
+    assert records[0]["reset_required"] is True
+    assert "TOP_SECRET_RAW_OUTPUT" not in completed.stdout + completed.stderr
+    assert "DO_NOT_PRINT_ME" not in completed.stdout + completed.stderr
+    assert list(output_dir.iterdir()) == []
 
 
 def test_reconciliation_service_has_canonical_runtime_and_failure_visibility() -> None:
@@ -206,20 +533,116 @@ def test_reconciliation_timer_is_randomized_persistent_and_not_self_enabling() -
     assert "systemctl start" not in timer.lower()
 
 
+def test_timer_enablement_requires_durable_accepted_campaign(tmp_path: Path) -> None:
+    state_file = tmp_path / "campaign.json"
+    systemctl_log = tmp_path / "systemctl.log"
+    systemctl = _write_executable(
+        tmp_path / "systemctl",
+        """#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$1" == "show" ]]; then
+  printf '%s\n' "${SERVICE_ENVIRONMENT:-}"
+  exit 0
+fi
+printf '%s\n' "$*" >> "$SYSTEMCTL_LOG"
+""",
+    )
+    base_env = {
+        **os.environ,
+        "ZELER_PLATFORM_ROOT": str(ROOT),
+        "ZELERDATA_DEVOLUCIONES_CAMPAIGN_STATE_FILE": str(state_file),
+        "ZELER_SYSTEMCTL_BIN": str(systemctl),
+        "SYSTEMCTL_LOG": str(systemctl_log),
+        "SERVICE_ENVIRONMENT": "",
+    }
+
+    rejected = subprocess.run(  # noqa: S603 - repository-owned timer gate.
+        ["/bin/bash", str(TIMER_ENABLE_WRAPPER)],
+        cwd=ROOT,
+        env=base_env,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert rejected.returncode != 0
+    assert not systemctl_log.exists()
+
+    store = CampaignStateStore(state_file)
+    for _ in range(20):
+        store.record(
+            {
+                "campaign_id": "campaign-a",
+                "outcome": "success",
+                "duration_seconds": 100.0,
+                "source_fingerprint_hash": "a" * 64,
+                "read_model_fingerprint_hash": "b" * 64,
+                "campaign_disqualified": False,
+            }
+        )
+    accepted_environment = (
+        "ZELERDATA_DEVOLUCIONES_CAMPAIGN_ID=campaign-a "
+        f"ZELERDATA_DEVOLUCIONES_SOURCE_FINGERPRINT_HASH={'a' * 64} "
+        f"ZELERDATA_DEVOLUCIONES_READ_MODEL_FINGERPRINT_HASH={'b' * 64}"
+    )
+    mismatch_env = {
+        **base_env,
+        "SERVICE_ENVIRONMENT": accepted_environment.replace("campaign-a", "campaign-b"),
+    }
+    mismatch = subprocess.run(  # noqa: S603 - repository-owned timer gate.
+        ["/bin/bash", str(TIMER_ENABLE_WRAPPER)],
+        cwd=ROOT,
+        env=mismatch_env,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert mismatch.returncode != 0
+    assert not systemctl_log.exists()
+
+    base_env["SERVICE_ENVIRONMENT"] = accepted_environment
+    accepted = subprocess.run(  # noqa: S603 - repository-owned timer gate.
+        ["/bin/bash", str(TIMER_ENABLE_WRAPPER)],
+        cwd=ROOT,
+        env=base_env,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert accepted.returncode == 0
+    assert systemctl_log.read_text(encoding="utf-8").strip() == (
+        "enable --now zelerdata-devoluciones-reconcile.timer"
+    )
+
+    restarted = subprocess.run(  # noqa: S603 - proves durable state survives process restart.
+        ["/bin/bash", str(TIMER_ENABLE_WRAPPER)],
+        cwd=ROOT,
+        env=base_env,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert restarted.returncode == 0
+    assert systemctl_log.read_text(encoding="utf-8").count("enable --now") == 2
+
+
 def test_startup_installs_exact_wrapper_and_units_without_enabling_timer_or_topology() -> None:
     startup = _read(STARTUP)
-    wrapper = _read(RECONCILE_WRAPPER).strip()
     service = _read(RECONCILE_SERVICE).strip()
     timer = _read(RECONCILE_TIMER).strip()
     alert_service = _read(RECONCILE_ALERT_SERVICE).strip()
     topology_wrapper = _read(TOPOLOGY_WRAPPER).strip()
 
     assert topology_wrapper in startup
-    assert wrapper in startup
+    assert "cat > /opt/zeler-platform/zelerdata-devoluciones-reconcile.sh" not in startup
+    encoded_wrapper = re.search(r"RECONCILE_WRAPPER_B64='([^']+)'", startup)
+    assert encoded_wrapper is not None
+    assert (
+        base64.b64decode(encoded_wrapper.group(1)).decode().strip()
+        == _read(RECONCILE_WRAPPER).strip()
+    )
     assert service in startup
     assert timer in startup
     assert alert_service in startup
-    assert "chmod 0755 /opt/zeler-platform/zelerdata-devoluciones-reconcile.sh" in startup
     assert "systemctl daemon-reload" in startup
     assert "systemctl enable --now zelerdata-devoluciones-reconcile.timer" not in startup
     assert "zelerdata-devoluciones-topology.sh prestart --execute" not in startup
@@ -252,20 +675,20 @@ def test_deploy_runbook_orders_topology_acceptance_and_timer_activation() -> Non
         "30-minute marker lease",
         "2026-06-01 through the previous closed UTC day",
         "every 10 minutes",
-        "bounded retry",
+        "single scheduled attempt",
         "OnFailure",
         "expected/persisted/complete/missing = 9/9/9/0",
         "OPERATOR_EVIDENCE_PENDING",
         "journalctl -u zelerdata-devoluciones-reconcile.service",
         "failure-conditional rollback",
-        "systemctl enable --now zelerdata-devoluciones-reconcile.timer",
+        "zelerdata-devoluciones-enable-timer.sh",
     )
     for snippet in required:
         assert snippet in section
     assert section.index("plan") < section.index("prestart --execute")
     assert section.index("prestart --execute") < section.index("bind-claims --execute")
-    assert section.index("Acceptance gate") < section.index(
-        "systemctl enable --now zelerdata-devoluciones-reconcile.timer"
+    assert section.index("Acceptance gate") < section.rindex(
+        "zelerdata-devoluciones-enable-timer.sh"
     )
     assert "pip install" not in section
     assert "uv run" not in section
@@ -370,6 +793,8 @@ def test_deploy_runbook_has_exact_non_activating_artifact_install_path() -> None
     )[1].split("---", 1)[0]
 
     assert "infra/gce/zelerdata-devoluciones-reconcile.sh" in section
+    assert "infra/gce/zelerdata-devoluciones-enable-timer.sh" in section
+    assert "infra/gce/sheets-rollback-execute.sh" in section
     assert "infra/gce/systemd/zelerdata-devoluciones-reconcile.service" in section
     assert "infra/gce/systemd/zelerdata-devoluciones-reconcile.timer" in section
     assert "infra/gce/systemd/zelerdata-devoluciones-reconcile-alert.service" in section
@@ -394,7 +819,7 @@ def test_zelerdata_docs_explain_joint_marker_operator_evidence_and_safe_rollback
         "plan → prestart → worker health → bind-claims",
         "OPERATOR_EVIDENCE_PENDING",
         "failure-conditional rollback",
-        "systemctl enable --now zelerdata-devoluciones-reconcile.timer",
+        "zelerdata-devoluciones-enable-timer.sh",
     )
     formula_required = (
         "joint `devoluciones` marker",
@@ -409,3 +834,51 @@ def test_zelerdata_docs_explain_joint_marker_operator_evidence_and_safe_rollback
         assert snippet in reconciliation
     for snippet in formula_required:
         assert snippet in formulas
+
+
+def test_reconciliation_runbook_documents_focused_budget_campaign_and_safe_api_rollback() -> None:
+    reconciliation = _read(RECONCILIATION_DOC)
+
+    required = (
+        "--read-model devoluciones",
+        "claims-first immutable snapshot",
+        "broad order-date, questions, items, shipments, and catalog hydration is prohibited",
+        "P + R + O ≤ 64",
+        "165-second process deadline",
+        "175-second shell stop",
+        "20 consecutive",
+        "nearest-rank p95",
+        "every run must remain below 180 seconds",
+        "p95 must remain below 150 seconds",
+        "exact 11 scopes and 5 routing keys",
+        "retain the corrected candidate API",
+        "rollback-compatible API image",
+        "old 8/4 writer is prohibited",
+        "keep the Sheets API unavailable",
+        "SHEETS_ROLLBACK_PREFLIGHT=1",
+        "sanitized evidence",
+        "Enable scheduling last",
+        "single scheduled attempt",
+        "one recorder cannot reset",
+        "explicit campaign ID",
+        "Cloud Build SLSA provenance",
+        "Repository JSON alone is not authority",
+        "unknown digest fails closed",
+        "registry fingerprint before healthy",
+        "startup-installed preflight is parity-bound",
+        "zelerdata_devoluciones_scheduled_run",
+        "source_fingerprint_hash",
+        "campaign_disqualified",
+        "evidence_invalid",
+        "temporary raw output is deleted only after",
+        "zelerdata-devoluciones-campaign.json",
+        "A→B→A",
+        "gcloud artifacts docker images describe",
+        "--show-provenance",
+        "gcloud builds describe",
+        "zeler_sheets.app:make_app --factory",
+        "sheets-rollback-execute.sh",
+        "RepoDigest",
+    )
+    for snippet in required:
+        assert snippet in reconciliation

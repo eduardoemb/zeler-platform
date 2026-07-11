@@ -4,7 +4,7 @@ import httpx
 import pytest
 import respx
 
-from zeler_gateway.proxy.retry import send_with_retry
+from zeler_gateway.proxy.retry import send_single_attempt, send_with_retry
 
 
 class SleepRecorder:
@@ -13,6 +13,21 @@ class SleepRecorder:
 
     async def __call__(self, delay_s: float) -> None:
         self.calls.append(delay_s)
+
+
+@pytest.mark.asyncio
+async def test_single_attempt_contract_never_consumes_hidden_gateway_retry() -> None:
+    async with httpx.AsyncClient() as client:
+        request = client.build_request("GET", "https://api.mercadolibre.com/items/MLA123")
+        with respx.mock(assert_all_called=False) as respx_mock:
+            upstream = respx_mock.get("https://api.mercadolibre.com/items/MLA123").mock(
+                side_effect=[httpx.Response(502), httpx.Response(200, json={"id": "unexpected"})]
+            )
+            response = await send_single_attempt(client, request)
+
+    assert response.status_code == 502
+    assert response.headers["X-Zeler-Upstream-Attempts"] == "1"
+    assert upstream.call_count == 1
 
 
 @pytest.mark.asyncio

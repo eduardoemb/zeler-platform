@@ -658,6 +658,8 @@ install packages while the reconciliation service is running.
 From an approved checkout, copy these files to a temporary directory on the VM:
 
 - `infra/gce/zelerdata-devoluciones-reconcile.sh`
+- `infra/gce/zelerdata-devoluciones-enable-timer.sh`
+- `infra/gce/sheets-rollback-execute.sh`
 - `infra/gce/zelerdata-devoluciones-topology.sh`
 - `infra/gce/systemd/zelerdata-devoluciones-reconcile.service`
 - `infra/gce/systemd/zelerdata-devoluciones-reconcile.timer`
@@ -670,6 +672,10 @@ sudo install -m 0755 /tmp/zelerdata-devoluciones-topology.sh \
   /opt/zeler-platform/zelerdata-devoluciones-topology.sh
 sudo install -m 0755 /tmp/zelerdata-devoluciones-reconcile.sh \
   /opt/zeler-platform/zelerdata-devoluciones-reconcile.sh
+sudo install -m 0755 /tmp/zelerdata-devoluciones-enable-timer.sh \
+  /opt/zeler-platform/zelerdata-devoluciones-enable-timer.sh
+sudo install -m 0755 /tmp/sheets-rollback-execute.sh \
+  /opt/zeler-platform/sheets-rollback-execute.sh
 sudo install -m 0644 /tmp/zelerdata-devoluciones-reconcile.service \
   /etc/systemd/system/zelerdata-devoluciones-reconcile.service
 sudo install -m 0644 /tmp/zelerdata-devoluciones-reconcile.timer \
@@ -763,12 +769,12 @@ Do not activate scheduling until every item below passes:
 Enable the timer LAST, only after all four acceptance checks pass:
 
 ```bash
-sudo systemctl enable --now zelerdata-devoluciones-reconcile.timer
+sudo /opt/zeler-platform/zelerdata-devoluciones-enable-timer.sh
 ```
 
-The timer runs every 10 minutes with at most one minute of random delay. The
-service has an eight-minute outer timeout and one bounded retry: two three-minute
-attempts separated by one minute, followed by an `OnFailure` alert. This keeps successful renewal inside the 30-minute marker
+The timer runs every 10 minutes with at most one minute of random delay. Each invocation uses one
+single scheduled attempt with a 175-second shell stop and one continuous source-call recorder,
+followed by an `OnFailure` alert. This keeps successful renewal inside the 30-minute marker
 lease while providing natural catch-up after downtime through `Persistent=true`.
 Every run re-verifies 2026-06-01 through the previous closed UTC day, so it
 must not shrink accepted coverage.
@@ -795,17 +801,16 @@ This is a **failure-conditional rollback**. Never roll back a successful
 release automatically. If and only if deployment, topology, write, formula, or
 timer acceptance fails:
 
-1. Disable the timer if it was activated.
-2. Run `sudo /opt/zeler-platform/zelerdata-devoluciones-topology.sh rollback --execute`
-   so readiness becomes stale before routing changes. Rollback stops the worker,
-   fences active reconciliation operations, completes topology cleanup, and
-   invalidates readiness again so an in-flight republish cannot survive.
-3. Restore the prior worker image and prior schedule/routing as documented by
-   the approved release record.
+1. Run `sudo /opt/zeler-platform/sheets-rollback-execute.sh` with the approved
+   prior worker/gateway `repo@sha256` references and either the verified candidate
+   API or externally attested rollback-compatible API reference.
+2. The executor disables the timer, stales readiness, unbinds claims, restores
+   worker/source images, verifies Artifact Registry/Cloud Build provenance when
+   API rollback is requested, starts the exact Compose image, checks the running
+   RepoDigest, and requires healthy exact 11/5 registration.
+3. If safe provenance/image/health is unavailable, the executor stops
+   `sheets-api` and fails closed. It never starts the old 8/4 writer.
 4. Retain verified idempotent claim/order facts; do not delete proven data.
-5. Confirm the joint marker remains stale and capture sanitized failure
-   evidence. A rehearsal must be non-destructive or must restore the candidate
-   and repeat the full acceptance gate.
 
 ---
 

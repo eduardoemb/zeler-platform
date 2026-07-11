@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -17,16 +17,20 @@ from infra.operations.zelerdata_read_model_reconcile import (
     DEFAULT_PHASE2_PREFLIGHT_TARGETS,
     READ_MODELS,
     ExpectedReadModelCounts,
+    FocusedRuntimeEvidence,
     PrivateExportRecord,
     ReadModelAggregate,
     ReadModelIssue,
     ReconciliationSummary,
+    ScheduledRunSample,
     build_arg_parser,
     build_phase2_runtime_contract,
     build_reconciliation_request,
     collect_expected_read_model_counts,
     collect_reconciliation_counts,
+    evaluate_timing_campaign,
     execute_observed_pause_basis_repair,
+    scheduled_sample_from_summary,
     validate_reconciliation_safety,
 )
 from infra.operations.zelerdata_read_model_reconcile import (
@@ -37,6 +41,7 @@ from infra.operations.zelerdata_read_model_reconcile import (
 )
 
 from zeler_platform_core.devoluciones_readiness import DevolucionesOperationContext
+from zeler_sheets import devoluciones_reconciliation as devoluciones_module
 from zeler_sheets.claim_projection import ClaimProjectionError
 from zeler_sheets.devoluciones_reconciliation import ClaimInventoryError
 from zeler_sheets.formulas.read_models import read_model_reconciliation_marker_covers
@@ -4202,6 +4207,308 @@ def test_mandatory_claims_source_gate_accepts_complete_authoritative_proof() -> 
         "authoritative": True,
         "issue_codes": [],
     }
+
+
+def test_focused_devoluciones_request_is_explicit_and_caps_concurrency() -> None:
+    args = build_arg_parser().parse_args(
+        [
+            "--seller-id",
+            "82453304",
+            "--date-from",
+            "2026-06-01",
+            "--date-to",
+            "2026-07-09",
+            "--read-model",
+            "devoluciones",
+            "--concurrency",
+            "4",
+            "--confirm-approved-runtime",
+        ]
+    )
+
+    request = build_reconciliation_request(args)
+
+    assert request.read_model == "devoluciones"
+    assert request.controls.concurrency == 4
+
+    args.concurrency = 5
+    with pytest.raises(SystemExit, match="concurrency"):
+        build_reconciliation_request(args)
+
+
+def test_twenty_run_nearest_rank_p95_campaign_accepts_only_strict_budgets() -> None:
+    samples = tuple(
+        ScheduledRunSample(
+            duration_seconds=float(duration),
+            succeeded=True,
+            source_fingerprint="source-a",
+            read_model_fingerprint="read-a",
+        )
+        for duration in [100] * 18 + [149, 179]
+    )
+
+    result = evaluate_timing_campaign(samples)
+
+    assert result.accepted is True
+    assert result.consecutive_runs == 20
+    assert result.p95_seconds == 149.0
+    assert result.hard_limit_seconds == 180.0
+    assert result.p95_limit_seconds == 150.0
+
+
+@pytest.mark.parametrize(
+    ("durations", "reason"),
+    [
+        ([100] * 18 + [150, 179], "p95_budget_exceeded"),
+        ([100] * 19 + [180], "hard_budget_exceeded"),
+    ],
+)
+def test_timing_campaign_rejects_equal_limits(durations: list[int], reason: str) -> None:
+    result = evaluate_timing_campaign(
+        tuple(
+            ScheduledRunSample(
+                duration_seconds=float(duration),
+                succeeded=True,
+                source_fingerprint="source-a",
+                read_model_fingerprint="read-a",
+            )
+            for duration in durations
+        )
+    )
+
+    assert result.accepted is False
+    assert result.reason == reason
+
+
+def test_failure_or_fingerprint_drift_resets_timing_campaign() -> None:
+    stable = [
+        ScheduledRunSample(100.0, True, "source-a", "read-a", campaign_id="campaign-a")
+        for _ in range(20)
+    ]
+    failed = ScheduledRunSample(10.0, False, "source-a", "read-a", campaign_id="campaign-a")
+    drifted = ScheduledRunSample(10.0, True, "source-b", "read-a", campaign_id="campaign-a")
+    restarted = [replace(sample, campaign_id="campaign-b") for sample in stable]
+
+    after_failure = evaluate_timing_campaign(tuple([*stable, failed, *stable[:19]]))
+    after_drift = evaluate_timing_campaign(tuple([*stable, drifted, *stable[:19]]))
+    recovered = evaluate_timing_campaign(tuple([failed, *restarted]))
+
+    assert after_failure.accepted is False
+    assert after_failure.consecutive_runs == 0
+    assert after_failure.reason == "campaign_disqualified"
+    assert after_drift.accepted is False
+    assert after_drift.consecutive_runs == 0
+    assert after_drift.reason == "campaign_disqualified"
+    assert recovered.accepted is True
+
+
+def test_hard_limit_disqualifies_campaign_until_explicit_new_campaign() -> None:
+    hard_limit = ScheduledRunSample(
+        180.0,
+        True,
+        "source-a",
+        "read-a",
+        campaign_id="campaign-a",
+    )
+    same_campaign = [
+        ScheduledRunSample(100.0, True, "source-a", "read-a", campaign_id="campaign-a")
+        for _ in range(20)
+    ]
+    new_campaign = [
+        ScheduledRunSample(100.0, True, "source-a", "read-a", campaign_id="campaign-b")
+        for _ in range(20)
+    ]
+
+    disqualified = evaluate_timing_campaign((hard_limit, *same_campaign))
+    recovered = evaluate_timing_campaign((hard_limit, *new_campaign))
+
+    assert disqualified.accepted is False
+    assert disqualified.reason == "hard_budget_exceeded"
+    assert recovered.accepted is True
+    assert recovered.consecutive_runs == 20
+
+
+def test_campaign_sample_is_derived_from_scheduled_write_runtime_evidence() -> None:
+    summary = ReconciliationSummary(
+        seller_id="82453304",
+        date_from="2026-06-01",
+        date_to="2026-07-09",
+        dry_run=False,
+        approved_runtime=True,
+        write_enabled=True,
+        write_counts={"devoluciones_markers_written": 1},
+        runtime_evidence=FocusedRuntimeEvidence(
+            duration_seconds=100.0,
+            source_calls={"P": 4, "R": 8, "O": 4, "T": 16},
+            succeeded=True,
+            source_fingerprint="source-a",
+            read_model_fingerprint="read-a",
+            campaign_id="campaign-a",
+        ),
+    )
+
+    sample = scheduled_sample_from_summary(summary)
+
+    assert sample == ScheduledRunSample(
+        100.0,
+        True,
+        "source-a",
+        "read-a",
+        campaign_id="campaign-a",
+        physical_attempts=16,
+    )
+    assert summary.to_sanitized_dict()["scheduled_run"] == sample.to_sanitized_dict()
+
+
+def test_claim_completeness_accepts_exact_productive_or_verified_non_productive_fact() -> None:
+    filter_spec = reconcile_operation_module._complete_claims_filter(
+        {"seller_id": "82453304", "_id": {"$in": ["claim-1", "claim-2"]}}
+    )
+
+    assert filter_spec["$or"] == [
+        {
+            "productive": True,
+            "returned_quantity": {"$gte": 1},
+            "return_quantity_basis": "v2_return_order",
+        },
+        {
+            "productive": False,
+            "return_subtype": "low_cost",
+            "return_quantity_basis": "verified_low_cost_no_row",
+            "returned_quantity": {"$exists": False},
+        },
+        {
+            "productive": {"$exists": False},
+            "returned_quantity": {"$gte": 1},
+        },
+        {
+            "productive": True,
+            "return_quantity_basis": {"$exists": False},
+            "returned_quantity": {"$gte": 1},
+        },
+    ]
+    assert "returned_quantity" not in {
+        key: value for key, value in filter_spec.items() if key != "$or"
+    }
+
+
+class _OneClaimFocusedSource:
+    async def search_claims(self, *, seller_id: str, params: dict[str, Any]) -> dict[str, Any]:
+        del seller_id
+        return {
+            "data": [
+                {
+                    "id": "1",
+                    "last_updated": "2026-06-01T12:01:00Z",
+                    "date_created": "2026-06-01T12:00:00Z",
+                    "type": "returns",
+                    "status": "closed",
+                }
+            ],
+            "paging": {"offset": params["offset"], "limit": params["limit"], "total": 1},
+        }
+
+    async def get_claim(self, *, seller_id: str, claim_id: str) -> dict[str, Any]:
+        return {
+            "id": claim_id,
+            "claim_version": 1,
+            "last_updated": "2026-06-01T12:01:00Z",
+            "date_created": "2026-06-01T12:00:00Z",
+            "order_id": "2",
+            "item_id": "MLA1",
+            "status": "closed",
+            "stage": "claim",
+            "type": "returns",
+            "players": [
+                {"user_id": seller_id, "role": "respondent", "type": "seller"},
+                {"user_id": "buyer", "role": "complainant", "type": "buyer"},
+            ],
+        }
+
+    async def get_returns(self, *, seller_id: str, claim_id: str) -> dict[str, Any]:
+        del seller_id
+        return {
+            "id": f"return-{claim_id}",
+            "status": "closed",
+            "subtype": "return_partial",
+            "last_updated": "2026-06-01T12:02:00Z",
+            "orders": [{"order_id": "2", "item_id": "MLA1", "return_quantity": 1}],
+        }
+
+    async def get_order(self, *, seller_id: str, order_id: str) -> dict[str, Any]:
+        return {
+            "id": order_id,
+            "seller": {"id": seller_id},
+            "buyer": {"id": "buyer"},
+            "status": "paid",
+            "date_created": "2026-06-01T11:00:00Z",
+            "items": [{"item": {"id": "MLA1"}, "quantity": 1}],
+        }
+
+
+@pytest.mark.asyncio
+async def test_focused_write_composes_db_bound_revalidation_heartbeat(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    heartbeat_calls: list[tuple[Any, DevolucionesOperationContext]] = []
+
+    async def acquire(**kwargs: Any) -> DevolucionesOperationContext:
+        return DevolucionesOperationContext(
+            seller_id=kwargs["seller_id"],
+            scope="devoluciones",
+            operation_id=kwargs["operation_id"],
+            attempt_token=kwargs["attempt_token"],
+            fence=1,
+            owns_lease=True,
+            source_fingerprint=kwargs["source_fingerprint"],
+        )
+
+    async def collect_counts(**kwargs: Any) -> ReconciliationSummary:
+        request = kwargs["request"]
+        return ReconciliationSummary(
+            seller_id=request.seller_id,
+            date_from=request.date_range.date_from,
+            date_to=request.date_range.date_to,
+            dry_run=False,
+            approved_runtime=True,
+            write_enabled=True,
+            aggregates=(ReadModelAggregate("claims", 1, 1, 0, 1),),
+            controls=request.controls,
+        )
+
+    async def write_snapshot(**_: Any) -> dict[str, int]:
+        return {"written_claims": 1, "written_orders": 1}
+
+    async def write_marker(**_: Any) -> dict[str, int]:
+        return {"devoluciones_markers_written": 1}
+
+    async def heartbeat(*, db: Any, operation: DevolucionesOperationContext) -> None:
+        heartbeat_calls.append((db, operation))
+
+    db = FakeAsyncDb({})
+    monkeypatch.setattr(reconcile_operation_module, "acquire_devoluciones_operation", acquire)
+    monkeypatch.setattr(reconcile_operation_module, "collect_reconciliation_counts", collect_counts)
+    monkeypatch.setattr(
+        reconcile_operation_module,
+        "write_complete_read_model_freshness_markers",
+        write_marker,
+    )
+    monkeypatch.setattr(reconcile_operation_module, "heartbeat_devoluciones_operation", heartbeat)
+    monkeypatch.setattr(devoluciones_module, "write_devoluciones_snapshot", write_snapshot)
+
+    result = await reconcile_operation_module.run_focused_devoluciones_reconciliation(
+        db=db,
+        request=_write_request(extra_args=["--read-model", "devoluciones"]),
+        source=_OneClaimFocusedSource(),
+        campaign_id="campaign-a",
+    )
+
+    assert result.write_counts["devoluciones_markers_written"] == 1
+    assert result.runtime_evidence is not None
+    assert result.runtime_evidence.source_calls == {"P": 4, "R": 4, "O": 2, "T": 10}
+    assert scheduled_sample_from_summary(result).physical_attempts == 10
+    assert heartbeat_calls
+    assert all(bound_db is db for bound_db, _ in heartbeat_calls)
 
 
 @pytest.mark.asyncio

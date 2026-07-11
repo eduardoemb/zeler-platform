@@ -32,6 +32,7 @@ sudo docker compose --file /opt/zeler-platform/docker-compose.yml \
   --seller-id <seller> \
   --date-from 2026-06-01 \
   --date-to 2026-06-04 \
+  --read-model devoluciones \
   --dry-run \
   --confirm-approved-runtime \
   --emit-phase2-contract
@@ -67,9 +68,9 @@ accepted-through date; reviewed non-secret overrides may live in
 widen the accepted coverage. Invalid, reversed, shrinking, or open ranges fail
 without invoking the reconciliation command.
 
-The timer runs every 10 minutes, with at most one minute of random delay. The
-service has an eight-minute outer timeout and performs one bounded retry: two
-three-minute attempts separated by one minute. `Persistent=true` provides catch-up after downtime, and
+The timer runs every 10 minutes, with at most one minute of random delay. Each invocation has one
+single scheduled attempt with a 175-second shell stop; there is no wrapper retry or sleep that can
+reset the source-call recorder. `Persistent=true` provides catch-up after downtime, and
 `OnFailure` invokes a sanitized journald alert. Missing wrapper, compose, or
 container paths fail visibly; they are not skipped by a path condition.
 
@@ -85,7 +86,7 @@ request/correlation ID. If neither is available, record
 Enable scheduling last, after all acceptance evidence passes:
 
 ```bash
-sudo systemctl enable --now zelerdata-devoluciones-reconcile.timer
+sudo /opt/zeler-platform/zelerdata-devoluciones-enable-timer.sh
 sudo journalctl -u zelerdata-devoluciones-reconcile.service \
   -u zelerdata-devoluciones-reconcile-alert.service --since "30 minutes ago" \
   --no-pager
@@ -95,6 +96,93 @@ Use **failure-conditional rollback** only after a failed deployment, topology,
 write, formula, or timer gate. Disable the timer, stale readiness through the
 topology rollback, restore the prior worker runtime/routing/schedule, and retain
 verified idempotent facts. Never roll back a successful release automatically.
+
+## Focused source and runtime budget
+
+The scheduled command MUST use `--read-model devoluciones`. This selects one
+claims-first immutable snapshot for proof and writes, followed by bounded targeted
+revalidation; broad order-date, questions, items, shipments, and catalog hydration is prohibited.
+Only authoritative claim pages, relevant claim/return details, and orders referenced by those
+claims are allowed.
+
+The sanitized physical-attempt recorder reports claim-page attempts (`P`), claim/return detail
+attempts (`R`), order-detail attempts (`O`), and total attempts (`T`). Retries and failures are
+charged before send. The hard contract is `P + R + O ≤ 64`, concurrency no greater than four, a
+165-second process deadline, and a 175-second shell stop. The single scheduled attempt means one recorder cannot reset or bypass the 64-attempt limit across a second process.
+
+Runtime acceptance requires 20 consecutive candidate-equivalent scheduled writes with stable
+source/read-model fingerprints and one explicit campaign ID. A timeout, non-success, hard-limit
+failure, source budget failure, or fingerprint drift disqualifies that campaign ID. Recovery requires
+20 new valid writes under a new explicit campaign ID; a rolling last-20 window cannot forget the
+failure. Set the reviewed non-secret `ZELERDATA_DEVOLUCIONES_CAMPAIGN_ID` for each new campaign. Compute
+nearest-rank p95 as `ceil(0.95 × eligible sample count)` over the actual durable window: every run must remain below 180 seconds; p95 must remain below 150 seconds. Enable scheduling last; the timer stays disabled
+until source, write, marker, formula/operator, rollback, and timing evidence all pass.
+
+Every allowlisted sample is atomically persisted at
+`/var/lib/zeler-platform/zelerdata-devoluciones-campaign.json`. Disqualified campaign IDs are
+permanent: an A→B→A sequence cannot reuse A to clear its failure. The timer enablement wrapper calls
+the durable `require-accepted` preflight and refuses incomplete, p95-failing, hard-limit, drifted, or
+previously disqualified campaigns.
+
+The wrapper parses the private command output and emits exactly one allowlisted
+`zelerdata_devoluciones_scheduled_run` JSON object to stdout and journald before cleanup. It retains
+only campaign ID, outcome/reason, duration, physical attempts, `P/R/O/T` counters,
+`source_fingerprint_hash`, `read_model_fingerprint_hash`, `campaign_disqualified`, and
+`reset_required`. Raw seller IDs, source documents, payloads, environment values, credentials,
+tokens, and URIs are never re-emitted. A timeout or process failure publishes a disqualifying sample;
+missing or malformed success evidence publishes `evidence_invalid` and fails closed. The temporary raw output is deleted only after the allowlisted evidence has been published.
+
+## Registration and rollback-compatible API
+
+The canonical Sheets manifest and registry contain exact 11 scopes and 5 routing keys, including
+passive metadata for `claims.updated`. Physical claims bindings remain independently controlled by
+the topology operation. Sheets startup registration completes before readiness, and `/health`
+requires the exact canonical registry fingerprint before healthy; counts alone never pass.
+This is an explicit registry fingerprint before healthy gate, not periodic repair.
+
+For an ordinary worker/source rollback, retain the corrected candidate API while it is healthy so
+its merge-safe registration writer keeps the registry exact. An API rollback may use only a
+prebuilt immutable rollback-compatible API image: the approved prior API application,
+dependencies, and entrypoint plus the corrected runtime manifest/registration writer and canonical
+Sheets manifest. The old 8/4 writer is prohibited.
+
+Run `infra/gce/docker-deploy-preflight.sh` with `SHEETS_ROLLBACK_PREFLIGHT=1`, an exact Artifact
+Registry `repo@sha256` image reference, and the expected source commit. Repository JSON alone is not authority.
+The preflight queries trusted external authority with
+`gcloud artifacts docker images describe IMAGE@sha256 --show-provenance --format=json`, extracts the
+build identity, then runs `gcloud builds describe BUILD_ID --format=json`. It requires a successful
+Cloud Build SLSA provenance and contract step proving prior API base behavior, the exact allowed tree, corrected
+manifest/registration writer, actual `zeler_sheets.app:make_app --factory` entrypoint, clean-restart
+health, and the full canonical registration fingerprint. An unknown digest or unavailable provenance
+fails closed: unknown digest fails closed without a repository fallback. The wrapper prints verification status only. If the compatible image is missing or
+unverified, retain a healthy candidate API. If it is also unhealthy, stop it and keep the Sheets API unavailable; never start the unsafe writer. Repeated rollback must reassert the selected safe digest,
+stale readiness, timer off, claims unbound, and exact 11/5.
+
+Execute production rollback only through `/opt/zeler-platform/sheets-rollback-execute.sh`. It disables
+the timer, invokes topology rollback to stale readiness and unbind claims, restores prior worker/source
+images, retains the verified candidate API or starts the externally verified rollback-compatible API,
+and checks the running container `RepoDigest`, `/health`, and exact registry fingerprint before healthy.
+The old 8/4 writer is prohibited; missing safe evidence stops `sheets-api` and fails closed. Repeated
+execution is idempotent.
+
+The startup-installed preflight is parity-bound to the canonical
+`infra/gce/docker-deploy-preflight.sh` artifact. CI extracts the exact startup heredoc, compares it
+byte-for-byte, and executes that installed copy against forged and unknown digests. A startup change
+must not overwrite the operational path with an attestation-free implementation.
+
+Record only sanitized evidence:
+
+```text
+candidate/prior/rollback-compatible digests: verified
+Cloud Build provenance, digest binding, allowed tree, entrypoint, health, clean restart: verified
+registry fingerprint: exact 11/5
+focused source calls: P=<count> R=<count> O=<count> T=<count>
+campaign: 20 consecutive; every run <180s; nearest-rank p95 <150s
+readiness/topology/timer: stale or accepted as appropriate; claims binding explicit; timer last
+```
+
+Do not include raw environment values, credentials, tokens, connection strings, source payloads,
+or production document identifiers in shared evidence.
 
 ## Flags
 

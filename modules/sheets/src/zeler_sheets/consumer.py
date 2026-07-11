@@ -617,7 +617,7 @@ def _sheets_routing_keys_from_manifest(manifest_path: str | Path | None) -> tupl
     if manifest_path is None:
         return SHEETS_DEFAULT_ROUTING_KEYS
     manifest = validate_manifest(manifest_path)
-    return tuple(manifest.routing_keys)
+    return tuple(manifest.active_routing_keys)
 
 
 def _sheets_passive_queue_names_from_manifest(

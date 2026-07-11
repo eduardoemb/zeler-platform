@@ -671,7 +671,12 @@ class ClaimsStage:
             start=start,
             end=end,
         )
-        projections = list(snapshot.projections)
+        claim_documents = getattr(snapshot, "claim_documents", None)
+        projections = (
+            claim_documents()
+            if callable(claim_documents)
+            else [dict(document) for document in snapshot.projections]
+        )
         source_fingerprint = snapshot.source_fingerprint
         owns_operation = operation is None
         if operation is None:
@@ -694,7 +699,13 @@ class ClaimsStage:
             )
             async with heartbeat_scope:
                 persistence = SheetsEventPersistence(db=self.database)
-                for order in snapshot.orders:
+                order_documents = getattr(snapshot, "order_documents", None)
+                orders = (
+                    order_documents()
+                    if callable(order_documents)
+                    else [dict(document) for document in snapshot.orders]
+                )
+                for order in orders:
                     await persistence.persist(
                         event_type="orders.updated",
                         seller_id=seller_id,

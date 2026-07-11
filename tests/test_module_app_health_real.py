@@ -13,10 +13,18 @@ from zeler_sheets.app import build_app as build_sheets_app
 
 
 class FakeCollection:
+    def __init__(self) -> None:
+        self.documents: dict[str, dict[str, Any]] = {}
+
     async def replace_one(
         self, filter_doc: dict[str, Any], replacement: dict[str, Any], *, upsert: bool
     ) -> None:
-        return None
+        assert upsert is True
+        self.documents[str(filter_doc["_id"])] = dict(replacement)
+
+    async def find_one(self, filter_doc: dict[str, Any]) -> dict[str, Any] | None:
+        document = self.documents.get(str(filter_doc["_id"]))
+        return dict(document) if document is not None else None
 
 
 class FakeMongoDb:
@@ -50,6 +58,8 @@ MODULE_BUILDERS: tuple[tuple[str, Callable[..., Any]], ...] = (
 async def test_health_200_when_mongo_ok(module: str, builder: Callable[..., Any]) -> None:
     db = FakeMongoDb()
     app = _build_app(builder, db)
+    for handler in app.router.on_startup:
+        await handler()
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -67,6 +77,8 @@ async def test_health_200_when_mongo_ok(module: str, builder: Callable[..., Any]
 async def test_health_503_when_mongo_unreachable(module: str, builder: Callable[..., Any]) -> None:
     db = FakeMongoDb(error=RuntimeError("down"))
     app = _build_app(builder, db)
+    for handler in app.router.on_startup:
+        await handler()
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"

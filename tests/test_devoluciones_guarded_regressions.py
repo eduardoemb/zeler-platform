@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+import infra.operations.zelerdata_read_model_reconcile as reconcile_module
 import pytest
 from infra.mongo.validator_contract import validate_document_against_schema
 from infra.operations.zelerdata_read_model_reconcile import (
@@ -552,14 +553,14 @@ async def test_local_reconciliation_expands_three_persisted_claims_to_nine() -> 
     operation.source_fingerprint = snapshot.source_fingerprint
     db = _MemoryDb({DEVOLUCIONES_OPERATIONS_COLLECTION: [_operation_document(operation)]})
     persistence = SheetsEventPersistence(db=db)
-    for order in snapshot.orders[:3]:
+    for order in snapshot.order_documents()[:3]:
         await persistence.persist(
             event_type="orders.updated",
             seller_id=SELLER_ID,
             resource=order,
             operation=operation,
         )
-    for claim in snapshot.projections[:3]:
+    for claim in snapshot.claim_documents()[:3]:
         await persist_claim_projection(db=db, document=claim, operation=operation)
     operation.checkpoint = {"claim_id": source.claim_ids[2]}
 
@@ -819,6 +820,127 @@ async def test_actual_guarded_writer_replaces_contained_joint_marker_with_exact_
 
 
 @pytest.mark.asyncio
+async def test_joint_marker_revokes_publication_when_deadline_expires_after_write() -> None:
+    operation = _operation()
+    operation.source_fingerprint = "stable-claims"
+    claims = [_joint_claim("claim-1", order_id="order-1", item_id="MLA1", productive=True)]
+    orders = [_joint_order("order-1", item_id="MLA1")]
+    db = _MemoryDb(
+        {
+            DEVOLUCIONES_OPERATIONS_COLLECTION: [_operation_document(operation)],
+            "claims": claims,
+            "orders": orders,
+        }
+    )
+    request = _write_request()
+    summary = ReconciliationSummary(
+        seller_id=SELLER_ID,
+        date_from=request.date_range.date_from,
+        date_to=request.date_range.date_to,
+        dry_run=False,
+        approved_runtime=True,
+        write_enabled=True,
+        aggregates=(ReadModelAggregate("claims", 1, 1, 0, 1),),
+    )
+    expected = ExpectedReadModelCounts(
+        counts={"claims": 1},
+        refs={"claims": frozenset({"claim-1"})},
+        truth_mode={"claims": "expected"},
+        source_fingerprint="stable-claims",
+        read_model_fingerprint=devoluciones_read_model_fingerprint(
+            seller_id=SELLER_ID,
+            claims=claims,
+            orders=orders,
+        ),
+    )
+    guard_calls = 0
+
+    def publication_guard() -> None:
+        nonlocal guard_calls
+        guard_calls += 1
+        if guard_calls >= 4:
+            raise RuntimeError("focused DEVOLUCIONES process deadline exceeded")
+
+    with pytest.raises(RuntimeError, match="deadline"):
+        await write_complete_read_model_freshness_markers(
+            db=db,
+            request=request,
+            summary=summary,
+            expected=expected,
+            operation=operation,
+            publication_guard=publication_guard,
+        )
+
+    marker = db["sheets_read_model_freshness"].documents[f"{SELLER_ID}:devoluciones"]
+    assert marker["state"] == "stale"
+    assert marker["revision"] == operation.attempt_token
+
+
+@pytest.mark.asyncio
+async def test_joint_marker_revokes_when_commit_latency_crosses_publication_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    operation = _operation()
+    operation.source_fingerprint = "stable-claims"
+    claims = [_joint_claim("claim-1", order_id="order-1", item_id="MLA1", productive=True)]
+    orders = [_joint_order("order-1", item_id="MLA1")]
+    db = _MemoryDb(
+        {
+            DEVOLUCIONES_OPERATIONS_COLLECTION: [_operation_document(operation)],
+            "claims": claims,
+            "orders": orders,
+        }
+    )
+    request = _write_request()
+    summary = ReconciliationSummary(
+        seller_id=SELLER_ID,
+        date_from=request.date_range.date_from,
+        date_to=request.date_range.date_to,
+        dry_run=False,
+        approved_runtime=True,
+        write_enabled=True,
+        aggregates=(ReadModelAggregate("claims", 1, 1, 0, 1),),
+    )
+    expected = ExpectedReadModelCounts(
+        counts={"claims": 1},
+        refs={"claims": frozenset({"claim-1"})},
+        truth_mode={"claims": "expected"},
+        source_fingerprint="stable-claims",
+        read_model_fingerprint=devoluciones_read_model_fingerprint(
+            seller_id=SELLER_ID,
+            claims=claims,
+            orders=orders,
+        ),
+    )
+    commit_finished = False
+
+    async def delayed_commit(**kwargs: Any) -> Any:
+        nonlocal commit_finished
+        result = await kwargs["writer"](None)
+        commit_finished = True
+        return result
+
+    def publication_guard() -> None:
+        if commit_finished:
+            raise RuntimeError("focused DEVOLUCIONES process deadline exceeded after commit")
+
+    monkeypatch.setattr(reconcile_module, "guarded_devoluciones_write", delayed_commit)
+
+    with pytest.raises(RuntimeError, match="after commit"):
+        await write_complete_read_model_freshness_markers(
+            db=db,
+            request=request,
+            summary=summary,
+            expected=expected,
+            operation=operation,
+            publication_guard=publication_guard,
+        )
+
+    marker = db["sheets_read_model_freshness"].documents[f"{SELLER_ID}:devoluciones"]
+    assert marker["state"] == "stale"
+
+
+@pytest.mark.asyncio
 async def test_joint_marker_dry_run_writes_nothing() -> None:
     operation = _operation()
     db = _MemoryDb({DEVOLUCIONES_OPERATIONS_COLLECTION: [_operation_document(operation)]})
@@ -859,15 +981,16 @@ async def test_joint_marker_dry_run_writes_nothing() -> None:
 async def test_joint_marker_rejects_open_utc_range_before_fenced_write() -> None:
     operation = _operation()
     db = _MemoryDb({DEVOLUCIONES_OPERATIONS_COLLECTION: [_operation_document(operation)]})
+    open_utc_date = datetime.now(UTC).date().isoformat()
     request = build_reconciliation_request(
         build_arg_parser().parse_args(
             [
                 "--seller-id",
                 SELLER_ID,
                 "--date-from",
-                "2026-07-10",
+                open_utc_date,
                 "--date-to",
-                "2026-07-10",
+                open_utc_date,
                 "--confirm-approved-runtime",
                 "--write",
                 "--confirm-production-write",

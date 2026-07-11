@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any
 
 import httpx
@@ -37,6 +38,17 @@ class MeliGatewayClient:
         response = await self.request(method="GET", seller_id=seller_id, path=path)
         return response.json()  # type: ignore[no-any-return]
 
+    async def fetch_resource_once(self, *, seller_id: str, path: str) -> dict[str, Any]:
+        response = await self.request(
+            method="GET",
+            seller_id=seller_id,
+            path=path,
+            headers={"X-Zeler-Proxy-Retry": "disabled"},
+        )
+        if response.headers.get("X-Zeler-Upstream-Attempts") != "1":
+            raise RuntimeError("focused gateway response is missing actual attempt metadata")
+        return response.json()  # type: ignore[no-any-return]
+
     async def request(
         self,
         *,
@@ -44,12 +56,13 @@ class MeliGatewayClient:
         seller_id: str,
         path: str,
         json: Any | None = None,
+        headers: Mapping[str, str] | None = None,
     ) -> httpx.Response:
         token = await self._auth.get_token_for_seller(seller_id)  # type: ignore[arg-type]
         response = await self._http_client.request(
             method,
             f"{self._base_url}/{path.lstrip('/')}",
-            headers={"Authorization": f"Bearer {token}"},
+            headers={"Authorization": f"Bearer {token}", **dict(headers or {})},
             json=json,
         )
         if response.status_code == 429:
