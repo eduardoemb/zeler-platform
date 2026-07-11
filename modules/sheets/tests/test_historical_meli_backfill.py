@@ -1156,6 +1156,48 @@ async def test_historical_backfill_keeps_explicit_quantity_after_scope_resolutio
 
 
 @pytest.mark.asyncio
+async def test_historical_backfill_accepts_mediation_linked_by_v2_return_order() -> None:
+    db = FakeDb()
+    gateway = FakeGateway(
+        claim_payloads=[
+            {
+                "id": "CLAIM-MEDIATION",
+                "order_id": "2001",
+                "item_id": "MLA1",
+                "status": "closed",
+                "stage": "claim",
+                "type": "mediations",
+                "date_created": "2026-05-01T12:00:00+00:00",
+                "claimed_quantity": 99,
+                "returned_quantity": 88,
+            }
+        ]
+    )
+
+    summary = await run_historical_meli_backfill(
+        db=db,
+        gateway=gateway,
+        order_detail_gateway=FakeOrderDetailGateway(),
+        seller_id="82453304",
+        date_from="2026-05-01",
+        date_to="2026-05-01",
+        dry_run=False,
+        approved_runtime=True,
+        max_orders=1,
+        include_claims=True,
+        devoluciones_source=_authoritative_claims_source(gateway),
+    )
+
+    assert summary.claims_found == 1
+    assert summary.written_claims == 1
+    claim = db["claims"].documents["CLAIM-MEDIATION"]
+    assert claim["type"] == "returns"
+    assert claim["returned_quantity"] == 2
+    assert claim["return_quantity_basis"] == "v2_return_order"
+    assert claim["productive"] is True
+
+
+@pytest.mark.asyncio
 async def test_historical_backfill_fails_closed_on_unresolved_non_return_claim() -> None:
     db = FakeDb()
     gateway = FakeGateway(
@@ -1170,12 +1212,12 @@ async def test_historical_backfill_fails_closed_on_unresolved_non_return_claim()
                 "date_created": "2026-05-01T12:00:00+00:00",
             },
             {
-                "id": "CLAIM-MEDIATION",
+                "id": "CLAIM-NON-RETURN",
                 "order_id": "2001",
                 "item_id": "MLA1",
                 "status": "closed",
                 "stage": "claim",
-                "type": "mediations",
+                "type": "warranty",
                 "date_created": "2026-05-01T12:00:00+00:00",
                 "returned_quantity": 1,
             },
