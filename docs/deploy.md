@@ -651,7 +651,11 @@ runtime requires these exact gateway scopes:
 - `GET /orders/*`
 
 Build production images only through the approved Cloud Build path. Never
-install packages while the reconciliation service is running.
+install packages while the reconciliation service is running. If the rollback-compatible
+API image came from a Cloud Build v2 connected repository, pass the expected repository
+resource through `SHEETS_ROLLBACK_CONNECTED_REPOSITORY`; preflight then requires
+`source.connectedRepository.repository` to match that resource and
+`source.connectedRepository.revision` to match the approved commit.
 
 ### 2. Install artifacts without activation
 

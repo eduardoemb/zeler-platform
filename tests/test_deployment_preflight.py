@@ -33,6 +33,12 @@ ROOT = Path(__file__).resolve().parents[1]
 DOCKER_DEPLOY_PREFLIGHT = ROOT / "infra" / "gce" / "docker-deploy-preflight.sh"
 PLATFORM_STARTUP = ROOT / "infra" / "gce" / "platform-vm-startup.sh"
 SHEETS_ROLLBACK_EXECUTOR = ROOT / "infra" / "gce" / "sheets-rollback-execute.sh"
+LEGACY_SOURCE_COMMIT = "6ae0608226b6eee32797427506ad19bd03ef2af6"
+CONNECTED_REPOSITORY = (
+    "projects/zeler-platform-dev/locations/us-central1/connections/"
+    "zeler-platform-github/repositories/zeler-platform"
+)
+CONNECTED_SOURCE_COMMIT = "7a455f76b33d7401a7b772499ccaf35dae6cff66"
 
 
 def _startup_installed_preflight() -> str:
@@ -311,6 +317,16 @@ def test_deploy_docs_describe_bootstrap_preflight_rollout_and_rollback() -> None
     assert "roles/cloudkms.signerVerifier" in report
 
 
+def test_sheets_reconciliation_docs_explain_connected_repository_provenance() -> None:
+    guide = (ROOT / "docs" / "sheets" / "zelerdata-read-model-reconciliation.md").read_text(
+        encoding="utf-8"
+    )
+
+    assert "SHEETS_ROLLBACK_CONNECTED_REPOSITORY" in guide
+    assert "source.connectedRepository.repository" in guide
+    assert "source.connectedRepository.revision" in guide
+
+
 def _gcloud_provenance(
     image_ref: str,
     *,
@@ -346,9 +362,7 @@ def _cloud_build(build_id: str = "build-123") -> dict[str, Any]:
     return {
         "id": build_id,
         "status": "SUCCESS",
-        "sourceProvenance": {
-            "resolvedRepoSource": {"commitSha": "6ae0608226b6eee32797427506ad19bd03ef2af6"}
-        },
+        "sourceProvenance": {"resolvedRepoSource": {"commitSha": LEGACY_SOURCE_COMMIT}},
         "steps": [
             {
                 "id": "zeler-sheets-rollback-contract",
@@ -364,6 +378,22 @@ def _cloud_build(build_id: str = "build-123") -> dict[str, Any]:
     }
 
 
+def _connected_cloud_build(
+    *,
+    build_id: str = "build-123",
+    repository: str = CONNECTED_REPOSITORY,
+    revision: str | None = CONNECTED_SOURCE_COMMIT,
+    legacy_commit_sha: str = "",
+) -> dict[str, Any]:
+    build = _cloud_build(build_id)
+    connected_repository: dict[str, str] = {"repository": repository}
+    if revision is not None:
+        connected_repository["revision"] = revision
+    build["source"] = {"connectedRepository": connected_repository}
+    build["sourceProvenance"]["resolvedRepoSource"]["commitSha"] = legacy_commit_sha
+    return build
+
+
 def test_external_gcloud_provenance_binds_digest_build_source_and_contract() -> None:
     image_ref = (
         "us-central1-docker.pkg.dev/zeler-platform-dev/zeler-platform/sheets-api@sha256:" + "a" * 64
@@ -375,10 +405,31 @@ def test_external_gcloud_provenance_binds_digest_build_source_and_contract() -> 
         image_ref=image_ref,
         artifact_document=artifact,
         build_document=_cloud_build(),
-        expected_source_commit="6ae0608226b6eee32797427506ad19bd03ef2af6",
+        expected_source_commit=LEGACY_SOURCE_COMMIT,
     )
 
     assert verified.image_ref == image_ref
+    assert verified.entrypoint == ("zeler_sheets.app:make_app", "--factory")
+    assert verified.registry_fingerprint == canonical_sheets_registration_fingerprint()
+
+
+def test_external_gcloud_provenance_accepts_connected_repository_source() -> None:
+    image_ref = (
+        "us-central1-docker.pkg.dev/zeler-platform-dev/zeler-platform/sheets-api@sha256:" + "a" * 64
+    )
+    artifact = _gcloud_provenance(image_ref)
+    build = _connected_cloud_build()
+
+    verified = verify_gcloud_provenance(
+        image_ref=image_ref,
+        artifact_document=artifact,
+        build_document=build,
+        expected_source_commit=CONNECTED_SOURCE_COMMIT,
+        expected_connected_repository=CONNECTED_REPOSITORY,
+    )
+
+    assert verified.image_ref == image_ref
+    assert verified.source_commit == CONNECTED_SOURCE_COMMIT
     assert verified.entrypoint == ("zeler_sheets.app:make_app", "--factory")
     assert verified.registry_fingerprint == canonical_sheets_registration_fingerprint()
 
@@ -422,7 +473,57 @@ def test_external_provenance_fails_closed_on_forged_or_incomplete_authority(
             image_ref=image_ref,
             artifact_document=artifact,
             build_document=build,
-            expected_source_commit="6ae0608226b6eee32797427506ad19bd03ef2af6",
+            expected_source_commit=LEGACY_SOURCE_COMMIT,
+        )
+
+
+@pytest.mark.parametrize(
+    ("mutation", "expected"),
+    [
+        ("repository", "repository"),
+        ("revision", "source commit"),
+        ("missing_revision", "revision"),
+        ("status", "successful"),
+        ("storage_only", "source"),
+        ("spoofed_extra_source", "source"),
+        ("legacy_mismatch", "source commit"),
+        ("digest", "digest"),
+    ],
+)
+def test_connected_repository_provenance_fails_closed_on_untrusted_authority(
+    mutation: str, expected: str
+) -> None:
+    image_ref = (
+        "us-central1-docker.pkg.dev/zeler-platform-dev/zeler-platform/sheets-api@sha256:" + "a" * 64
+    )
+    artifact = _gcloud_provenance(image_ref)
+    build = _connected_cloud_build()
+    if mutation == "repository":
+        build["source"]["connectedRepository"]["repository"] = CONNECTED_REPOSITORY + "-fork"
+    elif mutation == "revision":
+        build["source"]["connectedRepository"]["revision"] = "f" * 40
+    elif mutation == "missing_revision":
+        del build["source"]["connectedRepository"]["revision"]
+    elif mutation == "status":
+        build["status"] = "FAILURE"
+    elif mutation == "storage_only":
+        build["source"] = {"storageSource": {"bucket": "source", "object": "archive.tgz"}}
+    elif mutation == "spoofed_extra_source":
+        build["source"]["storageSource"] = {"bucket": "source", "object": "archive.tgz"}
+    elif mutation == "legacy_mismatch":
+        build["sourceProvenance"]["resolvedRepoSource"]["commitSha"] = "e" * 40
+    elif mutation == "digest":
+        artifact["provenance_summary"]["provenance"][0]["build"]["inTotoSlsaProvenanceV1"][
+            "subject"
+        ][0]["digest"]["sha256"] = "f" * 64
+
+    with pytest.raises(RollbackSafetyError, match=expected):
+        verify_gcloud_provenance(
+            image_ref=image_ref,
+            artifact_document=artifact,
+            build_document=build,
+            expected_source_commit=CONNECTED_SOURCE_COMMIT,
+            expected_connected_repository=CONNECTED_REPOSITORY,
         )
 
 
@@ -868,6 +969,27 @@ def test_deploy_wrapper_validates_sanitized_immutable_rollback_evidence(
         "SHEETS_ROLLBACK_CLEAN_RESTART_READY",
     ):
         assert self_asserted_field not in wrapper
+
+
+def test_deploy_wrapper_accepts_connected_repository_source_provenance(
+    tmp_path: Path,
+) -> None:
+    env = _rollback_preflight_env(tmp_path=tmp_path, build=_connected_cloud_build())
+    env["SHEETS_ROLLBACK_SOURCE_COMMIT"] = CONNECTED_SOURCE_COMMIT
+    env["SHEETS_ROLLBACK_CONNECTED_REPOSITORY"] = CONNECTED_REPOSITORY
+
+    completed = subprocess.run(  # noqa: S603 - executes the repository-owned wrapper.
+        ["/bin/bash", str(DOCKER_DEPLOY_PREFLIGHT)],
+        cwd=ROOT,
+        env=env,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 0
+    assert "Artifact Registry and Cloud Build provenance: verified" in completed.stdout
+    assert "MONGO_URI" not in completed.stdout
 
 
 def test_deploy_preflight_rejects_noop_runtime_image_even_with_successful_cloud_build(
