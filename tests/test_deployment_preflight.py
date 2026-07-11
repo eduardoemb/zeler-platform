@@ -39,6 +39,9 @@ CONNECTED_REPOSITORY = (
     "zeler-platform-github/repositories/zeler-platform"
 )
 CONNECTED_SOURCE_COMMIT = "7a455f76b33d7401a7b772499ccaf35dae6cff66"
+CLOUD_BUILD_PROJECT = "zeler-platform-dev"
+CLOUD_BUILD_LOCATION = "us-central1"
+CLOUD_BUILD_UUID = "3bd3cd55-03c8-4089-aa7c-cec3f52473da"
 
 
 def _startup_installed_preflight() -> str:
@@ -394,9 +397,25 @@ def _tagged_artifact_registry_subject_name(image_ref: str, tag: str = "build-123
     return f"https://{repository}:{tag}"
 
 
-def _cloud_build(build_id: str = "build-123") -> dict[str, Any]:
+def _cloud_build_resource_url(
+    *,
+    build_id: str = CLOUD_BUILD_UUID,
+    project: str = CLOUD_BUILD_PROJECT,
+    location: str = CLOUD_BUILD_LOCATION,
+) -> str:
+    return f"https://cloudbuild.googleapis.com/v1/projects/{project}/locations/{location}/builds/{build_id}"
+
+
+def _cloud_build(
+    build_id: str = "build-123",
+    *,
+    project: str = CLOUD_BUILD_PROJECT,
+    location: str = CLOUD_BUILD_LOCATION,
+) -> dict[str, Any]:
     return {
+        "name": f"projects/{project}/locations/{location}/builds/{build_id}",
         "id": build_id,
+        "projectId": project,
         "status": "SUCCESS",
         "sourceProvenance": {"resolvedRepoSource": {"commitSha": LEGACY_SOURCE_COMMIT}},
         "steps": [
@@ -417,11 +436,13 @@ def _cloud_build(build_id: str = "build-123") -> dict[str, Any]:
 def _connected_cloud_build(
     *,
     build_id: str = "build-123",
+    project: str = CLOUD_BUILD_PROJECT,
+    location: str = CLOUD_BUILD_LOCATION,
     repository: str = CONNECTED_REPOSITORY,
     revision: str | None = CONNECTED_SOURCE_COMMIT,
     legacy_commit_sha: str = "",
 ) -> dict[str, Any]:
-    build = _cloud_build(build_id)
+    build = _cloud_build(build_id, project=project, location=location)
     connected_repository: dict[str, str] = {"repository": repository}
     if revision is not None:
         connected_repository["revision"] = revision
@@ -514,6 +535,96 @@ def test_external_gcloud_provenance_accepts_tagged_artifact_registry_subject_url
 
     assert verified.build_id == "build-123"
     assert verified.source_commit == CONNECTED_SOURCE_COMMIT
+
+
+def test_external_gcloud_provenance_accepts_cloud_build_invocation_resource_url() -> None:
+    image_ref = (
+        "us-central1-docker.pkg.dev/zeler-platform-dev/zeler-platform/sheets-api@sha256:" + "a" * 64
+    )
+    invocation_url = _cloud_build_resource_url(build_id=CLOUD_BUILD_UUID)
+    artifact = _gcloud_provenance(image_ref, build_id=invocation_url)
+    _provenance_rows(artifact).append(_non_v1_intoto_row())
+    _set_slsa_subjects(
+        artifact,
+        [
+            _slsa_subject(
+                _tagged_artifact_registry_subject_name(image_ref, CLOUD_BUILD_UUID), "a" * 64
+            )
+        ],
+    )
+    build = _connected_cloud_build(build_id=CLOUD_BUILD_UUID)
+
+    assert extract_cloud_build_id(artifact, image_ref=image_ref) == invocation_url
+    verified = verify_gcloud_provenance(
+        image_ref=image_ref,
+        artifact_document=artifact,
+        build_document=build,
+        expected_source_commit=CONNECTED_SOURCE_COMMIT,
+        expected_connected_repository=CONNECTED_REPOSITORY,
+    )
+
+    assert verified.build_id == CLOUD_BUILD_UUID
+    assert verified.source_commit == CONNECTED_SOURCE_COMMIT
+
+
+@pytest.mark.parametrize(
+    ("mutation", "expected"),
+    [
+        ("wrong_project", "successful trusted build"),
+        ("wrong_location", "successful trusted build"),
+        ("wrong_build_uuid", "successful trusted build"),
+        ("malformed_url", "successful trusted build"),
+        ("unrelated_url", "successful trusted build"),
+        ("empty_invocation", "Cloud Build identity"),
+        ("legacy_simple_id_mismatch", "successful trusted build"),
+    ],
+)
+def test_cloud_build_invocation_identity_fails_closed_on_untrusted_shape(
+    mutation: str, expected: str
+) -> None:
+    image_ref = (
+        "us-central1-docker.pkg.dev/zeler-platform-dev/zeler-platform/sheets-api@sha256:" + "a" * 64
+    )
+    invocation_id = _cloud_build_resource_url(build_id=CLOUD_BUILD_UUID)
+    build = _connected_cloud_build(build_id=CLOUD_BUILD_UUID)
+    if mutation == "wrong_project":
+        invocation_id = _cloud_build_resource_url(
+            build_id=CLOUD_BUILD_UUID,
+            project="zeler-platform-prod",
+        )
+    elif mutation == "wrong_location":
+        invocation_id = _cloud_build_resource_url(
+            build_id=CLOUD_BUILD_UUID,
+            location="europe-west1",
+        )
+    elif mutation == "wrong_build_uuid":
+        invocation_id = _cloud_build_resource_url(build_id="d7be57d7-ef77-4c5a-8025-d7c38b2fe6df")
+    elif mutation == "malformed_url":
+        invocation_id = (
+            "https://cloudbuild.googleapis.com/v1/projects/"
+            f"{CLOUD_BUILD_PROJECT}/locations/{CLOUD_BUILD_LOCATION}/builds"
+        )
+    elif mutation == "unrelated_url":
+        invocation_id = (
+            "https://artifactregistry.googleapis.com/v1/projects/"
+            f"{CLOUD_BUILD_PROJECT}/locations/{CLOUD_BUILD_LOCATION}/builds/{CLOUD_BUILD_UUID}"
+        )
+    elif mutation == "empty_invocation":
+        invocation_id = " "
+    elif mutation == "legacy_simple_id_mismatch":
+        invocation_id = "different-build"
+    else:  # pragma: no cover - parametrization guard
+        raise AssertionError(f"Unhandled mutation: {mutation}")
+    artifact = _gcloud_provenance(image_ref, build_id=invocation_id)
+
+    with pytest.raises(RollbackSafetyError, match=expected):
+        verify_gcloud_provenance(
+            image_ref=image_ref,
+            artifact_document=artifact,
+            build_document=build,
+            expected_source_commit=CONNECTED_SOURCE_COMMIT,
+            expected_connected_repository=CONNECTED_REPOSITORY,
+        )
 
 
 @pytest.mark.parametrize(
