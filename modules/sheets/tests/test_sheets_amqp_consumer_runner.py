@@ -146,7 +146,13 @@ async def test_sheets_runner_declares_queue_with_dlx_and_binds_manifest_routing_
 def test_sheets_manifest_registers_claims_as_externally_bound_passive_consumer() -> None:
     manifest = validate_manifest("modules/sheets/manifest.yaml")
 
-    assert manifest.routing_keys == ["items.*", "orders.*", "shipments.*", "questions.*"]
+    assert manifest.routing_keys == [
+        "items.*",
+        "orders.*",
+        "shipments.*",
+        "questions.*",
+        "claims.updated",
+    ]
     assert [consumer.model_dump() for consumer in manifest.passive_consumers] == [
         {
             "queue_name": SHEETS_CLAIMS_QUEUE,

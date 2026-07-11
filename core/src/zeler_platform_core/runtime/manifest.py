@@ -75,7 +75,16 @@ class ModuleManifest(BaseModel):
 
     @property
     def routing_keys(self) -> list[str]:
-        return self.subscribed_events
+        passive_keys = (
+            routing_key
+            for consumer in self.passive_consumers
+            for routing_key in consumer.routing_keys
+        )
+        return list(dict.fromkeys([*self.subscribed_events, *passive_keys]))
+
+    @property
+    def active_routing_keys(self) -> list[str]:
+        return list(dict.fromkeys(self.subscribed_events))
 
     @property
     def display_identity(self) -> ModuleDisplayIdentity:

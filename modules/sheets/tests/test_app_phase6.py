@@ -17,6 +17,10 @@ class FakeCollection:
         assert upsert is True
         self.documents[filter_doc["_id"]] = replacement
 
+    async def find_one(self, filter_doc: dict[str, Any]) -> dict[str, Any] | None:
+        document = self.documents.get(str(filter_doc["_id"]))
+        return dict(document) if document is not None else None
+
 
 class FakeDb:
     def __init__(self) -> None:
@@ -34,7 +38,13 @@ def test_sheets_manifest_validates_owned_collections_and_readonly_scopes() -> No
     manifest = validate_manifest("modules/sheets/manifest.yaml")
 
     assert manifest.name == "sheets"
-    assert manifest.routing_keys == ["items.*", "orders.*", "shipments.*", "questions.*"]
+    assert manifest.routing_keys == [
+        "items.*",
+        "orders.*",
+        "shipments.*",
+        "questions.*",
+        "claims.updated",
+    ]
     assert manifest.owned_collections == [
         "sheets_exports",
         "sheets_sync_jobs",
@@ -108,7 +118,13 @@ async def test_sheets_startup_registers_manifest_and_health_ready() -> None:
             "GET /shipments/*",
             "GET /questions/*",
         ],
-        "routing_keys": ["items.*", "orders.*", "shipments.*", "questions.*"],
+        "routing_keys": [
+            "items.*",
+            "orders.*",
+            "shipments.*",
+            "questions.*",
+            "claims.updated",
+        ],
         "owned_collections": [
             "sheets_exports",
             "sheets_sync_jobs",
@@ -131,5 +147,28 @@ async def test_sheets_startup_registers_manifest_and_health_ready() -> None:
         "checks": {
             "mongo": {"ok": True, "detail": "connected"},
             "rabbitmq": {"ok": True, "detail": "connected"},
+            "registry": {"ok": True, "detail": "registry_fingerprint_match"},
         },
+    }
+
+
+@pytest.mark.asyncio
+async def test_sheets_health_fails_closed_when_registry_fingerprint_drifts() -> None:
+    from zeler_sheets.app import build_app
+
+    db = FakeDb()
+    app = build_app(mongo_db=db, rabbitmq_ready=lambda: True)
+    for handler in app.router.on_startup:
+        await handler()
+    db.module_registry.documents["sheets"]["routing_keys"] = ["items.*"]
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.get("/health")
+
+    assert response.status_code == 503
+    assert response.json()["checks"]["registry"] == {
+        "ok": False,
+        "detail": "registry_fingerprint_mismatch",
     }

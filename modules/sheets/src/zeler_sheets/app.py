@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import httpx
 from fastapi import FastAPI
@@ -10,7 +10,7 @@ from fastapi import FastAPI
 from zeler_platform_core.runtime.checks import mongo_check_factory
 from zeler_platform_core.runtime.health import HealthCheck, build_health_router
 from zeler_platform_core.runtime.manifest import validate_manifest
-from zeler_platform_core.runtime.registration import register_module
+from zeler_platform_core.runtime.registration import register_module, registration_matches_manifest
 from zeler_sheets.api import build_router
 from zeler_sheets.extension_token_encryption import build_extension_token_cipher
 from zeler_sheets.google_oauth_router import build_router as build_google_oauth_router
@@ -44,6 +44,16 @@ def build_app(
     async def rabbitmq_check() -> tuple[bool, str]:
         return (True, "connected") if rabbitmq_ready() else (False, "consumer_stalled")
 
+    async def registry_check() -> tuple[bool, str]:
+        try:
+            database = cast(Any, mongo_db)
+            document = await database["module_registry"].find_one({"_id": manifest.module_id})
+        except Exception:  # noqa: BLE001 - health must fail closed on registry read errors.
+            return False, "registry_fingerprint_unavailable"
+        if not registration_matches_manifest(document=document, manifest=manifest):
+            return False, "registry_fingerprint_mismatch"
+        return True, "registry_fingerprint_match"
+
     app.include_router(build_router())
     app.include_router(build_google_oauth_router())
     app.include_router(
@@ -52,6 +62,7 @@ def build_app(
             checks=[
                 HealthCheck(name="mongo", check=mongo_check),
                 HealthCheck(name="rabbitmq", check=rabbitmq_check),
+                HealthCheck(name="registry", check=registry_check),
             ],
         )
     )
