@@ -9,7 +9,9 @@ Task 1.9: Env-template contract (required keys per service per design §7).
 
 from __future__ import annotations
 
+import os
 import re
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -114,6 +116,9 @@ SERVICE_REQUIRED_KEYS: dict[str, set[str]] = {
         "GOOGLE_OAUTH_REDIRECT_URI",
         "KMS_GOOGLE_TOKENS_KEY",
         "GATEWAY_BASE_URL",
+        "RABBITMQ_MANAGEMENT_URL",
+        "GATEWAY_URL",
+        "SHEETS_URL",
     },
     "repricer-worker": BASE_KEYS | {"GATEWAY_BASE_URL"},
     "autoreply-worker": BASE_KEYS | {"GATEWAY_BASE_URL"},
@@ -337,6 +342,68 @@ class TestEnvTemplateContract:
         assert "GATEWAY_PROXY_BASE_URL=http://gateway:8080/proxy/meli" in text
         assert "GATEWAY_BASE_URL=$GATEWAY_PROXY_BASE_URL" in text
         assert 'GATEWAY_BASE_URL=http://gateway:8080"' not in text
+
+    def test_sheets_worker_emits_explicit_preflight_service_targets(self) -> None:
+        text = SECRETS_SCRIPT.read_text()
+        sheets_worker_section = text.split("# sheets-worker", 1)[1].split("# Workers", 1)[0]
+
+        assert "RABBITMQ_MANAGEMENT_URL=$(s cloudamqp-management-url)" in text
+        assert '"RABBITMQ_MANAGEMENT_URL=$RABBITMQ_MANAGEMENT_URL"' in sheets_worker_section
+        assert '"GATEWAY_URL=$GATEWAY_SERVICE_ROOT_URL"' in sheets_worker_section
+        assert '"SHEETS_URL=$SHEETS_API_SERVICE_ROOT_URL"' in sheets_worker_section
+
+    def test_sheets_worker_preflight_targets_do_not_reuse_proxy_or_transport_urls(self) -> None:
+        text = SECRETS_SCRIPT.read_text()
+        sheets_worker_section = text.split("# sheets-worker", 1)[1].split("# Workers", 1)[0]
+
+        assert "GATEWAY_SERVICE_ROOT_URL=http://gateway:8080" in text
+        assert "SHEETS_API_SERVICE_ROOT_URL=http://sheets-api:8080" in text
+        assert '"RABBITMQ_MANAGEMENT_URL=$RABBITMQ_URL"' not in sheets_worker_section
+        assert '"GATEWAY_URL=$GATEWAY_PROXY_BASE_URL"' not in sheets_worker_section
+        assert "/proxy/meli" not in "\n".join(
+            line for line in sheets_worker_section.splitlines() if "GATEWAY_URL=" in line
+        )
+
+    def test_sheets_worker_rendered_env_keeps_preflight_targets_separate(
+        self, tmp_path: Path
+    ) -> None:
+        env_dir = tmp_path / "env"
+        fake_gcloud = tmp_path / "gcloud"
+        fake_gcloud.write_text(
+            "#!/usr/bin/env bash\n"
+            'case "$*" in\n'
+            "  *--secret=cloudamqp-management-url*) printf '%s' 'https://management.test' ;;\n"
+            "  *--secret=cloudamqp-url*) printf '%s' 'amqps://transport.test' ;;\n"
+            "  *) printf '%s' 'placeholder' ;;\n"
+            "esac\n"
+        )
+        fake_gcloud.chmod(0o755)
+        sandboxed_script = tmp_path / SECRETS_SCRIPT.name
+        sandboxed_script.write_text(
+            SECRETS_SCRIPT.read_text().replace(
+                "ENV_DIR=/opt/zeler-platform/env", f"ENV_DIR={env_dir}"
+            )
+        )
+
+        completed = subprocess.run(  # noqa: S603 - test executes its sandboxed copy of a checked-in script.
+            ["/bin/bash", str(sandboxed_script)],
+            capture_output=True,
+            check=False,
+            env={"PATH": f"{tmp_path}{os.pathsep}{os.environ['PATH']}"},
+            text=True,
+        )
+
+        assert completed.returncode == 0, completed.stderr
+        values = dict(
+            line.split("=", 1)
+            for line in (env_dir / "sheets-worker.env").read_text().splitlines()
+            if line and not line.startswith("#")
+        )
+        assert values["RABBITMQ_MANAGEMENT_URL"] == "https://management.test"
+        assert values["GATEWAY_URL"] == "http://gateway:8080"
+        assert values["SHEETS_URL"] == "http://sheets-api:8080"
+        assert values["RABBITMQ_MANAGEMENT_URL"] != values["RABBITMQ_URL"]
+        assert values["GATEWAY_URL"] != values["GATEWAY_BASE_URL"]
 
     def test_secrets_script_fetches_zeler_app_broker_secret_for_gateway_only(self) -> None:
         text = SECRETS_SCRIPT.read_text()

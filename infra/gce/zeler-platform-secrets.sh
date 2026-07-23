@@ -2,7 +2,7 @@
 # zeler-platform-secrets.sh — installed at /opt/zeler-platform/zeler-platform-secrets.sh
 #
 # Systemd oneshot (Before=docker.service):
-#   Fetches 11 secrets from Secret Manager via the VM-attached SA (metadata-server token)
+#   Fetches 12 secrets from Secret Manager via the VM-attached SA (metadata-server token)
 #   and writes per-service env files under /opt/zeler-platform/env/<service>.env
 #   with mode 0600, owner root.
 #
@@ -31,6 +31,7 @@ echo "Fetching secrets from Secret Manager …"
 
 MONGO_URI=$(s mongo-uri-prod)
 RABBITMQ_URL=$(s cloudamqp-url)
+RABBITMQ_MANAGEMENT_URL=$(s cloudamqp-management-url)
 MELI_CLIENT_ID=$(s meli-client-id)
 MELI_CLIENT_SECRET=$(s meli-client-secret)
 GOOGLE_CLIENT_ID=$(s google-oauth-client-id)
@@ -52,6 +53,8 @@ KMS_PROJECT_ID=zeler-platform-dev
 KMS_LOCATION=us-central1
 KMS_KEYRING=zeler-platform
 GATEWAY_PROXY_BASE_URL=http://gateway:8080/proxy/meli
+GATEWAY_SERVICE_ROOT_URL=http://gateway:8080
+SHEETS_API_SERVICE_ROOT_URL=http://sheets-api:8080
 
 # ---------------------------------------------------------------------------
 # write <service> <KEY=VALUE> …
@@ -134,6 +137,9 @@ write sheets-worker \
   "GOOGLE_OAUTH_REDIRECT_URI=https://sheets.zeler.ai/oauth/google/callback" \
   "KMS_GOOGLE_TOKENS_KEY=google-tokens" \
   "GATEWAY_BASE_URL=$GATEWAY_PROXY_BASE_URL" \
+  "RABBITMQ_MANAGEMENT_URL=$RABBITMQ_MANAGEMENT_URL" \
+  "GATEWAY_URL=$GATEWAY_SERVICE_ROOT_URL" \
+  "SHEETS_URL=$SHEETS_API_SERVICE_ROOT_URL" \
   "ZELERDATA_ENRICHMENT_ENABLED=true" \
   "ZELERDATA_SALE_PRICE_ENABLED=true" \
   "ZELERDATA_LISTING_FIXED_FEE_ENABLED=true"
