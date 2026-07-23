@@ -2013,6 +2013,74 @@ def _focused_expected_counts(snapshot: Any) -> ExpectedReadModelCounts:
     )
 
 
+def _focused_failure_expected_counts(issue_code: str) -> ExpectedReadModelCounts:
+    return ExpectedReadModelCounts(
+        counts={"claims": None},
+        truth_mode={"claims": "unavailable"},
+        issues=(
+            ReadModelIssue(
+                read_model="claims",
+                code=issue_code,
+                message="focused DEVOLUCIONES source unavailable",
+            ),
+        ),
+    )
+
+
+def _focused_failure_summary(
+    *,
+    request: ReconciliationRequest,
+    expected: ExpectedReadModelCounts,
+    recorder: Any,
+    started: float,
+    campaign_id: str,
+    monotonic: Callable[[], float],
+) -> ReconciliationSummary:
+    issue = next(
+        (issue for issue in expected.issues if issue.read_model == "claims"),
+        ReadModelIssue("claims", "source_issue", "focused DEVOLUCIONES source unavailable"),
+    )
+    return ReconciliationSummary(
+        seller_id=request.seller_id,
+        date_from=request.date_range.date_from,
+        date_to=request.date_range.date_to,
+        dry_run=request.dry_run,
+        approved_runtime=request.approved_runtime,
+        write_enabled=request.write_enabled,
+        aggregates=(
+            ReadModelAggregate(
+                read_model="claims",
+                expected_count=None,
+                persisted_count=None,
+                missing_count=None,
+                complete_count=None,
+                truth_mode="unavailable",
+                issues=(issue,),
+            ),
+        ),
+        controls=request.controls,
+        mandatory_source_gate=_claims_authoritative_source_gate(expected),
+        runtime_evidence=FocusedRuntimeEvidence(
+            monotonic() - started,
+            recorder.counts,
+            campaign_id=campaign_id,
+        ),
+    )
+
+
+def _classify_focused_devoluciones_issue(exc: Exception) -> str:
+    exception_name = type(exc).__name__
+    if exception_name == "ClaimProjectionError":
+        return "query_anomaly"
+    if exception_name in {"ClaimInventoryError", "SourceCallBudgetError"}:
+        return "source_issue"
+    if _exception_status_code(exc) is not None:
+        return "source_issue"
+    if isinstance(exc, (ConnectionError, TimeoutError)):
+        return "source_issue"
+    return "query_anomaly"
+
+
 async def run_focused_devoluciones_reconciliation(
     *,
     db: Any,
@@ -2041,15 +2109,28 @@ async def run_focused_devoluciones_reconciliation(
         gateways = create_runtime_historical_meli_gateways()
         source = GatewayDevolucionesSource(gateways.order_detail_gateway, single_attempt=True)
 
-    snapshot = await collect_devoluciones_snapshot(
-        source=source,
-        seller_id=request.seller_id,
-        start=request.date_range.start,
-        end=request.date_range.end_exclusive,
-        recorder=recorder,
-        absolute_deadline=absolute_deadline,
-        monotonic=monotonic,
-    )
+    try:
+        snapshot = await collect_devoluciones_snapshot(
+            source=source,
+            seller_id=request.seller_id,
+            start=request.date_range.start,
+            end=request.date_range.end_exclusive,
+            recorder=recorder,
+            absolute_deadline=absolute_deadline,
+            monotonic=monotonic,
+        )
+    except Exception as exc:  # noqa: BLE001 - dry-run evidence must stay sanitized.
+        if not request.dry_run:
+            raise RuntimeError(_classify_focused_devoluciones_issue(exc)) from None
+        expected = _focused_failure_expected_counts(_classify_focused_devoluciones_issue(exc))
+        return _focused_failure_summary(
+            request=request,
+            expected=expected,
+            recorder=recorder,
+            started=started,
+            campaign_id=resolved_campaign_id,
+            monotonic=monotonic,
+        )
     expected = _focused_expected_counts(snapshot)
     summary = await collect_reconciliation_counts(
         db=db,

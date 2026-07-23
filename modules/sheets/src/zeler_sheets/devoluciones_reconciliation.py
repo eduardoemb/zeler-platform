@@ -612,11 +612,16 @@ async def collect_devoluciones_snapshot(
             monotonic=monotonic,
             heartbeat=heartbeat,
         )
-        returns = await _bounded_source_call(
-            source.get_returns(seller_id=seller_id, claim_id=entry.claim_id),
-            absolute_deadline=absolute_deadline,
-            monotonic=monotonic,
-        )
+        try:
+            returns = await _bounded_source_call(
+                source.get_returns(seller_id=seller_id, claim_id=entry.claim_id),
+                absolute_deadline=absolute_deadline,
+                monotonic=monotonic,
+            )
+        except SourceCallBudgetError:
+            raise
+        except Exception:  # noqa: BLE001 - source exception text is unsafe evidence.
+            raise ClaimInventoryError("v2 returns source_issue") from None
         order_id = str(claim.get("order_id") or claim.get("resource_id") or "").strip()
         if not order_id:
             raise ClaimInventoryError("return claim is missing order identity")
