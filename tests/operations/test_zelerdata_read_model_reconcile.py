@@ -4446,6 +4446,215 @@ class _OneClaimFocusedSource:
         }
 
 
+class _RawGatewayReturnsError(Exception):
+    def __init__(self, status_code: int) -> None:
+        self.response = type("Response", (), {"status_code": status_code})()
+        super().__init__(
+            "HTTP "
+            f"{status_code} GET https://runtime.internal/post-purchase/v2/claims/"
+            "519988002/returns?access_token=RAW_TOKEN&seller_id=82453304 "
+            'payload={"claim_id":"519988002","order_id":"1999"}'
+        )
+
+
+class _FocusedGatewayClient:
+    def __init__(
+        self,
+        *,
+        returns_failure: Exception | None = None,
+        returns_payload: dict[str, Any] | None = None,
+    ) -> None:
+        self.returns_failure = returns_failure
+        self.returns_payload = returns_payload or {
+            "id": "return-519988002",
+            "status": "closed",
+            "subtype": "return_partial",
+            "last_updated": "2026-06-01T12:02:00Z",
+            "orders": [{"order_id": "1999", "item_id": "MLA2", "return_quantity": 1}],
+        }
+
+    async def fetch_resource_once(self, *, seller_id: str, path: str) -> dict[str, Any]:
+        if path.startswith("/post-purchase/v1/claims/search?"):
+            return {
+                "data": [
+                    {
+                        "id": "519988002",
+                        "last_updated": "2026-06-01T12:01:00Z",
+                        "date_created": "2026-06-01T12:00:00Z",
+                        "type": "mediations",
+                        "status": "closed",
+                    }
+                ],
+                "paging": {"offset": 0, "limit": 100, "total": 1},
+            }
+        if path == "/post-purchase/v1/claims/519988002":
+            return {
+                "id": "519988002",
+                "claim_version": 1,
+                "last_updated": "2026-06-01T12:01:00Z",
+                "date_created": "2026-06-01T12:00:00Z",
+                "order_id": "1999",
+                "item_id": "MLA2",
+                "status": "closed",
+                "stage": "claim",
+                "type": "mediations",
+                "players": [
+                    {"user_id": seller_id, "role": "respondent", "type": "seller"},
+                    {"user_id": "buyer", "role": "complainant", "type": "buyer"},
+                ],
+                "related_entities": [],
+            }
+        if path == "/post-purchase/v2/claims/519988002/returns":
+            if self.returns_failure is not None:
+                raise self.returns_failure
+            return dict(self.returns_payload)
+        if path == "/orders/1999":
+            return {
+                "id": "1999",
+                "seller": {"id": seller_id},
+                "buyer": {"id": "buyer"},
+                "status": "paid",
+                "date_created": "2026-06-01T11:00:00Z",
+                "items": [{"item": {"id": "MLA2"}, "quantity": 1}],
+            }
+        raise AssertionError(f"unexpected path: {path}")
+
+
+def _install_focused_gateway(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    client: _FocusedGatewayClient,
+) -> None:
+    monkeypatch.setattr(reconcile_operation_module, "create_runtime_db", lambda: FakeAsyncDb({}))
+    monkeypatch.setattr(
+        reconcile_operation_module,
+        "create_runtime_historical_meli_gateways",
+        lambda: type("RuntimeGateways", (), {"order_detail_gateway": client})(),
+    )
+
+
+@pytest.mark.parametrize(
+    "returns_failure",
+    [
+        _RawGatewayReturnsError(401),
+        _RawGatewayReturnsError(403),
+        _RawGatewayReturnsError(404),
+        _RawGatewayReturnsError(500),
+        ConnectionError(
+            "network GET https://runtime.internal/post-purchase/v2/claims/"
+            "519988002/returns?access_token=RAW_TOKEN payload order_id=1999"
+        ),
+    ],
+    ids=("401", "403", "404", "500", "network"),
+)
+def test_focused_devoluciones_dry_run_sanitizes_gateway_returns_source_failures(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    returns_failure: Exception,
+) -> None:
+    _install_focused_gateway(
+        monkeypatch,
+        client=_FocusedGatewayClient(returns_failure=returns_failure),
+    )
+
+    result = reconcile_operation_module.main(
+        [
+            "--seller-id",
+            "82453304",
+            "--date-from",
+            "2026-06-01",
+            "--date-to",
+            "2026-07-09",
+            "--read-model",
+            "devoluciones",
+            "--dry-run",
+            "--confirm-approved-runtime",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    output = json.loads(captured.out)
+    claims = output["aggregates"][0]
+    combined_output = json.dumps(output, sort_keys=True) + captured.err
+
+    assert result == 1
+    assert claims == {
+        "read_model": "claims",
+        "expected_count": None,
+        "persisted_count": None,
+        "missing_count": None,
+        "complete_count": None,
+        "truth_mode": "unavailable",
+        "issues": [{"code": "source_issue"}],
+    }
+    assert output["mandatory_source_gate"]["authoritative"] is False
+    assert "source_issue" in output["mandatory_source_gate"]["issue_codes"]
+    assert output["runtime_evidence"]["succeeded"] is False
+    for forbidden in (
+        "Traceback",
+        "https://runtime.internal",
+        "/post-purchase/v2/claims",
+        "access_token",
+        "RAW_TOKEN",
+        "82453304",
+        "519988002",
+        "1999",
+        "payload",
+    ):
+        assert forbidden not in combined_output
+
+
+def test_focused_devoluciones_dry_run_sanitizes_projection_failures(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _install_focused_gateway(
+        monkeypatch,
+        client=_FocusedGatewayClient(
+            returns_payload={
+                "id": "return-519988002",
+                "status": "closed",
+                "subtype": "return_partial",
+                "last_updated": "2026-06-01T12:02:00Z",
+                "orders": [],
+            }
+        ),
+    )
+
+    result = reconcile_operation_module.main(
+        [
+            "--seller-id",
+            "82453304",
+            "--date-from",
+            "2026-06-01",
+            "--date-to",
+            "2026-07-09",
+            "--read-model",
+            "devoluciones",
+            "--dry-run",
+            "--confirm-approved-runtime",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    output = json.loads(captured.out)
+    combined_output = json.dumps(output, sort_keys=True) + captured.err
+
+    assert result == 1
+    assert output["aggregates"][0]["issues"] == [{"code": "query_anomaly"}]
+    assert output["mandatory_source_gate"]["authoritative"] is False
+    assert "query_anomaly" in output["mandatory_source_gate"]["issue_codes"]
+    for forbidden in (
+        "Traceback",
+        "/post-purchase/v2/claims",
+        "82453304",
+        "519988002",
+        "1999",
+        "unique order/item",
+    ):
+        assert forbidden not in combined_output
+
+
 @pytest.mark.asyncio
 async def test_focused_write_composes_db_bound_revalidation_heartbeat(
     monkeypatch: pytest.MonkeyPatch,

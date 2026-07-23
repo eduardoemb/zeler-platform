@@ -798,27 +798,51 @@ async def test_mediation_without_related_and_no_v2_return_rows_fails_closed_afte
     assert ("returns", "519988002") in source.hydration_calls
 
 
-class ReturnsAccessFailureSource(HydratingSource):
+class RawReturnsAccessError(Exception):
     def __init__(self, status_code: int) -> None:
+        self.response = type("Response", (), {"status_code": status_code})()
+        super().__init__(
+            "HTTP "
+            f"{status_code} GET https://runtime.internal/post-purchase/v2/claims/"
+            "519988002/returns?access_token=RAW_TOKEN&seller_id=82453304 "
+            'payload={"claim_id":"519988002","order_id":"1999"}'
+        )
+
+
+class ReturnsAccessFailureSource(HydratingSource):
+    def __init__(self, failure: Exception) -> None:
         super().__init__()
-        self.status_code = status_code
+        self.failure = failure
 
     async def get_returns(self, *, seller_id: str, claim_id: str) -> dict[str, Any]:
         if claim_id != "519988002":
             return await super().get_returns(seller_id=seller_id, claim_id=claim_id)
         self.hydration_calls.append(("returns", claim_id))
-        raise ClaimInventoryError(f"v2 returns http {self.status_code}")
+        raise self.failure
 
 
-@pytest.mark.parametrize("status_code", [401, 403, 404])
+@pytest.mark.parametrize(
+    "failure",
+    [
+        RawReturnsAccessError(401),
+        RawReturnsAccessError(403),
+        RawReturnsAccessError(404),
+        RawReturnsAccessError(500),
+        ConnectionError(
+            "network GET https://runtime.internal/post-purchase/v2/claims/"
+            "519988002/returns?access_token=RAW_TOKEN payload order_id=1999"
+        ),
+    ],
+    ids=("401", "403", "404", "500", "network"),
+)
 @pytest.mark.asyncio
-async def test_mediation_without_related_fails_closed_on_v2_returns_access_failure(
-    status_code: int,
+async def test_mediation_without_related_sanitizes_v2_returns_access_failure(
+    failure: Exception,
 ) -> None:
-    source = ReturnsAccessFailureSource(status_code)
+    source = ReturnsAccessFailureSource(failure)
     _use_mediation_without_related_v2_return_order(source)
 
-    with pytest.raises(ClaimInventoryError, match=f"v2 returns http {status_code}"):
+    with pytest.raises(ClaimInventoryError) as exc_info:
         await reconciliation_module.collect_devoluciones_snapshot(
             source=source,
             seller_id="82453304",
@@ -826,6 +850,19 @@ async def test_mediation_without_related_fails_closed_on_v2_returns_access_failu
             end=END,
         )
 
+    assert str(exc_info.value) == "v2 returns source_issue"
+    sanitized = str(exc_info.value)
+    for forbidden in (
+        "https://runtime.internal",
+        "/post-purchase/v2/claims",
+        "access_token",
+        "RAW_TOKEN",
+        "82453304",
+        "519988002",
+        "1999",
+        "payload",
+    ):
+        assert forbidden not in sanitized
     assert ("returns", "519988002") in source.hydration_calls
     assert ("order", "1999") not in source.hydration_calls
 
