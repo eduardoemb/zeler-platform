@@ -107,8 +107,11 @@ claims are allowed.
 
 The sanitized physical-attempt recorder reports claim-page attempts (`P`), claim/return detail
 attempts (`R`), order-detail attempts (`O`), and total attempts (`T`). Retries and failures are
-charged before send. The hard contract is `P + R + O ≤ 64`, concurrency no greater than four, a
-165-second process deadline, and a 175-second shell stop. The single scheduled attempt means one recorder cannot reset or bypass the 64-attempt limit across a second process.
+charged before send. For each frozen inventory snapshot, `B = P + 3H` and `B ≤ 104`; a scheduled
+write may use no more than two independent snapshots and must remain within the inclusive run cap
+`C ≤ 208`. The attempt that would become 105 or 209 is rejected before send and is not counted.
+Concurrency remains no greater than four, with a 165-second process deadline and a 175-second shell
+stop. The single scheduled attempt cannot reset either snapshot or run accounting.
 
 Runtime acceptance requires 20 consecutive candidate-equivalent scheduled writes with stable
 source/read-model fingerprints and one explicit campaign ID. A timeout, non-success, hard-limit
@@ -124,13 +127,18 @@ permanent: an A→B→A sequence cannot reuse A to clear its failure. The timer 
 the durable `require-accepted` preflight and refuses incomplete, p95-failing, hard-limit, drifted, or
 previously disqualified campaigns.
 
-The wrapper parses the private command output and emits exactly one allowlisted
-`zelerdata_devoluciones_scheduled_run` JSON object to stdout and journald before cleanup. It retains
-only campaign ID, outcome/reason, duration, physical attempts, `P/R/O/T` counters,
-`source_fingerprint_hash`, `read_model_fingerprint_hash`, `campaign_disqualified`, and
-`reset_required`. Raw seller IDs, source documents, payloads, environment values, credentials,
-tokens, and URIs are never re-emitted. A timeout or process failure publishes a disqualifying sample;
-missing or malformed success evidence publishes `evidence_invalid` and fails closed. The temporary raw output is deleted only after the allowlisted evidence has been published.
+The reconciliation command emits its typed scheduled transport only when the wrapper passes
+`--private-scheduled-transport`. The transport is written under `umask 077`, parsed into a private campaign sample,
+persisted to the schema-v1 campaign state, and deleted. Campaign identity, timing,
+disqualification, and success-only source/read-model fingerprint hashes never enter stdout,
+journald, or other shared evidence.
+
+Every public path, including child failure, timeout, malformed evidence, state failure, publication
+failure, and early wrapper fallback, emits exactly one JSON object with the keys `stage`, `status_class`, and `counters`.
+The stage is `scheduled`; status classes and non-negative aggregate
+counters are bounded. Child exits `42`, `124`, and arbitrary nonzero values remain authoritative.
+Exit `65` and status class `evidence_invalid` are reserved for true evidence-contract errors; state and publication tooling retain their
+actual nonzero exits. Raw output is never published and all temporary files are removed after state handling and publication.
 
 ## Registration and rollback-compatible API
 

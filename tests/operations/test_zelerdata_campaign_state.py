@@ -6,6 +6,7 @@ import pytest
 from infra.operations.zelerdata_campaign_state import (
     CampaignStateError,
     CampaignStateStore,
+    PrivateCampaignSample,
     nearest_rank_p95,
     require_accepted_campaign,
 )
@@ -144,3 +145,71 @@ def test_campaign_state_replace_is_atomic_and_leaves_no_temporary_file(tmp_path:
 
     assert state_path.exists()
     assert [path for path in tmp_path.iterdir() if path.name != state_path.name] == []
+
+
+def test_typed_private_sample_appends_to_legacy_v1_state_after_restart(tmp_path: Path) -> None:
+    state_path = tmp_path / "campaign.json"
+    legacy_store = CampaignStateStore(state_path)
+    legacy_store.record(_evidence("campaign-a", duration=91.0))
+
+    restarted_store = CampaignStateStore(state_path)
+    restarted_store.record(
+        PrivateCampaignSample(
+            campaign_id="campaign-a",
+            outcome="success",
+            campaign_disqualified=False,
+            duration_seconds=92.0,
+            source_fingerprint_hash="a" * 64,
+            read_model_fingerprint_hash="b" * 64,
+        )
+    )
+
+    state = CampaignStateStore(state_path).load()
+    assert state.campaigns["campaign-a"]["durations"] == [91.0, 92.0]
+    assert state.campaigns["campaign-a"]["source_fingerprint_hash"] == "a" * 64
+    assert state.campaigns["campaign-a"]["read_model_fingerprint_hash"] == "b" * 64
+
+
+def test_private_failure_rejects_fingerprint_hashes_and_disqualifies_without_them(
+    tmp_path: Path,
+) -> None:
+    with pytest.raises(CampaignStateError, match="success-only"):
+        PrivateCampaignSample.from_mapping(
+            {
+                "campaign_id": "campaign-a",
+                "outcome": "failure",
+                "campaign_disqualified": True,
+                "duration_seconds": 10.0,
+                "source_fingerprint_hash": "a" * 64,
+                "read_model_fingerprint_hash": "b" * 64,
+            }
+        )
+
+    store = CampaignStateStore(tmp_path / "campaign.json")
+    store.record(
+        PrivateCampaignSample(
+            campaign_id="campaign-a",
+            outcome="failure",
+            campaign_disqualified=True,
+            duration_seconds=10.0,
+        )
+    )
+    assert store.load().disqualified_campaign_ids == frozenset({"campaign-a"})
+
+
+def test_repeated_private_failure_is_idempotent_for_an_already_disqualified_campaign(
+    tmp_path: Path,
+) -> None:
+    store = CampaignStateStore(tmp_path / "campaign.json")
+    failed = PrivateCampaignSample(
+        campaign_id="campaign-a",
+        outcome="failure",
+        campaign_disqualified=True,
+        duration_seconds=10.0,
+    )
+
+    store.record(failed)
+    repeated = store.record(failed)
+
+    assert repeated.disqualified_campaign_ids == frozenset({"campaign-a"})
+    assert "campaign-a" not in repeated.campaigns

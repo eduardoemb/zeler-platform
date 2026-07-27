@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
 import json
 import os
 import time
@@ -10,6 +11,8 @@ from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from typing import Any
+
+from infra.operations.zelerdata_campaign_state import PrivateCampaignSample
 
 from zeler_platform_core.devoluciones_readiness import (
     DevolucionesOperationContext,
@@ -325,15 +328,28 @@ class ScheduledRunSample:
     read_model_fingerprint: str
     campaign_id: str = "default"
     physical_attempts: int = 0
+    source_calls: Mapping[str, int] = field(default_factory=dict)
 
     def to_sanitized_dict(self) -> dict[str, Any]:
+        counters = _bounded_focused_counters(self.source_calls)
         return {
-            "duration_seconds": round(self.duration_seconds, 3),
-            "succeeded": self.succeeded,
-            "source_fingerprint": self.source_fingerprint,
-            "read_model_fingerprint": self.read_model_fingerprint,
-            "campaign_id": self.campaign_id,
-            "physical_attempts": self.physical_attempts,
+            "stage": "scheduled",
+            "status_class": "success" if self.succeeded else "process_failed",
+            "counters": counters if counters else {"T": self.physical_attempts},
+        }
+
+
+@dataclass(frozen=True)
+class ScheduledTransportEnvelope:
+    public: Mapping[str, Any]
+    private_campaign: PrivateCampaignSample
+    schema_version: int = 1
+
+    def to_private_dict(self) -> dict[str, Any]:
+        return {
+            "schema_version": self.schema_version,
+            "public": dict(self.public),
+            "private_campaign": self.private_campaign.to_mapping(),
         }
 
 
@@ -350,6 +366,8 @@ class TimingCampaignResult:
 def evaluate_timing_campaign(
     samples: Sequence[ScheduledRunSample],
 ) -> TimingCampaignResult:
+    from zeler_sheets.devoluciones_reconciliation import MAX_SOURCE_PHYSICAL_ATTEMPTS
+
     campaign: list[ScheduledRunSample] = []
     campaign_id: str | None = None
     disqualified = False
@@ -368,13 +386,13 @@ def evaluate_timing_campaign(
         if (
             not sample.succeeded
             or sample.duration_seconds >= 180.0
-            or sample.physical_attempts > 64
+            or sample.physical_attempts > MAX_SOURCE_PHYSICAL_ATTEMPTS
         ):
             campaign = []
             disqualified = True
             if sample.duration_seconds >= 180.0:
                 disqualification_reason = "hard_budget_exceeded"
-            elif sample.physical_attempts > 64:
+            elif sample.physical_attempts > MAX_SOURCE_PHYSICAL_ATTEMPTS:
                 disqualification_reason = "source_budget_exceeded"
             continue
         if fingerprint is not None and current_fingerprint != fingerprint:
@@ -414,15 +432,14 @@ class FocusedRuntimeEvidence:
     campaign_id: str = "unassigned"
     process_deadline_seconds: float = 165.0
     shell_stop_seconds: float = 175.0
+    status_class: str = "success"
+    snapshot_calls: tuple[Mapping[str, int], ...] = ()
 
     def to_sanitized_dict(self) -> dict[str, Any]:
         return {
-            "duration_seconds": round(self.duration_seconds, 3),
-            "source_calls": dict(self.source_calls),
-            "succeeded": self.succeeded,
-            "campaign_id": self.campaign_id,
-            "process_deadline_seconds": self.process_deadline_seconds,
-            "shell_stop_seconds": self.shell_stop_seconds,
+            "stage": "runtime",
+            "status_class": _bounded_focused_status_class(self.status_class),
+            "counters": _bounded_focused_counters(self.source_calls),
         }
 
 
@@ -439,6 +456,7 @@ def scheduled_sample_from_summary(summary: ReconciliationSummary) -> ScheduledRu
         read_model_fingerprint=evidence.read_model_fingerprint,
         campaign_id=evidence.campaign_id,
         physical_attempts=int(evidence.source_calls.get("T", 0)),
+        source_calls=evidence.source_calls,
     )
 
 
@@ -618,6 +636,8 @@ class ReconciliationSummary:
     raw_context: dict[str, Any] = field(default_factory=dict, repr=False)
 
     def to_sanitized_dict(self) -> dict[str, Any]:
+        if self.runtime_evidence is not None:
+            return self.to_focused_evidence(stage="dry_run" if self.dry_run else "write_readback")
         sanitized: dict[str, Any] = {
             "seller_scope": "provided",
             "date_range": {"from": self.date_from, "to": self.date_to},
@@ -640,10 +660,110 @@ class ReconciliationSummary:
             sanitized["write_counts"] = dict(sorted(self.write_counts.items()))
         if self.repair_counts:
             sanitized["repair_counts"] = dict(sorted(self.repair_counts.items()))
-        if self.runtime_evidence is not None:
-            sanitized["runtime_evidence"] = self.runtime_evidence.to_sanitized_dict()
-            sanitized["scheduled_run"] = scheduled_sample_from_summary(self).to_sanitized_dict()
         return sanitized
+
+    def to_focused_evidence(self, *, stage: str) -> dict[str, Any]:
+        bounded_stage = _bounded_focused_stage(stage)
+        evidence = self.runtime_evidence
+        status_class = (
+            _bounded_focused_status_class(evidence.status_class)
+            if evidence is not None
+            else "query_anomaly"
+        )
+        counters = _bounded_focused_counters(evidence.source_calls) if evidence is not None else {}
+        claims = next(
+            (aggregate for aggregate in self.aggregates if aggregate.read_model == "claims"),
+            None,
+        )
+        if claims is not None:
+            for output_name, value in (
+                ("expected", claims.expected_count),
+                ("persisted", claims.persisted_count),
+                ("complete", claims.complete_count),
+                ("missing", claims.missing_count),
+            ):
+                if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+                    counters[output_name] = value
+        if evidence is not None and len(evidence.snapshot_calls) > 1:
+            for index, snapshot in enumerate(evidence.snapshot_calls, start=1):
+                counters[f"snapshot_{index}_T"] = int(snapshot.get("T", 0))
+        return {
+            "stage": bounded_stage,
+            "status_class": status_class,
+            "counters": dict(sorted(counters.items())),
+        }
+
+    def to_scheduled_transport(self) -> ScheduledTransportEnvelope:
+        sample = scheduled_sample_from_summary(self)
+        if not sample.succeeded:
+            raise ValueError("scheduled transport requires a successful write/readback proof")
+        return ScheduledTransportEnvelope(
+            public=self.to_focused_evidence(stage="write_readback"),
+            private_campaign=PrivateCampaignSample(
+                campaign_id=sample.campaign_id,
+                outcome="success",
+                campaign_disqualified=False,
+                duration_seconds=sample.duration_seconds,
+                source_fingerprint_hash=_private_fingerprint_hash(sample.source_fingerprint),
+                read_model_fingerprint_hash=_private_fingerprint_hash(
+                    sample.read_model_fingerprint
+                ),
+            ),
+        )
+
+
+_FOCUSED_EVIDENCE_STAGES = frozenset(
+    {"dry_run", "write_readback", "acceptance", "runtime", "scheduled"}
+)
+_FOCUSED_STATUS_CLASSES = frozenset(
+    {
+        "success",
+        "source_issue",
+        "query_anomaly",
+        "source_budget_exceeded",
+        "counter_mismatch",
+        "internal_drift",
+        "process_failed",
+        "timeout",
+        "evidence_invalid",
+    }
+)
+
+
+def _bounded_focused_stage(stage: str) -> str:
+    if stage not in _FOCUSED_EVIDENCE_STAGES:
+        raise ValueError("focused evidence stage is invalid")
+    return stage
+
+
+def _bounded_focused_status_class(status_class: str) -> str:
+    return status_class if status_class in _FOCUSED_STATUS_CLASSES else "query_anomaly"
+
+
+def _bounded_focused_counters(counters: Mapping[str, Any]) -> dict[str, int]:
+    allowed = {
+        "P",
+        "R",
+        "O",
+        "T",
+        "expected",
+        "persisted",
+        "complete",
+        "missing",
+        "snapshot_1_T",
+        "snapshot_2_T",
+    }
+    return {
+        key: value
+        for key, value in counters.items()
+        if key in allowed and isinstance(value, int) and not isinstance(value, bool) and value >= 0
+    }
+
+
+def _private_fingerprint_hash(value: str) -> str:
+    if not value:
+        raise ValueError("scheduled private fingerprint is missing")
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
@@ -725,6 +845,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="Include Phase 2 read-only preflight/dry-run contract in sanitized output.",
     )
     parser.add_argument(
+        "--private-scheduled-transport",
+        action="store_true",
+        help="Emit the wrapper-only scheduled transport instead of public evidence.",
+    )
+    parser.add_argument(
         "--repair-observed-pause-basis",
         action="store_true",
         help=(
@@ -762,6 +887,10 @@ def validate_reconciliation_safety(args: argparse.Namespace) -> None:
         raise SystemExit("--max-orders is required with --include-buyer-address-pii")
     if str(args.read_model) == "devoluciones" and int(args.concurrency) > 4:
         raise SystemExit("--concurrency must not exceed 4 for devoluciones")
+    if bool(args.private_scheduled_transport) and (
+        str(args.read_model) != "devoluciones" or bool(args.dry_run)
+    ):
+        raise SystemExit("--private-scheduled-transport requires focused write mode")
 
 
 def build_reconciliation_request(args: argparse.Namespace) -> ReconciliationRequest:
@@ -1865,21 +1994,6 @@ def _complete_claims_filter(filter_spec: dict[str, Any]) -> dict[str, Any]:
             "returned_quantity": {"$gte": 1},
             "return_quantity_basis": "v2_return_order",
         },
-        {
-            "productive": False,
-            "return_subtype": "low_cost",
-            "return_quantity_basis": "verified_low_cost_no_row",
-            "returned_quantity": {"$exists": False},
-        },
-        {
-            "productive": {"$exists": False},
-            "returned_quantity": {"$gte": 1},
-        },
-        {
-            "productive": True,
-            "return_quantity_basis": {"$exists": False},
-            "returned_quantity": {"$gte": 1},
-        },
     ]
     return complete_filter
 
@@ -2064,6 +2178,8 @@ def _focused_failure_summary(
             monotonic() - started,
             recorder.counts,
             campaign_id=campaign_id,
+            status_class=issue.code,
+            snapshot_calls=(recorder.counts,),
         ),
     )
 
@@ -2091,8 +2207,11 @@ async def run_focused_devoluciones_reconciliation(
     now: Callable[[], datetime] = lambda: datetime.now(UTC),
 ) -> ReconciliationSummary:
     from zeler_sheets.devoluciones_reconciliation import (
+        MAX_SNAPSHOT_PHYSICAL_ATTEMPTS,
+        MAX_SOURCE_PHYSICAL_ATTEMPTS,
         GatewayDevolucionesSource,
         SourceCallRecorder,
+        SourceRunLedger,
         collect_devoluciones_snapshot,
         require_snapshot_publication_age,
         revalidate_devoluciones_snapshot,
@@ -2101,7 +2220,11 @@ async def run_focused_devoluciones_reconciliation(
 
     started = monotonic()
     absolute_deadline = started + 165.0
-    recorder = SourceCallRecorder(max_total=64)
+    run_ledger = SourceRunLedger(max_total=MAX_SOURCE_PHYSICAL_ATTEMPTS)
+    recorder = SourceCallRecorder(
+        max_total=MAX_SNAPSHOT_PHYSICAL_ATTEMPTS,
+        run_ledger=run_ledger,
+    )
     resolved_campaign_id = campaign_id or os.environ.get(
         "ZELERDATA_DEVOLUCIONES_CAMPAIGN_ID", "unassigned"
     )
@@ -2144,10 +2267,11 @@ async def run_focused_devoluciones_reconciliation(
             mandatory_source_gate=_claims_authoritative_source_gate(expected),
             runtime_evidence=FocusedRuntimeEvidence(
                 monotonic() - started,
-                recorder.counts,
+                run_ledger.counts,
                 source_fingerprint=snapshot.source_fingerprint,
                 read_model_fingerprint=snapshot.read_model_fingerprint,
                 campaign_id=resolved_campaign_id,
+                snapshot_calls=(recorder.counts,),
             ),
         )
 
@@ -2180,6 +2304,10 @@ async def run_focused_devoluciones_reconciliation(
                 operation=operation,
             )
             _require_focused_deadline(monotonic=monotonic, absolute_deadline=absolute_deadline)
+            revalidation_recorder = SourceCallRecorder(
+                max_total=MAX_SNAPSHOT_PHYSICAL_ATTEMPTS,
+                run_ledger=run_ledger,
+            )
             write_counts = await write_devoluciones_snapshot(
                 db=db,
                 snapshot=snapshot,
@@ -2190,7 +2318,7 @@ async def run_focused_devoluciones_reconciliation(
                 snapshot=snapshot,
                 operation=operation,
                 absolute_deadline=absolute_deadline,
-                recorder=recorder,
+                recorder=revalidation_recorder,
                 heartbeat=revalidation_heartbeat,
                 monotonic=monotonic,
                 now=now,
@@ -2236,11 +2364,12 @@ async def run_focused_devoluciones_reconciliation(
         mandatory_source_gate=_claims_authoritative_source_gate(expected),
         runtime_evidence=FocusedRuntimeEvidence(
             monotonic() - started,
-            recorder.counts,
+            run_ledger.counts,
             succeeded=True,
             source_fingerprint=snapshot.source_fingerprint,
             read_model_fingerprint=snapshot.read_model_fingerprint,
             campaign_id=resolved_campaign_id,
+            snapshot_calls=(recorder.counts, revalidation_recorder.counts),
         ),
     )
 
@@ -2362,7 +2491,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         raise SystemExit(str(exc)) from exc
     except (AttributeError, RuntimeError, TypeError) as exc:
         raise SystemExit("query_anomaly") from exc
-    print(json.dumps(summary.to_sanitized_dict(), sort_keys=True))
+    if bool(args.private_scheduled_transport):
+        output = summary.to_scheduled_transport().to_private_dict()
+    elif str(args.read_model) == "devoluciones":
+        output = summary.to_focused_evidence(
+            stage="dry_run" if summary.dry_run else "write_readback"
+        )
+    else:
+        output = summary.to_sanitized_dict()
+    print(json.dumps(output, sort_keys=True))
     gate = summary.mandatory_source_gate
     return int(summary.dry_run and (gate is None or not gate.authoritative))
 
