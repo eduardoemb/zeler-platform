@@ -54,10 +54,13 @@ class GatewayDevolucionesSource:
         )
 
     async def get_returns(self, *, seller_id: str, claim_id: str) -> dict[str, Any]:
-        return await self._fetch(
-            seller_id=seller_id,
-            path=f"/post-purchase/v2/claims/{_numeric_id(claim_id, field='claim_id')}/returns",
-        )
+        path = f"/post-purchase/v2/claims/{_numeric_id(claim_id, field='claim_id')}/returns"
+        try:
+            return await self._fetch(seller_id=seller_id, path=path)
+        except Exception as exc:
+            if self._single_attempt and _is_authoritative_upstream_not_found(exc):
+                raise AuthoritativeReturnsNotFoundError from None
+            raise
 
     async def get_order(self, *, seller_id: str, order_id: str) -> dict[str, Any]:
         return await self._fetch(
@@ -76,6 +79,9 @@ def _numeric_id(value: str, *, field: str) -> str:
 MAX_CLAIM_SEARCH_LIMIT = 100
 MAX_CLAIM_SEARCH_OFFSET = 9999
 MIN_SPLIT_WINDOW = timedelta(milliseconds=1)
+MAX_SOURCE_PHYSICAL_ATTEMPTS = 208
+MAX_SNAPSHOT_PHYSICAL_ATTEMPTS = 104
+MAX_DETAIL_ATTEMPTS_PER_HYDRATION_CANDIDATE = 3
 
 
 class ClaimInventoryError(RuntimeError):
@@ -88,6 +94,10 @@ class DevolucionesReadModelVerificationError(RuntimeError):
 
 class SourceCallBudgetError(RuntimeError):
     pass
+
+
+class AuthoritativeReturnsNotFoundError(RuntimeError):
+    """The exact v2 returns resource is authoritatively absent upstream."""
 
 
 class FrozenDict(dict[str, Any]):
@@ -129,8 +139,8 @@ class FrozenList(list[Any]):
 
 
 @dataclass(slots=True)
-class SourceCallRecorder:
-    max_total: int = 64
+class SourceRunLedger:
+    max_total: int = MAX_SOURCE_PHYSICAL_ATTEMPTS
     claim_pages: int = 0
     claim_and_return_details: int = 0
     order_details: int = 0
@@ -152,17 +162,77 @@ class SourceCallRecorder:
             "T": self.total,
         }
 
+    def ensure_capacity(self) -> None:
+        if self.total >= self.max_total:
+            raise SourceCallBudgetError("source physical-attempt run budget exceeded")
+
+    def record(self, call_kind: str) -> None:
+        _increment_source_counter(self, call_kind)
+
+
+@dataclass(slots=True)
+class SourceCallRecorder:
+    max_total: int = MAX_SNAPSHOT_PHYSICAL_ATTEMPTS
+    run_ledger: SourceRunLedger | None = None
+    claim_pages: int = 0
+    claim_and_return_details: int = 0
+    order_details: int = 0
+    required_capacity: int = 0
+
+    def __post_init__(self) -> None:
+        if self.max_total < 1:
+            raise ValueError("source call budget must be positive")
+
+    @property
+    def total(self) -> int:
+        return self.claim_pages + self.claim_and_return_details + self.order_details
+
+    @property
+    def counts(self) -> dict[str, int]:
+        return {
+            "P": self.claim_pages,
+            "R": self.claim_and_return_details,
+            "O": self.order_details,
+            "T": self.total,
+        }
+
     def charge(self, call_kind: str) -> None:
-        if call_kind == "claim_search":
-            self.claim_pages += 1
-        elif call_kind in {"claim_detail", "return_detail"}:
-            self.claim_and_return_details += 1
-        elif call_kind == "order_detail":
-            self.order_details += 1
-        else:
-            raise ValueError("unknown source call kind")
-        if self.total > self.max_total:
+        _validate_source_call_kind(call_kind)
+        if self.total >= self.max_total:
             raise SourceCallBudgetError("source physical-attempt budget exceeded")
+        if self.run_ledger is not None:
+            self.run_ledger.ensure_capacity()
+        _increment_source_counter(self, call_kind)
+        if self.run_ledger is not None:
+            self.run_ledger.record(call_kind)
+
+    def require_hydration_capacity(self, candidate_count: int) -> None:
+        if isinstance(candidate_count, bool) or not isinstance(candidate_count, int):
+            raise TypeError("hydration candidate count must be an integer")
+        if candidate_count < 0:
+            raise ValueError("hydration candidate count must not be negative")
+        required_capacity = (
+            self.total + candidate_count * MAX_DETAIL_ATTEMPTS_PER_HYDRATION_CANDIDATE
+        )
+        self.required_capacity = max(self.required_capacity, required_capacity)
+        if required_capacity > self.max_total:
+            raise SourceCallBudgetError("inventory-derived source attempt budget exceeds hard cap")
+
+
+def _validate_source_call_kind(call_kind: str) -> None:
+    if call_kind not in {"claim_search", "claim_detail", "return_detail", "order_detail"}:
+        raise ValueError("unknown source call kind")
+
+
+def _increment_source_counter(
+    recorder: SourceRunLedger | SourceCallRecorder, call_kind: str
+) -> None:
+    if call_kind == "claim_search":
+        recorder.claim_pages += 1
+    elif call_kind in {"claim_detail", "return_detail"}:
+        recorder.claim_and_return_details += 1
+    else:
+        recorder.order_details += 1
 
 
 class InventoryRelevance(StrEnum):
@@ -403,19 +473,9 @@ async def verify_devoluciones_read_model(
                     "productive claim lacks exact v2 return quantity"
                 )
             productive_claims += 1
-        elif productive is False:
-            if (
-                claim.get("return_subtype") != "low_cost"
-                or claim.get("return_quantity_basis") != "verified_low_cost_no_row"
-                or claim.get("returned_quantity") is not None
-            ):
-                raise DevolucionesReadModelVerificationError(
-                    "non-productive claim is not a verified low-cost exclusion"
-                )
-            non_productive_claims += 1
         else:
             raise DevolucionesReadModelVerificationError(
-                "claim productive classification is uncertain"
+                "only positive integral v2 return proof is complete"
             )
         required_orders.setdefault(order_id, []).append(item_id)
         if not claim_id:
@@ -576,6 +636,13 @@ async def collect_devoluciones_snapshot(
         monotonic=monotonic,
         heartbeat=heartbeat,
     )
+    hydration_entries = tuple(
+        entry
+        for entry in inventory.entries
+        if classify_inventory_relevance(entry) is InventoryRelevance.HYDRATE_CANDIDATE
+    )
+    if recorder is not None:
+        recorder.require_hydration_capacity(len(hydration_entries))
     projections: list[dict[str, Any]] = []
     orders_by_id: dict[str, dict[str, Any]] = {}
     exclusions: list[InventoryExclusionEvidence] = []
@@ -620,6 +687,21 @@ async def collect_devoluciones_snapshot(
             )
         except SourceCallBudgetError:
             raise
+        except AuthoritativeReturnsNotFoundError:
+            if _is_authoritative_no_return_mediation(
+                entry=entry,
+                claim=claim,
+                seller_id=seller_id,
+            ):
+                exclusions.append(
+                    InventoryExclusionEvidence(
+                        claim_id=entry.claim_id,
+                        last_updated=entry.last_updated,
+                        reason="authoritative_no_return_mediation",
+                    )
+                )
+                continue
+            raise ClaimInventoryError("v2 returns source_issue") from None
         except Exception:  # noqa: BLE001 - source exception text is unsafe evidence.
             raise ClaimInventoryError("v2 returns source_issue") from None
         order_id = str(claim.get("order_id") or claim.get("resource_id") or "").strip()
@@ -659,6 +741,12 @@ async def collect_devoluciones_snapshot(
     frozen_orders = tuple(
         cast("Mapping[str, Any]", _deep_freeze(row)) for row in orders_by_id.values()
     )
+    terminal_cancellation_exclusions = sum(
+        exclusion.reason == "terminal_cancellation" for exclusion in exclusions
+    )
+    authoritative_no_return_exclusions = sum(
+        exclusion.reason == "authoritative_no_return_mediation" for exclusion in exclusions
+    )
     return CollectedDevolucionesSnapshot(
         seller_id=str(seller_id),
         start=normalized_start,
@@ -682,8 +770,17 @@ async def collect_devoluciones_snapshot(
         counters=FrozenDict(
             {
                 "inventory_candidates": len(inventory.entries),
-                "hydrated_candidates": len(inventory.entries) - len(exclusions),
-                "excluded_terminal_cancellations": len(exclusions),
+                "hydrated_candidates": len(hydration_entries),
+                "excluded_terminal_cancellations": terminal_cancellation_exclusions,
+                **(
+                    {
+                        "excluded_authoritative_no_return_mediations": (
+                            authoritative_no_return_exclusions
+                        )
+                    }
+                    if authoritative_no_return_exclusions
+                    else {}
+                ),
                 "productive_claims": sum(
                     projection.get("productive") is True for projection in projections
                 ),
@@ -707,6 +804,8 @@ async def revalidate_devoluciones_snapshot(
     monotonic: Callable[[], float] = time.monotonic,
     now: Callable[[], datetime] = lambda: datetime.now(UTC),
 ) -> CollectedDevolucionesSnapshot:
+    if recorder.total != 0:
+        raise SourceCallBudgetError("publication revalidation requires a fresh snapshot ledger")
     invalid_owner = (
         operation.seller_id != snapshot.seller_id
         or not operation.owns_lease
@@ -1270,6 +1369,92 @@ def _is_return_candidate(claim: Mapping[str, Any]) -> bool:
     if claim_type in {"return", "returns"}:
         return True
     return claim_type == "mediations"
+
+
+def _is_authoritative_upstream_not_found(exc: Exception) -> bool:
+    response = getattr(exc, "response", None)
+    headers = getattr(response, "headers", None)
+    return bool(
+        getattr(response, "status_code", None) == 404
+        and isinstance(headers, Mapping)
+        and headers.get("X-Zeler-Upstream-Attempts") == "1"
+    )
+
+
+def _is_authoritative_no_return_mediation(
+    *,
+    entry: ClaimInventoryEntry,
+    claim: Mapping[str, Any],
+    seller_id: str,
+) -> bool:
+    claim_id = str(claim.get("id") or claim.get("_id") or "").strip()
+    last_updated = str(claim.get("last_updated") or "").strip()
+    direct_order_id = str(claim.get("order_id") or "").strip()
+    resource_order_id = str(claim.get("resource_id") or "").strip()
+    order_id = direct_order_id or resource_order_id
+    order_identities = {
+        identity
+        for identity in (
+            direct_order_id,
+            resource_order_id,
+            str(entry.source.get("order_id") or "").strip(),
+            str(entry.source.get("resource_id") or "").strip(),
+        )
+        if identity
+    }
+    order_identity_agrees = len(order_identities) == 1 and all(
+        re.fullmatch(r"[0-9]+", identity) for identity in order_identities
+    )
+    item_id = claim.get("item_id")
+    item_identity_absent = item_id is None or (isinstance(item_id, str) and not item_id.strip())
+    related_entities = claim.get("related_entities")
+    related_return_absent = related_entities is None or (
+        isinstance(related_entities, list)
+        and all(isinstance(entity, Mapping) for entity in related_entities)
+        and not any(
+            str(entity.get("type") or "").strip().lower() in {"return", "returns"}
+            for entity in related_entities
+        )
+    )
+    players = claim.get("players")
+    seller_respondents = (
+        [
+            player
+            for player in players
+            if isinstance(player, Mapping)
+            and player.get("role") == "respondent"
+            and player.get("type") == "seller"
+        ]
+        if isinstance(players, list)
+        else []
+    )
+    seller_respondent_agrees = bool(
+        len(seller_respondents) == 1 and str(seller_respondents[0].get("user_id")) == str(seller_id)
+    )
+    contradictory_return_evidence = any(
+        claim.get(field_name) not in (None, "", [], {})
+        for field_name in (
+            "return_id",
+            "return_quantity",
+            "returned_quantity",
+            "return",
+            "returns",
+        )
+    )
+    return bool(
+        entry.trusted_type == "mediations"
+        and entry.trusted_status in {"", "closed"}
+        and claim_id == entry.claim_id
+        and last_updated == entry.last_updated
+        and str(claim.get("type") or "").strip().lower() == "mediations"
+        and str(claim.get("status") or "").strip().lower() == "closed"
+        and re.fullmatch(r"[0-9]+", order_id)
+        and order_identity_agrees
+        and item_identity_absent
+        and related_return_absent
+        and seller_respondent_agrees
+        and not contradictory_return_evidence
+    )
 
 
 def _validated_utc_range(start: datetime, end: datetime) -> tuple[datetime, datetime]:

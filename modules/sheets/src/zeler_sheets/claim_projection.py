@@ -28,8 +28,6 @@ def build_claim_projection(
     _validate_order_seller(order, seller_id=seller_id)
     return_subtype = _optional_text(returns.get("subtype"))
     return_rows = returns.get("orders")
-    if return_subtype == "low_cost" and "orders" in returns and return_rows is None:
-        return_rows = []
     if not isinstance(return_rows, list):
         raise ClaimProjectionError("v2 returns orders must be a list")
 
@@ -43,30 +41,20 @@ def build_claim_projection(
         and (item_id is None or _optional_identity(row.get("item_id")) == item_id)
     ]
 
-    return_context_type: str | None = None
-    has_authoritative_v2_return_order = False
-    if not matching_rows and return_subtype == "low_cost" and not return_rows:
-        productive = False
-        returned_quantity = None
-        return_quantity_basis = "verified_low_cost_no_row"
-    else:
-        if len(matching_rows) != 1:
-            raise ClaimProjectionError("v2 returns must contain one unique order/item row")
-        row = matching_rows[0]
-        item_id = _identity(row.get("item_id"), "item_id")
-        _validate_order_item(order, item_id=item_id)
-        returned_quantity = _positive_integral_return_quantity(row.get("return_quantity"))
-        productive = True
-        return_quantity_basis = "v2_return_order"
-        has_authoritative_v2_return_order = True
-        return_context_type = _optional_text(row.get("context_type"))
+    if len(matching_rows) != 1:
+        raise ClaimProjectionError(
+            "positive integral v2 return proof requires one unique order/item row"
+        )
+    row = matching_rows[0]
+    item_id = _identity(row.get("item_id"), "item_id")
+    _validate_order_item(order, item_id=item_id)
+    returned_quantity = _positive_integral_return_quantity(row.get("return_quantity"))
+    return_context_type = _optional_text(row.get("context_type"))
 
     claim_type = str(claim.get("type") or "")
     if claim_type not in {"return", "returns", "mediations"}:
         raise ClaimProjectionError("claim is not a return or return-linked mediation")
-    if claim_type == "mediations" and not (
-        _has_related_return(claim) or has_authoritative_v2_return_order
-    ):
+    if claim_type == "mediations" and not (_has_related_return(claim) or matching_rows):
         raise ClaimProjectionError("mediation is not linked to a return")
 
     model_payload: dict[str, Any] = {
@@ -85,8 +73,8 @@ def build_claim_projection(
         "return_status": _optional_text(returns.get("status")),
         "return_subtype": return_subtype,
         "return_context_type": return_context_type,
-        "return_quantity_basis": return_quantity_basis,
-        "productive": productive,
+        "return_quantity_basis": "v2_return_order",
+        "productive": True,
         "status": claim.get("status"),
         "stage": claim.get("stage") or "none",
         "type": "returns",

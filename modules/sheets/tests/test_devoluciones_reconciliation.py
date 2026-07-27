@@ -319,47 +319,34 @@ def test_productive_mediation_without_related_return_uses_authoritative_v2_order
     assert projection["productive"] is True
 
 
-def test_verified_low_cost_without_order_row_is_complete_non_productive() -> None:
-    projection = build_claim_projection(
-        seller_id="82453304",
-        claim=_claim(),
-        returns=_fixture("low_cost.json"),
-        order=_order(),
-    )
-
-    assert projection["productive"] is False
-    assert projection["return_quantity_basis"] == "verified_low_cost_no_row"
-    assert "returned_quantity" not in projection
+def test_verified_low_cost_without_order_row_is_unresolved() -> None:
+    with pytest.raises(ClaimProjectionError, match="positive integral v2 return proof"):
+        build_claim_projection(
+            seller_id="82453304",
+            claim=_claim(),
+            returns=_fixture("low_cost.json"),
+            order=_order(),
+        )
 
 
-def test_verified_low_cost_null_orders_has_complete_non_productive_projection() -> None:
-    projection = build_claim_projection(
-        seller_id="82453304",
-        claim=_claim(),
-        returns=_fixture("low_cost_orders_null.json"),
-        order=_order(),
-    )
+def test_only_positive_integral_v2_proof_can_produce_a_projection_row() -> None:
+    with pytest.raises(ClaimProjectionError, match="positive integral v2 return proof"):
+        build_claim_projection(
+            seller_id="82453304",
+            claim=_claim(),
+            returns=_fixture("low_cost.json"),
+            order=_order(),
+        )
 
-    assert projection == {
-        "schema_version": 1,
-        "_id": "519988001",
-        "seller_id": "82453304",
-        "buyer_id": "90001",
-        "item_id": "MLA1",
-        "order_id": "2001",
-        "claim_version": 3,
-        "last_updated": datetime(2026, 6, 15, 12, 5, tzinfo=UTC),
-        "return_id": "RETURN-LOW-COST-1",
-        "return_last_updated": datetime(2026, 6, 16, 9, 10, tzinfo=UTC),
-        "return_status": "closed",
-        "return_subtype": "low_cost",
-        "return_quantity_basis": "verified_low_cost_no_row",
-        "productive": False,
-        "status": "closed",
-        "stage": "claim",
-        "type": "returns",
-        "date_created": datetime(2026, 6, 15, 12, 0, tzinfo=UTC),
-    }
+
+def test_verified_low_cost_null_orders_is_unresolved() -> None:
+    with pytest.raises(ClaimProjectionError, match="orders must be a list"):
+        build_claim_projection(
+            seller_id="82453304",
+            claim=_claim(),
+            returns=_fixture("low_cost_orders_null.json"),
+            order=_order(),
+        )
 
 
 @pytest.mark.parametrize(
@@ -582,11 +569,13 @@ class HydratingSource(ScriptedInventorySource):
         mediation["order_id"] = "1999"
         mediation["item_id"] = "MLA2"
         mediation["last_updated"] = "2026-06-16T09:05:00.000Z"
-        low_cost = _fixture("low_cost.json")
+        second_return = _fixture("return_v2.json")
+        second_return["id"] = "RETURN-519988002"
+        second_return["orders"][0].update({"order_id": "1999", "item_id": "MLA2"})
         self.claims = {"519988001": _claim(), "519988002": mediation}
         self.returns = {
             "519988001": _fixture("return_v2.json"),
-            "519988002": low_cost,
+            "519988002": second_return,
         }
         self.orders = {"2001": _order(), "1999": _order(item_id="MLA2") | {"id": 1999}}
         self.hydration_calls: list[tuple[str, str]] = []
@@ -821,19 +810,230 @@ class ReturnsAccessFailureSource(HydratingSource):
         raise self.failure
 
 
+class _SingleAttemptOnlyGatewayClient:
+    async def fetch_resource(self, *, seller_id: str, path: str) -> dict[str, Any]:
+        del seller_id, path
+        raise AssertionError("single-attempt test client does not support retrying fetch")
+
+
+class AuthoritativeReturns404Client(_SingleAttemptOnlyGatewayClient):
+    async def fetch_resource_once(self, *, seller_id: str, path: str) -> dict[str, Any]:
+        del seller_id, path
+        response = type(
+            "Response",
+            (),
+            {
+                "status_code": 404,
+                "headers": {"X-Zeler-Upstream-Attempts": "1"},
+            },
+        )()
+        error = RuntimeError("unsafe raw v2 returns URL and identifiers")
+        error.response = response  # type: ignore[attr-defined]
+        raise error
+
+
+@pytest.mark.asyncio
+async def test_single_attempt_only_gateway_client_rejects_retrying_fetch() -> None:
+    client = AuthoritativeReturns404Client()
+
+    with pytest.raises(AssertionError, match="single-attempt test client"):
+        await client.fetch_resource(seller_id="82453304", path="/unsupported")
+
+
+class GatewayReturns404Source(HydratingSource):
+    def __init__(self) -> None:
+        super().__init__()
+        self.gateway = reconciliation_module.GatewayDevolucionesSource(
+            AuthoritativeReturns404Client(),
+            single_attempt=True,
+        )
+
+    async def get_returns(self, *, seller_id: str, claim_id: str) -> dict[str, Any]:
+        if claim_id != "519988002":
+            return await super().get_returns(seller_id=seller_id, claim_id=claim_id)
+        self.hydration_calls.append(("returns", claim_id))
+        return await self.gateway.get_returns(seller_id=seller_id, claim_id=claim_id)
+
+
+@pytest.mark.parametrize("related_entities", [None, []], ids=("missing-related", "empty-related"))
+@pytest.mark.asyncio
+async def test_authoritative_returns_404_excludes_only_closed_unlinked_mediation(
+    related_entities: list[dict[str, Any]] | None,
+) -> None:
+    source = GatewayReturns404Source()
+    mediation = source.claims["519988002"]
+    mediation.update(
+        {
+            "type": "mediations",
+            "status": "closed",
+            "order_id": "1999",
+            "item_id": None,
+        }
+    )
+    if related_entities is None:
+        mediation.pop("related_entities", None)
+    else:
+        mediation["related_entities"] = related_entities
+
+    snapshot = await reconciliation_module.collect_devoluciones_snapshot(
+        source=source,
+        seller_id="82453304",
+        start=START,
+        end=END,
+    )
+
+    assert snapshot.expected_claim_ids == frozenset({"519988001"})
+    assert [projection["_id"] for projection in snapshot.projections] == ["519988001"]
+    assert snapshot.exclusions[-1] == reconciliation_module.InventoryExclusionEvidence(
+        claim_id="519988002",
+        last_updated="2026-06-16T09:05:00.000Z",
+        reason="authoritative_no_return_mediation",
+    )
+    assert snapshot.counters["excluded_authoritative_no_return_mediations"] == 1
+    assert ("returns", "519988002") in source.hydration_calls
+    assert ("order", "1999") not in source.hydration_calls
+
+
+@pytest.mark.parametrize(
+    "claim_mutation",
+    [
+        {"item_id": "MLA2"},
+        {"status": "opened"},
+        {"related_entities": [{"type": "return", "id": "RETURN-1"}]},
+        {"players": []},
+    ],
+    ids=("item-present", "not-closed", "return-linked", "seller-unproven"),
+)
+@pytest.mark.asyncio
+async def test_authoritative_returns_404_fails_closed_when_mediation_invariants_are_unsafe(
+    claim_mutation: dict[str, Any],
+) -> None:
+    source = GatewayReturns404Source()
+    mediation = source.claims["519988002"]
+    mediation.update(
+        {
+            "type": "mediations",
+            "status": "closed",
+            "order_id": "1999",
+            "item_id": None,
+            "related_entities": [],
+            **claim_mutation,
+        }
+    )
+
+    with pytest.raises(ClaimInventoryError, match="source_issue"):
+        await reconciliation_module.collect_devoluciones_snapshot(
+            source=source,
+            seller_id="82453304",
+            start=START,
+            end=END,
+        )
+
+    assert ("order", "1999") not in source.hydration_calls
+
+
+@pytest.mark.parametrize(
+    "claim_mutation",
+    [
+        {"resource_id": "2999"},
+        {"returned_quantity": 1},
+        {
+            "players": [
+                {"user_id": "82453304", "role": "respondent", "type": "seller"},
+                {"user_id": "999", "role": "respondent", "type": "seller"},
+            ]
+        },
+    ],
+    ids=("conflicting-order", "return-proof-present", "second-seller-respondent"),
+)
+@pytest.mark.asyncio
+async def test_authoritative_returns_404_fails_closed_on_contradictory_evidence(
+    claim_mutation: dict[str, Any],
+) -> None:
+    source = GatewayReturns404Source()
+    source.claims["519988002"].update(
+        {
+            "type": "mediations",
+            "status": "closed",
+            "order_id": "1999",
+            "item_id": None,
+            "related_entities": [],
+            **claim_mutation,
+        }
+    )
+
+    with pytest.raises(ClaimInventoryError, match="source_issue"):
+        await reconciliation_module.collect_devoluciones_snapshot(
+            source=source,
+            seller_id="82453304",
+            start=START,
+            end=END,
+        )
+
+    assert ("order", "1999") not in source.hydration_calls
+
+
+@pytest.mark.asyncio
+async def test_authoritative_404_rejects_inventory_status_contradiction() -> None:
+    source = GatewayReturns404Source()
+    for response in source.responses:
+        response["data"][1]["status"] = "opened"
+    source.claims["519988002"].update(
+        {
+            "type": "mediations",
+            "status": "closed",
+            "order_id": "1999",
+            "item_id": None,
+            "related_entities": [],
+        }
+    )
+
+    with pytest.raises(ClaimInventoryError, match="source_issue"):
+        await reconciliation_module.collect_devoluciones_snapshot(
+            source=source,
+            seller_id="82453304",
+            start=START,
+            end=END,
+        )
+
+
+@pytest.mark.asyncio
+async def test_gateway_returns_404_requires_attempt_metadata_exactly_one() -> None:
+    class TwoAttemptClient(_SingleAttemptOnlyGatewayClient):
+        async def fetch_resource_once(self, *, seller_id: str, path: str) -> dict[str, Any]:
+            del seller_id, path
+            response = type(
+                "Response",
+                (),
+                {"status_code": 404, "headers": {"X-Zeler-Upstream-Attempts": "2"}},
+            )()
+            error = RuntimeError("unsafe raw upstream detail")
+            error.response = response  # type: ignore[attr-defined]
+            raise error
+
+    gateway = reconciliation_module.GatewayDevolucionesSource(
+        TwoAttemptClient(),
+        single_attempt=True,
+    )
+
+    with pytest.raises(RuntimeError, match="unsafe raw upstream detail"):
+        await gateway.get_returns(seller_id="82453304", claim_id="519988002")
+
+
 @pytest.mark.parametrize(
     "failure",
     [
         RawReturnsAccessError(401),
         RawReturnsAccessError(403),
         RawReturnsAccessError(404),
+        RawReturnsAccessError(429),
         RawReturnsAccessError(500),
         ConnectionError(
             "network GET https://runtime.internal/post-purchase/v2/claims/"
             "519988002/returns?access_token=RAW_TOKEN payload order_id=1999"
         ),
     ],
-    ids=("401", "403", "404", "500", "network"),
+    ids=("401", "403", "404", "429", "500", "network"),
 )
 @pytest.mark.asyncio
 async def test_mediation_without_related_sanitizes_v2_returns_access_failure(
@@ -987,7 +1187,7 @@ async def test_focused_snapshot_is_immutable_claims_first_and_referenced_orders_
     source.claims["519988002"]["item_id"] = "MLA1"
     source.returns["519988002"] = {
         **source.returns["519988002"],
-        "orders": None,
+        "orders": [{"order_id": "2001", "item_id": "MLA1", "return_quantity": 1}],
     }
     captured_at = datetime(2026, 7, 10, 12, tzinfo=UTC)
 
@@ -1038,7 +1238,7 @@ def test_source_call_recorder_charges_physical_attempts_before_send_and_caps_tot
     assert recorder.counts == {"P": 1, "R": 1, "O": 1, "T": 3}
     with pytest.raises(SourceCallBudgetError, match="64|budget"):
         recorder.charge("return_detail")
-    assert recorder.counts == {"P": 1, "R": 2, "O": 1, "T": 4}
+    assert recorder.counts == {"P": 1, "R": 1, "O": 1, "T": 3}
 
 
 @pytest.mark.asyncio
@@ -1106,7 +1306,8 @@ async def test_failed_physical_attempt_and_deadline_are_recorded_fail_closed() -
 
 @pytest.mark.asyncio
 async def test_targeted_revalidation_uses_root_context_and_rejects_fingerprint_drift() -> None:
-    recorder = SourceCallRecorder()
+    run_ledger = reconciliation_module.SourceRunLedger()
+    recorder = SourceCallRecorder(run_ledger=run_ledger)
     source = HydratingSource()
     snapshot = await reconciliation_module.collect_devoluciones_snapshot(
         source=source,
@@ -1125,12 +1326,13 @@ async def test_targeted_revalidation_uses_root_context_and_rejects_fingerprint_d
     async def heartbeat() -> None:
         heartbeat_calls.append(operation.operation_id)
 
+    revalidation_recorder = SourceCallRecorder(run_ledger=run_ledger)
     proof = await revalidate_devoluciones_snapshot(
         source=HydratingSource(),
         snapshot=snapshot,
         operation=operation,
         absolute_deadline=100.0,
-        recorder=recorder,
+        recorder=revalidation_recorder,
         heartbeat=heartbeat,
         monotonic=lambda: 2.0,
         now=lambda: datetime(2026, 7, 10, 12, 1, tzinfo=UTC),
@@ -1138,7 +1340,9 @@ async def test_targeted_revalidation_uses_root_context_and_rejects_fingerprint_d
 
     assert proof.source_fingerprint == snapshot.source_fingerprint
     assert proof.read_model_fingerprint == snapshot.read_model_fingerprint
-    assert recorder.counts == {"P": 4, "R": 8, "O": 4, "T": 16}
+    assert recorder.counts == {"P": 2, "R": 4, "O": 2, "T": 8}
+    assert revalidation_recorder.counts == {"P": 2, "R": 4, "O": 2, "T": 8}
+    assert run_ledger.counts == {"P": 4, "R": 8, "O": 4, "T": 16}
     assert heartbeat_calls == [operation.operation_id] * len(heartbeat_calls)
     assert len(heartbeat_calls) >= 2
 
@@ -1155,6 +1359,38 @@ async def test_targeted_revalidation_uses_root_context_and_rejects_fingerprint_d
             monotonic=lambda: 3.0,
             now=lambda: datetime(2026, 7, 10, 12, 2, tzinfo=UTC),
         )
+
+
+@pytest.mark.asyncio
+async def test_targeted_revalidation_rejects_reused_snapshot_ledger() -> None:
+    snapshot = await reconciliation_module.collect_devoluciones_snapshot(
+        source=HydratingSource(),
+        seller_id="82453304",
+        start=START,
+        end=END,
+        captured_at=datetime(2026, 7, 10, 12, tzinfo=UTC),
+    )
+    operation = _operation()
+    operation.source_fingerprint = snapshot.source_fingerprint
+    reused = SourceCallRecorder()
+    reused.charge("claim_search")
+
+    async def heartbeat() -> None:
+        return None
+
+    with pytest.raises(SourceCallBudgetError, match="snapshot ledger"):
+        await revalidate_devoluciones_snapshot(
+            source=HydratingSource(),
+            snapshot=snapshot,
+            operation=operation,
+            absolute_deadline=100.0,
+            recorder=reused,
+            heartbeat=heartbeat,
+            monotonic=lambda: 2.0,
+            now=lambda: datetime(2026, 7, 10, 12, 1, tzinfo=UTC),
+        )
+
+    assert reused.total == 1
 
 
 @pytest.mark.asyncio
@@ -1206,7 +1442,7 @@ async def test_collection_hydrates_return_mediation_and_old_order_from_claim_inv
     assert inventory.fingerprint
     assert [projection["_id"] for projection in projections] == ["519988001", "519988002"]
     assert projections[0]["returned_quantity"] == 2
-    assert projections[1]["productive"] is False
+    assert projections[1]["productive"] is True
     assert ("order", "1999") in source.hydration_calls
     assert all("order_id" not in params for _, params in source.calls)
 
@@ -1269,33 +1505,17 @@ async def test_hydrated_source_proof_changes_when_formula_visible_facts_drift() 
 
 
 @pytest.mark.asyncio
-async def test_low_cost_null_orders_produces_complete_snapshot_proof_fingerprints() -> None:
+async def test_low_cost_null_orders_suppresses_snapshot_proof() -> None:
     source = HydratingSource()
     source.returns["519988002"] = _fixture("low_cost_orders_null.json")
 
-    snapshot = await reconciliation_module.collect_devoluciones_snapshot(
-        source=source,
-        seller_id="82453304",
-        start=START,
-        end=END,
-    )
-
-    assert len(snapshot.projections) == 2
-    assert snapshot.projections[1]["productive"] is False
-    assert snapshot.projections[1]["return_quantity_basis"] == "verified_low_cost_no_row"
-    assert "returned_quantity" not in snapshot.projections[1]
-    assert (
-        snapshot.inventory.fingerprint
-        == "5d37b9ec4bce4cbabccbf657ec8a48df056ac0c9d7f7ee6e648c49744978ce41"
-    )
-    assert (
-        snapshot.source_fingerprint
-        == "11b1f26e4dddd2148852b452eeabbab44fcc64134dcbda534aecc6588094d3e8"
-    )
-    assert (
-        snapshot.read_model_fingerprint
-        == "21e6d32ec1580e541d46a073c9dcad960e3dcd2c984c60f361535c430de3d61b"
-    )
+    with pytest.raises(ClaimProjectionError, match="orders must be a list"):
+        await reconciliation_module.collect_devoluciones_snapshot(
+            source=source,
+            seller_id="82453304",
+            start=START,
+            end=END,
+        )
 
 
 def _persisted_readiness_order(source_order: dict[str, Any]) -> dict[str, Any]:
@@ -1436,6 +1656,173 @@ async def test_authoritative_inventory_expands_previous_three_to_nine_with_old_o
     assert snapshot.inventory.fingerprint
 
 
+class CompleteRangeSource(ScriptedInventorySource):
+    hydration_candidates = 34
+
+    def __init__(self) -> None:
+        terminal_rows = [
+            {
+                "id": str(700000000 + index),
+                "last_updated": f"2026-06-{index + 1:02d}T12:01:00.000Z",
+                "date_created": f"2026-06-{index + 1:02d}T12:00:00.000Z",
+                "type": "cancel_purchase",
+                "status": "closed",
+            }
+            for index in range(12)
+        ]
+        candidate_rows = [
+            {
+                "id": str(800000000 + index),
+                "last_updated": "2026-06-20T12:01:00.000Z",
+                "date_created": "2026-06-20T12:00:00.000Z",
+                "type": "returns" if index < 9 else "mediations",
+                "status": "closed",
+            }
+            for index in range(self.hydration_candidates)
+        ]
+        page = {
+            "data": [*terminal_rows, *candidate_rows],
+            "paging": {"offset": 0, "limit": 100, "total": 46},
+        }
+        super().__init__([page, page])
+        self.hydration_calls: list[tuple[str, str]] = []
+
+    async def get_claim(self, *, seller_id: str, claim_id: str) -> dict[str, Any]:
+        del seller_id
+        self.hydration_calls.append(("claim", claim_id))
+        index = int(claim_id) - 800000000
+        claim = {
+            **_claim(claim_type="returns" if index < 9 else "mediations"),
+            "id": claim_id,
+            "order_id": str(900000000 + min(index, 8)),
+            "last_updated": "2026-06-20T12:01:00.000Z",
+            "date_created": "2026-06-20T12:00:00.000Z",
+            "status": "closed",
+        }
+        if index >= 9:
+            claim.pop("item_id", None)
+            claim["related_entities"] = []
+        return claim
+
+    async def get_returns(self, *, seller_id: str, claim_id: str) -> dict[str, Any]:
+        del seller_id
+        self.hydration_calls.append(("returns", claim_id))
+        index = int(claim_id) - 800000000
+        if index >= 9:
+            raise reconciliation_module.AuthoritativeReturnsNotFoundError()
+        payload = _fixture("return_v2.json")
+        payload["id"] = f"RETURN-{claim_id}"
+        payload["orders"][0]["order_id"] = str(900000000 + index)
+        return payload
+
+    async def get_order(self, *, seller_id: str, order_id: str) -> dict[str, Any]:
+        self.hydration_calls.append(("order", order_id))
+        return {**_order(seller_id=int(seller_id)), "id": int(order_id)}
+
+
+@pytest.mark.asyncio
+async def test_complete_46_row_inventory_fits_inventory_derived_hard_budget() -> None:
+    source = CompleteRangeSource()
+    recorder = SourceCallRecorder()
+
+    snapshot = await reconciliation_module.collect_devoluciones_snapshot(
+        source=source,
+        seller_id="82453304",
+        start=START,
+        end=END,
+        recorder=recorder,
+    )
+
+    assert snapshot.counters == {
+        "inventory_candidates": 46,
+        "hydrated_candidates": 34,
+        "excluded_terminal_cancellations": 12,
+        "excluded_authoritative_no_return_mediations": 25,
+        "productive_claims": 9,
+        "non_productive_claims": 0,
+        "P": 2,
+        "R": 68,
+        "O": 9,
+        "T": 79,
+    }
+    assert len(snapshot.expected_claim_ids) == 9
+    assert len(snapshot.projections) == 9
+    assert len(snapshot.exclusions) == 37
+    assert recorder.required_capacity == 104
+    assert recorder.total == 79
+
+
+@pytest.mark.asyncio
+async def test_inventory_derived_budget_fails_before_hydration_when_one_attempt_over_cap() -> None:
+    source = CompleteRangeSource()
+    recorder = SourceCallRecorder(max_total=103)
+
+    with pytest.raises(SourceCallBudgetError, match="inventory-derived"):
+        await reconciliation_module.collect_devoluciones_snapshot(
+            source=source,
+            seller_id="82453304",
+            start=START,
+            end=END,
+            recorder=recorder,
+        )
+
+    assert recorder.counts == {"P": 2, "R": 0, "O": 0, "T": 2}
+    assert source.hydration_calls == []
+
+
+def test_snapshot_and_run_ledgers_allow_equality_and_do_not_count_cap_plus_one() -> None:
+    run = reconciliation_module.SourceRunLedger(max_total=208)
+    first = SourceCallRecorder(max_total=104, run_ledger=run)
+    second = SourceCallRecorder(max_total=104, run_ledger=run)
+
+    for _ in range(104):
+        first.charge("claim_search")
+    with pytest.raises(SourceCallBudgetError):
+        first.charge("claim_search")
+
+    for _ in range(104):
+        second.charge("claim_search")
+    with pytest.raises(SourceCallBudgetError):
+        second.charge("claim_search")
+
+    third = SourceCallRecorder(max_total=104, run_ledger=run)
+    with pytest.raises(SourceCallBudgetError, match="run budget"):
+        third.charge("claim_search")
+
+    assert first.total == 104
+    assert second.total == 104
+    assert third.total == 0
+    assert run.total == 208
+    assert run.counts == {"P": 208, "R": 0, "O": 0, "T": 208}
+
+
+@pytest.mark.asyncio
+async def test_inventory_derived_budget_above_104_fails_before_detail_work() -> None:
+    class OverRangeSource(CompleteRangeSource):
+        hydration_candidates = 35
+
+        def __init__(self) -> None:
+            super().__init__()
+            for response in self.responses:
+                response["paging"]["total"] = 47
+
+    source = OverRangeSource()
+    recorder = SourceCallRecorder()
+
+    with pytest.raises(SourceCallBudgetError, match="inventory-derived"):
+        await reconciliation_module.collect_devoluciones_snapshot(
+            source=source,
+            seller_id="82453304",
+            start=START,
+            end=END,
+            recorder=recorder,
+        )
+
+    assert recorder.required_capacity == 107
+    assert recorder.counts == {"P": 2, "R": 0, "O": 0, "T": 2}
+    assert source.hydration_calls == []
+
+
 class _KeysetCursor:
     def __init__(self, documents: list[dict[str, Any]]) -> None:
         self.documents = [deepcopy(document) for document in documents]
@@ -1560,7 +1947,7 @@ def _readiness_order(order_id: str, *, item_id: str) -> dict[str, Any]:
 
 
 @pytest.mark.asyncio
-async def test_joint_verifier_accepts_productive_and_verified_non_productive_returns() -> None:
+async def test_joint_verifier_accepts_only_productive_v2_returns() -> None:
     claims = [
         _readiness_claim(
             "claim-1",
@@ -1574,7 +1961,7 @@ async def test_joint_verifier_accepts_productive_and_verified_non_productive_ret
             order_id="order-2",
             item_id="MLA2",
             created_at=START + timedelta(days=1),
-            productive=False,
+            productive=True,
         ),
     ]
     db = _KeysetDb(
@@ -1599,8 +1986,8 @@ async def test_joint_verifier_accepts_productive_and_verified_non_productive_ret
     assert proof.persisted_claims == 2
     assert proof.complete_claims == 2
     assert proof.missing_claims == 0
-    assert proof.productive_claims == 1
-    assert proof.non_productive_claims == 1
+    assert proof.productive_claims == 2
+    assert proof.non_productive_claims == 0
     assert proof.verified_orders == 2
     assert len(db.claims.find_filters) == 3
     assert len(db.orders.find_filters) == 2

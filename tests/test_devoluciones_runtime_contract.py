@@ -9,7 +9,11 @@ import tomllib
 from pathlib import Path
 
 import pytest
-from infra.operations.zelerdata_campaign_state import CampaignStateStore
+from infra.operations.zelerdata_campaign_state import (
+    CampaignStateError,
+    CampaignStateStore,
+    require_accepted_campaign,
+)
 from infra.operations.zelerdata_read_model_reconcile import (
     build_arg_parser as build_reconciliation_arg_parser,
 )
@@ -49,6 +53,37 @@ def _write_executable(path: Path, content: str) -> Path:
     path.write_text(content, encoding="utf-8")
     path.chmod(0o755)
     return path
+
+
+def _scheduled_transport() -> str:
+    return json.dumps(
+        {
+            "schema_version": 1,
+            "public": {
+                "stage": "write_readback",
+                "status_class": "success",
+                "counters": {
+                    "expected": 9,
+                    "persisted": 9,
+                    "complete": 9,
+                    "missing": 0,
+                    "P": 4,
+                    "R": 8,
+                    "O": 4,
+                    "T": 16,
+                },
+            },
+            "private_campaign": {
+                "campaign_id": "campaign-generated-001",
+                "outcome": "success",
+                "campaign_disqualified": False,
+                "duration_seconds": 100.25,
+                "source_fingerprint_hash": "a" * 64,
+                "read_model_fingerprint_hash": "b" * 64,
+            },
+        },
+        sort_keys=True,
+    )
 
 
 def _scheduled_wrapper_test_env(
@@ -172,6 +207,21 @@ exec /usr/bin/python3 "$@"
     )
 
 
+def _accept_scheduled_campaign(state_file: Path) -> None:
+    store = CampaignStateStore(state_file)
+    for _ in range(20):
+        store.record(
+            {
+                "campaign_id": "campaign-generated-001",
+                "outcome": "success",
+                "duration_seconds": 100.0,
+                "source_fingerprint_hash": "a" * 64,
+                "read_model_fingerprint_hash": "b" * 64,
+                "campaign_disqualified": False,
+            }
+        )
+
+
 def test_sheets_runtime_keeps_motor_and_proves_frozen_reconcile_interpreter() -> None:
     pyproject = tomllib.loads(_read(SHEETS_PYPROJECT))
     dependencies = pyproject["project"]["dependencies"]
@@ -279,8 +329,10 @@ def test_reconcile_wrapper_renews_the_enclosing_closed_range_with_frozen_python(
     assert wrapper.count("infra.operations.zelerdata_read_model_reconcile") == 1
     assert "--read-model devoluciones" in wrapper
     assert "CAMPAIGN_ID=${ZELERDATA_DEVOLUCIONES_CAMPAIGN_ID:-}" in wrapper
-    assert "FINAL_REASON=runtime_config_invalid" in wrapper
+    assert "FINAL_STATUS_CLASS=evidence_invalid" in wrapper
     assert '--env "ZELERDATA_DEVOLUCIONES_CAMPAIGN_ID=$CAMPAIGN_ID"' in wrapper
+    assert "--private-scheduled-transport" in wrapper
+    assert "--private-output" in wrapper
     assert "reconciliation_retry_scheduled" not in wrapper
     assert "/usr/bin/sleep" not in wrapper
     assert "reconciliation_failed" in wrapper
@@ -294,38 +346,13 @@ def test_reconcile_wrapper_renews_the_enclosing_closed_range_with_frozen_python(
 
 
 @pytest.mark.parametrize(
-    ("process_status", "raw_output", "expected_returncode", "outcome", "reason"),
+    ("process_status", "raw_output", "expected_returncode", "status_class"),
     [
-        (
-            0,
-            json.dumps(
-                {
-                    "scheduled_run": {
-                        "duration_seconds": 100.25,
-                        "succeeded": True,
-                        "source_fingerprint": "source-fingerprint",
-                        "read_model_fingerprint": "read-model-fingerprint",
-                        "campaign_id": "campaign-generated-001",
-                        "physical_attempts": 16,
-                    },
-                    "runtime_evidence": {"source_calls": {"P": 4, "R": 8, "O": 4, "T": 16}},
-                    "token": "TOP_SECRET_SENTINEL",
-                    "seller_id": "RAW_PII_SENTINEL",
-                }
-            ),
-            0,
-            "success",
-            "candidate_sample_recorded",
-        ),
-        (
-            42,
-            "TOP_SECRET_SENTINEL RAW_PII_SENTINEL",
-            42,
-            "failure",
-            "process_failed_evidence_missing",
-        ),
-        (124, "", 124, "failure", "timeout_evidence_missing"),
-        (0, "TOP_SECRET_SENTINEL malformed", 65, "failure", "evidence_invalid"),
+        (0, _scheduled_transport(), 0, "success"),
+        (42, "TOP_SECRET_SENTINEL RAW_PII_SENTINEL", 42, "process_failed"),
+        (124, "", 124, "timeout"),
+        (7, "ARBITRARY_RAW_FAILURE", 7, "process_failed"),
+        (0, "TOP_SECRET_SENTINEL malformed", 65, "evidence_invalid"),
     ],
 )
 def test_scheduled_wrapper_publishes_allowlisted_evidence_before_cleanup(
@@ -333,8 +360,7 @@ def test_scheduled_wrapper_publishes_allowlisted_evidence_before_cleanup(
     process_status: int,
     raw_output: str,
     expected_returncode: int,
-    outcome: str,
-    reason: str,
+    status_class: str,
 ) -> None:
     env, output_dir, logger_file = _scheduled_wrapper_test_env(
         tmp_path=tmp_path,
@@ -355,35 +381,24 @@ def test_scheduled_wrapper_publishes_allowlisted_evidence_before_cleanup(
     evidence_lines = [line for line in completed.stdout.splitlines() if line.strip()]
     assert len(evidence_lines) == 1
     evidence = json.loads(evidence_lines[0])
-    assert set(evidence) == {
-        "campaign_disqualified",
-        "campaign_id",
-        "counters",
-        "duration_seconds",
-        "event",
-        "outcome",
-        "physical_attempts",
-        "read_model_fingerprint_hash",
-        "reason",
-        "reset_required",
-        "schema_version",
-        "source_fingerprint_hash",
-    }
-    assert evidence["campaign_id"] == "campaign-generated-001"
-    assert evidence["outcome"] == outcome
-    assert evidence["reason"] == reason
-    assert evidence["campaign_disqualified"] is (outcome == "failure")
-    assert evidence["reset_required"] is (outcome == "failure")
-    assert set(evidence["counters"]) == {"O", "P", "R", "T"}
-    if outcome == "success":
-        assert evidence["physical_attempts"] == 16
-        assert evidence["counters"] == {"O": 4, "P": 4, "R": 8, "T": 16}
-        assert re.fullmatch(r"[0-9a-f]{64}", evidence["source_fingerprint_hash"])
-        assert re.fullmatch(r"[0-9a-f]{64}", evidence["read_model_fingerprint_hash"])
-        assert "source-fingerprint" not in evidence_lines[0]
-        assert "read-model-fingerprint" not in evidence_lines[0]
+    assert set(evidence) == {"stage", "status_class", "counters"}
+    assert evidence["stage"] == "scheduled"
+    assert evidence["status_class"] == status_class
+    if status_class == "success":
+        assert evidence["counters"] == {
+            "O": 4,
+            "P": 4,
+            "R": 8,
+            "T": 16,
+            "complete": 9,
+            "expected": 9,
+            "missing": 0,
+            "persisted": 9,
+        }
     else:
-        assert evidence["physical_attempts"] is None
+        assert evidence["counters"] == {}
+    for forbidden in ("campaign", "duration", "fingerprint", "hash", "reason", "outcome"):
+        assert forbidden not in evidence_lines[0]
     assert "TOP_SECRET_SENTINEL" not in completed.stdout + completed.stderr
     assert "RAW_PII_SENTINEL" not in completed.stdout + completed.stderr
     journal = logger_file.read_text(encoding="utf-8")
@@ -394,24 +409,24 @@ def test_scheduled_wrapper_publishes_allowlisted_evidence_before_cleanup(
     campaign_state = json.loads(
         Path(env["ZELERDATA_DEVOLUCIONES_CAMPAIGN_STATE_FILE"]).read_text(encoding="utf-8")
     )
-    if outcome == "failure":
+    if status_class != "success":
         assert "campaign-generated-001" in campaign_state["disqualified_campaign_ids"]
     else:
         assert len(campaign_state["campaigns"]["campaign-generated-001"]["durations"]) == 1
 
 
 @pytest.mark.parametrize(
-    ("mutation", "reason"),
+    ("mutation", "status_class"),
     [
-        ({"ZELERDATA_DEVOLUCIONES_SELLER_ID": "wrong"}, "runtime_seller_invalid"),
-        ({"ZELERDATA_DEVOLUCIONES_CAMPAIGN_ID": "invalid campaign"}, "runtime_config_invalid"),
-        ({"ZELER_COMPOSE_FILE": "/missing/docker-compose.yml"}, "runtime_path_missing"),
+        ({"ZELERDATA_DEVOLUCIONES_SELLER_ID": "wrong"}, "evidence_invalid"),
+        ({"ZELERDATA_DEVOLUCIONES_CAMPAIGN_ID": "invalid campaign"}, "evidence_invalid"),
+        ({"ZELER_COMPOSE_FILE": "/missing/docker-compose.yml"}, "process_failed"),
     ],
 )
 def test_scheduled_wrapper_central_exit_emits_exactly_one_early_failure_record(
     tmp_path: Path,
     mutation: dict[str, str],
-    reason: str,
+    status_class: str,
 ) -> None:
     env, output_dir, logger_file = _scheduled_wrapper_test_env(
         tmp_path=tmp_path,
@@ -432,28 +447,27 @@ def test_scheduled_wrapper_central_exit_emits_exactly_one_early_failure_record(
     records = [json.loads(line) for line in completed.stdout.splitlines() if line.strip()]
     assert completed.returncode != 0
     assert len(records) == 1
-    assert records[0]["outcome"] == "failure"
-    assert records[0]["reason"] == reason
-    assert records[0]["campaign_disqualified"] is True
-    assert records[0]["reset_required"] is True
+    assert set(records[0]) == {"stage", "status_class", "counters"}
+    assert records[0] == {"stage": "scheduled", "status_class": status_class, "counters": {}}
     assert "TOP_SECRET_SENTINEL" not in completed.stdout + completed.stderr
     assert logger_file.read_text(encoding="utf-8").count("event=scheduled_run evidence=") == 1
     assert list(output_dir.iterdir()) == []
 
 
 @pytest.mark.parametrize(
-    ("mutation", "reason"),
+    ("mutation", "expected_exit", "status_class"),
     [
-        ({"FAKE_MKTEMP_FAIL_AT": "1"}, "mktemp_failed"),
-        ({"FAKE_PARSER_FAIL": "1"}, "evidence_invalid"),
-        ({"FAKE_LOGGER_FAIL": "1"}, "journald_failed"),
-        ({"FAKE_STATE_WRITER_FAIL": "1"}, "state_writer_failed"),
+        ({"FAKE_MKTEMP_FAIL_AT": "1"}, 73, "tooling_failed"),
+        ({"FAKE_PARSER_FAIL": "1"}, 65, "evidence_invalid"),
+        ({"FAKE_LOGGER_FAIL": "1"}, 72, "publication_failed"),
+        ({"FAKE_STATE_WRITER_FAIL": "1"}, 70, "state_failed"),
     ],
 )
 def test_scheduled_wrapper_tooling_failures_emit_one_minimal_disqualification(
     tmp_path: Path,
     mutation: dict[str, str],
-    reason: str,
+    expected_exit: int,
+    status_class: str,
 ) -> None:
     env, output_dir, _ = _scheduled_wrapper_test_env(
         tmp_path=tmp_path,
@@ -473,13 +487,63 @@ def test_scheduled_wrapper_tooling_failures_emit_one_minimal_disqualification(
     )
 
     records = [json.loads(line) for line in completed.stdout.splitlines() if line.strip()]
-    assert completed.returncode != 0
+    assert completed.returncode == expected_exit
     assert len(records) == 1
-    assert records[0]["reason"] == reason
-    assert records[0]["campaign_disqualified"] is True
-    assert records[0]["reset_required"] is True
+    assert records[0] == {"stage": "scheduled", "status_class": status_class, "counters": {}}
     assert "TOP_SECRET_RAW_OUTPUT" not in completed.stdout + completed.stderr
     assert "DO_NOT_PRINT_ME" not in completed.stdout + completed.stderr
+    assert list(output_dir.iterdir()) == []
+
+
+@pytest.mark.parametrize(
+    ("mutation", "expected_exit", "status_class"),
+    [
+        ({"FAKE_LOGGER_FAIL": "1"}, 72, "publication_failed"),
+        ({"FAKE_MKTEMP_FAIL_AT": "1"}, 73, "tooling_failed"),
+    ],
+)
+def test_scheduled_wrapper_failure_revokes_previously_accepted_campaign(
+    tmp_path: Path,
+    mutation: dict[str, str],
+    expected_exit: int,
+    status_class: str,
+) -> None:
+    env, output_dir, _ = _scheduled_wrapper_test_env(
+        tmp_path=tmp_path,
+        output=_scheduled_transport(),
+        status=0,
+    )
+    env.update(mutation)
+    state_file = Path(env["ZELERDATA_DEVOLUCIONES_CAMPAIGN_STATE_FILE"])
+    _accept_scheduled_campaign(state_file)
+
+    completed = subprocess.run(  # noqa: S603 - repository-owned wrapper.
+        ["/bin/bash", str(RECONCILE_WRAPPER)],
+        cwd=ROOT,
+        env=env,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    records = [json.loads(line) for line in completed.stdout.splitlines() if line.strip()]
+    assert completed.returncode == expected_exit
+    assert records == [{"stage": "scheduled", "status_class": status_class, "counters": {}}]
+    assert all(
+        private_field not in completed.stdout + completed.stderr
+        for private_field in ("campaign", "duration", "fingerprint", "outcome")
+    )
+    state = CampaignStateStore(state_file).load()
+    assert state.accepted_campaign_id is None
+    assert state.disqualified_campaign_ids == frozenset({"campaign-generated-001"})
+    assert "campaign-generated-001" not in state.campaigns
+    with pytest.raises(CampaignStateError, match="campaign is not accepted"):
+        require_accepted_campaign(
+            state_file,
+            expected_campaign_id="campaign-generated-001",
+            expected_source_fingerprint_hash="a" * 64,
+            expected_read_model_fingerprint_hash="b" * 64,
+        )
     assert list(output_dir.iterdir()) == []
 
 
@@ -634,6 +698,8 @@ def test_startup_installs_exact_wrapper_and_units_without_enabling_timer_or_topo
 
     assert topology_wrapper in startup
     assert "cat > /opt/zeler-platform/zelerdata-devoluciones-reconcile.sh" not in startup
+    assert "cat > /dev/null << 'SCRIPT'" not in startup
+    assert '"event":"zelerdata_devoluciones_scheduled_run"' not in startup
     encoded_wrapper = re.search(r"RECONCILE_WRAPPER_B64='([^']+)'", startup)
     assert encoded_wrapper is not None
     assert (
@@ -843,7 +909,9 @@ def test_reconciliation_runbook_documents_focused_budget_campaign_and_safe_api_r
         "--read-model devoluciones",
         "claims-first immutable snapshot",
         "broad order-date, questions, items, shipments, and catalog hydration is prohibited",
-        "P + R + O ≤ 64",
+        "B = P + 3H",
+        "B ≤ 104",
+        "C ≤ 208",
         "165-second process deadline",
         "175-second shell stop",
         "20 consecutive",
@@ -859,18 +927,19 @@ def test_reconciliation_runbook_documents_focused_budget_campaign_and_safe_api_r
         "sanitized evidence",
         "Enable scheduling last",
         "single scheduled attempt",
-        "one recorder cannot reset",
+        "cannot reset either snapshot or run accounting",
         "explicit campaign ID",
         "Cloud Build SLSA provenance",
         "Repository JSON alone is not authority",
         "unknown digest fails closed",
         "registry fingerprint before healthy",
         "startup-installed preflight is parity-bound",
-        "zelerdata_devoluciones_scheduled_run",
-        "source_fingerprint_hash",
-        "campaign_disqualified",
+        "private campaign sample",
+        "success-only source/read-model fingerprint hashes",
+        "stage`, `status_class`, and `counters",
+        "arbitrary nonzero values remain authoritative",
         "evidence_invalid",
-        "temporary raw output is deleted only after",
+        "all temporary files are removed after state handling and publication",
         "zelerdata-devoluciones-campaign.json",
         "A→B→A",
         "gcloud artifacts docker images describe",

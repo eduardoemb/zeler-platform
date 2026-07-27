@@ -21,13 +21,17 @@ ACCEPTED_THROUGH=${ZELERDATA_DEVOLUCIONES_ACCEPTED_THROUGH:-2026-07-09}
 CAMPAIGN_ID=${ZELERDATA_DEVOLUCIONES_CAMPAIGN_ID:-}
 CAMPAIGN_STATE_FILE=${ZELERDATA_DEVOLUCIONES_CAMPAIGN_STATE_FILE:-/var/lib/zeler-platform/zelerdata-devoluciones-campaign.json}
 OUTPUT_FILE=
-EVIDENCE_FILE=
+PUBLIC_EVIDENCE_FILE=
+PRIVATE_SAMPLE_FILE=
 EVIDENCE_PUBLISHED=0
-FINAL_REASON=runtime_unhandled_failure
+FINAL_STATUS_CLASS=evidence_invalid
 
 cleanup() {
-  if [[ -n "$OUTPUT_FILE" || -n "$EVIDENCE_FILE" ]]; then
-    "$RM_BIN" -f ${OUTPUT_FILE:+"$OUTPUT_FILE"} ${EVIDENCE_FILE:+"$EVIDENCE_FILE"}
+  if [[ -n "$OUTPUT_FILE" || -n "$PUBLIC_EVIDENCE_FILE" || -n "$PRIVATE_SAMPLE_FILE" ]]; then
+    "$RM_BIN" -f \
+      ${OUTPUT_FILE:+"$OUTPUT_FILE"} \
+      ${PUBLIC_EVIDENCE_FILE:+"$PUBLIC_EVIDENCE_FILE"} \
+      ${PRIVATE_SAMPLE_FILE:+"$PRIVATE_SAMPLE_FILE"}
   fi
 }
 
@@ -62,63 +66,67 @@ publish_scheduled_evidence() {
     [[ -n "$evidence_line" ]] || continue
     ((line_count += 1))
     selected_line=$evidence_line
-  done < "$EVIDENCE_FILE"
+  done < "$PUBLIC_EVIDENCE_FILE"
   [[ "$line_count" == "1" ]] || return 65
   if ! "$LOGGER_BIN" \
     --priority daemon.info \
     --tag zelerdata-devoluciones-reconcile \
     "event=scheduled_run evidence=$selected_line"; then
+    write_public_evidence publication_failed
+    local disqualification_status=0
+    persist_direct_failure 0 >/dev/null 2>&1 || disqualification_status=$?
+    selected_line=$(<"$PUBLIC_EVIDENCE_FILE")
+    printf '%s\n' "$selected_line"
+    EVIDENCE_PUBLISHED=1
+    [[ "$disqualification_status" == "0" ]] || return "$disqualification_status"
     return 72
   fi
   printf '%s\n' "$selected_line"
   EVIDENCE_PUBLISHED=1
 }
 
-fallback_evidence_line() {
-  local reason=$1
-  local duration=${2:-0}
+public_evidence_line() {
+  local status_class=$1
+  printf '%s\n' \
+    "{\"stage\":\"scheduled\",\"status_class\":\"$status_class\",\"counters\":{}}"
+}
+
+private_failure_line() {
+  local duration=${1:-0}
   local campaign
   campaign=$(safe_campaign_id)
   printf '%s\n' \
-    "{\"campaign_disqualified\":true,\"campaign_id\":\"$campaign\",\"counters\":{\"O\":null,\"P\":null,\"R\":null,\"T\":null},\"duration_seconds\":$duration,\"event\":\"zelerdata_devoluciones_scheduled_run\",\"outcome\":\"failure\",\"physical_attempts\":null,\"read_model_fingerprint_hash\":null,\"reason\":\"$reason\",\"reset_required\":true,\"schema_version\":1,\"source_fingerprint_hash\":null}"
+    "{\"campaign_disqualified\":true,\"campaign_id\":\"$campaign\",\"duration_seconds\":$duration,\"outcome\":\"failure\",\"read_model_fingerprint_hash\":null,\"source_fingerprint_hash\":null}"
 }
 
-write_fallback_evidence() {
-  local reason=$1
-  local duration=${2:-0}
-  fallback_evidence_line "$reason" "$duration" > "$EVIDENCE_FILE"
+write_public_evidence() {
+  public_evidence_line "$1" > "$PUBLIC_EVIDENCE_FILE"
+}
+
+write_private_failure() {
+  private_failure_line "${1:-0}" > "$PRIVATE_SAMPLE_FILE"
 }
 
 persist_campaign_state() {
   PYTHONPATH="$PLATFORM_ROOT" "$PYTHON_BIN" \
     -m infra.operations.zelerdata_campaign_state record \
     --state-file "$CAMPAIGN_STATE_FILE" \
-    --evidence-file "$EVIDENCE_FILE" 2>/dev/null
+    --evidence-file "$PRIVATE_SAMPLE_FILE" 2>/dev/null
 }
 
-persist_campaign_state_line() {
-  local evidence_line=$1
-  printf '%s\n' "$evidence_line" | PYTHONPATH="$PLATFORM_ROOT" "$PYTHON_BIN" \
+persist_direct_failure() {
+  private_failure_line "${1:-0}" | PYTHONPATH="$PLATFORM_ROOT" "$PYTHON_BIN" \
     -m infra.operations.zelerdata_campaign_state record-stdin \
     --state-file "$CAMPAIGN_STATE_FILE" 2>/dev/null
 }
 
-emit_minimal_disqualification() {
-  local reason=$1
-  local duration=${2:-0}
-  local use_journal=${3:-1}
+emit_direct_public() {
   local evidence_line
-  evidence_line=$(fallback_evidence_line "$reason" "$duration")
-  persist_campaign_state_line "$evidence_line" >/dev/null 2>&1 || true
-  if [[ "$use_journal" == "1" ]]; then
-    if ! "$LOGGER_BIN" \
-      --priority daemon.info \
-      --tag zelerdata-devoluciones-reconcile \
-      "event=scheduled_run evidence=$evidence_line"; then
-      evidence_line=$(fallback_evidence_line journald_failed "$duration")
-      persist_campaign_state_line "$evidence_line" >/dev/null 2>&1 || true
-    fi
-  fi
+  evidence_line=$(public_evidence_line "$1")
+  "$LOGGER_BIN" \
+    --priority daemon.info \
+    --tag zelerdata-devoluciones-reconcile \
+    "event=scheduled_run evidence=$evidence_line" >/dev/null 2>&1 || true
   printf '%s\n' "$evidence_line"
   EVIDENCE_PUBLISHED=1
 }
@@ -127,11 +135,16 @@ finalize() {
   local status=$?
   trap - EXIT
   set +e
-  if [[ "$EVIDENCE_PUBLISHED" == "0" && -n "$EVIDENCE_FILE" ]]; then
-    write_fallback_evidence "$FINAL_REASON" 0
-    persist_campaign_state >/dev/null 2>&1 || true
-    if ! publish_scheduled_evidence; then
-      emit_minimal_disqualification journald_failed 0 0
+  if [[ "$EVIDENCE_PUBLISHED" == "0" ]]; then
+    if [[ -n "$PUBLIC_EVIDENCE_FILE" ]]; then
+      write_public_evidence "$FINAL_STATUS_CLASS"
+      if [[ -n "$PRIVATE_SAMPLE_FILE" ]]; then
+        write_private_failure 0
+        persist_campaign_state >/dev/null 2>&1 || true
+      fi
+      publish_scheduled_evidence || true
+    else
+      emit_direct_public "$FINAL_STATUS_CLASS"
     fi
   fi
   cleanup
@@ -140,19 +153,28 @@ finalize() {
 
 trap finalize EXIT
 if ! OUTPUT_FILE=$("$MKTEMP_BIN"); then
-  FINAL_REASON=mktemp_failed
-  emit_minimal_disqualification mktemp_failed 0
+  FINAL_STATUS_CLASS=tooling_failed
+  persist_direct_failure 0 >/dev/null 2>&1 || exit $?
+  emit_direct_public tooling_failed
   exit 73
 fi
-if ! EVIDENCE_FILE=$("$MKTEMP_BIN"); then
-  FINAL_REASON=mktemp_failed
-  emit_minimal_disqualification mktemp_failed 0
+if ! PUBLIC_EVIDENCE_FILE=$("$MKTEMP_BIN"); then
+  FINAL_STATUS_CLASS=tooling_failed
+  persist_direct_failure 0 >/dev/null 2>&1 || exit $?
+  emit_direct_public tooling_failed
+  exit 73
+fi
+if ! PRIVATE_SAMPLE_FILE=$("$MKTEMP_BIN"); then
+  FINAL_STATUS_CLASS=tooling_failed
+  persist_direct_failure 0 >/dev/null 2>&1 || exit $?
+  write_public_evidence tooling_failed
+  publish_scheduled_evidence || true
   exit 73
 fi
 CLOSED_DATE_TO=$("$DATE_BIN" -u -d "yesterday" +%F)
 
 if [[ "$CONFIGURED_SELLER_ID" != "$APPROVED_SELLER_ID" ]]; then
-  FINAL_REASON=runtime_seller_invalid
+  FINAL_STATUS_CLASS=evidence_invalid
   log_event daemon.err runtime_seller_invalid
   exit 64
 fi
@@ -164,13 +186,13 @@ if ! valid_utc_date "$RANGE_START" ||
   [[ "$ACCEPTED_THROUGH" < "$ACCEPTED_BASELINE_THROUGH" ]] ||
   [[ "$ACCEPTED_THROUGH" > "$CLOSED_DATE_TO" ]] ||
   [[ ! "$CAMPAIGN_ID" =~ ^[A-Za-z0-9._-]{1,64}$ ]]; then
-  FINAL_REASON=runtime_config_invalid
+  FINAL_STATUS_CLASS=evidence_invalid
   log_event daemon.err runtime_config_invalid
   exit 64
 fi
 
 if [[ ! -d "$PLATFORM_ROOT" || ! -f "$COMPOSE_FILE" ]]; then
-  FINAL_REASON=runtime_path_missing
+  FINAL_STATUS_CLASS=process_failed
   log_event daemon.err runtime_path_missing
   exit 66
 fi
@@ -188,7 +210,8 @@ if "$TIMEOUT_BIN" --signal=TERM --kill-after=30s 175s \
     --read-model devoluciones \
     --write \
     --confirm-approved-runtime \
-    --confirm-production-write > "$OUTPUT_FILE" 2>&1; then
+    --confirm-production-write \
+    --private-scheduled-transport > "$OUTPUT_FILE" 2>&1; then
   process_status=0
 else
   process_status=$?
@@ -201,14 +224,16 @@ if PYTHONPATH="$PLATFORM_ROOT" "$PYTHON_BIN" \
   --input "$OUTPUT_FILE" \
   --campaign-id "$CAMPAIGN_ID" \
   --process-status "$process_status" \
-  --wrapper-duration-seconds "$wrapper_duration" > "$EVIDENCE_FILE" 2>/dev/null; then
+  --wrapper-duration-seconds "$wrapper_duration" \
+  --private-output "$PRIVATE_SAMPLE_FILE" > "$PUBLIC_EVIDENCE_FILE" 2>/dev/null; then
   evidence_status=0
 else
   evidence_status=$?
 fi
 
-if [[ ! -s "$EVIDENCE_FILE" ]]; then
-  write_fallback_evidence evidence_invalid "$wrapper_duration"
+if [[ ! -s "$PUBLIC_EVIDENCE_FILE" || ! -s "$PRIVATE_SAMPLE_FILE" ]]; then
+  write_public_evidence evidence_invalid
+  write_private_failure "$wrapper_duration"
   evidence_status=65
 fi
 
@@ -218,7 +243,7 @@ else
   campaign_status=$?
 fi
 if [[ "$campaign_status" != "0" ]]; then
-  write_fallback_evidence state_writer_failed "$wrapper_duration"
+  write_public_evidence state_failed
   evidence_status=$campaign_status
 fi
 
@@ -228,17 +253,16 @@ else
   publish_status=$?
 fi
 if [[ "$publish_status" != "0" ]]; then
-  emit_minimal_disqualification journald_failed "$wrapper_duration" 0
   evidence_status=$publish_status
 fi
 
 if [[ "$process_status" == "0" && "$evidence_status" == "0" ]]; then
-  FINAL_REASON=reconciliation_succeeded
+  FINAL_STATUS_CLASS=success
   log_event daemon.info reconciliation_succeeded
   exit 0
 fi
 
-FINAL_REASON=reconciliation_failed
+FINAL_STATUS_CLASS=process_failed
 log_event daemon.err reconciliation_failed
 if [[ "$evidence_status" != "0" ]]; then
   exit "$evidence_status"

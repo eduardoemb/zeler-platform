@@ -23,6 +23,7 @@ from infra.operations.zelerdata_read_model_reconcile import (
     ReadModelIssue,
     ReconciliationSummary,
     ScheduledRunSample,
+    ScheduledTransportEnvelope,
     build_arg_parser,
     build_phase2_runtime_contract,
     build_reconciliation_request,
@@ -39,6 +40,7 @@ from infra.operations.zelerdata_read_model_reconcile import (
 from infra.operations.zelerdata_read_model_reconcile import (
     write_complete_read_model_freshness_markers as _write_complete_read_model_freshness_markers,
 )
+from infra.operations.zelerdata_scheduled_evidence import build_scheduled_evidence
 
 from zeler_platform_core.devoluciones_readiness import DevolucionesOperationContext
 from zeler_sheets import devoluciones_reconciliation as devoluciones_module
@@ -1648,7 +1650,9 @@ async def test_collect_reconciliation_counts_reports_real_sanitized_aggregates()
                     order_id="ORDER-PII-1",
                     item_id="MLA1",
                     status="closed",
+                    productive=True,
                     returned_quantity=1,
+                    return_quantity_basis="v2_return_order",
                 ),
             ],
             "sheets_catalog_product_snapshots": [
@@ -3091,6 +3095,7 @@ async def test_devoluciones_nine_claim_regression_proves_9_9_9_0_coverage() -> N
                     type="returns",
                     productive=True,
                     returned_quantity=1,
+                    return_quantity_basis="v2_return_order",
                 )
                 for index in range(1, 10)
             ]
@@ -3130,6 +3135,7 @@ async def test_devoluciones_claim_aggregate_excludes_unrelated_claim_types() -> 
                     type="returns",
                     productive=True,
                     returned_quantity=1,
+                    return_quantity_basis="v2_return_order",
                 ),
                 _seller_doc(
                     _id="CANCEL-1",
@@ -3555,7 +3561,9 @@ async def test_unknown_returned_quantity_is_incomplete_in_claim_aggregate() -> N
                     order_id="ORDER-PII-1",
                     item_id="MLA1",
                     status="closed",
+                    productive=True,
                     returned_quantity=1,
+                    return_quantity_basis="v2_return_order",
                 ),
                 _seller_doc(
                     _id="CLAIM-PII-2",
@@ -3591,14 +3599,18 @@ async def test_missing_claim_item_id_prevents_complete_count() -> None:
                     order_id="ORDER-PII-1",
                     item_id="MLA1",
                     status="closed",
+                    productive=True,
                     returned_quantity=1,
+                    return_quantity_basis="v2_return_order",
                 ),
                 _seller_doc(
                     _id="CLAIM-PII-2",
                     date_created=_dt(3),
                     order_id="ORDER-PII-2",
                     status="closed",
+                    productive=True,
                     returned_quantity=1,
+                    return_quantity_basis="v2_return_order",
                 ),
             ]
         }
@@ -3628,7 +3640,9 @@ async def test_empty_claim_scope_fields_and_zero_quantity_are_incomplete() -> No
                     order_id="ORDER-PII-1",
                     item_id="MLA1",
                     status="closed",
+                    productive=True,
                     returned_quantity=1,
+                    return_quantity_basis="v2_return_order",
                 ),
                 _seller_doc(
                     _id="CLAIM-EMPTY-ITEM",
@@ -3636,7 +3650,9 @@ async def test_empty_claim_scope_fields_and_zero_quantity_are_incomplete() -> No
                     order_id="ORDER-PII-2",
                     item_id="",
                     status="closed",
+                    productive=True,
                     returned_quantity=1,
+                    return_quantity_basis="v2_return_order",
                 ),
                 _seller_doc(
                     _id="CLAIM-EMPTY-ORDER-STATUS",
@@ -3644,7 +3660,9 @@ async def test_empty_claim_scope_fields_and_zero_quantity_are_incomplete() -> No
                     order_id="",
                     item_id="MLA2",
                     status="",
+                    productive=True,
                     returned_quantity=1,
+                    return_quantity_basis="v2_return_order",
                 ),
                 _seller_doc(
                     _id="CLAIM-ZERO-QUANTITY",
@@ -3652,7 +3670,9 @@ async def test_empty_claim_scope_fields_and_zero_quantity_are_incomplete() -> No
                     order_id="ORDER-PII-3",
                     item_id="MLA3",
                     status="closed",
+                    productive=True,
                     returned_quantity=0,
+                    return_quantity_basis="v2_return_order",
                 ),
             ]
         }
@@ -4256,6 +4276,244 @@ def test_twenty_run_nearest_rank_p95_campaign_accepts_only_strict_budgets() -> N
     assert result.p95_limit_seconds == 150.0
 
 
+def test_timing_campaign_uses_complete_range_hard_source_attempt_cap() -> None:
+    at_cap = tuple(
+        ScheduledRunSample(
+            100.0,
+            True,
+            "source-a",
+            "read-a",
+            campaign_id="campaign-a",
+            physical_attempts=208,
+        )
+        for _ in range(20)
+    )
+    over_cap = replace(at_cap[0], physical_attempts=209)
+
+    accepted = evaluate_timing_campaign(at_cap)
+    rejected = evaluate_timing_campaign((over_cap, *at_cap))
+
+    assert accepted.accepted is True
+    assert rejected.accepted is False
+    assert rejected.reason == "source_budget_exceeded"
+
+
+def test_scheduled_evidence_accepts_complete_range_attempts_but_rejects_hard_cap_plus_one() -> None:
+    def raw_output(attempts: int) -> str:
+        return json.dumps(
+            {
+                "stage": "acceptance",
+                "status_class": "success",
+                "counters": {
+                    "expected": 9,
+                    "persisted": 9,
+                    "complete": 9,
+                    "missing": 0,
+                    "P": 2,
+                    "R": attempts - 11,
+                    "O": 9,
+                    "T": attempts,
+                },
+            }
+        )
+
+    accepted, accepted_status = build_scheduled_evidence(
+        raw_output=raw_output(79),
+        campaign_id="campaign-a",
+        process_status=0,
+        wrapper_duration_seconds=100.0,
+    )
+    rejected, rejected_status = build_scheduled_evidence(
+        raw_output=raw_output(209),
+        campaign_id="campaign-a",
+        process_status=0,
+        wrapper_duration_seconds=100.0,
+    )
+
+    assert accepted_status == 0
+    assert accepted == {
+        "stage": "scheduled",
+        "status_class": "success",
+        "counters": {
+            "expected": 9,
+            "persisted": 9,
+            "complete": 9,
+            "missing": 0,
+            "P": 2,
+            "R": 68,
+            "O": 9,
+            "T": 79,
+        },
+    }
+    assert rejected_status == 65
+    assert rejected == {
+        "stage": "scheduled",
+        "status_class": "source_budget_exceeded",
+        "counters": {},
+    }
+
+
+@pytest.mark.parametrize(
+    ("run_total", "first_snapshot", "second_snapshot", "expected_exit"),
+    [(158, 79, 79, 0), (208, 104, 104, 0), (209, 104, 104, 65)],
+    ids=("measured-two-snapshot-run", "inclusive-run-cap", "run-cap-plus-one"),
+)
+def test_scheduled_evidence_enforces_independent_snapshot_and_inclusive_run_caps(
+    run_total: int,
+    first_snapshot: int,
+    second_snapshot: int,
+    expected_exit: int,
+) -> None:
+    raw_output = json.dumps(
+        {
+            "stage": "write_readback",
+            "status_class": "success",
+            "counters": {
+                "expected": 9,
+                "persisted": 9,
+                "complete": 9,
+                "missing": 0,
+                "P": 4,
+                "R": run_total - 22,
+                "O": 18,
+                "T": run_total,
+                "snapshot_1_T": first_snapshot,
+                "snapshot_2_T": second_snapshot,
+            },
+        }
+    )
+
+    evidence, exit_code = build_scheduled_evidence(
+        raw_output=raw_output,
+        campaign_id="campaign-a",
+        process_status=0,
+        wrapper_duration_seconds=100.0,
+    )
+
+    assert exit_code == expected_exit
+    assert evidence["stage"] == "scheduled"
+    assert evidence["status_class"] == (
+        "success" if expected_exit == 0 else "source_budget_exceeded"
+    )
+
+
+def test_focused_shared_evidence_exposes_exact_r4_allowlist() -> None:
+    summary = ReconciliationSummary(
+        seller_id="82453304",
+        date_from="2026-06-01",
+        date_to="2026-07-09",
+        dry_run=True,
+        approved_runtime=True,
+        write_enabled=False,
+        aggregates=(ReadModelAggregate("claims", 9, 9, 0, 9),),
+        runtime_evidence=FocusedRuntimeEvidence(
+            duration_seconds=100.0,
+            source_calls={"P": 2, "R": 68, "O": 9, "T": 79, "raw_identifier": 82453304},
+            succeeded=True,
+            source_fingerprint="raw-source-proof",
+            read_model_fingerprint="raw-read-proof",
+            campaign_id="campaign-a",
+        ),
+    )
+
+    evidence = summary.to_focused_evidence(stage="dry_run")
+
+    assert evidence == {
+        "stage": "dry_run",
+        "status_class": "success",
+        "counters": {
+            "expected": 9,
+            "persisted": 9,
+            "complete": 9,
+            "missing": 0,
+            "P": 2,
+            "R": 68,
+            "O": 9,
+            "T": 79,
+        },
+    }
+    serialized = json.dumps(evidence, sort_keys=True)
+    for forbidden in ("duration", "fingerprint", "campaign", "hash", "82453304"):
+        assert forbidden not in serialized
+
+
+@pytest.mark.parametrize(
+    ("raw_output", "process_status", "expected_status_class", "expected_exit"),
+    [
+        ("", 0, "evidence_invalid", 65),
+        ("not-json", 0, "evidence_invalid", 65),
+        (
+            json.dumps(
+                {
+                    "stage": "write_readback",
+                    "status_class": "success",
+                    "counters": {
+                        "expected": 9,
+                        "persisted": 9,
+                        "complete": 9,
+                        "missing": 0,
+                        "P": 2,
+                        "R": 68,
+                        "O": 9,
+                        "T": 78,
+                    },
+                }
+            ),
+            0,
+            "counter_mismatch",
+            65,
+        ),
+        (
+            json.dumps(
+                {
+                    "stage": "write_readback",
+                    "status_class": "internal_drift",
+                    "counters": {"P": 2, "R": 68, "O": 9, "T": 79},
+                }
+            ),
+            0,
+            "internal_drift",
+            65,
+        ),
+        (
+            json.dumps(
+                {
+                    "stage": "write_readback",
+                    "status_class": "success",
+                    "counters": {"P": 2, "R": 94, "O": 9, "T": 105},
+                }
+            ),
+            0,
+            "source_budget_exceeded",
+            65,
+        ),
+        ("", 1, "process_failed", 0),
+    ],
+    ids=("missing", "malformed", "counter-mismatch", "internal-drift", "snapshot-105", "process"),
+)
+def test_scheduled_evidence_threats_disqualify_with_exact_allowlist(
+    raw_output: str,
+    process_status: int,
+    expected_status_class: str,
+    expected_exit: int,
+) -> None:
+    evidence, exit_code = build_scheduled_evidence(
+        raw_output=raw_output,
+        campaign_id="campaign-a",
+        process_status=process_status,
+        wrapper_duration_seconds=100.0,
+    )
+
+    assert exit_code == expected_exit
+    assert set(evidence) == {"stage", "status_class", "counters"}
+    assert evidence["stage"] == "scheduled"
+    assert evidence["status_class"] == expected_status_class
+    assert isinstance(evidence["counters"], dict)
+    serialized = json.dumps(evidence, sort_keys=True)
+    for forbidden in ("duration", "fingerprint", "campaign", "hash"):
+        assert forbidden not in serialized
+
+
 @pytest.mark.parametrize(
     ("durations", "reason"),
     [
@@ -4356,11 +4614,45 @@ def test_campaign_sample_is_derived_from_scheduled_write_runtime_evidence() -> N
         "read-a",
         campaign_id="campaign-a",
         physical_attempts=16,
+        source_calls={"P": 4, "R": 8, "O": 4, "T": 16},
     )
-    assert summary.to_sanitized_dict()["scheduled_run"] == sample.to_sanitized_dict()
+    assert summary.to_sanitized_dict() == {
+        "stage": "write_readback",
+        "status_class": "success",
+        "counters": {"P": 4, "R": 8, "O": 4, "T": 16},
+    }
+    assert summary.to_focused_evidence(stage="acceptance") == {
+        "stage": "acceptance",
+        "status_class": "success",
+        "counters": {"P": 4, "R": 8, "O": 4, "T": 16},
+    }
+    assert sample.to_sanitized_dict() == {
+        "stage": "scheduled",
+        "status_class": "success",
+        "counters": {"P": 4, "R": 8, "O": 4, "T": 16},
+    }
+
+    transport = summary.to_scheduled_transport()
+    assert isinstance(transport, ScheduledTransportEnvelope)
+    assert transport.public == {
+        "stage": "write_readback",
+        "status_class": "success",
+        "counters": {"P": 4, "R": 8, "O": 4, "T": 16},
+    }
+    assert transport.private_campaign.campaign_id == "campaign-a"
+    assert transport.private_campaign.duration_seconds == 100.0
+    assert transport.private_campaign.source_fingerprint_hash != "source-a"
+    assert transport.private_campaign.read_model_fingerprint_hash != "read-a"
+    serialized_private = json.dumps(transport.to_private_dict(), sort_keys=True)
+    assert "source-a" not in serialized_private
+    assert "read-a" not in serialized_private
+    assert "campaign-a" in serialized_private
+    serialized_public = json.dumps(transport.public, sort_keys=True)
+    for forbidden in ("duration", "fingerprint", "campaign", "hash"):
+        assert forbidden not in serialized_public
 
 
-def test_claim_completeness_accepts_exact_productive_or_verified_non_productive_fact() -> None:
+def test_claim_completeness_accepts_only_exact_positive_v2_fact() -> None:
     filter_spec = reconcile_operation_module._complete_claims_filter(
         {"seller_id": "82453304", "_id": {"$in": ["claim-1", "claim-2"]}}
     )
@@ -4370,21 +4662,6 @@ def test_claim_completeness_accepts_exact_productive_or_verified_non_productive_
             "productive": True,
             "returned_quantity": {"$gte": 1},
             "return_quantity_basis": "v2_return_order",
-        },
-        {
-            "productive": False,
-            "return_subtype": "low_cost",
-            "return_quantity_basis": "verified_low_cost_no_row",
-            "returned_quantity": {"$exists": False},
-        },
-        {
-            "productive": {"$exists": False},
-            "returned_quantity": {"$gte": 1},
-        },
-        {
-            "productive": True,
-            "return_quantity_basis": {"$exists": False},
-            "returned_quantity": {"$gte": 1},
         },
     ]
     assert "returned_quantity" not in {
@@ -4447,8 +4724,13 @@ class _OneClaimFocusedSource:
 
 
 class _RawGatewayReturnsError(Exception):
-    def __init__(self, status_code: int) -> None:
-        self.response = type("Response", (), {"status_code": status_code})()
+    def __init__(self, status_code: int, *, upstream_attempts: str | None = None) -> None:
+        headers = (
+            {"X-Zeler-Upstream-Attempts": upstream_attempts}
+            if upstream_attempts is not None
+            else {}
+        )
+        self.response = type("Response", (), {"status_code": status_code, "headers": headers})()
         super().__init__(
             "HTTP "
             f"{status_code} GET https://runtime.internal/post-purchase/v2/claims/"
@@ -4463,6 +4745,7 @@ class _FocusedGatewayClient:
         *,
         returns_failure: Exception | None = None,
         returns_payload: dict[str, Any] | None = None,
+        mediation_item_id: str | None = "MLA2",
     ) -> None:
         self.returns_failure = returns_failure
         self.returns_payload = returns_payload or {
@@ -4472,8 +4755,11 @@ class _FocusedGatewayClient:
             "last_updated": "2026-06-01T12:02:00Z",
             "orders": [{"order_id": "1999", "item_id": "MLA2", "return_quantity": 1}],
         }
+        self.mediation_item_id = mediation_item_id
+        self.paths: list[str] = []
 
     async def fetch_resource_once(self, *, seller_id: str, path: str) -> dict[str, Any]:
+        self.paths.append(path)
         if path.startswith("/post-purchase/v1/claims/search?"):
             return {
                 "data": [
@@ -4494,7 +4780,7 @@ class _FocusedGatewayClient:
                 "last_updated": "2026-06-01T12:01:00Z",
                 "date_created": "2026-06-01T12:00:00Z",
                 "order_id": "1999",
-                "item_id": "MLA2",
+                "item_id": self.mediation_item_id,
                 "status": "closed",
                 "stage": "claim",
                 "type": "mediations",
@@ -4539,13 +4825,14 @@ def _install_focused_gateway(
         _RawGatewayReturnsError(401),
         _RawGatewayReturnsError(403),
         _RawGatewayReturnsError(404),
+        _RawGatewayReturnsError(429),
         _RawGatewayReturnsError(500),
         ConnectionError(
             "network GET https://runtime.internal/post-purchase/v2/claims/"
             "519988002/returns?access_token=RAW_TOKEN payload order_id=1999"
         ),
     ],
-    ids=("401", "403", "404", "500", "network"),
+    ids=("401", "403", "404", "429", "500", "network"),
 )
 def test_focused_devoluciones_dry_run_sanitizes_gateway_returns_source_failures(
     monkeypatch: pytest.MonkeyPatch,
@@ -4574,22 +4861,14 @@ def test_focused_devoluciones_dry_run_sanitizes_gateway_returns_source_failures(
 
     captured = capsys.readouterr()
     output = json.loads(captured.out)
-    claims = output["aggregates"][0]
     combined_output = json.dumps(output, sort_keys=True) + captured.err
 
     assert result == 1
-    assert claims == {
-        "read_model": "claims",
-        "expected_count": None,
-        "persisted_count": None,
-        "missing_count": None,
-        "complete_count": None,
-        "truth_mode": "unavailable",
-        "issues": [{"code": "source_issue"}],
+    assert output == {
+        "stage": "dry_run",
+        "status_class": "source_issue",
+        "counters": {"P": 2, "R": 2, "O": 0, "T": 4},
     }
-    assert output["mandatory_source_gate"]["authoritative"] is False
-    assert "source_issue" in output["mandatory_source_gate"]["issue_codes"]
-    assert output["runtime_evidence"]["succeeded"] is False
     for forbidden in (
         "Traceback",
         "https://runtime.internal",
@@ -4602,6 +4881,87 @@ def test_focused_devoluciones_dry_run_sanitizes_gateway_returns_source_failures(
         "payload",
     ):
         assert forbidden not in combined_output
+
+
+def test_focused_devoluciones_dry_run_accepts_authoritative_absent_return_as_exclusion(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    client = _FocusedGatewayClient(
+        returns_failure=_RawGatewayReturnsError(404, upstream_attempts="1"),
+        mediation_item_id=None,
+    )
+    _install_focused_gateway(monkeypatch, client=client)
+
+    result = reconcile_operation_module.main(
+        [
+            "--seller-id",
+            "82453304",
+            "--date-from",
+            "2026-06-01",
+            "--date-to",
+            "2026-07-09",
+            "--read-model",
+            "devoluciones",
+            "--dry-run",
+            "--confirm-approved-runtime",
+        ]
+    )
+
+    output = json.loads(capsys.readouterr().out)
+
+    assert result == 0
+    assert output == {
+        "stage": "dry_run",
+        "status_class": "success",
+        "counters": {
+            "expected": 0,
+            "persisted": 0,
+            "complete": 0,
+            "missing": 0,
+            "P": 2,
+            "R": 2,
+            "O": 0,
+            "T": 4,
+        },
+    }
+    assert "/orders/1999" not in client.paths
+
+
+def test_focused_devoluciones_dry_run_rejects_upstream_404_when_item_identity_exists(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _install_focused_gateway(
+        monkeypatch,
+        client=_FocusedGatewayClient(
+            returns_failure=_RawGatewayReturnsError(404, upstream_attempts="1"),
+        ),
+    )
+
+    result = reconcile_operation_module.main(
+        [
+            "--seller-id",
+            "82453304",
+            "--date-from",
+            "2026-06-01",
+            "--date-to",
+            "2026-07-09",
+            "--read-model",
+            "devoluciones",
+            "--dry-run",
+            "--confirm-approved-runtime",
+        ]
+    )
+
+    output = json.loads(capsys.readouterr().out)
+
+    assert result == 1
+    assert output == {
+        "stage": "dry_run",
+        "status_class": "source_issue",
+        "counters": {"P": 2, "R": 2, "O": 0, "T": 4},
+    }
 
 
 def test_focused_devoluciones_dry_run_sanitizes_projection_failures(
@@ -4641,9 +5001,11 @@ def test_focused_devoluciones_dry_run_sanitizes_projection_failures(
     combined_output = json.dumps(output, sort_keys=True) + captured.err
 
     assert result == 1
-    assert output["aggregates"][0]["issues"] == [{"code": "query_anomaly"}]
-    assert output["mandatory_source_gate"]["authoritative"] is False
-    assert "query_anomaly" in output["mandatory_source_gate"]["issue_codes"]
+    assert output == {
+        "stage": "dry_run",
+        "status_class": "query_anomaly",
+        "counters": {"P": 2, "R": 2, "O": 1, "T": 5},
+    }
     for forbidden in (
         "Traceback",
         "/post-purchase/v2/claims",

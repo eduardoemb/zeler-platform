@@ -32,6 +32,35 @@ class AcceptedCampaign:
 
 
 @dataclass(frozen=True)
+class PrivateCampaignSample:
+    campaign_id: str
+    outcome: str
+    campaign_disqualified: bool
+    duration_seconds: float
+    source_fingerprint_hash: str | None = None
+    read_model_fingerprint_hash: str | None = None
+
+    def __post_init__(self) -> None:
+        validated = _validated_evidence(self.to_mapping())
+        object.__setattr__(self, "duration_seconds", validated["duration_seconds"])
+
+    @classmethod
+    def from_mapping(cls, value: Mapping[str, Any]) -> PrivateCampaignSample:
+        validated = _validated_evidence(value)
+        return cls(**validated)
+
+    def to_mapping(self) -> dict[str, Any]:
+        return {
+            "campaign_id": self.campaign_id,
+            "outcome": self.outcome,
+            "campaign_disqualified": self.campaign_disqualified,
+            "duration_seconds": self.duration_seconds,
+            "source_fingerprint_hash": self.source_fingerprint_hash,
+            "read_model_fingerprint_hash": self.read_model_fingerprint_hash,
+        }
+
+
+@dataclass(frozen=True)
 class CampaignState:
     disqualified_campaign_ids: frozenset[str]
     accepted_campaign_id: str | None
@@ -58,13 +87,19 @@ class CampaignStateStore:
             campaigns=document["campaigns"],
         )
 
-    def record(self, evidence: Mapping[str, Any]) -> CampaignState:
-        sample = _validated_evidence(evidence)
+    def record(self, evidence: Mapping[str, Any] | PrivateCampaignSample) -> CampaignState:
+        sample = (
+            evidence
+            if isinstance(evidence, PrivateCampaignSample)
+            else PrivateCampaignSample.from_mapping(evidence)
+        ).to_mapping()
         document = self._load_document()
         campaign_id = sample["campaign_id"]
         disqualified = set(document["disqualified_campaign_ids"])
         failure_reason: str | None = None
-        if campaign_id in disqualified:
+        if campaign_id in disqualified and not (
+            sample["campaign_disqualified"] or sample["outcome"] != "success"
+        ):
             raise CampaignStateError("campaign ID is permanently disqualified")
         campaigns = document["campaigns"]
         if sample["campaign_disqualified"] or sample["outcome"] != "success":
@@ -227,6 +262,11 @@ def _validated_evidence(value: Mapping[str, Any]) -> dict[str, Any]:
             or _HASH_PATTERN.fullmatch(read_hash) is None
         ):
             raise CampaignStateError("campaign evidence fingerprint is invalid")
+    elif (
+        value.get("source_fingerprint_hash") is not None
+        or value.get("read_model_fingerprint_hash") is not None
+    ):
+        raise CampaignStateError("campaign evidence fingerprints are success-only")
     return {
         "campaign_id": campaign_id,
         "outcome": outcome,
