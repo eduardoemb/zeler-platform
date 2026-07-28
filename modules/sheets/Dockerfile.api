@@ -11,11 +11,14 @@ RUN pip install --no-cache-dir uv
 COPY pyproject.toml uv.lock ./
 COPY core ./core
 COPY infra/operations ./infra/operations
+COPY infra/rabbitmq ./infra/rabbitmq
 COPY modules/sheets ./modules/sheets
 
 RUN uv sync --frozen --package zeler-sheets --no-dev
 
 RUN test -f .venv/bin/uvicorn
+RUN test -x .venv/bin/python
+RUN .venv/bin/python -c "import motor.motor_asyncio; import infra.rabbitmq.sheets_devoluciones_topology"
 
 RUN useradd --system --create-home --uid 1001 appuser
 RUN chown -R appuser:appuser /app
