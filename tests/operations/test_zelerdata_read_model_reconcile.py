@@ -4725,6 +4725,29 @@ class _OneClaimFocusedSource:
         }
 
 
+class _FakeMonotonicClock:
+    def __init__(self) -> None:
+        self.current = 0.0
+        self.sleeps: list[float] = []
+
+    def monotonic(self) -> float:
+        return self.current
+
+    async def sleep(self, delay: float) -> None:
+        self.sleeps.append(delay)
+        self.current += delay
+
+
+class _TimedOneClaimFocusedSource(_OneClaimFocusedSource):
+    def __init__(self, clock: _FakeMonotonicClock) -> None:
+        self.clock = clock
+        self.return_starts: list[float] = []
+
+    async def get_returns(self, *, seller_id: str, claim_id: str) -> dict[str, Any]:
+        self.return_starts.append(self.clock.monotonic())
+        return await super().get_returns(seller_id=seller_id, claim_id=claim_id)
+
+
 class _RawGatewayReturnsError(Exception):
     def __init__(self, status_code: int, *, upstream_attempts: str | None = None) -> None:
         headers = (
@@ -4841,9 +4864,10 @@ def test_focused_devoluciones_dry_run_sanitizes_gateway_returns_source_failures(
     capsys: pytest.CaptureFixture[str],
     returns_failure: Exception,
 ) -> None:
+    client = _FocusedGatewayClient(returns_failure=returns_failure)
     _install_focused_gateway(
         monkeypatch,
-        client=_FocusedGatewayClient(returns_failure=returns_failure),
+        client=client,
     )
 
     result = reconcile_operation_module.main(
@@ -4883,6 +4907,8 @@ def test_focused_devoluciones_dry_run_sanitizes_gateway_returns_source_failures(
         "payload",
     ):
         assert forbidden not in combined_output
+    if getattr(getattr(returns_failure, "response", None), "status_code", None) == 429:
+        assert client.paths.count("/post-purchase/v2/claims/519988002/returns") == 1
 
 
 def test_focused_devoluciones_dry_run_accepts_authoritative_absent_return_as_exclusion(
@@ -5234,18 +5260,24 @@ async def test_focused_write_composes_db_bound_revalidation_heartbeat(
     )
     monkeypatch.setattr(reconcile_operation_module, "heartbeat_devoluciones_operation", heartbeat)
     monkeypatch.setattr(devoluciones_module, "write_devoluciones_snapshot", write_snapshot)
+    clock = _FakeMonotonicClock()
+    source = _TimedOneClaimFocusedSource(clock)
 
     result = await reconcile_operation_module.run_focused_devoluciones_reconciliation(
         db=db,
         request=_write_request(extra_args=["--read-model", "devoluciones"]),
-        source=_OneClaimFocusedSource(),
+        source=source,
         campaign_id="campaign-a",
+        monotonic=clock.monotonic,
+        sleep=clock.sleep,
     )
 
     assert result.write_counts["devoluciones_markers_written"] == 1
     assert result.runtime_evidence is not None
     assert result.runtime_evidence.source_calls == {"P": 4, "R": 4, "O": 2, "T": 10}
     assert scheduled_sample_from_summary(result).physical_attempts == 10
+    assert source.return_starts == [0.0, 1.25]
+    assert clock.sleeps == [1.25]
     assert heartbeat_calls
     assert all(bound_db is db for bound_db, _ in heartbeat_calls)
 

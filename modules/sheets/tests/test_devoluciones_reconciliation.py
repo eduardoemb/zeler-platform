@@ -616,6 +616,31 @@ class HydratingSource(ScriptedInventorySource):
         return deepcopy(self.orders[order_id])
 
 
+class FakeMonotonicClock:
+    def __init__(self, *, current: float = 100.0, sleep_overshoot: float = 0.0) -> None:
+        self.current = current
+        self.sleep_overshoot = sleep_overshoot
+        self.sleeps: list[float] = []
+
+    def monotonic(self) -> float:
+        return self.current
+
+    async def sleep(self, delay: float) -> None:
+        self.sleeps.append(delay)
+        self.current += delay + self.sleep_overshoot
+
+
+class TimedHydratingSource(HydratingSource):
+    def __init__(self, clock: FakeMonotonicClock) -> None:
+        super().__init__()
+        self.clock = clock
+        self.return_starts: list[float] = []
+
+    async def get_returns(self, *, seller_id: str, claim_id: str) -> dict[str, Any]:
+        self.return_starts.append(self.clock.monotonic())
+        return await super().get_returns(seller_id=seller_id, claim_id=claim_id)
+
+
 def _use_mediation_without_related_v2_return_order(
     source: HydratingSource, *, missing_related_entities: bool = False
 ) -> None:
@@ -712,6 +737,54 @@ async def test_terminal_cancellation_excludes_before_detail_with_stable_evidence
     }
     assert first.inventory.fingerprint == second.inventory.fingerprint
     assert first.exclusion_fingerprint == second.exclusion_fingerprint
+
+
+@pytest.mark.asyncio
+async def test_returns_pacing_has_exact_spacing_without_first_or_post_final_wait() -> None:
+    clock = FakeMonotonicClock()
+    source = TimedHydratingSource(clock)
+
+    snapshot = await reconciliation_module.collect_devoluciones_snapshot(
+        source=source,
+        seller_id="82453304",
+        start=START,
+        end=END,
+        monotonic=clock.monotonic,
+        sleep=clock.sleep,
+    )
+
+    assert source.return_starts == [100.0, 101.25]
+    assert clock.sleeps == [1.25]
+    assert clock.current == 101.25
+    assert [call[0] for call in source.hydration_calls] == [
+        "claim",
+        "returns",
+        "order",
+        "claim",
+        "returns",
+        "order",
+    ]
+    assert snapshot.expected_claim_ids == frozenset({"519988001", "519988002"})
+
+
+@pytest.mark.asyncio
+async def test_returns_pacing_does_not_wait_for_pre_detail_cancellation() -> None:
+    clock = FakeMonotonicClock()
+    source = TimedHydratingSource(clock)
+    for page in source.responses:
+        page["data"][1].update({"type": "cancel_purchase", "status": "closed"})
+
+    await reconciliation_module.collect_devoluciones_snapshot(
+        source=source,
+        seller_id="82453304",
+        start=START,
+        end=END,
+        monotonic=clock.monotonic,
+        sleep=clock.sleep,
+    )
+
+    assert source.return_starts == [100.0]
+    assert clock.sleeps == []
 
 
 @pytest.mark.parametrize("missing_related_entities", [False, True])
@@ -1373,6 +1446,41 @@ async def test_failed_physical_attempt_and_deadline_are_recorded_fail_closed() -
     assert untouched.calls == []
 
 
+@pytest.mark.parametrize(
+    ("deadline", "sleep_overshoot", "expected_sleeps"),
+    [
+        (101.25, 0.0, []),
+        (101.30, 0.05, [1.25]),
+    ],
+    ids=("insufficient-margin-before-wait", "deadline-reached-after-wake"),
+)
+@pytest.mark.asyncio
+async def test_returns_pacing_deadline_fails_before_charge_and_second_send(
+    deadline: float,
+    sleep_overshoot: float,
+    expected_sleeps: list[float],
+) -> None:
+    clock = FakeMonotonicClock(sleep_overshoot=sleep_overshoot)
+    source = TimedHydratingSource(clock)
+    recorder = SourceCallRecorder()
+
+    with pytest.raises(SourceCallBudgetError, match="deadline"):
+        await reconciliation_module.collect_devoluciones_snapshot(
+            source=source,
+            seller_id="82453304",
+            start=START,
+            end=END,
+            recorder=recorder,
+            absolute_deadline=deadline,
+            monotonic=clock.monotonic,
+            sleep=clock.sleep,
+        )
+
+    assert source.return_starts == [100.0]
+    assert clock.sleeps == expected_sleeps
+    assert recorder.counts == {"P": 2, "R": 3, "O": 1, "T": 6}
+
+
 @pytest.mark.asyncio
 async def test_targeted_revalidation_uses_root_context_and_rejects_fingerprint_drift() -> None:
     run_ledger = reconciliation_module.SourceRunLedger()
@@ -1789,6 +1897,17 @@ class CompleteRangeSource(ScriptedInventorySource):
         return {**_order(seller_id=int(seller_id)), "id": int(order_id)}
 
 
+class TimedCompleteRangeSource(CompleteRangeSource):
+    def __init__(self, clock: FakeMonotonicClock) -> None:
+        super().__init__()
+        self.clock = clock
+        self.return_starts: list[float] = []
+
+    async def get_returns(self, *, seller_id: str, claim_id: str) -> dict[str, Any]:
+        self.return_starts.append(self.clock.monotonic())
+        return await super().get_returns(seller_id=seller_id, claim_id=claim_id)
+
+
 @pytest.mark.asyncio
 async def test_complete_46_row_inventory_fits_inventory_derived_hard_budget() -> None:
     source = CompleteRangeSource()
@@ -1819,6 +1938,57 @@ async def test_complete_46_row_inventory_fits_inventory_derived_hard_budget() ->
     assert len(snapshot.exclusions) == 37
     assert recorder.required_capacity == 104
     assert recorder.total == 79
+
+
+@pytest.mark.asyncio
+async def test_complete_inventory_projects_33_intervals_without_changing_104_budget() -> None:
+    clock = FakeMonotonicClock(current=0.0)
+    source = TimedCompleteRangeSource(clock)
+    recorder = SourceCallRecorder()
+
+    await reconciliation_module.collect_devoluciones_snapshot(
+        source=source,
+        seller_id="82453304",
+        start=START,
+        end=END,
+        recorder=recorder,
+        monotonic=clock.monotonic,
+        sleep=clock.sleep,
+    )
+
+    assert len(source.return_starts) == 34
+    assert all(
+        later - earlier == pytest.approx(1.25)
+        for earlier, later in zip(source.return_starts, source.return_starts[1:], strict=False)
+    )
+    assert len(clock.sleeps) == 33
+    assert sum(clock.sleeps) == pytest.approx(41.25)
+    assert recorder.required_capacity == 104
+    assert recorder.counts == {"P": 2, "R": 68, "O": 9, "T": 79}
+
+
+@pytest.mark.asyncio
+async def test_two_snapshot_pacing_projection_uses_67_intervals_and_83_75_seconds() -> None:
+    clock = FakeMonotonicClock(current=0.0)
+    pacer = reconciliation_module.ReturnsAttemptPacer(
+        monotonic=clock.monotonic,
+        sleep=clock.sleep,
+    )
+    starts: list[float] = []
+
+    for _ in range(68):
+        await pacer.wait_until_allowed(absolute_deadline=165.0)
+        pacer.record_start()
+        starts.append(clock.monotonic())
+
+    assert starts[0] == 0.0
+    assert starts[-1] == pytest.approx(83.75)
+    assert len(clock.sleeps) == 67
+    assert sum(clock.sleeps) == pytest.approx(83.75)
+    assert all(
+        later - earlier == pytest.approx(1.25)
+        for earlier, later in zip(starts, starts[1:], strict=False)
+    )
 
 
 @pytest.mark.asyncio

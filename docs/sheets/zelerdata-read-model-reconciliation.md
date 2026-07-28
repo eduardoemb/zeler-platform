@@ -113,6 +113,28 @@ write may use no more than two independent snapshots and must remain within the 
 Concurrency remains no greater than four, with a 165-second process deadline and a 175-second shell
 stop. The single scheduled attempt cannot reset either snapshot or run accounting.
 
+The focused run enforces a code-owned **1.25-second minimum start-to-start interval** for physical RETURNS attempts only.
+The first RETURNS send does not wait, and pacing occurs before each later
+send rather than after the previous or final send. Pre-detail cancellation exclusions never enter
+the pacer; authoritative safe-404 exclusions do because absence is known only after the physical
+RETURNS response. Claim-page, claim-detail, and order-detail sends are not paced. In frozen
+inventory order, one pacer spans both snapshots so publication revalidation cannot create a
+boundary burst.
+
+The monotonic 165-second deadline is checked before a required wait and again after wakeup. If the
+remaining margin cannot contain the wait, reconciliation fails before sleeping, charging, or
+sending; if the deadline is reached after wakeup, it fails before charge/send. Otherwise the
+existing recorder charges before exactly one physical send. A 429 remains terminal and the focused
+path does not retry, expand `B ≤ 104` or `C ≤ 208`, or alter public/private evidence.
+
+For the complete 34-candidate inventory, pacing inserts at most 33 intervals per snapshot and 67
+per two-snapshot run: at most 41.25 seconds per snapshot and 83.75 seconds per run. The retained
+110-second projected run envelope preserves 55 seconds of process-deadline margin and 65 seconds
+before the shell stop. Acceptance still requires private timing correlation proving every
+successive physical RETURNS start is at least 1.25 seconds apart, followed by fresh `9/9/9/0`
+evidence. Any spacing, deadline, source, or 429 failure stops without retry, keeps the timer off,
+and uses the existing failure-conditional rollback boundary.
+
 Runtime acceptance requires 20 consecutive candidate-equivalent scheduled writes with stable
 source/read-model fingerprints and one explicit campaign ID. A timeout, non-success, hard-limit
 failure, source budget failure, or fingerprint drift disqualifies that campaign ID. Recovery requires

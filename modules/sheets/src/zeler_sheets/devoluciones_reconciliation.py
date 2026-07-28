@@ -86,6 +86,7 @@ MIN_SPLIT_WINDOW = timedelta(milliseconds=1)
 MAX_SOURCE_PHYSICAL_ATTEMPTS = 208
 MAX_SNAPSHOT_PHYSICAL_ATTEMPTS = 104
 MAX_DETAIL_ATTEMPTS_PER_HYDRATION_CANDIDATE = 3
+RETURNS_MIN_START_INTERVAL_SECONDS = 1.25
 
 
 class _FocusedDevolucionesFailure(StrEnum):
@@ -124,6 +125,36 @@ class SourceCallBudgetError(RuntimeError):
 
 class AuthoritativeReturnsNotFoundError(RuntimeError):
     """The exact v2 returns resource is authoritatively absent upstream."""
+
+
+@dataclass(slots=True)
+class ReturnsAttemptPacer:
+    """Enforce the focused run's code-owned interval between RETURNS sends."""
+
+    monotonic: Callable[[], float] = time.monotonic
+    sleep: Callable[[float], Awaitable[None]] = asyncio.sleep
+    _last_start: float | None = field(default=None, init=False, repr=False)
+
+    async def wait_until_allowed(self, *, absolute_deadline: float | None) -> None:
+        while True:
+            current = self.monotonic()
+            if absolute_deadline is not None and current >= absolute_deadline:
+                raise SourceCallBudgetError(
+                    "source process deadline reached before paced physical attempt"
+                )
+            if self._last_start is None:
+                return
+            wait = RETURNS_MIN_START_INTERVAL_SECONDS - (current - self._last_start)
+            if wait <= 0:
+                return
+            if absolute_deadline is not None and wait >= absolute_deadline - current:
+                raise SourceCallBudgetError(
+                    "source process deadline lacks margin for paced physical attempt"
+                )
+            await self.sleep(wait)
+
+    def record_start(self) -> None:
+        self._last_start = self.monotonic()
 
 
 def _tag_private_focused_devoluciones_failure(
@@ -677,11 +708,16 @@ async def collect_devoluciones_snapshot(
     recorder: SourceCallRecorder | None = None,
     absolute_deadline: float | None = None,
     monotonic: Callable[[], float] = time.monotonic,
+    sleep: Callable[[float], Awaitable[None]] | None = None,
+    returns_pacer: ReturnsAttemptPacer | None = None,
     heartbeat: Callable[[], Awaitable[None]] | None = None,
 ) -> CollectedDevolucionesSnapshot:
     from zeler_sheets.claim_projection import build_claim_projection
 
     normalized_start, normalized_end = _validated_utc_range(start, end)
+    resolved_returns_pacer = returns_pacer
+    if resolved_returns_pacer is None and sleep is not None:
+        resolved_returns_pacer = ReturnsAttemptPacer(monotonic=monotonic, sleep=sleep)
     inventory = await verify_claim_inventory(
         source=source,
         seller_id=seller_id,
@@ -734,6 +770,7 @@ async def collect_devoluciones_snapshot(
             absolute_deadline=absolute_deadline,
             monotonic=monotonic,
             heartbeat=heartbeat,
+            returns_pacer=resolved_returns_pacer,
         )
         try:
             returns = await _bounded_source_call(
@@ -876,6 +913,7 @@ async def revalidate_devoluciones_snapshot(
     recorder: SourceCallRecorder,
     heartbeat: Callable[[], Awaitable[None]],
     monotonic: Callable[[], float] = time.monotonic,
+    returns_pacer: ReturnsAttemptPacer | None = None,
     now: Callable[[], datetime] = lambda: datetime.now(UTC),
 ) -> CollectedDevolucionesSnapshot:
     if recorder.total != 0:
@@ -900,6 +938,7 @@ async def revalidate_devoluciones_snapshot(
         recorder=recorder,
         absolute_deadline=absolute_deadline,
         monotonic=monotonic,
+        returns_pacer=returns_pacer,
         heartbeat=heartbeat,
     )
     if (
@@ -1089,13 +1128,18 @@ async def _before_source_attempt(
     absolute_deadline: float | None,
     monotonic: Callable[[], float],
     heartbeat: Callable[[], Awaitable[None]] | None,
+    returns_pacer: ReturnsAttemptPacer | None = None,
 ) -> None:
+    if call_kind == "return_detail" and returns_pacer is not None:
+        await returns_pacer.wait_until_allowed(absolute_deadline=absolute_deadline)
     if heartbeat is not None:
         await heartbeat()
     if absolute_deadline is not None and monotonic() >= absolute_deadline:
         raise SourceCallBudgetError("source process deadline reached before physical attempt")
     if recorder is not None:
         recorder.charge(call_kind)
+    if call_kind == "return_detail" and returns_pacer is not None:
+        returns_pacer.record_start()
 
 
 async def _bounded_source_call(
