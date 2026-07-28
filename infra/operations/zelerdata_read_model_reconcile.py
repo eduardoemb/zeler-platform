@@ -2264,12 +2264,14 @@ async def run_focused_devoluciones_reconciliation(
     source: Any | None = None,
     campaign_id: str | None = None,
     monotonic: Callable[[], float] = time.monotonic,
+    sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     now: Callable[[], datetime] = lambda: datetime.now(UTC),
 ) -> ReconciliationSummary:
     from zeler_sheets.devoluciones_reconciliation import (
         MAX_SNAPSHOT_PHYSICAL_ATTEMPTS,
         MAX_SOURCE_PHYSICAL_ATTEMPTS,
         GatewayDevolucionesSource,
+        ReturnsAttemptPacer,
         SourceCallRecorder,
         SourceRunLedger,
         _private_focused_devoluciones_failure,
@@ -2282,6 +2284,7 @@ async def run_focused_devoluciones_reconciliation(
     started = monotonic()
     absolute_deadline = started + 165.0
     run_ledger = SourceRunLedger(max_total=MAX_SOURCE_PHYSICAL_ATTEMPTS)
+    returns_pacer = ReturnsAttemptPacer(monotonic=monotonic, sleep=sleep)
     recorder = SourceCallRecorder(
         max_total=MAX_SNAPSHOT_PHYSICAL_ATTEMPTS,
         run_ledger=run_ledger,
@@ -2302,6 +2305,7 @@ async def run_focused_devoluciones_reconciliation(
             recorder=recorder,
             absolute_deadline=absolute_deadline,
             monotonic=monotonic,
+            returns_pacer=returns_pacer,
         )
     except Exception as exc:  # noqa: BLE001 - dry-run evidence must stay sanitized.
         private_failure = _private_focused_devoluciones_failure(exc)
@@ -2384,6 +2388,7 @@ async def run_focused_devoluciones_reconciliation(
                 recorder=revalidation_recorder,
                 heartbeat=revalidation_heartbeat,
                 monotonic=monotonic,
+                returns_pacer=returns_pacer,
                 now=now,
             )
             refreshed_summary = await collect_reconciliation_counts(
