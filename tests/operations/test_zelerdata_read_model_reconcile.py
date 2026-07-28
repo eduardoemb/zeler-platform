@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
+import stat
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
@@ -5015,6 +5017,172 @@ def test_focused_devoluciones_dry_run_sanitizes_projection_failures(
         "unique order/item",
     ):
         assert forbidden not in combined_output
+
+
+@pytest.mark.parametrize("private_failure", tuple(devoluciones_module._FocusedDevolucionesFailure))
+@pytest.mark.asyncio
+async def test_focused_devoluciones_failure_enum_is_retained_only_in_private_evidence(
+    monkeypatch: pytest.MonkeyPatch,
+    private_failure: devoluciones_module._FocusedDevolucionesFailure,
+) -> None:
+    async def fail_snapshot(**_: Any) -> Any:
+        raise ClaimInventoryError(
+            "sanitized source failure",
+            private_failure=private_failure,
+        )
+
+    monkeypatch.setattr(devoluciones_module, "collect_devoluciones_snapshot", fail_snapshot)
+    request = build_reconciliation_request(
+        build_arg_parser().parse_args(
+            [
+                "--seller-id",
+                "82453304",
+                "--date-from",
+                "2026-06-01",
+                "--date-to",
+                "2026-07-09",
+                "--read-model",
+                "devoluciones",
+                "--dry-run",
+                "--confirm-approved-runtime",
+            ]
+        )
+    )
+
+    summary = await reconcile_operation_module.run_focused_devoluciones_reconciliation(
+        db=FakeAsyncDb({}),
+        request=request,
+        source=object(),
+    )
+
+    public = summary.to_focused_evidence(stage="dry_run")
+    private = summary.to_private_diagnostic_evidence()
+    assert public == {
+        "stage": "dry_run",
+        "status_class": "source_issue",
+        "counters": {"P": 0, "R": 0, "O": 0, "T": 0},
+    }
+    assert private == {"failure_class": private_failure.value}
+    assert set(public) == {"stage", "status_class", "counters"}
+    assert "failure_class" not in json.dumps(public, sort_keys=True)
+    private_json = json.dumps(private, sort_keys=True)
+    for forbidden in (
+        "https://runtime.internal",
+        "/post-purchase/v2/claims",
+        "access_token",
+        "RAW_TOKEN",
+        "82453304",
+        "519988002",
+        "1999",
+        "payload",
+    ):
+        assert forbidden not in private_json
+
+
+def test_focused_diagnostic_writes_enum_to_separate_root_private_fd(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    writes: list[tuple[int, dict[str, str]]] = []
+    _install_focused_gateway(
+        monkeypatch,
+        client=_FocusedGatewayClient(returns_failure=_RawGatewayReturnsError(404)),
+    )
+    monkeypatch.setattr(
+        reconcile_operation_module,
+        "_write_root_private_diagnostic_evidence",
+        lambda fd, evidence: writes.append((fd, evidence)),
+    )
+
+    result = reconcile_operation_module.main(
+        [
+            "--seller-id",
+            "82453304",
+            "--date-from",
+            "2026-06-01",
+            "--date-to",
+            "2026-07-09",
+            "--read-model",
+            "devoluciones",
+            "--dry-run",
+            "--confirm-approved-runtime",
+            "--private-diagnostic-fd",
+            "9",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert result == 1
+    assert json.loads(captured.out) == {
+        "stage": "dry_run",
+        "status_class": "source_issue",
+        "counters": {"P": 2, "R": 2, "O": 0, "T": 4},
+    }
+    assert captured.err == ""
+    assert writes == [(9, {"failure_class": "unsafe_404_failure"})]
+
+
+def test_private_diagnostic_fd_requires_root_owned_mode_0600_regular_file(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    writes: list[tuple[int, bytes]] = []
+    monkeypatch.setattr(os, "geteuid", lambda: 0)
+    monkeypatch.setattr(
+        os,
+        "fstat",
+        lambda fd: type(
+            "PrivateStat",
+            (),
+            {"st_uid": 0, "st_mode": stat.S_IFREG | 0o600},
+        )(),
+    )
+
+    def write(fd: int, payload: bytes) -> int:
+        writes.append((fd, payload))
+        return len(payload)
+
+    monkeypatch.setattr(os, "write", write)
+
+    reconcile_operation_module._write_root_private_diagnostic_evidence(
+        9,
+        {"failure_class": "parser_failure"},
+    )
+
+    assert writes == [(9, b'{"failure_class":"parser_failure"}\n')]
+
+
+@pytest.mark.parametrize(
+    ("effective_uid", "owner_uid", "mode"),
+    [
+        (501, 501, stat.S_IFREG | 0o600),
+        (0, 501, stat.S_IFREG | 0o600),
+        (0, 0, stat.S_IFREG | 0o640),
+        (0, 0, stat.S_IFIFO | 0o600),
+    ],
+    ids=("non-root-process", "non-root-owner", "shared-mode", "non-regular"),
+)
+def test_private_diagnostic_fd_rejects_non_root_or_shared_channels(
+    monkeypatch: pytest.MonkeyPatch,
+    effective_uid: int,
+    owner_uid: int,
+    mode: int,
+) -> None:
+    monkeypatch.setattr(os, "geteuid", lambda: effective_uid)
+    monkeypatch.setattr(
+        os,
+        "fstat",
+        lambda fd: type(
+            "PrivateStat",
+            (),
+            {"st_uid": owner_uid, "st_mode": mode},
+        )(),
+    )
+
+    with pytest.raises(ValueError, match="root|0600"):
+        reconcile_operation_module._write_root_private_diagnostic_evidence(
+            9,
+            {"failure_class": "parser_failure"},
+        )
 
 
 @pytest.mark.asyncio

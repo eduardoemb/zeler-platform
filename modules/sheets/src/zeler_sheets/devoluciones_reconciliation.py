@@ -60,6 +60,10 @@ class GatewayDevolucionesSource:
         except Exception as exc:
             if self._single_attempt and _is_authoritative_upstream_not_found(exc):
                 raise AuthoritativeReturnsNotFoundError from None
+            _tag_private_focused_devoluciones_failure(
+                exc,
+                _private_focused_devoluciones_failure(exc),
+            )
             raise
 
     async def get_order(self, *, seller_id: str, order_id: str) -> dict[str, Any]:
@@ -84,8 +88,30 @@ MAX_SNAPSHOT_PHYSICAL_ATTEMPTS = 104
 MAX_DETAIL_ATTEMPTS_PER_HYDRATION_CANDIDATE = 3
 
 
+class _FocusedDevolucionesFailure(StrEnum):
+    """Bounded source diagnosis retained only across the private evidence boundary."""
+
+    PARSER = "parser_failure"
+    ATTEMPT_METADATA = "attempt_metadata_failure"
+    SAFE_404_PRECONDITION = "safe_404_precondition_failure"
+    UNSAFE_404 = "unsafe_404_failure"
+    ORDER = "order_failure"
+    IDENTITY = "identity_failure"
+    BUDGET = "budget_failure"
+    SOURCE = "source_failure"
+
+
 class ClaimInventoryError(RuntimeError):
-    pass
+    def __init__(
+        self,
+        message: str,
+        *,
+        private_failure: _FocusedDevolucionesFailure | None = None,
+    ) -> None:
+        super().__init__(message)
+        self._focused_devoluciones_private_failure = (
+            private_failure or _FocusedDevolucionesFailure.PARSER
+        )
 
 
 class DevolucionesReadModelVerificationError(RuntimeError):
@@ -98,6 +124,36 @@ class SourceCallBudgetError(RuntimeError):
 
 class AuthoritativeReturnsNotFoundError(RuntimeError):
     """The exact v2 returns resource is authoritatively absent upstream."""
+
+
+def _tag_private_focused_devoluciones_failure(
+    exc: Exception,
+    failure: _FocusedDevolucionesFailure,
+) -> Exception:
+    exc.__dict__["_focused_devoluciones_private_failure"] = failure
+    return exc
+
+
+def _private_focused_devoluciones_failure(exc: Exception) -> _FocusedDevolucionesFailure:
+    retained = getattr(exc, "_focused_devoluciones_private_failure", None)
+    if isinstance(retained, _FocusedDevolucionesFailure):
+        return retained
+    if isinstance(exc, SourceCallBudgetError):
+        return _FocusedDevolucionesFailure.BUDGET
+    if type(exc).__name__ == "ClaimProjectionError":
+        return _FocusedDevolucionesFailure.PARSER
+    response = getattr(exc, "response", None)
+    status_code = getattr(response, "status_code", None)
+    if status_code == 404:
+        headers = getattr(response, "headers", None)
+        if isinstance(headers, Mapping) and "X-Zeler-Upstream-Attempts" in headers:
+            return _FocusedDevolucionesFailure.ATTEMPT_METADATA
+        return _FocusedDevolucionesFailure.UNSAFE_404
+    if status_code is not None or isinstance(exc, (ConnectionError, TimeoutError)):
+        return _FocusedDevolucionesFailure.SOURCE
+    if isinstance(exc, ClaimInventoryError):
+        return _FocusedDevolucionesFailure.PARSER
+    return _FocusedDevolucionesFailure.SOURCE
 
 
 class FrozenDict(dict[str, Any]):
@@ -701,12 +757,21 @@ async def collect_devoluciones_snapshot(
                     )
                 )
                 continue
-            raise ClaimInventoryError("v2 returns source_issue") from None
-        except Exception:  # noqa: BLE001 - source exception text is unsafe evidence.
-            raise ClaimInventoryError("v2 returns source_issue") from None
+            raise ClaimInventoryError(
+                "v2 returns source_issue",
+                private_failure=_FocusedDevolucionesFailure.SAFE_404_PRECONDITION,
+            ) from None
+        except Exception as exc:  # noqa: BLE001 - source exception text is unsafe evidence.
+            raise ClaimInventoryError(
+                "v2 returns source_issue",
+                private_failure=_private_focused_devoluciones_failure(exc),
+            ) from None
         order_id = str(claim.get("order_id") or claim.get("resource_id") or "").strip()
         if not order_id:
-            raise ClaimInventoryError("return claim is missing order identity")
+            raise ClaimInventoryError(
+                "return claim is missing order identity",
+                private_failure=_FocusedDevolucionesFailure.IDENTITY,
+            )
         order = orders_by_id.get(order_id)
         if order is None:
             await _before_source_attempt(
@@ -716,11 +781,20 @@ async def collect_devoluciones_snapshot(
                 monotonic=monotonic,
                 heartbeat=heartbeat,
             )
-            order = await _bounded_source_call(
-                source.get_order(seller_id=seller_id, order_id=order_id),
-                absolute_deadline=absolute_deadline,
-                monotonic=monotonic,
-            )
+            try:
+                order = await _bounded_source_call(
+                    source.get_order(seller_id=seller_id, order_id=order_id),
+                    absolute_deadline=absolute_deadline,
+                    monotonic=monotonic,
+                )
+            except SourceCallBudgetError:
+                raise
+            except Exception as exc:
+                _tag_private_focused_devoluciones_failure(
+                    exc,
+                    _FocusedDevolucionesFailure.ORDER,
+                )
+                raise
             orders_by_id[order_id] = dict(order)
         projections.append(
             build_claim_projection(
@@ -952,7 +1026,10 @@ async def _inventory_window(
                 monotonic=monotonic,
             )
         except Exception as exc:
-            raise ClaimInventoryError("claim inventory source request failed") from exc
+            raise ClaimInventoryError(
+                "claim inventory source request failed",
+                private_failure=_private_focused_devoluciones_failure(exc),
+            ) from exc
         data, response_offset, _, total = _validated_page(payload, requested_offset=offset)
         if stable_total is None:
             stable_total = total

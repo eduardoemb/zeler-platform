@@ -157,24 +157,47 @@ async def test_stable_two_pass_inventory_is_authoritative_for_old_order_claims()
 
 
 @pytest.mark.parametrize(
-    "page",
+    ("page", "expected_private_failure"),
     [
-        {"data": [], "paging": {"offset": "0", "limit": 100, "total": 0}},
-        {"data": [], "paging": {"offset": 1, "limit": 100, "total": 0}},
-        {"data": [], "paging": {"offset": 0, "limit": 101, "total": 0}},
-        {"data": [], "paging": {"offset": 0, "limit": 100, "total": 1}},
-        {
-            "data": [{"id": "1", "last_updated": "a"}],
-            "paging": {"offset": 0, "limit": 1, "total": 2},
-        },
+        (
+            {"data": [], "paging": {"offset": "0", "limit": 100, "total": 0}},
+            reconciliation_module._FocusedDevolucionesFailure.PARSER,
+        ),
+        (
+            {"data": [], "paging": {"offset": 1, "limit": 100, "total": 0}},
+            reconciliation_module._FocusedDevolucionesFailure.PARSER,
+        ),
+        (
+            {"data": [], "paging": {"offset": 0, "limit": 101, "total": 0}},
+            reconciliation_module._FocusedDevolucionesFailure.PARSER,
+        ),
+        (
+            {"data": [], "paging": {"offset": 0, "limit": 100, "total": 1}},
+            reconciliation_module._FocusedDevolucionesFailure.PARSER,
+        ),
+        (
+            {
+                "data": [{"id": "1", "last_updated": "a"}],
+                "paging": {"offset": 0, "limit": 1, "total": 2},
+            },
+            reconciliation_module._FocusedDevolucionesFailure.SOURCE,
+        ),
     ],
 )
 @pytest.mark.asyncio
-async def test_inventory_rejects_unproven_paging_contract(page: dict[str, Any]) -> None:
+async def test_inventory_rejects_unproven_paging_contract(
+    page: dict[str, Any],
+    expected_private_failure: reconciliation_module._FocusedDevolucionesFailure,
+) -> None:
     source = ScriptedInventorySource([page])
 
-    with pytest.raises(ClaimInventoryError):
+    with pytest.raises(ClaimInventoryError) as exc_info:
         await verify_claim_inventory(source=source, seller_id="82453304", start=START, end=END)
+
+    assert (
+        reconciliation_module._private_focused_devoluciones_failure(exc_info.value)
+        is expected_private_failure
+    )
 
 
 @pytest.mark.asyncio
@@ -921,7 +944,7 @@ async def test_authoritative_returns_404_fails_closed_when_mediation_invariants_
         }
     )
 
-    with pytest.raises(ClaimInventoryError, match="source_issue"):
+    with pytest.raises(ClaimInventoryError, match="source_issue") as exc_info:
         await reconciliation_module.collect_devoluciones_snapshot(
             source=source,
             seller_id="82453304",
@@ -929,6 +952,10 @@ async def test_authoritative_returns_404_fails_closed_when_mediation_invariants_
             end=END,
         )
 
+    assert (
+        reconciliation_module._private_focused_devoluciones_failure(exc_info.value)
+        is reconciliation_module._FocusedDevolucionesFailure.SAFE_404_PRECONDITION
+    )
     assert ("order", "1999") not in source.hydration_calls
 
 
@@ -1016,8 +1043,13 @@ async def test_gateway_returns_404_requires_attempt_metadata_exactly_one() -> No
         single_attempt=True,
     )
 
-    with pytest.raises(RuntimeError, match="unsafe raw upstream detail"):
+    with pytest.raises(RuntimeError, match="unsafe raw upstream detail") as exc_info:
         await gateway.get_returns(seller_id="82453304", claim_id="519988002")
+
+    assert (
+        reconciliation_module._private_focused_devoluciones_failure(exc_info.value)
+        is reconciliation_module._FocusedDevolucionesFailure.ATTEMPT_METADATA
+    )
 
 
 @pytest.mark.parametrize(
@@ -1051,6 +1083,15 @@ async def test_mediation_without_related_sanitizes_v2_returns_access_failure(
         )
 
     assert str(exc_info.value) == "v2 returns source_issue"
+    expected_private_failure = (
+        reconciliation_module._FocusedDevolucionesFailure.UNSAFE_404
+        if getattr(getattr(failure, "response", None), "status_code", None) == 404
+        else reconciliation_module._FocusedDevolucionesFailure.SOURCE
+    )
+    assert (
+        reconciliation_module._private_focused_devoluciones_failure(exc_info.value)
+        is expected_private_failure
+    )
     sanitized = str(exc_info.value)
     for forbidden in (
         "https://runtime.internal",
@@ -1080,7 +1121,7 @@ async def test_mediation_without_related_fails_closed_when_referenced_order_is_m
     source = MissingReferencedOrderSource()
     _use_mediation_without_related_v2_return_order(source)
 
-    with pytest.raises(ClaimInventoryError, match="referenced order missing"):
+    with pytest.raises(ClaimInventoryError, match="referenced order missing") as exc_info:
         await reconciliation_module.collect_devoluciones_snapshot(
             source=source,
             seller_id="82453304",
@@ -1088,7 +1129,31 @@ async def test_mediation_without_related_fails_closed_when_referenced_order_is_m
             end=END,
         )
 
+    assert (
+        reconciliation_module._private_focused_devoluciones_failure(exc_info.value)
+        is reconciliation_module._FocusedDevolucionesFailure.ORDER
+    )
     assert ("order", "1999") in source.hydration_calls
+
+
+@pytest.mark.asyncio
+async def test_missing_order_identity_retains_only_bounded_private_failure() -> None:
+    source = HydratingSource()
+    source.claims["519988002"]["order_id"] = ""
+    source.claims["519988002"]["resource_id"] = ""
+
+    with pytest.raises(ClaimInventoryError, match="missing order identity") as exc_info:
+        await reconciliation_module.collect_devoluciones_snapshot(
+            source=source,
+            seller_id="82453304",
+            start=START,
+            end=END,
+        )
+
+    assert (
+        reconciliation_module._private_focused_devoluciones_failure(exc_info.value)
+        is reconciliation_module._FocusedDevolucionesFailure.IDENTITY
+    )
 
 
 @pytest.mark.asyncio
@@ -1236,8 +1301,12 @@ def test_source_call_recorder_charges_physical_attempts_before_send_and_caps_tot
     recorder.charge("order_detail")
 
     assert recorder.counts == {"P": 1, "R": 1, "O": 1, "T": 3}
-    with pytest.raises(SourceCallBudgetError, match="64|budget"):
+    with pytest.raises(SourceCallBudgetError, match="64|budget") as exc_info:
         recorder.charge("return_detail")
+    assert (
+        reconciliation_module._private_focused_devoluciones_failure(exc_info.value)
+        is reconciliation_module._FocusedDevolucionesFailure.BUDGET
+    )
     assert recorder.counts == {"P": 1, "R": 1, "O": 1, "T": 3}
 
 
