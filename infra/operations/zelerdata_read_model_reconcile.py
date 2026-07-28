@@ -5,12 +5,13 @@ import asyncio
 import hashlib
 import json
 import os
+import stat
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from infra.operations.zelerdata_campaign_state import PrivateCampaignSample
 
@@ -24,6 +25,9 @@ from zeler_platform_core.devoluciones_readiness import (
     new_devoluciones_attempt_token,
     stable_devoluciones_operation_id,
 )
+
+if TYPE_CHECKING:
+    from zeler_sheets.devoluciones_reconciliation import _FocusedDevolucionesFailure
 
 READ_MODELS: tuple[str, ...] = (
     "orders",
@@ -434,6 +438,11 @@ class FocusedRuntimeEvidence:
     shell_stop_seconds: float = 175.0
     status_class: str = "success"
     snapshot_calls: tuple[Mapping[str, int], ...] = ()
+    private_failure: _FocusedDevolucionesFailure | None = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
 
     def to_sanitized_dict(self) -> dict[str, Any]:
         return {
@@ -693,6 +702,13 @@ class ReconciliationSummary:
             "counters": dict(sorted(counters.items())),
         }
 
+    def to_private_diagnostic_evidence(self) -> dict[str, str] | None:
+        """Return the bounded failure class for a caller-owned root-only channel."""
+        evidence = self.runtime_evidence
+        if evidence is None or evidence.private_failure is None:
+            return None
+        return {"failure_class": evidence.private_failure.value}
+
     def to_scheduled_transport(self) -> ScheduledTransportEnvelope:
         sample = scheduled_sample_from_summary(self)
         if not sample.succeeded:
@@ -764,6 +780,37 @@ def _private_fingerprint_hash(value: str) -> str:
     if not value:
         raise ValueError("scheduled private fingerprint is missing")
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def _write_root_private_diagnostic_evidence(
+    fd: int,
+    evidence: Mapping[str, str],
+) -> None:
+    from zeler_sheets.devoluciones_reconciliation import _FocusedDevolucionesFailure
+
+    if isinstance(fd, bool) or not isinstance(fd, int) or fd < 3:
+        raise ValueError("private diagnostic descriptor is invalid")
+    if os.geteuid() != 0:
+        raise ValueError("private diagnostic descriptor requires root")
+    descriptor_stat = os.fstat(fd)
+    if (
+        descriptor_stat.st_uid != 0
+        or not stat.S_ISREG(descriptor_stat.st_mode)
+        or stat.S_IMODE(descriptor_stat.st_mode) != 0o600
+    ):
+        raise ValueError("private diagnostic descriptor must be root-owned mode 0600")
+    allowed_failures = {failure.value for failure in _FocusedDevolucionesFailure}
+    if set(evidence) != {"failure_class"} or evidence.get("failure_class") not in allowed_failures:
+        raise ValueError("private diagnostic evidence is invalid")
+    payload = (
+        json.dumps(dict(evidence), sort_keys=True, separators=(",", ":"), ensure_ascii=True) + "\n"
+    ).encode("ascii")
+    written = 0
+    while written < len(payload):
+        count = os.write(fd, payload[written:])
+        if count < 1:
+            raise OSError("private diagnostic evidence write did not advance")
+        written += count
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
@@ -850,6 +897,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="Emit the wrapper-only scheduled transport instead of public evidence.",
     )
     parser.add_argument(
+        "--private-diagnostic-fd",
+        type=_positive_int,
+        help=argparse.SUPPRESS,
+    )
+    parser.add_argument(
         "--repair-observed-pause-basis",
         action="store_true",
         help=(
@@ -891,6 +943,12 @@ def validate_reconciliation_safety(args: argparse.Namespace) -> None:
         str(args.read_model) != "devoluciones" or bool(args.dry_run)
     ):
         raise SystemExit("--private-scheduled-transport requires focused write mode")
+    if args.private_diagnostic_fd is not None and (
+        str(args.read_model) != "devoluciones"
+        or not bool(args.dry_run)
+        or int(args.private_diagnostic_fd) < 3
+    ):
+        raise SystemExit("--private-diagnostic-fd requires focused dry-run mode and fd >= 3")
 
 
 def build_reconciliation_request(args: argparse.Namespace) -> ReconciliationRequest:
@@ -2148,6 +2206,7 @@ def _focused_failure_summary(
     recorder: Any,
     started: float,
     campaign_id: str,
+    private_failure: _FocusedDevolucionesFailure,
     monotonic: Callable[[], float],
 ) -> ReconciliationSummary:
     issue = next(
@@ -2180,6 +2239,7 @@ def _focused_failure_summary(
             campaign_id=campaign_id,
             status_class=issue.code,
             snapshot_calls=(recorder.counts,),
+            private_failure=private_failure,
         ),
     )
 
@@ -2212,6 +2272,7 @@ async def run_focused_devoluciones_reconciliation(
         GatewayDevolucionesSource,
         SourceCallRecorder,
         SourceRunLedger,
+        _private_focused_devoluciones_failure,
         collect_devoluciones_snapshot,
         require_snapshot_publication_age,
         revalidate_devoluciones_snapshot,
@@ -2243,6 +2304,7 @@ async def run_focused_devoluciones_reconciliation(
             monotonic=monotonic,
         )
     except Exception as exc:  # noqa: BLE001 - dry-run evidence must stay sanitized.
+        private_failure = _private_focused_devoluciones_failure(exc)
         if not request.dry_run:
             raise RuntimeError(_classify_focused_devoluciones_issue(exc)) from None
         expected = _focused_failure_expected_counts(_classify_focused_devoluciones_issue(exc))
@@ -2252,6 +2314,7 @@ async def run_focused_devoluciones_reconciliation(
             recorder=recorder,
             started=started,
             campaign_id=resolved_campaign_id,
+            private_failure=private_failure,
             monotonic=monotonic,
         )
     expected = _focused_expected_counts(snapshot)
@@ -2491,6 +2554,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         raise SystemExit(str(exc)) from exc
     except (AttributeError, RuntimeError, TypeError) as exc:
         raise SystemExit("query_anomaly") from exc
+    private_diagnostic = summary.to_private_diagnostic_evidence()
+    if args.private_diagnostic_fd is not None and private_diagnostic is not None:
+        try:
+            _write_root_private_diagnostic_evidence(
+                int(args.private_diagnostic_fd),
+                private_diagnostic,
+            )
+        except (OSError, TypeError, ValueError) as exc:
+            raise SystemExit("private_diagnostic_failed") from exc
     if bool(args.private_scheduled_transport):
         output = summary.to_scheduled_transport().to_private_dict()
     elif str(args.read_model) == "devoluciones":
