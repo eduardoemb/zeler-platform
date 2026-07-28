@@ -24,6 +24,7 @@ from infra.rabbitmq.sheets_devoluciones_topology import _build_parser
 
 ROOT = Path(__file__).resolve().parents[1]
 SHEETS_PYPROJECT = ROOT / "modules" / "sheets" / "pyproject.toml"
+SHEETS_API_DOCKERFILE = ROOT / "modules" / "sheets" / "Dockerfile.api"
 SHEETS_WORKER_DOCKERFILE = ROOT / "modules" / "sheets" / "Dockerfile.worker"
 STARTUP = ROOT / "infra" / "gce" / "platform-vm-startup.sh"
 RECONCILE_WRAPPER = ROOT / "infra" / "gce" / "zelerdata-devoluciones-reconcile.sh"
@@ -236,6 +237,35 @@ def test_sheets_runtime_keeps_motor_and_proves_frozen_reconcile_interpreter() ->
     runtime_stanza = dockerfile.split("USER appuser", 1)[1]
     assert "pip install" not in runtime_stanza
     assert "uv sync" not in runtime_stanza
+
+
+def test_sheets_api_packages_topology_and_proves_frozen_import_without_execution() -> None:
+    dockerfile = _read(SHEETS_API_DOCKERFILE)
+
+    required_stanzas = (
+        "COPY pyproject.toml uv.lock ./",
+        "COPY core ./core",
+        "COPY infra/operations ./infra/operations",
+        "COPY infra/rabbitmq ./infra/rabbitmq",
+        "COPY modules/sheets ./modules/sheets",
+        "RUN uv sync --frozen --package zeler-sheets --no-dev",
+        "RUN test -x .venv/bin/python",
+        'RUN .venv/bin/python -c "import motor.motor_asyncio; '
+        'import infra.rabbitmq.sheets_devoluciones_topology"',
+        "USER appuser",
+        'CMD ["sh", "-c", ".venv/bin/uvicorn zeler_sheets.app:make_app '
+        '--factory --host 0.0.0.0 --port ${PORT:-8080}"]',
+    )
+    positions = tuple(dockerfile.index(stanza) for stanza in required_stanzas)
+
+    assert positions == tuple(sorted(positions))
+    assert "HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3" in dockerfile
+    runtime_stanza = dockerfile.split("USER appuser", 1)[1]
+    assert "pip install" not in runtime_stanza
+    assert "uv sync" not in runtime_stanza
+    assert "-m infra.rabbitmq.sheets_devoluciones_topology" not in dockerfile
+    assert "/var/run/docker.sock" not in dockerfile
+    assert "--privileged" not in dockerfile
 
 
 def test_topology_wrapper_uses_packaged_worker_one_shot_without_host_python() -> None:
