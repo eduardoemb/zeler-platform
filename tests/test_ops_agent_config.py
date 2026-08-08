@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import yaml
 
@@ -114,7 +114,7 @@ def _redaction_processor(config: dict[str, Any]) -> dict[str, Any]:
     for name in pipeline["processors"]:
         processor = config["processors"][name]
         if processor["type"] == "modify_fields":
-            return processor
+            return cast(dict[str, Any], processor)
     raise AssertionError("caddy pipeline has no modify_fields processor")
 
 
