@@ -12,12 +12,14 @@ from zeler_platform_core.runtime.health import HealthCheck, build_health_router
 from zeler_platform_core.runtime.manifest import validate_manifest
 from zeler_platform_core.runtime.registration import register_module
 from zeler_publicador.api import Generator, Publisher, build_router
+from zeler_publicador.ai import ProviderConfig, PublicadorConfigError
 from zeler_publicador.generator import ListingGenerator, LLMNotConfiguredError, Stub503LLM
 from zeler_publicador.publisher import PublicadorPublisher
 
 
-class PublicadorConfigError(RuntimeError):
-    """Raised when Publicador runtime config would otherwise fall back unsafely."""
+LEGAL_LISTING_LLM_VALUES = frozenset({"stub", "disabled"})
+AI_FAIL_CLOSED_PROVIDER = "stub"
+AI_FAIL_CLOSED_MODEL = "disabled"
 
 
 @dataclass(frozen=True)
@@ -52,13 +54,23 @@ def build_app(
     app = FastAPI(title="zeler-publicador")
     app.state.mongo_db = mongo_db
     manifest = validate_manifest(Path(__file__).resolve().parents[2] / "manifest.yaml")
-    generator = generator or _make_generator()
+    # Single construction path: reject unsupported LISTING_LLM values before serving.
+    selected_generator = select_listing_generator()
+    generator = generator or selected_generator
     publisher = publisher or _StubPublisher()
+
+    # Both AI routes derive from the stub selector: only the fail-closed stub
+    # provider is legal, so /publicador/ai/generate can never serve a listing.
+    app.state.publicador_ai_providers = {}
+    app.state.publicador_ai_default = ProviderConfig(
+        provider=AI_FAIL_CLOSED_PROVIDER, model=AI_FAIL_CLOSED_MODEL
+    )
 
     async def llm_not_configured_handler(_request: Request, exc: Exception) -> JSONResponse:
         return JSONResponse(status_code=503, content={"code": "llm_not_configured"})
 
     app.add_exception_handler(LLMNotConfiguredError, llm_not_configured_handler)
+    app.add_exception_handler(PublicadorConfigError, llm_not_configured_handler)
 
     mongo_check = mongo_check_factory(mongo_db)
 
@@ -92,18 +104,27 @@ def make_app() -> FastAPI:
     mongo_db: object = AsyncIOMotorClient(mongo_uri)[mongo_db_name]
     return build_app(
         mongo_db=mongo_db,
-        generator=_make_generator(),
+        generator=select_listing_generator(),
         publisher=PublicadorPublisher(mongo_db=mongo_db, gateway_client=_GatewayProxyClient()),
     )
 
 
-def _make_generator(listing_llm: str | None = None) -> ListingGenerator:
+def select_listing_generator(listing_llm: str | None = None) -> ListingGenerator:
+    """Build the listing generator from the single legal LISTING_LLM contract.
+
+    Only ``stub`` and ``disabled`` are legal; both return the fail-closed 503
+    stub. Any other value raises :class:`PublicadorConfigError` so unsupported
+    providers fail closed at startup instead of serving a contradictory state.
+    """
     import os
 
-    provider = listing_llm or os.environ.get("LISTING_LLM", "stub")
-    if provider == "stub":
+    raw_value = listing_llm or os.environ.get("LISTING_LLM", AI_FAIL_CLOSED_PROVIDER)
+    provider = raw_value.strip().lower()
+    if provider in LEGAL_LISTING_LLM_VALUES:
         return ListingGenerator(llm=Stub503LLM())
-    return ListingGenerator(llm=Stub503LLM())
+    raise PublicadorConfigError(
+        f"invalid LISTING_LLM provider {provider!r}; only 'stub' or 'disabled' are legal"
+    )
 
 
 class _StubPublisher:

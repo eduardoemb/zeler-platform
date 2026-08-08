@@ -180,6 +180,51 @@ def test_publish_returns_200_with_fake_publisher() -> None:
     assert publisher.calls == [draft_id]
 
 
+def test_app_populates_ai_state_from_stub_selector() -> None:
+    db = FakeDb()
+    app = build_app(mongo_db=db, publisher=FakePublisher())
+
+    assert app.state.publicador_ai_providers == {}
+    assert app.state.publicador_ai_default.provider == "stub"
+    assert app.state.publicador_ai_default.model == "disabled"
+
+
+def test_ai_generate_always_returns_503_never_422() -> None:
+    db = FakeDb()
+    app = build_app(mongo_db=db, publisher=FakePublisher())
+    create_response = TestClient(app).post(
+        "/publicador/drafts",
+        headers=_auth_headers(),
+        json={"title": "Base", "category_id": "MLA1234", "attributes": {}},
+    )
+    draft_id = create_response.json()["draft_id"]
+
+    for payload in (
+        {
+            "seller_id": "123456789",
+            "account_id": "123456789",
+            "draft_id": draft_id,
+            "operation": "title",
+            "prompt_inputs": {},
+            "actor_id": "operator-1",
+        },
+        {
+            "seller_id": "123456789",
+            "account_id": "123456789",
+            "draft_id": "missing-draft",
+            "operation": "description",
+            "prompt_inputs": {},
+            "actor_id": "operator-1",
+        },
+    ):
+        response = TestClient(app).post(
+            "/publicador/ai/generate", headers=_auth_headers(), json=payload
+        )
+
+        assert response.status_code == 503
+        assert response.json() == {"code": "llm_not_configured"}
+
+
 def _auth_headers() -> dict[str, str]:
     token = mint_module_jwt(
         "publicador",

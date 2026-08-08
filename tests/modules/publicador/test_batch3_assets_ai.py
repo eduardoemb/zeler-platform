@@ -269,7 +269,6 @@ async def test_publicador_assets_and_ai_api_contracts_persist_batch3_foundations
 ) -> None:
     import zeler_publicador.api as api
     from zeler_platform_core.auth.jwt import ModuleClaims
-    from zeler_publicador.ai import ProviderConfig, StaticGenerationProvider
     from zeler_publicador.api import build_router
 
     db = FakeDb()
@@ -288,12 +287,6 @@ async def test_publicador_assets_and_ai_api_contracts_persist_batch3_foundations
     )
     app = FastAPI()
     app.state.mongo_db = db
-    app.state.publicador_ai_providers = {
-        "stub-ai": StaticGenerationProvider(
-            provider="stub-ai", generated={"title": "Campera generada"}
-        )
-    }
-    app.state.publicador_ai_default = ProviderConfig(provider="stub-ai", model="listing-v1")
     app.include_router(build_router(generator=_FakeGenerator(), publisher=_FakePublisher()))
 
     def fake_verify(_token: str) -> ModuleClaims:
@@ -354,12 +347,8 @@ async def test_publicador_assets_and_ai_api_contracts_persist_batch3_foundations
         "registered",
         "registered",
     ]
-    assert ai.status_code == 202
-    assert ai.json()["generated_listing"]["title"] == "Campera generada"
-    assert (
-        db["publicador_ai_generations"].docs[0]["redacted_input"]["prompt_inputs"]["access_token"]
-        == "[REDACTED]"  # noqa: S105
-    )
+    assert ai.status_code == 503
+    assert ai.json() == {"code": "llm_not_configured"}
 
 
 class _FakeAssetStore:

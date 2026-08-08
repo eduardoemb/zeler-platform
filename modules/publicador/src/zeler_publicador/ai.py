@@ -21,6 +21,10 @@ SENSITIVE_KEY_PARTS = (
 )
 
 
+class PublicadorConfigError(RuntimeError):
+    """Raised when Publicador AI runtime config would fall back unsafely."""
+
+
 @dataclass(frozen=True)
 class ProviderConfig:
     provider: str
@@ -92,7 +96,7 @@ class AIGenerationService:
         config = await self._resolve_config(seller_id=seller_id, account_id=account_id)
         provider = self._providers.get(config.provider)
         if provider is None:
-            raise ValueError("publicador_ai_provider_not_configured")
+            raise PublicadorConfigError("publicador_ai_provider_not_configured")
 
         request = GenerationRequest(
             seller_id=seller_id,
