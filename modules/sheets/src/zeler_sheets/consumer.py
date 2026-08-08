@@ -548,6 +548,39 @@ def _dlq_class(
     return "http_5xx"
 
 
+async def claims_queue_state(
+    *,
+    rabbitmq_url: str,
+    queue_name: str = SHEETS_CLAIMS_QUEUE,
+    timeout_seconds: float = 5.0,
+) -> tuple[int, int] | None:
+    """Read the claims queue depth via a passive declare (read-only).
+
+    AMQP 0-9-1 exposes the combined message depth (ready + unacked) but not
+    the ready/unacked split. The depth is reported as the ready component
+    (unacked=0), so any backlog — waiting or in-flight — at or above the
+    health threshold degrades health. Returns None when the broker state
+    cannot be determined (fail closed).
+    """
+    try:
+        connection = await asyncio.wait_for(
+            aio_pika.connect_robust(rabbitmq_url), timeout=timeout_seconds
+        )
+    except Exception:  # noqa: BLE001 - health must fail closed on any broker failure.
+        return None
+    try:
+        channel = await connection.channel()
+        queue = await channel.declare_queue(queue_name, passive=True)
+        depth = queue.declaration_result.message_count
+        if depth is None:
+            return None
+        return (int(depth), 0)
+    except Exception:  # noqa: BLE001 - health must fail closed on any broker failure.
+        return None
+    finally:
+        await connection.close()
+
+
 def _log_message_dlq(
     event: SheetsEvent | None,
     attempts: int,
