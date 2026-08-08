@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from typing import Any
 
 import httpx
@@ -11,6 +12,8 @@ from zeler_sheets.scripts.authenticated_smoke import (
     ENV_SELLER,
     ENV_TOKEN,
     EXPECTED_FORMULA_COUNT,
+    SMOKE_DATE_FROM,
+    SMOKE_DATE_TO,
     SMOKE_FORMULA,
     STAGE,
     SmokeConfig,
@@ -23,6 +26,7 @@ from zeler_sheets.scripts.authenticated_smoke import (
     exit_code_for,
     fetch_inventory,
     inventory_passes,
+    main,
     parse_inventory,
     redact_text,
     run_devoluciones,
@@ -84,6 +88,12 @@ def _transport(
         return httpx.Response(404)
 
     return httpx.MockTransport(handler)
+
+
+def _client_factory(
+    transport: httpx.MockTransport,
+) -> Callable[[], httpx.AsyncClient]:
+    return lambda: httpx.AsyncClient(transport=transport, base_url="http://test")
 
 
 def test_taxonomy_status_classes_and_exit_codes_are_bounded() -> None:
@@ -276,3 +286,151 @@ async def test_run_devoluciones_classifies_success_data_unavailable_and_auth() -
             "encabezados": "",
         },
     }
+
+
+def test_main_dry_run_exits_zero_emits_single_redacted_json(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    exit_code = main(
+        ["--inventory-only", "--dry-run"],
+        environment={ENV_TOKEN: "zs_ext_dryrun_placeholder"},
+    )
+
+    captured = capsys.readouterr()
+    lines = [line for line in captured.out.splitlines() if line.strip()]
+    assert exit_code == 0
+    assert len(lines) == 1
+    envelope = json.loads(lines[0])
+    assert envelope["stage"] == "zelerdata_smoke"
+    assert envelope["status_class"] == "success"
+    assert envelope["counters"] == {"dry_run": 1}
+    assert "zs_ext_dryrun_placeholder" not in captured.out
+    assert "ZELERDATA_SMOKE_TOKEN" not in captured.out
+
+
+def test_main_full_success_with_fresh_marker_redacts_both_values(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    log = _TransportLog()
+    transport = _transport(log)
+    exit_code = main([], environment=ENV_OK, client_factory=_client_factory(transport))
+
+    captured = capsys.readouterr()
+    lines = [line for line in captured.out.splitlines() if line.strip()]
+    assert exit_code == 0
+    assert len(lines) == 1
+    envelope = json.loads(lines[0])
+    assert envelope["stage"] == "zelerdata_smoke"
+    assert envelope["status_class"] == "success"
+    assert envelope["counters"] == {
+        "devoluciones": 1,
+        "formulas_implemented": 52,
+        "formulas_total": 52,
+    }
+    assert TOKEN not in captured.out
+    assert SELLER not in captured.out
+
+
+def test_main_data_unavailable_when_marker_stale(capsys: pytest.CaptureFixture[str]) -> None:
+    log = _TransportLog()
+    transport = _transport(log, execute_payload=_devoluciones_error_payload("DATA_UNAVAILABLE"))
+    exit_code = main([], environment=ENV_OK, client_factory=_client_factory(transport))
+
+    envelope = json.loads(capsys.readouterr().out.splitlines()[-1])
+    assert exit_code != 0
+    assert envelope["status_class"] == "data_unavailable"
+    assert envelope["counters"] == {
+        "devoluciones": 1,
+        "formulas_implemented": 52,
+        "formulas_total": 52,
+    }
+
+
+def test_main_auth_failure_exits_nonzero_and_never_leaks_token(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    log = _TransportLog()
+    transport = _transport(
+        log,
+        execute_status=401,
+        execute_payload=_devoluciones_error_payload("TOKEN_MISSING"),
+    )
+    exit_code = main([], environment=ENV_OK, client_factory=_client_factory(transport))
+
+    captured = capsys.readouterr()
+    envelope = json.loads(captured.out.splitlines()[-1])
+    assert exit_code != 0
+    assert envelope["status_class"] == "auth_failed"
+    assert TOKEN not in captured.out
+
+
+def test_main_inventory_mismatch_fails_closed_before_execute(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    log = _TransportLog()
+    transport = _transport(log, inventory_payload=_inventory_payload(implemented=51))
+    exit_code = main([], environment=ENV_OK, client_factory=_client_factory(transport))
+
+    envelope = json.loads(capsys.readouterr().out.splitlines()[-1])
+    assert exit_code != 0
+    assert envelope["status_class"] == "inventory_mismatch"
+    assert envelope["counters"] == {"formulas_implemented": 51, "formulas_total": 52}
+    assert all(request.url.path != "/sheets/formulas:execute" for request in log.requests)
+
+
+def test_main_inventory_only_skips_execute_and_reports_success(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    log = _TransportLog()
+    exit_code = main(
+        ["--inventory-only"],
+        environment=ENV_OK,
+        client_factory=_client_factory(_transport(log)),
+    )
+
+    envelope = json.loads(capsys.readouterr().out.splitlines()[-1])
+    assert exit_code == 0
+    assert envelope["status_class"] == "success"
+    assert envelope["counters"] == {
+        "formulas_implemented": 52,
+        "formulas_total": 52,
+        "inventory_only": 1,
+    }
+    assert [request.url.path for request in log.requests] == ["/sheets/formulas/inventory"]
+
+
+def test_main_never_calls_token_management_endpoints() -> None:
+    log = _TransportLog()
+    exit_code = main(
+        [],
+        environment=ENV_OK,
+        client_factory=_client_factory(_transport(log)),
+    )
+
+    assert exit_code == 0
+    paths = [request.url.path for request in log.requests]
+    assert "/sheets/formulas/inventory" in paths
+    assert "/sheets/formulas:execute" in paths
+    assert all("/extension-tokens" not in path for path in paths)
+    assert all("rotate" not in path and "reveal" not in path for path in paths)
+
+
+def test_main_config_missing_fails_closed_with_single_json(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    exit_code = main([], environment={})
+
+    captured = capsys.readouterr()
+    lines = [line for line in captured.out.splitlines() if line.strip()]
+    assert exit_code != 0
+    assert len(lines) == 1
+    envelope = json.loads(lines[0])
+    assert envelope["status_class"] == "config_missing"
+    assert envelope["counters"] == {}
+
+
+def test_smoke_date_range_is_inside_documented_accepted_coverage() -> None:
+    assert SMOKE_DATE_FROM == "2026-06-01"
+    assert SMOKE_DATE_TO == "2026-06-04"
+    assert SMOKE_DATE_FROM < SMOKE_DATE_TO
+    assert SMOKE_FORMULA == "ZELERDATA_DEVOLUCIONES"
