@@ -172,6 +172,7 @@ async def test_status_observation_contention_is_delayed_and_acked_without_dlq(
                 "resource_path": "/items/MLA-CONTENDED",
                 "attempt": 1,
                 "error_type": "StatusObservationContentionError",
+                "dlq_class": "transient_timeout",
             },
         )
     ]
@@ -207,6 +208,7 @@ async def test_status_observation_contention_requeues_when_delay_publisher_unava
                 "resource_path": "/items/MLA-CONTENDED",
                 "attempt": 3,
                 "error_type": "StatusObservationContentionError",
+                "dlq_class": "transient_timeout",
             },
         )
     ]
