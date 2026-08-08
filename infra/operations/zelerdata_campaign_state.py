@@ -120,6 +120,10 @@ class CampaignStateStore:
                 campaign["source_fingerprint_hash"] != sample["source_fingerprint_hash"]
                 or campaign["read_model_fingerprint_hash"] != sample["read_model_fingerprint_hash"]
             ):
+                if document["accepted_campaign_id"] == campaign_id:
+                    raise CampaignStateError(
+                        "campaign fingerprint drift refused without state update"
+                    )
                 disqualified.add(campaign_id)
                 campaigns.pop(campaign_id, None)
                 failure_reason = "campaign fingerprint drift disqualified the campaign ID"

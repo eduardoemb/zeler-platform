@@ -432,7 +432,8 @@ Type=oneshot
 WorkingDirectory=/opt/zeler-platform
 Environment=ZELERDATA_DEVOLUCIONES_RANGE_START=2026-06-01
 Environment=ZELERDATA_DEVOLUCIONES_ACCEPTED_THROUGH=2026-07-09
-Environment=ZELERDATA_DEVOLUCIONES_CAMPAIGN_ID=candidate-r8-initial
+# Campaign identity (campaign ID and both fingerprint hashes) comes ONLY from
+# the runtime EnvironmentFile; missing or invalid identity fails closed (exit 64).
 EnvironmentFile=-/etc/zeler-platform/zelerdata-devoluciones-reconcile.env
 Environment=ZELERDATA_DEVOLUCIONES_SELLER_ID=82453304
 ExecStart=/opt/zeler-platform/zelerdata-devoluciones-reconcile.sh

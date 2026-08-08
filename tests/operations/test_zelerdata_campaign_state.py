@@ -213,3 +213,34 @@ def test_repeated_private_failure_is_idempotent_for_an_already_disqualified_camp
 
     assert repeated.disqualified_campaign_ids == frozenset({"campaign-a"})
     assert "campaign-a" not in repeated.campaigns
+
+
+@pytest.mark.parametrize(
+    ("drift_key", "drift_value"),
+    [
+        ("source_fingerprint_hash", "c" * 64),
+        ("read_model_fingerprint_hash", "c" * 64),
+    ],
+)
+def test_fingerprint_drift_on_accepted_campaign_is_refused_without_state_update(
+    tmp_path: Path,
+    drift_key: str,
+    drift_value: str,
+) -> None:
+    state_path = tmp_path / "campaign.json"
+    store = CampaignStateStore(state_path)
+    for _ in range(20):
+        store.record(_evidence("campaign-a"))
+    assert store.load().accepted_campaign_id == "campaign-a"
+
+    drifted = _evidence("campaign-a")
+    drifted[drift_key] = drift_value
+    with pytest.raises(CampaignStateError, match="drift"):
+        store.record(drifted)
+
+    state = CampaignStateStore(state_path).load()
+    assert state.accepted_campaign_id == "campaign-a"
+    assert "campaign-a" not in state.disqualified_campaign_ids
+    assert state.campaigns["campaign-a"]["durations"] == [100.0] * 20
+    assert state.campaigns["campaign-a"]["source_fingerprint_hash"] == "a" * 64
+    assert state.campaigns["campaign-a"]["read_model_fingerprint_hash"] == "b" * 64
