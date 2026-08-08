@@ -107,7 +107,7 @@ async def test_health_503_when_mongo_unreachable(module: str, builder: Callable[
 def _build_app(builder: Callable[..., Any], db: FakeMongoDb) -> Any:
     if builder is build_repricer_app:
         return builder(mongo_db=db, rabbitmq_ready=lambda: True)
-    if builder is build_sheets_app:
+    if builder in (build_publicador_app, build_sheets_app):
         return builder(
             mongo_db=db,
             rabbitmq_url="amqp://guest:guest@broker:5672/",
