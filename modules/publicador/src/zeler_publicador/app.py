@@ -11,11 +11,10 @@ from zeler_platform_core.runtime.checks import mongo_check_factory
 from zeler_platform_core.runtime.health import HealthCheck, build_health_router
 from zeler_platform_core.runtime.manifest import validate_manifest
 from zeler_platform_core.runtime.registration import register_module
-from zeler_publicador.api import Generator, Publisher, build_router
 from zeler_publicador.ai import ProviderConfig, PublicadorConfigError
+from zeler_publicador.api import Generator, Publisher, build_router
 from zeler_publicador.generator import ListingGenerator, LLMNotConfiguredError, Stub503LLM
 from zeler_publicador.publisher import PublicadorPublisher
-
 
 LEGAL_LISTING_LLM_VALUES = frozenset({"stub", "disabled"})
 AI_FAIL_CLOSED_PROVIDER = "stub"
