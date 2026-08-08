@@ -1,17 +1,15 @@
 from __future__ import annotations
 
-from typing import Any
-
 import pytest
 
 from zeler_sheets.scripts.authenticated_smoke import (
     ENV_BASE_URL,
     ENV_SELLER,
     ENV_TOKEN,
+    STAGE,
     SmokeConfig,
     SmokeConfigError,
     SmokeRedactionError,
-    STAGE,
     assert_redacted,
     build_evidence,
     config_from_env,
