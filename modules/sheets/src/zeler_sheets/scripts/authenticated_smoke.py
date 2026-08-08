@@ -14,8 +14,11 @@ token-lifecycle endpoint is ever touched.
 
 from __future__ import annotations
 
+import argparse
+import asyncio
 import json
-from collections.abc import Mapping
+import os
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -236,6 +239,44 @@ async def run_devoluciones(
     return "formula_failed"
 
 
+async def run_smoke(
+    config: SmokeConfig,
+    *,
+    client_factory: Callable[[], httpx.AsyncClient],
+    inventory_only: bool,
+    dry_run: bool,
+) -> SmokeResult:
+    if dry_run:
+        return SmokeResult("success", {"dry_run": 1}, exit_code_for("success"))
+    async with client_factory() as client:
+        try:
+            inventory = await fetch_inventory(client, config.base_url)
+        except SmokeHttpError as exc:
+            return SmokeResult(exc.status_class, {}, exit_code_for(exc.status_class))
+        counters: dict[str, int] = {
+            "formulas_total": inventory.formulas_total,
+            "formulas_implemented": inventory.formulas_implemented,
+        }
+        if not inventory_passes(inventory):
+            return SmokeResult("inventory_mismatch", counters, exit_code_for("inventory_mismatch"))
+        if inventory_only:
+            counters["inventory_only"] = 1
+            return SmokeResult("success", counters, exit_code_for("success"))
+        try:
+            devoluciones_class = await run_devoluciones(
+                client,
+                config.base_url,
+                config.token,
+                config.seller,
+            )
+        except SmokeHttpError as exc:
+            return SmokeResult(exc.status_class, counters, exit_code_for(exc.status_class))
+        counters["devoluciones"] = 1
+        if devoluciones_class != "success":
+            return SmokeResult(devoluciones_class, counters, exit_code_for(devoluciones_class))
+        return SmokeResult("success", counters, exit_code_for("success"))
+
+
 def _error_code(body: Any) -> str | None:
     if not isinstance(body, Mapping):
         return None
@@ -244,3 +285,64 @@ def _error_code(body: Any) -> str | None:
         return None
     code = error.get("code")
     return code if isinstance(code, str) else None
+
+
+def _build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description=(
+            "Env-only authenticated ZelerData smoke: validates the formula inventory "
+            "and executes one DEVOLUCIONES smoke. Reads ZELERDATA_SMOKE_BASE_URL, "
+            "ZELERDATA_SMOKE_TOKEN, and ZELERDATA_SMOKE_SELLER from the environment "
+            "only; never mints, rotates, or reveals tokens; redacts both values from "
+            "every output line."
+        )
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Resolve and redact only; no network call is made.",
+    )
+    parser.add_argument(
+        "--inventory-only",
+        action="store_true",
+        help="Validate the formula inventory and skip the DEVOLUCIONES execute smoke.",
+    )
+    return parser
+
+
+def main(
+    argv: Sequence[str] | None = None,
+    *,
+    environment: Mapping[str, str] | None = None,
+    client_factory: Callable[[], httpx.AsyncClient] | None = None,
+) -> int:
+    args = _build_parser().parse_args(argv)
+    env = os.environ if environment is None else environment
+    factory = client_factory or (lambda: httpx.AsyncClient(timeout=10.0))
+    try:
+        config = config_from_env(env, dry_run=args.dry_run)
+    except SmokeConfigError:
+        result = SmokeResult("config_missing", {}, exit_code_for("config_missing"))
+        print(_serialize(result))
+        return result.exit_code
+    result = asyncio.run(
+        run_smoke(
+            config,
+            client_factory=factory,
+            inventory_only=args.inventory_only,
+            dry_run=args.dry_run,
+        )
+    )
+    redacted = redact_text(_serialize(result), config)
+    try:
+        assert_redacted(redacted, config)
+    except SmokeRedactionError:
+        fallback = SmokeResult("redaction_failed", {}, exit_code_for("redaction_failed"))
+        print(_serialize(fallback))
+        return fallback.exit_code
+    print(redacted)
+    return result.exit_code
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
