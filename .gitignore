@@ -48,3 +48,6 @@ sdd/*/archive-report.md
 
 # Skill registry (project-local, never committed)
 .atl/
+
+# OpenCode local state
+.opencode/
