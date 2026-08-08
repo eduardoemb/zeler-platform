@@ -1,13 +1,13 @@
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any, cast
 
 import httpx
 from fastapi import FastAPI
 
-from zeler_platform_core.runtime.checks import mongo_check_factory
+from zeler_platform_core.runtime.checks import mongo_check_factory, rabbitmq_check_factory
 from zeler_platform_core.runtime.health import HealthCheck, build_health_router
 from zeler_platform_core.runtime.manifest import validate_manifest
 from zeler_platform_core.runtime.registration import register_module, registration_matches_manifest
@@ -20,7 +20,8 @@ from zeler_sheets.sheets_config import SheetsSettings, get_settings
 def build_app(
     *,
     mongo_db: object,
-    rabbitmq_ready: Callable[[], bool],
+    rabbitmq_url: str | None = None,
+    rabbitmq_connect: Callable[..., Awaitable[Any]] | None = None,
     kms_client: Any | None = None,
     settings: SheetsSettings | None = None,
     http_client_factory: Callable[[], httpx.AsyncClient] | None = None,
@@ -40,9 +41,11 @@ def build_app(
     manifest = validate_manifest(Path(__file__).resolve().parents[2] / "manifest.yaml")
 
     mongo_check = mongo_check_factory(mongo_db)
-
-    async def rabbitmq_check() -> tuple[bool, str]:
-        return (True, "connected") if rabbitmq_ready() else (False, "consumer_stalled")
+    rabbitmq_check = rabbitmq_check_factory(
+        lambda: rabbitmq_url,
+        timeout_seconds=5.0,
+        connect=rabbitmq_connect,
+    )
 
     async def registry_check() -> tuple[bool, str]:
         try:
@@ -89,9 +92,10 @@ def make_app() -> FastAPI:
         raise RuntimeError("MONGO_DB is required for API mode")
 
     mongo_db: object = AsyncIOMotorClient(mongo_uri)[mongo_db_name]
+    rabbitmq_url = os.environ.get("RABBITMQ_URL")
     return build_app(
         mongo_db=mongo_db,
-        rabbitmq_ready=lambda: True,
+        rabbitmq_url=rabbitmq_url,
         kms_client=kms.KeyManagementServiceClient(),
         settings=get_settings(),
     )
