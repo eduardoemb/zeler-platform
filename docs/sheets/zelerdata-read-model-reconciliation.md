@@ -92,6 +92,17 @@ sudo journalctl -u zelerdata-devoluciones-reconcile.service \
   --no-pager
 ```
 
+### Intentional state
+
+The timer is intentionally disabled and no campaign is currently accepted.
+`ZELERDATA_DEVOLUCIONES_ACCEPTED_THROUGH` defaults to `2026-07-09`, and campaign
+identity (campaign ID plus both source/read-model fingerprint hashes) is sourced
+only from `/etc/zeler-platform/zelerdata-devoluciones-reconcile.env`. Until a
+campaign is durably accepted for the release,
+`infra/operations/devoluciones_timer_status.py` reports
+`timer_active=false` and `has_accepted_campaign=false`; the status script never
+reads Mongo or private samples and never enables the timer.
+
 Use **failure-conditional rollback** only after a failed deployment, topology,
 write, formula, or timer gate. Disable the timer, stale readiness through the
 topology rollback, restore the prior worker runtime/routing/schedule, and retain
