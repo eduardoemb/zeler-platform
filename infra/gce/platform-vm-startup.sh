@@ -139,6 +139,81 @@ chmod 700 /opt/zeler-platform/env
 echo "Directory layout created under /opt/zeler-platform/"
 
 # -------------------------------------------------------------------------
+# 6a. Ops Agent classified-log config (validate, install, restart safely)
+# -------------------------------------------------------------------------
+cat > /opt/zeler-platform/ops-agent-config.yaml << 'OPSAGENT'
+# Google Cloud Ops Agent classified-log configuration for platform-vm.
+#
+# Two pipelines:
+#   - gateway_classified: tails Docker container logs (the gateway emits
+#     structlog JSON via container stdout -> Docker json-file driver), parses
+#     the per-line JSON payload, and routes it to the custom Cloud Logging log
+#     `zeler-platform/gateway-classified`.
+#   - caddy_classified: tails the same Docker json-file logs, which carry
+#     Caddy's JSON access logs (Caddy logs to container stdout), parses them,
+#     and routes the result to the custom Cloud Logging log
+#     `zeler-platform/caddy-classified`.
+#
+# Installed by infra/gce/platform-vm-startup.sh using a validate -> install ->
+# restart sequence that keeps the prior config when validation fails.
+
+receivers:
+  docker_container_logs:
+    type: files
+    include_paths:
+      - /var/lib/docker/containers/*/*-json.log
+  caddy_logs:
+    type: files
+    include_paths:
+      - /var/lib/docker/containers/*/*-json.log
+
+processors:
+  docker_logs_parse_json:
+    type: parse_json
+    parse_from: log
+  caddy_logs_parse_json:
+    type: parse_json
+    parse_from: log
+
+exporters:
+  gateway_classified_logging:
+    type: google_cloud_logging
+    log_type: zeler-platform/gateway-classified
+  caddy_classified_logging:
+    type: google_cloud_logging
+    log_type: zeler-platform/caddy-classified
+
+service:
+  pipelines:
+    gateway_classified:
+      receivers:
+        - docker_container_logs
+      processors:
+        - docker_logs_parse_json
+      exporters:
+        - gateway_classified_logging
+    caddy_classified:
+      receivers:
+        - caddy_logs
+      processors:
+        - caddy_logs_parse_json
+      exporters:
+        - caddy_classified_logging
+OPSAGENT
+if command -v ops-agent-ctl >/dev/null 2>&1; then
+  mkdir -p /etc/google-cloud-ops-agent
+  if ops-agent-ctl validate-config /opt/zeler-platform/ops-agent-config.yaml; then
+    install -m 0644 /opt/zeler-platform/ops-agent-config.yaml /etc/google-cloud-ops-agent/config.yaml
+    systemctl restart google-cloud-ops-agent
+    echo "Ops Agent classified-log config validated and applied"
+  else
+    echo "WARNING: Ops Agent config validation failed; prior config kept" >&2
+  fi
+else
+  echo "WARNING: ops-agent-ctl not found; classified-log config not applied" >&2
+fi
+
+# -------------------------------------------------------------------------
 # 6b. Safe Docker root-disk maintenance scripts + timer
 # -------------------------------------------------------------------------
 cat > /opt/zeler-platform/docker-maintenance.sh << 'SCRIPT'

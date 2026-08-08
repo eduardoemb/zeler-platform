@@ -15,27 +15,37 @@
 
 gateway.zeler.ai {
 	import common
-	reverse_proxy gateway:8080
+	reverse_proxy gateway:8080 {
+		header_up X-Request-Id {http.request.header.X-Request-Id}
+	}
 }
 
 sheets.zeler.ai {
 	import common
-	reverse_proxy sheets-api:8080
+	reverse_proxy sheets-api:8080 {
+		header_up X-Request-Id {http.request.header.X-Request-Id}
+	}
 }
 
 repricer.zeler.ai {
 	import common
-	reverse_proxy repricer-api:8080
+	reverse_proxy repricer-api:8080 {
+		header_up X-Request-Id {http.request.header.X-Request-Id}
+	}
 }
 
 publicador.zeler.ai {
 	import common
-	reverse_proxy publicador-api:8080
+	reverse_proxy publicador-api:8080 {
+		header_up X-Request-Id {http.request.header.X-Request-Id}
+	}
 }
 
 autoreply.zeler.ai {
 	import common
-	reverse_proxy autoreply-api:8080
+	reverse_proxy autoreply-api:8080 {
+		header_up X-Request-Id {http.request.header.X-Request-Id}
+	}
 }
 
 fulldock.zeler.ai {
