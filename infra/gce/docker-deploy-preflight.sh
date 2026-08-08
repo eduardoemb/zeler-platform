@@ -7,11 +7,22 @@ MIN_FREE_GIB=${MIN_FREE_GIB:-5}
 MAINTENANCE_SCRIPT=${MAINTENANCE_SCRIPT:-/opt/zeler-platform/docker-maintenance.sh}
 PLATFORM_ROOT=${ZELER_PLATFORM_ROOT:-/opt/zeler-platform}
 SHEETS_ROLLBACK_PREFLIGHT=${SHEETS_ROLLBACK_PREFLIGHT:-0}
+REQUIRE_DIGEST_BINDING=${REQUIRE_DIGEST_BINDING:-0}
 PROHIBITED_OLD_SHEETS_API_DIGEST=sha256:8da8ab2b0b092825e6b3f362ea92e375a52e25a7a3cb78c2af0828844ddb00b6
 GCLOUD_BIN=${ZELER_GCLOUD_BIN:-/usr/bin/gcloud}
 DOCKER_BIN=${ZELER_DOCKER_BIN:-/usr/bin/docker}
 PYTHON_BIN=${ZELER_PYTHON_BIN:-/usr/bin/python3}
 ROLLBACK_PROOF_FILE=${SHEETS_ROLLBACK_PROOF_FILE:-/var/lib/zeler-platform/sheets-rollback-release-proof.json}
+COMPOSE_FILE=${ZELER_COMPOSE_FILE:-$PLATFORM_ROOT/docker-compose.yml}
+if [[ ! -f "$COMPOSE_FILE" ]]; then
+  COMPOSE_FILE="$(cd "$(dirname "$0")" && pwd)/docker-compose.yml"
+fi
+IMAGE_TO_COMMIT_FILE=${IMAGE_TO_COMMIT_FILE:-/var/lib/zeler-platform/image_to_commit.json}
+
+DRY_RUN=0
+if [[ "${1:-}" == "--dry-run" ]]; then
+  DRY_RUN=1
+fi
 
 min_free_kib=$((MIN_FREE_GIB * 1024 * 1024))
 
@@ -121,13 +132,70 @@ verify_sheets_rollback_attestation() {
   echo "Pulled digest image config and no-secret runtime contract probe: verified"
 }
 
+verify_digest_binding() {
+  # Opt-in immutable-digest provenance gate: refuses any moving image: tag
+  # BEFORE any pull, then verifies each pinned image against one successful
+  # SLSA v1 subject/build/commit and writes image_to_commit.json evidence.
+  local image_ref build_id gcloud_project_id gcloud_project_number temp_dir image_list
+  if [[ ! -f "$COMPOSE_FILE" ]]; then
+    echo "ERROR: compose file is missing: $COMPOSE_FILE" >&2
+    exit 1
+  fi
+  echo "Refusing any moving image tag before pull (REQUIRE_DIGEST_BINDING=1)."
+  PYTHONPATH="$PLATFORM_ROOT" "$PYTHON_BIN" -m infra.deploy.provenance_check \
+    check-compose --compose-file "$COMPOSE_FILE"
+  gcloud_project_id=$("$GCLOUD_BIN" config get-value project 2>/dev/null)
+  if [[ ! "$gcloud_project_id" =~ ^[a-z][a-z0-9-]{4,28}[a-z0-9]$ ]]; then
+    echo "ERROR: trusted gcloud project id is missing or invalid." >&2
+    exit 1
+  fi
+  gcloud_project_number=$("$GCLOUD_BIN" projects describe "$gcloud_project_id" --format='value(projectNumber)')
+  if [[ ! "$gcloud_project_number" =~ ^[0-9]+$ ]]; then
+    echo "ERROR: trusted gcloud project number is missing or invalid." >&2
+    exit 1
+  fi
+  temp_dir=$(mktemp -d)
+  image_list=$(mktemp)
+  trap 'rm -rf "$temp_dir" "$image_list"' RETURN
+  rm -f "$IMAGE_TO_COMMIT_FILE"
+  PYTHONPATH="$PLATFORM_ROOT" "$PYTHON_BIN" \
+    -m infra.deploy.provenance_check list-images --compose-file "$COMPOSE_FILE" > "$image_list"
+  while IFS= read -r image_ref; do
+    [[ -n "$image_ref" ]] || continue
+    "$GCLOUD_BIN" artifacts docker images describe "$image_ref" \
+      --show-provenance --format=json > "$temp_dir/artifact.json"
+    build_id=$(PYTHONPATH="$PLATFORM_ROOT" "$PYTHON_BIN" \
+      -m infra.deploy.provenance_check extract-build-id \
+      --artifact-file "$temp_dir/artifact.json" --image-ref "$image_ref")
+    "$GCLOUD_BIN" builds describe "$build_id" --format=json > "$temp_dir/build.json"
+    PYTHONPATH="$PLATFORM_ROOT" "$PYTHON_BIN" -m infra.deploy.provenance_check \
+      verify-image \
+      --image-ref "$image_ref" \
+      --artifact-file "$temp_dir/artifact.json" \
+      --build-file "$temp_dir/build.json" \
+      --expected-project-id "$gcloud_project_id" \
+      --expected-project-number "$gcloud_project_number" \
+      --map-out "$IMAGE_TO_COMMIT_FILE"
+  done < "$image_list"
+  echo "Immutable image provenance binding: verified for every compose image."
+  echo "image_to_commit.json: $IMAGE_TO_COMMIT_FILE"
+}
+
 print_usage() {
   echo "Root filesystem usage:"
   df -h /
 }
 
+if [[ "$REQUIRE_DIGEST_BINDING" == "1" ]]; then
+  verify_digest_binding
+fi
+
 if [[ "$SHEETS_ROLLBACK_PREFLIGHT" == "1" ]]; then
-  verify_sheets_rollback_attestation
+  if [[ "$DRY_RUN" == "1" ]]; then
+    echo "dry-run: Sheets rollback attestation skipped (it would pull images)."
+  else
+    verify_sheets_rollback_attestation
+  fi
 fi
 
 free_kib=$(free_root_kib)
@@ -136,6 +204,12 @@ print_usage
 if require_free_space "$free_kib"; then
   echo "Preflight passed: root filesystem has at least ${MIN_FREE_GIB}GiB free."
   exit 0
+fi
+
+if [[ "$DRY_RUN" == "1" ]]; then
+  echo "dry-run: root filesystem has less than ${MIN_FREE_GIB}GiB free."
+  echo "dry-run: safe Docker maintenance skipped; the real preflight would run it."
+  exit 1
 fi
 
 echo "Preflight warning: root filesystem has less than ${MIN_FREE_GIB}GiB free."
