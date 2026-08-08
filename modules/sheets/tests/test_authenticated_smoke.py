@@ -1,22 +1,31 @@
 from __future__ import annotations
 
+import json
 from typing import Any
 
+import httpx
 import pytest
 
 from zeler_sheets.scripts.authenticated_smoke import (
     ENV_BASE_URL,
     ENV_SELLER,
     ENV_TOKEN,
+    EXPECTED_FORMULA_COUNT,
+    SMOKE_FORMULA,
+    STAGE,
     SmokeConfig,
     SmokeConfigError,
+    SmokeHttpError,
     SmokeRedactionError,
-    STAGE,
     assert_redacted,
     build_evidence,
     config_from_env,
     exit_code_for,
+    fetch_inventory,
+    inventory_passes,
+    parse_inventory,
     redact_text,
+    run_devoluciones,
 )
 
 TOKEN = "zs_ext_smoke_test_secret_token"  # noqa: S105 - test-only placeholder token.
@@ -28,6 +37,53 @@ ENV_OK = {
     ENV_TOKEN: TOKEN,
     ENV_SELLER: SELLER,
 }
+
+
+def _inventory_payload(*, implemented: int = 52, total: int = 52) -> dict[str, Any]:
+    formulas = [
+        {
+            "name": f"ZELERDATA_FORMULA_{index:02d}",
+            "status": "implemented" if index < implemented else "unsupported",
+        }
+        for index in range(total - 1)
+    ]
+    formulas.append(
+        {
+            "name": SMOKE_FORMULA,
+            "status": "implemented" if implemented == total else "unsupported",
+        }
+    )
+    return {"formulas": formulas}
+
+
+def _devoluciones_error_payload(code: str) -> dict[str, Any]:
+    return {"ok": False, "error": {"code": code}}
+
+
+class _TransportLog:
+    def __init__(self) -> None:
+        self.requests: list[httpx.Request] = []
+
+
+def _transport(
+    log: _TransportLog,
+    *,
+    inventory_payload: dict[str, Any] | None = None,
+    execute_status: int = 200,
+    execute_payload: dict[str, Any] | None = None,
+) -> httpx.MockTransport:
+    def handler(request: httpx.Request) -> httpx.Response:
+        log.requests.append(request)
+        if request.url.path == "/sheets/formulas/inventory":
+            return httpx.Response(200, json=inventory_payload or _inventory_payload())
+        if request.url.path == "/sheets/formulas:execute":
+            return httpx.Response(
+                execute_status,
+                json=execute_payload or {"ok": True, "values": [["value"]]},
+            )
+        return httpx.Response(404)
+
+    return httpx.MockTransport(handler)
 
 
 def test_taxonomy_status_classes_and_exit_codes_are_bounded() -> None:
@@ -126,3 +182,97 @@ def test_assert_redacted_rejects_leaked_token_or_seller() -> None:
     with pytest.raises(SmokeRedactionError) as seller_exc:
         assert_redacted(f"leaked {SELLER}", config)
     assert "seller" in str(seller_exc.value)
+
+
+def test_parse_inventory_counts_total_implemented_and_devoluciones() -> None:
+    observation = parse_inventory(_inventory_payload())
+
+    assert observation.formulas_total == EXPECTED_FORMULA_COUNT == 52
+    assert observation.formulas_implemented == 52
+    assert observation.devoluciones_implemented is True
+
+
+def test_parse_inventory_detects_missing_devoluciones_implementation() -> None:
+    observation = parse_inventory(_inventory_payload(implemented=51))
+
+    assert observation.formulas_total == 52
+    assert observation.formulas_implemented == 51
+    assert observation.devoluciones_implemented is False
+
+
+def test_parse_inventory_rejects_non_object_formula_contract() -> None:
+    with pytest.raises(ValueError, match="formula contract"):
+        parse_inventory({"formulas": ["invalid"]})
+
+
+@pytest.mark.parametrize(
+    ("total", "implemented", "devoluciones_implemented", "expected"),
+    [
+        (52, 52, True, True),
+        (52, 51, True, False),
+        (52, 52, False, False),
+        (53, 53, True, False),
+    ],
+)
+def test_inventory_passes_requires_exact_52_all_implemented(
+    total: int, implemented: int, devoluciones_implemented: bool, expected: bool
+) -> None:
+    from zeler_sheets.scripts.authenticated_smoke import InventoryObservation
+
+    observation = InventoryObservation(total, implemented, devoluciones_implemented)
+
+    assert inventory_passes(observation) is expected
+
+
+@pytest.mark.asyncio
+async def test_fetch_inventory_returns_observation_from_transport() -> None:
+    log = _TransportLog()
+    async with httpx.AsyncClient(transport=_transport(log)) as client:
+        observation = await fetch_inventory(client, BASE_URL)
+
+    assert observation.formulas_total == 52
+    assert observation.formulas_implemented == 52
+    assert observation.devoluciones_implemented is True
+    assert [request.url.path for request in log.requests] == ["/sheets/formulas/inventory"]
+
+
+@pytest.mark.asyncio
+async def test_fetch_inventory_raises_transport_failed_on_http_error() -> None:
+    transport = httpx.MockTransport(lambda request: httpx.Response(503))
+    async with httpx.AsyncClient(transport=transport) as client:
+        with pytest.raises(SmokeHttpError) as exc:
+            await fetch_inventory(client, BASE_URL)
+    assert exc.value.status_class == "transport_failed"
+
+
+@pytest.mark.asyncio
+async def test_run_devoluciones_classifies_success_data_unavailable_and_auth() -> None:
+    log = _TransportLog()
+    async with httpx.AsyncClient(transport=_transport(log)) as client:
+        assert await run_devoluciones(client, BASE_URL, TOKEN, SELLER) == "success"
+    async with httpx.AsyncClient(
+        transport=_transport(log, execute_payload=_devoluciones_error_payload("DATA_UNAVAILABLE"))
+    ) as client:
+        assert await run_devoluciones(client, BASE_URL, TOKEN, SELLER) == "data_unavailable"
+    async with httpx.AsyncClient(
+        transport=_transport(
+            log,
+            execute_status=401,
+            execute_payload=_devoluciones_error_payload("TOKEN_MISSING"),
+        )
+    ) as client:
+        assert await run_devoluciones(client, BASE_URL, TOKEN, SELLER) == "auth_failed"
+    execute_requests = [
+        request for request in log.requests if request.url.path == "/sheets/formulas:execute"
+    ]
+    assert execute_requests[0].headers["Authorization"] == f"Bearer {TOKEN}"
+    assert json.loads(execute_requests[0].content) == {
+        "formula": SMOKE_FORMULA,
+        "cuenta": SELLER,
+        "args": {
+            "fecha_inicio": "2026-06-01",
+            "fecha_final": "2026-06-04",
+            "id_publicaciones": "todos",
+            "encabezados": "",
+        },
+    }
