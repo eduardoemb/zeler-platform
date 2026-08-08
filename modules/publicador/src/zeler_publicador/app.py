@@ -1,21 +1,21 @@
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
-from zeler_platform_core.runtime.checks import mongo_check_factory
+from zeler_platform_core.runtime.checks import mongo_check_factory, rabbitmq_check_factory
 from zeler_platform_core.runtime.health import HealthCheck, build_health_router
 from zeler_platform_core.runtime.manifest import validate_manifest
-from zeler_platform_core.runtime.registration import register_module
-from zeler_publicador.api import Generator, Publisher, build_router
+from zeler_platform_core.runtime.registration import register_module, registration_matches_manifest
 from zeler_publicador.ai import ProviderConfig, PublicadorConfigError
+from zeler_publicador.api import Generator, Publisher, build_router
 from zeler_publicador.generator import ListingGenerator, LLMNotConfiguredError, Stub503LLM
 from zeler_publicador.publisher import PublicadorPublisher
-
 
 LEGAL_LISTING_LLM_VALUES = frozenset({"stub", "disabled"})
 AI_FAIL_CLOSED_PROVIDER = "stub"
@@ -49,7 +49,12 @@ def resolve_publicador_runtime_config(env: dict[str, str | None]) -> PublicadorR
 
 
 def build_app(
-    *, mongo_db: object, generator: Generator | None = None, publisher: Publisher | None = None
+    *,
+    mongo_db: object,
+    generator: Generator | None = None,
+    publisher: Publisher | None = None,
+    rabbitmq_url: str | None = None,
+    rabbitmq_connect: Callable[..., Awaitable[Any]] | None = None,
 ) -> FastAPI:
     app = FastAPI(title="zeler-publicador")
     app.state.mongo_db = mongo_db
@@ -73,11 +78,30 @@ def build_app(
     app.add_exception_handler(PublicadorConfigError, llm_not_configured_handler)
 
     mongo_check = mongo_check_factory(mongo_db)
+    rabbitmq_check = rabbitmq_check_factory(
+        lambda: rabbitmq_url,
+        timeout_seconds=5.0,
+        connect=rabbitmq_connect,
+    )
+
+    async def registry_check() -> tuple[bool, str]:
+        try:
+            database = cast(Any, mongo_db)
+            document = await database["module_registry"].find_one({"_id": manifest.module_id})
+        except Exception:  # noqa: BLE001 - health must fail closed on registry read errors.
+            return False, "registry_fingerprint_unavailable"
+        if not registration_matches_manifest(document=document, manifest=manifest):
+            return False, "registry_fingerprint_mismatch"
+        return True, "registry_fingerprint_match"
 
     app.include_router(
         build_health_router(
             manifest.name,
-            checks=[HealthCheck(name="mongo", check=mongo_check)],
+            checks=[
+                HealthCheck(name="mongo", check=mongo_check),
+                HealthCheck(name="rabbitmq", check=rabbitmq_check),
+                HealthCheck(name="registry", check=registry_check),
+            ],
         )
     )
     app.include_router(build_router(generator=generator, publisher=publisher))
@@ -106,6 +130,7 @@ def make_app() -> FastAPI:
         mongo_db=mongo_db,
         generator=select_listing_generator(),
         publisher=PublicadorPublisher(mongo_db=mongo_db, gateway_client=_GatewayProxyClient()),
+        rabbitmq_url=os.environ.get("RABBITMQ_URL"),
     )
 
 
