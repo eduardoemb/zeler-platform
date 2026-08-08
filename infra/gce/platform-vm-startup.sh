@@ -174,6 +174,18 @@ processors:
   caddy_logs_parse_json:
     type: parse_json
     parse_from: log
+  caddy_logs_redact:
+    type: modify_fields
+    fields:
+      jsonPayload.request.headers:
+        map_values: {}
+        map_values_exclusive: true
+      jsonPayload.request.uri:
+        map_values: {}
+        map_values_exclusive: true
+      jsonPayload.resp_headers:
+        map_values: {}
+        map_values_exclusive: true
 
 exporters:
   gateway_classified_logging:
@@ -197,6 +209,7 @@ service:
         - caddy_logs
       processors:
         - caddy_logs_parse_json
+        - caddy_logs_redact
       exporters:
         - caddy_classified_logging
 OPSAGENT
