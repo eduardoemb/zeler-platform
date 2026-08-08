@@ -10,6 +10,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from zeler_gateway.app import app as gateway_app
 from zeler_gateway.observability.logging import configure_logging
 from zeler_gateway.observability.request_context import (
     REQUEST_CLASS_SERVER_ERROR,
@@ -172,3 +173,16 @@ def test_log_and_500_never_contain_body_query_auth_or_seller(
         assert secret not in rendered
         assert secret not in captured_output
     assert response.json()["error"] == "internal"
+
+
+def test_gateway_app_registers_request_context_middleware() -> None:
+    registered = any(
+        middleware.kwargs.get("dispatch") is request_context_middleware
+        for middleware in gateway_app.user_middleware
+    )
+
+    assert registered
+
+
+def test_gateway_app_registers_global_exception_handler() -> None:
+    assert gateway_app.exception_handlers.get(Exception) is internal_error_handler
