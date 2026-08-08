@@ -21,6 +21,10 @@ from zeler_gateway.oauth.router import router as oauth_router
 from zeler_gateway.observability.logging import configure_logging
 from zeler_gateway.observability.metrics import metrics_middleware
 from zeler_gateway.observability.metrics import router as metrics_router
+from zeler_gateway.observability.request_context import (
+    internal_error_handler,
+    request_context_middleware,
+)
 from zeler_gateway.observability.tracing import configure_tracing
 from zeler_gateway.proxy.router import router as proxy_router
 from zeler_gateway.routes.health import router as health_router
@@ -214,6 +218,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 app = FastAPI(title="zeler-meli-gateway", lifespan=lifespan)
 app.middleware("http")(metrics_middleware)
+app.middleware("http")(request_context_middleware)
+app.add_exception_handler(Exception, internal_error_handler)
 app.include_router(accounts_router)
 app.include_router(auth_router)
 app.include_router(bootstrap_jobs_router)
