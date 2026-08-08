@@ -7,15 +7,21 @@ sha256 digest before a pull can occur.
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import re
 import tempfile
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
-from infra.deploy.sheets_rollback import RollbackSafetyError, verify_gcloud_provenance
+import yaml
+from infra.deploy.sheets_rollback import (
+    RollbackSafetyError,
+    extract_cloud_build_id,
+    verify_gcloud_provenance,
+)
 
 PROOF_SCHEMA_VERSION = 1
 _IMAGE_REF_PATTERN = re.compile(r"[a-z0-9.-]+/[a-z0-9._/-]+@sha256:[0-9a-f]{64}")
@@ -209,3 +215,78 @@ def _read_existing_map(path: Path) -> Mapping[str, Any] | None:
     if not isinstance(document, Mapping):
         raise ProvenanceCheckError("existing image_to_commit.json is invalid")
     return document
+
+
+def _read_compose(path: Path) -> Mapping[str, Any]:
+    document = yaml.safe_load(path.read_text(encoding="utf-8"))
+    if not isinstance(document, Mapping):
+        raise ProvenanceCheckError("compose file does not contain a mapping")
+    return document
+
+
+def _build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog="infra.deploy.provenance_check")
+    subparsers = parser.add_subparsers(dest="command", required=True)
+    check = subparsers.add_parser("check-compose")
+    check.add_argument("--compose-file", type=Path, required=True)
+    list_images = subparsers.add_parser("list-images")
+    list_images.add_argument("--compose-file", type=Path, required=True)
+    extract = subparsers.add_parser("extract-build-id")
+    extract.add_argument("--artifact-file", type=Path, required=True)
+    extract.add_argument("--image-ref", required=True)
+    verify = subparsers.add_parser("verify-image")
+    verify.add_argument("--image-ref", required=True)
+    verify.add_argument("--artifact-file", type=Path, required=True)
+    verify.add_argument("--build-file", type=Path, required=True)
+    verify.add_argument("--source-commit")
+    verify.add_argument("--connected-repository")
+    verify.add_argument("--expected-project-id")
+    verify.add_argument("--expected-project-number")
+    verify.add_argument("--map-out", type=Path, required=True)
+    return parser
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    args = _build_parser().parse_args(argv)
+    try:
+        if args.command == "check-compose":
+            check_compose_digest_binding(_read_compose(args.compose_file))
+            print("digest binding: every compose image is pinned by sha256 digest")
+            return 0
+        if args.command == "list-images":
+            for image_ref in compose_image_refs(_read_compose(args.compose_file)):
+                print(image_ref)
+            return 0
+        if args.command == "extract-build-id":
+            artifact_document = json.loads(args.artifact_file.read_text(encoding="utf-8"))
+            if not isinstance(artifact_document, Mapping):
+                raise ProvenanceCheckError("Artifact Registry provenance document is invalid")
+            print(extract_cloud_build_id(artifact_document, image_ref=args.image_ref))
+            return 0
+        if args.command == "verify-image":
+            artifact_document = json.loads(args.artifact_file.read_text(encoding="utf-8"))
+            build_document = json.loads(args.build_file.read_text(encoding="utf-8"))
+            if not isinstance(artifact_document, Mapping) or not isinstance(
+                build_document, Mapping
+            ):
+                raise ProvenanceCheckError("provenance evidence is invalid")
+            entry = verify_image_to_commit(
+                image_ref=args.image_ref,
+                artifact_document=artifact_document,
+                build_document=build_document,
+                expected_source_commit=args.source_commit,
+                expected_connected_repository=args.connected_repository,
+                expected_cloud_build_project_id=args.expected_project_id,
+                expected_cloud_build_project_number=args.expected_project_number,
+            )
+            merged = merge_image_to_commit(_read_existing_map(args.map_out), args.image_ref, entry)
+            write_image_to_commit(args.map_out, merged)
+            print(f"image_to_commit.json: {args.image_ref} digest/build/source verified")
+            return 0
+    except (OSError, ValueError, ProvenanceCheckError) as exc:
+        raise SystemExit(str(exc)) from exc
+    raise AssertionError(f"unhandled command: {args.command}")
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

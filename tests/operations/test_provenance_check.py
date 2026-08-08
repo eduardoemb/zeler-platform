@@ -14,6 +14,7 @@ from infra.deploy.provenance_check import (
     compose_image_refs,
     digest_pinned_image_ref,
     image_to_commit_document,
+    main,
     merge_image_to_commit,
     unpinned_image_refs,
     verify_image_to_commit,
@@ -315,3 +316,116 @@ def test_write_image_to_commit_writes_expected_json(tmp_path: Path) -> None:
     write_image_to_commit(target, document)
 
     assert json.loads(target.read_text(encoding="utf-8")) == document
+
+
+# --- CLI surface -------------------------------------------------------------
+
+
+def test_cli_check_compose_fails_closed_on_moving_tag(tmp_path: Path) -> None:
+    compose_file = tmp_path / "docker-compose.yml"
+    compose_file.write_text(
+        json.dumps(_compose({"gateway": {"image": MOVING_TAG_REF}})), encoding="utf-8"
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(["check-compose", "--compose-file", str(compose_file)])
+
+    assert exc_info.value.code != 0
+    assert MOVING_TAG_REF in str(exc_info.value)
+
+
+def test_cli_check_compose_passes_for_pinned_images(tmp_path: Path, capsys: Any) -> None:
+    compose_file = tmp_path / "docker-compose.yml"
+    compose_file.write_text(
+        json.dumps(_compose({"sheets-api": {"image": PINNED_IMAGE_REF}})), encoding="utf-8"
+    )
+
+    exit_code = main(["check-compose", "--compose-file", str(compose_file)])
+
+    assert exit_code == 0
+    assert capsys.readouterr().err == ""
+
+
+def test_cli_list_images_prints_one_ref_per_line(tmp_path: Path, capsys: Any) -> None:
+    compose_file = tmp_path / "docker-compose.yml"
+    compose_file.write_text(
+        json.dumps(_compose({"sheets-api": {"image": PINNED_IMAGE_REF}})), encoding="utf-8"
+    )
+
+    exit_code = main(["list-images", "--compose-file", str(compose_file)])
+
+    assert exit_code == 0
+    assert capsys.readouterr().out.strip() == PINNED_IMAGE_REF
+
+
+def test_cli_verify_image_writes_image_to_commit_map(tmp_path: Path) -> None:
+    artifact_file = tmp_path / "artifact.json"
+    artifact_file.write_text(json.dumps(_gcloud_provenance(PINNED_IMAGE_REF)), encoding="utf-8")
+    build_file = tmp_path / "build.json"
+    build_file.write_text(json.dumps(_cloud_build()), encoding="utf-8")
+    map_file = tmp_path / "image_to_commit.json"
+
+    exit_code = main(
+        [
+            "verify-image",
+            "--image-ref",
+            PINNED_IMAGE_REF,
+            "--artifact-file",
+            str(artifact_file),
+            "--build-file",
+            str(build_file),
+            "--map-out",
+            str(map_file),
+        ]
+    )
+
+    assert exit_code == 0
+    document = json.loads(map_file.read_text(encoding="utf-8"))
+    assert document["schema_version"] == PROOF_SCHEMA_VERSION
+    assert document["images"][PINNED_IMAGE_REF] == {
+        "digest": f"sha256:{'a' * 64}",
+        "build_id": "build-123",
+        "source_commit": SOURCE_COMMIT,
+    }
+
+
+def test_cli_verify_image_merges_into_existing_map(tmp_path: Path) -> None:
+    artifact_file = tmp_path / "artifact.json"
+    artifact_file.write_text(json.dumps(_gcloud_provenance(PINNED_IMAGE_REF)), encoding="utf-8")
+    build_file = tmp_path / "build.json"
+    build_file.write_text(json.dumps(_cloud_build()), encoding="utf-8")
+    map_file = tmp_path / "image_to_commit.json"
+    map_file.write_text(
+        json.dumps(
+            image_to_commit_document(
+                {
+                    "us-central1-docker.pkg.dev/zeler-platform-dev/zeler-platform/gateway@sha256:"
+                    + "b" * 64: {
+                        "digest": f"sha256:{'b' * 64}",
+                        "build_id": "build-456",
+                        "source_commit": CONNECTED_SOURCE_COMMIT,
+                    }
+                }
+            )
+        ),
+        encoding="utf-8",
+    )
+
+    exit_code = main(
+        [
+            "verify-image",
+            "--image-ref",
+            PINNED_IMAGE_REF,
+            "--artifact-file",
+            str(artifact_file),
+            "--build-file",
+            str(build_file),
+            "--map-out",
+            str(map_file),
+        ]
+    )
+
+    assert exit_code == 0
+    document = json.loads(map_file.read_text(encoding="utf-8"))
+    assert len(document["images"]) == 2
+    assert document["images"][PINNED_IMAGE_REF]["build_id"] == "build-123"
