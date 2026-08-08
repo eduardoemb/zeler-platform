@@ -19,6 +19,7 @@ class SheetsSettings(BaseSettings):
     google_oauth_token_url: str = "https://oauth2.googleapis.com/token"  # noqa: S105
     google_sheets_scope: str = "https://www.googleapis.com/auth/spreadsheets"
     extension_token_pepper: SecretStr | None = None
+    sheets_claims_dlq_threshold: int = 100
 
     model_config = SettingsConfigDict(env_prefix="", case_sensitive=False)
 

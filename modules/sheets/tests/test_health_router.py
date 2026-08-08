@@ -5,8 +5,10 @@ from typing import Any
 
 import httpx
 import pytest
+from pydantic import SecretStr
 
 from zeler_sheets.app import build_app
+from zeler_sheets.sheets_config import SheetsSettings
 
 TEST_RABBITMQ_URL = "amqp://guest:guest@broker:5672/"
 
@@ -62,6 +64,31 @@ def _connect_unreachable() -> Callable[..., Awaitable[FakeRabbitConnection]]:
     return connect
 
 
+def _settings(*, threshold: int = 2) -> SheetsSettings:
+    return SheetsSettings(
+        google_oauth_client_id="unit-test",
+        google_oauth_client_secret=SecretStr("unit-test-secret"),  # noqa: S106
+        google_oauth_redirect_uri="https://sheets.test/oauth/google/callback",
+        kms_project_id="zeler-dev",
+        sheets_claims_dlq_threshold=threshold,
+    )
+
+
+def _state_source(ready: int, unacked: int) -> Callable[[], Awaitable[tuple[int, int]]]:
+    async def source() -> tuple[int, int]:
+        return (ready, unacked)
+
+    return source
+
+
+async def _unavailable_source() -> None:
+    return None
+
+
+async def _raising_source() -> tuple[int, int]:
+    raise RuntimeError("broker unreachable")
+
+
 async def _health(app: Any) -> httpx.Response:
     for handler in app.router.on_startup:
         await handler()
@@ -76,6 +103,128 @@ async def _health_without_startup(app: Any) -> httpx.Response:
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
         return await client.get("/health")
+
+
+@pytest.mark.asyncio
+async def test_health_without_claims_source_has_no_dlq_budget_check() -> None:
+    app = build_app(
+        mongo_db=FakeDb(), rabbitmq_url=TEST_RABBITMQ_URL, rabbitmq_connect=_connect_ok()
+    )
+
+    response = await _health(app)
+
+    assert response.status_code == 200
+    assert "claims_dlq_within_budget" not in response.json()["checks"]
+
+
+@pytest.mark.asyncio
+async def test_claims_dlq_within_budget_ok_below_threshold() -> None:
+    app = build_app(
+        mongo_db=FakeDb(),
+        rabbitmq_url=TEST_RABBITMQ_URL,
+        rabbitmq_connect=_connect_ok(),
+        settings=_settings(threshold=3),
+        claims_dlq_state=_state_source(1, 1),
+    )
+
+    response = await _health(app)
+
+    assert response.status_code == 200
+    assert response.json()["checks"]["claims_dlq_within_budget"] == {
+        "ok": True,
+        "detail": "claims_dlq_within_budget:ready=1,unacked=1",
+    }
+
+
+@pytest.mark.asyncio
+async def test_claims_dlq_not_ok_when_ready_at_threshold() -> None:
+    app = build_app(
+        mongo_db=FakeDb(),
+        rabbitmq_url=TEST_RABBITMQ_URL,
+        rabbitmq_connect=_connect_ok(),
+        settings=_settings(threshold=2),
+        claims_dlq_state=_state_source(2, 0),
+    )
+
+    response = await _health(app)
+
+    assert response.status_code == 503
+    assert response.json()["ready"] is False
+    assert response.json()["checks"]["claims_dlq_within_budget"] == {
+        "ok": False,
+        "detail": "claims_dlq_ready_over_budget:ready=2,threshold=2",
+    }
+
+
+@pytest.mark.asyncio
+async def test_claims_dlq_not_ok_when_unacked_at_threshold() -> None:
+    app = build_app(
+        mongo_db=FakeDb(),
+        rabbitmq_url=TEST_RABBITMQ_URL,
+        rabbitmq_connect=_connect_ok(),
+        settings=_settings(threshold=2),
+        claims_dlq_state=_state_source(1, 2),
+    )
+
+    response = await _health(app)
+
+    assert response.status_code == 503
+    assert response.json()["checks"]["claims_dlq_within_budget"] == {
+        "ok": False,
+        "detail": "claims_dlq_unacked_over_budget:unacked=2,threshold=2",
+    }
+
+
+@pytest.mark.asyncio
+async def test_claims_dlq_fails_closed_on_unavailable_queue_state() -> None:
+    app = build_app(
+        mongo_db=FakeDb(),
+        rabbitmq_url=TEST_RABBITMQ_URL,
+        rabbitmq_connect=_connect_ok(),
+        claims_dlq_state=_unavailable_source,
+    )
+
+    response = await _health(app)
+
+    assert response.status_code == 503
+    assert response.json()["checks"]["claims_dlq_within_budget"] == {
+        "ok": False,
+        "detail": "claims_dlq_state_unavailable",
+    }
+
+
+@pytest.mark.asyncio
+async def test_claims_dlq_fails_closed_when_state_source_raises() -> None:
+    app = build_app(
+        mongo_db=FakeDb(),
+        rabbitmq_url=TEST_RABBITMQ_URL,
+        rabbitmq_connect=_connect_ok(),
+        claims_dlq_state=_raising_source,
+    )
+
+    response = await _health(app)
+
+    assert response.status_code == 503
+    assert response.json()["checks"]["claims_dlq_within_budget"] == {
+        "ok": False,
+        "detail": "claims_dlq_state_unavailable",
+    }
+
+
+@pytest.mark.asyncio
+async def test_claims_dlq_threshold_is_configurable_via_settings() -> None:
+    app = build_app(
+        mongo_db=FakeDb(),
+        rabbitmq_url=TEST_RABBITMQ_URL,
+        rabbitmq_connect=_connect_ok(),
+        settings=_settings(threshold=1),
+        claims_dlq_state=_state_source(1, 0),
+    )
+
+    response = await _health(app)
+
+    assert response.status_code == 503
+    assert response.json()["checks"]["claims_dlq_within_budget"]["ok"] is False
 
 
 @pytest.mark.asyncio
