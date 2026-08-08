@@ -19,6 +19,8 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
+import httpx
+
 STAGE = "zelerdata_smoke"
 SMOKE_FORMULA = "ZELERDATA_DEVOLUCIONES"
 EXPECTED_FORMULA_COUNT = 52
@@ -33,6 +35,8 @@ REQUIRED_ENV_NAMES = (ENV_BASE_URL, ENV_TOKEN, ENV_SELLER)
 
 TOKEN_REDACTED = "[REDACTED_TOKEN]"  # noqa: S105 - placeholder label.
 SELLER_REDACTED = "[REDACTED_SELLER]"
+INVENTORY_PATH = "/sheets/formulas/inventory"
+EXECUTE_PATH = "/sheets/formulas:execute"
 
 EXIT_CODES: Mapping[str, int] = {
     "success": 0,
@@ -54,6 +58,18 @@ class SmokeRedactionError(RuntimeError):
     """Raised when a token or seller value would leak into output."""
 
 
+class SmokeHttpError(RuntimeError):
+    """Raised when an HTTP transport or payload failure cannot be classified."""
+
+    def __init__(self, message: str, *, status_class: str) -> None:
+        super().__init__(message)
+        self.status_class = status_class
+
+
+class InventoryInvalidError(ValueError):
+    """Raised when the inventory payload is not the expected bounded shape."""
+
+
 @dataclass(frozen=True)
 class SmokeConfig:
     base_url: str
@@ -66,6 +82,13 @@ class SmokeResult:
     status_class: str
     counters: Mapping[str, int]
     exit_code: int
+
+
+@dataclass(frozen=True)
+class InventoryObservation:
+    formulas_total: int
+    formulas_implemented: int
+    devoluciones_implemented: bool
 
 
 def exit_code_for(status_class: str) -> int:
@@ -119,3 +142,105 @@ def _serialize(result: SmokeResult) -> str:
         sort_keys=True,
         separators=(",", ":"),
     )
+
+
+def parse_inventory(payload: Any) -> InventoryObservation:
+    if not isinstance(payload, Mapping):
+        raise InventoryInvalidError("inventory payload must be an object")
+    formulas = payload.get("formulas")
+    if not isinstance(formulas, list):
+        raise InventoryInvalidError("inventory payload must list formulas")
+    implemented = 0
+    devoluciones_implemented = False
+    for contract in formulas:
+        if not isinstance(contract, Mapping):
+            raise InventoryInvalidError("inventory formula contract must be an object")
+        if contract.get("status") == "implemented":
+            implemented += 1
+        if contract.get("name") == SMOKE_FORMULA and contract.get("status") == "implemented":
+            devoluciones_implemented = True
+    return InventoryObservation(
+        formulas_total=len(formulas),
+        formulas_implemented=implemented,
+        devoluciones_implemented=devoluciones_implemented,
+    )
+
+
+def inventory_passes(observation: InventoryObservation) -> bool:
+    return (
+        observation.formulas_total == EXPECTED_FORMULA_COUNT
+        and observation.formulas_implemented == EXPECTED_FORMULA_COUNT
+        and observation.devoluciones_implemented
+    )
+
+
+async def fetch_inventory(client: httpx.AsyncClient, base_url: str) -> InventoryObservation:
+    url = f"{base_url.rstrip('/')}{INVENTORY_PATH}"
+    try:
+        response = await client.get(url)
+        response.raise_for_status()
+        payload = response.json()
+    except (httpx.HTTPError, ValueError) as exc:
+        raise SmokeHttpError("inventory request failed", status_class="transport_failed") from exc
+    try:
+        return parse_inventory(payload)
+    except InventoryInvalidError as exc:
+        raise SmokeHttpError(str(exc), status_class="inventory_mismatch") from exc
+
+
+async def run_devoluciones(
+    client: httpx.AsyncClient,
+    base_url: str,
+    token: str,
+    seller: str,
+) -> str:
+    """Execute one DEVOLUCIONES smoke and return its bounded status class."""
+    url = f"{base_url.rstrip('/')}{EXECUTE_PATH}"
+    payload: dict[str, Any] = {
+        "formula": SMOKE_FORMULA,
+        "cuenta": seller,
+        "args": {
+            "fecha_inicio": SMOKE_DATE_FROM,
+            "fecha_final": SMOKE_DATE_TO,
+            "id_publicaciones": "todos",
+            "encabezados": "",
+        },
+    }
+    try:
+        response = await client.post(
+            url,
+            json=payload,
+            headers={"Authorization": f"Bearer {token}"},
+        )
+    except httpx.HTTPError as exc:
+        raise SmokeHttpError(
+            "devoluciones request failed", status_class="transport_failed"
+        ) from exc
+    if response.status_code in {401, 403}:
+        return "auth_failed"
+    if response.status_code != 200:
+        return "formula_failed"
+    try:
+        body = response.json()
+    except ValueError as exc:
+        raise SmokeHttpError(
+            "devoluciones response malformed", status_class="transport_failed"
+        ) from exc
+    if isinstance(body, Mapping) and body.get("ok") is True:
+        return "success"
+    code = _error_code(body)
+    if code == "DATA_UNAVAILABLE":
+        return "data_unavailable"
+    if code in {"TOKEN_MISSING", "TOKEN_REVOKED", "SELLER_FORBIDDEN"}:
+        return "auth_failed"
+    return "formula_failed"
+
+
+def _error_code(body: Any) -> str | None:
+    if not isinstance(body, Mapping):
+        return None
+    error = body.get("error")
+    if not isinstance(error, Mapping):
+        return None
+    code = error.get("code")
+    return code if isinstance(code, str) else None
