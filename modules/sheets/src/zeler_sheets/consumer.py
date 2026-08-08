@@ -38,7 +38,12 @@ from zeler_platform_core.runtime.worker_health import WorkerHealthSidecar
 from zeler_sheets.claim_projection import project_claim
 from zeler_sheets.devoluciones_reconciliation import GatewayDevolucionesSource
 from zeler_sheets.event_persistence import SheetsEventPersistence, StatusObservationContentionError
-from zeler_sheets.google_errors import RetryableGoogleSheetsApiError
+from zeler_sheets.google_errors import (
+    GoogleSheetsApiError,
+    RetryableGoogleSheetsApiError,
+    SellerNotConnectedError,
+    SellerTokenRevokedError,
+)
 from zeler_sheets.google_sheets_client import make_sheets_client
 from zeler_sheets.sheets_config import SheetsSettings
 from zeler_sheets.sheetseller_backfill import run_item_detail_enrichment, run_sheetseller_backfill
@@ -65,6 +70,15 @@ CLAIMS_RETRY_DELAYS = (
     (30_000, "30s"),
     (120_000, "2m"),
     (600_000, "10m"),
+)
+
+DLQ_CLASSES = (
+    "attribution_missing",
+    "http_4xx",
+    "http_5xx",
+    "deserialization",
+    "claims_unbound",
+    "transient_timeout",
 )
 
 logger = structlog.get_logger(__name__)
@@ -293,6 +307,7 @@ class SheetsAmqpConsumerRunner:
                 death_count + 1,
                 exc,
                 retry_after=exc.retry_after_seconds,
+                status_code=exc.response.status_code,
             )
             if await self._retry_claims_transient(
                 message,
@@ -487,6 +502,85 @@ class SheetsAmqpConsumerRunner:
         return status == "paused"
 
 
+def _dlq_class(
+    *,
+    event: SheetsEvent | None,
+    error: BaseException,
+    status_code: int | None = None,
+) -> str:
+    """Classify a failed message into the bounded DLQ taxonomy.
+
+    Priority: attribution first (missing event context), then explicit HTTP
+    status, then payload deserialization, then known transient/permanent
+    error families. The residual bucket is ``http_5xx`` (worker/server-side
+    failure) because the taxonomy has no "unknown" class.
+    """
+    if event is None:
+        return "attribution_missing"
+    if status_code is not None:
+        return "http_4xx" if 400 <= status_code < 500 else "http_5xx"
+    if isinstance(error, json.JSONDecodeError):
+        return "deserialization"
+    if isinstance(error, (KeyError, TypeError, ValueError, UnicodeDecodeError)):
+        return "deserialization"
+    if isinstance(
+        error,
+        (GatewayRateLimitError, RetryableGoogleSheetsApiError, GoogleSheetsApiError),
+    ):
+        return "http_4xx"
+    if isinstance(error, (SellerNotConnectedError, SellerTokenRevokedError)):
+        return "claims_unbound"
+    if isinstance(
+        error,
+        (
+            httpx.ConnectError,
+            httpx.TimeoutException,
+            RetryLimitExceededError,
+            StatusObservationContentionError,
+            DevolucionesLeaseConflictError,
+            DevolucionesLeaseLostError,
+        ),
+    ):
+        return "transient_timeout"
+    if isinstance(error, httpx.HTTPStatusError):
+        status = error.response.status_code
+        return "http_4xx" if 400 <= status < 500 else "http_5xx"
+    return "http_5xx"
+
+
+async def claims_queue_state(
+    *,
+    rabbitmq_url: str,
+    queue_name: str = SHEETS_CLAIMS_QUEUE,
+    timeout_seconds: float = 5.0,
+) -> tuple[int, int] | None:
+    """Read the claims queue depth via a passive declare (read-only).
+
+    AMQP 0-9-1 exposes the combined message depth (ready + unacked) but not
+    the ready/unacked split. The depth is reported as the ready component
+    (unacked=0), so any backlog — waiting or in-flight — at or above the
+    health threshold degrades health. Returns None when the broker state
+    cannot be determined (fail closed).
+    """
+    try:
+        connection = await asyncio.wait_for(
+            aio_pika.connect_robust(rabbitmq_url), timeout=timeout_seconds
+        )
+    except Exception:  # noqa: BLE001 - health must fail closed on any broker failure.
+        return None
+    try:
+        channel = await connection.channel()
+        queue = await channel.declare_queue(queue_name, passive=True)
+        depth = queue.declaration_result.message_count
+        if depth is None:
+            return None
+        return (int(depth), 0)
+    except Exception:  # noqa: BLE001 - health must fail closed on any broker failure.
+        return None
+    finally:
+        await connection.close()
+
+
 def _log_message_dlq(
     event: SheetsEvent | None,
     attempts: int,
@@ -501,6 +595,7 @@ def _log_message_dlq(
         "resource_path": event.resource if event is not None else None,
         "attempts": attempts,
         "error_type": type(error).__name__,
+        "dlq_class": _dlq_class(event=event, error=error, status_code=status_code),
     }
     if status_code is not None:
         fields["status_code"] = status_code
@@ -523,6 +618,7 @@ def _log_message_requeued(
         "resource_path": event.resource if event is not None else None,
         "attempt": attempt,
         "error_type": type(error).__name__,
+        "dlq_class": _dlq_class(event=event, error=error, status_code=status_code),
     }
     if status_code is not None:
         fields["status_code"] = status_code

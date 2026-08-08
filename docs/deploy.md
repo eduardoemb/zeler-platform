@@ -378,6 +378,47 @@ Safety rules:
 - `zeler-docker-maintenance.timer` runs the safe maintenance script daily; daily is intentional because failed pulls can fill the small boot disk quickly.
 - Configure Cloud Monitoring root filesystem alerts at 80% warning and 90% critical.
 
+### Opt-in immutable-digest provenance gate (`REQUIRE_DIGEST_BINDING`)
+
+The deploy preflight can refuse every moving `image:` tag before any pull. Set
+`REQUIRE_DIGEST_BINDING=1` on `platform-vm` to enable it; the flag defaults to
+`0`, so current behavior is unchanged until an operator opts in.
+
+Quick path (dry-run, read-only):
+
+```bash
+gcloud compute ssh platform-vm --tunnel-through-iap --zone=$ZONE --project=$PROJECT \
+  --command="sudo REQUIRE_DIGEST_BINDING=1 /opt/zeler-platform/docker-deploy-preflight.sh --dry-run"
+```
+
+Expected: fails closed while `infra/gce/docker-compose.yml` still uses moving
+tags (`gateway:rollout-v5`, `mongo:7.0`, ...); no pull, no Docker maintenance,
+no runtime mutation. `--dry-run` skips the Sheets rollback attestation pull and
+the maintenance script; the binding check itself is read-only.
+
+Behavior when enabled:
+
+| Step | Result |
+|------|--------|
+| Any compose `image:` is not `repo@sha256:<64 hex>` | Refused **before** any pull; preflight exits non-zero |
+| Every compose image is digest-pinned | SLSA v1 subject/build/commit verified per image; `image_to_commit.json` written |
+| Ambiguous/forged provenance, build mismatch, or subprocess failure | Fail closed before pull |
+
+Evidence file `/var/lib/zeler-platform/image_to_commit.json`:
+
+```json
+{"schema_version": 1, "images": {"us-central1-docker.pkg.dev/zeler-platform-dev/zeler-platform/sheets-api@sha256:<hex>": {"digest": "sha256:<hex>", "build_id": "<cloud-build>", "source_commit": "<40 hex>"}}}
+```
+
+**Moving tags are metadata only.** Tags such as `rollout-v5` document intent
+for humans; they are never deploy authority. Digest pinning per deploy is an
+operator work unit (Lane B): obtain `repo@sha256:...` plus `build_id` and
+`source_commit` from `gcloud artifacts docker images describe ... --show-provenance`
+and the matching Cloud Build record, then update the compose `image:` lines.
+The verifier lives in `infra/deploy/provenance_check.py` and reuses the same
+single-subject SLSA v1 binding as the Sheets rollback attestation, so
+provenance interpretation never drifts between the two gates.
+
 ---
 
 ## 5. Re-deploy a Single Service
@@ -392,7 +433,7 @@ gcloud compute ssh platform-vm --tunnel-through-iap --zone=$ZONE --project=$PROJ
     sudo docker compose up -d --no-deps <service>"
 ```
 
-The preflight requires at least 5GiB free on `/`. If the margin is lower, it runs safe Docker maintenance and re-checks before pulling images.
+The preflight requires at least 5GiB free on `/`. If the margin is lower, it runs safe Docker maintenance and re-checks before pulling images. With `REQUIRE_DIGEST_BINDING=1`, the preflight also refuses moving image tags before any pull (see the opt-in immutable-digest provenance gate in section 5a).
 
 Manual safe cleanup, if an operator needs to run it outside the timer:
 

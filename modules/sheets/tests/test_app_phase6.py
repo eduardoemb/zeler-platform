@@ -1,10 +1,28 @@
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 import httpx
 import pytest
 from fastapi.routing import APIRoute
+
+TEST_RABBITMQ_URL = "amqp://guest:guest@broker:5672/"
+
+
+class FakeRabbitConnection:
+    def __init__(self, *, is_open: bool = True) -> None:
+        self.is_open = is_open
+
+    async def close(self) -> None:
+        return None
+
+
+def _connect_ok() -> Callable[..., Awaitable[FakeRabbitConnection]]:
+    async def connect(*_args: Any, **_kwargs: Any) -> FakeRabbitConnection:
+        return FakeRabbitConnection(is_open=True)
+
+    return connect
 
 
 class FakeCollection:
@@ -81,7 +99,9 @@ def test_sheets_manifest_validates_owned_collections_and_readonly_scopes() -> No
 def test_sheets_app_includes_google_oauth_routes() -> None:
     from zeler_sheets.app import build_app
 
-    app = build_app(mongo_db=FakeDb(), rabbitmq_ready=lambda: True)
+    app = build_app(
+        mongo_db=FakeDb(), rabbitmq_url=TEST_RABBITMQ_URL, rabbitmq_connect=_connect_ok()
+    )
 
     route_paths = {route.path for route in app.routes if isinstance(route, APIRoute)}
     assert "/oauth/google/authorize" in route_paths
@@ -93,7 +113,9 @@ async def test_sheets_startup_registers_manifest_and_health_ready() -> None:
     from zeler_sheets.app import build_app
 
     db = FakeDb()
-    app = build_app(mongo_db=db, rabbitmq_ready=lambda: True)
+    app = build_app(
+        mongo_db=db, rabbitmq_url=TEST_RABBITMQ_URL, rabbitmq_connect=_connect_ok()
+    )
     for handler in app.router.on_startup:
         await handler()
 
@@ -146,7 +168,7 @@ async def test_sheets_startup_registers_manifest_and_health_ready() -> None:
         "ready": True,
         "checks": {
             "mongo": {"ok": True, "detail": "connected"},
-            "rabbitmq": {"ok": True, "detail": "connected"},
+            "rabbitmq": {"ok": True, "detail": "rabbitmq_ok"},
             "registry": {"ok": True, "detail": "registry_fingerprint_match"},
         },
     }
@@ -157,7 +179,9 @@ async def test_sheets_health_fails_closed_when_registry_fingerprint_drifts() -> 
     from zeler_sheets.app import build_app
 
     db = FakeDb()
-    app = build_app(mongo_db=db, rabbitmq_ready=lambda: True)
+    app = build_app(
+        mongo_db=db, rabbitmq_url=TEST_RABBITMQ_URL, rabbitmq_connect=_connect_ok()
+    )
     for handler in app.router.on_startup:
         await handler()
     db.module_registry.documents["sheets"]["routing_keys"] = ["items.*"]

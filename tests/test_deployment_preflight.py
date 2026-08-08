@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any, cast
 
@@ -1615,3 +1616,147 @@ def test_startup_installed_preflight_rejects_unknown_or_forged_digest(
 
     assert completed.returncode != 0
     assert "builder" in completed.stderr or "digest binding" in completed.stderr
+
+
+# --- A3.2: opt-in immutable-digest provenance gate on the daily-pull path -----
+
+
+def _digest_binding_env(
+    tmp_path: Path,
+    compose_document: dict[str, Any],
+    *,
+    require_binding: bool,
+    artifact: dict[str, Any] | None = None,
+    build: dict[str, Any] | None = None,
+) -> dict[str, str]:
+    """Environment that runs the real preflight against a temp compose file.
+
+    The fake docker binary fails closed (exit 99) if the preflight ever invokes
+    it, proving the daily-pull gate performs no pull and no container mutation.
+    `ZELER_PYTHON_BIN` is the current interpreter so `infra.deploy.provenance_check`
+    (and its PyYAML dependency) resolve inside the repository venv.
+    """
+    compose_file = tmp_path / "docker-compose.yml"
+    compose_file.write_text(json.dumps(compose_document), encoding="utf-8")
+    docker = tmp_path / "docker"
+    docker.write_text(
+        '#!/usr/bin/env bash\nprintf "%s\\n" "$*" >> "$DOCKER_CALL_LOG"\nexit 99\n',
+        encoding="utf-8",
+    )
+    docker.chmod(0o755)
+    image_ref = (
+        "us-central1-docker.pkg.dev/zeler-platform-dev/zeler-platform/sheets-api@sha256:" + "a" * 64
+    )
+    env: dict[str, str] = {
+        **os.environ,
+        "MIN_FREE_GIB": "0",
+        "ZELER_PLATFORM_ROOT": str(ROOT),
+        "ZELER_PYTHON_BIN": sys.executable,
+        "ZELER_GCLOUD_BIN": str(_fake_gcloud(tmp_path)),
+        "ZELER_DOCKER_BIN": str(docker),
+        "ZELER_COMPOSE_FILE": str(compose_file),
+        "IMAGE_TO_COMMIT_FILE": str(tmp_path / "image_to_commit.json"),
+        "DOCKER_CALL_LOG": str(tmp_path / "docker-calls.log"),
+        "GCLOUD_CALL_LOG": str(tmp_path / "gcloud-calls.log"),
+        "GCLOUD_PROJECT_ID": CLOUD_BUILD_PROJECT,
+        "GCLOUD_PROJECT_NUMBER": CLOUD_BUILD_PROJECT_NUMBER,
+        "ARTIFACT_PROVENANCE_JSON": json.dumps(artifact or _gcloud_provenance(image_ref)),
+        "CLOUD_BUILD_JSON": json.dumps(build or _cloud_build()),
+    }
+    if require_binding:
+        env["REQUIRE_DIGEST_BINDING"] = "1"
+    return env
+
+
+def _moving_tag_compose_document() -> dict[str, Any]:
+    return {
+        "services": {
+            "gateway": {
+                "image": (
+                    "us-central1-docker.pkg.dev/zeler-platform-dev/zeler-platform/"
+                    "gateway:rollout-v5"
+                )
+            }
+        }
+    }
+
+
+def test_daily_pull_refuses_moving_tag_when_digest_binding_enabled(
+    tmp_path: Path,
+) -> None:
+    env = _digest_binding_env(
+        tmp_path,
+        _moving_tag_compose_document(),
+        require_binding=True,
+    )
+
+    completed = subprocess.run(  # noqa: S603 - repository-owned preflight.
+        ["/bin/bash", str(DOCKER_DEPLOY_PREFLIGHT)],
+        cwd=ROOT,
+        env=env,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode != 0
+    assert "gateway:rollout-v5" in completed.stderr
+    assert not Path(env["IMAGE_TO_COMMIT_FILE"]).exists()
+    assert not Path(env["DOCKER_CALL_LOG"]).exists()
+
+
+def test_daily_pull_allows_moving_tag_when_digest_binding_disabled(
+    tmp_path: Path,
+) -> None:
+    env = _digest_binding_env(
+        tmp_path,
+        _moving_tag_compose_document(),
+        require_binding=False,
+    )
+
+    completed = subprocess.run(  # noqa: S603 - repository-owned preflight.
+        ["/bin/bash", str(DOCKER_DEPLOY_PREFLIGHT)],
+        cwd=ROOT,
+        env=env,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 0
+    assert not Path(env["DOCKER_CALL_LOG"]).exists()
+
+
+def test_daily_pull_writes_image_to_commit_for_pinned_images_when_enabled(
+    tmp_path: Path,
+) -> None:
+    image_ref = (
+        "us-central1-docker.pkg.dev/zeler-platform-dev/zeler-platform/sheets-api@sha256:" + "a" * 64
+    )
+    env = _digest_binding_env(
+        tmp_path,
+        {"services": {"sheets-api": {"image": image_ref}}},
+        require_binding=True,
+    )
+
+    completed = subprocess.run(  # noqa: S603 - repository-owned preflight.
+        ["/bin/bash", str(DOCKER_DEPLOY_PREFLIGHT)],
+        cwd=ROOT,
+        env=env,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    document = json.loads(Path(env["IMAGE_TO_COMMIT_FILE"]).read_text(encoding="utf-8"))
+    assert document["schema_version"] == 1
+    assert document["images"][image_ref] == {
+        "digest": f"sha256:{'a' * 64}",
+        "build_id": "build-123",
+        "source_commit": LEGACY_SOURCE_COMMIT,
+    }
+    assert not Path(env["DOCKER_CALL_LOG"]).exists()
+    gcloud_calls = Path(env["GCLOUD_CALL_LOG"]).read_text(encoding="utf-8")
+    assert "artifacts docker images describe" in gcloud_calls
+    assert "builds describe" in gcloud_calls

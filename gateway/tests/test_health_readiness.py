@@ -11,6 +11,7 @@ import httpx
 import pytest
 
 import zeler_gateway.app as app_module
+from zeler_gateway.routes.health import GATEWAY_REQUIRED_REGISTRY_IDS, REPRICER_SWEEP_JOB_ID
 
 
 class FakeMongoAdmin:
@@ -28,9 +29,49 @@ class FakeMongoClient:
         self.admin = FakeMongoAdmin(command)
 
 
+class FakeRegistryCollection:
+    def __init__(self, documents: dict[str, dict[str, Any]]) -> None:
+        self._documents = documents
+
+    async def find_one(self, filter_doc: dict[str, Any]) -> dict[str, Any] | None:
+        document = self._documents.get(str(filter_doc["_id"]))
+        return dict(document) if document is not None else None
+
+
+class FakeMongoDb:
+    def __init__(self, documents: dict[str, dict[str, Any]]) -> None:
+        self._registry = FakeRegistryCollection(documents)
+
+    def __getitem__(self, name: str) -> FakeRegistryCollection:
+        assert name == "module_registry"
+        return self._registry
+
+
 class FakeRabbitConnection:
     def __init__(self, *, is_open: bool = True) -> None:
         self.is_open = is_open
+
+
+class FakeScheduler:
+    def __init__(self, *, running: bool = True, has_sweep_job: bool = True) -> None:
+        self._running = running
+        self._has_sweep_job = has_sweep_job
+
+    @property
+    def running(self) -> bool:
+        return self._running
+
+    def get_job(self, job_id: str) -> object | None:
+        if job_id == REPRICER_SWEEP_JOB_ID and self._has_sweep_job:
+            return object()
+        return None
+
+
+def _registry_documents() -> dict[str, dict[str, Any]]:
+    return {
+        module_id: {"_id": module_id, "status": "enabled"}
+        for module_id in GATEWAY_REQUIRED_REGISTRY_IDS
+    }
 
 
 async def _ok_command(name: str) -> object:
@@ -55,7 +96,9 @@ def _reset_readiness_state(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("RABBITMQ_URL", "amqp://guest:guest@rabbitmq:5672/")
     app_module.app.state.ready = True
     app_module.app.state.mongo_client = FakeMongoClient(_ok_command)
+    app_module.app.state.mongo_db = FakeMongoDb(_registry_documents())
     app_module.app.state.rabbit = FakeRabbitConnection(is_open=True)
+    app_module.app.state.scheduler = FakeScheduler(running=True, has_sweep_job=True)
 
 
 @pytest.mark.asyncio
@@ -87,7 +130,11 @@ async def test_ready_returns_200_when_mongo_and_rabbit_are_ok() -> None:
         response = await client.get("/ready")
 
     assert response.status_code == 200
-    assert response.json() == {"status": "ready", "checks": {"mongo": "ok", "rabbitmq": "ok"}}
+    assert response.json() == {
+        "status": "ready",
+        "checks": {"mongo": "ok", "registry": "ok"},
+        "broker_dependencies": {"rabbitmq": "ok", "repricer_sweep_scheduler": "ok"},
+    }
 
 
 @pytest.mark.asyncio
@@ -100,7 +147,8 @@ async def test_ready_returns_503_when_mongo_fails() -> None:
     assert response.status_code == 503
     assert response.json() == {
         "status": "not_ready",
-        "checks": {"mongo": "fail", "rabbitmq": "ok"},
+        "checks": {"mongo": "fail", "registry": "ok"},
+        "broker_dependencies": {"rabbitmq": "ok", "repricer_sweep_scheduler": "ok"},
     }
 
 
@@ -120,7 +168,8 @@ async def test_ready_returns_503_when_rabbit_reconnect_fails(
     assert response.status_code == 503
     assert response.json() == {
         "status": "not_ready",
-        "checks": {"mongo": "ok", "rabbitmq": "fail"},
+        "checks": {"mongo": "ok", "registry": "ok"},
+        "broker_dependencies": {"rabbitmq": "fail", "repricer_sweep_scheduler": "ok"},
     }
 
 
@@ -141,8 +190,68 @@ async def test_ready_returns_503_when_both_dependencies_fail(
     assert response.status_code == 503
     assert response.json() == {
         "status": "not_ready",
-        "checks": {"mongo": "fail", "rabbitmq": "fail"},
+        "checks": {"mongo": "fail", "registry": "ok"},
+        "broker_dependencies": {"rabbitmq": "fail", "repricer_sweep_scheduler": "ok"},
     }
+
+
+@pytest.mark.asyncio
+async def test_ready_returns_503_when_registry_entry_is_missing() -> None:
+    documents = _registry_documents()
+    del documents["sheets"]
+    app_module.app.state.mongo_db = FakeMongoDb(documents)
+
+    async with await _readiness_client() as client:
+        response = await client.get("/ready")
+
+    assert response.status_code == 503
+    assert response.json()["checks"]["registry"] == "fail"
+
+
+@pytest.mark.asyncio
+async def test_ready_returns_503_when_registry_entry_is_disabled() -> None:
+    documents = _registry_documents()
+    documents["autoreply"] = {"_id": "autoreply", "status": "disabled"}
+    app_module.app.state.mongo_db = FakeMongoDb(documents)
+
+    async with await _readiness_client() as client:
+        response = await client.get("/ready")
+
+    assert response.status_code == 503
+    assert response.json()["checks"]["registry"] == "fail"
+
+
+@pytest.mark.asyncio
+async def test_ready_returns_503_when_scheduler_is_stopped() -> None:
+    app_module.app.state.scheduler = FakeScheduler(running=False, has_sweep_job=True)
+
+    async with await _readiness_client() as client:
+        response = await client.get("/ready")
+
+    assert response.status_code == 503
+    assert response.json()["broker_dependencies"]["repricer_sweep_scheduler"] == "fail"
+
+
+@pytest.mark.asyncio
+async def test_ready_returns_503_when_sweep_job_is_not_scheduled() -> None:
+    app_module.app.state.scheduler = FakeScheduler(running=True, has_sweep_job=False)
+
+    async with await _readiness_client() as client:
+        response = await client.get("/ready")
+
+    assert response.status_code == 503
+    assert response.json()["broker_dependencies"]["repricer_sweep_scheduler"] == "fail"
+
+
+@pytest.mark.asyncio
+async def test_ready_returns_503_when_scheduler_is_unavailable() -> None:
+    app_module.app.state.scheduler = None
+
+    async with await _readiness_client() as client:
+        response = await client.get("/ready")
+
+    assert response.status_code == 503
+    assert response.json()["broker_dependencies"]["repricer_sweep_scheduler"] == "fail"
 
 
 @pytest.mark.asyncio
@@ -163,7 +272,8 @@ async def test_ready_times_out_slow_mongo_with_bounded_wall_clock() -> None:
     assert response.status_code == 503
     assert response.json() == {
         "status": "not_ready",
-        "checks": {"mongo": "fail", "rabbitmq": "ok"},
+        "checks": {"mongo": "fail", "registry": "ok"},
+        "broker_dependencies": {"rabbitmq": "ok", "repricer_sweep_scheduler": "ok"},
     }
 
 
@@ -177,7 +287,11 @@ async def test_ready_returns_starting_before_lifespan_is_ready() -> None:
     assert response.status_code == 503
     assert response.json() == {
         "status": "not_ready",
-        "checks": {"mongo": "starting", "rabbitmq": "starting"},
+        "checks": {"mongo": "starting", "registry": "starting"},
+        "broker_dependencies": {
+            "rabbitmq": "starting",
+            "repricer_sweep_scheduler": "starting",
+        },
     }
 
 
@@ -205,10 +319,11 @@ async def test_ready_failure_body_is_sanitized(monkeypatch: pytest.MonkeyPatch) 
     body = response.json()
     serialized = json.dumps(body)
     assert response.status_code == 503
-    assert set(body.keys()) == {"status", "checks"}
+    assert set(body.keys()) == {"status", "checks", "broker_dependencies"}
     assert body == {
         "status": "not_ready",
-        "checks": {"mongo": "fail", "rabbitmq": "fail"},
+        "checks": {"mongo": "fail", "registry": "ok"},
+        "broker_dependencies": {"rabbitmq": "fail", "repricer_sweep_scheduler": "ok"},
     }
     assert "mongodb://" not in serialized
     assert "amqp://" not in serialized
@@ -237,6 +352,10 @@ async def test_ready_refreshes_closed_rabbit_connection(
         response = await client.get("/ready")
 
     assert response.status_code == 200
-    assert response.json() == {"status": "ready", "checks": {"mongo": "ok", "rabbitmq": "ok"}}
+    assert response.json() == {
+        "status": "ready",
+        "checks": {"mongo": "ok", "registry": "ok"},
+        "broker_dependencies": {"rabbitmq": "ok", "repricer_sweep_scheduler": "ok"},
+    }
     assert calls == 1
     assert app_module.app.state.rabbit is new_rabbit

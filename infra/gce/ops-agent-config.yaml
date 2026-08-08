@@ -1,0 +1,70 @@
+# Google Cloud Ops Agent classified-log configuration for platform-vm.
+#
+# Two pipelines:
+#   - gateway_classified: tails Docker container logs (the gateway emits
+#     structlog JSON via container stdout -> Docker json-file driver), parses
+#     the per-line JSON payload, and routes it to the custom Cloud Logging log
+#     `zeler-platform/gateway-classified`.
+#   - caddy_classified: tails the same Docker json-file logs, which carry
+#     Caddy's JSON access logs (Caddy logs to container stdout), parses them,
+#     and routes the result to the custom Cloud Logging log
+#     `zeler-platform/caddy-classified`.
+#
+# Installed by infra/gce/platform-vm-startup.sh using a validate -> install ->
+# restart sequence that keeps the prior config when validation fails.
+
+receivers:
+  docker_container_logs:
+    type: files
+    include_paths:
+      - /var/lib/docker/containers/*/*-json.log
+  caddy_logs:
+    type: files
+    include_paths:
+      - /var/lib/docker/containers/*/*-json.log
+
+processors:
+  docker_logs_parse_json:
+    type: parse_json
+    parse_from: log
+  caddy_logs_parse_json:
+    type: parse_json
+    parse_from: log
+  caddy_logs_redact:
+    type: modify_fields
+    fields:
+      jsonPayload.request.headers:
+        map_values: {}
+        map_values_exclusive: true
+      jsonPayload.request.uri:
+        map_values: {}
+        map_values_exclusive: true
+      jsonPayload.resp_headers:
+        map_values: {}
+        map_values_exclusive: true
+
+exporters:
+  gateway_classified_logging:
+    type: google_cloud_logging
+    log_type: zeler-platform/gateway-classified
+  caddy_classified_logging:
+    type: google_cloud_logging
+    log_type: zeler-platform/caddy-classified
+
+service:
+  pipelines:
+    gateway_classified:
+      receivers:
+        - docker_container_logs
+      processors:
+        - docker_logs_parse_json
+      exporters:
+        - gateway_classified_logging
+    caddy_classified:
+      receivers:
+        - caddy_logs
+      processors:
+        - caddy_logs_parse_json
+        - caddy_logs_redact
+      exporters:
+        - caddy_classified_logging

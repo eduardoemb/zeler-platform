@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 import httpx
@@ -10,6 +10,23 @@ from zeler_autoreply.app import build_app as build_autoreply_app
 from zeler_publicador.app import build_app as build_publicador_app
 from zeler_repricer.app import build_app as build_repricer_app
 from zeler_sheets.app import build_app as build_sheets_app
+
+TEST_RABBITMQ_URL = "amqp://guest:guest@broker:5672/"
+
+
+class FakeRabbitConnection:
+    def __init__(self, *, is_open: bool = True) -> None:
+        self.is_open = is_open
+
+    async def close(self) -> None:
+        return None
+
+
+def _connect_ok() -> Callable[..., Awaitable[FakeRabbitConnection]]:
+    async def connect(*_args: Any, **_kwargs: Any) -> FakeRabbitConnection:
+        return FakeRabbitConnection(is_open=True)
+
+    return connect
 
 
 class FakeCollection:
@@ -94,6 +111,4 @@ async def test_health_503_when_mongo_unreachable(module: str, builder: Callable[
 
 
 def _build_app(builder: Callable[..., Any], db: FakeMongoDb) -> Any:
-    if builder in {build_repricer_app, build_sheets_app}:
-        return builder(mongo_db=db, rabbitmq_ready=lambda: True)
-    return builder(mongo_db=db)
+    return builder(mongo_db=db, rabbitmq_url=TEST_RABBITMQ_URL, rabbitmq_connect=_connect_ok())
