@@ -187,7 +187,11 @@ print_usage() {
 }
 
 if [[ "$REQUIRE_DIGEST_BINDING" == "1" ]]; then
-  verify_digest_binding
+  if [[ "$DRY_RUN" == "1" ]]; then
+    echo "dry-run: immutable digest binding gate skipped (it would write image_to_commit.json)."
+  else
+    verify_digest_binding
+  fi
 fi
 
 if [[ "$SHEETS_ROLLBACK_PREFLIGHT" == "1" ]]; then
