@@ -107,6 +107,8 @@ async def test_gateway_rate_limit_sleeps_then_requeues_with_retry_after_log(
                 "resource_path": "/items/MLA429",
                 "attempt": 1,
                 "error_type": "GatewayRateLimitError",
+                "dlq_class": "http_4xx",
+                "status_code": 429,
                 "retry_after": 5,
             },
         )

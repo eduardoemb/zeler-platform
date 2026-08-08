@@ -107,6 +107,7 @@ async def test_devoluciones_lease_conflict_is_requeued_instead_of_sent_to_dlq(
     assert message.nacks == [True]
     assert log_spy.warning_calls[0][0] == "worker.message.requeued"
     assert log_spy.warning_calls[0][1]["error_type"] == "DevolucionesLeaseConflictError"
+    assert log_spy.warning_calls[0][1]["dlq_class"] == "transient_timeout"
     assert log_spy.error_calls == []
 
 
@@ -135,6 +136,7 @@ async def test_http_404_is_nacked_without_requeue_and_logged_to_dlq(
                 "attempts": 1,
                 "error_type": "HTTPStatusError",
                 "status_code": 404,
+                "dlq_class": "http_4xx",
             },
         )
     ]
@@ -158,6 +160,7 @@ async def test_permanent_http_4xx_statuses_are_nacked_without_requeue(
     assert message.nacks == [False]
     assert log_spy.error_calls[0][0] == "worker.message.dlq"
     assert log_spy.error_calls[0][1]["status_code"] == status_code
+    assert log_spy.error_calls[0][1]["dlq_class"] == "http_4xx"
 
 
 @pytest.mark.asyncio
@@ -187,6 +190,7 @@ async def test_http_500_is_nacked_with_requeue_and_logs_next_attempt(
                 "attempt": 3,
                 "error_type": "HTTPStatusError",
                 "status_code": 500,
+                "dlq_class": "http_5xx",
             },
         )
     ]
@@ -217,6 +221,39 @@ async def test_http_429_is_nacked_with_requeue_and_logged(
     assert log_spy.warning_calls[0][0] == "worker.message.requeued"
     assert log_spy.warning_calls[0][1]["error_type"] == "GatewayRateLimitError"
     assert log_spy.warning_calls[0][1]["retry_after"] == 5
+    assert log_spy.warning_calls[0][1]["status_code"] == 429
+    assert log_spy.warning_calls[0][1]["dlq_class"] == "http_4xx"
+
+
+@pytest.mark.asyncio
+async def test_http_408_is_requeued_with_status_code_and_http_4xx_class(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    log_spy = LogSpy()
+    monkeypatch.setattr(consumer, "logger", log_spy, raising=False)
+    handler = FakeHandler(error=_http_status_error(408, path="/items/MLA408"))
+    runner = SheetsAmqpConsumerRunner(rabbitmq_url="amqp://unit-test", handler=handler)
+    message = FakeMessage(_valid_payload(resource="/items/MLA408"))
+
+    await runner.handle_message(message)
+
+    assert message.acked is False
+    assert message.nacks == [True]
+    assert log_spy.warning_calls == [
+        (
+            "worker.message.requeued",
+            {
+                "event_id": "evt-1",
+                "seller_id": 123456789,
+                "resource_path": "/items/MLA408",
+                "attempt": 1,
+                "error_type": "HTTPStatusError",
+                "status_code": 408,
+                "dlq_class": "http_4xx",
+            },
+        )
+    ]
+    assert log_spy.error_calls == []
 
 
 @pytest.mark.asyncio
@@ -260,6 +297,7 @@ async def test_google_sheets_429_is_delayed_and_acked_without_dlq(
                 "attempt": 1,
                 "error_type": "RetryableGoogleSheetsApiError",
                 "retry_after": 12,
+                "dlq_class": "http_4xx",
             },
         )
     ]
@@ -298,6 +336,7 @@ async def test_google_sheets_retry_attempt_header_exhausts_delivery_limit_withou
     assert log_spy.error_calls[0][0] == "worker.message.dlq"
     assert log_spy.error_calls[0][1]["attempts"] == 5
     assert log_spy.error_calls[0][1]["error_type"] == "RetryLimitExceededError"
+    assert log_spy.error_calls[0][1]["dlq_class"] == "transient_timeout"
 
 
 @pytest.mark.asyncio
@@ -317,6 +356,7 @@ async def test_non_retryable_google_sheets_api_error_is_nacked_without_requeue(
     assert log_spy.warning_calls == []
     assert log_spy.error_calls[0][0] == "worker.message.dlq"
     assert log_spy.error_calls[0][1]["error_type"] == "GoogleSheetsApiError"
+    assert log_spy.error_calls[0][1]["dlq_class"] == "http_4xx"
 
 
 @pytest.mark.asyncio
@@ -347,6 +387,7 @@ async def test_retry_budget_exhausted_nacks_without_requeue_and_logs_dlq(
                 "resource_path": "/items/MLA500",
                 "attempts": 5,
                 "error_type": "RetryLimitExceededError",
+                "dlq_class": "transient_timeout",
             },
         )
     ]
@@ -375,6 +416,7 @@ async def test_connect_error_is_nacked_with_requeue_and_logged(
                 "resource_path": "/items/MLA-CONNECT",
                 "attempt": 1,
                 "error_type": "ConnectError",
+                "dlq_class": "transient_timeout",
             },
         )
     ]
@@ -407,6 +449,7 @@ async def test_timeout_error_is_nacked_with_requeue_and_logged(
                 "resource_path": "/items/MLA-TIMEOUT",
                 "attempt": 2,
                 "error_type": "TimeoutException",
+                "dlq_class": "transient_timeout",
             },
         )
     ]
@@ -438,6 +481,7 @@ async def test_json_decode_error_is_nacked_without_requeue_and_logged_to_dlq(
                 "resource_path": None,
                 "attempts": 1,
                 "error_type": "JSONDecodeError",
+                "dlq_class": "attribution_missing",
             },
         )
     ]
@@ -468,6 +512,7 @@ async def test_runtime_error_is_nacked_without_requeue_and_logged_to_dlq(
                 "attempts": 1,
                 "error_type": "RuntimeError",
                 "exc_info": True,
+                "dlq_class": "http_5xx",
             },
         )
     ]
@@ -496,8 +541,87 @@ async def test_unexpected_exception_is_nacked_without_requeue_and_logged_to_dlq(
             "attempts": 1,
             "error_type": "Exception",
             "exc_info": True,
+            "dlq_class": "http_5xx",
         },
     )
+
+
+def test_dlq_log_attribution_when_event_is_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    log_spy = LogSpy()
+    monkeypatch.setattr(consumer, "logger", log_spy, raising=False)
+
+    consumer._log_message_dlq(None, 1, ValueError("malformed payload"))
+
+    assert log_spy.error_calls == [
+        (
+            "worker.message.dlq",
+            {
+                "event_id": None,
+                "seller_id": None,
+                "resource_path": None,
+                "attempts": 1,
+                "error_type": "ValueError",
+                "dlq_class": "attribution_missing",
+            },
+        )
+    ]
+
+
+def test_requeue_log_includes_status_code_and_http_4xx_class(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    log_spy = LogSpy()
+    monkeypatch.setattr(consumer, "logger", log_spy, raising=False)
+    event = consumer.SheetsEvent(
+        event_id="evt-1",
+        event_type="items.updated",
+        seller_id=123456789,
+        resource="/items/MLA429",
+        idempotency_key="key-1",
+    )
+
+    consumer._log_message_requeued(event, 2, ValueError("transient"), status_code=429)
+
+    assert log_spy.warning_calls == [
+        (
+            "worker.message.requeued",
+            {
+                "event_id": "evt-1",
+                "seller_id": 123456789,
+                "resource_path": "/items/MLA429",
+                "attempt": 2,
+                "error_type": "ValueError",
+                "status_code": 429,
+                "dlq_class": "http_4xx",
+            },
+        )
+    ]
+
+
+def test_dlq_classifier_covers_remaining_taxonomy_branches() -> None:
+    from zeler_sheets.google_errors import SellerNotConnectedError
+
+    event = consumer.SheetsEvent(
+        event_id="evt-1",
+        event_type="items.updated",
+        seller_id=123456789,
+        resource="/items/MLA1",
+        idempotency_key="key-1",
+    )
+    request = httpx.Request("GET", "http://gateway:8080/proxy/meli/items/MLA1")
+    server_error = httpx.HTTPStatusError(
+        "500 response", request=request, response=httpx.Response(500, request=request)
+    )
+
+    assert (
+        consumer._dlq_class(event=event, error=SellerNotConnectedError("not connected"))
+        == "claims_unbound"
+    )
+    assert consumer._dlq_class(event=event, error=ValueError("bad field")) == "deserialization"
+    assert consumer._dlq_class(event=event, error=server_error) == "http_5xx"
+    assert consumer._dlq_class(event=event, error=RuntimeError("unexpected")) == "http_5xx"
 
 
 @pytest.mark.asyncio

@@ -38,7 +38,12 @@ from zeler_platform_core.runtime.worker_health import WorkerHealthSidecar
 from zeler_sheets.claim_projection import project_claim
 from zeler_sheets.devoluciones_reconciliation import GatewayDevolucionesSource
 from zeler_sheets.event_persistence import SheetsEventPersistence, StatusObservationContentionError
-from zeler_sheets.google_errors import RetryableGoogleSheetsApiError
+from zeler_sheets.google_errors import (
+    GoogleSheetsApiError,
+    RetryableGoogleSheetsApiError,
+    SellerNotConnectedError,
+    SellerTokenRevokedError,
+)
 from zeler_sheets.google_sheets_client import make_sheets_client
 from zeler_sheets.sheets_config import SheetsSettings
 from zeler_sheets.sheetseller_backfill import run_item_detail_enrichment, run_sheetseller_backfill
@@ -65,6 +70,15 @@ CLAIMS_RETRY_DELAYS = (
     (30_000, "30s"),
     (120_000, "2m"),
     (600_000, "10m"),
+)
+
+DLQ_CLASSES = (
+    "attribution_missing",
+    "http_4xx",
+    "http_5xx",
+    "deserialization",
+    "claims_unbound",
+    "transient_timeout",
 )
 
 logger = structlog.get_logger(__name__)
@@ -293,6 +307,7 @@ class SheetsAmqpConsumerRunner:
                 death_count + 1,
                 exc,
                 retry_after=exc.retry_after_seconds,
+                status_code=exc.response.status_code,
             )
             if await self._retry_claims_transient(
                 message,
@@ -487,6 +502,52 @@ class SheetsAmqpConsumerRunner:
         return status == "paused"
 
 
+def _dlq_class(
+    *,
+    event: SheetsEvent | None,
+    error: BaseException,
+    status_code: int | None = None,
+) -> str:
+    """Classify a failed message into the bounded DLQ taxonomy.
+
+    Priority: attribution first (missing event context), then explicit HTTP
+    status, then payload deserialization, then known transient/permanent
+    error families. The residual bucket is ``http_5xx`` (worker/server-side
+    failure) because the taxonomy has no "unknown" class.
+    """
+    if event is None:
+        return "attribution_missing"
+    if status_code is not None:
+        return "http_4xx" if 400 <= status_code < 500 else "http_5xx"
+    if isinstance(error, json.JSONDecodeError):
+        return "deserialization"
+    if isinstance(error, (KeyError, TypeError, ValueError, UnicodeDecodeError)):
+        return "deserialization"
+    if isinstance(
+        error,
+        (GatewayRateLimitError, RetryableGoogleSheetsApiError, GoogleSheetsApiError),
+    ):
+        return "http_4xx"
+    if isinstance(error, (SellerNotConnectedError, SellerTokenRevokedError)):
+        return "claims_unbound"
+    if isinstance(
+        error,
+        (
+            httpx.ConnectError,
+            httpx.TimeoutException,
+            RetryLimitExceededError,
+            StatusObservationContentionError,
+            DevolucionesLeaseConflictError,
+            DevolucionesLeaseLostError,
+        ),
+    ):
+        return "transient_timeout"
+    if isinstance(error, httpx.HTTPStatusError):
+        status = error.response.status_code
+        return "http_4xx" if 400 <= status < 500 else "http_5xx"
+    return "http_5xx"
+
+
 def _log_message_dlq(
     event: SheetsEvent | None,
     attempts: int,
@@ -501,6 +562,7 @@ def _log_message_dlq(
         "resource_path": event.resource if event is not None else None,
         "attempts": attempts,
         "error_type": type(error).__name__,
+        "dlq_class": _dlq_class(event=event, error=error, status_code=status_code),
     }
     if status_code is not None:
         fields["status_code"] = status_code
@@ -523,6 +585,7 @@ def _log_message_requeued(
         "resource_path": event.resource if event is not None else None,
         "attempt": attempt,
         "error_type": type(error).__name__,
+        "dlq_class": _dlq_class(event=event, error=error, status_code=status_code),
     }
     if status_code is not None:
         fields["status_code"] = status_code
