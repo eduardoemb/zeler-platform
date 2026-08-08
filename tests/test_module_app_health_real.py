@@ -45,6 +45,17 @@ class FakeMongoDb:
         return self.module_registry
 
 
+class FakeRabbitConnection:
+    is_open = True
+
+    async def close(self) -> None:
+        return None
+
+
+async def _connect_rabbitmq(*_args: Any, **_kwargs: Any) -> FakeRabbitConnection:
+    return FakeRabbitConnection()
+
+
 MODULE_BUILDERS: tuple[tuple[str, Callable[..., Any]], ...] = (
     ("repricer", build_repricer_app),
     ("sheets", build_sheets_app),
@@ -94,6 +105,12 @@ async def test_health_503_when_mongo_unreachable(module: str, builder: Callable[
 
 
 def _build_app(builder: Callable[..., Any], db: FakeMongoDb) -> Any:
-    if builder in {build_repricer_app, build_sheets_app}:
+    if builder is build_repricer_app:
         return builder(mongo_db=db, rabbitmq_ready=lambda: True)
+    if builder is build_sheets_app:
+        return builder(
+            mongo_db=db,
+            rabbitmq_url="amqp://guest:guest@broker:5672/",
+            rabbitmq_connect=_connect_rabbitmq,
+        )
     return builder(mongo_db=db)
