@@ -9,7 +9,8 @@ ROOT = Path(__file__).resolve().parents[3]
 
 
 def test_publicador_runtime_config_fails_closed_without_gateway_or_token() -> None:
-    from zeler_publicador.app import PublicadorConfigError, resolve_publicador_runtime_config
+    from zeler_publicador.ai import PublicadorConfigError
+    from zeler_publicador.app import resolve_publicador_runtime_config
 
     with pytest.raises(PublicadorConfigError, match="GATEWAY_BASE_URL is required"):
         resolve_publicador_runtime_config({"GATEWAY_MODULE_TOKEN": "module-token"})
@@ -21,7 +22,8 @@ def test_publicador_runtime_config_fails_closed_without_gateway_or_token() -> No
 
 
 def test_publicador_runtime_config_rejects_local_legacy_and_normalizes_gateway_proxy() -> None:
-    from zeler_publicador.app import PublicadorConfigError, resolve_publicador_runtime_config
+    from zeler_publicador.ai import PublicadorConfigError
+    from zeler_publicador.app import resolve_publicador_runtime_config
 
     for unsafe_base in [
         "http://localhost:8080/proxy/meli",

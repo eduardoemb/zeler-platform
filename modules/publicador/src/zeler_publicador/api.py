@@ -12,7 +12,6 @@ from pydantic import BaseModel
 
 from zeler_platform_core.auth.jwt import verify_module_jwt
 from zeler_platform_core.auth.module_admin import authorize_module_admin
-from zeler_publicador.ai import AIGenerationService, ProviderConfig
 from zeler_publicador.assets import AssetService, ImageUpload
 from zeler_publicador.batches import PublicadorBatchError, PublicadorBatchService
 from zeler_publicador.catalog import CatalogSuggestionService
@@ -431,24 +430,14 @@ def build_router(
             return JSONResponse(status_code=422, content={"error": str(exc)})
         return JSONResponse(status_code=201, content=jsonable_encoder({"assets": assets}))
 
-    @router.post("/ai/generate", status_code=202)
+    @router.post("/ai/generate", status_code=503)
     async def generate_ai(request: Request, payload: AiGenerateRequest) -> JSONResponse:
         auth = _authorize(request, seller_id=payload.seller_id)
         if auth is not None:
             return auth
-        try:
-            generated = await _ai_service(request, clock=now).generate_for_draft(
-                seller_id=payload.seller_id,
-                account_id=payload.account_id,
-                draft_id=payload.draft_id,
-                operation=payload.operation,
-                prompt_inputs=payload.prompt_inputs,
-                actor_id=payload.actor_id,
-            )
-        except ValueError as exc:
-            status_code = 404 if str(exc) == "publicador_draft_not_found" else 422
-            return JSONResponse(status_code=status_code, content={"error": str(exc)})
-        return JSONResponse(status_code=202, content=jsonable_encoder(generated))
+        # Unified fail-closed contract: LISTING_LLM only accepts stub/disabled,
+        # so AI generation is never available and always reports the stub code.
+        return JSONResponse(status_code=503, content={"code": "llm_not_configured"})
 
     @router.get("/batches", response_model=list[dict[str, Any]])
     async def list_batches(
@@ -749,21 +738,6 @@ def _asset_service(request: Request, *, clock: Callable[[], datetime]) -> AssetS
         request.app.state.mongo_db,
         storage=storage,
         picture_gateway=picture_gateway,
-        clock=clock,
-    )
-
-
-def _ai_service(request: Request, *, clock: Callable[[], datetime]) -> AIGenerationService:
-    providers = getattr(request.app.state, "publicador_ai_providers", {})
-    default = getattr(
-        request.app.state,
-        "publicador_ai_default",
-        ProviderConfig(provider="publicador-ai-provider-not-configured", model="disabled"),
-    )
-    return AIGenerationService(
-        request.app.state.mongo_db,
-        providers=providers,
-        platform_default=default,
         clock=clock,
     )
 
