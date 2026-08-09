@@ -1,23 +1,32 @@
-"""S1 tests for the guarded read-model freshness entry.
+"""Tests for the guarded read-model freshness entry.
 
-Covers Phase 1 S1 tasks 1.1-1.3 from
+Covers Phase 1 S1-S2 tasks from
 ``openspec/changes/zelerdata-read-model-freshness-guards/tasks.md``: the
-17-name inventory contract, target-state rejection, and runtime / read
-model / source rejection before any database access. S2 (generic upsert,
-session, retry) and S3 (devoluciones lease delegation) tests arrive in
-their own slices.
+17-name inventory contract and pre-DB validation (1.1-1.3), plus the
+generic ``stale``/``failed`` upsert at exact ``(seller_id, read_model)``
+identity with ``$$NOW``/source metadata, fail-closed session behavior,
+and the bounded same-pair retry (1.4-1.6). S3 (devoluciones lease
+delegation) tests arrive in their own slice.
 """
 
 from __future__ import annotations
 
+import asyncio
+from copy import deepcopy
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 from infra.operations.zelerdata_read_model_reconcile import (
     READ_MODELS as RECONCILE_READ_MODELS,
 )
+from pymongo.errors import DuplicateKeyError
 
-from zeler_platform_core.devoluciones_readiness import DEVOLUCIONES_READ_MODEL
+import tests.test_devoluciones_guarded_regressions as _devoluciones_tests
+from zeler_platform_core.devoluciones_readiness import (
+    DEVOLUCIONES_READ_MODEL,
+    READ_MODEL_FRESHNESS_COLLECTION,
+)
 from zeler_platform_core.read_model_freshness import (
     ALL_READ_MODELS,
     READ_MODELS,
@@ -138,3 +147,237 @@ async def test_unknown_source_rejected_before_db_access() -> None:
 
 def test_writer_source_allowlist_is_exactly_operator_action() -> None:
     assert frozenset({"operator-action"}) == WRITER_SOURCE_ALLOWLIST
+
+
+# S2 memory fakes ----------------------------------------------------------
+#
+# Reuse the devoluciones regression fakes; the subclass scripts the race.
+
+
+class _ConflictCollection(_devoluciones_tests._MemoryCollection):
+    """Base collection plus update recording and scripted unique-index conflicts."""
+
+    def __init__(
+        self,
+        documents: list[dict[str, Any]] | None = None,
+        *,
+        raise_on_upsert: bool = False,
+        raise_on_second_upsert: bool = False,
+        raise_on_retry: bool = False,
+    ) -> None:
+        super().__init__(documents)
+        self.raise_on_upsert = raise_on_upsert
+        self.raise_on_second_upsert = raise_on_second_upsert
+        self.raise_on_retry = raise_on_retry
+        self.upsert_attempts = 0
+        self.update_calls: list[dict[str, Any]] = []
+
+    async def update_one(
+        self,
+        filter_spec: dict[str, Any],
+        update: dict[str, Any] | list[dict[str, Any]],
+        *,
+        upsert: bool = False,
+        session: Any = None,
+    ) -> _devoluciones_tests._WriteResult:
+        self.update_calls.append(
+            {"filter": deepcopy(filter_spec), "upsert": upsert, "session": session}
+        )
+        if upsert:
+            self.upsert_attempts += 1
+            if self.raise_on_upsert or (self.raise_on_second_upsert and self.upsert_attempts >= 2):
+                raise DuplicateKeyError("E11000 duplicate key error on same seller/read-model pair")
+        if not upsert and self.raise_on_retry:
+            raise DuplicateKeyError("E11000 duplicate key error on bounded retry")
+        return await super().update_one(filter_spec, update, upsert=upsert, session=session)
+
+
+class _MemoryDb(_devoluciones_tests._MemoryDb):
+    """Base memory DB whose configured collections use the conflict fake."""
+
+    def __init__(
+        self,
+        collections: dict[str, list[dict[str, Any]]] | None = None,
+        *,
+        collection_options: dict[str, dict[str, Any]] | None = None,
+    ) -> None:
+        super().__init__(collections)
+        for name, base in list(self.collections.items()):
+            options = (collection_options or {}).get(name, {})
+            self.collections[name] = _ConflictCollection(
+                [deepcopy(document) for document in base.documents.values()],
+                **options,
+            )
+
+
+class _RecordingCollection:
+    """Records update attempts to prove fail-closed behavior precedes writes."""
+
+    def __init__(self) -> None:
+        self.update_calls: list[Any] = []
+
+    async def update_one(self, *args: Any, **kwargs: Any) -> _devoluciones_tests._WriteResult:
+        self.update_calls.append((args, kwargs))
+        return _devoluciones_tests._WriteResult()
+
+
+# 1.4 — generic stale/failed upsert ----------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_stale_upsert_creates_marker_with_now_and_operator_source() -> None:
+    db = _MemoryDb({READ_MODEL_FRESHNESS_COLLECTION: []})
+    await set_read_model_marker_state(
+        db=db,
+        seller_id=SELLER_ID,
+        read_model="orders",
+        target_state="stale",
+        source="operator-action",
+        approved_runtime=True,
+    )
+    marker = db[READ_MODEL_FRESHNESS_COLLECTION].documents[f"{SELLER_ID}:orders"]
+    assert marker == {
+        "_id": f"{SELLER_ID}:orders",
+        "seller_id": SELLER_ID,
+        "read_model": "orders",
+        "state": "stale",
+        "fresh_until": _devoluciones_tests.NOW,
+        "valid_until": _devoluciones_tests.NOW,
+        "updated_at": _devoluciones_tests.NOW,
+        "source": "operator-action",
+        "schema_version": 1,
+    }
+    assert db[READ_MODEL_FRESHNESS_COLLECTION].update_calls[0]["session"] is not None
+
+
+@pytest.mark.asyncio
+async def test_failed_upsert_creates_marker_with_now_and_operator_source() -> None:
+    db = _MemoryDb({READ_MODEL_FRESHNESS_COLLECTION: []})
+    await set_read_model_marker_state(
+        db=db,
+        seller_id=SELLER_ID,
+        read_model="claims",
+        target_state="failed",
+        source="operator-action",
+        approved_runtime=True,
+    )
+    marker = db[READ_MODEL_FRESHNESS_COLLECTION].documents[f"{SELLER_ID}:claims"]
+    assert marker["state"] == "failed"
+    assert marker["read_model"] == "claims"
+    assert marker["fresh_until"] == _devoluciones_tests.NOW
+    assert marker["valid_until"] == _devoluciones_tests.NOW
+    assert marker["updated_at"] == _devoluciones_tests.NOW
+    assert marker["source"] == "operator-action"
+
+
+@pytest.mark.asyncio
+async def test_stale_transition_updates_existing_marker_in_place() -> None:
+    existing = {
+        "_id": f"{SELLER_ID}:items",
+        "seller_id": SELLER_ID,
+        "read_model": "items",
+        "state": "reconciled",
+        "source": "zelerdata_read_model_reconcile",
+        "schema_version": 1,
+    }
+    db = _MemoryDb({READ_MODEL_FRESHNESS_COLLECTION: [existing]})
+    await set_read_model_marker_state(
+        db=db,
+        seller_id=SELLER_ID,
+        read_model="items",
+        target_state="stale",
+        source="operator-action",
+        approved_runtime=True,
+    )
+    marker = db[READ_MODEL_FRESHNESS_COLLECTION].documents[f"{SELLER_ID}:items"]
+    assert marker["state"] == "stale"
+    assert marker["seller_id"] == SELLER_ID
+    assert marker["read_model"] == "items"
+    assert marker["source"] == "operator-action"
+    assert marker["fresh_until"] == _devoluciones_tests.NOW
+    assert marker["updated_at"] == _devoluciones_tests.NOW
+    assert db[READ_MODEL_FRESHNESS_COLLECTION].update_calls[0]["upsert"] is True
+
+
+# 1.5 — fail closed without session/transaction support ---------------------
+
+
+@pytest.mark.parametrize(
+    "db",
+    [
+        SimpleNamespace(collection=_RecordingCollection()),
+        SimpleNamespace(client=object(), collection=_RecordingCollection()),
+    ],
+    ids=["no-client", "no-session-support"],
+)
+@pytest.mark.asyncio
+async def test_missing_session_support_fails_closed_before_any_write(
+    db: SimpleNamespace,
+) -> None:
+    with pytest.raises(RuntimeError, match="transaction"):
+        await set_read_model_marker_state(
+            db=db,
+            seller_id=SELLER_ID,
+            read_model="orders",
+            target_state="stale",
+            source="operator-action",
+            approved_runtime=True,
+        )
+    assert db.collection.update_calls == []
+
+
+# 1.6 — same-pair concurrency, bounded retry, valid final state ------------
+
+
+@pytest.mark.asyncio
+async def test_concurrent_same_pair_writes_leave_one_valid_state() -> None:
+    # Scripted conflict: the second upsert loses the unique-index insert race.
+    db = _MemoryDb(
+        {READ_MODEL_FRESHNESS_COLLECTION: []},
+        collection_options={READ_MODEL_FRESHNESS_COLLECTION: {"raise_on_second_upsert": True}},
+    )
+    first = set_read_model_marker_state(
+        db=db,
+        seller_id=SELLER_ID,
+        read_model="orders",
+        target_state="stale",
+        source="operator-action",
+        approved_runtime=True,
+    )
+    second = set_read_model_marker_state(
+        db=db,
+        seller_id=SELLER_ID,
+        read_model="orders",
+        target_state="failed",
+        source="operator-action",
+        approved_runtime=True,
+    )
+    await asyncio.gather(first, second)
+    marker = db[READ_MODEL_FRESHNESS_COLLECTION].documents[f"{SELLER_ID}:orders"]
+    assert marker["state"] in {"stale", "failed"}
+    calls = db[READ_MODEL_FRESHNESS_COLLECTION].update_calls
+    assert sum(1 for call in calls if call["upsert"]) == 2
+    assert sum(1 for call in calls if not call["upsert"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_duplicate_conflict_retry_is_bounded_to_one_attempt() -> None:
+    db = _MemoryDb(
+        {READ_MODEL_FRESHNESS_COLLECTION: []},
+        collection_options={
+            READ_MODEL_FRESHNESS_COLLECTION: {"raise_on_upsert": True, "raise_on_retry": True}
+        },
+    )
+    with pytest.raises(DuplicateKeyError):
+        await set_read_model_marker_state(
+            db=db,
+            seller_id=SELLER_ID,
+            read_model="orders",
+            target_state="stale",
+            source="operator-action",
+            approved_runtime=True,
+        )
+    collection = db[READ_MODEL_FRESHNESS_COLLECTION]
+    assert len(collection.update_calls) == 2
+    assert collection.update_calls[0]["upsert"] is True
+    assert collection.update_calls[1]["upsert"] is False
