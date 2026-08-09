@@ -12,14 +12,22 @@ and an unexpired ``valid_until`` for ``devoluciones``) and the
 deterministic action map (``none`` / ``await_lease`` for missing
 ``questions`` / ``re_run_reconcile``). S4c wires the CLI: a parser and
 ``validate_status_argv`` that reject invalid argv before any DB access,
-plus ``main(argv, db)`` emitting the report as JSON. Readiness (S5)
-arrives in a later slice.
+plus ``main(argv, db)`` emitting the report as JSON. S5 completes the
+``main()`` contract: the optional ``--readiness`` flag adds a readiness
+envelope (``status: ready|degraded`` plus the ordered ``blocking`` list of
+read models whose recommended action is not ``none``), and ``run`` is the
+process entry that emits the JSON, returns nonzero when readiness is
+degraded, and raises a sanitized ``query_anomaly`` ``SystemExit`` when the
+run is anomalous. Plain output without ``--readiness`` stays
+``{summary, read_models}`` (S4 behavior preserved).
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import os
+import sys
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from typing import Any
@@ -36,9 +44,14 @@ __all__ = [
     "ACTION_RE_RUN_RECONCILE",
     "ALL_READ_MODELS",
     "CONTRACTED_FIELDS",
+    "STATUS_DEGRADED",
+    "STATUS_READY",
+    "build_readiness_envelope",
     "build_read_model_status_report",
     "build_status_arg_parser",
+    "create_runtime_db",
     "main",
+    "run",
     "validate_status_argv",
 ]
 
@@ -78,6 +91,9 @@ SOURCE_GATED_MODELS: frozenset[str] = frozenset(
 ACTION_NONE = "none"
 ACTION_AWAIT_LEASE = "await_lease"
 ACTION_RE_RUN_RECONCILE = "re_run_reconcile"
+# Readiness statuses (design contract): ready only when no row blocks.
+STATUS_READY = "ready"
+STATUS_DEGRADED = "degraded"
 
 
 def build_status_arg_parser() -> argparse.ArgumentParser:
@@ -94,6 +110,11 @@ def build_status_arg_parser() -> argparse.ArgumentParser:
         "--confirm-approved-runtime",
         action="store_true",
         help="Required for every run; confirms approved VM/VPC/runtime execution.",
+    )
+    parser.add_argument(
+        "--readiness",
+        action="store_true",
+        help="Emit the readiness envelope (status ready|degraded plus blocking models).",
     )
     return parser
 
@@ -116,7 +137,9 @@ def main(argv: Sequence[str], db: Any) -> str:
     """CLI entry: validate argv, build the report, return its JSON.
 
     ``argv`` is validated before any database access; the report is
-    emitted as a JSON string with sorted keys.
+    emitted as a JSON string with sorted keys. With ``--readiness`` the
+    payload includes the readiness envelope (``status`` plus ``blocking``);
+    without it the output stays ``{summary, read_models}``.
     """
     args = validate_status_argv(argv)
     now = datetime.now(UTC)
@@ -125,7 +148,58 @@ def main(argv: Sequence[str], db: Any) -> str:
         seller_id=str(args.seller_id).strip(),
         now=now,
     )
+    if bool(args.readiness):
+        report.update(build_readiness_envelope(report["read_models"]))
     return json.dumps(report, sort_keys=True)
+
+
+def build_readiness_envelope(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    """Readiness envelope: ``ready`` only when no row's action blocks.
+
+    Every row whose ``action_recommended`` is not ``none`` blocks
+    readiness; ``blocking`` lists those read models in report order.
+    """
+    blocking = [row["read_model"] for row in rows if row["action_recommended"] != ACTION_NONE]
+    return {"status": STATUS_READY if not blocking else STATUS_DEGRADED, "blocking": blocking}
+
+
+def run(argv: Sequence[str] | None = None, db: Any | None = None) -> int:
+    """Process entry: validate argv, emit the report JSON, return exit code.
+
+    Returns ``0`` when the readiness envelope is ``ready`` (or when no
+    ``--readiness`` flag was requested); returns nonzero when readiness is
+    ``degraded``. Anomalous runs raise ``SystemExit("query_anomaly")`` —
+    raw exception details never reach the process.
+    """
+    resolved = list(argv) if argv is not None else sys.argv[1:]
+    args = validate_status_argv(resolved)
+    runtime_db = db if db is not None else create_runtime_db()
+    try:
+        text = main(resolved, runtime_db)
+    except (AttributeError, RuntimeError, TypeError) as exc:
+        raise SystemExit("query_anomaly") from exc
+    payload = json.loads(text)
+    print(text)
+    if bool(args.readiness) and payload.get("status") != STATUS_READY:
+        return 1
+    return 0
+
+
+def create_runtime_db() -> Any:
+    """Build the runtime Mongo database from environment configuration.
+
+    Mirrors the reconcile CLI: ``MONGO_URI`` and ``MONGO_DB`` must be set;
+    fails closed with a ``SystemExit`` otherwise.
+    """
+    mongo_uri = os.environ.get("MONGO_URI")
+    mongo_db_name = os.environ.get("MONGO_DB")
+    if not mongo_uri or not mongo_db_name:
+        raise SystemExit("runtime Mongo configuration is required")
+
+    from motor.motor_asyncio import AsyncIOMotorClient
+
+    client: AsyncIOMotorClient[Any] = AsyncIOMotorClient(mongo_uri)
+    return client[mongo_db_name]
 
 
 def build_read_model_status_report(*, db: Any, seller_id: str, now: datetime) -> dict[str, Any]:
@@ -255,3 +329,7 @@ def _sanitized_allowlisted(raw: Any, allowlist: frozenset[str]) -> str | None:
 
 def _sanitized_datetime(raw: Any) -> str | None:
     return raw.isoformat() if isinstance(raw, datetime) else None
+
+
+if __name__ == "__main__":
+    raise SystemExit(run())

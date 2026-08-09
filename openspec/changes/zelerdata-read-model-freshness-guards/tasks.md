@@ -43,8 +43,8 @@ Estimated: 1200–1450 across PR 1 → PR 8 (each slice ≤400). Recovery: PR #1
 - [x] 2.6a [S4a] GREEN: create report core in `infra/operations/zelerdata_read_model_status.py` — projected query, 17-row synthesis, summary, sanitization (no argv/JSON yet); passing 2.1–2.2
 - [x] 2.6c [S4b] GREEN: extend window gates (source-gated legacy basis, devoluciones `valid_until`) + action map; passing 2.3–2.4
 - [x] 2.6d [S4c] GREEN: add `validate_status_argv`, parser, `main(argv, db)` JSON output; passing 3.1 + argv tests
-- [ ] 2.5 [S5] RED: readiness `ready`/`degraded` + `blocking`; `main(argv)` twice → one read, zero writes; nonzero exit; sanitized errors
-- [ ] 2.6b [S5] GREEN: add readiness + `main()` contract, passing 2.5
+- [x] 2.5 [S5] RED: readiness `ready`/`degraded` + `blocking`; `main(argv)` twice → one read, zero writes; nonzero exit; sanitized errors
+- [x] 2.6b [S5] GREEN: add readiness + `main()` contract, passing 2.5
 
 ## Phase 3: Docs and verification — S6
 
