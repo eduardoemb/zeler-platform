@@ -10,14 +10,18 @@ is ``true`` only for ``fresh``/``reconciled`` markers whose coverage window
 includes now, with an allowlisted source, the source-gated legacy basis,
 and an unexpired ``valid_until`` for ``devoluciones``) and the
 deterministic action map (``none`` / ``await_lease`` for missing
-``questions`` / ``re_run_reconcile``). argv/CLI wiring (S4c) and readiness
-(S5) arrive in later slices.
+``questions`` / ``re_run_reconcile``). S4c wires the CLI: a parser and
+``validate_status_argv`` that reject invalid argv before any DB access,
+plus ``main(argv, db)`` emitting the report as JSON. Readiness (S5)
+arrives in a later slice.
 """
 
 from __future__ import annotations
 
-from collections.abc import Mapping
-from datetime import datetime
+import argparse
+import json
+from collections.abc import Mapping, Sequence
+from datetime import UTC, datetime
 from typing import Any
 
 from zeler_platform_core.devoluciones_readiness import (
@@ -25,6 +29,18 @@ from zeler_platform_core.devoluciones_readiness import (
     READ_MODEL_FRESHNESS_COLLECTION,
 )
 from zeler_platform_core.read_model_freshness import ALL_READ_MODELS
+
+__all__ = [
+    "ACTION_AWAIT_LEASE",
+    "ACTION_NONE",
+    "ACTION_RE_RUN_RECONCILE",
+    "ALL_READ_MODELS",
+    "CONTRACTED_FIELDS",
+    "build_read_model_status_report",
+    "build_status_arg_parser",
+    "main",
+    "validate_status_argv",
+]
 
 # Contracted per-row fields; the report rebuilds rows from exactly these.
 CONTRACTED_FIELDS: tuple[str, ...] = (
@@ -62,6 +78,54 @@ SOURCE_GATED_MODELS: frozenset[str] = frozenset(
 ACTION_NONE = "none"
 ACTION_AWAIT_LEASE = "await_lease"
 ACTION_RE_RUN_RECONCILE = "re_run_reconcile"
+
+
+def build_status_arg_parser() -> argparse.ArgumentParser:
+    """Build the status CLI argument parser.
+
+    Validation of parsed argv happens in ``validate_status_argv`` before
+    any database access; the parser itself only describes the flags.
+    """
+    parser = argparse.ArgumentParser(
+        description="Emit a sanitized ZelerData read-model freshness status report."
+    )
+    parser.add_argument("--seller-id", required=True, help="Seller id to report.")
+    parser.add_argument(
+        "--confirm-approved-runtime",
+        action="store_true",
+        help="Required for every run; confirms approved VM/VPC/runtime execution.",
+    )
+    return parser
+
+
+def validate_status_argv(argv: Sequence[str]) -> argparse.Namespace:
+    """Parse and validate CLI argv before any DB access.
+
+    Raises ``SystemExit`` for missing ``--seller-id``, a blank seller id,
+    or a missing ``--confirm-approved-runtime`` confirmation.
+    """
+    args = build_status_arg_parser().parse_args(argv)
+    if not str(args.seller_id).strip():
+        raise SystemExit("seller-id is required")
+    if not bool(args.confirm_approved_runtime):
+        raise SystemExit("--confirm-approved-runtime is required")
+    return args
+
+
+def main(argv: Sequence[str], db: Any) -> str:
+    """CLI entry: validate argv, build the report, return its JSON.
+
+    ``argv`` is validated before any database access; the report is
+    emitted as a JSON string with sorted keys.
+    """
+    args = validate_status_argv(argv)
+    now = datetime.now(UTC)
+    report = build_read_model_status_report(
+        db=db,
+        seller_id=str(args.seller_id).strip(),
+        now=now,
+    )
+    return json.dumps(report, sort_keys=True)
 
 
 def build_read_model_status_report(*, db: Any, seller_id: str, now: datetime) -> dict[str, Any]:
