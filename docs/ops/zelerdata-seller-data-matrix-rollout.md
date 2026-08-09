@@ -64,6 +64,26 @@ For formulas governed by this checklist, if a marker is missing, stale, failed,
 or outside the requested range, the Formula API must return stable
 `DATA_UNAVAILABLE`.
 
+## Unwired read-model guidance
+
+The status command reports all 17 read models, but the matrix gates only the
+formulas wired to a marker. An unwired model is one whose marker no formula
+consumes yet; treat its state as informative, not as an availability claim.
+
+- Do not announce a domain as available until its formula is wired to the
+  marker and passes the authenticated smoke.
+- When an unwired model is missing, stale, or failed, no formula is blocked
+  yet; leave the model fail-closed so the wiring slice inherits a clean state.
+- After wiring, use the status report's `action_recommended` as the repair
+  signal: `re_run_reconcile` for missing, stale, failed, or malformed markers;
+  `await_lease` for a missing `questions` marker.
+- Markers alone never make a formula live; formula readiness requires the
+  wired gate to prove the requested seller scope.
+
+Run the read-only status command from the approved runtime to inspect
+per-seller markers: `python -m infra.operations.zelerdata_read_model_status
+--seller-id <seller> --confirm-approved-runtime [--readiness]`.
+
 ## Rollback
 
 Rollback is domain-safe and marker-first: stop active reconciliation runs, mark

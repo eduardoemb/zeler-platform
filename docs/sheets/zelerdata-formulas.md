@@ -71,6 +71,17 @@ ZelerData formulas are Google Sheets custom functions backed by the zeler-platfo
 
 These formulas are supported only after their read-model freshness markers prove the requested seller scope. When the required marker is missing, stale, failed, partial, or outside the requested range, the Formula API returns `DATA_UNAVAILABLE` instead of guessing values.
 
+To inspect which markers actually prove a seller scope, run the read-only status command from the approved runtime:
+
+```bash
+python -m infra.operations.zelerdata_read_model_status \
+  --seller-id <seller> \
+  --confirm-approved-runtime \
+  [--readiness]
+```
+
+The report emits one row per read model, summary counters, and — with `--readiness` — the `ready`/`degraded` envelope plus the blocking models. See [ZelerData read-model reconciliation](zelerdata-read-model-reconciliation.md) for the runtime command shape and approved-context rules.
+
 Pause-duration outputs are not historical Mercado Libre truth unless Mercado Libre provides that source. For the current fallback, Zeler counts from the first synchronization where it observed the current continuous paused period; when the listing leaves `paused`, that basis is cleared and a later pause starts a new counter.
 
 | Formula | Required proof |
