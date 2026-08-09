@@ -20,17 +20,25 @@ process entry that emits the JSON, returns nonzero when readiness is
 degraded, and raises a sanitized ``query_anomaly`` ``SystemExit`` when the
 run is anomalous. Plain output without ``--readiness`` stays
 ``{summary, read_models}`` (S4 behavior preserved).
+
+Runtime DB access uses Motor (``AsyncIOMotorClient``); the report drains
+async cursors through a short-lived event loop while keeping the sync
+``main``/``run`` contracts, and connection errors surface as sanitized
+``query_anomaly`` exits.
 """
 
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 import os
 import sys
-from collections.abc import Mapping, Sequence
+from collections.abc import AsyncIterable, Iterable, Mapping, Sequence
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, cast
+
+from pymongo.errors import PyMongoError
 
 from zeler_platform_core.devoluciones_readiness import (
     DEVOLUCIONES_READ_MODEL,
@@ -176,7 +184,7 @@ def run(argv: Sequence[str] | None = None, db: Any | None = None) -> int:
     runtime_db = db if db is not None else create_runtime_db()
     try:
         text = main(resolved, runtime_db)
-    except (AttributeError, RuntimeError, TypeError) as exc:
+    except (AttributeError, RuntimeError, TypeError, PyMongoError) as exc:
         raise SystemExit("query_anomaly") from exc
     payload = json.loads(text)
     print(text)
@@ -202,6 +210,26 @@ def create_runtime_db() -> Any:
     return client[mongo_db_name]
 
 
+def _drain_cursor(cursor: Any) -> list[Mapping[str, Any]]:
+    """Return every document from a sync or Motor async cursor.
+
+    The runtime DB is Motor (``AsyncIOMotorClient``): its ``find()``
+    returns an ``AsyncIOMotorCursor`` — an async iterable that a
+    synchronous CLI cannot iterate directly. Async cursors are drained
+    through a short-lived event loop via ``to_list``; plain iterables
+    (test fakes, sync drivers) iterate synchronously. The CLI builds one
+    report per run, so at most one loop is created per process.
+    """
+    if isinstance(cursor, AsyncIterable) and not isinstance(cursor, Iterable):
+        return asyncio.run(_drain_async_cursor(cursor))
+    return list(cursor)
+
+
+async def _drain_async_cursor(cursor: Any) -> list[Mapping[str, Any]]:
+    """Drain a Motor cursor on the running event loop (``to_list``)."""
+    return cast("list[Mapping[str, Any]]", await cursor.to_list(length=None))
+
+
 def build_read_model_status_report(*, db: Any, seller_id: str, now: datetime) -> dict[str, Any]:
     """Emit the sanitized per-seller report: one query, 17 rows, summary.
 
@@ -210,12 +238,14 @@ def build_read_model_status_report(*, db: Any, seller_id: str, now: datetime) ->
     coverage window includes ``now``.
     """
     projection: dict[str, int] = {field: 1 for field in CONTRACTED_FIELDS} | {"_id": 0}
-    cursor = db[READ_MODEL_FRESHNESS_COLLECTION].find(
-        {"seller_id": seller_id, "read_model": {"$in": list(ALL_READ_MODELS)}},
-        projection,
+    documents = _drain_cursor(
+        db[READ_MODEL_FRESHNESS_COLLECTION].find(
+            {"seller_id": seller_id, "read_model": {"$in": list(ALL_READ_MODELS)}},
+            projection,
+        )
     )
     by_model: dict[str, Mapping[str, Any]] = {}
-    for document in list(cursor):
+    for document in documents:
         if not isinstance(document, Mapping) or document.get("read_model") not in ALL_READ_MODELS:
             continue
         by_model[document["read_model"]] = {
