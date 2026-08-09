@@ -589,3 +589,124 @@ def test_run_raises_sanitized_system_exit_on_anomaly() -> None:
     assert message == "query_anomaly"
     assert "mongodb://" not in message
     assert "supersecret" not in message
+
+
+# Motor-cursor regression (final-verification defect) ------------------------
+#
+# The runtime DB is Motor (``AsyncIOMotorClient``), whose ``find()`` returns
+# an ``AsyncIOMotorCursor``: an async iterable that is deliberately NOT
+# sync-iterable. The pre-fix report called ``list(cursor)``, which raises
+# ``TypeError: 'AsyncIOMotorCursor' object is not iterable`` at runtime. The
+# report must drain Motor cursors through an event loop while keeping the
+# sync fake path and the sync ``main``/``run`` contracts unchanged.
+
+
+class _AsyncStatusCursor:
+    """Motor-compatible cursor: awaitable ``to_list``, ``async for``, and
+    deliberately no sync ``__iter__`` (mirrors ``AsyncIOMotorCursor``)."""
+
+    def __init__(self, documents: list[dict[str, Any]]) -> None:
+        self.documents = [deepcopy(document) for document in documents]
+        self._index = 0
+
+    async def to_list(self, length: int | None = None) -> list[dict[str, Any]]:
+        return [deepcopy(document) for document in self.documents]
+
+    def __aiter__(self) -> _AsyncStatusCursor:
+        self._index = 0
+        return self
+
+    async def __anext__(self) -> dict[str, Any]:
+        if self._index >= len(self.documents):
+            raise StopAsyncIteration
+        document = self.documents[self._index]
+        self._index += 1
+        return deepcopy(document)
+
+
+class _AsyncStatusDb:
+    """Async-collection-shaped db whose ``find`` returns a Motor-shaped
+    cursor; counts reads to lock the one-read-per-run contract."""
+
+    def __init__(self, documents: list[dict[str, Any]] | None = None) -> None:
+        self.documents = [deepcopy(document) for document in documents or []]
+        self.reads = 0
+
+    def __getitem__(self, name: str) -> _AsyncStatusDb:
+        return self
+
+    def find(
+        self,
+        filter_spec: dict[str, Any],
+        projection: dict[str, int] | None = None,
+    ) -> _AsyncStatusCursor:
+        self.reads += 1
+        return _AsyncStatusCursor(
+            [document for document in self.documents if _matches(document, filter_spec)]
+        )
+
+
+def test_report_drains_motor_async_cursor_without_type_error() -> None:
+    db = _AsyncStatusDb([_marker(state="reconciled", fresh_until=NOW + HOUR)])
+    report = status_module.build_read_model_status_report(db=db, seller_id=SELLER_ID, now=NOW)
+    assert len(report["read_models"]) == 17
+    assert report["summary"] == {
+        "fresh": 0,
+        "reconciled": 1,
+        "stale": 0,
+        "failed": 0,
+        "missing": 16,
+    }
+    row = _row(report, "orders")
+    assert row["state"] == "reconciled"
+    assert row["in_productive_window"] is True
+    assert row["action_recommended"] == "none"
+
+
+def test_async_cursor_report_matches_sync_cursor_report() -> None:
+    markers = [
+        _marker(read_model="orders", state="reconciled", fresh_until=NOW + HOUR),
+        _marker(
+            read_model="devoluciones",
+            state="reconciled",
+            fresh_until=NOW + HOUR,
+            valid_until=NOW - HOUR,
+        ),
+        _marker(read_model="questions", source="mystery_writer"),
+    ]
+    sync_report = _report(_StatusCollection(markers))
+    async_report = status_module.build_read_model_status_report(
+        db=_AsyncStatusDb(markers), seller_id=SELLER_ID, now=NOW
+    )
+    assert async_report == sync_report
+
+
+def test_main_with_motor_async_db_emits_readiness_json_and_reads_once() -> None:
+    db = _AsyncStatusDb(_all_productive_markers())
+    payload = json.loads(
+        status_module.main(
+            ["--seller-id", SELLER_ID, "--confirm-approved-runtime", "--readiness"],
+            db=db,
+        )
+    )
+    assert payload["status"] == "ready"
+    assert payload["blocking"] == []
+    assert db.reads == 1  # one read per run on the Motor-shaped path too
+
+
+def test_run_with_motor_async_db_exits_zero_when_ready() -> None:
+    exit_code = status_module.run(
+        ["--seller-id", SELLER_ID, "--confirm-approved-runtime", "--readiness"],
+        db=_AsyncStatusDb(_all_productive_markers()),
+    )
+    assert exit_code == 0
+
+
+def test_run_with_motor_async_db_exits_nonzero_when_degraded() -> None:
+    markers = _all_productive_markers()
+    next(marker for marker in markers if marker["read_model"] == "orders")["state"] = "stale"
+    exit_code = status_module.run(
+        ["--seller-id", SELLER_ID, "--confirm-approved-runtime", "--readiness"],
+        db=_AsyncStatusDb(markers),
+    )
+    assert exit_code != 0
