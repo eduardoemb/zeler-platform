@@ -1,14 +1,17 @@
 """Tests for the sanitized read-only ZelerData read-model status report.
 
-Covers Phase 2 S4a-S4c tasks from
+Covers Phase 2 S4a-S5 tasks from
 ``openspec/changes/zelerdata-read-model-freshness-guards/tasks.md``: 17-row
 synthesis with exact contracted keys for full and empty collections (2.1),
 sanitized output that excludes identifiers and degrades malformed or
 unknown-source evidence to ``null`` (2.2), ``in_productive_window`` gated on
 productive evidence (2.3), the deterministic action map ``none`` /
-``await_lease`` / ``re_run_reconcile`` (2.4), and the CLI wiring that
-consumes the core inventory object and validates argv before any DB access
-(3.1, 2.6d). Readiness (S5) arrives in a later slice.
+``await_lease`` / ``re_run_reconcile`` (2.4), the CLI wiring that consumes
+the core inventory object and validates argv before any DB access (3.1,
+2.6d), and the S5 readiness contract (2.5): ``ready``/``degraded`` with a
+``blocking`` list, the completed ``main()`` contract that reads once per run
+and never writes, nonzero exit when readiness is degraded or the run is
+anomalous, and sanitized errors.
 """
 
 from __future__ import annotations
@@ -16,7 +19,7 @@ from __future__ import annotations
 import json
 from copy import deepcopy
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, cast
 
 import pytest
 from infra.operations import zelerdata_read_model_status as status_module
@@ -391,3 +394,198 @@ def test_status_main_emits_json_report_for_valid_argv() -> None:
     row = next(row for row in payload["read_models"] if row["read_model"] == "orders")
     assert row["read_model"] == "orders"
     assert row["state"] == "reconciled"
+
+
+# 2.5 — readiness ready/degraded + blocking; main() contract -----------------
+#
+# The design contract: ``ready`` is reported only when every row's
+# ``action_recommended`` is ``none``; every non-``none`` action blocks
+# readiness. ``main(argv, db)`` is repeatable and read-only (one read per
+# run, zero writes), and the completed CLI entry returns nonzero when
+# readiness is degraded or the run is anomalous, with sanitized errors.
+
+
+def _productive_marker(read_model: str, **overrides: Any) -> dict[str, Any]:
+    """A marker that is productive for its read model (state, window, source).
+
+    ``main``/``run`` anchor the window with real ``datetime.now(UTC)``, so
+    productive markers must be fresh relative to real now.
+    """
+    real_now = datetime.now(UTC)
+    marker = _marker(
+        read_model=read_model,
+        _id=f"{SELLER_ID}:{read_model}",
+        state="reconciled",
+        fresh_until=real_now + HOUR,
+        updated_at=real_now,
+        **overrides,
+    )
+    if read_model in {"stock_time_metrics", "catalog_time_metrics", "full_withdrawals"}:
+        marker["coverage_basis"] = "legacy_imported"
+    if read_model == "devoluciones":
+        marker["valid_until"] = real_now + HOUR
+    return marker
+
+
+def _all_productive_markers() -> list[dict[str, Any]]:
+    return [_productive_marker(model) for model in ALL_READ_MODELS]
+
+
+def _readiness(argv: list[str], collection: _StatusCollection) -> dict[str, Any]:
+    return cast("dict[str, Any]", json.loads(status_module.main(argv, db=collection)))
+
+
+@pytest.mark.parametrize("readiness_flag", [["--readiness"]], ids=["with-readiness"])
+def test_readiness_ready_when_all_models_productive(readiness_flag: list[str]) -> None:
+    argv = ["--seller-id", SELLER_ID, "--confirm-approved-runtime", *readiness_flag]
+    payload = _readiness(argv, _StatusCollection(_all_productive_markers()))
+    assert payload["status"] == "ready"
+    assert payload["blocking"] == []
+
+
+def test_readiness_degraded_and_blocking_lists_stale_model() -> None:
+    markers = _all_productive_markers()
+    stale = next(marker for marker in markers if marker["read_model"] == "orders")
+    stale["state"] = "stale"
+    payload = _readiness(
+        ["--seller-id", SELLER_ID, "--confirm-approved-runtime", "--readiness"],
+        _StatusCollection(markers),
+    )
+    assert payload["status"] == "degraded"
+    assert payload["blocking"] == ["orders"]
+
+
+def test_readiness_blocking_lists_every_non_none_action_in_row_order() -> None:
+    # Empty collection: every row is missing, so every non-questions action
+    # is re_run_reconcile and questions is await_lease; all 17 block.
+    payload = _readiness(
+        ["--seller-id", SELLER_ID, "--confirm-approved-runtime", "--readiness"],
+        _StatusCollection(),
+    )
+    assert payload["status"] == "degraded"
+    assert payload["blocking"] == list(ALL_READ_MODELS)
+
+
+def test_readiness_degraded_when_questions_await_lease_blocks() -> None:
+    # Triangulation: await_lease blocks readiness too, not just stale/failed.
+    markers = [
+        marker for marker in _all_productive_markers() if marker["read_model"] != "questions"
+    ]
+    payload = _readiness(
+        ["--seller-id", SELLER_ID, "--confirm-approved-runtime", "--readiness"],
+        _StatusCollection(markers),
+    )
+    assert payload["status"] == "degraded"
+    assert payload["blocking"] == ["questions"]
+
+
+def test_readiness_keys_absent_without_readiness_flag() -> None:
+    # S4 behavior preserved: plain output carries no status/blocking keys.
+    payload = _readiness(
+        ["--seller-id", SELLER_ID, "--confirm-approved-runtime"],
+        _StatusCollection([_marker(state="stale")]),
+    )
+    assert set(payload) == {"summary", "read_models"}
+    assert "status" not in payload and "blocking" not in payload
+
+
+class _ReadWriteSpyDb:
+    """Counts read (find) calls and any write-method attempt."""
+
+    def __init__(self, documents: list[dict[str, Any]] | None = None) -> None:
+        self._inner = _StatusCollection(documents)
+        self.reads = 0
+        self.writes = 0
+
+    def __getitem__(self, name: str) -> _ReadWriteSpyDb:
+        return self
+
+    def find(
+        self,
+        filter_spec: dict[str, Any],
+        projection: dict[str, int] | None = None,
+    ) -> list[dict[str, Any]]:
+        self.reads += 1
+        return self._inner.find(filter_spec, projection)
+
+    def update_one(self, *args: Any, **kwargs: Any) -> object:
+        self.writes += 1
+        return object()
+
+    def update_many(self, *args: Any, **kwargs: Any) -> object:
+        self.writes += 1
+        return object()
+
+    def insert_one(self, *args: Any, **kwargs: Any) -> object:
+        self.writes += 1
+        return object()
+
+    def insert_many(self, *args: Any, **kwargs: Any) -> object:
+        self.writes += 1
+        return object()
+
+    def delete_one(self, *args: Any, **kwargs: Any) -> object:
+        self.writes += 1
+        return object()
+
+    def delete_many(self, *args: Any, **kwargs: Any) -> object:
+        self.writes += 1
+        return object()
+
+
+def test_main_called_twice_reads_once_per_run_and_never_writes() -> None:
+    db = _ReadWriteSpyDb(_all_productive_markers())
+    argv = ["--seller-id", SELLER_ID, "--confirm-approved-runtime", "--readiness"]
+    first = status_module.main(argv, db=db)
+    second = status_module.main(argv, db=db)
+    assert json.loads(first) == json.loads(second)  # repeatable
+    assert db.reads == 2  # exactly one read per run
+    assert db.writes == 0  # zero writes across both runs
+
+
+def test_run_exits_zero_when_readiness_ready() -> None:
+    exit_code = status_module.run(
+        ["--seller-id", SELLER_ID, "--confirm-approved-runtime", "--readiness"],
+        db=_StatusCollection(_all_productive_markers()),
+    )
+    assert exit_code == 0
+
+
+def test_run_exits_nonzero_when_readiness_degraded() -> None:
+    markers = _all_productive_markers()
+    next(marker for marker in markers if marker["read_model"] == "orders")["state"] = "stale"
+    exit_code = status_module.run(
+        ["--seller-id", SELLER_ID, "--confirm-approved-runtime", "--readiness"],
+        db=_StatusCollection(markers),
+    )
+    assert exit_code != 0
+
+
+def test_run_exits_zero_without_readiness_flag_even_when_degraded() -> None:
+    # Nonzero exit is tied to the readiness emission, not to degraded rows alone.
+    markers = _all_productive_markers()
+    next(marker for marker in markers if marker["read_model"] == "orders")["state"] = "stale"
+    exit_code = status_module.run(
+        ["--seller-id", SELLER_ID, "--confirm-approved-runtime"],
+        db=_StatusCollection(markers),
+    )
+    assert exit_code == 0
+
+
+class _ExplodingStatusDb:
+    """Raises an anomaly carrying a secret so leak behavior is provable."""
+
+    def __getitem__(self, name: str) -> Any:
+        raise RuntimeError("connection to mongodb://user:supersecret@host:27017 failed")  # noqa: S106
+
+
+def test_run_raises_sanitized_system_exit_on_anomaly() -> None:
+    with pytest.raises(SystemExit) as exc_info:
+        status_module.run(
+            ["--seller-id", SELLER_ID, "--confirm-approved-runtime", "--readiness"],
+            db=_ExplodingStatusDb(),
+        )
+    message = str(exc_info.value)
+    assert message == "query_anomaly"
+    assert "mongodb://" not in message
+    assert "supersecret" not in message
