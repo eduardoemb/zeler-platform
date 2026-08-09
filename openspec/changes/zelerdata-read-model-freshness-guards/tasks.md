@@ -5,7 +5,7 @@ Chained PRs recommended: Yes
 Chain strategy: feature-branch-chain
 400-line budget risk: High
 
-Estimated: 1200–1400 across PR 1 → PR 6 (each slice ≤400). Recovery: PR #1 (844) rejected; resliced.
+Estimated: 1200–1450 across PR 1 → PR 8 (each slice ≤400). Recovery: PR #1 (844) and S4 (454) rejected; resliced — S4a ~300, S4b ~90, S4c ~55.
 
 ### Work Units
 
@@ -14,9 +14,11 @@ Estimated: 1200–1400 across PR 1 → PR 6 (each slice ≤400). Recovery: PR #1
 | S1 | Inventory + validation | PR 1 (base=tracker) | `uv run pytest tests/test_read_model_freshness_writer.py` | N/A: unit tests; live DB excluded | Remove core writer + test |
 | S2 | Generic upsert + session + concurrency | PR 2 (base=PR 1) | `uv run pytest tests/test_read_model_freshness_writer.py` | N/A: same | Revert S2 additions |
 | S3 | Devoluciones lease-guarded transitions | PR 3 (base=PR 2) | `uv run pytest tests/test_read_model_freshness_writer.py` | N/A: same | Revert S3 additions |
-| S4 | Status report: rows, sanitized output, windows, actions | PR 4 (base=PR 3) | `uv run pytest tests/operations/test_zelerdata_read_model_status.py` | N/A: `main(argv)` in tests; no deploy | Remove CLI + test |
-| S5 | Readiness + main() contract | PR 5 (base=PR 4) | `uv run pytest tests/operations/test_zelerdata_read_model_status.py` | N/A: same | Revert S5 additions |
-| S6 | Docs + final verification | PR 6 (base=PR 5) | `uv run pytest tests/test_read_model_freshness_writer.py tests/operations/test_zelerdata_read_model_status.py` | N/A: no runtime change | Revert 2 doc links |
+| S4a | Report core: 17 rows, exact keys, sanitized output, summary | PR 4 (base=PR 3) | `uv run pytest tests/operations/test_zelerdata_read_model_status.py` | N/A: report fn via fake collection in tests; no deploy | Remove report core + tests |
+| S4b | Productive-window gates + deterministic actions | PR 5 (base=PR 4) | `uv run pytest tests/operations/test_zelerdata_read_model_status.py` | N/A: same | Revert S4b additions |
+| S4c | CLI: parser, argv validation pre-DB, JSON output | PR 6 (base=PR 5) | `uv run pytest tests/operations/test_zelerdata_read_model_status.py` | N/A: `main(argv, db)` in tests; no deploy | Revert S4c additions |
+| S5 | Readiness + main() contract | PR 7 (base=PR 6) | `uv run pytest tests/operations/test_zelerdata_read_model_status.py` | N/A: same | Revert S5 additions |
+| S6 | Docs + final verification | PR 8 (base=PR 7) | `uv run pytest tests/test_read_model_freshness_writer.py tests/operations/test_zelerdata_read_model_status.py` | N/A: no runtime change | Revert 2 doc links |
 
 ## Phase 1: Core writer (TDD) — S1–S3
 
@@ -31,14 +33,16 @@ Estimated: 1200–1400 across PR 1 → PR 6 (each slice ≤400). Recovery: PR #1
 - [x] 1.7 [S3] RED: devoluciones — `stale`→`invalidate_devoluciones_readiness`, `failed`→`guarded_devoluciones_write` + expiry; foreign/lost lease fails pre-write
 - [x] 1.8c [S3] GREEN: add devoluciones dispatch (`_set_devoluciones_state`, `_set_devoluciones_failed`), passing 1.7
 
-## Phase 2: Status CLI (TDD) — S4–S5
+## Phase 2: Status CLI (TDD) — S4a–S4c, S5
 
-- [ ] 2.1 [S4] RED: full/empty → 17 rows, exact keys, `missing`
-- [ ] 2.2 [S4] RED: seller_id/`_id`/extra excluded; malformed/unknown-source degrade (`source: null`)
-- [ ] 2.3 [S4] RED: `in_productive_window` only on productive evidence
-- [ ] 2.4 [S4] RED: actions `none` / `await_lease` (missing questions) / `re_run_reconcile`
-- [ ] 3.1 [S4] Wire CLI to core inventory import (no duplicated list); 1.1 parity test locks it
-- [ ] 2.6a [S4] GREEN: create `infra/operations/zelerdata_read_model_status.py` (argv validation pre-DB, projected query, 17-row synthesis, JSON) passing 2.1–2.4, 3.1
+- [x] 2.1 [S4a] RED: full/empty → 17 rows, exact keys, `missing`
+- [x] 2.2 [S4a] RED: seller_id/`_id`/extra excluded; malformed/unknown-source degrade (`source: null`)
+- [ ] 2.3 [S4b] RED: `in_productive_window` only on productive evidence
+- [ ] 2.4 [S4b] RED: actions `none` / `await_lease` (missing questions) / `re_run_reconcile`
+- [ ] 3.1 [S4c] Wire CLI to core inventory import (no duplicated list); 1.1 parity test locks it
+- [x] 2.6a [S4a] GREEN: create report core in `infra/operations/zelerdata_read_model_status.py` — projected query, 17-row synthesis, summary, sanitization (no argv/JSON yet); passing 2.1–2.2
+- [ ] 2.6c [S4b] GREEN: extend window gates (source-gated legacy basis, devoluciones `valid_until`) + action map; passing 2.3–2.4
+- [ ] 2.6d [S4c] GREEN: add `validate_status_argv`, parser, `main(argv, db)` JSON output; passing 3.1 + argv tests
 - [ ] 2.5 [S5] RED: readiness `ready`/`degraded` + `blocking`; `main(argv)` twice → one read, zero writes; nonzero exit; sanitized errors
 - [ ] 2.6b [S5] GREEN: add readiness + `main()` contract, passing 2.5
 
