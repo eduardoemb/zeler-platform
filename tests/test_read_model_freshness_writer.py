@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 from copy import deepcopy
+from datetime import timedelta
 from types import SimpleNamespace
 from typing import Any
 
@@ -24,8 +25,11 @@ from pymongo.errors import DuplicateKeyError
 
 import tests.test_devoluciones_guarded_regressions as _devoluciones_tests
 from zeler_platform_core.devoluciones_readiness import (
+    DEVOLUCIONES_OPERATIONS_COLLECTION,
     DEVOLUCIONES_READ_MODEL,
     READ_MODEL_FRESHNESS_COLLECTION,
+    DevolucionesLeaseLostError,
+    DevolucionesOperationContext,
 )
 from zeler_platform_core.read_model_freshness import (
     ALL_READ_MODELS,
@@ -381,3 +385,205 @@ async def test_duplicate_conflict_retry_is_bounded_to_one_attempt() -> None:
     assert len(collection.update_calls) == 2
     assert collection.update_calls[0]["upsert"] is True
     assert collection.update_calls[1]["upsert"] is False
+
+
+# 1.7 — devoluciones lease-guarded delegation ---------------------------------
+#
+# S3 wires devoluciones through the existing lease authority: ``stale``
+# delegates to ``invalidate_devoluciones_readiness`` and ``failed`` uses
+# ``guarded_devoluciones_write`` to set ``failed`` and expire the
+# productive windows. Absent, foreign, lost, or expired leases fail
+# before any marker mutation.
+
+
+def _lease_operation(**overrides: Any) -> DevolucionesOperationContext:
+    operation = _devoluciones_tests._operation()
+    for name, value in overrides.items():
+        setattr(operation, name, value)
+    return operation
+
+
+def _lease_db(
+    operation: DevolucionesOperationContext,
+    markers: list[dict[str, Any]] | None = None,
+) -> _devoluciones_tests._MemoryDb:
+    return _devoluciones_tests._MemoryDb(
+        {
+            DEVOLUCIONES_OPERATIONS_COLLECTION: [
+                _devoluciones_tests._operation_document(operation)
+            ],
+            READ_MODEL_FRESHNESS_COLLECTION: markers or [],
+        }
+    )
+
+
+@pytest.mark.asyncio
+async def test_devoluciones_stale_delegates_to_invalidate_devoluciones_readiness() -> None:
+    existing = {
+        "_id": f"{SELLER_ID}:{DEVOLUCIONES_READ_MODEL}",
+        "seller_id": SELLER_ID,
+        "read_model": DEVOLUCIONES_READ_MODEL,
+        "state": "reconciled",
+        "source": "zelerdata_read_model_reconcile",
+        "schema_version": 1,
+    }
+    operation = _lease_operation()
+    db = _lease_db(operation, markers=[existing])
+    await set_read_model_marker_state(
+        db=db,
+        seller_id=SELLER_ID,
+        read_model=DEVOLUCIONES_READ_MODEL,
+        target_state="stale",
+        source="operator-action",
+        approved_runtime=False,
+        operation=operation,
+    )
+    marker = db[READ_MODEL_FRESHNESS_COLLECTION].documents[f"{SELLER_ID}:{DEVOLUCIONES_READ_MODEL}"]
+    assert marker["state"] == "stale"
+    assert marker["source"] == "devoluciones_operation_invalidate"
+    assert marker["fresh_until"] == _devoluciones_tests.NOW
+    assert marker["valid_until"] == _devoluciones_tests.NOW
+    assert marker["updated_at"] == _devoluciones_tests.NOW
+    operations = db[DEVOLUCIONES_OPERATIONS_COLLECTION].documents[f"{SELLER_ID}:devoluciones"]
+    assert operations["checkpoint"] == {
+        "phase": "readiness_invalidation",
+        "source": "devoluciones_operation_invalidate",
+    }
+
+
+@pytest.mark.asyncio
+async def test_devoluciones_failed_uses_guarded_write_with_expiry() -> None:
+    operation = _lease_operation()
+    db = _lease_db(operation)
+    await set_read_model_marker_state(
+        db=db,
+        seller_id=SELLER_ID,
+        read_model=DEVOLUCIONES_READ_MODEL,
+        target_state="failed",
+        source="operator-action",
+        approved_runtime=False,
+        operation=operation,
+    )
+    marker = db[READ_MODEL_FRESHNESS_COLLECTION].documents[f"{SELLER_ID}:{DEVOLUCIONES_READ_MODEL}"]
+    assert marker["state"] == "failed"
+    assert marker["source"] == "operator-action"
+    assert marker["fresh_until"] == _devoluciones_tests.NOW
+    assert marker["valid_until"] == _devoluciones_tests.NOW
+    assert marker["updated_at"] == _devoluciones_tests.NOW
+    assert marker["schema_version"] == 1
+    operations = db[DEVOLUCIONES_OPERATIONS_COLLECTION].documents[f"{SELLER_ID}:devoluciones"]
+    assert operations["checkpoint"] == {"phase": "failed_marker", "source": "operator-action"}
+
+
+@pytest.mark.asyncio
+async def test_devoluciones_without_operation_fails_before_db_access() -> None:
+    db = SpyDb()
+    with pytest.raises(DevolucionesLeaseLostError, match="lease"):
+        await set_read_model_marker_state(
+            db=db,
+            seller_id=SELLER_ID,
+            read_model=DEVOLUCIONES_READ_MODEL,
+            target_state="stale",
+            source="operator-action",
+            approved_runtime=False,
+            operation=None,
+        )
+    assert db.calls == []
+
+
+@pytest.mark.parametrize("target_state", ["stale", "failed"])
+@pytest.mark.asyncio
+async def test_devoluciones_foreign_seller_lease_fails_before_marker_write(
+    target_state: str,
+) -> None:
+    existing = {
+        "_id": f"{SELLER_ID}:{DEVOLUCIONES_READ_MODEL}",
+        "seller_id": SELLER_ID,
+        "read_model": DEVOLUCIONES_READ_MODEL,
+        "state": "reconciled",
+        "source": "zelerdata_read_model_reconcile",
+        "schema_version": 1,
+    }
+    operation = _lease_operation(seller_id="other-seller")
+    db = _lease_db(operation, markers=[existing])
+    with pytest.raises(DevolucionesLeaseLostError, match="seller"):
+        await set_read_model_marker_state(
+            db=db,
+            seller_id=SELLER_ID,
+            read_model=DEVOLUCIONES_READ_MODEL,
+            target_state=target_state,
+            source="operator-action",
+            approved_runtime=False,
+            operation=operation,
+        )
+    markers = db[READ_MODEL_FRESHNESS_COLLECTION].documents
+    assert markers[f"{SELLER_ID}:{DEVOLUCIONES_READ_MODEL}"] == existing
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"owns_lease": False},
+        {"lease_lost": True},
+        {"fence": 0},
+    ],
+    ids=["does-not-own", "lost", "invalid-fence"],
+)
+@pytest.mark.asyncio
+async def test_devoluciones_lost_lease_fails_before_marker_write(overrides: dict[str, Any]) -> None:
+    existing = {
+        "_id": f"{SELLER_ID}:{DEVOLUCIONES_READ_MODEL}",
+        "seller_id": SELLER_ID,
+        "read_model": DEVOLUCIONES_READ_MODEL,
+        "state": "reconciled",
+        "source": "zelerdata_read_model_reconcile",
+        "schema_version": 1,
+    }
+    operation = _lease_operation(**overrides)
+    db = _lease_db(operation, markers=[existing])
+    with pytest.raises(DevolucionesLeaseLostError):
+        await set_read_model_marker_state(
+            db=db,
+            seller_id=SELLER_ID,
+            read_model=DEVOLUCIONES_READ_MODEL,
+            target_state="failed",
+            source="operator-action",
+            approved_runtime=False,
+            operation=operation,
+        )
+    markers = db[READ_MODEL_FRESHNESS_COLLECTION].documents
+    assert markers[f"{SELLER_ID}:{DEVOLUCIONES_READ_MODEL}"] == existing
+
+
+@pytest.mark.asyncio
+async def test_devoluciones_expired_lease_fails_before_marker_mutation() -> None:
+    existing = {
+        "_id": f"{SELLER_ID}:{DEVOLUCIONES_READ_MODEL}",
+        "seller_id": SELLER_ID,
+        "read_model": DEVOLUCIONES_READ_MODEL,
+        "state": "reconciled",
+        "source": "zelerdata_read_model_reconcile",
+        "schema_version": 1,
+    }
+    operation = _lease_operation()
+    operation_document = _devoluciones_tests._operation_document(operation)
+    operation_document["lease_until"] = _devoluciones_tests.NOW - timedelta(seconds=1)
+    db = _devoluciones_tests._MemoryDb(
+        {
+            DEVOLUCIONES_OPERATIONS_COLLECTION: [operation_document],
+            READ_MODEL_FRESHNESS_COLLECTION: [existing],
+        }
+    )
+    with pytest.raises(DevolucionesLeaseLostError, match="lease guard failed"):
+        await set_read_model_marker_state(
+            db=db,
+            seller_id=SELLER_ID,
+            read_model=DEVOLUCIONES_READ_MODEL,
+            target_state="failed",
+            source="operator-action",
+            approved_runtime=False,
+            operation=operation,
+        )
+    assert operation.lease_lost is True
+    markers = db[READ_MODEL_FRESHNESS_COLLECTION].documents
+    assert markers[f"{SELLER_ID}:{DEVOLUCIONES_READ_MODEL}"] == existing

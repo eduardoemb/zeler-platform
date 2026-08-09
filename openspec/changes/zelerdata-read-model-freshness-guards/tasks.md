@@ -28,8 +28,8 @@ Estimated: 1200–1400 across PR 1 → PR 6 (each slice ≤400). Recovery: PR #1
 - [x] 1.5 [S2] RED: fails closed without session/transaction support
 - [x] 1.6 [S2] RED: same-pair concurrency — unique-index serialize, one bounded retry, valid final state
 - [x] 1.8b [S2] GREEN: add `_set_generic_state`, `_marker_transition_pipeline`, `_start_session` + wire entry, passing 1.4–1.6
-- [ ] 1.7 [S3] RED: devoluciones — `stale`→`invalidate_devoluciones_readiness`, `failed`→`guarded_devoluciones_write` + expiry; foreign/lost lease fails pre-write
-- [ ] 1.8c [S3] GREEN: add devoluciones dispatch (`_set_devoluciones_state`, `_set_devoluciones_failed`), passing 1.7
+- [x] 1.7 [S3] RED: devoluciones — `stale`→`invalidate_devoluciones_readiness`, `failed`→`guarded_devoluciones_write` + expiry; foreign/lost lease fails pre-write
+- [x] 1.8c [S3] GREEN: add devoluciones dispatch (`_set_devoluciones_state`, `_set_devoluciones_failed`), passing 1.7
 
 ## Phase 2: Status CLI (TDD) — S4–S5
 
