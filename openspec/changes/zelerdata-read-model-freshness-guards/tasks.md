@@ -48,9 +48,9 @@ Estimated: 1200–1450 across PR 1 → PR 8 (each slice ≤400). Recovery: PR #1
 
 ## Phase 3: Docs and verification — S6
 
-- [ ] 3.2 [S6] Cross-link status command in `docs/sheets/zelerdata-formulas.md`
-- [ ] 3.3 [S6] Document unwired-model operator guidance in `docs/ops/zelerdata-seller-data-matrix-rollout.md`
-- [ ] 3.4 [S6] Verify: S6 pytest command + `uv run ruff check .` + `uv run mypy core/src/zeler_platform_core/read_model_freshness.py infra/operations/zelerdata_read_model_status.py`
+- [x] 3.2 [S6] Cross-link status command in `docs/sheets/zelerdata-formulas.md`
+- [x] 3.3 [S6] Document unwired-model operator guidance in `docs/ops/zelerdata-seller-data-matrix-rollout.md`
+- [x] 3.4 [S6] Verify: S6 pytest command + `uv run ruff check .` + `uv run mypy core/src/zeler_platform_core/read_model_freshness.py infra/operations/zelerdata_read_model_status.py`
 
 Index guard: rely on existing unique `(seller_id, read_model)`; never alter schema/indexes. B1 stays blocked (no workaround).
 
