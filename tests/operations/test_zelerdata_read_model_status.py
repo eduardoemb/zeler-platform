@@ -1,11 +1,13 @@
 """Tests for the sanitized read-only ZelerData read-model status report.
 
-Covers Phase 2 S4a tasks from
+Covers Phase 2 S4a/S4b tasks from
 ``openspec/changes/zelerdata-read-model-freshness-guards/tasks.md``: 17-row
 synthesis with exact contracted keys for full and empty collections (2.1),
-and sanitized output that excludes identifiers and degrades malformed or
-unknown-source evidence to ``null`` (2.2). Productive-window gates (S4b),
-argv/CLI wiring (S4c), and readiness (S5) arrive in later slices.
+sanitized output that excludes identifiers and degrades malformed or
+unknown-source evidence to ``null`` (2.2), ``in_productive_window`` gated on
+productive evidence (2.3), and the deterministic action map ``none`` /
+``await_lease`` / ``re_run_reconcile`` (2.4). argv/CLI wiring (S4c) and
+readiness (S5) arrive in later slices.
 """
 
 from __future__ import annotations
@@ -31,6 +33,8 @@ CONTRACTED_ROW_KEYS = {
     "source",
     "updated_at",
 }
+# Derived per-row fields exposed on top of the contracted projection.
+ROW_KEYS = CONTRACTED_ROW_KEYS | {"in_productive_window", "action_recommended"}
 
 
 class _StatusCollection:
@@ -76,7 +80,7 @@ def _marker(**overrides: Any) -> dict[str, Any]:
 
 
 def _report(collection: _StatusCollection) -> dict[str, Any]:
-    return status_module.build_read_model_status_report(db=collection, seller_id=SELLER_ID)
+    return status_module.build_read_model_status_report(db=collection, seller_id=SELLER_ID, now=NOW)
 
 
 def _row(report: dict[str, Any], read_model: str) -> dict[str, Any]:
@@ -114,7 +118,7 @@ def test_full_marker_set_reports_exact_keys_states_and_summary() -> None:
     ]
     report = _report(_StatusCollection(markers))
     assert len(report["read_models"]) == 17
-    assert all(set(row) == CONTRACTED_ROW_KEYS for row in report["read_models"])
+    assert all(set(row) == ROW_KEYS for row in report["read_models"])
     assert report["summary"] == {"fresh": 0, "reconciled": 9, "stale": 8, "failed": 0, "missing": 0}
 
 
@@ -132,7 +136,7 @@ def test_projection_and_output_exclude_identifiers_and_unknown_fields() -> None:
             connection_string="mongodb://SECRET",  # noqa: S106
         )
     )
-    assert set(row) == CONTRACTED_ROW_KEYS
+    assert set(row) == ROW_KEYS
     assert "seller_id" not in row and "_id" not in row
 
 
@@ -162,3 +166,150 @@ def test_duplicate_marker_documents_collapse_to_one_row() -> None:
     rows = [row for row in report["read_models"] if row["read_model"] == "orders"]
     assert len(rows) == 1
     assert rows[0]["source"] is None  # last document wins deterministically
+
+
+# 2.3 — in_productive_window only on productive evidence --------------------
+
+
+def test_reconciled_marker_with_covering_window_is_productive() -> None:
+    row = _row_of(_marker(state="reconciled", fresh_until=NOW + HOUR))
+    assert row["in_productive_window"] is True
+
+
+def test_fresh_marker_with_covering_window_is_productive() -> None:
+    row = _row_of(_marker(state="fresh", fresh_until=NOW + HOUR))
+    assert row["in_productive_window"] is True
+
+
+@pytest.mark.parametrize("state", ["stale", "failed", "missing", "mystery"])
+def test_non_productive_states_are_outside_window(state: str) -> None:
+    row = _row_of(_marker(state=state, fresh_until=NOW + HOUR))
+    assert row["in_productive_window"] is False
+
+
+def test_expired_fresh_until_is_outside_window() -> None:
+    row = _row_of(_marker(state="reconciled", fresh_until=NOW - HOUR))
+    assert row["in_productive_window"] is False
+
+
+def test_absent_fresh_until_is_outside_window() -> None:
+    row = _row_of(_marker(state="reconciled", fresh_until=None))
+    assert row["in_productive_window"] is False
+
+
+def test_unknown_source_is_outside_window() -> None:
+    row = _row_of(_marker(source="mystery_writer", state="reconciled", fresh_until=NOW + HOUR))
+    assert row["source"] is None
+    assert row["in_productive_window"] is False
+
+
+def test_missing_questions_and_orders_are_outside_window() -> None:
+    report = _report(_StatusCollection())
+    assert _row(report, "questions")["in_productive_window"] is False
+    assert _row(report, "orders")["in_productive_window"] is False
+
+
+@pytest.mark.parametrize(
+    "read_model,basis",
+    [
+        ("stock_time_metrics", None),
+        ("catalog_time_metrics", "garbage"),
+        ("full_withdrawals", None),
+    ],
+)
+def test_source_gated_models_require_valid_legacy_basis(read_model: str, basis: str | None) -> None:
+    row = _row_of(
+        _marker(
+            read_model=read_model,
+            state="reconciled",
+            fresh_until=NOW + HOUR,
+            coverage_basis=basis,
+        ),
+        read_model=read_model,
+    )
+    assert row["coverage_basis"] is None
+    assert row["in_productive_window"] is False
+
+
+@pytest.mark.parametrize(
+    "basis",
+    ["legacy_imported", "observed_only"],
+)
+def test_source_gated_models_with_valid_basis_are_productive(basis: str) -> None:
+    row = _row_of(
+        _marker(
+            read_model="stock_time_metrics",
+            state="reconciled",
+            fresh_until=NOW + HOUR,
+            coverage_basis=basis,
+        ),
+        read_model="stock_time_metrics",
+    )
+    assert row["coverage_basis"] == basis
+    assert row["in_productive_window"] is True
+
+
+def test_devoluciones_requires_unexpired_valid_until() -> None:
+    row = _row_of(
+        _marker(
+            read_model="devoluciones",
+            state="reconciled",
+            fresh_until=NOW + HOUR,
+            valid_until=NOW - HOUR,
+        ),
+        read_model="devoluciones",
+    )
+    assert row["valid_until"] is not None
+    assert row["in_productive_window"] is False
+
+
+def test_devoluciones_with_live_valid_until_is_productive() -> None:
+    row = _row_of(
+        _marker(
+            read_model="devoluciones",
+            state="reconciled",
+            fresh_until=NOW + HOUR,
+            valid_until=NOW + HOUR,
+        ),
+        read_model="devoluciones",
+    )
+    assert row["in_productive_window"] is True
+
+
+# 2.4 — deterministic action map -------------------------------------------
+
+
+def test_productive_row_recommends_none() -> None:
+    row = _row_of(_marker(state="reconciled", fresh_until=NOW + HOUR))
+    assert row["action_recommended"] == "none"
+
+
+def test_missing_questions_recommends_await_lease() -> None:
+    report = _report(_StatusCollection())
+    assert _row(report, "questions")["action_recommended"] == "await_lease"
+
+
+def test_missing_other_models_recommend_re_run_reconcile() -> None:
+    report = _report(_StatusCollection())
+    assert _row(report, "orders")["action_recommended"] == "re_run_reconcile"
+
+
+@pytest.mark.parametrize("state", ["stale", "failed"])
+def test_stale_and_failed_recommend_re_run_reconcile(state: str) -> None:
+    row = _row_of(_marker(state=state, fresh_until=NOW + HOUR))
+    assert row["action_recommended"] == "re_run_reconcile"
+
+
+def test_expired_and_malformed_recommend_re_run_reconcile() -> None:
+    expired = _row_of(_marker(state="reconciled", fresh_until=NOW - HOUR))
+    malformed = _row_of(_marker(state="mystery", fresh_until=NOW + HOUR))
+    assert expired["action_recommended"] == "re_run_reconcile"
+    assert malformed["action_recommended"] == "re_run_reconcile"
+
+
+def test_stale_questions_recommend_re_run_reconcile_not_await_lease() -> None:
+    row = _row_of(
+        _marker(read_model="questions", state="stale", fresh_until=NOW + HOUR),
+        read_model="questions",
+    )
+    assert row["action_recommended"] == "re_run_reconcile"

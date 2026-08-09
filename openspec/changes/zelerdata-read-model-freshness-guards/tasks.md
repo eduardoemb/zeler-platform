@@ -37,11 +37,11 @@ Estimated: 1200–1450 across PR 1 → PR 8 (each slice ≤400). Recovery: PR #1
 
 - [x] 2.1 [S4a] RED: full/empty → 17 rows, exact keys, `missing`
 - [x] 2.2 [S4a] RED: seller_id/`_id`/extra excluded; malformed/unknown-source degrade (`source: null`)
-- [ ] 2.3 [S4b] RED: `in_productive_window` only on productive evidence
-- [ ] 2.4 [S4b] RED: actions `none` / `await_lease` (missing questions) / `re_run_reconcile`
+- [x] 2.3 [S4b] RED: `in_productive_window` only on productive evidence
+- [x] 2.4 [S4b] RED: actions `none` / `await_lease` (missing questions) / `re_run_reconcile`
 - [ ] 3.1 [S4c] Wire CLI to core inventory import (no duplicated list); 1.1 parity test locks it
 - [x] 2.6a [S4a] GREEN: create report core in `infra/operations/zelerdata_read_model_status.py` — projected query, 17-row synthesis, summary, sanitization (no argv/JSON yet); passing 2.1–2.2
-- [ ] 2.6c [S4b] GREEN: extend window gates (source-gated legacy basis, devoluciones `valid_until`) + action map; passing 2.3–2.4
+- [x] 2.6c [S4b] GREEN: extend window gates (source-gated legacy basis, devoluciones `valid_until`) + action map; passing 2.3–2.4
 - [ ] 2.6d [S4c] GREEN: add `validate_status_argv`, parser, `main(argv, db)` JSON output; passing 3.1 + argv tests
 - [ ] 2.5 [S5] RED: readiness `ready`/`degraded` + `blocking`; `main(argv)` twice → one read, zero writes; nonzero exit; sanitized errors
 - [ ] 2.6b [S5] GREEN: add readiness + `main()` contract, passing 2.5
