@@ -1,17 +1,19 @@
 """Tests for the sanitized read-only ZelerData read-model status report.
 
-Covers Phase 2 S4a/S4b tasks from
+Covers Phase 2 S4a-S4c tasks from
 ``openspec/changes/zelerdata-read-model-freshness-guards/tasks.md``: 17-row
 synthesis with exact contracted keys for full and empty collections (2.1),
 sanitized output that excludes identifiers and degrades malformed or
 unknown-source evidence to ``null`` (2.2), ``in_productive_window`` gated on
-productive evidence (2.3), and the deterministic action map ``none`` /
-``await_lease`` / ``re_run_reconcile`` (2.4). argv/CLI wiring (S4c) and
-readiness (S5) arrive in later slices.
+productive evidence (2.3), the deterministic action map ``none`` /
+``await_lease`` / ``re_run_reconcile`` (2.4), and the CLI wiring that
+consumes the core inventory object and validates argv before any DB access
+(3.1, 2.6d). Readiness (S5) arrives in a later slice.
 """
 
 from __future__ import annotations
 
+import json
 from copy import deepcopy
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -313,3 +315,79 @@ def test_stale_questions_recommend_re_run_reconcile_not_await_lease() -> None:
         read_model="questions",
     )
     assert row["action_recommended"] == "re_run_reconcile"
+
+
+# 3.1 — CLI wired to core inventory (no duplicated list) ----------------------
+#
+# The status CLI must consume the core 17-name inventory object directly.
+# Task 1.1's parity test locks core-vs-reconciliation; these tests lock the
+# CLI to the same core object (identity, never a duplicated list).
+
+
+def test_status_cli_uses_core_inventory_object_identity() -> None:
+    assert status_module.ALL_READ_MODELS is ALL_READ_MODELS
+    assert len(status_module.ALL_READ_MODELS) == 17
+
+
+def test_status_main_json_rows_follow_core_inventory_order() -> None:
+    payload = json.loads(
+        status_module.main(
+            ["--seller-id", SELLER_ID, "--confirm-approved-runtime"],
+            db=_StatusCollection(),
+        )
+    )
+    assert [row["read_model"] for row in payload["read_models"]] == list(ALL_READ_MODELS)
+
+
+# 2.6d — argv validation precedes DB; parser; main(argv, db) JSON -------------
+
+
+class _SpyStatusDb:
+    """Records collection access to prove validation precedes any DB use."""
+
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    def __getitem__(self, name: str) -> Any:
+        self.calls.append(name)
+        return object()
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        [],  # no arguments at all
+        ["--confirm-approved-runtime"],  # still missing --seller-id
+        ["--seller-id", "   ", "--confirm-approved-runtime"],  # blank seller id
+        ["--seller-id", SELLER_ID],  # missing --confirm-approved-runtime
+        ["--seller-id", SELLER_ID, "--confirm-approved-runtime", "--unknown"],  # unknown flag
+    ],
+    ids=["no-argv", "missing-seller-id", "blank-seller-id", "missing-confirm", "unknown-flag"],
+)
+def test_status_argv_validation_fails_before_any_db_access(argv: list[str]) -> None:
+    db = _SpyStatusDb()
+    with pytest.raises(SystemExit):
+        status_module.main(argv, db=db)
+    assert db.calls == []
+
+
+def test_status_main_emits_json_report_for_valid_argv() -> None:
+    collection = _StatusCollection([_marker(state="reconciled", fresh_until=NOW + HOUR)])
+    payload = json.loads(
+        status_module.main(
+            ["--seller-id", SELLER_ID, "--confirm-approved-runtime"],
+            db=collection,
+        )
+    )
+    assert set(payload) == {"summary", "read_models"}
+    assert len(payload["read_models"]) == 17
+    assert payload["summary"] == {
+        "fresh": 0,
+        "reconciled": 1,
+        "stale": 0,
+        "failed": 0,
+        "missing": 16,
+    }
+    row = next(row for row in payload["read_models"] if row["read_model"] == "orders")
+    assert row["read_model"] == "orders"
+    assert row["state"] == "reconciled"
