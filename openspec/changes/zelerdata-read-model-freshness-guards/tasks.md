@@ -24,10 +24,10 @@ Estimated: 1200–1400 across PR 1 → PR 6 (each slice ≤400). Recovery: PR #1
 - [x] 1.2 [S1] RED: reject `reconciled`/unknown `target_state` (ValueError, pre-DB)
 - [x] 1.3 [S1] RED: reject unapproved runtime, unknown read_model/source pre-DB
 - [x] 1.8a [S1] GREEN: create `core/src/zeler_platform_core/read_model_freshness.py` — inventory, allowlists, validation-only entry, passing 1.1–1.3
-- [ ] 1.4 [S2] RED: upsert `stale`/`failed` at exact `(seller_id, read_model)`, `$$NOW`, `source="operator-action"`
-- [ ] 1.5 [S2] RED: fails closed without session/transaction support
-- [ ] 1.6 [S2] RED: same-pair concurrency — unique-index serialize, one bounded retry, valid final state
-- [ ] 1.8b [S2] GREEN: add `_set_generic_state`, `_marker_transition_pipeline`, `_start_session` + wire entry, passing 1.4–1.6
+- [x] 1.4 [S2] RED: upsert `stale`/`failed` at exact `(seller_id, read_model)`, `$$NOW`, `source="operator-action"`
+- [x] 1.5 [S2] RED: fails closed without session/transaction support
+- [x] 1.6 [S2] RED: same-pair concurrency — unique-index serialize, one bounded retry, valid final state
+- [x] 1.8b [S2] GREEN: add `_set_generic_state`, `_marker_transition_pipeline`, `_start_session` + wire entry, passing 1.4–1.6
 - [ ] 1.7 [S3] RED: devoluciones — `stale`→`invalidate_devoluciones_readiness`, `failed`→`guarded_devoluciones_write` + expiry; foreign/lost lease fails pre-write
 - [ ] 1.8c [S3] GREEN: add devoluciones dispatch (`_set_devoluciones_state`, `_set_devoluciones_failed`), passing 1.7
 
