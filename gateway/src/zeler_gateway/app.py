@@ -30,7 +30,11 @@ from zeler_gateway.proxy.router import router as proxy_router
 from zeler_gateway.routes.health import router as health_router
 from zeler_gateway.tokens.refresh_worker import refresh_once
 from zeler_gateway.webhooks.classifier import MELI_EVENTS_EXCHANGE
-from zeler_gateway.webhooks.publisher import AioPikaWebhookPublisher, WebhookPublisher
+from zeler_gateway.webhooks.publisher import (
+    AccountLifecyclePublisherAdapter,
+    AioPikaWebhookPublisher,
+    WebhookPublisher,
+)
 from zeler_gateway.webhooks.router import router as webhooks_router
 
 logger = structlog.get_logger(__name__)
@@ -169,8 +173,15 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     )
     app.state.mongo_db = app.state.mongo_client[settings.mongo_db]
     app.state.rabbit = None
+    transport_publisher = None
+    app.state.amqp_publisher = None
     app.state.ready = False
     if settings.rabbitmq_url:
+        transport_publisher = AioPikaWebhookPublisher(
+            rabbitmq_url=settings.rabbitmq_url,
+            exchange_name=settings.rabbitmq_events_exchange,
+        )
+        app.state.amqp_publisher = AccountLifecyclePublisherAdapter(transport_publisher)
         try:
             app.state.rabbit = await aio_pika.connect_robust(settings.rabbitmq_url, heartbeat=60)
             app.state.ready = True
@@ -182,7 +193,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     async def _scheduled_refresh() -> None:
         try:
-            await refresh_once(app.state.mongo_db)
+            await refresh_once(
+                app.state.mongo_db,
+                lifecycle_publisher=app.state.amqp_publisher,
+            )
         except Exception:
             logger.exception("refresh worker pass failed")
 
@@ -195,14 +209,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         max_instances=1,
         coalesce=True,
     )
-    if settings.rabbitmq_url:
+    if transport_publisher is not None:
         configure_repricer_sweep_scheduler(
             scheduler=app.state.scheduler,
             db=app.state.mongo_db,
-            publisher=AioPikaWebhookPublisher(
-                rabbitmq_url=settings.rabbitmq_url,
-                exchange_name=settings.rabbitmq_events_exchange,
-            ),
+            publisher=transport_publisher,
             interval_minutes=DEFAULT_REPRICER_SWEEP_INTERVAL_MINUTES,
         )
     app.state.scheduler.start()

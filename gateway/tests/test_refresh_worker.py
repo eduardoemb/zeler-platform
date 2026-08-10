@@ -13,6 +13,7 @@ from motor.motor_asyncio import AsyncIOMotorClient
 from pymongo import MongoClient
 from pymongo.errors import PyMongoError
 
+import zeler_gateway.tokens.refresh_worker as refresh_worker_module
 from zeler_gateway.tokens.encryption import (
     EncryptedToken,
     decrypt_token,
@@ -24,6 +25,52 @@ from zeler_gateway.tokens.refresh_worker import refresh_once
 
 ROOT = Path(__file__).resolve().parents[2]
 SCHEMAS_DIR = ROOT / "infra" / "mongo" / "schemas"
+
+
+class RecordingLifecyclePublisher:
+    def __init__(self) -> None:
+        self.events: list[dict[str, Any]] = []
+
+    async def publish(self, *, exchange: str, routing_key: str, payload: dict[str, Any]) -> None:
+        self.events.append({"exchange": exchange, "routing_key": routing_key, "payload": payload})
+
+
+class FakeAccountCursor:
+    def __init__(self, candidates: list[dict[str, Any]]) -> None:
+        self._candidates = candidates
+
+    def __aiter__(self) -> FakeAccountCursor:
+        return self
+
+    async def __anext__(self) -> dict[str, Any]:
+        if not self._candidates:
+            raise StopAsyncIteration
+        return self._candidates.pop(0)
+
+
+class FakeMeliAccounts:
+    def __init__(self, account: dict[str, Any]) -> None:
+        self.account = account
+        self.find_queries: list[dict[str, Any]] = []
+        self.updates: list[dict[str, Any]] = []
+
+    def find(self, query: dict[str, Any], projection: dict[str, Any]) -> FakeAccountCursor:
+        self.find_queries.append(query)
+        statuses = query["status"]["$in"]
+        candidates = [{"_id": self.account["_id"]}] if self.account["status"] in statuses else []
+        return FakeAccountCursor(candidates)
+
+    async def find_one_and_update(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
+        return self.account
+
+    async def update_one(self, query: dict[str, Any], update: dict[str, Any]) -> None:
+        self.updates.append({"query": query, "update": update})
+        self.account.update(update["$set"])
+
+
+class FakeRefreshDb:
+    def __init__(self, account: dict[str, Any]) -> None:
+        self.meli_accounts = FakeMeliAccounts(account)
 
 
 class FakeKmsResponse:
@@ -198,9 +245,23 @@ async def test_invalid_grant_sets_status_revoked(
     fixed_now = datetime(2026, 4, 24, 12, 0, tzinfo=UTC)
     original = _seed_refreshable_account(database, fixed_now=fixed_now, lock_held_until=None)
     emitted: list[dict[str, Any]] = []
+    publisher = RecordingLifecyclePublisher()
 
-    async def spy_emit_accounts_revoked(*, seller_id: int, platform_user_id: str) -> None:
-        emitted.append({"seller_id": seller_id, "platform_user_id": platform_user_id})
+    async def spy_emit_accounts_revoked(
+        *,
+        seller_id: int,
+        platform_user_id: str,
+        amqp_publisher: Any,
+        clock: Any,
+    ) -> None:
+        emitted.append(
+            {
+                "seller_id": seller_id,
+                "platform_user_id": platform_user_id,
+                "amqp_publisher": amqp_publisher,
+                "occurred_at": clock(),
+            }
+        )
 
     monkeypatch.setattr(
         "zeler_gateway.tokens.refresh_worker.emit_accounts_revoked", spy_emit_accounts_revoked
@@ -211,7 +272,11 @@ async def test_invalid_grant_sets_status_revoked(
             return_value=httpx.Response(400, json={"error": "invalid_grant"})
         )
 
-        stats = await refresh_once(async_db, now_fn=lambda: fixed_now)
+        stats = await refresh_once(
+            async_db,
+            now_fn=lambda: fixed_now,
+            lifecycle_publisher=publisher,
+        )
 
     stored = database.meli_accounts.find_one({"_id": original["_id"]})
     assert stored is not None
@@ -220,7 +285,100 @@ async def test_invalid_grant_sets_status_revoked(
     assert stats.revoked == 1
     assert stored["status"] == "revoked"
     assert stored["lock_held_until"] is None
-    assert emitted == [{"seller_id": 123456789, "platform_user_id": "platform-user-123"}]
+    assert emitted == [
+        {
+            "seller_id": 123456789,
+            "platform_user_id": "platform-user-123",
+            "amqp_publisher": publisher,
+            "occurred_at": fixed_now,
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_invalid_grant_publishes_one_revocation_with_worker_clock(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixed_now = datetime(2026, 8, 10, 18, 30, tzinfo=UTC)
+    account = {
+        "_id": ObjectId(),
+        "seller_id": Int64(123456789),
+        "platform_user_id": "platform-user-456",
+        "refresh_token_ciphertext": b"ciphertext",
+        "refresh_token_dek_wrapped": b"wrapped",
+        "refresh_token_nonce": b"nonce",
+        "kms_key_version": "key-version-1",
+        "status": "active",
+        "expires_at": fixed_now + timedelta(minutes=5),
+    }
+    db = FakeRefreshDb(account)
+    publisher = RecordingLifecyclePublisher()
+
+    async def fail_with_invalid_grant(**kwargs: Any) -> dict[str, Any]:
+        raise refresh_worker_module.InvalidGrantError
+
+    monkeypatch.setattr(refresh_worker_module, "_call_meli_refresh", fail_with_invalid_grant)
+
+    stats = await refresh_once(
+        db,
+        now_fn=lambda: fixed_now,
+        lifecycle_publisher=publisher,
+    )
+
+    assert stats.attempted == 1
+    assert stats.revoked == 1
+    assert account["status"] == "revoked"
+    assert publisher.events == [
+        {
+            "exchange": "meli.events",
+            "routing_key": "accounts.revoked",
+            "payload": {
+                "seller_id": "123456789",
+                "platform_user_id": "platform-user-456",
+                "occurred_at": "2026-08-10T18:30:00+00:00",
+                "idempotency_key": (
+                    "accounts-revoked-123456789-platform-user-456-2026-08-10T18:30:00+00:00"
+                ),
+            },
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_already_revoked_account_does_not_publish(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixed_now = datetime(2026, 8, 10, 19, 0, tzinfo=UTC)
+    account = {
+        "_id": ObjectId(),
+        "seller_id": Int64(987654321),
+        "platform_user_id": "platform-user-revoked",
+        "status": "revoked",
+        "expires_at": fixed_now - timedelta(minutes=5),
+    }
+    db = FakeRefreshDb(account)
+    publisher = RecordingLifecyclePublisher()
+
+    async def unexpected_refresh(**kwargs: Any) -> dict[str, Any]:
+        pytest.fail("already-revoked account must not be refreshed")
+
+    monkeypatch.setattr(refresh_worker_module, "_call_meli_refresh", unexpected_refresh)
+
+    stats = await refresh_once(
+        db,
+        now_fn=lambda: fixed_now,
+        lifecycle_publisher=publisher,
+    )
+
+    assert stats.attempted == 0
+    assert stats.revoked == 0
+    assert db.meli_accounts.find_queries == [
+        {
+            "status": {"$in": ["active", "refresh_pending"]},
+            "expires_at": {"$lt": fixed_now + timedelta(minutes=15)},
+        }
+    ]
+    assert publisher.events == []
 
 
 @pytest.mark.asyncio
