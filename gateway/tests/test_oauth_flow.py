@@ -142,6 +142,7 @@ def _seed_oauth_state(
 def fake_mongo_db(monkeypatch: pytest.MonkeyPatch) -> Any:
     database = FakeAsyncDatabase()
     app.state.mongo_db = database
+    monkeypatch.setattr(app.state, "amqp_publisher", None, raising=False)
     reset_dek_cache()
     set_kms_client(FakeKmsClient())
     monkeypatch.setenv("MELI_CLIENT_ID", "meli-client-id-test")
