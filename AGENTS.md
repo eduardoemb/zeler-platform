@@ -44,6 +44,15 @@ Skill registry lives at
   production environment values.
 - Never run local Docker builds. Use Cloud Build for production images only when
   the user explicitly authorizes build/deploy work.
+- At the end of a session that produces or confirms runtime-affecting changes
+  merged into `main`, determine which service images are affected and compare
+  the intended `main` commit with the deployed image/source commit when runtime
+  evidence is available. If an image is stale or must be rebuilt, explicitly
+  recommend a new Cloud Build image for the affected service and name the
+  required runtime verification. Building and deploying remain separate actions
+  that require explicit user authorization; never perform either action solely
+  because drift was detected. If deployment evidence is unavailable, recommend
+  verifying image drift instead of assuming the runtime is current.
 - Do not mutate `../zeler-core` artifacts from this repository unless the user
   explicitly asks for cross-repo migration/decommission work.
 - Prefer local `sdd/zeler-platform-greenfield/` artifacts as the source of truth
