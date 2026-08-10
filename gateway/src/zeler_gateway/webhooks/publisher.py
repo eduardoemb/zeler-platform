@@ -22,6 +22,16 @@ class WebhookPublisher(Protocol):
     ) -> None: ...
 
 
+class ExchangePublisher(Protocol):
+    async def publish_to_exchange(
+        self,
+        exchange_name: str,
+        routing_key: str,
+        payload: dict[str, Any],
+        headers: dict[str, str],
+    ) -> None: ...
+
+
 class WebhookPublishError(RuntimeError):
     pass
 
@@ -105,7 +115,7 @@ class AioPikaWebhookPublisher:
                 content_type="application/json",
                 delivery_mode=aio_pika.DeliveryMode.PERSISTENT,
                 headers=cast(Any, headers),
-                message_id=str(payload["event_id"]),
+                message_id=str(payload.get("event_id") or payload["idempotency_key"]),
             )
             publish_result = await exchange.publish(
                 message, routing_key=routing_key, mandatory=True
@@ -115,6 +125,19 @@ class AioPikaWebhookPublisher:
                 exchange_name=exchange_name,
                 routing_key=routing_key,
             )
+
+
+class AccountLifecyclePublisherAdapter:
+    def __init__(self, transport: ExchangePublisher) -> None:
+        self.transport = transport
+
+    async def publish(self, *, exchange: str, routing_key: str, payload: dict[str, Any]) -> None:
+        await self.transport.publish_to_exchange(
+            exchange,
+            routing_key,
+            payload,
+            {"idempotency_key": str(payload["idempotency_key"])},
+        )
 
 
 def _fallback_event_id(event: dict[str, Any]) -> str:
