@@ -11,7 +11,7 @@ from cryptography.exceptions import InvalidTag
 from pymongo import ReturnDocument
 
 from zeler_gateway.config import Settings
-from zeler_gateway.oauth.events import emit_accounts_revoked
+from zeler_gateway.oauth.events import AmqpPublisher, emit_accounts_revoked
 from zeler_gateway.observability.metrics import get_metrics_registry
 from zeler_gateway.tokens.encryption import EncryptedToken, decrypt_token, encrypt_token
 
@@ -89,6 +89,7 @@ async def refresh_once(
     meli_client_secret: str | None = None,
     now_fn: Callable[[], datetime] | None = None,
     http_client_factory: Callable[[], httpx.AsyncClient] | None = None,
+    lifecycle_publisher: AmqpPublisher | None = None,
 ) -> RefreshRunStats:
     """Run one pass of the token refresh worker across eligible Meli accounts."""
     now = (now_fn or (lambda: datetime.now(UTC)))()
@@ -147,6 +148,8 @@ async def refresh_once(
             await emit_accounts_revoked(
                 seller_id=int(locked["seller_id"]),
                 platform_user_id=cast(str, locked["platform_user_id"]),
+                amqp_publisher=lifecycle_publisher,
+                clock=lambda: now,
             )
             stats = stats.with_revoked()
             metrics_registry = get_metrics_registry()
