@@ -90,9 +90,7 @@ def test_startup_embeds_byte_exact_ops_agent_config() -> None:
 def test_startup_validates_before_install_and_restart() -> None:
     startup_text = STARTUP.read_text(encoding="utf-8")
     validate_index = startup_text.index("ops-agent-ctl validate-config")
-    install_index = startup_text.index(
-        "install -m 0644 /opt/zeler-platform/ops-agent-config.yaml"
-    )
+    install_index = startup_text.index("install -m 0644 /opt/zeler-platform/ops-agent-config.yaml")
     restart_index = startup_text.index("systemctl restart google-cloud-ops-agent")
 
     assert validate_index < install_index < restart_index
@@ -158,9 +156,7 @@ def _simulated_caddy_entry(config: dict[str, Any]) -> dict[str, Any]:
     for field_path, ops in _redaction_processor(config)["fields"].items():
         value = _lookup_path(entry, field_path)
         map_values = ops.get("map_values") or {}
-        if ops.get("map_values_exclusive") is True and all(
-            value != key for key in map_values
-        ):
+        if ops.get("map_values_exclusive") is True and all(value != key for key in map_values):
             _unset_path(entry, field_path)
     return entry
 

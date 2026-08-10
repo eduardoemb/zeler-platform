@@ -109,9 +109,7 @@ def test_log_entry_emits_only_bounded_keys() -> None:
 
 def test_success_response_is_stamped_and_logged_once(capsys: pytest.CaptureFixture[str]) -> None:
     configure_logging(environment="production")
-    response = TestClient(_make_classified_app()).get(
-        "/ok", headers={REQUEST_ID_HEADER: "abc-123"}
-    )
+    response = TestClient(_make_classified_app()).get("/ok", headers={REQUEST_ID_HEADER: "abc-123"})
 
     assert response.status_code == 200
     assert response.headers[REQUEST_ID_HEADER] == "abc-123"

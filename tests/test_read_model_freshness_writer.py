@@ -182,8 +182,9 @@ class _ConflictCollection(_devoluciones_tests._MemoryCollection):
         update: dict[str, Any] | list[dict[str, Any]],
         *,
         upsert: bool = False,
-        session: Any = None,
+        **kwargs: Any,
     ) -> _devoluciones_tests._WriteResult:
+        session = kwargs.get("session")
         self.update_calls.append(
             {"filter": deepcopy(filter_spec), "upsert": upsert, "session": session}
         )
@@ -193,7 +194,7 @@ class _ConflictCollection(_devoluciones_tests._MemoryCollection):
                 raise DuplicateKeyError("E11000 duplicate key error on same seller/read-model pair")
         if not upsert and self.raise_on_retry:
             raise DuplicateKeyError("E11000 duplicate key error on bounded retry")
-        return await super().update_one(filter_spec, update, upsert=upsert, session=session)
+        return await super().update_one(filter_spec, update, upsert=upsert, **kwargs)
 
 
 class _MemoryDb(_devoluciones_tests._MemoryDb):
@@ -212,6 +213,15 @@ class _MemoryDb(_devoluciones_tests._MemoryDb):
                 [deepcopy(document) for document in base.documents.values()],
                 **options,
             )
+
+    def __getitem__(self, name: str) -> _ConflictCollection:
+        collection = self.collections.get(name)
+        if collection is None:
+            collection = _ConflictCollection()
+            self.collections[name] = collection
+        if not isinstance(collection, _ConflictCollection):
+            raise TypeError(f"collection {name!r} is not a conflict collection")
+        return collection
 
 
 class _RecordingCollection:
