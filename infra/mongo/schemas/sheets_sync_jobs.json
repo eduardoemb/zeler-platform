@@ -2,58 +2,46 @@
   "$jsonSchema": {
     "bsonType": "object",
     "properties": {
-      "_id": {
-        "bsonType": [
-          "objectId",
-          "string"
-        ]
-      },
-      "completed_at": {
-        "bsonType": [
-          "date",
-          "null"
-        ]
-      },
-      "error": {
-        "bsonType": [
-          "string",
-          "null"
-        ]
-      },
-      "requested_at": {
-        "bsonType": "date"
-      },
-      "schema_version": {
-        "bsonType": "int"
-      },
-      "seller_id": {
-        "bsonType": [
-          "string",
-          "long",
-          "int"
-        ]
-      },
-      "spreadsheet_id": {
-        "bsonType": "string"
-      },
+      "_id": {"bsonType": ["objectId", "string"]},
+      "seller_id": {"bsonType": ["string", "long", "int"]},
+      "spreadsheet_id": {"bsonType": "string"},
       "state": {
-        "enum": [
-          "pending",
-          "running",
-          "succeeded",
-          "failed"
-        ]
+        "enum": ["pending", "running", "succeeded", "failed", "quarantined"]
       },
-      "updated_at": {
-        "bsonType": "date"
-      }
+      "created_at": {"bsonType": "date"},
+      "requested_at": {"bsonType": "date"},
+      "available_at": {"bsonType": ["date", "null"]},
+      "attempt_count": {"bsonType": ["int", "long"]},
+      "attempt_token": {"bsonType": ["string", "null"]},
+      "fence": {"bsonType": ["int", "long"]},
+      "lease_until": {"bsonType": ["date", "null"]},
+      "append_started_at": {"bsonType": ["date", "null"]},
+      "started_at": {"bsonType": ["date", "null"]},
+      "completed_at": {"bsonType": ["date", "null"]},
+      "delta_through_at": {"bsonType": ["date", "null"]},
+      "cursor_received_at": {"bsonType": ["date", "null"]},
+      "cursor_event_id": {"bsonType": ["objectId", "string", "null"]},
+      "activation_cutoff": {"bsonType": ["date", "null"]},
+      "quarantined_at": {"bsonType": ["date", "null"]},
+      "quarantine_reason": {"bsonType": ["string", "null"]},
+      "error_code": {"bsonType": ["string", "null"]},
+      "error_message": {"bsonType": ["string", "null"]},
+      "updated_at": {"bsonType": "date"},
+      "schema_version": {"bsonType": "int"}
     },
     "required": [
       "_id",
       "seller_id",
       "spreadsheet_id",
       "state",
+      "created_at",
       "requested_at",
+      "available_at",
+      "attempt_count",
+      "attempt_token",
+      "fence",
+      "lease_until",
+      "append_started_at",
       "updated_at",
       "schema_version"
     ]

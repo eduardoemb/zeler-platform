@@ -191,10 +191,22 @@ def test_sheets_sync_jobs_validator_rejects_missing_required_fields() -> None:
         "seller_id",
         "spreadsheet_id",
         "state",
+        "created_at",
         "requested_at",
+        "available_at",
+        "attempt_count",
+        "attempt_token",
+        "fence",
+        "lease_until",
+        "append_started_at",
         "updated_at",
         "schema_version",
     ]
+
+    schema = validator["$jsonSchema"]
+    assert "quarantined" in schema["properties"]["state"]["enum"]
+    assert schema["properties"]["error_code"] == {"bsonType": ["string", "null"]}
+    assert schema["properties"]["error_message"] == {"bsonType": ["string", "null"]}
 
 
 def test_google_oauth_tokens_validator_rejects_missing_required_fields() -> None:
@@ -258,9 +270,21 @@ def test_sheets_indexes_match_phase6_contract() -> None:
     ]
     assert sync_indexes == [
         {
-            "keys": {"seller_id": 1, "state": 1, "updated_at": -1},
-            "options": {"name": "idx_sheets_sync_jobs_seller_state_updated"},
-        }
+            "keys": {"state": 1, "created_at": 1, "available_at": 1, "_id": 1},
+            "options": {"name": "idx_sheets_sync_jobs_claim"},
+        },
+        {
+            "keys": {"state": 1, "lease_until": 1},
+            "options": {"name": "idx_sheets_sync_jobs_recovery"},
+        },
+        {
+            "keys": {"seller_id": 1, "spreadsheet_id": 1},
+            "options": {
+                "name": "uniq_sheets_sync_jobs_running_seller_sheet",
+                "unique": True,
+                "partialFilterExpression": {"state": "running"},
+            },
+        },
     ]
     assert audit_indexes == [
         {
