@@ -170,7 +170,22 @@ async def test_manual_sync_creates_pending_job_from_config(monkeypatch: pytest.M
     assert response.json()["spreadsheet_id"] == "sheet-old"
     assert response.json()["state"] == "pending"
     assert response.json()["_id"].startswith("sheets-sync-123456789-")
-    assert db.sheets_sync_jobs.docs[-1]["state"] == "pending"
+    job = db.sheets_sync_jobs.docs[-1]
+    created_at = datetime(2026, 4, 24, 12, 30, tzinfo=UTC)
+    assert job | {"created_at": created_at, "requested_at": created_at} == job
+    assert (
+        job
+        | {
+            "available_at": None,
+            "attempt_count": 0,
+            "attempt_token": None,
+            "fence": 0,
+            "lease_until": None,
+            "append_started_at": None,
+            "schema_version": 2,
+        }
+        == job
+    )
 
 
 @pytest.mark.asyncio

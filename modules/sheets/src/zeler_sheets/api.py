@@ -185,17 +185,25 @@ def build_router(
         if export is None:
             return JSONResponse(status_code=404, content={"error": "sheets_export_not_found"})
 
-        requested_at = now()
+        created_at = now()
         job = {
-            "_id": f"sheets-sync-{payload.seller_id}-{int(requested_at.timestamp())}",
+            "_id": f"sheets-sync-{payload.seller_id}-{int(created_at.timestamp())}",
             "seller_id": payload.seller_id,
             "spreadsheet_id": str(export["spreadsheet_id"]),
             "state": "pending",
-            "requested_at": requested_at,
-            "updated_at": requested_at,
+            "created_at": created_at,
+            "requested_at": created_at,
+            "available_at": None,
+            "attempt_count": 0,
+            "attempt_token": None,
+            "fence": 0,
+            "lease_until": None,
+            "append_started_at": None,
+            "updated_at": created_at,
             "completed_at": None,
-            "error": None,
-            "schema_version": 1,
+            "error_code": None,
+            "error_message": None,
+            "schema_version": 2,
         }
         await request.app.state.mongo_db["sheets_sync_jobs"].insert_one(job)
         return JSONResponse(status_code=201, content=jsonable_encoder(job))

@@ -7,7 +7,7 @@ import signal
 import sys
 import time
 from collections.abc import Callable
-from contextlib import nullcontext
+from contextlib import nullcontext, suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -47,6 +47,7 @@ from zeler_sheets.google_errors import (
 from zeler_sheets.google_sheets_client import make_sheets_client
 from zeler_sheets.sheets_config import SheetsSettings
 from zeler_sheets.sheetseller_backfill import run_item_detail_enrichment, run_sheetseller_backfill
+from zeler_sheets.sync_jobs_processor import SyncJobsProcessor
 
 MELI_EVENTS_EXCHANGE = "meli.events"
 SHEETS_REPLAY_EXCHANGE = "zeler.sheets.replay"
@@ -64,6 +65,7 @@ PERMANENT_HTTP_STATUS_CODES = {401, 403, 404, 422}
 RETRIABLE_HTTP_STATUS_CODES = {408, 429}
 DEFAULT_GATEWAY_BASE_URL = "http://gateway:8080/proxy/meli"
 DEFAULT_STATUS_CONTENTION_RETRY_DELAY_MS = 1000
+SYNC_JOBS_MIGRATION_ID = "sheets_sync_jobs_v2_activation_cutoff"
 CLAIMS_RETRY_DELAYS = (
     (1_000, "1s"),
     (5_000, "5s"),
@@ -86,6 +88,92 @@ logger = structlog.get_logger(__name__)
 
 class RetryLimitExceededError(Exception):
     """Raised internally to describe exhausted broker retry budget."""
+
+
+class SyncJobsPollerSupervisor:
+    def __init__(
+        self,
+        processor: Any,
+        *,
+        poll_interval: float = 1.0,
+        restart_delays: tuple[float, ...] = (1.0, 5.0, 30.0),
+    ) -> None:
+        self._processor = processor
+        self._poll_interval = poll_interval
+        self._restart_delays = restart_delays
+        self._stop_event = asyncio.Event()
+        self._task: asyncio.Task[None] | None = None
+        self.health_status = "starting"
+
+    async def start(self) -> None:
+        if self._task is not None:
+            raise RuntimeError("sync jobs poller already started")
+        self._task = asyncio.create_task(self._run())
+
+    async def wait(self) -> None:
+        if self._task is None:
+            raise RuntimeError("sync jobs poller is not started")
+        await self._task
+
+    async def stop(self) -> None:
+        self._stop_event.set()
+        if self._task is not None:
+            await asyncio.gather(self._task, return_exceptions=True)
+        self.health_status = "stopped"
+
+    async def _run(self) -> None:
+        failures = 0
+        while not self._stop_event.is_set():
+            try:
+                result = await self._processor.process_once()
+            except Exception as exc:  # noqa: BLE001 - supervisor owns bounded recovery.
+                self.health_status = "error"
+                logger.exception("sheets.sync_jobs_poller_failed", attempt=failures + 1)
+                if failures >= len(self._restart_delays):
+                    raise RuntimeError("sync jobs poller restart budget exhausted") from exc
+                delay = self._restart_delays[failures]
+                failures += 1
+                await self._wait_or_stop(delay)
+                continue
+            failures = 0
+            self.health_status = "ok"
+            if result == "idle":
+                await self._wait_or_stop(self._poll_interval)
+
+    async def _wait_or_stop(self, delay: float) -> None:
+        with suppress(TimeoutError):
+            await asyncio.wait_for(self._stop_event.wait(), timeout=delay)
+
+
+async def run_worker_lifecycles(
+    runner: Any,
+    poller: Any | None,
+    shutdown_event: asyncio.Event,
+) -> None:
+    await runner.start()
+    if poller is None:
+        try:
+            await shutdown_event.wait()
+        finally:
+            await runner.close()
+        return
+
+    await poller.start()
+    shutdown_wait = asyncio.create_task(shutdown_event.wait())
+    poller_wait = asyncio.create_task(poller.wait())
+    try:
+        done, _ = await asyncio.wait(
+            {shutdown_wait, poller_wait}, return_when=asyncio.FIRST_COMPLETED
+        )
+        if poller_wait in done:
+            await poller_wait
+            raise RuntimeError("sync jobs poller stopped unexpectedly")
+    finally:
+        await poller.stop()
+        await runner.close()
+        shutdown_wait.cancel()
+        poller_wait.cancel()
+        await asyncio.gather(shutdown_wait, poller_wait, return_exceptions=True)
 
 
 @dataclass(frozen=True)
@@ -1039,6 +1127,7 @@ async def run() -> None:
         serverSelectionTimeoutMS=5000,
         connectTimeoutMS=5000,
         socketTimeoutMS=30000,
+        tz_aware=True,
     )
     db = mongo_client[mongo_db]
     from google.cloud import kms
@@ -1071,14 +1160,33 @@ async def run() -> None:
     for sig in (signal.SIGTERM, signal.SIGINT):
         loop.add_signal_handler(sig, shutdown_event.set)
 
-    sidecar = WorkerHealthSidecar(runner, port=int(os.environ.get("WORKER_HEALTH_PORT", "8080")))
+    poller: SyncJobsPollerSupervisor | None = None
+    component_status: dict[str, Callable[[], str]] = {}
+    if _env_flag_enabled("SHEETS_SYNC_JOBS_POLLER_ENABLED"):
+        migration = await db["platform_migrations"].find_one({"_id": SYNC_JOBS_MIGRATION_ID})
+        activation_cutoff = migration.get("activation_cutoff") if migration else None
+        if not isinstance(activation_cutoff, datetime):
+            raise RuntimeError("sheets sync jobs activation cutoff is not recorded")
+        active_poller = SyncJobsPollerSupervisor(
+            SyncJobsProcessor(
+                db=db,
+                handler=handler,
+                activation_cutoff=activation_cutoff,
+            )
+        )
+        poller = active_poller
+        component_status["sync_jobs_poller"] = lambda: active_poller.health_status
+
+    sidecar = WorkerHealthSidecar(
+        runner,
+        port=int(os.environ.get("WORKER_HEALTH_PORT", "8080")),
+        component_status=component_status,
+    )
     await sidecar.start()
-    await runner.start()
     try:
-        await shutdown_event.wait()
+        await run_worker_lifecycles(runner, poller, shutdown_event)
     finally:
         await sidecar.stop()
-        await runner.close()
         mongo_client.close()
 
 
