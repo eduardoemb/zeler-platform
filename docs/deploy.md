@@ -115,76 +115,123 @@ docker compose version
 
 **Important**: Always use Cloud Build. Never `docker build` locally on Mac.
 
-Use a temporary Cloud Build config file. Do **not** combine `--tag` with
-`--config`, and do **not** rely on `--config=-`; recent `gcloud` versions reject
-that combination or treat `-` as a literal file path. The Docker image tag lives
-in the Cloud Build YAML (`docker build -t ...` plus `images: [...]`).
+Build from the connected repository at one exact commit already present in
+`main`. Never submit the local checkout as `.`: doing so can upload the wrong
+branch or uncommitted files. A tag is only human-readable build metadata; the
+resulting `repo@sha256:...` reference is the deployment authority.
+
+### Build one affected service
 
 ```bash
 PROJECT=zeler-platform-dev
-AR=us-central1-docker.pkg.dev/${PROJECT}/zeler-platform
-TAG=rollout-v1
+BUILD_REGION=us-central1
+CONNECTION=zeler-platform-github
+REPOSITORY=zeler-platform
+REPOSITORY_RESOURCE="projects/${PROJECT}/locations/${BUILD_REGION}/connections/${CONNECTION}/repositories/${REPOSITORY}"
+AR="${BUILD_REGION}-docker.pkg.dev/${PROJECT}/zeler-platform"
 
-build() {
-  local svc=$1 dockerfile=$2 image cfg status
-  image="$AR/$svc:$TAG"
-  cfg=$(mktemp "${TMPDIR:-/tmp}/zeler-cloudbuild-${svc}.XXXXXX.yaml")
+# Select only the service affected by the merged change.
+SERVICE=sheets-worker
+DOCKERFILE=modules/sheets/Dockerfile.worker
 
-  cat > "$cfg" <<EOF
+git fetch origin main
+SOURCE_COMMIT=$(git rev-parse origin/main)
+test "${#SOURCE_COMMIT}" -eq 40
+
+TAG="${SERVICE}-${SOURCE_COMMIT:0:7}-$(date -u +%Y%m%dT%H%M%SZ)"
+TAGGED_IMAGE="${AR}/${SERVICE}:${TAG}"
+BUILD_TEMP_DIR=$(mktemp -d "${TMPDIR:-/tmp}/zeler-cloudbuild-${SERVICE}.XXXXXX")
+BUILD_CONFIG="${BUILD_TEMP_DIR}/cloudbuild.yaml"
+PROVENANCE_FILE="${BUILD_TEMP_DIR}/provenance.json"
+BUILD_FILE="${BUILD_TEMP_DIR}/build.json"
+IMAGE_MAP_FILE="${BUILD_TEMP_DIR}/image_to_commit.json"
+trap 'rm -rf "$BUILD_TEMP_DIR"' EXIT
+
+cat > "$BUILD_CONFIG" <<EOF
 steps:
 - name: gcr.io/cloud-builders/docker
-  args: ['build', '-f', '$dockerfile', '-t', '$image', '.']
-images: ['$image']
+  args: ['build', '-f', '${DOCKERFILE}', '-t', '${TAGGED_IMAGE}', '.']
+images: ['${TAGGED_IMAGE}']
 EOF
 
-  gcloud builds submit \
-    --project "$PROJECT" \
-    --config "$cfg" \
-    .
-  status=$?
-  rm -f "$cfg"
-  return "$status"
-}
+BUILD_ID=$(gcloud builds submit "$REPOSITORY_RESOURCE" \
+  --revision="$SOURCE_COMMIT" \
+  --config="$BUILD_CONFIG" \
+  --project="$PROJECT" \
+  --region="$BUILD_REGION" \
+  --async \
+  --format='value(id)')
 
-# Sequential (add & after each to parallelize if build quota allows)
-build gateway           gateway/Dockerfile
-build repricer-api      modules/repricer/Dockerfile.api
-build repricer-worker   modules/repricer/Dockerfile.worker
-build sheets-api        modules/sheets/Dockerfile.api
-build sheets-worker     modules/sheets/Dockerfile.worker
-build autoreply-api     modules/autoreply/Dockerfile.api
-build autoreply-worker  modules/autoreply/Dockerfile.worker
-build publicador-api    modules/publicador/Dockerfile.api
+gcloud builds log "$BUILD_ID" \
+  --project="$PROJECT" \
+  --region="$BUILD_REGION" \
+  --stream
+
+test "$(gcloud builds describe "$BUILD_ID" \
+  --project="$PROJECT" \
+  --region="$BUILD_REGION" \
+  --format='value(status)')" = "SUCCESS"
 ```
 
-**Parallel one-liner** (use when quota > 10 concurrent builds):
+Choose the Dockerfile from this map:
+
+| Service | Dockerfile |
+| --- | --- |
+| `gateway` | `gateway/Dockerfile` |
+| `repricer-api` | `modules/repricer/Dockerfile.api` |
+| `repricer-worker` | `modules/repricer/Dockerfile.worker` |
+| `sheets-api` | `modules/sheets/Dockerfile.api` |
+| `sheets-worker` | `modules/sheets/Dockerfile.worker` |
+| `autoreply-api` | `modules/autoreply/Dockerfile.api` |
+| `autoreply-worker` | `modules/autoreply/Dockerfile.worker` |
+| `publicador-api` | `modules/publicador/Dockerfile.api` |
+
+Do not build every service by default. Shared runtime or dependency changes may
+affect more than one image; name and build each affected service explicitly.
+
+### Resolve and verify the immutable image
 
 ```bash
-for svc_df in \
-  "gateway:gateway/Dockerfile" \
-  "repricer-api:modules/repricer/Dockerfile.api" \
-  "repricer-worker:modules/repricer/Dockerfile.worker" \
-  "sheets-api:modules/sheets/Dockerfile.api" \
-  "sheets-worker:modules/sheets/Dockerfile.worker" \
-  "autoreply-api:modules/autoreply/Dockerfile.api" \
-  "autoreply-worker:modules/autoreply/Dockerfile.worker" \
-  "publicador-api:modules/publicador/Dockerfile.api"
-do
-  svc="${svc_df%%:*}"; dockerfile="${svc_df##*:}"
-  build "$svc" "$dockerfile" &
-done
-wait
-echo "All builds complete"
+DIGEST=$(gcloud artifacts docker images describe "$TAGGED_IMAGE" \
+  --project="$PROJECT" \
+  --format='value(image_summary.digest)')
+[[ "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] \
+  || { echo "Invalid image digest" >&2; exit 1; }
+
+IMAGE_REF="${AR}/${SERVICE}@${DIGEST}"
+printf 'BUILD_ID=%s\nSOURCE_COMMIT=%s\nIMAGE_REF=%s\n' \
+  "$BUILD_ID" "$SOURCE_COMMIT" "$IMAGE_REF"
+
+gcloud builds describe "$BUILD_ID" \
+  --project="$PROJECT" \
+  --region="$BUILD_REGION" \
+  --format='yaml(status,source.connectedRepository.repository,source.connectedRepository.revision,results.images)'
+
+gcloud artifacts docker images describe "$IMAGE_REF" \
+  --project="$PROJECT" \
+  --show-provenance \
+  --format=json > "$PROVENANCE_FILE"
+
+gcloud builds describe "$BUILD_ID" \
+  --project="$PROJECT" \
+  --region="$BUILD_REGION" \
+  --format=json > "$BUILD_FILE"
+
+PROJECT_NUMBER=$(gcloud projects describe "$PROJECT" --format='value(projectNumber)')
+PYTHONPATH=. python3 -m infra.deploy.provenance_check verify-image \
+  --image-ref="$IMAGE_REF" \
+  --artifact-file="$PROVENANCE_FILE" \
+  --build-file="$BUILD_FILE" \
+  --source-commit="$SOURCE_COMMIT" \
+  --connected-repository="$REPOSITORY_RESOURCE" \
+  --expected-project-id="$PROJECT" \
+  --expected-project-number="$PROJECT_NUMBER" \
+  --map-out="$IMAGE_MAP_FILE"
 ```
 
-### Verify images
-
-```bash
-gcloud artifacts docker images list \
-  us-central1-docker.pkg.dev/zeler-platform-dev/zeler-platform \
-  --project=$PROJECT
-# Expect the selected images to include the tag in $TAG.
-```
+Before deployment, record the successful `BUILD_ID`, exact 40-character
+`SOURCE_COMMIT`, and immutable `IMAGE_REF`. Refuse a build whose connected
+repository, revision, subject digest, or status does not match those values.
 
 ---
 
@@ -423,17 +470,103 @@ provenance interpretation never drifts between the two gates.
 
 ## 5. Re-deploy a Single Service
 
-```bash
-TAG=rollout-v2  # or whatever new tag was built
+Deploy only after separate user authorization. Run the build steps locally,
+then connect to `platform-vm` and execute this section inside the VM. The
+previous **running** digest is the rollback authority; it may differ from the
+image currently written in Compose.
 
-gcloud compute ssh platform-vm --tunnel-through-iap --zone=$ZONE --project=$PROJECT \
-  --command="cd /opt/zeler-platform && \
-    sudo /opt/zeler-platform/docker-deploy-preflight.sh && \
-    sudo docker compose pull <service> && \
-    sudo docker compose up -d --no-deps <service>"
+```bash
+COMPOSE_FILE=/opt/zeler-platform/docker-compose.yml
+SERVICE=sheets-worker
+SOURCE_COMMIT=REPLACE_WITH_EXACT_40_CHARACTER_MAIN_COMMIT
+NEW_IMAGE=REPLACE_WITH_ARTIFACT_REGISTRY_REPOSITORY_AT_SHA256_DIGEST
+
+[[ "$SOURCE_COMMIT" =~ ^[0-9a-f]{40}$ ]] \
+  || { echo "SOURCE_COMMIT must be a full commit" >&2; exit 1; }
+[[ "$NEW_IMAGE" =~ ^[a-z0-9.-]+/[a-z0-9._/-]+@sha256:[0-9a-f]{64}$ ]] \
+  || { echo "NEW_IMAGE must be pinned by digest" >&2; exit 1; }
+
+sudo /opt/zeler-platform/docker-deploy-preflight.sh
+
+CONTAINER_ID=$(sudo docker compose --file "$COMPOSE_FILE" ps -q "$SERVICE")
+test -n "$CONTAINER_ID"
+PRIOR_IMAGE=$(sudo docker inspect "$CONTAINER_ID" --format '{{.Config.Image}}')
+[[ "$PRIOR_IMAGE" =~ ^[a-z0-9.-]+/[a-z0-9._/-]+@sha256:[0-9a-f]{64}$ ]] \
+  || { echo "Running rollback image is not pinned by digest" >&2; exit 1; }
+
+BACKUP="${COMPOSE_FILE}.pre-${SERVICE}-${SOURCE_COMMIT:0:7}"
+sudo cp -p "$COMPOSE_FILE" "$BACKUP"
+
+CURRENT_CONFIG_IMAGE=$(sudo docker compose --file "$COMPOSE_FILE" config --format json \
+  | python3 -c 'import json,sys; print(json.load(sys.stdin)["services"][sys.argv[1]]["image"])' \
+    "$SERVICE")
+
+sudo python3 - "$COMPOSE_FILE" "$CURRENT_CONFIG_IMAGE" "$NEW_IMAGE" <<'PY'
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+old = sys.argv[2]
+new = sys.argv[3]
+text = path.read_text()
+if text.count(old) != 1:
+    raise SystemExit("expected exactly one Compose image replacement")
+path.write_text(text.replace(old, new, 1))
+PY
+
+RENDERED_IMAGE=$(sudo docker compose --file "$COMPOSE_FILE" config --format json \
+  | python3 -c 'import json,sys; print(json.load(sys.stdin)["services"][sys.argv[1]]["image"])' \
+    "$SERVICE")
+test "$RENDERED_IMAGE" = "$NEW_IMAGE"
+
+sudo docker compose --file "$COMPOSE_FILE" pull "$SERVICE"
+sudo docker compose --file "$COMPOSE_FILE" up -d --no-deps "$SERVICE"
 ```
 
-The preflight requires at least 5GiB free on `/`. If the margin is lower, it runs safe Docker maintenance and re-checks before pulling images. With `REQUIRE_DIGEST_BINDING=1`, the preflight also refuses moving image tags before any pull (see the opt-in immutable-digest provenance gate in section 5a).
+The preflight requires at least 5GiB free on `/`. If the margin is lower, it
+runs safe Docker maintenance and re-checks before pulling images. Do not declare
+success from `Started`; prove the running digest and health:
+
+```bash
+CONTAINER_ID=$(sudo docker compose --file "$COMPOSE_FILE" ps -q "$SERVICE")
+RUNNING_IMAGE=$(sudo docker inspect "$CONTAINER_ID" --format '{{.Config.Image}}')
+test "$RUNNING_IMAGE" = "$NEW_IMAGE"
+
+for attempt in $(seq 1 12); do
+  RUNTIME_STATUS=$(sudo docker inspect "$CONTAINER_ID" \
+    --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}')
+  test "$RUNTIME_STATUS" = "healthy" && break
+  sleep 5
+done
+test "$RUNTIME_STATUS" = "healthy"
+
+sudo docker compose --file "$COMPOSE_FILE" ps "$SERVICE"
+```
+
+Run the service-specific smoke from section 8. If deployment, health, or smoke
+fails, replace `NEW_IMAGE` with the recorded `PRIOR_IMAGE`, recreate only the
+same service, and verify the rollback digest and health:
+
+```bash
+sudo python3 - "$COMPOSE_FILE" "$NEW_IMAGE" "$PRIOR_IMAGE" <<'PY'
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+old = sys.argv[2]
+new = sys.argv[3]
+text = path.read_text()
+if text.count(old) != 1:
+    raise SystemExit("expected exactly one Compose rollback replacement")
+path.write_text(text.replace(old, new, 1))
+PY
+
+sudo docker compose --file "$COMPOSE_FILE" up -d --no-deps "$SERVICE"
+sudo docker compose --file "$COMPOSE_FILE" ps "$SERVICE"
+```
+
+The Compose backup preserves the pre-deploy file for investigation, but it is
+not automatically the runtime rollback target. Use the recorded running digest.
 
 Manual safe cleanup, if an operator needs to run it outside the timer:
 
@@ -863,18 +996,15 @@ timer acceptance fails:
 
 ### Rollback a bad image
 
-Edit `/opt/zeler-platform/docker-compose.yml` on the VM, change the image tag for the affected service back to the previous tag (e.g. `rollout-v1`), then:
+Use the exact `PRIOR_IMAGE=repo@sha256:...` captured from the running container
+before deployment. Follow the failure path in section 5 to replace the candidate
+digest in Compose, recreate only the affected service, and verify that the
+running image and health returned to the prior values.
 
-```bash
-cd /opt/zeler-platform && sudo docker compose up -d --no-deps <service>
-```
-
-### Rollback via env override (faster, no file edit)
-
-```bash
-cd /opt/zeler-platform && \
-  sudo IMAGE_TAG=rollout-v1 docker compose up -d --no-deps <service>
-```
+Do not roll back by tag, do not assume the pre-deploy Compose file matches the
+previous running container, and do not use an `IMAGE_TAG` override unless the
+Compose file explicitly consumes that variable. Tags and backups are supporting
+evidence; the recorded prior running digest is the rollback authority.
 
 ### Full VM loss (within 7-day PC retention window)
 
@@ -935,7 +1065,10 @@ cd /opt/zeler-platform && sudo docker compose up -d sheets-api sheets-worker
 
 ## 8. Smoke Test Checklist
 
-Run after every deploy or cutover. All must pass before marking the deploy stable.
+After a narrow service deploy, run the container binding/health checks from
+section 5 plus the relevant service smoke below. After a platform cutover or a
+shared-runtime change, run the full checklist. Never mark a deploy stable from
+container startup alone.
 
 ### HTTPS health checks (TLS cert must be valid, not self-signed)
 
@@ -948,22 +1081,25 @@ done
 
 Expected: `HTTP/2 200` for all 5 active subdomains.
 
-### Container state (10 active containers, all running)
+### Container state
 
 ```bash
 gcloud compute ssh platform-vm --tunnel-through-iap --zone=$ZONE --project=$PROJECT \
-  --command="cd /opt/zeler-platform && \
-    sudo docker compose ps --format json | \
-    python3 -c \"import sys,json; data=json.load(sys.stdin) if isinstance(json.load(open('/dev/stdin')), list) else []; print(f'{len(data)} containers')\" || \
-    sudo docker compose ps"
+  --command="cd /opt/zeler-platform && sudo docker compose ps"
 ```
+
+Every deployed service must be `Up` and services with healthchecks must be
+`healthy`. For a narrow deploy, verify at least the affected service and its
+direct dependency boundary.
 
 ### Worker consumer logs (confirm queues bound)
 
 ```bash
 gcloud compute ssh platform-vm --tunnel-through-iap --zone=$ZONE --project=$PROJECT << 'EOF'
 for w in repricer-worker sheets-worker autoreply-worker; do
-  echo "=== $w ==="; sudo docker logs "$w" --tail 20 2>&1 | grep -iE "consumer|started|bound" || echo "NO MATCH"
+  echo "=== $w ==="
+  sudo docker compose --file /opt/zeler-platform/docker-compose.yml \
+    logs --tail 20 "$w" 2>&1 | grep -iE "consumer|started|bound" || echo "NO MATCH"
 done
 EOF
 ```
