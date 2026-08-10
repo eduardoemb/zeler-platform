@@ -113,9 +113,7 @@ async def test_sheets_startup_registers_manifest_and_health_ready() -> None:
     from zeler_sheets.app import build_app
 
     db = FakeDb()
-    app = build_app(
-        mongo_db=db, rabbitmq_url=TEST_RABBITMQ_URL, rabbitmq_connect=_connect_ok()
-    )
+    app = build_app(mongo_db=db, rabbitmq_url=TEST_RABBITMQ_URL, rabbitmq_connect=_connect_ok())
     for handler in app.router.on_startup:
         await handler()
 
@@ -179,9 +177,7 @@ async def test_sheets_health_fails_closed_when_registry_fingerprint_drifts() -> 
     from zeler_sheets.app import build_app
 
     db = FakeDb()
-    app = build_app(
-        mongo_db=db, rabbitmq_url=TEST_RABBITMQ_URL, rabbitmq_connect=_connect_ok()
-    )
+    app = build_app(mongo_db=db, rabbitmq_url=TEST_RABBITMQ_URL, rabbitmq_connect=_connect_ok())
     for handler in app.router.on_startup:
         await handler()
     db.module_registry.documents["sheets"]["routing_keys"] = ["items.*"]
