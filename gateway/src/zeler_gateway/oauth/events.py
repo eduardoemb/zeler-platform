@@ -60,6 +60,28 @@ async def emit_accounts_linked(
     logger.info("accounts.linked", **payload)
 
 
-async def emit_accounts_revoked(*, seller_id: int, platform_user_id: str) -> None:
-    # TODO(P2): publish accounts.revoked to RabbitMQ once AMQP wiring exists.
-    logger.info("accounts.revoked", seller_id=seller_id, platform_user_id=platform_user_id)
+async def emit_accounts_revoked(
+    *,
+    seller_id: int,
+    platform_user_id: str,
+    amqp_publisher: AmqpPublisher | None = None,
+    clock: Any = None,
+) -> None:
+    now = (clock or (lambda: datetime.now(UTC)))()
+    normalized_seller_id = str(seller_id)
+    occurred_at = now.isoformat()
+    payload = {
+        "seller_id": normalized_seller_id,
+        "platform_user_id": platform_user_id,
+        "occurred_at": occurred_at,
+        "idempotency_key": (
+            f"accounts-revoked-{normalized_seller_id}-{platform_user_id}-{occurred_at}"
+        ),
+    }
+    if amqp_publisher is not None:
+        await amqp_publisher.publish(
+            exchange="meli.events",
+            routing_key="accounts.revoked",
+            payload=payload,
+        )
+    logger.info("accounts.revoked", **payload)

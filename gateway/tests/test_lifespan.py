@@ -31,6 +31,7 @@ def test_lifespan_connects_and_disconnects_mongo(monkeypatch: Any) -> None:
 
     monkeypatch.setenv("MONGO_URI", "mongodb://localhost:27017/zeler_platform_test")
     monkeypatch.setenv("MONGO_DB", "zeler_platform_test")
+    monkeypatch.delenv("RABBITMQ_URL", raising=False)
     monkeypatch.setattr(app_module, "AsyncIOMotorClient", fake_client)
 
     with TestClient(app_module.app) as client:
@@ -42,5 +43,6 @@ def test_lifespan_connects_and_disconnects_mongo(monkeypatch: Any) -> None:
         assert created_clients[0].kwargs["socketTimeoutMS"] == 30000
         assert app_module.app.state.mongo_client is created_clients[0]
         assert app_module.app.state.mongo_db is created_clients[0]["zeler_platform_test"]
+        assert app_module.app.state.amqp_publisher is None
 
     assert created_clients[0].closed is True
