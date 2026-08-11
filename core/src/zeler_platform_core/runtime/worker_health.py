@@ -2,14 +2,23 @@ from __future__ import annotations
 
 import asyncio
 import json
+from collections.abc import Callable, Mapping
 from typing import Any
 
 
 class WorkerHealthSidecar:
-    def __init__(self, consumer_ref: Any, *, port: int = 8080, staleness_seconds: int = 30) -> None:
+    def __init__(
+        self,
+        consumer_ref: Any,
+        *,
+        port: int = 8080,
+        staleness_seconds: int = 30,
+        component_status: Mapping[str, Callable[[], str]] | None = None,
+    ) -> None:
         self._consumer_ref = consumer_ref
         self._port = port
         self._staleness_seconds = staleness_seconds
+        self._component_status = component_status or {}
         self._server: asyncio.AbstractServer | None = None
         self.bound_port = port
 
@@ -46,10 +55,15 @@ class WorkerHealthSidecar:
         )
 
     def _consumer_status(self) -> tuple[bool, dict[str, str]]:
-        if not bool(getattr(self._consumer_ref, "is_ready", False)):
-            return False, {"rabbitmq": "error", "reason": "not_ready"}
-
-        return True, {"rabbitmq": "ok"}
+        ready = bool(getattr(self._consumer_ref, "is_ready", False))
+        checks = {"rabbitmq": "ok" if ready else "error"}
+        if not ready:
+            checks["reason"] = "not_ready"
+        for component, source in self._component_status.items():
+            status = source()
+            checks[component] = status
+            ready = ready and status == "ok"
+        return ready, checks
 
     @staticmethod
     async def _write_response(

@@ -992,6 +992,53 @@ timer acceptance fails:
 
 ---
 
+## 5e. A5 Sheets sync-jobs processor rollout
+
+Keep the sync-jobs poller disabled until the schema, quarantine, post-check, and
+index gates are complete. Use one immutable UTC activation cutoff `T` throughout
+the rollout. Run all Mongo operations only from the approved VM/VPC/runtime
+context, and record sanitized counts rather than job contents or credentials.
+
+### Ordered rollout
+
+Complete these steps in order. Stop if any gate fails.
+
+1. **Deploy schema-compatible artifacts with polling disabled.** Deploy the
+   schema-v2-compatible Sheets API and worker while
+   `SHEETS_SYNC_JOBS_POLLER_ENABLED` remains unset or `false`. Confirm new jobs
+   contain distinct `created_at` and `requested_at` UTC fields before proceeding.
+2. **Capture the activation cutoff.** Record one UTC instant as `T` in the
+   deployment evidence. Do not change or regenerate `T` after migration starts.
+   The quarantine operation persists the same value as the immutable
+   `sheets_sync_jobs_v2_activation_cutoff` migration record.
+3. **Run quarantine and its post-check with `T`.** Run
+   `infra.mongo.operations.quarantine_sheets_sync_jobs` once with the recorded
+   `T` and `--confirm-approved-runtime`. The operation must exit successfully and
+   report sanitized scanned, quarantined, and eligible counts. Its post-check
+   must prove that no `pending` job has a missing/invalid `created_at` or a
+   `created_at` before `T`. Do not continue if the recorded cutoff differs from
+   `T` or any unsafe pending job remains.
+4. **Apply the sync-job indexes.** After the post-check passes, apply the claim,
+   lease-recovery, and unique partial running seller/spreadsheet indexes from
+   `infra/mongo/indexes/sheets_sync_jobs.json`. Confirm index drift is clear
+   before enabling polling.
+5. **Enable polling last.** Set `SHEETS_SYNC_JOBS_POLLER_ENABLED=true`, recreate
+   only `sheets-worker`, and confirm its health reports the sync-jobs poller as
+   ready while AMQP consumption remains healthy. The worker reads the immutable
+   cutoff from the migration record; do not provide a different runtime cutoff.
+
+### Rollback boundary
+
+If the poller or candidate worker is unhealthy, set
+`SHEETS_SYNC_JOBS_POLLER_ENABLED=false` and recreate `sheets-worker`. If needed,
+redeploy the prior approved worker image with polling disabled. Preserve all
+`sheets_sync_jobs` records and lifecycle evidence for audit, including
+`quarantined`, `running`, `succeeded`, and `failed` jobs. Never restore
+quarantined jobs to `pending`, and never automatically replay terminal or
+append-ambiguous jobs during rollback.
+
+---
+
 ## 6. Rollback
 
 ### Rollback a bad image
