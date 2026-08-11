@@ -573,6 +573,6 @@ class TestDockerRootDiskSafeguards:
         assert "/opt/zeler-platform/docker-deploy-preflight.sh" in deploy_section
         assert deploy_section.index(
             "/opt/zeler-platform/docker-deploy-preflight.sh"
-        ) < deploy_section.index("docker compose pull <service>")
+        ) < deploy_section.index('docker compose --file "$COMPOSE_FILE" pull "$SERVICE"')
         assert "never prune volumes" in text.lower()
         assert "/var/lib/zeler-mongo" in text
