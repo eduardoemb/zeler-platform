@@ -8,6 +8,7 @@ from typing import Any
 import pytest
 from infra.mongo.operations.quarantine_sheets_sync_jobs import (
     LEGACY_CREATED_AT_SENTINEL,
+    MIGRATION_ID,
     quarantine_sheets_sync_jobs,
 )
 from pymongo import MongoClient
@@ -104,6 +105,29 @@ def test_quarantine_migration_rejects_a_changed_recorded_cutoff() -> None:
         quarantine_sheets_sync_jobs(database, cutoff + timedelta(seconds=1), now=cutoff)
 
 
+def test_quarantine_migration_accepts_equivalent_bson_millisecond_cutoff() -> None:
+    requested_cutoff = datetime(2026, 8, 10, 12, 0, 0, 123456, tzinfo=UTC)
+    stored_cutoff = requested_cutoff.replace(microsecond=123000)
+    database = _Database([])
+    database["platform_migrations"].documents["sheets_sync_jobs_v2_activation_cutoff"] = {
+        "_id": "sheets_sync_jobs_v2_activation_cutoff",
+        "activation_cutoff": stored_cutoff,
+    }
+
+    quarantine_sheets_sync_jobs(database, requested_cutoff, now=requested_cutoff)
+
+    assert (
+        database["platform_migrations"].documents["sheets_sync_jobs_v2_activation_cutoff"][
+            "activation_cutoff"
+        ]
+        == stored_cutoff
+    )
+    with pytest.raises(ValueError, match="activation cutoff is immutable"):
+        quarantine_sheets_sync_jobs(
+            database, requested_cutoff + timedelta(milliseconds=1), now=requested_cutoff
+        )
+
+
 def test_quarantine_migration_runs_against_local_mongo(default_mongo_uri: str) -> None:
     parsed_uri = parse_uri(default_mongo_uri)
     if any(host not in {"127.0.0.1", "localhost", "::1"} for host, _port in parsed_uri["nodelist"]):
@@ -119,7 +143,8 @@ def test_quarantine_migration_runs_against_local_mongo(default_mongo_uri: str) -
         client.close()
         pytest.skip(f"local Mongo is not available: {type(exc).__name__}")
 
-    cutoff = datetime(2026, 8, 10, 12, tzinfo=UTC)
+    cutoff = datetime(2026, 8, 10, 12, 0, 0, 123456, tzinfo=UTC)
+    bson_cutoff = cutoff.replace(microsecond=123000)
     try:
         database.sheets_sync_jobs.delete_many({})
         database.platform_migrations.delete_many({})
@@ -130,8 +155,12 @@ def test_quarantine_migration_runs_against_local_mongo(default_mongo_uri: str) -
         summary = quarantine_sheets_sync_jobs(database, cutoff, now=cutoff)
 
         assert summary == {"scanned_count": 2, "quarantined_count": 1, "eligible_count": 1}
-        assert database.sheets_sync_jobs.find_one({"_id": "old"})["state"] == "quarantined"
-        assert database.sheets_sync_jobs.find_one({"_id": "eligible"})["state"] == "pending"
+        old_job = database.sheets_sync_jobs.find_one({"_id": "old"})
+        eligible_job = database.sheets_sync_jobs.find_one({"_id": "eligible"})
+        migration = database.platform_migrations.find_one({"_id": MIGRATION_ID})
+        assert old_job is not None and old_job["state"] == "quarantined"
+        assert eligible_job is not None and eligible_job["state"] == "pending"
+        assert migration is not None and migration["activation_cutoff"] == bson_cutoff
     finally:
         client.drop_database(database.name)
         client.close()

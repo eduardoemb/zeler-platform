@@ -27,6 +27,13 @@ def _as_utc(value: object) -> datetime | None:
     return value.astimezone(UTC)
 
 
+def _as_bson_utc(value: object) -> datetime | None:
+    result = _as_utc(value)
+    if result is None:
+        return None
+    return result.replace(microsecond=(result.microsecond // 1000) * 1000)
+
+
 def _record_cutoff(metadata: Any, cutoff: datetime, now: datetime) -> None:
     record = metadata.find_one_and_update(
         {"_id": MIGRATION_ID},
@@ -34,8 +41,8 @@ def _record_cutoff(metadata: Any, cutoff: datetime, now: datetime) -> None:
         upsert=True,
         return_document=ReturnDocument.AFTER,
     )
-    recorded_cutoff = _as_utc(record.get("activation_cutoff") if record else None)
-    if recorded_cutoff != cutoff:
+    recorded_cutoff = _as_bson_utc(record.get("activation_cutoff") if record else None)
+    if recorded_cutoff != _as_bson_utc(cutoff):
         raise ValueError("activation cutoff is immutable once recorded")
 
 
@@ -72,7 +79,7 @@ def quarantine_sheets_sync_jobs(
     *,
     now: datetime | None = None,
 ) -> QuarantineSummary:
-    cutoff = _as_utc(activation_cutoff)
+    cutoff = _as_bson_utc(activation_cutoff)
     migration_time = _as_utc(now or datetime.now(UTC))
     if cutoff is None or migration_time is None:
         raise ValueError("activation cutoff and migration time must be datetimes")
