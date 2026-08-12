@@ -238,6 +238,24 @@ def build_broker_payload(request: BrokerSigningRequest) -> str:
     )
 
 
+# Keep the prerequisite-only runner available until the full lifecycle slice.
+def run(inputs: RunnerInputs, seams: Seams) -> int:
+    if required_input_errors(secret_name=inputs.secret_name, base_url=inputs.base_url):
+        return EXIT_REQUIRED_INPUT
+    if authorization_error(seller_id=inputs.seller_id, formula_scope=inputs.formula_scope):
+        return EXIT_AUTHORIZATION_REJECTED
+    if documentation_like_reason(inputs.smoke_command, is_executable=inputs.is_executable):
+        return EXIT_COMMAND_PATH_REJECTED
+    if broker_payload_error(
+        platform_user_id=inputs.platform_user_id,
+        module=BROKER_MODULE,
+        scope=BROKER_SCOPE,
+        ttl_seconds=BROKER_TTL_SECONDS,
+    ):
+        return EXIT_BROKER_CONTRACT_REJECTED
+    return EXIT_SUCCESS
+
+
 class VersionIdError(ValueError): ...
 
 
