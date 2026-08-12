@@ -28,6 +28,11 @@ from infra.gce.operations import zelerdata_smoke_runner as runner
 urlopen = urllib.request.urlopen
 
 PROJECT_ID = "zeler-platform-dev"
+GCLOUD_COMMAND = Path("/snap/bin/gcloud")
+GCLOUD_ENV: Mapping[str, str] = {
+    "HOME": str(Path.home()),
+    "PATH": "/snap/bin:/usr/bin:/bin",
+}
 BROKER_SECRET_NAME = "zeler-app-broker-secret"  # noqa: S105 - fixed resource name.
 SMOKE_SECRET_NAME = runner.SECRET_NAME
 SELLER_ID = runner.ALLOWED_SELLER
@@ -149,7 +154,7 @@ class GcloudCommandRunner:
 
     def read_broker_secret(self) -> str:
         argv = [
-            "gcloud",
+            str(GCLOUD_COMMAND),
             "secrets",
             "versions",
             "access",
@@ -176,7 +181,7 @@ class GcloudCommandRunner:
             raise AdapterError("unsafe command boundary")
         if not _approved_version_argv(argv):
             raise AdapterError("command is outside the fixed B1 contract")
-        fixed_argv = [*argv, f"--project={PROJECT_ID}"]
+        fixed_argv = [str(GCLOUD_COMMAND), *argv[1:], f"--project={PROJECT_ID}"]
         result = self._run(fixed_argv, stdin=stdin, timeout=timeout)
         return result.returncode, result.stdout, ""
 
@@ -188,7 +193,7 @@ class GcloudCommandRunner:
                 input=stdin,
                 capture_output=True,
                 text=True,
-                env={},
+                env=dict(GCLOUD_ENV),
                 shell=False,
                 timeout=timeout,
                 check=False,
@@ -321,7 +326,7 @@ def _build_seams(command: GcloudCommandRunner, broker_secret: str) -> runner.Sea
         clock=_SystemClock(),
         http=FixedHttpTransport(broker_secret),
         command=command,
-        lock=runner.FlockLock(runner.ACTIVE_STATE_PATH),
+        lock=runner.FlockLock(runner.LOCK_PATH),
         state=runner.AtomicStateStore(runner.ACTIVE_STATE_PATH),
         process=LocalProcessRunner(),
     )

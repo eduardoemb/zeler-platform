@@ -249,9 +249,14 @@ def test_broker_payload_is_compact_json_with_server_derived_user() -> None:
     )
     assert " " not in payload
     body = json.loads(payload)
-    assert body["platform_user_id"] == "user-abc123"
-    assert body["module"] == "sheets" and body["scope"] == "admin:sheets"
-    assert body["ttl_seconds"] == 300 and body["iat"] == int(NOW.timestamp())
+    assert body == {
+        "platform_user_id": "user-abc123",
+        "scopes": ["admin:sheets"],
+        "seller_id": 82453304,
+        "target_module_id": "sheets",
+        "token_kind": "module_admin",
+        "ttl_s": 300,
+    }
 
 
 @pytest.mark.parametrize("ttl_seconds", [301, 0])
@@ -862,6 +867,25 @@ def test_lock_creates_state_file_with_mode_0600(tmp_path: Path) -> None:
     assert lock.acquire() is True
     assert path.exists()
     assert stat.S_IMODE(path.stat().st_mode) == 0o600
+    lock.release()
+
+
+def test_lock_and_active_state_use_distinct_files_in_one_runtime_directory() -> None:
+    assert runner.LOCK_PATH.parent == runner.RUNTIME_DIR
+    assert runner.ACTIVE_STATE_PATH.parent == runner.RUNTIME_DIR
+    assert runner.LOCK_PATH != runner.ACTIVE_STATE_PATH
+
+
+def test_lock_file_does_not_materialize_active_state(tmp_path: Path) -> None:
+    lock_path = tmp_path / "runner.lock"
+    active_path = tmp_path / "active.json"
+    lock = runner.FlockLock(lock_path)
+    store = runner.AtomicStateStore(active_path)
+
+    assert lock.acquire() is True
+    assert store.read() == {}
+    assert lock_path.exists()
+    assert not active_path.exists()
     lock.release()
 
 
@@ -1851,7 +1875,14 @@ def test_run_orchestrates_lifecycle_order_ttls_shell_boundary_and_removes_state(
         for call in fake.http_calls
         if call["url"] == runner.BROKER_TOKEN_URL
     ]
-    assert len(broker_bodies) == 2 and all(body["ttl_seconds"] <= 300 for body in broker_bodies)
+    assert len(broker_bodies) == 2
+    assert all(
+        body["ttl_s"] <= 300
+        and body["token_kind"] == "module_admin"  # noqa: S105 - token kind discriminator.
+        and body["target_module_id"] == "sheets"
+        and body["scopes"] == ["admin:sheets"]
+        for body in broker_bodies
+    )
     extension_body = json.loads(
         next(
             call["payload"] for call in fake.http_calls if call["url"] == runner.EXTENSION_TOKEN_URL
