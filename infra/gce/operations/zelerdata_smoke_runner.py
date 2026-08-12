@@ -34,7 +34,9 @@ orchestration and remaining stages land in later slices.
 
 from __future__ import annotations
 
+import fcntl
 import json
+import os
 import re
 import signal  # B1 interrupt handling
 import time  # B1 process polling
