@@ -46,16 +46,12 @@ handlers, no ``run`` wiring; the active state is never removed (2.10).
 
 from __future__ import annotations
 
-import contextlib
 import dataclasses
 import json
 import os
-import signal
-import stat
 import subprocess
 import sys
-import time
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -304,16 +300,23 @@ def test_run_rejects_invalid_gate_inputs_before_any_effect(override: dict[str, A
 
 def test_run_accepts_valid_inputs_without_any_effect_in_this_slice() -> None:
     inputs = _inputs()
-    assert runner.required_input_errors(secret_name=inputs.secret_name, base_url=inputs.base_url) == []
-    assert runner.authorization_error(
-        seller_id=inputs.seller_id, formula_scope=inputs.formula_scope
-    ) is None
-    assert runner.documentation_like_reason(
-        inputs.smoke_command, is_executable=inputs.is_executable
-    ) is None
-    assert runner.broker_payload_error(
-        platform_user_id=inputs.platform_user_id,
-        module=runner.BROKER_MODULE,
-        scope=runner.BROKER_SCOPE,
-        ttl_seconds=runner.BROKER_TTL_SECONDS,
-    ) is None
+    assert (
+        runner.required_input_errors(secret_name=inputs.secret_name, base_url=inputs.base_url) == []
+    )
+    assert (
+        runner.authorization_error(seller_id=inputs.seller_id, formula_scope=inputs.formula_scope)
+        is None
+    )
+    assert (
+        runner.documentation_like_reason(inputs.smoke_command, is_executable=inputs.is_executable)
+        is None
+    )
+    assert (
+        runner.broker_payload_error(
+            platform_user_id=inputs.platform_user_id,
+            module=runner.BROKER_MODULE,
+            scope=runner.BROKER_SCOPE,
+            ttl_seconds=runner.BROKER_TTL_SECONDS,
+        )
+        is None
+    )
