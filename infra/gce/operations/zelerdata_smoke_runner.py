@@ -603,8 +603,8 @@ class AtomicStateStore:
             return {}
         try:
             text = self._path.read_text(encoding="utf-8")
-        except OSError:
-            return {}
+        except OSError as exc:
+            raise ActiveStateError("active state exists but could not be read") from exc
         return parse_active_state(text)
 
     def write(self, state: Mapping[str, Any]) -> None:
