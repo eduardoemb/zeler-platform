@@ -300,19 +300,27 @@ def test_run_rejects_invalid_gate_inputs_before_any_effect(override: dict[str, A
 
 def test_run_accepts_valid_inputs_without_any_effect_in_this_slice() -> None:
     inputs = _inputs()
-    assert runner.required_input_errors(secret_name=inputs.secret_name, base_url=inputs.base_url) == []
-    assert runner.authorization_error(
-        seller_id=inputs.seller_id, formula_scope=inputs.formula_scope
-    ) is None
-    assert runner.documentation_like_reason(
-        inputs.smoke_command, is_executable=inputs.is_executable
-    ) is None
-    assert runner.broker_payload_error(
-        platform_user_id=inputs.platform_user_id,
-        module=runner.BROKER_MODULE,
-        scope=runner.BROKER_SCOPE,
-        ttl_seconds=runner.BROKER_TTL_SECONDS,
-    ) is None
+    assert (
+        runner.required_input_errors(secret_name=inputs.secret_name, base_url=inputs.base_url) == []
+    )
+    assert (
+        runner.authorization_error(seller_id=inputs.seller_id, formula_scope=inputs.formula_scope)
+        is None
+    )
+    assert (
+        runner.documentation_like_reason(inputs.smoke_command, is_executable=inputs.is_executable)
+        is None
+    )
+    assert (
+        runner.broker_payload_error(
+            platform_user_id=inputs.platform_user_id,
+            module=runner.BROKER_MODULE,
+            scope=runner.BROKER_SCOPE,
+            ttl_seconds=runner.BROKER_TTL_SECONDS,
+        )
+        is None
+    )
+
 
 # --- Slice 2A, task 2.1: versions add, stdin-only token, strict version capture ---
 
