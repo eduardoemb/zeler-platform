@@ -1,0 +1,8 @@
+#!/bin/sh
+set -eu
+if [ "$#" -ne 0 ]; then
+  printf '%s\n' 'fixed smoke launcher accepts no arguments' >&2
+  exit 2
+fi
+exec /opt/zeler-platform/zelerdata-smoke/.venv/bin/python \
+  /opt/zeler-platform/zelerdata-smoke/authenticated_smoke.py
