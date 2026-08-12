@@ -34,7 +34,9 @@ orchestration and remaining stages land in later slices.
 
 from __future__ import annotations
 
+import fcntl
 import json
+import os
 import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
