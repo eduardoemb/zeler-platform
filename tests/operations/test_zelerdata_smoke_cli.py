@@ -288,7 +288,7 @@ def test_gcloud_command_rejects_extra_flags_for_access_and_disable_before_subpro
                 "versions",
                 operation,
                 "42",
-                "zeler-app-broker-secret",
+                f"--secret={cli.SMOKE_SECRET_NAME}",
                 "--quiet",
             ],
             stdin="",
