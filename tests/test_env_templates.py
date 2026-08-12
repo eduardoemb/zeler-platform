@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -20,6 +21,7 @@ RETIRED_FULLDOCK_TEMPLATES = (
     "fulldock-api.env.template",
     "fulldock-worker.env.template",
 )
+SMOKE_ENV_VARIABLE_PATTERN = re.compile(r"\bZELERDATA_SMOKE_[A-Z0-9_]+\b")
 
 
 def test_otel_metrics_enabled_in_all_api_templates() -> None:
@@ -36,6 +38,18 @@ def test_worker_health_port_in_all_worker_templates() -> None:
 
 def test_retired_fulldock_env_templates_are_absent() -> None:
     assert [name for name in RETIRED_FULLDOCK_TEMPLATES if (ENV_DIR / name).exists()] == []
+
+
+def test_env_templates_declare_no_zelerdata_smoke_variables() -> None:
+    declared = sorted(
+        {
+            variable
+            for path in ENV_DIR.glob("*.env.template")
+            for variable in SMOKE_ENV_VARIABLE_PATTERN.findall(path.read_text(encoding="utf-8"))
+        }
+    )
+
+    assert declared == []
 
 
 def test_sheets_worker_declares_zelerdata_freshness_flags_and_sanitized_vm_check() -> None:

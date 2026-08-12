@@ -238,18 +238,177 @@ def build_broker_payload(request: BrokerSigningRequest) -> str:
     )
 
 
-def run(inputs: RunnerInputs, seams: Seams) -> int:
-    if required_input_errors(secret_name=inputs.secret_name, base_url=inputs.base_url):
-        return EXIT_REQUIRED_INPUT
-    if authorization_error(seller_id=inputs.seller_id, formula_scope=inputs.formula_scope):
-        return EXIT_AUTHORIZATION_REJECTED
-    if documentation_like_reason(inputs.smoke_command, is_executable=inputs.is_executable):
-        return EXIT_COMMAND_PATH_REJECTED
-    if broker_payload_error(
-        platform_user_id=inputs.platform_user_id,
-        module=BROKER_MODULE,
-        scope=BROKER_SCOPE,
-        ttl_seconds=BROKER_TTL_SECONDS,
-    ):
-        return EXIT_BROKER_CONTRACT_REJECTED
-    return EXIT_SUCCESS
+class VersionIdError(ValueError): ...
+
+
+def version_id_error(version_id: str) -> str | None:
+    """Validate an explicit Secret Manager version ID.
+
+    Only explicit ASCII decimal IDs are valid; the ``latest`` alias, blank
+    values, and any malformed or non-ASCII ID are rejected.
+    """
+    if not version_id or not version_id.strip():
+        return "version_id must be an explicit numeric version ID"
+    if version_id.strip().lower() == "latest":
+        return "version_id must not be the 'latest' alias"
+    if not (version_id.isascii() and version_id.isdecimal()):
+        return f"version_id must be an explicit numeric version ID, got {version_id!r}"
+    return None
+
+
+_ADD_VERSION_OUTPUT_RE = re.compile(
+    r"Created version \[(\d+)\] of the secret \[" + re.escape(SECRET_NAME) + r"\]\.?"
+)
+
+
+def parse_add_version_id(stdout: str) -> str:
+    """Extract the strict explicit version ID from ``versions add`` output.
+
+    The whole output must be exactly the canonical gcloud line for the fixed
+    secret; anything else (``latest``, another secret, trailing text, garbage)
+    raises ``VersionIdError``.
+    """
+    match = _ADD_VERSION_OUTPUT_RE.fullmatch(stdout)
+    if match is None:
+        raise VersionIdError("could not parse an explicit version ID from 'versions add' output")
+    version_id = match.group(1)
+    error = version_id_error(version_id)
+    if error is not None:
+        raise VersionIdError(error)
+    return version_id
+
+
+def add_version_argv() -> list[str]:
+    """Static argv for adding one version; token arrives via stdin (--data-file=-)."""
+    return ["gcloud", "secrets", "versions", "add", SECRET_NAME, "--data-file=-"]
+
+
+def add_version(seams: Seams, token: str) -> tuple[int, str]:
+    """Add exactly one version; the token travels only via stdin and memory.
+
+    Returns ``(exit_code, version_id)``; ``version_id`` is empty when the add
+    is rejected (empty token, nonzero result, malformed/``latest`` output, or
+    a command-seam timeout).
+    """
+    if not token:
+        return EXIT_ADD_VERSION_REJECTED, ""
+    try:
+        returncode, stdout, _stderr = seams.command.run(
+            add_version_argv(), stdin=token, env={}, timeout=GCLOUD_TIMEOUT_SECONDS, shell=False
+        )
+    except TimeoutError:
+        return EXIT_ADD_VERSION_REJECTED, ""
+    if returncode != 0:
+        return EXIT_ADD_VERSION_REJECTED, ""
+    try:
+        version_id = parse_add_version_id(stdout)
+    except VersionIdError:
+        return EXIT_ADD_VERSION_REJECTED, ""
+    return EXIT_SUCCESS, version_id
+
+
+VERSION_OPERATIONS = ("access", "disable", "destroy")
+
+
+def version_operation_argv(operation: str, version_id: str) -> list[str]:
+    """Static argv for one version operation on the fixed secret.
+
+    Only the lifecycle operations ``access``, ``disable``, and ``destroy`` are
+    supported; the secret itself is never created or deleted. The version ID
+    must be the strict explicit ID captured from ``versions add``.
+    """
+    if operation not in VERSION_OPERATIONS:
+        raise ValueError(f"unsupported version operation {operation!r}")
+    error = version_id_error(version_id)
+    if error is not None:
+        raise VersionIdError(error)
+    argv = ["gcloud", "secrets", "versions", operation, version_id, SECRET_NAME]
+    if operation == "destroy":
+        argv.append("--quiet")
+    return argv
+
+
+def version_lifecycle_argv(
+    version_id: str,
+) -> tuple[list[str], list[str], list[str]]:
+    """Bind one captured version ID to access, disable, and destroy argv.
+
+    All three commands target the exact same explicit version ID; ``latest``
+    or any other ID is rejected before any command is built.
+    """
+    error = version_id_error(version_id)
+    if error is not None:
+        raise VersionIdError(error)
+    return (
+        version_operation_argv("access", version_id),
+        version_operation_argv("disable", version_id),
+        version_operation_argv("destroy", version_id),
+    )
+
+
+def hostile_env_key(key: str) -> bool:
+    """True when an inherited environment key must never reach the smoke child.
+
+    Hostile keys are any ``ZELERDATA_SMOKE_*`` variable (smoke inputs must come
+    only from the inline injection below) and any broker/JWT/token/secret key
+    that could carry credentials into the child environment.
+    """
+    upper = key.upper()
+    if upper.startswith("ZELERDATA_SMOKE_"):
+        return True
+    return any(marker in upper for marker in _HOSTILE_ENV_MARKERS)
+
+
+def smoke_child_env(
+    *,
+    baseline: Mapping[str, str],
+    base_url: str,
+    token: str,
+    seller_id: str,
+) -> dict[str, str]:
+    """Build the smoke child environment: scrubbed baseline plus three keys.
+
+    Inherited hostile keys (``ZELERDATA_SMOKE_*`` and broker/JWT/token/secret
+    values) are excluded, then exactly the three inline smoke keys are added
+    with the provided values. The baseline mapping is never mutated.
+    """
+    child = {key: value for key, value in baseline.items() if not hostile_env_key(key)}
+    child["ZELERDATA_SMOKE_BASE_URL"] = base_url
+    child["ZELERDATA_SMOKE_TOKEN"] = token
+    child["ZELERDATA_SMOKE_SELLER"] = seller_id
+    return child
+
+
+def smoke_argv(smoke_command: Path) -> list[str]:
+    """Static argv for the env-only smoke child: command path only, no shell."""
+    return [str(smoke_command)]
+
+
+def invoke_smoke(
+    seams: Seams,
+    *,
+    smoke_command: Path,
+    baseline_env: Mapping[str, str],
+    base_url: str,
+    token: str,
+    seller_id: str,
+) -> tuple[int, str, str]:
+    """Invoke the smoke child exactly once through the process seam.
+
+    The child argv is static (command path only), the child environment is the
+    scrubbed baseline plus exactly the three inline smoke keys, and the bounded
+    timeout is fixed. No token/version/seller value ever appears in argv.
+    Returns the child's ``(returncode, stdout, stderr)``; orchestration and
+    exit mapping land in a later slice.
+    """
+    return seams.process.run_smoke(
+        smoke_argv(smoke_command),
+        env=smoke_child_env(
+            baseline=baseline_env,
+            base_url=base_url,
+            token=token,
+            seller_id=seller_id,
+        ),
+        timeout=SMOKE_TIMEOUT_SECONDS,
+        shell=False,
+    )
