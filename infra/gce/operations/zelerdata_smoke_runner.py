@@ -266,8 +266,8 @@ def version_id_error(version_id: str) -> str | None:
     return None
 
 
-_ADD_VERSION_OUTPUT_RE = re.compile(
-    r"Created version \[(\d+)\] of the secret \[" + re.escape(SECRET_NAME) + r"\]\.?"
+_VERSION_RESOURCE_RE = re.compile(
+    r"projects/[^/]+/secrets/" + re.escape(SECRET_NAME) + r"/versions/(\d+)"
 )
 
 
@@ -278,7 +278,7 @@ def parse_add_version_id(stdout: str) -> str:
     secret; anything else (``latest``, another secret, trailing text, garbage)
     raises ``VersionIdError``.
     """
-    match = _ADD_VERSION_OUTPUT_RE.fullmatch(stdout)
+    match = _VERSION_RESOURCE_RE.fullmatch(stdout.strip())
     if match is None:
         raise VersionIdError("could not parse an explicit version ID from 'versions add' output")
     version_id = match.group(1)
@@ -290,7 +290,15 @@ def parse_add_version_id(stdout: str) -> str:
 
 def add_version_argv() -> list[str]:
     """Static argv for adding one version; token arrives via stdin (--data-file=-)."""
-    return ["gcloud", "secrets", "versions", "add", SECRET_NAME, "--data-file=-"]
+    return [
+        "gcloud",
+        "secrets",
+        "versions",
+        "add",
+        SECRET_NAME,
+        "--data-file=-",
+        "--format=value(name)",
+    ]
 
 
 def add_version(seams: Seams, token: str) -> tuple[int, str]:
@@ -340,6 +348,8 @@ def version_operation_argv(operation: str, version_id: str) -> list[str]:
         version_id,
         f"--secret={SECRET_NAME}",
     ]
+    if operation in {"disable", "destroy"}:
+        argv.append("--format=value(name)")
     if operation == "destroy":
         argv.append("--quiet")
     return argv
@@ -904,12 +914,8 @@ def metacharacter_error(value: str) -> str | None:
 
 
 _CANONICAL_VERSION_OUTPUT = {
-    "disable": re.compile(
-        r"Disabled version \[(\d+)\] of the secret \[" + re.escape(SECRET_NAME) + r"\]\.?"
-    ),
-    "destroy": re.compile(
-        r"Destroyed version \[(\d+)\] of the secret \[" + re.escape(SECRET_NAME) + r"\]\.?"
-    ),
+    "disable": _VERSION_RESOURCE_RE,
+    "destroy": _VERSION_RESOURCE_RE,
 }
 
 

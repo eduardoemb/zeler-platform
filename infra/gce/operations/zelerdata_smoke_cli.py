@@ -205,27 +205,17 @@ class GcloudCommandRunner:
 
 
 def _approved_version_argv(argv: Sequence[str]) -> bool:
-    if len(argv) < 6 or tuple(argv[:4]) != ("gcloud", "secrets", "versions", argv[3]):
+    if len(argv) < 4 or tuple(argv[:3]) != ("gcloud", "secrets", "versions"):
         return False
     operation = argv[3]
     if operation == "add":
-        return list(argv) == [
-            "gcloud",
-            "secrets",
-            "versions",
-            "add",
-            SMOKE_SECRET_NAME,
-            "--data-file=-",
-        ]
-    if operation not in {"access", "disable", "destroy"} or len(argv) not in {6, 7}:
+        return list(argv) == runner.add_version_argv()
+    if operation not in {"access", "disable", "destroy"} or len(argv) < 6:
         return False
-    if argv[4] == "latest" or not argv[4].isascii() or not argv[4].isdecimal():
+    try:
+        return list(argv) == runner.version_operation_argv(operation, argv[4])
+    except (ValueError, runner.VersionIdError):
         return False
-    if argv[5] != f"--secret={SMOKE_SECRET_NAME}":
-        return False
-    if operation in {"access", "disable"}:
-        return len(argv) == 6
-    return argv[6:] == ["--quiet"]
 
 
 class LocalProcessRunner:

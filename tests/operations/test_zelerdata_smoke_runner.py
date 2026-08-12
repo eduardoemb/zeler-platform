@@ -333,8 +333,8 @@ def test_run_accepts_valid_inputs_without_any_effect_in_this_slice() -> None:
 
 # --- Slice 2A, task 2.1: versions add, stdin-only token, strict version capture ---
 
-# Real ``gcloud secrets versions add`` output ends with a period.
-ADD_OUTPUT = "Created version [{version}] of the secret [{secret}]."
+VERSION_RESOURCE = "projects/test-project/secrets/{secret}/versions/{version}"
+ADD_OUTPUT = VERSION_RESOURCE
 
 
 def test_add_version_argv_is_static_with_stdin_data_file() -> None:
@@ -346,6 +346,7 @@ def test_add_version_argv_is_static_with_stdin_data_file() -> None:
         "add",
         runner.SECRET_NAME,
         "--data-file=-",
+        "--format=value(name)",
     ]
     # A fresh list per call so callers cannot mutate a shared constant.
     assert runner.add_version_argv() is not argv
@@ -393,7 +394,7 @@ def test_add_version_captures_explicit_version_id_from_result() -> None:
         ADD_OUTPUT.format(version="42", secret="another-secret"),  # noqa: S106 - fixture, tests only
         "garbage output",
         "",
-        "Created version [42] of the secret [zelerdata-smoke-pilot]\nnote",
+        "projects/test-project/secrets/zelerdata-smoke-pilot/versions/42\nnote",
     ],
 )
 def test_parse_add_version_id_rejects_latest_and_malformed_output(stdout: str) -> None:
@@ -454,6 +455,7 @@ def test_version_operation_argv_targets_exact_captured_id() -> None:
         "disable",
         "42",
         f"--secret={runner.SECRET_NAME}",
+        "--format=value(name)",
     ]
 
 
@@ -466,6 +468,7 @@ def test_destroy_version_operation_argv_is_quiet_and_secret_free() -> None:
         "destroy",
         "42",
         f"--secret={runner.SECRET_NAME}",
+        "--format=value(name)",
         "--quiet",
     ]
     assert "super-secret-token" not in argv
@@ -489,6 +492,7 @@ def test_version_lifecycle_argv_binds_one_captured_id_across_all_operations() ->
         "disable",
         "42",
         f"--secret={runner.SECRET_NAME}",
+        "--format=value(name)",
     ]
     assert destroy == [
         "gcloud",
@@ -497,6 +501,7 @@ def test_version_lifecycle_argv_binds_one_captured_id_across_all_operations() ->
         "destroy",
         "42",
         f"--secret={runner.SECRET_NAME}",
+        "--format=value(name)",
         "--quiet",
     ]
     for operation in (access, disable, destroy):
@@ -974,8 +979,8 @@ def test_state_read_returns_empty_when_file_absent(tmp_path: Path) -> None:
 
 # --- Slice 2D, task 2.6: metacharacters, nonzero, malformed, timeout -> fail closed ---
 
-DISABLE_OUTPUT = "Disabled version [{version}] of the secret [{secret}]."
-DESTROY_OUTPUT = "Destroyed version [{version}] of the secret [{secret}]."
+DISABLE_OUTPUT = VERSION_RESOURCE
+DESTROY_OUTPUT = VERSION_RESOURCE
 BOUND_VERSION = "42"
 
 
