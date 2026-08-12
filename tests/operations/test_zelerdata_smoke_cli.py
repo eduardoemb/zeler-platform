@@ -225,13 +225,21 @@ def test_gcloud_adapter_uses_absolute_binary_and_minimal_environment(
         return subprocess.CompletedProcess(
             argv,
             0,
-            f"Created version [42] of the secret [{cli.SMOKE_SECRET_NAME}].\n",
+            f"projects/test-project/secrets/{cli.SMOKE_SECRET_NAME}/versions/42\n",
             "",
         )
 
     monkeypatch.setattr(subprocess, "run", run)
     result = cli.GcloudCommandRunner().run(
-        ["gcloud", "secrets", "versions", "add", cli.SMOKE_SECRET_NAME, "--data-file=-"],
+        [
+            "gcloud",
+            "secrets",
+            "versions",
+            "add",
+            cli.SMOKE_SECRET_NAME,
+            "--data-file=-",
+            "--format=value(name)",
+        ],
         stdin="one-time-token",
         env={},
         timeout=1,
@@ -242,7 +250,7 @@ def test_gcloud_adapter_uses_absolute_binary_and_minimal_environment(
     assert calls[0]["env"] == cli.GCLOUD_ENV
     assert result == (
         0,
-        f"Created version [42] of the secret [{cli.SMOKE_SECRET_NAME}].\n",
+        f"projects/test-project/secrets/{cli.SMOKE_SECRET_NAME}/versions/42\n",
         "",
     )
 
