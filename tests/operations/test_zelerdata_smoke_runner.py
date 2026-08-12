@@ -730,3 +730,194 @@ def test_invoke_smoke_passes_scrubbed_env_with_exactly_three_smoke_keys() -> Non
     assert "broker-secret" not in env.values()
     # The injected token appears exactly once, as the value of its own key.
     assert list(env.values()).count(SMOKE_TOKEN) == 1
+
+
+# --- Slice 2C, task 2.4: sentinel/token/version/seller absent from argv, files, output ---
+
+
+def test_smoke_child_env_contains_only_baseline_plus_exactly_three_smoke_keys() -> None:
+    process = _RecordingProcessRunner()
+    seams = _seams_with_process(process)
+    runner.invoke_smoke(
+        seams,
+        smoke_command=SMOKE_COMMAND,
+        baseline_env=HOSTILE_BASELINE,
+        base_url=SMOKE_BASE_URL,
+        token=SMOKE_TOKEN,
+        seller_id=runner.ALLOWED_SELLER,
+    )
+    env = process.calls[0]["env"]
+    expected = (
+        set(HOSTILE_BASELINE)
+        - {
+            "ZELERDATA_SMOKE_TOKEN",
+            "ZELERDATA_SMOKE_BASE_URL",
+            "ZELER_APP_BROKER_SECRET",
+            "SHEETS_EXTENSION_TOKEN",
+            "JWT_SECRET",
+            "GCLOUD_ACCESS_TOKEN",
+        }
+    ) | set(runner.SMOKE_ENV_KEYS)
+    assert set(env) == expected
+
+
+def test_argv_builders_never_contain_token_or_seller() -> None:
+    all_argv = [
+        runner.add_version_argv(),
+        *runner.version_lifecycle_argv("42"),
+        runner.smoke_argv(SMOKE_COMMAND),
+    ]
+    for argv in all_argv:
+        assert SMOKE_TOKEN not in argv
+        assert SMOKE_TOKEN not in " ".join(argv)
+        assert runner.ALLOWED_SELLER not in argv
+        assert runner.ALLOWED_SELLER not in " ".join(argv)
+
+
+def test_redact_sensitive_replaces_token_version_and_seller() -> None:
+    message = f"failed: token={SMOKE_TOKEN} seller={runner.ALLOWED_SELLER} version=42"
+    redacted = runner.redact_sensitive(
+        message, token=SMOKE_TOKEN, version_id="42", seller_id=runner.ALLOWED_SELLER
+    )
+    assert SMOKE_TOKEN not in redacted
+    assert runner.ALLOWED_SELLER not in redacted
+    assert "42" not in redacted
+    assert redacted == "failed: token=<redacted> seller=<redacted> version=<redacted>"
+
+
+def test_redact_sensitive_preserves_clean_text_and_empty_values() -> None:
+    message = "clean diagnostic line"
+    assert runner.redact_sensitive(message, token="", version_id="", seller_id="") == message
+    # Values absent from the text leave it unchanged.
+    assert (
+        runner.redact_sensitive(
+            message,
+            token="abc",  # noqa: S106 - fake values, tests only
+            version_id="123",
+            seller_id="987",
+        )
+        == message
+    )
+
+
+def test_redacted_diagnostic_builds_safe_error_lines() -> None:
+    line = runner.redacted_diagnostic(
+        f"secret access error: token={SMOKE_TOKEN} seller={runner.ALLOWED_SELLER} version=42",
+        token=SMOKE_TOKEN,
+        version_id="42",
+        seller_id=runner.ALLOWED_SELLER,
+    )
+    assert SMOKE_TOKEN not in line
+    assert runner.ALLOWED_SELLER not in line
+    assert "42" not in line
+    assert line.startswith("secret access error: token=<redacted>")
+
+
+def test_redacted_diagnostic_raises_when_redaction_cannot_guarantee_safety() -> None:
+    # A sensitive value equal to the placeholder cannot be redacted away; the
+    # diagnostic must fail closed instead of emitting an unsafe line.
+    with pytest.raises(runner.RedactionError):
+        runner.redacted_diagnostic(
+            "value <redacted>",
+            token=runner.REDACTION_PLACEHOLDER,
+            version_id="42",
+            seller_id="1",
+        )
+
+
+def test_state_file_content_never_contains_token_or_seller() -> None:
+    # The active state file holds only phase/timestamp/version_id; even a fake
+    # token or seller value must never reach its serialized content.
+    state = runner.build_active_state(
+        phase="smoke", timestamp="2026-08-11T12:00:00+00:00", version_id="42"
+    )
+    content = runner.encode_active_state(state)
+    assert SMOKE_TOKEN not in content
+    assert runner.ALLOWED_SELLER not in content
+
+
+# --- Slice 2C, task 2.5: non-blocking flock + atomic mode-0600 active state ---
+
+
+def test_lock_acquire_false_when_exclusive_flock_already_held(tmp_path: Path) -> None:
+    path = tmp_path / "zelerdata-smoke.active"
+    first = runner.FlockLock(path)
+    second = runner.FlockLock(path)
+    assert first.acquire() is True
+    # Non-blocking: a second acquire on the same file must fail immediately.
+    assert second.acquire() is False
+    first.release()
+    # After release the lock is reacquirable.
+    assert second.acquire() is True
+    second.release()
+
+
+def test_lock_creates_state_file_with_mode_0600(tmp_path: Path) -> None:
+    path = tmp_path / "zelerdata-smoke.active"
+    lock = runner.FlockLock(path)
+    assert lock.acquire() is True
+    assert path.exists()
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+    lock.release()
+
+
+def test_concurrent_lock_yields_exact_concurrent_rejection() -> None:
+    exit_code, message = runner.lock_and_state_gate(lock_acquired=False, state={})
+    assert exit_code == runner.EXIT_CONCURRENT_RUN_REJECTED
+    assert message == runner.CONCURRENT_RUN_REJECTED
+    assert message == "CONCURRENT_RUN_REJECTED"
+
+
+def test_stale_or_partial_state_rejects_fail_closed() -> None:
+    stale = {
+        "phase": "smoke",
+        "timestamp": "2026-08-11T12:00:00+00:00",
+        "version_id": "42",
+    }
+    exit_code, message = runner.lock_and_state_gate(lock_acquired=True, state=stale)
+    assert exit_code == runner.EXIT_ACTIVE_STATE_REJECTED
+    assert message == runner.ACTIVE_STATE_REJECTED
+
+
+def test_state_file_written_atomically_with_mode_0600(tmp_path: Path) -> None:
+    path = tmp_path / "zelerdata-smoke.active"
+    store = runner.AtomicStateStore(path)
+    store.write({"phase": "smoke", "timestamp": "2026-08-11T12:00:00+00:00", "version_id": "42"})
+    assert path.exists()
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+    assert store.read() == {
+        "phase": "smoke",
+        "timestamp": "2026-08-11T12:00:00+00:00",
+        "version_id": "42",
+    }
+
+
+def test_state_write_rejects_unsafe_keys_and_preserves_nothing(tmp_path: Path) -> None:
+    path = tmp_path / "zelerdata-smoke.active"
+    store = runner.AtomicStateStore(path)
+    with pytest.raises(runner.ActiveStateError):
+        store.write(
+            {
+                "phase": "smoke",
+                "timestamp": "2026-08-11T12:00:00+00:00",
+                "version_id": "42",
+                "token": SMOKE_TOKEN,
+            }
+        )
+    assert not path.exists()
+
+
+def test_state_read_rejects_partial_or_malformed_content(tmp_path: Path) -> None:
+    path = tmp_path / "zelerdata-smoke.active"
+    path.write_text('{"phase": "smoke"}', encoding="utf-8")
+    store = runner.AtomicStateStore(path)
+    with pytest.raises(runner.ActiveStateError):
+        store.read()
+    path.write_text("not json", encoding="utf-8")
+    with pytest.raises(runner.ActiveStateError):
+        store.read()
+
+
+def test_state_read_returns_empty_when_file_absent(tmp_path: Path) -> None:
+    store = runner.AtomicStateStore(tmp_path / "missing.active")
+    assert store.read() == {}
