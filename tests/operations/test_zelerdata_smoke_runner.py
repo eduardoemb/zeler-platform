@@ -320,3 +320,413 @@ def test_run_accepts_valid_inputs_without_any_effect_in_this_slice() -> None:
         )
         is None
     )
+
+
+# --- Slice 2A, task 2.1: versions add, stdin-only token, strict version capture ---
+
+# Real ``gcloud secrets versions add`` output ends with a period.
+ADD_OUTPUT = "Created version [{version}] of the secret [{secret}]."
+
+
+def test_add_version_argv_is_static_with_stdin_data_file() -> None:
+    argv = runner.add_version_argv()
+    assert argv == [
+        "gcloud",
+        "secrets",
+        "versions",
+        "add",
+        runner.SECRET_NAME,
+        "--data-file=-",
+    ]
+    # A fresh list per call so callers cannot mutate a shared constant.
+    assert runner.add_version_argv() is not argv
+
+
+def test_add_version_passes_token_only_via_stdin() -> None:
+    command = _RecordingCommandRunner(
+        stdout=ADD_OUTPUT.format(version="42", secret=runner.SECRET_NAME)
+    )
+    seams = _seams_with_command(command)
+    exit_code, version_id = runner.add_version(
+        seams,
+        token="super-secret-token",  # noqa: S106 - fake token, tests only
+    )
+    assert exit_code == runner.EXIT_SUCCESS
+    assert version_id == "42"
+    assert len(command.calls) == 1
+    call = command.calls[0]
+    assert call["stdin"] == "super-secret-token"
+    assert "super-secret-token" not in call["argv"]
+    assert "super-secret-token" not in call["env"]
+    assert call["argv"] == runner.add_version_argv()
+    assert call["timeout"] == runner.GCLOUD_TIMEOUT_SECONDS
+
+
+def test_add_version_captures_explicit_version_id_from_result() -> None:
+    command = _RecordingCommandRunner(
+        stdout=ADD_OUTPUT.format(version="7", secret=runner.SECRET_NAME)
+    )
+    seams = _seams_with_command(command)
+    exit_code, version_id = runner.add_version(
+        seams,
+        token="t",  # noqa: S106 - fake token, tests only
+    )
+    assert exit_code == runner.EXIT_SUCCESS
+    assert version_id == "7"
+
+
+@pytest.mark.parametrize(
+    "stdout",
+    [
+        ADD_OUTPUT.format(version="latest", secret=runner.SECRET_NAME),
+        ADD_OUTPUT.format(version="", secret=runner.SECRET_NAME),
+        ADD_OUTPUT.format(version="4.2", secret=runner.SECRET_NAME),
+        ADD_OUTPUT.format(version="42", secret="another-secret"),  # noqa: S106 - fixture, tests only
+        "garbage output",
+        "",
+        "Created version [42] of the secret [zelerdata-smoke-pilot]\nnote",
+    ],
+)
+def test_parse_add_version_id_rejects_latest_and_malformed_output(stdout: str) -> None:
+    with pytest.raises(runner.VersionIdError):
+        runner.parse_add_version_id(stdout)
+
+
+@pytest.mark.parametrize(
+    "returncode,stdout",
+    [
+        (1, ADD_OUTPUT.format(version="42", secret=runner.SECRET_NAME)),
+        (0, ADD_OUTPUT.format(version="latest", secret=runner.SECRET_NAME)),
+        (0, "error: could not parse"),
+    ],
+)
+def test_add_version_rejects_failed_or_malformed_add(returncode: int, stdout: str) -> None:
+    command = _RecordingCommandRunner(returncode=returncode, stdout=stdout)
+    seams = _seams_with_command(command)
+    exit_code, version_id = runner.add_version(
+        seams,
+        token="t",  # noqa: S106 - fake token, tests only
+    )
+    assert exit_code == runner.EXIT_ADD_VERSION_REJECTED
+    assert version_id == ""
+
+
+def test_add_version_rejects_empty_token_without_command_call() -> None:
+    command = _RecordingCommandRunner()
+    seams = _seams_with_command(command)
+    exit_code, version_id = runner.add_version(seams, token="")
+    assert exit_code == runner.EXIT_ADD_VERSION_REJECTED
+    assert version_id == ""
+    assert command.calls == []
+
+
+@pytest.mark.parametrize(
+    "version_id",
+    ["latest", "Latest", "LATEST", "", "   ", "4.2", "-1", "42abc", "42 43", "٤٢", "²"],
+)
+def test_version_id_error_rejects_non_explicit_ids(version_id: str) -> None:
+    assert runner.version_id_error(version_id) is not None
+
+
+def test_version_id_error_accepts_explicit_decimal_ids() -> None:
+    assert runner.version_id_error("0") is None
+    assert runner.version_id_error("42") is None
+
+
+# --- Slice 2A, task 2.2: access/disable/destroy target exactly the captured ID ---
+
+
+def test_version_operation_argv_targets_exact_captured_id() -> None:
+    argv = runner.version_operation_argv("disable", "42")
+    assert argv == ["gcloud", "secrets", "versions", "disable", "42", runner.SECRET_NAME]
+
+
+def test_destroy_version_operation_argv_is_quiet_and_secret_free() -> None:
+    argv = runner.version_operation_argv("destroy", "42")
+    assert argv == [
+        "gcloud",
+        "secrets",
+        "versions",
+        "destroy",
+        "42",
+        runner.SECRET_NAME,
+        "--quiet",
+    ]
+    assert "super-secret-token" not in argv
+    assert runner.ALLOWED_SELLER not in argv
+
+
+def test_version_lifecycle_argv_binds_one_captured_id_across_all_operations() -> None:
+    access, disable, destroy = runner.version_lifecycle_argv("42")
+    assert access == ["gcloud", "secrets", "versions", "access", "42", runner.SECRET_NAME]
+    assert disable == ["gcloud", "secrets", "versions", "disable", "42", runner.SECRET_NAME]
+    assert destroy == [
+        "gcloud",
+        "secrets",
+        "versions",
+        "destroy",
+        "42",
+        runner.SECRET_NAME,
+        "--quiet",
+    ]
+    for operation in (access, disable, destroy):
+        assert operation[4] == "42"
+        assert "latest" not in operation
+    # Version-level operations only; the fixed secret is never created or deleted.
+    flat = " ".join(" ".join(op) for op in (access, disable, destroy))
+    assert "create" not in flat
+    assert "delete" not in flat
+
+
+@pytest.mark.parametrize("version_id", ["latest", "", "   ", "4.2", "-1", "42abc", "٤٢", "²"])
+def test_version_lifecycle_argv_rejects_latest_and_malformed_ids(version_id: str) -> None:
+    with pytest.raises(runner.VersionIdError):
+        runner.version_lifecycle_argv(version_id)
+
+
+@pytest.mark.parametrize("operation", ["create", "delete", "recreate", "enable"])
+def test_version_operation_argv_rejects_non_lifecycle_operations(operation: str) -> None:
+    with pytest.raises(ValueError):
+        runner.version_operation_argv(operation, "42")
+
+
+def test_captured_id_flows_into_all_lifecycle_operations() -> None:
+    for version_number in ("42", "99"):
+        command = _RecordingCommandRunner(
+            stdout=ADD_OUTPUT.format(version=version_number, secret=runner.SECRET_NAME)
+        )
+        seams = _seams_with_command(command)
+        exit_code, captured = runner.add_version(
+            seams,
+            token="t",  # noqa: S106 - fake token, tests only
+        )
+        assert exit_code == runner.EXIT_SUCCESS
+        assert captured == version_number
+        for operation in runner.version_lifecycle_argv(captured):
+            assert operation[4] == version_number
+
+
+# --- Slice 2B, task 2.3: exactly one isolated smoke; child env = scrubbed baseline + 3 keys ---
+
+# A preseeded host environment mixing safe keys with hostile smoke/broker/JWT/token values.
+HOSTILE_BASELINE = {
+    "PATH": "/usr/local/bin:/usr/bin:/bin",
+    "LANG": "en_US.UTF-8",
+    "HOME": "/root",
+    "ZELERDATA_SMOKE_TOKEN": "inherited-hostile-token",
+    "ZELERDATA_SMOKE_BASE_URL": "https://evil.example",
+    "ZELER_APP_BROKER_SECRET": "broker-secret",
+    "SHEETS_EXTENSION_TOKEN": "extension-token",
+    "JWT_SECRET": "jwt-secret",
+    "GCLOUD_ACCESS_TOKEN": "gcloud-token",
+}
+
+SMOKE_TOKEN = "smoke-token-abc"  # noqa: S105 - fake token value, tests only
+SMOKE_BASE_URL = "https://sheets.zeler.ai"
+SMOKE_COMMAND = Path("/usr/local/bin/authenticated_smoke")
+
+
+def test_smoke_env_keys_are_exactly_the_three_required_keys() -> None:
+    assert runner.SMOKE_ENV_KEYS == (
+        "ZELERDATA_SMOKE_BASE_URL",
+        "ZELERDATA_SMOKE_TOKEN",
+        "ZELERDATA_SMOKE_SELLER",
+    )
+
+
+@pytest.mark.parametrize(
+    "key",
+    [
+        "ZELERDATA_SMOKE_TOKEN",
+        "ZELERDATA_SMOKE_BASE_URL",
+        "ZELERDATA_SMOKE_SELLER",
+        "zelerdata_smoke_token",
+        "ZELER_APP_BROKER_SECRET",
+        "JWT_SECRET",
+        "SHEETS_EXTENSION_TOKEN",
+        "GCLOUD_ACCESS_TOKEN",
+        "BROKER_JWT",
+    ],
+)
+def test_hostile_env_key_detects_smoke_broker_jwt_and_token_keys(key: str) -> None:
+    assert runner.hostile_env_key(key) is True
+
+
+@pytest.mark.parametrize("key", ["PATH", "LANG", "HOME", "PYTHONPATH", "TZ", "ZELERDATA_SMOKE"])
+def test_hostile_env_key_allows_safe_baseline_keys(key: str) -> None:
+    assert runner.hostile_env_key(key) is False
+
+
+def test_smoke_child_env_scrubs_hostile_keys_and_injects_exactly_three() -> None:
+    child = runner.smoke_child_env(
+        baseline=HOSTILE_BASELINE,
+        base_url=SMOKE_BASE_URL,
+        token=SMOKE_TOKEN,
+        seller_id=runner.ALLOWED_SELLER,
+    )
+    assert child["PATH"] == "/usr/local/bin:/usr/bin:/bin"
+    assert child["LANG"] == "en_US.UTF-8"
+    assert child["HOME"] == "/root"
+    assert child["ZELERDATA_SMOKE_BASE_URL"] == SMOKE_BASE_URL
+    assert child["ZELERDATA_SMOKE_TOKEN"] == SMOKE_TOKEN
+    assert child["ZELERDATA_SMOKE_SELLER"] == runner.ALLOWED_SELLER
+    for hostile in (
+        "ZELER_APP_BROKER_SECRET",
+        "SHEETS_EXTENSION_TOKEN",
+        "JWT_SECRET",
+        "GCLOUD_ACCESS_TOKEN",
+        "inherited-hostile-token",
+        "https://evil.example",
+    ):
+        assert hostile not in child
+    smoke_keys = sorted(k for k in child if k.startswith("ZELERDATA_SMOKE_"))
+    assert smoke_keys == sorted(runner.SMOKE_ENV_KEYS)
+
+
+def test_smoke_child_env_injected_values_override_inherited_hostile_values() -> None:
+    baseline = {"ZELERDATA_SMOKE_TOKEN": "inherited-hostile", "PATH": "/bin"}
+    child = runner.smoke_child_env(
+        baseline=baseline,
+        base_url=SMOKE_BASE_URL,
+        token=SMOKE_TOKEN,
+        seller_id=runner.ALLOWED_SELLER,
+    )
+    assert child["ZELERDATA_SMOKE_TOKEN"] == SMOKE_TOKEN
+    assert child["PATH"] == "/bin"
+    assert "inherited-hostile" not in child.values()
+
+
+def test_smoke_child_env_is_a_fresh_dict_and_does_not_mutate_baseline() -> None:
+    baseline = dict(HOSTILE_BASELINE)
+    child = runner.smoke_child_env(
+        baseline=baseline,
+        base_url=SMOKE_BASE_URL,
+        token=SMOKE_TOKEN,
+        seller_id=runner.ALLOWED_SELLER,
+    )
+    assert child is not baseline
+    # The baseline input is untouched: hostile keys stay there, none are added.
+    assert baseline == HOSTILE_BASELINE
+
+
+def test_smoke_argv_is_static_path_only_without_credentials() -> None:
+    argv = runner.smoke_argv(SMOKE_COMMAND)
+    assert argv == ["/usr/local/bin/authenticated_smoke"]
+    assert runner.smoke_argv(SMOKE_COMMAND) is not argv
+    for secretish in (SMOKE_TOKEN, runner.ALLOWED_SELLER, "42", "latest"):
+        assert secretish not in argv
+
+
+class _RecordingProcessRunner:
+    """Fake ProcessSeam implementing the extended run-smoke contract."""
+
+    def __init__(
+        self,
+        returncode: int = 0,
+        stdout: str = "",
+        stderr: str = "",
+        *,
+        raise_timeout: bool = False,
+        survival: str = "term",
+    ) -> None:
+        self.returncode = returncode
+        self.stdout = stdout
+        self.stderr = stderr
+        self.raise_timeout = raise_timeout
+        self.active_pid: int | None = None
+        # Process-group survival semantics for terminate_descendant tests:
+        # "term" dies on TERM, "kill" survives TERM and dies on KILL, and
+        # "never" survives both signals.
+        self.survival = survival
+        self.killed = False
+        self.calls: list[dict[str, Any]] = []
+
+    def run_smoke(
+        self,
+        argv: list[str],
+        *,
+        env: Mapping[str, str],
+        timeout: float,
+        shell: bool = False,
+    ) -> tuple[int, str, str]:
+        self.calls.append({"argv": argv, "env": env, "timeout": timeout})
+        if self.raise_timeout:
+            raise TimeoutError("smoke timed out")
+        return self.returncode, self.stdout, self.stderr
+
+    def terminate_tree(self, pid: int) -> None:
+        self.calls.append({"terminate_tree": pid})
+
+    def kill_tree(self, pid: int) -> None:
+        self.calls.append({"kill_tree": pid})
+        self.killed = True
+
+    def tree_alive(self, pid: int) -> bool:
+        self.calls.append({"tree_alive": pid})
+        if self.survival == "never":
+            return True
+        if self.survival == "kill":
+            return not self.killed
+        return False
+
+
+def _seams_with_process(process: _RecordingProcessRunner) -> runner.Seams:
+    fakes: list[Any] = [_FakeSeam() for _ in range(5)]
+    return runner.Seams(
+        clock=fakes[0],
+        http=fakes[1],
+        command=fakes[2],
+        lock=fakes[3],
+        state=fakes[4],
+        process=process,
+    )
+
+
+def test_invoke_smoke_calls_process_seam_exactly_once_and_returns_result() -> None:
+    process = _RecordingProcessRunner(returncode=3, stdout="out", stderr="err")
+    seams = _seams_with_process(process)
+    result = runner.invoke_smoke(
+        seams,
+        smoke_command=SMOKE_COMMAND,
+        baseline_env=HOSTILE_BASELINE,
+        base_url=SMOKE_BASE_URL,
+        token=SMOKE_TOKEN,
+        seller_id=runner.ALLOWED_SELLER,
+    )
+    assert result == (3, "out", "err")
+    assert len(process.calls) == 1
+    call = process.calls[0]
+    assert call["argv"] == ["/usr/local/bin/authenticated_smoke"]
+    assert call["timeout"] == runner.SMOKE_TIMEOUT_SECONDS
+    assert "terminate_tree" not in call
+
+
+def test_invoke_smoke_passes_scrubbed_env_with_exactly_three_smoke_keys() -> None:
+    process = _RecordingProcessRunner()
+    seams = _seams_with_process(process)
+    runner.invoke_smoke(
+        seams,
+        smoke_command=SMOKE_COMMAND,
+        baseline_env=HOSTILE_BASELINE,
+        base_url=SMOKE_BASE_URL,
+        token=SMOKE_TOKEN,
+        seller_id=runner.ALLOWED_SELLER,
+    )
+    env = process.calls[0]["env"]
+    assert env["ZELERDATA_SMOKE_BASE_URL"] == SMOKE_BASE_URL
+    assert env["ZELERDATA_SMOKE_TOKEN"] == SMOKE_TOKEN
+    assert env["ZELERDATA_SMOKE_SELLER"] == runner.ALLOWED_SELLER
+    assert env["PATH"] == "/usr/local/bin:/usr/bin:/bin"
+    smoke_keys = sorted(k for k in env if k.startswith("ZELERDATA_SMOKE_"))
+    assert smoke_keys == sorted(runner.SMOKE_ENV_KEYS)
+    for hostile in (
+        "ZELER_APP_BROKER_SECRET",
+        "JWT_SECRET",
+        "SHEETS_EXTENSION_TOKEN",
+        "GCLOUD_ACCESS_TOKEN",
+    ):
+        assert hostile not in env
+    assert "inherited-hostile-token" not in env.values()
+    assert "broker-secret" not in env.values()
+    # The injected token appears exactly once, as the value of its own key.
+    assert list(env.values()).count(SMOKE_TOKEN) == 1

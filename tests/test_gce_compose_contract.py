@@ -27,6 +27,7 @@ STARTUP_SCRIPT = INFRA_GCE / "platform-vm-startup.sh"
 DOCKER_MAINTENANCE_SCRIPT = INFRA_GCE / "docker-maintenance.sh"
 DOCKER_DEPLOY_PREFLIGHT_SCRIPT = INFRA_GCE / "docker-deploy-preflight.sh"
 DEVOLUCIONES_TOPOLOGY_WRAPPER = INFRA_GCE / "zelerdata-devoluciones-topology.sh"
+SMOKE_ENV_VARIABLE_PATTERN = re.compile(r"\bZELERDATA_SMOKE_[A-Z0-9_]+\b")
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -227,6 +228,12 @@ class TestComposeServices:
         assert healthcheck["interval"] == "10s"
         assert healthcheck["timeout"] == "3s"
         assert healthcheck["retries"] == 6
+
+    @pytest.mark.parametrize("path", (SECRETS_SCRIPT, COMPOSE_FILE))
+    def test_materializer_and_compose_boundary_has_no_smoke_variables(self, path: Path) -> None:
+        text = path.read_text(encoding="utf-8")
+
+        assert sorted(set(SMOKE_ENV_VARIABLE_PATTERN.findall(text))) == []
 
 
 # ===========================================================================
