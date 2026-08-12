@@ -36,9 +36,11 @@ from __future__ import annotations
 
 import json
 import re
+import signal  # B1 interrupt handling
+import time  # B1 process polling
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta  # B1 token expiry
 from pathlib import Path
 from typing import Any, Protocol
 

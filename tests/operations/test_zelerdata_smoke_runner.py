@@ -46,13 +46,16 @@ handlers, no ``run`` wiring; the active state is never removed (2.10).
 
 from __future__ import annotations
 
+import contextlib  # B1 process-group cleanup
 import dataclasses
 import json
 import os
+import signal  # B1 signal tests
 import stat
 import subprocess
 import sys
-from collections.abc import Mapping
+import time  # B1 process polling
+from collections.abc import Callable, Mapping  # B1 seam typing
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
