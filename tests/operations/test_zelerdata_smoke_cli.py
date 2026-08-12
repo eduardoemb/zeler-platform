@@ -200,7 +200,7 @@ def test_gcloud_command_uses_static_project_and_secret_stays_out_of_argv_env(
     assert command.read_broker_secret() == "broker-secret"
     call = calls[0]
     assert call["argv"] == [
-        "gcloud",
+        str(cli.GCLOUD_COMMAND),
         "secrets",
         "versions",
         "access",
@@ -210,9 +210,41 @@ def test_gcloud_command_uses_static_project_and_secret_stays_out_of_argv_env(
     ]
     assert call["shell"] is False
     assert call["input"] == ""
-    assert call["env"] == {}
+    assert call["env"] == cli.GCLOUD_ENV
     assert "broker-secret" not in call["argv"]
     assert "broker-secret" not in call["env"]
+
+
+def test_gcloud_adapter_uses_absolute_binary_and_minimal_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[dict[str, Any]] = []
+
+    def run(argv: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        calls.append({"argv": argv, **kwargs})
+        return subprocess.CompletedProcess(
+            argv,
+            0,
+            f"Created version [42] of the secret [{cli.SMOKE_SECRET_NAME}].\n",
+            "",
+        )
+
+    monkeypatch.setattr(subprocess, "run", run)
+    result = cli.GcloudCommandRunner().run(
+        ["gcloud", "secrets", "versions", "add", cli.SMOKE_SECRET_NAME, "--data-file=-"],
+        stdin="one-time-token",
+        env={},
+        timeout=1,
+        shell=False,
+    )
+
+    assert calls[0]["argv"][0] == str(cli.GCLOUD_COMMAND)
+    assert calls[0]["env"] == cli.GCLOUD_ENV
+    assert result == (
+        0,
+        f"Created version [42] of the secret [{cli.SMOKE_SECRET_NAME}].\n",
+        "",
+    )
 
 
 @pytest.mark.parametrize("operation", ["create", "delete"])

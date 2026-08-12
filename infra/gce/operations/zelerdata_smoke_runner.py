@@ -78,8 +78,12 @@ EXIT_PROCESS_BOUNDARY_REJECTED = 12
 # Exact rejection message mandated by the concurrency lock spec scenario.
 CONCURRENT_RUN_REJECTED = "CONCURRENT_RUN_REJECTED"
 ACTIVE_STATE_REJECTED = "ACTIVE_STATE_REJECTED"
-# Fixed host path for the non-blocking flock + atomic mode-0600 active state.
-ACTIVE_STATE_PATH = Path("/var/run/zelerdata-smoke.active")
+# Fixed host paths in a dedicated runtime directory.  The lock must not share
+# the active-state file: acquiring flock materializes the lock inode, while an
+# absent active-state file is the no-recovery-state signal.
+RUNTIME_DIR = Path("/run/zelerdata-smoke")
+LOCK_PATH = RUNTIME_DIR / "runner.lock"
+ACTIVE_STATE_PATH = RUNTIME_DIR / "active.json"
 STATE_KEYS = ("phase", "timestamp", "version_id")
 REDACTION_PLACEHOLDER = "<redacted>"
 
@@ -233,10 +237,11 @@ def build_broker_payload(request: BrokerSigningRequest) -> str:
     return json.dumps(
         {
             "platform_user_id": request.platform_user_id,
-            "module": request.module,
-            "scope": request.scope,
-            "ttl_seconds": request.ttl_seconds,
-            "iat": int(request.issued_at.timestamp()),
+            "scopes": [request.scope],
+            "seller_id": int(ALLOWED_SELLER),
+            "target_module_id": request.module,
+            "token_kind": "module_admin",
+            "ttl_s": request.ttl_seconds,
         },
         sort_keys=True,
         separators=(",", ":"),

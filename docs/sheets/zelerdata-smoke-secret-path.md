@@ -21,7 +21,9 @@ Runbook for one authenticated ZelerData smoke run through the pre-existing Secre
 | Broker module / scope | `sheets` / `admin:sheets` |
 | Broker JWT TTL | ≤ 300 seconds |
 | Extension token TTL | ≤ 3600 seconds |
-| Lock + state path | `/var/run/zelerdata-smoke.active`, atomic mode-0600, guarded by a non-blocking `flock` |
+| Runtime directory | `/run/zelerdata-smoke`, provisioned `root:zelerdata-b1` with mode `0770` |
+| Lock path | `/run/zelerdata-smoke/runner.lock`, mode 0600, guarded by a non-blocking `flock` |
+| State path | `/run/zelerdata-smoke/active.json`, atomic mode 0600 |
 | Smoke env keys | `ZELERDATA_SMOKE_BASE_URL`, `ZELERDATA_SMOKE_TOKEN`, `ZELERDATA_SMOKE_SELLER` |
 | Smoke CLI | Existing env-only `authenticated_smoke.py`; never modified |
 
@@ -76,7 +78,9 @@ The smoke CLI consumes exactly three environment variables:
 ## Lock, state, and recovery contract
 
 - Before adding a version, the runner acquires a non-blocking `flock`; a second concurrent invocation exits non-zero with `CONCURRENT_RUN_REJECTED`.
-- Active state is written atomically with mode 0600 to `/var/run/zelerdata-smoke.active`. It contains only the phase, a timestamp, and the captured version ID.
+- Before a run, an administrator provisions `/run/zelerdata-smoke` as `root:zelerdata-b1` with mode `0770`. The operational user receives access only through the dedicated group.
+- The lock and active state use distinct files. Acquiring the lock must not create or modify active state.
+- Active state is written atomically with mode 0600 to `/run/zelerdata-smoke/active.json`. It contains only the phase, a timestamp, and the captured version ID.
 - The state file is removed only after both destroy and revoke succeed.
 - Recovery fails closed while active state exists: an interrupted run leaves the state behind, and the runner never claims success on partial cleanup.
 
@@ -95,7 +99,7 @@ TTL contract: the broker JWT is freshly minted with TTL ≤ 300 seconds; the ext
 
 When a run is interrupted beyond automatic cleanup (for example, VM loss or SIGKILL):
 
-1. Read the captured version ID from the remaining active state.
+1. Read the captured version ID from the remaining `/run/zelerdata-smoke/active.json` state.
 2. Recover evidence from sanitized Cloud Audit Logs for the version operations.
 3. List and revoke any matching extension-token metadata through the canonical Sheets API.
 
