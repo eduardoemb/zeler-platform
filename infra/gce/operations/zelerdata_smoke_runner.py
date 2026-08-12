@@ -75,6 +75,16 @@ EXIT_ACTIVE_STATE_REJECTED = 8
 EXIT_VERSION_OPERATION_REJECTED = 10
 EXIT_SMOKE_FAILED = 11
 EXIT_PROCESS_BOUNDARY_REJECTED = 12
+SMOKE_STAGE = "zelerdata_smoke"
+SMOKE_STATUS_BY_EXIT = {
+    2: "config_missing",
+    3: "inventory_mismatch",
+    4: "auth_failed",
+    5: "data_unavailable",
+    6: "formula_failed",
+    7: "transport_failed",
+    8: "redaction_failed",
+}
 # Exact rejection message mandated by the concurrency lock spec scenario.
 CONCURRENT_RUN_REJECTED = "CONCURRENT_RUN_REJECTED"
 ACTIVE_STATE_REJECTED = "ACTIVE_STATE_REJECTED"
@@ -989,19 +999,43 @@ def version_operation(
 def smoke_result(
     *,
     returncode: int,
+    stdout: str,
     stderr: str,
     token: str,
     version_id: str,
     seller_id: str,
 ) -> tuple[int, str]:
-    """Fail closed on a nonzero smoke exit with a redacted stderr diagnostic."""
+    """Fail closed while retaining only a contract-bound safe status class."""
     if returncode == 0:
         return EXIT_SUCCESS, ""
+    status_class = smoke_status_class(returncode=returncode, stdout=stdout)
+    bounded_diagnostic = f"status_class={status_class}" if status_class is not None else stderr
     return _failure(
         EXIT_SMOKE_FAILED,
-        f"smoke exited with code {returncode}: {stderr}",
+        f"smoke exited with code {returncode}: {bounded_diagnostic}",
         (token, version_id, seller_id),
     )
+
+
+def smoke_status_class(*, returncode: int, stdout: str) -> str | None:
+    """Extract only a status class bound by the smoke exit contract.
+
+    The child payload must have the exact public evidence shape emitted by the
+    smoke CLI. Counters and all other body data are discarded. The status class
+    is accepted only when it matches the child's exit code.
+    """
+    expected = SMOKE_STATUS_BY_EXIT.get(returncode)
+    if expected is None:
+        return None
+    try:
+        evidence = json.loads(stdout)
+    except (json.JSONDecodeError, TypeError):
+        return None
+    if not isinstance(evidence, dict) or set(evidence) != {"stage", "status_class", "counters"}:
+        return None
+    if evidence.get("stage") != SMOKE_STAGE or not isinstance(evidence.get("counters"), dict):
+        return None
+    return expected if evidence.get("status_class") == expected else None
 
 
 def invoke_smoke_checked(
@@ -1029,7 +1063,7 @@ def invoke_smoke_checked(
                 EXIT_PROCESS_BOUNDARY_REJECTED, f"smoke {label} rejected: {error}", sensitive
             )
     try:
-        returncode, _stdout, stderr = invoke_smoke(
+        returncode, stdout, stderr = invoke_smoke(
             seams,
             smoke_command=smoke_command,
             baseline_env=baseline_env,
@@ -1041,6 +1075,7 @@ def invoke_smoke_checked(
         return _failure(EXIT_SMOKE_FAILED, "smoke timed out", sensitive)
     return smoke_result(
         returncode=returncode,
+        stdout=stdout,
         stderr=stderr,
         token=token,
         version_id=version_id,
