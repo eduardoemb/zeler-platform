@@ -34,7 +34,9 @@ orchestration and remaining stages land in later slices.
 
 from __future__ import annotations
 
+import fcntl
 import json
+import os
 import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -431,3 +433,187 @@ def invoke_smoke(
         timeout=SMOKE_TIMEOUT_SECONDS,
         shell=False,
     )
+
+
+# --- Slice 2C, task 2.4: redaction-safe diagnostics ---
+
+
+class RedactionError(ValueError): ...
+
+
+def redact_sensitive(text: str, *, token: str, version_id: str, seller_id: str) -> str:
+    """Replace every occurrence of token/version/seller with a placeholder.
+
+    Sensitive values are replaced longest-first so a shorter value cannot
+    partially consume a longer one (for example a numeric version ID inside a
+    token). Empty values are ignored.
+    """
+    redacted = text
+    for value in sorted((token, version_id, seller_id), key=len, reverse=True):
+        if value:
+            redacted = redacted.replace(value, REDACTION_PLACEHOLDER)
+    return redacted
+
+
+def redacted_diagnostic(message: str, *, token: str, version_id: str, seller_id: str) -> str:
+    """Build a diagnostic line that is guaranteed free of sensitive values.
+
+    Raises ``RedactionError`` when a sensitive value would still survive in the
+    output (for example when a value equals the placeholder itself), so a
+    dangerous diagnostic can never be emitted.
+    """
+    redacted = redact_sensitive(message, token=token, version_id=version_id, seller_id=seller_id)
+    survivors = [value for value in (token, version_id, seller_id) if value and value in redacted]
+    if survivors:
+        raise RedactionError(
+            "redaction could not guarantee a safe diagnostic for: "
+            + ", ".join(repr(value) for value in survivors)
+        )
+    return redacted
+
+
+# --- Slice 2C, task 2.5: non-blocking flock + atomic mode-0600 active state ---
+
+
+class ActiveStateError(ValueError): ...
+
+
+def active_state_error(state: Mapping[str, Any]) -> str | None:
+    """Validate active-state content: exactly phase/timestamp/version_id.
+
+    Partial state (missing keys), unsafe state (unexpected keys such as a
+    token or seller), blank values, and non-explicit version IDs are rejected
+    fail-closed.
+    """
+    errors: list[str] = []
+    if not isinstance(state, Mapping):
+        return "active state must be a JSON object"
+    if set(state) != set(STATE_KEYS):
+        unexpected = sorted(set(state) - set(STATE_KEYS))
+        missing = sorted(set(STATE_KEYS) - set(state))
+        if missing:
+            errors.append("missing active state keys: " + ", ".join(missing))
+        if unexpected:
+            errors.append("unexpected active state keys: " + ", ".join(unexpected))
+    for key in STATE_KEYS:
+        value = state.get(key)
+        if not isinstance(value, str) or not value.strip():
+            errors.append(f"active state key {key!r} must be a non-empty string")
+    version_id = state.get("version_id")
+    if isinstance(version_id, str) and version_id.strip():
+        version_error = version_id_error(version_id)
+        if version_error is not None:
+            errors.append(version_error)
+    return "; ".join(errors) if errors else None
+
+
+def build_active_state(*, phase: str, timestamp: str, version_id: str) -> dict[str, str]:
+    """Build the only allowed active-state payload: phase, timestamp, version_id."""
+    state = {"phase": phase, "timestamp": timestamp, "version_id": version_id}
+    error = active_state_error(state)
+    if error is not None:
+        raise ActiveStateError(error)
+    return state
+
+
+def encode_active_state(state: Mapping[str, Any]) -> str:
+    """Serialize active state as compact deterministic JSON (validated)."""
+    error = active_state_error(state)
+    if error is not None:
+        raise ActiveStateError(error)
+    return json.dumps(state, sort_keys=True, separators=(",", ":"))
+
+
+def parse_active_state(text: str) -> dict[str, Any]:
+    """Strictly parse active-state content; any deviation fails closed."""
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise ActiveStateError("active state is not valid JSON") from exc
+    if not isinstance(parsed, dict):
+        raise ActiveStateError("active state must be a JSON object")
+    error = active_state_error(parsed)
+    if error is not None:
+        raise ActiveStateError(error)
+    return parsed
+
+
+def lock_and_state_gate(*, lock_acquired: bool, state: Mapping[str, Any]) -> tuple[int, str]:
+    """Fail-closed gate before any effect: concurrent lock or leftover state.
+
+    Returns ``(exit_code, message)``; a successful gate returns
+    ``(EXIT_SUCCESS, "")``. A second concurrent invocation yields the exact
+    ``CONCURRENT_RUN_REJECTED`` result; any active state (stale/partial/unsafe
+    leftovers) yields ``ACTIVE_STATE_REJECTED``.
+    """
+    if not lock_acquired:
+        return EXIT_CONCURRENT_RUN_REJECTED, CONCURRENT_RUN_REJECTED
+    if state:
+        return EXIT_ACTIVE_STATE_REJECTED, ACTIVE_STATE_REJECTED
+    return EXIT_SUCCESS, ""
+
+
+class FlockLock:
+    """Non-blocking exclusive ``flock`` adapter over the active-state file."""
+
+    def __init__(self, path: Path) -> None:
+        self._path = path
+        self._fd: int | None = None
+
+    def acquire(self) -> bool:
+        if self._fd is not None:
+            return True
+        try:
+            fd = os.open(self._path, os.O_RDWR | os.O_CREAT, 0o600)
+        except OSError:
+            return False
+        try:
+            os.fchmod(fd, 0o600)  # noqa: S103 - explicit mode-0600 contract.
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            os.close(fd)
+            return False
+        self._fd = fd
+        return True
+
+    def release(self) -> None:
+        if self._fd is None:
+            return
+        try:
+            fcntl.flock(self._fd, fcntl.LOCK_UN)
+        finally:
+            os.close(self._fd)
+            self._fd = None
+
+
+class AtomicStateStore:
+    """Atomic mode-0600 JSON state file at a fixed host path."""
+
+    def __init__(self, path: Path) -> None:
+        self._path = path
+
+    def read(self) -> Mapping[str, Any]:
+        if not self._path.exists():
+            return {}
+        try:
+            text = self._path.read_text(encoding="utf-8")
+        except OSError:
+            return {}
+        return parse_active_state(text)
+
+    def write(self, state: Mapping[str, Any]) -> None:
+        error = active_state_error(state)
+        if error is not None:
+            raise ActiveStateError(error)
+        text = encode_active_state(state) + "\n"
+        temp = self._path.with_name(self._path.name + ".tmp")
+        fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            os.fchmod(handle.fileno(), 0o600)  # noqa: S103 - explicit mode-0600 contract.
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp, self._path)
+
+    def remove(self) -> None:
+        self._path.unlink(missing_ok=True)
