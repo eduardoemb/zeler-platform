@@ -1088,6 +1088,47 @@ def test_invoke_smoke_checked_nonzero_fails_closed_with_redacted_stderr() -> Non
     assert diagnostic.startswith("smoke exited with code 3:")
 
 
+def test_invoke_smoke_checked_preserves_only_bound_sanitized_status_class() -> None:
+    process = _RecordingProcessRunner(
+        returncode=5,
+        stdout=json.dumps(
+            {
+                "stage": "zelerdata_smoke",
+                "status_class": "data_unavailable",
+                "counters": {"devoluciones": 1},
+            }
+        ),
+        stderr="",
+    )
+    seams = _seams_with_process(process)
+
+    exit_code, diagnostic = _smoke_check(seams)
+
+    assert exit_code == runner.EXIT_SMOKE_FAILED
+    assert diagnostic == "smoke exited with code 5: status_class=data_unavailable"
+
+
+@pytest.mark.parametrize(
+    ("returncode", "stdout"),
+    [
+        (5, '{"stage":"zelerdata_smoke","status_class":"auth_failed","counters":{}}'),
+        (5, '{"stage":"other","status_class":"data_unavailable","counters":{}}'),
+        (5, "not-json"),
+    ],
+)
+def test_invoke_smoke_checked_rejects_unbound_or_malformed_stdout(
+    returncode: int, stdout: str
+) -> None:
+    process = _RecordingProcessRunner(returncode=returncode, stdout=stdout, stderr="")
+    seams = _seams_with_process(process)
+
+    exit_code, diagnostic = _smoke_check(seams)
+
+    assert exit_code == runner.EXIT_SMOKE_FAILED
+    assert diagnostic == f"smoke exited with code {returncode}: "
+    assert stdout not in diagnostic
+
+
 def test_invoke_smoke_checked_timeout_fails_closed() -> None:
     process = _RecordingProcessRunner(raise_timeout=True)
     seams = _seams_with_process(process)
