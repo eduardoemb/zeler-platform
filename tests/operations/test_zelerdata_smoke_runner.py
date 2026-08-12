@@ -46,13 +46,16 @@ handlers, no ``run`` wiring; the active state is never removed (2.10).
 
 from __future__ import annotations
 
+import contextlib  # B1 process-group cleanup
 import dataclasses
 import json
 import os
+import signal  # B1 signal tests
 import stat
 import subprocess
 import sys
-from collections.abc import Mapping
+import time  # B1 process polling
+from collections.abc import Callable, Mapping  # B1 seam typing
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -922,3 +925,715 @@ def test_state_read_rejects_partial_or_malformed_content(tmp_path: Path) -> None
 def test_state_read_returns_empty_when_file_absent(tmp_path: Path) -> None:
     store = runner.AtomicStateStore(tmp_path / "missing.active")
     assert store.read() == {}
+
+
+# --- Slice 2D, task 2.6: metacharacters, nonzero, malformed, timeout -> fail closed ---
+
+DISABLE_OUTPUT = "Disabled version [{version}] of the secret [{secret}]."
+DESTROY_OUTPUT = "Destroyed version [{version}] of the secret [{secret}]."
+BOUND_VERSION = "42"
+
+
+def _smoke_check(seams: runner.Seams, **overrides: Any) -> tuple[int, str]:
+    values: dict[str, Any] = {
+        "smoke_command": SMOKE_COMMAND,
+        "baseline_env": HOSTILE_BASELINE,
+        "base_url": SMOKE_BASE_URL,
+        "token": SMOKE_TOKEN,
+        "seller_id": runner.ALLOWED_SELLER,
+        "version_id": BOUND_VERSION,
+    }
+    values.update(overrides)
+    return runner.invoke_smoke_checked(seams, **values)
+
+
+def _version_op(
+    seams: runner.Seams,
+    operation: str,
+    *,
+    version_id: str = BOUND_VERSION,
+    **overrides: Any,
+) -> tuple[int, str]:
+    values: dict[str, Any] = {"token": SMOKE_TOKEN, "seller_id": runner.ALLOWED_SELLER}
+    values.update(overrides)
+    return runner.version_operation(seams, operation, version_id, **values)
+
+
+def test_metacharacter_error_rejects_shell_metacharacters() -> None:
+    for value in (
+        "a;b",
+        "a&b",
+        "a|b",
+        "$HOME",
+        "`id`",
+        "$(id)",
+        'a"b',
+        "a(b)",
+        "a*b",
+        "a!b",
+        "a\nb",
+        "a\\b",
+    ):
+        assert runner.metacharacter_error(value) is not None
+
+
+def test_metacharacter_error_accepts_clean_values() -> None:
+    for value in (
+        "",
+        "https://sheets.zeler.ai",
+        "/usr/local/bin/authenticated_smoke",
+        "user-abc123",
+        "42",
+    ):
+        assert runner.metacharacter_error(value) is None
+
+
+def test_invoke_smoke_checked_rejects_metacharacter_values_before_effects() -> None:
+    for kwargs in (
+        {"smoke_command": Path("/opt/smoke;rm -rf /")},
+        {"base_url": "https://evil.example/$(id)"},
+    ):
+        process = _RecordingProcessRunner()
+        seams = _seams_with_process(process)
+        exit_code, diagnostic = _smoke_check(seams, **kwargs)
+        assert exit_code == runner.EXIT_PROCESS_BOUNDARY_REJECTED
+        assert "metacharacter" in diagnostic
+        assert process.calls == []
+
+
+def test_invoke_smoke_checked_success_returns_success() -> None:
+    process = _RecordingProcessRunner()
+    seams = _seams_with_process(process)
+    exit_code, diagnostic = _smoke_check(seams)
+    assert exit_code == runner.EXIT_SUCCESS
+    assert diagnostic == ""
+    assert len(process.calls) == 1
+
+
+def test_invoke_smoke_checked_nonzero_fails_closed_with_redacted_stderr() -> None:
+    process = _RecordingProcessRunner(
+        returncode=3, stderr=f"token={SMOKE_TOKEN} seller={runner.ALLOWED_SELLER}"
+    )
+    seams = _seams_with_process(process)
+    exit_code, diagnostic = _smoke_check(seams)
+    assert exit_code == runner.EXIT_SMOKE_FAILED
+    assert SMOKE_TOKEN not in diagnostic
+    assert runner.ALLOWED_SELLER not in diagnostic
+    assert diagnostic.startswith("smoke exited with code 3:")
+
+
+def test_invoke_smoke_checked_timeout_fails_closed() -> None:
+    process = _RecordingProcessRunner(raise_timeout=True)
+    seams = _seams_with_process(process)
+    exit_code, diagnostic = _smoke_check(seams)
+    assert exit_code == runner.EXIT_SMOKE_FAILED
+    assert "timed out" in diagnostic
+    assert SMOKE_TOKEN not in diagnostic
+    assert len(process.calls) == 1
+
+
+def test_version_operation_access_returns_stripped_payload() -> None:
+    command = _RecordingCommandRunner(stdout=SMOKE_TOKEN + "\n")
+    seams = _seams_with_command(command)
+    exit_code, payload = _version_op(seams, "access")
+    assert exit_code == runner.EXIT_SUCCESS
+    assert payload == SMOKE_TOKEN
+    assert command.calls[0]["argv"] == runner.version_operation_argv("access", BOUND_VERSION)
+    assert command.calls[0]["stdin"] == ""
+
+
+def test_version_operation_access_rejects_failed_outcomes() -> None:
+    command = _RecordingCommandRunner(returncode=1)
+    seams = _seams_with_command(command)
+    exit_code, diagnostic = _version_op(seams, "access")
+    assert exit_code == runner.EXIT_VERSION_OPERATION_REJECTED
+    assert diagnostic.startswith("access exited with code 1")
+    assert SMOKE_TOKEN not in diagnostic
+    assert runner.ALLOWED_SELLER not in diagnostic
+    assert BOUND_VERSION not in diagnostic
+    command = _RecordingCommandRunner(stdout="   \n")
+    seams = _seams_with_command(command)
+    exit_code, diagnostic = _version_op(seams, "access")
+    assert exit_code == runner.EXIT_VERSION_OPERATION_REJECTED
+    assert "empty secret payload" in diagnostic
+    command = _RecordingCommandRunner(raise_timeout=True)
+    seams = _seams_with_command(command)
+    exit_code, diagnostic = _version_op(seams, "access")
+    assert exit_code == runner.EXIT_VERSION_OPERATION_REJECTED
+    assert "timed out" in diagnostic
+    assert SMOKE_TOKEN not in diagnostic
+    assert len(command.calls) == 1
+
+
+def test_version_operation_disable_destroy_success_on_canonical_output() -> None:
+    for operation, output in (("disable", DISABLE_OUTPUT), ("destroy", DESTROY_OUTPUT)):
+        command = _RecordingCommandRunner(
+            stdout=output.format(version=BOUND_VERSION, secret=runner.SECRET_NAME)
+        )
+        seams = _seams_with_command(command)
+        exit_code, payload = _version_op(seams, operation)
+        assert exit_code == runner.EXIT_SUCCESS
+        assert payload == ""
+        assert command.calls[0]["argv"] == runner.version_operation_argv(operation, BOUND_VERSION)
+
+
+def test_version_operation_disable_rejects_failed_outcomes() -> None:
+    for stdout in (
+        "garbage",
+        DISABLE_OUTPUT.format(version="7", secret=runner.SECRET_NAME),
+        DISABLE_OUTPUT.format(version=BOUND_VERSION, secret="another-secret"),  # noqa: S106 - fixture, tests only
+        "Disabled version [42] of the secret [zelerdata-smoke-pilot]\nnote",
+    ):
+        command = _RecordingCommandRunner(stdout=stdout)
+        seams = _seams_with_command(command)
+        exit_code, diagnostic = _version_op(seams, "disable")
+        assert exit_code == runner.EXIT_VERSION_OPERATION_REJECTED
+        assert "malformed" in diagnostic
+        assert BOUND_VERSION not in diagnostic
+    seams = _seams_with_command(_RecordingCommandRunner(returncode=1))
+    exit_code, diagnostic = _version_op(seams, "disable")
+    assert exit_code == runner.EXIT_VERSION_OPERATION_REJECTED
+    assert diagnostic.startswith("disable exited with code 1")
+
+
+def test_version_operation_destroy_rejects_malformed_and_timeout() -> None:
+    command = _RecordingCommandRunner(stdout="garbage")
+    seams = _seams_with_command(command)
+    exit_code, diagnostic = _version_op(seams, "destroy")
+    assert exit_code == runner.EXIT_VERSION_OPERATION_REJECTED
+    assert "malformed" in diagnostic
+    command = _RecordingCommandRunner(raise_timeout=True)
+    seams = _seams_with_command(command)
+    exit_code, diagnostic = _version_op(seams, "destroy")
+    assert exit_code == runner.EXIT_VERSION_OPERATION_REJECTED
+    assert "timed out" in diagnostic
+
+
+def test_version_operation_rejects_metacharacter_version_id_before_effects() -> None:
+    command = _RecordingCommandRunner()
+    seams = _seams_with_command(command)
+    with pytest.raises(runner.VersionIdError):
+        _version_op(seams, "disable", version_id="42;rm -rf")
+    assert command.calls == []
+
+
+def test_add_version_timeout_fails_closed() -> None:
+    command = _RecordingCommandRunner(raise_timeout=True)
+    seams = _seams_with_command(command)
+    exit_code, version_id = runner.add_version(seams, token=SMOKE_TOKEN)
+    assert exit_code == runner.EXIT_ADD_VERSION_REJECTED
+    assert version_id == ""
+    assert len(command.calls) == 1
+
+
+# --- Slice 2E, task 2.7: forked descendant TERM + bounded KILL; no survivor ---
+
+
+class _FakeClock:
+    """Deterministic monotonic clock: ``sleep`` advances the current time."""
+
+    def __init__(self) -> None:
+        self.now = 0.0
+
+    def __call__(self) -> float:
+        return self.now
+
+    def sleep(self, seconds: float) -> None:
+        self.now += seconds
+
+
+class _RealProcessGroup:
+    """Real local process-group harness: TERM/KILL via killpg, zombie-aware."""
+
+    active_pid: int | None = None
+
+    def run_smoke(
+        self,
+        argv: list[str],
+        *,
+        env: Mapping[str, str],
+        timeout: float,
+        shell: bool = False,
+    ) -> tuple[int, str, str]:
+        raise AssertionError("run_smoke is not used by the termination harness")
+
+    def terminate_tree(self, pid: int) -> None:
+        os.killpg(pid, signal.SIGTERM)
+
+    def kill_tree(self, pid: int) -> None:
+        os.killpg(pid, signal.SIGKILL)
+
+    def tree_alive(self, pid: int) -> bool:
+        # Reap the direct child if it exited so a zombie never counts as a
+        # survivor; then probe the remaining process group.
+        with contextlib.suppress(ChildProcessError):
+            os.waitpid(-pid, os.WNOHANG)
+        try:
+            os.killpg(pid, 0)
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True
+        return True
+
+
+def _terminate(process: _RecordingProcessRunner, pid: int = 4242) -> tuple[int, str]:
+    clock = _FakeClock()
+    fakes: list[Any] = [_FakeSeam() for _ in range(5)]
+    seams = runner.Seams(
+        clock=fakes[0],
+        http=fakes[1],
+        command=fakes[2],
+        lock=fakes[3],
+        state=fakes[4],
+        process=process,
+    )
+    return runner.terminate_descendant(
+        seams,
+        pid,
+        term_grace=5.0,
+        kill_grace=5.0,
+        poll_interval=0.1,
+        monotonic=clock,
+        sleep=clock.sleep,
+    )
+
+
+def _call_kinds(process: _RecordingProcessRunner) -> list[str]:
+    return [next(iter(call)) for call in process.calls]
+
+
+def test_terminate_descendant_terms_group_when_it_exits() -> None:
+    process = _RecordingProcessRunner(survival="term")
+    exit_code, diagnostic = _terminate(process)
+    assert exit_code == runner.EXIT_SUCCESS
+    assert diagnostic == ""
+    kinds = _call_kinds(process)
+    assert kinds.count("terminate_tree") == 1
+    assert "kill_tree" not in kinds
+    assert kinds.count("tree_alive") >= 1
+
+
+def test_terminate_descendant_escalates_to_kill_when_term_ignored() -> None:
+    process = _RecordingProcessRunner(survival="kill")
+    exit_code, diagnostic = _terminate(process)
+    assert exit_code == runner.EXIT_SUCCESS
+    assert diagnostic == ""
+    kinds = _call_kinds(process)
+    assert kinds.index("terminate_tree") < kinds.index("kill_tree")
+    assert "tree_alive" in kinds
+
+
+def test_terminate_descendant_survivor_fails_closed() -> None:
+    process = _RecordingProcessRunner(survival="never")
+    exit_code, diagnostic = _terminate(process)
+    assert exit_code == runner.EXIT_PROCESS_BOUNDARY_REJECTED
+    assert "survived TERM and KILL" in diagnostic
+    kinds = _call_kinds(process)
+    assert kinds.index("terminate_tree") < kinds.index("kill_tree")
+    assert kinds.count("tree_alive") >= 2
+
+
+_GROUP_CODE = (
+    "import subprocess, sys, time\n"
+    "p = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])\n"
+    "print(p.pid, flush=True)\n"
+    "time.sleep(60)\n"
+)
+_GROUP_IGNORES_TERM_CODE = (
+    "import signal, subprocess, sys, time\n"
+    "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+    "p = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])\n"
+    "print(p.pid, flush=True)\n"
+    "time.sleep(60)\n"
+)
+
+
+def _terminate_real_group(code: str) -> tuple[subprocess.Popen[str], int, tuple[int, str]]:
+    leader = subprocess.Popen(  # noqa: S603 - static argv: interpreter plus fixed harness code.
+        [sys.executable, "-c", code],
+        start_new_session=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        text=True,
+    )
+    assert leader.stdout is not None
+    descendant_pid = int(leader.stdout.readline().strip())
+    try:
+        fakes: list[Any] = [_FakeSeam() for _ in range(5)]
+        seams = runner.Seams(
+            clock=fakes[0],
+            http=fakes[1],
+            command=fakes[2],
+            lock=fakes[3],
+            state=fakes[4],
+            process=_RealProcessGroup(),
+        )
+        result = runner.terminate_descendant(
+            seams, leader.pid, term_grace=2.0, kill_grace=2.0, poll_interval=0.05
+        )
+        return leader, descendant_pid, result
+    except BaseException:
+        _kill_group(leader)
+        raise
+
+
+def _wait_gone(probe: Callable[[], None], *, timeout: float = 2.0) -> None:
+    # A dead child lingers as a zombie until reaped; wait (bounded) for that.
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            probe()
+        except ProcessLookupError:
+            return
+        time.sleep(0.05)
+    raise AssertionError("process still present after the bounded wait")
+
+
+def _kill_group(leader: subprocess.Popen[str]) -> None:
+    with contextlib.suppress(ProcessLookupError, PermissionError):
+        os.killpg(leader.pid, signal.SIGKILL)
+    with contextlib.suppress(subprocess.TimeoutExpired):
+        leader.wait(timeout=2.0)
+
+
+@pytest.mark.parametrize(
+    "code", [_GROUP_CODE, _GROUP_IGNORES_TERM_CODE], ids=["term", "kill-escalation"]
+)
+def test_terminate_descendant_real_group_leaves_no_survivor(code: str) -> None:
+    # Controlled local harness: a python leader starts in its own process
+    # group, forks a python descendant, and both sleep. The second variant's
+    # leader ignores SIGTERM, so only the bounded KILL escalation can take the
+    # group down. TERM then bounded KILL must leave no survivor; no external
+    # command, network, or GCP is involved.
+    leader, descendant_pid, (exit_code, diagnostic) = _terminate_real_group(code)
+    assert exit_code == runner.EXIT_SUCCESS
+    assert diagnostic == ""
+    _wait_gone(lambda: os.killpg(leader.pid, 0))
+    _wait_gone(lambda: os.kill(descendant_pid, 0))
+    _kill_group(leader)
+
+
+# --- Slice 2E, task 2.8: SIGINT/SIGTERM one cleanup transition; SIGKILL recovery state ---
+
+
+def test_cleanup_request_transitions_exactly_once() -> None:
+    cleanup = runner.CleanupRequest()
+    assert cleanup.requested is False
+    assert cleanup.request() is True
+    assert cleanup.request() is False
+    assert cleanup.request() is False
+    assert cleanup.requested is True
+
+
+@pytest.mark.parametrize("signal_number", [signal.SIGINT, signal.SIGTERM])
+def test_interrupt_exit_requests_cleanup_once_and_fails_closed(signal_number: int) -> None:
+    cleanup = runner.CleanupRequest()
+    exit_code, diagnostic = runner.interrupt_exit(
+        cleanup,
+        signal_number=signal_number,
+        token=SMOKE_TOKEN,
+        version_id=BOUND_VERSION,
+        seller_id=runner.ALLOWED_SELLER,
+    )
+    assert exit_code == runner.EXIT_INTERRUPTED
+    assert exit_code != runner.EXIT_SUCCESS  # never a false success
+    assert f"interrupted by signal {signal_number}" in diagnostic
+    assert SMOKE_TOKEN not in diagnostic
+    assert BOUND_VERSION not in diagnostic
+    assert runner.ALLOWED_SELLER not in diagnostic
+    assert cleanup.requested is True
+    assert cleanup.request() is False  # exactly one cleanup-request transition
+
+
+@pytest.mark.parametrize("signal_number", [signal.SIGKILL, signal.SIGHUP, 0])
+def test_interrupt_exit_rejects_non_handled_signals(signal_number: int) -> None:
+    with pytest.raises(ValueError):
+        runner.interrupt_exit(
+            runner.CleanupRequest(),
+            signal_number=signal_number,
+            token=SMOKE_TOKEN,
+            version_id=BOUND_VERSION,
+            seller_id=runner.ALLOWED_SELLER,
+        )
+
+
+def test_interrupt_and_sigkill_preserve_recovery_state_without_cleanup_claims(
+    tmp_path: Path,
+) -> None:
+    # Interrupted (SIGINT/SIGTERM) and SIGKILLed/VM-lost runs leave the active
+    # state untouched and never claim cleanup: no version operation or revoke
+    # command is attempted and the state remains readable.
+    path = tmp_path / "zelerdata-smoke.active"
+    store = runner.AtomicStateStore(path)
+    state = {
+        "phase": "smoke",
+        "timestamp": "2026-08-11T12:00:00+00:00",
+        "version_id": BOUND_VERSION,
+    }
+    store.write(state)
+    command = _RecordingCommandRunner()
+    _seams_with_command(command)
+    exit_code, diagnostic = runner.interrupt_exit(
+        runner.CleanupRequest(),
+        signal_number=signal.SIGTERM,
+        token=SMOKE_TOKEN,
+        version_id=BOUND_VERSION,
+        seller_id=runner.ALLOWED_SELLER,
+    )
+    assert exit_code == runner.EXIT_INTERRUPTED
+    assert SMOKE_TOKEN not in diagnostic
+    assert store.read() == state  # fail-closed state preserved, not removed
+    assert command.calls == []  # no cleanup claim (disable/destroy/revoke)
+    # SIGKILL/VM loss means no handler ever runs: a later run still fails
+    # closed on the leftover recovery state.
+    assert runner.lock_and_state_gate(lock_acquired=True, state=store.read()) == (
+        runner.EXIT_ACTIVE_STATE_REJECTED,
+        runner.ACTIVE_STATE_REJECTED,
+    )
+
+
+# --- Slice 2F, task 2.9: fake-testable cleanup transaction; ordered, no false success ---
+
+
+class _FakeCleanupStep:
+    """Injected cleanup step: records every invocation and returns its result."""
+
+    def __init__(self, result: tuple[int, str] = (runner.EXIT_SUCCESS, "")) -> None:
+        self.result = result
+        self.calls: list[tuple[int, str]] = []
+
+    def __call__(self) -> tuple[int, str]:
+        self.calls.append(self.result)
+        return self.result
+
+
+def _plan_with(
+    failures: dict[str, tuple[int, str]] | None = None,
+) -> tuple[runner.CleanupPlan, dict[str, _FakeCleanupStep]]:
+    failures = failures or {}
+    steps = {
+        name: _FakeCleanupStep(failures.get(name, (runner.EXIT_SUCCESS, "")))
+        for name in runner.CLEANUP_STEP_NAMES
+    }
+    return (
+        runner.CleanupPlan(
+            disable=steps["disable"],
+            destroy=steps["destroy"],
+            re_broker=steps["re-broker"],
+            revoke=steps["revoke"],
+        ),
+        steps,
+    )
+
+
+def _sensitive() -> tuple[str, str, str]:
+    return (SMOKE_TOKEN, BOUND_VERSION, runner.ALLOWED_SELLER)
+
+
+@pytest.mark.parametrize(
+    "version_eligible,token_eligible,expected_attempted,expected_removable",
+    [
+        (True, True, runner.CLEANUP_STEP_NAMES, True),
+        (False, True, ("re-broker", "revoke"), False),
+        (True, False, ("disable", "destroy"), False),
+        (False, False, (), False),
+    ],
+)
+def test_cleanup_plan_runs_eligible_steps_in_canonical_order(
+    version_eligible: bool,
+    token_eligible: bool,
+    expected_attempted: tuple[str, ...],
+    expected_removable: bool,
+) -> None:
+    plan, steps = _plan_with()
+    outcome = runner.run_cleanup_plan(
+        plan,
+        version_eligible=version_eligible,
+        token_eligible=token_eligible,
+        sensitive=_sensitive(),
+    )
+    assert outcome.exit_code == runner.EXIT_SUCCESS
+    assert outcome.attempted == expected_attempted
+    assert outcome.failed == () and outcome.diagnostic == ""
+    assert outcome.state_removable is expected_removable
+    assert {name: len(step.calls) for name, step in steps.items()} == {
+        name: (1 if name in expected_attempted else 0) for name in runner.CLEANUP_STEP_NAMES
+    }
+
+
+@pytest.mark.parametrize(
+    "failing_step,expected_removable",
+    [("disable", True), ("destroy", False), ("revoke", False)],
+)
+def test_cleanup_plan_step_failure_fails_closed_keeps_order_and_redacts(
+    failing_step: str, expected_removable: bool
+) -> None:
+    leaking = f"{failing_step} failed for token={SMOKE_TOKEN} version={BOUND_VERSION}"
+    plan, steps = _plan_with(failures={failing_step: (7, leaking)})
+    outcome = runner.run_cleanup_plan(
+        plan, version_eligible=True, token_eligible=True, sensitive=_sensitive()
+    )
+    assert outcome.exit_code == runner.EXIT_CLEANUP_REJECTED  # never a false success
+    assert outcome.attempted == runner.CLEANUP_STEP_NAMES  # ordered all-attempt
+    assert outcome.failed == (failing_step,)
+    assert failing_step in outcome.diagnostic
+    assert all(sensitive not in outcome.diagnostic for sensitive in _sensitive())
+    assert outcome.state_removable is expected_removable
+    # Every eligible step runs exactly once, including after the failure.
+    assert all(len(step.calls) == 1 for step in steps.values())
+
+
+def test_cleanup_plan_re_broker_failure_skips_revoke_and_fails_closed() -> None:
+    plan, steps = _plan_with(failures={"re-broker": (1, f"re-broker rejected token={SMOKE_TOKEN}")})
+    outcome = runner.run_cleanup_plan(
+        plan, version_eligible=True, token_eligible=True, sensitive=_sensitive()
+    )
+    assert outcome.exit_code == runner.EXIT_CLEANUP_REJECTED != runner.EXIT_SUCCESS
+    assert outcome.attempted == ("disable", "destroy", "re-broker")
+    assert outcome.failed == ("re-broker",) and steps["revoke"].calls == []
+    assert SMOKE_TOKEN not in outcome.diagnostic
+    assert outcome.state_removable is False
+
+
+def _fail_stage(stage: str) -> tuple[int, str]:
+    """Real stage outcome for a failing run phase, via existing runner functions."""
+    if stage == "add":
+        return runner.add_version(
+            _seams_with_command(_RecordingCommandRunner(returncode=1)), token=SMOKE_TOKEN
+        )
+    if stage == "access":
+        seams = _seams_with_command(_RecordingCommandRunner(returncode=1))
+        return runner.version_operation(
+            seams, "access", BOUND_VERSION, token=SMOKE_TOKEN, seller_id=runner.ALLOWED_SELLER
+        )
+    seams = _seams_with_process(
+        _RecordingProcessRunner(returncode=3, stderr=f"token={SMOKE_TOKEN}")
+    )
+    return runner.invoke_smoke_checked(
+        seams,
+        smoke_command=SMOKE_COMMAND,
+        baseline_env=HOSTILE_BASELINE,
+        base_url=SMOKE_BASE_URL,
+        token=SMOKE_TOKEN,
+        seller_id=runner.ALLOWED_SELLER,
+        version_id=BOUND_VERSION,
+    )
+
+
+@pytest.mark.parametrize(
+    "stage,version_eligible,expected_attempted",
+    [
+        ("add", False, ("re-broker", "revoke")),
+        ("access", True, runner.CLEANUP_STEP_NAMES),
+        ("smoke", True, runner.CLEANUP_STEP_NAMES),
+    ],
+    ids=["add", "access", "smoke"],
+)
+def test_run_failure_at_stage_keeps_eligible_cleanup_and_never_succeeds(
+    stage: str, version_eligible: bool, expected_attempted: tuple[str, ...]
+) -> None:
+    stage_result = _fail_stage(stage)
+    assert stage_result[0] != runner.EXIT_SUCCESS
+    plan, steps = _plan_with()
+    cleanup = runner.run_cleanup_plan(
+        plan, version_eligible=version_eligible, token_eligible=True, sensitive=_sensitive()
+    )
+    assert cleanup.exit_code == runner.EXIT_SUCCESS
+    assert cleanup.attempted == expected_attempted
+    final = runner.finalize_result(stage_result, cleanup, sensitive=_sensitive())
+    # The run failure is preserved: cleanup success never turns it into success.
+    assert final[0] == stage_result[0] != runner.EXIT_SUCCESS
+    assert all(sensitive not in final[1] for sensitive in _sensitive())
+    assert {name: len(step.calls) for name, step in steps.items()} == {
+        name: (1 if name in expected_attempted else 0) for name in runner.CLEANUP_STEP_NAMES
+    }
+
+
+class _CleanupCommandRunner:
+    """Command fake returning canonical gcloud output per version operation."""
+
+    def __init__(self) -> None:
+        self.calls: list[dict[str, Any]] = []
+
+    def run(
+        self,
+        argv: list[str],
+        *,
+        stdin: str,
+        env: Mapping[str, str],
+        timeout: float,
+        shell: bool = False,
+    ) -> tuple[int, str, str]:
+        self.calls.append({"argv": argv, "stdin": stdin, "env": env, "timeout": timeout})
+        operation = argv[3]
+        template = {"disable": DISABLE_OUTPUT, "destroy": DESTROY_OUTPUT}[operation]
+        return 0, template.format(version=BOUND_VERSION, secret=runner.SECRET_NAME), ""
+
+
+def test_cleanup_plan_wires_disable_destroy_to_captured_version_operation() -> None:
+    command = _CleanupCommandRunner()
+    fakes: list[Any] = [_FakeSeam() for _ in range(5)]
+    seams = runner.Seams(
+        clock=fakes[0],
+        http=fakes[1],
+        command=command,
+        lock=fakes[2],
+        state=fakes[3],
+        process=fakes[4],
+    )
+
+    def op(operation: str) -> Callable[[], tuple[int, str]]:
+        return lambda: runner.version_operation(
+            seams, operation, BOUND_VERSION, token=SMOKE_TOKEN, seller_id=runner.ALLOWED_SELLER
+        )
+
+    plan = runner.CleanupPlan(
+        disable=op("disable"),
+        destroy=op("destroy"),
+        re_broker=lambda: (runner.EXIT_SUCCESS, ""),
+        revoke=lambda: (runner.EXIT_SUCCESS, ""),
+    )
+    outcome = runner.run_cleanup_plan(
+        plan, version_eligible=True, token_eligible=True, sensitive=_sensitive()
+    )
+    assert outcome.exit_code == runner.EXIT_SUCCESS
+    assert outcome.attempted == runner.CLEANUP_STEP_NAMES
+    argv_order = [call["argv"] for call in command.calls]
+    assert [argv[3] for argv in argv_order] == ["disable", "destroy"]
+    # The captured explicit version ID flows into both operations, never latest.
+    assert all(
+        argv[4] == BOUND_VERSION and "latest" not in argv and argv[5] == runner.SECRET_NAME
+        for argv in argv_order
+    )
+
+
+def test_finalize_result_success_only_when_run_and_cleanup_succeed() -> None:
+    ok = runner.CleanupOutcome(runner.CLEANUP_STEP_NAMES, (), runner.EXIT_SUCCESS, "")
+    failed = runner.CleanupOutcome(
+        ("disable", "destroy"),
+        ("destroy",),
+        runner.EXIT_CLEANUP_REJECTED,
+        "cleanup failed for: destroy: destroy rejected",
+    )
+    failed_run = (runner.EXIT_ADD_VERSION_REJECTED, "")
+    result = runner.finalize_result((runner.EXIT_SUCCESS, ""), ok, sensitive=_sensitive())
+    assert result == (runner.EXIT_SUCCESS, "")
+    result = runner.finalize_result((runner.EXIT_SUCCESS, ""), failed, sensitive=_sensitive())
+    assert result == (runner.EXIT_CLEANUP_REJECTED, failed.diagnostic)
+    assert runner.finalize_result(failed_run, ok, sensitive=_sensitive()) == failed_run
+
+
+def test_finalize_result_combines_run_and_cleanup_failures_redaction_safe() -> None:
+    run_result = (runner.EXIT_SMOKE_FAILED, f"smoke leaked token={SMOKE_TOKEN}")
+    cleanup = runner.CleanupOutcome(
+        runner.CLEANUP_STEP_NAMES,
+        ("revoke",),
+        runner.EXIT_CLEANUP_REJECTED,
+        f"revoke failed seller={runner.ALLOWED_SELLER}",
+    )
+    final = runner.finalize_result(run_result, cleanup, sensitive=_sensitive())
+    assert final[0] == runner.EXIT_SMOKE_FAILED  # primary failure code preserved
+    assert "smoke leaked token=<redacted>" in final[1]
+    assert "revoke failed seller=<redacted>" in final[1]
+    assert all(sensitive not in final[1] for sensitive in _sensitive())

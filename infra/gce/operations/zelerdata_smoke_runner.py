@@ -38,9 +38,11 @@ import fcntl
 import json
 import os
 import re
+import signal  # B1 interrupt handling
+import time  # B1 process polling
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta  # B1 token expiry
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -239,24 +241,6 @@ def build_broker_payload(request: BrokerSigningRequest) -> str:
         sort_keys=True,
         separators=(",", ":"),
     )
-
-
-# Keep the prerequisite-only runner available until the full lifecycle slice.
-def run(inputs: RunnerInputs, seams: Seams) -> int:
-    if required_input_errors(secret_name=inputs.secret_name, base_url=inputs.base_url):
-        return EXIT_REQUIRED_INPUT
-    if authorization_error(seller_id=inputs.seller_id, formula_scope=inputs.formula_scope):
-        return EXIT_AUTHORIZATION_REJECTED
-    if documentation_like_reason(inputs.smoke_command, is_executable=inputs.is_executable):
-        return EXIT_COMMAND_PATH_REJECTED
-    if broker_payload_error(
-        platform_user_id=inputs.platform_user_id,
-        module=BROKER_MODULE,
-        scope=BROKER_SCOPE,
-        ttl_seconds=BROKER_TTL_SECONDS,
-    ):
-        return EXIT_BROKER_CONTRACT_REJECTED
-    return EXIT_SUCCESS
 
 
 class VersionIdError(ValueError): ...
@@ -617,3 +601,659 @@ class AtomicStateStore:
 
     def remove(self) -> None:
         self._path.unlink(missing_ok=True)
+
+
+def _post_json(
+    seams: Seams,
+    url: str,
+    payload: str,
+    *,
+    headers: Mapping[str, str],
+    exit_code: int,
+    sensitive: tuple[str, str, str],
+) -> tuple[int, str, dict[str, Any]]:
+    try:
+        status, body = seams.http.post(url, payload, headers)
+    except Exception as exc:  # noqa: BLE001 - boundary must fail closed.
+        code, diagnostic = _failure(exit_code, f"{url} failed: {exc}", sensitive)
+        return code, diagnostic, {}
+    if not 200 <= status < 300:
+        code, diagnostic = _failure(exit_code, f"{url} returned HTTP {status}", sensitive)
+        return code, diagnostic, {}
+    try:
+        value = json.loads(body)
+    except json.JSONDecodeError:
+        code, diagnostic = _failure(exit_code, f"{url} returned malformed JSON", sensitive)
+        return code, diagnostic, {}
+    if not isinstance(value, dict):
+        code, diagnostic = _failure(exit_code, f"{url} returned a non-object response", sensitive)
+        return code, diagnostic, {}
+    return EXIT_SUCCESS, "", value
+
+
+def _mint_broker_jwt(seams: Seams, inputs: RunnerInputs) -> tuple[int, str]:
+    request = BrokerSigningRequest(
+        inputs.platform_user_id,
+        BROKER_MODULE,
+        BROKER_SCOPE,
+        BROKER_TTL_SECONDS,
+        seams.clock.utcnow(),
+    )
+    payload = build_broker_payload(request)
+    result, diagnostic, body = _post_json(
+        seams,
+        BROKER_TOKEN_URL,
+        payload,
+        headers={"Content-Type": "application/json"},
+        exit_code=EXIT_BROKER_CONTRACT_REJECTED,
+        sensitive=("", "", inputs.seller_id),
+    )
+    token = body.get("access_token")
+    if result != EXIT_SUCCESS or not isinstance(token, str) or not token:
+        return _failure(
+            EXIT_BROKER_CONTRACT_REJECTED,
+            diagnostic or "broker response did not contain access_token",
+            ("", "", inputs.seller_id),
+        )
+    return EXIT_SUCCESS, token
+
+
+def _mint_extension_token(
+    seams: Seams, inputs: RunnerInputs, broker_jwt: str
+) -> tuple[int, str, str]:
+    expires_at = seams.clock.utcnow() + timedelta(seconds=EXTENSION_TOKEN_TTL_SECONDS)
+    payload = json.dumps(
+        {
+            "label": "B1 smoke",
+            "seller_scopes": [{"seller_id": inputs.seller_id, "nickname": "pilot"}],
+            "formula_scopes": [inputs.formula_scope],
+            "expires_at": expires_at.isoformat(),
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    result, diagnostic, body = _post_json(
+        seams,
+        EXTENSION_TOKEN_URL,
+        payload,
+        headers={"Authorization": f"Bearer {broker_jwt}", "Content-Type": "application/json"},
+        exit_code=EXIT_BROKER_CONTRACT_REJECTED,
+        sensitive=(broker_jwt, "", inputs.seller_id),
+    )
+    token = body.get("token_once")
+    token_id = body.get("id")
+    if result != EXIT_SUCCESS or not isinstance(token, str) or not token:
+        return _failure(
+            EXIT_BROKER_CONTRACT_REJECTED,
+            diagnostic or "extension response did not contain token_once",
+            (broker_jwt, "", inputs.seller_id),
+        ) + ("",)
+    if not isinstance(token_id, str) or not token_id or metacharacter_error(token_id):
+        return _failure(
+            EXIT_BROKER_CONTRACT_REJECTED,
+            "extension response did not contain a safe token id",
+            (broker_jwt, "", inputs.seller_id),
+        ) + ("",)
+    return EXIT_SUCCESS, token, token_id
+
+
+def _revoke_extension_token(
+    seams: Seams, broker_jwt: str, token_id: str, sensitive: tuple[str, str, str]
+) -> tuple[int, str]:
+    return _post_json(
+        seams,
+        f"{EXTENSION_TOKEN_URL}/{token_id}:revoke",
+        "{}",
+        headers={"Authorization": f"Bearer {broker_jwt}"},
+        exit_code=EXIT_CLEANUP_REJECTED,
+        sensitive=sensitive,
+    )[:2]
+
+
+def _rebroke(seams: Seams, inputs: RunnerInputs, target: list[str]) -> tuple[int, str]:
+    result, token = _mint_broker_jwt(seams, inputs)
+    if result == EXIT_SUCCESS:
+        target[0] = token
+    return result, ""
+
+
+def run(inputs: RunnerInputs, seams: Seams) -> int:
+    if required_input_errors(secret_name=inputs.secret_name, base_url=inputs.base_url):
+        return EXIT_REQUIRED_INPUT
+    if authorization_error(seller_id=inputs.seller_id, formula_scope=inputs.formula_scope):
+        return EXIT_AUTHORIZATION_REJECTED
+    if documentation_like_reason(inputs.smoke_command, is_executable=inputs.is_executable):
+        return EXIT_COMMAND_PATH_REJECTED
+    if broker_payload_error(
+        platform_user_id=inputs.platform_user_id,
+        module=BROKER_MODULE,
+        scope=BROKER_SCOPE,
+        ttl_seconds=BROKER_TTL_SECONDS,
+    ):
+        return EXIT_BROKER_CONTRACT_REJECTED
+    locked = False
+    version_id = ""
+    extension_token = ""
+    token_id = ""
+    broker_jwt = ""
+    fresh_broker: list[str] = [""]
+    run_result = (EXIT_SUCCESS, "")
+    final_result = EXIT_SUCCESS
+    cleanup_request = CleanupRequest()
+    interrupt_result: list[tuple[int, str] | None] = [None]
+    previous_handlers: dict[signal.Signals, Any] = {}
+    state = seams.state
+    sensitive = (extension_token, version_id, inputs.seller_id)
+
+    def on_interrupt(signal_number: int, _frame: Any) -> None:
+        active_pid = seams.process.active_pid
+        if active_pid is not None:
+            try:
+                termination_code, termination_diagnostic = terminate_descendant(seams, active_pid)
+            except Exception as exc:  # noqa: BLE001 - signal path must fail closed.
+                interrupt_result[0] = _failure(
+                    EXIT_PROCESS_BOUNDARY_REJECTED,
+                    f"smoke process termination failed: {exc}",
+                    (extension_token, version_id, inputs.seller_id),
+                )
+                return
+            if termination_code != EXIT_SUCCESS:
+                interrupt_result[0] = _failure(
+                    EXIT_PROCESS_BOUNDARY_REJECTED,
+                    f"smoke process termination failed: {termination_diagnostic}",
+                    (extension_token, version_id, inputs.seller_id),
+                )
+                return
+        interrupt_result[0] = interrupt_exit(
+            cleanup_request,
+            signal_number=signal_number,
+            token=extension_token,
+            version_id=version_id,
+            seller_id=inputs.seller_id,
+        )
+
+    try:
+        locked = seams.lock.acquire()
+        if not locked:
+            return EXIT_CONCURRENT_RUN_REJECTED
+        try:
+            gate_result = lock_and_state_gate(lock_acquired=True, state=state.read())
+        except (ActiveStateError, OSError, ValueError):
+            gate_result = (EXIT_ACTIVE_STATE_REJECTED, ACTIVE_STATE_REJECTED)
+        if gate_result[0] != EXIT_SUCCESS:
+            return gate_result[0]
+        for signal_number in INTERRUPT_SIGNALS:
+            previous_handlers[signal_number] = signal.getsignal(signal_number)
+            signal.signal(signal_number, on_interrupt)
+        code, broker_jwt = _mint_broker_jwt(seams, inputs)
+        if code == EXIT_SUCCESS:
+            code, extension_token, token_id = _mint_extension_token(seams, inputs, broker_jwt)
+        if code == EXIT_SUCCESS:
+            code, version_id = add_version(seams, extension_token)
+        if code == EXIT_SUCCESS:
+            state.write(
+                build_active_state(
+                    phase="added", timestamp=seams.clock.utcnow().isoformat(), version_id=version_id
+                )
+            )
+            code, extension_token = version_operation(
+                seams, "access", version_id, token=extension_token, seller_id=inputs.seller_id
+            )
+        if code == EXIT_SUCCESS:
+            code, diagnostic = invoke_smoke_checked(
+                seams,
+                smoke_command=inputs.smoke_command,
+                baseline_env=os.environ,
+                base_url=inputs.base_url,
+                token=extension_token,
+                seller_id=inputs.seller_id,
+                version_id=version_id,
+            )
+            run_result = (code, diagnostic)
+        elif code != EXIT_SUCCESS:
+            run_result = (code, "run stage failed")
+        if interrupt_result[0] is not None:
+            run_result = interrupt_result[0]
+    except Exception as exc:  # noqa: BLE001 - orchestration fails closed.
+        run_result = _failure(
+            EXIT_PROCESS_BOUNDARY_REJECTED,
+            f"run failed: {exc}",
+            (extension_token, version_id, inputs.seller_id),
+        )
+    finally:
+        if locked:
+            if interrupt_result[0] is not None and not cleanup_request.requested:
+                final_result = interrupt_result[0][0]
+            else:
+                sensitive = (extension_token, version_id, inputs.seller_id)
+                plan = CleanupPlan(
+                    disable=lambda: version_operation(
+                        seams,
+                        "disable",
+                        version_id,
+                        token=extension_token,
+                        seller_id=inputs.seller_id,
+                    ),
+                    destroy=lambda: version_operation(
+                        seams,
+                        "destroy",
+                        version_id,
+                        token=extension_token,
+                        seller_id=inputs.seller_id,
+                    ),
+                    re_broker=lambda: _rebroke(seams, inputs, fresh_broker),
+                    revoke=lambda: _revoke_extension_token(
+                        seams, fresh_broker[0], token_id, sensitive
+                    ),
+                )
+                cleanup = run_cleanup_plan(
+                    plan,
+                    version_eligible=bool(version_id),
+                    token_eligible=bool(extension_token and token_id),
+                    sensitive=sensitive,
+                )
+                if cleanup.state_removable:
+                    try:
+                        state.remove()
+                    except Exception as exc:  # noqa: BLE001 - retain recovery state.
+                        cleanup = CleanupOutcome(
+                            cleanup.attempted,
+                            cleanup.failed + ("state",),
+                            EXIT_CLEANUP_REJECTED,
+                            redacted_diagnostic(
+                                f"state removal failed: {exc}",
+                                token=extension_token,
+                                version_id=version_id,
+                                seller_id=inputs.seller_id,
+                            ),
+                        )
+                result = finalize_result(run_result, cleanup, sensitive=sensitive)
+                final_result = result[0]
+            for signal_number, previous in previous_handlers.items():
+                signal.signal(signal_number, previous)
+            seams.lock.release()
+    return final_result if locked else run_result[0]
+
+
+# --- Slice 2D, task 2.6: fail-closed command outcomes ---
+
+# Shell metacharacters rejected in values that reach a process boundary.
+_METACHARACTERS = frozenset(";&|$`'\"()<>*?[]{}\\~!#\n\r\t\x00")
+
+
+def metacharacter_error(value: str) -> str | None:
+    """Fail closed on shell metacharacters in process-boundary values."""
+    if not value:
+        return None
+    found = sorted(set(value) & _METACHARACTERS)
+    if not found:
+        return None
+    return "value contains shell metacharacters: " + ", ".join(repr(c) for c in found)
+
+
+_CANONICAL_VERSION_OUTPUT = {
+    "disable": re.compile(
+        r"Disabled version \[(\d+)\] of the secret \[" + re.escape(SECRET_NAME) + r"\]\.?"
+    ),
+    "destroy": re.compile(
+        r"Destroyed version \[(\d+)\] of the secret \[" + re.escape(SECRET_NAME) + r"\]\.?"
+    ),
+}
+
+
+def _failure(
+    exit_code: int,
+    message: str,
+    sensitive: tuple[str, str, str],
+) -> tuple[int, str]:
+    """Redaction-safe fail-closed (exit, diagnostic) pair.
+
+    ``sensitive`` is ``(token, version_id, seller_id)``; the diagnostic raises
+    ``RedactionError`` instead of leaking if redaction cannot guarantee safety.
+    """
+    token, version_id, seller_id = sensitive
+    return exit_code, redacted_diagnostic(
+        message, token=token, version_id=version_id, seller_id=seller_id
+    )
+
+
+def version_operation(
+    seams: Seams,
+    operation: str,
+    version_id: str,
+    *,
+    token: str,
+    seller_id: str,
+) -> tuple[int, str]:
+    """Run one static-argv version operation; nonzero/malformed/timeout fail closed.
+
+    ``access`` succeeds only with a non-empty secret payload (returned
+    stripped); ``disable``/``destroy`` succeed only when stdout is exactly the
+    canonical gcloud line for the captured version ID. The argv is built only
+    after the explicit version ID passes validation, so unsafe values are
+    rejected before any effect; a command-seam ``TimeoutError`` fails closed
+    with a redaction-safe timeout diagnostic.
+    """
+    sensitive = (token, version_id, seller_id)
+    argv = version_operation_argv(operation, version_id)
+    try:
+        returncode, stdout, _stderr = seams.command.run(
+            argv, stdin="", env={}, timeout=GCLOUD_TIMEOUT_SECONDS, shell=False
+        )
+    except TimeoutError:
+        return _failure(EXIT_VERSION_OPERATION_REJECTED, f"{operation} timed out", sensitive)
+    if returncode != 0:
+        return _failure(
+            EXIT_VERSION_OPERATION_REJECTED,
+            f"{operation} exited with code {returncode}",
+            sensitive,
+        )
+    if operation == "access":
+        payload = stdout.strip()
+        if not payload:
+            return _failure(
+                EXIT_VERSION_OPERATION_REJECTED,
+                "access returned an empty secret payload",
+                sensitive,
+            )
+        return EXIT_SUCCESS, payload
+    pattern = _CANONICAL_VERSION_OUTPUT[operation]
+    match = pattern.fullmatch(stdout.strip())
+    if match is None or match.group(1) != version_id:
+        return _failure(
+            EXIT_VERSION_OPERATION_REJECTED,
+            f"{operation} returned malformed output",
+            sensitive,
+        )
+    return EXIT_SUCCESS, ""
+
+
+def smoke_result(
+    *,
+    returncode: int,
+    stderr: str,
+    token: str,
+    version_id: str,
+    seller_id: str,
+) -> tuple[int, str]:
+    """Fail closed on a nonzero smoke exit with a redacted stderr diagnostic."""
+    if returncode == 0:
+        return EXIT_SUCCESS, ""
+    return _failure(
+        EXIT_SMOKE_FAILED,
+        f"smoke exited with code {returncode}: {stderr}",
+        (token, version_id, seller_id),
+    )
+
+
+def invoke_smoke_checked(
+    seams: Seams,
+    *,
+    smoke_command: Path,
+    baseline_env: Mapping[str, str],
+    base_url: str,
+    token: str,
+    seller_id: str,
+    version_id: str,
+) -> tuple[int, str]:
+    """Run the smoke once; metacharacter values fail closed before any effect.
+
+    Metacharacter values in the command path or base URL are rejected before
+    any process is started; a nonzero child exit or a seam timeout fails
+    closed. Every diagnostic is redaction-safe; the argv stays static and
+    exactly one smoke invocation is attempted.
+    """
+    sensitive = (token, version_id, seller_id)
+    for label, value in (("command path", str(smoke_command)), ("base URL", base_url)):
+        error = metacharacter_error(value)
+        if error is not None:
+            return _failure(
+                EXIT_PROCESS_BOUNDARY_REJECTED, f"smoke {label} rejected: {error}", sensitive
+            )
+    try:
+        returncode, _stdout, stderr = invoke_smoke(
+            seams,
+            smoke_command=smoke_command,
+            baseline_env=baseline_env,
+            base_url=base_url,
+            token=token,
+            seller_id=seller_id,
+        )
+    except TimeoutError:
+        return _failure(EXIT_SMOKE_FAILED, "smoke timed out", sensitive)
+    return smoke_result(
+        returncode=returncode,
+        stderr=stderr,
+        token=token,
+        version_id=version_id,
+        seller_id=seller_id,
+    )
+
+
+# --- Slice 2E, task 2.7: forked descendant TERM + bounded KILL; no survivor ---
+
+TERM_GRACE_SECONDS = 5.0
+KILL_GRACE_SECONDS = 5.0
+TERM_POLL_SECONDS = 0.1
+
+
+def terminate_descendant(
+    seams: Seams,
+    pid: int,
+    *,
+    term_grace: float = TERM_GRACE_SECONDS,
+    kill_grace: float = KILL_GRACE_SECONDS,
+    poll_interval: float = TERM_POLL_SECONDS,
+    monotonic: Callable[[], float] = time.monotonic,
+    sleep: Callable[[float], None] = time.sleep,
+) -> tuple[int, str]:
+    """Terminate a forked descendant's group: TERM, then bounded KILL if needed.
+
+    The whole process group of ``pid`` receives SIGTERM first and is given a
+    bounded grace window to exit; only if a member survives does the group
+    receive SIGKILL, followed by a second bounded window. ``EXIT_SUCCESS`` is
+    returned only when no survivor remains; a group that survives both signals
+    fails closed with ``EXIT_PROCESS_BOUNDARY_REJECTED``.
+    """
+    seams.process.terminate_tree(pid)
+    deadline = monotonic() + term_grace
+    while monotonic() < deadline:
+        if not seams.process.tree_alive(pid):
+            return EXIT_SUCCESS, ""
+        sleep(poll_interval)
+    seams.process.kill_tree(pid)
+    deadline = monotonic() + kill_grace
+    while monotonic() < deadline:
+        if not seams.process.tree_alive(pid):
+            return EXIT_SUCCESS, ""
+        sleep(poll_interval)
+    return EXIT_PROCESS_BOUNDARY_REJECTED, "smoke process group survived TERM and KILL"
+
+
+# --- Slice 2E, task 2.8: SIGINT/SIGTERM cleanup transition; SIGKILL recovery state ---
+
+EXIT_INTERRUPTED = 13
+INTERRUPT_SIGNALS = frozenset({signal.SIGINT, signal.SIGTERM})
+
+
+class CleanupRequest:
+    """Exactly-once cleanup-request transition for SIGINT/SIGTERM handlers."""
+
+    def __init__(self) -> None:
+        self._requested = False
+
+    def request(self) -> bool:
+        """Record the cleanup request; only the first call transitions."""
+        if self._requested:
+            return False
+        self._requested = True
+        return True
+
+    @property
+    def requested(self) -> bool:
+        return self._requested
+
+
+def interrupt_exit(
+    cleanup: CleanupRequest,
+    *,
+    signal_number: int,
+    token: str,
+    version_id: str,
+    seller_id: str,
+) -> tuple[int, str]:
+    """Exactly-one cleanup request plus a fail-closed, non-success result.
+
+    Only ``SIGINT`` and ``SIGTERM`` are handled interrupt signals; any other
+    signal (for example ``SIGKILL``, which cannot be caught by a handler) is
+    rejected. The result is never a success: an interrupted run must not
+    claim cleanup, and its active state stays in place for recovery.
+    """
+    if signal_number not in INTERRUPT_SIGNALS:
+        raise ValueError(
+            f"only SIGINT and SIGTERM are handled interrupt signals, got {signal_number!r}"
+        )
+    cleanup.request()
+    return _failure(
+        EXIT_INTERRUPTED,
+        f"interrupted by signal {signal_number}",
+        (token, version_id, seller_id),
+    )
+
+
+# --- Slice 2F, task 2.9: fake-testable cleanup transaction; ordered, no false success ---
+
+EXIT_CLEANUP_REJECTED = 14
+# Canonical cleanup order for the fixed-secret lifecycle (design data flow).
+CLEANUP_STEP_NAMES = ("disable", "destroy", "re-broker", "revoke")
+
+
+@dataclass(frozen=True)
+class CleanupPlan:
+    """Injectable cleanup steps run in canonical order by the 2.10 orchestration.
+
+    Each step is a zero-argument ``(exit_code, diagnostic)`` callable; 2.10
+    binds disable/destroy to ``version_operation`` with the captured explicit
+    version ID, re-broker to a fresh broker JWT (TTL <= 300s), and revoke to
+    the revocation call that requires that fresh JWT. Tests inject fakes.
+    """
+
+    disable: Callable[[], tuple[int, str]]
+    destroy: Callable[[], tuple[int, str]]
+    re_broker: Callable[[], tuple[int, str]]
+    revoke: Callable[[], tuple[int, str]]
+
+
+@dataclass(frozen=True)
+class CleanupOutcome:
+    """Ordered cleanup transaction result: attempted/failed steps, exit, diagnostic.
+
+    ``exit_code`` is ``EXIT_SUCCESS`` only when every eligible step succeeded;
+    otherwise ``EXIT_CLEANUP_REJECTED`` with a redaction-safe diagnostic
+    naming the failed steps. ``state_removable`` encodes the design rule that
+    the active state is removed only after destroy AND revoke succeed; a step
+    in ``attempted`` but not in ``failed`` succeeded.
+    """
+
+    attempted: tuple[str, ...]
+    failed: tuple[str, ...]
+    exit_code: int
+    diagnostic: str
+
+    @property
+    def state_removable(self) -> bool:
+        """True only when destroy and revoke both succeeded (design rule)."""
+        return (
+            "destroy" in self.attempted
+            and "destroy" not in self.failed
+            and "revoke" in self.attempted
+            and "revoke" not in self.failed
+        )
+
+
+def run_cleanup_plan(
+    plan: CleanupPlan,
+    *,
+    version_eligible: bool,
+    token_eligible: bool,
+    sensitive: tuple[str, str, str],
+) -> CleanupOutcome:
+    """Attempt eligible cleanup steps in canonical order; never report success on failure.
+
+    Eligibility: ``disable``/``destroy`` apply only when a version was captured
+    and ``re-broker``/``revoke`` only when a token was minted; ``revoke`` also
+    needs a successful fresh re-broker (the revocation JWT must be freshly
+    minted), so a re-broker failure skips it fail-closed. Every eligible step
+    is attempted in order even when an earlier step fails (ordered all-attempt
+    cleanup); the outcome fails closed with ``EXIT_CLEANUP_REJECTED`` when any
+    eligible step fails, and the diagnostic is redaction-safe for ``sensitive``
+    = (token, version_id, seller_id).
+    """
+    steps = (
+        ("disable", plan.disable, version_eligible),
+        ("destroy", plan.destroy, version_eligible),
+        ("re-broker", plan.re_broker, token_eligible),
+        ("revoke", plan.revoke, token_eligible),
+    )
+    attempted: list[str] = []
+    failed: list[str] = []
+    reasons: list[str] = []
+    re_broker_ok = False
+    for name, step, eligible in steps:
+        if not eligible:
+            continue
+        if name == "revoke" and not re_broker_ok:
+            continue
+        attempted.append(name)
+        exit_code, diagnostic = step()
+        if exit_code == EXIT_SUCCESS:
+            if name == "re-broker":
+                re_broker_ok = True
+            continue
+        failed.append(name)
+        reasons.append(f"{name}: {diagnostic}")
+    if failed:
+        token, version_id, seller_id = sensitive
+        return CleanupOutcome(
+            attempted=tuple(attempted),
+            failed=tuple(failed),
+            exit_code=EXIT_CLEANUP_REJECTED,
+            diagnostic=redacted_diagnostic(
+                "cleanup failed for: " + "; ".join(reasons),
+                token=token,
+                version_id=version_id,
+                seller_id=seller_id,
+            ),
+        )
+    return CleanupOutcome(
+        attempted=tuple(attempted),
+        failed=(),
+        exit_code=EXIT_SUCCESS,
+        diagnostic="",
+    )
+
+
+def finalize_result(
+    run_result: tuple[int, str],
+    cleanup: CleanupOutcome,
+    *,
+    sensitive: tuple[str, str, str],
+) -> tuple[int, str]:
+    """Compose the run result with the cleanup outcome; never a false success.
+
+    A failed run keeps its own failure exit code even when cleanup fully
+    succeeds (cleanup cannot rescue a failed run); when both fail, the
+    combined diagnostic stays redaction-safe. A successful run fails closed
+    with ``EXIT_CLEANUP_REJECTED`` when any eligible cleanup step failed.
+    """
+    token, version_id, seller_id = sensitive
+    if run_result[0] != EXIT_SUCCESS:
+        if cleanup.exit_code != EXIT_SUCCESS:
+            parts = [part for part in (run_result[1], cleanup.diagnostic) if part]
+            return run_result[0], redacted_diagnostic(
+                "; ".join(parts), token=token, version_id=version_id, seller_id=seller_id
+            )
+        return run_result
+    if cleanup.exit_code != EXIT_SUCCESS:
+        return EXIT_CLEANUP_REJECTED, cleanup.diagnostic
+    return run_result
