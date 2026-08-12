@@ -1,0 +1,319 @@
+"""Tests for the fixed-secret ZelerData smoke runner prerequisite gates.
+
+Slice 1 covers tasks 1.1-1.6: injectable clock/HTTP/command/lock/state/process
+seams with no import effects, the runner skeleton, and the four gates
+(required inputs, seller/formula authorization, documentation-like command
+paths, broker contract). Fakes only; ``run`` records zero seam calls.
+
+Slice 2A covers tasks 2.1-2.2: the ``versions add`` command with stdin-only
+token transport, strict explicit version-ID capture that never accepts
+``latest``, and access/disable/destroy argv that target exactly the captured
+version ID. Fakes only; no subprocess/network/GCP calls.
+
+Slice 2B covers task 2.3: the smoke child invocation through a
+``ProcessSeam``-based boundary — exactly one invocation, static argv with no
+credentials, and a child environment equal to a scrubbed baseline plus exactly
+the three inline smoke keys (hostile ``ZELERDATA_SMOKE_*``, broker/JWT/token
+inherited values excluded). Fakes only; no subprocess/network/GCP calls.
+
+Slice 2D covers task 2.6: fail-closed validation and handling for
+metacharacters, malformed command results, nonzero outcomes, and timeouts.
+``invoke_smoke_checked`` rejects metacharacter command paths and base URLs
+before any process is started; access/disable/destroy results are validated
+against canonical gcloud output; nonzero exits, malformed output, and seam
+timeouts fail closed with redaction-safe diagnostics. Fakes only; no
+subprocess/network/GCP calls.
+
+Slice 2E covers tasks 2.7-2.8: process-group control and interrupt
+semantics. ``terminate_descendant`` sends TERM to the forked descendant's
+process group and escalates to a bounded KILL only when a member survives,
+never leaving a survivor — proven both with a fake process seam and with a
+controlled local subprocess harness using real process-group signals (no
+external command, network, or GCP). ``CleanupRequest``/``interrupt_exit``
+prove that SIGINT/SIGTERM cause exactly one cleanup-request transition and a
+fail-closed non-success result, while SIGKILL/VM loss leaves the active
+state in place for recovery without any cleanup claim.
+
+Slice 2F covers task 2.9: the fake-testable cleanup transaction and failure
+injection. ``CleanupPlan``/``run_cleanup_plan`` attempt eligible
+disable/destroy/re-broker/revoke steps in canonical order with injected
+callables (revoke needs a successful fresh re-broker; an add failure leaves
+no version) and never report success when an eligible step fails;
+``finalize_result`` composes the run result with the cleanup outcome so a
+failed run or cleanup can never yield a success exit. Fakes only; no signal
+handlers, no ``run`` wiring; the active state is never removed (2.10).
+"""
+
+from __future__ import annotations
+
+import contextlib
+import dataclasses
+import json
+import os
+import signal
+import stat
+import subprocess
+import sys
+import time
+from collections.abc import Callable, Mapping
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any
+
+import pytest
+from infra.gce.operations import zelerdata_smoke_runner as runner
+
+NOW = datetime(2026, 8, 11, 12, 0, tzinfo=UTC)
+
+
+class _FakeSeam:
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+
+def _inputs(**overrides: Any) -> runner.RunnerInputs:
+    values: dict[str, Any] = {
+        "secret_name": runner.SECRET_NAME,
+        "base_url": "https://sheets.zeler.ai",
+        "seller_id": runner.ALLOWED_SELLER,
+        "formula_scope": runner.FORMULA_SCOPE,
+        "platform_user_id": "user-abc123",
+        "smoke_command": Path("/usr/local/bin/authenticated_smoke"),
+        "is_executable": lambda path: False,
+    }
+    values.update(overrides)
+    return runner.RunnerInputs(**values)
+
+
+def _seams() -> tuple[runner.Seams, list[Any]]:
+    fakes: list[Any] = [_FakeSeam() for _ in range(6)]
+    seams = runner.Seams(
+        clock=fakes[0],
+        http=fakes[1],
+        command=fakes[2],
+        lock=fakes[3],
+        state=fakes[4],
+        process=fakes[5],
+    )
+    return seams, fakes
+
+
+class _RecordingCommandRunner:
+    """Fake CommandRunner implementing the extended stdin-aware contract."""
+
+    def __init__(
+        self,
+        returncode: int = 0,
+        stdout: str = "",
+        stderr: str = "",
+        *,
+        raise_timeout: bool = False,
+    ) -> None:
+        self.returncode = returncode
+        self.stdout = stdout
+        self.stderr = stderr
+        self.raise_timeout = raise_timeout
+        self.calls: list[dict[str, Any]] = []
+
+    def run(
+        self,
+        argv: list[str],
+        *,
+        stdin: str,
+        env: Mapping[str, str],
+        timeout: float,
+        shell: bool = False,
+    ) -> tuple[int, str, str]:
+        self.calls.append({"argv": argv, "stdin": stdin, "env": env, "timeout": timeout})
+        if self.raise_timeout:
+            raise TimeoutError("command timed out")
+        return self.returncode, self.stdout, self.stderr
+
+
+def _seams_with_command(command: _RecordingCommandRunner) -> runner.Seams:
+    fakes: list[Any] = [_FakeSeam() for _ in range(5)]
+    return runner.Seams(
+        clock=fakes[0],
+        http=fakes[1],
+        command=command,
+        lock=fakes[2],
+        state=fakes[3],
+        process=fakes[4],
+    )
+
+
+def test_seams_require_injected_adapters_with_no_defaults() -> None:
+    with pytest.raises(TypeError):
+        runner.Seams()  # type: ignore[call-arg]
+    assert {field.name for field in dataclasses.fields(runner.Seams)} == {
+        "clock",
+        "http",
+        "command",
+        "lock",
+        "state",
+        "process",
+    }
+    assert all(field.default is dataclasses.MISSING for field in dataclasses.fields(runner.Seams))
+    assert not any(
+        "override" in field.name or field.name.startswith("allow")
+        for field in dataclasses.fields(runner.RunnerInputs)
+    )
+    seams, fakes = _seams()
+    assert [seams.clock, seams.http, seams.command, seams.lock, seams.state, seams.process] == fakes
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        seams.clock = object()  # type: ignore[misc, assignment]
+
+
+def test_module_import_pulls_no_network_dependencies() -> None:
+    probe = (
+        "import sys\n"
+        "from infra.gce.operations import zelerdata_smoke_runner\n"
+        "bad = [n for n in sys.modules if n == 'httpx' or n == 'google'\n"
+        "        or n.startswith('google.')]\n"
+        "print(','.join(bad))\n"
+    )
+    root = Path(__file__).resolve().parents[2]
+    pythonpath = os.pathsep.join([str(root), os.environ.get("PYTHONPATH", "")])
+    result = subprocess.run(  # noqa: S603 - static argv: interpreter plus a fixed probe.
+        [sys.executable, "-c", probe],
+        capture_output=True,
+        text=True,
+        env={**os.environ, "PYTHONPATH": pythonpath},
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == ""
+
+
+@pytest.mark.parametrize(
+    "secret_name,base_url",
+    [
+        ("", "https://sheets.zeler.ai"),
+        ("   ", "https://sheets.zeler.ai"),
+        (runner.SECRET_NAME, ""),
+        (runner.SECRET_NAME, "   "),
+        ("zelerdata-smoke-other", "https://sheets.zeler.ai"),
+    ],
+)
+def test_missing_or_wrong_secret_and_missing_base_url_are_rejected(
+    secret_name: str, base_url: str
+) -> None:
+    assert runner.required_input_errors(secret_name=secret_name, base_url=base_url) != []
+
+
+@pytest.mark.parametrize(
+    "seller_id,formula_scope",
+    [
+        ("99999999", runner.FORMULA_SCOPE),
+        (runner.ALLOWED_SELLER, "formulas:read"),
+    ],
+)
+def test_wrong_seller_or_formula_scope_is_rejected(seller_id: str, formula_scope: str) -> None:
+    assert runner.authorization_error(seller_id=seller_id, formula_scope=formula_scope) is not None
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["requirements.txt", "CMakeLists.txt", "README.sh"],
+)
+def test_documentation_like_command_names_are_rejected(name: str) -> None:
+    assert (
+        runner.documentation_like_reason(Path("/opt/scripts") / name, is_executable=lambda p: True)
+        is not None
+    )
+
+
+@pytest.mark.parametrize("suffix", [".md", ".mdx"])
+def test_executable_markdown_command_paths_are_rejected(suffix: str) -> None:
+    assert (
+        runner.documentation_like_reason(
+            Path(f"/opt/scripts/run{suffix}"), is_executable=lambda p: True
+        )
+        is not None
+    )
+
+
+def test_non_executable_markdown_and_real_command_paths_are_allowed() -> None:
+    assert (
+        runner.documentation_like_reason(Path("/opt/notes.md"), is_executable=lambda p: False)
+        is None
+    )
+    assert (
+        runner.documentation_like_reason(Path("/opt/smoke"), is_executable=lambda p: True) is None
+    )
+
+
+def test_broker_payload_is_compact_json_with_server_derived_user() -> None:
+    payload = runner.build_broker_payload(
+        runner.BrokerSigningRequest("user-abc123", "sheets", "admin:sheets", 300, NOW)
+    )
+    assert " " not in payload
+    body = json.loads(payload)
+    assert body["platform_user_id"] == "user-abc123"
+    assert body["module"] == "sheets" and body["scope"] == "admin:sheets"
+    assert body["ttl_seconds"] == 300 and body["iat"] == int(NOW.timestamp())
+
+
+@pytest.mark.parametrize("ttl_seconds", [301, 0])
+def test_broker_ttl_outside_one_to_300_seconds_is_rejected(ttl_seconds: int) -> None:
+    assert (
+        runner.broker_payload_error(
+            platform_user_id="user-abc123",
+            module=runner.BROKER_MODULE,
+            scope=runner.BROKER_SCOPE,
+            ttl_seconds=ttl_seconds,
+        )
+        is not None
+    )
+
+
+@pytest.mark.parametrize(
+    "platform_user_id,module,scope",
+    [
+        ("", runner.BROKER_MODULE, runner.BROKER_SCOPE),
+        ("user-abc123", "publicador", runner.BROKER_SCOPE),
+        ("user-abc123", runner.BROKER_MODULE, "admin:repricer"),
+    ],
+)
+def test_broker_contract_rejects_absent_user_or_wrong_identity(
+    platform_user_id: str, module: str, scope: str
+) -> None:
+    assert (
+        runner.broker_payload_error(
+            platform_user_id=platform_user_id, module=module, scope=scope, ttl_seconds=300
+        )
+        is not None
+    )
+
+
+@pytest.mark.parametrize(
+    "override",
+    [
+        {"secret_name": ""},
+        {"seller_id": "99999999"},
+        {"smoke_command": Path("/opt/requirements.txt")},
+        {"platform_user_id": ""},
+    ],
+)
+def test_run_rejects_invalid_gate_inputs_before_any_effect(override: dict[str, Any]) -> None:
+    seams, fakes = _seams()
+    assert runner.run(_inputs(**override), seams) != 0
+    for fake in fakes:
+        assert fake.calls == []
+
+
+def test_run_accepts_valid_inputs_without_any_effect_in_this_slice() -> None:
+    inputs = _inputs()
+    assert runner.required_input_errors(secret_name=inputs.secret_name, base_url=inputs.base_url) == []
+    assert runner.authorization_error(
+        seller_id=inputs.seller_id, formula_scope=inputs.formula_scope
+    ) is None
+    assert runner.documentation_like_reason(
+        inputs.smoke_command, is_executable=inputs.is_executable
+    ) is None
+    assert runner.broker_payload_error(
+        platform_user_id=inputs.platform_user_id,
+        module=runner.BROKER_MODULE,
+        scope=runner.BROKER_SCOPE,
+        ttl_seconds=runner.BROKER_TTL_SECONDS,
+    ) is None
