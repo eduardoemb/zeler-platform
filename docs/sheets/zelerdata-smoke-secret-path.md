@@ -113,8 +113,9 @@ This runbook contains no Mongo command. A local assistant must not query or reco
 
 ## Host CLI installation and non-operational preflight
 
-The host bundle is installed as a fixed, dedicated interpreter layout under
-`/opt/zeler-platform/zelerdata-smoke/`. It contains the existing
+The host bundle uses a fixed, dedicated interpreter layout under
+`/opt/zeler-platform/zelerdata-smoke/` and installs the runner and CLI at their
+repository package paths under `/opt/zeler-platform/infra/gce/operations/`. It contains the existing
 `authenticated_smoke.py`, a dedicated Python environment, and the static
 launcher from `infra/gce/operations/zelerdata_smoke_bundle/`. It contains no
 environment file, secret file, service unit, timer, or automatic execution

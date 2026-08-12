@@ -50,6 +50,11 @@ def test_cli_constants_are_fixed_and_only_platform_user_is_an_argument() -> None
     )
 
 
+def test_cli_runner_import_resolves_to_the_deployed_package_module() -> None:
+    source = Path(cli.__file__).read_text(encoding="utf-8")
+    assert "from infra.gce.operations import zelerdata_smoke_runner as runner" in source
+
+
 def test_help_does_not_construct_or_call_operational_adapters(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -424,3 +429,19 @@ def test_bundle_launcher_is_fixed_and_does_not_contain_secret_values() -> None:
     assert "/opt/zeler-platform/zelerdata-smoke/authenticated_smoke.py" in content
     assert "zeler-app-broker-secret" not in content
     assert "ZELER_APP_BROKER_SECRET" not in content
+
+
+def test_bundle_uses_repository_package_layout_for_runner_and_cli() -> None:
+    root = Path(__file__).parents[2]
+    cli_source = (root / "infra/gce/operations/zelerdata_smoke_cli.py").read_text(encoding="utf-8")
+    readme = (root / "infra/gce/operations/zelerdata_smoke_bundle/README.md").read_text(
+        encoding="utf-8"
+    )
+    launcher = (
+        root / "infra/gce/operations/zelerdata_smoke_bundle/launch_authenticated_smoke"
+    ).read_text(encoding="utf-8")
+
+    assert "from infra.gce.operations import zelerdata_smoke_runner" in cli_source
+    assert "/opt/zeler-platform/infra/gce/operations/zelerdata_smoke_cli.py" in readme
+    assert "-m infra.gce.operations.zelerdata_smoke_cli" in readme
+    assert "/opt/zeler-platform/zelerdata-smoke/authenticated_smoke.py" in launcher

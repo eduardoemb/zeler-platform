@@ -977,6 +977,22 @@ def test_state_read_returns_empty_when_file_absent(tmp_path: Path) -> None:
     assert store.read() == {}
 
 
+def test_state_read_fails_closed_when_existing_file_cannot_be_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "active.json"
+    path.write_text("{}", encoding="utf-8")
+    store = runner.AtomicStateStore(path)
+    monkeypatch.setattr(
+        Path,
+        "read_text",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError()),
+    )
+
+    with pytest.raises(runner.ActiveStateError, match="could not be read"):
+        store.read()
+
+
 # --- Slice 2D, task 2.6: metacharacters, nonzero, malformed, timeout -> fail closed ---
 
 DISABLE_OUTPUT = VERSION_RESOURCE
