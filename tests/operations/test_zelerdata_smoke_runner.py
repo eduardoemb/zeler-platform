@@ -1637,3 +1637,246 @@ def test_finalize_result_combines_run_and_cleanup_failures_redaction_safe() -> N
     assert "smoke leaked token=<redacted>" in final[1]
     assert "revoke failed seller=<redacted>" in final[1]
     assert all(sensitive not in final[1] for sensitive in _sensitive())
+
+
+# --- Slice 2G, task 2.10: final lifecycle orchestration ---
+
+
+class _LifecycleFake:
+    def __init__(self, *, smoke_returncode: int = 0, cleanup_failure: str | None = None) -> None:
+        self.calls: list[str] = []
+        self.command_calls: list[dict[str, Any]] = []
+        self.http_calls: list[dict[str, Any]] = []
+        self.state: dict[str, str] = {}
+        self.smoke_returncode = smoke_returncode
+        self.cleanup_failure = cleanup_failure
+        self.active_pid: int | None = None
+
+    def utcnow(self) -> datetime:
+        return NOW
+
+    def post(self, url: str, payload: str, headers: Mapping[str, str]) -> tuple[int, str]:
+        self.http_calls.append({"url": url, "payload": payload, "headers": headers})
+        self.calls.append("broker" if url == runner.BROKER_TOKEN_URL else "http:" + url)
+        if url == runner.BROKER_TOKEN_URL:
+            return 200, json.dumps({"access_token": "broker-jwt"})
+        if url == runner.EXTENSION_TOKEN_URL:
+            return 201, json.dumps({"id": "token-id", "token_once": SMOKE_TOKEN})
+        if url.endswith(":revoke"):
+            if self.cleanup_failure == "revoke":
+                return 500, "revoke failed"
+            return 200, "{}"
+        raise AssertionError(f"unexpected URL: {url}")
+
+    def run(
+        self,
+        argv: list[str],
+        *,
+        stdin: str,
+        env: Mapping[str, str],
+        timeout: float,
+        shell: bool,
+    ) -> tuple[int, str, str]:
+        operation = argv[3]
+        self.command_calls.append({"argv": argv, "stdin": stdin, "env": env, "shell": shell})
+        if operation == "add":
+            self.calls.append("add")
+            return 0, ADD_OUTPUT.format(version=BOUND_VERSION, secret=runner.SECRET_NAME), ""
+        self.calls.append(operation)
+        if operation == "access":
+            return 0, SMOKE_TOKEN, ""
+        if operation == self.cleanup_failure:
+            return 1, "cleanup failed", ""
+        output = {"disable": DISABLE_OUTPUT, "destroy": DESTROY_OUTPUT}[operation]
+        return 0, output.format(version=BOUND_VERSION, secret=runner.SECRET_NAME), ""
+
+    def acquire(self) -> bool:
+        self.calls.append("acquire")
+        return True
+
+    def release(self) -> None:
+        self.calls.append("release")
+
+    def read(self) -> Mapping[str, Any]:
+        return self.state
+
+    def write(self, state: Mapping[str, Any]) -> None:
+        self.state = dict(state)
+        self.calls.append("state:write")
+
+    def remove(self) -> None:
+        self.state = {}
+        self.calls.append("state:remove")
+
+    def run_smoke(
+        self,
+        argv: list[str],
+        *,
+        env: Mapping[str, str],
+        timeout: float,
+        shell: bool,
+    ) -> tuple[int, str, str]:
+        self.calls.append("smoke")
+        return self.smoke_returncode, "", "smoke failed" if self.smoke_returncode else ""
+
+    def terminate_tree(self, pid: int) -> None:
+        raise AssertionError("termination is not expected in this fake")
+
+    def kill_tree(self, pid: int) -> None:
+        raise AssertionError("termination is not expected in this fake")
+
+    def tree_alive(self, pid: int) -> bool:
+        return False
+
+
+class _InterruptingLifecycleFake(_LifecycleFake):
+    def __init__(self, *, termination_signal: signal.Signals = signal.SIGTERM) -> None:
+        super().__init__()
+        self.active_pid = 4242
+        self.termination_signal = termination_signal
+        self.installed_handlers: dict[signal.Signals, Callable[..., None]] = {}
+
+    def run_smoke(
+        self,
+        argv: list[str],
+        *,
+        env: Mapping[str, str],
+        timeout: float,
+        shell: bool,
+    ) -> tuple[int, str, str]:
+        self.calls.append("smoke")
+        self.installed_handlers[self.termination_signal](self.termination_signal, None)
+        return 0, "", ""
+
+
+def _lifecycle_seams(fake: _LifecycleFake) -> runner.Seams:
+    return runner.Seams(
+        clock=fake,
+        http=fake,
+        command=fake,
+        lock=fake,
+        state=fake,
+        process=fake,
+    )
+
+
+def _install_signal_fakes(
+    monkeypatch: pytest.MonkeyPatch, fake: _InterruptingLifecycleFake
+) -> None:
+    monkeypatch.setattr(signal, "getsignal", lambda _signal_number: None)
+
+    def install(signal_number: signal.Signals, handler: Callable[..., None]) -> None:
+        fake.installed_handlers[signal_number] = handler
+
+    monkeypatch.setattr(signal, "signal", install)
+
+
+@pytest.mark.parametrize("termination_signal", [signal.SIGINT, signal.SIGTERM])
+def test_run_terminates_active_smoke_group_before_requesting_cleanup(
+    monkeypatch: pytest.MonkeyPatch,
+    termination_signal: signal.Signals,
+) -> None:
+    fake = _InterruptingLifecycleFake(termination_signal=termination_signal)
+    _install_signal_fakes(monkeypatch, fake)
+    events: list[str] = []
+    original_interrupt_exit = runner.interrupt_exit
+
+    def terminate(*args: Any, **kwargs: Any) -> tuple[int, str]:
+        events.append("terminate")
+        assert args[1] == fake.active_pid
+        return runner.EXIT_SUCCESS, ""
+
+    def interrupt(*args: Any, **kwargs: Any) -> tuple[int, str]:
+        events.append("interrupt")
+        return original_interrupt_exit(*args, **kwargs)
+
+    monkeypatch.setattr(runner, "terminate_descendant", terminate)
+    monkeypatch.setattr(runner, "interrupt_exit", interrupt)
+    monkeypatch.setattr(os, "environ", {"PATH": "/bin"})
+
+    result = runner.run(_inputs(), _lifecycle_seams(fake))
+
+    assert result == runner.EXIT_INTERRUPTED
+    assert events == ["terminate", "interrupt"]
+    assert fake.calls.index("disable") > fake.calls.index("smoke")
+
+
+def test_run_fails_closed_and_preserves_state_when_group_termination_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake = _InterruptingLifecycleFake()
+    _install_signal_fakes(monkeypatch, fake)
+    monkeypatch.setattr(
+        runner,
+        "terminate_descendant",
+        lambda *args, **kwargs: (runner.EXIT_PROCESS_BOUNDARY_REJECTED, "survivor"),
+    )
+    monkeypatch.setattr(os, "environ", {"PATH": "/bin"})
+
+    result = runner.run(_inputs(), _lifecycle_seams(fake))
+
+    assert result == runner.EXIT_PROCESS_BOUNDARY_REJECTED
+    assert fake.state["version_id"] == BOUND_VERSION
+    assert "disable" not in fake.calls
+    assert "destroy" not in fake.calls
+    assert "state:remove" not in fake.calls
+
+
+def test_run_orchestrates_lifecycle_order_ttls_shell_boundary_and_removes_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake = _LifecycleFake()
+    monkeypatch.setattr(os, "environ", {"PATH": "/bin"})
+    result = runner.run(_inputs(), _lifecycle_seams(fake))
+
+    assert result == runner.EXIT_SUCCESS
+    assert fake.calls == [
+        "acquire",
+        "broker",
+        "http:/sheets/extension-tokens",
+        "add",
+        "state:write",
+        "access",
+        "smoke",
+        "disable",
+        "destroy",
+        "broker",
+        "http:/sheets/extension-tokens/token-id:revoke",
+        "state:remove",
+        "release",
+    ]
+    assert all(call["shell"] is False for call in fake.command_calls)
+    broker_bodies = [
+        json.loads(call["payload"])
+        for call in fake.http_calls
+        if call["url"] == runner.BROKER_TOKEN_URL
+    ]
+    assert len(broker_bodies) == 2 and all(body["ttl_seconds"] <= 300 for body in broker_bodies)
+    extension_body = json.loads(
+        next(
+            call["payload"] for call in fake.http_calls if call["url"] == runner.EXTENSION_TOKEN_URL
+        )
+    )
+    expires_at = datetime.fromisoformat(extension_body["expires_at"])
+    assert (expires_at - NOW).total_seconds() <= 3600
+    assert fake.state == {}
+
+
+@pytest.mark.parametrize("failure", ["smoke", "destroy", "revoke"])
+def test_run_preserves_failure_and_active_state_on_incomplete_cleanup(
+    failure: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake = _LifecycleFake(
+        smoke_returncode=3 if failure == "smoke" else 0,
+        cleanup_failure=None if failure == "smoke" else failure,
+    )
+    monkeypatch.setattr(os, "environ", {"PATH": "/bin"})
+    result = runner.run(_inputs(), _lifecycle_seams(fake))
+
+    assert result != runner.EXIT_SUCCESS
+    assert fake.calls[-1] == "release"
+    assert fake.state if failure in {"destroy", "revoke"} else fake.state == {}
+    if failure == "smoke":
+        assert fake.state == {}
+    else:
+        assert fake.state["version_id"] == BOUND_VERSION

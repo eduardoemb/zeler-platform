@@ -141,7 +141,7 @@ class FakeOAuthMotorClient:
 
 class FrozenDateTime(datetime):
     @classmethod
-    def now(cls, tz: Any = None) -> datetime:
+    def now(cls, tz: Any = None) -> datetime:  # type: ignore[override]
         return datetime(2026, 8, 10, 20, 30, tzinfo=UTC)
 
 
