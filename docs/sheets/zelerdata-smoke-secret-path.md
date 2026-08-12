@@ -107,6 +107,46 @@ This runbook contains no Mongo command. A local assistant must not query or reco
 - B1 authorization is granted separately from the runner and from tests.
 - The runner and its tests never trigger B1 automatically; B1 execution is a separately authorized operator work unit.
 
+## Host CLI installation and non-operational preflight
+
+The host bundle is installed as a fixed, dedicated interpreter layout under
+`/opt/zeler-platform/zelerdata-smoke/`. It contains the existing
+`authenticated_smoke.py`, a dedicated Python environment, and the static
+launcher from `infra/gce/operations/zelerdata_smoke_bundle/`. It contains no
+environment file, secret file, service unit, timer, or automatic execution
+hook. The existing smoke script is copied without modification.
+
+Verify the static bundle before installation:
+
+```bash
+sha256sum launch_authenticated_smoke README.md
+```
+
+Run the local CLI preflight without operational arguments:
+
+```bash
+/opt/zeler-platform/zelerdata-smoke/.venv/bin/python \
+  -m infra.gce.operations.zelerdata_smoke_cli --help
+```
+
+The `--help` path and invalid-input paths must not call HTTP, `gcloud`, the
+smoke process, or any runtime service. The only accepted operational argument
+is the approved `--platform-user-id`; project, seller, scope, URLs, secret
+names, smoke command, and paths are fixed in source. Do not pass token, secret,
+URL, path, seller, scope, project, or command overrides.
+
+The CLI reads `zeler-app-broker-secret` only in memory through the fixed
+`gcloud secrets versions access latest --project=zeler-platform-dev` command.
+It never writes or logs that value. Gateway requests use compact JSON HMAC with
+`X-Zeler-Client-Id: zeler-app`; Sheets requests use Bearer authorization.
+
+### Explicit execution prohibition
+
+B1 execution is never automatic. Do not add a systemd unit, timer, cron entry,
+startup hook, container entrypoint, or service restart for this bundle. A human
+operator must separately authorize each invocation after the readiness checklist
+is complete. `--help` is the only supported non-operational verification path.
+
 ## Run readiness checklist
 
 - [ ] Day-0 gate complete and recorded.
@@ -119,4 +159,7 @@ This runbook contains no Mongo command. A local assistant must not query or reco
 
 - Runner: `infra/gce/operations/zelerdata_smoke_runner.py`
 - Runner tests: `tests/operations/test_zelerdata_smoke_runner.py`
+- Host CLI/adapters: `infra/gce/operations/zelerdata_smoke_cli.py`
+- Static bundle: `infra/gce/operations/zelerdata_smoke_bundle/`
+- CLI tests: `tests/operations/test_zelerdata_smoke_cli.py`
 - SDD change: `zelerda-b1-smoke-secret-path` (Engram planning topics)
