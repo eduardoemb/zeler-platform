@@ -1270,3 +1270,4 @@ def finalize_result(
         return run_result
     if cleanup.exit_code != EXIT_SUCCESS:
         return EXIT_CLEANUP_REJECTED, cleanup.diagnostic
+    return run_result
