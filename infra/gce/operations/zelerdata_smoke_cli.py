@@ -221,7 +221,7 @@ def _approved_version_argv(argv: Sequence[str]) -> bool:
         return False
     if argv[4] == "latest" or not argv[4].isascii() or not argv[4].isdecimal():
         return False
-    if argv[5] != SMOKE_SECRET_NAME:
+    if argv[5] != f"--secret={SMOKE_SECRET_NAME}":
         return False
     if operation in {"access", "disable"}:
         return len(argv) == 6

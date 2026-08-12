@@ -447,7 +447,14 @@ def test_version_id_error_accepts_explicit_decimal_ids() -> None:
 
 def test_version_operation_argv_targets_exact_captured_id() -> None:
     argv = runner.version_operation_argv("disable", "42")
-    assert argv == ["gcloud", "secrets", "versions", "disable", "42", runner.SECRET_NAME]
+    assert argv == [
+        "gcloud",
+        "secrets",
+        "versions",
+        "disable",
+        "42",
+        f"--secret={runner.SECRET_NAME}",
+    ]
 
 
 def test_destroy_version_operation_argv_is_quiet_and_secret_free() -> None:
@@ -458,7 +465,7 @@ def test_destroy_version_operation_argv_is_quiet_and_secret_free() -> None:
         "versions",
         "destroy",
         "42",
-        runner.SECRET_NAME,
+        f"--secret={runner.SECRET_NAME}",
         "--quiet",
     ]
     assert "super-secret-token" not in argv
@@ -467,15 +474,29 @@ def test_destroy_version_operation_argv_is_quiet_and_secret_free() -> None:
 
 def test_version_lifecycle_argv_binds_one_captured_id_across_all_operations() -> None:
     access, disable, destroy = runner.version_lifecycle_argv("42")
-    assert access == ["gcloud", "secrets", "versions", "access", "42", runner.SECRET_NAME]
-    assert disable == ["gcloud", "secrets", "versions", "disable", "42", runner.SECRET_NAME]
+    assert access == [
+        "gcloud",
+        "secrets",
+        "versions",
+        "access",
+        "42",
+        f"--secret={runner.SECRET_NAME}",
+    ]
+    assert disable == [
+        "gcloud",
+        "secrets",
+        "versions",
+        "disable",
+        "42",
+        f"--secret={runner.SECRET_NAME}",
+    ]
     assert destroy == [
         "gcloud",
         "secrets",
         "versions",
         "destroy",
         "42",
-        runner.SECRET_NAME,
+        f"--secret={runner.SECRET_NAME}",
         "--quiet",
     ]
     for operation in (access, disable, destroy):
@@ -1627,7 +1648,9 @@ def test_cleanup_plan_wires_disable_destroy_to_captured_version_operation() -> N
     assert [argv[3] for argv in argv_order] == ["disable", "destroy"]
     # The captured explicit version ID flows into both operations, never latest.
     assert all(
-        argv[4] == BOUND_VERSION and "latest" not in argv and argv[5] == runner.SECRET_NAME
+        argv[4] == BOUND_VERSION
+        and "latest" not in argv
+        and argv[5] == f"--secret={runner.SECRET_NAME}"
         for argv in argv_order
     )
 

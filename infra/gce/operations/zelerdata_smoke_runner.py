@@ -332,7 +332,14 @@ def version_operation_argv(operation: str, version_id: str) -> list[str]:
     error = version_id_error(version_id)
     if error is not None:
         raise VersionIdError(error)
-    argv = ["gcloud", "secrets", "versions", operation, version_id, SECRET_NAME]
+    argv = [
+        "gcloud",
+        "secrets",
+        "versions",
+        operation,
+        version_id,
+        f"--secret={SECRET_NAME}",
+    ]
     if operation == "destroy":
         argv.append("--quiet")
     return argv
