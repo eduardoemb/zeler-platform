@@ -49,6 +49,7 @@ from __future__ import annotations
 import dataclasses
 import json
 import os
+import stat
 import subprocess
 import sys
 from collections.abc import Mapping
