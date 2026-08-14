@@ -409,8 +409,14 @@ class TestEnvTemplateContract:
         assert values["RABBITMQ_MANAGEMENT_URL"] == "https://management.test"
         assert values["GATEWAY_URL"] == "http://gateway:8080"
         assert values["SHEETS_URL"] == "http://sheets-api:8080"
+        assert values["SHEETS_SYNC_JOBS_POLLER_ENABLED"] == "true"
         assert values["RABBITMQ_MANAGEMENT_URL"] != values["RABBITMQ_URL"]
         assert values["GATEWAY_URL"] != values["GATEWAY_BASE_URL"]
+
+    def test_sheets_worker_template_enables_sync_jobs_poller(self) -> None:
+        template = (ENV_TEMPLATES_DIR / "sheets-worker.env.template").read_text()
+
+        assert "SHEETS_SYNC_JOBS_POLLER_ENABLED=true" in template
 
     def test_secrets_script_fetches_zeler_app_broker_secret_for_gateway_only(self) -> None:
         text = SECRETS_SCRIPT.read_text()

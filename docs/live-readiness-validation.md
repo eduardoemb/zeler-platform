@@ -21,6 +21,7 @@ Optional sandbox/live checks:
 
 - `RabbitMQ_MANAGEMENT_EXPORT`: path to a JSON export from RabbitMQ Management UI/API. Generate it outside this tool, then pass it as `--management-export "$RabbitMQ_MANAGEMENT_EXPORT"`.
 - `RABBITMQ_READINESS_MODE=amqp-passive`: preflight fallback for CloudAMQP plans that cannot export definitions. Pair it with `RABBITMQ_URL`/`CLOUDAMQP_URL` and run `python -m infra.rabbitmq.readiness --amqp-url "$RABBITMQ_URL"`.
+- `RABBITMQ_MANAGEMENT_URL`: CloudAMQP management API base URL (secret `cloudamqp-management-url`, e.g. `https://<user>:<pass>@woodpecker.rmq.cloudamqp.com`). Read-only checks such as `infra/operations/preflight.py` must receive this URL; the localhost default (`http://localhost:15672`) only applies to a locally hosted broker and will fail against CloudAMQP. Never print the URL or its credentials.
 - `MONGO_URI`: MongoDB URI for the target database. The readiness tool uses it in read-only metadata mode only.
 - `MODULE_REGISTRY_EXPORT`: optional path to a read-only export of live/sandbox `module_registry` documents. Generate it outside the readiness tool, then pass it as `--module-registry-export "$MODULE_REGISTRY_EXPORT"`.
 
@@ -39,6 +40,8 @@ Optional sandbox/live checks:
      --amqp-url "$RABBITMQ_URL"
    ```
    Passive mode cannot inspect bindings. Use a management export when available, or follow an explicitly approved idempotent topology apply with functional smoke.
+
+   Note on CloudAMQP plans: the `/api/definitions` export endpoint may return `401` on plans that do not allow definition exports (observed on the `zeler-platform-dev` CloudAMQP instance). In that case read-only checks can still use `/api/overview` and `/api/queues` through `RABBITMQ_MANAGEMENT_URL` (see above), and passive AMQP readiness remains the documented fallback. Do not interpret the `401` as a connectivity failure.
 3. Compare expected topology against the export:
    ```bash
    python -m infra.rabbitmq.readiness \
