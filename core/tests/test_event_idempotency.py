@@ -5,7 +5,7 @@ from typing import Any
 
 import pytest
 
-from zeler_platform_core.events.idempotency import IdempotencyStore
+from zeler_platform_core.events.idempotency import IdempotencyStore, scoped_processed_event_id
 
 
 class FakeInsertOneResult:
@@ -202,6 +202,34 @@ async def test_consumer_specific_processed_events_remain_independent_without_leg
         )
         is False
     )
+
+
+def test_scoped_processed_event_id_prepends_scope_descriptively() -> None:
+    assert (
+        scoped_processed_event_id("items:/items/MLA1:notif-1", "repricer")
+        == "repricer:items:/items/MLA1:notif-1"
+    )
+    assert (
+        scoped_processed_event_id("items:/items/MLA1:notif-1", "sheets")
+        == "sheets:items:/items/MLA1:notif-1"
+    )
+
+
+def test_scoped_processed_event_id_inserts_consumer_scope_without_collision() -> None:
+    assert (
+        scoped_processed_event_id("items_prices:/items/MLA1/prices:notif-1", "zeler.repricer.items")
+        == "zeler.repricer.items:items_prices:/items/MLA1/prices:notif-1"
+    )
+    assert (
+        scoped_processed_event_id("items_prices:/items/MLA1/prices:notif-1", "zeler.repricer.items")
+        != "zeler.repricer.items_prices:items_prices:/items/MLA1/prices:notif-1"
+    )
+
+
+def test_scoped_processed_event_id_is_stable_and_reversible_under_hashing() -> None:
+    key = scoped_processed_event_id("items:/items/MLA1:notif-1", "sheets")
+    assert key == scoped_processed_event_id("items:/items/MLA1:notif-1", "sheets")
+    assert ":" in key
 
 
 @pytest.mark.asyncio

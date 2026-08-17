@@ -1,0 +1,10 @@
+[
+  {
+    "keys": { "event_hash": 1 },
+    "options": { "name": "uniq_sheets_dlq_reconciliation_event_hash", "unique": true }
+  },
+  {
+    "keys": { "run_id": 1, "sequence": 1 },
+    "options": { "name": "uniq_sheets_dlq_reconciliation_run_sequence", "unique": true }
+  }
+]

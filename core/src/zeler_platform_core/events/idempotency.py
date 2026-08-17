@@ -85,5 +85,15 @@ class IdempotencyStore:
         return isinstance(expires_at, datetime) and expires_at > self._now_fn()
 
 
-def _scoped_processed_event_id(idempotency_key: str, scope_id: str) -> str:
+def scoped_processed_event_id(idempotency_key: str, scope_id: str) -> str:
+    """Build the canonical scoped `processed_events` document id.
+
+    The scoped id uniquely identifies one idempotency key within one scope
+    (module or consumer). It is the exact key that the Sheets DLQ
+    reconciliation must re-check immediately before any replay publish.
+    """
     return f"{scope_id}:{idempotency_key}"
+
+
+def _scoped_processed_event_id(idempotency_key: str, scope_id: str) -> str:
+    return scoped_processed_event_id(idempotency_key, scope_id)
