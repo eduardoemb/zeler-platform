@@ -11,16 +11,28 @@ Mongo write capability is exposed.
 
 from __future__ import annotations
 
+import argparse
 import asyncio
 import fcntl
+import hashlib
+import json
 import signal
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import BinaryIO, Protocol
 
+from infra.operations.sheets_dlq_reconcile import classify_and_sanitize_one
+
 BUFFER_CAPACITY = 24
 SNAPSHOT_CAP = 24
+DLQ_QUEUE_NAME = "zeler.sheets.events.dlq"
+
+# Closed set of AMQP delivery metadata the sanitized report may carry. All
+# other fields (raw payloads, ids, credentials, URIs, headers) never cross the
+# report boundary.
+AMQP_METADATA_ALLOWLIST = frozenset({"content_type", "delivery_mode", "exchange", "routing_key"})
 
 STATE_INIT = "INIT"
 STATE_LOCKED = "LOCKED"
@@ -190,7 +202,11 @@ class SnapshotCoordinator:
         self.state = STATE_INIT
         self.outcomes: list[str] = []
 
-    async def acquire(self, queue_name: str) -> list[SnapshotDelivery]:
+    async def acquire(
+        self,
+        queue_name: str,
+        on_acquire: Callable[[SnapshotDelivery], None] | None = None,
+    ) -> list[SnapshotDelivery]:
         """Acquire and retain unacked deliveries up to the snapshot cap."""
         self.state = STATE_ACQUIRING
         buffered: list[SnapshotDelivery] = []
@@ -199,6 +215,8 @@ class SnapshotCoordinator:
             if delivery is None:
                 break
             buffered.append(delivery)
+            if on_acquire is not None:
+                on_acquire(delivery)
             if len(buffered) >= self._buffer_capacity:
                 break
         return buffered
@@ -259,6 +277,7 @@ class SnapshotCoordinator:
         lock_path: str,
         runtime: WorkerRuntime,
         offline_consumers: int = 0,
+        on_acquire: Callable[[SnapshotDelivery], None] | None = None,
     ) -> list[str]:
         """Run preflight, acquire, ordered drain, and close.
 
@@ -279,7 +298,7 @@ class SnapshotCoordinator:
                 offline_consumers=offline_consumers,
             )
             self.state = STATE_PREFLIGHTED
-            buffered = await self.acquire(queue_name)
+            buffered = await self.acquire(queue_name, on_acquire=on_acquire)
             outcomes = await self.drain(buffered)
             await self._close_after_run()
             self.state = STATE_COMPLETE
@@ -298,3 +317,211 @@ class SnapshotCoordinator:
             raise
         finally:
             _release_flock(handle)
+
+
+# ---------------------------------------------------------------------------
+# SnapshotRecord + sanitized report (PR3)
+# ---------------------------------------------------------------------------
+
+_MISSING = object()
+
+
+@dataclass(frozen=True)
+class SnapshotRecord:
+    """One sanitized audit line: sequence, allowlisted metadata, fingerprint.
+
+    Delivery tags and raw bodies never cross this boundary; they remain only in
+    the bounded in-memory buffer.
+    """
+
+    sequence: int
+    metadata: dict[str, object] = field(default_factory=dict)
+    payload_fingerprint: str | None = None
+    classification: dict[str, str | None] = field(default_factory=dict)
+    nack_outcome: str = ""
+
+
+def _delivery_metadata(delivery: object) -> dict[str, object]:
+    """Return only allowlisted AMQP metadata taken from a delivery."""
+    result: dict[str, object] = {}
+    for key in AMQP_METADATA_ALLOWLIST:
+        value = getattr(delivery, key, _MISSING)
+        if value is not _MISSING:
+            result[key] = value
+    return result
+
+
+def _classify_delivery(delivery: object) -> dict[str, str | None]:
+    """Compose the canonical classifier and sanitize one delivery body.
+
+    Delegates to ``classify_and_sanitize_one`` so the four-class taxonomy
+    cannot drift from the reconciler. The adapter holds no in-process evidence,
+    so an empty mapping preserves the fail-closed unknown classification. Only
+    the three allowlisted verdict fields are returned; the decoded local view
+    dies on return so raw fields never reach the report.
+    """
+    body = getattr(delivery, "body", None)
+    if not isinstance(body, bytes):
+        raise TypeError("delivery body must be bytes for classification")
+    try:
+        message = json.loads(body)
+    except (ValueError, TypeError) as exc:
+        raise TypeError("delivery body is not valid JSON") from exc
+    if not isinstance(message, Mapping):
+        raise TypeError("delivery body must decode to a JSON object for classification")
+    return classify_and_sanitize_one(message, {})
+
+
+def build_snapshot_record(
+    *,
+    sequence: int,
+    delivery: object,
+    nack_outcome: str,
+    include_fingerprint: bool = False,
+) -> SnapshotRecord:
+    """Build a sanitized record: metadata, optional fingerprint, classification."""
+    metadata = _delivery_metadata(delivery)
+    fingerprint: str | None = None
+    if include_fingerprint:
+        body = getattr(delivery, "body", None)
+        if not isinstance(body, bytes):
+            raise TypeError("delivery body must be bytes for payload fingerprinting")
+        fingerprint = hashlib.sha256(body).hexdigest()
+    return SnapshotRecord(
+        sequence=sequence,
+        metadata=metadata,
+        payload_fingerprint=fingerprint,
+        classification=_classify_delivery(delivery),
+        nack_outcome=nack_outcome,
+    )
+
+
+def build_sanitized_report(records: Sequence[SnapshotRecord]) -> dict[str, list[dict[str, object]]]:
+    """Serialize sanitized records only; raw fields never appear."""
+    return {
+        "records": [
+            {
+                "sequence": record.sequence,
+                "metadata": dict(record.metadata),
+                "payload_fingerprint": record.payload_fingerprint,
+                "classification": dict(record.classification),
+                "nack_outcome": record.nack_outcome,
+            }
+            for record in records
+        ]
+    }
+
+
+async def _run_snapshot(
+    *,
+    broker: SnapshotBroker,
+    runtime: WorkerRuntime,
+    queue_name: str,
+    lock_path: str,
+    offline_consumers: int,
+    include_fingerprint: bool,
+    buffer_capacity: int,
+    snapshot_cap: int,
+) -> dict[str, list[dict[str, object]]]:
+    """Wire lock -> offline -> preflight -> acquire -> drain -> close -> emit.
+
+    Records are built from each acquired delivery (allowlisted metadata plus
+    optional fingerprint) and paired with the honest nack outcome in ascending
+    delivery-tag order. On any abort the coordinator closes the channel and
+    raises, so no report is emitted.
+    """
+    coordinator = SnapshotCoordinator(
+        broker=broker,
+        buffer_capacity=buffer_capacity,
+        snapshot_cap=snapshot_cap,
+    )
+    captured: list[tuple[int, object]] = []
+
+    def on_acquire(delivery: SnapshotDelivery) -> None:
+        captured.append((delivery.delivery_tag, delivery))
+
+    outcomes = await coordinator.run(
+        queue_name=queue_name,
+        lock_path=lock_path,
+        runtime=runtime,
+        offline_consumers=offline_consumers,
+        on_acquire=on_acquire,
+    )
+    deliveries_by_tag = [delivery for _, delivery in sorted(captured, key=lambda pair: pair[0])]
+    records = [
+        build_snapshot_record(
+            sequence=sequence,
+            delivery=delivery,
+            nack_outcome=outcome,
+            include_fingerprint=include_fingerprint,
+        )
+        for sequence, (delivery, outcome) in enumerate(
+            zip(deliveries_by_tag, outcomes, strict=True), start=1
+        )
+    ]
+    return build_sanitized_report(records)
+
+
+def _build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description=(
+            "Bounded R1 snapshot of distinct current Sheets DLQ messages. "
+            "Inactive by default: live broker execution requires injected ports "
+            "under separate authorization. Launches no shell or subprocess."
+        )
+    )
+    parser.add_argument("--lock-path", required=True, help="Same-host flock path")
+    parser.add_argument("--queue", default=DLQ_QUEUE_NAME, help="DLQ queue name")
+    parser.add_argument("--offline-consumers", type=int, default=0, help="Offline consumer count")
+    parser.add_argument(
+        "--buffer-capacity", type=int, default=BUFFER_CAPACITY, help="In-memory buffer cap (K)"
+    )
+    parser.add_argument(
+        "--snapshot-cap",
+        type=int,
+        default=SNAPSHOT_CAP,
+        help="Distinct snapshot cap",
+    )
+    parser.add_argument(
+        "--payload-fingerprint-sha256",
+        action="store_true",
+        default=False,
+        help="Include deterministic sha256 fingerprint of each raw body",
+    )
+    return parser
+
+
+def main(
+    argv: Sequence[str] | None = None,
+    *,
+    broker: SnapshotBroker | None = None,
+    runtime: WorkerRuntime | None = None,
+) -> int:
+    """Inactive-by-default CLI: never dials a broker without injected ports.
+
+    Without ``broker``/``runtime`` the CLI refuses to execute and contacts no
+    live broker or Mongo. Structured execution is only reachable through the
+    explicitly injected ports under separate authorization.
+    """
+    parser = _build_parser()
+    args = parser.parse_args(argv)
+    if broker is None or runtime is None:
+        parser.error("live broker execution requires injected ports under separate authorization")
+    report = asyncio.run(
+        _run_snapshot(
+            broker=broker,
+            runtime=runtime,
+            queue_name=args.queue,
+            lock_path=args.lock_path,
+            offline_consumers=args.offline_consumers,
+            include_fingerprint=args.payload_fingerprint_sha256,
+            buffer_capacity=args.buffer_capacity,
+            snapshot_cap=args.snapshot_cap,
+        )
+    )
+    print(json.dumps(report, sort_keys=True, separators=(",", ":")))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
