@@ -5,8 +5,8 @@ import inspect
 import json
 import pathlib
 import signal
-from collections.abc import Callable
-from typing import cast
+from collections.abc import Awaitable, Callable
+from typing import Any, cast
 
 import httpx
 import pytest
@@ -27,9 +27,16 @@ from infra.operations.sheets_dlq_snapshot_adapter import (
     same_host_exclusion,
 )
 from infra.operations.sheets_dlq_snapshot_runtime import (
+    EXECUTION_CANCELLED,
+    EXECUTION_CLOSE_ERROR,
+    EXECUTION_COMPLETED,
+    EXECUTION_MESSAGE_ERROR,
+    EXECUTION_PREFLIGHT_ERROR,
+    MESSAGE_NOT_OBTAINED,
     WORKER_HEALTH_URL,
     AioPikaSnapshotBroker,
     HttpSheetsWorkerRuntime,
+    run_snapshot_runtime,
 )
 from zeler_platform_test_support.sheets_dlq_snapshot import (
     FakeBroker,
@@ -530,7 +537,9 @@ async def test_get_one_manual_no_ack_and_empty() -> None:
         pytest.param(RuntimeError("boom"), pytest.raises(RuntimeError, match="boom"), id="fail"),
     ],
 )
-async def test_nack_requeue_requeue_true_multiple_false(nack_error, expect) -> None:
+async def test_nack_requeue_requeue_true_multiple_false(
+    nack_error: Exception | None, expect: Any
+) -> None:
     msg = FakeMsg(body=b"{}", delivery_tag=3, nack_error=nack_error)
     broker = _broker(FakeConnection(channel=FakeChannel(messages={DLQ: msg})))
     delivery = await broker.get_one(DLQ)
@@ -574,7 +583,7 @@ async def test_close_channel_idempotent_dedicated_and_partial() -> None:
         ),
     ],
 )
-async def test_worker_health_by_status(response, healthy) -> None:
+async def test_worker_health_by_status(response: httpx.Response, healthy: bool) -> None:
     async def handler(_request: httpx.Request) -> httpx.Response:
         return response
 
@@ -587,7 +596,9 @@ async def test_worker_health_by_status(response, healthy) -> None:
     [httpx.ReadTimeout, httpx.ConnectError],
     ids=["timeout", "transport"],
 )
-async def test_worker_unhealthy_on_timeout_or_transport(exc) -> None:
+async def test_worker_unhealthy_on_timeout_or_transport(
+    exc: type[httpx.TransportError],
+) -> None:
     async def handler(request: httpx.Request) -> httpx.Response:
         raise exc("boom", request=request)
 
@@ -605,3 +616,235 @@ async def test_worker_uses_fixed_get_url_without_redirects() -> None:
 
     assert await _runtime(httpx.MockTransport(handler)).worker_is_healthy() is True
     assert seen == [(httpx.URL(WORKER_HEALTH_URL), "GET")]
+
+
+# PR 2: runtime coordinator + reporter (tasks 3.1-3.5, 4.1, 4.2, 4.4, 4.5).
+
+
+class FailingNackFake(FakeBroker):
+    def __init__(self, *, fail_tag: int, exc: Exception, count: int) -> None:
+        super().__init__(
+            states={DLQ: queue_state(ready=count)},
+            messages={DLQ: [_body(i) for i in range(count)]},
+        )
+        self.fail_tag, self.exc = fail_tag, exc
+
+    async def nack_requeue(self, delivery: FakeMessage) -> None:
+        if delivery.delivery_tag == self.fail_tag:
+            self.calls.append(f"nack_requeue:{delivery.queue_name}:{delivery.delivery_tag}")
+            raise self.exc
+        await super().nack_requeue(delivery)
+
+
+class ClosingFailingFake(FakeBroker):
+    async def close_channel(self) -> None:
+        self.calls.append("channel_close")
+        raise RuntimeError("close boom")
+
+
+class CancellingGetFake(FakeBroker):
+    def __init__(self, *, cancel_after: int, count: int) -> None:
+        super().__init__(
+            states={DLQ: queue_state(ready=count)},
+            messages={DLQ: [_body(i) for i in range(count)]},
+        )
+        self.cancel_after, self.gets = cancel_after, 0
+
+    async def get_one(self, queue_name: str) -> FakeMessage | None:
+        self.gets += 1
+        if self.gets > self.cancel_after:
+            raise asyncio.CancelledError()
+        return await super().get_one(queue_name)
+
+
+def _run(broker: FakeBroker, *, lock: str, healthy: bool = True) -> Awaitable[dict[str, object]]:
+    return run_snapshot_runtime(
+        broker=cast(SnapshotBroker, broker),
+        runtime=FakeRuntime(healthy=healthy),
+        queue_name=DLQ,
+        limit=24,
+        lock_path=lock,
+    )
+
+
+def _results(report: dict[str, object]) -> list[dict[str, object]]:
+    return cast(list[dict[str, object]], report["message_results"])
+
+
+@pytest.mark.asyncio
+async def test_preflight_lock_contention_fails_before_any_io(tmp_path: pathlib.Path) -> None:
+    lock = str(tmp_path / "l.lock")
+    broker = FakeBroker(states={DLQ: queue_state(consumers=0)})
+    with same_host_exclusion(lock):
+        report = await _run(broker, lock=lock)
+    assert report["execution_outcome"] == EXECUTION_PREFLIGHT_ERROR
+    assert report["error_code"] == 5
+    assert "inspect:DLQ" not in broker.calls
+    assert not any(c.startswith("get_one:") for c in broker.calls)
+
+
+@pytest.mark.asyncio
+async def test_preflight_health_fails_after_connectivity_with_zero_gets(
+    tmp_path: pathlib.Path,
+) -> None:
+    lock = str(tmp_path / "l.lock")
+    broker = FakeBroker(
+        states={DLQ: queue_state(ready=2, consumers=0)},
+        messages={DLQ: [_body(i) for i in range(2)]},
+    )
+    report = await _run(broker, lock=lock, healthy=False)
+    assert report["execution_outcome"] == EXECUTION_PREFLIGHT_ERROR
+    assert report["error_code"] == 5
+    assert f"inspect:{DLQ}" in broker.calls  # connectivity reached
+    assert not any(c.startswith("get_one:") for c in broker.calls)  # health blocked get
+
+
+@pytest.mark.asyncio
+async def test_runtime_preflight_fails_closed_on_live_consumers(
+    tmp_path: pathlib.Path,
+) -> None:
+    lock = str(tmp_path / "l.lock")
+    broker = FakeBroker(states={DLQ: queue_state(consumers=2)})
+    report = await _run(broker, lock=lock)
+    assert report["execution_outcome"] == EXECUTION_PREFLIGHT_ERROR
+    assert not any(c.startswith("get_one:") for c in broker.calls)
+
+
+@pytest.mark.asyncio
+async def test_universal_nack_ascending_one_per_delivery_continues_after_failure(
+    tmp_path: pathlib.Path,
+) -> None:
+    broker = FailingNackFake(fail_tag=2, exc=NackRequeueError("fail"), count=3)
+    report = await _run(broker, lock=str(tmp_path / "l.lock"))
+    nacks = [c for c in broker.calls if c.startswith("nack_requeue:")]
+    assert nacks == [
+        f"nack_requeue:{DLQ}:1",
+        f"nack_requeue:{DLQ}:2",
+        f"nack_requeue:{DLQ}:3",
+    ]
+    assert [m["outcome"] for m in _results(report)] == [
+        "requeue_requested",
+        "requeue_send_failed",
+        "requeue_requested",
+    ]
+    assert report["execution_outcome"] == EXECUTION_MESSAGE_ERROR
+    assert report["error_code"] == 6
+
+
+@pytest.mark.asyncio
+async def test_coordinator_maps_transport_loss_to_outcome_unknown(
+    tmp_path: pathlib.Path,
+) -> None:
+    broker = FailingNackFake(fail_tag=2, exc=BrokerChannelLostError("lost"), count=3)
+    report = await _run(broker, lock=str(tmp_path / "l.lock"))
+    assert [m["outcome"] for m in _results(report)] == [
+        "requeue_requested",
+        "outcome_unknown",
+        "requeue_requested",
+    ]
+    assert report["execution_outcome"] == EXECUTION_MESSAGE_ERROR
+
+
+@pytest.mark.asyncio
+async def test_cancellation_nacks_acquired_and_closes_reports_cancelled(
+    tmp_path: pathlib.Path,
+) -> None:
+    broker = CancellingGetFake(cancel_after=1, count=3)
+    report = await _run(broker, lock=str(tmp_path / "l.lock"))
+    assert [c for c in broker.calls if c.startswith("nack_requeue:")] == [f"nack_requeue:{DLQ}:1"]
+    assert "channel_close" in broker.calls
+    assert report["execution_outcome"] == EXECUTION_CANCELLED
+    assert report["error_code"] == 6
+
+
+@pytest.mark.asyncio
+async def test_close_error_precedence_reports_close_error(
+    tmp_path: pathlib.Path,
+) -> None:
+    broker = ClosingFailingFake(
+        states={DLQ: queue_state(ready=1)},
+        messages={DLQ: [_body(0)]},
+    )
+    report = await _run(broker, lock=str(tmp_path / "l.lock"))
+    assert report["execution_outcome"] == EXECUTION_CLOSE_ERROR
+    assert report["error_code"] == 7
+
+
+@pytest.mark.asyncio
+async def test_empty_queue_reports_message_not_obtained(
+    tmp_path: pathlib.Path,
+) -> None:
+    broker = FakeBroker(states={DLQ: queue_state(ready=0)}, messages={DLQ: []})
+    report = await _run(broker, lock=str(tmp_path / "l.lock"))
+    assert [m["outcome"] for m in _results(report)] == [MESSAGE_NOT_OBTAINED]
+    assert report["execution_outcome"] == EXECUTION_COMPLETED
+    assert report["error_code"] == 0
+
+
+@pytest.mark.asyncio
+async def test_reporter_completed_sanitized_without_secrets(
+    tmp_path: pathlib.Path,
+) -> None:
+    broker = FakeBroker(
+        states={DLQ: queue_state(ready=3)},
+        messages={DLQ: [_body(i) for i in range(3)]},
+    )
+    report = await _run(broker, lock=str(tmp_path / "l.lock"))
+    assert report["execution_outcome"] == EXECUTION_COMPLETED
+    assert report["preflight"] is True
+    assert report["close"] is True
+    assert report["requeue_confirmation"] == "unavailable"
+    assert report["error_code"] == 0
+    assert [m["sequence"] for m in _results(report)] == [1, 2, 3]
+    assert [m["outcome"] for m in _results(report)] == ["requeue_requested"] * 3
+    flat = json.dumps(report)
+    for secret in ("msg-", "message_id", "headers", "token", "uri"):
+        assert secret not in flat
+
+
+# PR2a native-review correction: unexpected get_one exception must still nack,
+# close, and emit a sanitized report (findings R3-001 / R4-001).
+
+
+class ExplodingGetFake(FakeBroker):
+    def __init__(self, *, after: int, count: int, close_error: Exception | None = None) -> None:
+        super().__init__(
+            states={DLQ: queue_state(ready=count)},
+            messages={DLQ: [_body(i) for i in range(count)]},
+        )
+        self.after, self.gets, self.close_error = after, 0, close_error
+
+    async def get_one(self, queue_name: str) -> FakeMessage | None:
+        self.gets += 1
+        if self.gets > self.after:
+            raise RuntimeError("boom")
+        return await super().get_one(queue_name)
+
+    async def close_channel(self) -> None:
+        self.calls.append("channel_close")
+        if self.close_error is not None:
+            raise self.close_error
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("close_error", "outcome", "error_code"),
+    [
+        (None, EXECUTION_MESSAGE_ERROR, 6),
+        (RuntimeError("boom"), EXECUTION_CLOSE_ERROR, 7),
+    ],
+    ids=["message", "close"],
+)
+async def test_unexpected_get_failure_nacks_and_reports(
+    tmp_path: pathlib.Path,
+    close_error: Exception | None,
+    outcome: str,
+    error_code: int,
+) -> None:
+    broker = ExplodingGetFake(after=1, count=3, close_error=close_error)
+    report = await _run(broker, lock=str(tmp_path / "l.lock"))
+    assert [c for c in broker.calls if c.startswith("nack_requeue:")] == [f"nack_requeue:{DLQ}:1"]
+    assert "channel_close" in broker.calls
+    assert report["execution_outcome"] == outcome
+    assert report["error_code"] == error_code
+    assert not any(s in json.dumps(report) for s in ("boom", "RuntimeError", "msg-", "uri"))
