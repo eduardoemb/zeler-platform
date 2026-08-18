@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 
 
 @dataclass
@@ -79,3 +79,103 @@ class FakeRuntime:
 
     async def worker_is_healthy(self) -> bool:
         return self.healthy
+
+
+# Hermetic aio_pika seam (PR 1: broker + worker runtime).
+
+
+@dataclass
+class FakeDecl:
+    message_count: int = 0
+    consumer_count: int = 0
+
+
+@dataclass
+class FakeQueue:
+    declaration_result: FakeDecl = field(default_factory=FakeDecl)
+
+
+class FakeMsg:
+    """Fake aio_pika delivery recording nack requests."""
+
+    def __init__(
+        self, *, body: bytes = b"{}", delivery_tag: int = 0, nack_error: Exception | None = None
+    ) -> None:
+        self.body, self.delivery_tag, self.nack_error = body, delivery_tag, nack_error
+        self.nacks: list[tuple[bool, bool]] = []
+
+    async def nack(self, *, requeue: bool = True, multiple: bool = False) -> None:
+        self.nacks.append((requeue, multiple))
+        if self.nack_error is not None:
+            raise self.nack_error
+
+
+class FakeChannel:
+    """Fake aio_pika channel exposing failure-injecting seams."""
+
+    def __init__(
+        self,
+        *,
+        queue: FakeQueue | None = None,
+        messages: dict[str, FakeMsg | None] | None = None,
+        calls: list[str] | None = None,
+    ) -> None:
+        self.queue, self.messages = queue or FakeQueue(), messages or {}
+        self.calls = calls if calls is not None else []
+        self.passives: list[bool] = []
+        self.no_acks: list[bool] = []
+
+    async def declare_queue(
+        self, name: str, *, passive: bool = True, timeout: float | None = None
+    ) -> FakeQueue:
+        self.passives.append(passive)
+        self.calls.append(f"declare:{name}")
+        return self.queue
+
+    async def get(
+        self, queue: str, *, no_ack: bool = False, fail: bool = False, timeout: float | None = None
+    ) -> FakeMsg | None:
+        self.no_acks.append(no_ack)
+        self.calls.append(f"get:{queue}")
+        return self.messages.get(queue)
+
+    async def close(self) -> None:
+        self.calls.append("channel_close")
+
+
+class FakeConnection:
+    """Fake aio_pika connection yielding a dedicated fake channel."""
+
+    def __init__(
+        self,
+        *,
+        channel: FakeChannel | None = None,
+        calls: list[str] | None = None,
+        channel_error: Exception | None = None,
+    ) -> None:
+        self._channel, self.calls, self.channel_error = (
+            channel or FakeChannel(),
+            calls if calls is not None else [],
+            channel_error,
+        )
+
+    async def channel(self) -> FakeChannel:
+        if self.channel_error is not None:
+            raise self.channel_error
+        self.calls.append("new_channel")
+        return self._channel
+
+    async def close(self) -> None:
+        self.calls.append("connection_close")
+
+
+class FakeConnect:
+    """Lazy aio_pika.connect seam; records attempts, pops injected connections."""
+
+    def __init__(self, connections: list[FakeConnection] | None = None) -> None:
+        self.connections = connections or [FakeConnection()]
+        self.calls: list[str] = []
+
+    async def __call__(self, url: str = "", **_kwargs: object) -> FakeConnection:
+        self.calls.append(url)
+        return self.connections.pop(0)
