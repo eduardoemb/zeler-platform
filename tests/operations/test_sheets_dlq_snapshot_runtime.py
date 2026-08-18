@@ -8,6 +8,7 @@ import signal
 from collections.abc import Callable
 from typing import cast
 
+import httpx
 import pytest
 from infra.operations.sheets_dlq_snapshot_adapter import (
     BUFFER_CAPACITY,
@@ -25,9 +26,20 @@ from infra.operations.sheets_dlq_snapshot_adapter import (
     run_preflight,
     same_host_exclusion,
 )
+from infra.operations.sheets_dlq_snapshot_runtime import (
+    WORKER_HEALTH_URL,
+    AioPikaSnapshotBroker,
+    HttpSheetsWorkerRuntime,
+)
 from zeler_platform_test_support.sheets_dlq_snapshot import (
     FakeBroker,
+    FakeChannel,
+    FakeConnect,
+    FakeConnection,
+    FakeDecl,
     FakeMessage,
+    FakeMsg,
+    FakeQueue,
     FakeRuntime,
     queue_state,
 )
@@ -435,3 +447,161 @@ def test_completion_proof_exists_only_for_orderly_complete() -> None:
     # reach COMPLETE, so no completion proof exists for those terminations.
     for state in ("INIT", "ACQUIRING", "DRAINING", "FAILED"):
         assert completion_proof(state) is None
+
+
+# PR 1: sheets_dlq_snapshot_runtime — module separation + narrow adapters.
+
+
+def _broker(conn: FakeConnection, url: str = "amqp://test") -> AioPikaSnapshotBroker:
+    return AioPikaSnapshotBroker(url, connect=FakeConnect(connections=[conn]))
+
+
+def _runtime(handler: httpx.MockTransport) -> HttpSheetsWorkerRuntime:
+    return HttpSheetsWorkerRuntime(
+        client_factory=lambda: httpx.AsyncClient(
+            transport=handler, timeout=2.0, follow_redirects=False
+        )
+    )
+
+
+def test_runtime_module_separate_and_adapter_inert(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    import infra.operations.sheets_dlq_snapshot_adapter as adapter_mod
+    import infra.operations.sheets_dlq_snapshot_runtime as runtime_mod
+
+    assert runtime_mod.__file__ != adapter_mod.__file__
+    with pytest.raises(SystemExit) as exc:
+        adapter_mod.main(["--lock-path", "snap.lock"], broker=None, runtime=None)
+    assert exc.value.code == 2
+    assert "injected ports" in capsys.readouterr().err
+
+
+def test_broker_and_runtime_narrow_surfaces() -> None:
+    broker = set(AioPikaSnapshotBroker.__dict__)
+    runtime = set(HttpSheetsWorkerRuntime.__dict__)
+    assert {"inspect_queue", "get_one", "nack_requeue", "close_channel"} <= broker
+    assert "worker_is_healthy" in runtime
+    for word in "ack publish purge delete quarantine replay nack mutate".split():  # noqa: SIM905
+        assert word not in broker
+        assert word not in runtime
+
+
+def test_runtime_module_hermetic_imports() -> None:
+    src = pathlib.Path("infra/operations/sheets_dlq_snapshot_runtime.py").read_text(
+        encoding="utf-8"
+    )
+    for word in ("motor", "pymongo", "subprocess", "os.system", "Popen", "docker", "socket"):
+        assert word not in src
+    assert "aio_pika.connect" in src
+    assert "aio_pika.connect_robust" not in src
+
+
+@pytest.mark.asyncio
+async def test_broker_connects_lazily_and_inspects_passive() -> None:
+    connect = FakeConnect()
+    lazy = AioPikaSnapshotBroker("amqp://test", connect=connect)
+    assert connect.calls == []
+    await lazy.inspect_queue(DLQ)
+    assert connect.calls == ["amqp://test"]
+    ch = FakeChannel(queue=FakeQueue(declaration_result=FakeDecl(message_count=5)))
+    inspection = await _broker(FakeConnection(channel=ch)).inspect_queue(DLQ)
+    assert inspection is not None
+    assert ch.passives == [True]
+    assert (inspection.ready, inspection.consumers, inspection.unacked) == (5, 0, -1)
+
+
+@pytest.mark.asyncio
+async def test_get_one_manual_no_ack_and_empty() -> None:
+    msg = FakeMsg(body=b'{"a":1}', delivery_tag=7)
+    ch = FakeChannel(messages={DLQ: msg})
+    delivery = await _broker(FakeConnection(channel=ch)).get_one(DLQ)
+    assert delivery is not None and ch.no_acks == [False]
+    assert (delivery.delivery_tag, delivery.body) == (7, b'{"a":1}')
+    empty = await _broker(FakeConnection(channel=FakeChannel(messages={DLQ: None}))).get_one(DLQ)
+    assert empty is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "nack_error,expect",
+    [
+        pytest.param(None, None, id="ok"),
+        pytest.param(RuntimeError("boom"), pytest.raises(RuntimeError, match="boom"), id="fail"),
+    ],
+)
+async def test_nack_requeue_requeue_true_multiple_false(nack_error, expect) -> None:
+    msg = FakeMsg(body=b"{}", delivery_tag=3, nack_error=nack_error)
+    broker = _broker(FakeConnection(channel=FakeChannel(messages={DLQ: msg})))
+    delivery = await broker.get_one(DLQ)
+    if expect is None:
+        await broker.nack_requeue(cast(SnapshotDelivery, delivery))
+        assert msg.nacks == [(True, False)]
+    else:
+        with expect:
+            await broker.nack_requeue(cast(SnapshotDelivery, delivery))
+
+
+@pytest.mark.asyncio
+async def test_close_channel_idempotent_dedicated_and_partial() -> None:
+    ch_a = FakeChannel()
+    conn_a = FakeConnection(channel=ch_a)
+    conn_b = FakeConnection()
+    a = _broker(conn_a, "amqp://a")
+    b = _broker(conn_b, "amqp://b")
+    await a.inspect_queue(DLQ)
+    await b.inspect_queue(DLQ)
+    await a.close_channel()
+    await a.close_channel()
+    assert ch_a.calls.count("channel_close") == 1
+    assert conn_a.calls.count("connection_close") == 1
+    assert conn_b.calls.count("connection_close") == 0
+    partial = _broker(FakeConnection(channel_error=RuntimeError("chan")))
+    with pytest.raises(RuntimeError, match="chan"):
+        await partial.inspect_queue(DLQ)
+    await partial.close_channel()
+    await AioPikaSnapshotBroker("amqp://x", connect=FakeConnect()).close_channel()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "response,healthy",
+    [
+        pytest.param(httpx.Response(200), True, id="200"),
+        pytest.param(httpx.Response(500), False, id="500"),
+        pytest.param(
+            httpx.Response(302, headers={"location": "http://elsewhere"}), False, id="302"
+        ),
+    ],
+)
+async def test_worker_health_by_status(response, healthy) -> None:
+    async def handler(_request: httpx.Request) -> httpx.Response:
+        return response
+
+    assert await _runtime(httpx.MockTransport(handler)).worker_is_healthy() is healthy
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "exc",
+    [httpx.ReadTimeout, httpx.ConnectError],
+    ids=["timeout", "transport"],
+)
+async def test_worker_unhealthy_on_timeout_or_transport(exc) -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        raise exc("boom", request=request)
+
+    assert await _runtime(httpx.MockTransport(handler)).worker_is_healthy() is False
+
+
+@pytest.mark.asyncio
+async def test_worker_uses_fixed_get_url_without_redirects() -> None:
+    assert WORKER_HEALTH_URL == "http://sheets-worker:8080/health"
+    seen: list[tuple[httpx.URL, str]] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        seen.append((request.url, request.method))
+        return httpx.Response(200)
+
+    assert await _runtime(httpx.MockTransport(handler)).worker_is_healthy() is True
+    assert seen == [(httpx.URL(WORKER_HEALTH_URL), "GET")]
