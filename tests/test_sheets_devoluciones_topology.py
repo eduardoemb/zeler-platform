@@ -35,6 +35,7 @@ class FakeMessage:
     queue_name: str
     body: bytes
     headers: dict[str, object]
+    delivery_tag: int = 0
 
 
 class FakeBroker:
@@ -56,6 +57,7 @@ class FakeBroker:
         self.bindings: set[tuple[str, str, str]] = set()
         self.deleted_queues: list[str] = []
         self.deleted_exchanges: list[str] = []
+        self._delivery_tag_counter = 0
 
     async def inspect_queue(
         self,
@@ -97,6 +99,24 @@ class FakeBroker:
         self.states[queue_name] = replace(state, unacked=state.unacked + 1)
         self.calls.append(f"get:{queue_name}:{message.body.decode()}")
         return message
+
+    async def get_one(self, queue_name: str) -> FakeMessage | None:
+        self._delivery_tag_counter += 1
+        message = await self.get_message(queue_name)
+        if message is None:
+            return None
+        message.delivery_tag = self._delivery_tag_counter
+        self.calls.append(f"get_one:{queue_name}:{message.delivery_tag}:{message.body.decode()}")
+        return message
+
+    async def nack_requeue(self, delivery: FakeMessage) -> None:
+        self.calls.append(f"nack_requeue:{delivery.queue_name}:{delivery.delivery_tag}")
+        state = self.states[delivery.queue_name]
+        self.states[delivery.queue_name] = replace(state, unacked=state.unacked - 1)
+        self.messages.setdefault(delivery.queue_name, []).append(delivery)
+
+    async def close_channel(self) -> None:
+        self.calls.append("channel_close")
 
     async def publish_confirmed(self, queue_name: str, message: FakeMessage) -> None:
         self.calls.append(f"confirm:{queue_name}:{message.body.decode()}")
