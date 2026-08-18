@@ -43,10 +43,11 @@ class FakeCollection:
 class FakeDb:
     def __init__(self) -> None:
         self.module_registry = FakeCollection()
+        self.sheets_formula_audit = FakeCollection()
 
     def __getitem__(self, name: str) -> FakeCollection:
-        assert name == "module_registry"
-        return self.module_registry
+        assert name in {"module_registry", "sheets_formula_audit"}
+        return self.module_registry if name == "module_registry" else self.sheets_formula_audit
 
 
 def test_sheets_manifest_validates_owned_collections_and_readonly_scopes() -> None:
@@ -68,6 +69,7 @@ def test_sheets_manifest_validates_owned_collections_and_readonly_scopes() -> No
         "sheets_sync_jobs",
         "google_oauth_tokens",
         "seller_unit_costs",
+        "sheets_formula_audit",
     ]
     assert manifest.allowed_meli_scopes == [
         "GET /items",
@@ -150,6 +152,7 @@ async def test_sheets_startup_registers_manifest_and_health_ready() -> None:
             "sheets_sync_jobs",
             "google_oauth_tokens",
             "seller_unit_costs",
+            "sheets_formula_audit",
         ],
         "health_endpoint": "/health",
         "display_identity": {

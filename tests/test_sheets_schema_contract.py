@@ -770,6 +770,17 @@ def test_sheets_manifest_owns_google_oauth_tokens_not_transient_state() -> None:
     assert "google_oauth_state" not in manifest.owned_collections
 
 
+def test_sheets_manifest_and_seed_own_formula_audit_collection() -> None:
+    from zeler_platform_core.runtime.manifest import validate_manifest
+
+    manifest = validate_manifest("modules/sheets/manifest.yaml")
+    seed = json.loads((ROOT / "infra/mongo/seeds/module_registry.admin_clients.json").read_text())
+    sheets_doc = next(doc for doc in seed["documents"] if doc["_id"] == "sheets")
+
+    assert "sheets_formula_audit" in manifest.owned_collections
+    assert "sheets_formula_audit" in sheets_doc["owned_collections"]
+
+
 def test_sheets_manifest_allows_listing_prices_scope() -> None:
     from zeler_platform_core.runtime.manifest import validate_manifest
 

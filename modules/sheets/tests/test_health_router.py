@@ -40,14 +40,15 @@ class FakeCollection:
 class FakeDb:
     def __init__(self) -> None:
         self.module_registry = FakeCollection()
+        self.sheets_formula_audit = FakeCollection()
 
     async def command(self, command: str) -> dict[str, int]:
         assert command == "ping"
         return {"ok": 1}
 
     def __getitem__(self, name: str) -> FakeCollection:
-        assert name == "module_registry"
-        return self.module_registry
+        assert name in {"module_registry", "sheets_formula_audit"}
+        return self.module_registry if name == "module_registry" else self.sheets_formula_audit
 
 
 def _connect_ok() -> Callable[..., Awaitable[FakeRabbitConnection]]:

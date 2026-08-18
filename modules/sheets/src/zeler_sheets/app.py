@@ -14,6 +14,7 @@ from zeler_platform_core.runtime.registration import register_module, registrati
 from zeler_sheets.api import build_router
 from zeler_sheets.consumer import claims_queue_state
 from zeler_sheets.extension_token_encryption import build_extension_token_cipher
+from zeler_sheets.formulas.audit import FormulaAuditService
 from zeler_sheets.google_oauth_router import build_router as build_google_oauth_router
 from zeler_sheets.sheets_config import SheetsSettings, get_settings
 
@@ -88,7 +89,8 @@ def build_app(
             return False, "registry_fingerprint_mismatch"
         return True, "registry_fingerprint_match"
 
-    app.include_router(build_router())
+    formula_audit_hook = FormulaAuditService(db=mongo_db).record
+    app.include_router(build_router(formula_audit_hook=formula_audit_hook))
     app.include_router(build_google_oauth_router())
     checks = [
         HealthCheck(name="mongo", check=mongo_check),

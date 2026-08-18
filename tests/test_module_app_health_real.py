@@ -49,6 +49,7 @@ class FakeMongoDb:
         self.error = error
         self.calls = 0
         self.module_registry = FakeCollection()
+        self.sheets_formula_audit = FakeCollection()
 
     async def command(self, command: str) -> dict[str, int]:
         self.calls += 1
@@ -58,8 +59,8 @@ class FakeMongoDb:
         return {"ok": 1}
 
     def __getitem__(self, name: str) -> FakeCollection:
-        assert name == "module_registry"
-        return self.module_registry
+        assert name in ("module_registry", "sheets_formula_audit")
+        return self.module_registry if name == "module_registry" else self.sheets_formula_audit
 
 
 MODULE_BUILDERS: tuple[tuple[str, Callable[..., Any]], ...] = (
