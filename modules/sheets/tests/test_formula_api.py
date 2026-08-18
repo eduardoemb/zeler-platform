@@ -8,10 +8,17 @@ from typing import Any
 
 import httpx
 import pytest
+import structlog
 from bson.decimal128 import Decimal128
 from fastapi import FastAPI
+from pymongo.errors import DuplicateKeyError, PyMongoError
 
-from zeler_sheets.extension_tokens import ExtensionTokenService, SellerScope, hash_extension_token
+from zeler_sheets.extension_tokens import (
+    ExtensionTokenService,
+    ExtensionTokenValidationError,
+    SellerScope,
+    hash_extension_token,
+)
 from zeler_sheets.formulas.dispatcher import FormulaExecutionResult
 from zeler_sheets.formulas.read_models import ITEM_FORMULA_ROWS_READ_MODEL
 
@@ -35,9 +42,18 @@ class FakeCollection:
     def __init__(self) -> None:
         self.documents: dict[str, dict[str, Any]] = {}
         self.find_filters: list[dict[str, Any]] = []
+        self.operations: list[tuple[str, str]] = []
+        self.duplicate_aware = False
+        self.insert_failure: Exception | None = None
 
     async def insert_one(self, doc: dict[str, Any]) -> None:
-        self.documents[str(doc["_id"])] = dict(doc)
+        if self.insert_failure is not None:
+            raise self.insert_failure
+        doc_id = str(doc["_id"])
+        if self.duplicate_aware and doc_id in self.documents:
+            raise DuplicateKeyError(f"E11000 duplicate key error collection: {doc_id}")
+        self.documents[doc_id] = dict(doc)
+        self.operations.append(("insert", doc_id))
 
     async def find_one(self, filter_spec: dict[str, Any]) -> dict[str, Any] | None:
         self.find_filters.append(dict(filter_spec))
@@ -60,6 +76,7 @@ class FakeCollection:
                 replacement = dict(doc)
                 replacement.update(update_spec.get("$set", {}))
                 self.documents[doc_id] = replacement
+                self.operations.append(("update", doc_id))
                 return FakeUpdateResult()
         raise AssertionError(f"no matching document for {filter_spec}")
 
@@ -122,6 +139,231 @@ async def test_execute_known_formula_validates_token_and_cuenta_nickname() -> No
         "error_code": None,
         "occurred_at": now,
     }
+
+
+@pytest.mark.asyncio
+async def test_build_app_persists_sanitized_formula_audit_record() -> None:
+    from zeler_sheets.app import build_app
+
+    now = datetime(2026, 5, 13, 12, 0, tzinfo=UTC)
+    db = FakeDb()
+    app = build_app(mongo_db=db)
+    app.state.extension_token_pepper = "test-pepper"
+    issued = await _token_service(db, now=now).create_token(
+        owner_user_id="user-1",
+        label="Formula sheet",
+        seller_scopes=[SellerScope(seller_id="123456789", nickname="HOPEMOB")],
+    )
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.post(
+            "/sheets/formulas:execute",
+            headers={"Authorization": f"Bearer {issued.token_once}"},
+            json={
+                "formula": "ZELERDATA_STOCK",
+                "cuenta": "HOPEMOB",
+                "args": {"skus": ["SKU-1"], "id_publicaciones": ["MLA1"]},
+                "request_id": "req-production-audit",
+            },
+        )
+
+    assert response.status_code == 200
+    audit_doc = next(iter(db["sheets_formula_audit"].documents.values()))
+    occurred_at = audit_doc.pop("occurred_at")
+    assert isinstance(occurred_at, datetime)
+    assert audit_doc == {
+        "_id": "formula-audit-req-production-audit",
+        "token_id": next(iter(db.sheets_extension_tokens.documents.values()))["_id"],
+        "seller_id": "123456789",
+        "seller_nickname": "HOPEMOB",
+        "formula": "ZELERDATA_STOCK",
+        "request_id": "req-production-audit",
+        "outcome": "allowed",
+        "error_code": None,
+        "schema_version": 1,
+    }
+
+
+async def _create_token(db: FakeDb) -> str:
+    issued = await _token_service(db, now=datetime(2026, 5, 13, 12, 0, tzinfo=UTC)).create_token(
+        owner_user_id="user-1",
+        label="Formula sheet",
+        seller_scopes=[SellerScope(seller_id="123456789", nickname="HOPEMOB")],
+    )
+    return issued.token_once
+
+
+async def _execute(client: httpx.AsyncClient, token: str | None, **payload: Any) -> httpx.Response:
+    body: dict[str, Any] = {"formula": "ZELERDATA_SKU", "cuenta": "HOPEMOB", "args": {}}
+    body.update(payload)
+    headers: dict[str, str] = {} if token is None else {"Authorization": f"Bearer {token}"}
+    return await client.post("/sheets/formulas:execute", headers=headers, json=body)
+
+
+@pytest.mark.parametrize(
+    ("scenario", "cuenta", "status_code", "error_code", "request_id"),
+    [
+        ("revoked", "HOPEMOB", 401, "TOKEN_REVOKED", "req-revoked"),
+        ("forbidden", "OTHER", 403, "SELLER_FORBIDDEN", "req-forbidden"),
+        ("rate-limited", "HOPEMOB", 429, "RATE_LIMITED", "req-rate-limited"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_build_app_persists_denied_audit_without_updating_last_used(
+    monkeypatch: pytest.MonkeyPatch,
+    scenario: str,
+    cuenta: str,
+    status_code: int,
+    error_code: str,
+    request_id: str,
+) -> None:
+    db = FakeDb()
+    app, _ = await _production_app(db)
+    token = await _create_token(db)
+    if scenario == "revoked":
+        next(iter(db.sheets_extension_tokens.documents.values()))["status"] = "revoked"
+    if scenario == "rate-limited":
+
+        async def deny_rate_limit(
+            self: Any,
+            doc: dict[str, Any],
+            scope: SellerScope,
+            *,
+            formula: str,
+            request_id: str | None,
+        ) -> None:
+            raise ExtensionTokenValidationError("RATE_LIMITED", "extension token rate limited")
+
+        monkeypatch.setattr(ExtensionTokenService, "_enforce_rate_limit", deny_rate_limit)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await _execute(client, token, request_id=request_id, cuenta=cuenta)
+
+    assert response.status_code == status_code
+    assert response.json()["error"]["code"] == error_code
+    assert next(iter(db.sheets_extension_tokens.documents.values()))["last_used_at"] is None
+    audit = db["sheets_formula_audit"].documents[f"formula-audit-{request_id}"]
+    assert isinstance(audit["occurred_at"], datetime)
+    assert audit["outcome"] == "denied"
+    assert audit["error_code"] == error_code
+    assert audit["seller_id"] == ("123456789" if scenario == "rate-limited" else "None")
+
+
+@pytest.mark.asyncio
+async def test_build_app_repeats_request_id_idempotently_without_rewriting_audit() -> None:
+    db = FakeDb()
+    audit = db["sheets_formula_audit"]
+    audit.duplicate_aware = True
+    app, _ = await _production_app(db)
+    token = await _create_token(db)
+    payload = {
+        "formula": "ZELERDATA_STOCK",
+        "args": {"skus": ["SKU-1"], "id_publicaciones": ["MLA1"]},
+    }
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        first = await _execute(client, token, request_id="req-repeated", **payload)
+        second = await _execute(client, token, request_id="req-repeated", **payload)
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert (
+        first.json()
+        == second.json()
+        == {"ok": True, "values": [[""]], "meta": {"partial_misses": 1}}
+    )
+    assert len(audit.documents) == 1
+    assert audit.documents["formula-audit-req-repeated"]["outcome"] == "allowed"
+    assert audit.operations == [("insert", "formula-audit-req-repeated")]
+
+
+@pytest.mark.asyncio
+async def test_build_app_allowed_result_survives_audit_failure_without_leaking_secrets() -> None:
+    db = FakeDb()
+    db["sheets_formula_audit"].insert_failure = PyMongoError("mongo unavailable")
+    app, _ = await _production_app(db)
+    token = await _create_token(db)
+    payload = {
+        "formula": "ZELERDATA_STOCK",
+        "args": {"skus": ["SKU-1"], "id_publicaciones": ["MLA1"]},
+    }
+
+    with structlog.testing.capture_logs() as entries:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await _execute(client, token, request_id="req-failing-allowed", **payload)
+
+    assert response.status_code == 200
+    assert response.json() == {"ok": True, "values": [[""]], "meta": {"partial_misses": 1}}
+    assert next(iter(db.sheets_extension_tokens.documents.values()))["last_used_at"] is not None
+    assert db["sheets_formula_audit"].documents == {}
+    assert set(entries[0]) == {"event", "log_level", "exception_type", "outcome", "error_code"}
+    serialized = str(entries)
+    assert token not in serialized
+    assert "SKU-1" not in serialized
+    assert "Bearer" not in serialized
+
+
+@pytest.mark.asyncio
+async def test_build_app_revoked_denial_preserved_when_audit_write_fails() -> None:
+    db = FakeDb()
+    db["sheets_formula_audit"].insert_failure = PyMongoError("mongo unavailable")
+    app, _ = await _production_app(db)
+    token = await _create_token(db)
+    next(iter(db.sheets_extension_tokens.documents.values()))["status"] = "revoked"
+
+    with structlog.testing.capture_logs() as entries:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await _execute(client, token, request_id="req-failing-revoked")
+
+    assert response.status_code == 401
+    assert response.json()["error"]["code"] == "TOKEN_REVOKED"
+    assert len(entries) == 1
+    assert entries[0]["error_code"] == "TOKEN_REVOKED"
+
+
+@pytest.mark.asyncio
+async def test_build_app_allowed_updates_last_used_before_audit_insert() -> None:
+    db = FakeDb()
+    app, _ = await _production_app(db)
+    token = await _create_token(db)
+    token_id = next(iter(db.sheets_extension_tokens.documents.values()))["_id"]
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await _execute(client, token, request_id="req-ordered")
+
+    assert response.status_code == 200
+    assert db.sheets_extension_tokens.operations[-1] == ("update", token_id)
+    assert db["sheets_formula_audit"].operations == [("insert", "formula-audit-req-ordered")]
+
+
+@pytest.mark.asyncio
+async def test_build_app_missing_token_and_unknown_hash_create_no_audit() -> None:
+    db = FakeDb()
+    app, _ = await _production_app(db)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        missing = await _execute(client, None, request_id="req-missing")
+        unknown = await _execute(client, "zs_ext_never_minted", request_id="req-unknown")
+
+    assert missing.status_code == 401
+    assert missing.json()["error"]["code"] == "TOKEN_MISSING"
+    assert unknown.status_code == 401
+    assert unknown.json()["error"]["code"] == "TOKEN_REVOKED"
+    assert db["sheets_formula_audit"].documents == {}
 
 
 @pytest.mark.asyncio
@@ -815,6 +1057,14 @@ def _app(
             formula_dispatcher=formula_dispatcher,
         )
     )
+    return app, db
+
+
+async def _production_app(db: FakeDb) -> tuple[FastAPI, FakeDb]:
+    from zeler_sheets.app import build_app
+
+    app = build_app(mongo_db=db)
+    app.state.extension_token_pepper = "test-pepper"
     return app, db
 
 

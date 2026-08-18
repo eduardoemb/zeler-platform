@@ -46,7 +46,8 @@
         "sheets_exports",
         "sheets_sync_jobs",
         "google_oauth_tokens",
-        "seller_unit_costs"
+        "seller_unit_costs",
+        "sheets_formula_audit"
       ],
       "health_endpoint": "/health",
       "status": "enabled",

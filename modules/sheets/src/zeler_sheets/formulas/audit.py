@@ -4,6 +4,11 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
 
+import structlog
+from pymongo.errors import DuplicateKeyError, PyMongoError
+
+logger = structlog.get_logger(__name__)
+
 SCHEMA_VERSION = 1
 AUDIT_COLLECTION = "sheets_formula_audit"
 _REDACTED_EVENT_KEYS = {"Authorization", "authorization", "token", "token_once", "bearer_token"}
@@ -31,7 +36,17 @@ class FormulaAuditService:
         }
         for key in _REDACTED_EVENT_KEYS:
             doc.pop(key, None)
-        await self._collection.insert_one(doc)
+        try:
+            await self._collection.insert_one(doc)
+        except DuplicateKeyError:
+            return
+        except PyMongoError as exc:
+            logger.warning(
+                "formula.audit.write_failed",
+                exception_type=type(exc).__name__,
+                outcome=doc["outcome"],
+                error_code=doc["error_code"],
+            )
 
 
 def _audit_id(event: dict[str, Any], *, occurred_at: datetime) -> str:

@@ -6,6 +6,8 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
+import structlog
+from pymongo.errors import DuplicateKeyError, PyMongoError
 
 from zeler_sheets.extension_tokens import (
     ExtensionTokenService,
@@ -38,12 +40,24 @@ class FakeCursor:
 
 
 class FakeCollection:
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        duplicate_aware: bool = False,
+        insert_failure: Exception | None = None,
+    ) -> None:
         self.documents: dict[str, dict[str, Any]] = {}
         self.last_find_filter: dict[str, Any] | None = None
+        self._duplicate_aware = duplicate_aware
+        self._insert_failure = insert_failure
 
     async def insert_one(self, doc: dict[str, Any]) -> None:
-        self.documents[str(doc["_id"])] = dict(doc)
+        if self._insert_failure is not None:
+            raise self._insert_failure
+        doc_id = str(doc["_id"])
+        if self._duplicate_aware and doc_id in self.documents:
+            raise DuplicateKeyError(f"E11000 duplicate key error collection: {doc_id}")
+        self.documents[doc_id] = dict(doc)
 
     async def find_one(self, filter_spec: dict[str, Any]) -> dict[str, Any] | None:
         self.last_find_filter = dict(filter_spec)
@@ -141,6 +155,69 @@ async def test_formula_audit_service_persists_redacted_request_decisions() -> No
     ]
     assert "token_once" not in docs[0]
     assert "Authorization" not in docs[0]
+
+
+@pytest.mark.asyncio
+async def test_formula_audit_service_replays_duplicate_request_id_without_warning() -> None:
+    now = datetime(2026, 5, 13, 15, 30, tzinfo=UTC)
+    db = FakeDb()
+    collection = db["sheets_formula_audit"]
+    collection._duplicate_aware = True
+    service = FormulaAuditService(db=db, now_fn=lambda: now)
+    event = {
+        "token_id": "sheets-ext-token-abc",
+        "seller_id": "123456789",
+        "seller_nickname": "HOPEMOB",
+        "formula": "ZELERDATA_PRECIO",
+        "request_id": "req-replay",
+        "outcome": "allowed",
+        "error_code": None,
+        "occurred_at": now,
+    }
+
+    with structlog.testing.capture_logs() as entries:
+        await service.record(event)
+        await service.record(event)
+
+    assert entries == []
+    docs = list(collection.documents.values())
+    assert len(docs) == 1
+    assert docs[0]["_id"] == "formula-audit-req-replay"
+    assert docs[0]["outcome"] == "allowed"
+    assert docs[0]["error_code"] is None
+
+
+@pytest.mark.asyncio
+async def test_formula_audit_service_warns_without_sensitive_data_on_write_failure() -> None:
+    now = datetime(2026, 5, 13, 15, 30, tzinfo=UTC)
+    db = FakeDb()
+    collection = db["sheets_formula_audit"]
+    collection._insert_failure = PyMongoError("mongo unavailable")
+    service = FormulaAuditService(db=db, now_fn=lambda: now)
+    event = {
+        "token_id": "sheets-ext-token-abc",
+        "seller_id": "123456789",
+        "seller_nickname": "HOPEMOB",
+        "formula": "ZELERDATA_PRECIO",
+        "request_id": "req-failing",
+        "outcome": "allowed",
+        "error_code": None,
+        "occurred_at": now,
+        "Authorization": "Bearer zs_ext_secret",
+        "token_once": "zs_ext_secret",
+    }
+
+    with structlog.testing.capture_logs() as entries:
+        await service.record(event)
+
+    assert len(entries) == 1
+    assert set(entries[0]) == {"event", "log_level", "exception_type", "outcome", "error_code"}
+    assert entries[0]["event"] == "formula.audit.write_failed"
+    assert entries[0]["log_level"] == "warning"
+    assert entries[0]["exception_type"] == "PyMongoError"
+    assert entries[0]["outcome"] == "allowed"
+    assert entries[0]["error_code"] is None
+    assert "zs_ext_secret" not in str(entries)
 
 
 @pytest.mark.asyncio
