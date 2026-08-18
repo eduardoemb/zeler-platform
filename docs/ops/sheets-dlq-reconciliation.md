@@ -66,6 +66,65 @@ operation before the append.
 | `unknown_append_outcome` | No conclusive success/failure | `quarantine_manual_review` only | replay, close/archive, purge, delete |
 | `replay_candidate` | Valid source, enabled export, stable key, negative append proof | `approved_dry_run` then individually approved `replay` | batch/global replay, quarantine, purge, delete |
 
+## Bounded snapshot adapter runbook
+
+The bounded snapshot adapter
+(`infra/operations/sheets_dlq_snapshot_adapter.py`) is a one-shot, read-only
+surface that snapshots up to `K = SNAPSHOT_CAP = 24` distinct current DLQ
+messages while they remain unacked, then nacks them in ascending delivery-tag
+order. It ships **inactive by default**: importing it or invoking `main`
+without injected broker/runtime ports contacts no live broker, Mongo, or
+subprocess. Its purpose is bounded, privacy-preserving classification and it
+uses the canonical `classify_and_sanitize_one` taxonomy from this capability.
+It grants no execution authorization.
+
+### Preconditions (fail closed)
+
+- Run on the **authoritative host**. Exclusion is same-host only
+  (`fcntl.flock` on an operator-supplied `--lock-path`); no cross-host
+  exclusion is claimed.
+- **Zero DLQ consumers**: the live queue inspection reports
+  `consumers == 0` and the offline zero-consumer check passes.
+- The **Sheets worker runtime is healthy**. Health confirms the worker probe
+  responds; it does not require or assert an exact worker instance count.
+- **No Mongo writes**: the adapter exposes no Mongo write path.
+
+Any unmet precondition rejects the run before any `basic.get`.
+
+### Privacy boundary and residuals
+
+Up to 24 raw messages may reside only in the bounded in-memory buffer while the
+run is live. Raw payload bytes, ids, credentials, and URIs never enter logs,
+files, stdout, HTTP bodies, Mongo documents, or Engram observations. Accepted
+residuals the adapter minimizes but cannot eliminate are library/process
+memory, crash dumps, external tracing/debuggers, and `/proc/<pid>/mem`
+inspection. Payload fingerprints are omitted by default and only emitted when
+`--payload-fingerprint-sha256` is explicitly enabled.
+
+### Honest nack outcomes and abort
+
+Each nack records exactly one of `requeue_requested`, `requeue_send_failed`, or
+`outcome_unknown`. The adapter **never claims broker confirmation of requeue**.
+On `requeue_send_failed` or `outcome_unknown` it closes the channel and issues
+no further gets or nacks. SIGINT/SIGTERM trigger a best-effort channel close so
+unacked messages auto-requeue; abrupt death (SIGKILL, OOM, segfault) cannot emit
+a completion claim and relies on AMQP connection termination to requeue.
+
+### Authorization separation
+
+Design or documentation approval of this adapter **does not authorize
+execution or RabbitMQ delivery/requeue**. The first authorized run uses
+`K = 24` and `SNAPSHOT_CAP = 24`; any future adjustment of `K` or the cap is a
+separate explicit operator decision. No worker pause, topology mutation,
+publish, replay, purge, delete, quarantine, disposition, deploy, or production
+run is performed by the adapter:
+
+```bash
+# Inert by default; live execution requires separately authorized injected
+# broker/runtime ports and never runs without explicit operator authorization.
+python -m infra.operations.sheets_dlq_snapshot_adapter --help
+```
+
 ## Dry-run plan (read-only)
 
 Run the dry-run CLI against a capped, sanitized snapshot (local file only):
