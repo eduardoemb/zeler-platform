@@ -25,7 +25,12 @@ from infra.operations.sheets_dlq_snapshot_adapter import (
     run_preflight,
     same_host_exclusion,
 )
-from tests.test_sheets_devoluciones_topology import FakeBroker, FakeMessage, FakeRuntime, _state
+from zeler_platform_test_support.sheets_dlq_snapshot import (
+    FakeBroker,
+    FakeMessage,
+    FakeRuntime,
+    queue_state,
+)
 
 DLQ = "zeler.sheets.events.dlq"
 
@@ -37,7 +42,7 @@ def _body(index: int) -> bytes:
 @pytest.mark.asyncio
 async def test_fake_get_one_assigns_ascending_delivery_tags_and_nack_records_tag() -> None:
     broker = FakeBroker(
-        states={DLQ: _state(ready=3)},
+        states={DLQ: queue_state(ready=3)},
         messages={DLQ: [_body(1), _body(2), _body(3)]},
     )
 
@@ -59,7 +64,7 @@ async def test_fake_get_one_assigns_ascending_delivery_tags_and_nack_records_tag
 
 @pytest.mark.asyncio
 async def test_fake_get_one_returns_none_when_queue_is_empty() -> None:
-    broker = FakeBroker(states={DLQ: _state(ready=0)}, messages={DLQ: []})
+    broker = FakeBroker(states={DLQ: queue_state(ready=0)}, messages={DLQ: []})
 
     assert await broker.get_one(DLQ) is None
 
@@ -73,7 +78,7 @@ async def test_first_run_defaults_bind_k_and_cap_to_twenty_four() -> None:
 @pytest.mark.asyncio
 async def test_acquire_bounds_to_cap_when_thirty_queued() -> None:
     broker = FakeBroker(
-        states={DLQ: _state(ready=30)},
+        states={DLQ: queue_state(ready=30)},
         messages={DLQ: [_body(i) for i in range(30)]},
     )
     coordinator = SnapshotCoordinator(broker=_as_broker(broker))
@@ -87,7 +92,7 @@ async def test_acquire_bounds_to_cap_when_thirty_queued() -> None:
 @pytest.mark.asyncio
 async def test_acquire_stops_on_get_none_when_fewer_than_cap() -> None:
     broker = FakeBroker(
-        states={DLQ: _state(ready=3)},
+        states={DLQ: queue_state(ready=3)},
         messages={DLQ: [_body(i) for i in range(3)]},
     )
     coordinator = SnapshotCoordinator(broker=_as_broker(broker))
@@ -101,7 +106,7 @@ async def test_acquire_stops_on_get_none_when_fewer_than_cap() -> None:
 @pytest.mark.asyncio
 async def test_drain_nacks_in_ascending_delivery_tag_order() -> None:
     broker = FakeBroker(
-        states={DLQ: _state(ready=3)},
+        states={DLQ: queue_state(ready=3)},
         messages={DLQ: [_body(i) for i in range(3)]},
     )
     coordinator = SnapshotCoordinator(broker=_as_broker(broker))
@@ -130,7 +135,7 @@ def _tagged(tag: int, index: int) -> SnapshotDelivery:
 async def test_preflight_fails_closed_on_nonzero_offline_consumers(
     offline_consumers: int,
 ) -> None:
-    broker = FakeBroker(states={DLQ: _state(consumers=0)})
+    broker = FakeBroker(states={DLQ: queue_state(consumers=0)})
 
     with pytest.raises(PreflightError, match="offline consumer count"):
         await run_preflight(
@@ -147,7 +152,7 @@ async def test_preflight_fails_closed_on_nonzero_offline_consumers(
     [1, 3],
 )
 async def test_preflight_fails_closed_on_live_consumers(consumers: int) -> None:
-    broker = FakeBroker(states={DLQ: _state(consumers=consumers)})
+    broker = FakeBroker(states={DLQ: queue_state(consumers=consumers)})
 
     with pytest.raises(PreflightError, match="live consumer count"):
         await run_preflight(
@@ -159,7 +164,7 @@ async def test_preflight_fails_closed_on_live_consumers(consumers: int) -> None:
 
 @pytest.mark.asyncio
 async def test_preflight_fails_closed_when_worker_runtime_is_unhealthy() -> None:
-    broker = FakeBroker(states={DLQ: _state(consumers=0)})
+    broker = FakeBroker(states={DLQ: queue_state(consumers=0)})
 
     with pytest.raises(PreflightError, match="worker runtime is unhealthy"):
         await run_preflight(
@@ -171,7 +176,7 @@ async def test_preflight_fails_closed_when_worker_runtime_is_unhealthy() -> None
 
 @pytest.mark.asyncio
 async def test_preflight_passes_when_all_gates_clear() -> None:
-    broker = FakeBroker(states={DLQ: _state(consumers=0)})
+    broker = FakeBroker(states={DLQ: queue_state(consumers=0)})
 
     await run_preflight(
         broker=_as_broker(broker),
@@ -239,7 +244,7 @@ def test_adapter_exposes_no_mongo_or_forbidden_broker_imports() -> None:
 
 def _make_broker(count: int) -> FakeBroker:
     return FakeBroker(
-        states={DLQ: _state(ready=count)},
+        states={DLQ: queue_state(ready=count)},
         messages={DLQ: [_body(i) for i in range(count)]},
     )
 
@@ -260,7 +265,7 @@ class FailingNackBroker(FakeBroker):
         count: int = 3,
     ) -> None:
         super().__init__(
-            states={DLQ: _state(ready=count)},
+            states={DLQ: queue_state(ready=count)},
             messages={DLQ: [_body(i) for i in range(count)]},
         )
         self.fail_tag = fail_tag
@@ -332,7 +337,7 @@ def test_cancellation_during_acquire_issues_best_effort_close_no_completion_clai
             self.calls.append("get_one_called")
             raise asyncio.CancelledError()
 
-    broker = CancellingBroker(states={DLQ: _state(ready=3)})
+    broker = CancellingBroker(states={DLQ: queue_state(ready=3)})
     coordinator = SnapshotCoordinator(broker=_as_broker(broker))
 
     with pytest.raises(asyncio.CancelledError):
@@ -356,7 +361,7 @@ def test_handled_exception_during_run_closes_best_effort_and_sets_failed(
         async def get_one(self, queue_name: str) -> FakeMessage | None:
             raise RuntimeError("boom")
 
-    broker = ExplodingBroker(states={DLQ: _state(ready=3)})
+    broker = ExplodingBroker(states={DLQ: queue_state(ready=3)})
     coordinator = SnapshotCoordinator(broker=_as_broker(broker))
 
     with pytest.raises(RuntimeError, match="boom"):
@@ -396,7 +401,7 @@ async def test_run_fails_closed_on_contended_lock_before_preflight(
     tmp_path: pathlib.Path,
 ) -> None:
     lock_path = str(tmp_path / "snapshot.lock")
-    broker = FakeBroker(states={DLQ: _state(ready=1, consumers=0)})
+    broker = FakeBroker(states={DLQ: queue_state(ready=1, consumers=0)})
     coordinator = SnapshotCoordinator(broker=_as_broker(broker))
     # Lock acquired before any preflight inspection (no inspect call on
     # contention) and STATE_LOCKED is only set after acquisition succeeds.
