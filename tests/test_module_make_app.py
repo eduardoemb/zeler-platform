@@ -18,7 +18,20 @@ class FakeMongoClient:
         self.calls.append(mongo_uri)
 
     def __getitem__(self, mongo_db_name: str) -> object:
-        return {"mongo_db_name": mongo_db_name}
+        return _FakeDb(mongo_db_name)
+
+
+class _FakeDb:
+    def __init__(self, mongo_db_name: str) -> None:
+        self._name = mongo_db_name
+
+    def __getitem__(self, collection_name: str) -> object:
+        return _FakeCollection()
+
+
+class _FakeCollection:
+    def __init__(self) -> None:
+        self.documents: dict[str, object] = {}
 
 
 @pytest.fixture(autouse=True)

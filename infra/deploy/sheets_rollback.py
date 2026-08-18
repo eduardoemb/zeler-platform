@@ -56,7 +56,7 @@ _IMAGE_REF_PATTERN = re.compile(
     r"(?P<repository>[a-z0-9.-]+/[a-z0-9._/-]+)@sha256:(?P<digest>[0-9a-f]{64})"
 )
 _CANONICAL_FULL_REGISTRATION_FINGERPRINT = (
-    "3a80a26a340151c5a8a2fca1cbece0f0c4d3974e3695885bce488745c08cda38"
+    "5c578997b6786c5fc12dfa6ddb1fa6cd41960d680a96cb8ae1e858ce79be82f4"
 )
 
 
