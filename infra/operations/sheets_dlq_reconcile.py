@@ -140,6 +140,36 @@ def classify_message(message: Mapping[str, Any], evidence: Mapping[str, Any]) ->
     )
 
 
+# Closed set of verdict fields the canonical wrapper may emit. Everything
+# beyond these three values must be derived (for example, hashed) separately;
+# raw payloads, ids, credentials, and URIs never cross this boundary.
+SANITIZED_OUTPUT_ALLOWLIST = frozenset({"classification", "reason_code", "evidence_source"})
+
+
+def classify_and_sanitize_one(
+    message: Mapping[str, Any],
+    evidence: Mapping[str, Any],
+) -> dict[str, str | None]:
+    """Classify one raw message through the canonical taxonomy and sanitize it.
+
+    Rejects non-mappings so raw structures never reach the verdict path.
+    Always delegates to :func:`classify_message` so the four-class taxonomy
+    cannot drift. Returns only allowlisted verdict fields; with no in-process
+    evidence, passing an empty mapping preserves the fail-closed unknown
+    classification.
+    """
+    if not isinstance(message, Mapping):
+        raise TypeError(f"message must be a mapping, got {type(message).__name__}")
+    if not isinstance(evidence, Mapping):
+        raise TypeError(f"evidence must be a mapping, got {type(evidence).__name__}")
+    verdict = classify_message(message, evidence)
+    return {
+        "classification": verdict.classification,
+        "reason_code": verdict.reason_code,
+        "evidence_source": verdict.evidence_source,
+    }
+
+
 def _append_outcome_inconclusive(evidence: Mapping[str, Any]) -> bool:
     return any(
         evidence.get(flag)

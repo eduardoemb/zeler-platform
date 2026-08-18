@@ -16,6 +16,7 @@ from infra.operations.sheets_dlq_reconcile import (
     MONGO_BATCH_CAP,
     MONGO_BATCH_INTERVAL_SECONDS,
     REPLAY_CONCURRENCY,
+    SANITIZED_OUTPUT_ALLOWLIST,
     SNAPSHOT_CAP,
     AppendOnlyLedger,
     ApprovalError,
@@ -28,6 +29,7 @@ from infra.operations.sheets_dlq_reconcile import (
     build_approval,
     build_dry_run_report,
     check_replay_gate,
+    classify_and_sanitize_one,
     classify_message,
     hash_evidence_pointer,
     main,
@@ -875,3 +877,153 @@ def test_cli_launches_no_shell_or_subprocess() -> None:
     assert "os.system" not in source
     assert "shell=True" not in source
     assert "Popen" not in source
+
+
+# ---------------------------------------------------------------------------
+# 4.1 Canonical sanitized wrapper (PR 1)
+# ---------------------------------------------------------------------------
+
+
+def test_classify_and_sanitize_one_matches_canonical_taxonomy_on_all_four_classes() -> None:
+    cases = (
+        (
+            _evidence(processed_events_active=True),
+            "already_applied",
+            "already_applied",
+            "processed_events",
+        ),
+        (
+            _evidence(upstream_404_identity_matched=True),
+            "terminal_upstream_404",
+            "terminal_upstream_404",
+            "broker",
+        ),
+        (
+            _evidence(webhook_reports_append_success=True),
+            "unknown_append_outcome",
+            "conflicting_success_evidence",
+            "webhook_events",
+        ),
+        (
+            _evidence(
+                webhook_events_valid=True,
+                export_enabled=True,
+                stable_key=True,
+                no_append_proof=True,
+            ),
+            "replay_candidate",
+            "replay_candidate",
+            "webhook_events",
+        ),
+    )
+    for evidence, expected_class, expected_reason, expected_source in cases:
+        message = _message()
+        result = classify_and_sanitize_one(message, evidence)
+        verdict = classify_message(message, evidence)
+        assert result == {
+            "classification": verdict.classification,
+            "reason_code": verdict.reason_code,
+            "evidence_source": verdict.evidence_source,
+        }
+        assert result == {
+            "classification": expected_class,
+            "reason_code": expected_reason,
+            "evidence_source": expected_source,
+        }
+
+
+def test_classify_and_sanitize_one_rejects_non_mapping_message() -> None:
+    non_mappings: list[Any] = ["raw-body", ["message"], 42]
+    for candidate in non_mappings:
+        with pytest.raises(TypeError):
+            classify_and_sanitize_one(candidate, _evidence())
+
+
+def test_classify_and_sanitize_one_rejects_non_mapping_evidence() -> None:
+    non_mappings: list[Any] = ["raw-evidence", ["evidence"], 42]
+    for candidate in non_mappings:
+        with pytest.raises(TypeError):
+            classify_and_sanitize_one(_message(), candidate)
+
+
+def test_classify_and_sanitize_one_empty_evidence_stays_fail_closed_unknown() -> None:
+    result = classify_and_sanitize_one(_message(), {})
+    assert result["classification"] == "unknown_append_outcome"
+    assert result["reason_code"] == "replay_prerequisites_missing"
+    assert result["evidence_source"] is None
+
+
+def test_classify_and_sanitize_one_returns_only_allowlisted_fields() -> None:
+    result = classify_and_sanitize_one(
+        _message(),
+        _evidence(
+            webhook_events_valid=True,
+            export_enabled=True,
+            stable_key=True,
+            no_append_proof=True,
+        ),
+    )
+    assert set(result) == {"classification", "reason_code", "evidence_source"}
+    assert frozenset({"classification", "reason_code", "evidence_source"}) == (
+        SANITIZED_OUTPUT_ALLOWLIST
+    )
+
+
+def _collect_strings(value: Any) -> list[str]:
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, Mapping):
+        strings: list[str] = []
+        for key, child in value.items():
+            strings.extend(_collect_strings(key))
+            strings.extend(_collect_strings(child))
+        return strings
+    if isinstance(value, (list, tuple)):
+        strings = []
+        for child in value:
+            strings.extend(_collect_strings(child))
+        return strings
+    return []
+
+
+def test_classify_and_sanitize_one_leaks_no_raw_payload_id_credential_or_uri() -> None:
+    message = _message(
+        message_id="raw-msg-f3a1",
+        seller_id=82453304,
+        idempotency_key="idem-super-secret-7f2b",
+        payload={
+            "orders": "SECRET-BODY",
+            "credential": "AKIA-CREDENTIAL-SECRET",
+            "url": "https://internal.example.com/x",
+        },
+        uri="amqp://svc:secret@broker.internal/zeler.sheets.events.dlq",
+        headers={"x-auth": "header-secret"},
+        evidence_document_ref="doc-ref-super-secret",
+    )
+    result = classify_and_sanitize_one(message, _evidence(processed_events_active=True))
+
+    raw_markers = (
+        "raw-msg-f3a1",
+        "82453304",
+        "idem-super-secret-7f2b",
+        "SECRET-BODY",
+        "AKIA-CREDENTIAL-SECRET",
+        "https://internal.example.com/x",
+        "amqp://svc:secret@broker.internal",
+        "header-secret",
+        "doc-ref-super-secret",
+    )
+    collected = _collect_strings(result)
+    assert len(collected) >= 3
+    for marker in raw_markers:
+        assert all(marker not in text for text in collected)
+
+
+def test_classify_and_sanitize_one_emits_nothing_to_stdout_or_stderr(capsys: Any) -> None:
+    classify_and_sanitize_one(
+        _message(payload={"orders": "SECRET-BODY", "credential": "AKIA-CREDENTIAL-SECRET"}),
+        _evidence(),
+    )
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == ""
