@@ -229,6 +229,24 @@ class TestComposeServices:
         assert healthcheck["timeout"] == "3s"
         assert healthcheck["retries"] == 6
 
+    def test_sheets_dlq_snapshot_mount_and_startup_install_are_root_only(self) -> None:
+        snapshot_path = "/var/lib/zeler-platform/sheets-dlq-snapshot"
+        compose = load_compose()["services"]
+        worker = compose["sheets-worker"]
+        startup = STARTUP_SCRIPT.read_text(encoding="utf-8")
+        wrapper = (INFRA_GCE / "sheets-dlq-snapshot-execute.sh").read_text(encoding="utf-8")
+
+        assert worker.get("volumes") == [
+            {"type": "bind", "source": snapshot_path, "target": snapshot_path, "read_only": False}
+        ]
+        assert "volumes" not in compose["sheets-api"]
+        assert "user" not in worker
+        assert "install -d -o root -g root -m 0700" in startup
+        assert snapshot_path in startup
+        assert "/opt/zeler-platform/sheets-dlq-snapshot-execute.sh" in startup
+        assert "install -m 0755" in startup
+        assert wrapper.strip() in startup
+
     @pytest.mark.parametrize("path", (SECRETS_SCRIPT, COMPOSE_FILE))
     def test_materializer_and_compose_boundary_has_no_smoke_variables(self, path: Path) -> None:
         text = path.read_text(encoding="utf-8")
