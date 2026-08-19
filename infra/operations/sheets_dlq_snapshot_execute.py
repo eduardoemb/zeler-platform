@@ -19,7 +19,15 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from urllib.parse import urlsplit
 
-from infra.operations.sheets_dlq_snapshot_adapter import SnapshotBroker, SnapshotDelivery
+from infra.operations.sheets_dlq_snapshot_adapter import (
+    SnapshotBroker,
+    SnapshotDelivery,
+    WorkerRuntime,
+)
+from infra.operations.sheets_dlq_snapshot_runtime import (
+    AioPikaSnapshotBroker,
+    HttpSheetsWorkerRuntime,
+)
 
 QUEUE_NAME = "zeler.sheets.events.dlq"
 SNAPSHOT_LIMIT = 24
@@ -28,10 +36,38 @@ TOKEN_FILE_MODE = 0o600
 CANONICAL_LOCK_PATH = "/var/lib/zeler-platform/sheets-dlq-snapshot/snapshot.lock"
 LOCK_FILE_MODE = 0o600
 NACK_TIMEOUT_SECONDS = 2.0
+CLOSE_TIMEOUT_SECONDS = 5.0
+
+EXIT_OK = 0
+EXIT_PREFLIGHT = 5
+EXIT_MESSAGE_OR_CANCELLED = 6
+EXIT_CLOSE = 7
+
+_RUN_ID_ENV = "SHEETS_DLQ_SNAPSHOT_EXEC_RUN_ID"
+_TOKEN_FILE_ENV = "SHEETS_DLQ_SNAPSHOT_EXEC_TOKEN_FILE"  # noqa: S105 - environment variable name.
+_DIGEST_ENV = "SHEETS_DLQ_SNAPSHOT_EXEC_DIGEST"
 
 
 class LockUnavailableError(RuntimeError):
     """The canonical execution lock could not be acquired safely."""
+
+
+@dataclass(frozen=True)
+class ExecutionStatus:
+    first_preflight_failure: str | None
+    capture: CapturePass | None
+    capture_failed: bool
+    close_failed: bool
+
+    @property
+    def exit_code(self) -> int:
+        if self.first_preflight_failure is not None:
+            return EXIT_PREFLIGHT
+        if self.capture_failed:
+            return EXIT_MESSAGE_OR_CANCELLED
+        if self.close_failed:
+            return EXIT_CLOSE
+        return EXIT_OK
 
 
 def generate_execution_token() -> bytes:
@@ -188,3 +224,118 @@ async def capture_once(
         classification_errors=classification_errors,
         unknown_outcomes=unknown_outcomes,
     )
+
+
+async def _close_bounded(broker: SnapshotBroker) -> bool:
+    try:
+        await asyncio.wait_for(broker.close_channel(), timeout=CLOSE_TIMEOUT_SECONDS)
+        return True
+    except Exception:  # noqa: BLE001 - the status retains the original failure.
+        return False
+
+
+async def execute_authorized_capture(
+    *,
+    run_id: str,
+    token_file: str,
+    digest: str,
+    broker_factory: Callable[[str], SnapshotBroker] | None = None,
+    runtime_factory: Callable[[], WorkerRuntime] | None = None,
+    cleanup_ready: Callable[[], bool] = lambda: True,
+    classify: Callable[[SnapshotDelivery], object],
+) -> ExecutionStatus:
+    if not verify_execution_authorization(token_file, run_id, digest):
+        return ExecutionStatus("authorization", None, False, False)
+    broker_factory = broker_factory or AioPikaSnapshotBroker
+    runtime_factory = runtime_factory or HttpSheetsWorkerRuntime
+    broker: SnapshotBroker | None = None
+    inspection = None
+    rabbitmq_url: str | None = None
+    preflight_failure: str | None = None
+    capture: CapturePass | None = None
+    capture_failed = close_failed = False
+    try:
+        with execution_lock():
+            try:
+                try:
+                    validate_capture_scope(QUEUE_NAME, SNAPSHOT_LIMIT)
+                except ValueError:
+                    preflight_failure = "scope"
+                if preflight_failure is None:
+                    rabbitmq_url = read_rabbitmq_url()
+                    if rabbitmq_url is None:
+                        preflight_failure = "binding"
+                if preflight_failure is None and rabbitmq_url is not None:
+                    try:
+                        broker = broker_factory(rabbitmq_url)
+                        inspection = await broker.inspect_queue(QUEUE_NAME)
+                    except Exception:  # noqa: BLE001 - connection/inspection fails closed.
+                        preflight_failure = "broker"
+                if preflight_failure is None and inspection is None:
+                    preflight_failure = "queue"
+                if (
+                    preflight_failure is None
+                    and inspection is not None
+                    and inspection.consumers != 0
+                ):
+                    preflight_failure = "consumers"
+                if preflight_failure is None:
+                    try:
+                        healthy = await runtime_factory().worker_is_healthy()
+                    except Exception:  # noqa: BLE001 - health transport errors fail closed.
+                        healthy = False
+                    if not healthy:
+                        preflight_failure = "worker_health"
+                if preflight_failure is None:
+                    try:
+                        ready_for_cleanup = cleanup_ready()
+                    except Exception:  # noqa: BLE001 - unavailable cleanup readiness fails closed.
+                        ready_for_cleanup = False
+                    if not ready_for_cleanup:
+                        preflight_failure = "cleanup_readiness"
+                if preflight_failure is None and broker is not None:
+                    try:
+                        capture = await capture_once(broker, classify=classify)
+                    except Exception:  # noqa: BLE001 - exit mapping is finalized in S1d-2.
+                        capture_failed = True
+            finally:
+                if broker is not None:
+                    close_failed = not await _close_bounded(broker)
+    except LockUnavailableError:
+        preflight_failure = "lock"
+    return ExecutionStatus(preflight_failure, capture, capture_failed, close_failed)
+
+
+def _authority_environment() -> tuple[str, str, str] | None:
+    values = tuple(os.environ.get(name) for name in (_RUN_ID_ENV, _TOKEN_FILE_ENV, _DIGEST_ENV))
+    if any(value is None or not value.strip() for value in values):
+        return None
+    return values  # type: ignore[return-value]
+
+
+def main(
+    *,
+    broker_factory: Callable[[str], SnapshotBroker] | None = None,
+    runtime_factory: Callable[[], WorkerRuntime] | None = None,
+    cleanup_ready: Callable[[], bool] = lambda: True,
+    classify: Callable[[SnapshotDelivery], object] = lambda _delivery: "captured",
+) -> int:
+    authority = _authority_environment()
+    if authority is None:
+        return EXIT_PREFLIGHT
+    run_id, token_file, digest = authority
+    return asyncio.run(
+        execute_authorized_capture(
+            run_id=run_id,
+            token_file=token_file,
+            digest=digest,
+            broker_factory=broker_factory,
+            runtime_factory=runtime_factory,
+            cleanup_ready=cleanup_ready,
+            classify=classify,
+        )
+    ).exit_code
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

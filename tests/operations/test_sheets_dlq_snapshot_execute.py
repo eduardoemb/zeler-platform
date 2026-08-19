@@ -5,6 +5,8 @@ import hashlib
 import inspect
 import os
 import stat
+from collections.abc import Iterator
+from contextlib import contextmanager
 from types import SimpleNamespace
 from typing import cast
 from urllib.parse import urlsplit
@@ -337,3 +339,248 @@ def test_capture_stops_after_unknown_nack_without_retry() -> None:
     assert broker.nack_calls == [1]
     assert result.classification_errors == 1
     assert result.unknown_outcomes == 1
+
+
+class _PreflightBroker(_CaptureBroker):
+    def __init__(
+        self,
+        calls: list[str],
+        *,
+        consumers: int = 0,
+        deliveries: list[_Delivery | None] | None = None,
+        close_error: Exception | None = None,
+    ) -> None:
+        super().__init__(deliveries or [None])
+        self.calls = calls
+        self.consumers = consumers
+        self.close_error = close_error
+
+    async def inspect_queue(self, queue_name: str) -> SimpleNamespace:
+        self.calls.append(f"inspect:{queue_name}")
+        return SimpleNamespace(consumers=self.consumers)
+
+    async def get_one(self, queue_name: str) -> _Delivery | None:
+        self.calls.append(f"get:{queue_name}")
+        return await super().get_one(queue_name)
+
+    async def close_channel(self) -> None:
+        if self.close_error is not None:
+            raise self.close_error
+        self.calls.append("close")
+
+
+class _PreflightRuntime:
+    def __init__(self, calls: list[str], *, healthy: bool) -> None:
+        self.calls = calls
+        self.healthy = healthy
+
+    async def worker_is_healthy(self) -> bool:
+        self.calls.append("health")
+        return self.healthy
+
+
+@contextmanager
+def _recording_lock(calls: list[str]) -> Iterator[None]:
+    calls.append("lock")
+    yield
+
+
+@contextmanager
+def _ordered_lock(calls: list[str]) -> Iterator[None]:
+    calls.append("lock-enter")
+    try:
+        yield
+    finally:
+        calls.append("lock-exit")
+
+
+def test_preflight_completes_every_gate_before_the_first_get_and_closes_after_capture(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+    broker = _PreflightBroker(calls, deliveries=[_Delivery(1), None])
+    monkeypatch.setattr(
+        execute,
+        "verify_execution_authorization",
+        lambda *_args: calls.append("auth") or True,
+    )
+    monkeypatch.setattr(execute, "execution_lock", lambda: _recording_lock(calls))
+    monkeypatch.setattr(
+        execute, "read_rabbitmq_url", lambda: calls.append("url") or "amqps://broker"
+    )
+
+    status = asyncio.run(
+        execute.execute_authorized_capture(
+            run_id="run-1",
+            token_file=execute.CANONICAL_LOCK_PATH,
+            digest="digest",
+            broker_factory=lambda url: calls.append(f"broker:{url}") or broker,
+            runtime_factory=lambda: (
+                calls.append("runtime") or _PreflightRuntime(calls, healthy=True)
+            ),
+            cleanup_ready=lambda: calls.append("cleanup-ready") or True,
+            classify=lambda _delivery: "classified",
+        )
+    )
+
+    assert status.first_preflight_failure is None
+    assert status.capture is not None
+    assert calls == [
+        "auth",
+        "lock",
+        "url",
+        "broker:amqps://broker",
+        "inspect:zeler.sheets.events.dlq",
+        "runtime",
+        "health",
+        "cleanup-ready",
+        "get:zeler.sheets.events.dlq",
+        "get:zeler.sheets.events.dlq",
+        "close",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("authorized", "consumers", "healthy", "expected_gate"),
+    [
+        (False, 0, True, "authorization"),
+        (True, 1, True, "consumers"),
+        (True, 0, False, "worker_health"),
+    ],
+)
+def test_preflight_records_its_first_failure_and_never_gets_a_delivery(
+    monkeypatch: pytest.MonkeyPatch,
+    authorized: bool,
+    consumers: int,
+    healthy: bool,
+    expected_gate: str,
+) -> None:
+    calls: list[str] = []
+    broker = _PreflightBroker(calls, consumers=consumers, deliveries=[_Delivery(1)])
+    monkeypatch.setattr(execute, "verify_execution_authorization", lambda *_args: authorized)
+    monkeypatch.setattr(execute, "execution_lock", lambda: _recording_lock(calls))
+    monkeypatch.setattr(execute, "read_rabbitmq_url", lambda: "amqp://broker")
+
+    status = asyncio.run(
+        execute.execute_authorized_capture(
+            run_id="run-1",
+            token_file=execute.CANONICAL_LOCK_PATH,
+            digest="digest",
+            broker_factory=lambda _url: broker,
+            runtime_factory=lambda: _PreflightRuntime(calls, healthy=healthy),
+            cleanup_ready=lambda: True,
+            classify=lambda _delivery: "classified",
+        )
+    )
+
+    assert status.first_preflight_failure == expected_gate
+    assert status.capture is None
+    assert not any(call.startswith("get:") for call in calls)
+    assert calls.count("close") == int(authorized)
+
+
+def test_entry_fails_closed_without_wrapper_authority_and_does_not_create_adapters(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    created: list[str] = []
+    monkeypatch.delenv("SHEETS_DLQ_SNAPSHOT_EXEC_RUN_ID", raising=False)
+    monkeypatch.delenv("SHEETS_DLQ_SNAPSHOT_EXEC_TOKEN_FILE", raising=False)
+    monkeypatch.delenv("SHEETS_DLQ_SNAPSHOT_EXEC_DIGEST", raising=False)
+
+    result = execute.main(
+        broker_factory=lambda _url: created.append("broker") or _CaptureBroker([]),
+        runtime_factory=lambda: created.append("runtime") or _PreflightRuntime([], healthy=True),
+    )
+
+    assert result == execute.EXIT_PREFLIGHT
+    assert created == []
+
+
+def test_entry_closes_on_capture_failure_without_masking_the_preflight_status(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+    broker = _PreflightBroker(calls, deliveries=[_Delivery(1)])
+    monkeypatch.setenv("SHEETS_DLQ_SNAPSHOT_EXEC_RUN_ID", "run-1")
+    monkeypatch.setenv("SHEETS_DLQ_SNAPSHOT_EXEC_TOKEN_FILE", "/safe/token")
+    monkeypatch.setenv("SHEETS_DLQ_SNAPSHOT_EXEC_DIGEST", "digest")
+    monkeypatch.setattr(execute, "verify_execution_authorization", lambda *_args: True)
+    monkeypatch.setattr(execute, "execution_lock", lambda: _recording_lock(calls))
+    monkeypatch.setattr(execute, "read_rabbitmq_url", lambda: "amqp://broker")
+
+    result = execute.main(
+        broker_factory=lambda _url: broker,
+        runtime_factory=lambda: _PreflightRuntime(calls, healthy=True),
+        cleanup_ready=lambda: True,
+        classify=lambda _delivery: (_ for _ in ()).throw(RuntimeError("capture failed")),
+    )
+
+    assert result == execute.EXIT_MESSAGE_OR_CANCELLED
+    assert calls[-1] == "close"
+
+
+def test_capture_close_finishes_before_the_execution_lock_releases(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+    broker = _PreflightBroker(calls, deliveries=[_Delivery(1)])
+    monkeypatch.setattr(execute, "verify_execution_authorization", lambda *_args: True)
+    monkeypatch.setattr(execute, "execution_lock", lambda: _ordered_lock(calls))
+    monkeypatch.setattr(execute, "read_rabbitmq_url", lambda: "amqp://broker")
+
+    status = asyncio.run(
+        execute.execute_authorized_capture(
+            run_id="run-1",
+            token_file=execute.CANONICAL_LOCK_PATH,
+            digest="digest",
+            broker_factory=lambda _url: broker,
+            runtime_factory=lambda: _PreflightRuntime(calls, healthy=True),
+            classify=lambda _delivery: (_ for _ in ()).throw(RuntimeError("capture failed")),
+        )
+    )
+
+    assert status.capture_failed
+    assert calls.index("close") < calls.index("lock-exit")
+
+
+def test_preflight_default_factories_compose_archived_broker_and_worker_health_seams(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+    broker = _PreflightBroker(calls, deliveries=[None])
+    monkeypatch.setattr(execute, "verify_execution_authorization", lambda *_args: True)
+    monkeypatch.setattr(execute, "execution_lock", lambda: _recording_lock(calls))
+    monkeypatch.setattr(execute, "read_rabbitmq_url", lambda: "amqps://broker")
+    monkeypatch.setattr(
+        execute,
+        "AioPikaSnapshotBroker",
+        lambda url: calls.append(f"aio-pika:{url}") or broker,
+    )
+    monkeypatch.setattr(
+        execute,
+        "HttpSheetsWorkerRuntime",
+        lambda: calls.append("http-health") or _PreflightRuntime(calls, healthy=True),
+    )
+
+    status = asyncio.run(
+        execute.execute_authorized_capture(
+            run_id="run-1",
+            token_file=execute.CANONICAL_LOCK_PATH,
+            digest="digest",
+            broker_factory=None,
+            runtime_factory=None,
+            cleanup_ready=lambda: True,
+            classify=lambda _delivery: "classified",
+        )
+    )
+
+    assert status.first_preflight_failure is None
+    assert calls == [
+        "lock",
+        "aio-pika:amqps://broker",
+        "inspect:zeler.sheets.events.dlq",
+        "http-health",
+        "health",
+        "get:zeler.sheets.events.dlq",
+        "close",
+    ]
