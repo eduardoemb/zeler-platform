@@ -3,7 +3,9 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import inspect
+import json
 import os
+import signal
 import stat
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -584,3 +586,155 @@ def test_preflight_default_factories_compose_archived_broker_and_worker_health_s
         "get:zeler.sheets.events.dlq",
         "close",
     ]
+
+
+def test_sanitized_report_has_exact_allowlist_and_never_serializes_sensitive_classifications() -> (
+    None
+):
+    report = execute.build_sanitized_report(
+        execute.ExecutionStatus(
+            first_preflight_failure=None,
+            capture=execute.CapturePass(
+                classifications=["captured", "seller-82453304:token=secret"],
+                messages_obtained=2,
+                classification_errors=1,
+                unknown_outcomes=0,
+            ),
+            capture_failed=False,
+            close_failed=False,
+        ),
+        safe_revision="f603987e",
+    )
+
+    assert set(report) == {
+        "schema_version",
+        "timestamp_utc",
+        "safe_revision",
+        "requested_limit",
+        "messages_obtained",
+        "classifications",
+        "requeue_requested_count",
+        "requeue_failed_count",
+        "unknown_outcomes_count",
+        "preflight_errors",
+        "close_errors",
+        "lock_status",
+        "cleanup_status",
+        "exit_code",
+        "reason_codes",
+    }
+    assert report["classifications"] == {"captured": 1, "other": 1, "classification_error": 1}
+    assert report["reason_codes"] == ["completed"]
+    serialized = json.dumps(report, sort_keys=True)
+    assert "seller-82453304" not in serialized
+    assert "secret" not in serialized
+    assert "token=" not in serialized
+
+
+def test_sanitized_report_distinguishes_preflight_before_lock_from_completed_cleanup() -> None:
+    report = execute.build_sanitized_report(
+        execute.ExecutionStatus("authorization", None, False, False)
+    )
+
+    assert report["lock_status"] == "not_attempted"
+    assert report["cleanup_status"] == "not_started"
+    assert report["preflight_errors"] == ["invalid_authorization"]
+
+
+@pytest.mark.parametrize(
+    ("failure_class", "expected_exit", "expected_reasons"),
+    [
+        ("completed", 0, ["completed"]),
+        ("usage", 2, ["usage"]),
+        ("invalid_config", 4, ["invalid_config"]),
+        ("invalid_authorization", 5, ["preflight_rejected", "invalid_authorization"]),
+        ("missing_token", 5, ["preflight_rejected", "missing_token"]),
+        ("insecure_token", 5, ["preflight_rejected", "insecure_token"]),
+        ("lock_busy", 5, ["preflight_rejected", "lock_busy"]),
+        ("unhealthy_worker", 5, ["preflight_rejected", "unhealthy_worker"]),
+        ("incompatible_consumers", 5, ["preflight_rejected", "incompatible_consumers"]),
+        ("broker_error", 5, ["preflight_rejected", "broker_error"]),
+        ("unknown_outcome", 6, ["message_error_or_cancelled", "unknown_outcome"]),
+        ("cleanup_failure", 7, ["close_error", "cleanup_failure"]),
+        ("cancellation", 6, ["message_error_or_cancelled", "cancellation"]),
+        ("serialization", 8, ["serialization_error"]),
+        ("internal", 70, ["sanitized_internal_error"]),
+        ("token_cleanup_failed", 75, ["token_cleanup_failed"]),
+    ],
+)
+def test_exit_reason_map_is_deterministic_for_every_contract_failure_class(
+    failure_class: str,
+    expected_exit: int,
+    expected_reasons: list[str],
+) -> None:
+    resolution = execute.resolve_exit(failure_class)
+
+    assert resolution.exit_code == expected_exit
+    assert resolution.reason_codes == expected_reasons
+
+
+def test_capture_attempts_exactly_one_nack_when_cancellation_arrives_after_obtaining_delivery() -> (
+    None
+):
+    class CancellationBroker(_CaptureBroker):
+        async def nack_requeue(self, delivery: _Delivery) -> None:
+            self.nack_calls.append(delivery.delivery_tag)
+
+    broker = CancellationBroker([_Delivery(1)])
+
+    def cancel_current_capture(_delivery: _Delivery) -> str:
+        asyncio.current_task().cancel()  # type: ignore[union-attr]
+        return "captured"
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(
+            execute.capture_once(
+                cast(execute.SnapshotBroker, broker), classify=cancel_current_capture
+            )
+        )
+
+    assert broker.nack_calls == [1]
+
+
+def test_cancellation_signal_handlers_restore_prior_handlers_and_raise_keyboard_interrupt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original_term = object()
+    original_int = object()
+    installed: dict[signal.Signals, object] = {}
+    monkeypatch.setattr(
+        execute.signal,
+        "getsignal",
+        lambda signum: {signal.SIGTERM: original_term, signal.SIGINT: original_int}[signum],
+    )
+    monkeypatch.setattr(
+        execute.signal,
+        "signal",
+        lambda signum, handler: installed.__setitem__(signum, handler),
+    )
+
+    with execute.cancellation_signal_handlers(), pytest.raises(KeyboardInterrupt):
+        installed[signal.SIGTERM](signal.SIGTERM, None)  # type: ignore[operator]
+
+    assert installed[signal.SIGTERM] is original_term
+    assert installed[signal.SIGINT] is original_int
+
+
+def test_main_emits_one_sanitized_json_report_and_returns_its_real_exit(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setenv("SHEETS_DLQ_SNAPSHOT_EXEC_RUN_ID", "run-1")
+    monkeypatch.setenv("SHEETS_DLQ_SNAPSHOT_EXEC_TOKEN_FILE", "/safe/token")
+    monkeypatch.setenv("SHEETS_DLQ_SNAPSHOT_EXEC_DIGEST", "digest")
+
+    async def successful_execution(**_kwargs: object) -> execute.ExecutionStatus:
+        return execute.ExecutionStatus(None, None, False, False)
+
+    monkeypatch.setattr(execute, "execute_authorized_capture", successful_execution)
+
+    assert execute.main() == execute.EXIT_OK
+    reports = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    assert len(reports) == 1
+    assert reports[0]["exit_code"] == execute.EXIT_OK
+    assert reports[0]["reason_codes"] == ["completed"]
