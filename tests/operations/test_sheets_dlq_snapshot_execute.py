@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
+import inspect
 import os
 import stat
 from types import SimpleNamespace
+from typing import cast
 from urllib.parse import urlsplit
 
 import pytest
@@ -245,3 +248,92 @@ def test_rabbitmq_url_reader_rejects_missing_blank_or_invalid_config_without_lea
     assert execute.read_rabbitmq_url() is None
     assert capsys.readouterr().out == ""
     assert capsys.readouterr().err == ""
+
+
+class _Delivery:
+    def __init__(self, tag: int) -> None:
+        self.delivery_tag = tag
+
+
+class _CaptureBroker:
+    def __init__(self, deliveries: list[_Delivery | None]) -> None:
+        self._deliveries = iter(deliveries)
+        self.get_calls: list[str] = []
+        self.nack_calls: list[int] = []
+
+    async def inspect_queue(self, _queue_name: str) -> None:
+        return None
+
+    async def get_one(self, queue_name: str) -> _Delivery | None:
+        self.get_calls.append(queue_name)
+        return next(self._deliveries)
+
+    async def nack_requeue(self, delivery: _Delivery) -> None:
+        self.nack_calls.append(delivery.delivery_tag)
+
+    async def close_channel(self) -> None:
+        return None
+
+
+def test_broker_protocol_exposes_only_the_restricted_requeue_surface() -> None:
+    members = {
+        name
+        for name, value in inspect.getmembers(execute.SnapshotBroker)
+        if not name.startswith("_") and callable(value)
+    }
+
+    assert members == {"inspect_queue", "get_one", "nack_requeue", "close_channel"}
+
+
+@pytest.mark.parametrize(
+    ("queue_name", "limit"),
+    [
+        ("other.queue", 1),
+        (execute.QUEUE_NAME, 0),
+        (execute.QUEUE_NAME, 25),
+    ],
+)
+def test_capture_scope_rejects_noncanonical_queue_and_limits_outside_one_to_twenty_four(
+    queue_name: str,
+    limit: int,
+) -> None:
+    with pytest.raises(ValueError):
+        execute.validate_capture_scope(queue_name, limit)
+
+
+def test_capture_uses_fixed_queue_single_pass_and_nacks_each_obtained_delivery_once() -> None:
+    broker = _CaptureBroker([_Delivery(1), _Delivery(2), _Delivery(3), None])
+
+    result = asyncio.run(
+        execute.capture_once(
+            cast(execute.SnapshotBroker, broker),
+            classify=lambda delivery: f"classified-{delivery.delivery_tag}",
+            limit=2,
+        )
+    )
+
+    assert broker.get_calls == [execute.QUEUE_NAME, execute.QUEUE_NAME]
+    assert broker.nack_calls == [1, 2]
+    assert result.classifications == ["classified-1", "classified-2"]
+    assert result.unknown_outcomes == 0
+
+
+def test_capture_stops_after_unknown_nack_without_retry() -> None:
+    class UnknownNackBroker(_CaptureBroker):
+        async def nack_requeue(self, delivery: _Delivery) -> None:
+            self.nack_calls.append(delivery.delivery_tag)
+            raise TimeoutError("unverifiable nack")
+
+    broker = UnknownNackBroker([_Delivery(1), _Delivery(2)])
+
+    result = asyncio.run(
+        execute.capture_once(
+            cast(execute.SnapshotBroker, broker),
+            classify=lambda _delivery: (_ for _ in ()).throw(ValueError("classification failed")),
+        )
+    )
+
+    assert broker.get_calls == [execute.QUEUE_NAME]
+    assert broker.nack_calls == [1]
+    assert result.classification_errors == 1
+    assert result.unknown_outcomes == 1
