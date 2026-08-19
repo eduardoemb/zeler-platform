@@ -5,16 +5,210 @@ import hashlib
 import inspect
 import json
 import os
+import re
 import signal
 import stat
+import subprocess
 from collections.abc import Iterator
 from contextlib import contextmanager
+from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
 from urllib.parse import urlsplit
 
 import pytest
 from infra.operations import sheets_dlq_snapshot_execute as execute
+
+_WRAPPER_PATH = Path(__file__).resolve().parents[2] / "infra/gce/sheets-dlq-snapshot-execute.sh"
+_WRAPPER_DOCKER_MARKER = "SHEETS_DLQ_SNAPSHOT_EXEC_DOCKER_BIN"
+_TOKEN_DIRECTORY = "/var/lib/zeler-platform/sheets-dlq-snapshot"  # noqa: S105
+
+
+def _sandboxed_wrapper(
+    tmp_path: Path, *, docker_exit: int = 0, cleanup_failure: bool = False, term: bool = False
+) -> tuple[Path, Path, Path, Path]:
+    source = _WRAPPER_PATH.read_text()
+    assert source.count(_WRAPPER_DOCKER_MARKER) == 1
+    assert f"TOKEN_DIRECTORY={_TOKEN_DIRECTORY}" in source
+    assert '[[ "$(/usr/bin/id -u)" == "0" ]] || exit "$EXIT_CONFIG"' in source
+    assert '"0:700:directory"' in source
+    assert '"0:600:regular file:32"' in source
+    token_directory = tmp_path / "root-owned-token-directory"
+    token_directory.mkdir(mode=0o700)
+    fake_docker = tmp_path / "fake-docker"
+    argv_file = tmp_path / "docker-argv.bin"
+    environment_file = tmp_path / "docker-environment.bin"
+    fake_docker.write_text(
+        "#!/usr/bin/python3\n"
+        "import os\n"
+        "import signal\n"
+        "import sys\n"
+        "from pathlib import Path\n"
+        f"argv_file = Path({str(argv_file)!r})\n"
+        f"environment_file = Path({str(environment_file)!r})\n"
+        "argv_file.write_bytes(b'\\0'.join(arg.encode() for arg in sys.argv[1:]) + b'\\0')\n"
+        "environment_file.write_bytes(b'\\0'.join(\n"
+        "    f'{name}={value}'.encode() for name, value in os.environ.items()\n"
+        ") + b'\\0')\n"
+        "token_file = Path(os.environ['SHEETS_DLQ_SNAPSHOT_EXEC_TOKEN_FILE'])\n"
+        f"(environment_file.with_name('docker-environment.bin.calls')).write_text('call\\n')\n"
+        "(environment_file.with_name('docker-environment.bin.token-metadata')).write_text(\n"
+        "    f'{token_file.stat().st_uid}:{token_file.stat().st_mode & 0o777:o}:regular file:'\n"
+        "    f'{token_file.stat().st_size}\\n'\n"
+        ")\n"
+        + ("token_file.unlink()\ntoken_file.mkdir()\n" if cleanup_failure else "")
+        + ("os.kill(os.getppid(), signal.SIGTERM)\n" if term else "")
+        + f"raise SystemExit({docker_exit})\n"
+    )
+    fake_docker.chmod(0o700)
+    replacement = f"DOCKER_BIN={fake_docker} # {_WRAPPER_DOCKER_MARKER}"
+    sandbox = tmp_path / "sheets-dlq-snapshot-execute.sh"
+    sandbox_source = (
+        source.replace(
+            f"TOKEN_DIRECTORY={_TOKEN_DIRECTORY}", f"TOKEN_DIRECTORY={token_directory}", 1
+        )
+        .replace(
+            '[[ "$(/usr/bin/id -u)" == "0" ]] || exit "$EXIT_CONFIG"', ": # sandbox root check", 1
+        )
+        .replace('"0:700:directory"', f'"{os.geteuid()}:700:directory"', 1)
+        .replace('"0:600:regular file:32"', f'"{os.geteuid()}:600:regular file:32"', 1)
+    )
+    sandbox_source = sandbox_source.replace(
+        f"DOCKER_BIN=/usr/bin/docker # {_WRAPPER_DOCKER_MARKER}", replacement, 1
+    )
+    assert sandbox_source.count(_WRAPPER_DOCKER_MARKER) == 1
+    sandbox.write_text(sandbox_source)
+    sandbox.chmod(0o700)
+    return sandbox, argv_file, environment_file, token_directory
+
+
+def _null_fields(path: Path) -> list[str]:
+    return [field.decode() for field in path.read_bytes().split(b"\0") if field]
+
+
+def test_wrapper_rejects_arguments_and_stdin_before_the_compose_boundary(tmp_path: Path) -> None:
+    sandbox, argv_file, _environment_file, _token_directory = _sandboxed_wrapper(tmp_path)
+
+    assert subprocess.run([sandbox, "--not-allowed"], check=False).returncode == 2  # noqa: S603
+    assert not argv_file.exists()
+    assert (
+        subprocess.run(  # noqa: S603 - executes only the disposable sandbox wrapper.
+            [sandbox], input="operator input\n", text=True, check=False
+        ).returncode
+        == 2
+    )
+    assert not argv_file.exists()
+
+
+def test_wrapper_uses_a_sanitized_environment_and_exact_bare_compose_authority_argv(
+    tmp_path: Path,
+) -> None:
+    sandbox, argv_file, environment_file, token_directory = _sandboxed_wrapper(tmp_path)
+    hostile_environment = os.environ | {
+        "RABBITMQ_URL": "amqps://secret.example/vhost",
+        "SHEETS_DLQ_SNAPSHOT_EXEC_RUN_ID": "operator-run",
+        "SHEETS_DLQ_SNAPSHOT_EXEC_TOKEN_FILE": "/operator/token",
+        "SHEETS_DLQ_SNAPSHOT_EXEC_DIGEST": "operator-digest",
+        "SHEETS_DLQ_SNAPSHOT_EXEC_DOCKER_BIN": "/operator/docker",
+        "UNTRUSTED_OPERATOR_VARIABLE": "must-not-reach-compose",
+    }
+
+    completed = subprocess.run(  # noqa: S603 - executes only the disposable sandbox wrapper.
+        [sandbox],
+        env=hostile_environment,
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0
+    compose_argv = _null_fields(argv_file)
+    assert compose_argv[:15] == [
+        "compose",
+        "--project-name",
+        "zeler-platform",
+        "--project-directory",
+        "/opt/zeler-platform",
+        "--file",
+        "/opt/zeler-platform/docker-compose.yml",
+        "exec",
+        "-T",
+        "--user",
+        "0:0",
+        "--workdir",
+        "/app",
+        "-e",
+        "SHEETS_DLQ_SNAPSHOT_EXEC_RUN_ID",
+    ]
+    assert compose_argv[15:] == [
+        "-e",
+        "SHEETS_DLQ_SNAPSHOT_EXEC_DIGEST",
+        "-e",
+        "SHEETS_DLQ_SNAPSHOT_EXEC_TOKEN_FILE",
+        "sheets-worker",
+        "/app/.venv/bin/python",
+        "-m",
+        "infra.operations.sheets_dlq_snapshot_execute",
+    ]
+    environment = _null_fields(environment_file)
+    environment_names = {field.split("=", 1)[0] for field in environment}
+    assert environment_names - {"LC_CTYPE"} == {
+        "PATH",
+        "HOME",
+        "DOCKER_HOST",
+        "SHEETS_DLQ_SNAPSHOT_EXEC_RUN_ID",
+        "SHEETS_DLQ_SNAPSHOT_EXEC_DIGEST",
+        "SHEETS_DLQ_SNAPSHOT_EXEC_TOKEN_FILE",
+    }
+    assert not any(
+        forbidden in "\n".join(environment)
+        for forbidden in ("RABBITMQ_URL=", "UNTRUSTED_OPERATOR_VARIABLE=", "operator-digest")
+    )
+    token_path = next(
+        field.split("=", 1)[1]
+        for field in environment
+        if field.startswith("SHEETS_DLQ_SNAPSHOT_EXEC_TOKEN_FILE=")
+    )
+    assert token_path.startswith(f"{token_directory}/")
+    assert not Path(token_path).exists()
+    assert environment_file.with_name("docker-environment.bin.calls").read_text() == "call\n"
+    assert environment_file.with_name("docker-environment.bin.token-metadata").read_text() == (
+        f"{os.geteuid()}:600:regular file:32\n"
+    )
+    values = dict(field.split("=", 1) for field in environment)
+    assert re.fullmatch(r"[0-9a-f]{32}", values["SHEETS_DLQ_SNAPSHOT_EXEC_RUN_ID"])
+    assert re.fullmatch(r"[0-9a-f]{64}", values["SHEETS_DLQ_SNAPSHOT_EXEC_DIGEST"])
+    assert "TOKEN" not in environment_names
+    assert completed.stdout == b""
+
+
+@pytest.mark.parametrize(
+    ("docker_exit", "cleanup_failure", "term", "expected_exit"),
+    [(0, True, False, 75), (9, True, False, 9), (0, False, True, 143)],
+    ids=["successful-cleanup-failure", "original-failure-wins", "term-cleans-token"],
+)
+def test_wrapper_cleanup_and_exit_precedence_are_bounded_to_the_sandboxed_docker_seam(
+    tmp_path: Path,
+    docker_exit: int,
+    cleanup_failure: bool,
+    term: bool,
+    expected_exit: int,
+) -> None:
+    sandbox, _argv_file, environment_file, _token_directory = _sandboxed_wrapper(
+        tmp_path, docker_exit=docker_exit, cleanup_failure=cleanup_failure, term=term
+    )
+
+    completed = subprocess.run(  # noqa: S603 - executes only the disposable sandbox wrapper.
+        [sandbox], stdin=subprocess.DEVNULL, check=False
+    )
+
+    assert completed.returncode == expected_exit
+    token_path = next(
+        field.split("=", 1)[1]
+        for field in _null_fields(environment_file)
+        if field.startswith("SHEETS_DLQ_SNAPSHOT_EXEC_TOKEN_FILE=")
+    )
+    assert not Path(token_path).is_file()
 
 
 def _root_owned_regular_token(size: int) -> SimpleNamespace:
