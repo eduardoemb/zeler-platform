@@ -4,6 +4,7 @@ import hashlib
 import os
 import stat
 from types import SimpleNamespace
+from urllib.parse import urlsplit
 
 import pytest
 from infra.operations import sheets_dlq_snapshot_execute as execute
@@ -116,5 +117,131 @@ def test_digest_binds_canonical_newline_fields_and_compare_digest_fails_closed(
     assert execute.verify_execution_authorization(str(token_path), run_id, expected)
     assert not execute.verify_execution_authorization(str(token_path), run_id, "0" * 64)
     assert compared == [(expected, expected), (expected, "0" * 64)]
+    assert capsys.readouterr().out == ""
+    assert capsys.readouterr().err == ""
+
+
+def test_execution_lock_uses_canonical_root_only_file_and_nonblocking_exclusive_flock(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    opened: list[tuple[str, int, int]] = []
+    flock_calls: list[tuple[int, int]] = []
+    closed: list[int] = []
+
+    def record_open(path: str, flags: int, mode: int) -> int:
+        opened.append((path, flags, mode))
+        return 17
+
+    monkeypatch.setattr(execute.os, "open", record_open)
+    monkeypatch.setattr(execute.os, "fstat", lambda _fd: _root_owned_regular_token(0))
+    monkeypatch.setattr(
+        execute.fcntl,
+        "flock",
+        lambda descriptor, operation: flock_calls.append((descriptor, operation)),
+    )
+    monkeypatch.setattr(execute.os, "close", lambda descriptor: closed.append(descriptor))
+
+    with execute.execution_lock():
+        pass
+
+    assert opened == [
+        (
+            "/var/lib/zeler-platform/sheets-dlq-snapshot/snapshot.lock",
+            os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC,
+            0o600,
+        )
+    ]
+    assert flock_calls == [
+        (17, execute.fcntl.LOCK_EX | execute.fcntl.LOCK_NB),
+        (17, execute.fcntl.LOCK_UN),
+    ]
+    assert closed == [17]
+
+
+def test_execution_lock_releases_and_closes_when_its_body_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    flock_calls: list[tuple[int, int]] = []
+    closed: list[int] = []
+    monkeypatch.setattr(execute.os, "open", lambda *_args: 19)
+    monkeypatch.setattr(execute.os, "fstat", lambda _fd: _root_owned_regular_token(0))
+    monkeypatch.setattr(
+        execute.fcntl,
+        "flock",
+        lambda descriptor, operation: flock_calls.append((descriptor, operation)),
+    )
+    monkeypatch.setattr(execute.os, "close", lambda descriptor: closed.append(descriptor))
+
+    with pytest.raises(RuntimeError, match="boom"), execute.execution_lock():
+        raise RuntimeError("boom")
+
+    assert flock_calls[-1] == (19, execute.fcntl.LOCK_UN)
+    assert closed == [19]
+
+
+def test_execution_lock_rejects_contention_and_closes_before_broker_interaction(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    closed: list[int] = []
+    monkeypatch.setattr(execute.os, "open", lambda *_args: 23)
+    monkeypatch.setattr(execute.os, "fstat", lambda _fd: _root_owned_regular_token(0))
+    monkeypatch.setattr(execute.os, "close", lambda descriptor: closed.append(descriptor))
+    monkeypatch.setattr(
+        execute.fcntl,
+        "flock",
+        lambda _descriptor, _operation: (_ for _ in ()).throw(BlockingIOError()),
+    )
+
+    with pytest.raises(execute.LockUnavailableError), execute.execution_lock():
+        pytest.fail("a contended lock must not enter the execution body")
+
+    assert closed == [23]
+
+
+def test_execution_lock_rejects_non_root_lock_file(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(execute.os, "open", lambda *_args: 29)
+    monkeypatch.setattr(
+        execute.os,
+        "fstat",
+        lambda _fd: SimpleNamespace(st_mode=stat.S_IFREG | 0o600, st_uid=1, st_size=0),
+    )
+    closed: list[int] = []
+    monkeypatch.setattr(execute.os, "close", lambda descriptor: closed.append(descriptor))
+
+    with pytest.raises(execute.LockUnavailableError), execute.execution_lock():
+        pytest.fail("an insecure lock file must not enter the execution body")
+
+    assert closed == [29]
+
+
+@pytest.mark.parametrize("url", ["amqp://broker.example/vhost", "amqps://broker.example/vhost"])
+def test_rabbitmq_url_reader_accepts_only_inherited_amqp_bindings(
+    monkeypatch: pytest.MonkeyPatch,
+    url: str,
+) -> None:
+    monkeypatch.setenv("RABBITMQ_URL", url)
+
+    assert execute.read_rabbitmq_url() == url
+    assert urlsplit(execute.read_rabbitmq_url() or "").netloc == "broker.example"
+
+
+@pytest.mark.parametrize(
+    "value",
+    [None, "", "  \t", "http://broker.example", "amqp:///missing-host"],
+    ids=["missing", "empty", "whitespace", "insecure-scheme", "missing-netloc"],
+)
+def test_rabbitmq_url_reader_rejects_missing_blank_or_invalid_config_without_leaking_uri(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    value: str | None,
+) -> None:
+    if value is None:
+        monkeypatch.delenv("RABBITMQ_URL", raising=False)
+    else:
+        monkeypatch.setenv("RABBITMQ_URL", value)
+
+    assert execute.read_rabbitmq_url() is None
     assert capsys.readouterr().out == ""
     assert capsys.readouterr().err == ""
