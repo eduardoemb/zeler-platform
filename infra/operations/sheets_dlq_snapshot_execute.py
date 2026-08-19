@@ -1,9 +1,4 @@
-"""Per-execution authority primitives for the Sheets DLQ executor.
-
-This module deliberately owns no broker connection, reporting, signal, or
-command authority. It composes the archived narrow broker port for one bounded
-capture pass only; later execution slices add the remaining authority.
-"""
+"""Per-execution authority primitives for the Sheets DLQ executor."""
 
 from __future__ import annotations
 
@@ -11,12 +6,16 @@ import asyncio
 import fcntl
 import hashlib
 import hmac
+import json
 import os
 import secrets
+import signal
 import stat
+import sys
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from urllib.parse import urlsplit
 
 from infra.operations.sheets_dlq_snapshot_adapter import (
@@ -39,9 +38,14 @@ NACK_TIMEOUT_SECONDS = 2.0
 CLOSE_TIMEOUT_SECONDS = 5.0
 
 EXIT_OK = 0
+EXIT_USAGE = 2
+EXIT_CONFIG = 4
 EXIT_PREFLIGHT = 5
 EXIT_MESSAGE_OR_CANCELLED = 6
 EXIT_CLOSE = 7
+EXIT_SERIALIZATION = 8
+EXIT_INTERNAL = 70
+EXIT_TOKEN_CLEANUP_FAIL = 75  # Wrapper-only until S2 owns token-file cleanup.
 
 _RUN_ID_ENV = "SHEETS_DLQ_SNAPSHOT_EXEC_RUN_ID"
 _TOKEN_FILE_ENV = "SHEETS_DLQ_SNAPSHOT_EXEC_TOKEN_FILE"  # noqa: S105 - environment variable name.
@@ -53,6 +57,55 @@ class LockUnavailableError(RuntimeError):
 
 
 @dataclass(frozen=True)
+class ExitResolution:
+    """A deterministic, non-sensitive process outcome."""
+
+    exit_code: int
+    reason_codes: list[str]
+
+
+_EXIT_RESOLUTIONS = {
+    "completed": ExitResolution(EXIT_OK, ["completed"]),
+    "usage": ExitResolution(EXIT_USAGE, ["usage"]),
+    "invalid_config": ExitResolution(EXIT_CONFIG, ["invalid_config"]),
+    "invalid_authorization": ExitResolution(
+        EXIT_PREFLIGHT, ["preflight_rejected", "invalid_authorization"]
+    ),
+    "missing_token": ExitResolution(EXIT_PREFLIGHT, ["preflight_rejected", "missing_token"]),
+    "insecure_token": ExitResolution(EXIT_PREFLIGHT, ["preflight_rejected", "insecure_token"]),
+    "lock_busy": ExitResolution(EXIT_PREFLIGHT, ["preflight_rejected", "lock_busy"]),
+    "unhealthy_worker": ExitResolution(EXIT_PREFLIGHT, ["preflight_rejected", "unhealthy_worker"]),
+    "incompatible_consumers": ExitResolution(
+        EXIT_PREFLIGHT, ["preflight_rejected", "incompatible_consumers"]
+    ),
+    "broker_error": ExitResolution(EXIT_PREFLIGHT, ["preflight_rejected", "broker_error"]),
+    "unknown_outcome": ExitResolution(
+        EXIT_MESSAGE_OR_CANCELLED, ["message_error_or_cancelled", "unknown_outcome"]
+    ),
+    "cleanup_failure": ExitResolution(EXIT_CLOSE, ["close_error", "cleanup_failure"]),
+    "cancellation": ExitResolution(
+        EXIT_MESSAGE_OR_CANCELLED, ["message_error_or_cancelled", "cancellation"]
+    ),
+    "serialization": ExitResolution(EXIT_SERIALIZATION, ["serialization_error"]),
+    "internal": ExitResolution(EXIT_INTERNAL, ["sanitized_internal_error"]),
+    "token_cleanup_failed": ExitResolution(EXIT_TOKEN_CLEANUP_FAIL, ["token_cleanup_failed"]),
+}
+_PREFLIGHT_FAILURE_CLASSES = {
+    "authorization": "invalid_authorization",
+    "binding": "invalid_config",
+    "broker": "broker_error",
+    "consumers": "incompatible_consumers",
+    "lock": "lock_busy",
+    "worker_health": "unhealthy_worker",
+}
+
+
+def resolve_exit(failure_class: str) -> ExitResolution:
+    """Return the sole allowed exit/reason pair for a known outcome."""
+    return _EXIT_RESOLUTIONS.get(failure_class, _EXIT_RESOLUTIONS["internal"])
+
+
+@dataclass(frozen=True)
 class ExecutionStatus:
     first_preflight_failure: str | None
     capture: CapturePass | None
@@ -61,13 +114,21 @@ class ExecutionStatus:
 
     @property
     def exit_code(self) -> int:
-        if self.first_preflight_failure is not None:
-            return EXIT_PREFLIGHT
-        if self.capture_failed:
-            return EXIT_MESSAGE_OR_CANCELLED
-        if self.close_failed:
-            return EXIT_CLOSE
-        return EXIT_OK
+        return resolve_exit(_status_failure_class(self)).exit_code
+
+
+def _status_failure_class(status: ExecutionStatus) -> str:
+    if status.first_preflight_failure is not None:
+        return _PREFLIGHT_FAILURE_CLASSES.get(
+            status.first_preflight_failure, "invalid_authorization"
+        )
+    if status.capture is not None and status.capture.unknown_outcomes:
+        return "unknown_outcome"
+    if status.capture_failed:
+        return "unknown_outcome"
+    if status.close_failed:
+        return "cleanup_failure"
+    return "completed"
 
 
 def generate_execution_token() -> bytes:
@@ -208,15 +269,24 @@ async def capture_once(
         if delivery is None:
             break
         messages_obtained += 1
+        cancelled = False
         try:
             classifications.append(classify(delivery))
+            await asyncio.sleep(0)
+        except asyncio.CancelledError:
+            cancelled = True
         except Exception:  # noqa: BLE001 - classification failure must still requeue.
             classification_errors += 1
         try:
             await asyncio.wait_for(broker.nack_requeue(delivery), timeout=NACK_TIMEOUT_SECONDS)
+        except asyncio.CancelledError:
+            cancelled = True
+            unknown_outcomes += 1
         except Exception:  # noqa: BLE001 - a failed nack cannot prove a requeue outcome.
             unknown_outcomes += 1
             break
+        if cancelled:
+            raise asyncio.CancelledError
 
     return CapturePass(
         classifications=classifications,
@@ -313,6 +383,73 @@ def _authority_environment() -> tuple[str, str, str] | None:
     return values  # type: ignore[return-value]
 
 
+def build_sanitized_report(
+    status: ExecutionStatus,
+    *,
+    safe_revision: str = "unavailable",
+    failure_class: str | None = None,
+) -> dict[str, object]:
+    """Build the fixed report allowlist without copying any runtime values."""
+    capture = status.capture
+    classifications = {"captured": 0, "other": 0, "classification_error": 0}
+    for classification in capture.classifications if capture is not None else ():
+        classifications["captured" if classification == "captured" else "other"] += 1
+    if capture is not None:
+        classifications["classification_error"] = capture.classification_errors
+    outcome = resolve_exit(failure_class or _status_failure_class(status))
+    preflight_class = _PREFLIGHT_FAILURE_CLASSES.get(status.first_preflight_failure or "")
+    unknown_outcomes = capture.unknown_outcomes if capture is not None else 0
+    lock_status = "busy" if status.first_preflight_failure == "lock" else "released"
+    cleanup_status = "failed" if status.close_failed else "complete"
+    if status.first_preflight_failure == "authorization":
+        lock_status = "not_attempted"
+        cleanup_status = "not_started"
+    return {
+        "schema_version": "zeler.sheets_dlq_snapshot_report/v1",
+        "timestamp_utc": datetime.now(UTC).isoformat(),
+        "safe_revision": safe_revision if safe_revision.isalnum() else "unavailable",
+        "requested_limit": SNAPSHOT_LIMIT,
+        "messages_obtained": capture.messages_obtained if capture is not None else 0,
+        "classifications": classifications,
+        "requeue_requested_count": capture.messages_obtained if capture is not None else 0,
+        "requeue_failed_count": unknown_outcomes,
+        "unknown_outcomes_count": unknown_outcomes,
+        "preflight_errors": [preflight_class] if preflight_class is not None else [],
+        "close_errors": int(status.close_failed),
+        "lock_status": lock_status,
+        "cleanup_status": cleanup_status,
+        "exit_code": outcome.exit_code,
+        "reason_codes": outcome.reason_codes,
+    }
+
+
+@contextmanager
+def cancellation_signal_handlers() -> Iterator[None]:
+    """Translate TERM/INT into cleanup-driving KeyboardInterrupt and restore handlers."""
+    previous = {signum: signal.getsignal(signum) for signum in (signal.SIGTERM, signal.SIGINT)}
+
+    def cancel(_signum: int, _frame: object) -> None:
+        raise KeyboardInterrupt
+
+    try:
+        for signum in previous:
+            signal.signal(signum, cancel)
+        yield
+    finally:
+        for signum, handler in previous.items():
+            signal.signal(signum, handler)
+
+
+def _emit_report(status: ExecutionStatus, failure_class: str | None = None) -> int:
+    outcome = resolve_exit(failure_class or _status_failure_class(status))
+    report = build_sanitized_report(status, failure_class=failure_class)
+    try:
+        sys.stdout.write(json.dumps(report, sort_keys=True, separators=(",", ":")) + "\n")
+    except (TypeError, ValueError):
+        return EXIT_SERIALIZATION
+    return outcome.exit_code
+
+
 def main(
     *,
     broker_factory: Callable[[str], SnapshotBroker] | None = None,
@@ -320,21 +457,31 @@ def main(
     cleanup_ready: Callable[[], bool] = lambda: True,
     classify: Callable[[SnapshotDelivery], object] = lambda _delivery: "captured",
 ) -> int:
-    authority = _authority_environment()
-    if authority is None:
-        return EXIT_PREFLIGHT
-    run_id, token_file, digest = authority
-    return asyncio.run(
-        execute_authorized_capture(
-            run_id=run_id,
-            token_file=token_file,
-            digest=digest,
-            broker_factory=broker_factory,
-            runtime_factory=runtime_factory,
-            cleanup_ready=cleanup_ready,
-            classify=classify,
-        )
-    ).exit_code
+    status = ExecutionStatus(None, None, False, False)
+    failure_class: str | None = None
+    try:
+        with cancellation_signal_handlers():
+            authority = _authority_environment()
+            if authority is None:
+                failure_class = "missing_token"
+            else:
+                run_id, token_file, digest = authority
+                status = asyncio.run(
+                    execute_authorized_capture(
+                        run_id=run_id,
+                        token_file=token_file,
+                        digest=digest,
+                        broker_factory=broker_factory,
+                        runtime_factory=runtime_factory,
+                        cleanup_ready=cleanup_ready,
+                        classify=classify,
+                    )
+                )
+    except (KeyboardInterrupt, asyncio.CancelledError):
+        failure_class = "cancellation"
+    except Exception:  # noqa: BLE001 - reports must not disclose exception detail.
+        failure_class = "internal"
+    return _emit_report(status, failure_class)
 
 
 if __name__ == "__main__":
