@@ -22,6 +22,7 @@ from typing import Any, Protocol, cast
 
 import aio_pika
 import httpx
+from infra.operations.sheets_dlq_reconcile import classify_and_sanitize_one
 from infra.operations.sheets_dlq_snapshot_adapter import (
     DLQ_QUEUE_NAME,
     OUTCOME_REQUEUE_REQUESTED,
@@ -43,6 +44,7 @@ WORKER_HEALTH_URL = "http://sheets-worker:8080/health"
 _CONNECT_TIMEOUT = 5.0
 _HEARTBEAT = 60
 _CLOSE_TIMEOUT = 5.0
+_NACK_TIMEOUT = 2.0
 
 ConnectHandle = Callable[..., Awaitable[Any]]
 
@@ -61,6 +63,15 @@ async def _default_connect(url: str, timeout: float | None, heartbeat: int | Non
 
 class _Nackable(Protocol):
     async def nack(self, *, requeue: bool = True, multiple: bool = False) -> None: ...
+
+
+async def _close_owned_pair(channel: Any | None, connection: Any | None) -> None:
+    try:
+        if channel is not None:
+            await channel.close()
+    finally:
+        if connection is not None:
+            await connection.close()
 
 
 class AioPikaSnapshotBroker:
@@ -107,12 +118,7 @@ class AioPikaSnapshotBroker:
     async def close_channel(self) -> None:
         channel, self._channel = self._channel, None
         connection, self._connection = self._connection, None
-        try:
-            if channel is not None:
-                await asyncio.wait_for(channel.close(), timeout=_CLOSE_TIMEOUT)
-        finally:
-            if connection is not None:
-                await asyncio.wait_for(connection.close(), timeout=_CLOSE_TIMEOUT)
+        await asyncio.wait_for(_close_owned_pair(channel, connection), timeout=_CLOSE_TIMEOUT)
 
 
 class HttpSheetsWorkerRuntime:
@@ -163,11 +169,11 @@ _EXECUTION_EXIT = {
 
 async def _attempt_nack(broker: SnapshotBroker, delivery: SnapshotDelivery) -> str:
     try:
-        await broker.nack_requeue(delivery)
+        await asyncio.wait_for(broker.nack_requeue(delivery), timeout=_NACK_TIMEOUT)
         return OUTCOME_REQUEUE_REQUESTED
     except NackRequeueError:
         return OUTCOME_REQUEUE_SEND_FAILED
-    except Exception:  # noqa: BLE001 - transport/unknown stays outcome_unknown.
+    except Exception:  # noqa: BLE001 - timeout/transport/unknown -> outcome_unknown.
         return OUTCOME_UNKNOWN
 
 
@@ -181,7 +187,7 @@ async def _universal_nack(broker: SnapshotBroker, obtained: list[SnapshotDeliver
 
 async def _safe_close(broker: SnapshotBroker) -> bool:
     try:
-        await broker.close_channel()
+        await asyncio.wait_for(broker.close_channel(), timeout=_CLOSE_TIMEOUT)
         return False
     except Exception:  # noqa: BLE001 - close failure must not mask the cause.
         return True
@@ -201,13 +207,15 @@ def _build_report(
     close_failed: bool,
     results: list[str],
     outcome: str,
+    verdicts: Sequence[dict[str, str | None]] = (),
 ) -> dict[str, object]:
     return {
         "execution_outcome": outcome,
         "preflight": preflight,
         "close": not close_failed,
         "message_results": [
-            {"sequence": index, "outcome": item} for index, item in enumerate(results, start=1)
+            {"sequence": index, "outcome": item, **(*verdicts, {})[index - 1]}
+            for index, item in enumerate(results, start=1)
         ],
         "error_code": _EXECUTION_EXIT[outcome],
         "requeue_confirmation": "unavailable",
@@ -230,16 +238,20 @@ async def run_snapshot_runtime(
     On cancellation every obtained delivery is still nacked once.
     """
     obtained: list[SnapshotDelivery] = []
+    verdicts: list[dict[str, str | None]] = []
     preflight = False
     empty = False
     try:
         with same_host_exclusion(lock_path):
-            await run_preflight(
-                broker=broker,
-                runtime=runtime,
-                queue_name=queue_name,
-                offline_consumers=offline_consumers,
-            )
+            try:
+                await run_preflight(
+                    broker=broker,
+                    runtime=runtime,
+                    queue_name=queue_name,
+                    offline_consumers=offline_consumers,
+                )
+            except (ConnectionError, OSError, aio_pika.exceptions.AMQPError) as exc:
+                raise PreflightError("broker connectivity unavailable") from exc
             preflight = True
             for _ in range(limit):
                 delivery = await broker.get_one(queue_name)
@@ -247,14 +259,24 @@ async def run_snapshot_runtime(
                     empty = not obtained
                     break
                 obtained.append(delivery)
+                verdicts.append(classify_and_sanitize_one(json.loads(delivery.body), {}))
             results = await _universal_nack(broker, obtained)
     except asyncio.CancelledError:
-        results = await _universal_nack(broker, obtained)
-        close_failed = await _safe_close(broker)
+
+        async def _cleanup() -> tuple[list[str], bool]:
+            outcomes = await _universal_nack(broker, obtained)
+            return outcomes, await _safe_close(broker)
+
+        cleanup = asyncio.create_task(_cleanup())
+        try:
+            results, close_failed = await asyncio.shield(cleanup)
+        except asyncio.CancelledError:
+            results, close_failed = await cleanup
         return _build_report(
             preflight=preflight,
             close_failed=close_failed,
             results=results,
+            verdicts=verdicts,
             outcome=EXECUTION_CLOSE_ERROR if close_failed else EXECUTION_CANCELLED,
         )
     except (PreflightError, SameHostExclusionError):
@@ -265,13 +287,15 @@ async def run_snapshot_runtime(
             results=[],
             outcome=EXECUTION_CLOSE_ERROR if close_failed else EXECUTION_PREFLIGHT_ERROR,
         )
-    except Exception:  # noqa: BLE001 - unexpected get failure -> honest report.
+    except Exception:  # noqa: BLE001 - unexpected failure reports honest unknown.
         results = await _universal_nack(broker, obtained)
+        results, verdicts = results + [OUTCOME_UNKNOWN], verdicts + [{}]
         close_failed = await _safe_close(broker)
         return _build_report(
             preflight=preflight,
             close_failed=close_failed,
             results=results,
+            verdicts=verdicts,
             outcome=EXECUTION_CLOSE_ERROR if close_failed else EXECUTION_MESSAGE_ERROR,
         )
     close_failed = await _safe_close(broker)
@@ -281,6 +305,7 @@ async def run_snapshot_runtime(
         preflight=preflight,
         close_failed=close_failed,
         results=results,
+        verdicts=verdicts,
         outcome=_execution_outcome(results, close_failed),
     )
 
@@ -288,7 +313,6 @@ async def run_snapshot_runtime(
 # ===================== PR 2b: authorized runtime CLI =====================
 
 EXIT_USAGE = 2
-EXIT_AUTH = 3
 EXIT_CONFIG = 4
 EXIT_SERIALIZATION = 8
 EXIT_INTERNAL = 70
@@ -312,7 +336,6 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--authorization-token-file",
-        required=True,
         help="Owner-only authorization token file",
     )
     parser.add_argument(
@@ -322,7 +345,9 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-def _read_token(path: str) -> bytes | None:
+def _read_token(path: str | None) -> bytes | None:
+    if path is None:
+        return None
     try:
         st = os.stat(path)
     except OSError:
@@ -344,6 +369,14 @@ def _authorized(token_file: str, expected_sha256: str) -> bool:
     return hmac.compare_digest(actual, expected_sha256)
 
 
+def _emit_report(report: dict[str, object]) -> int:
+    try:
+        print(json.dumps(report, sort_keys=True, separators=(",", ":")))
+    except (TypeError, ValueError):
+        return EXIT_SERIALIZATION
+    return cast(int, report["error_code"])
+
+
 def main(
     argv: Sequence[str] | None = None,
     *,
@@ -360,9 +393,19 @@ def main(
     if expected is None or lock is None:
         return EXIT_CONFIG
     if not _authorized(args.authorization_token_file, expected):
-        return EXIT_AUTH
+        return _emit_report(
+            _build_report(
+                preflight=False,
+                close_failed=False,
+                results=[],
+                outcome=EXECUTION_PREFLIGHT_ERROR,
+            )
+        )
     if broker is None:
-        broker = AioPikaSnapshotBroker(os.environ.get(_AMQP_URL_ENV, ""))
+        amqp_url = os.environ.get(_AMQP_URL_ENV)
+        if not amqp_url or not amqp_url.strip():
+            return EXIT_CONFIG
+        broker = AioPikaSnapshotBroker(amqp_url)
     if runtime is None:
         runtime = HttpSheetsWorkerRuntime()
     try:
@@ -377,11 +420,7 @@ def main(
         )
     except Exception:  # noqa: BLE001 - internal failure mapped to 70 without leaking.
         return EXIT_INTERNAL
-    try:
-        print(json.dumps(report, sort_keys=True, separators=(",", ":")))
-    except (TypeError, ValueError):
-        return EXIT_SERIALIZATION
-    return cast(int, report["error_code"])
+    return _emit_report(report)
 
 
 if __name__ == "__main__":
