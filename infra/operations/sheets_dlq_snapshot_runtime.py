@@ -9,17 +9,25 @@ and reporting live later; the adapter ``__main__`` stays inert.
 
 from __future__ import annotations
 
+import argparse
 import asyncio
-from collections.abc import Awaitable, Callable
+import hashlib
+import hmac
+import json
+import os
+import stat
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from typing import Any, Protocol, cast
 
 import aio_pika
 import httpx
 from infra.operations.sheets_dlq_snapshot_adapter import (
+    DLQ_QUEUE_NAME,
     OUTCOME_REQUEUE_REQUESTED,
     OUTCOME_REQUEUE_SEND_FAILED,
     OUTCOME_UNKNOWN,
+    SNAPSHOT_CAP,
     NackRequeueError,
     PreflightError,
     QueueInspection,
@@ -275,3 +283,106 @@ async def run_snapshot_runtime(
         results=results,
         outcome=_execution_outcome(results, close_failed),
     )
+
+
+# ===================== PR 2b: authorized runtime CLI =====================
+
+EXIT_USAGE = 2
+EXIT_AUTH = 3
+EXIT_CONFIG = 4
+EXIT_SERIALIZATION = 8
+EXIT_INTERNAL = 70
+
+MAX_LIMIT = 24
+_MAX_TOKEN_BYTES = 4096
+QUEUE_ALLOWLIST = frozenset({DLQ_QUEUE_NAME})
+
+_AUTH_SHA256_ENV = "SHEETS_DLQ_SNAPSHOT_AUTH_SHA256"
+_AMQP_URL_ENV = "SHEETS_DLQ_SNAPSHOT_AMQP_URL"
+_LOCK_PATH_ENV = "SHEETS_DLQ_SNAPSHOT_LOCK_PATH"
+
+
+def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        prog="sheets-dlq-snapshot-runtime",
+        description=(
+            "Authorized, fail-closed Sheets DLQ snapshot. Requires an owner-only "
+            "authorization token file and explicit configuration; emits sanitized JSON only."
+        ),
+    )
+    parser.add_argument(
+        "--authorization-token-file",
+        required=True,
+        help="Owner-only authorization token file",
+    )
+    parser.add_argument(
+        "--queue", default=DLQ_QUEUE_NAME, help=f"DLQ queue (allowlist: {DLQ_QUEUE_NAME})"
+    )
+    parser.add_argument("--limit", type=int, default=SNAPSHOT_CAP, help="Delivery limit (1..24)")
+    return parser.parse_args(argv)
+
+
+def _read_token(path: str) -> bytes | None:
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    if not stat.S_ISREG(st.st_mode) or st.st_mode & 0o077 or st.st_size > _MAX_TOKEN_BYTES:
+        return None
+    try:
+        with open(path, "rb") as handle:
+            return handle.read()
+    except OSError:
+        return None
+
+
+def _authorized(token_file: str, expected_sha256: str) -> bool:
+    token = _read_token(token_file)
+    if token is None:
+        return False
+    actual = hashlib.sha256(token).hexdigest()
+    return hmac.compare_digest(actual, expected_sha256)
+
+
+def main(
+    argv: Sequence[str] | None = None,
+    *,
+    broker: SnapshotBroker | None = None,
+    runtime: WorkerRuntime | None = None,
+    lock_path: str | None = None,
+) -> int:
+    """Run the authorized runtime CLI and return the deterministic exit code."""
+    args = _parse_args(argv)
+    if args.queue not in QUEUE_ALLOWLIST or args.limit < 1 or args.limit > MAX_LIMIT:
+        return EXIT_CONFIG
+    expected = os.environ.get(_AUTH_SHA256_ENV)
+    lock = lock_path if lock_path is not None else os.environ.get(_LOCK_PATH_ENV)
+    if expected is None or lock is None:
+        return EXIT_CONFIG
+    if not _authorized(args.authorization_token_file, expected):
+        return EXIT_AUTH
+    if broker is None:
+        broker = AioPikaSnapshotBroker(os.environ.get(_AMQP_URL_ENV, ""))
+    if runtime is None:
+        runtime = HttpSheetsWorkerRuntime()
+    try:
+        report = asyncio.run(
+            run_snapshot_runtime(
+                broker=broker,
+                runtime=runtime,
+                queue_name=args.queue,
+                limit=args.limit,
+                lock_path=lock,
+            )
+        )
+    except Exception:  # noqa: BLE001 - internal failure mapped to 70 without leaking.
+        return EXIT_INTERNAL
+    try:
+        print(json.dumps(report, sort_keys=True, separators=(",", ":")))
+    except (TypeError, ValueError):
+        return EXIT_SERIALIZATION
+    return cast(int, report["error_code"])
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
