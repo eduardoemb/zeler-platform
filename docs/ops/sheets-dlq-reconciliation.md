@@ -125,6 +125,63 @@ run is performed by the adapter:
 python -m infra.operations.sheets_dlq_snapshot_adapter --help
 ```
 
+## Authorized snapshot runtime CLI (fail-closed)
+
+The authorized runtime
+(`infra/operations/sheets_dlq_snapshot_runtime.py`, entrypoint
+`python -m infra.operations.sheets_dlq_snapshot_runtime`) is the only surface
+that may request a broker-side requeue, and only under explicit
+authorization. It performs one snapshot pass over at most 24 deliveries and
+requests one requeue nack per acquired delivery. It never executes Wave 2
+operations and never runs against production.
+
+### Authorization marker (required)
+
+- The run requires `--authorization-token-file` pointing to an **owner-only**
+  token file (regular file, no group/other permission bits, ≤ 4096 bytes).
+- The environment must define `SHEETS_DLQ_SNAPSHOT_AUTH_SHA256` as the SHA-256
+  hex digest of the authorized token. The CLI compares digests with
+  `compare_digest` and rejects any missing, insecure, or mismatched token.
+- The token and its digest are never emitted in output, logs, or reports.
+
+### Canonical queue allowlist
+
+Only the canonical DLQ is accepted: `zeler.sheets.events.dlq`. Any other queue
+name is a configuration error and fails before any broker I/O.
+
+### Deterministic exits
+
+| Exit | Meaning |
+|------|---------|
+| 0 | Completed (sanitized report emitted) |
+| 2 | Usage error (unknown or missing option) |
+| 3 | Authorization rejected |
+| 4 | Configuration error (queue, limit, env, or lock path) |
+| 5 | Preflight failed |
+| 6 | Message error or cancellation |
+| 7 | Channel close error |
+| 8 | Serialization error |
+| 70 | Internal error |
+
+### Blind-retry prohibition
+
+- Exactly **one** `nack(requeue=True)` attempt per acquired delivery, in
+  ascending delivery-tag order; a failed send is never retried.
+- `requeue_confirmation` is always `unavailable`: the CLI never claims broker
+  confirmation of a requeue.
+- Per-delivery outcomes are limited to `requeue_requested`,
+  `requeue_send_failed`, `outcome_unknown`, or `message_not_obtained`.
+
+### Wave 2 and production boundary
+
+This runbook authorizes **no execution**. Wave 2 operations, production
+execution, live smoke runs, and image builds are out of scope; running the CLI
+against production RabbitMQ is forbidden. A later authorized run must first
+verify worker-image availability. Output is sanitized JSON only and never
+contains message bodies, credentials, authorization markers, routing keys,
+broker URIs, environment values, seller or customer identifiers, or
+tracebacks.
+
 ## Dry-run plan (read-only)
 
 Run the dry-run CLI against a capped, sanitized snapshot (local file only):

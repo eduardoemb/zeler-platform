@@ -6157,3 +6157,54 @@ async def test_partial_source_gated_stock_inventory_does_not_write_interval_mark
     assert {issue.code for issue in stock_aggregate.issues} == {"source_history_incomplete"}
     assert counts == {}
     assert db["sheets_read_model_freshness"].documents == []
+
+
+# PR 3: static packaging contract for the authorized DLQ snapshot runtime (R10/R11).
+# RED first: these assertions reference content that does not exist yet (worker
+# image import smoke, dependency manifest coverage, and runbook markers).
+
+SNAPSHOT_RUNTIME_MODULE = "infra.operations.sheets_dlq_snapshot_runtime"
+SNAPSHOT_RUNTIME_SOURCE = Path("infra/operations/sheets_dlq_snapshot_runtime.py")
+SHEETS_WORKER_DOCKERFILE = Path("modules/sheets/Dockerfile.worker")
+SHEETS_PACKAGE_MANIFEST = Path("modules/sheets/pyproject.toml")
+SNAPSHOT_RUNTIME_RUNBOOK = Path("docs/ops/sheets-dlq-reconciliation.md")
+
+
+def test_sheets_worker_image_import_smoke_covers_snapshot_runtime() -> None:
+    dockerfile = SHEETS_WORKER_DOCKERFILE.read_text(encoding="utf-8")
+
+    assert f"import {SNAPSHOT_RUNTIME_MODULE}" in dockerfile
+    assert dockerfile.index(f"import {SNAPSHOT_RUNTIME_MODULE}") > dockerfile.index("uv sync")
+
+
+def test_snapshot_runtime_dependencies_available_in_sheets_context() -> None:
+    runtime_source = SNAPSHOT_RUNTIME_SOURCE.read_text(encoding="utf-8")
+    sheets_manifest = SHEETS_PACKAGE_MANIFEST.read_text(encoding="utf-8")
+
+    # The worker image runs `uv sync --frozen --package zeler-sheets --no-dev`,
+    # so the runtime import resolves only when both dependencies are declared
+    # for the zeler-sheets package (R10).
+    assert "import aio_pika" in runtime_source
+    assert "import httpx" in runtime_source
+    assert "aio-pika" in sheets_manifest
+    assert "httpx" in sheets_manifest
+
+
+def test_snapshot_runtime_runbook_authorization_and_boundaries() -> None:
+    runbook = SNAPSHOT_RUNTIME_RUNBOOK.read_text(encoding="utf-8")
+
+    # Authorization marker (R11): explicit owner-only token + compare_digest.
+    assert "--authorization-token-file" in runbook
+    assert "SHEETS_DLQ_SNAPSHOT_AUTH_SHA256" in runbook
+    assert "owner-only" in runbook
+    assert "compare_digest" in runbook
+
+    # Canonical queue allowlist and deterministic exits.
+    assert "zeler.sheets.events.dlq" in runbook
+    assert "Deterministic exits" in runbook
+    assert "Blind-retry prohibition" in runbook
+
+    # Wave 2 and production execution are explicitly out of scope.
+    assert "Wave 2" in runbook
+    assert "production" in runbook
+    assert "no execution" in runbook.lower() or "no live execution" in runbook.lower()
