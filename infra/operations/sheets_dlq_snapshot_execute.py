@@ -1,20 +1,25 @@
 """Per-execution authority primitives for the Sheets DLQ executor.
 
-This module deliberately owns no broker, reporting, signal, or command
-authority. Those concerns are added by later execution slices.
+This module deliberately owns no broker connection, reporting, signal, or
+command authority. It composes the archived narrow broker port for one bounded
+capture pass only; later execution slices add the remaining authority.
 """
 
 from __future__ import annotations
 
+import asyncio
 import fcntl
 import hashlib
 import hmac
 import os
 import secrets
 import stat
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
+from dataclasses import dataclass
 from urllib.parse import urlsplit
+
+from infra.operations.sheets_dlq_snapshot_adapter import SnapshotBroker, SnapshotDelivery
 
 QUEUE_NAME = "zeler.sheets.events.dlq"
 SNAPSHOT_LIMIT = 24
@@ -22,6 +27,7 @@ TOKEN_BYTES = 32
 TOKEN_FILE_MODE = 0o600
 CANONICAL_LOCK_PATH = "/var/lib/zeler-platform/sheets-dlq-snapshot/snapshot.lock"
 LOCK_FILE_MODE = 0o600
+NACK_TIMEOUT_SECONDS = 2.0
 
 
 class LockUnavailableError(RuntimeError):
@@ -123,3 +129,62 @@ def read_rabbitmq_url() -> str | None:
     if parsed_url.scheme not in {"amqp", "amqps"} or not parsed_url.netloc:
         return None
     return rabbitmq_url
+
+
+@dataclass(frozen=True)
+class CapturePass:
+    """Counts and classifications from one bounded requeue-only capture pass."""
+
+    classifications: list[object]
+    messages_obtained: int
+    classification_errors: int
+    unknown_outcomes: int
+
+
+def validate_capture_scope(queue_name: str, limit: int) -> None:
+    """Reject every queue and limit except the fixed narrow-authority scope."""
+    if queue_name != QUEUE_NAME:
+        raise ValueError("queue is not authorized for the capture")
+    if not 1 <= limit <= SNAPSHOT_LIMIT:
+        raise ValueError("capture limit must be within 1..24")
+
+
+async def capture_once(
+    broker: SnapshotBroker,
+    *,
+    classify: Callable[[SnapshotDelivery], object],
+    limit: int = SNAPSHOT_LIMIT,
+) -> CapturePass:
+    """Classify and nack-requeue at most ``limit`` fixed-queue deliveries once.
+
+    A delivery is nacked exactly once even if classification fails. A failed or
+    timed-out nack is necessarily unverifiable, so the pass stops immediately
+    without retrying the nack or acquiring another delivery.
+    """
+    validate_capture_scope(QUEUE_NAME, limit)
+    classifications: list[object] = []
+    messages_obtained = 0
+    classification_errors = 0
+    unknown_outcomes = 0
+
+    for _ in range(limit):
+        delivery = await broker.get_one(QUEUE_NAME)
+        if delivery is None:
+            break
+        messages_obtained += 1
+        try:
+            classifications.append(classify(delivery))
+        except Exception:  # noqa: BLE001 - classification failure must still requeue.
+            classification_errors += 1
+        try:
+            await asyncio.wait_for(broker.nack_requeue(delivery), timeout=NACK_TIMEOUT_SECONDS)
+        except Exception:  # noqa: BLE001 - a failed nack cannot prove a requeue outcome.
+            unknown_outcomes += 1
+            break
+
+    return CapturePass(
+        classifications=classifications,
+        messages_obtained=messages_obtained,
+        classification_errors=classification_errors,
+        unknown_outcomes=unknown_outcomes,
+    )
