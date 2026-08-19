@@ -20,6 +20,7 @@ from urllib.parse import urlsplit
 
 import pytest
 from infra.operations import sheets_dlq_snapshot_execute as execute
+from infra.operations import sheets_dlq_snapshot_runtime as archived_runtime
 from infra.operations.sheets_dlq_snapshot_adapter import (
     QueueInspection,
     SnapshotBroker,
@@ -27,6 +28,7 @@ from infra.operations.sheets_dlq_snapshot_adapter import (
 )
 
 _WRAPPER_PATH = Path(__file__).resolve().parents[2] / "infra/gce/sheets-dlq-snapshot-execute.sh"
+_RUNBOOK_PATH = Path(__file__).resolve().parents[2] / "docs/ops/sheets-dlq-reconciliation.md"
 _WRAPPER_DOCKER_MARKER = "SHEETS_DLQ_SNAPSHOT_EXEC_DOCKER_BIN"
 _TOKEN_DIRECTORY = "/var/lib/zeler-platform/sheets-dlq-snapshot"  # noqa: S105
 
@@ -909,8 +911,8 @@ def test_preflight_default_factories_compose_archived_broker_and_worker_health_s
         calls.append(f"aio-pika:{url}")
         return broker
 
-    def runtime_factory() -> _PreflightRuntime:
-        calls.append("http-health")
+    def runtime_factory(*, health_url: str) -> _PreflightRuntime:
+        calls.append(f"http-health:{health_url}")
         return _PreflightRuntime(calls, healthy=True)
 
     monkeypatch.setattr(
@@ -941,11 +943,61 @@ def test_preflight_default_factories_compose_archived_broker_and_worker_health_s
         "lock",
         "aio-pika:amqps://broker",
         "inspect:zeler.sheets.events.dlq",
-        "http-health",
+        "http-health:http://127.0.0.1:8080/health",
         "health",
         "get:zeler.sheets.events.dlq",
         "close",
     ]
+
+
+def test_authority_default_runtime_factory_targets_worker_loopback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+    constructed_urls: list[str] = []
+    broker = _PreflightBroker(calls, deliveries=[None])
+    monkeypatch.setattr(execute, "validate_execution_authorization", lambda *_args: None)
+    monkeypatch.setattr(execute, "execution_lock", lambda: _recording_lock(calls))
+    monkeypatch.setattr(execute, "read_rabbitmq_url", lambda: "amqps://broker")
+    monkeypatch.setattr(execute, "AioPikaSnapshotBroker", lambda _url: broker)
+
+    def runtime_factory(*, health_url: str) -> _PreflightRuntime:
+        constructed_urls.append(health_url)
+        return _PreflightRuntime(calls, healthy=True)
+
+    monkeypatch.setattr(execute, "HttpSheetsWorkerRuntime", runtime_factory)
+
+    status = asyncio.run(
+        execute.execute_authorized_capture(
+            run_id="run-1",
+            token_file=execute.CANONICAL_LOCK_PATH,
+            digest="digest",
+            cleanup_ready=lambda: True,
+            classify=lambda _delivery: "classified",
+        )
+    )
+
+    assert status.first_preflight_failure is None
+    assert constructed_urls == ["http://127.0.0.1:8080/health"]
+
+
+def test_archived_runtime_default_keeps_service_dns_health_url() -> None:
+    runtime = archived_runtime.HttpSheetsWorkerRuntime()
+
+    assert archived_runtime.WORKER_HEALTH_URL == "http://sheets-worker:8080/health"
+    assert runtime._health_url == archived_runtime.WORKER_HEALTH_URL
+
+
+def test_authority_runbook_and_source_keep_loopback_parity_without_changing_archived_default() -> (
+    None
+):
+    authority_source = Path(execute.__file__).read_text()
+    runbook = _RUNBOOK_PATH.read_text()
+
+    assert execute.AUTHORITY_WORKER_HEALTH_URL == "http://127.0.0.1:8080/health"
+    assert "HttpSheetsWorkerRuntime(health_url=AUTHORITY_WORKER_HEALTH_URL)" in authority_source
+    assert "GET http://127.0.0.1:8080/health" in runbook
+    assert archived_runtime.WORKER_HEALTH_URL == "http://sheets-worker:8080/health"
 
 
 def test_sanitized_report_has_exact_allowlist_and_never_serializes_sensitive_classifications() -> (

@@ -38,6 +38,7 @@ CANONICAL_LOCK_PATH = "/var/lib/zeler-platform/sheets-dlq-snapshot/snapshot.lock
 LOCK_FILE_MODE = 0o600
 NACK_TIMEOUT_SECONDS = 2.0
 CLOSE_TIMEOUT_SECONDS = 5.0
+AUTHORITY_WORKER_HEALTH_URL = "http://127.0.0.1:8080/health"
 
 EXIT_OK = 0
 EXIT_USAGE = 2
@@ -267,6 +268,11 @@ def read_rabbitmq_url() -> str | None:
     return rabbitmq_url
 
 
+def authority_runtime_factory() -> WorkerRuntime:
+    """Probe the worker's loopback health endpoint from the authority container."""
+    return HttpSheetsWorkerRuntime(health_url=AUTHORITY_WORKER_HEALTH_URL)
+
+
 @dataclass(frozen=True)
 class CapturePass:
     """Counts and classifications from one bounded requeue-only capture pass."""
@@ -358,7 +364,7 @@ async def execute_authorized_capture(
     if authorization_failure is not None:
         return ExecutionStatus(authorization_failure, None, False, False)
     broker_factory = broker_factory or AioPikaSnapshotBroker
-    runtime_factory = runtime_factory or HttpSheetsWorkerRuntime
+    runtime_factory = runtime_factory or authority_runtime_factory
     broker: SnapshotBroker | None = None
     inspection = None
     rabbitmq_url: str | None = None

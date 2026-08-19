@@ -45,8 +45,10 @@ It grants no execution authorization.
 
 ## Preflight
 
-- Authorization, lock, inherited AMQP URL, broker, passive inspection, zero consumers, `GET http://sheets-worker:8080/health` (200/no redirects), and report/cleanup readiness must all pass before the first `get_one`.
+- Authorization, lock, inherited AMQP URL, broker, passive inspection, zero consumers, `GET http://127.0.0.1:8080/health` (200/no redirects), and report/cleanup readiness must all pass before the first `get_one`.
 - Any failed gate stops acquisition. Do not bypass a gate, alter the queue, or compensate with a second command.
+
+The production authority runs inside `sheets-worker`, so it must use that container's loopback endpoint. The health server binds only to loopback; `http://sheets-worker:8080/health` resolves to the container network address and cannot reach that listener. This authority-local override does not change the archived `HttpSheetsWorkerRuntime` default, which remains the service-DNS URL for non-authority contexts.
 
 Any unmet precondition rejects the run before any `basic.get`.
 
