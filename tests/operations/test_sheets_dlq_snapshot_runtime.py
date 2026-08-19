@@ -33,7 +33,6 @@ from infra.operations.sheets_dlq_snapshot_runtime import (
     EXECUTION_COMPLETED,
     EXECUTION_MESSAGE_ERROR,
     EXECUTION_PREFLIGHT_ERROR,
-    EXIT_AUTH,
     EXIT_CLOSE,
     EXIT_CONFIG,
     EXIT_MESSAGE_OR_CANCELLED,
@@ -560,7 +559,15 @@ async def test_nack_requeue_requeue_true_multiple_false(
 
 
 @pytest.mark.asyncio
-async def test_close_channel_idempotent_dedicated_and_partial() -> None:
+async def test_close_channel_idempotent_dedicated_partial_and_total_bound(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    waits: list[float] = []
+
+    async def count_timeout(awaitable: Awaitable[Any], *, timeout: float) -> Any:
+        waits.append(timeout)
+        return await awaitable
+
     ch_a = FakeChannel()
     conn_a = FakeConnection(channel=ch_a)
     conn_b = FakeConnection()
@@ -568,7 +575,9 @@ async def test_close_channel_idempotent_dedicated_and_partial() -> None:
     b = _broker(conn_b, "amqp://b")
     await a.inspect_queue(DLQ)
     await b.inspect_queue(DLQ)
+    monkeypatch.setattr(asyncio, "wait_for", count_timeout)
     await a.close_channel()
+    assert waits == [5.0]
     await a.close_channel()
     assert ch_a.calls.count("channel_close") == 1
     assert conn_a.calls.count("connection_close") == 1
@@ -693,7 +702,7 @@ async def test_preflight_lock_contention_fails_before_any_io(tmp_path: pathlib.P
 
 @pytest.mark.asyncio
 async def test_preflight_health_fails_after_connectivity_with_zero_gets(
-    tmp_path: pathlib.Path,
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     lock = str(tmp_path / "l.lock")
     broker = FakeBroker(
@@ -705,6 +714,10 @@ async def test_preflight_health_fails_after_connectivity_with_zero_gets(
     assert report["error_code"] == 5
     assert f"inspect:{DLQ}" in broker.calls  # connectivity reached
     assert not any(c.startswith("get_one:") for c in broker.calls)  # health blocked get
+    monkeypatch.setattr(broker, "inspect_queue", _boomer(ConnectionError("broker unreachable")))
+    report = await _run(broker, lock=str(tmp_path / "l2.lock"))
+    assert report["execution_outcome"] == EXECUTION_PREFLIGHT_ERROR
+    assert not any(c.startswith("get_one:") for c in broker.calls)
 
 
 @pytest.mark.asyncio
@@ -741,7 +754,7 @@ async def test_universal_nack_ascending_one_per_delivery_continues_after_failure
 
 @pytest.mark.asyncio
 async def test_coordinator_maps_transport_loss_to_outcome_unknown(
-    tmp_path: pathlib.Path,
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     broker = FailingNackFake(fail_tag=2, exc=BrokerChannelLostError("lost"), count=3)
     report = await _run(broker, lock=str(tmp_path / "l.lock"))
@@ -751,14 +764,33 @@ async def test_coordinator_maps_transport_loss_to_outcome_unknown(
         "requeue_requested",
     ]
     assert report["execution_outcome"] == EXECUTION_MESSAGE_ERROR
+    monkeypatch.setattr("infra.operations.sheets_dlq_snapshot_runtime._NACK_TIMEOUT", 0.01)
+    timed_broker = FakeBroker(states={DLQ: queue_state(ready=1)}, messages={DLQ: [_body(0)]})
+    monkeypatch.setattr(timed_broker, "nack_requeue", lambda _delivery: asyncio.sleep(0.05))
+    report = await _run(timed_broker, lock=str(tmp_path / "l.lock"))
+    assert [m["outcome"] for m in _results(report)] == ["outcome_unknown"]
 
 
 @pytest.mark.asyncio
 async def test_cancellation_nacks_acquired_and_closes_reports_cancelled(
-    tmp_path: pathlib.Path,
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    started, release = asyncio.Event(), asyncio.Event()
     broker = CancellingGetFake(cancel_after=1, count=3)
-    report = await _run(broker, lock=str(tmp_path / "l.lock"))
+
+    async def blocking_nack(delivery: FakeMessage) -> None:
+        started.set()
+        await release.wait()
+        await FakeBroker.nack_requeue(broker, delivery)
+
+    monkeypatch.setattr(broker, "nack_requeue", blocking_nack)
+    task: asyncio.Future[dict[str, object]] = asyncio.ensure_future(
+        _run(broker, lock=str(tmp_path / "l.lock"))
+    )
+    await started.wait()
+    task.cancel()
+    release.set()
+    report = await task
     assert [c for c in broker.calls if c.startswith("nack_requeue:")] == [f"nack_requeue:{DLQ}:1"]
     assert "channel_close" in broker.calls
     assert report["execution_outcome"] == EXECUTION_CANCELLED
@@ -795,8 +827,9 @@ async def test_reporter_completed_sanitized_without_secrets(
 ) -> None:
     broker = FakeBroker(
         states={DLQ: queue_state(ready=3)},
-        messages={DLQ: [_body(i) for i in range(3)]},
+        messages={DLQ: [b'{"idempotency_key":"body-secret"}'] * 3},
     )
+    broker.messages[DLQ][0].headers["authorization"] = "header-secret"
     report = await _run(broker, lock=str(tmp_path / "l.lock"))
     assert report["execution_outcome"] == EXECUTION_COMPLETED
     assert report["preflight"] is True
@@ -805,8 +838,9 @@ async def test_reporter_completed_sanitized_without_secrets(
     assert report["error_code"] == 0
     assert [m["sequence"] for m in _results(report)] == [1, 2, 3]
     assert [m["outcome"] for m in _results(report)] == ["requeue_requested"] * 3
+    assert _results(report)[0]["classification"] == "unknown_append_outcome"
     flat = json.dumps(report)
-    for secret in ("msg-", "message_id", "headers", "token", "uri"):
+    for secret in ("idempotency_key", "body-secret", "authorization", "header-secret", "headers"):
         assert secret not in flat
 
 
@@ -853,6 +887,7 @@ async def test_unexpected_get_failure_nacks_and_reports(
     report = await _run(broker, lock=str(tmp_path / "l.lock"))
     assert [c for c in broker.calls if c.startswith("nack_requeue:")] == [f"nack_requeue:{DLQ}:1"]
     assert "channel_close" in broker.calls
+    assert "outcome_unknown" in [m["outcome"] for m in _results(report)]
     assert report["execution_outcome"] == outcome
     assert report["error_code"] == error_code
     assert not any(s in json.dumps(report) for s in ("boom", "RuntimeError", "msg-", "uri"))
@@ -880,12 +915,11 @@ def _set_env(monkeypatch: pytest.MonkeyPatch, token: bytes, tmp_path: pathlib.Pa
     monkeypatch.setenv(_LOCK_PATH, str(tmp_path / "l.lock"))
 
 
-def test_cli_missing_required_auth_arg_is_usage(
-    tmp_path: pathlib.Path,
-) -> None:
-    with pytest.raises(SystemExit) as exc:
-        main(["--queue", DLQ, "--limit", "5"])
-    assert exc.value.code == EXIT_USAGE
+def _boomer(error: Exception) -> Callable[..., Any]:
+    def _boom(*_args: object, **_kwargs: object) -> Any:
+        raise error
+
+    return _boom
 
 
 def test_cli_unknown_option_fails_before_io(
@@ -926,29 +960,43 @@ def test_cli_limit_out_of_range_rejected(
     )
 
 
+@pytest.mark.parametrize("amqp_url", [None, "   "], ids=["missing", "blank"])
 def test_cli_incomplete_config_rejected(
-    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, amqp_url: str | None
 ) -> None:
     token = b"secret"
-    monkeypatch.setenv(_AUTH_SHA256, _hash(token))  # lock path missing -> incomplete
+    _set_env(monkeypatch, token, tmp_path)
+    if amqp_url is None:
+        monkeypatch.delenv("SHEETS_DLQ_SNAPSHOT_AMQP_URL", raising=False)
+    else:
+        monkeypatch.setenv("SHEETS_DLQ_SNAPSHOT_AMQP_URL", amqp_url)
+    monkeypatch.setattr(
+        "infra.operations.sheets_dlq_snapshot_runtime.AioPikaSnapshotBroker",
+        _boomer(AssertionError("broker construction")),
+    )
     assert main(["--authorization-token-file", _auth_file(tmp_path, token)]) == EXIT_CONFIG
 
 
-@pytest.mark.parametrize("problem", ["missing", "insecure", "wrong"])
-def test_cli_authorization_rejected(
+@pytest.mark.parametrize("problem", ["missing_arg", "missing", "insecure", "wrong"])
+def test_cli_authorization_rejected_reports_preflight_error_json(
     tmp_path: pathlib.Path,
     monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
     problem: str,
 ) -> None:
     token = b"secret"
-    if problem == "missing":
+    if problem == "missing_arg":
+        path = None
+    elif problem == "missing":
         path = str(tmp_path / "nope.token")
     elif problem == "insecure":
         path = _auth_file(tmp_path, b"x", mode=0o644)
     else:
         path = _auth_file(tmp_path, b"garbage")
     _set_env(monkeypatch, token, tmp_path)
-    assert main(["--authorization-token-file", path]) == EXIT_AUTH
+    args = [] if path is None else ["--authorization-token-file", path]
+    assert main(args) == EXIT_PREFLIGHT
+    assert json.loads(capsys.readouterr().out)["execution_outcome"] == EXECUTION_PREFLIGHT_ERROR
 
 
 def test_cli_successful_injected_composition_exit_0_json(
@@ -960,10 +1008,10 @@ def test_cli_successful_injected_composition_exit_0_json(
     _set_env(monkeypatch, token, tmp_path)
     broker = FakeBroker(
         states={DLQ: queue_state(consumers=0)},
-        messages={DLQ: [_body(1)]},
+        messages={DLQ: [_body(i) for i in range(5)]},
     )
     rc = main(
-        ["--authorization-token-file", _auth_file(tmp_path, token)],
+        ["--authorization-token-file", _auth_file(tmp_path, token), "--limit", "5"],
         broker=cast(SnapshotBroker, broker),
         runtime=FakeRuntime(healthy=True),
         lock_path=str(tmp_path / "l.lock"),
@@ -971,6 +1019,7 @@ def test_cli_successful_injected_composition_exit_0_json(
     outer = capsys.readouterr().out
     assert rc == 0
     assert json.loads(outer)["execution_outcome"] == EXECUTION_COMPLETED
+    assert [m["outcome"] for m in json.loads(outer)["message_results"]] == ["requeue_requested"] * 5
     assert not any(secret in outer for secret in ("msg-", "secret", "token", "uri", "sha256"))
 
 
@@ -1000,10 +1049,18 @@ def test_cli_deterministic_exit_mapping(
 ) -> None:
     token = b"secret"
     _set_env(monkeypatch, token, tmp_path)
+    args = ["--authorization-token-file", _auth_file(tmp_path, token)]
     rc = main(
-        ["--authorization-token-file", _auth_file(tmp_path, token)],
+        args,
         broker=cast(SnapshotBroker, broker),
         runtime=FakeRuntime(healthy=True),
         lock_path=str(tmp_path / "l.lock"),
     )
     assert rc == expected_exit
+    runtime_module = "infra.operations.sheets_dlq_snapshot_runtime."
+    lock = str(tmp_path / "fatal.lock")
+    injected = dict(broker=cast(SnapshotBroker, broker), runtime=FakeRuntime(), lock_path=lock)
+    monkeypatch.setattr(runtime_module + "json.dumps", _boomer(TypeError("boom")))
+    assert main(args, **injected) == 8  # type: ignore[arg-type]
+    monkeypatch.setattr(runtime_module + "run_snapshot_runtime", _boomer(RuntimeError("loop")))
+    assert main(args, **injected) == 70  # type: ignore[arg-type]
