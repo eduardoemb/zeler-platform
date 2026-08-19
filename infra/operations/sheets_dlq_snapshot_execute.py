@@ -28,6 +28,8 @@ from infra.operations.sheets_dlq_snapshot_runtime import (
     HttpSheetsWorkerRuntime,
 )
 
+__all__ = ["SnapshotBroker", "fcntl", "hmac", "os", "secrets", "signal"]
+
 QUEUE_NAME = "zeler.sheets.events.dlq"
 SNAPSHOT_LIMIT = 24
 TOKEN_BYTES = 32
@@ -64,6 +66,14 @@ class ExitResolution:
     reason_codes: list[str]
 
 
+@dataclass(frozen=True)
+class TokenValidation:
+    """A non-sensitive token-file validation result."""
+
+    token: bytes | None
+    failure_class: str | None
+
+
 _EXIT_RESOLUTIONS = {
     "completed": ExitResolution(EXIT_OK, ["completed"]),
     "usage": ExitResolution(EXIT_USAGE, ["usage"]),
@@ -89,13 +99,24 @@ _EXIT_RESOLUTIONS = {
     "serialization": ExitResolution(EXIT_SERIALIZATION, ["serialization_error"]),
     "internal": ExitResolution(EXIT_INTERNAL, ["sanitized_internal_error"]),
     "token_cleanup_failed": ExitResolution(EXIT_TOKEN_CLEANUP_FAIL, ["token_cleanup_failed"]),
+    "queue_not_ready": ExitResolution(EXIT_PREFLIGHT, ["preflight_rejected", "queue_not_ready"]),
+    "cleanup_not_ready": ExitResolution(
+        EXIT_PREFLIGHT, ["preflight_rejected", "cleanup_not_ready"]
+    ),
+    "report_not_ready": ExitResolution(EXIT_PREFLIGHT, ["preflight_rejected", "report_not_ready"]),
 }
 _PREFLIGHT_FAILURE_CLASSES = {
     "authorization": "invalid_authorization",
+    "invalid_authorization": "invalid_authorization",
+    "missing_token": "missing_token",
+    "insecure_token": "insecure_token",
     "binding": "invalid_config",
     "broker": "broker_error",
     "consumers": "incompatible_consumers",
+    "queue": "queue_not_ready",
+    "cleanup_readiness": "cleanup_not_ready",
     "lock": "lock_busy",
+    "report_readiness": "report_not_ready",
     "worker_health": "unhealthy_worker",
 }
 
@@ -136,12 +157,14 @@ def generate_execution_token() -> bytes:
     return secrets.token_bytes(TOKEN_BYTES)
 
 
-def read_execution_token(token_file: str) -> bytes | None:
-    """Read only a root-owned, regular, owner-only token file without following links."""
+def validate_execution_token(token_file: str) -> TokenValidation:
+    """Read a token file while preserving only safe failure classes."""
     try:
         descriptor = os.open(token_file, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    except FileNotFoundError:
+        return TokenValidation(None, "missing_token")
     except OSError:
-        return None
+        return TokenValidation(None, "insecure_token")
     try:
         metadata = os.fstat(descriptor)
         if (
@@ -150,14 +173,21 @@ def read_execution_token(token_file: str) -> bytes | None:
             or stat.S_IMODE(metadata.st_mode) != TOKEN_FILE_MODE
             or metadata.st_size != TOKEN_BYTES
         ):
-            return None
+            return TokenValidation(None, "insecure_token")
         with os.fdopen(descriptor, "rb", closefd=False) as handle:
             token = handle.read(TOKEN_BYTES + 1)
-        return token if len(token) == TOKEN_BYTES else None
+        if len(token) == TOKEN_BYTES:
+            return TokenValidation(token, None)
+        return TokenValidation(None, "insecure_token")
     except OSError:
-        return None
+        return TokenValidation(None, "insecure_token")
     finally:
         os.close(descriptor)
+
+
+def read_execution_token(token_file: str) -> bytes | None:
+    """Read only a root-owned, regular, owner-only token file without following links."""
+    return validate_execution_token(token_file).token
 
 
 def execution_digest(run_id: str, token: bytes) -> str:
@@ -169,11 +199,20 @@ def execution_digest(run_id: str, token: bytes) -> str:
 
 def verify_execution_authorization(token_file: str, run_id: str, supplied_digest: str) -> bool:
     """Fail closed unless the supplied digest matches the safe token file."""
-    token = read_execution_token(token_file)
-    if token is None:
-        return False
-    expected_digest = execution_digest(run_id, token)
-    return hmac.compare_digest(expected_digest, supplied_digest)
+    return validate_execution_authorization(token_file, run_id, supplied_digest) is None
+
+
+def validate_execution_authorization(
+    token_file: str, run_id: str, supplied_digest: str
+) -> str | None:
+    """Return the safe first authorization failure, if any."""
+    validation = validate_execution_token(token_file)
+    if validation.failure_class is not None or validation.token is None:
+        return validation.failure_class or "insecure_token"
+    expected_digest = execution_digest(run_id, validation.token)
+    if hmac.compare_digest(expected_digest, supplied_digest):
+        return None
+    return "invalid_authorization"
 
 
 @contextmanager
@@ -312,10 +351,12 @@ async def execute_authorized_capture(
     broker_factory: Callable[[str], SnapshotBroker] | None = None,
     runtime_factory: Callable[[], WorkerRuntime] | None = None,
     cleanup_ready: Callable[[], bool] = lambda: True,
+    report_ready: Callable[[], bool] = lambda: True,
     classify: Callable[[SnapshotDelivery], object],
 ) -> ExecutionStatus:
-    if not verify_execution_authorization(token_file, run_id, digest):
-        return ExecutionStatus("authorization", None, False, False)
+    authorization_failure = validate_execution_authorization(token_file, run_id, digest)
+    if authorization_failure is not None:
+        return ExecutionStatus(authorization_failure, None, False, False)
     broker_factory = broker_factory or AioPikaSnapshotBroker
     runtime_factory = runtime_factory or HttpSheetsWorkerRuntime
     broker: SnapshotBroker | None = None
@@ -363,6 +404,13 @@ async def execute_authorized_capture(
                         ready_for_cleanup = False
                     if not ready_for_cleanup:
                         preflight_failure = "cleanup_readiness"
+                if preflight_failure is None:
+                    try:
+                        ready_for_report = report_ready()
+                    except Exception:  # noqa: BLE001 - unavailable report readiness fails closed.
+                        ready_for_report = False
+                    if not ready_for_report:
+                        preflight_failure = "report_readiness"
                 if preflight_failure is None and broker is not None:
                     try:
                         capture = await capture_once(broker, classify=classify)
@@ -401,7 +449,12 @@ def build_sanitized_report(
     unknown_outcomes = capture.unknown_outcomes if capture is not None else 0
     lock_status = "busy" if status.first_preflight_failure == "lock" else "released"
     cleanup_status = "failed" if status.close_failed else "complete"
-    if status.first_preflight_failure == "authorization":
+    if status.first_preflight_failure in {
+        "authorization",
+        "invalid_authorization",
+        "missing_token",
+        "insecure_token",
+    }:
         lock_status = "not_attempted"
         cleanup_status = "not_started"
     return {
@@ -455,6 +508,7 @@ def main(
     broker_factory: Callable[[str], SnapshotBroker] | None = None,
     runtime_factory: Callable[[], WorkerRuntime] | None = None,
     cleanup_ready: Callable[[], bool] = lambda: True,
+    report_ready: Callable[[], bool] = lambda: True,
     classify: Callable[[SnapshotDelivery], object] = lambda _delivery: "captured",
 ) -> int:
     status = ExecutionStatus(None, None, False, False)
@@ -474,6 +528,7 @@ def main(
                         broker_factory=broker_factory,
                         runtime_factory=runtime_factory,
                         cleanup_ready=cleanup_ready,
+                        report_ready=report_ready,
                         classify=classify,
                     )
                 )

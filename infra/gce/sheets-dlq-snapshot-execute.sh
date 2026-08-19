@@ -4,6 +4,7 @@ umask 077
 
 EXIT_USAGE=2
 EXIT_CONFIG=4
+EXIT_MESSAGE_OR_CANCELLED=6
 EXIT_INTERNAL=70
 EXIT_TOKEN_CLEANUP_FAIL=75
 TOKEN_DIRECTORY=/var/lib/zeler-platform/sheets-dlq-snapshot
@@ -51,7 +52,7 @@ cleanup() {
 }
 
 trap cleanup EXIT
-trap 'exit 143' HUP INT TERM
+trap 'exit "$EXIT_MESSAGE_OR_CANCELLED"' HUP INT TERM
 
 /usr/bin/openssl rand -out "$TOKEN_FILE" 32 || exit "$EXIT_INTERNAL"
 [[ "$(/usr/bin/stat -c '%u:%a:%F:%s' "$TOKEN_FILE")" == "0:600:regular file:32" ]] || exit "$EXIT_CONFIG"

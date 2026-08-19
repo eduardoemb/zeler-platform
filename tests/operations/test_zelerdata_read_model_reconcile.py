@@ -6236,16 +6236,16 @@ def test_execute_runbook_covers_r14_without_granting_execution_consent() -> None
         "Side effects|Exit codes|Sanitized report|Cleanup|Rollback|Stop conditions|"
         "Retry prohibition|Remaining prohibitions|POINT_1_PASS checklist"
     )
-    required_headings = re.split(r"\|", required_headings)
+    required_heading_list: list[str] = re.split(r"\|", required_headings)
 
-    assert all(f"## {heading}" in runbook for heading in required_headings)
+    assert all(f"## {heading}" in runbook for heading in required_heading_list)
     required_strings = (
         "/opt/zeler-platform/sheets-dlq-snapshot-execute.sh|platform-vm|sheets-worker|root|"
         "zeler.sheets.events.dlq|24|RABBITMQ_URL|nack-requeue|75|Authorization rejected|"
         "separate explicit consent|does not authorize"
     )
-    required_strings = re.split(r"\|", required_strings)
-    for required in required_strings:
+    required_string_list: list[str] = re.split(r"\|", required_strings)
+    for required in required_string_list:
         assert required in runbook
     assert "| 5 |" in runbook
     forbidden_operations = "ack|publish|purge|delete|quarantine|direct Python invocation"
