@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import inspect
 import json
 import pathlib
@@ -32,10 +33,17 @@ from infra.operations.sheets_dlq_snapshot_runtime import (
     EXECUTION_COMPLETED,
     EXECUTION_MESSAGE_ERROR,
     EXECUTION_PREFLIGHT_ERROR,
+    EXIT_AUTH,
+    EXIT_CLOSE,
+    EXIT_CONFIG,
+    EXIT_MESSAGE_OR_CANCELLED,
+    EXIT_PREFLIGHT,
+    EXIT_USAGE,
     MESSAGE_NOT_OBTAINED,
     WORKER_HEALTH_URL,
     AioPikaSnapshotBroker,
     HttpSheetsWorkerRuntime,
+    main,
     run_snapshot_runtime,
 )
 from zeler_platform_test_support.sheets_dlq_snapshot import (
@@ -848,3 +856,154 @@ async def test_unexpected_get_failure_nacks_and_reports(
     assert report["execution_outcome"] == outcome
     assert report["error_code"] == error_code
     assert not any(s in json.dumps(report) for s in ("boom", "RuntimeError", "msg-", "uri"))
+
+
+# PR 2b: authorized runtime CLI + auth + exits (tasks 1.3, 1.4, 4.3).
+
+_AUTH_SHA256 = "SHEETS_DLQ_SNAPSHOT_AUTH_SHA256"
+_LOCK_PATH = "SHEETS_DLQ_SNAPSHOT_LOCK_PATH"
+
+
+def _auth_file(tmp_path: pathlib.Path, token: bytes, mode: int = 0o600) -> str:
+    path = tmp_path / "auth.token"
+    path.write_bytes(token)
+    path.chmod(mode)
+    return str(path)
+
+
+def _hash(token: bytes) -> str:
+    return hashlib.sha256(token).hexdigest()
+
+
+def _set_env(monkeypatch: pytest.MonkeyPatch, token: bytes, tmp_path: pathlib.Path) -> None:
+    monkeypatch.setenv(_AUTH_SHA256, _hash(token))
+    monkeypatch.setenv(_LOCK_PATH, str(tmp_path / "l.lock"))
+
+
+def test_cli_missing_required_auth_arg_is_usage(
+    tmp_path: pathlib.Path,
+) -> None:
+    with pytest.raises(SystemExit) as exc:
+        main(["--queue", DLQ, "--limit", "5"])
+    assert exc.value.code == EXIT_USAGE
+
+
+def test_cli_unknown_option_fails_before_io(
+    tmp_path: pathlib.Path,
+) -> None:
+    with pytest.raises(SystemExit) as exc:
+        main(["--authorization-token-file", _auth_file(tmp_path, b"t"), "--purge"])
+    assert exc.value.code == EXIT_USAGE
+
+
+def test_cli_non_allowlisted_queue_rejected(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    token = b"secret"
+    _set_env(monkeypatch, token, tmp_path)
+    assert (
+        main(["--authorization-token-file", _auth_file(tmp_path, token), "--queue", "other"])
+        == EXIT_CONFIG
+    )
+
+
+@pytest.mark.parametrize("limit", [0, 25])
+def test_cli_limit_out_of_range_rejected(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, limit: int
+) -> None:
+    token = b"secret"
+    _set_env(monkeypatch, token, tmp_path)
+    assert (
+        main(
+            [
+                "--authorization-token-file",
+                _auth_file(tmp_path, token),
+                "--limit",
+                str(limit),
+            ]
+        )
+        == EXIT_CONFIG
+    )
+
+
+def test_cli_incomplete_config_rejected(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    token = b"secret"
+    monkeypatch.setenv(_AUTH_SHA256, _hash(token))  # lock path missing -> incomplete
+    assert main(["--authorization-token-file", _auth_file(tmp_path, token)]) == EXIT_CONFIG
+
+
+@pytest.mark.parametrize("problem", ["missing", "insecure", "wrong"])
+def test_cli_authorization_rejected(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+    problem: str,
+) -> None:
+    token = b"secret"
+    if problem == "missing":
+        path = str(tmp_path / "nope.token")
+    elif problem == "insecure":
+        path = _auth_file(tmp_path, b"x", mode=0o644)
+    else:
+        path = _auth_file(tmp_path, b"garbage")
+    _set_env(monkeypatch, token, tmp_path)
+    assert main(["--authorization-token-file", path]) == EXIT_AUTH
+
+
+def test_cli_successful_injected_composition_exit_0_json(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    token = b"secret"
+    _set_env(monkeypatch, token, tmp_path)
+    broker = FakeBroker(
+        states={DLQ: queue_state(consumers=0)},
+        messages={DLQ: [_body(1)]},
+    )
+    rc = main(
+        ["--authorization-token-file", _auth_file(tmp_path, token)],
+        broker=cast(SnapshotBroker, broker),
+        runtime=FakeRuntime(healthy=True),
+        lock_path=str(tmp_path / "l.lock"),
+    )
+    outer = capsys.readouterr().out
+    assert rc == 0
+    assert json.loads(outer)["execution_outcome"] == EXECUTION_COMPLETED
+    assert not any(secret in outer for secret in ("msg-", "secret", "token", "uri", "sha256"))
+
+
+@pytest.mark.parametrize(
+    ("broker", "expected_exit"),
+    [
+        (FakeBroker(states={DLQ: queue_state(consumers=2)}), EXIT_PREFLIGHT),
+        (
+            FailingNackFake(fail_tag=1, exc=NackRequeueError("fail"), count=1),
+            EXIT_MESSAGE_OR_CANCELLED,
+        ),
+        (CancellingGetFake(cancel_after=0, count=2), EXIT_MESSAGE_OR_CANCELLED),
+        (
+            ClosingFailingFake(
+                states={DLQ: queue_state(ready=1)},
+                messages={DLQ: [_body(0)]},
+            ),
+            EXIT_CLOSE,
+        ),
+    ],
+)
+def test_cli_deterministic_exit_mapping(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+    broker: FakeBroker,
+    expected_exit: int,
+) -> None:
+    token = b"secret"
+    _set_env(monkeypatch, token, tmp_path)
+    rc = main(
+        ["--authorization-token-file", _auth_file(tmp_path, token)],
+        broker=cast(SnapshotBroker, broker),
+        runtime=FakeRuntime(healthy=True),
+        lock_path=str(tmp_path / "l.lock"),
+    )
+    assert rc == expected_exit
