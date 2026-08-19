@@ -149,6 +149,11 @@ services:
     networks:
       - platform_default
     env_file: /opt/zeler-platform/env/sheets-worker.env
+    volumes:
+      - type: bind
+        source: /var/lib/zeler-platform/sheets-dlq-snapshot
+        target: /var/lib/zeler-platform/sheets-dlq-snapshot
+        read_only: false
     depends_on:
       mongo:
         condition: service_healthy

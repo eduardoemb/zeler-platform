@@ -1,55 +1,20 @@
 # Sheets DLQ reconciliation runbook
 
-This runbook documents the one-shot, read-only, fail-closed capability that
-classifies and plans the disposition of Sheets product dead-letter-queue (DLQ)
-messages so duplicate Google Sheets rows are never created.
+This runbook defines the only bounded production path for a Sheets DLQ Wave 2 snapshot; reading it or installing its files provides no execution consent.
 
-This document authorizes **no execution**. It does not authorize replay, purge,
-delete, archive/terminal-close, deploy, restart, or any MongoDB/RabbitMQ
-mutation. Every action is dry-run-first and requires a separate, explicit,
-digest-bound human approval.
+## Purpose
 
-For the operative replay-publish runbook, see
-[`docs/ops/webhook-backlog-replay.md`](webhook-backlog-replay.md). This
-capability cross-references that runbook for replay; it does not replace it.
+The snapshot inspects at most 24 current Sheets DLQ messages and requests one `nack(requeue=True)` per delivery; it is not replay, a general consumer, a terminal disposition tool, a deployment instruction, or MongoDB work.
 
-## Scope and intent
+## Required authorization
 
-- Read-only DLQ snapshot classification with a clean, evidence-based plan.
-- A closed action allowlist per class, so forged or skipped transitions fail
-  closed.
-- Digest-bound approvals that are re-validated immediately before execution.
-- Pre-publish duplicate prevention that re-checks the exact scoped
-  `processed_events` key.
-- An append-only immutable ledger with hash-chain links.
-- Fail-closed rollback and quarantine disposition that leave source messages
-  untouched unless a separately authorized, proven adapter is bound.
-- Rate, size, and action caps.
+An incident commander or designated production approver must record separate explicit consent before each execution.
+The record identifies merge commit, deployed/source delta, queue `zeler.sheets.events.dlq`, limit `24`, and “bounded inspect + nack-requeue”; a prior consent never carries over.
 
-Out of scope: UI routes, new admin scopes, A5 poller/reboot persistence,
-topology changes, deployment, and runtime operations (see "Scope boundary").
+## Approved runtime
 
-## Safety contract
-
-- The tool is read-only and dry-run by default. It never opens a live broker or
-  Mongo connection and launches no shell or subprocess.
-- Without an explicit, non-expired, digest-bound approval whose plan digest,
-  classification, action, and message fingerprint still match, no publish or
-  mutation occurs.
-- Only `replay_candidate` may publish replay, and only through exchange
-  `zeler.sheets.replay` with concurrency `1` at a rate below `1` message/second.
-- The exact scoped idempotency key and ledger state are re-checked immediately
-  before publish. An active key, prior replay success, or unreconciled durable
-  replay reservation blocks the publish.
-- A durable replay reservation is appended before publish. Publisher confirm
-  precedes source acknowledgement and the final success-ledger append. If that
-  final append fails, the reservation remains blocking until explicit
-  reconciliation proves no publish occurred.
-- Rollback stops publishing and applies only the approved quarantine
-  disposition to the remaining approved items. Without a usable adapter,
-  rollback fails closed and appends nothing.
-- Caps: snapshot ≤ 10,000 messages; actions ≤ 100/run; MongoDB ≤ 100
-  writes/batch and ≤ 1 batch/second; reject oversize bodies.
+Run only as `root` on GCE host `platform-vm`, from the installed host wrapper.
+It executes only in `sheets-worker` with `docker compose exec --user 0:0`; never run it locally, in `sheets-api`, or elsewhere.
 
 ## Classification
 
@@ -78,16 +43,10 @@ subprocess. Its purpose is bounded, privacy-preserving classification and it
 uses the canonical `classify_and_sanitize_one` taxonomy from this capability.
 It grants no execution authorization.
 
-### Preconditions (fail closed)
+## Preflight
 
-- Run on the **authoritative host**. Exclusion is same-host only
-  (`fcntl.flock` on an operator-supplied `--lock-path`); no cross-host
-  exclusion is claimed.
-- **Zero DLQ consumers**: the live queue inspection reports
-  `consumers == 0` and the offline zero-consumer check passes.
-- The **Sheets worker runtime is healthy**. Health confirms the worker probe
-  responds; it does not require or assert an exact worker instance count.
-- **No Mongo writes**: the adapter exposes no Mongo write path.
+- Authorization, lock, inherited AMQP URL, broker, passive inspection, zero consumers, `GET http://sheets-worker:8080/health` (200/no redirects), and report/cleanup readiness must all pass before the first `get_one`.
+- Any failed gate stops acquisition. Do not bypass a gate, alter the queue, or compensate with a second command.
 
 Any unmet precondition rejects the run before any `basic.get`.
 
@@ -125,62 +84,91 @@ run is performed by the adapter:
 python -m infra.operations.sheets_dlq_snapshot_adapter --help
 ```
 
-## Authorized snapshot runtime CLI (fail-closed)
+## Canonical command
 
-The authorized runtime
-(`infra/operations/sheets_dlq_snapshot_runtime.py`, entrypoint
-`python -m infra.operations.sheets_dlq_snapshot_runtime`) is the only surface
-that may request a broker-side requeue, and only under explicit
-authorization. It performs one snapshot pass over at most 24 deliveries and
-requests one requeue nack per acquired delivery. It never executes Wave 2
-operations and never runs against production.
+After the separate explicit consent is recorded, run exactly this argument-free
+command. Do not add flags, stdin, environment values, or a shell wrapper.
 
-### Authorization marker (required)
+```bash
+/opt/zeler-platform/sheets-dlq-snapshot-execute.sh
+```
 
-- The run requires `--authorization-token-file` pointing to an **owner-only**
-  token file (regular file, no group/other permission bits, ≤ 4096 bytes).
-- The environment must define `SHEETS_DLQ_SNAPSHOT_AUTH_SHA256` as the SHA-256
-  hex digest of the authorized token. The CLI compares digests with
-  `compare_digest` and rejects any missing, insecure, or mismatched token.
-- The token and its digest are never emitted in output, logs, or reports.
+Direct Python invocation of `infra.operations.sheets_dlq_snapshot_runtime`, `infra.operations.sheets_dlq_snapshot_adapter`, or the execute module is forbidden in production.
 
-### Canonical queue allowlist
+## Safe placeholders
 
-Only the canonical DLQ is accepted: `zeler.sheets.events.dlq`. Any other queue
-name is a configuration error and fails before any broker I/O.
+Operators never supply `<token>`, `<digest>`, `<AMQP URI>`, or `<lock path>`; do not print, copy, persist, or put them in argv.
+Legacy `--authorization-token-file` and `SHEETS_DLQ_SNAPSHOT_AUTH_SHA256` are owner-only `compare_digest` inputs, not production paths.
 
-### Deterministic exits
+## Token and digest
 
-| Exit | Meaning |
-|------|---------|
-| 0 | Completed (sanitized report emitted) |
-| 2 | Usage error (unknown or missing option) |
-| 3 | Authorization rejected |
-| 4 | Configuration error (queue, limit, env, or lock path) |
-| 5 | Preflight failed |
-| 6 | Message error or cancellation |
-| 7 | Channel close error |
-| 8 | Serialization error |
-| 70 | Internal error |
+The wrapper creates a fresh 32-byte root-owned `0600` token file, binds its SHA-256 with a random run ID, queue, and limit, forwards only digest/file path, then deletes it on every exit path.
 
-### Blind-retry prohibition
+## Canonical lock
 
-- Exactly **one** `nack(requeue=True)` attempt per acquired delivery, in
-  ascending delivery-tag order; a failed send is never retried.
-- `requeue_confirmation` is always `unavailable`: the CLI never claims broker
-  confirmation of a requeue.
-- Per-delivery outcomes are limited to `requeue_requested`,
-  `requeue_send_failed`, `outcome_unknown`, or `message_not_obtained`.
+The hardcoded lock is `/var/lib/zeler-platform/sheets-dlq-snapshot/snapshot.lock`; startup creates its `root:root` `0700` directory and non-blocking contention fails closed before broker contact.
 
-### Wave 2 and production boundary
+## RabbitMQ binding
 
-This runbook authorizes **no execution**. Wave 2 operations, production
-execution, live smoke runs, and image builds are out of scope; running the CLI
-against production RabbitMQ is forbidden. A later authorized run must first
-verify worker-image availability. Output is sanitized JSON only and never
-contains message bodies, credentials, authorization markers, routing keys,
-broker URIs, environment values, seller or customer identifiers, or
-tracebacks.
+`RABBITMQ_URL` is inherited only from the existing `sheets-worker` `env_file`, validated in-container, and never copied to argv, wrapper, or report.
+
+## Limit
+
+The fixed queue is `zeler.sheets.events.dlq`; the fixed maximum is 24 messages and one capture pass.
+
+## Side effects
+
+Every obtained delivery has one `nack(requeue=True)` attempt; `ack`, publish, purge, delete, quarantine, and terminal disposition are prohibited. Requeue can change delivery order and queue metrics; a failed or timed-out nack is unknown.
+
+## Exit codes — Deterministic exits
+
+| Exit | Reason code | Meaning |
+|---:|---|---|
+| 0 | `completed` | All requested requeues completed. |
+| 2 | `usage` | Arguments or stdin were supplied. |
+| 4 | `invalid_config` | Runtime configuration is unsafe. |
+| 5 | `preflight_rejected` | Authorization rejected, lock/binding/health/consumer gate failed. |
+| 6 | `message_error_or_cancelled` | Message result is unknown or execution was cancelled. |
+| 7 | `close_error` | Channel or cleanup close failed. |
+| 8 | `serialization_error` | Sanitized report could not serialize. |
+| 70 | `sanitized_internal_error` | Internal failure without sensitive detail. |
+| 75 | `token_cleanup_failed` | Successful subprocess token deletion failed. |
+
+## Sanitized report
+
+The module emits sanitized JSON to command stdout for the execution record: timestamp, safe revision, limit, counts, classifications,
+preflight/close errors, lock/cleanup status, exit/reason codes; never payloads, headers, URI, credentials, tokens, digest, IDs, env, or traces.
+
+## Cleanup
+
+Success, exceptions, cancellation, `SIGTERM`, timeout, and open/close failures delete the token file, stop more gets, close the channel, release the lock, preserve the original nonzero exit, and retain unknown final state as `outcome_unknown`.
+
+## Rollback
+
+Remove the wrapper and `sheets-worker` bind mount, then recreate only `sheets-worker`; this restores no-execution state. Do not run a capture to test rollback.
+
+## Stop conditions
+
+Stop for missing consent, a preflight failure, live consumers, unhealthy worker, unknown nack outcome, cleanup error, signal, timeout,
+or any request outside the fixed queue and limit.
+
+## Retry prohibition — Blind-retry prohibition
+
+No retry loop is permitted after nack failure, timeout, cancellation, or any nonzero result; each execution is independent and requires new consent.
+
+## Remaining prohibitions
+
+Do not use direct Python invocation, ad-hoc clients, recurring jobs, manual token/digest handling, ack, publish, replay, purge, delete,
+quarantine, topology changes, MongoDB operations, deployment, or a generalized consumer.
+
+## POINT_1_PASS checklist
+
+- [ ] Wrapper, worker image, mount, and startup permissions match this runbook.
+- [ ] Separate authorization exists for the reviewed execution evidence.
+- [ ] Sanitized report and exit/reason map are retained without sensitive data.
+
+Do not declare `POINT_1_PASS` in this cycle. `POINT_1_PASS` does not authorize
+an execution; every production run still needs separate explicit consent.
 
 ## Dry-run plan (read-only)
 
@@ -211,11 +199,8 @@ OAuth data. Review it before requesting any approval.
 
 ## Execute
 
-Do not execute replay, purge, delete, archive/terminal-close, deploy, restart,
-or any MongoDB/RabbitMQ mutation from this capability. Replay, if any, follows
-the separate
-[`docs/ops/webhook-backlog-replay.md`](webhook-backlog-replay.md) runbook and
-requires an independent approved command with a run ID.
+Do not execute replay, purge, delete, archive/terminal-close, deploy, restart, or MongoDB/RabbitMQ mutation outside the canonical snapshot.
+Replay follows the separate [`docs/ops/webhook-backlog-replay.md`](webhook-backlog-replay.md) runbook and needs an independent approved command.
 
 ## Rollback
 

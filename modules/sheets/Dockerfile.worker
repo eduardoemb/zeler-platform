@@ -18,6 +18,7 @@ RUN uv sync --frozen --package zeler-sheets --no-dev
 RUN test -x .venv/bin/python
 RUN .venv/bin/python -c "import motor.motor_asyncio; import infra.operations.zelerdata_read_model_reconcile"
 RUN .venv/bin/python -c "import infra.operations.sheets_dlq_snapshot_runtime"
+RUN .venv/bin/python -c "import infra.operations.sheets_dlq_snapshot_execute"
 RUN .venv/bin/python -c "import infra.rabbitmq.sheets_devoluciones_topology"
 
 RUN useradd --system --create-home --uid 1001 appuser

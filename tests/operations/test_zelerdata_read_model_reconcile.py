@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import stat
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, replace
@@ -6168,6 +6169,9 @@ SNAPSHOT_RUNTIME_SOURCE = Path("infra/operations/sheets_dlq_snapshot_runtime.py"
 SHEETS_WORKER_DOCKERFILE = Path("modules/sheets/Dockerfile.worker")
 SHEETS_PACKAGE_MANIFEST = Path("modules/sheets/pyproject.toml")
 SNAPSHOT_RUNTIME_RUNBOOK = Path("docs/ops/sheets-dlq-reconciliation.md")
+SNAPSHOT_EXECUTE_MODULE = "infra.operations.sheets_dlq_snapshot_execute"
+SNAPSHOT_EXECUTE_SOURCE = Path("infra/operations/sheets_dlq_snapshot_execute.py")
+SHEETS_API_DOCKERFILE = Path("modules/sheets/Dockerfile.api")
 
 
 def test_sheets_worker_image_import_smoke_covers_snapshot_runtime() -> None:
@@ -6208,3 +6212,42 @@ def test_snapshot_runtime_runbook_authorization_and_boundaries() -> None:
     assert "Wave 2" in runbook
     assert "production" in runbook
     assert "no execution" in runbook.lower() or "no live execution" in runbook.lower()
+
+
+def test_sheets_worker_packages_the_execute_entrypoint_without_api_or_dependency_drift() -> None:
+    worker = SHEETS_WORKER_DOCKERFILE.read_text(encoding="utf-8")
+    api = SHEETS_API_DOCKERFILE.read_text(encoding="utf-8")
+    source = SNAPSHOT_EXECUTE_SOURCE.read_text(encoding="utf-8")
+
+    assert f"import {SNAPSHOT_EXECUTE_MODULE}" in worker
+    assert worker.index(f"import {SNAPSHOT_EXECUTE_MODULE}") > worker.index("uv sync")
+    assert OPERATIONS_COPY_STANZA in worker
+    assert 'if __name__ == "__main__":' in source
+    assert "raise SystemExit(main())" in source
+    assert SNAPSHOT_EXECUTE_MODULE not in api
+    assert "pip install" not in worker.split("uv sync", 1)[1]
+
+
+def test_execute_runbook_covers_r14_without_granting_execution_consent() -> None:
+    runbook = SNAPSHOT_RUNTIME_RUNBOOK.read_text(encoding="utf-8")
+    required_headings = (
+        "Purpose|Required authorization|Approved runtime|Preflight|Canonical command|"
+        "Safe placeholders|Token and digest|Canonical lock|RabbitMQ binding|Limit|"
+        "Side effects|Exit codes|Sanitized report|Cleanup|Rollback|Stop conditions|"
+        "Retry prohibition|Remaining prohibitions|POINT_1_PASS checklist"
+    )
+    required_headings = re.split(r"\|", required_headings)
+
+    assert all(f"## {heading}" in runbook for heading in required_headings)
+    required_strings = (
+        "/opt/zeler-platform/sheets-dlq-snapshot-execute.sh|platform-vm|sheets-worker|root|"
+        "zeler.sheets.events.dlq|24|RABBITMQ_URL|nack-requeue|75|Authorization rejected|"
+        "separate explicit consent|does not authorize"
+    )
+    required_strings = re.split(r"\|", required_strings)
+    for required in required_strings:
+        assert required in runbook
+    assert "| 5 |" in runbook
+    forbidden_operations = "ack|publish|purge|delete|quarantine|direct Python invocation"
+    for forbidden in re.split(r"\|", forbidden_operations):
+        assert forbidden in runbook
