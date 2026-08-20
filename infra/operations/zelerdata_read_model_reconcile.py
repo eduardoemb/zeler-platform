@@ -443,6 +443,7 @@ class FocusedRuntimeEvidence:
         repr=False,
         compare=False,
     )
+    projection_reason: str | None = field(default=None, repr=False, compare=False)
 
     def to_sanitized_dict(self) -> dict[str, Any]:
         return {
@@ -707,7 +708,15 @@ class ReconciliationSummary:
         evidence = self.runtime_evidence
         if evidence is None or evidence.private_failure is None:
             return None
-        return {"failure_class": evidence.private_failure.value}
+        diagnostic = {"failure_class": evidence.private_failure.value}
+        projection_reason = evidence.projection_reason
+        if (
+            evidence.private_failure.value == "parser_failure"
+            and projection_reason is not None
+            and _is_allowed_projection_reason(projection_reason)
+        ):
+            diagnostic["projection_reason"] = projection_reason
+        return diagnostic
 
     def to_scheduled_transport(self) -> ScheduledTransportEnvelope:
         sample = scheduled_sample_from_summary(self)
@@ -782,6 +791,14 @@ def _private_fingerprint_hash(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
+def _is_allowed_projection_reason(value: object) -> bool:
+    from zeler_sheets.claim_projection import ClaimProjectionReason
+
+    return isinstance(value, str) and (
+        value == "projection_unknown" or value in {reason.value for reason in ClaimProjectionReason}
+    )
+
+
 def _write_root_private_diagnostic_evidence(
     fd: int,
     evidence: Mapping[str, str],
@@ -799,8 +816,19 @@ def _write_root_private_diagnostic_evidence(
         or stat.S_IMODE(descriptor_stat.st_mode) != 0o600
     ):
         raise ValueError("private diagnostic descriptor must be root-owned mode 0600")
+    if not all(isinstance(key, str) and key.isascii() for key in evidence):
+        raise ValueError("private diagnostic evidence is invalid")
+    if not all(isinstance(value, str) and value.isascii() for value in evidence.values()):
+        raise ValueError("private diagnostic evidence is invalid")
     allowed_failures = {failure.value for failure in _FocusedDevolucionesFailure}
-    if set(evidence) != {"failure_class"} or evidence.get("failure_class") not in allowed_failures:
+    failure_class = evidence.get("failure_class")
+    is_legacy_envelope = set(evidence) == {"failure_class"} and failure_class in allowed_failures
+    is_extended_parser_envelope = (
+        set(evidence) == {"failure_class", "projection_reason"}
+        and failure_class == "parser_failure"
+        and _is_allowed_projection_reason(evidence.get("projection_reason"))
+    )
+    if not is_legacy_envelope and not is_extended_parser_envelope:
         raise ValueError("private diagnostic evidence is invalid")
     payload = (
         json.dumps(dict(evidence), sort_keys=True, separators=(",", ":"), ensure_ascii=True) + "\n"
@@ -2207,6 +2235,7 @@ def _focused_failure_summary(
     started: float,
     campaign_id: str,
     private_failure: _FocusedDevolucionesFailure,
+    projection_reason: str | None,
     monotonic: Callable[[], float],
 ) -> ReconciliationSummary:
     issue = next(
@@ -2240,6 +2269,7 @@ def _focused_failure_summary(
             status_class=issue.code,
             snapshot_calls=(recorder.counts,),
             private_failure=private_failure,
+            projection_reason=projection_reason,
         ),
     )
 
@@ -2274,6 +2304,7 @@ async def run_focused_devoluciones_reconciliation(
         ReturnsAttemptPacer,
         SourceCallRecorder,
         SourceRunLedger,
+        _private_focused_devoluciones_diagnostic,
         _private_focused_devoluciones_failure,
         collect_devoluciones_snapshot,
         require_snapshot_publication_age,
@@ -2308,6 +2339,7 @@ async def run_focused_devoluciones_reconciliation(
             returns_pacer=returns_pacer,
         )
     except Exception as exc:  # noqa: BLE001 - dry-run evidence must stay sanitized.
+        private_diagnostic = _private_focused_devoluciones_diagnostic(exc)
         private_failure = _private_focused_devoluciones_failure(exc)
         if not request.dry_run:
             raise RuntimeError(_classify_focused_devoluciones_issue(exc)) from None
@@ -2319,6 +2351,7 @@ async def run_focused_devoluciones_reconciliation(
             started=started,
             campaign_id=resolved_campaign_id,
             private_failure=private_failure,
+            projection_reason=private_diagnostic.get("projection_reason"),
             monotonic=monotonic,
         )
     expected = _focused_expected_counts(snapshot)

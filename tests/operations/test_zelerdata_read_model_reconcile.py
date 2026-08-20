@@ -47,7 +47,7 @@ from infra.operations.zelerdata_scheduled_evidence import build_scheduled_eviden
 
 from zeler_platform_core.devoluciones_readiness import DevolucionesOperationContext
 from zeler_sheets import devoluciones_reconciliation as devoluciones_module
-from zeler_sheets.claim_projection import ClaimProjectionError
+from zeler_sheets.claim_projection import ClaimProjectionError, ClaimProjectionReason
 from zeler_sheets.devoluciones_reconciliation import ClaimInventoryError
 from zeler_sheets.formulas.read_models import read_model_reconciliation_marker_covers
 
@@ -5149,8 +5149,20 @@ def test_focused_diagnostic_writes_enum_to_separate_root_private_fd(
     assert writes == [(9, {"failure_class": "unsafe_404_failure"})]
 
 
-def test_private_diagnostic_fd_requires_root_owned_mode_0600_regular_file(
+@pytest.mark.parametrize(
+    "evidence",
+    (
+        {"failure_class": "parser_failure"},
+        {
+            "failure_class": "parser_failure",
+            "projection_reason": "projection_return_quantity",
+        },
+    ),
+    ids=("legacy-parser-envelope", "extended-parser-envelope"),
+)
+def test_private_diagnostic_fd_accepts_exact_legacy_and_extended_parser_envelopes(
     monkeypatch: pytest.MonkeyPatch,
+    evidence: dict[str, str],
 ) -> None:
     writes: list[tuple[int, bytes]] = []
     monkeypatch.setattr(os, "geteuid", lambda: 0)
@@ -5172,10 +5184,156 @@ def test_private_diagnostic_fd_requires_root_owned_mode_0600_regular_file(
 
     reconcile_operation_module._write_root_private_diagnostic_evidence(
         9,
-        {"failure_class": "parser_failure"},
+        evidence,
     )
 
-    assert writes == [(9, b'{"failure_class":"parser_failure"}\n')]
+    assert writes == [
+        (
+            9,
+            (json.dumps(evidence, sort_keys=True, separators=(",", ":")) + "\n").encode("ascii"),
+        )
+    ]
+
+
+@pytest.mark.parametrize(
+    "evidence",
+    (
+        {},
+        {"failure_class": "parser_failure", "unexpected": "value"},
+        {"failure_class": "unknown_failure"},
+        {"failure_class": "parser_failure", "projection_reason": "projection_not_real"},
+        {"failure_class": "source_failure", "projection_reason": "projection_return_quantity"},
+        {"fáilure_class": "parser_failure"},
+        {"failure_class": "parser_failure", "projection_reason": "razón"},
+    ),
+    ids=(
+        "missing-key",
+        "extra-key",
+        "unknown-failure-class",
+        "arbitrary-projection-reason",
+        "reason-with-non-parser-class",
+        "non-ascii-key",
+        "non-ascii-value",
+    ),
+)
+def test_private_diagnostic_fd_rejects_invalid_envelopes(
+    monkeypatch: pytest.MonkeyPatch,
+    evidence: dict[str, str],
+) -> None:
+    monkeypatch.setattr(os, "geteuid", lambda: 0)
+    monkeypatch.setattr(
+        os,
+        "fstat",
+        lambda fd: type(
+            "PrivateStat",
+            (),
+            {"st_uid": 0, "st_mode": stat.S_IFREG | 0o600},
+        )(),
+    )
+
+    with pytest.raises(ValueError, match="private diagnostic evidence is invalid"):
+        reconcile_operation_module._write_root_private_diagnostic_evidence(9, evidence)
+
+
+def test_private_diagnostic_reason_is_private_and_preserves_public_focused_evidence() -> None:
+    summary = ReconciliationSummary(
+        seller_id="82453304",
+        date_from="2026-06-01",
+        date_to="2026-06-04",
+        dry_run=True,
+        approved_runtime=True,
+        write_enabled=False,
+        aggregates=(ReadModelAggregate("claims", None, None, None, None),),
+        runtime_evidence=FocusedRuntimeEvidence(
+            duration_seconds=0.0,
+            source_calls={"P": 2, "R": 2, "O": 1, "T": 5},
+            status_class="query_anomaly",
+            private_failure=devoluciones_module._FocusedDevolucionesFailure.PARSER,
+            projection_reason="projection_return_quantity",
+        ),
+    )
+
+    assert summary.to_focused_evidence(stage="dry_run") == {
+        "stage": "dry_run",
+        "status_class": "query_anomaly",
+        "counters": {"O": 1, "P": 2, "R": 2, "T": 5},
+    }
+    assert summary.to_private_diagnostic_evidence() == {
+        "failure_class": "parser_failure",
+        "projection_reason": "projection_return_quantity",
+    }
+
+
+def test_private_diagnostic_preserves_unknown_projection_reason_in_exact_envelope(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    writes: list[tuple[int, bytes]] = []
+    summary = ReconciliationSummary(
+        seller_id="82453304",
+        date_from="2026-06-01",
+        date_to="2026-06-04",
+        dry_run=True,
+        approved_runtime=True,
+        write_enabled=False,
+        runtime_evidence=FocusedRuntimeEvidence(
+            duration_seconds=0.0,
+            source_calls={},
+            status_class="query_anomaly",
+            private_failure=devoluciones_module._FocusedDevolucionesFailure.PARSER,
+            projection_reason="projection_unknown",
+        ),
+    )
+    evidence = summary.to_private_diagnostic_evidence()
+    monkeypatch.setattr(os, "geteuid", lambda: 0)
+    monkeypatch.setattr(
+        os,
+        "fstat",
+        lambda fd: type("PrivateStat", (), {"st_uid": 0, "st_mode": stat.S_IFREG | 0o600})(),
+    )
+
+    def write(fd: int, payload: bytes) -> int:
+        writes.append((fd, payload))
+        return len(payload)
+
+    monkeypatch.setattr(os, "write", write)
+
+    assert evidence == {
+        "failure_class": "parser_failure",
+        "projection_reason": "projection_unknown",
+    }
+    reconcile_operation_module._write_root_private_diagnostic_evidence(9, evidence)
+    assert writes == [
+        (9, b'{"failure_class":"parser_failure","projection_reason":"projection_unknown"}\n')
+    ]
+
+
+@pytest.mark.asyncio
+async def test_focused_projection_failure_propagates_only_allowlisted_private_reason(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fail_snapshot(**_: Any) -> Any:
+        raise ClaimProjectionError(
+            "sensitive parser detail",
+            projection_reason=ClaimProjectionReason.RETURN_QUANTITY,
+        )
+
+    monkeypatch.setattr(devoluciones_module, "collect_devoluciones_snapshot", fail_snapshot)
+
+    summary = await reconcile_operation_module.run_focused_devoluciones_reconciliation(
+        db=FakeAsyncDb({}),
+        request=_request(),
+        source=object(),
+    )
+
+    assert summary.to_focused_evidence(stage="dry_run") == {
+        "stage": "dry_run",
+        "status_class": "query_anomaly",
+        "counters": {"P": 0, "R": 0, "O": 0, "T": 0},
+    }
+    assert summary.to_private_diagnostic_evidence() == {
+        "failure_class": "parser_failure",
+        "projection_reason": "projection_return_quantity",
+    }
 
 
 @pytest.mark.parametrize(
