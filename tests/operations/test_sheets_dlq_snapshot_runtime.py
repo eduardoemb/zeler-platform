@@ -537,6 +537,20 @@ async def test_get_one_manual_no_ack_and_empty() -> None:
 
 
 @pytest.mark.asyncio
+async def test_get_one_uses_queue_fallback_when_channel_has_no_get() -> None:
+    msg = FakeMsg(body=b'{"a":1}', delivery_tag=7)
+    queue = FakeQueue(message=msg)
+    ch = FakeChannel(queue=queue, get_available=False)
+
+    delivery = await _broker(FakeConnection(channel=ch)).get_one(DLQ)
+
+    assert delivery is msg
+    assert ch.calls == [f"get_queue:{DLQ}:None"]
+    assert queue.calls == ["queue_get"]
+    assert queue.no_acks == [False]
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "nack_error,expect",
     [

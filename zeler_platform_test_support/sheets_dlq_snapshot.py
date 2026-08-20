@@ -93,6 +93,14 @@ class FakeDecl:
 @dataclass
 class FakeQueue:
     declaration_result: FakeDecl = field(default_factory=FakeDecl)
+    message: FakeMsg | None = None
+    calls: list[str] = field(default_factory=list)
+    no_acks: list[bool] = field(default_factory=list)
+
+    async def get(self, *, no_ack: bool = False, fail: bool = False) -> FakeMsg | None:
+        self.no_acks.append(no_ack)
+        self.calls.append("queue_get")
+        return self.message
 
 
 class FakeMsg:
@@ -119,11 +127,18 @@ class FakeChannel:
         queue: FakeQueue | None = None,
         messages: dict[str, FakeMsg | None] | None = None,
         calls: list[str] | None = None,
+        get_available: bool = True,
     ) -> None:
         self.queue, self.messages = queue or FakeQueue(), messages or {}
         self.calls = calls if calls is not None else []
         self.passives: list[bool] = []
         self.no_acks: list[bool] = []
+        self.get_available = get_available
+
+    def __getattribute__(self, name: str) -> object:
+        if name == "get" and not object.__getattribute__(self, "get_available"):
+            raise AttributeError("get")
+        return object.__getattribute__(self, name)
 
     async def declare_queue(
         self, name: str, *, passive: bool = True, timeout: float | None = None
@@ -138,6 +153,10 @@ class FakeChannel:
         self.no_acks.append(no_ack)
         self.calls.append(f"get:{queue}")
         return self.messages.get(queue)
+
+    async def get_queue(self, name: str, *, timeout: float | None = None) -> FakeQueue:
+        self.calls.append(f"get_queue:{name}:{timeout}")
+        return self.queue
 
     async def close(self) -> None:
         self.calls.append("channel_close")

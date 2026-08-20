@@ -109,7 +109,13 @@ class AioPikaSnapshotBroker:
         )
 
     async def get_one(self, queue_name: str) -> SnapshotDelivery | None:
-        message = await (await self._ensure_channel()).get(queue_name, no_ack=False, fail=False)
+        channel = await self._ensure_channel()
+        get = getattr(channel, "get", None)
+        if get is not None:
+            message = await get(queue_name, no_ack=False, fail=False)
+        else:
+            queue = await channel.get_queue(queue_name)
+            message = await queue.get(no_ack=False, fail=False)
         return None if message is None else cast(SnapshotDelivery, message)
 
     async def nack_requeue(self, delivery: SnapshotDelivery) -> None:
