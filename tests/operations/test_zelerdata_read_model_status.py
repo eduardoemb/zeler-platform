@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import json
 from copy import deepcopy
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, timezone
 from typing import Any, cast
 
 import pytest
@@ -279,6 +279,56 @@ def test_devoluciones_with_live_valid_until_is_productive() -> None:
         read_model="devoluciones",
     )
     assert row["in_productive_window"] is True
+
+
+@pytest.mark.parametrize(
+    ("window", "expected"),
+    [
+        (NOW.replace(tzinfo=None) + HOUR, True),
+        (NOW.replace(tzinfo=None) - HOUR, False),
+    ],
+    ids=["future", "past"],
+)
+def test_naive_fresh_until_is_normalized_as_utc(window: datetime, expected: bool) -> None:
+    assert status_module._covers_now(window, NOW) is expected
+
+
+@pytest.mark.parametrize(
+    ("window", "expected"),
+    [
+        (NOW.replace(tzinfo=None) + HOUR, True),
+        (NOW.replace(tzinfo=None) - HOUR, False),
+    ],
+    ids=["future", "past"],
+)
+def test_devoluciones_naive_valid_until_is_normalized_as_utc(
+    window: datetime, expected: bool
+) -> None:
+    assert status_module._covers_now(window, NOW) is expected
+
+
+@pytest.mark.parametrize(
+    ("window", "expected"),
+    [
+        ((NOW + HOUR).astimezone(timezone(HOUR * 2)), True),
+        ((NOW - HOUR).astimezone(timezone(HOUR * 2)), False),
+    ],
+    ids=["future", "past"],
+)
+def test_aware_offset_window_preserves_absolute_time(window: datetime, expected: bool) -> None:
+    assert status_module._covers_now(window, NOW) is expected
+
+
+@pytest.mark.parametrize("window", [None, "2026-06-10T13:00:00Z"])
+def test_non_datetime_window_values_fail_closed(window: Any) -> None:
+    assert status_module._covers_now(window, NOW) is False
+
+
+def test_sanitized_datetime_preserves_isoformat_contract() -> None:
+    naive = NOW.replace(tzinfo=None)
+    aware = NOW.astimezone(UTC)
+    assert status_module._sanitized_datetime(naive) == naive.isoformat()
+    assert status_module._sanitized_datetime(aware) == aware.isoformat()
 
 
 # 2.4 — deterministic action map -------------------------------------------
@@ -559,6 +609,25 @@ def test_run_exits_nonzero_when_readiness_degraded() -> None:
         db=_StatusCollection(markers),
     )
     assert exit_code != 0
+
+
+def test_stale_devoluciones_with_naive_windows_reports_degraded(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    markers = _all_productive_markers()
+    devoluciones = next(marker for marker in markers if marker["read_model"] == "devoluciones")
+    stale_window = (datetime.now(UTC) - HOUR).replace(tzinfo=None)
+    devoluciones.update(state="stale", fresh_until=stale_window, valid_until=stale_window)
+
+    exit_code = status_module.run(
+        ["--seller-id", SELLER_ID, "--confirm-approved-runtime", "--readiness"],
+        db=_StatusCollection(markers),
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert exit_code != 0
+    assert payload["status"] == "degraded"
+    assert "devoluciones" in payload["blocking"]
 
 
 def test_run_exits_zero_without_readiness_flag_even_when_degraded() -> None:

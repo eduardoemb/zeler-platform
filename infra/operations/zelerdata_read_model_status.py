@@ -335,7 +335,16 @@ def _in_productive_window(
 
 
 def _covers_now(value: Any, now: datetime) -> bool:
-    return isinstance(value, datetime) and value > now
+    normalized = _as_utc_datetime(value)
+    return normalized is not None and normalized > now
+
+
+def _as_utc_datetime(value: Any) -> datetime | None:
+    if not isinstance(value, datetime):
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
 
 
 def _recommended_action(*, read_model: str, state: str, in_window: bool) -> str:
