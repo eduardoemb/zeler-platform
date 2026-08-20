@@ -17,6 +17,7 @@ import zeler_sheets.devoluciones_reconciliation as reconciliation_module
 from zeler_platform_core.devoluciones_readiness import DevolucionesOperationContext
 from zeler_sheets.claim_projection import (
     ClaimProjectionError,
+    ClaimProjectionReason,
     build_claim_projection,
     persist_claim_projection,
     project_claim,
@@ -1479,6 +1480,141 @@ async def test_returns_pacing_deadline_fails_before_charge_and_second_send(
     assert source.return_starts == [100.0]
     assert clock.sleeps == expected_sleeps
     assert recorder.counts == {"P": 2, "R": 3, "O": 1, "T": 6}
+
+
+def _projection_matrix_source(case: str) -> HydratingSource:
+    source = HydratingSource()
+    claim = source.claims["519988001"]
+    returns = source.returns["519988001"]
+    order = source.orders["2001"]
+    row = returns["orders"][0]
+    if case == "claim_respondent":
+        claim["players"] = []
+    elif case == "order_seller":
+        order["seller"] = {"id": 999}
+    elif case == "returns_orders_shape":
+        returns["orders"] = None
+    elif case == "return_row_cardinality":
+        returns["orders"] = []
+    elif case == "item_identity":
+        claim.pop("item_id")
+        row.pop("item_id")
+    elif case == "order_items_shape":
+        order["items"] = None
+    elif case == "order_item_cardinality":
+        order["items"] = [{"item": {"id": "MLA-OTHER"}}]
+    elif case == "return_quantity":
+        row["return_quantity"] = 0
+    elif case == "claim_identity":
+        claim.pop("id")
+    elif case == "claim_version":
+        claim["claim_version"] = "not-an-integer"
+    elif case == "last_updated_format":
+        claim["last_updated"] = "not-a-timestamp"
+    elif case == "last_updated_timezone":
+        claim["last_updated"] = "2026-06-15T12:05:00"
+    elif case == "return_last_updated_format":
+        returns["last_updated"] = "not-a-timestamp"
+    elif case == "return_last_updated_timezone":
+        returns["last_updated"] = "2026-06-15T12:05:00"
+    else:
+        raise AssertionError(f"unknown projection matrix case: {case}")
+    return source
+
+
+@pytest.mark.parametrize(
+    ("case", "expected_reason"),
+    [
+        ("claim_respondent", "projection_claim_respondent"),
+        ("order_seller", "projection_order_seller"),
+        ("returns_orders_shape", "projection_returns_orders_shape"),
+        ("return_row_cardinality", "projection_return_row_cardinality"),
+        ("item_identity", "projection_item_identity"),
+        ("order_items_shape", "projection_order_items_shape"),
+        ("order_item_cardinality", "projection_order_item_cardinality"),
+        ("return_quantity", "projection_return_quantity"),
+        ("claim_identity", "projection_claim_identity"),
+        ("claim_version", "projection_claim_version"),
+        ("last_updated_format", "projection_last_updated_format"),
+        ("last_updated_timezone", "projection_last_updated_timezone"),
+        ("return_last_updated_format", "projection_return_last_updated_format"),
+        ("return_last_updated_timezone", "projection_return_last_updated_timezone"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_focused_projection_diagnostics_classify_reachable_hydration_failures(
+    case: str, expected_reason: str
+) -> None:
+    source = _projection_matrix_source(case)
+
+    with pytest.raises(ClaimProjectionError) as exc_info:
+        await reconciliation_module.collect_devoluciones_snapshot(
+            source=source, seller_id="82453304", start=START, end=END
+        )
+
+    assert source.hydration_calls == [
+        ("claim", "519988001"),
+        ("returns", "519988001"),
+        ("order", "2001"),
+    ]
+    assert reconciliation_module._private_focused_devoluciones_diagnostic(exc_info.value) == {
+        "failure_class": "parser_failure",
+        "projection_reason": expected_reason,
+    }
+
+
+@pytest.mark.parametrize(
+    ("case", "value", "expected_reason"),
+    [
+        ("return_quantity", "not-a-decimal", "projection_return_quantity"),
+        ("return_quantity", "1.5", "projection_return_quantity"),
+        ("last_updated_format", "not-a-timestamp", "projection_last_updated_format"),
+        ("last_updated_format", object(), "projection_last_updated_format"),
+        ("last_updated_timezone", datetime(2026, 6, 15, 12, 5), "projection_last_updated_timezone"),
+        ("return_last_updated_format", "not-a-timestamp", "projection_return_last_updated_format"),
+        ("return_last_updated_format", object(), "projection_return_last_updated_format"),
+        (
+            "return_last_updated_timezone",
+            datetime(2026, 6, 15, 12, 5),
+            "projection_return_last_updated_timezone",
+        ),
+    ],
+)
+@pytest.mark.asyncio
+async def test_focused_projection_diagnostics_keep_coercion_and_validation_reasons_stable(
+    case: str, value: Any, expected_reason: str
+) -> None:
+    source = _projection_matrix_source(case)
+    if case == "return_quantity":
+        source.returns["519988001"]["orders"][0]["return_quantity"] = value
+    elif case == "last_updated_format" or case == "last_updated_timezone":
+        source.claims["519988001"]["last_updated"] = value
+    else:
+        source.returns["519988001"]["last_updated"] = value
+
+    with pytest.raises(ClaimProjectionError) as exc_info:
+        await reconciliation_module.collect_devoluciones_snapshot(
+            source=source, seller_id="82453304", start=START, end=END
+        )
+
+    assert reconciliation_module._private_focused_devoluciones_diagnostic(exc_info.value) == {
+        "failure_class": "parser_failure",
+        "projection_reason": expected_reason,
+    }
+
+
+@pytest.mark.parametrize("reason", [None, "projection_return_quantity SECRET=token-123"])
+def test_focused_projection_diagnostic_uses_unknown_for_untyped_or_invalid_reason(
+    reason: str | None,
+) -> None:
+    error = ClaimProjectionError("https://sensitive.example/claim/519988001?token=secret")
+    if reason is not None:
+        error.projection_reason = cast(ClaimProjectionReason, reason)
+
+    assert reconciliation_module._private_focused_devoluciones_diagnostic(error) == {
+        "failure_class": "parser_failure",
+        "projection_reason": "projection_unknown",
+    }
 
 
 @pytest.mark.asyncio

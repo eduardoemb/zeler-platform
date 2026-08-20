@@ -187,6 +187,23 @@ def _private_focused_devoluciones_failure(exc: Exception) -> _FocusedDevolucione
     return _FocusedDevolucionesFailure.SOURCE
 
 
+def _private_focused_devoluciones_diagnostic(exc: Exception) -> dict[str, str]:
+    failure = _private_focused_devoluciones_failure(exc)
+    diagnostic = {"failure_class": failure.value}
+    if (
+        failure is not _FocusedDevolucionesFailure.PARSER
+        or type(exc).__name__ != "ClaimProjectionError"
+    ):
+        return diagnostic
+    from zeler_sheets.claim_projection import ClaimProjectionReason
+
+    reason = getattr(exc, "projection_reason", None)
+    diagnostic["projection_reason"] = (
+        reason.value if isinstance(reason, ClaimProjectionReason) else "projection_unknown"
+    )
+    return diagnostic
+
+
 class FrozenDict(dict[str, Any]):
     def _immutable(self, *_: Any, **__: Any) -> None:
         raise TypeError("snapshot mappings are immutable")

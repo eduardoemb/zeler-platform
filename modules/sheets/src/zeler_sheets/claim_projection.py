@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
+from enum import StrEnum
 from typing import Any
 
 from zeler_platform_core.devoluciones_readiness import (
@@ -12,8 +13,29 @@ from zeler_platform_core.devoluciones_readiness import (
 from zeler_platform_core.models import Claim, current_schema_version
 
 
+class ClaimProjectionReason(StrEnum):
+    CLAIM_RESPONDENT = "projection_claim_respondent"
+    ORDER_SELLER = "projection_order_seller"
+    RETURNS_ORDERS_SHAPE = "projection_returns_orders_shape"
+    RETURN_ROW_CARDINALITY = "projection_return_row_cardinality"
+    ITEM_IDENTITY = "projection_item_identity"
+    ORDER_ITEMS_SHAPE = "projection_order_items_shape"
+    ORDER_ITEM_CARDINALITY = "projection_order_item_cardinality"
+    RETURN_QUANTITY = "projection_return_quantity"
+    CLAIM_IDENTITY = "projection_claim_identity"
+    CLAIM_VERSION = "projection_claim_version"
+    LAST_UPDATED_FORMAT = "projection_last_updated_format"
+    LAST_UPDATED_TIMEZONE = "projection_last_updated_timezone"
+    RETURN_LAST_UPDATED_FORMAT = "projection_return_last_updated_format"
+    RETURN_LAST_UPDATED_TIMEZONE = "projection_return_last_updated_timezone"
+
+
 class ClaimProjectionError(RuntimeError):
-    pass
+    def __init__(
+        self, message: str, *, projection_reason: ClaimProjectionReason | None = None
+    ) -> None:
+        super().__init__(message)
+        self.projection_reason = projection_reason
 
 
 def build_claim_projection(
@@ -29,7 +51,10 @@ def build_claim_projection(
     return_subtype = _optional_text(returns.get("subtype"))
     return_rows = returns.get("orders")
     if not isinstance(return_rows, list):
-        raise ClaimProjectionError("v2 returns orders must be a list")
+        raise ClaimProjectionError(
+            "v2 returns orders must be a list",
+            projection_reason=ClaimProjectionReason.RETURNS_ORDERS_SHAPE,
+        )
 
     order_id = _identity(claim.get("order_id") or claim.get("resource_id"), "order_id")
     item_id = _optional_identity(claim.get("item_id"))
@@ -43,10 +68,11 @@ def build_claim_projection(
 
     if len(matching_rows) != 1:
         raise ClaimProjectionError(
-            "positive integral v2 return proof requires one unique order/item row"
+            "positive integral v2 return proof requires one unique order/item row",
+            projection_reason=ClaimProjectionReason.RETURN_ROW_CARDINALITY,
         )
     row = matching_rows[0]
-    item_id = _identity(row.get("item_id"), "item_id")
+    item_id = _identity(row.get("item_id"), "item_id", ClaimProjectionReason.ITEM_IDENTITY)
     _validate_order_item(order, item_id=item_id)
     returned_quantity = _positive_integral_return_quantity(row.get("return_quantity"))
     return_context_type = _optional_text(row.get("context_type"))
@@ -58,17 +84,29 @@ def build_claim_projection(
         raise ClaimProjectionError("mediation is not linked to a return")
 
     model_payload: dict[str, Any] = {
-        "_id": _identity(claim.get("id") or claim.get("_id"), "claim_id"),
+        "_id": _identity(
+            claim.get("id") or claim.get("_id"), "claim_id", ClaimProjectionReason.CLAIM_IDENTITY
+        ),
         "seller_id": seller_id,
         "buyer_id": _claim_buyer_id(claim),
         "item_id": item_id,
         "order_id": order_id,
         "returned_quantity": returned_quantity,
-        "claim_version": _optional_integer(claim.get("claim_version"), "claim_version"),
-        "last_updated": _optional_datetime(claim.get("last_updated"), "last_updated"),
+        "claim_version": _optional_integer(
+            claim.get("claim_version"), "claim_version", ClaimProjectionReason.CLAIM_VERSION
+        ),
+        "last_updated": _optional_datetime(
+            claim.get("last_updated"),
+            "last_updated",
+            ClaimProjectionReason.LAST_UPDATED_FORMAT,
+            ClaimProjectionReason.LAST_UPDATED_TIMEZONE,
+        ),
         "return_id": _optional_identity(returns.get("id")),
         "return_last_updated": _optional_datetime(
-            returns.get("last_updated"), "return_last_updated"
+            returns.get("last_updated"),
+            "return_last_updated",
+            ClaimProjectionReason.RETURN_LAST_UPDATED_FORMAT,
+            ClaimProjectionReason.RETURN_LAST_UPDATED_TIMEZONE,
         ),
         "return_status": _optional_text(returns.get("status")),
         "return_subtype": return_subtype,
@@ -215,20 +253,28 @@ def _validate_claim_respondent(claim: Mapping[str, Any], *, seller_id: str) -> N
         else []
     )
     if len(matches) != 1:
-        raise ClaimProjectionError("claim must have exactly one seller respondent")
+        raise ClaimProjectionError(
+            "claim must have exactly one seller respondent",
+            projection_reason=ClaimProjectionReason.CLAIM_RESPONDENT,
+        )
 
 
 def _validate_order_seller(order: Mapping[str, Any], *, seller_id: str) -> None:
     seller = order.get("seller")
     order_seller_id = seller.get("id") if isinstance(seller, Mapping) else order.get("seller_id")
     if str(order_seller_id) != seller_id:
-        raise ClaimProjectionError("order seller does not match operation seller")
+        raise ClaimProjectionError(
+            "order seller does not match operation seller",
+            projection_reason=ClaimProjectionReason.ORDER_SELLER,
+        )
 
 
 def _validate_order_item(order: Mapping[str, Any], *, item_id: str) -> None:
     items = order.get("items") or order.get("order_items")
     if not isinstance(items, list):
-        raise ClaimProjectionError("order items are unavailable")
+        raise ClaimProjectionError(
+            "order items are unavailable", projection_reason=ClaimProjectionReason.ORDER_ITEMS_SHAPE
+        )
     matches = []
     for row in items:
         if not isinstance(row, Mapping):
@@ -238,18 +284,30 @@ def _validate_order_item(order: Mapping[str, Any], *, item_id: str) -> None:
         if str(row_item_id) == item_id:
             matches.append(row)
     if len(matches) != 1:
-        raise ClaimProjectionError("order must contain one unique matching item row")
+        raise ClaimProjectionError(
+            "order must contain one unique matching item row",
+            projection_reason=ClaimProjectionReason.ORDER_ITEM_CARDINALITY,
+        )
 
 
 def _positive_integral_return_quantity(value: Any) -> int:
     if isinstance(value, bool) or value is None:
-        raise ClaimProjectionError("return_quantity must be a positive integral value")
+        raise ClaimProjectionError(
+            "return_quantity must be a positive integral value",
+            projection_reason=ClaimProjectionReason.RETURN_QUANTITY,
+        )
     try:
         quantity = Decimal(str(value))
     except (InvalidOperation, ValueError) as exc:
-        raise ClaimProjectionError("return_quantity must be a positive integral value") from exc
+        raise ClaimProjectionError(
+            "return_quantity must be a positive integral value",
+            projection_reason=ClaimProjectionReason.RETURN_QUANTITY,
+        ) from exc
     if not quantity.is_finite() or quantity <= 0 or quantity != quantity.to_integral_value():
-        raise ClaimProjectionError("return_quantity must be a positive integral value")
+        raise ClaimProjectionError(
+            "return_quantity must be a positive integral value",
+            projection_reason=ClaimProjectionReason.RETURN_QUANTITY,
+        )
     return int(quantity)
 
 
@@ -273,10 +331,10 @@ def _claim_buyer_id(claim: Mapping[str, Any]) -> str | None:
     return None
 
 
-def _identity(value: Any, field: str) -> str:
+def _identity(value: Any, field: str, reason: ClaimProjectionReason | None = None) -> str:
     normalized = _optional_identity(value)
     if normalized is None:
-        raise ClaimProjectionError(f"{field} is required")
+        raise ClaimProjectionError(f"{field} is required", projection_reason=reason)
     return normalized
 
 
@@ -291,18 +349,23 @@ def _optional_text(value: Any) -> str | None:
     return _optional_identity(value)
 
 
-def _optional_integer(value: Any, field: str) -> int | None:
+def _optional_integer(value: Any, field: str, reason: ClaimProjectionReason) -> int | None:
     if value is None:
         return None
     if isinstance(value, bool):
-        raise ClaimProjectionError(f"{field} must be an integer")
+        raise ClaimProjectionError(f"{field} must be an integer", projection_reason=reason)
     try:
         return int(value)
     except (TypeError, ValueError) as exc:
-        raise ClaimProjectionError(f"{field} must be an integer") from exc
+        raise ClaimProjectionError(f"{field} must be an integer", projection_reason=reason) from exc
 
 
-def _optional_datetime(value: Any, field: str) -> datetime | None:
+def _optional_datetime(
+    value: Any,
+    field: str,
+    format_reason: ClaimProjectionReason,
+    timezone_reason: ClaimProjectionReason,
+) -> datetime | None:
     if value is None:
         return None
     if isinstance(value, datetime):
@@ -311,9 +374,15 @@ def _optional_datetime(value: Any, field: str) -> datetime | None:
         try:
             parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
         except ValueError as exc:
-            raise ClaimProjectionError(f"{field} must be an ISO datetime") from exc
+            raise ClaimProjectionError(
+                f"{field} must be an ISO datetime", projection_reason=format_reason
+            ) from exc
     else:
-        raise ClaimProjectionError(f"{field} must be an ISO datetime")
+        raise ClaimProjectionError(
+            f"{field} must be an ISO datetime", projection_reason=format_reason
+        )
     if parsed.tzinfo is None:
-        raise ClaimProjectionError(f"{field} must be timezone-aware")
+        raise ClaimProjectionError(
+            f"{field} must be timezone-aware", projection_reason=timezone_reason
+        )
     return parsed.astimezone(UTC)
