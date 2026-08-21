@@ -5541,8 +5541,8 @@ async def test_focused_write_composes_db_bound_revalidation_heartbeat(
     assert result.runtime_evidence is not None
     assert result.runtime_evidence.source_calls == {"P": 4, "R": 4, "O": 2, "T": 10}
     assert scheduled_sample_from_summary(result).physical_attempts == 10
-    assert source.return_starts == [0.0, 1.25]
-    assert clock.sleeps == [1.25]
+    assert source.return_starts == [0.0, 1.75]
+    assert clock.sleeps == [1.75]
     assert heartbeat_calls
     assert all(bound_db is db for bound_db, _ in heartbeat_calls)
 

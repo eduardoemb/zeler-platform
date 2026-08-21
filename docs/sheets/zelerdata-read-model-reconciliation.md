@@ -124,7 +124,7 @@ write may use no more than two independent snapshots and must remain within the 
 Concurrency remains no greater than four, with a 165-second process deadline and a 175-second shell
 stop. The single scheduled attempt cannot reset either snapshot or run accounting.
 
-The focused run enforces a code-owned **1.25-second minimum start-to-start interval** for physical RETURNS attempts only.
+The focused run enforces a code-owned **1.75-second minimum start-to-start interval** for physical RETURNS attempts only.
 The first RETURNS send does not wait, and pacing occurs before each later
 send rather than after the previous or final send. Pre-detail cancellation exclusions never enter
 the pacer; authoritative safe-404 exclusions do because absence is known only after the physical
@@ -139,10 +139,11 @@ existing recorder charges before exactly one physical send. A 429 remains termin
 path does not retry, expand `B ≤ 104` or `C ≤ 208`, or alter public/private evidence.
 
 For the complete 34-candidate inventory, pacing inserts at most 33 intervals per snapshot and 67
-per two-snapshot run: at most 41.25 seconds per snapshot and 83.75 seconds per run. The retained
-110-second projected run envelope preserves 55 seconds of process-deadline margin and 65 seconds
-before the shell stop. Acceptance still requires private timing correlation proving every
-successive physical RETURNS start is at least 1.25 seconds apart, followed by fresh `9/9/9/0`
+per two-snapshot run: at most 57.75 seconds per snapshot and 117.25 seconds per run. The
+143.5-second projected run envelope (117.25s pacing + 26.25s non-paced budgets) preserves 21.5 seconds of process-deadline margin and 31.5 seconds of shell-stop margin before the 175-second
+shell stop. Acceptance
+still requires private timing correlation proving every
+successive physical RETURNS start is at least 1.75 seconds apart, followed by fresh `9/9/9/0`
 evidence. Any spacing, deadline, source, or 429 failure stops without retry, keeps the timer off,
 and uses the existing failure-conditional rollback boundary.
 
