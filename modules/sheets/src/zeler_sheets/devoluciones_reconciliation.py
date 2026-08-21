@@ -87,6 +87,7 @@ MAX_SOURCE_PHYSICAL_ATTEMPTS = 208
 MAX_SNAPSHOT_PHYSICAL_ATTEMPTS = 104
 MAX_DETAIL_ATTEMPTS_PER_HYDRATION_CANDIDATE = 3
 RETURNS_MIN_START_INTERVAL_SECONDS = 1.75
+MAX_RETURNS_SERVER_RETRIES = 1
 
 
 class _FocusedDevolucionesFailure(StrEnum):
@@ -844,53 +845,68 @@ async def collect_devoluciones_snapshot(
             raise ClaimInventoryError(
                 "hydrated claim candidate is unresolved and cannot be excluded"
             )
-        await _before_source_attempt(
-            "return_detail",
-            recorder=recorder,
-            absolute_deadline=absolute_deadline,
-            monotonic=monotonic,
-            heartbeat=heartbeat,
-            returns_pacer=resolved_returns_pacer,
-        )
-        try:
-            returns = await _bounded_source_call(
-                source.get_returns(seller_id=seller_id, claim_id=entry.claim_id),
+        returns: dict[str, Any] = {}
+        excluded_by_authoritative_404 = False
+        for attempt in range(MAX_RETURNS_SERVER_RETRIES + 1):
+            await _before_source_attempt(
+                "return_detail",
+                recorder=recorder,
                 absolute_deadline=absolute_deadline,
                 monotonic=monotonic,
+                heartbeat=heartbeat,
+                returns_pacer=resolved_returns_pacer,
             )
-        except SourceCallBudgetError:
-            raise
-        except AuthoritativeReturnsNotFoundError:
-            if _is_authoritative_no_return_mediation(
-                entry=entry,
-                claim=claim,
-                seller_id=seller_id,
-            ):
-                exclusions.append(
-                    InventoryExclusionEvidence(
-                        claim_id=entry.claim_id,
-                        last_updated=entry.last_updated,
-                        reason="authoritative_no_return_mediation",
-                    )
+            try:
+                returns = await _bounded_source_call(
+                    source.get_returns(seller_id=seller_id, claim_id=entry.claim_id),
+                    absolute_deadline=absolute_deadline,
+                    monotonic=monotonic,
                 )
-                continue
-            raise ClaimInventoryError(
-                "v2 returns source_issue",
-                private_failure=_FocusedDevolucionesFailure.SAFE_404_PRECONDITION,
-            ) from None
-        except Exception as exc:  # noqa: BLE001 - source exception text is unsafe evidence.
-            failure = _private_focused_devoluciones_failure(exc)
-            error = ClaimInventoryError(
-                "v2 returns source_issue",
-                private_failure=failure,
-            )
-            _tag_private_focused_devoluciones_failure(
-                error,
-                failure,
-                source_stage=_FocusedSourceStage.RETURN_DETAIL,
-                source_exc=exc,
-            )
-            raise error from None
+            except SourceCallBudgetError:
+                raise
+            except AuthoritativeReturnsNotFoundError:
+                if _is_authoritative_no_return_mediation(
+                    entry=entry,
+                    claim=claim,
+                    seller_id=seller_id,
+                ):
+                    exclusions.append(
+                        InventoryExclusionEvidence(
+                            claim_id=entry.claim_id,
+                            last_updated=entry.last_updated,
+                            reason="authoritative_no_return_mediation",
+                        )
+                    )
+                    excluded_by_authoritative_404 = True
+                else:
+                    raise ClaimInventoryError(
+                        "v2 returns source_issue",
+                        private_failure=_FocusedDevolucionesFailure.SAFE_404_PRECONDITION,
+                    ) from None
+                break
+            except Exception as exc:  # noqa: BLE001 - source exception text is unsafe evidence.
+                failure = _private_focused_devoluciones_failure(exc)
+                retry_available = (
+                    failure is _FocusedDevolucionesFailure.SOURCE
+                    and _classify_source_family(exc) is _FocusedSourceFamily.SERVER
+                    and attempt < MAX_RETURNS_SERVER_RETRIES
+                )
+                if retry_available:
+                    continue
+                error = ClaimInventoryError(
+                    "v2 returns source_issue",
+                    private_failure=failure,
+                )
+                _tag_private_focused_devoluciones_failure(
+                    error,
+                    failure,
+                    source_stage=_FocusedSourceStage.RETURN_DETAIL,
+                    source_exc=exc,
+                )
+                raise error from None
+            break
+        if excluded_by_authoritative_404:
+            continue
         order_id = str(claim.get("order_id") or claim.get("resource_id") or "").strip()
         if not order_id:
             raise ClaimInventoryError(

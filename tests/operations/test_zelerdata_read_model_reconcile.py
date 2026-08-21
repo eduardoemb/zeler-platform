@@ -4770,10 +4770,13 @@ class _FocusedGatewayClient:
         self,
         *,
         returns_failure: Exception | None = None,
+        returns_fail_once: Exception | None = None,
         returns_payload: dict[str, Any] | None = None,
         mediation_item_id: str | None = "MLA2",
     ) -> None:
         self.returns_failure = returns_failure
+        self.returns_fail_once = returns_fail_once
+        self.returns_failed_once = False
         self.returns_payload = returns_payload or {
             "id": "return-519988002",
             "status": "closed",
@@ -4817,6 +4820,9 @@ class _FocusedGatewayClient:
                 "related_entities": [],
             }
         if path == "/post-purchase/v2/claims/519988002/returns":
+            if self.returns_fail_once is not None and not self.returns_failed_once:
+                self.returns_failed_once = True
+                raise self.returns_fail_once
             if self.returns_failure is not None:
                 raise self.returns_failure
             return dict(self.returns_payload)
@@ -4891,11 +4897,21 @@ def test_focused_devoluciones_dry_run_sanitizes_gateway_returns_source_failures(
     combined_output = json.dumps(output, sort_keys=True) + captured.err
 
     assert result == 1
-    assert output == {
-        "stage": "dry_run",
-        "status_class": "source_issue",
-        "counters": {"P": 2, "R": 2, "O": 0, "T": 4},
-    }
+    if getattr(getattr(returns_failure, "response", None), "status_code", None) == 500:
+        # SERVER failures get exactly one paced retry that also fails closed (S3).
+        assert output == {
+            "stage": "dry_run",
+            "status_class": "source_issue",
+            "counters": {"P": 2, "R": 3, "O": 0, "T": 5},
+        }
+        assert client.paths.count("/post-purchase/v2/claims/519988002/returns") == 2
+    else:
+        assert output == {
+            "stage": "dry_run",
+            "status_class": "source_issue",
+            "counters": {"P": 2, "R": 2, "O": 0, "T": 4},
+        }
+        assert client.paths.count("/post-purchase/v2/claims/519988002/returns") == 1
     for forbidden in (
         "Traceback",
         "https://runtime.internal",
@@ -4910,6 +4926,81 @@ def test_focused_devoluciones_dry_run_sanitizes_gateway_returns_source_failures(
         assert forbidden not in combined_output
     if getattr(getattr(returns_failure, "response", None), "status_code", None) == 429:
         assert client.paths.count("/post-purchase/v2/claims/519988002/returns") == 1
+
+
+def test_focused_devoluciones_dry_run_retries_server_once_then_succeeds(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    client = _FocusedGatewayClient(returns_fail_once=_RawGatewayReturnsError(500))
+    _install_focused_gateway(monkeypatch, client=client)
+
+    result = reconcile_operation_module.main(
+        [
+            "--seller-id",
+            "82453304",
+            "--date-from",
+            "2026-06-01",
+            "--date-to",
+            "2026-07-09",
+            "--read-model",
+            "devoluciones",
+            "--dry-run",
+            "--confirm-approved-runtime",
+        ]
+    )
+
+    output = json.loads(capsys.readouterr().out)
+
+    assert result == 0
+    assert output["stage"] == "dry_run"
+    assert output["status_class"] == "success"
+    # The single fail-once-then-success retry grows only R and T by one (S2).
+    assert output["counters"]["P"] == 8
+    assert output["counters"]["R"] == 9
+    assert output["counters"]["O"] == 4
+    assert output["counters"]["T"] == 21
+    assert output["counters"]["expected"] == 1
+    assert output["counters"]["persisted"] == 1
+    # One retry over the four 10-day slices: 4 sends + 1 retry.
+    assert client.paths.count("/post-purchase/v2/claims/519988002/returns") == 5
+
+
+def test_focused_devoluciones_dry_run_success_path_unaffected_by_retry_path(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    client = _FocusedGatewayClient()
+    _install_focused_gateway(monkeypatch, client=client)
+
+    result = reconcile_operation_module.main(
+        [
+            "--seller-id",
+            "82453304",
+            "--date-from",
+            "2026-06-01",
+            "--date-to",
+            "2026-07-09",
+            "--read-model",
+            "devoluciones",
+            "--dry-run",
+            "--confirm-approved-runtime",
+        ]
+    )
+
+    output = json.loads(capsys.readouterr().out)
+
+    # The clean success path keeps the single-attempt baseline counters (S1).
+    assert result == 0
+    assert output["stage"] == "dry_run"
+    assert output["status_class"] == "success"
+    assert output["counters"]["P"] == 8
+    assert output["counters"]["R"] == 8
+    assert output["counters"]["O"] == 4
+    assert output["counters"]["T"] == 20
+    assert output["counters"]["expected"] == 1
+    assert output["counters"]["persisted"] == 1
+    assert client.paths.count("/post-purchase/v2/claims/519988002/returns") == 4
 
 
 def test_focused_devoluciones_dry_run_accepts_authoritative_absent_return_as_exclusion(
