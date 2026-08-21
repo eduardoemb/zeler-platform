@@ -900,6 +900,86 @@ class RawReturnsAccessError(Exception):
         )
 
 
+class DirectStatusError(Exception):
+    def __init__(self, status_code: int) -> None:
+        self.status_code = status_code
+
+
+@pytest.mark.parametrize(
+    ("failure", "expected_family"),
+    [
+        (RawReturnsAccessError(429), "rate_limit"),
+        (RawReturnsAccessError(503), "server"),
+        (DirectStatusError(503), "server"),
+        (RawReturnsAccessError(401), "client_other"),
+        (ConnectionError("connection details are private"), "connection"),
+        (TimeoutError("timeout details are private"), "timeout"),
+        (RuntimeError("unknown details are private"), "other"),
+    ],
+    ids=(
+        "rate-limit",
+        "response-server",
+        "direct-server",
+        "client-other",
+        "connection",
+        "timeout",
+        "other",
+    ),
+)
+def test_source_family_classifier_returns_only_bounded_tokens(
+    failure: Exception, expected_family: str
+) -> None:
+    assert reconciliation_module._classify_source_family(failure).value == expected_family
+
+
+class SourceStageFailureSource(HydratingSource):
+    def __init__(self, *, stage: str) -> None:
+        super().__init__()
+        self.stage = stage
+
+    async def search_claims(
+        self, *, seller_id: str, params: dict[str, str | int]
+    ) -> dict[str, Any]:
+        if self.stage == "claim_search":
+            raise RawReturnsAccessError(429)
+        return await super().search_claims(seller_id=seller_id, params=params)
+
+    async def get_claim(self, *, seller_id: str, claim_id: str) -> dict[str, Any]:
+        if self.stage == "claim_detail":
+            raise RawReturnsAccessError(429)
+        return await super().get_claim(seller_id=seller_id, claim_id=claim_id)
+
+    async def get_returns(self, *, seller_id: str, claim_id: str) -> dict[str, Any]:
+        if self.stage == "return_detail":
+            raise RawReturnsAccessError(429)
+        return await super().get_returns(seller_id=seller_id, claim_id=claim_id)
+
+    async def get_order(self, *, seller_id: str, order_id: str) -> dict[str, Any]:
+        if self.stage == "order_detail":
+            raise RawReturnsAccessError(429)
+        return await super().get_order(seller_id=seller_id, order_id=order_id)
+
+
+@pytest.mark.parametrize("stage", ("claim_search", "claim_detail", "return_detail", "order_detail"))
+@pytest.mark.asyncio
+async def test_source_failures_expose_only_bounded_stage_and_family_diagnostics(stage: str) -> None:
+    source = SourceStageFailureSource(stage=stage)
+
+    with pytest.raises(Exception) as exc_info:
+        await reconciliation_module.collect_devoluciones_snapshot(
+            source=source,
+            seller_id="82453304",
+            start=START,
+            end=END,
+        )
+
+    assert reconciliation_module._private_focused_devoluciones_diagnostic(exc_info.value) == {
+        "failure_class": "source_failure",
+        "source_stage": stage,
+        "source_family": "rate_limit",
+    }
+
+
 class ReturnsAccessFailureSource(HydratingSource):
     def __init__(self, failure: Exception) -> None:
         super().__init__()

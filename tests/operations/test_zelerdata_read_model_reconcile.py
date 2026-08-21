@@ -5157,8 +5157,13 @@ def test_focused_diagnostic_writes_enum_to_separate_root_private_fd(
             "failure_class": "parser_failure",
             "projection_reason": "projection_return_quantity",
         },
+        {
+            "failure_class": "source_failure",
+            "source_stage": "claim_search",
+            "source_family": "rate_limit",
+        },
     ),
-    ids=("legacy-parser-envelope", "extended-parser-envelope"),
+    ids=("legacy-parser-envelope", "extended-parser-envelope", "source-envelope"),
 )
 def test_private_diagnostic_fd_accepts_exact_legacy_and_extended_parser_envelopes(
     monkeypatch: pytest.MonkeyPatch,
@@ -5203,6 +5208,27 @@ def test_private_diagnostic_fd_accepts_exact_legacy_and_extended_parser_envelope
         {"failure_class": "unknown_failure"},
         {"failure_class": "parser_failure", "projection_reason": "projection_not_real"},
         {"failure_class": "source_failure", "projection_reason": "projection_return_quantity"},
+        {
+            "failure_class": "source_failure",
+            "source_stage": "unknown_stage",
+            "source_family": "rate_limit",
+        },
+        {
+            "failure_class": "source_failure",
+            "source_stage": "claim_search",
+            "source_family": "unknown_family",
+        },
+        {
+            "failure_class": "source_failure",
+            "source_stage": "claim_search",
+            "source_family": "rate_limit",
+            "unexpected": "value",
+        },
+        {
+            "failure_class": "source_failure",
+            "source_stage": "cláim_search",
+            "source_family": "rate_limit",
+        },
         {"fáilure_class": "parser_failure"},
         {"failure_class": "parser_failure", "projection_reason": "razón"},
     ),
@@ -5212,6 +5238,10 @@ def test_private_diagnostic_fd_accepts_exact_legacy_and_extended_parser_envelope
         "unknown-failure-class",
         "arbitrary-projection-reason",
         "reason-with-non-parser-class",
+        "unknown-source-stage",
+        "unknown-source-family",
+        "source-extra-key",
+        "source-non-ascii-stage",
         "non-ascii-key",
         "non-ascii-value",
     ),
