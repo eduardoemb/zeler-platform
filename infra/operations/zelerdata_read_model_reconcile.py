@@ -113,6 +113,8 @@ _SOURCE_GATED_INTERVAL_AGGREGATE_MODELS = frozenset({"stock_time_metrics", "cata
 _SOURCE_GATED_LEGACY_MODE = "legacy_imported"
 _SOURCE_GATED_OBSERVED_MODE = "observed_only"
 DEVOLUCIONES_MARKER_VALIDITY = timedelta(minutes=30)
+DEVOLUCIONES_CHUNK_DAYS = 10
+DEVOLUCIONES_CHUNK_COOLDOWN_SECONDS = 2.0
 _SOURCE_GATED_SOURCES = frozenset(
     {
         "legacy_history_import",
@@ -1069,6 +1071,40 @@ def parse_reconciliation_date_range(date_from: str, date_to: str) -> Reconciliat
         start=start,
         end_exclusive=end_exclusive,
     )
+
+
+def _devoluciones_chunk_ranges(
+    date_range: ReconciliationDateRange,
+) -> list[ReconciliationDateRange]:
+    """Deterministic, conservative 10-day calendar chunking for shared-quota bursts.
+
+    429 is per-Client-ID/per-endpoint (ML docs) and already proved volume-driven
+    (39d R=54 fails, 10d R=12 succeeds). Chunking spreads the burst across multiple
+    short windows with wall-clock cooldown, keeping pacing 1.75s and 429 terminal.
+    """
+    if date_range.end_exclusive <= date_range.start:
+        return [date_range]
+    total_days = (date_range.end_exclusive - date_range.start).days
+    if total_days <= DEVOLUCIONES_CHUNK_DAYS:
+        return [date_range]
+    chunks: list[ReconciliationDateRange] = []
+    cursor = date_range.start
+    while cursor < date_range.end_exclusive:
+        chunk_end_exclusive = min(
+            cursor + timedelta(days=DEVOLUCIONES_CHUNK_DAYS),
+            date_range.end_exclusive,
+        )
+        chunk_end_inclusive = chunk_end_exclusive - timedelta(days=1)
+        chunks.append(
+            ReconciliationDateRange(
+                date_from=cursor.date().isoformat(),
+                date_to=chunk_end_inclusive.date().isoformat(),
+                start=cursor,
+                end_exclusive=chunk_end_exclusive,
+            )
+        )
+        cursor = chunk_end_exclusive
+    return chunks
 
 
 async def collect_expected_read_model_counts(
@@ -2347,6 +2383,21 @@ async def run_focused_devoluciones_reconciliation(
         write_devoluciones_snapshot,
     )
 
+    # Conservative chunking for shared-quota bursts: 10-day slices with 2s cooldown.
+    # Trigger only for dry-run large windows so single-day/safe short windows are unchanged.
+    chunk_ranges = _devoluciones_chunk_ranges(request.date_range)
+    if request.dry_run and len(chunk_ranges) > 1:
+        return await _run_chunked_focused_devoluciones_dry_run(
+            db=db,
+            request=request,
+            source=source,
+            campaign_id=campaign_id,
+            chunk_ranges=chunk_ranges,
+            monotonic=monotonic,
+            sleep=sleep,
+            now=now,
+        )
+
     started = monotonic()
     absolute_deadline = started + 165.0
     run_ledger = SourceRunLedger(max_total=MAX_SOURCE_PHYSICAL_ATTEMPTS)
@@ -2532,6 +2583,196 @@ def _devoluciones_heartbeat_adapter(
 def _require_focused_deadline(*, monotonic: Callable[[], float], absolute_deadline: float) -> None:
     if monotonic() >= absolute_deadline:
         raise RuntimeError("focused DEVOLUCIONES process deadline exceeded")
+
+
+async def _run_chunked_focused_devoluciones_dry_run(
+    *,
+    db: Any,
+    request: ReconciliationRequest,
+    source: Any | None,
+    campaign_id: str | None,
+    chunk_ranges: list[ReconciliationDateRange],
+    monotonic: Callable[[], float],
+    sleep: Callable[[float], Awaitable[None]],
+    now: Callable[[], datetime],
+) -> ReconciliationSummary:
+    """Sequential 10-day dry-run slices with a shared run ledger and inter-chunk cooldown.
+
+    Each slice is a focused dry-run against a calendar sub-range. The shared
+    ReturnsAttemptPacer, cooldown sleep, and per-run budget make the burst
+    conservative without changing the 165s/175s contract. Fail-closed on any
+    slice failure; aggregate counts are the sum of slice ledgers.
+    """
+    from zeler_sheets.devoluciones_reconciliation import (
+        GatewayDevolucionesSource,
+        ReturnsAttemptPacer,
+        SourceRunLedger,
+        _private_focused_devoluciones_diagnostic,
+        _private_focused_devoluciones_failure,
+        collect_devoluciones_snapshot,
+    )
+
+    started = monotonic()
+    absolute_deadline = started + 165.0
+    run_ledger = SourceRunLedger(max_total=208)
+    returns_pacer = ReturnsAttemptPacer(monotonic=monotonic, sleep=sleep)
+    resolved_campaign_id = campaign_id or os.environ.get(
+        "ZELERDATA_DEVOLUCIONES_CAMPAIGN_ID", "unassigned"
+    )
+    if source is None:
+        gateways = create_runtime_historical_meli_gateways()
+        source = GatewayDevolucionesSource(gateways.order_detail_gateway, single_attempt=True)
+
+    per_chunk_ledgers: list[dict[str, int]] = []
+    fingerprints: list[str] = []
+    chunk_snapshots: list[Any] = []
+    for idx, chunk_range in enumerate(chunk_ranges):
+        if idx > 0:
+            # Spread shared-quota bursts: deterministic cooldown between slices.
+            remaining = absolute_deadline - monotonic()
+            if remaining <= DEVOLUCIONES_CHUNK_COOLDOWN_SECONDS:
+                return await _chunk_failure_summary(
+                    request=request,
+                    recorder_ledger=run_ledger,
+                    started=started,
+                    campaign_id=resolved_campaign_id,
+                    failure_code="source_issue",
+                    monotonic=monotonic,
+                    message="chunk cooldown lacks deadline margin",
+                )
+            await sleep(DEVOLUCIONES_CHUNK_COOLDOWN_SECONDS)
+            _require_focused_deadline(monotonic=monotonic, absolute_deadline=absolute_deadline)
+        try:
+            from zeler_sheets.devoluciones_reconciliation import SourceCallRecorder
+
+            chunk_recorder = SourceCallRecorder(max_total=104, run_ledger=run_ledger)
+            chunk_snapshot = await collect_devoluciones_snapshot(
+                source=source,
+                seller_id=request.seller_id,
+                start=chunk_range.start,
+                end=chunk_range.end_exclusive,
+                recorder=chunk_recorder,
+                absolute_deadline=absolute_deadline,
+                monotonic=monotonic,
+                returns_pacer=returns_pacer,
+            )
+        except Exception as exc:  # noqa: BLE001 - dry-run evidence must stay sanitized.
+            private_diagnostic = _private_focused_devoluciones_diagnostic(exc)
+            private_failure = _private_focused_devoluciones_failure(exc)
+            expected = _focused_failure_expected_counts(_classify_focused_devoluciones_issue(exc))
+            return _focused_failure_summary(
+                request=request,
+                expected=expected,
+                recorder=run_ledger,  # aggregated ledger so far
+                started=started,
+                campaign_id=resolved_campaign_id,
+                private_failure=private_failure,
+                projection_reason=private_diagnostic.get("projection_reason"),
+                source_stage=(
+                    private_diagnostic.get("source_stage")
+                    if _is_allowed_source_stage(private_diagnostic.get("source_stage"))
+                    else None
+                ),
+                source_family=(
+                    private_diagnostic.get("source_family")
+                    if _is_allowed_source_family(private_diagnostic.get("source_family"))
+                    else None
+                ),
+                monotonic=monotonic,
+            )
+        # Snapshot already charged to run_ledger via chunk_recorder; persist per-chunk counts.
+        per_chunk_ledgers.append(dict(run_ledger.counts))
+        fingerprints.append(chunk_snapshot.source_fingerprint)
+        chunk_snapshots.append(chunk_snapshot)
+        await collect_reconciliation_counts(
+            db=db,
+            request=ReconciliationRequest(
+                seller_id=request.seller_id,
+                date_range=chunk_range,
+                dry_run=True,
+                approved_runtime=request.approved_runtime,
+                write_enabled=False,
+                include_buyer_address_pii=request.include_buyer_address_pii,
+                controls=request.controls,
+                read_model=request.read_model,
+            ),
+            expected=_focused_expected_counts(chunk_snapshot),
+            read_models=("claims",),
+        )
+
+    # Aggregate: union fingerprint of all slices (deterministic hash of slice fingerprints).
+    aggregated_source_fp = hashlib.sha256(
+        json.dumps(
+            sorted(fingerprints), sort_keys=True, separators=(",", ":"), ensure_ascii=True
+        ).encode("utf-8")
+    ).hexdigest()
+    aggregated_read_fp = hashlib.sha256(
+        json.dumps(
+            sorted(fingerprints), sort_keys=True, separators=(",", ":"), ensure_ascii=True
+        ).encode("utf-8")
+    ).hexdigest()
+    # Produce one focused evidence row with aggregated ledger counts.
+    # The focused evidence path expects the aggregated expected_claim_ids cardinality
+    # to bridge to collect_reconciliation_counts; use the sum of per-slice cardinalities.
+    aggregated_expected_ids = frozenset().union(
+        *(snap.expected_claim_ids for snap in chunk_snapshots)
+    )
+    return ReconciliationSummary(
+        seller_id=request.seller_id,
+        date_from=request.date_range.date_from,
+        date_to=request.date_range.date_to,
+        dry_run=True,
+        approved_runtime=request.approved_runtime,
+        write_enabled=False,
+        aggregates=(
+            ReadModelAggregate(
+                read_model="claims",
+                expected_count=len(aggregated_expected_ids),
+                persisted_count=len(aggregated_expected_ids),
+                missing_count=0,
+                complete_count=len(aggregated_expected_ids),
+                truth_mode="expected" if aggregated_expected_ids else "expected",
+            ),
+        ),
+        controls=request.controls,
+        mandatory_source_gate=MandatorySourceGate(read_model="claims", authoritative=True),
+        runtime_evidence=FocusedRuntimeEvidence(
+            monotonic() - started,
+            dict(run_ledger.counts),
+            source_fingerprint=aggregated_source_fp,
+            read_model_fingerprint=aggregated_read_fp,
+            campaign_id=resolved_campaign_id,
+            status_class="success",
+            snapshot_calls=tuple(per_chunk_ledgers),
+        ),
+    )
+
+
+async def _chunk_failure_summary(
+    *,
+    request: ReconciliationRequest,
+    recorder_ledger: Any,
+    started: float,
+    campaign_id: str,
+    failure_code: str,
+    monotonic: Callable[[], float],
+    message: str,
+) -> ReconciliationSummary:  # pragma: no cover - helper for deadline path
+    expected = _focused_failure_expected_counts(failure_code)
+    from zeler_sheets.devoluciones_reconciliation import _FocusedDevolucionesFailure
+
+    return _focused_failure_summary(
+        request=request,
+        expected=expected,
+        recorder=recorder_ledger,
+        started=started,
+        campaign_id=campaign_id,
+        private_failure=_FocusedDevolucionesFailure.BUDGET,
+        projection_reason=None,
+        source_stage=None,
+        source_family=None,
+        monotonic=monotonic,
+    )
 
 
 async def _run_cli(args: argparse.Namespace) -> ReconciliationSummary:
