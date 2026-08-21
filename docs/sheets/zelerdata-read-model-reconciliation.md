@@ -122,7 +122,23 @@ charged before send. For each frozen inventory snapshot, `B = P + 3H` and `B ≤
 write may use no more than two independent snapshots and must remain within the inclusive run cap
 `C ≤ 208`. The attempt that would become 105 or 209 is rejected before send and is not counted.
 Concurrency remains no greater than four, with a 165-second process deadline and a 175-second shell
-stop. The single scheduled attempt cannot reset either snapshot or run accounting.
+stop. The single scheduled attempt cannot reset either snapshot or run accounting. Server retries
+are runtime-bounded by these same caps: they draw from `B ≤ 104` and `C ≤ 208`, never expand them,
+and die with `SourceCallBudgetError` before the 105th or 209th send.
+
+A Meli 5xx (`SERVER`) on `return_detail` receives at most one code-owned retry
+(`MAX_RETURNS_SERVER_RETRIES = 1`, so at most two physical sends per logical `return_detail`). The
+retry runs through the same `_before_source_attempt` as the initial send: 1.75s start-to-start
+pacer wait (run-scoped, shared across initial and revalidation snapshots), heartbeat, deadline
+checks before the wait, after wakeup, and before charge, and the recorder charge before the retry
+send. Each retry is a fresh single-attempt send (`fetch_resource_once` with
+`X-Zeler-Upstream-Attempts=1`). If the retry also fails with `SERVER`, the final attempt's
+classification wins and the run fails closed; a deadline or budget hit propagates and no third
+send ever occurs. A retry that returns an authoritative 404 (attempts metadata `1`) reuses the
+strict mediation exclusion invariants: safe mediation excludes, unsafe fails closed with
+`SAFE_404_PRECONDITION`. `B = P + 3H` remains the baseline formula and
+`MAX_DETAIL_ATTEMPTS_PER_HYDRATION_CANDIDATE` stays 3; a successful candidate that retries once is
+bounded at runtime by the recorder cap (honest worst case 4 detail sends per candidate).
 
 The focused run enforces a code-owned **1.75-second minimum start-to-start interval** for physical RETURNS attempts only.
 The first RETURNS send does not wait, and pacing occurs before each later
@@ -135,8 +151,10 @@ boundary burst.
 The monotonic 165-second deadline is checked before a required wait and again after wakeup. If the
 remaining margin cannot contain the wait, reconciliation fails before sleeping, charging, or
 sending; if the deadline is reached after wakeup, it fails before charge/send. Otherwise the
-existing recorder charges before exactly one physical send. A 429 remains terminal and the focused
-path does not retry, expand `B ≤ 104` or `C ≤ 208`, or alter public/private evidence.
+existing recorder charges before exactly one physical send per attempt and does not retry. A 429 remains terminal:
+rate limits, client errors, connection, timeout, and other families never retry and keep exactly
+one charged send. Only a `SERVER` failure on `return_detail` receives exactly one paced retry (see
+above); retries never expand `B ≤ 104` or `C ≤ 208` and never alter public/private evidence.
 
 For the complete 34-candidate inventory, pacing inserts at most 33 intervals per snapshot and 67
 per two-snapshot run: at most 57.75 seconds per snapshot and 117.25 seconds per run. The
@@ -144,8 +162,9 @@ per two-snapshot run: at most 57.75 seconds per snapshot and 117.25 seconds per 
 shell stop. Acceptance
 still requires private timing correlation proving every
 successive physical RETURNS start is at least 1.75 seconds apart, followed by fresh `9/9/9/0`
-evidence. Any spacing, deadline, source, or 429 failure stops without retry, keeps the timer off,
-and uses the existing failure-conditional rollback boundary.
+evidence. Any spacing, deadline, or non-SERVER source failure stops without retry and keeps the
+timer off; a `SERVER` failure on `return_detail` retries once through the paced path and, if it
+fails again, uses the existing failure-conditional rollback boundary.
 
 Runtime acceptance requires 20 consecutive candidate-equivalent scheduled writes with stable
 source/read-model fingerprints and one explicit campaign ID. A timeout, non-success, hard-limit
