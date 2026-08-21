@@ -102,6 +102,22 @@ class _FocusedDevolucionesFailure(StrEnum):
     SOURCE = "source_failure"
 
 
+class _FocusedSourceStage(StrEnum):
+    CLAIM_SEARCH = "claim_search"
+    CLAIM_DETAIL = "claim_detail"
+    RETURN_DETAIL = "return_detail"
+    ORDER_DETAIL = "order_detail"
+
+
+class _FocusedSourceFamily(StrEnum):
+    RATE_LIMIT = "rate_limit"
+    SERVER = "server"
+    CLIENT_OTHER = "client_other"
+    CONNECTION = "connection"
+    TIMEOUT = "timeout"
+    OTHER = "other"
+
+
 class ClaimInventoryError(RuntimeError):
     def __init__(
         self,
@@ -160,9 +176,36 @@ class ReturnsAttemptPacer:
 def _tag_private_focused_devoluciones_failure(
     exc: Exception,
     failure: _FocusedDevolucionesFailure,
+    *,
+    source_stage: _FocusedSourceStage | None = None,
+    source_exc: Exception | None = None,
 ) -> Exception:
     exc.__dict__["_focused_devoluciones_private_failure"] = failure
+    if failure is _FocusedDevolucionesFailure.SOURCE and source_stage is not None:
+        exc.__dict__["_focused_devoluciones_source_stage"] = source_stage
+        exc.__dict__["_focused_devoluciones_source_family"] = _classify_source_family(
+            source_exc or exc
+        )
     return exc
+
+
+def _classify_source_family(exc: Exception) -> _FocusedSourceFamily:
+    status_code = getattr(exc, "status_code", None)
+    if status_code is None:
+        response = getattr(exc, "response", None)
+        status_code = getattr(response, "status_code", None)
+    if status_code == 429:
+        return _FocusedSourceFamily.RATE_LIMIT
+    if isinstance(status_code, int) and not isinstance(status_code, bool):
+        if 500 <= status_code <= 599:
+            return _FocusedSourceFamily.SERVER
+        if 400 <= status_code <= 499:
+            return _FocusedSourceFamily.CLIENT_OTHER
+    if isinstance(exc, ConnectionError):
+        return _FocusedSourceFamily.CONNECTION
+    if isinstance(exc, (TimeoutError, asyncio.TimeoutError)):
+        return _FocusedSourceFamily.TIMEOUT
+    return _FocusedSourceFamily.OTHER
 
 
 def _private_focused_devoluciones_failure(exc: Exception) -> _FocusedDevolucionesFailure:
@@ -190,6 +233,13 @@ def _private_focused_devoluciones_failure(exc: Exception) -> _FocusedDevolucione
 def _private_focused_devoluciones_diagnostic(exc: Exception) -> dict[str, str]:
     failure = _private_focused_devoluciones_failure(exc)
     diagnostic = {"failure_class": failure.value}
+    if failure is _FocusedDevolucionesFailure.SOURCE:
+        stage = getattr(exc, "_focused_devoluciones_source_stage", None)
+        family = getattr(exc, "_focused_devoluciones_source_family", None)
+        if isinstance(stage, _FocusedSourceStage) and isinstance(family, _FocusedSourceFamily):
+            diagnostic["source_stage"] = stage.value
+            diagnostic["source_family"] = family.value
+        return diagnostic
     if (
         failure is not _FocusedDevolucionesFailure.PARSER
         or type(exc).__name__ != "ClaimProjectionError"
@@ -772,11 +822,22 @@ async def collect_devoluciones_snapshot(
             monotonic=monotonic,
             heartbeat=heartbeat,
         )
-        claim = await _bounded_source_call(
-            source.get_claim(seller_id=seller_id, claim_id=entry.claim_id),
-            absolute_deadline=absolute_deadline,
-            monotonic=monotonic,
-        )
+        try:
+            claim = await _bounded_source_call(
+                source.get_claim(seller_id=seller_id, claim_id=entry.claim_id),
+                absolute_deadline=absolute_deadline,
+                monotonic=monotonic,
+            )
+        except SourceCallBudgetError:
+            raise
+        except Exception as exc:
+            failure = _private_focused_devoluciones_failure(exc)
+            _tag_private_focused_devoluciones_failure(
+                exc,
+                failure,
+                source_stage=_FocusedSourceStage.CLAIM_DETAIL,
+            )
+            raise
         if not _is_return_candidate(claim):
             raise ClaimInventoryError(
                 "hydrated claim candidate is unresolved and cannot be excluded"
@@ -816,10 +877,18 @@ async def collect_devoluciones_snapshot(
                 private_failure=_FocusedDevolucionesFailure.SAFE_404_PRECONDITION,
             ) from None
         except Exception as exc:  # noqa: BLE001 - source exception text is unsafe evidence.
-            raise ClaimInventoryError(
+            failure = _private_focused_devoluciones_failure(exc)
+            error = ClaimInventoryError(
                 "v2 returns source_issue",
-                private_failure=_private_focused_devoluciones_failure(exc),
-            ) from None
+                private_failure=failure,
+            )
+            _tag_private_focused_devoluciones_failure(
+                error,
+                failure,
+                source_stage=_FocusedSourceStage.RETURN_DETAIL,
+                source_exc=exc,
+            )
+            raise error from None
         order_id = str(claim.get("order_id") or claim.get("resource_id") or "").strip()
         if not order_id:
             raise ClaimInventoryError(
@@ -844,9 +913,15 @@ async def collect_devoluciones_snapshot(
             except SourceCallBudgetError:
                 raise
             except Exception as exc:
+                source_failure = _private_focused_devoluciones_failure(exc)
                 _tag_private_focused_devoluciones_failure(
                     exc,
-                    _FocusedDevolucionesFailure.ORDER,
+                    (
+                        _FocusedDevolucionesFailure.SOURCE
+                        if source_failure is _FocusedDevolucionesFailure.SOURCE
+                        else _FocusedDevolucionesFailure.ORDER
+                    ),
+                    source_stage=_FocusedSourceStage.ORDER_DETAIL,
                 )
                 raise
             orders_by_id[order_id] = dict(order)
@@ -1082,10 +1157,18 @@ async def _inventory_window(
                 monotonic=monotonic,
             )
         except Exception as exc:
-            raise ClaimInventoryError(
+            failure = _private_focused_devoluciones_failure(exc)
+            error = ClaimInventoryError(
                 "claim inventory source request failed",
-                private_failure=_private_focused_devoluciones_failure(exc),
-            ) from exc
+                private_failure=failure,
+            )
+            _tag_private_focused_devoluciones_failure(
+                error,
+                failure,
+                source_stage=_FocusedSourceStage.CLAIM_SEARCH,
+                source_exc=exc,
+            )
+            raise error from exc
         data, response_offset, _, total = _validated_page(payload, requested_offset=offset)
         if stable_total is None:
             stable_total = total

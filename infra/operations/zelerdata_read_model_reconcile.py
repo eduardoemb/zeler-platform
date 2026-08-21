@@ -799,6 +799,18 @@ def _is_allowed_projection_reason(value: object) -> bool:
     )
 
 
+def _is_allowed_source_stage(value: object) -> bool:
+    from zeler_sheets.devoluciones_reconciliation import _FocusedSourceStage
+
+    return isinstance(value, str) and value in {stage.value for stage in _FocusedSourceStage}
+
+
+def _is_allowed_source_family(value: object) -> bool:
+    from zeler_sheets.devoluciones_reconciliation import _FocusedSourceFamily
+
+    return isinstance(value, str) and value in {family.value for family in _FocusedSourceFamily}
+
+
 def _write_root_private_diagnostic_evidence(
     fd: int,
     evidence: Mapping[str, str],
@@ -828,7 +840,13 @@ def _write_root_private_diagnostic_evidence(
         and failure_class == "parser_failure"
         and _is_allowed_projection_reason(evidence.get("projection_reason"))
     )
-    if not is_legacy_envelope and not is_extended_parser_envelope:
+    is_extended_source_envelope = (
+        set(evidence) == {"failure_class", "source_stage", "source_family"}
+        and failure_class == "source_failure"
+        and _is_allowed_source_stage(evidence.get("source_stage"))
+        and _is_allowed_source_family(evidence.get("source_family"))
+    )
+    if not (is_legacy_envelope or is_extended_parser_envelope or is_extended_source_envelope):
         raise ValueError("private diagnostic evidence is invalid")
     payload = (
         json.dumps(dict(evidence), sort_keys=True, separators=(",", ":"), ensure_ascii=True) + "\n"
