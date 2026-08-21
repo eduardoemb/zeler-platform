@@ -57,11 +57,19 @@ def build_claim_projection(
     orders_reason: ClaimProjectionReason | None
     try:
         orders_key_present = "orders" in returns
+        return_rows = returns.get("orders")
     except Exception:  # noqa: BLE001 - preserve strict rejection on an unsafe mapping.
         orders_reason = ClaimProjectionReason.RETURNS_ORDERS_SHAPE
+        return_rows = None
     else:
         orders_reason = None
-    return_rows = returns.get("orders")
+    if _is_verified_low_cost_without_row(return_subtype, return_rows):
+        return _unverified_low_cost_projection(
+            seller_id=seller_id,
+            claim=claim,
+            returns=returns,
+            return_subtype=return_subtype,
+        )
     if not isinstance(return_rows, list):
         if orders_reason is None:
             try:
@@ -133,6 +141,63 @@ def build_claim_projection(
         "return_context_type": return_context_type,
         "return_quantity_basis": "v2_return_order",
         "productive": True,
+        "status": claim.get("status"),
+        "stage": claim.get("stage") or "none",
+        "type": "returns",
+        "date_created": claim.get("date_created"),
+        "resolution": claim.get("resolution"),
+        "schema_version": current_schema_version("claims"),
+    }
+    model = Claim.model_validate(model_payload)
+    return model.model_dump(by_alias=True, mode="python", exclude_none=True)
+
+
+def _is_verified_low_cost_without_row(
+    return_subtype: str | None,
+    return_rows: object,
+) -> bool:
+    if (return_subtype or "").strip().lower() != "low_cost":
+        return False
+    if isinstance(return_rows, list):
+        return len(return_rows) == 0
+    return return_rows is None
+
+
+def _unverified_low_cost_projection(
+    *,
+    seller_id: str,
+    claim: Mapping[str, Any],
+    returns: Mapping[str, Any],
+    return_subtype: str | None,
+) -> dict[str, Any]:
+    model_payload: dict[str, Any] = {
+        "_id": _identity(
+            claim.get("id") or claim.get("_id"), "claim_id", ClaimProjectionReason.CLAIM_IDENTITY
+        ),
+        "seller_id": seller_id,
+        "buyer_id": _claim_buyer_id(claim),
+        "item_id": _optional_identity(claim.get("item_id")),
+        "order_id": _identity(claim.get("order_id") or claim.get("resource_id"), "order_id"),
+        "claim_version": _optional_integer(
+            claim.get("claim_version"), "claim_version", ClaimProjectionReason.CLAIM_VERSION
+        ),
+        "last_updated": _optional_datetime(
+            claim.get("last_updated"),
+            "last_updated",
+            ClaimProjectionReason.LAST_UPDATED_FORMAT,
+            ClaimProjectionReason.LAST_UPDATED_TIMEZONE,
+        ),
+        "return_id": _optional_identity(returns.get("id")),
+        "return_last_updated": _optional_datetime(
+            returns.get("last_updated"),
+            "return_last_updated",
+            ClaimProjectionReason.RETURN_LAST_UPDATED_FORMAT,
+            ClaimProjectionReason.RETURN_LAST_UPDATED_TIMEZONE,
+        ),
+        "return_status": _optional_text(returns.get("status")),
+        "return_subtype": return_subtype,
+        "return_quantity_basis": "verified_low_cost_no_row",
+        "productive": False,
         "status": claim.get("status"),
         "stage": claim.get("stage") or "none",
         "type": "returns",
