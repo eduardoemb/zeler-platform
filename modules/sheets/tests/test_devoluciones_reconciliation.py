@@ -1527,7 +1527,7 @@ def _projection_matrix_source(case: str) -> HydratingSource:
     [
         ("claim_respondent", "projection_claim_respondent"),
         ("order_seller", "projection_order_seller"),
-        ("returns_orders_shape", "projection_returns_orders_shape"),
+        ("returns_orders_shape", "projection_returns_orders_shape_null"),
         ("return_row_cardinality", "projection_return_row_cardinality"),
         ("item_identity", "projection_item_identity"),
         ("order_items_shape", "projection_order_items_shape"),
@@ -1615,6 +1615,149 @@ def test_focused_projection_diagnostic_uses_unknown_for_untyped_or_invalid_reaso
         "failure_class": "parser_failure",
         "projection_reason": "projection_unknown",
     }
+
+
+@pytest.mark.parametrize(
+    ("key_present", "value", "expected_reason"),
+    [
+        (False, None, "projection_returns_orders_shape_absent"),
+        (True, None, "projection_returns_orders_shape_null"),
+        (True, {"order_id": "SECRET-ORDER"}, "projection_returns_orders_shape_object"),
+        (True, True, "projection_returns_orders_shape_scalar"),
+        (True, ("unserializable",), "projection_returns_orders_shape_other"),
+    ],
+    ids=("absent", "null", "mapping", "bool-scalar", "other"),
+)
+def test_returns_orders_shape_classifier_uses_closed_private_tokens(
+    key_present: bool, value: object, expected_reason: str
+) -> None:
+    assert claim_projection_module._classify_returns_orders_shape(  # type: ignore[attr-defined]
+        key_present=key_present, value=value
+    ) is ClaimProjectionReason(expected_reason)
+
+
+@pytest.mark.parametrize(
+    ("orders", "expected_reason"),
+    [
+        (None, "projection_returns_orders_shape_null"),
+        ({"order_id": "SECRET-ORDER"}, "projection_returns_orders_shape_object"),
+        (True, "projection_returns_orders_shape_scalar"),
+        (("not-json",), "projection_returns_orders_shape_other"),
+    ],
+    ids=("null", "mapping", "bool-scalar", "other"),
+)
+def test_non_list_orders_emit_exact_private_tokens_without_content_leakage(
+    orders: object, expected_reason: str
+) -> None:
+    returns = _fixture("return_v2.json")
+    returns["orders"] = orders
+
+    with pytest.raises(ClaimProjectionError) as exc_info:
+        build_claim_projection(
+            seller_id="82453304", claim=_claim(), returns=returns, order=_order()
+        )
+
+    assert exc_info.value.projection_reason is ClaimProjectionReason(expected_reason)
+    assert exc_info.value.projection_reason.value == expected_reason
+    assert "SECRET-ORDER" not in exc_info.value.projection_reason.value
+    assert "not-json" not in exc_info.value.projection_reason.value
+
+
+def test_missing_orders_emit_absent_private_token() -> None:
+    returns = _fixture("return_v2.json")
+    returns.pop("orders")
+
+    with pytest.raises(ClaimProjectionError) as exc_info:
+        build_claim_projection(
+            seller_id="82453304", claim=_claim(), returns=returns, order=_order()
+        )
+
+    assert exc_info.value.projection_reason is ClaimProjectionReason.RETURNS_ORDERS_SHAPE_ABSENT
+
+
+def test_returns_orders_shape_classifier_failure_falls_back_to_broad_reason(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail_classifier(*, key_present: bool, value: object) -> ClaimProjectionReason:
+        del key_present, value
+        raise RuntimeError("unexpected classifier failure")
+
+    monkeypatch.setattr(
+        claim_projection_module,
+        "_classify_returns_orders_shape",
+        fail_classifier,
+    )
+
+    with pytest.raises(ClaimProjectionError) as exc_info:
+        build_claim_projection(
+            seller_id="82453304",
+            claim=_claim(),
+            returns={**_fixture("return_v2.json"), "orders": None},
+            order=_order(),
+        )
+
+    assert exc_info.value.projection_reason is ClaimProjectionReason.RETURNS_ORDERS_SHAPE
+
+
+def test_list_orders_bypass_shape_classifier_for_populated_and_empty_lists(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail_classifier(*, key_present: bool, value: object) -> ClaimProjectionReason:
+        del key_present, value
+        raise AssertionError("list values must bypass shape classification")
+
+    monkeypatch.setattr(
+        claim_projection_module,
+        "_classify_returns_orders_shape",
+        fail_classifier,
+    )
+
+    projection = build_claim_projection(
+        seller_id="82453304",
+        claim=_claim(),
+        returns=_fixture("return_v2.json"),
+        order=_order(),
+    )
+    assert projection["returned_quantity"] == 2
+
+    returns = _fixture("return_v2.json")
+    returns["orders"] = []
+    with pytest.raises(ClaimProjectionError) as exc_info:
+        build_claim_projection(
+            seller_id="82453304", claim=_claim(), returns=returns, order=_order()
+        )
+    assert exc_info.value.projection_reason is ClaimProjectionReason.RETURN_ROW_CARDINALITY
+
+
+@pytest.mark.asyncio
+async def test_first_non_list_orders_failure_aborts_before_second_candidate() -> None:
+    source = HydratingSource()
+    source.returns["519988001"]["orders"] = None
+    source.returns["519988002"]["orders"] = {"order_id": "SECOND-SECRET"}
+    recorder = SourceCallRecorder()
+
+    with pytest.raises(ClaimProjectionError) as exc_info:
+        await reconciliation_module.collect_devoluciones_snapshot(
+            source=source,
+            seller_id="82453304",
+            start=START,
+            end=END,
+            recorder=recorder,
+        )
+
+    assert reconciliation_module._private_focused_devoluciones_diagnostic(exc_info.value) == {
+        "failure_class": "parser_failure",
+        "projection_reason": "projection_returns_orders_shape_null",
+    }
+    assert source.hydration_calls == [
+        ("claim", "519988001"),
+        ("returns", "519988001"),
+        ("order", "2001"),
+    ]
+    assert ("claim", "519988002") not in source.hydration_calls
+    assert ("returns", "519988002") not in source.hydration_calls
+    assert ("order", "1999") not in source.hydration_calls
+    assert recorder.counts == {"P": 2, "R": 2, "O": 1, "T": 5}
 
 
 @pytest.mark.asyncio
