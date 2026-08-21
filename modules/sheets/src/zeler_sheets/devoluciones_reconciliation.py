@@ -86,7 +86,7 @@ MIN_SPLIT_WINDOW = timedelta(milliseconds=1)
 MAX_SOURCE_PHYSICAL_ATTEMPTS = 208
 MAX_SNAPSHOT_PHYSICAL_ATTEMPTS = 104
 MAX_DETAIL_ATTEMPTS_PER_HYDRATION_CANDIDATE = 3
-RETURNS_MIN_START_INTERVAL_SECONDS = 1.25
+RETURNS_MIN_START_INTERVAL_SECONDS = 1.75
 
 
 class _FocusedDevolucionesFailure(StrEnum):
@@ -147,6 +147,8 @@ class AuthoritativeReturnsNotFoundError(RuntimeError):
 class ReturnsAttemptPacer:
     """Enforce the focused run's code-owned interval between RETURNS sends."""
 
+    INTERVAL = RETURNS_MIN_START_INTERVAL_SECONDS
+
     monotonic: Callable[[], float] = time.monotonic
     sleep: Callable[[float], Awaitable[None]] = asyncio.sleep
     _last_start: float | None = field(default=None, init=False, repr=False)
@@ -160,7 +162,7 @@ class ReturnsAttemptPacer:
                 )
             if self._last_start is None:
                 return
-            wait = RETURNS_MIN_START_INTERVAL_SECONDS - (current - self._last_start)
+            wait = self.INTERVAL - (current - self._last_start)
             if wait <= 0:
                 return
             if absolute_deadline is not None and wait >= absolute_deadline - current:

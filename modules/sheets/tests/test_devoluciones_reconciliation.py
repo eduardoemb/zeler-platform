@@ -759,9 +759,9 @@ async def test_returns_pacing_has_exact_spacing_without_first_or_post_final_wait
         sleep=clock.sleep,
     )
 
-    assert source.return_starts == [100.0, 101.25]
-    assert clock.sleeps == [1.25]
-    assert clock.current == 101.25
+    assert source.return_starts == [100.0, 101.75]
+    assert clock.sleeps == [1.75]
+    assert clock.current == 101.75
     assert [call[0] for call in source.hydration_calls] == [
         "claim",
         "returns",
@@ -1536,7 +1536,7 @@ async def test_failed_physical_attempt_and_deadline_are_recorded_fail_closed() -
     ("deadline", "sleep_overshoot", "expected_sleeps"),
     [
         (101.25, 0.0, []),
-        (101.30, 0.05, [1.25]),
+        (101.90, 0.20, [1.75]),
     ],
     ids=("insufficient-margin-before-wait", "deadline-reached-after-wake"),
 )
@@ -1565,6 +1565,34 @@ async def test_returns_pacing_deadline_fails_before_charge_and_second_send(
     assert source.return_starts == [100.0]
     assert clock.sleeps == expected_sleeps
     assert recorder.counts == {"P": 2, "R": 3, "O": 1, "T": 6}
+
+
+@pytest.mark.asyncio
+async def test_paced_returns_429_charges_exactly_one_attempt_and_never_retries() -> None:
+    clock = FakeMonotonicClock()
+    source = ReturnsAccessFailureSource(RawReturnsAccessError(429))
+    recorder = SourceCallRecorder(max_total=16)
+
+    with pytest.raises(ClaimInventoryError, match="source_issue") as exc_info:
+        await reconciliation_module.collect_devoluciones_snapshot(
+            source=source,
+            seller_id="82453304",
+            start=START,
+            end=END,
+            recorder=recorder,
+            monotonic=clock.monotonic,
+            sleep=clock.sleep,
+        )
+
+    # The paced physical attempt is charged exactly once and never retried.
+    assert source.hydration_calls.count(("returns", "519988002")) == 1
+    assert source.hydration_calls.count(("returns", "519988001")) == 1
+    assert recorder.counts == {"P": 2, "R": 4, "O": 1, "T": 7}
+    assert reconciliation_module._private_focused_devoluciones_diagnostic(exc_info.value) == {
+        "failure_class": "source_failure",
+        "source_stage": "return_detail",
+        "source_family": "rate_limit",
+    }
 
 
 def _projection_matrix_source(case: str) -> HydratingSource:
@@ -2326,17 +2354,17 @@ async def test_complete_inventory_projects_33_intervals_without_changing_104_bud
 
     assert len(source.return_starts) == 34
     assert all(
-        later - earlier == pytest.approx(1.25)
+        later - earlier == pytest.approx(1.75)
         for earlier, later in zip(source.return_starts, source.return_starts[1:], strict=False)
     )
     assert len(clock.sleeps) == 33
-    assert sum(clock.sleeps) == pytest.approx(41.25)
+    assert sum(clock.sleeps) == pytest.approx(57.75)
     assert recorder.required_capacity == 104
     assert recorder.counts == {"P": 2, "R": 68, "O": 9, "T": 79}
 
 
 @pytest.mark.asyncio
-async def test_two_snapshot_pacing_projection_uses_67_intervals_and_83_75_seconds() -> None:
+async def test_two_snapshot_pacing_projection_uses_67_intervals_and_117_25_seconds() -> None:
     clock = FakeMonotonicClock(current=0.0)
     pacer = reconciliation_module.ReturnsAttemptPacer(
         monotonic=clock.monotonic,
@@ -2350,13 +2378,31 @@ async def test_two_snapshot_pacing_projection_uses_67_intervals_and_83_75_second
         starts.append(clock.monotonic())
 
     assert starts[0] == 0.0
-    assert starts[-1] == pytest.approx(83.75)
+    assert starts[-1] == pytest.approx(117.25)
     assert len(clock.sleeps) == 67
-    assert sum(clock.sleeps) == pytest.approx(83.75)
+    assert sum(clock.sleeps) == pytest.approx(117.25)
     assert all(
-        later - earlier == pytest.approx(1.25)
+        later - earlier == pytest.approx(1.75)
         for earlier, later in zip(starts, starts[1:], strict=False)
     )
+
+
+@pytest.mark.asyncio
+async def test_two_snapshot_pacing_envelope_143_5s_is_within_process_and_shell_deadlines() -> None:
+    pacing_seconds = 67 * reconciliation_module.RETURNS_MIN_START_INTERVAL_SECONDS
+    non_paced_budgets = 26.25
+    envelope = pacing_seconds + non_paced_budgets
+
+    assert envelope == pytest.approx(143.5)
+    assert envelope < 165.0
+    assert envelope < 175.0
+    assert 165.0 - envelope == pytest.approx(21.5)
+    assert 175.0 - envelope == pytest.approx(31.5)
+
+    # A 2.0s interval would consume almost all shell margin and is rejected.
+    rejected_envelope = 67 * 2.0 + non_paced_budgets
+    assert rejected_envelope == pytest.approx(160.25)
+    assert 175.0 - rejected_envelope == pytest.approx(14.75)
 
 
 @pytest.mark.asyncio
