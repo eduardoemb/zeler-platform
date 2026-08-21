@@ -1595,6 +1595,364 @@ async def test_paced_returns_429_charges_exactly_one_attempt_and_never_retries()
     }
 
 
+class FailOnceReturnsSource(HydratingSource):
+    """Raise ``failure`` for the mediation returns once, then succeed on retry."""
+
+    def __init__(self, failure: Exception) -> None:
+        super().__init__()
+        self.failure = failure
+        self.pending_failures = 1
+
+    async def get_returns(self, *, seller_id: str, claim_id: str) -> dict[str, Any]:
+        if claim_id != "519988002":
+            return await super().get_returns(seller_id=seller_id, claim_id=claim_id)
+        if self.pending_failures > 0:
+            self.pending_failures -= 1
+            self.hydration_calls.append(("returns", claim_id))
+            raise self.failure
+        return await super().get_returns(seller_id=seller_id, claim_id=claim_id)
+
+
+class TimedFailOnceReturnsSource(FailOnceReturnsSource):
+    def __init__(self, clock: FakeMonotonicClock, failure: Exception) -> None:
+        super().__init__(failure)
+        self.clock = clock
+        self.return_starts: list[float] = []
+
+    async def get_returns(self, *, seller_id: str, claim_id: str) -> dict[str, Any]:
+        self.return_starts.append(self.clock.monotonic())
+        return await super().get_returns(seller_id=seller_id, claim_id=claim_id)
+
+
+@pytest.mark.asyncio
+async def test_server_500_on_return_detail_retries_once_and_continues() -> None:
+    clock = FakeMonotonicClock(current=0.0)
+    source = FailOnceReturnsSource(RawReturnsAccessError(500))
+    recorder = SourceCallRecorder()
+
+    snapshot = await reconciliation_module.collect_devoluciones_snapshot(
+        source=source,
+        seller_id="82453304",
+        start=START,
+        end=END,
+        recorder=recorder,
+        monotonic=clock.monotonic,
+        sleep=clock.sleep,
+    )
+
+    # Initial 500 send plus exactly one retry that succeeds (S2).
+    assert source.hydration_calls.count(("returns", "519988002")) == 2
+    assert snapshot.expected_claim_ids == frozenset({"519988001", "519988002"})
+    assert recorder.counts == {"P": 2, "R": 5, "O": 2, "T": 9}
+
+
+@pytest.mark.parametrize(
+    ("failure", "expected_family"),
+    [
+        (RawReturnsAccessError(429), "rate_limit"),
+        (RawReturnsAccessError(401), "client_other"),
+        (ConnectionError("connection details are private"), "connection"),
+        (TimeoutError("timeout details are private"), "timeout"),
+        (RuntimeError("unknown details are private"), "other"),
+    ],
+    ids=("rate-limit", "client-other", "connection", "timeout", "other"),
+)
+@pytest.mark.asyncio
+async def test_non_server_return_detail_failures_never_retry(
+    failure: Exception, expected_family: str
+) -> None:
+    source = ReturnsAccessFailureSource(failure)
+    recorder = SourceCallRecorder(max_total=16)
+
+    with pytest.raises(ClaimInventoryError, match="source_issue") as exc_info:
+        await reconciliation_module.collect_devoluciones_snapshot(
+            source=source,
+            seller_id="82453304",
+            start=START,
+            end=END,
+            recorder=recorder,
+        )
+
+    # Exactly one charged send; the original source_issue propagates (R1).
+    assert source.hydration_calls.count(("returns", "519988002")) == 1
+    assert recorder.counts == {"P": 2, "R": 4, "O": 1, "T": 7}
+    assert reconciliation_module._private_focused_devoluciones_diagnostic(exc_info.value) == {
+        "failure_class": "source_failure",
+        "source_stage": "return_detail",
+        "source_family": expected_family,
+    }
+
+
+@pytest.mark.asyncio
+async def test_server_retry_fails_closed_after_second_500_without_third_send() -> None:
+    clock = FakeMonotonicClock(current=0.0)
+    source = ReturnsAccessFailureSource(RawReturnsAccessError(500))
+    recorder = SourceCallRecorder()
+
+    with pytest.raises(ClaimInventoryError, match="source_issue") as exc_info:
+        await reconciliation_module.collect_devoluciones_snapshot(
+            source=source,
+            seller_id="82453304",
+            start=START,
+            end=END,
+            recorder=recorder,
+            monotonic=clock.monotonic,
+            sleep=clock.sleep,
+        )
+
+    # Initial send plus one retry; no third send. Final classification wins (S3, R2).
+    assert source.hydration_calls.count(("returns", "519988002")) == 2
+    assert recorder.counts == {"P": 2, "R": 5, "O": 1, "T": 8}
+    assert reconciliation_module._private_focused_devoluciones_diagnostic(exc_info.value) == {
+        "failure_class": "source_failure",
+        "source_stage": "return_detail",
+        "source_family": "server",
+    }
+
+
+@pytest.mark.asyncio
+async def test_server_retry_is_paced_1_75s_start_to_start() -> None:
+    clock = FakeMonotonicClock(current=0.0)
+    source = TimedFailOnceReturnsSource(clock, RawReturnsAccessError(500))
+    recorder = SourceCallRecorder()
+
+    await reconciliation_module.collect_devoluciones_snapshot(
+        source=source,
+        seller_id="82453304",
+        start=START,
+        end=END,
+        recorder=recorder,
+        monotonic=clock.monotonic,
+        sleep=clock.sleep,
+    )
+
+    # First send and retry both record starts exactly 1.75s apart (R3).
+    assert len(source.return_starts) == 3
+    assert source.return_starts[0] == 0.0
+    assert source.return_starts[1] - source.return_starts[0] == pytest.approx(1.75)
+    assert source.return_starts[2] - source.return_starts[1] == pytest.approx(1.75)
+    assert clock.sleeps == [1.75, 1.75]
+    assert recorder.counts == {"P": 2, "R": 5, "O": 2, "T": 9}
+
+
+@pytest.mark.asyncio
+async def test_server_retry_charge_rejected_by_run_budget_before_send() -> None:
+    clock = FakeMonotonicClock(current=0.0)
+    source = ReturnsAccessFailureSource(RawReturnsAccessError(500))
+    run = reconciliation_module.SourceRunLedger(max_total=7)
+    recorder = SourceCallRecorder(run_ledger=run)
+
+    with pytest.raises(SourceCallBudgetError, match="budget"):
+        await reconciliation_module.collect_devoluciones_snapshot(
+            source=source,
+            seller_id="82453304",
+            start=START,
+            end=END,
+            recorder=recorder,
+            monotonic=clock.monotonic,
+            sleep=clock.sleep,
+        )
+
+    # The retry charge that would be the 8th is rejected before any retry send (S5).
+    assert source.hydration_calls.count(("returns", "519988002")) == 1
+    assert recorder.counts == {"P": 2, "R": 4, "O": 1, "T": 7}
+    assert run.counts == {"P": 2, "R": 4, "O": 1, "T": 7}
+
+
+@pytest.mark.parametrize(
+    (
+        "deadline",
+        "sleep_overshoot",
+        "hydrations_for_failing_claim",
+        "expected_sleeps",
+        "expected_counts",
+    ),
+    [
+        (3.0, 0.0, 1, [1.75], {"P": 2, "R": 4, "O": 1, "T": 7}),
+        (3.80, 0.20, 1, [1.75, 1.75], {"P": 2, "R": 4, "O": 1, "T": 7}),
+        (1.76, 0.02, 0, [1.75], {"P": 2, "R": 3, "O": 1, "T": 6}),
+    ],
+    ids=("before-wait", "after-wakeup", "before-charge"),
+)
+@pytest.mark.asyncio
+async def test_server_retry_deadline_gates_fail_closed_before_charge_or_send(
+    deadline: float,
+    sleep_overshoot: float,
+    hydrations_for_failing_claim: int,
+    expected_sleeps: list[float],
+    expected_counts: dict[str, int],
+) -> None:
+    clock = FakeMonotonicClock(current=0.0, sleep_overshoot=sleep_overshoot)
+    source = ReturnsAccessFailureSource(RawReturnsAccessError(500))
+    recorder = SourceCallRecorder()
+
+    with pytest.raises(SourceCallBudgetError, match="deadline"):
+        await reconciliation_module.collect_devoluciones_snapshot(
+            source=source,
+            seller_id="82453304",
+            start=START,
+            end=END,
+            recorder=recorder,
+            absolute_deadline=deadline,
+            monotonic=clock.monotonic,
+            sleep=clock.sleep,
+        )
+
+    # Deadline gates fire before the retry wait, after wakeup, or before charge (S6, S7).
+    assert source.hydration_calls.count(("returns", "519988002")) == hydrations_for_failing_claim
+    assert clock.sleeps == expected_sleeps
+    assert recorder.counts == expected_counts
+
+
+class ServerThenAuthoritative404Client(_SingleAttemptOnlyGatewayClient):
+    """Fail the first single-attempt send with 500, then return an authoritative 404."""
+
+    def __init__(self) -> None:
+        self.pending_server_failure = True
+
+    async def fetch_resource_once(self, *, seller_id: str, path: str) -> dict[str, Any]:
+        del seller_id, path
+        if self.pending_server_failure:
+            self.pending_server_failure = False
+            raise RawReturnsAccessError(500)
+        response = type(
+            "Response",
+            (),
+            {"status_code": 404, "headers": {"X-Zeler-Upstream-Attempts": "1"}},
+        )()
+        error = RuntimeError("unsafe raw v2 returns URL and identifiers")
+        error.response = response  # type: ignore[attr-defined]
+        raise error
+
+
+class ServerThenAuthoritative404Source(HydratingSource):
+    def __init__(self) -> None:
+        super().__init__()
+        self.gateway = reconciliation_module.GatewayDevolucionesSource(
+            ServerThenAuthoritative404Client(),
+            single_attempt=True,
+        )
+
+    async def get_returns(self, *, seller_id: str, claim_id: str) -> dict[str, Any]:
+        if claim_id != "519988002":
+            return await super().get_returns(seller_id=seller_id, claim_id=claim_id)
+        self.hydration_calls.append(("returns", claim_id))
+        return await self.gateway.get_returns(seller_id=seller_id, claim_id=claim_id)
+
+
+@pytest.mark.asyncio
+async def test_5xx_then_authoritative_404_retry_excludes_safe_mediation() -> None:
+    source = ServerThenAuthoritative404Source()
+    source.claims["519988002"].update(
+        {
+            "type": "mediations",
+            "status": "closed",
+            "order_id": "1999",
+            "item_id": None,
+            "related_entities": [],
+        }
+    )
+
+    snapshot = await reconciliation_module.collect_devoluciones_snapshot(
+        source=source,
+        seller_id="82453304",
+        start=START,
+        end=END,
+    )
+
+    # 5xx triggers the retry; the authoritative 404 on retry reuses mediation invariants (R7).
+    assert source.hydration_calls.count(("returns", "519988002")) == 2
+    assert snapshot.expected_claim_ids == frozenset({"519988001"})
+    assert snapshot.exclusions[-1] == reconciliation_module.InventoryExclusionEvidence(
+        claim_id="519988002",
+        last_updated="2026-06-16T09:05:00.000Z",
+        reason="authoritative_no_return_mediation",
+    )
+    assert ("order", "1999") not in source.hydration_calls
+
+
+@pytest.mark.asyncio
+async def test_5xx_then_authoritative_404_retry_fails_closed_when_mediation_is_unsafe() -> None:
+    source = ServerThenAuthoritative404Source()
+    source.claims["519988002"].update(
+        {
+            "type": "mediations",
+            "status": "closed",
+            "order_id": "1999",
+            "item_id": "MLA2",
+            "related_entities": [],
+        }
+    )
+
+    with pytest.raises(ClaimInventoryError, match="source_issue") as exc_info:
+        await reconciliation_module.collect_devoluciones_snapshot(
+            source=source,
+            seller_id="82453304",
+            start=START,
+            end=END,
+        )
+
+    assert source.hydration_calls.count(("returns", "519988002")) == 2
+    assert (
+        reconciliation_module._private_focused_devoluciones_failure(exc_info.value)
+        is reconciliation_module._FocusedDevolucionesFailure.SAFE_404_PRECONDITION
+    )
+    assert ("order", "1999") not in source.hydration_calls
+
+
+@pytest.mark.asyncio
+async def test_server_retry_evidence_keeps_shape_and_only_grows_r_and_t() -> None:
+    clock = FakeMonotonicClock(current=0.0)
+    retried = ReturnsAccessFailureSource(RawReturnsAccessError(500))
+    terminal = ReturnsAccessFailureSource(RawReturnsAccessError(429))
+    retried_recorder = SourceCallRecorder()
+    terminal_recorder = SourceCallRecorder()
+
+    with pytest.raises(ClaimInventoryError, match="source_issue") as exc_info:
+        await reconciliation_module.collect_devoluciones_snapshot(
+            source=retried,
+            seller_id="82453304",
+            start=START,
+            end=END,
+            recorder=retried_recorder,
+            monotonic=clock.monotonic,
+            sleep=clock.sleep,
+        )
+    with pytest.raises(ClaimInventoryError, match="source_issue"):
+        await reconciliation_module.collect_devoluciones_snapshot(
+            source=terminal,
+            seller_id="82453304",
+            start=START,
+            end=END,
+            recorder=terminal_recorder,
+            monotonic=clock.monotonic,
+            sleep=clock.sleep,
+        )
+
+    # Public counters keep {P,R,O,T}; only R and T grow by one on the retry (R5).
+    assert set(retried_recorder.counts) == {"P", "R", "O", "T"}
+    assert retried_recorder.counts == {"P": 2, "R": 5, "O": 1, "T": 8}
+    assert terminal_recorder.counts == {"P": 2, "R": 4, "O": 1, "T": 7}
+    # Private evidence keeps the exact bounded tokens and sanitized message (R6).
+    assert reconciliation_module._private_focused_devoluciones_diagnostic(exc_info.value) == {
+        "failure_class": "source_failure",
+        "source_stage": "return_detail",
+        "source_family": "server",
+    }
+    assert str(exc_info.value) == "v2 returns source_issue"
+    for forbidden in (
+        "https://runtime.internal",
+        "/post-purchase/v2/claims",
+        "access_token",
+        "RAW_TOKEN",
+        "82453304",
+        "519988002",
+        "1999",
+        "payload",
+    ):
+        assert forbidden not in str(exc_info.value)
+
+
 def _projection_matrix_source(case: str) -> HydratingSource:
     source = HydratingSource()
     claim = source.claims["519988001"]
