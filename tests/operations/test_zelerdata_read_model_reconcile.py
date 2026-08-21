@@ -5339,6 +5339,37 @@ def test_shape_reason_stays_out_of_public_focused_evidence() -> None:
     }
 
 
+def test_source_failure_emits_bounded_stage_and_family_in_private_evidence() -> None:
+    summary = ReconciliationSummary(
+        seller_id="82453304",
+        date_from="2026-06-01",
+        date_to="2026-06-04",
+        dry_run=True,
+        approved_runtime=True,
+        write_enabled=False,
+        aggregates=(ReadModelAggregate("claims", None, None, None, None),),
+        runtime_evidence=FocusedRuntimeEvidence(
+            duration_seconds=0.0,
+            source_calls={"P": 2, "R": 2, "O": 1, "T": 5},
+            status_class="source_issue",
+            private_failure=devoluciones_module._FocusedDevolucionesFailure.SOURCE,
+            source_stage=devoluciones_module._FocusedSourceStage.RETURN_DETAIL,
+            source_family=devoluciones_module._FocusedSourceFamily.RATE_LIMIT,
+        ),
+    )
+
+    assert summary.to_focused_evidence(stage="dry_run") == {
+        "stage": "dry_run",
+        "status_class": "source_issue",
+        "counters": {"O": 1, "P": 2, "R": 2, "T": 5},
+    }
+    assert summary.to_private_diagnostic_evidence() == {
+        "failure_class": "source_failure",
+        "source_stage": "return_detail",
+        "source_family": "rate_limit",
+    }
+
+
 def test_private_diagnostic_preserves_unknown_projection_reason_in_exact_envelope(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

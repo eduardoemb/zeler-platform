@@ -444,6 +444,8 @@ class FocusedRuntimeEvidence:
         compare=False,
     )
     projection_reason: str | None = field(default=None, repr=False, compare=False)
+    source_stage: str | None = field(default=None, repr=False, compare=False)
+    source_family: str | None = field(default=None, repr=False, compare=False)
 
     def to_sanitized_dict(self) -> dict[str, Any]:
         return {
@@ -716,6 +718,17 @@ class ReconciliationSummary:
             and _is_allowed_projection_reason(projection_reason)
         ):
             diagnostic["projection_reason"] = projection_reason
+        source_stage = evidence.source_stage
+        source_family = evidence.source_family
+        if (
+            evidence.private_failure.value == "source_failure"
+            and isinstance(source_stage, str)
+            and isinstance(source_family, str)
+            and _is_allowed_source_stage(source_stage)
+            and _is_allowed_source_family(source_family)
+        ):
+            diagnostic["source_stage"] = source_stage
+            diagnostic["source_family"] = source_family
         return diagnostic
 
     def to_scheduled_transport(self) -> ScheduledTransportEnvelope:
@@ -2254,6 +2267,8 @@ def _focused_failure_summary(
     campaign_id: str,
     private_failure: _FocusedDevolucionesFailure,
     projection_reason: str | None,
+    source_stage: str | None,
+    source_family: str | None,
     monotonic: Callable[[], float],
 ) -> ReconciliationSummary:
     issue = next(
@@ -2288,6 +2303,8 @@ def _focused_failure_summary(
             snapshot_calls=(recorder.counts,),
             private_failure=private_failure,
             projection_reason=projection_reason,
+            source_stage=source_stage,
+            source_family=source_family,
         ),
     )
 
@@ -2370,6 +2387,16 @@ async def run_focused_devoluciones_reconciliation(
             campaign_id=resolved_campaign_id,
             private_failure=private_failure,
             projection_reason=private_diagnostic.get("projection_reason"),
+            source_stage=(
+                private_diagnostic.get("source_stage")
+                if _is_allowed_source_stage(private_diagnostic.get("source_stage"))
+                else None
+            ),
+            source_family=(
+                private_diagnostic.get("source_family")
+                if _is_allowed_source_family(private_diagnostic.get("source_family"))
+                else None
+            ),
             monotonic=monotonic,
         )
     expected = _focused_expected_counts(snapshot)
