@@ -1336,7 +1336,10 @@ def _inventory_fingerprint(entries: Sequence[ClaimInventoryEntry]) -> str:
 
 
 def classify_inventory_relevance(entry: ClaimInventoryEntry) -> InventoryRelevance:
-    if entry.trusted_type == "cancel_purchase" and entry.trusted_status == "closed":
+    if (
+        entry.trusted_type in {"cancel_purchase", "cancel_sale"}
+        and entry.trusted_status == "closed"
+    ):
         return InventoryRelevance.EXCLUDED_TERMINAL_CANCELLATION
     return InventoryRelevance.HYDRATE_CANDIDATE
 
