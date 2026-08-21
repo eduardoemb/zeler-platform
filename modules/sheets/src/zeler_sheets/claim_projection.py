@@ -17,6 +17,11 @@ class ClaimProjectionReason(StrEnum):
     CLAIM_RESPONDENT = "projection_claim_respondent"
     ORDER_SELLER = "projection_order_seller"
     RETURNS_ORDERS_SHAPE = "projection_returns_orders_shape"
+    RETURNS_ORDERS_SHAPE_ABSENT = "projection_returns_orders_shape_absent"
+    RETURNS_ORDERS_SHAPE_NULL = "projection_returns_orders_shape_null"
+    RETURNS_ORDERS_SHAPE_OBJECT = "projection_returns_orders_shape_object"
+    RETURNS_ORDERS_SHAPE_SCALAR = "projection_returns_orders_shape_scalar"
+    RETURNS_ORDERS_SHAPE_OTHER = "projection_returns_orders_shape_other"
     RETURN_ROW_CARDINALITY = "projection_return_row_cardinality"
     ITEM_IDENTITY = "projection_item_identity"
     ORDER_ITEMS_SHAPE = "projection_order_items_shape"
@@ -49,11 +54,26 @@ def build_claim_projection(
     _validate_claim_respondent(claim, seller_id=seller_id)
     _validate_order_seller(order, seller_id=seller_id)
     return_subtype = _optional_text(returns.get("subtype"))
+    orders_reason: ClaimProjectionReason | None
+    try:
+        orders_key_present = "orders" in returns
+    except Exception:  # noqa: BLE001 - preserve strict rejection on an unsafe mapping.
+        orders_reason = ClaimProjectionReason.RETURNS_ORDERS_SHAPE
+    else:
+        orders_reason = None
     return_rows = returns.get("orders")
     if not isinstance(return_rows, list):
+        if orders_reason is None:
+            try:
+                orders_reason = _classify_returns_orders_shape(
+                    key_present=orders_key_present,
+                    value=return_rows,
+                )
+            except Exception:  # noqa: BLE001 - diagnostics must not weaken the strict guard.
+                orders_reason = ClaimProjectionReason.RETURNS_ORDERS_SHAPE
         raise ClaimProjectionError(
             "v2 returns orders must be a list",
-            projection_reason=ClaimProjectionReason.RETURNS_ORDERS_SHAPE,
+            projection_reason=orders_reason,
         )
 
     order_id = _identity(claim.get("order_id") or claim.get("resource_id"), "order_id")
@@ -122,6 +142,20 @@ def build_claim_projection(
     }
     model = Claim.model_validate(model_payload)
     return model.model_dump(by_alias=True, mode="python", exclude_none=True)
+
+
+def _classify_returns_orders_shape(*, key_present: bool, value: object) -> ClaimProjectionReason:
+    if not key_present:
+        return ClaimProjectionReason.RETURNS_ORDERS_SHAPE_ABSENT
+    if value is None:
+        return ClaimProjectionReason.RETURNS_ORDERS_SHAPE_NULL
+    if isinstance(value, Mapping):
+        return ClaimProjectionReason.RETURNS_ORDERS_SHAPE_OBJECT
+    if isinstance(value, bool):
+        return ClaimProjectionReason.RETURNS_ORDERS_SHAPE_SCALAR
+    if isinstance(value, (str, int, float)):
+        return ClaimProjectionReason.RETURNS_ORDERS_SHAPE_SCALAR
+    return ClaimProjectionReason.RETURNS_ORDERS_SHAPE_OTHER
 
 
 async def project_claim(

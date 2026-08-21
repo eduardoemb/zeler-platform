@@ -5264,6 +5264,51 @@ def test_private_diagnostic_reason_is_private_and_preserves_public_focused_evide
     }
 
 
+@pytest.mark.parametrize(
+    "projection_reason",
+    [
+        "projection_returns_orders_shape_absent",
+        "projection_returns_orders_shape_null",
+        "projection_returns_orders_shape_object",
+        "projection_returns_orders_shape_scalar",
+        "projection_returns_orders_shape_other",
+    ],
+)
+def test_private_diagnostic_fd_allows_only_enum_derived_shape_reasons(
+    projection_reason: str,
+) -> None:
+    assert reconcile_operation_module._is_allowed_projection_reason(projection_reason)
+    assert ClaimProjectionReason(projection_reason).value == projection_reason
+
+
+def test_shape_reason_stays_out_of_public_focused_evidence() -> None:
+    summary = ReconciliationSummary(
+        seller_id="82453304",
+        date_from="2026-06-01",
+        date_to="2026-06-04",
+        dry_run=True,
+        approved_runtime=True,
+        write_enabled=False,
+        runtime_evidence=FocusedRuntimeEvidence(
+            duration_seconds=0.0,
+            source_calls={"P": 2, "R": 2, "O": 1, "T": 5},
+            status_class="query_anomaly",
+            private_failure=devoluciones_module._FocusedDevolucionesFailure.PARSER,
+            projection_reason="projection_returns_orders_shape_null",
+        ),
+    )
+
+    assert summary.to_focused_evidence(stage="dry_run") == {
+        "stage": "dry_run",
+        "status_class": "query_anomaly",
+        "counters": {"O": 1, "P": 2, "R": 2, "T": 5},
+    }
+    assert summary.to_private_diagnostic_evidence() == {
+        "failure_class": "parser_failure",
+        "projection_reason": "projection_returns_orders_shape_null",
+    }
+
+
 def test_private_diagnostic_preserves_unknown_projection_reason_in_exact_envelope(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
