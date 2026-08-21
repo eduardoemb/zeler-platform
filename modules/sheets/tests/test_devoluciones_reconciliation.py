@@ -343,32 +343,12 @@ def test_productive_mediation_without_related_return_uses_authoritative_v2_order
     assert projection["productive"] is True
 
 
-def test_verified_low_cost_without_order_row_is_unresolved() -> None:
+def test_non_low_cost_without_order_row_is_unresolved() -> None:
     with pytest.raises(ClaimProjectionError, match="positive integral v2 return proof"):
         build_claim_projection(
             seller_id="82453304",
             claim=_claim(),
-            returns=_fixture("low_cost.json"),
-            order=_order(),
-        )
-
-
-def test_only_positive_integral_v2_proof_can_produce_a_projection_row() -> None:
-    with pytest.raises(ClaimProjectionError, match="positive integral v2 return proof"):
-        build_claim_projection(
-            seller_id="82453304",
-            claim=_claim(),
-            returns=_fixture("low_cost.json"),
-            order=_order(),
-        )
-
-
-def test_verified_low_cost_null_orders_is_unresolved() -> None:
-    with pytest.raises(ClaimProjectionError, match="orders must be a list"):
-        build_claim_projection(
-            seller_id="82453304",
-            claim=_claim(),
-            returns=_fixture("low_cost_orders_null.json"),
+            returns={**_fixture("return_v2.json"), "orders": []},
             order=_order(),
         )
 
@@ -378,9 +358,9 @@ def test_verified_low_cost_null_orders_is_unresolved() -> None:
     [
         {**_fixture("return_v2.json"), "orders": None},
         {**_fixture("low_cost.json"), "orders": {"unexpected": "shape"}},
-        {key: value for key, value in _fixture("low_cost.json").items() if key != "orders"},
+        {**_fixture("low_cost.json"), "orders": True},
     ],
-    ids=("productive-null", "low-cost-non-list", "low-cost-missing"),
+    ids=("productive-null", "low-cost-mapping", "low-cost-scalar"),
 )
 def test_projection_rejects_unverified_null_or_non_list_orders(
     returns: dict[str, Any],
@@ -392,6 +372,31 @@ def test_projection_rejects_unverified_null_or_non_list_orders(
             returns=returns,
             order=_order(),
         )
+
+
+@pytest.mark.parametrize(
+    "returns",
+    [
+        _fixture("low_cost.json"),
+        _fixture("low_cost_orders_null.json"),
+        {key: value for key, value in _fixture("low_cost.json").items() if key != "orders"},
+    ],
+    ids=("empty-list", "null", "missing-key"),
+)
+def test_verified_low_cost_without_order_row_is_non_productive(returns: dict[str, Any]) -> None:
+    projection = build_claim_projection(
+        seller_id="82453304",
+        claim=_claim(),
+        returns=returns,
+        order=_order(),
+    )
+
+    assert projection["type"] == "returns"
+    assert projection["order_id"] == "2001"
+    assert projection["return_subtype"] == "low_cost"
+    assert projection["return_quantity_basis"] == "verified_low_cost_no_row"
+    assert projection["productive"] is False
+    assert projection.get("returned_quantity") is None
 
 
 @pytest.mark.parametrize("return_quantity", [None, 0, -1, "1.5", True])
@@ -1961,17 +1966,21 @@ async def test_hydrated_source_proof_changes_when_formula_visible_facts_drift() 
 
 
 @pytest.mark.asyncio
-async def test_low_cost_null_orders_suppresses_snapshot_proof() -> None:
+async def test_low_cost_null_orders_captures_non_productive_claim() -> None:
     source = HydratingSource()
-    source.returns["519988002"] = _fixture("low_cost_orders_null.json")
+    source.returns["519988001"] = _fixture("low_cost_orders_null.json")
 
-    with pytest.raises(ClaimProjectionError, match="orders must be a list"):
-        await reconciliation_module.collect_devoluciones_snapshot(
-            source=source,
-            seller_id="82453304",
-            start=START,
-            end=END,
-        )
+    snapshot = await reconciliation_module.collect_devoluciones_snapshot(
+        source=source,
+        seller_id="82453304",
+        start=START,
+        end=END,
+    )
+
+    by_id = {projection["_id"]: projection for projection in snapshot.projections}
+    assert set(by_id) == {"519988001", "519988002"}
+    assert by_id["519988001"]["productive"] is False
+    assert by_id["519988001"]["return_quantity_basis"] == "verified_low_cost_no_row"
 
 
 def _persisted_readiness_order(source_order: dict[str, Any]) -> dict[str, Any]:
