@@ -5119,10 +5119,11 @@ def test_focused_devoluciones_dry_run_sanitizes_projection_failures(
     combined_output = json.dumps(output, sort_keys=True) + captured.err
 
     assert result == 1
+    # Early evidence classification rejects the malformed return before order hydration.
     assert output == {
         "stage": "dry_run",
         "status_class": "query_anomaly",
-        "counters": {"P": 2, "R": 2, "O": 1, "T": 5},
+        "counters": {"P": 2, "R": 2, "O": 0, "T": 4},
     }
     for forbidden in (
         "Traceback",
