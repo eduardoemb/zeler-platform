@@ -35,6 +35,13 @@ class ClaimProjectionReason(StrEnum):
     RETURN_LAST_UPDATED_TIMEZONE = "projection_return_last_updated_timezone"
 
 
+class ReturnEvidenceDisposition(StrEnum):
+    PRODUCTIVE_CANDIDATE = "productive_candidate"
+    EXCLUDE_LOW_COST_NO_AUTHORITATIVE_ITEM_IDENTITY = (
+        "exclude_low_cost_no_authoritative_item_identity"
+    )
+
+
 class ClaimProjectionError(RuntimeError):
     def __init__(
         self, message: str, *, projection_reason: ClaimProjectionReason | None = None
@@ -53,6 +60,9 @@ def build_claim_projection(
     seller_id = str(seller_id)
     _validate_claim_respondent(claim, seller_id=seller_id)
     _validate_order_seller(order, seller_id=seller_id)
+    disposition = classify_return_evidence(claim=claim, returns=returns)
+    if disposition is ReturnEvidenceDisposition.EXCLUDE_LOW_COST_NO_AUTHORITATIVE_ITEM_IDENTITY:
+        raise ClaimProjectionError("low-cost return evidence has no authoritative item identity")
     return_subtype = _optional_text(returns.get("subtype"))
     orders_reason: ClaimProjectionReason | None
     try:
@@ -63,13 +73,6 @@ def build_claim_projection(
         return_rows = None
     else:
         orders_reason = None
-    if _is_verified_low_cost_without_row(return_subtype, return_rows):
-        return _unverified_low_cost_projection(
-            seller_id=seller_id,
-            claim=claim,
-            returns=returns,
-            return_subtype=return_subtype,
-        )
     if not isinstance(return_rows, list):
         if orders_reason is None:
             try:
@@ -152,61 +155,50 @@ def build_claim_projection(
     return model.model_dump(by_alias=True, mode="python", exclude_none=True)
 
 
-def _is_verified_low_cost_without_row(
-    return_subtype: str | None,
-    return_rows: object,
-) -> bool:
-    if (return_subtype or "").strip().lower() != "low_cost":
-        return False
-    if isinstance(return_rows, list):
-        return len(return_rows) == 0
-    return return_rows is None
-
-
-def _unverified_low_cost_projection(
-    *,
-    seller_id: str,
-    claim: Mapping[str, Any],
-    returns: Mapping[str, Any],
-    return_subtype: str | None,
-) -> dict[str, Any]:
-    model_payload: dict[str, Any] = {
-        "_id": _identity(
-            claim.get("id") or claim.get("_id"), "claim_id", ClaimProjectionReason.CLAIM_IDENTITY
-        ),
-        "seller_id": seller_id,
-        "buyer_id": _claim_buyer_id(claim),
-        "item_id": _optional_identity(claim.get("item_id")),
-        "order_id": _identity(claim.get("order_id") or claim.get("resource_id"), "order_id"),
-        "claim_version": _optional_integer(
-            claim.get("claim_version"), "claim_version", ClaimProjectionReason.CLAIM_VERSION
-        ),
-        "last_updated": _optional_datetime(
-            claim.get("last_updated"),
-            "last_updated",
-            ClaimProjectionReason.LAST_UPDATED_FORMAT,
-            ClaimProjectionReason.LAST_UPDATED_TIMEZONE,
-        ),
-        "return_id": _optional_identity(returns.get("id")),
-        "return_last_updated": _optional_datetime(
-            returns.get("last_updated"),
-            "return_last_updated",
-            ClaimProjectionReason.RETURN_LAST_UPDATED_FORMAT,
-            ClaimProjectionReason.RETURN_LAST_UPDATED_TIMEZONE,
-        ),
-        "return_status": _optional_text(returns.get("status")),
-        "return_subtype": return_subtype,
-        "return_quantity_basis": "verified_low_cost_no_row",
-        "productive": False,
-        "status": claim.get("status"),
-        "stage": claim.get("stage") or "none",
-        "type": "returns",
-        "date_created": claim.get("date_created"),
-        "resolution": claim.get("resolution"),
-        "schema_version": current_schema_version("claims"),
-    }
-    model = Claim.model_validate(model_payload)
-    return model.model_dump(by_alias=True, mode="python", exclude_none=True)
+def classify_return_evidence(
+    *, claim: Mapping[str, Any], returns: Mapping[str, Any]
+) -> ReturnEvidenceDisposition:
+    return_subtype = _optional_text(returns.get("subtype"))
+    try:
+        key_present = "orders" in returns
+        return_rows = returns.get("orders")
+    except Exception as exc:
+        raise ClaimProjectionError(
+            "v2 returns orders must be a list",
+            projection_reason=ClaimProjectionReason.RETURNS_ORDERS_SHAPE,
+        ) from exc
+    low_cost = (return_subtype or "").strip().lower() == "low_cost"
+    if low_cost and (return_rows is None or return_rows == [] or not key_present):
+        return ReturnEvidenceDisposition.EXCLUDE_LOW_COST_NO_AUTHORITATIVE_ITEM_IDENTITY
+    if not isinstance(return_rows, list):
+        try:
+            reason = _classify_returns_orders_shape(key_present=key_present, value=return_rows)
+        except Exception:  # noqa: BLE001 - diagnostics must not weaken strict rejection.
+            reason = ClaimProjectionReason.RETURNS_ORDERS_SHAPE
+        raise ClaimProjectionError("v2 returns orders must be a list", projection_reason=reason)
+    order_id = _identity(claim.get("order_id") or claim.get("resource_id"), "order_id")
+    claim_item_id = _optional_identity(claim.get("item_id"))
+    matching_rows = [
+        row
+        for row in return_rows
+        if isinstance(row, Mapping) and _optional_identity(row.get("order_id")) == order_id
+    ]
+    if len(matching_rows) != 1:
+        raise ClaimProjectionError(
+            "positive integral v2 return proof requires one unique order/item row",
+            projection_reason=ClaimProjectionReason.RETURN_ROW_CARDINALITY,
+        )
+    row = matching_rows[0]
+    if low_cost and _optional_identity(row.get("item_id")) is None:
+        return ReturnEvidenceDisposition.EXCLUDE_LOW_COST_NO_AUTHORITATIVE_ITEM_IDENTITY
+    item_id = _identity(row.get("item_id"), "item_id", ClaimProjectionReason.ITEM_IDENTITY)
+    if claim_item_id is not None and item_id != claim_item_id:
+        raise ClaimProjectionError(
+            "positive integral v2 return proof requires one unique order/item row",
+            projection_reason=ClaimProjectionReason.RETURN_ROW_CARDINALITY,
+        )
+    _positive_integral_return_quantity(row.get("return_quantity"))
+    return ReturnEvidenceDisposition.PRODUCTIVE_CANDIDATE
 
 
 def _classify_returns_orders_shape(*, key_present: bool, value: object) -> ClaimProjectionReason:

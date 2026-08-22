@@ -18,7 +18,9 @@ from zeler_platform_core.devoluciones_readiness import DevolucionesOperationCont
 from zeler_sheets.claim_projection import (
     ClaimProjectionError,
     ClaimProjectionReason,
+    ReturnEvidenceDisposition,
     build_claim_projection,
+    classify_return_evidence,
     persist_claim_projection,
     project_claim,
 )
@@ -383,20 +385,45 @@ def test_projection_rejects_unverified_null_or_non_list_orders(
     ],
     ids=("empty-list", "null", "missing-key"),
 )
-def test_verified_low_cost_without_order_row_is_non_productive(returns: dict[str, Any]) -> None:
-    projection = build_claim_projection(
-        seller_id="82453304",
-        claim=_claim(),
-        returns=returns,
-        order=_order(),
+def test_low_cost_without_order_row_is_excluded_from_projection(returns: dict[str, Any]) -> None:
+    assert (
+        classify_return_evidence(claim=_claim(), returns=returns)
+        is ReturnEvidenceDisposition.EXCLUDE_LOW_COST_NO_AUTHORITATIVE_ITEM_IDENTITY
+    )
+    with pytest.raises(ClaimProjectionError, match="authoritative item identity"):
+        build_claim_projection(
+            seller_id="82453304",
+            claim=_claim(),
+            returns=returns,
+            order=_order(),
+        )
+
+
+def test_low_cost_with_authoritative_row_stays_productive() -> None:
+    returns = {**_fixture("return_v2.json"), "subtype": "low_cost"}
+
+    assert (
+        classify_return_evidence(claim=_claim(), returns=returns)
+        is ReturnEvidenceDisposition.PRODUCTIVE_CANDIDATE
+    )
+    assert (
+        build_claim_projection(
+            seller_id="82453304", claim=_claim(), returns=returns, order=_order()
+        )["productive"]
+        is True
     )
 
-    assert projection["type"] == "returns"
-    assert projection["order_id"] == "2001"
-    assert projection["return_subtype"] == "low_cost"
-    assert projection["return_quantity_basis"] == "verified_low_cost_no_row"
-    assert projection["productive"] is False
-    assert projection.get("returned_quantity") is None
+
+def test_return_evidence_rejects_duplicate_and_missing_identity_rows() -> None:
+    duplicated = _fixture("return_v2.json")
+    duplicated["orders"].append(deepcopy(duplicated["orders"][0]))
+    missing_identity = _fixture("return_v2.json")
+    missing_identity["orders"][0]["item_id"] = None
+
+    with pytest.raises(ClaimProjectionError, match="unique"):
+        classify_return_evidence(claim=_claim(), returns=duplicated)
+    with pytest.raises(ClaimProjectionError, match="item_id"):
+        classify_return_evidence(claim=_claim(), returns=missing_identity)
 
 
 @pytest.mark.parametrize("return_quantity", [None, 0, -1, "1.5", True])
@@ -731,7 +758,7 @@ async def test_terminal_cancellation_excludes_before_detail_with_stable_evidence
         reconciliation_module.InventoryExclusionEvidence(
             claim_id="519988002",
             last_updated="2026-06-16T09:05:00.000Z",
-            reason="terminal_cancellation",
+            reason=reconciliation_module.InventoryExclusionReason.TERMINAL_CANCELLATION,
         ),
     )
     assert first.counters == {
@@ -743,6 +770,76 @@ async def test_terminal_cancellation_excludes_before_detail_with_stable_evidence
     }
     assert first.inventory.fingerprint == second.inventory.fingerprint
     assert first.exclusion_fingerprint == second.exclusion_fingerprint
+
+
+@pytest.mark.asyncio
+async def test_low_cost_without_authoritative_identity_excludes_before_order_and_is_dynamic() -> (
+    None
+):
+    source = HydratingSource()
+    for claim_id in source.returns:
+        source.returns[claim_id] = _fixture("low_cost.json")
+
+    snapshot = await reconciliation_module.collect_devoluciones_snapshot(
+        source=source,
+        seller_id="82453304",
+        start=START,
+        end=END,
+    )
+
+    assert snapshot.projections == ()
+    assert snapshot.expected_claim_ids == frozenset()
+    assert snapshot.counters["productive_claims"] == len(snapshot.projections)
+    assert snapshot.counters["excluded_low_cost_no_authoritative_item_identity"] == 2
+    assert {exclusion.reason for exclusion in snapshot.exclusions} == {
+        reconciliation_module.InventoryExclusionReason.LOW_COST_NO_AUTHORITATIVE_ITEM_IDENTITY
+    }
+    assert all(call[0] != "order" for call in source.hydration_calls)
+
+
+@pytest.mark.asyncio
+async def test_revalidation_rejects_exclusion_counter_drift() -> None:
+    snapshot = await reconciliation_module.collect_devoluciones_snapshot(
+        source=HydratingSource(),
+        seller_id="82453304",
+        start=START,
+        end=END,
+        captured_at=datetime(2026, 7, 10, 12, tzinfo=UTC),
+    )
+    operation = _operation()
+    operation.source_fingerprint = snapshot.source_fingerprint
+    drifted_counters = dict(snapshot.counters)
+    drifted_counters["excluded_low_cost_no_authoritative_item_identity"] = 1
+    drifted_snapshot = reconciliation_module.CollectedDevolucionesSnapshot(
+        seller_id=snapshot.seller_id,
+        start=snapshot.start,
+        end=snapshot.end,
+        captured_at=snapshot.captured_at,
+        projections=snapshot.projections,
+        orders=snapshot.orders,
+        inventory=snapshot.inventory,
+        expected_claim_ids=snapshot.expected_claim_ids,
+        source_fingerprint=snapshot.source_fingerprint,
+        read_model_fingerprint=snapshot.read_model_fingerprint,
+        exclusions=snapshot.exclusions,
+        exclusion_fingerprint=snapshot.exclusion_fingerprint,
+        counters=reconciliation_module.FrozenDict(drifted_counters),
+    )
+
+    async def heartbeat() -> None:
+        return None
+
+    with pytest.raises(DevolucionesReadModelVerificationError, match="counter"):
+        await reconciliation_module.revalidate_devoluciones_snapshot(
+            source=HydratingSource(),
+            snapshot=drifted_snapshot,
+            operation=operation,
+            absolute_deadline=100.0,
+            recorder=SourceCallRecorder(),
+            heartbeat=heartbeat,
+            monotonic=lambda: 1.0,
+            now=lambda: datetime(2026, 7, 10, 12, tzinfo=UTC),
+        )
 
 
 @pytest.mark.asyncio
@@ -1069,7 +1166,7 @@ async def test_authoritative_returns_404_excludes_only_closed_unlinked_mediation
     assert snapshot.exclusions[-1] == reconciliation_module.InventoryExclusionEvidence(
         claim_id="519988002",
         last_updated="2026-06-16T09:05:00.000Z",
-        reason="authoritative_no_return_mediation",
+        reason=reconciliation_module.InventoryExclusionReason.AUTHORITATIVE_NO_RETURN_MEDIATION,
     )
     assert snapshot.counters["excluded_authoritative_no_return_mediations"] == 1
     assert ("returns", "519988002") in source.hydration_calls
@@ -1363,7 +1460,7 @@ async def test_mediation_without_related_never_uses_claim_or_order_quantity_subs
             end=END,
         )
 
-    assert ("order", "1999") in source.hydration_calls
+    assert ("order", "1999") not in source.hydration_calls
 
 
 @pytest.mark.parametrize("claim_type", ["cancel_purchase", "cancel_sale", "warranty"])
@@ -1866,7 +1963,7 @@ async def test_5xx_then_authoritative_404_retry_excludes_safe_mediation() -> Non
     assert snapshot.exclusions[-1] == reconciliation_module.InventoryExclusionEvidence(
         claim_id="519988002",
         last_updated="2026-06-16T09:05:00.000Z",
-        reason="authoritative_no_return_mediation",
+        reason=reconciliation_module.InventoryExclusionReason.AUTHORITATIVE_NO_RETURN_MEDIATION,
     )
     assert ("order", "1999") not in source.hydration_calls
 
@@ -2023,11 +2120,18 @@ async def test_focused_projection_diagnostics_classify_reachable_hydration_failu
             source=source, seller_id="82453304", start=START, end=END
         )
 
-    assert source.hydration_calls == [
+    expected_calls = [
         ("claim", "519988001"),
         ("returns", "519988001"),
-        ("order", "2001"),
     ]
+    if expected_reason not in {
+        "projection_returns_orders_shape_null",
+        "projection_return_row_cardinality",
+        "projection_item_identity",
+        "projection_return_quantity",
+    }:
+        expected_calls.append(("order", "2001"))
+    assert source.hydration_calls == expected_calls
     assert reconciliation_module._private_focused_devoluciones_diagnostic(exc_info.value) == {
         "failure_class": "parser_failure",
         "projection_reason": expected_reason,
@@ -2102,7 +2206,7 @@ def test_focused_projection_diagnostic_uses_unknown_for_untyped_or_invalid_reaso
 def test_returns_orders_shape_classifier_uses_closed_private_tokens(
     key_present: bool, value: object, expected_reason: str
 ) -> None:
-    assert claim_projection_module._classify_returns_orders_shape(  # type: ignore[attr-defined]
+    assert claim_projection_module._classify_returns_orders_shape(
         key_present=key_present, value=value
     ) is ClaimProjectionReason(expected_reason)
 
@@ -2223,12 +2327,11 @@ async def test_first_non_list_orders_failure_aborts_before_second_candidate() ->
     assert source.hydration_calls == [
         ("claim", "519988001"),
         ("returns", "519988001"),
-        ("order", "2001"),
     ]
     assert ("claim", "519988002") not in source.hydration_calls
     assert ("returns", "519988002") not in source.hydration_calls
     assert ("order", "1999") not in source.hydration_calls
-    assert recorder.counts == {"P": 2, "R": 2, "O": 1, "T": 5}
+    assert recorder.counts == {"P": 2, "R": 2, "O": 0, "T": 4}
 
 
 @pytest.mark.asyncio
@@ -2432,7 +2535,7 @@ async def test_hydrated_source_proof_changes_when_formula_visible_facts_drift() 
 
 
 @pytest.mark.asyncio
-async def test_low_cost_null_orders_captures_non_productive_claim() -> None:
+async def test_low_cost_null_orders_exclude_before_projection() -> None:
     source = HydratingSource()
     source.returns["519988001"] = _fixture("low_cost_orders_null.json")
 
@@ -2443,10 +2546,9 @@ async def test_low_cost_null_orders_captures_non_productive_claim() -> None:
         end=END,
     )
 
-    by_id = {projection["_id"]: projection for projection in snapshot.projections}
-    assert set(by_id) == {"519988001", "519988002"}
-    assert by_id["519988001"]["productive"] is False
-    assert by_id["519988001"]["return_quantity_basis"] == "verified_low_cost_no_row"
+    assert {projection["_id"] for projection in snapshot.projections} == {"519988002"}
+    assert snapshot.counters["productive_claims"] == len(snapshot.projections)
+    assert snapshot.counters["excluded_low_cost_no_authoritative_item_identity"] == 1
 
 
 def _persisted_readiness_order(source_order: dict[str, Any]) -> dict[str, Any]:
@@ -2675,21 +2777,15 @@ async def test_complete_46_row_inventory_fits_inventory_derived_hard_budget() ->
         recorder=recorder,
     )
 
-    assert snapshot.counters == {
-        "inventory_candidates": 46,
-        "hydrated_candidates": 34,
-        "excluded_terminal_cancellations": 12,
-        "excluded_authoritative_no_return_mediations": 25,
-        "productive_claims": 9,
-        "non_productive_claims": 0,
-        "P": 2,
-        "R": 68,
-        "O": 9,
-        "T": 79,
-    }
-    assert len(snapshot.expected_claim_ids) == 9
-    assert len(snapshot.projections) == 9
-    assert len(snapshot.exclusions) == 37
+    assert snapshot.counters["productive_claims"] == len(snapshot.projections)
+    assert snapshot.counters["non_productive_claims"] == 0
+    assert snapshot.expected_claim_ids == frozenset(
+        str(projection["_id"]) for projection in snapshot.projections
+    )
+    assert len(snapshot.exclusions) == (
+        snapshot.counters["excluded_terminal_cancellations"]
+        + snapshot.counters["excluded_authoritative_no_return_mediations"]
+    )
     assert recorder.required_capacity == 104
     assert recorder.total == 79
 

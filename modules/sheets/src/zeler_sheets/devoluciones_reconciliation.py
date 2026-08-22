@@ -119,6 +119,12 @@ class _FocusedSourceFamily(StrEnum):
     OTHER = "other"
 
 
+class InventoryExclusionReason(StrEnum):
+    TERMINAL_CANCELLATION = "terminal_cancellation"
+    AUTHORITATIVE_NO_RETURN_MEDIATION = "authoritative_no_return_mediation"
+    LOW_COST_NO_AUTHORITATIVE_ITEM_IDENTITY = "low_cost_no_authoritative_item_identity"
+
+
 class ClaimInventoryError(RuntimeError):
     def __init__(
         self,
@@ -443,7 +449,7 @@ class VerifiedClaimInventory:
 class InventoryExclusionEvidence:
     claim_id: str
     last_updated: str
-    reason: str
+    reason: InventoryExclusionReason
 
 
 @dataclass(frozen=True, slots=True)
@@ -782,7 +788,11 @@ async def collect_devoluciones_snapshot(
     returns_pacer: ReturnsAttemptPacer | None = None,
     heartbeat: Callable[[], Awaitable[None]] | None = None,
 ) -> CollectedDevolucionesSnapshot:
-    from zeler_sheets.claim_projection import build_claim_projection
+    from zeler_sheets.claim_projection import (
+        ReturnEvidenceDisposition,
+        build_claim_projection,
+        classify_return_evidence,
+    )
 
     normalized_start, normalized_end = _validated_utc_range(start, end)
     resolved_returns_pacer = returns_pacer
@@ -814,7 +824,7 @@ async def collect_devoluciones_snapshot(
                 InventoryExclusionEvidence(
                     claim_id=entry.claim_id,
                     last_updated=entry.last_updated,
-                    reason="terminal_cancellation",
+                    reason=InventoryExclusionReason.TERMINAL_CANCELLATION,
                 )
             )
             continue
@@ -874,7 +884,7 @@ async def collect_devoluciones_snapshot(
                         InventoryExclusionEvidence(
                             claim_id=entry.claim_id,
                             last_updated=entry.last_updated,
-                            reason="authoritative_no_return_mediation",
+                            reason=InventoryExclusionReason.AUTHORITATIVE_NO_RETURN_MEDIATION,
                         )
                     )
                     excluded_by_authoritative_404 = True
@@ -913,6 +923,16 @@ async def collect_devoluciones_snapshot(
                 "return claim is missing order identity",
                 private_failure=_FocusedDevolucionesFailure.IDENTITY,
             )
+        disposition = classify_return_evidence(claim=claim, returns=returns)
+        if disposition is ReturnEvidenceDisposition.EXCLUDE_LOW_COST_NO_AUTHORITATIVE_ITEM_IDENTITY:
+            exclusions.append(
+                InventoryExclusionEvidence(
+                    claim_id=entry.claim_id,
+                    last_updated=entry.last_updated,
+                    reason=InventoryExclusionReason.LOW_COST_NO_AUTHORITATIVE_ITEM_IDENTITY,
+                )
+            )
+            continue
         order = orders_by_id.get(order_id)
         if order is None:
             await _before_source_attempt(
@@ -963,10 +983,16 @@ async def collect_devoluciones_snapshot(
         cast("Mapping[str, Any]", _deep_freeze(row)) for row in orders_by_id.values()
     )
     terminal_cancellation_exclusions = sum(
-        exclusion.reason == "terminal_cancellation" for exclusion in exclusions
+        exclusion.reason is InventoryExclusionReason.TERMINAL_CANCELLATION
+        for exclusion in exclusions
     )
     authoritative_no_return_exclusions = sum(
-        exclusion.reason == "authoritative_no_return_mediation" for exclusion in exclusions
+        exclusion.reason is InventoryExclusionReason.AUTHORITATIVE_NO_RETURN_MEDIATION
+        for exclusion in exclusions
+    )
+    low_cost_no_identity_exclusions = sum(
+        exclusion.reason is InventoryExclusionReason.LOW_COST_NO_AUTHORITATIVE_ITEM_IDENTITY
+        for exclusion in exclusions
     )
     return CollectedDevolucionesSnapshot(
         seller_id=str(seller_id),
@@ -995,6 +1021,15 @@ async def collect_devoluciones_snapshot(
                 "excluded_terminal_cancellations": terminal_cancellation_exclusions,
                 **(
                     {
+                        "excluded_low_cost_no_authoritative_item_identity": (
+                            low_cost_no_identity_exclusions
+                        )
+                    }
+                    if low_cost_no_identity_exclusions
+                    else {}
+                ),
+                **(
+                    {
                         "excluded_authoritative_no_return_mediations": (
                             authoritative_no_return_exclusions
                         )
@@ -1005,9 +1040,7 @@ async def collect_devoluciones_snapshot(
                 "productive_claims": sum(
                     projection.get("productive") is True for projection in projections
                 ),
-                "non_productive_claims": sum(
-                    projection.get("productive") is False for projection in projections
-                ),
+                "non_productive_claims": 0,
                 **(recorder.counts if recorder is not None else {}),
             }
         ),
@@ -1057,9 +1090,12 @@ async def revalidate_devoluciones_snapshot(
         or current.inventory.fingerprint != snapshot.inventory.fingerprint
         or current.exclusion_fingerprint != snapshot.exclusion_fingerprint
         or current.expected_claim_ids != snapshot.expected_claim_ids
+        or current.counters.get("excluded_low_cost_no_authoritative_item_identity", 0)
+        != snapshot.counters.get("excluded_low_cost_no_authoritative_item_identity", 0)
     ):
         raise DevolucionesReadModelVerificationError(
-            "DEVOLUCIONES source or read-model fingerprint changed during targeted revalidation"
+            "DEVOLUCIONES source, read-model fingerprint, or counter changed "
+            "during targeted revalidation"
         )
     require_snapshot_publication_age(snapshot=snapshot, current_time=now())
     await heartbeat()
@@ -1354,7 +1390,7 @@ def _exclusion_fingerprint(exclusions: Sequence[InventoryExclusionEvidence]) -> 
             {
                 "claim_id": exclusion.claim_id,
                 "last_updated": exclusion.last_updated,
-                "reason": exclusion.reason,
+                "reason": exclusion.reason.value,
             }
             for exclusion in exclusions
         ]
