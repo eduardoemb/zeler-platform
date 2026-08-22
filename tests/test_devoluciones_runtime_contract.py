@@ -979,6 +979,7 @@ def test_public_evidence_excludes_sensitive_identifiers_and_keeps_only_counter()
     assert "raw_claim_id" not in public_evidence
     assert "82453304" not in public_evidence
 
+
 def test_reconciliation_runbook_documents_focused_budget_campaign_and_safe_api_rollback() -> None:
     reconciliation = _read(RECONCILIATION_DOC)
 
