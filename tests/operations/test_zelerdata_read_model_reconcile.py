@@ -4440,6 +4440,50 @@ def test_focused_shared_evidence_exposes_exact_r4_allowlist() -> None:
         assert forbidden not in serialized
 
 
+def test_focused_evidence_allowlists_authoritative_exclusion_counter() -> None:
+    summary = ReconciliationSummary(
+        seller_id="82453304",
+        date_from="2026-06-01",
+        date_to="2026-06-04",
+        dry_run=True,
+        approved_runtime=True,
+        write_enabled=False,
+        runtime_evidence=FocusedRuntimeEvidence(
+            duration_seconds=1.0,
+            source_calls={
+                "P": 2,
+                "excluded_low_cost_no_authoritative_item_identity": 3,
+                "raw_claim_id": 99,
+            },
+        ),
+    )
+
+    evidence = summary.to_focused_evidence(stage="dry_run")
+
+    assert evidence["counters"] == {
+        "P": 2,
+        "excluded_low_cost_no_authoritative_item_identity": 3,
+    }
+
+
+def test_chunked_dry_run_sums_authoritative_exclusion_counters() -> None:
+    counters = reconcile_operation_module._aggregate_chunked_devoluciones_counters(
+        {"P": 2, "R": 4, "O": 2, "T": 8},
+        (
+            {"excluded_low_cost_no_authoritative_item_identity": 2},
+            {"excluded_low_cost_no_authoritative_item_identity": 3, "raw_claim_id": 99},
+        ),
+    )
+
+    assert counters == {
+        "P": 2,
+        "R": 4,
+        "O": 2,
+        "T": 8,
+        "excluded_low_cost_no_authoritative_item_identity": 5,
+    }
+
+
 @pytest.mark.parametrize(
     ("raw_output", "process_status", "expected_status_class", "expected_exit"),
     [

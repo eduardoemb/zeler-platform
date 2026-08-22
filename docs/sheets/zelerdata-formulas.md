@@ -100,7 +100,8 @@ narrower scheduled run must never replace previously accepted coverage.
 
 Initial production acceptance for the approved account uses
 `[2026-06-01T00:00:00Z, 2026-07-10T00:00:00Z)` and requires
-`expected/persisted/complete/missing = 9/9/9/0`. Acceptance also requires
+`expected/persisted/complete/missing` to equal the authoritative productive snapshot count.
+Acceptance also requires
 dispatcher-equivalent formula proof plus either an authenticated smoke or
 sanitized operator evidence containing the timestamp, exact formula/date
 inputs, result, no-error state, and request/correlation ID. If that evidence is

@@ -940,8 +940,8 @@ sudo docker compose --file /opt/zeler-platform/docker-compose.yml \
 Do not activate scheduling until every item below passes:
 
 1. Sanitized reconciliation evidence reports
-   `expected/persisted/complete/missing = 9/9/9/0` for the exact initial
-   interval.
+   `expected/persisted/complete/missing` must equal the authoritative productive snapshot count for
+   the exact initial interval.
 2. The database contains one exact non-unioned `devoluciones` marker enclosing
    the accepted interval with a 30-minute marker lease. Never combine disjoint
    markers or infer broader coverage.

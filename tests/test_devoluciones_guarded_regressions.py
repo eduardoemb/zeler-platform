@@ -656,6 +656,23 @@ def _joint_order(order_id: str, *, item_id: str) -> dict[str, Any]:
 
 
 @pytest.mark.asyncio
+async def test_prewrite_guard_blocks_historical_non_productive_claim_without_mutation() -> None:
+    historical_claim = _joint_claim(
+        "claim-historical", order_id="order-historical", item_id="MLA9", productive=False
+    )
+    db = _MemoryDb({"claims": [historical_claim]})
+
+    with pytest.raises(RuntimeError, match="audited remediation"):
+        await reconcile_module._reject_historical_non_productive_devoluciones_rows(
+            db=db,
+            seller_id=SELLER_ID,
+        )
+
+    assert db["claims"].documents["claim-historical"] == historical_claim
+    assert db["sheets_read_model_freshness"].documents == {}
+
+
+@pytest.mark.asyncio
 async def test_actual_guarded_writer_rejects_narrower_joint_marker_without_union() -> None:
     operation = _operation()
     operation.source_fingerprint = "stable-claims"
