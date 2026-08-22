@@ -429,7 +429,14 @@ Safety rules:
 
 The deploy preflight can refuse every moving `image:` tag before any pull. Set
 `REQUIRE_DIGEST_BINDING=1` on `platform-vm` to enable it; the flag defaults to
-`0`, so current behavior is unchanged until an operator opts in.
+`0`, so current behavior is unchanged until an operator opts in. By default, it
+validates every Compose service.
+
+For a targeted deployment, set `DIGEST_BINDING_SERVICES` to a comma-separated
+list of Compose service names, for example `sheets-worker`. The preflight then
+validates and writes provenance only for those selected services. An empty value
+keeps the default all-service validation. Invalid, duplicate, or unknown service
+names fail closed.
 
 Quick path (dry-run, read-only):
 
@@ -447,8 +454,8 @@ Behavior when enabled:
 
 | Step | Result |
 |------|--------|
-| Any compose `image:` is not `repo@sha256:<64 hex>` | Refused **before** any pull; preflight exits non-zero |
-| Every compose image is digest-pinned | SLSA v1 subject/build/commit verified per image; `image_to_commit.json` written |
+| Any selected compose `image:` is not `repo@sha256:<64 hex>` | Refused **before** any pull; preflight exits non-zero |
+| Every selected compose image is digest-pinned | SLSA v1 subject/build/commit verified per image; `image_to_commit.json` written |
 | Ambiguous/forged provenance, build mismatch, or subprocess failure | Fail closed before pull |
 
 Evidence file `/var/lib/zeler-platform/image_to_commit.json`:
