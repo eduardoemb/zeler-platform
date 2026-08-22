@@ -1684,14 +1684,17 @@ def _moving_tag_compose_document() -> dict[str, Any]:
     }
 
 
+@pytest.mark.parametrize("service_scope", [None, ""])
 def test_daily_pull_refuses_moving_tag_when_digest_binding_enabled(
-    tmp_path: Path,
+    tmp_path: Path, service_scope: str | None
 ) -> None:
     env = _digest_binding_env(
         tmp_path,
         _moving_tag_compose_document(),
         require_binding=True,
     )
+    if service_scope is not None:
+        env["DIGEST_BINDING_SERVICES"] = service_scope
 
     completed = subprocess.run(  # noqa: S603 - repository-owned preflight.
         ["/bin/bash", str(DOCKER_DEPLOY_PREFLIGHT)],
@@ -1728,6 +1731,65 @@ def test_daily_pull_allows_moving_tag_when_digest_binding_disabled(
 
     assert completed.returncode == 0
     assert not Path(env["DOCKER_CALL_LOG"]).exists()
+
+
+def test_daily_pull_scopes_digest_binding_to_selected_service(tmp_path: Path) -> None:
+    worker_image_ref = (
+        "us-central1-docker.pkg.dev/zeler-platform-dev/zeler-platform/sheets-worker@sha256:"
+        + "a" * 64
+    )
+    env = _digest_binding_env(
+        tmp_path,
+        {
+            "services": {
+                "sheets-worker": {"image": worker_image_ref},
+                "gateway": {
+                    "image": _moving_tag_compose_document()["services"]["gateway"]["image"]
+                },
+            }
+        },
+        require_binding=True,
+        artifact=_gcloud_provenance(worker_image_ref),
+    )
+    env["DIGEST_BINDING_SERVICES"] = "sheets-worker"
+
+    completed = subprocess.run(  # noqa: S603 - repository-owned preflight.
+        ["/bin/bash", str(DOCKER_DEPLOY_PREFLIGHT)],
+        cwd=ROOT,
+        env=env,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    document = json.loads(Path(env["IMAGE_TO_COMMIT_FILE"]).read_text(encoding="utf-8"))
+    assert set(document["images"]) == {worker_image_ref}
+
+
+def test_daily_pull_rejects_invalid_digest_binding_service_scope_without_execution(
+    tmp_path: Path,
+) -> None:
+    marker = tmp_path / "injected"
+    env = _digest_binding_env(
+        tmp_path,
+        {"services": {"sheets-worker": {"image": "mongo:7.0"}}},
+        require_binding=True,
+    )
+    env["DIGEST_BINDING_SERVICES"] = f"sheets-worker;touch {marker}"
+
+    completed = subprocess.run(  # noqa: S603 - repository-owned preflight.
+        ["/bin/bash", str(DOCKER_DEPLOY_PREFLIGHT)],
+        cwd=ROOT,
+        env=env,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode != 0
+    assert "DIGEST_BINDING_SERVICES" in completed.stderr
+    assert not marker.exists()
 
 
 @pytest.mark.parametrize(

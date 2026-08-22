@@ -346,6 +346,112 @@ def test_cli_check_compose_passes_for_pinned_images(tmp_path: Path, capsys: Any)
     assert capsys.readouterr().err == ""
 
 
+def test_cli_scope_validates_and_lists_only_selected_digest_pinned_service(
+    tmp_path: Path, capsys: Any
+) -> None:
+    compose_file = tmp_path / "docker-compose.yml"
+    compose_file.write_text(
+        json.dumps(
+            _compose(
+                {
+                    "sheets-worker": {"image": PINNED_IMAGE_REF},
+                    "gateway": {"image": MOVING_TAG_REF},
+                }
+            )
+        ),
+        encoding="utf-8",
+    )
+
+    check_exit_code = main(
+        [
+            "check-compose",
+            "--compose-file",
+            str(compose_file),
+            "--service",
+            "sheets-worker",
+        ]
+    )
+
+    assert check_exit_code == 0
+    assert (
+        main(
+            [
+                "list-images",
+                "--compose-file",
+                str(compose_file),
+                "--service",
+                "sheets-worker",
+            ]
+        )
+        == 0
+    )
+    assert capsys.readouterr().out.splitlines() == [
+        "digest binding: selected compose image is pinned by sha256 digest",
+        PINNED_IMAGE_REF,
+    ]
+
+
+@pytest.mark.parametrize(
+    ("service", "expected"),
+    [
+        ("missing", "does not exist"),
+        ("gateway", MOVING_TAG_REF),
+        ("", "invalid service"),
+        ("sheets-worker;touch", "invalid service"),
+        ("sheets-worker", "does not exist"),
+    ],
+)
+def test_cli_scope_fails_closed_for_missing_tagged_or_invalid_service(
+    tmp_path: Path, service: str, expected: str
+) -> None:
+    compose_file = tmp_path / "docker-compose.yml"
+    compose_file.write_text(
+        json.dumps(
+            _compose(
+                {
+                    "sheets-api": {"image": PINNED_IMAGE_REF},
+                    "gateway": {"image": MOVING_TAG_REF},
+                }
+            )
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(
+            [
+                "check-compose",
+                "--compose-file",
+                str(compose_file),
+                "--service",
+                service,
+            ]
+        )
+
+    assert exc_info.value.code != 0
+    assert expected in str(exc_info.value)
+
+
+def test_cli_scope_fails_closed_on_ambiguous_duplicate_service(tmp_path: Path) -> None:
+    compose_file = tmp_path / "docker-compose.yml"
+    compose_file.write_text(
+        json.dumps(_compose({"sheets-api": {"image": PINNED_IMAGE_REF}})), encoding="utf-8"
+    )
+
+    with pytest.raises(SystemExit, match="duplicates"):
+        main(
+            [
+                "check-compose",
+                "--compose-file",
+                str(compose_file),
+                "--service",
+                "sheets-api",
+                "--service",
+                "sheets-api",
+            ]
+        )
+
+
 def test_cli_list_images_prints_one_ref_per_line(tmp_path: Path, capsys: Any) -> None:
     compose_file = tmp_path / "docker-compose.yml"
     compose_file.write_text(

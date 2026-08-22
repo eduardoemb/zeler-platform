@@ -277,6 +277,7 @@ MAINTENANCE_SCRIPT=${MAINTENANCE_SCRIPT:-/opt/zeler-platform/docker-maintenance.
 PLATFORM_ROOT=${ZELER_PLATFORM_ROOT:-/opt/zeler-platform}
 SHEETS_ROLLBACK_PREFLIGHT=${SHEETS_ROLLBACK_PREFLIGHT:-0}
 REQUIRE_DIGEST_BINDING=${REQUIRE_DIGEST_BINDING:-0}
+DIGEST_BINDING_SERVICES=${DIGEST_BINDING_SERVICES:-}
 PROHIBITED_OLD_SHEETS_API_DIGEST=sha256:8da8ab2b0b092825e6b3f362ea92e375a52e25a7a3cb78c2af0828844ddb00b6
 GCLOUD_BIN=${ZELER_GCLOUD_BIN:-/usr/bin/gcloud}
 DOCKER_BIN=${ZELER_DOCKER_BIN:-/usr/bin/docker}
@@ -296,6 +297,18 @@ fi
 DRY_RUN=0
 if [[ "${1:-}" == "--dry-run" ]]; then
   DRY_RUN=1
+fi
+
+digest_binding_service_args=()
+if [[ -n "$DIGEST_BINDING_SERVICES" ]]; then
+  if [[ ! "$DIGEST_BINDING_SERVICES" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*(,[A-Za-z0-9][A-Za-z0-9_.-]*)*$ ]]; then
+    echo "ERROR: DIGEST_BINDING_SERVICES must be a comma-separated list of Compose service names." >&2
+    exit 1
+  fi
+  IFS=, read -r -a digest_binding_services <<< "$DIGEST_BINDING_SERVICES"
+  for digest_binding_service in "${digest_binding_services[@]}"; do
+    digest_binding_service_args+=(--service "$digest_binding_service")
+  done
 fi
 
 min_free_kib=$((MIN_FREE_GIB * 1024 * 1024))
@@ -417,7 +430,7 @@ verify_digest_binding() {
   fi
   echo "Refusing any moving image tag before pull (REQUIRE_DIGEST_BINDING=1)."
   PYTHONPATH="$PLATFORM_ROOT" "$PYTHON_BIN" -m infra.deploy.provenance_check \
-    check-compose --compose-file "$COMPOSE_FILE"
+    check-compose --compose-file "$COMPOSE_FILE" "${digest_binding_service_args[@]}"
   gcloud_project_id=$("$GCLOUD_BIN" config get-value project 2>/dev/null)
   if [[ ! "$gcloud_project_id" =~ ^[a-z][a-z0-9-]{4,28}[a-z0-9]$ ]]; then
     echo "ERROR: trusted gcloud project id is missing or invalid." >&2
@@ -433,7 +446,8 @@ verify_digest_binding() {
   trap 'rm -rf "$temp_dir" "$image_list"' RETURN
   rm -f "$IMAGE_TO_COMMIT_FILE"
   PYTHONPATH="$PLATFORM_ROOT" "$PYTHON_BIN" \
-    -m infra.deploy.provenance_check list-images --compose-file "$COMPOSE_FILE" > "$image_list"
+    -m infra.deploy.provenance_check list-images --compose-file "$COMPOSE_FILE" \
+    "${digest_binding_service_args[@]}" > "$image_list"
   while IFS= read -r image_ref; do
     [[ -n "$image_ref" ]] || continue
     "$GCLOUD_BIN" artifacts docker images describe "$image_ref" \

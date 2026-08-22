@@ -26,6 +26,7 @@ from infra.deploy.sheets_rollback import (
 PROOF_SCHEMA_VERSION = 1
 _IMAGE_REF_PATTERN = re.compile(r"[a-z0-9.-]+/[a-z0-9._/-]+@sha256:[0-9a-f]{64}")
 _COMMIT_PATTERN = re.compile(r"[0-9a-f]{40}")
+_SERVICE_NAME_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*")
 
 
 class ProvenanceCheckError(RuntimeError):
@@ -37,13 +38,28 @@ def digest_pinned_image_ref(image_ref: str) -> bool:
     return _IMAGE_REF_PATTERN.fullmatch(image_ref) is not None
 
 
-def compose_image_refs(compose_document: Mapping[str, Any]) -> list[str]:
-    """Return every service `image:` value in definition order."""
+def compose_image_refs(
+    compose_document: Mapping[str, Any], service_names: Sequence[str] | None = None
+) -> list[str]:
+    """Return selected service `image:` values in definition order."""
     services = compose_document.get("services")
     if not isinstance(services, Mapping):
         raise ProvenanceCheckError("compose services mapping is missing")
+    selected_names = tuple(service_names or ())
+    if len(set(selected_names)) != len(selected_names):
+        raise ProvenanceCheckError("selected services must not contain duplicates")
+    for service_name in selected_names:
+        if not _SERVICE_NAME_PATTERN.fullmatch(service_name):
+            raise ProvenanceCheckError(f"invalid service name: {service_name!r}")
+        if service_name not in services:
+            raise ProvenanceCheckError(f"selected service does not exist: {service_name}")
+    selected_services = (
+        ((service_name, services[service_name]) for service_name in selected_names)
+        if selected_names
+        else services.items()
+    )
     image_refs: list[str] = []
-    for service_name, service in services.items():
+    for service_name, service in selected_services:
         if not isinstance(service, Mapping):
             continue
         image = service.get("image")
@@ -55,14 +71,22 @@ def compose_image_refs(compose_document: Mapping[str, Any]) -> list[str]:
     return image_refs
 
 
-def unpinned_image_refs(compose_document: Mapping[str, Any]) -> list[str]:
+def unpinned_image_refs(
+    compose_document: Mapping[str, Any], service_names: Sequence[str] | None = None
+) -> list[str]:
     """Return compose images that are not digest-pinned."""
-    return [ref for ref in compose_image_refs(compose_document) if not digest_pinned_image_ref(ref)]
+    return [
+        ref
+        for ref in compose_image_refs(compose_document, service_names)
+        if not digest_pinned_image_ref(ref)
+    ]
 
 
-def check_compose_digest_binding(compose_document: Mapping[str, Any]) -> None:
+def check_compose_digest_binding(
+    compose_document: Mapping[str, Any], service_names: Sequence[str] | None = None
+) -> None:
     """Fail closed when any compose image is a moving tag or malformed ref."""
-    unpinned = unpinned_image_refs(compose_document)
+    unpinned = unpinned_image_refs(compose_document, service_names)
     if unpinned:
         listed = ", ".join(unpinned)
         raise ProvenanceCheckError(
@@ -229,8 +253,10 @@ def _build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", required=True)
     check = subparsers.add_parser("check-compose")
     check.add_argument("--compose-file", type=Path, required=True)
+    check.add_argument("--service", dest="services", action="append")
     list_images = subparsers.add_parser("list-images")
     list_images.add_argument("--compose-file", type=Path, required=True)
+    list_images.add_argument("--service", dest="services", action="append")
     extract = subparsers.add_parser("extract-build-id")
     extract.add_argument("--artifact-file", type=Path, required=True)
     extract.add_argument("--image-ref", required=True)
@@ -250,11 +276,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
     try:
         if args.command == "check-compose":
-            check_compose_digest_binding(_read_compose(args.compose_file))
-            print("digest binding: every compose image is pinned by sha256 digest")
+            check_compose_digest_binding(_read_compose(args.compose_file), args.services)
+            scope = "selected" if args.services else "every"
+            print(f"digest binding: {scope} compose image is pinned by sha256 digest")
             return 0
         if args.command == "list-images":
-            for image_ref in compose_image_refs(_read_compose(args.compose_file)):
+            for image_ref in compose_image_refs(_read_compose(args.compose_file), args.services):
                 print(image_ref)
             return 0
         if args.command == "extract-build-id":
