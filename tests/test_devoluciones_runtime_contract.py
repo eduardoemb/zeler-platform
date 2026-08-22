@@ -15,10 +15,12 @@ from infra.operations.zelerdata_campaign_state import (
     require_accepted_campaign,
 )
 from infra.operations.zelerdata_read_model_reconcile import (
-    build_arg_parser as build_reconciliation_arg_parser,
+    FocusedRuntimeEvidence,
+    ReconciliationSummary,
+    build_reconciliation_request,
 )
 from infra.operations.zelerdata_read_model_reconcile import (
-    build_reconciliation_request,
+    build_arg_parser as build_reconciliation_arg_parser,
 )
 from infra.rabbitmq.sheets_devoluciones_topology import _build_parser
 
@@ -941,12 +943,41 @@ def test_devoluciones_affected_docs_and_operations_have_no_fixed_inventory_accep
         RECONCILIATION_DOC,
         FORMULA_DOC,
         ROOT / "infra" / "operations" / "zelerdata_read_model_reconcile.py",
+        ROOT / "modules" / "sheets" / "src" / "zeler_sheets" / "claim_projection.py",
+        ROOT / "modules" / "sheets" / "src" / "zeler_sheets" / "devoluciones_reconciliation.py",
+        ROOT / "modules" / "sheets" / "tests" / "test_devoluciones_reconciliation.py",
+        ROOT / "tests" / "operations" / "test_zelerdata_read_model_reconcile.py",
+        ROOT / "tests" / "test_devoluciones_guarded_regressions.py",
+        ROOT / "tests" / "test_devoluciones_runtime_contract.py",
     )
     forbidden = ("9/9" + "/9/0", "expected_count = " + str(14), "expected_count=" + str(14))
 
     for path in affected_paths:
         text = _read(path)
         assert all(literal not in text for literal in forbidden), path
+
+
+def test_public_evidence_excludes_sensitive_identifiers_and_keeps_only_counter() -> None:
+    evidence = ReconciliationSummary(
+        seller_id="82453304",
+        date_from="2026-06-01",
+        date_to="2026-06-04",
+        dry_run=True,
+        approved_runtime=True,
+        write_enabled=False,
+        runtime_evidence=FocusedRuntimeEvidence(
+            duration_seconds=1.0,
+            source_calls={
+                "excluded_low_cost_no_authoritative_item_identity": 3,
+                "raw_claim_id": 99,
+            },
+        ),
+    ).to_focused_evidence(stage="dry_run")
+
+    assert evidence["counters"] == {"excluded_low_cost_no_authoritative_item_identity": 3}
+    public_evidence = json.dumps(evidence, sort_keys=True)
+    assert "raw_claim_id" not in public_evidence
+    assert "82453304" not in public_evidence
 
 
 def test_reconciliation_runbook_documents_focused_budget_campaign_and_safe_api_rollback() -> None:

@@ -779,6 +779,18 @@ async def test_low_cost_without_authoritative_identity_excludes_before_order_and
     source = HydratingSource()
     for claim_id in source.returns:
         source.returns[claim_id] = _fixture("low_cost.json")
+    for response in source.responses:
+        response["data"].append(
+            {
+                "id": "519988003",
+                "last_updated": "2026-06-17T09:05:00.000Z",
+                "date_created": "2026-06-17T09:00:00.000Z",
+                "type": "returns",
+            }
+        )
+        response["paging"]["total"] = 3
+    source.claims["519988003"] = _claim() | {"id": "519988003"}
+    source.returns["519988003"] = _fixture("low_cost.json")
 
     snapshot = await reconciliation_module.collect_devoluciones_snapshot(
         source=source,
@@ -790,10 +802,13 @@ async def test_low_cost_without_authoritative_identity_excludes_before_order_and
     assert snapshot.projections == ()
     assert snapshot.expected_claim_ids == frozenset()
     assert snapshot.counters["productive_claims"] == len(snapshot.projections)
-    assert snapshot.counters["excluded_low_cost_no_authoritative_item_identity"] == 2
-    assert {exclusion.reason for exclusion in snapshot.exclusions} == {
-        reconciliation_module.InventoryExclusionReason.LOW_COST_NO_AUTHORITATIVE_ITEM_IDENTITY
-    }
+    assert snapshot.counters["excluded_low_cost_no_authoritative_item_identity"] == 3
+    assert len(snapshot.exclusions) == 3
+    assert all(
+        exclusion.reason
+        is reconciliation_module.InventoryExclusionReason.LOW_COST_NO_AUTHORITATIVE_ITEM_IDENTITY
+        for exclusion in snapshot.exclusions
+    )
     assert all(call[0] != "order" for call in source.hydration_calls)
 
 
@@ -2375,9 +2390,30 @@ async def test_targeted_revalidation_uses_root_context_and_rejects_fingerprint_d
     assert run_ledger.counts == {"P": 4, "R": 8, "O": 4, "T": 16}
     assert heartbeat_calls == [operation.operation_id] * len(heartbeat_calls)
     assert len(heartbeat_calls) >= 2
+    assert len(snapshot.projections) == 2
 
     drifted = HydratingSource()
-    drifted.returns["519988001"]["orders"][0]["return_quantity"] = 3
+    for response in drifted.responses:
+        response["data"].append(
+            {
+                "id": "519988003",
+                "last_updated": "2026-06-17T09:05:00.000Z",
+                "date_created": "2026-06-17T09:00:00.000Z",
+                "type": "returns",
+            }
+        )
+        response["paging"]["total"] = 3
+    drifted.claims["519988003"] = _claim() | {"id": "519988003"}
+    drifted.returns["519988003"] = _fixture("return_v2.json")
+    drifted.responses.extend(deepcopy(drifted.responses))
+    changed_snapshot = await reconciliation_module.collect_devoluciones_snapshot(
+        source=drifted,
+        seller_id="82453304",
+        start=START,
+        end=END,
+    )
+
+    assert len(changed_snapshot.projections) == len(snapshot.projections) + 1
     with pytest.raises(DevolucionesReadModelVerificationError, match="changed"):
         await revalidate_devoluciones_snapshot(
             source=drifted,
@@ -2532,6 +2568,33 @@ async def test_hydrated_source_proof_changes_when_formula_visible_facts_drift() 
     assert variation_drift.read_model_fingerprint != baseline.read_model_fingerprint
     assert sku_drift.read_model_fingerprint != baseline.read_model_fingerprint
     assert title_drift.read_model_fingerprint != baseline.read_model_fingerprint
+
+
+def test_reason_only_change_changes_exclusion_and_source_fingerprints() -> None:
+    first = reconciliation_module.InventoryExclusionEvidence(
+        claim_id="claim-private",
+        last_updated="2026-06-15T12:05:00.000Z",
+        reason=reconciliation_module.InventoryExclusionReason.TERMINAL_CANCELLATION,
+    )
+    second = reconciliation_module.InventoryExclusionEvidence(
+        claim_id=first.claim_id,
+        last_updated=first.last_updated,
+        reason=reconciliation_module.InventoryExclusionReason.LOW_COST_NO_AUTHORITATIVE_ITEM_IDENTITY,
+    )
+
+    first_exclusion = reconciliation_module._exclusion_fingerprint((first,))
+    second_exclusion = reconciliation_module._exclusion_fingerprint((second,))
+
+    assert first_exclusion != second_exclusion
+    assert reconciliation_module._hydrated_source_fingerprint(
+        inventory_fingerprint="inventory",
+        read_model_fingerprint="read-model",
+        exclusion_fingerprint=first_exclusion,
+    ) != reconciliation_module._hydrated_source_fingerprint(
+        inventory_fingerprint="inventory",
+        read_model_fingerprint="read-model",
+        exclusion_fingerprint=second_exclusion,
+    )
 
 
 @pytest.mark.asyncio
