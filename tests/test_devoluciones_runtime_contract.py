@@ -773,7 +773,10 @@ def test_deploy_runbook_orders_topology_acceptance_and_timer_activation() -> Non
         "every 10 minutes",
         "single scheduled attempt",
         "OnFailure",
-        "expected/persisted/complete/missing = 9/9/9/0",
+        (
+            "`expected/persisted/complete/missing` must equal the authoritative "
+            "productive snapshot count"
+        ),
         "OPERATOR_EVIDENCE_PENDING",
         "journalctl -u zelerdata-devoluciones-reconcile.service",
         "failure-conditional rollback",
@@ -924,12 +927,26 @@ def test_zelerdata_docs_explain_joint_marker_operator_evidence_and_safe_rollback
         "operator evidence",
         "request/correlation ID",
         "DATA_UNAVAILABLE",
-        "expected/persisted/complete/missing = 9/9/9/0",
+        "authoritative productive snapshot count",
     )
     for snippet in reconciliation_required:
         assert snippet in reconciliation
     for snippet in formula_required:
         assert snippet in formulas
+
+
+def test_devoluciones_affected_docs_and_operations_have_no_fixed_inventory_acceptance() -> None:
+    affected_paths = (
+        DEPLOY_DOC,
+        RECONCILIATION_DOC,
+        FORMULA_DOC,
+        ROOT / "infra" / "operations" / "zelerdata_read_model_reconcile.py",
+    )
+    forbidden = ("9/9" + "/9/0", "expected_count = " + str(14), "expected_count=" + str(14))
+
+    for path in affected_paths:
+        text = _read(path)
+        assert all(literal not in text for literal in forbidden), path
 
 
 def test_reconciliation_runbook_documents_focused_budget_campaign_and_safe_api_rollback() -> None:

@@ -78,7 +78,8 @@ Production rollout order is `plan → prestart → worker health → bind-claims
 then frozen-runtime dry-run, authorized write, and acceptance. The initial
 accepted half-open interval is
 `[2026-06-01T00:00:00Z, 2026-07-10T00:00:00Z)` and must report
-`expected/persisted/complete/missing = 9/9/9/0`. Capture an authenticated formula
+`expected/persisted/complete/missing` equal to the authoritative productive snapshot count.
+Capture an authenticated formula
 smoke or sanitized operator evidence with timestamp, exact inputs/result, and
 request/correlation ID. If neither is available, record
 `OPERATOR_EVIDENCE_PENDING`; do not report success.
@@ -161,8 +162,8 @@ per two-snapshot run: at most 57.75 seconds per snapshot and 117.25 seconds per 
 143.5-second projected run envelope (117.25s pacing + 26.25s non-paced budgets) preserves 21.5 seconds of process-deadline margin and 31.5 seconds of shell-stop margin before the 175-second
 shell stop. Acceptance
 still requires private timing correlation proving every
-successive physical RETURNS start is at least 1.75 seconds apart, followed by fresh `9/9/9/0`
-evidence. Any spacing, deadline, or non-SERVER source failure stops without retry and keeps the
+successive physical RETURNS start is at least 1.75 seconds apart, followed by fresh authoritative
+productive snapshot evidence. Any spacing, deadline, or non-SERVER source failure stops without retry and keeps the
 timer off; a `SERVER` failure on `return_detail` retries once through the paced path and, if it
 fails again, uses the existing failure-conditional rollback boundary.
 
@@ -361,3 +362,11 @@ The dry-run result is not write authorization. A write phase requires all of the
 - no active stop criteria.
 
 If any condition is absent, do not insert, update, delete, deploy, restart, or repair production data.
+
+## DEVOLUCIONES authoritative acceptance
+
+The expected inventory is dynamic. It contains only productive claims backed by authoritative v2
+return evidence. Before marker publication, reconciliation reads persisted claims and fails closed
+when any row is not `productive=true`. This change does not delete or rewrite that historical row;
+it requires separate audited remediation. Public evidence may include only the allowlisted
+`excluded_low_cost_no_authoritative_item_identity` counter and aggregate inventory counters.

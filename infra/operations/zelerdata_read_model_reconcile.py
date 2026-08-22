@@ -792,12 +792,28 @@ def _bounded_focused_counters(counters: Mapping[str, Any]) -> dict[str, int]:
         "missing",
         "snapshot_1_T",
         "snapshot_2_T",
+        "excluded_low_cost_no_authoritative_item_identity",
     }
     return {
         key: value
         for key, value in counters.items()
         if key in allowed and isinstance(value, int) and not isinstance(value, bool) and value >= 0
     }
+
+
+def _aggregate_chunked_devoluciones_counters(
+    source_calls: Mapping[str, int], chunk_counters: Sequence[Mapping[str, int]]
+) -> dict[str, int]:
+    aggregated = dict(source_calls)
+    counter_name = "excluded_low_cost_no_authoritative_item_identity"
+    aggregated[counter_name] = sum(
+        counters.get(counter_name, 0)
+        for counters in chunk_counters
+        if isinstance(counters.get(counter_name, 0), int)
+        and not isinstance(counters.get(counter_name, 0), bool)
+        and counters.get(counter_name, 0) >= 0
+    )
+    return {key: value for key, value in aggregated.items() if value or key != counter_name}
 
 
 def _private_fingerprint_hash(value: str) -> str:
@@ -1714,6 +1730,11 @@ async def write_complete_read_model_freshness_markers(
             aggregate=claims_aggregate,
             operation=operation,
         )
+        await _reject_historical_non_productive_devoluciones_rows(
+            db=db,
+            seller_id=request.seller_id,
+            session=session,
+        )
         from zeler_sheets.devoluciones_reconciliation import verify_devoluciones_read_model
 
         if publication_guard is not None:
@@ -1829,6 +1850,21 @@ async def write_complete_read_model_freshness_markers(
     if devoluciones_written:
         counts["devoluciones_markers_written"] = devoluciones_written
     return counts
+
+
+async def _reject_historical_non_productive_devoluciones_rows(
+    *, db: Any, seller_id: str, session: Any | None = None
+) -> None:
+    """Fail closed before marker publication; remediation remains separately audited."""
+    session_kwargs = {"session": session} if session is not None else {}
+    historical_row = await db["claims"].find_one(
+        {"seller_id": seller_id, "productive": {"$ne": True}},
+        **session_kwargs,
+    )
+    if historical_row is not None:
+        raise RuntimeError(
+            "historical non-productive DEVOLUCIONES rows require audited remediation"
+        )
 
 
 def _request_encloses_required_devoluciones_coverage(
@@ -2738,7 +2774,10 @@ async def _run_chunked_focused_devoluciones_dry_run(
         mandatory_source_gate=MandatorySourceGate(read_model="claims", authoritative=True),
         runtime_evidence=FocusedRuntimeEvidence(
             monotonic() - started,
-            dict(run_ledger.counts),
+            _aggregate_chunked_devoluciones_counters(
+                run_ledger.counts,
+                tuple(snapshot.counters for snapshot in chunk_snapshots),
+            ),
             source_fingerprint=aggregated_source_fp,
             read_model_fingerprint=aggregated_read_fp,
             campaign_id=resolved_campaign_id,
