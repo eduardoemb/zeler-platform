@@ -1360,6 +1360,9 @@ elif [[ "${1:-} ${2:-}" == "projects describe" ]]; then
 elif [[ "${1:-} ${2:-} ${3:-} ${4:-}" == "artifacts docker images describe" ]]; then
   printf '%s\n' "$ARTIFACT_PROVENANCE_JSON"
 elif [[ "${1:-} ${2:-}" == "builds describe" ]]; then
+  if [[ " $* " != *" --region=${GCLOUD_BUILD_REGION:-us-central1} "* ]]; then
+    exit 66
+  fi
   printf '%s\n' "$CLOUD_BUILD_JSON"
 else
   exit 64
@@ -1727,8 +1730,12 @@ def test_daily_pull_allows_moving_tag_when_digest_binding_disabled(
     assert not Path(env["DOCKER_CALL_LOG"]).exists()
 
 
+@pytest.mark.parametrize(
+    ("build_region", "expected_build_region"),
+    [(None, "us-central1"), ("europe-west1", "europe-west1"), ("global", "global")],
+)
 def test_daily_pull_writes_image_to_commit_for_pinned_images_when_enabled(
-    tmp_path: Path,
+    tmp_path: Path, build_region: str | None, expected_build_region: str
 ) -> None:
     image_ref = (
         "us-central1-docker.pkg.dev/zeler-platform-dev/zeler-platform/sheets-api@sha256:" + "a" * 64
@@ -1738,6 +1745,9 @@ def test_daily_pull_writes_image_to_commit_for_pinned_images_when_enabled(
         {"services": {"sheets-api": {"image": image_ref}}},
         require_binding=True,
     )
+    env["GCLOUD_BUILD_REGION"] = expected_build_region
+    if build_region is not None:
+        env["ZELER_BUILD_REGION"] = build_region
 
     completed = subprocess.run(  # noqa: S603 - repository-owned preflight.
         ["/bin/bash", str(DOCKER_DEPLOY_PREFLIGHT)],
