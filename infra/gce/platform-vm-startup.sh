@@ -287,6 +287,11 @@ if [[ ! -f "$COMPOSE_FILE" ]]; then
   COMPOSE_FILE="$(cd "$(dirname "$0")" && pwd)/docker-compose.yml"
 fi
 IMAGE_TO_COMMIT_FILE=${IMAGE_TO_COMMIT_FILE:-/var/lib/zeler-platform/image_to_commit.json}
+ZELER_BUILD_REGION=${ZELER_BUILD_REGION:-us-central1}
+if [[ "$ZELER_BUILD_REGION" != "global" && ! "$ZELER_BUILD_REGION" =~ ^[a-z]+(-[a-z]+)+[0-9]+$ ]]; then
+  echo "ERROR: ZELER_BUILD_REGION must be a valid regional Cloud Build location." >&2
+  exit 1
+fi
 
 DRY_RUN=0
 if [[ "${1:-}" == "--dry-run" ]]; then
@@ -358,7 +363,7 @@ verify_sheets_rollback_attestation() {
   build_id=$(PYTHONPATH="$PLATFORM_ROOT" "$PYTHON_BIN" \
     -m infra.deploy.sheets_rollback extract-build-id \
     --artifact-provenance "$artifact_file" --image-ref "$image_ref")
-  "$GCLOUD_BIN" builds describe "$build_id" --format=json > "$build_file"
+  "$GCLOUD_BIN" builds describe "$build_id" --region="$ZELER_BUILD_REGION" --format=json > "$build_file"
   if [[ -n "$connected_repository" ]]; then
     PYTHONPATH="$PLATFORM_ROOT" "$PYTHON_BIN" -m infra.deploy.sheets_rollback \
       verify-gcloud \
@@ -436,7 +441,7 @@ verify_digest_binding() {
     build_id=$(PYTHONPATH="$PLATFORM_ROOT" "$PYTHON_BIN" \
       -m infra.deploy.provenance_check extract-build-id \
       --artifact-file "$temp_dir/artifact.json" --image-ref "$image_ref")
-    "$GCLOUD_BIN" builds describe "$build_id" --format=json > "$temp_dir/build.json"
+    "$GCLOUD_BIN" builds describe "$build_id" --region="$ZELER_BUILD_REGION" --format=json > "$temp_dir/build.json"
     PYTHONPATH="$PLATFORM_ROOT" "$PYTHON_BIN" -m infra.deploy.provenance_check \
       verify-image \
       --image-ref "$image_ref" \
