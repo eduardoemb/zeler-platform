@@ -4,6 +4,7 @@ import asyncio
 import json
 import os
 import re
+import shlex
 import stat
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, replace
@@ -401,19 +402,25 @@ async def test_guard_reason_code_productive_only_is_private() -> None:
     assert "82453304" not in str(error.value)
 
 
-@pytest.mark.asyncio
-async def test_guard_basis_failure_publicly_remains_query_anomaly() -> None:
+def test_guard_basis_failure_publicly_remains_query_anomaly(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     class Claims:
         async def find_one(self, *_: Any, **__: Any) -> dict[str, Any]:
             return {"productive": True, "return_quantity_basis": "verified_low_cost_no_row"}
 
-    with pytest.raises(reconcile_operation_module.HistoricalDevolucionesGuardError) as error:
+    async def fail_cli(_: Any) -> Any:
         await reconcile_operation_module._reject_historical_non_productive_devoluciones_rows(
             db={"claims": Claims()}, seller_id="82453304"
         )
 
-    assert error.value.error_code == "historical_returns_basis_not_v2_return_order"
-    assert "verified_low_cost_no_row" not in str(error.value)
+    with pytest.raises(SystemExit, match="query_anomaly") as error:
+        monkeypatch.setattr(reconcile_operation_module, "_run_cli", fail_cli)
+        reconcile_operation_module.main(
+            ["--seller-id", "82453304", "--date-from", "2026-01-01", "--date-to", "2026-01-02"]
+        )
+
+    assert str(error.value) == "query_anomaly"
 
 
 @pytest.mark.asyncio
@@ -431,24 +438,21 @@ async def test_guard_and_tool_read_failures_use_closed_codes_without_partial_out
     assert "private-row-id" not in str(error.value)
 
 
-def test_receipt_semantics_are_dynamic_not_constants() -> None:
-    first = reconcile_operation_module.ReconciliationSummary(
-        seller_id="seller",
-        date_from="2026-01-01",
-        date_to="2026-01-02",
-        dry_run=True,
-        approved_runtime=True,
-        write_enabled=False,
-    ).to_sanitized_dict()
-    second = reconcile_operation_module.ReconciliationSummary(
-        seller_id="seller",
-        date_from="2026-01-01",
-        date_to="2026-01-02",
-        dry_run=True,
-        approved_runtime=True,
-        write_enabled=False,
-    ).to_sanitized_dict()
-    assert first == second and first["mode"] == "dry_run"
+def test_receipt_semantics_are_dynamic_not_constants(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    _install_focused_gateway(monkeypatch, client=_FocusedGatewayClient())
+    args = shlex.split(
+        "--seller-id 82453304 --date-from 2026-06-01 --date-to 2026-07-09 "
+        "--read-model devoluciones --dry-run --confirm-approved-runtime"
+    )
+    receipt = tmp_path / "dry-run.json"
+    assert reconcile_operation_module.main(args) == 0
+    first = capsys.readouterr().out
+    receipt.write_text(first)
+    assert reconcile_operation_module.main(args) == 0
+    second = capsys.readouterr().out
+    assert receipt.read_text() == second and json.loads(second)["stage"] == "dry_run"
 
 
 def _complete_price_stockout_summary(request: Any) -> ReconciliationSummary:
