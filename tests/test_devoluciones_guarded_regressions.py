@@ -679,6 +679,7 @@ async def test_prewrite_guard_blocks_historical_non_productive_claim_without_mut
     ("claim", "reason"),
     [
         ({"productive": True}, "basis"),
+        ({"productive": True, "return_quantity_basis": None}, "basis"),
         ({"productive": True, "return_quantity_basis": "verified_low_cost_no_row"}, "basis"),
     ],
 )

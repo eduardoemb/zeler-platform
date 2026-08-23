@@ -221,7 +221,10 @@ async def test_guard_pass_does_not_change_staleness_or_formula_checks() -> None:
 
 
 @pytest.mark.asyncio
-async def test_productive_none_blocks_guard_but_formula_semantics_stay_unchanged() -> None:
+@pytest.mark.parametrize("productive", [None, pytest.param(..., id="missing")])
+async def test_productive_none_blocks_guard_but_formula_semantics_stay_unchanged(
+    productive: object,
+) -> None:
     db = FakeDb()
     _mark_devoluciones_reconciled(db, valid_until=NOW)
     db["claims"].documents = {
@@ -229,7 +232,7 @@ async def test_productive_none_blocks_guard_but_formula_semantics_stay_unchanged
             "_id": "guarded",
             "seller_id": "seller-1",
             "type": "returns",
-            "productive": None,
+            **({} if productive is ... else {"productive": productive}),
         }
     }
     with pytest.raises(reconcile_module.HistoricalDevolucionesGuardError):

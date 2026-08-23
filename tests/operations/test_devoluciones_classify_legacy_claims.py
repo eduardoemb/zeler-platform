@@ -1,6 +1,11 @@
 from __future__ import annotations
 
+import ast
 import json
+import os
+import re
+import subprocess
+from pathlib import Path
 from typing import Any, cast
 
 import pytest
@@ -176,8 +181,22 @@ def test_mixed_claim_types_emit_only_bounded_fields(
     first = capsys.readouterr().out
     invoke(monkeypatch, list(reversed(rows)))
     output = json.loads(first)
-    assert capsys.readouterr().out == first and "seller-private" not in first
+    assert (
+        capsys.readouterr().out == first
+        and "seller-private" not in first
+        and "private" not in first
+    )
     assert set(output) == {"schema_version", "mode", "date_window", "groups"}
+    assert [set(group) for group in output["groups"]] == [
+        {
+            "type",
+            "productive",
+            "return_quantity_basis",
+            "item_id_present",
+            "in_requested_date_window",
+            "count",
+        }
+    ] * 2
     assert client.claims.query == {"seller_id": "seller-private"} and client.claims.projection == {
         "_id": 0,
         "type": 1,
@@ -192,7 +211,9 @@ def test_type_non_string_normalizes_to_unknown(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     groups = _groups(monkeypatch, capsys, [{"type": True}, {"type": 123}])
+    rendered = json.dumps(groups)
     assert [group["type"] for group in groups] == ["unknown"] and groups[0]["count"] == 2
+    assert '"type": true' not in rendered and "123" not in rendered
 
 
 def test_unknown_type_string_does_not_leak(
@@ -258,6 +279,18 @@ def test_all_group_values_belong_to_closed_domains(
         "null",
         "unknown",
     }
+    assert set(group) == {
+        "type",
+        "productive",
+        "return_quantity_basis",
+        "item_id_present",
+        "in_requested_date_window",
+        "count",
+    }
+    assert isinstance(group["item_id_present"], bool)
+    assert group["in_requested_date_window"] in {True, False, None, "unknown"}
+    assert isinstance(group["count"], int) and group["count"] >= 0
+    assert "bad" not in json.dumps(groups)
 
 
 def test_no_window_labels_all_groups_null(
@@ -274,20 +307,110 @@ def test_invalid_date_created_maps_to_unknown(
     groups = _groups(
         monkeypatch,
         capsys,
-        [{"date_created": "bad"}],
+        [{"date_created": "bad"}, {}],
         "--date-from",
         "2026-01-01",
         "--date-to",
         "2026-01-02",
     )
-    assert groups[0]["in_requested_date_window"] == "unknown" and groups[0]["count"] == 1
+    assert groups[0]["in_requested_date_window"] == "unknown" and groups[0]["count"] == 2
 
 
-def test_phase1_has_no_data_restoration_rollback_path(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    groups = _groups(monkeypatch, capsys, [{"type": "returns"}])
-    assert groups[0]["count"] == 1
+PHASE5_ALLOWLIST = frozenset(
+    {
+        "modules/sheets/tests/test_formula_handlers_returns_histories_withdrawals.py",
+        "tests/operations/test_devoluciones_classify_legacy_claims.py",
+        "tests/operations/test_zelerdata_read_model_reconcile.py",
+        "tests/test_devoluciones_guarded_regressions.py",
+    }
+)
+_FORBIDDEN_ROLLBACK_NAME = re.compile(r"rollback|restore|restoration|revert", re.I)
+
+
+def _run_git(argv: list[str], cwd: Path) -> str:
+    return subprocess.run(  # noqa: S603 -- fixed Git argv is structural test evidence.
+        argv, cwd=cwd, shell=False, check=True, capture_output=True, text=True
+    ).stdout.rstrip("\n")
+
+
+def _prove_phase5_rollback(ref: str, run: Any) -> tuple[str, list[str]]:
+    root = Path(__file__).resolve().parents[2]
+    assert run(["git", "rev-parse", "--show-toplevel"], root) == str(root)
+    sha = run(["git", "rev-parse", "--verify", f"{ref}^{{commit}}"], root)
+    assert len(run(["git", "rev-list", "--parents", "-n", "1", sha], root).split()) == 2
+    paths = set(
+        run(
+            ["git", "diff-tree", "--no-commit-id", "--name-only", "-r", "-z", f"{sha}^", sha], root
+        ).split("\0")
+    ) - {""}
+    assert paths and "tests/operations/test_devoluciones_classify_legacy_claims.py" in paths
+    assert paths <= PHASE5_ALLOWLIST
+    for path in (
+        "infra/operations/devoluciones_classify_legacy_claims.py",
+        "infra/operations/zelerdata_read_model_reconcile.py",
+    ):
+        tree = ast.parse(run(["git", "cat-file", "blob", f"{sha}:{path}"], root))
+        names = [node.id for node in ast.walk(tree) if isinstance(node, ast.Name)]
+        names += [node.attr for node in ast.walk(tree) if isinstance(node, ast.Attribute)]
+        names += [
+            node.value
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Constant) and isinstance(node.value, str)
+        ]
+        assert not any(_FORBIDDEN_ROLLBACK_NAME.search(name) for name in names)
+    return sha, ["git", "revert", sha]
+
+
+def test_phase1_has_no_data_restoration_rollback_path() -> None:
+    if ref := os.environ.get("PHASE5_WORK_UNIT_COMMIT"):
+        sha, rollback = _prove_phase5_rollback(ref, _run_git)
+        assert rollback == ["git", "revert", sha]
+        return
+
+    sha = "a" * 40
+    calls: list[list[str]] = []
+
+    def run(argv: list[str], cwd: Path) -> str:
+        assert cwd == Path(__file__).resolve().parents[2]
+        calls.append(argv)
+        if argv[1:3] == ["rev-parse", "--show-toplevel"]:
+            return str(cwd)
+        if argv[1:3] == ["rev-parse", "--verify"]:
+            return sha
+        if argv[1:3] == ["rev-list", "--parents"]:
+            return f"{sha} {'b' * 40}"
+        if argv[1] == "diff-tree":
+            return "tests/operations/test_devoluciones_classify_legacy_claims.py\0"
+        return "def read_only(): pass\n"
+
+    assert _prove_phase5_rollback("phase5", run) == (sha, ["git", "revert", sha])
+    assert all(call[0] == "git" for call in calls)
+
+
+def test_r9_s5_rejects_out_of_boundary_paths() -> None:
+    with pytest.raises(AssertionError):
+        _prove_phase5_rollback(
+            "phase5",
+            lambda argv, cwd: (
+                "README.sh\0"
+                if argv[1] == "diff-tree"
+                else str(cwd)
+                if argv[1:3] == ["rev-parse", "--show-toplevel"]
+                else "a" * 40
+                if argv[1] == "rev-parse"
+                else f"{'a' * 40} {'b' * 40}"
+            ),
+        )
+
+
+def test_r9_s5_pins_canonical_repository_root() -> None:
+    with pytest.raises(AssertionError):
+        _prove_phase5_rollback(
+            "phase5",
+            lambda argv, _: (
+                "/wrong" if argv[1] == "rev-parse" and argv[2] == "--show-toplevel" else ""
+            ),
+        )
 
 
 def test_window_is_inclusive_by_utc_date(
