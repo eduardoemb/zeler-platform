@@ -363,6 +363,25 @@ The dry-run result is not write authorization. A write phase requires all of the
 
 If any condition is absent, do not insert, update, delete, deploy, restart, or repair production data.
 
+## Historical claims classifier
+
+Use `infra.operations.devoluciones_classify_legacy_claims` only from an approved
+VM/VPC/runtime context. It is a read-only, seller-wide classifier and requires
+both `--seller-id` and `--confirm-approved-runtime`. The confirmation gate is
+checked before Mongo client construction.
+
+The tool writes one canonical JSON object to stdout only after its full read
+completes. It emits bounded aggregate groups and metadata only; it never emits
+seller identity, document IDs, payloads, connection values, or raw unknown
+Mongo values. `MISSING_SELLER`, `APPROVED_RUNTIME_CONFIRMATION_REQUIRED`,
+`INVALID_DATE_RANGE`, and `READ_FAILED` are deterministic stderr errors with
+no partial JSON output.
+
+Classification is evidence only. It does not change the marker decision: any
+noncanonical `returns` row keeps the DEVOLUCIONES marker blocked, and the timer
+remains disabled. The observed `21/2/8/66/21/95` values are evidence only, not
+classifier inputs, fixed expectations, or authorization for a write.
+
 ## DEVOLUCIONES authoritative acceptance
 
 The expected inventory is dynamic. It contains only productive claims backed by authoritative v2
