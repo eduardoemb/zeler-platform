@@ -27,8 +27,10 @@ from zeler_platform_core.devoluciones_readiness import (
 )
 from zeler_sheets.claim_projection import persist_claim_projection
 from zeler_sheets.devoluciones_reconciliation import (
+    DevolucionesReadModelVerificationError,
     collect_devoluciones_snapshot,
     devoluciones_read_model_fingerprint,
+    verify_devoluciones_read_model,
 )
 from zeler_sheets.event_persistence import SheetsEventPersistence
 from zeler_sheets.historical_meli_backfill import run_historical_meli_backfill
@@ -676,12 +678,11 @@ async def test_prewrite_guard_blocks_historical_non_productive_claim_without_mut
 @pytest.mark.parametrize(
     ("claim", "reason"),
     [
-        ({"productive": None, "return_quantity_basis": "v2_return_order"}, "productive"),
-        ({"productive": True, "return_quantity_basis": None}, "basis"),
-        ({"productive": False, "return_quantity_basis": "v2_return_order"}, "productive"),
+        ({"productive": True}, "basis"),
+        ({"productive": True, "return_quantity_basis": "verified_low_cost_no_row"}, "basis"),
     ],
 )
-async def test_guard_blocks_noncanonical_returns(claim: dict[str, Any], reason: str) -> None:
+async def test_guard_blocks_noncanonical_basis(claim: dict[str, Any], reason: str) -> None:
     db = _MemoryDb(
         {"claims": [{"_id": "claim", "seller_id": SELLER_ID, "type": "returns", **claim}]}
     )
@@ -693,19 +694,97 @@ async def test_guard_blocks_noncanonical_returns(claim: dict[str, Any], reason: 
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("claim_type", ["cancel_purchase", "mediations", None, ""])
-async def test_guard_ignores_non_return_types_and_malformed_rows(claim_type: str | None) -> None:
+@pytest.mark.parametrize("claim_type", ["cancel_purchase", "mediations"])
+async def test_guard_ignores_non_return_types(claim_type: str) -> None:
+    canonical_return = (
+        [
+            {
+                "_id": "return",
+                "seller_id": SELLER_ID,
+                "type": "returns",
+                "productive": True,
+                "return_quantity_basis": "v2_return_order",
+            }
+        ]
+        if claim_type == "mediations"
+        else []
+    )
     db = _MemoryDb(
         {
             "claims": [
                 {"_id": "claim", "seller_id": SELLER_ID, "type": claim_type, "productive": None}
             ]
+            + canonical_return
         }
     )
 
     await reconcile_module._reject_historical_non_productive_devoluciones_rows(
         db=db, seller_id=SELLER_ID
     )
+
+
+@pytest.mark.asyncio
+async def test_guard_ignores_malformed_type_rows() -> None:
+    db = _MemoryDb(
+        {
+            "claims": [
+                {"_id": "null", "seller_id": SELLER_ID, "type": None, "productive": None},
+                {"_id": "integer", "seller_id": SELLER_ID, "type": 7, "productive": False},
+                {"_id": "empty", "seller_id": SELLER_ID, "type": "", "productive": False},
+            ]
+        }
+    )
+    await reconcile_module._reject_historical_non_productive_devoluciones_rows(
+        db=db, seller_id=SELLER_ID
+    )
+
+
+@pytest.mark.asyncio
+async def test_guard_blocks_any_mixed_noncanonical_return() -> None:
+    db = _MemoryDb(
+        {
+            "claims": [
+                {
+                    "_id": "canonical",
+                    "seller_id": SELLER_ID,
+                    "type": "returns",
+                    "productive": True,
+                    "return_quantity_basis": "v2_return_order",
+                },
+                {
+                    "_id": "noncanonical",
+                    "seller_id": SELLER_ID,
+                    "type": "returns",
+                    "productive": True,
+                    "return_quantity_basis": "verified_low_cost_no_row",
+                },
+            ]
+        }
+    )
+    with pytest.raises(reconcile_module.HistoricalDevolucionesGuardError, match="basis"):
+        await reconcile_module._reject_historical_non_productive_devoluciones_rows(
+            db=db, seller_id=SELLER_ID
+        )
+
+
+@pytest.mark.asyncio
+async def test_guard_pass_does_not_bypass_joint_item_verification() -> None:
+    claim = _joint_claim("canonical", order_id="order", item_id="MLA-mismatch", productive=True)
+    db = _MemoryDb({"claims": [claim], "orders": [_joint_order("order", item_id="MLA-other")]})
+
+    await reconcile_module._reject_historical_non_productive_devoluciones_rows(
+        db=db, seller_id=SELLER_ID
+    )
+
+    with pytest.raises(DevolucionesReadModelVerificationError, match="item"):
+        await verify_devoluciones_read_model(
+            db=db,
+            seller_id=SELLER_ID,
+            date_from=datetime(2026, 6, 1, tzinfo=UTC),
+            date_to=datetime(2026, 6, 9, tzinfo=UTC),
+            expected_claim_ids=frozenset({"canonical"}),
+            expected_read_model_fingerprint="different-proof",
+        )
 
 
 @pytest.mark.asyncio
@@ -716,7 +795,7 @@ async def test_guard_precedes_devoluciones_marker_upsert() -> None:
         {
             DEVOLUCIONES_OPERATIONS_COLLECTION: [_operation_document(operation)],
             "claims": [
-                {"_id": "claim", "seller_id": SELLER_ID, "type": "returns", "productive": None}
+                {"_id": "claim", "seller_id": SELLER_ID, "type": "returns", "productive": False}
             ],
         }
     )
