@@ -11,6 +11,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequenc
 from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
+from enum import StrEnum
 from typing import TYPE_CHECKING, Any
 
 from infra.operations.zelerdata_campaign_state import PrivateCampaignSample
@@ -28,6 +29,32 @@ from zeler_platform_core.devoluciones_readiness import (
 
 if TYPE_CHECKING:
     from zeler_sheets.devoluciones_reconciliation import _FocusedDevolucionesFailure
+
+
+class HistoricalGuardReason(StrEnum):
+    PRODUCTIVE_NOT_TRUE = "productive_not_true"
+    BASIS_NOT_V2_RETURN_ORDER = "basis_not_v2_return_order"
+    PRODUCTIVE_AND_BASIS = "productive_not_true_and_basis_not_v2_return_order"
+    READ_FAILED = "guard_read_failed"
+
+
+class HistoricalDevolucionesGuardError(RuntimeError):
+    _ERROR_CODES = {
+        HistoricalGuardReason.PRODUCTIVE_NOT_TRUE: "historical_returns_productive_not_true",
+        HistoricalGuardReason.BASIS_NOT_V2_RETURN_ORDER: (
+            "historical_returns_basis_not_v2_return_order"
+        ),
+        HistoricalGuardReason.PRODUCTIVE_AND_BASIS: (
+            "historical_returns_productive_not_true_and_basis_not_v2_return_order"
+        ),
+        HistoricalGuardReason.READ_FAILED: "historical_returns_guard_read_failed",
+    }
+
+    def __init__(self, reason: HistoricalGuardReason) -> None:
+        self.reason = reason
+        self.error_code = self._ERROR_CODES[reason]
+        super().__init__(f"historical DEVOLUCIONES guard blocked: {reason}")
+
 
 READ_MODELS: tuple[str, ...] = (
     "orders",
@@ -1857,14 +1884,34 @@ async def _reject_historical_non_productive_devoluciones_rows(
 ) -> None:
     """Fail closed before marker publication; remediation remains separately audited."""
     session_kwargs = {"session": session} if session is not None else {}
-    historical_row = await db["claims"].find_one(
-        {"seller_id": seller_id, "productive": {"$ne": True}},
-        **session_kwargs,
-    )
-    if historical_row is not None:
-        raise RuntimeError(
-            "historical non-productive DEVOLUCIONES rows require audited remediation"
+    try:
+        historical_row = await db["claims"].find_one(
+            {
+                "seller_id": seller_id,
+                "type": "returns",
+                "$or": [
+                    {"productive": {"$ne": True}},
+                    {"return_quantity_basis": {"$ne": "v2_return_order"}},
+                ],
+            },
+            projection={"_id": 0, "productive": 1, "return_quantity_basis": 1},
+            **session_kwargs,
         )
+    except Exception as exc:
+        raise HistoricalDevolucionesGuardError(HistoricalGuardReason.READ_FAILED) from exc
+    if historical_row is None:
+        return
+    reason = {
+        (True, False): HistoricalGuardReason.PRODUCTIVE_NOT_TRUE,
+        (False, True): HistoricalGuardReason.BASIS_NOT_V2_RETURN_ORDER,
+        (True, True): HistoricalGuardReason.PRODUCTIVE_AND_BASIS,
+    }[
+        (
+            historical_row.get("productive") is not True,
+            historical_row.get("return_quantity_basis") != "v2_return_order",
+        )
+    ]
+    raise HistoricalDevolucionesGuardError(reason)
 
 
 def _request_encloses_required_devoluciones_coverage(
@@ -2581,6 +2628,11 @@ async def run_focused_devoluciones_reconciliation(
                 publication_guard=publication_guard,
             )
             publication_guard()
+        except HistoricalDevolucionesGuardError as exc:
+            await finish_devoluciones_operation(
+                db=db, operation=operation, succeeded=False, error_code=exc.error_code
+            )
+            raise
         except Exception:
             await finish_devoluciones_operation(
                 db=db,
@@ -2882,6 +2934,11 @@ async def _run_cli(args: argparse.Namespace) -> ReconciliationSummary:
                         write_counts={**write_counts, **marker_counts},
                         repair_counts=repair_counts,
                     )
+                except HistoricalDevolucionesGuardError as exc:
+                    await finish_devoluciones_operation(
+                        db=db, operation=operation, succeeded=False, error_code=exc.error_code
+                    )
+                    raise
                 except Exception:
                     await finish_devoluciones_operation(
                         db=db,

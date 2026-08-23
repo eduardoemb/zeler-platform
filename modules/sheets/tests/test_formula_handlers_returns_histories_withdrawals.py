@@ -194,6 +194,20 @@ async def test_devoluciones_never_falls_back_to_single_order_line_quantity() -> 
 
 
 @pytest.mark.asyncio
+async def test_guard_pass_does_not_change_staleness_or_formula_checks() -> None:
+    db = FakeDb()
+    _mark_devoluciones_reconciled(db, valid_until=NOW)
+
+    with pytest.raises(FormulaDataUnavailableError, match="ZELERDATA_DEVOLUCIONES"):
+        await _dispatcher(db).execute(
+            _context(
+                "ZELERDATA_DEVOLUCIONES",
+                {"fecha_inicio": "2026-06-01", "fecha_final": "2026-06-15"},
+            )
+        )
+
+
+@pytest.mark.asyncio
 async def test_devoluciones_never_falls_back_to_raw_order_item_quantity() -> None:
     db = FakeDb()
     _mark_devoluciones_reconciled(db)
