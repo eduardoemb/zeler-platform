@@ -7,6 +7,7 @@ from decimal import Decimal
 from typing import Any
 
 import pytest
+from infra.operations import zelerdata_read_model_reconcile as reconcile_module
 
 from zeler_sheets.formulas.dispatcher import (
     FormulaDataUnavailableError,
@@ -49,7 +50,7 @@ class FakeCollection:
         self.documents: dict[str, dict[str, Any]] = {}
         self.last_find_filter: dict[str, Any] | None = None
 
-    async def find_one(self, filter_spec: dict[str, Any]) -> dict[str, Any] | None:
+    async def find_one(self, filter_spec: dict[str, Any], **_: Any) -> dict[str, Any] | None:
         self.last_find_filter = dict(filter_spec)
         for doc in self.documents.values():
             if _matches(doc, filter_spec):
@@ -197,7 +198,44 @@ async def test_devoluciones_never_falls_back_to_single_order_line_quantity() -> 
 async def test_guard_pass_does_not_change_staleness_or_formula_checks() -> None:
     db = FakeDb()
     _mark_devoluciones_reconciled(db, valid_until=NOW)
+    db["claims"].documents = {
+        "canonical": {
+            "_id": "canonical",
+            "seller_id": "seller-1",
+            "type": "returns",
+            "productive": True,
+            "return_quantity_basis": "v2_return_order",
+        }
+    }
+    await reconcile_module._reject_historical_non_productive_devoluciones_rows(
+        db=db, seller_id="seller-1"
+    )
 
+    with pytest.raises(FormulaDataUnavailableError, match="ZELERDATA_DEVOLUCIONES"):
+        await _dispatcher(db).execute(
+            _context(
+                "ZELERDATA_DEVOLUCIONES",
+                {"fecha_inicio": "2026-06-01", "fecha_final": "2026-06-15"},
+            )
+        )
+
+
+@pytest.mark.asyncio
+async def test_productive_none_blocks_guard_but_formula_semantics_stay_unchanged() -> None:
+    db = FakeDb()
+    _mark_devoluciones_reconciled(db, valid_until=NOW)
+    db["claims"].documents = {
+        "guarded": {
+            "_id": "guarded",
+            "seller_id": "seller-1",
+            "type": "returns",
+            "productive": None,
+        }
+    }
+    with pytest.raises(reconcile_module.HistoricalDevolucionesGuardError):
+        await reconcile_module._reject_historical_non_productive_devoluciones_rows(
+            db=db, seller_id="seller-1"
+        )
     with pytest.raises(FormulaDataUnavailableError, match="ZELERDATA_DEVOLUCIONES"):
         await _dispatcher(db).execute(
             _context(
