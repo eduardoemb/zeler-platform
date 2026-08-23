@@ -377,6 +377,30 @@ def _write_request(*, extra_args: list[str] | None = None) -> Any:
     return build_reconciliation_request(build_arg_parser().parse_args(args))
 
 
+@pytest.mark.asyncio
+async def test_guard_reason_code_productive_only_is_private() -> None:
+    class Claims:
+        async def find_one(self, query: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
+            assert query == {
+                "seller_id": "82453304",
+                "type": "returns",
+                "$or": [
+                    {"productive": {"$ne": True}},
+                    {"return_quantity_basis": {"$ne": "v2_return_order"}},
+                ],
+            }
+            assert kwargs["projection"] == {"_id": 0, "productive": 1, "return_quantity_basis": 1}
+            return {"productive": None, "return_quantity_basis": "v2_return_order"}
+
+    with pytest.raises(reconcile_operation_module.HistoricalDevolucionesGuardError) as error:
+        await reconcile_operation_module._reject_historical_non_productive_devoluciones_rows(
+            db={"claims": Claims()}, seller_id="82453304"
+        )
+
+    assert error.value.error_code == "historical_returns_productive_not_true"
+    assert "82453304" not in str(error.value)
+
+
 def _complete_price_stockout_summary(request: Any) -> ReconciliationSummary:
     return ReconciliationSummary(
         seller_id=request.seller_id,

@@ -662,13 +662,80 @@ async def test_prewrite_guard_blocks_historical_non_productive_claim_without_mut
     )
     db = _MemoryDb({"claims": [historical_claim]})
 
-    with pytest.raises(RuntimeError, match="audited remediation"):
+    with pytest.raises(RuntimeError, match="historical DEVOLUCIONES guard"):
         await reconcile_module._reject_historical_non_productive_devoluciones_rows(
             db=db,
             seller_id=SELLER_ID,
         )
 
     assert db["claims"].documents["claim-historical"] == historical_claim
+    assert db["sheets_read_model_freshness"].documents == {}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("claim", "reason"),
+    [
+        ({"productive": None, "return_quantity_basis": "v2_return_order"}, "productive"),
+        ({"productive": True, "return_quantity_basis": None}, "basis"),
+        ({"productive": False, "return_quantity_basis": "v2_return_order"}, "productive"),
+    ],
+)
+async def test_guard_blocks_noncanonical_returns(claim: dict[str, Any], reason: str) -> None:
+    db = _MemoryDb(
+        {"claims": [{"_id": "claim", "seller_id": SELLER_ID, "type": "returns", **claim}]}
+    )
+
+    with pytest.raises(reconcile_module.HistoricalDevolucionesGuardError, match=reason):
+        await reconcile_module._reject_historical_non_productive_devoluciones_rows(
+            db=db, seller_id=SELLER_ID
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("claim_type", ["cancel_purchase", "mediations", None, ""])
+async def test_guard_ignores_non_return_types_and_malformed_rows(claim_type: str | None) -> None:
+    db = _MemoryDb(
+        {
+            "claims": [
+                {"_id": "claim", "seller_id": SELLER_ID, "type": claim_type, "productive": None}
+            ]
+        }
+    )
+
+    await reconcile_module._reject_historical_non_productive_devoluciones_rows(
+        db=db, seller_id=SELLER_ID
+    )
+
+
+@pytest.mark.asyncio
+async def test_guard_precedes_devoluciones_marker_upsert() -> None:
+    operation = _operation()
+    operation.source_fingerprint = "source"
+    db = _MemoryDb(
+        {
+            DEVOLUCIONES_OPERATIONS_COLLECTION: [_operation_document(operation)],
+            "claims": [
+                {"_id": "claim", "seller_id": SELLER_ID, "type": "returns", "productive": None}
+            ],
+        }
+    )
+
+    with pytest.raises(reconcile_module.HistoricalDevolucionesGuardError):
+        await write_complete_read_model_freshness_markers(
+            db=db,
+            request=_write_request(),
+            summary=_complete_claim_summary(),
+            expected=ExpectedReadModelCounts(
+                counts={"claims": 9},
+                refs={"claims": frozenset(str(index) for index in range(9))},
+                truth_mode={"claims": "expected"},
+                source_fingerprint="source",
+                read_model_fingerprint="proof",
+            ),
+            operation=operation,
+        )
+
     assert db["sheets_read_model_freshness"].documents == {}
 
 
