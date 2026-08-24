@@ -921,7 +921,7 @@ sudo docker compose --file /opt/zeler-platform/docker-compose.yml \
   exec -T --workdir /app sheets-worker \
   /app/.venv/bin/python -m infra.operations.zelerdata_read_model_reconcile \
   --seller-id 82453304 --date-from 2026-06-01 --date-to 2026-07-09 \
-  --dry-run --confirm-approved-runtime
+  --read-model devoluciones --dry-run --confirm-approved-runtime
 ```
 
 Review the sanitized dry-run result. Only after it passes, run the same command
@@ -932,7 +932,7 @@ sudo docker compose --file /opt/zeler-platform/docker-compose.yml \
   exec -T --workdir /app sheets-worker \
   /app/.venv/bin/python -m infra.operations.zelerdata_read_model_reconcile \
   --seller-id 82453304 --date-from 2026-06-01 --date-to 2026-07-09 \
-  --write --confirm-approved-runtime --confirm-production-write
+  --read-model devoluciones --write --confirm-approved-runtime --confirm-production-write
 ```
 
 ### Acceptance gate

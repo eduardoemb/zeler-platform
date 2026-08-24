@@ -832,9 +832,11 @@ def test_deploy_runbook_dry_run_and_write_commands_confirm_runtime_exactly_once(
     assert "--dry-run" in dry_run
     assert "--write" not in dry_run
     assert dry_run.count("--confirm-approved-runtime") == 1
+    assert dry_run.count("--read-model devoluciones") == 1
     assert "--write" in authorized_write
     assert "--confirm-production-write" in authorized_write
     assert authorized_write.count("--confirm-approved-runtime") == 1
+    assert authorized_write.count("--read-model devoluciones") == 1
 
 
 def test_deploy_runbook_records_the_wu8_gate_corrections() -> None:

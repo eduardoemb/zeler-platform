@@ -116,6 +116,12 @@ def test_preflight_reports_missing_required_inputs_without_printing_secret_value
     assert "amqps://" not in markdown
 
 
+def test_deploy_preflight_defaults_to_snap_gcloud_and_preserves_override() -> None:
+    text = DOCKER_DEPLOY_PREFLIGHT.read_text(encoding="utf-8")
+
+    assert "GCLOUD_BIN=${ZELER_GCLOUD_BIN:-/snap/bin/gcloud}" in text
+
+
 def test_preflight_passes_when_gcloud_env_and_repo_contracts_are_available() -> None:
     env = {
         "MONGO_URI": "mongodb://zeler-platform-target.invalid/zeler_platform",
