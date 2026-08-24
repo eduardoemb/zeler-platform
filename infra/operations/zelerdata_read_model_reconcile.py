@@ -367,6 +367,7 @@ class ScheduledRunSample:
     source_fingerprint: str
     read_model_fingerprint: str
     campaign_id: str = "default"
+    run_id: str | None = None
     physical_attempts: int = 0
     source_calls: Mapping[str, int] = field(default_factory=dict)
 
@@ -470,6 +471,7 @@ class FocusedRuntimeEvidence:
     source_fingerprint: str = ""
     read_model_fingerprint: str = ""
     campaign_id: str = "unassigned"
+    run_id: str | None = None
     process_deadline_seconds: float = 165.0
     shell_stop_seconds: float = 175.0
     status_class: str = "success"
@@ -503,6 +505,7 @@ def scheduled_sample_from_summary(summary: ReconciliationSummary) -> ScheduledRu
         source_fingerprint=evidence.source_fingerprint,
         read_model_fingerprint=evidence.read_model_fingerprint,
         campaign_id=evidence.campaign_id,
+        run_id=evidence.run_id,
         physical_attempts=int(evidence.source_calls.get("T", 0)),
         source_calls=evidence.source_calls,
     )
@@ -775,6 +778,7 @@ class ReconciliationSummary:
             public=self.to_focused_evidence(stage="write_readback"),
             private_campaign=PrivateCampaignSample(
                 campaign_id=sample.campaign_id,
+                run_id=sample.run_id,
                 outcome="success",
                 campaign_disqualified=False,
                 duration_seconds=sample.duration_seconds,

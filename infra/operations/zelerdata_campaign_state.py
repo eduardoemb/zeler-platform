@@ -39,6 +39,7 @@ class PrivateCampaignSample:
     duration_seconds: float
     source_fingerprint_hash: str | None = None
     read_model_fingerprint_hash: str | None = None
+    run_id: str | None = None
 
     def __post_init__(self) -> None:
         validated = _validated_evidence(self.to_mapping())
@@ -50,7 +51,7 @@ class PrivateCampaignSample:
         return cls(**validated)
 
     def to_mapping(self) -> dict[str, Any]:
-        return {
+        payload = {
             "campaign_id": self.campaign_id,
             "outcome": self.outcome,
             "campaign_disqualified": self.campaign_disqualified,
@@ -58,6 +59,9 @@ class PrivateCampaignSample:
             "source_fingerprint_hash": self.source_fingerprint_hash,
             "read_model_fingerprint_hash": self.read_model_fingerprint_hash,
         }
+        if self.run_id is not None:
+            payload["run_id"] = self.run_id
+        return payload
 
 
 @dataclass(frozen=True)
@@ -128,8 +132,23 @@ class CampaignStateStore:
                 campaigns.pop(campaign_id, None)
                 failure_reason = "campaign fingerprint drift disqualified the campaign ID"
             else:
+                run_id = sample.get("run_id")
+                if run_id is not None and campaign["durations"] and "run_ids" not in campaign:
+                    raise CampaignStateError("v2 evidence requires a new campaign")
+                if document["accepted_campaign_id"] == campaign_id:
+                    return self.load()
+                if run_id is not None:
+                    run_ids = campaign.setdefault("run_ids", [])
+                    if run_id in run_ids:
+                        return self.load()
+                    run_ids.append(run_id)
+                    document["schema_version"] = 2
+                elif "run_ids" in campaign:
+                    raise CampaignStateError("v2 campaign evidence requires run ID")
                 durations = [*campaign["durations"], sample["duration_seconds"]]
-                campaign["durations"] = durations[-CAMPAIGN_WINDOW_SIZE:]
+                campaign["durations"] = (
+                    durations if run_id is not None else durations[-CAMPAIGN_WINDOW_SIZE:]
+                )
                 if len(campaign["durations"]) == CAMPAIGN_WINDOW_SIZE:
                     p95 = nearest_rank_p95(campaign["durations"])
                     if p95 >= 150.0:
@@ -158,7 +177,7 @@ class CampaignStateStore:
             raise CampaignStateError("campaign state is unreadable") from exc
         if (
             not isinstance(document, dict)
-            or document.get("schema_version") != 1
+            or document.get("schema_version") not in {1, 2}
             or not isinstance(document.get("disqualified_campaign_ids"), list)
             or not isinstance(document.get("campaigns"), dict)
             or (
@@ -167,6 +186,24 @@ class CampaignStateStore:
             )
         ):
             raise CampaignStateError("campaign state schema is invalid")
+        if document["schema_version"] == 2:
+            for campaign in document["campaigns"].values():
+                if not isinstance(campaign, Mapping):
+                    raise CampaignStateError("campaign state schema is invalid")
+                run_ids = campaign.get("run_ids")
+                durations = campaign.get("durations")
+                if run_ids is not None and (
+                    not isinstance(run_ids, list)
+                    or not isinstance(durations, list)
+                    or len(run_ids) != len(durations)
+                    or len(run_ids) > CAMPAIGN_WINDOW_SIZE
+                    or len(run_ids) != len(set(run_ids))
+                    or any(
+                        not isinstance(run_id, str) or _HASH_PATTERN.fullmatch(run_id) is None
+                        for run_id in run_ids
+                    )
+                ):
+                    raise CampaignStateError("campaign state schema is invalid")
         return document
 
     def _atomic_write(self, document: Mapping[str, Any]) -> None:
@@ -208,6 +245,13 @@ def require_accepted_campaign(
         raise CampaignStateError("accepted campaign state is missing")
     durations = campaign.get("durations")
     if not isinstance(durations, list) or len(durations) != CAMPAIGN_WINDOW_SIZE:
+        raise CampaignStateError("campaign is not accepted")
+    run_ids = campaign.get("run_ids")
+    if run_ids is not None and (
+        not isinstance(run_ids, list)
+        or len(run_ids) != CAMPAIGN_WINDOW_SIZE
+        or len(set(run_ids)) != CAMPAIGN_WINDOW_SIZE
+    ):
         raise CampaignStateError("campaign is not accepted")
     if (
         campaign.get("source_fingerprint_hash") != expected_source_fingerprint_hash
@@ -266,6 +310,11 @@ def _validated_evidence(value: Mapping[str, Any]) -> dict[str, Any]:
             or _HASH_PATTERN.fullmatch(read_hash) is None
         ):
             raise CampaignStateError("campaign evidence fingerprint is invalid")
+        run_id = value.get("run_id")
+        if run_id is not None and (
+            not isinstance(run_id, str) or _HASH_PATTERN.fullmatch(run_id) is None
+        ):
+            raise CampaignStateError("campaign evidence run ID is invalid")
     elif (
         value.get("source_fingerprint_hash") is not None
         or value.get("read_model_fingerprint_hash") is not None
@@ -278,6 +327,7 @@ def _validated_evidence(value: Mapping[str, Any]) -> dict[str, Any]:
         "duration_seconds": _duration(value.get("duration_seconds")),
         "source_fingerprint_hash": value.get("source_fingerprint_hash"),
         "read_model_fingerprint_hash": value.get("read_model_fingerprint_hash"),
+        "run_id": value.get("run_id"),
     }
 
 
