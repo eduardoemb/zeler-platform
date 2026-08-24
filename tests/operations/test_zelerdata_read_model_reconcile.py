@@ -181,7 +181,7 @@ class FakeAsyncCollection:
             return type(
                 "UpdateResult",
                 (),
-                {"modified_count": 1, "upserted_id": None},
+                {"matched_count": 1, "modified_count": 1, "upserted_id": None},
             )()
         if upsert:
             replacement = dict(update_spec.get("$set", {}))
@@ -190,7 +190,11 @@ class FakeAsyncCollection:
         return type(
             "UpdateResult",
             (),
-            {"modified_count": 1, "upserted_id": filter_spec.get("_id")},
+            {
+                "matched_count": 0,
+                "modified_count": 1,
+                "upserted_id": filter_spec.get("_id"),
+            },
         )()
 
 
@@ -918,7 +922,14 @@ async def test_quota_run_advancement_processes_only_one_window_with_contract_bud
     async def source(**kwargs: Any) -> dict[str, Any]:
         assert inside_transaction is False
         calls.append(kwargs)
-        return {"expected_count": 1, "persisted_count": 1, "complete_count": 1, "missing_count": 0}
+        return {
+            "source_fingerprint": "source-0",
+            "read_model_fingerprint": "read-0",
+            "expected_count": 1,
+            "persisted_count": 1,
+            "complete_count": 1,
+            "missing_count": 0,
+        }
 
     result = await reconcile_operation_module.advance_devoluciones_quota_run(
         db=db, run_id="run-1", operation=_operation(), now=lambda: _dt(2), source=source
@@ -944,9 +955,7 @@ async def test_quota_run_advancement_processes_only_one_window_with_contract_bud
     ):
         validator = json.loads((ROOT / "infra/mongo/schemas" / schema_name).read_text())
         document = db[collection_name].documents[0]
-        assert validate_document_against_schema(
-            document, validator
-        ).valid
+        assert validate_document_against_schema(document, validator).valid
         assert set(document) <= set(validator["$jsonSchema"]["properties"])
 
 
@@ -1011,6 +1020,9 @@ async def test_quota_advancement_rejects_invalid_runs_before_source_work() -> No
     async def forbidden_source(**_: Any) -> dict[str, int]:
         raise AssertionError("source work must not start")
 
+    async def forbidden_readback(**_: Any) -> dict[str, Any]:
+        raise AssertionError("readback must not start")
+
     results = [
         await reconcile_operation_module.advance_devoluciones_quota_run(
             db=db,
@@ -1018,11 +1030,191 @@ async def test_quota_advancement_rejects_invalid_runs_before_source_work() -> No
             operation=_operation(),
             now=lambda: _dt(2),
             source=forbidden_source,
+            readback=forbidden_readback,
         )
         for run_id in ("unauthorized", "expired", "early")
     ]
 
     assert results == [{"advanced": 0, "finalized": 0}] * 3
+
+
+def _completed_quota_run(*, run_id: str = "run-finalize") -> dict[str, Any]:
+    return {
+        "_id": run_id,
+        "cohort_id": "cohort-1",
+        "seller_id": "82453304",
+        "scope": "devoluciones",
+        "authorization_id": "approved",
+        "state": "active",
+        "start": _dt(1),
+        "end": _dt(21),
+        "partition_version": "v1",
+        "release_fingerprints": {"gateway": "release-1"},
+        "window_count": 2,
+        "next_window_index": 2,
+        "created_at": _dt(1),
+        "expires_at": _dt(30),
+        "schema_version": 1,
+    }
+
+
+def _completed_quota_windows(*, run_id: str = "run-finalize") -> list[dict[str, Any]]:
+    return [
+        {
+            "_id": f"{run_id}:{index}",
+            "run_id": run_id,
+            "index": index,
+            "start": _dt(1 + index * 10),
+            "end": _dt(11 + index * 10),
+            "state": "completed",
+            "fence": 1,
+            "idempotency_key": f"{run_id}:{index}",
+            "source_fingerprint": f"source-{index}",
+            "read_model_fingerprint": f"read-{index}",
+            "expected_count": 1,
+            "persisted_count": 1,
+            "complete_count": 1,
+            "missing_count": 0,
+            "created_at": _dt(2),
+            "updated_at": _dt(2),
+            "schema_version": 1,
+        }
+        for index in range(2)
+    ]
+
+
+@pytest.mark.asyncio
+async def test_quota_run_finalization_publishes_one_exact_marker_and_is_idempotent() -> None:
+    db = FakeAsyncDb(
+        {
+            "sheets_devoluciones_runs": [_completed_quota_run()],
+            "sheets_devoluciones_run_windows": _completed_quota_windows(),
+        }
+    )
+    readbacks: list[dict[str, Any]] = []
+
+    async def forbidden_source(**_: Any) -> dict[str, Any]:
+        raise AssertionError("completed windows must not repeat source work")
+
+    async def readback(**kwargs: Any) -> dict[str, Any]:
+        readbacks.append(kwargs)
+        return {
+            "start": _dt(1),
+            "end": _dt(21),
+            "source_fingerprint": "full-source",
+            "read_model_fingerprint": "full-read",
+            "expected_count": 2,
+            "persisted_count": 2,
+            "complete_count": 2,
+            "missing_count": 0,
+        }
+
+    first = await reconcile_operation_module.advance_devoluciones_quota_run(
+        db=db,
+        run_id="run-finalize",
+        operation=_operation(),
+        now=lambda: _dt(22),
+        source=forbidden_source,
+        readback=readback,
+    )
+    second = await reconcile_operation_module.advance_devoluciones_quota_run(
+        db=db,
+        run_id="run-finalize",
+        operation=_operation(),
+        now=lambda: _dt(22),
+        source=forbidden_source,
+        readback=readback,
+    )
+
+    assert first == {"advanced": 0, "finalized": 1}
+    assert second == {"advanced": 0, "finalized": 0}
+    assert readbacks == [{"run": _completed_quota_run(), "windows": _completed_quota_windows()}]
+    assert db["sheets_devoluciones_runs"].documents[0]["state"] == "completed"
+    marker = db["sheets_read_model_freshness"].documents[0]
+    assert marker["_id"] == "82453304:devoluciones"
+    assert marker["date_from"] == _dt(1)
+    assert marker["reconciled_until"] == _dt(21)
+    assert marker["revision"] == "run-finalize"
+    assert marker["proof_fingerprint"]
+    validator = json.loads(
+        (ROOT / "infra/mongo/schemas/sheets_read_model_freshness.json").read_text()
+    )
+    assert validate_document_against_schema(marker, validator).valid
+    assert set(marker) <= set(validator["$jsonSchema"]["properties"])
+    assert len(db["sheets_read_model_freshness"].updates) == 1
+    run_filters = [entry[0] for entry in db["sheets_devoluciones_runs"].updates]
+    assert {"_id": "run-finalize", "state": "active"} in run_filters
+    assert {"_id": "run-finalize", "state": "finalizing"} in run_filters
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["gap", "failed"])
+async def test_quota_finalization_rejects_non_contiguous_or_failed_windows(failure: str) -> None:
+    windows = _completed_quota_windows(run_id=f"run-{failure}")
+    if failure == "gap":
+        windows.pop()
+    else:
+        windows[1]["state"] = "prepared"
+    db = FakeAsyncDb(
+        {
+            "sheets_devoluciones_runs": [_completed_quota_run(run_id=f"run-{failure}")],
+            "sheets_devoluciones_run_windows": windows,
+        }
+    )
+
+    async def forbidden(**_: Any) -> dict[str, Any]:
+        raise AssertionError("invalid finalization must not perform external work")
+
+    result = await reconcile_operation_module.advance_devoluciones_quota_run(
+        db=db,
+        run_id=f"run-{failure}",
+        operation=_operation(),
+        now=lambda: _dt(22),
+        source=forbidden,
+        readback=forbidden,
+    )
+
+    assert result == {"advanced": 0, "finalized": 0}
+    assert db["sheets_devoluciones_runs"].documents[0]["state"] == "failed"
+    assert db["sheets_read_model_freshness"].documents == []
+
+
+@pytest.mark.asyncio
+async def test_quota_finalization_rejects_inexact_readback_without_marker() -> None:
+    db = FakeAsyncDb(
+        {
+            "sheets_devoluciones_runs": [_completed_quota_run()],
+            "sheets_devoluciones_run_windows": _completed_quota_windows(),
+        }
+    )
+
+    async def forbidden_source(**_: Any) -> dict[str, Any]:
+        raise AssertionError("completed windows must not repeat source work")
+
+    async def inexact_readback(**_: Any) -> dict[str, Any]:
+        return {
+            "start": _dt(1),
+            "end": _dt(11),
+            "source_fingerprint": "partial-source",
+            "read_model_fingerprint": "partial-read",
+            "expected_count": 1,
+            "persisted_count": 1,
+            "complete_count": 1,
+            "missing_count": 0,
+        }
+
+    result = await reconcile_operation_module.advance_devoluciones_quota_run(
+        db=db,
+        run_id="run-finalize",
+        operation=_operation(),
+        now=lambda: _dt(22),
+        source=forbidden_source,
+        readback=inexact_readback,
+    )
+
+    assert result == {"advanced": 0, "finalized": 0}
+    assert db["sheets_devoluciones_runs"].documents[0]["state"] == "failed"
+    assert db["sheets_read_model_freshness"].documents == []
 
 
 def _seller_doc(**values: Any) -> dict[str, Any]:

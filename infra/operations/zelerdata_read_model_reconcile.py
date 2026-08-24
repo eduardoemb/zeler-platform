@@ -1164,6 +1164,7 @@ async def advance_devoluciones_quota_run(
     operation: DevolucionesOperationContext,
     now: Callable[[], datetime],
     source: Callable[..., Awaitable[Mapping[str, Any]]],
+    readback: Callable[..., Awaitable[Mapping[str, Any]]] | None = None,
 ) -> dict[str, int]:
     """Advance one authorized deterministic window, never a whole range."""
     runs = db["sheets_devoluciones_runs"]
@@ -1173,9 +1174,23 @@ async def advance_devoluciones_quota_run(
         return {"advanced": 0, "finalized": 0}
     if run is None:
         return {"advanced": 0, "finalized": 0}
+    if int(run.get("next_window_index", 0)) >= int(run["window_count"]):
+        return await _finalize_devoluciones_quota_run(
+            db=db,
+            run=run,
+            operation=operation,
+            current=current,
+            readback=readback,
+        )
     window = await _next_devoluciones_run_window(db=db, run=run)
     if window is None:
-        return {"advanced": 0, "finalized": 0}
+        return await _finalize_devoluciones_quota_run(
+            db=db,
+            run=run,
+            operation=operation,
+            current=current,
+            readback=readback,
+        )
 
     outcome = {"advanced": 0, "finalized": 0}
 
@@ -1230,6 +1245,9 @@ async def advance_devoluciones_quota_run(
             key: int(proof[key])
             for key in ("expected_count", "persisted_count", "complete_count", "missing_count")
         }
+        aggregate_proof.update(
+            {key: str(proof[key]) for key in ("source_fingerprint", "read_model_fingerprint")}
+        )
         await db["sheets_devoluciones_run_windows"].update_one(
             {"_id": window["_id"]},
             {"$set": {"state": "completed", **aggregate_proof, "updated_at": current}},
@@ -1257,6 +1275,171 @@ async def advance_devoluciones_quota_run(
         writer=finish,
     )
     return outcome
+
+
+async def _finalize_devoluciones_quota_run(
+    *,
+    db: Any,
+    run: Mapping[str, Any],
+    operation: DevolucionesOperationContext,
+    current: datetime,
+    readback: Callable[..., Awaitable[Mapping[str, Any]]] | None,
+) -> dict[str, int]:
+    windows = await _contiguous_devoluciones_run_windows(db=db, run=run)
+    if windows is None:
+        await _fail_devoluciones_quota_run(db=db, run=run, operation=operation, current=current)
+        return {"advanced": 0, "finalized": 0}
+    if readback is None:
+        return {"advanced": 0, "finalized": 0}
+    try:
+        proof = await readback(run=dict(run), windows=windows)
+    except Exception:  # noqa: BLE001 - incomplete final readback is markerless.
+        proof = {}
+    if not _complete_finalization_proof(proof, run=run, windows=windows):
+        await _fail_devoluciones_quota_run(db=db, run=run, operation=operation, current=current)
+        return {"advanced": 0, "finalized": 0}
+
+    marker = {
+        "_id": f"{operation.seller_id}:devoluciones",
+        "seller_id": operation.seller_id,
+        "read_model": "devoluciones",
+        "state": "reconciled",
+        "date_from": run["start"],
+        "fresh_until": run["end"],
+        "reconciled_until": run["end"],
+        "last_event_synced_at": run["start"],
+        "valid_until": current + DEVOLUCIONES_MARKER_VALIDITY,
+        "updated_at": current,
+        "source": "zelerdata_devoluciones_quota_run",
+        "revision": run["_id"],
+        "proof_fingerprint": _quota_finalization_fingerprint(proof, windows=windows),
+        "schema_version": 1,
+    }
+    outcome = {"advanced": 0, "finalized": 0}
+
+    async def publish(session: Any) -> None:
+        session_kwargs = {"session": session} if session is not None else {}
+        started = await db["sheets_devoluciones_runs"].update_one(
+            {"_id": run["_id"], "state": run["state"]},
+            {"$set": {"state": "finalizing", "updated_at": current}},
+            **session_kwargs,
+        )
+        if getattr(started, "matched_count", 0) != 1:
+            raise RuntimeError("quota run finalization CAS failed")
+        await db["sheets_read_model_freshness"].update_one(
+            {
+                "_id": marker["_id"],
+                "seller_id": operation.seller_id,
+                "read_model": "devoluciones",
+            },
+            {"$set": marker},
+            upsert=True,
+            **session_kwargs,
+        )
+        completed = await db["sheets_devoluciones_runs"].update_one(
+            {"_id": run["_id"], "state": "finalizing"},
+            {"$set": {"state": "completed", "updated_at": current}},
+            **session_kwargs,
+        )
+        if getattr(completed, "matched_count", 0) != 1:
+            raise RuntimeError("quota run completion CAS failed")
+        outcome["finalized"] = 1
+
+    await guarded_devoluciones_write(
+        db=db,
+        operation=operation,
+        seller_id=operation.seller_id,
+        checkpoint={"phase": "quota_run_finalize", "run_id": run["_id"]},
+        writer=publish,
+    )
+    return outcome
+
+
+async def _fail_devoluciones_quota_run(
+    *,
+    db: Any,
+    run: Mapping[str, Any],
+    operation: DevolucionesOperationContext,
+    current: datetime,
+) -> None:
+    async def fail(session: Any) -> None:
+        session_kwargs = {"session": session} if session is not None else {}
+        await db["sheets_devoluciones_runs"].update_one(
+            {"_id": run["_id"], "state": run["state"]},
+            {"$set": {"state": "failed", "updated_at": current}},
+            **session_kwargs,
+        )
+
+    await guarded_devoluciones_write(
+        db=db,
+        operation=operation,
+        seller_id=operation.seller_id,
+        checkpoint={"phase": "quota_run_fail", "run_id": run["_id"]},
+        writer=fail,
+    )
+
+
+async def _contiguous_devoluciones_run_windows(
+    *, db: Any, run: Mapping[str, Any]
+) -> list[dict[str, Any]] | None:
+    windows = [
+        window
+        async for window in db["sheets_devoluciones_run_windows"].find({"run_id": run["_id"]})
+    ]
+    windows.sort(key=lambda window: int(window.get("index", -1)))
+    if len(windows) != int(run["window_count"]):
+        return None
+    expected_start = run["start"]
+    for index, window in enumerate(windows):
+        expected_end = min(expected_start + timedelta(days=DEVOLUCIONES_CHUNK_DAYS), run["end"])
+        if (
+            window.get("index") != index
+            or window.get("state") != "completed"
+            or window.get("start") != expected_start
+            or window.get("end") != expected_end
+            or not _complete_quota_proof(window)
+        ):
+            return None
+        expected_start = expected_end
+    return windows if expected_start == run["end"] else None
+
+
+def _complete_finalization_proof(
+    proof: Mapping[str, Any], *, run: Mapping[str, Any], windows: Sequence[Mapping[str, Any]]
+) -> bool:
+    return bool(
+        _complete_quota_proof(proof)
+        and proof.get("start") == run["start"]
+        and proof.get("end") == run["end"]
+        and proof.get("expected_count") == sum(int(window["expected_count"]) for window in windows)
+    )
+
+
+def _quota_finalization_fingerprint(
+    proof: Mapping[str, Any], *, windows: Sequence[Mapping[str, Any]]
+) -> str:
+    payload = {
+        "proof": dict(proof),
+        "windows": [
+            {
+                key: window.get(key)
+                for key in (
+                    "index",
+                    "start",
+                    "end",
+                    "source_fingerprint",
+                    "read_model_fingerprint",
+                    "expected_count",
+                    "persisted_count",
+                    "complete_count",
+                    "missing_count",
+                )
+            }
+            for window in windows
+        ],
+    }
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str).encode()
+    return hashlib.sha256(encoded).hexdigest()
 
 
 async def _next_devoluciones_run_window(
@@ -1288,7 +1471,12 @@ def _complete_quota_proof(proof: Mapping[str, Any]) -> bool:
         )
         and proof["expected_count"] == proof["persisted_count"] == proof["complete_count"]
         and proof["missing_count"] == 0
+        and all(
+            isinstance(proof.get(key), str) and bool(str(proof[key]).strip())
+            for key in ("source_fingerprint", "read_model_fingerprint")
+        )
     )
+
 
 async def collect_expected_read_model_counts(
     *,
