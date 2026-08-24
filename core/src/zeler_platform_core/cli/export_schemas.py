@@ -811,7 +811,9 @@ ENTITY_SCHEMAS: dict[str, dict[str, Any]] = {
                 "enum": ["authorized", "active", "finalizing", "completed", "failed", "expired"]
             },
             "next_window_index": {"bsonType": ["int", "long"], "minimum": 0},
+            "not_before": NULLABLE_DATE,
             "created_at": DATE,
+            "updated_at": NULLABLE_DATE,
             "expires_at": DATE,
             **SCHEMA_VERSION,
         },

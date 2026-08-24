@@ -63,6 +63,30 @@ def operation_lease_guard(operation: DevolucionesOperationContext) -> dict[str, 
     }
 
 
+def devoluciones_run_allows_advancement(
+    run: Mapping[str, Any] | None,
+    *,
+    operation: DevolucionesOperationContext,
+    now: datetime,
+) -> bool:
+    """Fail closed before a quota-window invocation can start source work."""
+    if not isinstance(run, Mapping) or not run.get("authorization_id"):
+        return False
+    if run.get("seller_id") != operation.seller_id or run.get("scope") != operation.scope:
+        return False
+    if run.get("state") not in {"authorized", "active"}:
+        return False
+    expires_at = _utc_datetime_or_none(run.get("expires_at"))
+    not_before = _utc_datetime_or_none(run.get("not_before"))
+    current = _utc_datetime_or_none(now)
+    return bool(
+        expires_at is not None
+        and current is not None
+        and current < expires_at
+        and (not_before is None or current >= not_before)
+    )
+
+
 def takeover_checkpoint(
     existing: Mapping[str, Any] | None, *, source_fingerprint: str | None
 ) -> dict[str, Any] | None:

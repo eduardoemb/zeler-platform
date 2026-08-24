@@ -19,6 +19,7 @@ from infra.operations.zelerdata_campaign_state import PrivateCampaignSample
 from zeler_platform_core.devoluciones_readiness import (
     DevolucionesOperationContext,
     acquire_devoluciones_operation,
+    devoluciones_run_allows_advancement,
     finish_devoluciones_operation,
     guarded_devoluciones_write,
     heartbeat_devoluciones_operation,
@@ -142,6 +143,12 @@ _SOURCE_GATED_OBSERVED_MODE = "observed_only"
 DEVOLUCIONES_MARKER_VALIDITY = timedelta(minutes=30)
 DEVOLUCIONES_CHUNK_DAYS = 10
 DEVOLUCIONES_CHUNK_COOLDOWN_SECONDS = 2.0
+DEVOLUCIONES_WINDOW_NOT_BEFORE = timedelta(minutes=10)
+DEVOLUCIONES_WINDOW_CALL_BUDGET = 104
+DEVOLUCIONES_RUN_CALL_BUDGET = 208
+DEVOLUCIONES_PROCESS_DEADLINE_SECONDS = 165
+DEVOLUCIONES_SHELL_DEADLINE_SECONDS = 175
+DEVOLUCIONES_RETURN_DETAIL_PACING_SECONDS = 1.75
 _SOURCE_GATED_SOURCES = frozenset(
     {
         "legacy_history_import",
@@ -1149,6 +1156,139 @@ def _devoluciones_chunk_ranges(
         cursor = chunk_end_exclusive
     return chunks
 
+
+async def advance_devoluciones_quota_run(
+    *,
+    db: Any,
+    run_id: str,
+    operation: DevolucionesOperationContext,
+    now: Callable[[], datetime],
+    source: Callable[..., Awaitable[Mapping[str, Any]]],
+) -> dict[str, int]:
+    """Advance one authorized deterministic window, never a whole range."""
+    runs = db["sheets_devoluciones_runs"]
+    run = await runs.find_one({"_id": run_id})
+    current = now()
+    if not devoluciones_run_allows_advancement(run, operation=operation, now=current):
+        return {"advanced": 0, "finalized": 0}
+    if run is None:
+        return {"advanced": 0, "finalized": 0}
+    window = await _next_devoluciones_run_window(db=db, run=run)
+    if window is None:
+        return {"advanced": 0, "finalized": 0}
+
+    outcome = {"advanced": 0, "finalized": 0}
+
+    async def prepare(session: Any) -> None:
+        session_kwargs = {"session": session} if session is not None else {}
+        await db["sheets_devoluciones_run_windows"].update_one(
+            {"_id": window["_id"]},
+            {
+                "$set": {
+                    **window,
+                    "state": "prepared",
+                    "fence": operation.fence,
+                    "idempotency_key": window["_id"],
+                    "created_at": current,
+                    "updated_at": current,
+                    "schema_version": 1,
+                }
+            },
+            upsert=True,
+            **session_kwargs,
+        )
+
+    await guarded_devoluciones_write(
+        db=db,
+        operation=operation,
+        seller_id=operation.seller_id,
+        checkpoint={"phase": "quota_window_prepare", "run_id": run_id, "index": window["index"]},
+        writer=prepare,
+    )
+    try:
+        proof = await source(
+            window=window,
+            call_budget=DEVOLUCIONES_WINDOW_CALL_BUDGET,
+            total_budget=DEVOLUCIONES_RUN_CALL_BUDGET,
+            process_deadline_seconds=DEVOLUCIONES_PROCESS_DEADLINE_SECONDS,
+            shell_deadline_seconds=DEVOLUCIONES_SHELL_DEADLINE_SECONDS,
+            pacing_seconds=DEVOLUCIONES_RETURN_DETAIL_PACING_SECONDS,
+        )
+    except Exception:  # noqa: BLE001 - every source failure is terminal and markerless.
+        proof = {}
+
+    async def finish(session: Any) -> None:
+        session_kwargs = {"session": session} if session is not None else {}
+        if not _complete_quota_proof(proof):
+            await runs.update_one(
+                {"_id": run_id},
+                {"$set": {"state": "failed", "updated_at": current}},
+                **session_kwargs,
+            )
+            return
+        aggregate_proof = {
+            key: int(proof[key])
+            for key in ("expected_count", "persisted_count", "complete_count", "missing_count")
+        }
+        await db["sheets_devoluciones_run_windows"].update_one(
+            {"_id": window["_id"]},
+            {"$set": {"state": "completed", **aggregate_proof, "updated_at": current}},
+            **session_kwargs,
+        )
+        await runs.update_one(
+            {"_id": run_id},
+            {
+                "$set": {
+                    "state": "active",
+                    "next_window_index": window["index"] + 1,
+                    "not_before": current + DEVOLUCIONES_WINDOW_NOT_BEFORE,
+                    "updated_at": current,
+                }
+            },
+            **session_kwargs,
+        )
+        outcome["advanced"] = 1
+
+    await guarded_devoluciones_write(
+        db=db,
+        operation=operation,
+        seller_id=operation.seller_id,
+        checkpoint={"phase": "quota_window_finish", "run_id": run_id, "index": window["index"]},
+        writer=finish,
+    )
+    return outcome
+
+
+async def _next_devoluciones_run_window(
+    *, db: Any, run: Mapping[str, Any]
+) -> dict[str, Any] | None:
+    start, end = run["start"], run["end"]
+    for index in range(int(run["window_count"])):
+        existing = await db["sheets_devoluciones_run_windows"].find_one(
+            {"run_id": run["_id"], "index": index}
+        )
+        window_end = min(start + timedelta(days=DEVOLUCIONES_CHUNK_DAYS), end)
+        if existing is None or existing.get("state") != "completed":
+            return {
+                "_id": f"{run['_id']}:{index}",
+                "run_id": run["_id"],
+                "index": index,
+                "start": start,
+                "end": window_end,
+            }
+        start = window_end
+    return None
+
+
+def _complete_quota_proof(proof: Mapping[str, Any]) -> bool:
+    return (
+        all(
+            isinstance(proof.get(key), int) and proof[key] >= 0
+            for key in ("expected_count", "persisted_count", "complete_count", "missing_count")
+        )
+        and proof["expected_count"] == proof["persisted_count"] == proof["complete_count"]
+        and proof["missing_count"] == 0
+    )
 
 async def collect_expected_read_model_counts(
     *,

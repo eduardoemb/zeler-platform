@@ -28,6 +28,12 @@
         ],
         "minimum": 0
       },
+      "not_before": {
+        "bsonType": [
+          "date",
+          "null"
+        ]
+      },
       "partition_version": {
         "bsonType": "string"
       },
@@ -58,6 +64,12 @@
           "completed",
           "failed",
           "expired"
+        ]
+      },
+      "updated_at": {
+        "bsonType": [
+          "date",
+          "null"
         ]
       },
       "window_count": {
