@@ -1,5 +1,5 @@
 [Unit]
-Description=Renew the enclosing closed UTC range for ZELERDATA DEVOLUCIONES
+Description=Advance one authorized ZELERDATA DEVOLUCIONES quota window
 Wants=network-online.target
 Requires=docker.service
 After=docker.service network-online.target
@@ -8,12 +8,8 @@ OnFailure=zelerdata-devoluciones-reconcile-alert.service
 [Service]
 Type=oneshot
 WorkingDirectory=/opt/zeler-platform
-Environment=ZELERDATA_DEVOLUCIONES_RANGE_START=2026-06-01
-Environment=ZELERDATA_DEVOLUCIONES_ACCEPTED_THROUGH=2026-07-09
-# Campaign identity (campaign ID and both fingerprint hashes) comes ONLY from
-# the runtime EnvironmentFile; missing or invalid identity fails closed (exit 64).
-EnvironmentFile=-/etc/zeler-platform/zelerdata-devoluciones-reconcile.env
-Environment=ZELERDATA_DEVOLUCIONES_SELLER_ID=82453304
+# The operator-owned run ID is mandatory. This unit never creates authority.
+EnvironmentFile=/etc/zeler-platform/zelerdata-devoluciones-quota-run.env
 ExecStart=/opt/zeler-platform/zelerdata-devoluciones-reconcile.sh
 TimeoutStartSec=8m
 Restart=no
