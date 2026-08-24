@@ -60,19 +60,17 @@ covering claims and the joined orders. It has a 30-minute marker lease.
 Formula readers fail closed when the marker expires or does not enclose the
 requested range; separate claims/orders markers cannot be combined.
 
-For the pilot, scheduled reconciliation always verifies 2026-06-01 through the previous closed UTC day.
-It must not shrink accepted coverage. The service
-defaults make `2026-06-01` the historical start and `2026-07-09` the minimum
-accepted-through date; reviewed non-secret overrides may live in
-`/etc/zeler-platform/zelerdata-devoluciones-reconcile.env`. Overrides may only
-widen the accepted coverage. Invalid, reversed, shrinking, or open ranges fail
-without invoking the reconciliation command.
+The active scheduled path consumes one operator-authorized quota run. The
+operator fixes the seller, half-open UTC range, cohort, partition version, and
+release fingerprints before scheduling. The timer cannot create or discover a
+run. Its mandatory root-only authority file is
+`/etc/zeler-platform/zelerdata-devoluciones-quota-run.env`.
 
-The timer runs every 10 minutes, with at most one minute of random delay. Each invocation has one
-single scheduled attempt with a 175-second shell stop; there is no wrapper retry or sleep that can
-reset the source-call recorder. `Persistent=true` provides catch-up after downtime, and
-`OnFailure` invokes a sanitized journald alert. Missing wrapper, compose, or
-container paths fail visibly; they are not skipped by a path condition.
+Each invocation advances at most one 10-day window. The monotonic timer waits 10
+minutes after the prior unit becomes inactive, then adds 0-119 seconds of
+random delay. The wrapper has one 175-second shell stop and no retry. There is
+no calendar catch-up after downtime. `OnFailure` emits a sanitized journald
+alert. Missing authority, wrapper, compose, or container paths fail visibly.
 
 Production rollout order is `plan → prestart → worker health → bind-claims`,
 then frozen-runtime dry-run, authorized write, and acceptance. The initial
@@ -84,30 +82,54 @@ smoke or sanitized operator evidence with timestamp, exact inputs/result, and
 request/correlation ID. If neither is available, record
 `OPERATOR_EVIDENCE_PENDING`; do not report success.
 
-Enable scheduling last, after all acceptance evidence passes:
+### Authorize a run
+
+Run this only from the approved VM after a separate production-write approval.
+`--date-to` is exclusive for this quota command. Do not print or inspect the
+generated authority value.
 
 ```bash
-sudo /opt/zeler-platform/zelerdata-devoluciones-enable-timer.sh
-sudo journalctl -u zelerdata-devoluciones-reconcile.service \
-  -u zelerdata-devoluciones-reconcile-alert.service --since "30 minutes ago" \
-  --no-pager
+sudo install -d -o root -g root -m 0700 /etc/zeler-platform
+sudo docker compose --file /opt/zeler-platform/docker-compose.yml run \
+  --rm --no-deps --user 0:0 \
+  --volume /etc/zeler-platform:/etc/zeler-platform \
+  sheets-worker /app/.venv/bin/python \
+  -m infra.operations.devoluciones_quota_authorize \
+  --seller-id 82453304 \
+  --authorization-id '<authorization-id>' \
+  --cohort-id '<cohort-id>' \
+  --date-from '<YYYY-MM-DD>' \
+  --date-to '<exclusive-YYYY-MM-DD>' \
+  --partition-version v1 \
+  --release-fingerprint '<component>=<sha256>' \
+  --confirm-approved-runtime \
+  --confirm-run-authorization
+sudo stat --format='%U %G %a' \
+  /etc/zeler-platform/zelerdata-devoluciones-quota-run.env
 ```
+
+The expected metadata is `root root 600`. The command atomically replaces the
+authority file only after the run is persisted. A manual service start, timer
+enablement, build, deploy, and production smoke are separate approvals.
 
 ### Intentional state
 
-The timer is intentionally disabled and no campaign is currently accepted.
-`ZELERDATA_DEVOLUCIONES_ACCEPTED_THROUGH` defaults to `2026-07-09`, and campaign
-identity (campaign ID plus both source/read-model fingerprint hashes) is sourced
-only from `/etc/zeler-platform/zelerdata-devoluciones-reconcile.env`. Until a
-campaign is durably accepted for the release,
-`infra/operations/devoluciones_timer_status.py` reports
-`timer_active=false` and `has_accepted_campaign=false`; the status script never
-reads Mongo or private samples and never enables the timer.
+The timer is intentionally disabled. Installing the unit does not enable or
+start it. The legacy campaign acceptance wrapper does not authorize the quota
+timer and must not be used to activate this path.
+
+For recovery, stop or disable the timer first. A failed or expired run is
+terminal. Diagnose it from sanitized run state and journald evidence, then
+authorize a new run with a new authorization and cohort identity. Never edit a
+run document or reuse its authority file manually. A completed run is an
+idempotent no-op and does not reacquire the lease.
 
 Use **failure-conditional rollback** only after a failed deployment, topology,
 write, formula, or timer gate. Disable the timer, stale readiness through the
-topology rollback, restore the prior worker runtime/routing/schedule, and retain
-verified idempotent facts. Never roll back a successful release automatically.
+approved topology rollback, restore the prior worker runtime/routing/schedule,
+and retain verified idempotent facts. Remove or replace the authority file only
+as an explicit operator action. Never roll back a successful release
+automatically.
 
 ## Focused source and runtime budget
 
@@ -167,32 +189,10 @@ productive snapshot evidence. Any spacing, deadline, or non-SERVER source failur
 timer off; a `SERVER` failure on `return_detail` retries once through the paced path and, if it
 fails again, uses the existing failure-conditional rollback boundary.
 
-Runtime acceptance requires 20 consecutive candidate-equivalent scheduled writes with stable
-source/read-model fingerprints and one explicit campaign ID. A timeout, non-success, hard-limit
-failure, source budget failure, or fingerprint drift disqualifies that campaign ID. Recovery requires
-20 new valid writes under a new explicit campaign ID; a rolling last-20 window cannot forget the
-failure. Set the reviewed non-secret `ZELERDATA_DEVOLUCIONES_CAMPAIGN_ID` for each new campaign. Compute
-nearest-rank p95 as `ceil(0.95 × eligible sample count)` over the actual durable window: every run must remain below 180 seconds; p95 must remain below 150 seconds. Enable scheduling last; the timer stays disabled
-until source, write, marker, formula/operator, rollback, and timing evidence all pass.
-
-Every allowlisted sample is atomically persisted at
-`/var/lib/zeler-platform/zelerdata-devoluciones-campaign.json`. Disqualified campaign IDs are
-permanent: an A→B→A sequence cannot reuse A to clear its failure. The timer enablement wrapper calls
-the durable `require-accepted` preflight and refuses incomplete, p95-failing, hard-limit, drifted, or
-previously disqualified campaigns.
-
-The reconciliation command emits its typed scheduled transport only when the wrapper passes
-`--private-scheduled-transport`. The transport is written under `umask 077`, parsed into a private campaign sample,
-persisted to the schema-v1 campaign state, and deleted. Campaign identity, timing,
-disqualification, and success-only source/read-model fingerprint hashes never enter stdout,
-journald, or other shared evidence.
-
-Every public path, including child failure, timeout, malformed evidence, state failure, publication
-failure, and early wrapper fallback, emits exactly one JSON object with the keys `stage`, `status_class`, and `counters`.
-The stage is `scheduled`; status classes and non-negative aggregate
-counters are bounded. Child exits `42`, `124`, and arbitrary nonzero values remain authoritative.
-Exit `65` and status class `evidence_invalid` are reserved for true evidence-contract errors; state and publication tooling retain their
-actual nonzero exits. Raw output is never published and all temporary files are removed after state handling and publication.
+The previous campaign wrapper and campaign-state acceptance remain available as
+legacy evidence tooling only. They are not the active timer authority. The
+active quota path persists per-window proof and publishes readiness only after
+contiguous windows and an exact full-range readback succeed.
 
 ## Registration and rollback-compatible API
 
