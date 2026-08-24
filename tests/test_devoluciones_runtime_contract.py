@@ -30,6 +30,7 @@ SHEETS_API_DOCKERFILE = ROOT / "modules" / "sheets" / "Dockerfile.api"
 SHEETS_WORKER_DOCKERFILE = ROOT / "modules" / "sheets" / "Dockerfile.worker"
 STARTUP = ROOT / "infra" / "gce" / "platform-vm-startup.sh"
 RECONCILE_WRAPPER = ROOT / "infra" / "gce" / "zelerdata-devoluciones-reconcile.sh"
+LEGACY_RECONCILE_WRAPPER = ROOT / "infra" / "gce" / "zelerdata-devoluciones-campaign-reconcile.sh"
 TIMER_ENABLE_WRAPPER = ROOT / "infra" / "gce" / "zelerdata-devoluciones-enable-timer.sh"
 TOPOLOGY_WRAPPER = ROOT / "infra" / "gce" / "zelerdata-devoluciones-topology.sh"
 COMPOSE_FILE = ROOT / "infra" / "gce" / "docker-compose.yml"
@@ -332,8 +333,8 @@ def test_topology_privilege_boundary_keeps_persistent_worker_non_root() -> None:
     assert "persistent worker never mounts the Docker socket" in section
 
 
-def test_reconcile_wrapper_renews_the_enclosing_closed_range_with_frozen_python() -> None:
-    wrapper = _read(RECONCILE_WRAPPER)
+def test_legacy_reconcile_wrapper_renews_the_enclosing_closed_range_with_frozen_python() -> None:
+    wrapper = _read(LEGACY_RECONCILE_WRAPPER)
 
     assert wrapper.startswith("#!/usr/bin/env bash\nset -euo pipefail\n")
     assert "ACCEPTED_RANGE_START=2026-06-01" in wrapper
@@ -377,6 +378,21 @@ def test_reconcile_wrapper_renews_the_enclosing_closed_range_with_frozen_python(
     assert "set -x" not in wrapper
 
 
+def test_quota_wrapper_requires_run_authority_and_executes_one_bounded_invocation() -> None:
+    wrapper = _read(RECONCILE_WRAPPER)
+
+    assert wrapper.startswith("#!/usr/bin/env bash\nset -euo pipefail\n")
+    assert "ZELERDATA_DEVOLUCIONES_RUN_ID" in wrapper
+    assert "^[0-9a-f]{64}$" in wrapper
+    assert '"$TIMEOUT_BIN" --signal=TERM --kill-after=30s 175s' in wrapper
+    assert '"$DOCKER_BIN" compose --file "$COMPOSE_FILE" exec -T --workdir /app' in wrapper
+    assert "-m infra.operations.devoluciones_quota_advance" in wrapper
+    assert '--run-id "$RUN_ID"' in wrapper
+    assert "zelerdata_read_model_reconcile" not in wrapper
+    assert "--write" not in wrapper
+    assert "set -x" not in wrapper
+
+
 @pytest.mark.parametrize(
     ("process_status", "raw_output", "expected_returncode", "status_class"),
     [
@@ -401,7 +417,7 @@ def test_scheduled_wrapper_publishes_allowlisted_evidence_before_cleanup(
     )
 
     completed = subprocess.run(  # noqa: S603 - executes repository-owned wrapper.
-        ["/bin/bash", str(RECONCILE_WRAPPER)],
+        ["/bin/bash", str(LEGACY_RECONCILE_WRAPPER)],
         cwd=ROOT,
         env=env,
         check=False,
@@ -468,7 +484,7 @@ def test_scheduled_wrapper_central_exit_emits_exactly_one_early_failure_record(
     env.update(mutation)
 
     completed = subprocess.run(  # noqa: S603 - executes repository-owned wrapper.
-        ["/bin/bash", str(RECONCILE_WRAPPER)],
+        ["/bin/bash", str(LEGACY_RECONCILE_WRAPPER)],
         cwd=ROOT,
         env=env,
         check=False,
@@ -510,7 +526,7 @@ def test_scheduled_wrapper_tooling_failures_emit_one_minimal_disqualification(
     env["TOP_SECRET_RAW_ENV"] = "DO_NOT_PRINT_ME"  # noqa: S105 - leak sentinel, not a secret.
 
     completed = subprocess.run(  # noqa: S603 - repository-owned wrapper.
-        ["/bin/bash", str(RECONCILE_WRAPPER)],
+        ["/bin/bash", str(LEGACY_RECONCILE_WRAPPER)],
         cwd=ROOT,
         env=env,
         check=False,
@@ -550,7 +566,7 @@ def test_scheduled_wrapper_failure_revokes_previously_accepted_campaign(
     _accept_scheduled_campaign(state_file)
 
     completed = subprocess.run(  # noqa: S603 - repository-owned wrapper.
-        ["/bin/bash", str(RECONCILE_WRAPPER)],
+        ["/bin/bash", str(LEGACY_RECONCILE_WRAPPER)],
         cwd=ROOT,
         env=env,
         check=False,
@@ -589,10 +605,7 @@ def test_reconciliation_service_has_canonical_runtime_and_failure_visibility() -
         "OnFailure=zelerdata-devoluciones-reconcile-alert.service",
         "Type=oneshot",
         "WorkingDirectory=/opt/zeler-platform",
-        "Environment=ZELERDATA_DEVOLUCIONES_SELLER_ID=82453304",
-        "Environment=ZELERDATA_DEVOLUCIONES_RANGE_START=2026-06-01",
-        "Environment=ZELERDATA_DEVOLUCIONES_ACCEPTED_THROUGH=2026-07-09",
-        "EnvironmentFile=-/etc/zeler-platform/zelerdata-devoluciones-reconcile.env",
+        "EnvironmentFile=/etc/zeler-platform/zelerdata-devoluciones-quota-run.env",
         "ExecStart=/opt/zeler-platform/zelerdata-devoluciones-reconcile.sh",
         "TimeoutStartSec=8m",
         "Restart=no",
@@ -602,9 +615,8 @@ def test_reconciliation_service_has_canonical_runtime_and_failure_visibility() -
     )
     for snippet in required:
         assert snippet in service
-    assert service.index("EnvironmentFile=") < service.index(
-        "Environment=ZELERDATA_DEVOLUCIONES_SELLER_ID=82453304"
-    )
+    assert "EnvironmentFile=-" not in service
+    assert "ZELERDATA_DEVOLUCIONES_SELLER_ID" not in service
     assert "ConditionPathExists" not in service
     assert "python" not in service.lower()
     assert "uv " not in service.lower()
@@ -616,13 +628,14 @@ def test_reconciliation_service_has_canonical_runtime_and_failure_visibility() -
     assert "ZELERDATA_DEVOLUCIONES_SELLER_ID" not in alert_service
 
 
-def test_reconciliation_timer_is_randomized_persistent_and_not_self_enabling() -> None:
+def test_reconciliation_timer_has_window_cadence_and_is_not_self_enabling() -> None:
     timer = _read(RECONCILE_TIMER)
 
-    assert "OnCalendar=*-*-* *:00,10,20,30,40,50:00 UTC" in timer
-    assert "RandomizedDelaySec=1m" in timer
-    assert "AccuracySec=30s" in timer
-    assert "Persistent=true" in timer
+    assert "OnUnitInactiveSec=10m" in timer
+    assert "RandomizedDelaySec=119s" in timer
+    assert "AccuracySec=1s" in timer
+    assert "OnCalendar=" not in timer
+    assert "Persistent=" not in timer
     assert "Unit=zelerdata-devoluciones-reconcile.service" in timer
     assert "WantedBy=timers.target" in timer
     assert "enable" not in timer.lower()
@@ -747,8 +760,8 @@ def test_startup_installs_exact_wrapper_and_units_without_enabling_timer_or_topo
     assert "zelerdata-devoluciones-topology.sh bind-claims --execute" not in startup
 
 
-def test_reconcile_wrapper_rejects_environment_seller_override() -> None:
-    wrapper = _read(RECONCILE_WRAPPER)
+def test_legacy_reconcile_wrapper_rejects_environment_seller_override() -> None:
+    wrapper = _read(LEGACY_RECONCILE_WRAPPER)
 
     assert "APPROVED_SELLER_ID=82453304" in wrapper
     assert '[[ "$CONFIGURED_SELLER_ID" != "$APPROVED_SELLER_ID" ]]' in wrapper
@@ -869,7 +882,7 @@ def test_every_reviewed_operator_command_confirms_runtime_exactly_once() -> None
         if "infra.operations.zelerdata_read_model_reconcile" in block
     )
     wrapper_invocation = (
-        _read(RECONCILE_WRAPPER)
+        _read(LEGACY_RECONCILE_WRAPPER)
         .split(
             "/app/.venv/bin/python -m infra.operations.zelerdata_read_model_reconcile",
             1,

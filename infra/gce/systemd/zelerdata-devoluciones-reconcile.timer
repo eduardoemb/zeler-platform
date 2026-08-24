@@ -1,11 +1,10 @@
 [Unit]
-Description=Renew closed-range ZELERDATA DEVOLUCIONES readiness before its lease expires
+Description=Advance authorized ZELERDATA DEVOLUCIONES quota windows
 
 [Timer]
-OnCalendar=*-*-* *:00,10,20,30,40,50:00 UTC
-RandomizedDelaySec=1m
-AccuracySec=30s
-Persistent=true
+OnUnitInactiveSec=10m
+RandomizedDelaySec=119s
+AccuracySec=1s
 Unit=zelerdata-devoluciones-reconcile.service
 
 [Install]
