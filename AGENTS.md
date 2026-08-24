@@ -37,6 +37,10 @@ Skill registry lives at
 ## Project rules
 
 - TDD strict: every non-trivial change starts with a failing test.
+- Before any relevant task, consult `docs/lessons/README.md`: read **Quick path**,
+  then search its active index by area and keywords. If the task refers to prior
+  work or runtime state, search Engram too; apply the proven path, avoid the failed
+  path, and capture only durable learnings when the task ends.
 - Conventional commits only.
 - No AI attribution in commits or pull requests.
 - Never commit without being asked.
