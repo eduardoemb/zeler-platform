@@ -1,0 +1,6 @@
+[
+  {
+    "keys": {"run_id": 1, "index": 1},
+    "options": {"name": "uniq_sheets_devoluciones_run_windows_index", "unique": true}
+  }
+]

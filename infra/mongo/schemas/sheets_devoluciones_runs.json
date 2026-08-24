@@ -1,0 +1,91 @@
+{
+  "$jsonSchema": {
+    "additionalProperties": false,
+    "bsonType": "object",
+    "properties": {
+      "_id": {
+        "bsonType": "string"
+      },
+      "authorization_id": {
+        "bsonType": "string"
+      },
+      "cohort_id": {
+        "bsonType": "string"
+      },
+      "created_at": {
+        "bsonType": "date"
+      },
+      "end": {
+        "bsonType": "date"
+      },
+      "expires_at": {
+        "bsonType": "date"
+      },
+      "next_window_index": {
+        "bsonType": [
+          "int",
+          "long"
+        ],
+        "minimum": 0
+      },
+      "partition_version": {
+        "bsonType": "string"
+      },
+      "release_fingerprints": {
+        "bsonType": "object"
+      },
+      "schema_version": {
+        "bsonType": "int"
+      },
+      "scope": {
+        "bsonType": "string"
+      },
+      "seller_id": {
+        "bsonType": [
+          "string",
+          "long",
+          "int"
+        ]
+      },
+      "start": {
+        "bsonType": "date"
+      },
+      "state": {
+        "enum": [
+          "authorized",
+          "active",
+          "finalizing",
+          "completed",
+          "failed",
+          "expired"
+        ]
+      },
+      "window_count": {
+        "bsonType": [
+          "int",
+          "long"
+        ],
+        "minimum": 1
+      }
+    },
+    "required": [
+      "_id",
+      "authorization_id",
+      "cohort_id",
+      "seller_id",
+      "scope",
+      "start",
+      "end",
+      "partition_version",
+      "release_fingerprints",
+      "window_count",
+      "state",
+      "next_window_index",
+      "created_at",
+      "expires_at",
+      "schema_version"
+    ]
+  },
+  "validationAction": "error",
+  "validationLevel": "strict"
+}

@@ -25,6 +25,11 @@ from zeler_platform_core.devoluciones_readiness import (
     DevolucionesLeaseLostError,
     DevolucionesOperationContext,
 )
+from zeler_platform_core.devoluciones_runs import (
+    MongoRunWindowRepository,
+    RunBinding,
+    partition_windows,
+)
 from zeler_sheets.claim_projection import persist_claim_projection
 from zeler_sheets.devoluciones_reconciliation import (
     DevolucionesReadModelVerificationError,
@@ -335,6 +340,31 @@ def _operation_document(operation: DevolucionesOperationContext) -> dict[str, An
         "lease_until": NOW + timedelta(minutes=2),
         "checkpoint": deepcopy(operation.checkpoint),
     }
+
+
+@pytest.mark.asyncio
+async def test_read_next_derives_unprepared_window_after_completed_replay() -> None:
+    operation = _operation()
+    db = _MemoryDb({DEVOLUCIONES_OPERATIONS_COLLECTION: [_operation_document(operation)]})
+    binding = RunBinding(
+        "auth",
+        "cohort",
+        SELLER_ID,
+        "devoluciones",
+        NOW,
+        NOW + timedelta(days=11),
+        "v1",
+        {"app": "x"},
+    )
+    repository = MongoRunWindowRepository(db)
+    assert await repository.create(binding, operation=operation, created_at=NOW)
+    first, second = partition_windows(binding)
+    assert await repository.prepare(first, operation=operation, idempotency_key="first")
+    assert await repository.read_next(binding.run_id, operation=operation) == first
+    db["sheets_devoluciones_run_windows"].documents[first.window_id]["state"] = "completed"
+
+    assert await repository.read_next(binding.run_id, operation=operation) == second
+    assert await repository.read_next("missing", operation=operation) is None
 
 
 def _write_request() -> Any:

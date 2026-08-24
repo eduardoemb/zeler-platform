@@ -1,0 +1,6 @@
+[
+  {
+    "keys": {"authorization_id": 1, "cohort_id": 1, "seller_id": 1, "scope": 1},
+    "options": {"name": "uniq_sheets_devoluciones_runs_identity", "unique": true}
+  }
+]
