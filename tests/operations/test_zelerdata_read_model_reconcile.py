@@ -8,7 +8,7 @@ import shlex
 import stat
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -878,6 +878,151 @@ async def test_non_item_bounded_source_gated_expected_counts_and_markers_are_ski
 
 def _dt(day: int) -> datetime:
     return datetime(2026, 6, day, tzinfo=UTC)
+
+
+@pytest.mark.asyncio
+async def test_quota_run_advancement_processes_only_one_window_with_contract_budgets(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    run = {
+        "_id": "run-1",
+        "cohort_id": "cohort-1",
+        "seller_id": "82453304",
+        "scope": "devoluciones",
+        "authorization_id": "approved",
+        "state": "authorized",
+        "start": _dt(1),
+        "end": _dt(21),
+        "partition_version": "v1",
+        "release_fingerprints": {"gateway": "release-1"},
+        "window_count": 2,
+        "next_window_index": 0,
+        "created_at": _dt(1),
+        "expires_at": _dt(30),
+        "schema_version": 1,
+    }
+    db = FakeAsyncDb({"sheets_devoluciones_runs": [run]})
+    calls: list[dict[str, Any]] = []
+    inside_transaction = False
+
+    async def guarded_write(**kwargs: Any) -> None:
+        nonlocal inside_transaction
+        inside_transaction = True
+        try:
+            await kwargs["writer"](None)
+        finally:
+            inside_transaction = False
+
+    monkeypatch.setattr(reconcile_operation_module, "guarded_devoluciones_write", guarded_write)
+
+    async def source(**kwargs: Any) -> dict[str, Any]:
+        assert inside_transaction is False
+        calls.append(kwargs)
+        return {"expected_count": 1, "persisted_count": 1, "complete_count": 1, "missing_count": 0}
+
+    result = await reconcile_operation_module.advance_devoluciones_quota_run(
+        db=db, run_id="run-1", operation=_operation(), now=lambda: _dt(2), source=source
+    )
+
+    assert result == {"advanced": 1, "finalized": 0}
+    assert len(calls) == 1
+    assert calls[0] | {"window": calls[0]["window"]} == {
+        "window": calls[0]["window"],
+        "call_budget": 104,
+        "total_budget": 208,
+        "process_deadline_seconds": 165,
+        "shell_deadline_seconds": 175,
+        "pacing_seconds": 1.75,
+    }
+    assert db["sheets_devoluciones_runs"].documents[0]["next_window_index"] == 1
+    assert db["sheets_devoluciones_runs"].documents[0]["not_before"] == _dt(2) + timedelta(
+        minutes=10
+    )
+    for collection_name, schema_name in (
+        ("sheets_devoluciones_runs", "sheets_devoluciones_runs.json"),
+        ("sheets_devoluciones_run_windows", "sheets_devoluciones_run_windows.json"),
+    ):
+        validator = json.loads((ROOT / "infra/mongo/schemas" / schema_name).read_text())
+        document = db[collection_name].documents[0]
+        assert validate_document_against_schema(
+            document, validator
+        ).valid
+        assert set(document) <= set(validator["$jsonSchema"]["properties"])
+
+
+@pytest.mark.asyncio
+async def test_quota_run_failure_is_markerless_and_terminal_429_is_not_retried() -> None:
+    db = FakeAsyncDb(
+        {
+            "sheets_devoluciones_runs": [
+                {
+                    "_id": "run-429",
+                    "seller_id": "82453304",
+                    "scope": "devoluciones",
+                    "authorization_id": "approved",
+                    "state": "authorized",
+                    "start": _dt(1),
+                    "end": _dt(11),
+                    "window_count": 1,
+                    "expires_at": _dt(30),
+                }
+            ]
+        }
+    )
+    attempts = 0
+
+    async def rate_limited(**_: Any) -> dict[str, Any]:
+        nonlocal attempts
+        attempts += 1
+        raise FakeRateLimitError()
+
+    result = await reconcile_operation_module.advance_devoluciones_quota_run(
+        db=db, run_id="run-429", operation=_operation(), now=lambda: _dt(2), source=rate_limited
+    )
+
+    assert result == {"advanced": 0, "finalized": 0}
+    assert attempts == 1
+    assert db["sheets_devoluciones_runs"].documents[0]["state"] == "failed"
+    assert db["sheets_read_model_freshness"].documents == []
+
+
+@pytest.mark.asyncio
+async def test_quota_advancement_rejects_invalid_runs_before_source_work() -> None:
+    base = {
+        "seller_id": "82453304",
+        "scope": "devoluciones",
+        "authorization_id": "approved",
+        "state": "authorized",
+        "start": _dt(1),
+        "end": _dt(11),
+        "window_count": 1,
+        "expires_at": _dt(30),
+    }
+    db = FakeAsyncDb(
+        {
+            "sheets_devoluciones_runs": [
+                {**base, "_id": "unauthorized", "authorization_id": ""},
+                {**base, "_id": "expired", "expires_at": _dt(2)},
+                {**base, "_id": "early", "not_before": _dt(3)},
+            ]
+        }
+    )
+
+    async def forbidden_source(**_: Any) -> dict[str, int]:
+        raise AssertionError("source work must not start")
+
+    results = [
+        await reconcile_operation_module.advance_devoluciones_quota_run(
+            db=db,
+            run_id=run_id,
+            operation=_operation(),
+            now=lambda: _dt(2),
+            source=forbidden_source,
+        )
+        for run_id in ("unauthorized", "expired", "early")
+    ]
+
+    assert results == [{"advanced": 0, "finalized": 0}] * 3
 
 
 def _seller_doc(**values: Any) -> dict[str, Any]:
