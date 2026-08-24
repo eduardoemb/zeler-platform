@@ -1399,6 +1399,48 @@ async def advance_devoluciones_quota_run(
     return outcome
 
 
+async def readback_devoluciones_quota_run(
+    *,
+    db: Any,
+    run: Mapping[str, Any],
+    windows: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    """Verify the exact persisted full range without another source burst."""
+    start, end = run.get("start"), run.get("end")
+    seller_id = run.get("seller_id")
+    if (
+        not isinstance(start, datetime)
+        or not isinstance(end, datetime)
+        or start >= end
+        or not isinstance(seller_id, str)
+        or not seller_id
+    ):
+        raise ValueError("quota run bounds are invalid")
+    expected_count = sum(int(window["expected_count"]) for window in windows)
+    filter_spec = {
+        "seller_id": seller_id,
+        "date_created": {"$gte": start, "$lt": end},
+    }
+    claims = db["claims"]
+    persisted_count = int(await claims.count_documents(filter_spec))
+    complete_count = int(await claims.count_documents(_complete_claims_filter(filter_spec)))
+
+    def composite_fingerprint(key: str) -> str:
+        payload = [str(window[key]) for window in windows]
+        return hashlib.sha256(json.dumps(payload, separators=(",", ":")).encode()).hexdigest()
+
+    return {
+        "start": start,
+        "end": end,
+        "source_fingerprint": composite_fingerprint("source_fingerprint"),
+        "read_model_fingerprint": composite_fingerprint("read_model_fingerprint"),
+        "expected_count": expected_count,
+        "persisted_count": persisted_count,
+        "complete_count": complete_count,
+        "missing_count": max(expected_count - persisted_count, 0),
+    }
+
+
 async def _finalize_devoluciones_quota_run(
     *,
     db: Any,
