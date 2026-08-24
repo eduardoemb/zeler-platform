@@ -1,0 +1,113 @@
+{
+  "$jsonSchema": {
+    "additionalProperties": false,
+    "bsonType": "object",
+    "properties": {
+      "_id": {
+        "bsonType": "string"
+      },
+      "complete_count": {
+        "bsonType": [
+          "int",
+          "long",
+          "null"
+        ]
+      },
+      "counters": {
+        "bsonType": [
+          "object",
+          "null"
+        ]
+      },
+      "created_at": {
+        "bsonType": "date"
+      },
+      "end": {
+        "bsonType": "date"
+      },
+      "expected_count": {
+        "bsonType": [
+          "int",
+          "long",
+          "null"
+        ]
+      },
+      "fence": {
+        "bsonType": [
+          "int",
+          "long"
+        ],
+        "minimum": 1
+      },
+      "idempotency_key": {
+        "bsonType": "string"
+      },
+      "index": {
+        "bsonType": [
+          "int",
+          "long"
+        ],
+        "minimum": 0
+      },
+      "missing_count": {
+        "bsonType": [
+          "int",
+          "long",
+          "null"
+        ]
+      },
+      "persisted_count": {
+        "bsonType": [
+          "int",
+          "long",
+          "null"
+        ]
+      },
+      "read_model_fingerprint": {
+        "bsonType": [
+          "string",
+          "null"
+        ]
+      },
+      "run_id": {
+        "bsonType": "string"
+      },
+      "schema_version": {
+        "bsonType": "int"
+      },
+      "source_fingerprint": {
+        "bsonType": [
+          "string",
+          "null"
+        ]
+      },
+      "start": {
+        "bsonType": "date"
+      },
+      "state": {
+        "enum": [
+          "prepared",
+          "completed"
+        ]
+      },
+      "updated_at": {
+        "bsonType": "date"
+      }
+    },
+    "required": [
+      "_id",
+      "run_id",
+      "index",
+      "start",
+      "end",
+      "state",
+      "fence",
+      "idempotency_key",
+      "created_at",
+      "updated_at",
+      "schema_version"
+    ]
+  },
+  "validationAction": "error",
+  "validationLevel": "strict"
+}

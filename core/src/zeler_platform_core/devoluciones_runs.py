@@ -5,7 +5,12 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from types import MappingProxyType
-from typing import Protocol
+from typing import Any, Protocol
+
+from zeler_platform_core.devoluciones_readiness import (
+    DevolucionesOperationContext,
+    operation_lease_guard,
+)
 
 WINDOW_DAYS = 10
 INVOCATION_SECONDS = 175
@@ -124,3 +129,139 @@ class RunWindowRepository(Protocol):
     async def read_next(self, run_id: str, *, fence: int) -> RunWindow | None: ...
 
     async def prepare(self, window: RunWindow, *, fence: int, idempotency_key: str) -> bool: ...
+
+
+RUNS_COLLECTION = "sheets_devoluciones_runs"
+RUN_WINDOWS_COLLECTION = "sheets_devoluciones_run_windows"
+
+
+class MongoRunWindowRepository:
+    """Persist deterministic run windows only while the operation lease remains fenced."""
+
+    def __init__(self, db: Any) -> None:
+        self._db = db
+
+    async def create(
+        self,
+        binding: RunBinding,
+        *,
+        operation: DevolucionesOperationContext,
+        created_at: datetime | None = None,
+    ) -> bool:
+        created_at = _utc(created_at or datetime.now(UTC), "created_at")
+        windows = partition_windows(binding)
+        async with await _session(self._db) as session, session.start_transaction():
+            if not await self._guard(operation, session):
+                return False
+            result = await self._db[RUNS_COLLECTION].update_one(
+                {"_id": binding.run_id},
+                {
+                    "$setOnInsert": {
+                        "_id": binding.run_id,
+                        "authorization_id": binding.authorization_id,
+                        "cohort_id": binding.cohort_id,
+                        "seller_id": binding.seller_id,
+                        "scope": binding.scope,
+                        "start": binding.start,
+                        "end": binding.end,
+                        "partition_version": binding.partition_version,
+                        "release_fingerprints": dict(binding.release_fingerprints),
+                        "window_count": len(windows),
+                        "state": "authorized",
+                        "next_window_index": 0,
+                        "created_at": created_at,
+                        "expires_at": expires_at(binding, created_at=created_at),
+                        "schema_version": 1,
+                    }
+                },
+                upsert=True,
+                session=session,
+            )
+            return getattr(result, "acknowledged", True) is not False
+
+    async def prepare(
+        self,
+        window: RunWindow,
+        *,
+        operation: DevolucionesOperationContext,
+        idempotency_key: str,
+    ) -> bool:
+        async with await _session(self._db) as session, session.start_transaction():
+            if not await self._guard(operation, session):
+                return False
+            existing = await self._db[RUN_WINDOWS_COLLECTION].find_one(
+                {"_id": window.window_id}, session=session
+            )
+            if existing is not None:
+                return _prepared_window_matches(existing, window, idempotency_key)
+            await self._db[RUN_WINDOWS_COLLECTION].update_one(
+                {"_id": window.window_id},
+                {
+                    "$setOnInsert": {
+                        "_id": window.window_id,
+                        "run_id": window.run_id,
+                        "index": window.index,
+                        "start": window.start,
+                        "end": window.end,
+                        "state": "prepared",
+                        "fence": operation.fence,
+                        "idempotency_key": idempotency_key,
+                        "created_at": datetime.now(UTC),
+                        "updated_at": datetime.now(UTC),
+                        "schema_version": 1,
+                    }
+                },
+                upsert=True,
+                session=session,
+            )
+            return True
+
+    async def read_next(
+        self, run_id: str, *, operation: DevolucionesOperationContext
+    ) -> RunWindow | None:
+        async with await _session(self._db) as session, session.start_transaction():
+            if not await self._guard(operation, session):
+                return None
+            run = await self._db[RUNS_COLLECTION].find_one({"_id": run_id}, session=session)
+            if run is None:
+                return None
+            start, end = _utc(run["start"], "start"), _utc(run["end"], "end")
+            for index in range(int(run["window_count"])):
+                window = RunWindow(
+                    run_id, index, start, min(start + timedelta(days=WINDOW_DAYS), end)
+                )
+                document = await self._db[RUN_WINDOWS_COLLECTION].find_one(
+                    {"run_id": run_id, "index": index}, session=session
+                )
+                if document is None or document["state"] != "completed":
+                    return window
+                start = window.end
+            return None
+
+    async def _guard(self, operation: DevolucionesOperationContext, session: Any) -> bool:
+        result = await self._db["sheets_devoluciones_operations"].update_one(
+            operation_lease_guard(operation),
+            {"$currentDate": {"updated_at": True}},
+            session=session,
+        )
+        return getattr(result, "matched_count", 0) == 1
+
+
+def _prepared_window_matches(
+    document: Mapping[str, Any], window: RunWindow, idempotency_key: str
+) -> bool:
+    return (
+        document.get("run_id") == window.run_id
+        and document.get("index") == window.index
+        and document.get("start") == window.start
+        and document.get("end") == window.end
+        and document.get("idempotency_key") == idempotency_key
+    )
+
+
+async def _session(db: Any) -> Any:
+    client = getattr(db, "client", None)
+    if client is None or not callable(getattr(client, "start_session", None)):
+        raise RuntimeError("Mongo transaction-capable database client is required")
+    session = client.start_session()
+    return await session if hasattr(session, "__await__") else session

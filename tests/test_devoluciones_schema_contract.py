@@ -96,3 +96,55 @@ def test_devoluciones_indexes_match_claim_order_freshness_and_operation_access()
             "options": {"name": "idx_sheets_devoluciones_operations_state_lease"},
         },
     ]
+
+
+def test_devoluciones_run_and_window_schemas_are_strict_and_identity_indexed() -> None:
+    runs = _load("infra/mongo/schemas/sheets_devoluciones_runs.json")
+    windows = _load("infra/mongo/schemas/sheets_devoluciones_run_windows.json")
+    run_indexes = _load("infra/mongo/indexes/sheets_devoluciones_runs.json")
+    window_indexes = _load("infra/mongo/indexes/sheets_devoluciones_run_windows.json")
+
+    assert _validator_payload(ENTITY_SCHEMAS["sheets_devoluciones_runs"]) == runs
+    assert _validator_payload(ENTITY_SCHEMAS["sheets_devoluciones_run_windows"]) == windows
+    assert runs["$jsonSchema"]["additionalProperties"] is False
+    assert windows["$jsonSchema"]["additionalProperties"] is False
+    assert runs["$jsonSchema"]["required"] == [
+        "_id",
+        "authorization_id",
+        "cohort_id",
+        "seller_id",
+        "scope",
+        "start",
+        "end",
+        "partition_version",
+        "release_fingerprints",
+        "window_count",
+        "state",
+        "next_window_index",
+        "created_at",
+        "expires_at",
+        "schema_version",
+    ]
+    assert windows["$jsonSchema"]["required"] == [
+        "_id",
+        "run_id",
+        "index",
+        "start",
+        "end",
+        "state",
+        "fence",
+        "idempotency_key",
+        "created_at",
+        "updated_at",
+        "schema_version",
+    ]
+    assert {
+        "keys": {"authorization_id": 1, "cohort_id": 1, "seller_id": 1, "scope": 1},
+        "options": {"name": "uniq_sheets_devoluciones_runs_identity", "unique": True},
+    } in run_indexes
+    assert window_indexes == [
+        {
+            "keys": {"run_id": 1, "index": 1},
+            "options": {"name": "uniq_sheets_devoluciones_run_windows_index", "unique": True},
+        }
+    ]
