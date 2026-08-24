@@ -928,14 +928,18 @@ def test_zelerdata_docs_explain_joint_marker_operator_evidence_and_safe_rollback
         "/app/.venv/bin/python",
         "30-minute marker lease",
         "one exact non-unioned `devoluciones` marker",
-        "2026-06-01 through the previous closed UTC day",
-        "must not shrink accepted coverage",
-        "every 10 minutes",
+        "operator-authorized quota run",
+        "/etc/zeler-platform/zelerdata-devoluciones-quota-run.env",
+        "at most one 10-day window",
+        "0-119 seconds",
+        "no calendar catch-up",
         "OnFailure",
         "plan → prestart → worker health → bind-claims",
         "OPERATOR_EVIDENCE_PENDING",
         "failure-conditional rollback",
-        "zelerdata-devoluciones-enable-timer.sh",
+        "infra.operations.devoluciones_quota_authorize",
+        "root root 600",
+        "failed or expired run is",
     )
     formula_required = (
         "joint `devoluciones` marker",
@@ -995,7 +999,7 @@ def test_public_evidence_excludes_sensitive_identifiers_and_keeps_only_counter()
     assert "82453304" not in public_evidence
 
 
-def test_reconciliation_runbook_documents_focused_budget_campaign_and_safe_api_rollback() -> None:
+def test_reconciliation_runbook_documents_quota_authority_and_safe_api_rollback() -> None:
     reconciliation = _read(RECONCILIATION_DOC)
 
     required = (
@@ -1015,10 +1019,6 @@ def test_reconciliation_runbook_documents_focused_budget_campaign_and_safe_api_r
         "21.5 seconds of process-deadline margin",
         "165-second process deadline",
         "175-second shell stop",
-        "20 consecutive",
-        "nearest-rank p95",
-        "every run must remain below 180 seconds",
-        "p95 must remain below 150 seconds",
         "exact 11 scopes and 5 routing keys",
         "retain the corrected candidate API",
         "rollback-compatible API image",
@@ -1026,23 +1026,16 @@ def test_reconciliation_runbook_documents_focused_budget_campaign_and_safe_api_r
         "keep the Sheets API unavailable",
         "SHEETS_ROLLBACK_PREFLIGHT=1",
         "sanitized evidence",
-        "Enable scheduling last",
-        "single scheduled attempt",
+        "operator-authorized quota run",
+        "advances at most one 10-day window",
         "cannot reset either snapshot or run accounting",
-        "explicit campaign ID",
+        "cannot create or discover a",
+        "exact full-range readback",
         "Cloud Build SLSA provenance",
         "Repository JSON alone is not authority",
         "unknown digest fails closed",
         "registry fingerprint before healthy",
         "startup-installed preflight is parity-bound",
-        "private campaign sample",
-        "success-only source/read-model fingerprint hashes",
-        "stage`, `status_class`, and `counters",
-        "arbitrary nonzero values remain authoritative",
-        "evidence_invalid",
-        "all temporary files are removed after state handling and publication",
-        "zelerdata-devoluciones-campaign.json",
-        "A→B→A",
         "gcloud artifacts docker images describe",
         "--show-provenance",
         "gcloud builds describe",
