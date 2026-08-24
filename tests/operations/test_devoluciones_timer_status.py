@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 from infra.operations.devoluciones_timer_status import main
-from infra.operations.zelerdata_campaign_state import CampaignStateStore
+from infra.operations.zelerdata_campaign_state import CampaignStateStore, PrivateCampaignSample
 
 VALID_CAMPAIGN_ID = "campaign-a"
 SOURCE_HASH = "a" * 64
@@ -126,6 +126,39 @@ def test_accepted_campaign_reports_active_gate_and_aggregates_only(
     assert payload["p95_seconds"] == 100.0
     assert payload["sample_count"] == 20
     assert payload["accepted_through"] == "2026-07-15"
+    assert SOURCE_HASH not in output
+    assert READ_HASH not in output
+
+
+def test_v2_status_reports_only_aggregates_and_redacts_run_ids(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    state_path = tmp_path / "campaign.json"
+    store = CampaignStateStore(state_path)
+    run_ids = [f"{index:064x}" for index in range(20)]
+    for run_id in run_ids:
+        store.record(
+            PrivateCampaignSample(
+                campaign_id=VALID_CAMPAIGN_ID,
+                run_id=run_id,
+                outcome="success",
+                campaign_disqualified=False,
+                duration_seconds=100.0,
+                source_fingerprint_hash=SOURCE_HASH,
+                read_model_fingerprint_hash=READ_HASH,
+            )
+        )
+    env_path = tmp_path / "service.env"
+    env_path.write_text(_service_environment(), encoding="utf-8")
+
+    assert main(["--state-file", str(state_path), "--service-environment-file", str(env_path)]) == 0
+    output = capsys.readouterr().out
+    payload = json.loads(output)
+
+    assert payload["timer_active"] is True
+    assert payload["sample_count"] == 20
+    assert all(run_id not in output for run_id in run_ids)
     assert SOURCE_HASH not in output
     assert READ_HASH not in output
 

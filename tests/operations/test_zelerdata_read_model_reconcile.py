@@ -5064,6 +5064,7 @@ def test_campaign_sample_is_derived_from_scheduled_write_runtime_evidence() -> N
             source_fingerprint="source-a",
             read_model_fingerprint="read-a",
             campaign_id="campaign-a",
+            run_id="c" * 64,
         ),
     )
 
@@ -5075,6 +5076,7 @@ def test_campaign_sample_is_derived_from_scheduled_write_runtime_evidence() -> N
         "source-a",
         "read-a",
         campaign_id="campaign-a",
+        run_id="c" * 64,
         physical_attempts=16,
         source_calls={"P": 4, "R": 8, "O": 4, "T": 16},
     )
@@ -5102,6 +5104,7 @@ def test_campaign_sample_is_derived_from_scheduled_write_runtime_evidence() -> N
         "counters": {"P": 4, "R": 8, "O": 4, "T": 16},
     }
     assert transport.private_campaign.campaign_id == "campaign-a"
+    assert transport.private_campaign.run_id == "c" * 64
     assert transport.private_campaign.duration_seconds == 100.0
     assert transport.private_campaign.source_fingerprint_hash != "source-a"
     assert transport.private_campaign.read_model_fingerprint_hash != "read-a"
