@@ -10,6 +10,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 from uuid import uuid4
 
@@ -1215,6 +1216,107 @@ async def test_quota_finalization_rejects_inexact_readback_without_marker() -> N
     assert result == {"advanced": 0, "finalized": 0}
     assert db["sheets_devoluciones_runs"].documents[0]["state"] == "failed"
     assert db["sheets_read_model_freshness"].documents == []
+
+
+@pytest.mark.asyncio
+async def test_quota_window_executor_reuses_root_fence_and_returns_markerless_proof(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from zeler_sheets import devoluciones_reconciliation as source_module
+
+    operation = _operation()
+    snapshot = SimpleNamespace(
+        seller_id=operation.seller_id,
+        start=_dt(1),
+        end=_dt(11),
+        captured_at=_dt(2),
+        expected_claim_ids=frozenset({"claim-1"}),
+        source_fingerprint="source-window",
+        read_model_fingerprint="read-window",
+    )
+    events: list[tuple[str, Any]] = []
+
+    async def collect_snapshot(**kwargs: Any) -> Any:
+        events.append(("collect", kwargs))
+        return snapshot
+
+    async def write_snapshot(**kwargs: Any) -> dict[str, int]:
+        child_operation = kwargs["operation"]
+        assert child_operation.attempt_token == operation.attempt_token
+        assert child_operation.fence == operation.fence
+        assert child_operation.source_fingerprint == "source-window"
+        events.append(("write", kwargs))
+        return {"written_claims": 1}
+
+    async def revalidate(**kwargs: Any) -> Any:
+        events.append(("revalidate", kwargs))
+        return snapshot
+
+    async def collect_counts(**kwargs: Any) -> ReconciliationSummary:
+        events.append(("readback", kwargs))
+        request = kwargs["request"]
+        return ReconciliationSummary(
+            seller_id=request.seller_id,
+            date_from=request.date_range.date_from,
+            date_to=request.date_range.date_to,
+            dry_run=False,
+            approved_runtime=True,
+            write_enabled=True,
+            aggregates=(
+                ReadModelAggregate(
+                    read_model="claims",
+                    expected_count=1,
+                    persisted_count=1,
+                    missing_count=0,
+                    complete_count=1,
+                    truth_mode="expected",
+                ),
+            ),
+        )
+
+    @asynccontextmanager
+    async def heartbeat(**_: Any) -> Any:
+        events.append(("heartbeat", None))
+        yield
+
+    async def forbidden(**_: Any) -> Any:
+        raise AssertionError("executor must not acquire, finish, or publish a marker")
+
+    monkeypatch.setattr(source_module, "collect_devoluciones_snapshot", collect_snapshot)
+    monkeypatch.setattr(source_module, "write_devoluciones_snapshot", write_snapshot)
+    monkeypatch.setattr(source_module, "revalidate_devoluciones_snapshot", revalidate)
+    monkeypatch.setattr(reconcile_operation_module, "collect_reconciliation_counts", collect_counts)
+    monkeypatch.setattr(reconcile_operation_module, "maintain_devoluciones_heartbeat", heartbeat)
+    monkeypatch.setattr(reconcile_operation_module, "acquire_devoluciones_operation", forbidden)
+    monkeypatch.setattr(reconcile_operation_module, "finish_devoluciones_operation", forbidden)
+    monkeypatch.setattr(
+        reconcile_operation_module, "write_complete_read_model_freshness_markers", forbidden
+    )
+
+    proof = await reconcile_operation_module.execute_devoluciones_quota_window(
+        db=FakeAsyncDb({}),
+        window={"start": _dt(1), "end": _dt(11)},
+        operation=operation,
+        source=object(),
+        monotonic=lambda: 1.0,
+        now=lambda: _dt(2),
+    )
+
+    assert proof == {
+        "source_fingerprint": "source-window",
+        "read_model_fingerprint": "read-window",
+        "expected_count": 1,
+        "persisted_count": 1,
+        "complete_count": 1,
+        "missing_count": 0,
+    }
+    assert [event[0] for event in events] == [
+        "collect",
+        "heartbeat",
+        "write",
+        "revalidate",
+        "readback",
+    ]
 
 
 def _seller_doc(**values: Any) -> dict[str, Any]:

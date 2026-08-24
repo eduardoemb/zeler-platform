@@ -1161,6 +1161,124 @@ def _devoluciones_chunk_ranges(
     return chunks
 
 
+async def execute_devoluciones_quota_window(
+    *,
+    db: Any,
+    window: Mapping[str, Any],
+    operation: DevolucionesOperationContext,
+    source: Any | None = None,
+    monotonic: Callable[[], float] = time.monotonic,
+    sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+    now: Callable[[], datetime] = lambda: datetime.now(UTC),
+) -> dict[str, Any]:
+    """Write and verify one exact quota window under an existing root lease."""
+    from zeler_sheets.devoluciones_reconciliation import (
+        MAX_SNAPSHOT_PHYSICAL_ATTEMPTS,
+        MAX_SOURCE_PHYSICAL_ATTEMPTS,
+        GatewayDevolucionesSource,
+        ReturnsAttemptPacer,
+        SourceCallRecorder,
+        SourceRunLedger,
+        collect_devoluciones_snapshot,
+        require_snapshot_publication_age,
+        revalidate_devoluciones_snapshot,
+        write_devoluciones_snapshot,
+    )
+
+    start, end = window.get("start"), window.get("end")
+    if not isinstance(start, datetime) or not isinstance(end, datetime) or start >= end:
+        raise ValueError("quota window bounds are invalid")
+    if not operation.owns_lease or operation.lease_lost or operation.scope != "devoluciones":
+        raise RuntimeError("quota window operation does not own the required lease")
+    if source is None:
+        gateways = create_runtime_historical_meli_gateways()
+        source = GatewayDevolucionesSource(gateways.order_detail_gateway, single_attempt=True)
+
+    started = monotonic()
+    absolute_deadline = started + DEVOLUCIONES_PROCESS_DEADLINE_SECONDS
+    run_ledger = SourceRunLedger(max_total=MAX_SOURCE_PHYSICAL_ATTEMPTS)
+    returns_pacer = ReturnsAttemptPacer(monotonic=monotonic, sleep=sleep)
+    recorder = SourceCallRecorder(
+        max_total=MAX_SNAPSHOT_PHYSICAL_ATTEMPTS,
+        run_ledger=run_ledger,
+    )
+    snapshot = await collect_devoluciones_snapshot(
+        source=source,
+        seller_id=operation.seller_id,
+        start=start,
+        end=end,
+        recorder=recorder,
+        absolute_deadline=absolute_deadline,
+        monotonic=monotonic,
+        returns_pacer=returns_pacer,
+    )
+    window_operation = replace(operation, source_fingerprint=snapshot.source_fingerprint)
+    request = ReconciliationRequest(
+        seller_id=operation.seller_id,
+        date_range=ReconciliationDateRange(
+            date_from=start.date().isoformat(),
+            date_to=(end - timedelta(days=1)).date().isoformat(),
+            start=start,
+            end_exclusive=end,
+        ),
+        dry_run=False,
+        approved_runtime=True,
+        write_enabled=True,
+        include_buyer_address_pii=False,
+        controls=ReconciliationControls(),
+        read_model="devoluciones",
+    )
+    expected = _focused_expected_counts(snapshot)
+
+    async with maintain_devoluciones_heartbeat(db=db, operation=operation):
+        require_snapshot_publication_age(snapshot=snapshot, current_time=now())
+        await write_devoluciones_snapshot(
+            db=db,
+            snapshot=snapshot,
+            operation=window_operation,
+        )
+        revalidation_recorder = SourceCallRecorder(
+            max_total=MAX_SNAPSHOT_PHYSICAL_ATTEMPTS,
+            run_ledger=run_ledger,
+        )
+        await revalidate_devoluciones_snapshot(
+            source=source,
+            snapshot=snapshot,
+            operation=window_operation,
+            absolute_deadline=absolute_deadline,
+            recorder=revalidation_recorder,
+            heartbeat=_devoluciones_heartbeat_adapter(
+                db=db,
+                operation=window_operation,
+            ),
+            monotonic=monotonic,
+            returns_pacer=returns_pacer,
+            now=now,
+        )
+        summary = await collect_reconciliation_counts(
+            db=db,
+            request=request,
+            expected=expected,
+            read_models=("claims",),
+        )
+
+    aggregate = next(
+        (item for item in summary.aggregates if item.read_model == "claims"),
+        None,
+    )
+    proof = {
+        "source_fingerprint": snapshot.source_fingerprint,
+        "read_model_fingerprint": snapshot.read_model_fingerprint,
+        "expected_count": aggregate.expected_count if aggregate else None,
+        "persisted_count": aggregate.persisted_count if aggregate else None,
+        "complete_count": aggregate.complete_count if aggregate else None,
+        "missing_count": aggregate.missing_count if aggregate else None,
+    }
+    if not _complete_quota_proof(proof):
+        raise RuntimeError("quota window readback proof is incomplete")
+    return proof
+
+
 async def advance_devoluciones_quota_run(
     *,
     db: Any,
