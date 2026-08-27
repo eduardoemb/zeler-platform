@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import stat
 from pathlib import Path
 from typing import Any
 
@@ -316,6 +317,253 @@ def test_write_image_to_commit_writes_expected_json(tmp_path: Path) -> None:
     write_image_to_commit(target, document)
 
     assert json.loads(target.read_text(encoding="utf-8")) == document
+
+
+def _complete_entry(build_id: str = "build-123") -> dict[str, str]:
+    return {
+        "digest": f"sha256:{DIGEST_HEX}",
+        "build_id": build_id,
+        "source_commit": SOURCE_COMMIT,
+    }
+
+
+def test_write_image_to_commit_initial_write_is_exactly_0644(tmp_path: Path) -> None:
+    target = tmp_path / "image_to_commit.json"
+    document = image_to_commit_document({PINNED_IMAGE_REF: _complete_entry()})
+
+    write_image_to_commit(target, document)
+
+    assert stat.S_IMODE(target.stat().st_mode) == 0o644
+
+
+def test_write_image_to_commit_rewrite_keeps_exactly_0644(tmp_path: Path) -> None:
+    target = tmp_path / "image_to_commit.json"
+    first = image_to_commit_document({PINNED_IMAGE_REF: _complete_entry("build-123")})
+    second = image_to_commit_document({PINNED_IMAGE_REF: _complete_entry("build-456")})
+
+    write_image_to_commit(target, first)
+    write_image_to_commit(target, second)
+
+    assert json.loads(target.read_text(encoding="utf-8")) == second
+    assert stat.S_IMODE(target.stat().st_mode) == 0o644
+
+
+def test_write_image_to_commit_rejects_invalid_structure_without_touching_target(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "image_to_commit.json"
+    first = image_to_commit_document({PINNED_IMAGE_REF: _complete_entry()})
+    write_image_to_commit(target, first)
+
+    with pytest.raises(ProvenanceCheckError) as exc_info:
+        write_image_to_commit(target, {"images": {PINNED_IMAGE_REF: {"unserializable": set()}}})
+
+    assert "unserializable" not in str(exc_info.value)
+    assert json.loads(target.read_text(encoding="utf-8")) == first
+    assert stat.S_IMODE(target.stat().st_mode) == 0o644
+    assert list(tmp_path.glob(f".{target.name}.*")) == []
+
+
+@pytest.mark.parametrize("schema_version", [True, 1.0, "1"])
+def test_write_image_to_commit_rejects_non_int_schema_version_without_touching_target(
+    tmp_path: Path, schema_version: Any
+) -> None:
+    target = tmp_path / "image_to_commit.json"
+    first = image_to_commit_document({PINNED_IMAGE_REF: _complete_entry()})
+    write_image_to_commit(target, first)
+    forged: Any = {
+        "schema_version": schema_version,
+        "images": {PINNED_IMAGE_REF: _complete_entry()},
+    }
+
+    with pytest.raises(ProvenanceCheckError, match="schema_version"):
+        write_image_to_commit(target, forged)
+
+    assert json.loads(target.read_text(encoding="utf-8")) == first
+    assert stat.S_IMODE(target.stat().st_mode) == 0o644
+    assert list(tmp_path.glob(f".{target.name}.*")) == []
+
+
+def test_write_image_to_commit_rejects_non_mapping_document_without_touching_target(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "image_to_commit.json"
+    first = image_to_commit_document({PINNED_IMAGE_REF: _complete_entry()})
+    write_image_to_commit(target, first)
+    forged: Any = ["not", "a", "mapping"]
+
+    with pytest.raises(ProvenanceCheckError, match="document is invalid"):
+        write_image_to_commit(target, forged)
+
+    assert json.loads(target.read_text(encoding="utf-8")) == first
+    assert stat.S_IMODE(target.stat().st_mode) == 0o644
+    assert list(tmp_path.glob(f".{target.name}.*")) == []
+
+
+def test_image_to_commit_document_rejects_non_mapping_entry() -> None:
+    forged: Any = {PINNED_IMAGE_REF: "certificate-pem"}
+    with pytest.raises(ProvenanceCheckError, match="entry"):
+        image_to_commit_document(forged)
+
+
+def test_image_to_commit_document_rejects_extra_entry_fields_without_echoing_value() -> None:
+    forged = _complete_entry() | {"password": "s3cr3t-value"}
+
+    with pytest.raises(ProvenanceCheckError) as exc_info:
+        image_to_commit_document({PINNED_IMAGE_REF: forged})
+
+    message = str(exc_info.value)
+    assert "password" not in message
+    assert "s3cr3t-value" not in message
+
+
+def test_image_to_commit_document_rejects_secret_like_key_without_echoing() -> None:
+    needle = "s3cr3t-token"
+    invalid_key = f"registry.example/{needle}"
+    pinned_secret_key = PINNED_IMAGE_REF.replace("/sheets-api", f"/{needle}")
+
+    with pytest.raises(
+        ProvenanceCheckError, match="immutable image reference is required"
+    ) as exc_info:
+        image_to_commit_document({invalid_key: _complete_entry()})
+
+    message = str(exc_info.value)
+    assert message == "immutable image reference is required"
+    assert needle not in message
+    assert invalid_key not in message
+
+    with pytest.raises(ProvenanceCheckError, match="image entry is missing") as exc_info:
+        image_to_commit_document(
+            {pinned_secret_key: {"build_id": "build-123", "source_commit": SOURCE_COMMIT}}
+        )
+
+    message = str(exc_info.value)
+    assert "digest" in message
+    assert needle not in message
+    assert pinned_secret_key not in message
+
+
+def test_write_image_to_commit_rejects_extra_top_level_field_without_echoing_value(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "image_to_commit.json"
+    forged = {
+        "schema_version": PROOF_SCHEMA_VERSION,
+        "images": {PINNED_IMAGE_REF: _complete_entry()},
+        "sidecar-secret": "s3cr3t-value",
+    }
+
+    with pytest.raises(ProvenanceCheckError) as exc_info:
+        write_image_to_commit(target, forged)
+
+    message = str(exc_info.value)
+    assert "s3cr3t-value" not in message
+    assert "sidecar-secret" not in message
+    assert list(tmp_path.glob(f".{target.name}.*")) == []
+
+
+def test_write_image_to_commit_rejects_extra_entry_field_without_echoing_value(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "image_to_commit.json"
+    first = image_to_commit_document({PINNED_IMAGE_REF: _complete_entry()})
+    write_image_to_commit(target, first)
+    forged = {
+        "schema_version": PROOF_SCHEMA_VERSION,
+        "images": {PINNED_IMAGE_REF: _complete_entry() | {"password": "s3cr3t-value"}},
+    }
+
+    with pytest.raises(ProvenanceCheckError) as exc_info:
+        write_image_to_commit(target, forged)
+
+    message = str(exc_info.value)
+    assert "password" not in message
+    assert "s3cr3t-value" not in message
+    assert json.loads(target.read_text(encoding="utf-8")) == first
+    assert stat.S_IMODE(target.stat().st_mode) == 0o644
+    assert list(tmp_path.glob(f".{target.name}.*")) == []
+
+
+def test_write_image_to_commit_rejects_entry_missing_required_field(tmp_path: Path) -> None:
+    target = tmp_path / "image_to_commit.json"
+    incomplete = {
+        "schema_version": PROOF_SCHEMA_VERSION,
+        "images": {
+            PINNED_IMAGE_REF: {
+                "digest": f"sha256:{DIGEST_HEX}",
+                "source_commit": SOURCE_COMMIT,
+            }
+        },
+    }
+
+    with pytest.raises(ProvenanceCheckError, match="build_id"):
+        write_image_to_commit(target, incomplete)
+
+    assert list(tmp_path.glob(f".{target.name}.*")) == []
+
+
+def test_merge_image_to_commit_rejects_existing_map_extra_top_level_field() -> None:
+    with pytest.raises(ProvenanceCheckError) as exc_info:
+        merge_image_to_commit(
+            {
+                "schema_version": PROOF_SCHEMA_VERSION,
+                "images": {},
+                "sidecar-secret": "s3cr3t-value",
+            },
+            PINNED_IMAGE_REF,
+            _complete_entry(),
+        )
+
+    message = str(exc_info.value)
+    assert "s3cr3t-value" not in message
+    assert "sidecar-secret" not in message
+
+
+def test_merge_image_to_commit_rejects_existing_entry_extra_fields_without_echoing() -> None:
+    existing = {
+        "schema_version": PROOF_SCHEMA_VERSION,
+        "images": {PINNED_IMAGE_REF: _complete_entry() | {"password": "s3cr3t-value"}},
+    }
+
+    with pytest.raises(ProvenanceCheckError) as exc_info:
+        merge_image_to_commit(existing, PINNED_IMAGE_REF, _complete_entry("build-2"))
+
+    message = str(exc_info.value)
+    assert "password" not in message
+    assert "s3cr3t-value" not in message
+
+
+def test_merge_image_to_commit_output_is_structurally_exact() -> None:
+    existing = image_to_commit_document({PINNED_IMAGE_REF: _complete_entry("build-1")})
+
+    merged = merge_image_to_commit(existing, PINNED_IMAGE_REF, _complete_entry("build-2"))
+
+    assert set(merged) == {"schema_version", "images"}
+    assert merged["schema_version"] == PROOF_SCHEMA_VERSION
+    assert set(merged["images"]) == {PINNED_IMAGE_REF}
+    assert set(merged["images"][PINNED_IMAGE_REF]) == {"digest", "build_id", "source_commit"}
+    assert merged["images"][PINNED_IMAGE_REF]["build_id"] == "build-2"
+
+
+def test_write_image_to_commit_fsync_failure_keeps_old_target_and_removes_temp(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target = tmp_path / "image_to_commit.json"
+    first = image_to_commit_document({PINNED_IMAGE_REF: _complete_entry("build-123")})
+    write_image_to_commit(target, first)
+
+    def fail_fsync(fileno: int) -> None:
+        raise OSError("injected fsync failure")
+
+    monkeypatch.setattr("os.fsync", fail_fsync)
+    with pytest.raises(OSError, match="injected fsync failure"):
+        write_image_to_commit(
+            target, image_to_commit_document({PINNED_IMAGE_REF: _complete_entry("build-456")})
+        )
+
+    assert json.loads(target.read_text(encoding="utf-8")) == first
+    assert stat.S_IMODE(target.stat().st_mode) == 0o644
+    assert list(tmp_path.glob(f".{target.name}.*")) == []
 
 
 # --- CLI surface -------------------------------------------------------------

@@ -464,6 +464,13 @@ Evidence file `/var/lib/zeler-platform/image_to_commit.json`:
 {"schema_version": 1, "images": {"us-central1-docker.pkg.dev/zeler-platform-dev/zeler-platform/sheets-api@sha256:<hex>": {"digest": "sha256:<hex>", "build_id": "<cloud-build>", "source_commit": "<40 hex>"}}}
 ```
 
+The canonical writer permits exactly these top-level and per-image fields. It
+publishes the completed map atomically with mode `0644`; when the deploy
+preflight runs with `sudo`, the result is root-owned, root-writable, and readable
+by the approved non-root metadata verifier. The map contains provenance
+identifiers only. Never add credentials, tokens, connection strings, or other
+secret material to this world-readable evidence contract.
+
 **Moving tags are metadata only.** Tags such as `rollout-v5` document intent
 for humans; they are never deploy authority. Digest pinning per deploy is an
 operator work unit (Lane B): obtain `repo@sha256:...` plus `build_id` and
