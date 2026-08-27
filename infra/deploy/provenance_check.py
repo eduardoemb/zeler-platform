@@ -24,6 +24,12 @@ from infra.deploy.sheets_rollback import (
 )
 
 PROOF_SCHEMA_VERSION = 1
+# Root-owned observable provenance metadata: world-readable, root-writable. The
+# map holds no secrets (digest/build/source-commit only), so 0644 is deliberate;
+# credentials stay in Secret Manager and are mounted privately, never here.
+_PROVENANCE_MAP_MODE = 0o644
+_IMAGE_MAP_KEYS = ("schema_version", "images")
+_IMAGE_ENTRY_KEYS = ("digest", "build_id", "source_commit")
 _IMAGE_REF_PATTERN = re.compile(r"[a-z0-9.-]+/[a-z0-9._/-]+@sha256:[0-9a-f]{64}")
 _COMMIT_PATTERN = re.compile(r"[0-9a-f]{40}")
 _SERVICE_NAME_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*")
@@ -178,15 +184,46 @@ def verify_image_to_commit(
     }
 
 
+def _validate_image_entry(entry: Any) -> None:
+    """Fail closed unless the entry is exactly the three non-empty string fields.
+
+    Messages are static: the image-map key is a user-controlled reference and must
+    never be echoed into crash/log output.
+    """
+    if not isinstance(entry, Mapping):
+        raise ProvenanceCheckError("image entry is invalid")
+    extra_fields = set(entry) - set(_IMAGE_ENTRY_KEYS)
+    if extra_fields:
+        raise ProvenanceCheckError("image entry has unexpected fields")
+    for field in _IMAGE_ENTRY_KEYS:
+        value = entry.get(field)
+        if not isinstance(value, str) or not value.strip():
+            raise ProvenanceCheckError(f"image entry is missing {field}")
+
+
+def _validate_image_map_document(
+    document: Mapping[str, Any], *, subject: str = "image_to_commit.json"
+) -> None:
+    """Fail closed unless the map is exactly schema_version + validated image entries."""
+    if not isinstance(document, Mapping):
+        raise ProvenanceCheckError(f"{subject} document is invalid")
+    if set(document) != set(_IMAGE_MAP_KEYS):
+        raise ProvenanceCheckError(f"{subject} structure is invalid")
+    schema_version = document.get("schema_version")
+    if type(schema_version) is not int or schema_version != PROOF_SCHEMA_VERSION:
+        raise ProvenanceCheckError(f"{subject} schema_version is invalid")
+    images = document.get("images")
+    if not isinstance(images, Mapping):
+        raise ProvenanceCheckError(f"{subject} images mapping is invalid")
+    image_to_commit_document(images)
+
+
 def image_to_commit_document(images: Mapping[str, Mapping[str, str]]) -> dict[str, Any]:
     """Build the bounded `image_to_commit.json` document, validating entries."""
     for image_ref, entry in images.items():
         if not digest_pinned_image_ref(image_ref):
-            raise ProvenanceCheckError(f"immutable image reference is required; got {image_ref}")
-        for field in ("digest", "build_id", "source_commit"):
-            value = entry.get(field)
-            if not isinstance(value, str) or not value.strip():
-                raise ProvenanceCheckError(f"image entry for {image_ref} is missing {field}")
+            raise ProvenanceCheckError("immutable image reference is required")
+        _validate_image_entry(entry)
     return {"schema_version": PROOF_SCHEMA_VERSION, "images": dict(images)}
 
 
@@ -197,17 +234,10 @@ def merge_image_to_commit(
 ) -> dict[str, Any]:
     """Merge one verified image entry into an existing evidence document."""
     if existing is None:
-        merged = image_to_commit_document({})
-    elif (
-        not isinstance(existing, Mapping) or existing.get("schema_version") != PROOF_SCHEMA_VERSION
-    ):
-        raise ProvenanceCheckError("existing image_to_commit.json schema_version is invalid")
+        images: dict[str, Any] = {}
     else:
-        images = existing.get("images")
-        if not isinstance(images, Mapping):
-            raise ProvenanceCheckError("existing image_to_commit.json images mapping is invalid")
-        merged = image_to_commit_document(images)
-    images = dict(merged["images"])
+        _validate_image_map_document(existing, subject="existing image_to_commit.json")
+        images = dict(existing["images"])
     images[image_ref] = dict(entry)
     return image_to_commit_document(images)
 
@@ -220,6 +250,7 @@ def _atomic_json_write(path: Path, document: Mapping[str, Any]) -> None:
         with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
             json.dump(document, handle, sort_keys=True, separators=(",", ":"))
             handle.flush()
+            os.fchmod(handle.fileno(), _PROVENANCE_MAP_MODE)
             os.fsync(handle.fileno())
         os.replace(temporary, path)
     finally:
@@ -227,8 +258,7 @@ def _atomic_json_write(path: Path, document: Mapping[str, Any]) -> None:
 
 
 def write_image_to_commit(path: Path, document: Mapping[str, Any]) -> None:
-    if not isinstance(document, Mapping):
-        raise ProvenanceCheckError("image_to_commit document is invalid")
+    _validate_image_map_document(document)
     _atomic_json_write(path, document)
 
 
