@@ -14,13 +14,14 @@ from zeler_sheets import source_gated_read_model_writers as planner
 START, END = datetime(2026, 6, 1, tzinfo=UTC), datetime(2026, 7, 1, tzinfo=UTC)
 
 
-def metric(target: str, value: int) -> dict[str, Any]:
+def metric(target: str, value: int, **extra: Any) -> dict[str, Any]:
     return {
         "_id": target,
         "seller_id": "82453304",
         "date_from": START,
         "date_to": END,
         "value": value,
+        **extra,
     }
 
 
@@ -190,7 +191,154 @@ def test_seal_rejects_source_that_does_not_match_the_plan() -> None:
         seal(source="drift", plan=action_plan())
 
 
+def test_materializes_metric_actions_with_operation_owned_revisions() -> None:
+    sealed = seal()
+    mutations = sealed._mutations
+    metric_mutations = mutations[:-1]
+
+    assert [(item.sequence, item._target_id, item.action) for item in metric_mutations] == [
+        (1, "delete", "delete"),
+        (2, "insert", "insert"),
+        (3, "replace", "replace"),
+    ]
+    assert [doc["_id"] for doc in sealed._expected_metric_documents] == [
+        "insert",
+        "replace",
+        "same",
+    ]
+    final = {doc["_id"]: doc for doc in sealed._expected_metric_documents}
+    assert final["same"] == metric("same", 1)
+    assert "revision" not in final["same"]
+    for target in ("insert", "replace"):
+        mutation = next(item for item in metric_mutations if item._target_id == target)
+        assert final[target]["revision"] == mutation.expected_forward_revision
+        assert mutation._document == final[target]
+    overwrite_plan = planner._plan_stock_time_actions(
+        source_inventory=[{"_id": "source"}],
+        planned_documents=[metric("insert", 2, revision="caller-revision")],
+        existing_target_rows=[],
+    )
+    overwritten = seal(plan=overwrite_plan)._expected_metric_documents[0]
+    assert overwritten["revision"] != "caller-revision"
+    deleted = metric_mutations[0]
+    assert deleted._document is None
+    assert (
+        engine._operation_revision(
+            sealed.operation_id, deleted.target_collection, "delete", "delete"
+        )
+        == deleted.expected_forward_revision
+    )
+    assert len({item.expected_forward_revision for item in mutations}) == len(mutations)
+    assert seal()._mutations == mutations
+    assert (
+        len(
+            {
+                engine._operation_revision(sealed.operation_id, "collection", "id", action)
+                for action in ("insert", "replace", "delete")
+            }
+        )
+        == 3
+    )
+
+
+def test_noop_preserves_exact_existing_revision_and_nested_document() -> None:
+    same = metric("same", 1, revision="existing", nested={"values": [1, 2]})
+    plan = planner._plan_stock_time_actions(
+        source_inventory=[{"_id": "source"}],
+        planned_documents=[metric("same", 1, nested={"values": [1, 2]})],
+        existing_target_rows=[same],
+    )
+    sealed = seal(plan=plan)
+
+    assert len(sealed._mutations) == 1  # Marker only.
+    assert planner._canonical_bson_bytes(sealed._expected_metric_documents[0]) == (
+        planner._canonical_bson_bytes(same)
+    )
+    with pytest.raises(TypeError):
+        sealed._expected_metric_documents[0]["nested"]["values"][0] = 9
+
+
+@pytest.mark.parametrize("old_marker", [None, marker()])
+def test_marker_is_canonical_final_mutation_with_exact_counts(
+    old_marker: dict[str, Any] | None,
+) -> None:
+    sealed = seal(old_marker=old_marker)
+    desired = sealed._desired_marker
+    marker_mutation = sealed._mutations[-1]
+
+    assert set(desired) == {
+        "_id",
+        "seller_id",
+        "read_model",
+        "state",
+        "date_from",
+        "fresh_until",
+        "reconciled_until",
+        "last_event_synced_at",
+        "updated_at",
+        "source",
+        "coverage_basis",
+        "revision",
+        "proof_fingerprint",
+        "schema_version",
+    }
+    assert desired == {
+        "_id": "82453304:stock_time_metrics",
+        "seller_id": "82453304",
+        "read_model": "stock_time_metrics",
+        "state": "reconciled",
+        "date_from": START,
+        "fresh_until": END,
+        "reconciled_until": END,
+        "last_event_synced_at": START,
+        "updated_at": END,
+        "source": "zelerdata_read_model_reconcile",
+        "coverage_basis": "legacy_imported",
+        "revision": marker_mutation.expected_forward_revision,
+        "proof_fingerprint": sealed.expected_metric_fingerprint,
+        "schema_version": 1,
+    }
+    assert desired["proof_fingerprint"] == engine._metric_proof_fingerprint(
+        sealed._expected_metric_documents
+    )
+    assert desired["proof_fingerprint"] != engine._metric_proof_fingerprint(
+        (*sealed._expected_metric_documents, desired)
+    )
+    assert marker_mutation.sequence == len(sealed._mutations)
+    assert marker_mutation._document == desired
+    assert marker_mutation.action == ("replace" if old_marker else "insert")
+    assert marker_mutation._preimage == old_marker
+    assert sealed.ledger_counts == engine._ForwardLedgerCounts(
+        planned_insert_count=1 + (old_marker is None),
+        planned_update_count=1 + (old_marker is not None),
+        planned_delete_count=1,
+        planned_preimage_count=4,
+    )
+
+
+def test_mutation_preimages_are_exact_coupled_and_deeply_frozen() -> None:
+    sealed = seal(old_marker=marker(nested={"value": [1]}))
+
+    for mutation in sealed._mutations:
+        assert mutation.preimage_kind == (
+            "absent" if mutation.action == "insert" else "exact_document"
+        )
+        if mutation.action == "insert":
+            assert mutation._preimage is None
+        else:
+            assert mutation._preimage is not None
+        assert mutation.preimage_fingerprint == engine._preimage_fingerprint(mutation._preimage)
+    assert planner._canonical_bson_bytes(sealed._mutations[-1]._preimage) == (
+        planner._canonical_bson_bytes(marker(nested={"value": [1]}))
+    )
+    with pytest.raises(TypeError):
+        sealed._mutations[-1]._preimage["nested"]["value"][0] = 2
+    with pytest.raises(FrozenInstanceError):
+        sealed._mutations[0].sequence = 99
+
+
 def test_forward_contract_remains_private_with_bounded_errors() -> None:
     assert not hasattr(zeler_sheets, "_seal_forward_plan")
+    assert not hasattr(zeler_sheets, "_ForwardMutation")
     with pytest.raises(ValueError, match="unknown forward-engine error code"):
         engine._ForwardEngineError("NOT_A_SEALING_ERROR")
