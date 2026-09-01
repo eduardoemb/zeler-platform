@@ -47,6 +47,10 @@ _ERROR_CODES = frozenset(
         "LEASE_CONFLICT",
         "FENCE_CONFLICT",
         "PREIMAGE_MISMATCH",
+        "MARKER_CONFLICT",
+        "MARKER_READBACK_MISMATCH",
+        "COMMIT_CONFLICT",
+        "COMMIT_READBACK_MISMATCH",
         "STATE_BLOCKED",
     }
 )
@@ -780,15 +784,22 @@ async def _persist_forward_preimages(
     db: Any,
     sealed_plan: _SealedForwardPlan,
     context: _ForwardOperationContext,
-    transaction_callback: Callable[[Any], Awaitable[None]] | None = None,
+    transaction_callback: (
+        Callable[[Any], Awaitable[None]] | Sequence[Callable[[Any], Awaitable[None]]] | None
+    ) = None,
 ) -> None:
+    callbacks = (
+        (transaction_callback,)
+        if callable(transaction_callback)
+        else (() if transaction_callback is None else transaction_callback)
+    )
     async with _required_transaction(db) as session:
         operation = await _validated_execution_operation(db, sealed_plan, context, session)
         await _revalidate_forward_preimages(db, sealed_plan, session)
         records = _preimage_records(sealed_plan, operation["lease_acquired_at"])
         await db[_PREIMAGE_COLLECTION].insert_many(records, ordered=True, session=session)
-        if transaction_callback is not None:
-            await transaction_callback(session)
+        for callback in callbacks:
+            await callback(session)
 
 
 def _revision_state_guard(document: Mapping[str, Any] | None) -> dict[str, Any]:
@@ -917,3 +928,113 @@ async def _persist_forward_metrics(
         await _write_and_verify_forward_metrics(db, sealed_plan, session)
 
     await _persist_forward_preimages(db, sealed_plan, context, persist)
+
+
+async def _write_and_verify_forward_marker(
+    db: Any, sealed_plan: _SealedForwardPlan, session: Any
+) -> None:
+    desired = _canonical_bson_document(sealed_plan._desired_marker)
+    expected = sealed_plan._marker_preimage
+    selector = {
+        "_id": desired["_id"],
+        "seller_id": desired["seller_id"],
+        "read_model": desired["read_model"],
+        **_revision_state_guard(expected),
+    }
+    result = await db[_MARKER_COLLECTION].replace_one(
+        selector, desired, upsert=expected is None, session=session
+    )
+    exact_result = (
+        result.matched_count == 0 and result.upserted_id == desired["_id"]
+        if expected is None
+        else result.matched_count == 1 and result.modified_count == 1
+    )
+    if not exact_result:
+        raise _ForwardEngineError("MARKER_CONFLICT")
+    observed = await db[_MARKER_COLLECTION].find_one({"_id": desired["_id"]}, session=session)
+    if not _exact_preimages_match([] if observed is None else [observed], [desired]):
+        raise _ForwardEngineError("MARKER_READBACK_MISMATCH")
+
+
+async def _write_and_verify_operation_commit(
+    db: Any,
+    sealed_plan: _SealedForwardPlan,
+    context: _ForwardOperationContext,
+    session: Any,
+) -> None:
+    operations = db[_OPERATION_COLLECTION]
+    result = await operations.update_one(
+        {
+            **_operation_immutable(sealed_plan),
+            "state": "prepared",
+            "attempt": context.attempt,
+            "attempt_token": context.attempt_token,
+            "fence": context.fence,
+            "$expr": {"$gt": ["$lease_until", "$$NOW"]},
+        },
+        [
+            {
+                "$set": {
+                    "state": "committed",
+                    "heartbeat_at": "$$NOW",
+                    "updated_at": "$$NOW",
+                    "committed_at": "$$NOW",
+                    "terminal_at": "$$NOW",
+                    "lease_until": "$$NOW",
+                    "error_code": None,
+                }
+            }
+        ],
+        session=session,
+    )
+    if result.matched_count != 1 or result.modified_count != 1:
+        raise _ForwardEngineError("COMMIT_CONFLICT")
+    observed = await operations.find_one({"_id": sealed_plan.operation_id}, session=session)
+    try:
+        persisted = _validate_persisted_operation(observed, _operation_immutable(sealed_plan))
+    except _ForwardEngineError as exc:
+        raise _ForwardEngineError("COMMIT_READBACK_MISMATCH") from exc
+    committed_at = persisted.get("committed_at")
+    exact_context = {
+        "state": "committed",
+        "attempt": context.attempt,
+        "attempt_token": context.attempt_token,
+        "fence": context.fence,
+        "error_code": None,
+    }
+    exact_timestamps = (
+        isinstance(committed_at, datetime)
+        and committed_at.tzinfo is not None
+        and committed_at.utcoffset() == timedelta(0)
+        and all(
+            persisted.get(field) == committed_at
+            for field in ("heartbeat_at", "updated_at", "terminal_at", "lease_until")
+        )
+    )
+    if any(persisted.get(field) != value for field, value in exact_context.items()) or not (
+        exact_timestamps
+    ):
+        raise _ForwardEngineError("COMMIT_READBACK_MISMATCH")
+
+
+async def _commit_forward_operation(
+    db: Any, sealed_plan: _SealedForwardPlan, context: _ForwardOperationContext
+) -> _ForwardOperationContext:
+    async def metrics(session: Any) -> None:
+        await _write_and_verify_forward_metrics(db, sealed_plan, session)
+
+    async def marker(session: Any) -> None:
+        await _write_and_verify_forward_marker(db, sealed_plan, session)
+
+    async def operation(session: Any) -> None:
+        await _write_and_verify_operation_commit(db, sealed_plan, context, session)
+
+    await _persist_forward_preimages(db, sealed_plan, context, (metrics, marker, operation))
+    return _ForwardOperationContext(
+        context.operation_id,
+        "committed",
+        context.attempt,
+        context.attempt_token,
+        context.fence,
+        False,
+    )
