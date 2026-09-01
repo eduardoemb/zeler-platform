@@ -1,11 +1,17 @@
 from __future__ import annotations
 
 import hashlib
+import inspect
 import re
-from collections.abc import Mapping, Sequence
+import secrets
+from collections.abc import AsyncIterator, Mapping, Sequence
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any
+
+from pymongo.read_concern import ReadConcern
+from pymongo.write_concern import WriteConcern
 
 from .source_gated_read_model_writers import (
     _canonical_bson_bytes,
@@ -20,8 +26,10 @@ from .source_gated_read_model_writers import (
 _READ_MODEL = "stock_time_metrics"
 _METRIC_COLLECTION = "sheets_stock_time_metrics"
 _MARKER_COLLECTION = "sheets_read_model_freshness"
+_OPERATION_COLLECTION = "sheets_stock_time_reconciliation_operations"
 _RECONCILE_SOURCE = "zelerdata_read_model_reconcile"
 _SHA = re.compile(r"^[0-9a-f]{64}$")
+_ATTEMPT_TOKEN = re.compile(r"^[0-9a-f]{32}$")
 _ERROR_CODES = frozenset(
     {
         "INVALID_SELLER",
@@ -30,6 +38,9 @@ _ERROR_CODES = frozenset(
         "INVALID_BSON_INPUT",
         "ACTION_SCOPE_MISMATCH",
         "INVALID_ACTION",
+        "INVALID_ATTEMPT_TOKEN",
+        "TRANSACTION_REQUIRED",
+        "OPERATION_EXISTS",
     }
 )
 
@@ -73,6 +84,16 @@ class _ForwardLedgerCounts:
 
 
 @dataclass(frozen=True)
+class _ForwardOperationContext:
+    operation_id: str
+    state: str
+    attempt: int
+    attempt_token: str = field(repr=False)
+    fence: int
+    owns_lease: bool
+
+
+@dataclass(frozen=True)
 class _SealedForwardPlan:
     binding: _ForwardBinding
     _action_plan: _StockTimeActionPlan = field(repr=False)
@@ -84,6 +105,116 @@ class _SealedForwardPlan:
     _desired_marker: Mapping[str, Any] = field(repr=False)
     expected_metric_fingerprint: str
     ledger_counts: _ForwardLedgerCounts
+
+
+def _new_forward_attempt_token() -> str:
+    return secrets.token_hex(16)
+
+
+@asynccontextmanager
+async def _required_transaction(db: Any) -> AsyncIterator[Any]:
+    session_context: Any = None
+    session_entered = False
+    try:
+        client = getattr(db, "client", None)
+        start_session = getattr(client, "start_session", None)
+        if not callable(start_session):
+            raise TypeError("start_session unavailable")
+        session_context = start_session()
+        if inspect.isawaitable(session_context):
+            session_context = await session_context
+        session_enter = getattr(session_context, "__aenter__", None)
+        session_exit = getattr(session_context, "__aexit__", None)
+        if not callable(session_enter) or not callable(session_exit):
+            raise TypeError("async session context unavailable")
+        session = await session_enter()
+        session_entered = True
+        start_transaction = getattr(session, "start_transaction", None)
+        if not callable(start_transaction):
+            raise TypeError("start_transaction unavailable")
+        transaction = start_transaction(
+            read_concern=ReadConcern("snapshot"), write_concern=WriteConcern("majority")
+        )
+        transaction_enter = getattr(transaction, "__aenter__", None)
+        transaction_exit = getattr(transaction, "__aexit__", None)
+        if not callable(transaction_enter) or not callable(transaction_exit):
+            raise TypeError("async transaction context unavailable")
+        await transaction_enter()
+    except Exception as exc:
+        if session_entered:
+            try:
+                await session_context.__aexit__(type(exc), exc, exc.__traceback__)
+            except Exception as cleanup_exc:
+                raise _ForwardEngineError("TRANSACTION_REQUIRED") from cleanup_exc
+        raise _ForwardEngineError("TRANSACTION_REQUIRED") from exc
+    try:
+        yield session
+    except BaseException as exc:
+        await transaction_exit(type(exc), exc, exc.__traceback__)
+        await session_exit(type(exc), exc, exc.__traceback__)
+        raise
+    else:
+        try:
+            await transaction_exit(None, None, None)
+        except BaseException as exc:
+            await session_exit(type(exc), exc, exc.__traceback__)
+            raise
+        await session_exit(None, None, None)
+
+
+async def _acquire_new_forward_operation(
+    db: Any, sealed_plan: _SealedForwardPlan, attempt_token: str
+) -> _ForwardOperationContext:
+    if not isinstance(attempt_token, str) or _ATTEMPT_TOKEN.fullmatch(attempt_token) is None:
+        raise _ForwardEngineError("INVALID_ATTEMPT_TOKEN")
+    binding = sealed_plan.binding
+    exact_binding = {
+        "seller_id": binding._seller_id,
+        "read_model": _READ_MODEL,
+        "date_from": binding.date_from,
+        "date_to": binding.date_to,
+        "source_fingerprint": binding.source_fingerprint,
+        "plan_fingerprint": binding.plan_fingerprint,
+    }
+    counts = sealed_plan.ledger_counts
+    context = _ForwardOperationContext(
+        sealed_plan.operation_id, "prepared", 1, attempt_token, 1, True
+    )
+    async with _required_transaction(db) as session:
+        operations = db[_OPERATION_COLLECTION]
+        existing = await operations.find_one(
+            {"$or": [{"_id": sealed_plan.operation_id}, exact_binding]}, session=session
+        )
+        if existing is not None:
+            raise _ForwardEngineError("OPERATION_EXISTS")
+        prepared = {
+            "_id": sealed_plan.operation_id,
+            **exact_binding,
+            "state": "prepared",
+            "attempt": 1,
+            "attempt_token": attempt_token,
+            "fence": 1,
+            "lease_acquired_at": "$$NOW",
+            "heartbeat_at": "$$NOW",
+            "lease_until": {"$dateAdd": {"startDate": "$$NOW", "unit": "second", "amount": 120}},
+            "planned_insert_count": counts.planned_insert_count,
+            "planned_update_count": counts.planned_update_count,
+            "planned_delete_count": counts.planned_delete_count,
+            "planned_preimage_count": counts.planned_preimage_count,
+            "created_at": "$$NOW",
+            "updated_at": "$$NOW",
+            "committed_at": None,
+            "terminal_at": None,
+            "error_code": None,
+            "schema_version": 1,
+        }
+        await operations.update_one(
+            {"_id": sealed_plan.operation_id},
+            [{"$replaceWith": prepared}],
+            upsert=True,
+            session=session,
+        )
+    return context
 
 
 def _digest(document: Mapping[str, Any]) -> str:

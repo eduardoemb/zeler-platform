@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+from copy import deepcopy
 from dataclasses import FrozenInstanceError, replace
 from datetime import UTC, datetime, timedelta, timezone
 from inspect import signature
@@ -337,8 +339,245 @@ def test_mutation_preimages_are_exact_coupled_and_deeply_frozen() -> None:
         sealed._mutations[0].sequence = 99
 
 
+class FakeTransaction:
+    def __init__(self, db: FakeDB, options: dict[str, Any]) -> None:
+        self.db, self.options = db, options
+
+    async def __aenter__(self) -> FakeTransaction:
+        self.db.staged = deepcopy(self.db.rows)
+        return self
+
+    async def __aexit__(self, error_type: Any, error: Any, traceback: Any) -> None:
+        staged, self.db.staged = self.db.staged, None
+        if error_type is None and self.db.fail_commit:
+            raise RuntimeError("commit failed")
+        if error_type is None:
+            self.db.rows = staged or {}
+
+
+class FakeSession:
+    def __init__(self, db: FakeDB, *, transaction: bool = True) -> None:
+        self.db, self.transaction = db, transaction
+
+    async def __aenter__(self) -> FakeSession:
+        return self
+
+    async def __aexit__(self, error_type: Any, error: Any, traceback: Any) -> None:
+        return None
+
+    def start_transaction(self, **options: Any) -> FakeTransaction:
+        if not self.transaction:
+            raise AttributeError("transaction unavailable")
+        self.db.transaction_options.append(options)
+        return FakeTransaction(self.db, options)
+
+
+class FakeClient:
+    def __init__(self, db: FakeDB, *, awaitable: bool = False, session: Any = None) -> None:
+        self.db, self.awaitable, self.session = db, awaitable, session
+
+    def start_session(self) -> Any:
+        session = self.session if self.session is not None else FakeSession(self.db)
+        if not self.awaitable:
+            return session
+
+        async def result() -> Any:
+            return session
+
+        return result()
+
+
+class FakeCollection:
+    def __init__(self, db: FakeDB) -> None:
+        self.db = db
+
+    async def find_one(self, query: dict[str, Any], **options: Any) -> Any:
+        if self.db.fail_body:
+            raise RuntimeError("body failed")
+        self.db.reads.append((query, options))
+        for row in (self.db.staged or {}).values():
+            clauses = query.get("$or", (query,))
+            if any(
+                all(row.get(key) == value for key, value in clause.items()) for clause in clauses
+            ):
+                return deepcopy(row)
+        return None
+
+    async def update_one(
+        self, query: dict[str, Any], pipeline: list[dict[str, Any]], **options: Any
+    ) -> None:
+        self.db.writes.append((query, pipeline, options))
+        replacement = pipeline[0]["$replaceWith"]
+        row = self._evaluate(replacement)
+        assert self.db.staged is not None
+        self.db.staged[row["_id"]] = row
+        if self.db.fail_write:
+            raise RuntimeError("write failed")
+
+    def _evaluate(self, value: Any) -> Any:
+        if value == "$$NOW":
+            return self.db.server_now
+        if isinstance(value, list):
+            return [self._evaluate(item) for item in value]
+        if not isinstance(value, dict):
+            return value
+        if "$dateAdd" in value:
+            spec = value["$dateAdd"]
+            assert spec["unit"] == "second"
+            return self._evaluate(spec["startDate"]) + timedelta(seconds=spec["amount"])
+        return {key: self._evaluate(item) for key, item in value.items()}
+
+
+class FakeDB:
+    def __init__(self, **failures: bool) -> None:
+        self.rows: dict[str, dict[str, Any]] = {}
+        self.staged: dict[str, dict[str, Any]] | None = None
+        self.server_now = datetime(2026, 8, 1, 12, 0, tzinfo=UTC)
+        self.accessed: list[str] = []
+        self.reads: list[Any] = []
+        self.writes: list[Any] = []
+        self.transaction_options: list[dict[str, Any]] = []
+        self.fail_body = failures.get("fail_body", False)
+        self.fail_write = failures.get("fail_write", False)
+        self.fail_commit = failures.get("fail_commit", False)
+        self.client: Any = FakeClient(self)
+
+    def __getitem__(self, name: str) -> FakeCollection:
+        self.accessed.append(name)
+        return FakeCollection(self)
+
+
+@pytest.mark.asyncio
+async def test_attempt_tokens_are_fresh_bounded_and_redacted() -> None:
+    tokens = {engine._new_forward_attempt_token() for _ in range(8)}
+    assert len(tokens) == 8
+    assert all(re.fullmatch(r"[0-9a-f]{32}", token) for token in tokens)
+    token = tokens.pop()
+    context = engine._ForwardOperationContext("operation", "prepared", 1, token, 1, True)
+    assert token not in repr(context)
+    with pytest.raises(FrozenInstanceError):
+        context.__setattr__("fence", 2)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("token", ["", "a" * 31, "A" * 32, object()])
+async def test_invalid_attempt_token_fails_before_database_access(token: Any) -> None:
+    class UntouchableDB:
+        @property
+        def client(self) -> Any:
+            raise AssertionError("database accessed")
+
+    with pytest.raises(engine._ForwardEngineError, match="INVALID_ATTEMPT_TOKEN"):
+        await engine._acquire_new_forward_operation(UntouchableDB(), seal(), token)
+
+
+@pytest.mark.asyncio
+async def test_acquire_creates_exact_prepared_operation_with_server_lease() -> None:
+    db, sealed, token = FakeDB(), seal(), "a" * 32
+    context = await engine._acquire_new_forward_operation(db, sealed, token)
+
+    assert context == engine._ForwardOperationContext(
+        sealed.operation_id, "prepared", 1, token, 1, True
+    )
+    now = db.server_now
+    assert db.rows == {
+        sealed.operation_id: {
+            "_id": sealed.operation_id,
+            "seller_id": "82453304",
+            "read_model": "stock_time_metrics",
+            "date_from": START,
+            "date_to": END,
+            "source_fingerprint": sealed.binding.source_fingerprint,
+            "plan_fingerprint": sealed.binding.plan_fingerprint,
+            "state": "prepared",
+            "attempt": 1,
+            "attempt_token": token,
+            "fence": 1,
+            "lease_acquired_at": now,
+            "heartbeat_at": now,
+            "lease_until": now + timedelta(seconds=120),
+            "planned_insert_count": 2,
+            "planned_update_count": 1,
+            "planned_delete_count": 1,
+            "planned_preimage_count": 4,
+            "created_at": now,
+            "updated_at": now,
+            "committed_at": None,
+            "terminal_at": None,
+            "error_code": None,
+            "schema_version": 1,
+        }
+    }
+    options = db.transaction_options[0]
+    assert options["read_concern"].level == "snapshot"
+    assert options["write_concern"].document == {"w": "majority"}
+    assert "$$NOW" in repr(db.writes[0][1]) and "$dateAdd" in repr(db.writes[0][1])
+    assert db.writes[0][2]["upsert"] is True
+    binding_fields = (
+        "seller_id",
+        "read_model",
+        "date_from",
+        "date_to",
+        "source_fingerprint",
+        "plan_fingerprint",
+    )
+    assert db.reads[0][0]["$or"] == [
+        {"_id": sealed.operation_id},
+        {key: db.rows[sealed.operation_id][key] for key in binding_fields},
+    ]
+    assert db.accessed == ["sheets_stock_time_reconciliation_operations"]
+
+
+@pytest.mark.asyncio
+async def test_acquire_accepts_awaitable_session() -> None:
+    db = FakeDB()
+    db.client = FakeClient(db, awaitable=True)
+    assert (await engine._acquire_new_forward_operation(db, seal(), "b" * 32)).owns_lease
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "missing", ["client", "session_context", "transaction", "transaction_failure"]
+)
+async def test_acquire_requires_all_transaction_capabilities(missing: str) -> None:
+    db = FakeDB()
+    if missing == "client":
+        db.client = object()
+    elif missing == "session_context":
+        db.client = FakeClient(db, session=object())
+    else:
+        session: Any = FakeSession(db, transaction=missing != "transaction_failure")
+        if missing == "transaction":
+            session.start_transaction = None
+        db.client = FakeClient(db, session=session)
+    with pytest.raises(engine._ForwardEngineError, match="TRANSACTION_REQUIRED"):
+        await engine._acquire_new_forward_operation(db, seal(), "c" * 32)
+    assert not db.rows and not db.writes and not db.accessed
+
+
+@pytest.mark.asyncio
+async def test_existing_operation_fails_closed_without_write() -> None:
+    db, sealed = FakeDB(), seal()
+    db.rows[sealed.operation_id] = {"_id": sealed.operation_id, "state": "committed"}
+    with pytest.raises(engine._ForwardEngineError, match="OPERATION_EXISTS"):
+        await engine._acquire_new_forward_operation(db, sealed, "d" * 32)
+    assert db.rows[sealed.operation_id]["state"] == "committed"
+    assert not db.writes
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["fail_body", "fail_write", "fail_commit"])
+async def test_acquire_failure_rolls_back_and_never_becomes_success(failure: str) -> None:
+    db = FakeDB(**{failure: True})
+    with pytest.raises(RuntimeError, match=failure.removeprefix("fail_") + " failed"):
+        await engine._acquire_new_forward_operation(db, seal(), "e" * 32)
+    assert not db.rows and db.staged is None
+
+
 def test_forward_contract_remains_private_with_bounded_errors() -> None:
     assert not hasattr(zeler_sheets, "_seal_forward_plan")
     assert not hasattr(zeler_sheets, "_ForwardMutation")
+    assert not hasattr(zeler_sheets, "_acquire_new_forward_operation")
+    assert not hasattr(zeler_sheets, "_ForwardOperationContext")
     with pytest.raises(ValueError, match="unknown forward-engine error code"):
         engine._ForwardEngineError("NOT_A_SEALING_ERROR")
