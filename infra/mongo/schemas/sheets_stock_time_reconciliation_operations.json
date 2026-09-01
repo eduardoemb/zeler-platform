@@ -1,0 +1,159 @@
+{
+  "$jsonSchema": {
+    "additionalProperties": false,
+    "bsonType": "object",
+    "properties": {
+      "_id": {
+        "bsonType": "string"
+      },
+      "attempt": {
+        "bsonType": [
+          "int",
+          "long"
+        ],
+        "minimum": 1
+      },
+      "attempt_token": {
+        "bsonType": "string"
+      },
+      "committed_at": {
+        "bsonType": [
+          "date",
+          "null"
+        ]
+      },
+      "created_at": {
+        "bsonType": "date"
+      },
+      "date_from": {
+        "bsonType": "date"
+      },
+      "date_to": {
+        "bsonType": "date"
+      },
+      "error_code": {
+        "bsonType": [
+          "string",
+          "null"
+        ],
+        "maxLength": 64,
+        "pattern": "^[A-Z][A-Z0-9_]{0,63}$"
+      },
+      "fence": {
+        "bsonType": [
+          "int",
+          "long"
+        ],
+        "minimum": 1
+      },
+      "heartbeat_at": {
+        "bsonType": "date"
+      },
+      "lease_acquired_at": {
+        "bsonType": "date"
+      },
+      "lease_until": {
+        "bsonType": "date"
+      },
+      "plan_fingerprint": {
+        "bsonType": "string",
+        "maxLength": 64,
+        "minLength": 64,
+        "pattern": "^[0-9a-f]{64}$"
+      },
+      "planned_delete_count": {
+        "bsonType": [
+          "int",
+          "long"
+        ],
+        "minimum": 0
+      },
+      "planned_insert_count": {
+        "bsonType": [
+          "int",
+          "long"
+        ],
+        "minimum": 0
+      },
+      "planned_preimage_count": {
+        "bsonType": [
+          "int",
+          "long"
+        ],
+        "minimum": 0
+      },
+      "planned_update_count": {
+        "bsonType": [
+          "int",
+          "long"
+        ],
+        "minimum": 0
+      },
+      "read_model": {
+        "enum": [
+          "stock_time_metrics"
+        ]
+      },
+      "schema_version": {
+        "bsonType": "int"
+      },
+      "seller_id": {
+        "bsonType": [
+          "string",
+          "long",
+          "int"
+        ]
+      },
+      "source_fingerprint": {
+        "bsonType": "string",
+        "maxLength": 64,
+        "minLength": 64,
+        "pattern": "^[0-9a-f]{64}$"
+      },
+      "state": {
+        "enum": [
+          "prepared",
+          "committed",
+          "rolled_back",
+          "rollback_blocked",
+          "failed",
+          "expired"
+        ]
+      },
+      "terminal_at": {
+        "bsonType": [
+          "date",
+          "null"
+        ]
+      },
+      "updated_at": {
+        "bsonType": "date"
+      }
+    },
+    "required": [
+      "_id",
+      "seller_id",
+      "read_model",
+      "date_from",
+      "date_to",
+      "source_fingerprint",
+      "plan_fingerprint",
+      "state",
+      "attempt",
+      "attempt_token",
+      "fence",
+      "lease_acquired_at",
+      "heartbeat_at",
+      "lease_until",
+      "planned_insert_count",
+      "planned_update_count",
+      "planned_delete_count",
+      "planned_preimage_count",
+      "created_at",
+      "updated_at",
+      "schema_version"
+    ]
+  },
+  "validationAction": "error",
+  "validationLevel": "strict"
+}
