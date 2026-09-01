@@ -4,7 +4,7 @@ import hashlib
 import inspect
 import re
 import secrets
-from collections.abc import AsyncIterator, Mapping, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -734,22 +734,32 @@ async def _validated_execution_operation(
     return persisted
 
 
+def _metric_interval_query(binding: _ForwardBinding) -> dict[str, Any]:
+    seller_values: list[str | int] = [binding._seller_id]
+    if binding._seller_id.isdigit():
+        seller_values.append(int(binding._seller_id))
+    return {
+        "seller_id": {"$in": seller_values},
+        "date_from": binding.date_from,
+        "date_to": binding.date_to,
+    }
+
+
+async def _metric_interval_documents(
+    db: Any, sealed_plan: _SealedForwardPlan, session: Any
+) -> list[Mapping[str, Any]]:
+    cursor = db[_METRIC_COLLECTION].find(
+        _metric_interval_query(sealed_plan.binding), session=session
+    )
+    documents: list[Mapping[str, Any]] = await cursor.to_list(length=None)
+    return documents
+
+
 async def _revalidate_forward_preimages(
     db: Any, sealed_plan: _SealedForwardPlan, session: Any
 ) -> None:
     binding = sealed_plan.binding
-    seller_values: list[str | int] = [binding._seller_id]
-    if binding._seller_id.isdigit():
-        seller_values.append(int(binding._seller_id))
-    cursor = db[_METRIC_COLLECTION].find(
-        {
-            "seller_id": {"$in": seller_values},
-            "date_from": binding.date_from,
-            "date_to": binding.date_to,
-        },
-        session=session,
-    )
-    observed = await cursor.to_list(length=None)
+    observed = await _metric_interval_documents(db, sealed_plan, session)
     expected = [
         action._preimage
         for action in sealed_plan._action_plan.actions
@@ -767,10 +777,143 @@ async def _revalidate_forward_preimages(
 
 
 async def _persist_forward_preimages(
-    db: Any, sealed_plan: _SealedForwardPlan, context: _ForwardOperationContext
+    db: Any,
+    sealed_plan: _SealedForwardPlan,
+    context: _ForwardOperationContext,
+    transaction_callback: Callable[[Any], Awaitable[None]] | None = None,
 ) -> None:
     async with _required_transaction(db) as session:
         operation = await _validated_execution_operation(db, sealed_plan, context, session)
         await _revalidate_forward_preimages(db, sealed_plan, session)
         records = _preimage_records(sealed_plan, operation["lease_acquired_at"])
         await db[_PREIMAGE_COLLECTION].insert_many(records, ordered=True, session=session)
+        if transaction_callback is not None:
+            await transaction_callback(session)
+
+
+def _revision_state_guard(document: Mapping[str, Any] | None) -> dict[str, Any]:
+    if document is None or "revision" not in document:
+        return {"revision": {"$exists": False}}
+    return {"revision": {"$exists": True, "$eq": document["revision"]}}
+
+
+def _metric_cas_selector(
+    sealed_plan: _SealedForwardPlan,
+    action: _StockTimeAction,
+    revision_document: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    return {
+        "_id": action._target_id,
+        **_metric_interval_query(sealed_plan.binding),
+        **_revision_state_guard(revision_document),
+    }
+
+
+def _exact_write_result(condition: bool) -> None:
+    if not condition:
+        raise _ForwardEngineError("PREIMAGE_MISMATCH")
+
+
+async def _insert_metric_cas(
+    collection: Any, sealed_plan: _SealedForwardPlan, action: _StockTimeAction, session: Any
+) -> None:
+    if action._document is None:
+        raise _ForwardEngineError("INVALID_ACTION")
+    desired = _canonical_bson_document(
+        {
+            **action._document,
+            "revision": _operation_revision(
+                sealed_plan.operation_id, _METRIC_COLLECTION, action._target_id, "insert"
+            ),
+        }
+    )
+    result = await collection.replace_one(
+        _metric_cas_selector(sealed_plan, action, None), desired, upsert=True, session=session
+    )
+    _exact_write_result(result.matched_count == 0 and result.upserted_id == action._target_id)
+
+
+async def _replace_metric_cas(
+    collection: Any, sealed_plan: _SealedForwardPlan, action: _StockTimeAction, session: Any
+) -> None:
+    if action._document is None or action._preimage is None:
+        raise _ForwardEngineError("INVALID_ACTION")
+    desired = _canonical_bson_document(
+        {
+            **action._document,
+            "revision": _operation_revision(
+                sealed_plan.operation_id, _METRIC_COLLECTION, action._target_id, "replace"
+            ),
+        }
+    )
+    result = await collection.replace_one(
+        _metric_cas_selector(sealed_plan, action, action._preimage), desired, session=session
+    )
+    _exact_write_result(result.matched_count == 1 and result.modified_count == 1)
+
+
+async def _delete_metric_cas(
+    collection: Any, sealed_plan: _SealedForwardPlan, action: _StockTimeAction, session: Any
+) -> None:
+    if action._preimage is None:
+        raise _ForwardEngineError("INVALID_ACTION")
+    result = await collection.delete_one(
+        _metric_cas_selector(sealed_plan, action, action._preimage), session=session
+    )
+    _exact_write_result(result.deleted_count == 1)
+
+
+async def _touch_noop_metric_cas(
+    collection: Any, sealed_plan: _SealedForwardPlan, action: _StockTimeAction, session: Any
+) -> None:
+    if action._preimage is None:
+        raise _ForwardEngineError("INVALID_ACTION")
+    temporary_revision = _operation_revision(
+        sealed_plan.operation_id, _METRIC_COLLECTION, action._target_id, "no-op"
+    )
+    if action._preimage.get("revision") == temporary_revision:
+        temporary_revision = _operation_revision(
+            sealed_plan.operation_id, _METRIC_COLLECTION, action._target_id, "no-op-alternate"
+        )
+    temporary = _canonical_bson_document({**action._preimage, "revision": temporary_revision})
+    touched = await collection.replace_one(
+        _metric_cas_selector(sealed_plan, action, action._preimage), temporary, session=session
+    )
+    _exact_write_result(touched.matched_count == 1 and touched.modified_count == 1)
+    restored = await collection.replace_one(
+        _metric_cas_selector(sealed_plan, action, temporary),
+        _canonical_bson_document(action._preimage),
+        session=session,
+    )
+    _exact_write_result(restored.matched_count == 1 and restored.modified_count == 1)
+
+
+async def _write_and_verify_forward_metrics(
+    db: Any, sealed_plan: _SealedForwardPlan, session: Any
+) -> None:
+    collection = db[_METRIC_COLLECTION]
+    helpers = {
+        "insert": _insert_metric_cas,
+        "replace": _replace_metric_cas,
+        "delete": _delete_metric_cas,
+        "no-op": _touch_noop_metric_cas,
+    }
+    for action in sealed_plan._action_plan.actions:
+        helper = helpers.get(action.action)
+        if helper is None:
+            raise _ForwardEngineError("INVALID_ACTION")
+        await helper(collection, sealed_plan, action, session)
+    observed = await _metric_interval_documents(db, sealed_plan, session)
+    if not _exact_preimages_match(observed, sealed_plan._expected_metric_documents) or (
+        _metric_proof_fingerprint(observed) != sealed_plan.expected_metric_fingerprint
+    ):
+        raise _ForwardEngineError("PREIMAGE_MISMATCH")
+
+
+async def _persist_forward_metrics(
+    db: Any, sealed_plan: _SealedForwardPlan, context: _ForwardOperationContext
+) -> None:
+    async def persist(session: Any) -> None:
+        await _write_and_verify_forward_metrics(db, sealed_plan, session)
+
+    await _persist_forward_preimages(db, sealed_plan, context, persist)
