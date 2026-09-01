@@ -27,6 +27,7 @@ _READ_MODEL = "stock_time_metrics"
 _METRIC_COLLECTION = "sheets_stock_time_metrics"
 _MARKER_COLLECTION = "sheets_read_model_freshness"
 _OPERATION_COLLECTION = "sheets_stock_time_reconciliation_operations"
+_PREIMAGE_COLLECTION = "sheets_stock_time_reconciliation_preimages"
 _RECONCILE_SOURCE = "zelerdata_read_model_reconcile"
 _SHA = re.compile(r"^[0-9a-f]{64}$")
 _ATTEMPT_TOKEN = re.compile(r"^[0-9a-f]{32}$")
@@ -44,6 +45,8 @@ _ERROR_CODES = frozenset(
         "OPERATION_MISMATCH",
         "TAKEOVER_CONFLICT",
         "LEASE_CONFLICT",
+        "FENCE_CONFLICT",
+        "PREIMAGE_MISMATCH",
         "STATE_BLOCKED",
     }
 )
@@ -177,6 +180,23 @@ def _persisted_operation_context(
         fence=operation["fence"],
         owns_lease=owns_lease,
     )
+
+
+def _operation_immutable(sealed_plan: _SealedForwardPlan) -> dict[str, Any]:
+    binding, counts = sealed_plan.binding, sealed_plan.ledger_counts
+    return {
+        "_id": sealed_plan.operation_id,
+        "seller_id": binding._seller_id,
+        "read_model": _READ_MODEL,
+        "date_from": binding.date_from,
+        "date_to": binding.date_to,
+        "source_fingerprint": binding.source_fingerprint,
+        "plan_fingerprint": binding.plan_fingerprint,
+        "planned_insert_count": counts.planned_insert_count,
+        "planned_update_count": counts.planned_update_count,
+        "planned_delete_count": counts.planned_delete_count,
+        "planned_preimage_count": counts.planned_preimage_count,
+    }
 
 
 def _validate_persisted_operation(
@@ -349,6 +369,45 @@ async def _acquire_forward_operation(
 
 def _digest(document: Mapping[str, Any]) -> str:
     return hashlib.sha256(_canonical_bson_bytes(document)).hexdigest()
+
+
+def _preimage_record_id(operation_id: str, mutation: _ForwardMutation) -> str:
+    return _digest(
+        {
+            "domain": "zeler.stock-time-forward-preimage-record",
+            "version": 1,
+            "operation_id": operation_id,
+            "sequence": mutation.sequence,
+            "target_collection": mutation.target_collection,
+            "target_id": mutation._target_id,
+        }
+    )
+
+
+def _preimage_records(
+    sealed_plan: _SealedForwardPlan, created_at: datetime
+) -> list[dict[str, Any]]:
+    return [
+        {
+            "_id": _preimage_record_id(sealed_plan.operation_id, mutation),
+            "operation_id": sealed_plan.operation_id,
+            "sequence": mutation.sequence,
+            "target_collection": mutation.target_collection,
+            "target_id": mutation._target_id,
+            "action": mutation.action,
+            "preimage": (
+                _canonical_bson_document(mutation._preimage)
+                if mutation._preimage is not None
+                else None
+            ),
+            "preimage_kind": mutation.preimage_kind,
+            "preimage_fingerprint": mutation.preimage_fingerprint,
+            "expected_forward_revision": mutation.expected_forward_revision,
+            "created_at": created_at,
+            "schema_version": 1,
+        }
+        for mutation in sealed_plan._mutations
+    ]
 
 
 def _operation_revision(
@@ -617,3 +676,101 @@ def _seal_forward_plan(
         marker_action="replace" if prior is not None else "insert",
         marker_preimage=prior,
     )
+
+
+def _exact_preimages_match(
+    observed: Sequence[Mapping[str, Any]], expected: Sequence[Mapping[str, Any]]
+) -> bool:
+    try:
+        return sorted(_canonical_bson_bytes(row) for row in observed) == sorted(
+            _canonical_bson_bytes(row) for row in expected
+        )
+    except _StockTimeActionPlanError:
+        return False
+
+
+async def _validated_execution_operation(
+    db: Any,
+    sealed_plan: _SealedForwardPlan,
+    context: _ForwardOperationContext,
+    session: Any,
+) -> Mapping[str, Any]:
+    if (
+        not isinstance(context, _ForwardOperationContext)
+        or context.operation_id != sealed_plan.operation_id
+        or context.state != "prepared"
+        or not context.owns_lease
+    ):
+        raise _ForwardEngineError("FENCE_CONFLICT")
+    operations = db[_OPERATION_COLLECTION]
+    operation = await operations.find_one({"_id": sealed_plan.operation_id}, session=session)
+    if operation is None:
+        raise _ForwardEngineError("OPERATION_MISMATCH")
+    persisted = _validate_persisted_operation(operation, _operation_immutable(sealed_plan))
+    if persisted["state"] != "prepared":
+        raise _ForwardEngineError("STATE_BLOCKED")
+    if any(
+        persisted[field] != expected
+        for field, expected in {
+            "attempt": context.attempt,
+            "attempt_token": context.attempt_token,
+            "fence": context.fence,
+        }.items()
+    ):
+        raise _ForwardEngineError("FENCE_CONFLICT")
+    live = await operations.find_one(
+        {
+            "_id": sealed_plan.operation_id,
+            "state": "prepared",
+            "attempt": context.attempt,
+            "attempt_token": context.attempt_token,
+            "fence": context.fence,
+            "$expr": {"$gt": ["$lease_until", "$$NOW"]},
+        },
+        session=session,
+    )
+    if live is None:
+        raise _ForwardEngineError("LEASE_CONFLICT")
+    return persisted
+
+
+async def _revalidate_forward_preimages(
+    db: Any, sealed_plan: _SealedForwardPlan, session: Any
+) -> None:
+    binding = sealed_plan.binding
+    seller_values: list[str | int] = [binding._seller_id]
+    if binding._seller_id.isdigit():
+        seller_values.append(int(binding._seller_id))
+    cursor = db[_METRIC_COLLECTION].find(
+        {
+            "seller_id": {"$in": seller_values},
+            "date_from": binding.date_from,
+            "date_to": binding.date_to,
+        },
+        session=session,
+    )
+    observed = await cursor.to_list(length=None)
+    expected = [
+        action._preimage
+        for action in sealed_plan._action_plan.actions
+        if action._preimage is not None
+    ]
+    marker = await db[_MARKER_COLLECTION].find_one(
+        {"_id": f"{binding._seller_id}:{_READ_MODEL}"}, session=session
+    )
+    expected_marker = sealed_plan._marker_preimage
+    if not _exact_preimages_match(observed, expected) or not _exact_preimages_match(
+        [] if marker is None else [marker],
+        [] if expected_marker is None else [expected_marker],
+    ):
+        raise _ForwardEngineError("PREIMAGE_MISMATCH")
+
+
+async def _persist_forward_preimages(
+    db: Any, sealed_plan: _SealedForwardPlan, context: _ForwardOperationContext
+) -> None:
+    async with _required_transaction(db) as session:
+        operation = await _validated_execution_operation(db, sealed_plan, context, session)
+        await _revalidate_forward_preimages(db, sealed_plan, session)
+        records = _preimage_records(sealed_plan, operation["lease_acquired_at"])
+        await db[_PREIMAGE_COLLECTION].insert_many(records, ordered=True, session=session)
