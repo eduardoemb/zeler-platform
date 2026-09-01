@@ -397,8 +397,17 @@ class FakeClient:
 
 
 class FakeUpdateResult:
-    def __init__(self, matched_count: int) -> None:
+    def __init__(
+        self,
+        matched_count: int = 0,
+        modified_count: int = 0,
+        upserted_id: str | None = None,
+        deleted_count: int = 0,
+    ) -> None:
         self.matched_count = matched_count
+        self.modified_count = modified_count
+        self.upserted_id = upserted_id
+        self.deleted_count = deleted_count
 
 
 class FakeCursor:
@@ -432,7 +441,12 @@ class FakeCollection:
     def find(self, query: dict[str, Any], **options: Any) -> FakeCursor:
         self._session(options)
         self.db.reads.append((query, options))
-        return FakeCursor([row for row in self._rows().values() if self._matches(row, query)])
+        rows = [row for row in self._rows().values() if self._matches(row, query)]
+        if self.name == "sheets_stock_time_metrics":
+            self.db.metric_reads += 1
+            if self.db.metric_reads == 2 and self.db.metric_readback_hook is not None:
+                rows = self.db.metric_readback_hook(deepcopy(rows))
+        return FakeCursor(rows)
 
     def _matches(self, row: dict[str, Any], query: dict[str, Any]) -> bool:
         for key, expected in query.items():
@@ -448,6 +462,11 @@ class FakeCollection:
                     return False
             elif isinstance(expected, dict) and "$in" in expected:
                 if row.get(key) not in expected["$in"]:
+                    return False
+            elif isinstance(expected, dict) and "$exists" in expected:
+                if (key in row) is not expected["$exists"]:
+                    return False
+                if "$eq" in expected and row.get(key) != expected["$eq"]:
                     return False
             elif row.get(key) != expected:
                 return False
@@ -486,6 +505,45 @@ class FakeCollection:
         if self.db.fail_write:
             raise RuntimeError("write failed")
         return FakeUpdateResult(int(matched is not None))
+
+    def _metric_race(self) -> None:
+        if self.name == "sheets_stock_time_metrics" and self.db.metric_race is not None:
+            race, self.db.metric_race = self.db.metric_race, None
+            race(self._rows())
+
+    async def replace_one(
+        self, query: dict[str, Any], document: dict[str, Any], **options: Any
+    ) -> FakeUpdateResult:
+        self._session(options)
+        self._metric_race()
+        self.db.metric_writes.append(("replace", deepcopy(query), deepcopy(document), options))
+        rows = self._rows()
+        matched = next((row for row in rows.values() if self._matches(row, query)), None)
+        if self.db.metric_result_overrides:
+            return self.db.metric_result_overrides.pop(0)
+        if matched is not None:
+            modified = int(matched != document)
+            rows[matched["_id"]] = deepcopy(document)
+            return FakeUpdateResult(1, modified)
+        if options.get("upsert"):
+            if document["_id"] in rows:
+                raise RuntimeError("duplicate key")
+            rows[document["_id"]] = deepcopy(document)
+            return FakeUpdateResult(upserted_id=document["_id"])
+        return FakeUpdateResult()
+
+    async def delete_one(self, query: dict[str, Any], **options: Any) -> FakeUpdateResult:
+        self._session(options)
+        self._metric_race()
+        self.db.metric_writes.append(("delete", deepcopy(query), None, options))
+        rows = self._rows()
+        matched = next((row for row in rows.values() if self._matches(row, query)), None)
+        if self.db.metric_result_overrides:
+            return self.db.metric_result_overrides.pop(0)
+        if matched is not None:
+            del rows[matched["_id"]]
+            return FakeUpdateResult(deleted_count=1)
+        return FakeUpdateResult()
 
     async def insert_many(self, documents: list[dict[str, Any]], **options: Any) -> None:
         self._session(options)
@@ -546,6 +604,11 @@ class FakeDB:
         self.fail_write = failures.get("fail_write", False)
         self.fail_commit = failures.get("fail_commit", False)
         self.pre_match_mutation: dict[str, Any] | None = None
+        self.metric_race: Any = None
+        self.metric_result_overrides: list[FakeUpdateResult] = []
+        self.metric_writes: list[Any] = []
+        self.metric_readback_hook: Any = None
+        self.metric_reads = 0
         self.client: Any = FakeClient(self)
 
     def __getitem__(self, name: str) -> FakeCollection:
@@ -1081,6 +1144,159 @@ async def test_duplicate_preimage_insert_rolls_back_partial_batch() -> None:
     }
 
 
+@pytest.mark.asyncio
+async def test_preimage_callback_runs_after_insert_inside_the_same_transaction() -> None:
+    db, sealed, context = execution_setup()
+    called: list[Any] = []
+
+    async def callback(session: Any) -> None:
+        called.append(session)
+        assert db.active_session is session
+        assert db.staged_collections is not None
+        assert len(db.staged_collections["sheets_stock_time_reconciliation_preimages"]) == 4
+
+    await engine._persist_forward_preimages(db, sealed, context, callback)
+    assert called and len(db.transaction_options) == 1
+
+
+@pytest.mark.asyncio
+async def test_metric_cas_mixed_plan_has_exact_sequence_noop_touch_and_readback() -> None:
+    db, sealed, context = execution_setup()
+    original_operation, original_marker = (
+        deepcopy(db.rows),
+        deepcopy(db.collections["sheets_read_model_freshness"]),
+    )
+
+    await engine._persist_forward_metrics(db, sealed, context)
+
+    assert db.collections["sheets_stock_time_metrics"] == {
+        row["_id"]: row for row in sealed._expected_metric_documents
+    }
+    assert [(method, query["_id"]) for method, query, _, _ in db.metric_writes] == [
+        ("delete", "delete"),
+        ("replace", "insert"),
+        ("replace", "replace"),
+        ("replace", "same"),
+        ("replace", "same"),
+    ]
+    for _, query, _, _ in db.metric_writes:
+        assert query["seller_id"] == {"$in": ["82453304", 82453304]}
+        assert (query["date_from"], query["date_to"]) == (START, END)
+    assert db.metric_writes[1][3]["upsert"] is True
+    assert db.metric_writes[1][2] == next(
+        row for row in sealed._expected_metric_documents if row["_id"] == "insert"
+    )
+    noop_writes = db.metric_writes[-2:]
+    assert noop_writes[0][2]["revision"] == engine._operation_revision(
+        sealed.operation_id, "sheets_stock_time_metrics", "same", "no-op"
+    )
+    assert noop_writes[1][2] == metric("same", 1)
+    assert len(db.collections["sheets_stock_time_reconciliation_preimages"]) == 4
+    assert db.rows == original_operation
+    assert db.collections["sheets_read_model_freshness"] == original_marker
+    assert len(db.transaction_options) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("revision", ["missing", None, "7" * 64])
+async def test_noop_cas_distinguishes_and_restores_legacy_revision_state(revision: Any) -> None:
+    existing = metric("same", 1)
+    if revision != "missing":
+        existing["revision"] = revision
+    plan = planner._plan_stock_time_actions(
+        source_inventory=[{"_id": "source"}],
+        planned_documents=[metric("same", 1)],
+        existing_target_rows=[existing],
+    )
+    db, sealed, context = execution_setup(seal(plan=plan, old_marker=marker()))
+
+    await engine._persist_forward_metrics(db, sealed, context)
+
+    assert db.collections["sheets_stock_time_metrics"]["same"] == existing
+    first_guard = db.metric_writes[0][1]["revision"]
+    assert first_guard == (
+        {"$exists": False} if revision == "missing" else {"$exists": True, "$eq": revision}
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("action", ["insert", "replace", "delete", "no-op"])
+async def test_metric_cas_rejects_each_non_exact_write_result(action: str) -> None:
+    planned = [] if action == "delete" else [metric("target", 1 if action == "no-op" else 2)]
+    existing = [] if action == "insert" else [metric("target", 1)]
+    plan = planner._plan_stock_time_actions(
+        source_inventory=[{"_id": "source"}],
+        planned_documents=planned,
+        existing_target_rows=existing,
+    )
+    db, sealed, context = execution_setup(seal(plan=plan, old_marker=marker()))
+    db.metric_result_overrides = [
+        FakeUpdateResult(matched_count=1)
+        if action in {"insert", "no-op"}
+        else FakeUpdateResult(matched_count=1, modified_count=0)
+        if action == "replace"
+        else FakeUpdateResult(deleted_count=0)
+    ]
+    original = deepcopy(db.collections)
+
+    with pytest.raises(engine._ForwardEngineError, match="PREIMAGE_MISMATCH"):
+        await engine._persist_forward_metrics(db, sealed, context)
+    assert db.collections == original
+
+
+@pytest.mark.asyncio
+async def test_metric_concurrent_write_conflict_rolls_back_preimages_and_metrics() -> None:
+    plan = planner._plan_stock_time_actions(
+        source_inventory=[{"_id": "source"}],
+        planned_documents=[metric("replace", 2)],
+        existing_target_rows=[metric("replace", 1)],
+    )
+    db, sealed, context = execution_setup(seal(plan=plan, old_marker=marker()))
+    original = deepcopy(db.collections)
+
+    def race(_: Any) -> None:
+        raise RuntimeError("write conflict")
+
+    db.metric_race = race
+    with pytest.raises(RuntimeError, match="write conflict"):
+        await engine._persist_forward_metrics(db, sealed, context)
+    assert db.collections == original
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["missing", "extra", "altered", "fingerprint"])
+async def test_metric_exact_readback_mismatch_rolls_back(mode: str) -> None:
+    db, sealed, context = execution_setup()
+    original = deepcopy(db.collections)
+    if mode == "fingerprint":
+        sealed = replace(sealed, expected_metric_fingerprint="0" * 64)
+    else:
+
+        def hook(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+            if mode == "missing":
+                return rows[:-1]
+            if mode == "extra":
+                return [*rows, metric("extra", 1)]
+            rows[0]["value"] = 999
+            return rows
+
+        db.metric_readback_hook = hook
+
+    with pytest.raises(engine._ForwardEngineError, match="PREIMAGE_MISMATCH"):
+        await engine._persist_forward_metrics(db, sealed, context)
+    assert db.collections == original
+
+
+@pytest.mark.asyncio
+async def test_metric_commit_failure_rolls_back_preimages_and_all_metric_writes() -> None:
+    db, sealed, context = execution_setup()
+    original = deepcopy(db.collections)
+    db.fail_commit = True
+    with pytest.raises(RuntimeError, match="commit failed"):
+        await engine._persist_forward_metrics(db, sealed, context)
+    assert db.collections == original
+
+
 def test_forward_contract_remains_private_with_bounded_errors() -> None:
     assert not hasattr(zeler_sheets, "_seal_forward_plan")
     assert not hasattr(zeler_sheets, "_ForwardMutation")
@@ -1088,5 +1304,6 @@ def test_forward_contract_remains_private_with_bounded_errors() -> None:
     assert not hasattr(engine, "_acquire_new_forward_operation")
     assert not hasattr(zeler_sheets, "_ForwardOperationContext")
     assert not hasattr(zeler_sheets, "_persist_forward_preimages")
+    assert not hasattr(zeler_sheets, "_persist_forward_metrics")
     with pytest.raises(ValueError, match="unknown forward-engine error code"):
         engine._ForwardEngineError("NOT_A_SEALING_ERROR")
