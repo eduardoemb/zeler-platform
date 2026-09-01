@@ -677,8 +677,58 @@ ENTITY_SCHEMAS: dict[str, dict[str, Any]] = {
             "source": SOURCE_GATED_PROJECTOR_SOURCE,
             "history_basis": SOURCE_GATED_HISTORY_BASIS,
             "coverage_basis": SOURCE_GATED_HISTORY_BASIS,
+            "revision": SHA256_FINGERPRINT,
             **SCHEMA_VERSION,
         },
+    },
+    "sheets_stock_time_reconciliation_preimages": {
+        "additionalProperties": False,
+        "required": [
+            "_id",
+            "operation_id",
+            "sequence",
+            "target_collection",
+            "target_id",
+            "action",
+            "preimage",
+            "preimage_kind",
+            "preimage_fingerprint",
+            "expected_forward_revision",
+            "created_at",
+            "schema_version",
+        ],
+        "properties": {
+            "_id": SHA256_FINGERPRINT,
+            "operation_id": SHA256_FINGERPRINT,
+            "sequence": {"bsonType": ["int", "long"], "minimum": 1},
+            "target_collection": {
+                "enum": ["sheets_stock_time_metrics", "sheets_read_model_freshness"]
+            },
+            "target_id": {"bsonType": "string", "minLength": 1},
+            "action": {"enum": ["insert", "replace", "delete"]},
+            "preimage": {"bsonType": ["object", "null"]},
+            "preimage_kind": {"enum": ["absent", "exact_document"]},
+            "preimage_fingerprint": SHA256_FINGERPRINT,
+            "expected_forward_revision": SHA256_FINGERPRINT,
+            "created_at": DATE,
+            **SCHEMA_VERSION,
+        },
+        "oneOf": [
+            {
+                "properties": {
+                    "action": {"enum": ["insert"]},
+                    "preimage": {"bsonType": "null"},
+                    "preimage_kind": {"enum": ["absent"]},
+                }
+            },
+            {
+                "properties": {
+                    "action": {"enum": ["replace", "delete"]},
+                    "preimage": {"bsonType": "object"},
+                    "preimage_kind": {"enum": ["exact_document"]},
+                }
+            },
+        ],
     },
     "sheets_stock_time_reconciliation_operations": {
         "additionalProperties": False,
@@ -1148,6 +1198,8 @@ def _validator_payload(schema: dict[str, Any]) -> dict[str, Any]:
     }
     if "additionalProperties" in schema:
         json_schema["additionalProperties"] = schema["additionalProperties"]
+    if "oneOf" in schema:
+        json_schema["oneOf"] = schema["oneOf"]
     return {
         "validationAction": "error",
         "validationLevel": "strict",

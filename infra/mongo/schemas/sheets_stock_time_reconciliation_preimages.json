@@ -1,0 +1,127 @@
+{
+  "$jsonSchema": {
+    "additionalProperties": false,
+    "bsonType": "object",
+    "oneOf": [
+      {
+        "properties": {
+          "action": {
+            "enum": [
+              "insert"
+            ]
+          },
+          "preimage": {
+            "bsonType": "null"
+          },
+          "preimage_kind": {
+            "enum": [
+              "absent"
+            ]
+          }
+        }
+      },
+      {
+        "properties": {
+          "action": {
+            "enum": [
+              "replace",
+              "delete"
+            ]
+          },
+          "preimage": {
+            "bsonType": "object"
+          },
+          "preimage_kind": {
+            "enum": [
+              "exact_document"
+            ]
+          }
+        }
+      }
+    ],
+    "properties": {
+      "_id": {
+        "bsonType": "string",
+        "maxLength": 64,
+        "minLength": 64,
+        "pattern": "^[0-9a-f]{64}$"
+      },
+      "action": {
+        "enum": [
+          "insert",
+          "replace",
+          "delete"
+        ]
+      },
+      "created_at": {
+        "bsonType": "date"
+      },
+      "expected_forward_revision": {
+        "bsonType": "string",
+        "maxLength": 64,
+        "minLength": 64,
+        "pattern": "^[0-9a-f]{64}$"
+      },
+      "operation_id": {
+        "bsonType": "string",
+        "maxLength": 64,
+        "minLength": 64,
+        "pattern": "^[0-9a-f]{64}$"
+      },
+      "preimage": {
+        "bsonType": [
+          "object",
+          "null"
+        ]
+      },
+      "preimage_fingerprint": {
+        "bsonType": "string",
+        "maxLength": 64,
+        "minLength": 64,
+        "pattern": "^[0-9a-f]{64}$"
+      },
+      "preimage_kind": {
+        "enum": [
+          "absent",
+          "exact_document"
+        ]
+      },
+      "schema_version": {
+        "bsonType": "int"
+      },
+      "sequence": {
+        "bsonType": [
+          "int",
+          "long"
+        ],
+        "minimum": 1
+      },
+      "target_collection": {
+        "enum": [
+          "sheets_stock_time_metrics",
+          "sheets_read_model_freshness"
+        ]
+      },
+      "target_id": {
+        "bsonType": "string",
+        "minLength": 1
+      }
+    },
+    "required": [
+      "_id",
+      "operation_id",
+      "sequence",
+      "target_collection",
+      "target_id",
+      "action",
+      "preimage",
+      "preimage_kind",
+      "preimage_fingerprint",
+      "expected_forward_revision",
+      "created_at",
+      "schema_version"
+    ]
+  },
+  "validationAction": "error",
+  "validationLevel": "strict"
+}

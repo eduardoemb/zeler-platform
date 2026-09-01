@@ -74,6 +74,16 @@ path. The current `stock_time_metrics --write` rejection remains unchanged. Runt
 and replica-set capability, preimage persistence, guarded mutation/readback, compensation, marker
 publication, deployment, and approved-runtime verification remain later gates.
 
+### Stock-time immutable preimage contract
+
+The additive `sheets_stock_time_reconciliation_preimages` schema stores one immutable action per
+private target identity. Its kind and SHA-256 fingerprint distinguish a domain-separated absent
+preimage from the exact prior document, while the operation-owned expected revision enables later
+CAS compensation. The target metric revision is optional so existing rows remain valid.
+
+These are schemas and indexes only: no preimage rows are written yet. Write, rollback, marker,
+deploy, and production actions remain blocked, as does transaction-capable runtime proof.
+
 Observed pause-basis repair dry-run:
 
 ```bash
