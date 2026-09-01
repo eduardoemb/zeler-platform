@@ -340,19 +340,28 @@ def test_mutation_preimages_are_exact_coupled_and_deeply_frozen() -> None:
 
 
 class FakeTransaction:
-    def __init__(self, db: FakeDB, options: dict[str, Any]) -> None:
-        self.db, self.options = db, options
+    def __init__(self, db: FakeDB, session: FakeSession, options: dict[str, Any]) -> None:
+        self.db, self.session, self.options = db, session, options
 
     async def __aenter__(self) -> FakeTransaction:
-        self.db.staged = deepcopy(self.db.rows)
+        assert self.db.staged is None and self.db.active_session is None
+        self.db.staged_collections = deepcopy(self.db.collections)
+        self.db.staged = self.db.staged_collections.setdefault(
+            "sheets_stock_time_reconciliation_operations", {}
+        )
+        self.db.active_session = self.session
         return self
 
     async def __aexit__(self, error_type: Any, error: Any, traceback: Any) -> None:
-        staged, self.db.staged = self.db.staged, None
+        staged_collections = self.db.staged_collections
+        self.db.staged_collections = self.db.staged = self.db.active_session = None
         if error_type is None and self.db.fail_commit:
             raise RuntimeError("commit failed")
         if error_type is None:
-            self.db.rows = staged or {}
+            self.db.collections = staged_collections or {}
+            self.db.rows = self.db.collections.setdefault(
+                "sheets_stock_time_reconciliation_operations", {}
+            )
 
 
 class FakeSession:
@@ -369,7 +378,7 @@ class FakeSession:
         if not self.transaction:
             raise AttributeError("transaction unavailable")
         self.db.transaction_options.append(options)
-        return FakeTransaction(self.db, options)
+        return FakeTransaction(self.db, self, options)
 
 
 class FakeClient:
@@ -392,16 +401,38 @@ class FakeUpdateResult:
         self.matched_count = matched_count
 
 
+class FakeCursor:
+    def __init__(self, rows: list[dict[str, Any]]) -> None:
+        self.rows = rows
+
+    async def to_list(self, length: int | None = None) -> list[dict[str, Any]]:
+        return deepcopy(self.rows if length is None else self.rows[:length])
+
+
 class FakeCollection:
-    def __init__(self, db: FakeDB) -> None:
-        self.db = db
+    def __init__(self, db: FakeDB, name: str) -> None:
+        self.db, self.name = db, name
+
+    def _session(self, options: dict[str, Any]) -> None:
+        assert self.db.staged_collections is not None
+        assert options.get("session") is self.db.active_session
+
+    def _rows(self) -> dict[str, dict[str, Any]]:
+        assert self.db.staged_collections is not None
+        return self.db.staged_collections.setdefault(self.name, {})
 
     async def find_one(self, query: dict[str, Any], **options: Any) -> Any:
+        self._session(options)
         self.db.reads.append((query, options))
-        for row in (self.db.staged or {}).values():
+        for row in self._rows().values():
             if self._matches(row, query):
                 return deepcopy(row)
         return None
+
+    def find(self, query: dict[str, Any], **options: Any) -> FakeCursor:
+        self._session(options)
+        self.db.reads.append((query, options))
+        return FakeCursor([row for row in self._rows().values() if self._matches(row, query)])
 
     def _matches(self, row: dict[str, Any], query: dict[str, Any]) -> bool:
         for key, expected in query.items():
@@ -414,6 +445,9 @@ class FakeCollection:
                 if operation == "$gt" and not left > right:
                     return False
                 if operation == "$lte" and not left <= right:
+                    return False
+            elif isinstance(expected, dict) and "$in" in expected:
+                if row.get(key) not in expected["$in"]:
                     return False
             elif row.get(key) != expected:
                 return False
@@ -429,7 +463,9 @@ class FakeCollection:
     async def update_one(
         self, query: dict[str, Any], pipeline: list[dict[str, Any]], **options: Any
     ) -> FakeUpdateResult:
+        self._session(options)
         self.db.writes.append((query, pipeline, options))
+        self.db.written_collections.append(self.name)
         assert self.db.staged is not None
         if self.db.pre_match_mutation is not None:
             mutation, self.db.pre_match_mutation = self.db.pre_match_mutation, None
@@ -450,6 +486,27 @@ class FakeCollection:
         if self.db.fail_write:
             raise RuntimeError("write failed")
         return FakeUpdateResult(int(matched is not None))
+
+    async def insert_many(self, documents: list[dict[str, Any]], **options: Any) -> None:
+        self._session(options)
+        self.db.written_collections.append(self.name)
+        rows = self._rows()
+        for document in documents:
+            identity = (document["operation_id"], document["sequence"])
+            target = (
+                document["operation_id"],
+                document["target_collection"],
+                document["target_id"],
+            )
+            if document["_id"] in rows or any(
+                (row["operation_id"], row["sequence"]) == identity
+                or (row["operation_id"], row["target_collection"], row["target_id"]) == target
+                for row in rows.values()
+            ):
+                raise RuntimeError("duplicate insert")
+            rows[document["_id"]] = deepcopy(document)
+        if self.db.fail_write:
+            raise RuntimeError("write failed")
 
     def _evaluate(self, value: Any, row: dict[str, Any] | None) -> Any:
         if value == "$$NOW":
@@ -473,11 +530,17 @@ class FakeCollection:
 class FakeDB:
     def __init__(self, **failures: bool) -> None:
         self.rows: dict[str, dict[str, Any]] = {}
+        self.collections: dict[str, dict[str, dict[str, Any]]] = {
+            "sheets_stock_time_reconciliation_operations": self.rows
+        }
         self.staged: dict[str, dict[str, Any]] | None = None
+        self.staged_collections: dict[str, dict[str, dict[str, Any]]] | None = None
+        self.active_session: FakeSession | None = None
         self.server_now = datetime(2026, 8, 1, 12, 0, tzinfo=UTC)
         self.accessed: list[str] = []
         self.reads: list[Any] = []
         self.writes: list[Any] = []
+        self.written_collections: list[str] = []
         self.transaction_options: list[dict[str, Any]] = []
         self.fail_body = failures.get("fail_body", False)
         self.fail_write = failures.get("fail_write", False)
@@ -487,7 +550,7 @@ class FakeDB:
 
     def __getitem__(self, name: str) -> FakeCollection:
         self.accessed.append(name)
-        return FakeCollection(self)
+        return FakeCollection(self, name)
 
 
 @pytest.mark.asyncio
@@ -636,6 +699,24 @@ def persisted_operation(
 
 def install(db: FakeDB, row: dict[str, Any]) -> None:
     db.rows[row["_id"]] = row
+
+
+def execution_setup(sealed: Any | None = None) -> tuple[FakeDB, Any, Any]:
+    db, plan, token = FakeDB(), sealed or seal(old_marker=marker()), "9" * 32
+    operation = persisted_operation(plan, token=token)
+    install(db, operation)
+    metrics = db.collections.setdefault("sheets_stock_time_metrics", {})
+    for action in plan._action_plan.actions:
+        if action._preimage is not None:
+            metrics[action._target_id] = planner._canonical_bson_document(action._preimage)
+    if plan._marker_preimage is not None:
+        db.collections["sheets_read_model_freshness"] = {
+            plan._marker_preimage["_id"]: planner._canonical_bson_document(plan._marker_preimage)
+        }
+    context = engine._ForwardOperationContext(
+        plan.operation_id, "prepared", operation["attempt"], token, operation["fence"], True
+    )
+    return db, plan, context
 
 
 @pytest.mark.asyncio
@@ -861,11 +942,151 @@ async def test_acquire_failure_rolls_back_and_never_becomes_success(
     assert db.rows == original and db.staged is None
 
 
+@pytest.mark.asyncio
+async def test_execution_revalidates_owner_and_persists_deterministic_exact_preimages() -> None:
+    db, sealed, context = execution_setup()
+    await engine._persist_forward_preimages(db, sealed, context)
+    rows = list(db.collections["sheets_stock_time_reconciliation_preimages"].values())
+
+    assert [row["sequence"] for row in rows] == [1, 2, 3, 4]
+    assert [row["target_id"] for row in rows] == ["delete", "insert", "replace", marker()["_id"]]
+    assert "same" not in {row["target_id"] for row in rows}
+    operation = db.rows[sealed.operation_id]
+    for row, mutation in zip(rows, sealed._mutations, strict=True):
+        assert row == {
+            "_id": engine._preimage_record_id(sealed.operation_id, mutation),
+            "operation_id": sealed.operation_id,
+            "sequence": mutation.sequence,
+            "target_collection": mutation.target_collection,
+            "target_id": mutation._target_id,
+            "action": mutation.action,
+            "preimage": mutation._preimage,
+            "preimage_kind": mutation.preimage_kind,
+            "preimage_fingerprint": mutation.preimage_fingerprint,
+            "expected_forward_revision": mutation.expected_forward_revision,
+            "created_at": operation["lease_acquired_at"],
+            "schema_version": 1,
+        }
+    assert db.written_collections == ["sheets_stock_time_reconciliation_preimages"]
+
+    other, _, other_context = execution_setup(sealed)
+    await engine._persist_forward_preimages(other, sealed, other_context)
+    assert (
+        other.collections["sheets_stock_time_reconciliation_preimages"]
+        == (db.collections["sheets_stock_time_reconciliation_preimages"])
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("kind", "code"),
+    [
+        ("token", "FENCE_CONFLICT"),
+        ("fence", "FENCE_CONFLICT"),
+        ("state", "STATE_BLOCKED"),
+        ("lease", "LEASE_CONFLICT"),
+        ("binding", "OPERATION_MISMATCH"),
+    ],
+)
+async def test_execution_rejects_stale_owner_state_lease_and_binding(kind: str, code: str) -> None:
+    db, sealed, context = execution_setup()
+    if kind == "token":
+        context = replace(context, attempt_token="8" * 32)
+    elif kind == "fence":
+        context = replace(context, fence=context.fence + 1)
+    elif kind == "state":
+        db.rows[sealed.operation_id]["state"] = "committed"
+    elif kind == "lease":
+        db.rows[sealed.operation_id]["lease_until"] = db.server_now
+    else:
+        db.rows[sealed.operation_id]["planned_preimage_count"] += 1
+    with pytest.raises(engine._ForwardEngineError, match=code):
+        await engine._persist_forward_preimages(db, sealed, context)
+    assert "sheets_stock_time_reconciliation_preimages" not in db.collections
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("target", ["replace", "same", "marker"])
+async def test_execution_rejects_metric_marker_and_noop_drift(target: str) -> None:
+    db, sealed, context = execution_setup()
+    collection = (
+        "sheets_read_model_freshness" if target == "marker" else "sheets_stock_time_metrics"
+    )
+    target_id = marker()["_id"] if target == "marker" else target
+    db.collections[collection][target_id]["revision"] = None
+    with pytest.raises(engine._ForwardEngineError, match="PREIMAGE_MISMATCH"):
+        await engine._persist_forward_preimages(db, sealed, context)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["missing", "extra", "duplicate"])
+async def test_execution_rejects_incomplete_or_duplicate_exact_interval(mode: str) -> None:
+    db, sealed, context = execution_setup()
+    metrics = db.collections["sheets_stock_time_metrics"]
+    if mode == "missing":
+        del metrics["delete"]
+    elif mode == "extra":
+        metrics["extra"] = metric("extra", 1)
+    else:
+        metrics["duplicate"] = deepcopy(metrics["same"])
+    with pytest.raises(engine._ForwardEngineError, match="PREIMAGE_MISMATCH"):
+        await engine._persist_forward_preimages(db, sealed, context)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("revision", ["missing", None, "7" * 64])
+async def test_execution_preserves_exact_legacy_revision_state(revision: Any) -> None:
+    existing = metric("same", 1)
+    if revision != "missing":
+        existing["revision"] = revision
+    plan = planner._plan_stock_time_actions(
+        source_inventory=[{"_id": "source"}],
+        planned_documents=[metric("same", 1)],
+        existing_target_rows=[existing],
+    )
+    db, sealed, context = execution_setup(seal(plan=plan, old_marker=marker()))
+    await engine._persist_forward_preimages(db, sealed, context)
+    assert len(db.collections["sheets_stock_time_reconciliation_preimages"]) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["fail_write", "fail_commit"])
+async def test_preimage_transaction_failure_rolls_back_and_next_transaction_is_fresh(
+    failure: str,
+) -> None:
+    db, sealed, context = execution_setup()
+    setattr(db, failure, True)
+    with pytest.raises(RuntimeError, match=failure.removeprefix("fail_") + " failed"):
+        await engine._persist_forward_preimages(db, sealed, context)
+    assert "sheets_stock_time_reconciliation_preimages" not in db.collections
+    assert db.staged_collections is None and db.active_session is None
+    setattr(db, failure, False)
+    await engine._persist_forward_preimages(db, sealed, context)
+    assert len(db.collections["sheets_stock_time_reconciliation_preimages"]) == 4
+
+
+@pytest.mark.asyncio
+async def test_duplicate_preimage_insert_rolls_back_partial_batch() -> None:
+    source, sealed, source_context = execution_setup()
+    await engine._persist_forward_preimages(source, sealed, source_context)
+    records = list(source.collections["sheets_stock_time_reconciliation_preimages"].values())
+    db, _, context = execution_setup(sealed)
+    db.collections["sheets_stock_time_reconciliation_preimages"] = {
+        records[1]["_id"]: deepcopy(records[1])
+    }
+    with pytest.raises(RuntimeError, match="duplicate insert"):
+        await engine._persist_forward_preimages(db, sealed, context)
+    assert db.collections["sheets_stock_time_reconciliation_preimages"] == {
+        records[1]["_id"]: records[1]
+    }
+
+
 def test_forward_contract_remains_private_with_bounded_errors() -> None:
     assert not hasattr(zeler_sheets, "_seal_forward_plan")
     assert not hasattr(zeler_sheets, "_ForwardMutation")
     assert not hasattr(zeler_sheets, "_acquire_forward_operation")
     assert not hasattr(engine, "_acquire_new_forward_operation")
     assert not hasattr(zeler_sheets, "_ForwardOperationContext")
+    assert not hasattr(zeler_sheets, "_persist_forward_preimages")
     with pytest.raises(ValueError, match="unknown forward-engine error code"):
         engine._ForwardEngineError("NOT_A_SEALING_ERROR")
