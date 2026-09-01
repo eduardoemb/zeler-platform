@@ -396,12 +396,32 @@ class FakeCollection:
             raise RuntimeError("body failed")
         self.db.reads.append((query, options))
         for row in (self.db.staged or {}).values():
-            clauses = query.get("$or", (query,))
-            if any(
-                all(row.get(key) == value for key, value in clause.items()) for clause in clauses
-            ):
+            if self._matches(row, query):
                 return deepcopy(row)
         return None
+
+    def _matches(self, row: dict[str, Any], query: dict[str, Any]) -> bool:
+        for key, expected in query.items():
+            if key == "$or":
+                if not any(self._matches(row, clause) for clause in expected):
+                    return False
+            elif key == "$expr":
+                operation, operands = next(iter(expected.items()))
+                left, right = (self._operand(row, operand) for operand in operands)
+                if operation == "$gt" and not left > right:
+                    return False
+                if operation == "$lte" and not left <= right:
+                    return False
+            elif row.get(key) != expected:
+                return False
+        return True
+
+    def _operand(self, row: dict[str, Any], operand: Any) -> Any:
+        if operand == "$$NOW":
+            return self.db.server_now
+        if isinstance(operand, str) and operand.startswith("$"):
+            return row.get(operand[1:])
+        return operand
 
     async def update_one(
         self, query: dict[str, Any], pipeline: list[dict[str, Any]], **options: Any
@@ -468,13 +488,13 @@ async def test_invalid_attempt_token_fails_before_database_access(token: Any) ->
             raise AssertionError("database accessed")
 
     with pytest.raises(engine._ForwardEngineError, match="INVALID_ATTEMPT_TOKEN"):
-        await engine._acquire_new_forward_operation(UntouchableDB(), seal(), token)
+        await engine._acquire_forward_operation(UntouchableDB(), seal(), token)
 
 
 @pytest.mark.asyncio
 async def test_acquire_creates_exact_prepared_operation_with_server_lease() -> None:
     db, sealed, token = FakeDB(), seal(), "a" * 32
-    context = await engine._acquire_new_forward_operation(db, sealed, token)
+    context = await engine._acquire_forward_operation(db, sealed, token)
 
     assert context == engine._ForwardOperationContext(
         sealed.operation_id, "prepared", 1, token, 1, True
@@ -532,7 +552,7 @@ async def test_acquire_creates_exact_prepared_operation_with_server_lease() -> N
 async def test_acquire_accepts_awaitable_session() -> None:
     db = FakeDB()
     db.client = FakeClient(db, awaitable=True)
-    assert (await engine._acquire_new_forward_operation(db, seal(), "b" * 32)).owns_lease
+    assert (await engine._acquire_forward_operation(db, seal(), "b" * 32)).owns_lease
 
 
 @pytest.mark.asyncio
@@ -551,17 +571,174 @@ async def test_acquire_requires_all_transaction_capabilities(missing: str) -> No
             session.start_transaction = None
         db.client = FakeClient(db, session=session)
     with pytest.raises(engine._ForwardEngineError, match="TRANSACTION_REQUIRED"):
-        await engine._acquire_new_forward_operation(db, seal(), "c" * 32)
+        await engine._acquire_forward_operation(db, seal(), "c" * 32)
     assert not db.rows and not db.writes and not db.accessed
 
 
+def persisted_operation(
+    sealed: Any,
+    *,
+    state: Any = "prepared",
+    token: str = "a" * 32,
+    lease_until: datetime | None = None,
+) -> dict[str, Any]:
+    now, counts = datetime(2026, 8, 1, 12, 0, tzinfo=UTC), sealed.ledger_counts
+    return {
+        "_id": sealed.operation_id,
+        "seller_id": sealed.binding._seller_id,
+        "read_model": "stock_time_metrics",
+        "date_from": sealed.binding.date_from,
+        "date_to": sealed.binding.date_to,
+        "source_fingerprint": sealed.binding.source_fingerprint,
+        "plan_fingerprint": sealed.binding.plan_fingerprint,
+        "state": state,
+        "attempt": 3,
+        "attempt_token": token,
+        "fence": 5,
+        "lease_acquired_at": now - timedelta(minutes=1),
+        "heartbeat_at": now,
+        "lease_until": lease_until or now + timedelta(minutes=1),
+        "planned_insert_count": counts.planned_insert_count,
+        "planned_update_count": counts.planned_update_count,
+        "planned_delete_count": counts.planned_delete_count,
+        "planned_preimage_count": counts.planned_preimage_count,
+        "created_at": now - timedelta(minutes=2),
+        "updated_at": now,
+        "schema_version": 1,
+    }
+
+
+def install(db: FakeDB, row: dict[str, Any]) -> None:
+    db.rows[row["_id"]] = row
+
+
 @pytest.mark.asyncio
-async def test_existing_operation_fails_closed_without_write() -> None:
+async def test_same_token_live_prepared_returns_persisted_owner_using_server_time() -> None:
+    db, sealed, token = FakeDB(), seal(), "d" * 32
+    install(db, persisted_operation(sealed, token=token))
+
+    context = await engine._acquire_forward_operation(db, sealed, token)
+
+    assert context == engine._ForwardOperationContext(
+        sealed.operation_id, "prepared", 3, token, 5, True
+    )
+    assert db.reads[1][0] == {
+        "_id": sealed.operation_id,
+        "state": "prepared",
+        "attempt_token": token,
+        "$expr": {"$gt": ["$lease_until", "$$NOW"]},
+    }
+    assert not db.writes
+
+
+@pytest.mark.asyncio
+async def test_other_live_prepared_is_lease_conflict_with_server_predicates() -> None:
     db, sealed = FakeDB(), seal()
-    db.rows[sealed.operation_id] = {"_id": sealed.operation_id, "state": "committed"}
-    with pytest.raises(engine._ForwardEngineError, match="OPERATION_EXISTS"):
-        await engine._acquire_new_forward_operation(db, sealed, "d" * 32)
-    assert db.rows[sealed.operation_id]["state"] == "committed"
+    install(db, persisted_operation(sealed, token="d" * 32))
+
+    with pytest.raises(engine._ForwardEngineError, match="LEASE_CONFLICT"):
+        await engine._acquire_forward_operation(db, sealed, "e" * 32)
+
+    assert [read[0].get("$expr") for read in db.reads[1:]] == [
+        {"$gt": ["$lease_until", "$$NOW"]},
+        {"$lte": ["$lease_until", "$$NOW"]},
+    ]
+    assert not db.writes
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("persisted_token", "requested_token", "delta"),
+    [("f" * 32, "f" * 32, timedelta(0)), ("f" * 32, "0" * 32, timedelta(seconds=-1))],
+)
+async def test_expired_prepared_either_token_is_takeover_blocked(
+    persisted_token: str, requested_token: str, delta: timedelta
+) -> None:
+    db, sealed = FakeDB(), seal()
+    install(
+        db,
+        persisted_operation(sealed, token=persisted_token, lease_until=db.server_now + delta),
+    )
+    with pytest.raises(engine._ForwardEngineError, match="TAKEOVER_BLOCKED"):
+        await engine._acquire_forward_operation(db, sealed, requested_token)
+    assert db.reads[-1][0]["$expr"] == {"$lte": ["$lease_until", "$$NOW"]}
+    assert not db.writes
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("requested", ["a" * 32, "b" * 32])
+async def test_committed_exact_row_returns_persisted_non_owner(requested: str) -> None:
+    db, sealed, persisted = FakeDB(), seal(), "a" * 32
+    install(db, persisted_operation(sealed, state="committed", token=persisted))
+    assert await engine._acquire_forward_operation(db, sealed, requested) == (
+        engine._ForwardOperationContext(sealed.operation_id, "committed", 3, persisted, 5, False)
+    )
+    assert len(db.reads) == 1 and not db.writes
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "state", ["failed", "expired", "rolled_back", "rollback_blocked", "future_state"]
+)
+async def test_terminal_and_unknown_states_are_blocked_without_write(state: str) -> None:
+    db, sealed = FakeDB(), seal()
+    install(db, persisted_operation(sealed, state=state))
+    with pytest.raises(engine._ForwardEngineError, match="STATE_BLOCKED"):
+        await engine._acquire_forward_operation(db, sealed, "a" * 32)
+    assert not db.writes
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("_id", "other"),
+        ("seller_id", "other"),
+        ("read_model", "other"),
+        ("date_from", START + timedelta(days=1)),
+        ("date_to", END + timedelta(days=1)),
+        ("source_fingerprint", "0" * 64),
+        ("plan_fingerprint", "0" * 64),
+        ("planned_insert_count", 99),
+        ("planned_update_count", 99),
+        ("planned_delete_count", 99),
+        ("planned_preimage_count", 99),
+    ],
+)
+async def test_existing_immutable_mismatch_precedes_state(field: str, value: Any) -> None:
+    db, sealed = FakeDB(), seal()
+    row = persisted_operation(sealed, state="committed")
+    row[field] = value
+    install(db, row)
+    with pytest.raises(engine._ForwardEngineError, match="OPERATION_MISMATCH"):
+        await engine._acquire_forward_operation(db, sealed, "a" * 32)
+    assert not db.writes
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("schema_version", 2),
+        ("state", None),
+        ("attempt", 0),
+        ("attempt", True),
+        ("fence", 0),
+        ("fence", True),
+        ("attempt_token", "bad"),
+        ("planned_update_count", True),
+        ("lease_acquired_at", START.replace(tzinfo=None)),
+        ("heartbeat_at", START.replace(tzinfo=None)),
+        ("lease_until", START.replace(tzinfo=None)),
+    ],
+)
+async def test_existing_malformed_schema_precedes_state(field: str, value: Any) -> None:
+    db, sealed = FakeDB(), seal()
+    row = persisted_operation(sealed, state="committed")
+    row[field] = value
+    install(db, row)
+    with pytest.raises(engine._ForwardEngineError, match="INVALID_OPERATION_SCHEMA"):
+        await engine._acquire_forward_operation(db, sealed, "a" * 32)
     assert not db.writes
 
 
@@ -570,14 +747,15 @@ async def test_existing_operation_fails_closed_without_write() -> None:
 async def test_acquire_failure_rolls_back_and_never_becomes_success(failure: str) -> None:
     db = FakeDB(**{failure: True})
     with pytest.raises(RuntimeError, match=failure.removeprefix("fail_") + " failed"):
-        await engine._acquire_new_forward_operation(db, seal(), "e" * 32)
+        await engine._acquire_forward_operation(db, seal(), "e" * 32)
     assert not db.rows and db.staged is None
 
 
 def test_forward_contract_remains_private_with_bounded_errors() -> None:
     assert not hasattr(zeler_sheets, "_seal_forward_plan")
     assert not hasattr(zeler_sheets, "_ForwardMutation")
-    assert not hasattr(zeler_sheets, "_acquire_new_forward_operation")
+    assert not hasattr(zeler_sheets, "_acquire_forward_operation")
+    assert not hasattr(engine, "_acquire_new_forward_operation")
     assert not hasattr(zeler_sheets, "_ForwardOperationContext")
     with pytest.raises(ValueError, match="unknown forward-engine error code"):
         engine._ForwardEngineError("NOT_A_SEALING_ERROR")

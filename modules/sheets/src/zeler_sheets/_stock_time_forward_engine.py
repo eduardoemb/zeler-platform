@@ -40,7 +40,11 @@ _ERROR_CODES = frozenset(
         "INVALID_ACTION",
         "INVALID_ATTEMPT_TOKEN",
         "TRANSACTION_REQUIRED",
-        "OPERATION_EXISTS",
+        "INVALID_OPERATION_SCHEMA",
+        "OPERATION_MISMATCH",
+        "TAKEOVER_BLOCKED",
+        "LEASE_CONFLICT",
+        "STATE_BLOCKED",
     }
 )
 
@@ -162,7 +166,60 @@ async def _required_transaction(db: Any) -> AsyncIterator[Any]:
         await session_exit(None, None, None)
 
 
-async def _acquire_new_forward_operation(
+def _persisted_operation_context(
+    operation: Mapping[str, Any], *, owns_lease: bool
+) -> _ForwardOperationContext:
+    return _ForwardOperationContext(
+        operation_id=operation["_id"],
+        state=operation["state"],
+        attempt=operation["attempt"],
+        attempt_token=operation["attempt_token"],
+        fence=operation["fence"],
+        owns_lease=owns_lease,
+    )
+
+
+def _validate_persisted_operation(
+    operation: Any, immutable: Mapping[str, Any]
+) -> Mapping[str, Any]:
+    if not isinstance(operation, Mapping):
+        raise _ForwardEngineError("INVALID_OPERATION_SCHEMA")
+    positive_integers = (operation.get("attempt"), operation.get("fence"))
+    counts = tuple(
+        operation.get(field)
+        for field in (
+            "planned_insert_count",
+            "planned_update_count",
+            "planned_delete_count",
+            "planned_preimage_count",
+        )
+    )
+    timestamps = tuple(
+        operation.get(field) for field in ("lease_acquired_at", "heartbeat_at", "lease_until")
+    )
+    schema_valid = (
+        operation.get("schema_version") == 1
+        and type(operation.get("schema_version")) is int
+        and isinstance(operation.get("state"), str)
+        and all(type(value) is int and value > 0 for value in positive_integers)
+        and all(type(value) is int and value >= 0 for value in counts)
+        and isinstance(operation.get("attempt_token"), str)
+        and _ATTEMPT_TOKEN.fullmatch(operation["attempt_token"]) is not None
+        and all(
+            isinstance(value, datetime)
+            and value.tzinfo is not None
+            and value.utcoffset() == timedelta(0)
+            for value in timestamps
+        )
+    )
+    if not schema_valid:
+        raise _ForwardEngineError("INVALID_OPERATION_SCHEMA")
+    if any(operation.get(field) != expected for field, expected in immutable.items()):
+        raise _ForwardEngineError("OPERATION_MISMATCH")
+    return operation
+
+
+async def _acquire_forward_operation(
     db: Any, sealed_plan: _SealedForwardPlan, attempt_token: str
 ) -> _ForwardOperationContext:
     if not isinstance(attempt_token, str) or _ATTEMPT_TOKEN.fullmatch(attempt_token) is None:
@@ -177,6 +234,14 @@ async def _acquire_new_forward_operation(
         "plan_fingerprint": binding.plan_fingerprint,
     }
     counts = sealed_plan.ledger_counts
+    exact_immutable = {
+        "_id": sealed_plan.operation_id,
+        **exact_binding,
+        "planned_insert_count": counts.planned_insert_count,
+        "planned_update_count": counts.planned_update_count,
+        "planned_delete_count": counts.planned_delete_count,
+        "planned_preimage_count": counts.planned_preimage_count,
+    }
     context = _ForwardOperationContext(
         sealed_plan.operation_id, "prepared", 1, attempt_token, 1, True
     )
@@ -186,7 +251,29 @@ async def _acquire_new_forward_operation(
             {"$or": [{"_id": sealed_plan.operation_id}, exact_binding]}, session=session
         )
         if existing is not None:
-            raise _ForwardEngineError("OPERATION_EXISTS")
+            persisted = _validate_persisted_operation(existing, exact_immutable)
+            if persisted["state"] == "committed":
+                return _persisted_operation_context(persisted, owns_lease=False)
+            if persisted["state"] != "prepared":
+                raise _ForwardEngineError("STATE_BLOCKED")
+            identity = {"_id": sealed_plan.operation_id, "state": "prepared"}
+            live_owner = await operations.find_one(
+                {
+                    **identity,
+                    "attempt_token": attempt_token,
+                    "$expr": {"$gt": ["$lease_until", "$$NOW"]},
+                },
+                session=session,
+            )
+            if live_owner is not None:
+                return _persisted_operation_context(persisted, owns_lease=True)
+            expired = await operations.find_one(
+                {**identity, "$expr": {"$lte": ["$lease_until", "$$NOW"]}},
+                session=session,
+            )
+            if expired is not None:
+                raise _ForwardEngineError("TAKEOVER_BLOCKED")
+            raise _ForwardEngineError("LEASE_CONFLICT")
         prepared = {
             "_id": sealed_plan.operation_id,
             **exact_binding,
