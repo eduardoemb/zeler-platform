@@ -939,9 +939,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--date-to", required=True, help="Inclusive end date (YYYY-MM-DD).")
     parser.add_argument(
         "--read-model",
-        choices=("all", "devoluciones"),
+        choices=("all", "devoluciones", "stock_time_metrics"),
         default="all",
-        help="Use the focused claims-first DEVOLUCIONES path when set to devoluciones.",
+        help="Select a focused read-model path; stock_time_metrics is dry-run only.",
     )
     parser.add_argument(
         "--max-orders",
@@ -1046,6 +1046,8 @@ def validate_reconciliation_safety(args: argparse.Namespace) -> None:
         raise SystemExit("seller-id is required")
     if not bool(args.confirm_approved_runtime):
         raise SystemExit("--confirm-approved-runtime is required")
+    if str(args.read_model) == "stock_time_metrics" and not bool(args.dry_run):
+        raise SystemExit("stock_time_metrics is dry-run only until deterministic rollback exists")
     if not bool(args.dry_run) and not bool(args.confirm_production_write):
         raise SystemExit("--confirm-production-write is required with --write")
     if not bool(args.dry_run) and bool(args.repair_observed_pause_basis) and args.max_items is None:
@@ -3358,6 +3360,58 @@ async def _chunk_failure_summary(
     )
 
 
+async def run_focused_stock_time_metrics_plan(
+    *, db: Any, request: ReconciliationRequest
+) -> ReconciliationSummary:
+    from zeler_sheets.source_gated_read_model_writers import plan_stock_time_metrics_reconcile
+
+    plan = await plan_stock_time_metrics_reconcile(
+        db=db,
+        seller_id=request.seller_id,
+        date_from=request.date_range.start,
+        date_to=request.date_range.end_exclusive,
+    )
+    issue_counts = {
+        "exact_interval_stale_rows": plan.stale_exact_count,
+        "exact_interval_extra_rows": plan.extra_exact_count,
+        "validator_count_mismatch": abs(plan.source_inventory_count - plan.validator_count),
+    }
+    issues = tuple(
+        ReadModelIssue(
+            read_model="stock_time_metrics",
+            code=code,
+            message="focused stock-time plan blocked",
+            count=issue_counts.get(code) or None,
+        )
+        for code in plan.issue_codes
+    )
+    return ReconciliationSummary(
+        seller_id=request.seller_id,
+        date_from=request.date_range.date_from,
+        date_to=request.date_range.date_to,
+        dry_run=True,
+        approved_runtime=request.approved_runtime,
+        write_enabled=False,
+        aggregates=(
+            ReadModelAggregate(
+                read_model="stock_time_metrics",
+                expected_count=plan.source_inventory_count,
+                persisted_count=plan.persisted_exact_count,
+                missing_count=plan.missing_exact_count,
+                complete_count=plan.validator_count,
+                truth_mode="legacy_imported" if plan.ready else "unavailable",
+                error_count=len(plan.issue_codes),
+                issues=issues,
+            ),
+        ),
+        mandatory_source_gate=MandatorySourceGate(
+            read_model="stock_time_metrics",
+            authoritative=plan.ready,
+            issue_codes=plan.issue_codes,
+        ),
+    )
+
+
 async def _run_cli(args: argparse.Namespace) -> ReconciliationSummary:
     request = build_reconciliation_request(args)
     handle = create_runtime_db()
@@ -3365,6 +3419,8 @@ async def _run_cli(args: argparse.Namespace) -> ReconciliationSummary:
         db = handle.db if isinstance(handle, RuntimeDatabase) else handle
         if request.read_model == "devoluciones":
             return await run_focused_devoluciones_reconciliation(db=db, request=request)
+        if request.read_model == "stock_time_metrics":
+            return await run_focused_stock_time_metrics_plan(db=db, request=request)
         expected = await collect_expected_read_model_counts(db=db, request=request)
         summary = await collect_reconciliation_counts(db=db, request=request, expected=expected)
         if request.dry_run:

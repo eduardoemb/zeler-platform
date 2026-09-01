@@ -4749,6 +4749,66 @@ def test_mandatory_claims_source_gate_accepts_complete_authoritative_proof() -> 
     }
 
 
+def test_stock_time_metrics_cli_is_local_focused_sanitized_and_dry_run_only(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    command = shlex.split(
+        "--seller-id 82453304 --date-from 2026-06-01 --date-to 2026-06-04 "
+        "--read-model stock_time_metrics --confirm-approved-runtime"
+    )
+    args = build_arg_parser().parse_args(command)
+    assert build_reconciliation_request(args).read_model == "stock_time_metrics"
+    args.dry_run, args.confirm_production_write = False, True
+    with pytest.raises(SystemExit, match="deterministic rollback"):
+        build_reconciliation_request(args)
+
+    db = FakeAsyncDb(
+        {
+            "meli_accounts": [
+                {"_id": "account-1", "seller_id": "82453304", "account_id": 10, "site_id": "MLM"}
+            ],
+            "item_history_projection": [
+                {
+                    "_id": "projection-1",
+                    "account_id": 10,
+                    "item_id": "MLM-SENSITIVE-1",
+                    "variations_history": {
+                        "SKU-SENSITIVE": [{"status2": "active", "changed_at": _dt(1)}]
+                    },
+                }
+            ],
+        }
+    )
+
+    async def forbidden(**_: Any) -> Any:
+        raise AssertionError("broad, leased, or remote path was called")
+
+    monkeypatch.setattr(reconcile_operation_module, "create_runtime_db", lambda: db)
+    for name in (
+        "collect_expected_read_model_counts",
+        "acquire_devoluciones_operation",
+        "create_runtime_historical_meli_gateways",
+    ):
+        monkeypatch.setattr(reconcile_operation_module, name, forbidden)
+
+    result = reconcile_operation_module.main(command)
+    output = json.loads(capsys.readouterr().out)
+    aggregate = output["aggregates"][0]
+
+    assert result == 0
+    assert aggregate["read_model"] == "stock_time_metrics"
+    assert tuple(
+        aggregate[key]
+        for key in ("expected_count", "persisted_count", "missing_count", "complete_count")
+    ) == (1, 0, 1, 1)
+    assert output["mandatory_source_gate"]["authoritative"] is True
+    serialized = json.dumps(output, sort_keys=True)
+    assert all(
+        value not in serialized
+        for value in ("82453304", "MLM-SENSITIVE-1", "SKU-SENSITIVE", "account-1")
+    )
+
+
 def test_focused_devoluciones_request_is_explicit_and_caps_concurrency() -> None:
     args = build_arg_parser().parse_args(
         [
@@ -6606,6 +6666,15 @@ def test_reconciliation_runbook_documents_flags_stop_criteria_and_runtime_bounda
         "unexpected count delta",
         "index anomaly",
         "no secrets, tokens, raw IDs, raw payloads, buyer/address PII, or raw env values",
+        "--read-model stock_time_metrics",
+        "item_history_projection",
+        "seller/account ownership",
+        "MLM",
+        "exact half-open UTC interval",
+        "dry-run-only",
+        "deterministic data-level rollback",
+        "does not call Mercado Libre",
+        "does not acquire the DEVOLUCIONES lease",
     ):
         assert required in content
 

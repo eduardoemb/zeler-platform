@@ -38,6 +38,28 @@ sudo docker compose --file /opt/zeler-platform/docker-compose.yml \
   --emit-phase2-contract
 ```
 
+### Focused stock-time plan (ZAI-80 first work unit)
+
+`--read-model stock_time_metrics` selects a local, dry-run-only plan for one seller and the
+exact half-open UTC interval derived from the existing inclusive `--date-from` / `--date-to`
+date semantics. It reads only `meli_accounts`, `item_history_projection`, and exact-interval
+`sheets_stock_time_metrics` rows. It does not call Mercado Libre, process catalog metrics or
+withdrawals, run formulas, or execute broad reconciliation, and it does not acquire the DEVOLUCIONES lease.
+
+Command shape: `python -m infra.operations.zelerdata_read_model_reconcile --seller-id <seller> --date-from <YYYY-MM-DD> --date-to <YYYY-MM-DD> --read-model stock_time_metrics --dry-run --confirm-approved-runtime`.
+
+The plan fails closed on missing or incomplete history, missing or ambiguous seller/account ownership,
+non-MLM account or item evidence, generated-document validator/count mismatch, and stale or extra rows
+for the exact interval. Output contains aggregate counters and bounded issue codes only; it contains no
+seller, item, SKU, account, source-row, payload, or credential values.
+
+This first work unit is intentionally dry-run-only. `--write` is rejected even with production
+confirmation because deterministic data-level rollback/compensation cannot yet be guaranteed
+within the current architecture. Therefore it publishes no freshness marker and has no data
+rollback action; abort means stop after the plan. A later write unit must capture a restorable
+preimage, define compensation for insert/update/delete effects, perform complete exact readback,
+and only then publish the exact marker. Formula execution remains separately prohibited.
+
 Observed pause-basis repair dry-run:
 
 ```bash

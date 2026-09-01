@@ -9,6 +9,7 @@ import pytest
 from test_event_persistence import FakeDb
 
 from zeler_sheets.source_gated_read_model_writers import (
+    plan_stock_time_metrics_reconcile,
     run_source_gated_read_model_import,
 )
 
@@ -871,3 +872,85 @@ async def test_missing_stock_and_catalog_history_count_as_incomplete_source_inve
     assert summary.coverage_complete["catalog_time_metrics"] is False
     assert summary.coverage_basis["stock_time_metrics"] == "observed_only"
     assert summary.coverage_basis["catalog_time_metrics"] == "observed_only"
+
+
+def _stock_plan_db(
+    *,
+    account_count: int = 1,
+    site_id: str = "MLM",
+    history: bool = True,
+    item_id: str = "MLM1",
+    exact_rows: list[dict[str, Any]] | None = None,
+) -> FakeDb:
+    projection: dict[str, Any] = {
+        "_id": "projection-1",
+        "seller_id": "seller-1",
+        "item_id": item_id,
+    }
+    if history:
+        projection["variations_history"] = {
+            "SKU1": [{"status2": "active", "changed_at": datetime(2026, 5, 31, tzinfo=UTC)}]
+        }
+    return _db_with(
+        {
+            "meli_accounts": [
+                {"_id": f"account-{index}", "seller_id": "seller-1", "site_id": site_id}
+                for index in range(account_count)
+            ],
+            "item_history_projection": [projection],
+            "sheets_stock_time_metrics": exact_rows or [],
+        }
+    )
+
+
+@pytest.mark.asyncio
+async def test_stock_time_reconcile_plan_is_local_and_fails_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from zeler_sheets import source_gated_read_model_writers as writers
+
+    db = _stock_plan_db()
+    plan = await plan_stock_time_metrics_reconcile(
+        db=db, seller_id="seller-1", date_from=RANGE_START, date_to=RANGE_END
+    )
+    assert plan.ready and plan.issue_codes == ()
+    assert plan.source_inventory_count == plan.validator_count == 1
+    assert all(
+        not db[name].replace_calls
+        for name in (
+            "sheets_stock_time_metrics",
+            "sheets_catalog_time_metrics",
+            "sheets_full_withdrawals",
+        )
+    )
+
+    for blocked_db, issue_code in (
+        (_stock_plan_db(account_count=0), "seller_account_missing"),
+        (_stock_plan_db(account_count=2), "seller_account_ambiguous"),
+        (_stock_plan_db(site_id="MLA", item_id="MLA1"), "non_mlm_evidence"),
+        (_stock_plan_db(history=False), "source_history_incomplete"),
+    ):
+        blocked = await plan_stock_time_metrics_reconcile(
+            db=blocked_db, seller_id="seller-1", date_from=RANGE_START, date_to=RANGE_END
+        )
+        assert not blocked.ready and issue_code in blocked.issue_codes
+        assert blocked_db["sheets_stock_time_metrics"].replace_calls == []
+
+    exact = {"seller_id": "seller-1", "date_from": RANGE_START, "date_to": RANGE_END}
+    drift_db = _stock_plan_db(
+        exact_rows=[
+            {"_id": "seller-1:MLM1:SKU1:2026-06-01:2026-06-15", **exact},
+            {"_id": "extra-exact-row", **exact},
+        ]
+    )
+    monkeypatch.setattr(writers, "_stock_time_document_is_valid", lambda *args, **kwargs: False)
+    drift = await plan_stock_time_metrics_reconcile(
+        db=drift_db, seller_id="seller-1", date_from=RANGE_START, date_to=RANGE_END
+    )
+    assert drift.stale_exact_count == drift.extra_exact_count == 1
+    assert set(drift.issue_codes) == {
+        "exact_interval_extra_rows",
+        "exact_interval_stale_rows",
+        "validator_count_mismatch",
+    }
+    assert drift_db["sheets_stock_time_metrics"].replace_calls == []
