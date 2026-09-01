@@ -387,13 +387,16 @@ class FakeClient:
         return result()
 
 
+class FakeUpdateResult:
+    def __init__(self, matched_count: int) -> None:
+        self.matched_count = matched_count
+
+
 class FakeCollection:
     def __init__(self, db: FakeDB) -> None:
         self.db = db
 
     async def find_one(self, query: dict[str, Any], **options: Any) -> Any:
-        if self.db.fail_body:
-            raise RuntimeError("body failed")
         self.db.reads.append((query, options))
         for row in (self.db.staged or {}).values():
             if self._matches(row, query):
@@ -425,27 +428,46 @@ class FakeCollection:
 
     async def update_one(
         self, query: dict[str, Any], pipeline: list[dict[str, Any]], **options: Any
-    ) -> None:
+    ) -> FakeUpdateResult:
         self.db.writes.append((query, pipeline, options))
-        replacement = pipeline[0]["$replaceWith"]
-        row = self._evaluate(replacement)
         assert self.db.staged is not None
-        self.db.staged[row["_id"]] = row
+        if self.db.pre_match_mutation is not None:
+            mutation, self.db.pre_match_mutation = self.db.pre_match_mutation, None
+            raced = self.db.rows[query["_id"]]
+            raced.update(mutation)
+            self.db.staged[query["_id"]] = deepcopy(raced)
+        matched = next((row for row in self.db.staged.values() if self._matches(row, query)), None)
+        if "$replaceWith" in pipeline[0]:
+            if matched is not None or options.get("upsert"):
+                updated = self._evaluate(pipeline[0]["$replaceWith"], matched)
+                self.db.staged[updated["_id"]] = updated
+        elif matched is not None:
+            updated = deepcopy(matched)
+            updated.update(self._evaluate(pipeline[0]["$set"], matched))
+            self.db.staged[updated["_id"]] = updated
+        if self.db.fail_body:
+            raise RuntimeError("body failed")
         if self.db.fail_write:
             raise RuntimeError("write failed")
+        return FakeUpdateResult(int(matched is not None))
 
-    def _evaluate(self, value: Any) -> Any:
+    def _evaluate(self, value: Any, row: dict[str, Any] | None) -> Any:
         if value == "$$NOW":
             return self.db.server_now
+        if isinstance(value, str) and value.startswith("$"):
+            assert row is not None
+            return row[value[1:]]
         if isinstance(value, list):
-            return [self._evaluate(item) for item in value]
+            return [self._evaluate(item, row) for item in value]
         if not isinstance(value, dict):
             return value
+        if "$add" in value:
+            return sum(self._evaluate(item, row) for item in value["$add"])
         if "$dateAdd" in value:
             spec = value["$dateAdd"]
             assert spec["unit"] == "second"
-            return self._evaluate(spec["startDate"]) + timedelta(seconds=spec["amount"])
-        return {key: self._evaluate(item) for key, item in value.items()}
+            return self._evaluate(spec["startDate"], row) + timedelta(seconds=spec["amount"])
+        return {key: self._evaluate(item, row) for key, item in value.items()}
 
 
 class FakeDB:
@@ -460,6 +482,7 @@ class FakeDB:
         self.fail_body = failures.get("fail_body", False)
         self.fail_write = failures.get("fail_write", False)
         self.fail_commit = failures.get("fail_commit", False)
+        self.pre_match_mutation: dict[str, Any] | None = None
         self.client: Any = FakeClient(self)
 
     def __getitem__(self, name: str) -> FakeCollection:
@@ -604,6 +627,9 @@ def persisted_operation(
         "planned_preimage_count": counts.planned_preimage_count,
         "created_at": now - timedelta(minutes=2),
         "updated_at": now,
+        "committed_at": None,
+        "terminal_at": None,
+        "error_code": None,
         "schema_version": 1,
     }
 
@@ -651,18 +677,96 @@ async def test_other_live_prepared_is_lease_conflict_with_server_predicates() ->
     ("persisted_token", "requested_token", "delta"),
     [("f" * 32, "f" * 32, timedelta(0)), ("f" * 32, "0" * 32, timedelta(seconds=-1))],
 )
-async def test_expired_prepared_either_token_is_takeover_blocked(
+async def test_expired_prepared_either_token_cas_takes_over_exact_row(
     persisted_token: str, requested_token: str, delta: timedelta
 ) -> None:
     db, sealed = FakeDB(), seal()
-    install(
-        db,
-        persisted_operation(sealed, token=persisted_token, lease_until=db.server_now + delta),
+    original = persisted_operation(sealed, token=persisted_token, lease_until=db.server_now + delta)
+    original.update(
+        committed_at=START, terminal_at=START, error_code="stale", preserved={"nested": 1}
     )
-    with pytest.raises(engine._ForwardEngineError, match="TAKEOVER_BLOCKED"):
-        await engine._acquire_forward_operation(db, sealed, requested_token)
-    assert db.reads[-1][0]["$expr"] == {"$lte": ["$lease_until", "$$NOW"]}
-    assert not db.writes
+    install(db, original)
+
+    context = await engine._acquire_forward_operation(db, sealed, requested_token)
+
+    assert context == engine._ForwardOperationContext(
+        sealed.operation_id, "prepared", 4, requested_token, 6, True
+    )
+    query, pipeline, options = db.writes[0]
+    assert query == {
+        "_id": sealed.operation_id,
+        "seller_id": sealed.binding._seller_id,
+        "read_model": "stock_time_metrics",
+        "date_from": sealed.binding.date_from,
+        "date_to": sealed.binding.date_to,
+        "source_fingerprint": sealed.binding.source_fingerprint,
+        "plan_fingerprint": sealed.binding.plan_fingerprint,
+        "planned_insert_count": 2,
+        "planned_update_count": 1,
+        "planned_delete_count": 1,
+        "planned_preimage_count": 4,
+        "state": "prepared",
+        "attempt": 3,
+        "attempt_token": persisted_token,
+        "fence": 5,
+        "$expr": {"$lte": ["$lease_until", "$$NOW"]},
+    }
+    assert pipeline == [
+        {
+            "$set": {
+                "state": "prepared",
+                "attempt": {"$add": ["$attempt", 1]},
+                "attempt_token": requested_token,
+                "fence": {"$add": ["$fence", 1]},
+                "lease_acquired_at": "$$NOW",
+                "heartbeat_at": "$$NOW",
+                "lease_until": {
+                    "$dateAdd": {"startDate": "$$NOW", "unit": "second", "amount": 120}
+                },
+                "updated_at": "$$NOW",
+                "committed_at": None,
+                "terminal_at": None,
+                "error_code": None,
+            }
+        }
+    ]
+    assert options == {"session": options["session"]}
+    expected = deepcopy(original)
+    expected.update(
+        state="prepared",
+        attempt=4,
+        attempt_token=requested_token,
+        fence=6,
+        lease_acquired_at=db.server_now,
+        heartbeat_at=db.server_now,
+        lease_until=db.server_now + timedelta(seconds=120),
+        updated_at=db.server_now,
+        committed_at=None,
+        terminal_at=None,
+        error_code=None,
+    )
+    assert db.rows[sealed.operation_id] == expected
+    assert len(db.writes) == 1
+    assert db.accessed == ["sheets_stock_time_reconciliation_operations"]
+
+
+@pytest.mark.asyncio
+async def test_expired_takeover_race_loser_is_bounded_without_fallback() -> None:
+    db, sealed = FakeDB(), seal()
+    install(db, persisted_operation(sealed, token="1" * 32, lease_until=db.server_now))
+    db.pre_match_mutation = {
+        "attempt": 4,
+        "attempt_token": "2" * 32,
+        "fence": 6,
+        "lease_until": db.server_now + timedelta(seconds=120),
+    }
+
+    with pytest.raises(engine._ForwardEngineError, match="TAKEOVER_CONFLICT"):
+        await engine._acquire_forward_operation(db, sealed, "3" * 32)
+
+    assert len(db.writes) == 1
+    assert len(db.reads) == 3
+    assert db.rows[sealed.operation_id]["attempt_token"] == "2" * 32
 
 
 @pytest.mark.asyncio
@@ -744,11 +848,17 @@ async def test_existing_malformed_schema_precedes_state(field: str, value: Any) 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("failure", ["fail_body", "fail_write", "fail_commit"])
-async def test_acquire_failure_rolls_back_and_never_becomes_success(failure: str) -> None:
-    db = FakeDB(**{failure: True})
+@pytest.mark.parametrize("existing", [False, True], ids=["create", "takeover"])
+async def test_acquire_failure_rolls_back_and_never_becomes_success(
+    failure: str, existing: bool
+) -> None:
+    db, sealed = FakeDB(**{failure: True}), seal()
+    if existing:
+        install(db, persisted_operation(sealed, token="d" * 32, lease_until=db.server_now))
+    original = deepcopy(db.rows)
     with pytest.raises(RuntimeError, match=failure.removeprefix("fail_") + " failed"):
-        await engine._acquire_forward_operation(db, seal(), "e" * 32)
-    assert not db.rows and db.staged is None
+        await engine._acquire_forward_operation(db, sealed, "e" * 32)
+    assert db.rows == original and db.staged is None
 
 
 def test_forward_contract_remains_private_with_bounded_errors() -> None:
