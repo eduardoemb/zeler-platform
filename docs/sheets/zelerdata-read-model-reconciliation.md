@@ -60,6 +60,20 @@ rollback action; abort means stop after the plan. A later write unit must captur
 preimage, define compensation for insert/update/delete effects, perform complete exact readback,
 and only then publish the exact marker. Formula execution remains separately prohibited.
 
+### Stock-time durable operation ledger contract
+
+The additive `sheets_stock_time_reconciliation_operations` validator and indexes define only the
+future durable operation ledger. Each opaque operation binds the private seller scope, exact
+half-open UTC interval, immutable source/plan SHA-256 fingerprints, fenced lease attempt, and
+sanitized planned-action/preimage counts. Operator output must never emit the stored seller scope.
+The contract reserves committed/terminal timestamps for later atomic commit and compensation
+transitions, but stores no preimage payloads.
+
+This slice adds no executable write, rollback, freshness-marker, deploy, or production-readiness
+path. The current `stock_time_metrics --write` rejection remains unchanged. Runtime transaction
+and replica-set capability, preimage persistence, guarded mutation/readback, compensation, marker
+publication, deployment, and approved-runtime verification remain later gates.
+
 Observed pause-basis repair dry-run:
 
 ```bash
