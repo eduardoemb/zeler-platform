@@ -59,6 +59,110 @@ class _BuildResult:
     coverage_complete: bool
 
 
+@dataclass(frozen=True)
+class StockTimeMetricsReconcilePlan:
+    ready: bool
+    source_inventory_count: int
+    validator_count: int
+    persisted_exact_count: int
+    matching_exact_count: int
+    missing_exact_count: int
+    stale_exact_count: int
+    extra_exact_count: int
+    issue_codes: tuple[str, ...]
+
+
+async def plan_stock_time_metrics_reconcile(
+    *, db: Any, seller_id: str, date_from: Any, date_to: Any
+) -> StockTimeMetricsReconcilePlan:
+    """Plan one exact MLM stock-history interval without writes or remote calls."""
+    seller = str(seller_id).strip()
+    interval = _ReadInterval.from_bounds(date_from, date_to)
+    accounts = await _seller_accounts(db, seller_id=seller)
+    issues: set[str] = set()
+    if not accounts:
+        issues.add("seller_account_missing")
+    elif len(accounts) != 1:
+        issues.add("seller_account_ambiguous")
+    if issues:
+        return _stock_time_plan(issue_codes=issues)
+
+    account = accounts[0]
+    account_ids = tuple(
+        dict.fromkeys(
+            value
+            for field_name in ("account_id", "_id", "meli_user_id")
+            if (value := account.get(field_name)) is not None
+        )
+    )
+    if str(account.get("site_id") or "").strip().upper() != "MLM":
+        issues.add("non_mlm_evidence")
+    if await _account_ids_have_other_owner(db, seller_id=seller, account_ids=account_ids):
+        issues.add("seller_account_ambiguous")
+
+    projections = await _seller_scoped_documents(
+        db[ITEM_HISTORY_PROJECTION_COLLECTION],
+        seller_id=seller,
+        account_ids=account_ids,
+        limit=None,
+    )
+    account_keys = {str(value) for value in account_ids}
+    for projection in projections:
+        projection_seller = _str(projection.get("seller_id"))
+        projection_account = _str(projection.get("account_id"))
+        if (projection_seller is not None and projection_seller != seller) or (
+            projection_account is not None and projection_account not in account_keys
+        ):
+            issues.add("seller_account_ambiguous")
+        if not str(_item_id(projection) or "").upper().startswith("MLM"):
+            issues.add("non_mlm_evidence")
+
+    result = _stock_time_metric_documents(seller, projections, interval=interval)
+    if not result.coverage_complete:
+        issues.add("source_history_incomplete")
+    validator_count = sum(
+        _stock_time_document_is_valid(document, interval=interval) for document in result.documents
+    )
+    if (
+        validator_count != len(result.documents)
+        or len(result.documents) != result.source_inventory_count
+    ):
+        issues.add("validator_count_mismatch")
+
+    exact_rows = await _seller_exact_stock_rows(db, seller_id=seller, interval=interval)
+    planned_by_id = {
+        str(document["_id"]): _bson_safe_document(document) for document in result.documents
+    }
+    existing_by_id = {
+        str(document.get("_id")): _bson_safe_document(document) for document in exact_rows
+    }
+    matching = sum(existing_by_id.get(key) == document for key, document in planned_by_id.items())
+    stale = sum(
+        key in existing_by_id and existing_by_id[key] != document
+        for key, document in planned_by_id.items()
+    )
+    extra = len(set(existing_by_id) - set(planned_by_id))
+    if stale:
+        issues.add("exact_interval_stale_rows")
+    if extra:
+        issues.add("exact_interval_extra_rows")
+    return StockTimeMetricsReconcilePlan(
+        ready=not issues,
+        source_inventory_count=result.source_inventory_count,
+        validator_count=validator_count,
+        persisted_exact_count=len(exact_rows),
+        matching_exact_count=matching,
+        missing_exact_count=len(set(planned_by_id) - set(existing_by_id)),
+        stale_exact_count=stale,
+        extra_exact_count=extra,
+        issue_codes=tuple(sorted(issues)),
+    )
+
+
+def _stock_time_plan(*, issue_codes: set[str]) -> StockTimeMetricsReconcilePlan:
+    return StockTimeMetricsReconcilePlan(False, 0, 0, 0, 0, 0, 0, 0, tuple(sorted(issue_codes)))
+
+
 async def run_source_gated_read_model_import(
     *,
     db: Any,
@@ -210,14 +314,62 @@ async def _seller_scoped_documents(
 
 async def _seller_account_ids(db: Any, *, seller_id: str) -> tuple[Any, ...]:
     account_ids: list[Any] = []
-    for seller_key in (seller_id, _int(seller_id)):
-        if seller_key is None:
-            continue
-        for account in await _all(db["meli_accounts"], {"seller_id": seller_key}, limit=None):
-            for field_name in ("account_id", "_id", "meli_user_id"):
-                if (account_id := account.get(field_name)) is not None:
-                    account_ids.append(account_id)
+    for account in await _seller_accounts(db, seller_id=seller_id):
+        for field_name in ("account_id", "_id", "meli_user_id"):
+            if (account_id := account.get(field_name)) is not None:
+                account_ids.append(account_id)
     return tuple(dict.fromkeys(account_ids))
+
+
+async def _seller_accounts(db: Any, *, seller_id: str) -> list[dict[str, Any]]:
+    accounts: list[dict[str, Any]] = []
+    for seller_key in (seller_id, _int(seller_id)):
+        if seller_key is not None:
+            accounts.extend(await _all(db["meli_accounts"], {"seller_id": seller_key}, limit=None))
+    return _dedupe_documents(accounts)
+
+
+async def _account_ids_have_other_owner(
+    db: Any, *, seller_id: str, account_ids: Sequence[Any]
+) -> bool:
+    for account_id in account_ids:
+        for field_name in ("account_id", "_id", "meli_user_id"):
+            for account in await _all(db["meli_accounts"], {field_name: account_id}, limit=None):
+                if _str(account.get("seller_id")) != seller_id:
+                    return True
+    return False
+
+
+async def _seller_exact_stock_rows(
+    db: Any, *, seller_id: str, interval: _ReadInterval
+) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for seller_key in (seller_id, _int(seller_id)):
+        if seller_key is not None:
+            rows.extend(
+                await _all(
+                    db[STOCK_TIME_METRICS_COLLECTION],
+                    {"seller_id": seller_key, "date_from": interval.start, "date_to": interval.end},
+                    limit=None,
+                )
+            )
+    return _dedupe_documents(rows)
+
+
+def _stock_time_document_is_valid(document: Mapping[str, Any], *, interval: _ReadInterval) -> bool:
+    return bool(
+        isinstance(document.get("_id"), str)
+        and isinstance(document.get("seller_id"), str)
+        and str(document.get("item_id") or "").upper().startswith("MLM")
+        and document.get("date_from") == interval.start
+        and document.get("date_to") == interval.end
+        and document.get("source") == LEGACY_HISTORY_IMPORT_SOURCE
+        and document.get("history_basis") == LEGACY_IMPORTED_BASIS
+        and document.get("coverage_basis") == LEGACY_IMPORTED_BASIS
+        and document.get("schema_version") == READ_MODEL_SCHEMA_VERSION
+        and isinstance(document.get("total_hours"), Decimal)
+        and document["total_hours"] > 0
+    )
 
 
 def _dedupe_documents(documents: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
