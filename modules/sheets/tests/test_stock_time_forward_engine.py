@@ -433,14 +433,24 @@ class FakeCollection:
     async def find_one(self, query: dict[str, Any], **options: Any) -> Any:
         self._session(options)
         self.db.reads.append((query, options))
-        for row in self._rows().values():
-            if self._matches(row, query):
-                return deepcopy(row)
-        return None
+        self.db.events.append(f"{self.name}:read")
+        found = next(
+            (deepcopy(row) for row in self._rows().values() if self._matches(row, query)), None
+        )
+        if self.name == "sheets_read_model_freshness":
+            self.db.marker_reads += 1
+            if self.db.marker_reads == 2 and self.db.marker_readback_hook is not None:
+                found = self.db.marker_readback_hook(found)
+        elif self.name == "sheets_stock_time_reconciliation_operations":
+            self.db.operation_reads += 1
+            if self.db.operation_reads == 3 and self.db.operation_readback_hook is not None:
+                found = self.db.operation_readback_hook(found)
+        return deepcopy(found)
 
     def find(self, query: dict[str, Any], **options: Any) -> FakeCursor:
         self._session(options)
         self.db.reads.append((query, options))
+        self.db.events.append(f"{self.name}:read")
         rows = [row for row in self._rows().values() if self._matches(row, query)]
         if self.name == "sheets_stock_time_metrics":
             self.db.metric_reads += 1
@@ -485,6 +495,7 @@ class FakeCollection:
         self._session(options)
         self.db.writes.append((query, pipeline, options))
         self.db.written_collections.append(self.name)
+        self.db.events.append(f"{self.name}:update")
         assert self.db.staged is not None
         if self.db.pre_match_mutation is not None:
             mutation, self.db.pre_match_mutation = self.db.pre_match_mutation, None
@@ -492,19 +503,23 @@ class FakeCollection:
             raced.update(mutation)
             self.db.staged[query["_id"]] = deepcopy(raced)
         matched = next((row for row in self.db.staged.values() if self._matches(row, query)), None)
-        if "$replaceWith" in pipeline[0]:
-            if matched is not None or options.get("upsert"):
-                updated = self._evaluate(pipeline[0]["$replaceWith"], matched)
-                self.db.staged[updated["_id"]] = updated
+        updated = None
+        if "$replaceWith" in pipeline[0] and (matched is not None or options.get("upsert")):
+            updated = self._evaluate(pipeline[0]["$replaceWith"], matched)
         elif matched is not None:
             updated = deepcopy(matched)
             updated.update(self._evaluate(pipeline[0]["$set"], matched))
+        if self.db.operation_result_overrides:
+            return self.db.operation_result_overrides.pop(0)
+        if updated is not None:
             self.db.staged[updated["_id"]] = updated
         if self.db.fail_body:
             raise RuntimeError("body failed")
         if self.db.fail_write:
             raise RuntimeError("write failed")
-        return FakeUpdateResult(int(matched is not None))
+        return FakeUpdateResult(
+            int(matched is not None), int(matched is not None and matched != updated)
+        )
 
     def _metric_race(self) -> None:
         if self.name == "sheets_stock_time_metrics" and self.db.metric_race is not None:
@@ -516,11 +531,17 @@ class FakeCollection:
     ) -> FakeUpdateResult:
         self._session(options)
         self._metric_race()
-        self.db.metric_writes.append(("replace", deepcopy(query), deepcopy(document), options))
+        self.db.events.append(f"{self.name}:replace")
+        if self.name == "sheets_stock_time_metrics":
+            self.db.metric_writes.append(("replace", deepcopy(query), deepcopy(document), options))
+            overrides = self.db.metric_result_overrides
+        else:
+            self.db.marker_writes.append((deepcopy(query), deepcopy(document), options))
+            overrides = self.db.marker_result_overrides
         rows = self._rows()
         matched = next((row for row in rows.values() if self._matches(row, query)), None)
-        if self.db.metric_result_overrides:
-            return self.db.metric_result_overrides.pop(0)
+        if overrides:
+            return overrides.pop(0)
         if matched is not None:
             modified = int(matched != document)
             rows[matched["_id"]] = deepcopy(document)
@@ -535,6 +556,7 @@ class FakeCollection:
     async def delete_one(self, query: dict[str, Any], **options: Any) -> FakeUpdateResult:
         self._session(options)
         self._metric_race()
+        self.db.events.append(f"{self.name}:delete")
         self.db.metric_writes.append(("delete", deepcopy(query), None, options))
         rows = self._rows()
         matched = next((row for row in rows.values() if self._matches(row, query)), None)
@@ -548,6 +570,7 @@ class FakeCollection:
     async def insert_many(self, documents: list[dict[str, Any]], **options: Any) -> None:
         self._session(options)
         self.db.written_collections.append(self.name)
+        self.db.events.append(f"{self.name}:insert")
         rows = self._rows()
         for document in documents:
             identity = (document["operation_id"], document["sequence"])
@@ -606,9 +629,15 @@ class FakeDB:
         self.pre_match_mutation: dict[str, Any] | None = None
         self.metric_race: Any = None
         self.metric_result_overrides: list[FakeUpdateResult] = []
+        self.marker_result_overrides: list[FakeUpdateResult] = []
+        self.operation_result_overrides: list[FakeUpdateResult] = []
         self.metric_writes: list[Any] = []
+        self.marker_writes: list[Any] = []
         self.metric_readback_hook: Any = None
-        self.metric_reads = 0
+        self.marker_readback_hook: Any = None
+        self.operation_readback_hook: Any = None
+        self.metric_reads = self.marker_reads = self.operation_reads = 0
+        self.events: list[str] = []
         self.client: Any = FakeClient(self)
 
     def __getitem__(self, name: str) -> FakeCollection:
@@ -1297,6 +1326,159 @@ async def test_metric_commit_failure_rolls_back_preimages_and_all_metric_writes(
     assert db.collections == original
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("revision", ["absent", "missing", None, "7" * 64])
+async def test_forward_commit_marker_guards_order_and_exact_final_rows(revision: Any) -> None:
+    prior = None if revision == "absent" else marker()
+    if prior is not None and revision != "missing":
+        prior["revision"] = revision
+    db, sealed, context = execution_setup(seal(old_marker=prior))
+    original_operation = deepcopy(db.rows[sealed.operation_id])
+
+    committed = await engine._commit_forward_operation(db, sealed, context)
+
+    assert committed == replace(context, state="committed", owns_lease=False)
+    assert db.collections["sheets_read_model_freshness"] == {
+        sealed._desired_marker["_id"]: sealed._desired_marker
+    }
+    query, document, options = db.marker_writes[0]
+    assert document == sealed._desired_marker
+    assert query == {
+        "_id": sealed._desired_marker["_id"],
+        "seller_id": "82453304",
+        "read_model": "stock_time_metrics",
+        "revision": (
+            {"$exists": False}
+            if revision in {"absent", "missing"}
+            else {"$exists": True, "$eq": revision}
+        ),
+    }
+    assert options.get("upsert") is (revision == "absent")
+    final = db.rows[sealed.operation_id]
+    expected = deepcopy(original_operation)
+    expected.update(
+        state="committed",
+        heartbeat_at=db.server_now,
+        updated_at=db.server_now,
+        committed_at=db.server_now,
+        terminal_at=db.server_now,
+        lease_until=db.server_now,
+        error_code=None,
+    )
+    assert final == expected
+    operation_query, pipeline, _ = db.writes[-1]
+    assert operation_query == {
+        **engine._operation_immutable(sealed),
+        "state": "prepared",
+        "attempt": context.attempt,
+        "attempt_token": context.attempt_token,
+        "fence": context.fence,
+        "$expr": {"$gt": ["$lease_until", "$$NOW"]},
+    }
+    assert pipeline == [
+        {
+            "$set": {
+                "state": "committed",
+                "heartbeat_at": "$$NOW",
+                "updated_at": "$$NOW",
+                "committed_at": "$$NOW",
+                "terminal_at": "$$NOW",
+                "lease_until": "$$NOW",
+                "error_code": None,
+            }
+        }
+    ]
+    assert db.events == [
+        "sheets_stock_time_reconciliation_operations:read",
+        "sheets_stock_time_reconciliation_operations:read",
+        "sheets_stock_time_metrics:read",
+        "sheets_read_model_freshness:read",
+        "sheets_stock_time_reconciliation_preimages:insert",
+        "sheets_stock_time_metrics:delete",
+        "sheets_stock_time_metrics:replace",
+        "sheets_stock_time_metrics:replace",
+        "sheets_stock_time_metrics:replace",
+        "sheets_stock_time_metrics:replace",
+        "sheets_stock_time_metrics:read",
+        "sheets_read_model_freshness:replace",
+        "sheets_read_model_freshness:read",
+        "sheets_stock_time_reconciliation_operations:update",
+        "sheets_stock_time_reconciliation_operations:read",
+    ]
+    assert len(db.transaction_options) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["insert-result", "replace-result", "readback"])
+async def test_marker_failure_is_bounded_and_rolls_back(mode: str) -> None:
+    sealed = seal(old_marker=None if mode == "insert-result" else marker())
+    db, sealed, context = execution_setup(sealed)
+    original = deepcopy(db.collections)
+    if mode.endswith("result"):
+        db.marker_result_overrides = [FakeUpdateResult(matched_count=1)]
+        code = "MARKER_CONFLICT"
+    else:
+        db.marker_readback_hook = lambda row: {**row, "state": "stale"}
+        code = "MARKER_READBACK_MISMATCH"
+    with pytest.raises(engine._ForwardEngineError, match=code):
+        await engine._commit_forward_operation(db, sealed, context)
+    assert db.collections == original
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("result", [FakeUpdateResult(), FakeUpdateResult(matched_count=1)])
+async def test_commit_cas_requires_exact_fence_and_live_lease(result: FakeUpdateResult) -> None:
+    db, sealed, context = execution_setup()
+    original = deepcopy(db.collections)
+    db.operation_result_overrides = [result]
+    with pytest.raises(engine._ForwardEngineError, match="COMMIT_CONFLICT"):
+        await engine._commit_forward_operation(db, sealed, context)
+    query = db.writes[-1][0]
+    assert query["fence"] == context.fence
+    assert query["attempt_token"] == context.attempt_token
+    assert query["$expr"] == {"$gt": ["$lease_until", "$$NOW"]}
+    assert db.collections == original
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["missing", "malformed", "timestamp"])
+async def test_committed_operation_readback_must_be_exact(mode: str) -> None:
+    db, sealed, context = execution_setup()
+    original = deepcopy(db.collections)
+
+    def corrupt(row: Any) -> Any:
+        if mode == "missing":
+            return None
+        if mode == "malformed":
+            return {**row, "attempt": 0}
+        return {**row, "terminal_at": START}
+
+    db.operation_readback_hook = corrupt
+    with pytest.raises(engine._ForwardEngineError, match="COMMIT_READBACK_MISMATCH"):
+        await engine._commit_forward_operation(db, sealed, context)
+    assert db.collections == original
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("phase", ["preimages", "metrics", "marker", "operation", "commit"])
+async def test_each_forward_commit_phase_failure_rolls_back_every_collection(phase: str) -> None:
+    db, sealed, context = execution_setup()
+    original = deepcopy(db.collections)
+    if phase == "preimages":
+        db.fail_write = True
+    elif phase == "metrics":
+        db.metric_result_overrides = [FakeUpdateResult()]
+    elif phase == "marker":
+        db.marker_result_overrides = [FakeUpdateResult()]
+    elif phase == "operation":
+        db.operation_result_overrides = [FakeUpdateResult()]
+    else:
+        db.fail_commit = True
+    with pytest.raises((RuntimeError, engine._ForwardEngineError)):
+        await engine._commit_forward_operation(db, sealed, context)
+    assert db.collections == original
+
+
 def test_forward_contract_remains_private_with_bounded_errors() -> None:
     assert not hasattr(zeler_sheets, "_seal_forward_plan")
     assert not hasattr(zeler_sheets, "_ForwardMutation")
@@ -1305,5 +1487,6 @@ def test_forward_contract_remains_private_with_bounded_errors() -> None:
     assert not hasattr(zeler_sheets, "_ForwardOperationContext")
     assert not hasattr(zeler_sheets, "_persist_forward_preimages")
     assert not hasattr(zeler_sheets, "_persist_forward_metrics")
+    assert not hasattr(zeler_sheets, "_commit_forward_operation")
     with pytest.raises(ValueError, match="unknown forward-engine error code"):
         engine._ForwardEngineError("NOT_A_SEALING_ERROR")
