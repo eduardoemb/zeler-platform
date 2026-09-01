@@ -4,7 +4,12 @@ from collections.abc import AsyncIterator, Mapping, Sequence
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
+from hashlib import sha256
+from types import MappingProxyType
 from typing import Any, cast
+
+import bson
+from bson import json_util
 
 ITEM_HISTORY_PROJECTION_COLLECTION = "item_history_projection"
 CATALOG_CHANGE_EVENTS_COLLECTION = "meli_item_events"
@@ -70,6 +75,184 @@ class StockTimeMetricsReconcilePlan:
     stale_exact_count: int
     extra_exact_count: int
     issue_codes: tuple[str, ...]
+
+
+# MongoDB transactions are limited to 16 MiB; the combined BSON/JSON estimate stays
+# at half that ceiling so later ledger and transaction overhead cannot consume it.
+_STOCK_TIME_MAX_ACTION_ROWS = 1_000
+_STOCK_TIME_MAX_TRANSACTION_PAYLOAD_BYTES = 8 * 1024 * 1024
+
+
+class _StockTimeActionPlanError(ValueError):
+    def __init__(self, code: str) -> None:
+        self.code = code
+        super().__init__(code)
+
+
+@dataclass(frozen=True)
+class _StockTimeAction:
+    action: str
+    _target_id: str = field(repr=False)
+    _document: Mapping[str, Any] | None = field(repr=False)
+    _preimage: Mapping[str, Any] | None = field(repr=False)
+
+
+@dataclass(frozen=True)
+class _StockTimeActionPlan:
+    actions: tuple[_StockTimeAction, ...]
+    source_fingerprint: str
+    preimage_fingerprint: str
+    plan_fingerprint: str
+    action_count: int
+    insert_count: int
+    replace_count: int
+    delete_count: int
+    no_op_count: int
+    preimage_count: int
+    estimated_bson_bytes: int
+    estimated_json_bytes: int
+    estimated_transaction_payload_bytes: int
+
+
+def _plan_stock_time_actions(
+    *,
+    source_inventory: Sequence[Mapping[str, Any]],
+    planned_documents: Sequence[Mapping[str, Any]],
+    existing_target_rows: Sequence[Mapping[str, Any]],
+) -> _StockTimeActionPlan:
+    """Build a deterministic, private action plan without I/O or mutation."""
+    source_parts = sorted(_canonical_bson_bytes(row) for row in source_inventory)
+    planned = _indexed_canonical_documents(planned_documents, "DUPLICATE_PLANNED_ID")
+    existing = _indexed_canonical_documents(existing_target_rows, "DUPLICATE_EXISTING_ID")
+    target_ids = sorted(set(planned) | set(existing))
+    if len(target_ids) > _STOCK_TIME_MAX_ACTION_ROWS:
+        raise _StockTimeActionPlanError("ACTION_ROW_LIMIT_EXCEEDED")
+
+    actions: list[_StockTimeAction] = []
+    action_parts: list[bytes] = []
+    counts = {"insert": 0, "replace": 0, "delete": 0, "no-op": 0}
+    estimated_bson_bytes = 0
+    estimated_json_bytes = 0
+    for target_id in target_ids:
+        document = planned.get(target_id)
+        preimage = existing.get(target_id)
+        if document is None:
+            action = "delete"
+        elif preimage is None:
+            action = "insert"
+        elif _business_document_bytes(document) == _business_document_bytes(preimage):
+            action = "no-op"
+        else:
+            action = "replace"
+        payload = {
+            "action": action,
+            "target_id": target_id,
+            "document": document,
+            "preimage": preimage,
+        }
+        part = _canonical_bson_bytes(payload)
+        action_parts.append(part)
+        estimated_bson_bytes += len(part)
+        estimated_json_bytes += len(
+            json_util.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        )
+        counts[action] += 1
+        actions.append(
+            _StockTimeAction(
+                action=action,
+                _target_id=target_id,
+                _document=_deep_freeze(document),
+                _preimage=_deep_freeze(preimage),
+            )
+        )
+
+    estimated_payload = estimated_bson_bytes + estimated_json_bytes
+    if estimated_payload > _STOCK_TIME_MAX_TRANSACTION_PAYLOAD_BYTES:
+        raise _StockTimeActionPlanError("PAYLOAD_LIMIT_EXCEEDED")
+    return _StockTimeActionPlan(
+        actions=tuple(actions),
+        source_fingerprint=_fingerprint(source_parts),
+        preimage_fingerprint=_fingerprint(
+            [_canonical_bson_bytes(existing[target_id]) for target_id in sorted(existing)]
+        ),
+        plan_fingerprint=_fingerprint(action_parts),
+        action_count=len(actions),
+        insert_count=counts["insert"],
+        replace_count=counts["replace"],
+        delete_count=counts["delete"],
+        no_op_count=counts["no-op"],
+        preimage_count=sum(action._preimage is not None for action in actions),
+        estimated_bson_bytes=estimated_bson_bytes,
+        estimated_json_bytes=estimated_json_bytes,
+        estimated_transaction_payload_bytes=estimated_payload,
+    )
+
+
+def _indexed_canonical_documents(
+    documents: Sequence[Mapping[str, Any]], duplicate_code: str
+) -> dict[str, dict[str, Any]]:
+    indexed: dict[str, dict[str, Any]] = {}
+    for document in documents:
+        if not isinstance(document, Mapping):
+            raise _StockTimeActionPlanError("MALFORMED_DOCUMENT")
+        target_id = document.get("_id")
+        if (
+            not isinstance(target_id, str)
+            or not target_id.strip()
+            or target_id != target_id.strip()
+        ):
+            raise _StockTimeActionPlanError("MALFORMED_TARGET_ID")
+        if target_id in indexed:
+            raise _StockTimeActionPlanError(duplicate_code)
+        indexed[target_id] = _canonical_bson_document(document)
+    return indexed
+
+
+def _canonical_bson_document(document: Mapping[str, Any]) -> dict[str, Any]:
+    try:
+        safe = _bson_safe_document(document)
+        return cast("dict[str, Any]", _canonical_bson_value(safe))
+    except (TypeError, ValueError, OverflowError, bson.errors.InvalidDocument) as exc:
+        raise _StockTimeActionPlanError("INPUT_NOT_BSON_SAFE") from exc
+
+
+def _canonical_bson_value(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        if any(not isinstance(key, str) for key in value):
+            raise TypeError("BSON document keys must be strings")
+        return {key: _canonical_bson_value(value[key]) for key in sorted(value)}
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+        return [_canonical_bson_value(item) for item in value]
+    return _utc(value) if isinstance(value, datetime) else value
+
+
+def _canonical_bson_bytes(document: Mapping[str, Any]) -> bytes:
+    try:
+        return bson.encode(_canonical_bson_document(document))
+    except (TypeError, ValueError, OverflowError, bson.errors.InvalidDocument) as exc:
+        raise _StockTimeActionPlanError("INPUT_NOT_BSON_SAFE") from exc
+
+
+def _business_document_bytes(document: Mapping[str, Any]) -> bytes:
+    return _canonical_bson_bytes(
+        {key: value for key, value in document.items() if key != "revision"}
+    )
+
+
+def _fingerprint(parts: Sequence[bytes]) -> str:
+    digest = sha256()
+    for part in parts:
+        digest.update(len(part).to_bytes(8, "big"))
+        digest.update(part)
+    return digest.hexdigest()
+
+
+def _deep_freeze(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return MappingProxyType({key: _deep_freeze(item) for key, item in value.items()})
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+        return tuple(_deep_freeze(item) for item in value)
+    return value
 
 
 async def plan_stock_time_metrics_reconcile(

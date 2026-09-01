@@ -954,3 +954,190 @@ async def test_stock_time_reconcile_plan_is_local_and_fails_closed(
         "validator_count_mismatch",
     }
     assert drift_db["sheets_stock_time_metrics"].replace_calls == []
+
+
+def _action_document(target_id: str, *, title: str) -> dict[str, Any]:
+    return {
+        "_id": target_id,
+        "seller_id": "seller-1",
+        "title": title,
+        "date_from": RANGE_START,
+        "total_hours": Decimal("336.0000"),
+    }
+
+
+def test_stock_time_action_planner_classifies_and_orders_every_action() -> None:
+    from zeler_sheets import source_gated_read_model_writers as writers
+
+    planned = [
+        _action_document("target-replace", title="new"),
+        _action_document("target-no-op", title="same"),
+        _action_document("target-insert", title="new"),
+    ]
+    existing = [
+        {**_action_document("target-delete", title="old"), "revision": "d" * 64},
+        {**_action_document("target-no-op", title="same"), "revision": "n" * 64},
+        {**_action_document("target-replace", title="old"), "revision": "r" * 64},
+    ]
+
+    plan = writers._plan_stock_time_actions(
+        source_inventory=[{"_id": "source-1", "at": RANGE_START, "value": Decimal("1.00")}],
+        planned_documents=planned,
+        existing_target_rows=existing,
+    )
+
+    assert [(action._target_id, action.action) for action in plan.actions] == [
+        ("target-delete", "delete"),
+        ("target-insert", "insert"),
+        ("target-no-op", "no-op"),
+        ("target-replace", "replace"),
+    ]
+    assert (
+        plan.insert_count,
+        plan.replace_count,
+        plan.delete_count,
+        plan.no_op_count,
+        plan.preimage_count,
+    ) == (1, 1, 1, 1, 3)
+    assert plan.action_count == 4
+    assert plan.estimated_bson_bytes > 0
+    assert plan.estimated_json_bytes > 0
+    assert plan.estimated_transaction_payload_bytes == (
+        plan.estimated_bson_bytes + plan.estimated_json_bytes
+    )
+    no_op = plan.actions[2]
+    assert no_op._document["title"] == "same"
+    assert no_op._preimage["revision"] == "n" * 64
+    with pytest.raises(TypeError):
+        no_op._document["title"] = "mutated"
+
+
+def test_stock_time_action_planner_insert_only_has_no_preimage() -> None:
+    from zeler_sheets import source_gated_read_model_writers as writers
+
+    plan = writers._plan_stock_time_actions(
+        source_inventory=[],
+        planned_documents=[_action_document("target-insert", title="new")],
+        existing_target_rows=[],
+    )
+
+    assert plan.insert_count == 1
+    assert plan.preimage_count == 0
+
+
+def test_stock_time_action_planner_no_op_only_has_one_preimage() -> None:
+    from zeler_sheets import source_gated_read_model_writers as writers
+
+    document = _action_document("target-no-op", title="same")
+    plan = writers._plan_stock_time_actions(
+        source_inventory=[],
+        planned_documents=[document],
+        existing_target_rows=[document],
+    )
+
+    assert plan.no_op_count == 1
+    assert plan.preimage_count == 1
+
+
+def test_stock_time_action_planner_fingerprints_are_permutation_stable_and_material() -> None:
+    from zeler_sheets import source_gated_read_model_writers as writers
+
+    source = [
+        {"_id": "source-b", "at": RANGE_END, "value": Decimal("2.50")},
+        {"_id": "source-a", "at": RANGE_START, "value": Decimal("1.00")},
+    ]
+    planned = [
+        _action_document("target-b", title="same"),
+        _action_document("target-a", title="new"),
+    ]
+    existing = [
+        {**_action_document("target-b", title="same"), "revision": "b" * 64},
+        _action_document("target-c", title="old"),
+    ]
+    kwargs = {
+        "source_inventory": source,
+        "planned_documents": planned,
+        "existing_target_rows": existing,
+    }
+
+    first = writers._plan_stock_time_actions(**kwargs)
+    permuted = writers._plan_stock_time_actions(
+        source_inventory=list(reversed(source)),
+        planned_documents=list(reversed(planned)),
+        existing_target_rows=list(reversed(existing)),
+    )
+    assert first == permuted
+    for fingerprint in (
+        first.source_fingerprint,
+        first.preimage_fingerprint,
+        first.plan_fingerprint,
+    ):
+        assert len(fingerprint) == 64
+        assert fingerprint == fingerprint.lower()
+
+    changed_source = writers._plan_stock_time_actions(
+        **{**kwargs, "source_inventory": [{**source[0], "value": Decimal("2.51")}, source[1]]}
+    )
+    assert changed_source.source_fingerprint != first.source_fingerprint
+    changed_target = writers._plan_stock_time_actions(
+        **{
+            **kwargs,
+            "existing_target_rows": [
+                {**existing[0], "title": "drifted"},
+                existing[1],
+            ],
+        }
+    )
+    assert changed_target.preimage_fingerprint != first.preimage_fingerprint
+    assert changed_target.plan_fingerprint != first.plan_fingerprint
+
+
+@pytest.mark.parametrize("bucket", ["planned_documents", "existing_target_rows"])
+def test_stock_time_action_planner_rejects_duplicate_and_malformed_target_ids(
+    bucket: str,
+) -> None:
+    from zeler_sheets import source_gated_read_model_writers as writers
+
+    duplicate = [
+        _action_document("duplicate", title="one"),
+        _action_document("duplicate", title="two"),
+    ]
+    kwargs: dict[str, Any] = {
+        "source_inventory": [],
+        "planned_documents": [],
+        "existing_target_rows": [],
+    }
+    kwargs[bucket] = duplicate
+    expected_code = (
+        "DUPLICATE_PLANNED_ID" if bucket == "planned_documents" else "DUPLICATE_EXISTING_ID"
+    )
+    with pytest.raises(writers._StockTimeActionPlanError, match=f"^{expected_code}$") as error:
+        writers._plan_stock_time_actions(**kwargs)
+    assert error.value.code == expected_code
+
+    kwargs[bucket] = [{"_id": " ", "title": "private"}]
+    with pytest.raises(writers._StockTimeActionPlanError, match="^MALFORMED_TARGET_ID$"):
+        writers._plan_stock_time_actions(**kwargs)
+
+
+def test_stock_time_action_planner_fails_closed_on_row_and_payload_budgets(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from zeler_sheets import source_gated_read_model_writers as writers
+
+    kwargs = {
+        "source_inventory": [],
+        "planned_documents": [
+            _action_document("target-a", title="a"),
+            _action_document("target-b", title="b"),
+        ],
+        "existing_target_rows": [],
+    }
+    monkeypatch.setattr(writers, "_STOCK_TIME_MAX_ACTION_ROWS", 1)
+    with pytest.raises(writers._StockTimeActionPlanError, match="^ACTION_ROW_LIMIT_EXCEEDED$"):
+        writers._plan_stock_time_actions(**kwargs)
+
+    monkeypatch.setattr(writers, "_STOCK_TIME_MAX_ACTION_ROWS", 2)
+    monkeypatch.setattr(writers, "_STOCK_TIME_MAX_TRANSACTION_PAYLOAD_BYTES", 1)
+    with pytest.raises(writers._StockTimeActionPlanError, match="^PAYLOAD_LIMIT_EXCEEDED$"):
+        writers._plan_stock_time_actions(**kwargs)
