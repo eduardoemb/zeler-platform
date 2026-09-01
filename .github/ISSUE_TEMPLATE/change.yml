@@ -1,0 +1,51 @@
+name: Cambio propuesto
+description: Propón un cambio con alcance, validación y reversión claros.
+title: "[Cambio]: "
+labels: []
+body:
+  - type: textarea
+    id: problema-resultado
+    attributes:
+      label: Problema y resultado esperado
+      description: Describe el problema, a quién afecta y el resultado verificable que buscas.
+      placeholder: Problema actual y resultado esperado.
+    validations:
+      required: true
+  - type: textarea
+    id: alcance-aceptacion
+    attributes:
+      label: Alcance y criterios de aceptación
+      description: Indica qué incluye y excluye el cambio, y cómo sabremos que está terminado.
+      placeholder: Incluye..., excluye..., se acepta cuando...
+    validations:
+      required: true
+  - type: dropdown
+    id: tipo-pr
+    attributes:
+      label: Tipo de PR
+      description: Selecciona el único tipo de etiqueta que deberá tener la PR.
+      options:
+        - bug
+        - feature
+        - docs
+        - refactor
+        - chore
+        - breaking-change
+    validations:
+      required: true
+  - type: textarea
+    id: verificacion-reversion
+    attributes:
+      label: Verificación y reversión
+      description: Explica cómo validarás el cambio y cómo revertirlo de forma segura si fuera necesario.
+      placeholder: Validación..., reversión...
+    validations:
+      required: true
+  - type: textarea
+    id: contexto-adicional
+    attributes:
+      label: Contexto adicional
+      description: Añade enlaces, evidencia, restricciones o dependencias relevantes.
+      placeholder: Opcional.
+    validations:
+      required: false
