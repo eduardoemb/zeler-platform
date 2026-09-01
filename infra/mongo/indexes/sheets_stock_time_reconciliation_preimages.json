@@ -1,0 +1,22 @@
+[
+  {
+    "keys": {"operation_id": 1, "sequence": 1},
+    "options": {
+      "name": "uniq_sheets_stock_time_reconciliation_preimages_operation_sequence",
+      "unique": true
+    }
+  },
+  {
+    "keys": {"operation_id": 1, "target_collection": 1, "target_id": 1},
+    "options": {
+      "name": "uniq_sheets_stock_time_reconciliation_preimages_operation_target",
+      "unique": true
+    }
+  },
+  {
+    "keys": {"target_collection": 1, "target_id": 1},
+    "options": {
+      "name": "idx_sheets_stock_time_reconciliation_preimages_target"
+    }
+  }
+]
