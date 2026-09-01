@@ -42,7 +42,7 @@ _ERROR_CODES = frozenset(
         "TRANSACTION_REQUIRED",
         "INVALID_OPERATION_SCHEMA",
         "OPERATION_MISMATCH",
-        "TAKEOVER_BLOCKED",
+        "TAKEOVER_CONFLICT",
         "LEASE_CONFLICT",
         "STATE_BLOCKED",
     }
@@ -271,9 +271,52 @@ async def _acquire_forward_operation(
                 {**identity, "$expr": {"$lte": ["$lease_until", "$$NOW"]}},
                 session=session,
             )
-            if expired is not None:
-                raise _ForwardEngineError("TAKEOVER_BLOCKED")
-            raise _ForwardEngineError("LEASE_CONFLICT")
+            if expired is None:
+                raise _ForwardEngineError("LEASE_CONFLICT")
+            takeover = await operations.update_one(
+                {
+                    **exact_immutable,
+                    "state": "prepared",
+                    "attempt": persisted["attempt"],
+                    "attempt_token": persisted["attempt_token"],
+                    "fence": persisted["fence"],
+                    "$expr": {"$lte": ["$lease_until", "$$NOW"]},
+                },
+                [
+                    {
+                        "$set": {
+                            "state": "prepared",
+                            "attempt": {"$add": ["$attempt", 1]},
+                            "attempt_token": attempt_token,
+                            "fence": {"$add": ["$fence", 1]},
+                            "lease_acquired_at": "$$NOW",
+                            "heartbeat_at": "$$NOW",
+                            "lease_until": {
+                                "$dateAdd": {
+                                    "startDate": "$$NOW",
+                                    "unit": "second",
+                                    "amount": 120,
+                                }
+                            },
+                            "updated_at": "$$NOW",
+                            "committed_at": None,
+                            "terminal_at": None,
+                            "error_code": None,
+                        }
+                    }
+                ],
+                session=session,
+            )
+            if takeover.matched_count != 1:
+                raise _ForwardEngineError("TAKEOVER_CONFLICT")
+            return _ForwardOperationContext(
+                sealed_plan.operation_id,
+                "prepared",
+                persisted["attempt"] + 1,
+                attempt_token,
+                persisted["fence"] + 1,
+                True,
+            )
         prepared = {
             "_id": sealed_plan.operation_id,
             **exact_binding,
