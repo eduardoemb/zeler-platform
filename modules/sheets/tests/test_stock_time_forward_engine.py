@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import FrozenInstanceError, replace
 from datetime import UTC, datetime, timedelta, timezone
+from inspect import signature
 from typing import Any
 
 import pytest
@@ -53,24 +54,12 @@ def seal(
     start: datetime = START,
     end: datetime = END,
 ) -> Any:
-    desired = {
-        "_id": f"{seller}:stock_time_metrics",
-        "seller_id": seller,
-        "read_model": "stock_time_metrics",
-        "state": "reconciled",
-        "fresh_until": end,
-        "date_from": start,
-        "reconciled_until": end,
-        "updated_at": end,
-        "schema_version": 1,
-    }
     return engine._seal_forward_plan(
         seller_id=seller,
         date_from=start,
         date_to=end,
         source_inventory=[{"_id": source}],
         action_plan=plan if plan is not None else action_plan(source=source),
-        marker_document=desired,
         marker_preimage=old_marker,
     )
 
@@ -89,7 +78,7 @@ def test_seal_is_permutation_stable_and_binds_all_material() -> None:
         existing_target_rows=[base.actions[i]._preimage for i in (3, 2, 0)],
     )
     assert seal(plan=permuted).operation_id == first.operation_id
-    assert first.operation_id == "77bbccdc25c327be7fa3f8b0e0f9f8193256efc90dd5a9976edf7a1ced675553"
+    assert first.operation_id == "e0d8a44491f8e18db199c281bb38a2333f470dd19fb9fd3ef795be46466e7a15"
     variants = [
         seal(seller="82453305", plan=EMPTY_PLAN),
         seal(start=START + timedelta(days=1), plan=EMPTY_PLAN),
@@ -103,6 +92,8 @@ def test_seal_is_permutation_stable_and_binds_all_material() -> None:
 
 def test_seal_canonicalizes_marker_action_and_is_frozen() -> None:
     first = seal()
+    assert "marker_document" not in signature(engine._seal_forward_plan).parameters
+    assert not hasattr(first, "_marker_document")
     assert first._marker_action == "insert" and first._marker_preimage is None
     replaced = seal(old_marker=marker())
     assert replaced._marker_action == "replace" and replaced._marker_preimage == marker()
@@ -122,10 +113,12 @@ def test_seal_canonicalizes_marker_action_and_is_frozen() -> None:
             "INVALID_UTC_INTERVAL",
         ),
         ("82453304", END, END, "INVALID_UTC_INTERVAL"),
+        ("82453304", "2026-06-01", END, "INVALID_UTC_INTERVAL"),
+        ("82453304", START, object(), "INVALID_UTC_INTERVAL"),
     ],
 )
 def test_seal_rejects_invalid_seller_and_half_open_utc_bounds(
-    seller: str, start: datetime, end: datetime, code: str
+    seller: str, start: Any, end: Any, code: str
 ) -> None:
     with pytest.raises(engine._ForwardEngineError, match=code):
         seal(seller=seller, start=start, end=end, plan=EMPTY_PLAN)
