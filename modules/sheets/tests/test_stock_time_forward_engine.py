@@ -494,6 +494,8 @@ class FakeCollection:
         self.db.events.append(f"{self.name}:read")
         rows = [row for row in self._rows().values() if self._matches(row, query)]
         if self.name == "sheets_stock_time_metrics":
+            if self.db.live_metric_read_hook is not None:
+                rows = self.db.live_metric_read_hook(deepcopy(rows))
             self.db.metric_reads += 1
             if self.db.metric_reads == 2 and self.db.metric_readback_hook is not None:
                 rows = self.db.metric_readback_hook(deepcopy(rows))
@@ -681,6 +683,7 @@ class FakeDB:
         self.metric_writes: list[Any] = []
         self.marker_writes: list[Any] = []
         self.metric_readback_hook: Any = None
+        self.live_metric_read_hook: Any = None
         self.marker_readback_hook: Any = None
         self.operation_readback_hook: Any = None
         self.metric_reads = self.marker_reads = self.operation_reads = 0
@@ -1895,14 +1898,231 @@ async def test_rollback_record_load_blocks_nonexact_preimages(mode: str) -> None
         await engine._load_validated_rollback_record_set(db, sealed.operation_id)
 
 
+@pytest.mark.asyncio
+async def test_prepare_rollback_builds_immutable_deterministic_inverse_plan_without_writes() -> (
+    None
+):
+    original_marker = marker(nested={"values": [1]})
+    db, sealed = await rollback_setup(original_marker)
+
+    first = await engine._prepare_forward_rollback(db, sealed.operation_id)
+    second = await engine._prepare_forward_rollback(db, sealed.operation_id)
+
+    expected = (
+        engine._RollbackMutation(
+            "sheets_read_model_freshness",
+            original_marker["_id"],
+            "replace",
+            sealed._mutations[-1].expected_forward_revision,
+            4,
+            planner._deep_freeze(original_marker),
+        ),
+        engine._RollbackMutation(
+            "sheets_stock_time_metrics",
+            "replace",
+            "replace",
+            sealed._mutations[2].expected_forward_revision,
+            3,
+            metric("replace", 1),
+        ),
+        engine._RollbackMutation(
+            "sheets_stock_time_metrics",
+            "insert",
+            "delete",
+            sealed._mutations[1].expected_forward_revision,
+            2,
+            None,
+        ),
+        engine._RollbackMutation(
+            "sheets_stock_time_metrics",
+            "delete",
+            "insert",
+            sealed._mutations[0].expected_forward_revision,
+            1,
+            metric("delete", 1),
+        ),
+    )
+    assert first == engine._ForwardRollbackPlan(sealed.operation_id, "committed", expected)
+    assert second == first
+    restoration = first._mutations[0]._restoration
+    assert restoration is not None
+    with pytest.raises(TypeError):
+        restoration["nested"]["values"][0] = 9
+    with pytest.raises(FrozenInstanceError):
+        first._mutations[0].__setattr__("action", "delete")
+    assert (
+        db.majority_reads
+        == [
+            ("sheets_stock_time_reconciliation_operations", "majority"),
+            ("sheets_stock_time_reconciliation_preimages", "majority"),
+            ("sheets_read_model_freshness", "majority"),
+            ("sheets_stock_time_metrics", "majority"),
+        ]
+        * 2
+    )
+    assert (
+        not db.writes
+        and not db.written_collections
+        and not db.metric_writes
+        and not db.marker_writes
+    )
+
+
+@pytest.mark.asyncio
+async def test_prepare_rollback_inverts_forward_marker_insert_to_delete() -> None:
+    db, sealed = await rollback_setup()
+
+    plan = await engine._prepare_forward_rollback(db, sealed.operation_id)
+
+    marker_mutation = plan._mutations[0]
+    assert (
+        marker_mutation.target_collection,
+        marker_mutation._target_id,
+        marker_mutation.action,
+        marker_mutation.expected_forward_revision,
+        marker_mutation.forward_sequence,
+        marker_mutation._restoration,
+    ) == (
+        "sheets_read_model_freshness",
+        marker()["_id"],
+        "delete",
+        sealed._mutations[-1].expected_forward_revision,
+        4,
+        None,
+    )
+
+
+@pytest.mark.asyncio
+async def test_prepare_rollback_rolled_back_is_immutable_noop_after_ledger_reads_only() -> None:
+    db, sealed = await rollback_setup(marker())
+    db.rows[sealed.operation_id]["state"] = "rolled_back"
+
+    plan = await engine._prepare_forward_rollback(db, sealed.operation_id)
+
+    assert plan == engine._ForwardRollbackPlan(sealed.operation_id, "rolled_back", ())
+    assert db.majority_reads == [
+        ("sheets_stock_time_reconciliation_operations", "majority"),
+        ("sheets_stock_time_reconciliation_preimages", "majority"),
+    ]
+    assert db.accessed == [
+        "sheets_stock_time_reconciliation_operations",
+        "sheets_stock_time_reconciliation_preimages",
+    ]
+    assert not db.writes and not db.metric_writes and not db.marker_writes
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "corrupt",
+    [
+        lambda row: row.update(state="stale"),
+        lambda row: row.pop("source"),
+        lambda row: row.update(fresh_until=START),
+        lambda row: row.update(revision="f" * 64),
+        lambda row: row.update(proof_fingerprint="not-a-sha"),
+    ],
+)
+async def test_prepare_rollback_blocks_marker_corruption_without_identifier_leakage(
+    corrupt: Any,
+) -> None:
+    db, sealed = await rollback_setup(marker())
+    corrupt(db.collections["sheets_read_model_freshness"][marker()["_id"]])
+
+    with pytest.raises(engine._ForwardEngineError, match="^ROLLBACK_BLOCKED$") as caught:
+        await engine._prepare_forward_rollback(db, sealed.operation_id)
+
+    assert sealed.operation_id not in str(caught.value)
+    assert not db.writes and not db.metric_writes and not db.marker_writes
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["marker-proof", "no-op", "extra", "missing", "changed"])
+async def test_prepare_rollback_blocks_marker_proof_and_complete_interval_drift(mode: str) -> None:
+    db, sealed = await rollback_setup(marker())
+    metrics = db.collections["sheets_stock_time_metrics"]
+    if mode == "marker-proof":
+        db.collections["sheets_read_model_freshness"][marker()["_id"]]["proof_fingerprint"] = (
+            "0" * 64
+        )
+    elif mode == "no-op":
+        metrics["same"]["value"] = 99
+    elif mode == "extra":
+        metrics["extra"] = metric("extra", 1)
+    elif mode == "missing":
+        metrics.pop("same")
+    else:
+        metrics["replace"]["value"] = 99
+
+    with pytest.raises(engine._ForwardEngineError, match="^ROLLBACK_BLOCKED$"):
+        await engine._prepare_forward_rollback(db, sealed.operation_id)
+    assert not db.writes and not db.metric_writes and not db.marker_writes
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("action", "mode"),
+    [
+        ("insert", "missing"),
+        ("insert", "revision"),
+        ("replace", "missing"),
+        ("replace", "revision"),
+        ("delete", "reappeared"),
+    ],
+)
+async def test_prepare_rollback_blocks_forward_target_revision_and_presence_drift(
+    action: str, mode: str
+) -> None:
+    db, sealed = await rollback_setup(marker())
+    record = next(
+        row
+        for row in db.collections["sheets_stock_time_reconciliation_preimages"].values()
+        if row["target_collection"] == "sheets_stock_time_metrics" and row["action"] == action
+    )
+    metrics = db.collections["sheets_stock_time_metrics"]
+    if mode == "missing":
+        metrics.pop(record["target_id"])
+    elif mode == "revision":
+        metrics[record["target_id"]]["revision"] = "f" * 64
+    else:
+        metrics[record["target_id"]] = metric(record["target_id"], 1)
+
+    with pytest.raises(engine._ForwardEngineError, match="^ROLLBACK_BLOCKED$"):
+        await engine._prepare_forward_rollback(db, sealed.operation_id)
+    assert not db.writes and not db.metric_writes and not db.marker_writes
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["malformed", "duplicate", "out-of-scope"])
+async def test_prepare_rollback_blocks_malformed_duplicate_and_out_of_scope_live_metrics(
+    mode: str,
+) -> None:
+    db, sealed = await rollback_setup(marker())
+    if mode == "malformed":
+        db.live_metric_read_hook = lambda rows: [*rows, {"seller_id": "82453304"}]
+    elif mode == "duplicate":
+        db.live_metric_read_hook = lambda rows: [*rows, deepcopy(rows[0])]
+    else:
+        db.live_metric_read_hook = lambda rows: [
+            *rows,
+            metric("outside", 1, date_to=END + timedelta(days=1)),
+        ]
+
+    with pytest.raises(engine._ForwardEngineError, match="^ROLLBACK_BLOCKED$"):
+        await engine._prepare_forward_rollback(db, sealed.operation_id)
+    assert not db.writes and not db.metric_writes and not db.marker_writes
+
+
 def test_forward_contract_remains_private_with_bounded_errors() -> None:
     assert not hasattr(zeler_sheets, "_seal_forward_plan")
     assert not hasattr(zeler_sheets, "_ForwardMutation")
     assert not hasattr(zeler_sheets, "_ValidatedRollbackRecordSet")
     assert not hasattr(zeler_sheets, "_load_validated_rollback_record_set")
-    assert not hasattr(engine, "_ForwardRollbackPlan")
-    assert not hasattr(engine, "_RollbackMutation")
-    assert not hasattr(engine, "_prepare_forward_rollback")
+    assert hasattr(engine, "_ForwardRollbackPlan")
+    assert hasattr(engine, "_RollbackMutation")
+    assert hasattr(engine, "_prepare_forward_rollback")
+    assert not hasattr(zeler_sheets, "_prepare_forward_rollback")
+    assert not hasattr(engine, "_execute_forward_rollback")
+    assert not hasattr(engine, "_persist_forward_rollback")
     assert not hasattr(zeler_sheets, "_acquire_forward_operation")
     assert not hasattr(engine, "_acquire_new_forward_operation")
     assert not hasattr(zeler_sheets, "_ForwardOperationContext")

@@ -128,6 +128,23 @@ class _ValidatedRollbackRecordSet:
     _records: tuple[Mapping[str, Any], ...] = field(repr=False)
 
 
+@dataclass(frozen=True)
+class _RollbackMutation:
+    target_collection: str
+    _target_id: str = field(repr=False)
+    action: str
+    expected_forward_revision: str
+    forward_sequence: int
+    _restoration: Mapping[str, Any] | None = field(repr=False)
+
+
+@dataclass(frozen=True)
+class _ForwardRollbackPlan:
+    operation_id: str
+    state: str
+    _mutations: tuple[_RollbackMutation, ...] = field(repr=False)
+
+
 def _new_forward_attempt_token() -> str:
     return secrets.token_hex(16)
 
@@ -1315,6 +1332,149 @@ async def _load_validated_rollback_record_set(
             _deep_freeze(persisted),
             tuple(_deep_freeze(row) for row in records),
         )
+    except (
+        AttributeError,
+        IndexError,
+        KeyError,
+        OverflowError,
+        TypeError,
+        ValueError,
+        _StockTimeActionPlanError,
+    ) as exc:
+        raise _ForwardEngineError("ROLLBACK_BLOCKED") from exc
+
+
+def _validated_rollback_marker(
+    operation: Mapping[str, Any], records: Sequence[Mapping[str, Any]], marker: Any
+) -> Mapping[str, Any]:
+    marker_record = records[-1]
+    expected = {
+        "_id": marker_record["target_id"],
+        "seller_id": operation["seller_id"],
+        "read_model": _READ_MODEL,
+        "state": "reconciled",
+        "date_from": operation["date_from"],
+        "fresh_until": operation["date_to"],
+        "reconciled_until": operation["date_to"],
+        "last_event_synced_at": operation["date_from"],
+        "updated_at": operation["date_to"],
+        "source": _RECONCILE_SOURCE,
+        "coverage_basis": "legacy_imported",
+        "revision": marker_record["expected_forward_revision"],
+        "schema_version": 1,
+    }
+    if (
+        not isinstance(marker, Mapping)
+        or set(marker) != set(expected) | {"proof_fingerprint"}
+        or any(marker.get(name) != value for name, value in expected.items())
+        or not isinstance(marker.get("proof_fingerprint"), str)
+        or _SHA.fullmatch(marker["proof_fingerprint"]) is None
+    ):
+        raise _ForwardEngineError("ROLLBACK_BLOCKED")
+    return marker
+
+
+def _validated_rollback_metrics(
+    operation: Mapping[str, Any], documents: Sequence[Any]
+) -> dict[str, Mapping[str, Any]]:
+    seller = operation["seller_id"]
+    seller_values: set[str | int] = {seller}
+    if seller.isdigit():
+        seller_values.add(int(seller))
+    indexed: dict[str, Mapping[str, Any]] = {}
+    for document in documents:
+        if (
+            not isinstance(document, Mapping)
+            or not isinstance(document.get("_id"), str)
+            or not document["_id"]
+            or document["_id"] in indexed
+            or document.get("seller_id") not in seller_values
+            or document.get("date_from") != operation["date_from"]
+            or document.get("date_to") != operation["date_to"]
+        ):
+            raise _ForwardEngineError("ROLLBACK_BLOCKED")
+        _canonical_bson_bytes(document)
+        indexed[document["_id"]] = document
+    return indexed
+
+
+def _rollback_mutation(record: Mapping[str, Any]) -> _RollbackMutation:
+    actions = {"insert": "delete", "replace": "replace", "delete": "insert"}
+    action = actions.get(record["action"])
+    if action is None:
+        raise _ForwardEngineError("ROLLBACK_BLOCKED")
+    restoration = None if action == "delete" else _deep_freeze(record["preimage"])
+    return _RollbackMutation(
+        record["target_collection"],
+        record["target_id"],
+        action,
+        record["expected_forward_revision"],
+        record["sequence"],
+        restoration,
+    )
+
+
+async def _prepare_forward_rollback(db: Any, operation_id: str) -> _ForwardRollbackPlan:
+    """Prepare only; R2 applies inverses atomically, so ordering is an audit/readback convention."""
+    record_set = await _load_validated_rollback_record_set(db, operation_id)
+    if record_set.state == "rolled_back":
+        return _ForwardRollbackPlan(record_set.operation_id, record_set.state, ())
+    try:
+        operation, records = record_set._operation, record_set._records
+        concern = ReadConcern("majority")
+        marker = (
+            await db[_MARKER_COLLECTION]
+            .with_options(read_concern=concern)
+            .find_one({"_id": f"{operation['seller_id']}:{_READ_MODEL}"})
+        )
+        documents = (
+            await db[_METRIC_COLLECTION]
+            .with_options(read_concern=concern)
+            .find(
+                _metric_interval_query(
+                    _ForwardBinding(
+                        operation["seller_id"],
+                        operation["date_from"],
+                        operation["date_to"],
+                        operation["source_fingerprint"],
+                        operation["plan_fingerprint"],
+                    )
+                )
+            )
+            .to_list(length=None)
+        )
+        current_marker = _validated_rollback_marker(operation, records, marker)
+        current_metrics = _validated_rollback_metrics(operation, documents)
+        if (
+            _metric_proof_fingerprint(tuple(current_metrics.values()))
+            != current_marker["proof_fingerprint"]
+        ):
+            raise _ForwardEngineError("ROLLBACK_BLOCKED")
+        for record in records:
+            if record["target_collection"] != _METRIC_COLLECTION:
+                continue
+            current = current_metrics.get(record["target_id"])
+            if record["action"] in {"insert", "replace"}:
+                if (
+                    current is None
+                    or current.get("revision") != record["expected_forward_revision"]
+                ):
+                    raise _ForwardEngineError("ROLLBACK_BLOCKED")
+            elif current is not None:
+                raise _ForwardEngineError("ROLLBACK_BLOCKED")
+        marker_record = records[-1]
+        metrics = tuple(
+            _rollback_mutation(record)
+            for record in reversed(records[:-1])
+            if record["target_collection"] == _METRIC_COLLECTION
+        )
+        return _ForwardRollbackPlan(
+            record_set.operation_id,
+            record_set.state,
+            (_rollback_mutation(marker_record), *metrics),
+        )
+    except _ForwardEngineError:
+        raise
     except (
         AttributeError,
         IndexError,
