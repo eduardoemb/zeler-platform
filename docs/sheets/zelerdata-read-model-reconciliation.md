@@ -69,7 +69,7 @@ sanitized planned-action/preimage counts. Operator output must never emit the st
 The contract reserves committed/terminal timestamps for later atomic commit and compensation
 transitions, but stores no preimage payloads.
 
-This slice adds no executable write, rollback, freshness-marker, deploy, or production-readiness
+This slice adds no executable forward write, freshness-marker, deploy, or production-readiness
 path. The current `stock_time_metrics --write` rejection remains unchanged. Runtime transaction
 and replica-set capability, preimage persistence, guarded mutation/readback, compensation, marker
 publication, deployment, and approved-runtime verification remain later gates.
@@ -81,8 +81,29 @@ private target identity. Its kind and SHA-256 fingerprint distinguish a domain-s
 preimage from the exact prior document, while the operation-owned expected revision enables later
 CAS compensation. The target metric revision is optional so existing rows remain valid.
 
-These are schemas and indexes only: no preimage rows are written yet. Write, rollback, marker,
-deploy, and production actions remain blocked, as does transaction-capable runtime proof.
+These schemas and indexes do not authorize a forward write, marker publication, deploy, or
+production action. Transaction-capable runtime proof remains mandatory.
+
+### Stock-time rollback-only CLI
+
+The isolated rollback command is for an already-recorded forward operation only; it never plans or
+performs a forward operation, formulas, Mercado Libre calls, deployment, or production authorization.
+Run it only from the separately approved runtime after the relevant authorization is available:
+
+```bash
+python -m infra.operations.zelerdata_stock_time_rollback \
+  --operation-id <64-lowercase-hex-operation-id> \
+  --confirm-approved-runtime \
+  --confirm-stock-time-rollback-operation-id <same-64-lowercase-hex-operation-id>
+```
+
+The repeated operation ID is a required exact-match confirmation. Before rollback, the command first
+verifies the transaction-capable runtime and the required collection/index contracts; a failed or
+unavailable preflight does not start rollback. It emits exactly one compact JSON receipt with
+`schema_version`, `operation`, `operation_id_digest`, `preflight`, and `outcome`; the operation ID is
+never emitted. Exit codes are `0` rolled back (including an already rolled-back operation), `2` invalid
+request, `3` preflight blocked, `4` rollback blocked, and `1` rollback failed. A receipt is evidence,
+not forward-write, deploy, or production authorization.
 
 Observed pause-basis repair dry-run:
 
