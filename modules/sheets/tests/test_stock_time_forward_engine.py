@@ -540,22 +540,28 @@ class FakeCollection:
         self.db.written_collections.append(self.name)
         self.db.events.append(f"{self.name}:update")
         assert self.db.staged is not None
+        rows = self._rows()
         if self.db.pre_match_mutation is not None:
             mutation, self.db.pre_match_mutation = self.db.pre_match_mutation, None
             raced = self.db.rows[query["_id"]]
             raced.update(mutation)
             self.db.staged[query["_id"]] = deepcopy(raced)
-        matched = next((row for row in self.db.staged.values() if self._matches(row, query)), None)
+        matched = next((row for row in rows.values() if self._matches(row, query)), None)
         updated = None
         if "$replaceWith" in pipeline[0] and (matched is not None or options.get("upsert")):
             updated = self._evaluate(pipeline[0]["$replaceWith"], matched)
         elif matched is not None:
             updated = deepcopy(matched)
             updated.update(self._evaluate(pipeline[0]["$set"], matched))
-        if self.db.operation_result_overrides:
-            return self.db.operation_result_overrides.pop(0)
+        overrides = (
+            self.db.marker_result_overrides
+            if self.name == "sheets_read_model_freshness"
+            else self.db.operation_result_overrides
+        )
+        if overrides:
+            return overrides.pop(0)
         if updated is not None:
-            self.db.staged[updated["_id"]] = updated
+            rows[updated["_id"]] = updated
         if self.db.fail_body:
             raise RuntimeError("body failed")
         if self.db.fail_write:
@@ -591,7 +597,11 @@ class FakeCollection:
             return FakeUpdateResult(1, modified)
         if options.get("upsert"):
             if document["_id"] in rows:
-                raise RuntimeError("duplicate key")
+                raise OperationFailure(
+                    "E11000 duplicate key error collection: sheets_stock_time_metrics "
+                    "index: _id_ dup key",
+                    code=11000,
+                )
             rows[document["_id"]] = deepcopy(document)
             return FakeUpdateResult(upserted_id=document["_id"])
         return FakeUpdateResult()
@@ -2154,7 +2164,12 @@ async def test_rollback_cas_failures_abort_the_entire_transaction(phase: str) ->
     with pytest.raises(engine._ForwardEngineError, match="^ROLLBACK_BLOCKED$"):
         await engine._rollback_forward_operation(db, sealed.operation_id)
 
-    assert db.collections == original
+    if phase == "operation":
+        assert db.collections == original
+    else:
+        assert db.rows[sealed.operation_id]["state"] == "rollback_blocked"
+        assert db.collections["sheets_stock_time_metrics"] == original["sheets_stock_time_metrics"]
+        assert db.collections["sheets_read_model_freshness"][marker()["_id"]]["state"] == "stale"
 
 
 @pytest.mark.asyncio
@@ -2180,7 +2195,7 @@ async def test_rollback_unknown_then_success_retries_same_session_without_replay
     assert restored == engine._ForwardRollbackPlan(sealed.operation_id, "rolled_back", ())
     assert db.transaction_bodies == bodies + 1 and db.commit_calls == commits + 2
     assert len({id(session) for session in db.commit_sessions[-2:]}) == 1
-    assert len(db.majority_reads) == 6  # rollback preflight only; no outcome recovery
+    assert len(db.majority_reads) == 2  # ledger preflight only; no outcome recovery
 
 
 @pytest.mark.asyncio
@@ -2296,13 +2311,13 @@ async def test_rollback_unknown_readback_rejects_nonexact_durable_state(
 
     reads, recovery_read = (
         0,
-        3
+        2
         if collection
         in {
             "sheets_stock_time_reconciliation_operations",
             "sheets_stock_time_reconciliation_preimages",
         }
-        else 2,
+        else 1,
     )
 
     def after_preflight(rows: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
@@ -2331,7 +2346,7 @@ async def test_rollback_unknown_readback_unavailable_remains_bounded_unknown() -
     def unavailable_after_preflight(rows: Any) -> Any:
         nonlocal metric_reads
         metric_reads += 1
-        return unavailable(rows) if metric_reads >= 2 else rows
+        return unavailable(rows) if metric_reads >= 1 else rows
 
     db.majority_readback_hooks["sheets_stock_time_metrics"] = unavailable_after_preflight
     with pytest.raises(engine._ForwardEngineError, match="^COMMIT_OUTCOME_UNKNOWN$") as caught:
@@ -2354,7 +2369,7 @@ async def test_rollback_nonunknown_commit_error_propagates_without_recovery(
 
     assert caught.value is ordinary
     assert db.commit_calls == (3 if after_unknown else 2)
-    assert len(db.majority_reads) == 6  # rollback preflight only; no outcome recovery
+    assert len(db.majority_reads) == 2  # ledger preflight only; no outcome recovery
 
 
 @pytest.mark.asyncio
@@ -2364,7 +2379,7 @@ async def test_rollback_preparation_accepts_only_decimal_integer_legacy_metric_s
     assert engine._validated_rollback_metrics(operation, [numeric]) == {"numeric": numeric}
     for seller in (True, 12.0, "012"):
         document = {**numeric, "seller_id": seller}
-        with pytest.raises(engine._ForwardEngineError, match="^ROLLBACK_BLOCKED$"):
+        with pytest.raises(engine._TargetDriftError):
             engine._validated_rollback_metrics(operation, [document])
 
 
@@ -2412,3 +2427,126 @@ def test_forward_contract_remains_private_with_bounded_errors() -> None:
     assert not hasattr(zeler_sheets, "_majority_commit_readback")
     with pytest.raises(ValueError, match="unknown forward-engine error code"):
         engine._ForwardEngineError("NOT_A_SEALING_ERROR")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("drift", "owned_marker"),
+    [
+        ("metric-proof", True),
+        ("metric-revision", True),
+        ("metric-absence", True),
+        ("metric-race", True),
+        ("marker-missing", False),
+        ("marker-malformed", False),
+        ("marker-foreign", False),
+    ],
+)
+async def test_target_drift_aborts_compensation_and_terminalizes_only_owned_marker(
+    drift: str, owned_marker: bool
+) -> None:
+    db, sealed = await rollback_setup(marker())
+    preimages = deepcopy(db.collections["sheets_stock_time_reconciliation_preimages"])
+    marker_id = marker()["_id"]
+    if drift == "metric-proof":
+        db.collections["sheets_stock_time_metrics"]["same"]["value"] = 99
+    elif drift == "metric-revision":
+        db.collections["sheets_stock_time_metrics"]["insert"]["revision"] = "f" * 64
+    elif drift == "metric-absence":
+        db.collections["sheets_stock_time_metrics"].pop("insert")
+    elif drift == "metric-race":
+        db.metric_race = lambda rows: rows.update(
+            {"delete": metric("delete", 1, seller_id="other")}
+        )
+    elif drift == "marker-missing":
+        db.collections["sheets_read_model_freshness"].pop(marker_id)
+    elif drift == "marker-malformed":
+        db.collections["sheets_read_model_freshness"][marker_id]["source"] = "other"
+    else:
+        db.collections["sheets_read_model_freshness"][marker_id] = marker(source="other")
+    expected_metrics = deepcopy(db.collections["sheets_stock_time_metrics"])
+    expected_marker = deepcopy(db.collections["sheets_read_model_freshness"])
+
+    with pytest.raises(engine._ForwardEngineError, match="^ROLLBACK_BLOCKED$"):
+        await engine._rollback_forward_operation(db, sealed.operation_id)
+
+    operation = db.rows[sealed.operation_id]
+    assert operation["state"] == "rollback_blocked"
+    assert operation["error_code"] == "TARGET_DRIFT"
+    assert operation["updated_at"] == operation["terminal_at"] == db.server_now
+    assert db.collections["sheets_stock_time_reconciliation_preimages"] == preimages
+    assert db.collections["sheets_stock_time_metrics"] == expected_metrics
+    if owned_marker:
+        assert db.collections["sheets_read_model_freshness"][marker_id] == {
+            **expected_marker[marker_id],
+            "state": "stale",
+            "updated_at": db.server_now,
+        }
+    else:
+        assert db.collections["sheets_read_model_freshness"] == expected_marker
+
+    reads, bodies, writes = len(db.majority_reads), db.transaction_bodies, len(db.writes)
+    with pytest.raises(engine._ForwardEngineError, match="^ROLLBACK_BLOCKED$"):
+        await engine._rollback_forward_operation(db, sealed.operation_id)
+    assert len(db.majority_reads) == reads + 2
+    assert (db.transaction_bodies, len(db.writes)) == (bodies, writes)
+
+
+@pytest.mark.asyncio
+async def test_rollback_nonduplicate_inverse_insert_operation_failure_propagates(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db, sealed = await rollback_setup(marker())
+    original = deepcopy(db.collections)
+    failure = OperationFailure("not authorized", code=13)
+    replace_one = FakeCollection.replace_one
+
+    async def fail_inverse_insert(
+        self: FakeCollection, query: dict[str, Any], document: dict[str, Any], **options: Any
+    ) -> FakeUpdateResult:
+        if (
+            self.name == "sheets_stock_time_metrics"
+            and options.get("upsert")
+            and query["_id"] == "delete"
+        ):
+            raise failure
+        return await replace_one(self, query, document, **options)
+
+    monkeypatch.setattr(FakeCollection, "replace_one", fail_inverse_insert)
+
+    with pytest.raises(OperationFailure) as caught:
+        await engine._rollback_forward_operation(db, sealed.operation_id)
+
+    assert caught.value is failure
+    assert db.collections == original
+
+
+@pytest.mark.asyncio
+async def test_target_drift_finalizer_operation_cas_aborts_marker_quarantine() -> None:
+    db, sealed = await rollback_setup(marker())
+    db.collections["sheets_stock_time_metrics"]["same"]["value"] = 99
+    db.operation_result_overrides = [FakeUpdateResult()]
+
+    with pytest.raises(engine._ForwardEngineError, match="^ROLLBACK_BLOCKED$"):
+        await engine._rollback_forward_operation(db, sealed.operation_id)
+
+    assert db.rows[sealed.operation_id]["state"] == "committed"
+    assert db.collections["sheets_read_model_freshness"][marker()["_id"]]["state"] == "reconciled"
+
+
+@pytest.mark.asyncio
+async def test_target_drift_finalizer_unknown_commit_fails_closed_without_recovery() -> None:
+    db, sealed = await rollback_setup(marker())
+    db.collections["sheets_stock_time_metrics"]["same"]["value"] = 99
+    unknown = unknown_commit()
+    bodies, commits = db.transaction_bodies, db.commit_calls
+    db.majority_reads.clear()
+    db.commit_outcomes = [unknown]
+
+    with pytest.raises(engine._ForwardEngineError, match="^COMMIT_OUTCOME_UNKNOWN$") as caught:
+        await engine._rollback_forward_operation(db, sealed.operation_id)
+
+    assert caught.value.__cause__ is unknown
+    assert db.transaction_bodies == bodies + 2
+    assert db.commit_calls == commits + 1
+    assert len(db.majority_reads) == 2  # ledger preflight only; no finalizer recovery
