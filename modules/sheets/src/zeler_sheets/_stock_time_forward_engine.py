@@ -14,6 +14,8 @@ from pymongo.errors import OperationFailure
 from pymongo.read_concern import ReadConcern
 from pymongo.write_concern import WriteConcern
 
+from zeler_platform_core.cli.export_schemas import ENTITY_SCHEMAS, _validator_payload
+
 from .source_gated_read_model_writers import (
     _canonical_bson_bytes,
     _canonical_bson_document,
@@ -114,6 +116,133 @@ _STOCK_TIME_WRITE_EXPECTED_INDEXES = (
         ),
     ),
 )
+
+
+@dataclass(frozen=True)
+class _StockTimeRuntimeReadiness:
+    ready: bool
+    issues: tuple[str, ...]
+
+
+def _valid_hello(hello: Mapping[str, Any]) -> tuple[str, ...]:
+    issues: list[str] = []
+    if "msg" in hello:
+        issues.append("HELLO_MONGOS")
+    if hello.get("isWritablePrimary") is not True:
+        issues.append("HELLO_NOT_WRITABLE_PRIMARY")
+    if not (
+        isinstance(hello.get("setName"), str)
+        and bool(hello["setName"].strip())
+        and type(hello.get("logicalSessionTimeoutMinutes")) is int
+        and hello["logicalSessionTimeoutMinutes"] > 0
+        and type(hello.get("maxWireVersion")) is int
+        and hello["maxWireVersion"] >= 7
+    ):
+        issues.append("HELLO_INVALID")
+    return tuple(issues)
+
+
+def _expected_validator(collection: str) -> Mapping[str, Any]:
+    payload = _validator_payload(ENTITY_SCHEMAS[collection])
+    return {"$jsonSchema": payload["$jsonSchema"]}
+
+
+def _collection_contract(response: Any, collection: str, validator: Mapping[str, Any]) -> bool:
+    if not isinstance(response, Mapping):
+        return False
+    cursor = response.get("cursor")
+    if not isinstance(cursor, Mapping):
+        return False
+    batch = cursor.get("firstBatch")
+    if not isinstance(batch, list) or len(batch) != 1 or not isinstance(batch[0], Mapping):
+        return False
+    item = batch[0]
+    options = item.get("options")
+    return (
+        item.get("name") == collection
+        and item.get("type") == "collection"
+        and isinstance(options, Mapping)
+        and options.get("validator") == validator
+        and options.get("validationLevel") == "strict"
+        and options.get("validationAction") == "error"
+    )
+
+
+def _index_contract(observed: Any, descriptors: Sequence[_StockTimeIndexDescriptor]) -> bool:
+    if not isinstance(observed, list):
+        return False
+    expected = (("_id_", (("_id", 1),), False),) + tuple(
+        (item.name, item.keys, item.unique) for item in descriptors
+    )
+    if len(observed) != len(expected):
+        return False
+    for index, (name, keys, unique) in zip(observed, expected, strict=True):
+        if not isinstance(index, Mapping):
+            return False
+        normalized = {key: value for key, value in index.items() if key not in {"v", "ns"}}
+        key_document = normalized.get("key")
+        actual_unique = normalized.get("unique", False)
+        if (
+            set(normalized) - {"name", "key", "unique"}
+            or normalized.get("name") != name
+            or not isinstance(key_document, Mapping)
+            or tuple(key_document.items()) != keys
+            or type(actual_unique) is not bool
+            or actual_unique is not unique
+        ):
+            return False
+    return True
+
+
+async def _preflight_stock_time_runtime(db: Any) -> _StockTimeRuntimeReadiness:
+    """Read the minimum Mongo runtime contract without starting sessions or mutating state."""
+    issues: set[str] = set()
+    try:
+        hello = await db.command("hello")
+    except Exception:  # noqa: BLE001 - the readiness result is intentionally sanitized
+        issues.add("HELLO_UNAVAILABLE")
+    else:
+        if not isinstance(hello, Mapping):
+            issues.add("HELLO_INVALID")
+        else:
+            issues.update(_valid_hello(hello))
+
+    try:
+        start_session = db.client.start_session
+    except Exception:  # noqa: BLE001 - driver proxies can fail while resolving attributes
+        issues.add("SESSION_UNAVAILABLE")
+    else:
+        if not callable(start_session):
+            issues.add("SESSION_UNAVAILABLE")
+
+    validators: dict[str, Mapping[str, Any]] = {}
+    for collection, _ in _STOCK_TIME_WRITE_EXPECTED_INDEXES:
+        try:
+            validators[collection] = _expected_validator(collection)
+        except Exception:  # noqa: BLE001 - installed Core contract is unavailable or malformed
+            issues.add("VALIDATOR_CONTRACT_UNAVAILABLE")
+
+    for collection, descriptors in _STOCK_TIME_WRITE_EXPECTED_INDEXES:
+        validator = validators.get(collection)
+        if validator is None:
+            continue
+        try:
+            listed = await db.command("listCollections", filter={"name": collection})
+        except Exception:  # noqa: BLE001 - no driver detail may escape the readiness result
+            issues.add("COLLECTION_READ_FAILED")
+        else:
+            if not _collection_contract(listed, collection, validator):
+                issues.add("COLLECTION_CONTRACT_INVALID")
+        try:
+            indexes = await db[collection].list_indexes().to_list(length=None)
+        except Exception:  # noqa: BLE001 - no driver detail may escape the readiness result
+            issues.add("INDEX_READ_FAILED")
+        else:
+            if not _index_contract(indexes, descriptors):
+                issues.add("INDEX_CONTRACT_INVALID")
+
+    normalized_issues = tuple(sorted(issues))
+    return _StockTimeRuntimeReadiness(not normalized_issues, normalized_issues)
 
 
 _ERROR_CODES = frozenset(
