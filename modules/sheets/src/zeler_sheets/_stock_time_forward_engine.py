@@ -53,6 +53,7 @@ _ERROR_CODES = frozenset(
         "COMMIT_READBACK_MISMATCH",
         "COMMIT_OUTCOME_UNKNOWN",
         "STATE_BLOCKED",
+        "ROLLBACK_BLOCKED",
     }
 )
 
@@ -117,6 +118,14 @@ class _SealedForwardPlan:
     _desired_marker: Mapping[str, Any] = field(repr=False)
     expected_metric_fingerprint: str
     ledger_counts: _ForwardLedgerCounts
+
+
+@dataclass(frozen=True)
+class _ValidatedRollbackRecordSet:
+    operation_id: str
+    state: str
+    _operation: Mapping[str, Any] = field(repr=False)
+    _records: tuple[Mapping[str, Any], ...] = field(repr=False)
 
 
 def _new_forward_attempt_token() -> str:
@@ -1121,3 +1130,198 @@ async def _commit_forward_operation(
         context.fence,
         False,
     )
+
+
+_ROLLBACK_OPERATION_FIELDS = set(
+    "_id seller_id read_model date_from date_to source_fingerprint plan_fingerprint state attempt "  # noqa: SIM905
+    "attempt_token fence lease_acquired_at heartbeat_at lease_until planned_insert_count "
+    "planned_update_count planned_delete_count planned_preimage_count created_at updated_at "
+    "committed_at terminal_at error_code schema_version".split()
+)
+_ROLLBACK_PREIMAGE_FIELDS = set(
+    "_id operation_id sequence target_collection target_id action preimage preimage_kind "  # noqa: SIM905
+    "preimage_fingerprint expected_forward_revision created_at schema_version".split()
+)
+
+
+def _utc(value: Any) -> bool:
+    return (
+        isinstance(value, datetime)
+        and value.tzinfo is not None
+        and (value.utcoffset() == timedelta(0))
+    )
+
+
+def _validate_rollback_operation(operation: Any, operation_id: str) -> Mapping[str, Any]:
+    if not isinstance(operation, Mapping) or set(operation) != _ROLLBACK_OPERATION_FIELDS:
+        raise _ForwardEngineError("ROLLBACK_BLOCKED")
+    seller = operation["seller_id"]
+    dates = (operation["date_from"], operation["date_to"])
+    timestamps = tuple(
+        operation.get(name)
+        for name in ("lease_acquired_at", "heartbeat_at", "lease_until", "created_at", "updated_at")
+    )
+    terminal, committed = operation["terminal_at"], operation["committed_at"]
+    counts = tuple(
+        operation.get(name)
+        for name in (
+            "planned_insert_count",
+            "planned_update_count",
+            "planned_delete_count",
+            "planned_preimage_count",
+        )
+    )
+    expected_id = _digest(
+        {
+            "domain": "zeler.stock-time-forward-operation",
+            "version": 1,
+            "seller_id": seller,
+            "date_from": dates[0],
+            "date_to": dates[1],
+            "source_fingerprint": operation.get("source_fingerprint"),
+            "plan_fingerprint": operation.get("plan_fingerprint"),
+        }
+    )
+    valid = (
+        operation.get("_id") == operation_id == expected_id
+        and isinstance(seller, str)
+        and bool(seller.strip())
+        and operation.get("read_model") == _READ_MODEL
+        and all(_utc(value) for value in dates + timestamps + (terminal, committed))
+        and dates[1] > dates[0]
+        and operation.get("state") in {"committed", "rolled_back"}
+        and type(operation.get("attempt")) is int
+        and operation["attempt"] > 0
+        and type(operation.get("fence")) is int
+        and operation["fence"] > 0
+        and isinstance(operation.get("attempt_token"), str)
+        and _ATTEMPT_TOKEN.fullmatch(operation["attempt_token"]) is not None
+        and all(type(value) is int and value >= 0 for value in counts)
+        and all(
+            isinstance(operation.get(name), str) and _SHA.fullmatch(operation[name])
+            for name in ("source_fingerprint", "plan_fingerprint")
+        )
+        and operation.get("schema_version") == 1
+        and operation.get("error_code") is None
+        and operation["heartbeat_at"]
+        == operation["updated_at"]
+        == terminal
+        == operation["lease_until"]
+        and operation["created_at"] <= operation["lease_acquired_at"] <= committed <= terminal
+        and (operation["state"] != "committed" or committed == terminal)
+    )
+    if not valid:
+        raise _ForwardEngineError("ROLLBACK_BLOCKED")
+    return operation
+
+
+def _validate_rollback_preimages(
+    operation: Mapping[str, Any], observed: Sequence[Mapping[str, Any]]
+) -> tuple[Mapping[str, Any], ...]:
+    operation_id = operation["_id"]
+    seller, start, end = operation["seller_id"], operation["date_from"], operation["date_to"]
+    expected_sequences = list(range(1, operation["planned_preimage_count"] + 1))
+    sequences = [row.get("sequence") if isinstance(row, Mapping) else None for row in observed]
+    if len(observed) != len(expected_sequences) or sequences != expected_sequences:
+        raise _ForwardEngineError("ROLLBACK_BLOCKED")
+    seen: set[tuple[str, str]] = set()
+    markers = 0
+    action_counts = {"insert": 0, "replace": 0, "delete": 0}
+    for row in observed:
+        if not isinstance(row, Mapping) or set(row) != _ROLLBACK_PREIMAGE_FIELDS:
+            raise _ForwardEngineError("ROLLBACK_BLOCKED")
+        target = (row["target_collection"], row["target_id"])
+        action, preimage = row["action"], row["preimage"]
+        exact = action in {"replace", "delete"}
+        valid = (
+            row.get("operation_id") == operation_id
+            and isinstance(target[1], str)
+            and bool(target[1])
+            and target[0] in {_METRIC_COLLECTION, _MARKER_COLLECTION}
+            and target not in seen
+            and action in action_counts
+            and row.get("schema_version") == 1
+            and row.get("created_at") == operation["lease_acquired_at"]
+            and row.get("preimage_kind") == ("exact_document" if exact else "absent")
+            and ((isinstance(preimage, Mapping)) if exact else preimage is None)
+            and row.get("preimage_fingerprint") == _preimage_fingerprint(preimage)
+            and row.get("expected_forward_revision")
+            == _operation_revision(operation_id, target[0], target[1], action)
+        )
+        mutation = _ForwardMutation(
+            row["sequence"], target[0], target[1], action, None, None, "", "", ""
+        )
+        valid = valid and row.get("_id") == _preimage_record_id(operation_id, mutation)
+        if exact and target[0] == _METRIC_COLLECTION:
+            valid = valid and (
+                preimage.get("_id") == target[1]
+                and preimage.get("seller_id") == seller
+                and preimage.get("date_from") == start
+                and preimage.get("date_to") == end
+            )
+        if target[0] == _MARKER_COLLECTION:
+            markers += 1
+            valid = (
+                valid and target[1] == f"{seller}:{_READ_MODEL}" and action in {"insert", "replace"}
+            )
+            if exact:
+                valid = valid and (
+                    preimage.get("_id") == target[1]
+                    and preimage.get("seller_id") == seller
+                    and preimage.get("read_model") == _READ_MODEL
+                )
+        if not valid:
+            raise _ForwardEngineError("ROLLBACK_BLOCKED")
+        seen.add(target)
+        action_counts[action] += 1
+    expected_counts = dict(
+        insert=operation["planned_insert_count"],
+        replace=operation["planned_update_count"],
+        delete=operation["planned_delete_count"],
+    )
+    if (
+        markers != 1
+        or action_counts != expected_counts
+        or observed[-1]["target_collection"] != _MARKER_COLLECTION
+    ):
+        raise _ForwardEngineError("ROLLBACK_BLOCKED")
+    return tuple(observed)
+
+
+async def _load_validated_rollback_record_set(
+    db: Any, operation_id: str
+) -> _ValidatedRollbackRecordSet:
+    if not isinstance(operation_id, str) or _SHA.fullmatch(operation_id) is None:
+        raise _ForwardEngineError("ROLLBACK_BLOCKED")
+    concern = ReadConcern("majority")
+    operation = (
+        await db[_OPERATION_COLLECTION]
+        .with_options(read_concern=concern)
+        .find_one({"_id": operation_id})
+    )
+    preimages = (
+        await db[_PREIMAGE_COLLECTION]
+        .with_options(read_concern=concern)
+        .find({"operation_id": operation_id})
+        .to_list(length=None)
+    )
+    try:
+        persisted = _validate_rollback_operation(operation, operation_id)
+        preimages.sort(key=lambda row: row.get("sequence", -1) if isinstance(row, Mapping) else -1)
+        records = _validate_rollback_preimages(persisted, preimages)
+        return _ValidatedRollbackRecordSet(
+            operation_id,
+            persisted["state"],
+            _deep_freeze(persisted),
+            tuple(_deep_freeze(row) for row in records),
+        )
+    except (
+        AttributeError,
+        IndexError,
+        KeyError,
+        OverflowError,
+        TypeError,
+        ValueError,
+        _StockTimeActionPlanError,
+    ) as exc:
+        raise _ForwardEngineError("ROLLBACK_BLOCKED") from exc
