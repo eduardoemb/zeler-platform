@@ -37,7 +37,7 @@ def create_runtime_db() -> _RuntimeDatabase:
 
     from motor.motor_asyncio import AsyncIOMotorClient
 
-    client: AsyncIOMotorClient[Any] = AsyncIOMotorClient(mongo_uri)
+    client: AsyncIOMotorClient[Any] = AsyncIOMotorClient(mongo_uri, tz_aware=True)
     return _RuntimeDatabase(db=client[mongo_db_name], client=client)
 
 
