@@ -4,9 +4,10 @@ import ast
 import builtins
 import hashlib
 import json
+import sys
 from pathlib import Path
-from types import SimpleNamespace
-from typing import Any
+from types import ModuleType, SimpleNamespace
+from typing import Any, cast
 
 import pytest
 from infra.operations import zelerdata_stock_time_rollback as rollback
@@ -99,6 +100,36 @@ def test_missing_runtime_config_is_sanitized_without_importing_or_creating_a_cli
     assert rollback.main(_argv()) == 1
     assert attempted_motor_import is False
     assert _receipt(capsys) == rollback._receipt(OPERATION_ID, "not_run", "rollback_failed")
+
+
+def test_create_runtime_db_lazily_constructs_an_utc_aware_motor_client(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    calls: list[tuple[tuple[str, ...], dict[str, bool]]] = []
+
+    class Client:
+        def __init__(self, *args: str, **kwargs: bool) -> None:
+            calls.append((args, kwargs))
+
+        def __getitem__(self, name: str) -> str:
+            return name
+
+        def close(self) -> None:
+            pass
+
+    motor = ModuleType("motor")
+    motor_asyncio = ModuleType("motor.motor_asyncio")
+    cast(Any, motor_asyncio).AsyncIOMotorClient = Client
+    monkeypatch.setitem(sys.modules, "motor", motor)
+    monkeypatch.setitem(sys.modules, "motor.motor_asyncio", motor_asyncio)
+    monkeypatch.setenv("MONGO_URI", "mongodb://runtime-host")
+    monkeypatch.setenv("MONGO_DB", "runtime_db")
+
+    handle = rollback.create_runtime_db()
+
+    assert calls == [(("mongodb://runtime-host",), {"tz_aware": True})]
+    assert handle.db == "runtime_db"
+    assert capsys.readouterr().out == ""
 
 
 def test_runtime_setup_failure_is_sanitized(
