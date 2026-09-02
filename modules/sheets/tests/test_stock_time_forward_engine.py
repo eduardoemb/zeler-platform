@@ -2158,7 +2158,7 @@ async def test_rollback_cas_failures_abort_the_entire_transaction(phase: str) ->
 
 
 @pytest.mark.asyncio
-async def test_rollback_is_idempotent_and_unknown_auto_commit_is_not_recovered() -> None:
+async def test_rollback_is_idempotent_after_ledger_reads_only() -> None:
     db, sealed = await rollback_setup(marker())
     first = await engine._rollback_forward_operation(db, sealed.operation_id)
     reads, bodies, commits = len(db.majority_reads), db.transaction_bodies, db.commit_calls
@@ -2167,16 +2167,194 @@ async def test_rollback_is_idempotent_and_unknown_auto_commit_is_not_recovered()
     assert len(db.majority_reads) == reads + 2
     assert (db.transaction_bodies, db.commit_calls) == (bodies, commits)
 
-    unknown_db, unknown_sealed = await rollback_setup(marker())
-    unknown = unknown_commit()
-    bodies, commits = unknown_db.transaction_bodies, unknown_db.commit_calls
-    unknown_db.commit_outcomes = [("apply", unknown)]
+
+@pytest.mark.asyncio
+async def test_rollback_unknown_then_success_retries_same_session_without_replaying_body() -> None:
+    db, sealed = await rollback_setup(marker())
+    bodies, commits = db.transaction_bodies, db.commit_calls
+    db.majority_reads.clear()
+    db.commit_outcomes = [unknown_commit(), None]
+
+    restored = await engine._rollback_forward_operation(db, sealed.operation_id)
+
+    assert restored == engine._ForwardRollbackPlan(sealed.operation_id, "rolled_back", ())
+    assert db.transaction_bodies == bodies + 1 and db.commit_calls == commits + 2
+    assert len({id(session) for session in db.commit_sessions[-2:]}) == 1
+    assert len(db.majority_reads) == 6  # rollback preflight only; no outcome recovery
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("original_marker", [None, marker(nested={"values": [1]})])
+async def test_rollback_ack_lost_unknowns_recover_from_exact_majority_readback(
+    original_marker: dict[str, Any] | None,
+) -> None:
+    db, sealed = await rollback_setup(original_marker)
+    errors = [unknown_commit() for _ in range(3)]
+    db.commit_outcomes = [("apply", errors[0]), *errors[1:]]
+    db.majority_reads.clear()
+
+    restored = await engine._rollback_forward_operation(db, sealed.operation_id)
+
+    assert restored == engine._ForwardRollbackPlan(sealed.operation_id, "rolled_back", ())
+    assert db.commit_calls == 4 and db.transaction_bodies == 2
+    assert db.rows[sealed.operation_id]["state"] == "rolled_back"
+    assert db.collections["sheets_stock_time_metrics"] == {
+        "delete": metric("delete", 1),
+        "replace": metric("replace", 1),
+        "same": metric("same", 1),
+    }
+    assert db.collections["sheets_read_model_freshness"] == (
+        {} if original_marker is None else {original_marker["_id"]: original_marker}
+    )
+    assert db.majority_reads[-4:] == [
+        ("sheets_stock_time_reconciliation_operations", "majority"),
+        ("sheets_stock_time_reconciliation_preimages", "majority"),
+        ("sheets_stock_time_metrics", "majority"),
+        ("sheets_read_model_freshness", "majority"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_rollback_unknown_before_apply_is_bounded_and_never_replays() -> None:
+    db, sealed = await rollback_setup(marker())
+    errors = [unknown_commit() for _ in range(4)]
+    bodies, commits = db.transaction_bodies, db.commit_calls
+    db.majority_reads.clear()
+    db.commit_outcomes = errors.copy()
+
     with pytest.raises(engine._ForwardEngineError, match="^COMMIT_OUTCOME_UNKNOWN$") as caught:
-        await engine._rollback_forward_operation(unknown_db, unknown_sealed.operation_id)
-    assert caught.value.__cause__ is unknown
-    assert unknown_db.transaction_bodies == bodies + 1
-    assert unknown_db.commit_calls == commits + 1
-    assert len(unknown_db.majority_reads) == 6  # prepare plus exact majority ledger comparison
+        await engine._rollback_forward_operation(db, sealed.operation_id)
+
+    assert caught.value.__cause__ is errors[2]
+    assert db.transaction_bodies == bodies + 1 and db.commit_calls == commits + 3
+    assert len(db.commit_outcomes) == 1
+    assert db.rows[sealed.operation_id]["state"] == "committed"
+    assert db.collections["sheets_read_model_freshness"][marker()["_id"]]["state"] == "reconciled"
+    assert "rollback_blocked" not in {row["state"] for row in db.rows.values()}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("collection", "mode"),
+    [
+        ("sheets_stock_time_reconciliation_operations", "committed"),
+        ("sheets_stock_time_reconciliation_operations", "immutable"),
+        ("sheets_stock_time_reconciliation_operations", "timestamps"),
+        ("sheets_stock_time_reconciliation_operations", "missing"),
+        ("sheets_stock_time_reconciliation_operations", "extra"),
+        ("sheets_stock_time_reconciliation_preimages", "missing"),
+        ("sheets_stock_time_reconciliation_preimages", "extra"),
+        ("sheets_stock_time_reconciliation_preimages", "corrupt"),
+        ("sheets_stock_time_metrics", "missing"),
+        ("sheets_stock_time_metrics", "extra"),
+        ("sheets_stock_time_metrics", "noop"),
+        ("sheets_read_model_freshness", "missing"),
+        ("sheets_read_model_freshness", "extra"),
+        ("sheets_read_model_freshness", "corrupt"),
+    ],
+)
+async def test_rollback_unknown_readback_rejects_nonexact_durable_state(
+    collection: str, mode: str
+) -> None:
+    db, sealed = await rollback_setup(marker())
+    errors = [unknown_commit() for _ in range(3)]
+    db.commit_outcomes = [("apply", errors[0]), *errors[1:]]
+
+    def corrupt(rows: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
+        if collection == "sheets_stock_time_reconciliation_operations":
+            if mode == "missing":
+                rows.clear()
+            else:
+                row = rows[sealed.operation_id]
+                if mode == "committed":
+                    row["state"] = "committed"
+                elif mode == "immutable":
+                    row["attempt"] += 1
+                else:
+                    row["heartbeat_at"] = START
+        elif collection == "sheets_stock_time_reconciliation_preimages":
+            if mode == "missing":
+                rows.pop(next(iter(rows)))
+            elif mode == "extra":
+                extra = deepcopy(next(iter(rows.values())))
+                extra["_id"] = "extra"
+                rows["extra"] = extra
+            else:
+                next(iter(rows.values()))["preimage_fingerprint"] = "f" * 64
+        elif collection == "sheets_stock_time_metrics":
+            if mode == "missing":
+                rows.pop("same")
+            elif mode == "extra":
+                rows["extra"] = metric("extra", 1)
+            else:
+                rows["same"]["value"] = 99
+        elif mode == "missing":
+            rows.clear()
+        else:
+            next(iter(rows.values()))["source"] = "other"
+        return rows
+
+    reads, recovery_read = (
+        0,
+        3
+        if collection
+        in {
+            "sheets_stock_time_reconciliation_operations",
+            "sheets_stock_time_reconciliation_preimages",
+        }
+        else 2,
+    )
+
+    def after_preflight(rows: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
+        nonlocal reads
+        reads += 1
+        return corrupt(rows) if reads >= recovery_read else rows
+
+    db.majority_readback_hooks[collection] = after_preflight
+    with pytest.raises(engine._ForwardEngineError, match="^COMMIT_OUTCOME_UNKNOWN$") as caught:
+        await engine._rollback_forward_operation(db, sealed.operation_id)
+    assert caught.value.__cause__ is errors[-1]
+    assert "rollback_blocked" not in {row["state"] for row in db.rows.values()}
+
+
+@pytest.mark.asyncio
+async def test_rollback_unknown_readback_unavailable_remains_bounded_unknown() -> None:
+    db, sealed = await rollback_setup(marker())
+    errors = [unknown_commit() for _ in range(3)]
+    db.commit_outcomes = [("apply", errors[0]), *errors[1:]]
+
+    def unavailable(_: Any) -> Any:
+        raise RuntimeError("majority unavailable")
+
+    metric_reads = 0
+
+    def unavailable_after_preflight(rows: Any) -> Any:
+        nonlocal metric_reads
+        metric_reads += 1
+        return unavailable(rows) if metric_reads >= 2 else rows
+
+    db.majority_readback_hooks["sheets_stock_time_metrics"] = unavailable_after_preflight
+    with pytest.raises(engine._ForwardEngineError, match="^COMMIT_OUTCOME_UNKNOWN$") as caught:
+        await engine._rollback_forward_operation(db, sealed.operation_id)
+    assert caught.value.__cause__ is errors[-1]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("after_unknown", [False, True], ids=["immediate", "after-unknown"])
+async def test_rollback_nonunknown_commit_error_propagates_without_recovery(
+    after_unknown: bool,
+) -> None:
+    db, sealed = await rollback_setup(marker())
+    db.majority_reads.clear()
+    ordinary = RuntimeError("ordinary commit")
+    db.commit_outcomes = ([unknown_commit()] if after_unknown else []) + [ordinary]
+
+    with pytest.raises(RuntimeError, match="ordinary commit") as caught:
+        await engine._rollback_forward_operation(db, sealed.operation_id)
+
+    assert caught.value is ordinary
+    assert db.commit_calls == (3 if after_unknown else 2)
+    assert len(db.majority_reads) == 6  # rollback preflight only; no outcome recovery
 
 
 @pytest.mark.asyncio

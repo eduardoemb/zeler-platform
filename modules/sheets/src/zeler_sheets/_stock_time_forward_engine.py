@@ -1620,12 +1620,72 @@ def _rollback_baseline(
     return tuple(baseline.values())
 
 
+async def _majority_rollback_readback(
+    db: Any,
+    record_set: _ValidatedRollbackRecordSet,
+    baseline: Sequence[Mapping[str, Any]],
+    expected_marker: Mapping[str, Any] | None,
+) -> bool:
+    """Accept an unknown rollback commit only when its entire durable result is exact."""
+    try:
+        concern = ReadConcern("majority")
+        operation = (
+            await db[_OPERATION_COLLECTION]
+            .with_options(read_concern=concern)
+            .find_one({"_id": record_set.operation_id})
+        )
+        preimages = (
+            await db[_PREIMAGE_COLLECTION]
+            .with_options(read_concern=concern)
+            .find({"operation_id": record_set.operation_id})
+            .to_list(length=None)
+        )
+        metrics = (
+            await db[_METRIC_COLLECTION]
+            .with_options(read_concern=concern)
+            .find(_metric_interval_query(_rollback_binding(record_set._operation)))
+            .to_list(length=None)
+        )
+        marker = (
+            await db[_MARKER_COLLECTION]
+            .with_options(read_concern=concern)
+            .find_one({"_id": f"{record_set._operation['seller_id']}:{_READ_MODEL}"})
+        )
+        observed = _validate_rollback_operation(operation, record_set.operation_id)
+        mutable = {
+            "state",
+            "heartbeat_at",
+            "updated_at",
+            "terminal_at",
+            "lease_until",
+            "error_code",
+        }
+        if observed["state"] != "rolled_back" or any(
+            observed.get(field) != record_set._operation.get(field)
+            for field in set(record_set._operation) - mutable
+        ):
+            return False
+        return (
+            _exact_preimages_match(preimages, record_set._records)
+            and _exact_preimages_match(metrics, baseline)
+            and _exact_preimages_match(
+                [] if marker is None else [marker],
+                [] if expected_marker is None else [expected_marker],
+            )
+        )
+    except Exception:  # noqa: BLE001 - unavailable readback is an unknown commit outcome
+        return False
+
+
 async def _rollback_forward_operation(db: Any, operation_id: str) -> _ForwardRollbackPlan:
-    """Atomically restore a committed forward operation; recovery policy is deliberately absent."""
+    """Atomically restore a committed forward operation with bounded commit-outcome recovery."""
     majority_plan = await _prepare_forward_rollback(db, operation_id)
     if majority_plan.state == "rolled_back":
         return majority_plan
     majority_records = await _load_validated_rollback_record_set(db, operation_id)
+    recovery_record_set: _ValidatedRollbackRecordSet | None = None
+    recovery_baseline: tuple[Mapping[str, Any], ...] | None = None
+    recovery_marker: Mapping[str, Any] | None = None
     try:
         async with _required_transaction(db) as session:
             record_set = await _transaction_rollback_record_set(db, operation_id, session)
@@ -1639,6 +1699,10 @@ async def _rollback_forward_operation(db: Any, operation_id: str) -> _ForwardRol
             ):
                 raise _ForwardEngineError("ROLLBACK_BLOCKED")
             baseline = _rollback_baseline(metrics, local_plan)
+            expected_marker = local_plan._mutations[0]._restoration
+            recovery_record_set = record_set
+            recovery_baseline = baseline
+            recovery_marker = expected_marker
             for mutation in local_plan._mutations:
                 await _apply_rollback_mutation(db, record_set._operation, mutation, session)
             observed_metrics = (
@@ -1654,7 +1718,6 @@ async def _rollback_forward_operation(db: Any, operation_id: str) -> _ForwardRol
             observed_marker = await db[_MARKER_COLLECTION].find_one(
                 {"_id": f"{record_set._operation['seller_id']}:{_READ_MODEL}"}, session=session
             )
-            expected_marker = local_plan._mutations[0]._restoration
             if not _exact_preimages_match(
                 [] if observed_marker is None else [observed_marker],
                 [] if expected_marker is None else [expected_marker],
@@ -1710,9 +1773,17 @@ async def _rollback_forward_operation(db: Any, operation_id: str) -> _ForwardRol
                 for key in set(operation) - mutable
             ):
                 raise _ForwardEngineError("ROLLBACK_BLOCKED")
-    except Exception as exc:
-        has_label = getattr(exc, "has_error_label", None)
-        if callable(has_label) and has_label("UnknownTransactionCommitResult"):
-            raise _ForwardEngineError("COMMIT_OUTCOME_UNKNOWN") from exc
-        raise
+            await _commit_transaction_with_retry(session)
+    except _ForwardEngineError as exc:
+        if exc.code != "COMMIT_OUTCOME_UNKNOWN":
+            raise
+        last_unknown = exc.__cause__
+        if (
+            recovery_record_set is None
+            or recovery_baseline is None
+            or not await _majority_rollback_readback(
+                db, recovery_record_set, recovery_baseline, recovery_marker
+            )
+        ):
+            raise _ForwardEngineError("COMMIT_OUTCOME_UNKNOWN") from last_unknown
     return _ForwardRollbackPlan(operation_id, "rolled_back", ())
