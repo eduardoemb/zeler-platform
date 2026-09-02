@@ -1734,86 +1734,140 @@ def _validated_blocked_operation(
     return operation
 
 
+async def _majority_target_drift_finalizer_readback(
+    db: Any,
+    record_set: _ValidatedRollbackRecordSet,
+    expected_operation: Mapping[str, Any],
+    expected_marker: Mapping[str, Any] | None,
+) -> bool:
+    """Accept an unknown finalizer commit only when its bounded durable result is exact.
+
+    Metrics are intentionally excluded: the finalizer cannot mutate metrics and the
+    compensation transaction that detected drift was aborted before this transaction.
+    """
+    try:
+        concern = ReadConcern("majority")
+        operation = (
+            await db[_OPERATION_COLLECTION]
+            .with_options(read_concern=concern)
+            .find_one({"_id": record_set.operation_id})
+        )
+        preimages = (
+            await db[_PREIMAGE_COLLECTION]
+            .with_options(read_concern=concern)
+            .find({"operation_id": record_set.operation_id})
+            .to_list(length=None)
+        )
+        marker = (
+            await db[_MARKER_COLLECTION]
+            .with_options(read_concern=concern)
+            .find_one({"_id": f"{record_set._operation['seller_id']}:{_READ_MODEL}"})
+        )
+        _validated_blocked_operation(operation, record_set._operation, record_set.operation_id)
+        return (
+            _exact_preimages_match([operation], [expected_operation])
+            and _exact_preimages_match(preimages, record_set._records)
+            and _exact_preimages_match(
+                [] if marker is None else [marker],
+                [] if expected_marker is None else [expected_marker],
+            )
+        )
+    except Exception:  # noqa: BLE001 - unavailable/corrupt readback is an unknown outcome
+        return False
+
+
 async def _finalize_target_drift(db: Any, majority_records: _ValidatedRollbackRecordSet) -> None:
     """Atomically quarantine an owned marker and make confirmed target drift terminal."""
-    async with _required_transaction(db) as session:
-        record_set = await _transaction_rollback_record_set(
-            db, majority_records.operation_id, session
-        )
-        if (
-            record_set.state != "committed"
-            or record_set._operation != majority_records._operation
-            or record_set._records != majority_records._records
-        ):
-            raise _ForwardEngineError("ROLLBACK_BLOCKED")
-        operation, records = record_set._operation, record_set._records
-        marker_collection = db[_MARKER_COLLECTION]
-        observed_marker = await marker_collection.find_one(
-            {"_id": f"{operation['seller_id']}:{_READ_MODEL}"}, session=session
-        )
-        try:
-            owned_marker = _validated_rollback_marker(operation, records, observed_marker)
-        except _TargetDriftError:
-            owned_marker = None
-        expected_marker = observed_marker
-        if owned_marker is not None:
-            result = await marker_collection.update_one(
-                _full_document_selector(owned_marker),
-                [{"$set": {"state": "stale", "updated_at": "$$NOW"}}],
+    recovery_record_set: _ValidatedRollbackRecordSet | None = None
+    recovery_operation: Mapping[str, Any] | None = None
+    recovery_marker: Mapping[str, Any] | None = None
+    try:
+        async with _required_transaction(db) as session:
+            record_set = await _transaction_rollback_record_set(
+                db, majority_records.operation_id, session
+            )
+            if (
+                record_set.state != "committed"
+                or record_set._operation != majority_records._operation
+                or record_set._records != majority_records._records
+            ):
+                raise _ForwardEngineError("ROLLBACK_BLOCKED")
+            operation, records = record_set._operation, record_set._records
+            result = await db[_OPERATION_COLLECTION].update_one(
+                _full_document_selector(operation),
+                [
+                    {
+                        "$set": {
+                            "state": "rollback_blocked",
+                            "error_code": "TARGET_DRIFT",
+                            "heartbeat_at": "$$NOW",
+                            "updated_at": "$$NOW",
+                            "terminal_at": "$$NOW",
+                            "lease_until": "$$NOW",
+                        }
+                    }
+                ],
                 session=session,
             )
             if result.matched_count != 1 or result.modified_count != 1:
                 raise _ForwardEngineError("ROLLBACK_BLOCKED")
-        result = await db[_OPERATION_COLLECTION].update_one(
-            _full_document_selector(operation),
-            [
-                {
-                    "$set": {
-                        "state": "rollback_blocked",
-                        "error_code": "TARGET_DRIFT",
-                        "heartbeat_at": "$$NOW",
-                        "updated_at": "$$NOW",
-                        "terminal_at": "$$NOW",
-                        "lease_until": "$$NOW",
-                    }
+            observed_operation = await db[_OPERATION_COLLECTION].find_one(
+                {"_id": operation["_id"]}, session=session
+            )
+            blocked = _validated_blocked_operation(observed_operation, operation, operation["_id"])
+            marker_collection = db[_MARKER_COLLECTION]
+            observed_marker = await marker_collection.find_one(
+                {"_id": f"{operation['seller_id']}:{_READ_MODEL}"}, session=session
+            )
+            try:
+                owned_marker = _validated_rollback_marker(operation, records, observed_marker)
+            except _TargetDriftError:
+                owned_marker = None
+            expected_marker = observed_marker
+            if owned_marker is not None:
+                result = await marker_collection.update_one(
+                    _full_document_selector(owned_marker),
+                    [{"$set": {"state": "stale", "updated_at": blocked["updated_at"]}}],
+                    session=session,
+                )
+                if result.matched_count != 1 or result.modified_count != 1:
+                    raise _ForwardEngineError("ROLLBACK_BLOCKED")
+                expected_marker = {
+                    **owned_marker,
+                    "state": "stale",
+                    "updated_at": blocked["updated_at"],
                 }
-            ],
-            session=session,
-        )
-        if result.matched_count != 1 or result.modified_count != 1:
-            raise _ForwardEngineError("ROLLBACK_BLOCKED")
-        observed_operation = await db[_OPERATION_COLLECTION].find_one(
-            {"_id": operation["_id"]}, session=session
-        )
-        blocked = _validated_blocked_operation(observed_operation, operation, operation["_id"])
-        if owned_marker is not None:
-            expected_marker = {
-                **owned_marker,
-                "state": "stale",
-                "updated_at": blocked["updated_at"],
-            }
-        readback_marker = await marker_collection.find_one(
-            {"_id": f"{operation['seller_id']}:{_READ_MODEL}"}, session=session
-        )
-        if not _exact_preimages_match(
-            [] if readback_marker is None else [readback_marker],
-            [] if expected_marker is None else [expected_marker],
-        ):
-            raise _ForwardEngineError("ROLLBACK_BLOCKED")
-        preimages = (
-            await db[_PREIMAGE_COLLECTION]
-            .find({"operation_id": operation["_id"]}, session=session)
-            .to_list(length=None)
-        )
-        if not _exact_preimages_match(preimages, records):
-            raise _ForwardEngineError("ROLLBACK_BLOCKED")
-        try:
-            await session.commit_transaction()
-        except Exception as exc:
-            has_label = getattr(exc, "has_error_label", None)
-            if callable(has_label) and has_label("UnknownTransactionCommitResult"):
-                raise _ForwardEngineError("COMMIT_OUTCOME_UNKNOWN") from exc
+            readback_marker = await marker_collection.find_one(
+                {"_id": f"{operation['seller_id']}:{_READ_MODEL}"}, session=session
+            )
+            if not _exact_preimages_match(
+                [] if readback_marker is None else [readback_marker],
+                [] if expected_marker is None else [expected_marker],
+            ):
+                raise _ForwardEngineError("ROLLBACK_BLOCKED")
+            preimages = (
+                await db[_PREIMAGE_COLLECTION]
+                .find({"operation_id": operation["_id"]}, session=session)
+                .to_list(length=None)
+            )
+            if not _exact_preimages_match(preimages, records):
+                raise _ForwardEngineError("ROLLBACK_BLOCKED")
+            recovery_record_set = record_set
+            recovery_operation = _deep_freeze(blocked)
+            recovery_marker = expected_marker
+            await _commit_transaction_with_retry(session)
+    except _ForwardEngineError as exc:
+        if exc.code != "COMMIT_OUTCOME_UNKNOWN":
             raise
+        last_unknown = exc.__cause__
+        if (
+            recovery_record_set is None
+            or recovery_operation is None
+            or not await _majority_target_drift_finalizer_readback(
+                db, recovery_record_set, recovery_operation, recovery_marker
+            )
+        ):
+            raise _ForwardEngineError("COMMIT_OUTCOME_UNKNOWN") from last_unknown
 
 
 async def _rollback_forward_operation(db: Any, operation_id: str) -> _ForwardRollbackPlan:
