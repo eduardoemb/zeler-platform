@@ -5,7 +5,8 @@ from copy import deepcopy
 from dataclasses import FrozenInstanceError, replace
 from datetime import UTC, datetime, timedelta, timezone
 from inspect import signature
-from typing import Any
+from operator import setitem
+from typing import Any, cast
 
 import pytest
 from pymongo.errors import OperationFailure
@@ -1665,9 +1666,243 @@ async def test_legacy_transaction_callers_retain_automatic_commit_lifecycle(call
     assert db.staged_collections is None and db.commit_applied
 
 
+async def rollback_setup(old_marker: dict[str, Any] | None = None) -> tuple[FakeDB, Any]:
+    db, sealed, context = execution_setup(seal(old_marker=old_marker))
+    await engine._commit_forward_operation(db, sealed, context)
+    for history in (
+        db.accessed,
+        db.reads,
+        db.writes,
+        db.written_collections,
+        db.metric_writes,
+        db.marker_writes,
+        db.events,
+        db.majority_reads,
+    ):
+        history.clear()
+    return db, sealed
+
+
+def refresh_record_id(row: dict[str, Any]) -> None:
+    row["_id"] = engine._digest(
+        {
+            "domain": "zeler.stock-time-forward-preimage-record",
+            "version": 1,
+            "operation_id": row["operation_id"],
+            "sequence": row["sequence"],
+            "target_collection": row["target_collection"],
+            "target_id": row["target_id"],
+        }
+    )
+
+
+@pytest.mark.asyncio
+async def test_loads_deterministic_deep_frozen_records_with_only_majority_ledger_reads() -> None:
+    db, sealed = await rollback_setup(marker(nested={"values": [1]}))
+    name = "sheets_stock_time_reconciliation_preimages"
+    db.collections[name] = dict(reversed(list(db.collections[name].items())))
+
+    record_set = await engine._load_validated_rollback_record_set(db, sealed.operation_id)
+
+    assert record_set.operation_id == sealed.operation_id and record_set.state == "committed"
+    assert [(row["sequence"], row["action"]) for row in record_set._records] == [
+        (1, "delete"),
+        (2, "insert"),
+        (3, "replace"),
+        (4, "replace"),
+    ]
+    assert planner._canonical_bson_bytes(record_set._records[-1]["preimage"]) == (
+        planner._canonical_bson_bytes(marker(nested={"values": [1]}))
+    )
+    with pytest.raises(TypeError):
+        setitem(cast(Any, record_set._records[-1]["preimage"]["nested"]["values"]), 0, 9)
+    with pytest.raises(TypeError):
+        setitem(cast(Any, record_set._operation), "state", "changed")
+    with pytest.raises(FrozenInstanceError):
+        record_set.__setattr__("state", "changed")
+    assert db.majority_reads == [
+        ("sheets_stock_time_reconciliation_operations", "majority"),
+        ("sheets_stock_time_reconciliation_preimages", "majority"),
+    ]
+    assert not db.writes and not db.written_collections
+
+
+@pytest.mark.asyncio
+async def test_rolled_back_operation_returns_same_validated_records_idempotently() -> None:
+    db, sealed = await rollback_setup(marker())
+    committed = await engine._load_validated_rollback_record_set(db, sealed.operation_id)
+    db.rows[sealed.operation_id]["state"] = "rolled_back"
+    db.majority_reads.clear()
+
+    rolled_back = await engine._load_validated_rollback_record_set(db, sealed.operation_id)
+
+    assert rolled_back.state == "rolled_back"
+    assert rolled_back._records == committed._records
+    assert db.majority_reads == [
+        ("sheets_stock_time_reconciliation_operations", "majority"),
+        ("sheets_stock_time_reconciliation_preimages", "majority"),
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "mode",
+    [
+        "prepared",
+        "rollback_blocked",
+        "failed",
+        "expired",
+        "future",
+        "missing",
+        "missing-field",
+        "extra-field",
+        "attempt",
+        "seller",
+        "count",
+        "timestamp",
+    ],
+)
+async def test_rollback_record_load_blocks_nonexact_operation_state_and_schema(mode: str) -> None:
+    db, sealed = await rollback_setup(marker())
+    operation = db.rows[sealed.operation_id]
+    if mode in {"prepared", "rollback_blocked", "failed", "expired", "future"}:
+        operation["state"] = mode
+    elif mode == "missing":
+        db.rows.clear()
+    elif mode == "missing-field":
+        operation.pop("schema_version")
+    elif mode == "extra-field":
+        operation["extra"] = True
+    elif mode == "attempt":
+        operation["attempt"] = 0
+    elif mode == "seller":
+        operation["seller_id"] = "other"
+    elif mode == "count":
+        operation["planned_preimage_count"] = 99
+    else:
+        operation["committed_at"] = START.replace(tzinfo=None)
+    with pytest.raises(engine._ForwardEngineError, match="ROLLBACK_BLOCKED"):
+        await engine._load_validated_rollback_record_set(db, sealed.operation_id)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "mode",
+    [
+        "missing",
+        "extra",
+        "malformed",
+        "extra-field",
+        "duplicate-sequence",
+        "duplicate-target",
+        "order",
+        "cross-op",
+        "hash",
+        "revision",
+        "fingerprint",
+        "collection",
+        "action",
+        "preimage-coupling",
+        "marker-missing",
+        "marker-duplicate",
+        "marker-action",
+    ],
+)
+async def test_rollback_record_load_blocks_nonexact_preimages(mode: str) -> None:
+    db, sealed = await rollback_setup(marker())
+    rows = db.collections["sheets_stock_time_reconciliation_preimages"]
+    ordered = sorted(rows.values(), key=lambda row: row["sequence"])
+    first, second, marker_record = ordered[0], ordered[1], ordered[-1]
+    if mode == "missing":
+        rows.pop(next(iter(rows)))
+    elif mode == "extra":
+        extra = deepcopy(first)
+        extra.update(sequence=5, target_id="extra")
+        refresh_record_id(extra)
+        rows[extra["_id"]] = extra
+    elif mode == "malformed":
+        first["sequence"] = "1"
+    elif mode == "extra-field":
+        first["extra"] = True
+    elif mode == "duplicate-sequence":
+        second["sequence"] = first["sequence"]
+    elif mode == "duplicate-target":
+        second["target_collection"], second["target_id"] = (
+            first["target_collection"],
+            first["target_id"],
+        )
+        refresh_record_id(second)
+    elif mode == "order":
+        first["sequence"], marker_record["sequence"] = (
+            marker_record["sequence"],
+            first["sequence"],
+        )
+        refresh_record_id(first)
+        refresh_record_id(marker_record)
+    elif mode == "cross-op":
+        first["operation_id"] = "f" * 64
+    elif mode == "hash":
+        first["_id"] = "f" * 64
+    elif mode == "revision":
+        first["expected_forward_revision"] = "f" * 64
+    elif mode == "fingerprint":
+        first["preimage_fingerprint"] = "f" * 64
+    elif mode == "collection":
+        first["target_collection"] = "other"
+    elif mode == "action":
+        first["action"] = "noop"
+    elif mode == "preimage-coupling":
+        inserted = next(row for row in ordered if row["action"] == "insert")
+        inserted["preimage"] = metric("insert", 1)
+        inserted["preimage_fingerprint"] = engine._preimage_fingerprint(inserted["preimage"])
+    elif mode == "marker-missing":
+        marker_record.update(
+            target_collection="sheets_stock_time_metrics",
+            target_id="former-marker",
+            preimage=metric("former-marker", 1),
+        )
+        marker_record["preimage_fingerprint"] = engine._preimage_fingerprint(
+            marker_record["preimage"]
+        )
+        marker_record["expected_forward_revision"] = engine._operation_revision(
+            sealed.operation_id,
+            marker_record["target_collection"],
+            marker_record["target_id"],
+            marker_record["action"],
+        )
+        refresh_record_id(marker_record)
+    elif mode == "marker-duplicate":
+        first.update(
+            target_collection=marker_record["target_collection"],
+            target_id=marker_record["target_id"],
+            action="replace",
+            preimage=marker(),
+        )
+        first["preimage_fingerprint"] = engine._preimage_fingerprint(first["preimage"])
+        first["expected_forward_revision"] = engine._operation_revision(
+            sealed.operation_id, first["target_collection"], first["target_id"], first["action"]
+        )
+        refresh_record_id(first)
+    else:
+        marker_record["action"] = "delete"
+        marker_record["expected_forward_revision"] = engine._operation_revision(
+            sealed.operation_id,
+            marker_record["target_collection"],
+            marker_record["target_id"],
+            marker_record["action"],
+        )
+    with pytest.raises(engine._ForwardEngineError, match="ROLLBACK_BLOCKED"):
+        await engine._load_validated_rollback_record_set(db, sealed.operation_id)
+
+
 def test_forward_contract_remains_private_with_bounded_errors() -> None:
     assert not hasattr(zeler_sheets, "_seal_forward_plan")
     assert not hasattr(zeler_sheets, "_ForwardMutation")
+    assert not hasattr(zeler_sheets, "_ValidatedRollbackRecordSet")
+    assert not hasattr(zeler_sheets, "_load_validated_rollback_record_set")
+    assert not hasattr(engine, "_ForwardRollbackPlan")
+    assert not hasattr(engine, "_RollbackMutation")
+    assert not hasattr(engine, "_prepare_forward_rollback")
     assert not hasattr(zeler_sheets, "_acquire_forward_operation")
     assert not hasattr(engine, "_acquire_new_forward_operation")
     assert not hasattr(zeler_sheets, "_ForwardOperationContext")
