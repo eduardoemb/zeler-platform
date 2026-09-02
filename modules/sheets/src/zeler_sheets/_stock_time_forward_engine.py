@@ -32,6 +32,90 @@ _PREIMAGE_COLLECTION = "sheets_stock_time_reconciliation_preimages"
 _RECONCILE_SOURCE = "zelerdata_read_model_reconcile"
 _SHA = re.compile(r"^[0-9a-f]{64}$")
 _ATTEMPT_TOKEN = re.compile(r"^[0-9a-f]{32}$")
+
+
+@dataclass(frozen=True)
+class _StockTimeIndexDescriptor:
+    name: str
+    keys: tuple[tuple[str, int], ...]
+    unique: bool = False
+
+
+_STOCK_TIME_WRITE_EXPECTED_INDEXES = (
+    (
+        _METRIC_COLLECTION,
+        (
+            _StockTimeIndexDescriptor(
+                "idx_sheets_stock_time_metrics_seller_item_range",
+                (("seller_id", 1), ("item_id", 1), ("date_from", 1), ("date_to", 1)),
+            ),
+            _StockTimeIndexDescriptor(
+                "idx_sheets_stock_time_metrics_seller_sku_range",
+                (("seller_id", 1), ("normalized_sku", 1), ("date_from", 1), ("date_to", 1)),
+            ),
+        ),
+    ),
+    (
+        _MARKER_COLLECTION,
+        (
+            _StockTimeIndexDescriptor(
+                "uniq_sheets_read_model_freshness_seller_model",
+                (("seller_id", 1), ("read_model", 1)),
+                True,
+            ),
+            _StockTimeIndexDescriptor(
+                "idx_sheets_read_model_freshness_seller_state_until",
+                (("seller_id", 1), ("state", 1), ("fresh_until", -1)),
+            ),
+            _StockTimeIndexDescriptor(
+                "idx_sheets_read_model_freshness_seller_state_valid_until",
+                (("seller_id", 1), ("state", 1), ("valid_until", 1)),
+            ),
+        ),
+    ),
+    (
+        _OPERATION_COLLECTION,
+        (
+            _StockTimeIndexDescriptor(
+                "uniq_sheets_stock_time_reconciliation_operation_binding",
+                (
+                    ("seller_id", 1),
+                    ("read_model", 1),
+                    ("date_from", 1),
+                    ("date_to", 1),
+                    ("source_fingerprint", 1),
+                    ("plan_fingerprint", 1),
+                ),
+                True,
+            ),
+            _StockTimeIndexDescriptor(
+                "idx_sheets_stock_time_reconciliation_operations_state_lease",
+                (("state", 1), ("lease_until", 1)),
+            ),
+        ),
+    ),
+    (
+        _PREIMAGE_COLLECTION,
+        (
+            _StockTimeIndexDescriptor(
+                "uniq_sheets_stock_time_reconciliation_preimages_operation_sequence",
+                (("operation_id", 1), ("sequence", 1)),
+                True,
+            ),
+            _StockTimeIndexDescriptor(
+                "uniq_sheets_stock_time_reconciliation_preimages_operation_target",
+                (("operation_id", 1), ("target_collection", 1), ("target_id", 1)),
+                True,
+            ),
+            _StockTimeIndexDescriptor(
+                "idx_sheets_stock_time_reconciliation_preimages_target",
+                (("target_collection", 1), ("target_id", 1)),
+            ),
+        ),
+    ),
+)
+
+
 _ERROR_CODES = frozenset(
     {
         "INVALID_SELLER",
