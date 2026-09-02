@@ -51,6 +51,7 @@ _ERROR_CODES = frozenset(
         "MARKER_READBACK_MISMATCH",
         "COMMIT_CONFLICT",
         "COMMIT_READBACK_MISMATCH",
+        "COMMIT_OUTCOME_UNKNOWN",
         "STATE_BLOCKED",
     }
 )
@@ -956,6 +957,58 @@ async def _write_and_verify_forward_marker(
         raise _ForwardEngineError("MARKER_READBACK_MISMATCH")
 
 
+def _validated_committed_operation(
+    observed: Any, sealed_plan: _SealedForwardPlan, context: _ForwardOperationContext
+) -> Mapping[str, Any]:
+    try:
+        persisted = _validate_persisted_operation(observed, _operation_immutable(sealed_plan))
+    except _ForwardEngineError as exc:
+        raise _ForwardEngineError("COMMIT_READBACK_MISMATCH") from exc
+    committed_at = persisted.get("committed_at")
+    exact_fields = set(_operation_immutable(sealed_plan)) | {
+        "state",
+        "attempt",
+        "attempt_token",
+        "fence",
+        "lease_acquired_at",
+        "heartbeat_at",
+        "lease_until",
+        "created_at",
+        "updated_at",
+        "committed_at",
+        "terminal_at",
+        "error_code",
+        "schema_version",
+    }
+    exact_context = {
+        "state": "committed",
+        "attempt": context.attempt,
+        "attempt_token": context.attempt_token,
+        "fence": context.fence,
+        "error_code": None,
+    }
+    exact_timestamps = (
+        isinstance(committed_at, datetime)
+        and committed_at.tzinfo is not None
+        and committed_at.utcoffset() == timedelta(0)
+        and all(
+            persisted.get(field) == committed_at
+            for field in ("heartbeat_at", "updated_at", "terminal_at", "lease_until")
+        )
+    )
+    created_at = persisted.get("created_at")
+    if (
+        set(persisted) != exact_fields
+        or not isinstance(created_at, datetime)
+        or created_at.tzinfo is None
+        or created_at.utcoffset() != timedelta(0)
+        or any(persisted.get(field) != value for field, value in exact_context.items())
+        or not exact_timestamps
+    ):
+        raise _ForwardEngineError("COMMIT_READBACK_MISMATCH")
+    return persisted
+
+
 async def _write_and_verify_operation_commit(
     db: Any,
     sealed_plan: _SealedForwardPlan,
@@ -990,31 +1043,52 @@ async def _write_and_verify_operation_commit(
     if result.matched_count != 1 or result.modified_count != 1:
         raise _ForwardEngineError("COMMIT_CONFLICT")
     observed = await operations.find_one({"_id": sealed_plan.operation_id}, session=session)
+    _validated_committed_operation(observed, sealed_plan, context)
+
+
+async def _commit_transaction_with_retry(session: Any) -> None:
+    last_unknown: BaseException | None = None
+    for _ in range(3):
+        try:
+            await session.commit_transaction()
+            return
+        except Exception as exc:
+            has_label = getattr(exc, "has_error_label", None)
+            if not callable(has_label) or not has_label("UnknownTransactionCommitResult"):
+                raise
+            last_unknown = exc
+    raise _ForwardEngineError("COMMIT_OUTCOME_UNKNOWN") from last_unknown
+
+
+async def _majority_commit_readback(
+    db: Any, sealed_plan: _SealedForwardPlan, context: _ForwardOperationContext
+) -> bool:
+    concern = ReadConcern("majority")
+    operations = db[_OPERATION_COLLECTION].with_options(read_concern=concern)
+    preimages = db[_PREIMAGE_COLLECTION].with_options(read_concern=concern)
+    metrics = db[_METRIC_COLLECTION].with_options(read_concern=concern)
+    markers = db[_MARKER_COLLECTION].with_options(read_concern=concern)
+    operation = await operations.find_one({"_id": sealed_plan.operation_id})
+    observed_preimages = await preimages.find({"operation_id": sealed_plan.operation_id}).to_list(
+        length=None
+    )
+    observed_metrics = await metrics.find(_metric_interval_query(sealed_plan.binding)).to_list(
+        length=None
+    )
+    marker = await markers.find_one({"_id": sealed_plan._desired_marker["_id"]})
     try:
-        persisted = _validate_persisted_operation(observed, _operation_immutable(sealed_plan))
-    except _ForwardEngineError as exc:
-        raise _ForwardEngineError("COMMIT_READBACK_MISMATCH") from exc
-    committed_at = persisted.get("committed_at")
-    exact_context = {
-        "state": "committed",
-        "attempt": context.attempt,
-        "attempt_token": context.attempt_token,
-        "fence": context.fence,
-        "error_code": None,
-    }
-    exact_timestamps = (
-        isinstance(committed_at, datetime)
-        and committed_at.tzinfo is not None
-        and committed_at.utcoffset() == timedelta(0)
-        and all(
-            persisted.get(field) == committed_at
-            for field in ("heartbeat_at", "updated_at", "terminal_at", "lease_until")
+        persisted = _validated_committed_operation(operation, sealed_plan, context)
+    except _ForwardEngineError:
+        return False
+    expected_preimages = _preimage_records(sealed_plan, persisted["lease_acquired_at"])
+    return (
+        _exact_preimages_match(observed_preimages, expected_preimages)
+        and _exact_preimages_match(observed_metrics, sealed_plan._expected_metric_documents)
+        and _metric_proof_fingerprint(observed_metrics) == sealed_plan.expected_metric_fingerprint
+        and _exact_preimages_match(
+            [] if marker is None else [marker], [sealed_plan._desired_marker]
         )
     )
-    if any(persisted.get(field) != value for field, value in exact_context.items()) or not (
-        exact_timestamps
-    ):
-        raise _ForwardEngineError("COMMIT_READBACK_MISMATCH")
 
 
 async def _commit_forward_operation(
@@ -1029,7 +1103,16 @@ async def _commit_forward_operation(
     async def operation(session: Any) -> None:
         await _write_and_verify_operation_commit(db, sealed_plan, context, session)
 
-    await _persist_forward_preimages(db, sealed_plan, context, (metrics, marker, operation))
+    try:
+        await _persist_forward_preimages(
+            db, sealed_plan, context, (metrics, marker, operation, _commit_transaction_with_retry)
+        )
+    except _ForwardEngineError as exc:
+        if exc.code != "COMMIT_OUTCOME_UNKNOWN":
+            raise
+        last_unknown = exc.__cause__
+        if not await _majority_commit_readback(db, sealed_plan, context):
+            raise _ForwardEngineError("COMMIT_OUTCOME_UNKNOWN") from last_unknown
     return _ForwardOperationContext(
         context.operation_id,
         "committed",

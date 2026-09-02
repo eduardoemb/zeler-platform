@@ -8,6 +8,7 @@ from inspect import signature
 from typing import Any
 
 import pytest
+from pymongo.errors import OperationFailure
 
 import zeler_sheets
 from zeler_sheets import _stock_time_forward_engine as engine
@@ -350,23 +351,21 @@ class FakeTransaction:
             "sheets_stock_time_reconciliation_operations", {}
         )
         self.db.active_session = self.session
+        self.db.transaction_bodies += 1
         return self
 
     async def __aexit__(self, error_type: Any, error: Any, traceback: Any) -> None:
-        staged_collections = self.db.staged_collections
-        self.db.staged_collections = self.db.staged = self.db.active_session = None
-        if error_type is None and self.db.fail_commit:
-            raise RuntimeError("commit failed")
-        if error_type is None:
-            self.db.collections = staged_collections or {}
-            self.db.rows = self.db.collections.setdefault(
-                "sheets_stock_time_reconciliation_operations", {}
-            )
+        try:
+            if error_type is None and not self.session.explicit_commit_attempted:
+                await self.session.commit_transaction()
+        finally:
+            self.db.staged_collections = self.db.staged = self.db.active_session = None
 
 
 class FakeSession:
     def __init__(self, db: FakeDB, *, transaction: bool = True) -> None:
         self.db, self.transaction = db, transaction
+        self.explicit_commit_attempted = self.commit_applied = False
 
     async def __aenter__(self) -> FakeSession:
         return self
@@ -379,6 +378,32 @@ class FakeSession:
             raise AttributeError("transaction unavailable")
         self.db.transaction_options.append(options)
         return FakeTransaction(self.db, self, options)
+
+    def _apply(self) -> None:
+        if self.commit_applied:
+            return
+        assert self.db.staged_collections is not None
+        self.db.collections = deepcopy(self.db.staged_collections)
+        self.db.rows = self.db.collections.setdefault(
+            "sheets_stock_time_reconciliation_operations", {}
+        )
+        self.commit_applied = self.db.commit_applied = True
+
+    async def commit_transaction(self) -> None:
+        self.explicit_commit_attempted = True
+        self.db.commit_calls += 1
+        self.db.commit_sessions.append(self)
+        outcome = self.db.commit_outcomes.pop(0) if self.db.commit_outcomes else None
+        if isinstance(outcome, tuple):
+            action, error = outcome
+            if action == "apply":
+                self._apply()
+            raise error
+        if isinstance(outcome, BaseException):
+            raise outcome
+        if self.db.fail_commit:
+            raise RuntimeError("commit failed")
+        self._apply()
 
 
 class FakeClient:
@@ -419,16 +444,31 @@ class FakeCursor:
 
 
 class FakeCollection:
-    def __init__(self, db: FakeDB, name: str) -> None:
-        self.db, self.name = db, name
+    def __init__(self, db: FakeDB, name: str, read_concern: Any = None) -> None:
+        self.db, self.name, self.read_concern = db, name, read_concern
+
+    def with_options(self, *, read_concern: Any) -> FakeCollection:
+        return FakeCollection(self.db, self.name, read_concern)
 
     def _session(self, options: dict[str, Any]) -> None:
-        assert self.db.staged_collections is not None
-        assert options.get("session") is self.db.active_session
+        if self.read_concern is not None:
+            assert options.get("session") is None and self.db.staged_collections is None
+            self.db.majority_reads.append((self.name, self.read_concern.level))
+        else:
+            assert self.db.staged_collections is not None
+            assert options.get("session") is self.db.active_session
 
     def _rows(self) -> dict[str, dict[str, Any]]:
-        assert self.db.staged_collections is not None
-        return self.db.staged_collections.setdefault(self.name, {})
+        collections = (
+            self.db.collections if self.read_concern is not None else self.db.staged_collections
+        )
+        assert collections is not None
+        rows = collections.get(self.name, {})
+        if self.read_concern is None:
+            return collections.setdefault(self.name, {})
+        visible = deepcopy(rows)
+        hook = self.db.majority_readback_hooks.get(self.name)
+        return hook(visible) if hook is not None else visible
 
     async def find_one(self, query: dict[str, Any], **options: Any) -> Any:
         self._session(options)
@@ -626,6 +666,12 @@ class FakeDB:
         self.fail_body = failures.get("fail_body", False)
         self.fail_write = failures.get("fail_write", False)
         self.fail_commit = failures.get("fail_commit", False)
+        self.commit_outcomes: list[Any] = []
+        self.commit_calls = self.transaction_bodies = 0
+        self.commit_sessions: list[FakeSession] = []
+        self.commit_applied = False
+        self.majority_reads: list[tuple[str, str | None]] = []
+        self.majority_readback_hooks: dict[str, Any] = {}
         self.pre_match_mutation: dict[str, Any] | None = None
         self.metric_race: Any = None
         self.metric_result_overrides: list[FakeUpdateResult] = []
@@ -1441,7 +1487,7 @@ async def test_commit_cas_requires_exact_fence_and_live_lease(result: FakeUpdate
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("mode", ["missing", "malformed", "timestamp"])
+@pytest.mark.parametrize("mode", ["missing", "malformed", "timestamp", "extra"])
 async def test_committed_operation_readback_must_be_exact(mode: str) -> None:
     db, sealed, context = execution_setup()
     original = deepcopy(db.collections)
@@ -1451,7 +1497,9 @@ async def test_committed_operation_readback_must_be_exact(mode: str) -> None:
             return None
         if mode == "malformed":
             return {**row, "attempt": 0}
-        return {**row, "terminal_at": START}
+        if mode == "timestamp":
+            return {**row, "terminal_at": START}
+        return {**row, "extra": True}
 
     db.operation_readback_hook = corrupt
     with pytest.raises(engine._ForwardEngineError, match="COMMIT_READBACK_MISMATCH"):
@@ -1479,6 +1527,144 @@ async def test_each_forward_commit_phase_failure_rolls_back_every_collection(pha
     assert db.collections == original
 
 
+def unknown_commit() -> OperationFailure:
+    return OperationFailure(
+        "unknown commit", details={"errorLabels": ["UnknownTransactionCommitResult"]}
+    )
+
+
+@pytest.mark.asyncio
+async def test_unknown_commit_then_success_retries_same_session_without_replaying_body() -> None:
+    db, sealed, context = execution_setup()
+    db.commit_outcomes = [unknown_commit(), None]
+
+    committed = await engine._commit_forward_operation(db, sealed, context)
+
+    assert committed == replace(context, state="committed", owns_lease=False)
+    assert db.commit_calls == 2 and db.transaction_bodies == 1
+    assert len({id(session) for session in db.commit_sessions}) == 1
+    assert db.events.count("sheets_stock_time_reconciliation_preimages:insert") == 1
+    assert not db.majority_reads
+
+
+@pytest.mark.asyncio
+async def test_ack_lost_unknowns_recover_only_from_exact_majority_durable_readback() -> None:
+    db, sealed, context = execution_setup()
+    errors = [unknown_commit() for _ in range(3)]
+    db.commit_outcomes = [("apply", errors[0]), *errors[1:]]
+
+    committed = await engine._commit_forward_operation(db, sealed, context)
+
+    assert committed == replace(context, state="committed", owns_lease=False)
+    assert db.commit_calls == 3 and db.transaction_bodies == 1
+    assert db.majority_reads == [
+        ("sheets_stock_time_reconciliation_operations", "majority"),
+        ("sheets_stock_time_reconciliation_preimages", "majority"),
+        ("sheets_stock_time_metrics", "majority"),
+        ("sheets_read_model_freshness", "majority"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_unknown_before_apply_is_bounded_to_three_commits_and_never_replays() -> None:
+    db, sealed, context = execution_setup()
+    errors = [unknown_commit() for _ in range(4)]
+    db.commit_outcomes = errors.copy()
+
+    with pytest.raises(engine._ForwardEngineError, match="COMMIT_OUTCOME_UNKNOWN") as caught:
+        await engine._commit_forward_operation(db, sealed, context)
+
+    assert caught.value.__cause__ is errors[2]
+    assert db.commit_calls == 3 and len(db.commit_outcomes) == 1
+    assert db.transaction_bodies == 1 and db.rows[sealed.operation_id]["state"] == "prepared"
+    assert "sheets_stock_time_reconciliation_preimages" not in db.collections
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("collection", "mode"),
+    [
+        ("sheets_stock_time_reconciliation_operations", "prepared"),
+        ("sheets_read_model_freshness", "absent"),
+        ("sheets_stock_time_reconciliation_operations", "malformed"),
+        ("sheets_stock_time_reconciliation_preimages", "partial"),
+        ("sheets_stock_time_metrics", "extra"),
+        ("sheets_read_model_freshness", "mismatch"),
+    ],
+)
+async def test_unknown_commit_readback_rejects_every_nonexact_durable_state(
+    collection: str, mode: str
+) -> None:
+    db, sealed, context = execution_setup()
+    errors = [unknown_commit() for _ in range(3)]
+    db.commit_outcomes = [("apply", errors[0]), *errors[1:]]
+
+    def corrupt(rows: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
+        if mode in {"prepared", "malformed"}:
+            row = rows[sealed.operation_id]
+            field, value = ("state", "prepared") if mode == "prepared" else ("attempt", 0)
+            row[field] = value
+        elif mode == "absent":
+            rows.clear()
+        elif mode == "partial":
+            rows.pop(next(iter(rows)))
+        elif mode == "extra":
+            rows["extra"] = metric("extra", 9)
+        else:
+            rows[next(iter(rows))]["state"] = "stale"
+        return rows
+
+    db.majority_readback_hooks[collection] = corrupt
+    with pytest.raises(engine._ForwardEngineError, match="COMMIT_OUTCOME_UNKNOWN") as caught:
+        await engine._commit_forward_operation(db, sealed, context)
+    assert caught.value.__cause__ is errors[-1]
+    assert db.transaction_bodies == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("after_unknown", [False, True], ids=["immediate", "after-unknown"])
+async def test_non_unknown_commit_error_propagates_immediately(after_unknown: bool) -> None:
+    db, sealed, context = execution_setup()
+    ordinary = RuntimeError("ordinary commit")
+    db.commit_outcomes = ([unknown_commit()] if after_unknown else []) + [ordinary]
+
+    with pytest.raises(RuntimeError, match="ordinary commit") as caught:
+        await engine._commit_forward_operation(db, sealed, context)
+
+    assert caught.value is ordinary
+    assert db.commit_calls == (2 if after_unknown else 1)
+    assert not db.majority_reads and db.rows[sealed.operation_id]["state"] == "prepared"
+
+
+@pytest.mark.asyncio
+async def test_unknown_commit_majority_read_operational_error_propagates() -> None:
+    db, sealed, context = execution_setup()
+    errors = [unknown_commit() for _ in range(3)]
+    db.commit_outcomes = [("apply", errors[0]), *errors[1:]]
+    read_error = RuntimeError("majority unavailable")
+
+    def fail_read(_: Any) -> Any:
+        raise read_error
+
+    db.majority_readback_hooks["sheets_stock_time_metrics"] = fail_read
+    with pytest.raises(RuntimeError, match="majority unavailable") as caught:
+        await engine._commit_forward_operation(db, sealed, context)
+    assert caught.value is read_error
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("caller", ["acquisition", "preimages", "metrics"])
+async def test_legacy_transaction_callers_retain_automatic_commit_lifecycle(caller: str) -> None:
+    if caller == "acquisition":
+        db, sealed = FakeDB(), seal()
+        await engine._acquire_forward_operation(db, sealed, "a" * 32)
+    else:
+        db, sealed, context = execution_setup()
+        await getattr(engine, f"_persist_forward_{caller}")(db, sealed, context)
+    assert db.commit_calls == db.transaction_bodies == 1
+    assert db.staged_collections is None and db.commit_applied
+
+
 def test_forward_contract_remains_private_with_bounded_errors() -> None:
     assert not hasattr(zeler_sheets, "_seal_forward_plan")
     assert not hasattr(zeler_sheets, "_ForwardMutation")
@@ -1488,5 +1674,7 @@ def test_forward_contract_remains_private_with_bounded_errors() -> None:
     assert not hasattr(zeler_sheets, "_persist_forward_preimages")
     assert not hasattr(zeler_sheets, "_persist_forward_metrics")
     assert not hasattr(zeler_sheets, "_commit_forward_operation")
+    assert not hasattr(zeler_sheets, "_commit_transaction_with_retry")
+    assert not hasattr(zeler_sheets, "_majority_commit_readback")
     with pytest.raises(ValueError, match="unknown forward-engine error code"):
         engine._ForwardEngineError("NOT_A_SEALING_ERROR")
