@@ -266,6 +266,7 @@ _ERROR_CODES = frozenset(
         "COMMIT_CONFLICT",
         "COMMIT_READBACK_MISMATCH",
         "COMMIT_OUTCOME_UNKNOWN",
+        "FORWARD_CONTEXT_INVALID",
         "STATE_BLOCKED",
         "ROLLBACK_BLOCKED",
     }
@@ -1365,6 +1366,72 @@ async def _commit_forward_operation(
         context.fence,
         False,
     )
+
+
+def _exact_forward_operation_context(
+    context: Any,
+    *,
+    operation_id: str,
+    state: str,
+    owns_lease: bool,
+    attempt: int | None = None,
+    attempt_token: str | None = None,
+    fence: int | None = None,
+) -> bool:
+    if type(context) is not _ForwardOperationContext:
+        return False
+    exact = context
+    return (
+        type(exact.operation_id) is str
+        and exact.operation_id == operation_id
+        and type(exact.state) is str
+        and exact.state == state
+        and type(exact.attempt) is int
+        and exact.attempt > 0
+        and type(exact.attempt_token) is str
+        and _ATTEMPT_TOKEN.fullmatch(exact.attempt_token) is not None
+        and type(exact.fence) is int
+        and exact.fence > 0
+        and type(exact.owns_lease) is bool
+        and exact.owns_lease is owns_lease
+        and (attempt is None or exact.attempt == attempt)
+        and (attempt_token is None or exact.attempt_token == attempt_token)
+        and (fence is None or exact.fence == fence)
+    )
+
+
+async def _execute_sealed_forward_operation(
+    db: Any, sealed_plan: _SealedForwardPlan, attempt_token: str
+) -> str:
+    context = await _acquire_forward_operation(db, sealed_plan, attempt_token)
+    if _exact_forward_operation_context(
+        context,
+        operation_id=sealed_plan.operation_id,
+        state="committed",
+        owns_lease=False,
+    ):
+        return "already_committed"
+    if not _exact_forward_operation_context(
+        context,
+        operation_id=sealed_plan.operation_id,
+        state="prepared",
+        owns_lease=True,
+        attempt_token=attempt_token,
+    ):
+        raise _ForwardEngineError("FORWARD_CONTEXT_INVALID")
+
+    committed = await _commit_forward_operation(db, sealed_plan, context)
+    if not _exact_forward_operation_context(
+        committed,
+        operation_id=context.operation_id,
+        state="committed",
+        owns_lease=False,
+        attempt=context.attempt,
+        attempt_token=context.attempt_token,
+        fence=context.fence,
+    ):
+        raise _ForwardEngineError("FORWARD_CONTEXT_INVALID")
+    return "forward_committed"
 
 
 _ROLLBACK_OPERATION_FIELDS = set(
