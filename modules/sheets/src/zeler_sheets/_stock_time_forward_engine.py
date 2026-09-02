@@ -767,7 +767,7 @@ async def _validated_execution_operation(
 
 def _metric_interval_query(binding: _ForwardBinding) -> dict[str, Any]:
     seller_values: list[str | int] = [binding._seller_id]
-    if binding._seller_id.isdigit():
+    if re.fullmatch(r"[0-9]+", binding._seller_id):
         seller_values.append(int(binding._seller_id))
     return {
         "seller_id": {"$in": seller_values},
@@ -1232,6 +1232,12 @@ def _validate_rollback_operation(operation: Any, operation_id: str) -> Mapping[s
     return operation
 
 
+def _rollback_seller_matches(seller: str, value: Any) -> bool:
+    return (type(value) is str and value == seller) or (
+        bool(re.fullmatch(r"[0-9]+", seller)) and type(value) is int and value == int(seller)
+    )
+
+
 def _validate_rollback_preimages(
     operation: Mapping[str, Any], observed: Sequence[Mapping[str, Any]]
 ) -> tuple[Mapping[str, Any], ...]:
@@ -1272,7 +1278,7 @@ def _validate_rollback_preimages(
         if exact and target[0] == _METRIC_COLLECTION:
             valid = valid and (
                 preimage.get("_id") == target[1]
-                and preimage.get("seller_id") == seller
+                and _rollback_seller_matches(seller, preimage.get("seller_id"))
                 and preimage.get("date_from") == start
                 and preimage.get("date_to") == end
             )
@@ -1378,9 +1384,6 @@ def _validated_rollback_metrics(
     operation: Mapping[str, Any], documents: Sequence[Any]
 ) -> dict[str, Mapping[str, Any]]:
     seller = operation["seller_id"]
-    seller_values: set[str | int] = {seller}
-    if seller.isdigit():
-        seller_values.add(int(seller))
     indexed: dict[str, Mapping[str, Any]] = {}
     for document in documents:
         if (
@@ -1388,7 +1391,7 @@ def _validated_rollback_metrics(
             or not isinstance(document.get("_id"), str)
             or not document["_id"]
             or document["_id"] in indexed
-            or document.get("seller_id") not in seller_values
+            or not _rollback_seller_matches(seller, document.get("seller_id"))
             or document.get("date_from") != operation["date_from"]
             or document.get("date_to") != operation["date_to"]
         ):
@@ -1414,35 +1417,33 @@ def _rollback_mutation(record: Mapping[str, Any]) -> _RollbackMutation:
     )
 
 
-async def _prepare_forward_rollback(db: Any, operation_id: str) -> _ForwardRollbackPlan:
-    """Prepare only; R2 applies inverses atomically, so ordering is an audit/readback convention."""
-    record_set = await _load_validated_rollback_record_set(db, operation_id)
+async def _prepare_rollback_record_set(
+    db: Any, record_set: _ValidatedRollbackRecordSet, session: Any | None = None
+) -> tuple[_ForwardRollbackPlan, Mapping[str, Any] | None, dict[str, Mapping[str, Any]]]:
+    """Validate the complete forward state from one read view and derive its inverse."""
     if record_set.state == "rolled_back":
-        return _ForwardRollbackPlan(record_set.operation_id, record_set.state, ())
+        return _ForwardRollbackPlan(record_set.operation_id, record_set.state, ()), None, {}
     try:
         operation, records = record_set._operation, record_set._records
-        concern = ReadConcern("majority")
-        marker = (
-            await db[_MARKER_COLLECTION]
-            .with_options(read_concern=concern)
-            .find_one({"_id": f"{operation['seller_id']}:{_READ_MODEL}"})
+        options = {"session": session} if session is not None else {}
+        marker_collection, metric_collection = db[_MARKER_COLLECTION], db[_METRIC_COLLECTION]
+        if session is None:
+            concern = ReadConcern("majority")
+            marker_collection = marker_collection.with_options(read_concern=concern)
+            metric_collection = metric_collection.with_options(read_concern=concern)
+        marker = await marker_collection.find_one(
+            {"_id": f"{operation['seller_id']}:{_READ_MODEL}"}, **options
         )
-        documents = (
-            await db[_METRIC_COLLECTION]
-            .with_options(read_concern=concern)
-            .find(
-                _metric_interval_query(
-                    _ForwardBinding(
-                        operation["seller_id"],
-                        operation["date_from"],
-                        operation["date_to"],
-                        operation["source_fingerprint"],
-                        operation["plan_fingerprint"],
-                    )
-                )
-            )
-            .to_list(length=None)
+        binding = _ForwardBinding(
+            operation["seller_id"],
+            operation["date_from"],
+            operation["date_to"],
+            operation["source_fingerprint"],
+            operation["plan_fingerprint"],
         )
+        documents = await metric_collection.find(
+            _metric_interval_query(binding), **options
+        ).to_list(length=None)
         current_marker = _validated_rollback_marker(operation, records, marker)
         current_metrics = _validated_rollback_metrics(operation, documents)
         if (
@@ -1468,10 +1469,14 @@ async def _prepare_forward_rollback(db: Any, operation_id: str) -> _ForwardRollb
             for record in reversed(records[:-1])
             if record["target_collection"] == _METRIC_COLLECTION
         )
-        return _ForwardRollbackPlan(
-            record_set.operation_id,
-            record_set.state,
-            (_rollback_mutation(marker_record), *metrics),
+        return (
+            _ForwardRollbackPlan(
+                record_set.operation_id,
+                record_set.state,
+                (_rollback_mutation(marker_record), *metrics),
+            ),
+            current_marker,
+            current_metrics,
         )
     except _ForwardEngineError:
         raise
@@ -1485,3 +1490,229 @@ async def _prepare_forward_rollback(db: Any, operation_id: str) -> _ForwardRollb
         _StockTimeActionPlanError,
     ) as exc:
         raise _ForwardEngineError("ROLLBACK_BLOCKED") from exc
+
+
+async def _prepare_forward_rollback(db: Any, operation_id: str) -> _ForwardRollbackPlan:
+    """Prepare only; R2 applies inverses atomically, so ordering is an audit/readback convention."""
+    record_set = await _load_validated_rollback_record_set(db, operation_id)
+    plan, _, _ = await _prepare_rollback_record_set(db, record_set)
+    return plan
+
+
+async def _transaction_rollback_record_set(
+    db: Any, operation_id: str, session: Any
+) -> _ValidatedRollbackRecordSet:
+    operation = await db[_OPERATION_COLLECTION].find_one({"_id": operation_id}, session=session)
+    preimages = (
+        await db[_PREIMAGE_COLLECTION]
+        .find({"operation_id": operation_id}, session=session)
+        .to_list(length=None)
+    )
+    try:
+        persisted = _validate_rollback_operation(operation, operation_id)
+        preimages.sort(key=lambda row: row.get("sequence", -1) if isinstance(row, Mapping) else -1)
+        records = _validate_rollback_preimages(persisted, preimages)
+        return _ValidatedRollbackRecordSet(
+            operation_id,
+            persisted["state"],
+            _deep_freeze(persisted),
+            tuple(_deep_freeze(row) for row in records),
+        )
+    except _ForwardEngineError:
+        raise
+    except (AttributeError, IndexError, KeyError, OverflowError, TypeError, ValueError) as exc:
+        raise _ForwardEngineError("ROLLBACK_BLOCKED") from exc
+
+
+def _rollback_operation_identity(operation: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        key: operation[key]
+        for key in (
+            "_id",
+            "seller_id",
+            "read_model",
+            "date_from",
+            "date_to",
+            "source_fingerprint",
+            "plan_fingerprint",
+            "planned_insert_count",
+            "planned_update_count",
+            "planned_delete_count",
+            "planned_preimage_count",
+            "schema_version",
+        )
+    }
+
+
+def _rollback_binding(operation: Mapping[str, Any]) -> _ForwardBinding:
+    return _ForwardBinding(
+        operation["seller_id"],
+        operation["date_from"],
+        operation["date_to"],
+        operation["source_fingerprint"],
+        operation["plan_fingerprint"],
+    )
+
+
+def _rollback_selector(operation: Mapping[str, Any], mutation: _RollbackMutation) -> dict[str, Any]:
+    if mutation.target_collection == _MARKER_COLLECTION:
+        return {
+            "_id": mutation._target_id,
+            "seller_id": operation["seller_id"],
+            "read_model": _READ_MODEL,
+            "revision": mutation.expected_forward_revision,
+        }
+    return {
+        "_id": mutation._target_id,
+        **_metric_interval_query(_rollback_binding(operation)),
+        "revision": mutation.expected_forward_revision,
+    }
+
+
+async def _apply_rollback_mutation(
+    db: Any, operation: Mapping[str, Any], mutation: _RollbackMutation, session: Any
+) -> None:
+    collection = db[mutation.target_collection]
+    if mutation.action == "delete":
+        result = await collection.delete_one(
+            _rollback_selector(operation, mutation), session=session
+        )
+        exact = result.deleted_count == 1
+    elif mutation.action == "replace":
+        if mutation._restoration is None:
+            raise _ForwardEngineError("ROLLBACK_BLOCKED")
+        result = await collection.replace_one(
+            _rollback_selector(operation, mutation),
+            _canonical_bson_document(mutation._restoration),
+            session=session,
+        )
+        exact = result.matched_count == 1 and result.modified_count == 1
+    elif mutation.action == "insert":
+        if mutation._restoration is None:
+            raise _ForwardEngineError("ROLLBACK_BLOCKED")
+        selector = {
+            key: value
+            for key, value in _rollback_selector(operation, mutation).items()
+            if key != "revision"
+        }
+        result = await collection.replace_one(
+            selector,
+            _canonical_bson_document(mutation._restoration),
+            upsert=True,
+            session=session,
+        )
+        exact = result.matched_count == 0 and result.upserted_id == mutation._target_id
+    else:
+        raise _ForwardEngineError("ROLLBACK_BLOCKED")
+    if not exact:
+        raise _ForwardEngineError("ROLLBACK_BLOCKED")
+
+
+def _rollback_baseline(
+    current_metrics: Mapping[str, Mapping[str, Any]], plan: _ForwardRollbackPlan
+) -> tuple[Mapping[str, Any], ...]:
+    baseline = dict(current_metrics)
+    for mutation in plan._mutations[1:]:
+        if mutation.action == "delete":
+            baseline.pop(mutation._target_id, None)
+        elif mutation._restoration is not None:
+            baseline[mutation._target_id] = mutation._restoration
+    return tuple(baseline.values())
+
+
+async def _rollback_forward_operation(db: Any, operation_id: str) -> _ForwardRollbackPlan:
+    """Atomically restore a committed forward operation; recovery policy is deliberately absent."""
+    majority_plan = await _prepare_forward_rollback(db, operation_id)
+    if majority_plan.state == "rolled_back":
+        return majority_plan
+    majority_records = await _load_validated_rollback_record_set(db, operation_id)
+    try:
+        async with _required_transaction(db) as session:
+            record_set = await _transaction_rollback_record_set(db, operation_id, session)
+            if record_set.state == "rolled_back":
+                return _ForwardRollbackPlan(operation_id, "rolled_back", ())
+            local_plan, _, metrics = await _prepare_rollback_record_set(db, record_set, session)
+            if (
+                record_set._operation != majority_records._operation
+                or record_set._records != majority_records._records
+                or local_plan != majority_plan
+            ):
+                raise _ForwardEngineError("ROLLBACK_BLOCKED")
+            baseline = _rollback_baseline(metrics, local_plan)
+            for mutation in local_plan._mutations:
+                await _apply_rollback_mutation(db, record_set._operation, mutation, session)
+            observed_metrics = (
+                await db[_METRIC_COLLECTION]
+                .find(
+                    _metric_interval_query(_rollback_binding(record_set._operation)),
+                    session=session,
+                )
+                .to_list(length=None)
+            )
+            if not _exact_preimages_match(observed_metrics, baseline):
+                raise _ForwardEngineError("ROLLBACK_BLOCKED")
+            observed_marker = await db[_MARKER_COLLECTION].find_one(
+                {"_id": f"{record_set._operation['seller_id']}:{_READ_MODEL}"}, session=session
+            )
+            expected_marker = local_plan._mutations[0]._restoration
+            if not _exact_preimages_match(
+                [] if observed_marker is None else [observed_marker],
+                [] if expected_marker is None else [expected_marker],
+            ):
+                raise _ForwardEngineError("ROLLBACK_BLOCKED")
+            preimages = (
+                await db[_PREIMAGE_COLLECTION]
+                .find({"operation_id": operation_id}, session=session)
+                .to_list(length=None)
+            )
+            if not _exact_preimages_match(preimages, record_set._records):
+                raise _ForwardEngineError("ROLLBACK_BLOCKED")
+            operation = record_set._operation
+            result = await db[_OPERATION_COLLECTION].update_one(
+                {
+                    **_rollback_operation_identity(operation),
+                    "state": "committed",
+                    "attempt": operation["attempt"],
+                    "attempt_token": operation["attempt_token"],
+                    "fence": operation["fence"],
+                    "committed_at": operation["committed_at"],
+                },
+                [
+                    {
+                        "$set": {
+                            "state": "rolled_back",
+                            "heartbeat_at": "$$NOW",
+                            "updated_at": "$$NOW",
+                            "terminal_at": "$$NOW",
+                            "lease_until": "$$NOW",
+                            "error_code": None,
+                        }
+                    }
+                ],
+                session=session,
+            )
+            if result.matched_count != 1 or result.modified_count != 1:
+                raise _ForwardEngineError("ROLLBACK_BLOCKED")
+            observed_operation = await db[_OPERATION_COLLECTION].find_one(
+                {"_id": operation_id}, session=session
+            )
+            _validate_rollback_operation(observed_operation, operation_id)
+            mutable = {
+                "state",
+                "heartbeat_at",
+                "updated_at",
+                "terminal_at",
+                "lease_until",
+                "error_code",
+            }
+            if any(
+                observed_operation.get(key) != operation.get(key)
+                for key in set(operation) - mutable
+            ):
+                raise _ForwardEngineError("ROLLBACK_BLOCKED")
+    except Exception as exc:
+        has_label = getattr(exc, "has_error_label", None)
+        if callable(has_label) and has_label("UnknownTransactionCommitResult"):
+            raise _ForwardEngineError("COMMIT_OUTCOME_UNKNOWN") from exc
+        raise
+    return _ForwardRollbackPlan(operation_id, "rolled_back", ())

@@ -2112,6 +2112,105 @@ async def test_prepare_rollback_blocks_malformed_duplicate_and_out_of_scope_live
     assert not db.writes and not db.metric_writes and not db.marker_writes
 
 
+@pytest.mark.asyncio
+async def test_rollback_applies_atomic_inverse_and_preserves_exact_baseline() -> None:
+    original_marker = marker(nested={"values": [1]})
+    db, sealed = await rollback_setup(original_marker)
+
+    committed_at = db.rows[sealed.operation_id]["committed_at"]
+    preimages = deepcopy(db.collections["sheets_stock_time_reconciliation_preimages"])
+    bodies, commits = db.transaction_bodies, db.commit_calls
+    restored = await engine._rollback_forward_operation(db, sealed.operation_id)
+
+    assert restored == engine._ForwardRollbackPlan(sealed.operation_id, "rolled_back", ())
+    assert db.collections["sheets_stock_time_metrics"] == {
+        "delete": metric("delete", 1),
+        "replace": metric("replace", 1),
+        "same": metric("same", 1),
+    }
+    assert db.collections["sheets_read_model_freshness"] == {
+        original_marker["_id"]: original_marker
+    }
+    operation = db.rows[sealed.operation_id]
+    assert operation["state"] == "rolled_back"
+    assert operation["committed_at"] == committed_at
+    assert operation["terminal_at"] == operation["updated_at"] == db.server_now
+    assert db.collections["sheets_stock_time_reconciliation_preimages"] == preimages
+    assert db.transaction_bodies == bodies + 1 and db.commit_calls == commits + 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("phase", ["marker", "metric", "operation"])
+async def test_rollback_cas_failures_abort_the_entire_transaction(phase: str) -> None:
+    db, sealed = await rollback_setup(marker())
+    original = deepcopy(db.collections)
+    if phase == "marker":
+        db.marker_result_overrides = [FakeUpdateResult()]
+    elif phase == "metric":
+        db.metric_result_overrides = [FakeUpdateResult()]
+    else:
+        db.operation_result_overrides = [FakeUpdateResult()]
+
+    with pytest.raises(engine._ForwardEngineError, match="^ROLLBACK_BLOCKED$"):
+        await engine._rollback_forward_operation(db, sealed.operation_id)
+
+    assert db.collections == original
+
+
+@pytest.mark.asyncio
+async def test_rollback_is_idempotent_and_unknown_auto_commit_is_not_recovered() -> None:
+    db, sealed = await rollback_setup(marker())
+    first = await engine._rollback_forward_operation(db, sealed.operation_id)
+    reads, bodies, commits = len(db.majority_reads), db.transaction_bodies, db.commit_calls
+
+    assert await engine._rollback_forward_operation(db, sealed.operation_id) == first
+    assert len(db.majority_reads) == reads + 2
+    assert (db.transaction_bodies, db.commit_calls) == (bodies, commits)
+
+    unknown_db, unknown_sealed = await rollback_setup(marker())
+    unknown = unknown_commit()
+    bodies, commits = unknown_db.transaction_bodies, unknown_db.commit_calls
+    unknown_db.commit_outcomes = [("apply", unknown)]
+    with pytest.raises(engine._ForwardEngineError, match="^COMMIT_OUTCOME_UNKNOWN$") as caught:
+        await engine._rollback_forward_operation(unknown_db, unknown_sealed.operation_id)
+    assert caught.value.__cause__ is unknown
+    assert unknown_db.transaction_bodies == bodies + 1
+    assert unknown_db.commit_calls == commits + 1
+    assert len(unknown_db.majority_reads) == 6  # prepare plus exact majority ledger comparison
+
+
+@pytest.mark.asyncio
+async def test_rollback_preparation_accepts_only_decimal_integer_legacy_metric_sellers() -> None:
+    operation = {"seller_id": "12", "date_from": START, "date_to": END}
+    numeric = {"_id": "numeric", "seller_id": 12, "date_from": START, "date_to": END}
+    assert engine._validated_rollback_metrics(operation, [numeric]) == {"numeric": numeric}
+    for seller in (True, 12.0, "012"):
+        document = {**numeric, "seller_id": seller}
+        with pytest.raises(engine._ForwardEngineError, match="^ROLLBACK_BLOCKED$"):
+            engine._validated_rollback_metrics(operation, [document])
+
+
+@pytest.mark.asyncio
+async def test_rollback_deletes_an_absent_preimage_marker_and_plans_numeric_legacy_rows() -> None:
+    db, sealed = await rollback_setup()
+    await engine._rollback_forward_operation(db, sealed.operation_id)
+    assert db.collections["sheets_read_model_freshness"] == {}
+
+    def numeric(target: str, value: int) -> dict[str, Any]:
+        return metric(target, value, seller_id=82453304)
+
+    plan = planner._plan_stock_time_actions(
+        source_inventory=[{"_id": "source"}],
+        planned_documents=[numeric("insert", 2), numeric("same", 1), numeric("replace", 2)],
+        existing_target_rows=[numeric("delete", 1), numeric("same", 1), numeric("replace", 1)],
+    )
+    numeric_db, numeric_sealed, context = execution_setup(seal(plan=plan, old_marker=marker()))
+    await engine._commit_forward_operation(numeric_db, numeric_sealed, context)
+    assert (
+        await engine._prepare_forward_rollback(numeric_db, numeric_sealed.operation_id)
+    ).state == "committed"
+
+
 def test_forward_contract_remains_private_with_bounded_errors() -> None:
     assert not hasattr(zeler_sheets, "_seal_forward_plan")
     assert not hasattr(zeler_sheets, "_ForwardMutation")
@@ -2120,7 +2219,9 @@ def test_forward_contract_remains_private_with_bounded_errors() -> None:
     assert hasattr(engine, "_ForwardRollbackPlan")
     assert hasattr(engine, "_RollbackMutation")
     assert hasattr(engine, "_prepare_forward_rollback")
+    assert hasattr(engine, "_rollback_forward_operation")
     assert not hasattr(zeler_sheets, "_prepare_forward_rollback")
+    assert not hasattr(zeler_sheets, "_rollback_forward_operation")
     assert not hasattr(engine, "_execute_forward_rollback")
     assert not hasattr(engine, "_persist_forward_rollback")
     assert not hasattr(zeler_sheets, "_acquire_forward_operation")
