@@ -2404,6 +2404,249 @@ async def test_rollback_deletes_an_absent_preimage_marker_and_plans_numeric_lega
     ).state == "committed"
 
 
+class RegexValidAttemptToken(str):
+    pass
+
+
+@pytest.mark.parametrize(("state", "owns_lease"), [("prepared", True), ("committed", False)])
+def test_exact_forward_operation_context_rejects_regex_valid_attempt_token_subclass(
+    state: str, owns_lease: bool
+) -> None:
+    context = engine._ForwardOperationContext(
+        "operation", state, 3, RegexValidAttemptToken("a" * 32), 5, owns_lease
+    )
+
+    assert not engine._exact_forward_operation_context(
+        context,
+        operation_id="operation",
+        state=state,
+        owns_lease=owns_lease,
+    )
+
+
+@pytest.mark.asyncio
+async def test_execute_sealed_forward_operation_acquires_then_commits_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sealed, token, calls = seal(), "a" * 32, []
+    prepared = engine._ForwardOperationContext(sealed.operation_id, "prepared", 3, token, 5, True)
+    committed = replace(prepared, state="committed", owns_lease=False)
+
+    async def acquire(db: Any, plan: Any, attempt_token: str) -> Any:
+        calls.append(("acquire", db, plan, attempt_token))
+        return prepared
+
+    async def commit(db: Any, plan: Any, context: Any) -> Any:
+        calls.append(("commit", db, plan, context))
+        return committed
+
+    monkeypatch.setattr(engine, "_acquire_forward_operation", acquire)
+    monkeypatch.setattr(engine, "_commit_forward_operation", commit)
+    database = object()
+
+    assert (
+        await engine._execute_sealed_forward_operation(database, sealed, token)
+        == "forward_committed"
+    )
+    assert calls == [
+        ("acquire", database, sealed, token),
+        ("commit", database, sealed, prepared),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_execute_sealed_forward_operation_skips_commit_when_already_committed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sealed, token = seal(), "a" * 32
+    committed = engine._ForwardOperationContext(
+        sealed.operation_id, "committed", 3, token, 5, False
+    )
+    calls: list[str] = []
+
+    async def acquire(*_: Any) -> Any:
+        calls.append("acquire")
+        return committed
+
+    async def commit(*_: Any) -> Any:
+        calls.append("commit")
+        raise AssertionError("already committed operations must not be committed again")
+
+    monkeypatch.setattr(engine, "_acquire_forward_operation", acquire)
+    monkeypatch.setattr(engine, "_commit_forward_operation", commit)
+
+    assert (
+        await engine._execute_sealed_forward_operation(object(), sealed, token)
+        == "already_committed"
+    )
+    assert calls == ["acquire"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "context",
+    [
+        engine._ForwardOperationContext("other", "prepared", 3, "a" * 32, 5, True),
+        engine._ForwardOperationContext("operation", "future", 3, "a" * 32, 5, True),
+        engine._ForwardOperationContext("operation", "prepared", 3, "a" * 32, 5, False),
+        engine._ForwardOperationContext("operation", "committed", 3, "a" * 32, 5, True),
+        object(),
+    ],
+    ids=[
+        "wrong-operation",
+        "unknown-state",
+        "prepared-without-lease",
+        "committed-with-lease",
+        "wrong-type",
+    ],
+)
+async def test_execute_sealed_forward_operation_rejects_invalid_acquired_context(
+    monkeypatch: pytest.MonkeyPatch, context: Any
+) -> None:
+    sealed, token, calls = seal(), "a" * 32, []
+    if isinstance(context, engine._ForwardOperationContext) and context.operation_id == "operation":
+        context = replace(context, operation_id=sealed.operation_id)
+
+    async def acquire(*_: Any) -> Any:
+        calls.append("acquire")
+        return context
+
+    async def commit(*_: Any) -> Any:
+        calls.append("commit")
+        return None
+
+    monkeypatch.setattr(engine, "_acquire_forward_operation", acquire)
+    monkeypatch.setattr(engine, "_commit_forward_operation", commit)
+
+    with pytest.raises(engine._ForwardEngineError, match="^FORWARD_CONTEXT_INVALID$"):
+        await engine._execute_sealed_forward_operation(object(), sealed, token)
+    assert calls == ["acquire"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("state", "owns_lease", "field", "value"),
+    [
+        ("prepared", True, "attempt", 3.0),
+        ("prepared", True, "fence", 5.0),
+        ("prepared", True, "owns_lease", 1),
+        ("prepared", True, "attempt_token", "invalid"),
+        ("prepared", True, "attempt_token", "b" * 32),
+        ("committed", False, "attempt", 3.0),
+        ("committed", False, "fence", 5.0),
+        ("committed", False, "owns_lease", 0),
+        ("committed", False, "attempt_token", "invalid"),
+    ],
+)
+async def test_execute_sealed_forward_operation_rejects_malformed_acquired_context(
+    monkeypatch: pytest.MonkeyPatch, state: str, owns_lease: bool, field: str, value: Any
+) -> None:
+    sealed, token, calls = seal(), "a" * 32, []
+    context = replace(
+        engine._ForwardOperationContext(sealed.operation_id, state, 3, token, 5, owns_lease),
+        **{field: value},
+    )
+
+    async def acquire(*_: Any) -> Any:
+        calls.append("acquire")
+        return context
+
+    async def commit(*_: Any) -> Any:
+        calls.append("commit")
+        return None
+
+    monkeypatch.setattr(engine, "_acquire_forward_operation", acquire)
+    monkeypatch.setattr(engine, "_commit_forward_operation", commit)
+
+    with pytest.raises(engine._ForwardEngineError, match="^FORWARD_CONTEXT_INVALID$"):
+        await engine._execute_sealed_forward_operation(object(), sealed, token)
+    assert calls == ["acquire"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "returned",
+    [
+        engine._ForwardOperationContext("other", "committed", 3, "a" * 32, 5, False),
+        engine._ForwardOperationContext("operation", "prepared", 3, "a" * 32, 5, False),
+        engine._ForwardOperationContext("operation", "committed", 4, "a" * 32, 5, False),
+        engine._ForwardOperationContext(
+            "operation", "committed", cast(Any, 3.0), "a" * 32, 5, False
+        ),
+        engine._ForwardOperationContext("operation", "committed", 3, "b" * 32, 5, False),
+        engine._ForwardOperationContext("operation", "committed", 3, "a" * 32, 6, False),
+        engine._ForwardOperationContext(
+            "operation", "committed", 3, "a" * 32, cast(Any, 5.0), False
+        ),
+        engine._ForwardOperationContext("operation", "committed", 3, "a" * 32, 5, cast(Any, 0)),
+        engine._ForwardOperationContext("operation", "committed", 3, "a" * 32, 5, True),
+        object(),
+    ],
+    ids=[
+        "wrong-operation",
+        "wrong-state",
+        "wrong-attempt",
+        "equal-valued-float-attempt",
+        "wrong-token",
+        "wrong-fence",
+        "equal-valued-float-fence",
+        "equal-valued-int-ownership",
+        "committed-with-lease",
+        "wrong-type",
+    ],
+)
+async def test_execute_sealed_forward_operation_rejects_mismatched_committed_context(
+    monkeypatch: pytest.MonkeyPatch, returned: Any
+) -> None:
+    sealed, token, calls = seal(), "a" * 32, []
+    prepared = engine._ForwardOperationContext(sealed.operation_id, "prepared", 3, token, 5, True)
+    if (
+        isinstance(returned, engine._ForwardOperationContext)
+        and returned.operation_id == "operation"
+    ):
+        returned = replace(returned, operation_id=sealed.operation_id)
+
+    async def acquire(*_: Any) -> Any:
+        calls.append("acquire")
+        return prepared
+
+    async def commit(*_: Any) -> Any:
+        calls.append("commit")
+        return returned
+
+    monkeypatch.setattr(engine, "_acquire_forward_operation", acquire)
+    monkeypatch.setattr(engine, "_commit_forward_operation", commit)
+
+    with pytest.raises(engine._ForwardEngineError, match="^FORWARD_CONTEXT_INVALID$"):
+        await engine._execute_sealed_forward_operation(object(), sealed, token)
+    assert calls == ["acquire", "commit"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("helper", ["_acquire_forward_operation", "_commit_forward_operation"])
+async def test_execute_sealed_forward_operation_propagates_engine_errors_unchanged(
+    monkeypatch: pytest.MonkeyPatch, helper: str
+) -> None:
+    sealed, token = seal(), "a" * 32
+    failure = engine._ForwardEngineError("LEASE_CONFLICT")
+    prepared = engine._ForwardOperationContext(sealed.operation_id, "prepared", 3, token, 5, True)
+
+    async def acquire(*_: Any) -> Any:
+        if helper == "_acquire_forward_operation":
+            raise failure
+        return prepared
+
+    async def commit(*_: Any) -> Any:
+        raise failure
+
+    monkeypatch.setattr(engine, "_acquire_forward_operation", acquire)
+    monkeypatch.setattr(engine, "_commit_forward_operation", commit)
+
+    with pytest.raises(engine._ForwardEngineError) as caught:
+        await engine._execute_sealed_forward_operation(object(), sealed, token)
+    assert caught.value is failure
+
+
 def test_forward_contract_remains_private_with_bounded_errors() -> None:
     assert not hasattr(zeler_sheets, "_seal_forward_plan")
     assert not hasattr(zeler_sheets, "_ForwardMutation")
@@ -2423,6 +2666,8 @@ def test_forward_contract_remains_private_with_bounded_errors() -> None:
     assert not hasattr(zeler_sheets, "_persist_forward_preimages")
     assert not hasattr(zeler_sheets, "_persist_forward_metrics")
     assert not hasattr(zeler_sheets, "_commit_forward_operation")
+    assert hasattr(engine, "_execute_sealed_forward_operation")
+    assert not hasattr(zeler_sheets, "_execute_sealed_forward_operation")
     assert not hasattr(zeler_sheets, "_commit_transaction_with_retry")
     assert not hasattr(zeler_sheets, "_majority_commit_readback")
     with pytest.raises(ValueError, match="unknown forward-engine error code"):
