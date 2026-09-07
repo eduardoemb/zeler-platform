@@ -712,3 +712,48 @@ items above remain open.
   its next exact main image before claiming production protection. This does
   not implement order recovery, field-aware HTTP 206 handling or all-resource
   isolation. Those remain required before global acceptance.
+
+## Order ownership guard deployed — source d145d61
+
+- Worker Cloud Build `b40aeff1-ac67-4c7a-88cd-fa93e77f25d7` succeeded from
+  `d145d61d887c2f4b9a036cfbf3ac73b5416f59e7`. Connected repository, exact
+  source, build and immutable digest passed provenance verification:
+  `sha256:b8edfdf59627d1c24fa9d2594048d145aa94a8aa16d039442b819d2bd097b945`.
+  Only sheets-worker was replaced. Running digest matches, healthy, zero
+  restarts, health HTTP 200/ready. Three pure in-memory owner rejection cases
+  also passed inside the deployed image, without production database writes.
+- A separate runtime read-only pass checked details for all 100 Mongo orders
+  in the August 8–September 6 pilot window. All 100 source owners matched the
+  pilot; none were foreign or missing. No production order repair was needed.
+- Removed only the unused local worker image
+  `sha256:9903cd1ddcb932e6f252f0a95445f60e41e9d2478910407345fff192bcf641e5`
+  after verifying no container referenced it and the Artifact Registry copy
+  still existed. This restored 5.1 GiB preflight capacity. No volumes were
+  removed. After the targeted pull, free space is again 4.6 GiB; restore the
+  runbook floor before another image pull.
+- Worker rollback digest:
+  `sha256:03d5a2c2378a7d4e5133bb37185313559d49f21703778e3854dcfd673b011016`.
+  Compose backup suffix `.pre-sheets-worker-d145d61`. The previous question
+  repair backup remains on the VM, root-owned mode 0600, 1,234 bytes. Automatic
+  formula recovery remains disabled. No other product or API was deployed.
+- Full regression: 3,631 passed, 9 skipped in 70.26s; protected replica-set
+  suite separately 8 passed in 3.36s. Static gates remain clean. This release
+  evidence changes no executable source and needs no additional image.
+
+### Next functional gap: complete order ranges and recovery together
+
+Inspection of `handlers_orders_questions.py` found that its eleven order/sales
+handlers call `find_orders` without a coverage check; unlike its two question
+handlers, they can calculate a successful result from an incomplete range.
+The repository method and HTTP dispatcher do not add that check. Other handler
+groups already have some generic order freshness checks, so audit per consumer
+rather than infer coverage from a single helper.
+
+The next implementation must pair truthful range validation with persistent
+order recovery, not just add a gate that leaves recoverable data unavailable.
+Reuse the existing guarded order writer and seller isolation. Its transaction
+is coupled to the devoluciones operation lease: do not bypass it to reuse the
+question transaction implementation. Handle partial source responses and prior
+Mongo fields explicitly. The last-sale handler requests from 1970; applying the
+queue's 90-day request limit blindly would make it permanently unrecoverable.
+All-history absence and latest-known-sale evidence need distinct treatment.
