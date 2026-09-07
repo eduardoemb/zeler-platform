@@ -135,6 +135,8 @@ async def test_shipping_includes_latest_order_after_5000_older_orders(formula: s
         "OLD": _shipment_doc("OLD", seller_cost=Decimal("30")),
         "LATEST": _shipment_doc("LATEST", seller_cost=Decimal("24.5")),
     }
+    if formula == "ZELERDATA_COSTOENVIOVENDEDOR":
+        del db["shipments"].documents["OLD"]
     result = await _dispatcher(db).execute(
         _context(formula, {"skus": ["sku-1"], "id_publicaciones": ["MLA1"], "encabezados": False})
     )
@@ -353,10 +355,12 @@ async def test_catalogo_buybox_preserves_legacy_winner_count_fallback() -> None:
 
 
 @pytest.mark.asyncio
-async def test_costo_envio_vendedor_uses_latest_realized_shipment_cost_per_unit() -> None:
+@pytest.mark.parametrize("latest_state", ["ready", "missing_cost", "missing_identity"])
+async def test_costo_envio_vendedor_uses_latest_realized_shipment_cost_per_unit(
+    latest_state: str,
+) -> None:
     db = FakeDb()
     _mark_read_model_fresh(db, ORDERS_READ_MODEL)
-    _mark_read_model_fresh(db, SHIPMENTS_READ_MODEL)
     db["sheets_item_formula_rows"].documents = {
         "seller-1:SKU-1:MLA1": {
             "_id": "seller-1:SKU-1:MLA1",
@@ -397,19 +401,42 @@ async def test_costo_envio_vendedor_uses_latest_realized_shipment_cost_per_unit(
     db["shipments"].documents = {
         "SHIP-OLD": _shipment_doc("SHIP-OLD", seller_cost=Decimal("30")),
         "SHIP-LATEST": _shipment_doc("SHIP-LATEST", seller_cost=Decimal("24.50")),
-        "SHIP-CANCELLED": _shipment_doc("SHIP-CANCELLED", seller_cost=Decimal("100")),
     }
-    dispatcher = _dispatcher(db)
-
-    result = await dispatcher.execute(
-        _context(
-            "ZELERDATA_COSTOENVIOVENDEDOR",
-            {"skus": ["sku-1", "missing"], "id_publicaciones": ["MLA1", "MLA-X"]},
-        )
+    db["orders"].documents["unrelated"] = _order_doc(
+        "ORDER-UNRELATED",
+        date_created=NOW,
+        shipment_id="UNRELATED-MISSING",
+        sku="different",
+        item_id="MLA-OTHER",
+        quantity=1,
     )
+    if latest_state == "missing_cost":
+        del db["shipments"].documents["SHIP-LATEST"]
+    elif latest_state == "missing_identity":
+        db["orders"].documents["latest"].pop("shipment_id")
+        db["orders"].documents["latest"]["unavailable_fields"] = ["shipment_id"]
+    dispatcher = _dispatcher(db)
+    context = _context(
+        "ZELERDATA_COSTOENVIOVENDEDOR",
+        {"skus": ["sku-1", "missing"], "id_publicaciones": ["MLA1", "MLA-X"]},
+    )
+    if latest_state != "ready":
+        with pytest.raises(FormulaDataUnavailableError) as missing:
+            await dispatcher.execute(context)
+        if latest_state == "missing_cost":
+            assert missing.value.shipment_ids == ("SHIP-LATEST",)
+        else:
+            assert missing.value.read_model == "orders"
+            assert missing.value.order_ids == ("ORDER-LATEST",)
+        return
+    result = await dispatcher.execute(context)
 
     assert result.values == [[12.25], ["NA"]]
-    assert result.meta == {"partial_misses": 1, "orders_count": 3}
+    assert result.meta == {"partial_misses": 1, "orders_count": 4}
+    assert db["shipments"].last_find_filter == {
+        "seller_id": "seller-1",
+        "_id": {"$in": ["SHIP-LATEST"]},
+    }
 
 
 @pytest.mark.asyncio
@@ -607,13 +634,26 @@ async def test_shipping_formulas_require_fresh_shipments_after_orders_are_fresh(
 ) -> None:
     db = FakeDb()
     _mark_read_model_fresh(db, ORDERS_READ_MODEL)
+    if formula == "ZELERDATA_COSTOENVIOVENDEDOR":
+        db["orders"].documents["latest"] = _order_doc(
+            "latest",
+            date_created=NOW - timedelta(days=1),
+            shipment_id="LATEST",
+            sku="sku-1",
+            item_id="MLA1",
+            quantity=1,
+        )
     dispatcher = _dispatcher(db)
 
-    with pytest.raises(FormulaDataUnavailableError, match=formula) as error:
+    with pytest.raises(FormulaDataUnavailableError) as error:
         await dispatcher.execute(_context(formula, args))
 
-    assert SHIPMENTS_READ_MODEL in str(error.value)
-    assert "freshness/reconciliation" in str(error.value)
+    assert error.value.read_model == SHIPMENTS_READ_MODEL
+    if formula == "ZELERDATA_COSTOENVIOVENDEDOR":
+        assert error.value.shipment_ids == ("LATEST",)
+    else:
+        assert formula in str(error.value)
+        assert "freshness/reconciliation" in str(error.value)
 
 
 def _dispatcher(db: FakeDb) -> FormulaDispatcher:

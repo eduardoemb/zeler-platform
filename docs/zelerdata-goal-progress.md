@@ -1131,3 +1131,36 @@ retain their contract; other product deployments remain out of scope.
   replica-set cases passed separately in 2.42s; remaining skip is Caddy's
   no-required-keys case. Ruff check/format, mypy (500 files) and diff whitespace
   validation passed.
+
+## Work unit: select relevant latest sales before requiring shipment costs
+
+- COSTOENVIOVENDEDOR selects the newest eligible non-cancelled order line for
+  each requested SKU/item pair before reading shipment costs. Positive quantity
+  and existing shipment eligibility are preserved; explicit shipment-identity
+  gaps participate in selection and request order-ID recovery if selected.
+- Only the selected shipment IDs need current costs. Older, cancelled or
+  unrelated orders no longer force acquisition. A missing selected cost cannot
+  be silently replaced with an older cost. The per-unit arithmetic and response
+  metadata remain unchanged.
+- Removed this formula's global shipment freshness prerequisite: the required
+  per-ID cost checks now provide the relevant evidence. The order readiness gate
+  remains; ENVIOSMERCADOENVIOS keeps its existing separate gate. This resolves
+  the previously noted minimum-needed selection for latest-cost calculation.
+- Four cases failed first. Updated tests verify a latest sale beyond 5,000 older
+  orders without their cost snapshot, unrelated/cancelled missing shipments,
+  selected missing cost/identity, and successful calculation without a global
+  shipment marker. Item-shipping and recovery suites: 117 passed in 15.11s.
+  These are local calculation/recovery tests, not a new productive cost-formula
+  or real Sheet acceptance result. Static checks pass for 500 source files.
+- The order read still scans all available history. Strong absent-sale/history
+  completeness evidence and bounded acquisition remain required goal work;
+  this optimization does not prove those broader properties.
+- Rollback boundary: latest-line selection, required-ID lookup and removed
+  global shipment gate in this handler with their regression updates. No schema,
+  production data, build or deployment change. Sheets API needs a verified new
+  image after the outstanding rollout gates, coordinated with the pending
+  recovery worker/validator release; verify deployed source/digest, health and
+  pilot COSTOENVIOVENDEDOR with obsolete unrelated shipments unavailable.
+- Final root regression: 3,696 passed, 9 skipped in 79.50s. Eight protected
+  replica-set tests passed separately in 2.53s; remaining skip is Caddy's
+  no-required-keys case. Ruff check/format, mypy and diff whitespace checks pass.

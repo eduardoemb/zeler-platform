@@ -8,6 +8,7 @@ from typing import Any
 from bson.decimal128 import Decimal128
 
 from zeler_sheets.formulas.dispatcher import (
+    FormulaDataUnavailableError,
     FormulaExecutionContext,
     FormulaExecutionResult,
     FormulaHandler,
@@ -198,12 +199,6 @@ class ItemShippingCatalogFormulaHandlers:
             date_to=now,
             formula=context.contract.name,
         )
-        await self._repository.require_read_model_productive(
-            seller_id=context.seller_id,
-            read_model=SHIPMENTS_READ_MODEL,
-            date_to=now,
-            formula=context.contract.name,
-        )
         pairs = _lookup_pairs(
             skus=context.args.get("skus"),
             item_ids=context.args.get("id_publicaciones"),
@@ -214,15 +209,30 @@ class ItemShippingCatalogFormulaHandlers:
             date_to=_day_end(now),
             limit=None,
         )
+        selected = _latest_shipping_order_lines_by_pair(orders, pairs=pairs)
+        missing_order_ids = tuple(
+            dict.fromkeys(
+                _document_id(order)
+                for order, _line in selected.values()
+                if "shipment_id" in (order.get("unavailable_fields") or [])
+            )
+        )
+        if missing_order_ids:
+            raise FormulaDataUnavailableError(
+                context.contract.name,
+                "Latest relevant order shipment identity is unavailable.",
+                read_model="orders",
+                order_ids=missing_order_ids,
+            )
         real_shipping_costs = await _real_shipping_costs_for_orders(
             repository=self._repository,
             seller_id=context.seller_id,
-            orders=orders,
+            orders=[order for order, _line in selected.values()],
         )
-        latest_cost_by_pair = _latest_realized_shipping_cost_per_unit_by_pair(
-            orders,
-            real_shipping_costs=real_shipping_costs,
-        )
+        latest_cost_by_pair = {
+            pair: real_shipping_costs[_shipment_id(order)] / line.quantity
+            for pair, (order, line) in selected.items()
+        }
         values: list[list[Any]] = []
         misses = 0
         for pair in pairs:
@@ -442,27 +452,29 @@ async def _shipments_for_orders(
     return {str(row.get("_id") or "").strip(): row for row in rows if row.get("_id")}
 
 
-def _latest_realized_shipping_cost_per_unit_by_pair(
-    orders: Sequence[Mapping[str, Any]], *, real_shipping_costs: Mapping[str, Any]
-) -> dict[tuple[str, str], Decimal]:
-    latest: dict[tuple[str, str], tuple[datetime, Decimal]] = {}
+def _latest_shipping_order_lines_by_pair(
+    orders: Sequence[Mapping[str, Any]], *, pairs: Sequence[_LookupPair]
+) -> dict[tuple[str, str], tuple[Mapping[str, Any], _OrderLine]]:
+    wanted = {(pair.sku, pair.item_id) for pair in pairs}
+    latest: dict[tuple[str, str], tuple[datetime, Mapping[str, Any], _OrderLine]] = {}
     for order in orders:
         if not _order_is_non_cancelled(order):
             continue
         created = _optional_datetime(order.get("date_created"))
         shipment_id = _shipment_id(order)
-        seller_cost = _optional_non_negative_decimal(real_shipping_costs.get(shipment_id))
-        if created is None or not shipment_id or seller_cost is None:
+        shipment_unknown = "shipment_id" in (order.get("unavailable_fields") or [])
+        if created is None or (not shipment_id and not shipment_unknown):
             continue
         for line in _order_lines(order):
             if not line.sku or not line.item_id or line.quantity <= 0:
                 continue
             key = (line.sku, line.item_id)
-            cost_per_unit = seller_cost / line.quantity
+            if key not in wanted:
+                continue
             current = latest.get(key)
             if current is None or created > current[0]:
-                latest[key] = (created, cost_per_unit)
-    return {key: value for key, (_created, value) in latest.items()}
+                latest[key] = (created, order, line)
+    return {key: (order, line) for key, (_created, order, line) in latest.items()}
 
 
 def _mercadoenvios_row(
