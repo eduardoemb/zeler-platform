@@ -1010,3 +1010,43 @@ retain their contract; other product deployments remain out of scope.
 - Final root regression: 3,668 passed, 9 skipped in 74.69s. Eight protected
   replica-set tests passed separately in 2.68s; remaining skip is Caddy's
   no-required-keys case. Diff whitespace validation passed.
+
+## Work unit: acquire owned shipment IDs and publish atomically
+
+- The recovery worker can process explicit shipment-ID jobs (up to 100 unique
+  normalized numeric IDs). It obtains owned order relationships from
+  `/shipments/{id}/orders` with `X-New-Domain: true`, then current detail and costs
+  with `x-format-new: true`. Costs reuse the existing seller-matched normalizer.
+  Source: [Mercado Libre shipment contract](https://developers.mercadolibre.com.mx/envios),
+  checked September 7, 2026.
+- The established singular `order_id` projection uses a deterministic owned
+  relationship, never a foreign row or invented ID. Full relationship modeling
+  and simultaneous multi-seller storage are not claimed: an existing shipment
+  document owned by another seller is preserved, not reassigned.
+- Normalized shipments and live job completion commit in one Mongo transaction.
+  Publication checks persisted BSON-normalized values against the acquisition;
+  a newer stored version cannot be overwritten or silently certified as the
+  acquired version. Explicit-ID acquisition does not write a history coverage
+  marker. Queue completion can join the transaction using the existing lease
+  and cooldown logic.
+- Initial tests failed because shipment ID requests were unimplemented. The
+  actual-Mongo/schema suite now passes 9 scenarios in 1.70s: acquisition,
+  foreign relationship, wrong detail ID, partial response, superseded lease,
+  invalid second document, foreign cost, preexisting foreign document and newer
+  stored snapshot. Failure while publishing the second document rolls back the
+  first. Phone/raw destination data are not persisted.
+- Activation remains OFF: shipments are not added to runtime IMPLEMENTED_MODELS
+  and the HTTP error-to-job path does not yet admit shipment IDs. A range-only
+  shipment request is not implemented. Before enabling, add required-field
+  availability/freshness and formula-triggered ID scheduling. A hidden/missing
+  address must not become optional NA; incomplete costs currently reject the
+  acquisition, so preserving independently usable partial fields also remains
+  required work. These are goal requirements, not waived acceptance criteria.
+- Rollback boundary: shipment-ID request type, transactional queue completion,
+  worker shipment branch and its regression cases. No schema migration or
+  production mutation/build/deploy occurred. A new verified Sheets worker image
+  is required once activation gates are satisfied; verify source/digest, health,
+  pilot source equality and formula reads in the approved runtime context.
+- Final regression: 3,677 passed, 9 skipped in 76.55s. Eight protected replica-set
+  cases passed separately in 2.49s; remaining skip is Caddy's no-required-keys
+  case. Ruff check/format, mypy (500 files) and diff whitespace checks passed.

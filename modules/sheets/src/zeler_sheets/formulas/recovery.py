@@ -88,6 +88,31 @@ class OrderIdsRecoveryRequest:
         ).hexdigest()
 
 
+@dataclass(frozen=True)
+class ShipmentIdsRecoveryRequest:
+    seller_id: str
+    shipment_ids: tuple[str, ...]
+    read_model: str = "shipments"
+
+    def __post_init__(self) -> None:
+        if (
+            not self.seller_id.strip()
+            or self.read_model != "shipments"
+            or not 1 <= len(self.shipment_ids) <= 100
+            or any(
+                not identity.isascii() or not identity.isdecimal() for identity in self.shipment_ids
+            )
+        ):
+            raise ValueError("a seller and at most 100 numeric shipment IDs are required")
+        object.__setattr__(self, "shipment_ids", tuple(sorted(set(self.shipment_ids))))
+
+    @property
+    def key(self) -> str:
+        return hashlib.sha256(
+            "\0".join((self.seller_id, self.read_model, "ids", *self.shipment_ids)).encode()
+        ).hexdigest()
+
+
 class FormulaRecoveryQueue:
     def __init__(
         self,
@@ -110,7 +135,9 @@ class FormulaRecoveryQueue:
             name="recovery_expired_lease",
         )
 
-    async def enqueue(self, request: RecoveryRequest | OrderIdsRecoveryRequest) -> str:
+    async def enqueue(
+        self, request: RecoveryRequest | OrderIdsRecoveryRequest | ShipmentIdsRecoveryRequest
+    ) -> str:
         if request.read_model not in self.enabled_models:
             raise ValueError("recovery source is not enabled")
         now = self.now()
@@ -126,6 +153,8 @@ class FormulaRecoveryQueue:
         }
         if isinstance(request, OrderIdsRecoveryRequest):
             initial["order_ids"] = list(request.order_ids)
+        elif isinstance(request, ShipmentIdsRecoveryRequest):
+            initial["shipment_ids"] = list(request.shipment_ids)
         else:
             initial.update(date_from=request.date_from, date_to=request.date_to)
         # A simultaneous upsert can already have persisted this exact request.
@@ -201,7 +230,10 @@ class FormulaRecoveryQueue:
         succeeded: bool,
         retryable: bool = False,
         failure_reason: str = "recovery_failed",
+        session: Any = None,
     ) -> bool:
+        if session is not None and not session.in_transaction:
+            raise ValueError("recovery publication requires an active transaction")
         now = self.now()
         retry = not succeeded and retryable and job["attempts"] < MAX_ATTEMPTS
         if failure_reason not in {
@@ -229,6 +261,7 @@ class FormulaRecoveryQueue:
                 "$set": fields,
                 "$unset": unset,
             },
+            **({"session": session} if session is not None else {}),
         )
         return bool(result.matched_count)
 

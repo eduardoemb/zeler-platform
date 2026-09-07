@@ -9,6 +9,7 @@ from typing import Any
 from urllib.parse import urlencode
 
 import httpx
+from bson import BSON
 from pymongo.errors import PyMongoError
 
 from zeler_platform_core.clients.meli_gateway_client import GatewayRateLimitError
@@ -20,9 +21,15 @@ from zeler_platform_core.devoluciones_readiness import (
     finish_devoluciones_operation,
     operation_lease_guard,
 )
-from zeler_sheets.event_persistence import SheetsEventPersistence
+from zeler_platform_core.models.entities import ShipmentRealShippingCostProjection
+from zeler_sheets.event_persistence import SheetsEventPersistence, _canonical_shipment_document
 from zeler_sheets.formulas.read_models import read_model_reconciliation_marker_covers
-from zeler_sheets.formulas.recovery import COOLDOWN, FormulaRecoveryQueue, OrderIdsRecoveryRequest
+from zeler_sheets.formulas.recovery import (
+    COOLDOWN,
+    FormulaRecoveryQueue,
+    OrderIdsRecoveryRequest,
+    ShipmentIdsRecoveryRequest,
+)
 
 
 class FormulaRecoveryWorker:
@@ -54,6 +61,8 @@ class FormulaRecoveryWorker:
                     if "order_ids" in job:
                         job = await self._locate_orders(job)
                     await self._orders(job)
+                elif job["read_model"] == "shipments":
+                    await self._shipments(job)
                 else:
                     raise ValueError("recovery source not implemented")
         except httpx.HTTPStatusError as exc:
@@ -83,6 +92,97 @@ class FormulaRecoveryWorker:
         except Exception:  # noqa: BLE001 - never log upstream payloads or credentials.
             await self.queue.finish(job, succeeded=False)
         return True
+
+    async def _shipments(self, job: dict[str, Any]) -> None:
+        requested = ShipmentIdsRecoveryRequest(job["seller_id"], tuple(job["shipment_ids"]))
+        resources: list[dict[str, Any]] = []
+        for identity in requested.shipment_ids:
+            relation_response = await self.detail_gateway.request(
+                method="GET",
+                seller_id=requested.seller_id,
+                path=f"/shipments/{identity}/orders",
+                headers={"X-New-Domain": "true"},
+            )
+            if relation_response.status_code != 200:
+                raise ValueError("shipment order relationship unavailable")
+            relations = relation_response.json()
+            if not isinstance(relations, list) or not relations:
+                raise ValueError("shipment order relationship unavailable")
+            owned_orders = sorted(
+                {
+                    str(row.get("order_id"))
+                    for row in relations
+                    if isinstance(row, dict) and str(row.get("seller_id")) == requested.seller_id
+                }
+            )
+            if not owned_orders or any(
+                not identity.isascii() or not identity.isdecimal() for identity in owned_orders
+            ):
+                raise ValueError("shipment seller relationship unavailable")
+            response = await self.detail_gateway.request(
+                method="GET",
+                seller_id=requested.seller_id,
+                path=f"/shipments/{identity}",
+                headers={"x-format-new": "true"},
+            )
+            if response.status_code != 200:
+                raise ValueError("shipment detail incomplete")
+            detail = response.json()
+            if (
+                not isinstance(detail, dict)
+                or str(detail.get("id")) != identity
+                or (
+                    detail.get("seller_id") is not None
+                    and str(detail["seller_id"]) != requested.seller_id
+                )
+                or (
+                    detail.get("order_id") is not None
+                    and str(detail["order_id"]) not in owned_orders
+                )
+            ):
+                raise ValueError("shipment detail scope mismatch")
+            cost_response = await self.detail_gateway.request(
+                method="GET",
+                seller_id=requested.seller_id,
+                path=f"/shipments/{identity}/costs",
+                headers={"x-format-new": "true"},
+            )
+            if cost_response.status_code != 200:
+                raise ValueError("shipment costs incomplete")
+            cost = ShipmentRealShippingCostProjection.from_meli_costs_payload(
+                cost_response.json(), seller_id=requested.seller_id, synced_at=self.queue.now()
+            )
+            if cost is None:
+                raise ValueError("shipment seller cost unavailable")
+            resources.append(
+                {
+                    **detail,
+                    "order_id": owned_orders[0],
+                    "real_shipping_cost": cost.model_dump(mode="python", exclude_none=True),
+                }
+            )
+        # Explicit IDs do not prove a historical inventory. Publish only these
+        # normalized documents and the live job's completion, not a range marker.
+        async with (
+            await self.db.client.start_session() as session,
+            session.start_transaction(),
+        ):
+            if not await self.queue.finish(job, succeeded=True, session=session):
+                raise ValueError("shipment recovery lease lost before publication")
+            writer = SheetsEventPersistence(db=self.db, clock=self.queue.now)
+            for resource in resources:
+                await writer.persist(
+                    event_type="shipments.updated",
+                    seller_id=requested.seller_id,
+                    resource=resource,
+                    session=session,
+                )
+                stored = await self.db["shipments"].find_one(
+                    {"_id": str(resource["id"]), "seller_id": requested.seller_id}, session=session
+                )
+                expected = _canonical_shipment_document(resource, seller_id=requested.seller_id)
+                if stored is None or BSON.encode(stored).decode() != BSON.encode(expected).decode():
+                    raise ValueError("shipment changed during acquisition")
 
     async def _locate_orders(self, job: dict[str, Any]) -> dict[str, Any]:
         requested = OrderIdsRecoveryRequest(job["seller_id"], tuple(job["order_ids"]))

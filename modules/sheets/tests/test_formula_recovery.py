@@ -15,6 +15,133 @@ from zeler_sheets.formulas.recovery import FormulaRecoveryQueue, RecoveryRequest
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "failure",
+    [
+        None,
+        "foreign",
+        "wrong_id",
+        "partial",
+        "lease_lost",
+        "invalid_second",
+        "foreign_cost",
+        "existing_foreign",
+        "newer_snapshot",
+    ],
+)
+async def test_shipment_id_recovery_publishes_owned_detail_and_costs_atomically(
+    recovery_db: Any, failure: str | None
+) -> None:
+    import json
+    from pathlib import Path
+
+    import httpx
+    from bson.decimal128 import Decimal128
+
+    from zeler_sheets.formulas.recovery import ShipmentIdsRecoveryRequest
+    from zeler_sheets.formulas.recovery_worker import FormulaRecoveryWorker
+
+    schema = json.loads(Path("infra/mongo/schemas/shipments.json").read_text())
+    await recovery_db.create_collection(
+        "shipments", validator={"$jsonSchema": schema["$jsonSchema"]}
+    )
+    queue = FormulaRecoveryQueue(recovery_db)
+    requested = ShipmentIdsRecoveryRequest("pilot", ("3001", "3002"))
+    await queue.enqueue(requested)
+    prior = None
+    if failure in {"existing_foreign", "newer_snapshot"}:
+        await recovery_db.shipments.insert_one(
+            {
+                "_id": "3002",
+                "seller_id": "foreign" if failure == "existing_foreign" else "pilot",
+                "order_id": "42",
+                "status": "delivered",
+                "logistic_type": "fulfillment",
+                "date_created": datetime(2026, 8, 20, 10, tzinfo=UTC),
+                "last_updated": datetime(2026, 8, 21, tzinfo=UTC),
+                "schema_version": 1,
+            }
+        )
+        prior = await recovery_db.shipments.find_one({"_id": "3002"})
+    calls: list[str] = []
+
+    class Gateway:
+        async def request(self, **kwargs: Any) -> httpx.Response:
+            path = kwargs["path"]
+            calls.append(path)
+            identity = path.split("/")[2]
+            second = identity == "3002"
+            if path.endswith("/orders"):
+                assert kwargs["headers"] == {"X-New-Domain": "true"}
+                return httpx.Response(
+                    200,
+                    json=[
+                        {
+                            "order_id": "42",
+                            "seller_id": "foreign" if second and failure == "foreign" else "pilot",
+                        }
+                    ],
+                )
+            assert kwargs["headers"] == {"x-format-new": "true"}
+            if path.endswith("/costs"):
+                if second and failure == "lease_lost":
+                    await queue.collection.update_one(
+                        {"_id": requested.key}, {"$set": {"attempt_token": "superseded"}}
+                    )
+                return httpx.Response(
+                    200,
+                    json={
+                        "senders": [
+                            {
+                                "user_id": "foreign"
+                                if second and failure == "foreign_cost"
+                                else "pilot",
+                                "cost": 12.5,
+                            }
+                        ]
+                    },
+                )
+            return httpx.Response(
+                206 if second and failure == "partial" else 200,
+                json={
+                    "id": "9999" if second and failure == "wrong_id" else identity,
+                    "status": "ready_to_ship",
+                    "logistic": {
+                        "type": "invalid"
+                        if second and failure == "invalid_second"
+                        else "fulfillment"
+                    },
+                    "date_created": "2026-08-20T10:00:00Z",
+                    "last_updated": "2026-08-20T11:00:00Z",
+                    "destination": {
+                        "receiver_name": "Synthetic Receiver",
+                        "receiver_phone": "PHONE_MUST_NOT_PERSIST",
+                        "shipping_address": {"street_name": "Synthetic Street"},
+                    },
+                },
+            )
+
+    await FormulaRecoveryWorker(db=recovery_db, gateway=Gateway(), queue=queue).process_one()
+    job = await queue.collection.find_one({"_id": requested.key})
+    if failure:
+        assert job["state"] != "completed"
+        assert await recovery_db.shipments.count_documents({}) == (1 if prior else 0)
+        if prior:
+            assert await recovery_db.shipments.find_one({"_id": "3002"}) == prior
+    else:
+        assert job["state"] == "completed", job.get("failure_reason")
+        stored = await recovery_db.shipments.find({}).to_list(None)
+        assert len(stored) == 2
+        assert all(row["seller_id"] == "pilot" and row["order_id"] == "42" for row in stored)
+        assert all(row["real_shipping_cost"]["seller_cost"] == Decimal128("12.5") for row in stored)
+        assert all(row["receiver_address"]["name"] == "Synthetic Receiver" for row in stored)
+        assert "MUST_NOT_PERSIST" not in repr(stored)
+        assert len(calls) == 6
+    # An explicit ID set is not evidence of complete shipment history.
+    assert await recovery_db.sheets_read_model_freshness.count_documents({}) == 0
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("transaction", ["none", "commit", "abort", "inactive"])
 async def test_current_shipment_projection_joins_recovery_transaction(
     recovery_db: Any, transaction: str
