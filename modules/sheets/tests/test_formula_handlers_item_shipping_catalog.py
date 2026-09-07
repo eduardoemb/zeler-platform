@@ -79,6 +79,72 @@ NOW = datetime(2026, 6, 15, 12, 0, tzinfo=UTC)
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("formula", "model"),
+    [
+        ("ZELERDATA_OBTENER_CATALOGO", "catalog_product_snapshots"),
+        ("ZELERDATA_CATALOGO_COMPLETO", "catalog_product_snapshots"),
+        ("ZELERDATA_CATALOGOBUYBOX", "catalog_buybox_snapshots"),
+    ],
+)
+async def test_catalog_outputs_include_every_stored_snapshot(formula: str, model: str) -> None:
+    db = FakeDb()
+    _mark_read_model_fresh(db, model)
+    db[f"sheets_{model}"].documents = {
+        str(i): {
+            "_id": str(i),
+            "seller_id": "seller-1",
+            "item_id": f"MLM{i}",
+            "catalog_product_id": f"CAT{i}",
+        }
+        for i in range(1001)
+    }
+    result = await _dispatcher(db).execute(_context(formula, {"encabezados": False}))
+    assert result.meta["rows_count"] == 1001
+    assert len(result.values) == 1001
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "formula", ["ZELERDATA_COSTOENVIOVENDEDOR", "ZELERDATA_ENVIOSMERCADOENVIOS"]
+)
+async def test_shipping_includes_latest_order_after_5000_older_orders(formula: str) -> None:
+    db = FakeDb()
+    for model in (ORDERS_READ_MODEL, SHIPMENTS_READ_MODEL):
+        _mark_read_model_fresh(db, model)
+    db["orders"].documents = {
+        str(i): _order_doc(
+            str(i),
+            date_created=NOW - timedelta(days=2),
+            shipment_id="OLD",
+            sku="sku-1",
+            item_id="MLA1",
+            quantity=1,
+        )
+        for i in range(5000)
+    }
+    db["orders"].documents["latest"] = _order_doc(
+        "latest",
+        date_created=NOW - timedelta(days=1),
+        shipment_id="LATEST",
+        sku="sku-1",
+        item_id="MLA1",
+        quantity=1,
+    )
+    db["shipments"].documents = {
+        "OLD": _shipment_doc("OLD", seller_cost=Decimal("30")),
+        "LATEST": _shipment_doc("LATEST", seller_cost=Decimal("24.5")),
+    }
+    result = await _dispatcher(db).execute(
+        _context(formula, {"skus": ["sku-1"], "id_publicaciones": ["MLA1"], "encabezados": False})
+    )
+    if formula == "ZELERDATA_COSTOENVIOVENDEDOR":
+        assert result.values == [[24.5]]
+    else:
+        assert len(result.values) == 5001
+
+
+@pytest.mark.asyncio
 async def test_item_catalog_handlers_use_local_rows_and_catalog_snapshots() -> None:
     db = FakeDb()
     _mark_read_model_fresh(db, ITEM_FORMULA_ROWS_READ_MODEL)

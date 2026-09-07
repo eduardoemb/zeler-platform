@@ -37,6 +37,8 @@ async def test_complete_formula_sources_remain_seller_scoped_in_mongo() -> None:
             ("find_sku_index_rows", "sheets_item_sku_index", 501, {}),
             ("find_orders", "orders", 1001, {"date_from": start, "date_to": end}),
             ("find_questions", "questions", 1001, {"date_from": start, "date_to": end}),
+            ("find_catalog_product_snapshots", "sheets_catalog_product_snapshots", 1001, {}),
+            ("find_catalog_buybox_snapshots", "sheets_catalog_buybox_snapshots", 1001, {}),
             ("find_stockout_snapshots", "sheets_stockout_snapshots", 1001, {}),
             ("find_price_history_snapshots", "sheets_price_history_snapshots", 1001, {}),
             (

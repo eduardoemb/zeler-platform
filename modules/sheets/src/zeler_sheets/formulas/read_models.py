@@ -260,7 +260,7 @@ class FormulaReadModelRepository:
         *,
         seller_id: str,
         catalog_product_ids: list[str] | tuple[str, ...] | None = None,
-        limit: int = 1000,
+        limit: int | None = None,
     ) -> list[dict[str, Any]]:
         filter_spec: dict[str, Any] = {"seller_id": seller_id}
         normalized_ids = list(
@@ -281,7 +281,7 @@ class FormulaReadModelRepository:
         self,
         *,
         seller_id: str,
-        limit: int = 1000,
+        limit: int | None = None,
     ) -> list[dict[str, Any]]:
         cursor = self._catalog_buybox_snapshots.find({"seller_id": seller_id}).sort(
             [("item_id", 1), ("catalog_product_id", 1), ("_id", 1)]

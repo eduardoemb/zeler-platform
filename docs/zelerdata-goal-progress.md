@@ -302,3 +302,19 @@ Pilot: seller `82453304`; initial historical window 2026-08-08 through
   Large-result latency/memory measurement remains pending.
 - Rollback boundary: seven complete-range caller limits, five reader defaults
   and associated boundary regressions. No production state changed.
+
+## Work unit: complete shipping and catalog snapshot queries
+
+- Five boundary scenarios failed first: three catalog outputs returned only
+  1,000 of 1,001 snapshots; seller shipping cost excluded the latest order after
+  5,000 earlier ones and returned an old cost; Mercado Envios omitted that
+  latest open label. These full-input queries now use no silent row cap.
+- Catalog product/buybox reader defaults are complete; extended actual Mongo
+  boundary checks for both collections and foreign-seller exclusion.
+- Verification: Mongo boundaries, item/shipping/catalog, remaining formulas and
+  reader tests **68 passed in 0.76s**. Root Ruff, format and mypy pass.
+- This preserves the existing latest-cost, status/date and seller semantics;
+  it does not prove productive source coverage or large-input response timing.
+  Remaining heuristic SKU/item joins and catalog buybox enrichment are pending.
+- Rollback boundary: five handler limit arguments, two reader defaults and
+  their boundary tests. No production data or deployment changed.

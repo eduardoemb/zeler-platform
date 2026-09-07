@@ -212,7 +212,7 @@ class ItemShippingCatalogFormulaHandlers:
             seller_id=context.seller_id,
             date_from=datetime(1970, 1, 1, tzinfo=UTC),
             date_to=_day_end(now),
-            limit=5000,
+            limit=None,
         )
         real_shipping_costs = await _real_shipping_costs_for_orders(
             repository=self._repository,
@@ -257,7 +257,7 @@ class ItemShippingCatalogFormulaHandlers:
             seller_id=context.seller_id,
             date_from=datetime.combine((now - timedelta(days=29)).date(), time.min, tzinfo=UTC),
             date_to=_day_end(now),
-            limit=5000,
+            limit=None,
         )
         shipments = await _shipments_for_orders(
             repository=self._repository,
@@ -299,7 +299,7 @@ class ItemShippingCatalogFormulaHandlers:
         )
         snapshots = await self._repository.find_catalog_product_snapshots(
             seller_id=context.seller_id,
-            limit=1000,
+            limit=None,
         )
         values: list[list[Any]] = _header_row(
             context.args.get("encabezados"), list(OBTENER_CATALOGO_VISIBLE_HEADERS)
@@ -328,7 +328,7 @@ class ItemShippingCatalogFormulaHandlers:
         )
         snapshots = await self._repository.find_catalog_product_snapshots(
             seller_id=context.seller_id,
-            limit=1000,
+            limit=None,
         )
         values: list[list[Any]] = _header_row(
             context.args.get("encabezados"), list(CATALOGO_COMPLETO_VISIBLE_HEADERS)
@@ -350,7 +350,7 @@ class ItemShippingCatalogFormulaHandlers:
         )
         snapshots = await self._repository.find_catalog_buybox_snapshots(
             seller_id=context.seller_id,
-            limit=1000,
+            limit=None,
         )
         values: list[list[Any]] = _header_row(
             context.args.get("encabezados"), list(CATALOGOBUYBOX_VISIBLE_HEADERS)
