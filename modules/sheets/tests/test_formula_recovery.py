@@ -462,7 +462,14 @@ async def test_app_wires_only_implemented_recovery_sources(recovery_db: Any) -> 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("read_model", "partial"), [("questions", False), ("orders", False), ("orders", True)]
+    ("read_model", "partial"),
+    [
+        ("questions", False),
+        ("orders", False),
+        ("orders", True),
+        ("order_ids", False),
+        ("order_ids", True),
+    ],
 )
 async def test_http_missing_data_recovers_in_background_and_next_http_succeeds(
     recovery_db: Any,
@@ -490,7 +497,7 @@ async def test_http_missing_data_recovers_in_background_and_next_http_succeeds(
     order = {
         "id": 42,
         "seller": {"id": "123456789"},
-        "buyer": {} if partial else {"id": 123},
+        "buyer": {} if partial and read_model == "orders" else {"id": 123},
         "status": "paid",
         "date_created": "2026-08-20T10:00:00Z",
         "last_updated": "2026-08-20T11:00:00Z",
@@ -501,12 +508,16 @@ async def test_http_missing_data_recovers_in_background_and_next_http_succeeds(
     class Gateway:
         async def fetch_resource(self, **kwargs: Any) -> dict[str, Any]:
             calls.append(kwargs["path"])
-            if read_model == "orders":
+            if read_model in {"orders", "order_ids"}:
                 return {"paging": {"total": 1}, "results": [order]}
             return {"total": 0, "questions": []}
 
         async def request(self, **kwargs: Any) -> httpx.Response:
             calls.append(kwargs["path"])
+            if partial and read_model == "order_ids":
+                return httpx.Response(
+                    206, headers={"X-Content-Missing": "seller"}, json={**order, "seller": {}}
+                )
             if partial:
                 return httpx.Response(206, headers={"X-Content-Missing": "buyer"}, json=order)
             return httpx.Response(200, json=order)
@@ -518,9 +529,11 @@ async def test_http_missing_data_recovers_in_background_and_next_http_succeeds(
         poll_interval=0.01,
     )
     payload = {
-        "formula": "ZELERDATA_PREGUNTAS"
-        if read_model == "questions"
-        else "ZELERDATA_VENTASTOTALES",
+        "formula": {
+            "questions": "ZELERDATA_PREGUNTAS",
+            "orders": "ZELERDATA_VENTASTOTALES",
+            "order_ids": "ZELERDATA_COMPRADORES",
+        }[read_model],
         "cuenta": "PILOT",
         "args": {
             "fecha_inicial": "2026-08-08",
@@ -529,6 +542,8 @@ async def test_http_missing_data_recovers_in_background_and_next_http_succeeds(
             "horario_final": "23:59",
         },
     }
+    if read_model == "order_ids":
+        payload["args"] = {"id_ordenes": ["42"]}
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
@@ -544,11 +559,68 @@ async def test_http_missing_data_recovers_in_background_and_next_http_succeeds(
                     await asyncio.sleep(0.01)
             ready = await client.post("/sheets/formulas:execute", headers=headers, json=payload)
             assert ready.json()["ok"] is True, ready.json()
-            assert len(calls) == (1 if read_model == "questions" else 2)
+            assert len(calls) == {"questions": 1, "orders": 2, "order_ids": 3}[read_model]
             if read_model == "orders":
                 assert ready.json()["values"] == [[30]]
+            elif read_model == "order_ids":
+                assert len(ready.json()["values"]) == 1
+                assert await recovery_db.orders.count_documents({"_id": "42"}) == 1
         finally:
             await worker.stop()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["foreign", "missing_owner", "wrong_id", "missing_search"])
+async def test_id_recovery_never_publishes_unproven_requested_orders(
+    recovery_db: Any, failure: str
+) -> None:
+    import httpx
+
+    from zeler_sheets.formulas.recovery import OrderIdsRecoveryRequest
+    from zeler_sheets.formulas.recovery_worker import FormulaRecoveryWorker
+
+    queue = FormulaRecoveryQueue(recovery_db)
+    requested = OrderIdsRecoveryRequest("pilot", ("42",))
+    await queue.enqueue(requested)
+    detail = {
+        "id": 43 if failure == "wrong_id" else 42,
+        "seller": {}
+        if failure == "missing_owner"
+        else {"id": "foreign" if failure == "foreign" else "pilot"},
+        "date_created": "2026-08-20T10:00:00Z",
+    }
+    calls: list[str] = []
+
+    class Gateway:
+        async def request(self, **kwargs: Any) -> httpx.Response:
+            calls.append(kwargs["path"])
+            return httpx.Response(200, json=detail)
+
+        async def fetch_resource(self, **kwargs: Any) -> dict[str, Any]:
+            calls.append(kwargs["path"])
+            return {"paging": {"total": 0}, "results": []}
+
+    await FormulaRecoveryWorker(db=recovery_db, gateway=Gateway(), queue=queue).process_one()
+    job = await queue.collection.find_one({"_id": requested.key})
+    assert job["state"] == "failed"
+    assert job["failure_reason"] == "source_incomplete"
+    assert await recovery_db.orders.count_documents({}) == 0
+    assert await recovery_db.sheets_read_model_freshness.count_documents({}) == 0
+    assert len(calls) == (2 if failure == "missing_search" else 1)
+
+
+def test_id_requests_coalesce_and_reject_non_order_or_unbounded_targets() -> None:
+    from zeler_sheets.formulas.recovery import OrderIdsRecoveryRequest
+
+    request_a = OrderIdsRecoveryRequest("pilot", ("43", "42", "42"))
+    assert request_a.order_ids == ("42", "43")
+    assert request_a.key == OrderIdsRecoveryRequest("pilot", ("42", "43")).key
+    assert request_a.key != OrderIdsRecoveryRequest("other", ("42", "43")).key
+    for identities in ((), ("../42",), ("４２",), tuple(str(i) for i in range(101))):
+        with pytest.raises(ValueError):
+            OrderIdsRecoveryRequest("pilot", identities)
+    with pytest.raises(ValueError):
+        OrderIdsRecoveryRequest("pilot", ("42",), read_model="questions")
 
 
 @pytest.mark.asyncio

@@ -905,9 +905,9 @@ retain their contract; other product deployments remain out of scope.
 
 ### Still required before production order-recovery activation
 
-- COMPRADORES reads by explicit order IDs and DIASDESDEULTIMAVENTA reads
-  all-history; neither is solved by the bounded-range helper. Handle missing
-  IDs and the latest-known-sale/unknown-history distinction explicitly.
+- DIASDESDEULTIMAVENTA reads all-history; handle the latest-known-sale versus
+  unknown-history distinction explicitly. COMPRADORES missing IDs now request
+  discovery as documented below, but missing shipment snapshots remain pending.
 - Continue the required-field audit beyond the explicit shipment_id guard
   below: missing shipment snapshots and required address/cost fields still need
   their own acquisition and availability handling.
@@ -943,3 +943,38 @@ retain their contract; other product deployments remain out of scope.
   cases passed separately in 2.48s with the dedicated replica-set test variable;
   the remaining skip is Caddy's no-required-keys case. Ruff check/format, mypy
   (500 source files) and diff whitespace checks passed.
+
+## Work unit: recover explicit COMPRADORES order IDs
+
+- COMPRADORES no longer silently omits requested orders absent from the seller's
+  Mongo read model. It raises structured unavailability with private recovery
+  targets, without including those IDs or upstream payloads in the public error.
+- Opt-in HTTP recovery queues deterministic seller-scoped ID jobs, at most 100
+  numeric IDs each, under one total one-second insertion deadline. Existing
+  range-job identities and claim/lease/cooldown behavior remain unchanged.
+- The worker discovers creation dates, then reuses the existing inventory search,
+  detail validation and transactional publication. Discovery alone never proves
+  coverage. Every requested ID must occur in the authoritative inventory before
+  any publication. Explicit foreign/conflicting ownership is rejected; HTTP 206
+  seller omission requires ownership proof from the subsequent search/detail
+  validation. The 240-second worker timeout and 10,000-order search cap remain.
+- Local authenticated ASGI/Mongo scenarios failed first for absent IDs and for
+  recoverable partial seller responses. Both now recover in the background;
+  the next COMPRADORES query returns a row without more source calls. Negative
+  tests reject foreign/missing ownership, wrong IDs and absent search results
+  without persisting an order or coverage marker. Queue tests cover coalescing,
+  tenant isolation and invalid/bounded identities.
+- Rollback boundary: ID request type, private error targets, API scheduling,
+  missing-ID handler guard and worker discovery with its regression cases.
+  Deploy API and worker together; do not leave an old worker consuming ID jobs.
+  No production write/build/deploy occurred. New Sheets API and worker images
+  remain required after the outstanding activation gates, followed by digest,
+  health and controlled pilot HTTP recovery verification.
+- This does not complete COMPRADORES address acquisition or source freshness,
+  wide-history acquisition, global admission controls, or real Google Sheet
+  acceptance. Range acquisition may still exceed its worker budget for widely
+  separated IDs; independent bounded acquisition remains a follow-up for the goal.
+- Final verification: recovery/address suites 63 passed in 10.16s; root suite
+  3,664 passed, 9 skipped in 74.59s. Eight protected replica-set cases separately
+  passed in 2.42s; remaining skip is Caddy's no-required-keys case. Ruff check,
+  format, mypy (500 files) and diff whitespace checks passed.

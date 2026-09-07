@@ -380,6 +380,18 @@ class OrderQuestionFormulaHandlers:
             limit=max(1000, len(requested_order_ids)),
         )
         orders_by_id = {_document_id(order): order for order in orders}
+        missing_ids = tuple(
+            order_id
+            for order_id in dict.fromkeys(requested_order_ids)
+            if order_id not in orders_by_id
+        )
+        if missing_ids:
+            raise FormulaDataUnavailableError(
+                context.contract.name,
+                "Requested orders are not available in the seller read model.",
+                read_model="orders",
+                order_ids=missing_ids,
+            )
         ordered_orders = [
             orders_by_id[order_id]
             for order_id in dict.fromkeys(requested_order_ids)

@@ -48,7 +48,11 @@ from zeler_sheets.formulas.handlers_returns_histories_withdrawals import (
     build_returns_histories_withdrawals_formula_handlers,
 )
 from zeler_sheets.formulas.read_models import FormulaReadModelRepository
-from zeler_sheets.formulas.recovery import RECOVERABLE_MODELS, RecoveryRequest
+from zeler_sheets.formulas.recovery import (
+    RECOVERABLE_MODELS,
+    OrderIdsRecoveryRequest,
+    RecoveryRequest,
+)
 from zeler_sheets.formulas.registry import FormulaRegistry
 from zeler_sheets.formulas.runtime_states import (
     FormulaRuntimeState,
@@ -661,7 +665,24 @@ async def _request_formula_recovery(
     missing: FormulaDataUnavailableError,
 ) -> bool:
     queue = getattr(request.app.state, "formula_recovery_queue", None)
-    if queue is None or missing.read_model not in RECOVERABLE_MODELS or missing.date_to is None:
+    if queue is None or missing.read_model not in RECOVERABLE_MODELS:
+        return False
+    if missing.order_ids:
+        try:
+            # Bound insertion time for the whole set, not separately per batch.
+            async with asyncio.timeout(1.0):
+                for offset in range(0, len(missing.order_ids), 100):
+                    await queue.enqueue(
+                        OrderIdsRecoveryRequest(
+                            seller_id=context.seller_id,
+                            order_ids=missing.order_ids[offset : offset + 100],
+                            read_model=missing.read_model,
+                        )
+                    )
+        except (ValueError, PyMongoError, TimeoutError):
+            return False
+        return True
+    if missing.date_to is None:
         return False
     date_to = missing.date_to
     date_from = missing.date_from

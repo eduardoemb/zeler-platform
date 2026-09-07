@@ -22,7 +22,7 @@ from zeler_platform_core.devoluciones_readiness import (
 )
 from zeler_sheets.event_persistence import SheetsEventPersistence
 from zeler_sheets.formulas.read_models import read_model_reconciliation_marker_covers
-from zeler_sheets.formulas.recovery import COOLDOWN, FormulaRecoveryQueue
+from zeler_sheets.formulas.recovery import COOLDOWN, FormulaRecoveryQueue, OrderIdsRecoveryRequest
 
 
 class FormulaRecoveryWorker:
@@ -51,6 +51,8 @@ class FormulaRecoveryWorker:
                 if job["read_model"] == "questions":
                     await self._questions(job)
                 elif job["read_model"] == "orders":
+                    if "order_ids" in job:
+                        job = await self._locate_orders(job)
                     await self._orders(job)
                 else:
                     raise ValueError("recovery source not implemented")
@@ -81,6 +83,41 @@ class FormulaRecoveryWorker:
         except Exception:  # noqa: BLE001 - never log upstream payloads or credentials.
             await self.queue.finish(job, succeeded=False)
         return True
+
+    async def _locate_orders(self, job: dict[str, Any]) -> dict[str, Any]:
+        requested = OrderIdsRecoveryRequest(job["seller_id"], tuple(job["order_ids"]))
+        dates: list[datetime] = []
+        for identity in requested.order_ids:
+            response = await self.detail_gateway.request(
+                method="GET", seller_id=requested.seller_id, path=f"/orders/{identity}"
+            )
+            if response.status_code not in {200, 206}:
+                raise ValueError("order location unavailable")
+            detail = response.json()
+            seller = detail.get("seller") if isinstance(detail, dict) else None
+            owners = (
+                detail.get("seller_id") if isinstance(detail, dict) else None,
+                seller.get("id") if isinstance(seller, dict) else None,
+            )
+            seller_unavailable = response.status_code == 206 and "seller" in {
+                field.strip().lower()
+                for field in response.headers.get("X-Content-Missing", "").split(",")
+            }
+            if (
+                not isinstance(detail, dict)
+                or str(detail.get("id")) != identity
+                or (not any(owner is not None for owner in owners) and not seller_unavailable)
+                or any(owner is not None and str(owner) != requested.seller_id for owner in owners)
+            ):
+                raise ValueError("order location scope mismatch")
+            dates.append(_date(detail.get("date_created")))
+        # Discovery is not coverage evidence: the existing search/detail pipeline
+        # must still reconcile the inventory and include every requested identity.
+        return {
+            **job,
+            "date_from": min(dates),
+            "date_to": max(dates) + timedelta(milliseconds=1),
+        }
 
     async def _coverage(
         self, job: dict[str, Any]
@@ -199,6 +236,8 @@ class FormulaRecoveryWorker:
             if not rows or len(seen) > total:
                 raise ValueError("incomplete order search")
 
+        if not set(job.get("order_ids", ())).issubset(seen):
+            raise ValueError("requested orders absent from authoritative inventory")
         operation = await acquire_devoluciones_operation(
             db=self.db,
             seller_id=seller_id,

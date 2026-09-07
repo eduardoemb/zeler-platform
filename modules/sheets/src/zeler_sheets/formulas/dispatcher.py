@@ -36,6 +36,7 @@ class FormulaDataUnavailableError(Exception):
         read_model: str | None = None,
         date_from: datetime | None = None,
         date_to: datetime | None = None,
+        order_ids: tuple[str, ...] = (),
     ) -> None:
         message = f"{formula} data is not available yet"
         if reason:
@@ -46,6 +47,7 @@ class FormulaDataUnavailableError(Exception):
         self.read_model = read_model
         self.date_from = date_from
         self.date_to = date_to
+        self.order_ids = order_ids
 
 
 FormulaHandler: TypeAlias = Callable[

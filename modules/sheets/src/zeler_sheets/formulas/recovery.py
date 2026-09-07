@@ -63,6 +63,31 @@ class RecoveryRequest:
         return hashlib.sha256("\0".join(parts).encode()).hexdigest()
 
 
+@dataclass(frozen=True)
+class OrderIdsRecoveryRequest:
+    seller_id: str
+    order_ids: tuple[str, ...]
+    read_model: str = "orders"
+
+    def __post_init__(self) -> None:
+        if (
+            not self.seller_id.strip()
+            or self.read_model != "orders"
+            or not 1 <= len(self.order_ids) <= 100
+            or any(
+                not identity.isascii() or not identity.isdecimal() for identity in self.order_ids
+            )
+        ):
+            raise ValueError("a seller and at most 100 numeric order IDs are required")
+        object.__setattr__(self, "order_ids", tuple(sorted(set(self.order_ids))))
+
+    @property
+    def key(self) -> str:
+        return hashlib.sha256(
+            "\0".join((self.seller_id, self.read_model, "ids", *self.order_ids)).encode()
+        ).hexdigest()
+
+
 class FormulaRecoveryQueue:
     def __init__(
         self,
@@ -85,7 +110,7 @@ class FormulaRecoveryQueue:
             name="recovery_expired_lease",
         )
 
-    async def enqueue(self, request: RecoveryRequest) -> str:
+    async def enqueue(self, request: RecoveryRequest | OrderIdsRecoveryRequest) -> str:
         if request.read_model not in self.enabled_models:
             raise ValueError("recovery source is not enabled")
         now = self.now()
@@ -93,14 +118,16 @@ class FormulaRecoveryQueue:
             "_id": request.key,
             "seller_id": request.seller_id,
             "read_model": request.read_model,
-            "date_from": request.date_from,
-            "date_to": request.date_to,
             "state": "pending",
             "attempts": 0,
             "created_at": now,
             "updated_at": now,
             "available_at": now,
         }
+        if isinstance(request, OrderIdsRecoveryRequest):
+            initial["order_ids"] = list(request.order_ids)
+        else:
+            initial.update(date_from=request.date_from, date_to=request.date_to)
         # A simultaneous upsert can already have persisted this exact request.
         with suppress(DuplicateKeyError):
             await self.collection.update_one(
