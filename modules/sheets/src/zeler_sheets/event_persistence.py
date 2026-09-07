@@ -1053,6 +1053,16 @@ def _state_synced_at(item: dict[str, Any], state: Any) -> datetime:
 def _canonical_order_document(
     resource: dict[str, Any], *, seller_id: str, sale_fee_synced_at: datetime
 ) -> dict[str, Any]:
+    seller = resource.get("seller")
+    source_owners = (
+        resource.get("seller_id"),
+        seller.get("id") if isinstance(seller, dict) else None,
+    )
+    if any(
+        owner is not None and str(owner).strip() != str(seller_id).strip()
+        for owner in source_owners
+    ):
+        raise ValueError("order seller scope mismatch")
     order_id = _string_id(resource.get("_id") or resource.get("id"))
     last_updated = (
         resource.get("last_updated")

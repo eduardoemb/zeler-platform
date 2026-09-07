@@ -688,3 +688,27 @@ items above remain open.
   (500 files) and diff whitespace checks pass. This evidence-only update needs
   no additional image; the affected worker source already matches its verified
   deployed image.
+
+## Work unit: reject foreign ownership during order persistence
+
+- Following the confirmed question contamination, inspection found that order
+  normalization also overwrote the source owner with the caller's seller.
+  Four real-Mongo scenarios failed first because foreign orders were accepted.
+- Canonical order normalization now checks both `seller_id` and Mercado Libre's
+  `seller.id` independently. Either explicit foreign value rejects the write;
+  a matching alias cannot conceal a contradictory one. The error contains no
+  source payload or seller identity. Missing-owner partial payloads retain their
+  existing contract; absence is not proof of ownership or complete source data.
+- Real transaction tests exercise both an empty collection and an existing
+  same-seller order, proving rejection cannot create or replace an order. The
+  matching-owner control persists successfully. Existing sparse buyer/shipping
+  fallback remains covered by the adjacent real-Mongo regression.
+- Recovery, event persistence and historical backfill suites: 134 passed in
+  5.13s. Root Ruff, format and mypy pass (500 files). Runtime harness for this
+  unit is the task-owned local Mongo replica set; no production order mutation
+  is part of the test.
+- Rollback boundary: the ten-line order-owner normalization guard and its
+  regression. The worker is the identified runtime consumer; build and verify
+  its next exact main image before claiming production protection. This does
+  not implement order recovery, field-aware HTTP 206 handling or all-resource
+  isolation. Those remain required before global acceptance.

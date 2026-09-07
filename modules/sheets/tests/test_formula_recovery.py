@@ -15,6 +15,70 @@ from zeler_sheets.formulas.recovery import FormulaRecoveryQueue, RecoveryRequest
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "source_owner",
+    [
+        {"seller": {"id": 999}},
+        {"seller_id": "999"},
+        {"seller_id": "pilot", "seller": {"id": 999}},
+        {"seller_id": "999", "seller": {"id": "pilot"}},
+    ],
+)
+async def test_foreign_order_cannot_create_or_replace_seller_data(
+    recovery_db: Any, source_owner: dict[str, Any]
+) -> None:
+    from zeler_platform_core.devoluciones_readiness import acquire_devoluciones_operation
+    from zeler_sheets.event_persistence import SheetsEventPersistence
+
+    operation = await acquire_devoluciones_operation(
+        db=recovery_db,
+        seller_id="pilot",
+        scope="devoluciones",
+        operation_id=uuid4().hex,
+        attempt_token=uuid4().hex,
+    )
+    writer = SheetsEventPersistence(db=recovery_db)
+    resource = {
+        "id": 42,
+        "seller_id": "pilot",
+        "seller": {"id": "pilot"},
+        "buyer": {"id": 123},
+        "shipping": {"id": 456},
+        "status": "paid",
+        "date_created": "2026-08-20T10:00:00Z",
+        "last_updated": "2026-08-20T11:00:00Z",
+        "total_amount": 30,
+        "order_items": [],
+    }
+    for preexisting in (False, True):
+        if preexisting:
+            await writer.persist(
+                event_type="orders.updated",
+                seller_id="pilot",
+                resource=resource,
+                operation=operation,
+            )
+        before = await recovery_db.orders.find({}).to_list(None)
+        with pytest.raises(ValueError, match="order seller scope mismatch"):
+            await writer.persist(
+                event_type="orders.updated",
+                seller_id="pilot",
+                operation=operation,
+                resource={
+                    **{
+                        key: value
+                        for key, value in resource.items()
+                        if key not in {"seller_id", "seller"}
+                    },
+                    **source_owner,
+                    "status": "cancelled",
+                    "last_updated": "2026-08-20T12:00:00Z",
+                },
+            )
+        assert await recovery_db.orders.find({}).to_list(None) == before
+
+
+@pytest.mark.asyncio
 async def test_order_partial_update_uses_same_seller_state_in_real_transaction(
     recovery_db: Any,
 ) -> None:
