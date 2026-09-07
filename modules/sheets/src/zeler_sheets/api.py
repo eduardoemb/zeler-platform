@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import asyncio
 import inspect
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any, cast
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -13,6 +14,7 @@ from fastapi import APIRouter, Request, Response
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
+from pymongo.errors import PyMongoError
 
 from zeler_platform_core.auth.jwt import verify_module_jwt
 from zeler_platform_core.auth.module_admin import authorize_module_admin
@@ -46,6 +48,7 @@ from zeler_sheets.formulas.handlers_returns_histories_withdrawals import (
     build_returns_histories_withdrawals_formula_handlers,
 )
 from zeler_sheets.formulas.read_models import FormulaReadModelRepository
+from zeler_sheets.formulas.recovery import RECOVERABLE_MODELS, RecoveryRequest
 from zeler_sheets.formulas.registry import FormulaRegistry
 from zeler_sheets.formulas.runtime_states import (
     FormulaRuntimeState,
@@ -616,6 +619,14 @@ async def _execute_formula_payload(
     try:
         result = await _dispatch_formula(_runtime_dispatcher(request, dispatcher, now=now), context)
     except FormulaDataUnavailableError as exc:
+        if await _request_formula_recovery(request, context, exc):
+            body, status = _formula_error(
+                "DATA_UNAVAILABLE",
+                "Actualización solicitada; vuelve a intentar.",
+                status_code=200,
+            )
+            body["meta"] = {"recovery_requested": True}
+            return body, status
         return _formula_error("DATA_UNAVAILABLE", exc.message, status_code=200)
     except Exception:  # noqa: BLE001 - Apps Script callers require stable error cells.
         return _formula_error(
@@ -630,6 +641,36 @@ async def _execute_formula_payload(
         "values": _formula_json_safe(result.values),
         "meta": _formula_json_safe(result.meta),
     }, 200
+
+
+async def _request_formula_recovery(
+    request: Request,
+    context: FormulaExecutionContext,
+    missing: FormulaDataUnavailableError,
+) -> bool:
+    queue = getattr(request.app.state, "formula_recovery_queue", None)
+    if queue is None or missing.read_model not in RECOVERABLE_MODELS or missing.date_to is None:
+        return False
+    date_to = missing.date_to
+    date_from = missing.date_from
+    if date_from is None:
+        # Coalesce current-snapshot requests across all recalculations that day.
+        date_to = date_to.astimezone(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
+        date_to += timedelta(days=1)
+        date_from = date_to - timedelta(days=30)
+    try:
+        recovery = RecoveryRequest(
+            seller_id=context.seller_id,
+            read_model=missing.read_model,
+            date_from=date_from,
+            date_to=date_to,
+        )
+        # Mongo queue insertion is bounded; the formula never waits for recovery.
+        async with asyncio.timeout(1.0):
+            await queue.enqueue(recovery)
+    except (ValueError, PyMongoError, TimeoutError):
+        return False
+    return True
 
 
 async def _dispatch_formula(

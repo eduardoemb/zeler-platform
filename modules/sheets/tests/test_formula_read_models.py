@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any
 
 import pytest
 
+from zeler_sheets.formulas.dispatcher import FormulaDataUnavailableError
 from zeler_sheets.formulas.read_models import FormulaReadModelRepository
 
 
@@ -38,6 +40,9 @@ class FakeCollection:
         self.last_cursor = FakeCursor(self._docs)
         return self.last_cursor
 
+    async def find_one(self, filter_spec: dict[str, Any]) -> dict[str, Any] | None:
+        return None
+
 
 class FakeDb:
     def __init__(self, item_rows: list[dict[str, Any]]) -> None:
@@ -48,6 +53,34 @@ class FakeDb:
 
 
 _UNSET = object()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("method", "read_model", "has_start"),
+    [
+        ("require_questions_read_model_productive", "questions", True),
+        ("require_read_model_productive", "item_formula_rows", False),
+        ("require_read_model_reconciled_range", "stock_time_metrics", True),
+    ],
+)
+async def test_missing_model_identifies_exact_recovery_scope(
+    method: str, read_model: str, has_start: bool
+) -> None:
+    start = datetime(2026, 8, 8, tzinfo=UTC)
+    end = datetime(2026, 9, 7, tzinfo=UTC)
+    kwargs: dict[str, Any] = {"seller_id": "seller-1", "date_to": end, "formula": "ZELERDATA_TEST"}
+    if has_start:
+        kwargs["date_from"] = start
+    if read_model != "questions":
+        kwargs["read_model"] = read_model
+
+    with pytest.raises(FormulaDataUnavailableError) as caught:
+        await getattr(FormulaReadModelRepository(db=FakeDb([])), method)(**kwargs)
+
+    assert caught.value.read_model == read_model
+    assert caught.value.date_from == (start if has_start else None)
+    assert caught.value.date_to == end
 
 
 @pytest.mark.asyncio

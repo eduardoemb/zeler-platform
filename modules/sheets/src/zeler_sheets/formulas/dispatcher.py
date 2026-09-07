@@ -3,6 +3,7 @@ from __future__ import annotations
 import inspect
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any, TypeAlias
 
 from zeler_sheets.formulas.schemas import FormulaContract
@@ -27,13 +28,24 @@ class FormulaExecutionResult:
 
 
 class FormulaDataUnavailableError(Exception):
-    def __init__(self, formula: str, reason: str | None = None) -> None:
+    def __init__(
+        self,
+        formula: str,
+        reason: str | None = None,
+        *,
+        read_model: str | None = None,
+        date_from: datetime | None = None,
+        date_to: datetime | None = None,
+    ) -> None:
         message = f"{formula} data is not available yet"
         if reason:
             message = f"{message}: {reason}"
         super().__init__(message)
         self.formula = formula
         self.message = message
+        self.read_model = read_model
+        self.date_from = date_from
+        self.date_to = date_to
 
 
 FormulaHandler: TypeAlias = Callable[

@@ -21,10 +21,52 @@ from zeler_sheets.extension_tokens import (
 )
 from zeler_sheets.formulas.dispatcher import FormulaExecutionResult
 from zeler_sheets.formulas.read_models import ITEM_FORMULA_ROWS_READ_MODEL
+from zeler_sheets.formulas.recovery import RecoveryRequest
 
 
 class FakeUpdateResult:
     modified_count = 1
+
+
+@pytest.mark.asyncio
+async def test_missing_questions_schedule_recovery_only_for_authenticated_seller() -> None:
+    now = datetime(2026, 5, 13, 12, 0, tzinfo=UTC)
+    app, _db, token = await _app_with_token(now=now)
+    queued: list[RecoveryRequest] = []
+
+    class Queue:
+        async def enqueue(self, request: RecoveryRequest) -> str:
+            queued.append(request)
+            return "recovery-id"
+
+    app.state.formula_recovery_queue = Queue()
+    payload = {
+        "formula": "ZELERDATA_PREGUNTAS",
+        "cuenta": "HOPEMOB",
+        "args": {
+            "fecha_inicial": "2026-05-10",
+            "fecha_final": "2026-05-10",
+            "horario_inicial": "00:00",
+            "horario_final": "23:59",
+        },
+    }
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        denied = await client.post("/sheets/formulas:execute", json=payload)
+        assert denied.status_code == 401
+        assert not queued
+        response = await client.post(
+            "/sheets/formulas:execute",
+            json=payload,
+            headers={"Authorization": f"Bearer {token}"},
+        )
+    assert len(queued) == 1
+    assert queued[0].seller_id == "123456789"
+    assert queued[0].read_model == "questions"
+    assert response.status_code == 200
+    assert response.json()["error"]["code"] == "DATA_UNAVAILABLE"
+    assert response.json()["meta"]["recovery_requested"] is True
 
 
 class FakeCursor:

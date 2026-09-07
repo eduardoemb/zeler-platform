@@ -86,3 +86,27 @@ Pilot: seller `82453304`; initial historical window 2026-08-08 through
 4. Implement recovery with failing behavioral tests first, reuse existing
    reconciliation and keep the formula path independent of remote API latency.
 5. Continue every acceptance item above; a passing narrow test is not closure.
+
+## Work unit: durable recovery request boundary
+
+- Missing-model exceptions now carry structured model and normalized range.
+  Three new scenarios failed first, then passed after adding the metadata.
+- Mongo-backed recovery queue coalesces exact seller/model/range requests with
+  deterministic IDs, claims jobs atomically, renews leases, fences completions
+  from expired attempts and applies a 15-minute terminal cooldown.
+- Real Mongo tests verify 20 concurrent requests coalesce, seller separation,
+  exclusive claims, expired-attempt fencing and cooldown rescheduling.
+- API can use an injected queue only after token/seller validation. Enqueue is
+  capped at one second; response remains DATA_UNAVAILABLE with an explicit
+  update-requested message. The authorization/API regression failed before
+  wiring and passed afterwards.
+- 73 focused API, recovery, model and handler tests passed in 1.35s. Focused
+  Ruff and mypy pass.
+- NOT production-enabled: worker execution, indexes/schema, retry/queue limits,
+  full model coverage, startup wiring and end-to-end recovery remain pending.
+  No success claim for automatic data recovery until the executor proves it.
+- Next reuse point: historical_meli_backfill currently always fetches orders,
+  even for questions/catalog; broad reconciliation also acquires a devoluciones
+  lease. Avoid blindly invoking that broad path for each missing model.
+- Rollback boundary: new recovery module and tests, optional API scheduling
+  helper, and exception metadata. No production schema/data changes occurred.

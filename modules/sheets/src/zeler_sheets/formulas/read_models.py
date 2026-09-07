@@ -476,7 +476,13 @@ class FormulaReadModelRepository:
             date_from=date_from,
             date_to=date_to,
         ):
-            raise FormulaDataUnavailableError(formula, QUESTIONS_FRESHNESS_UNAVAILABLE_REASON)
+            raise FormulaDataUnavailableError(
+                formula,
+                QUESTIONS_FRESHNESS_UNAVAILABLE_REASON,
+                read_model=QUESTIONS_READ_MODEL,
+                date_from=_safe_utc_datetime(date_from),
+                date_to=_safe_utc_datetime(date_to),
+            )
 
     async def require_read_model_productive(
         self,
@@ -498,7 +504,9 @@ class FormulaReadModelRepository:
                 f"Read model {read_model} has not passed freshness/reconciliation "
                 "for the requested range."
             )
-            raise FormulaDataUnavailableError(formula, reason)
+            raise FormulaDataUnavailableError(
+                formula, reason, read_model=read_model, date_to=_safe_utc_datetime(date_to)
+            )
 
     async def require_read_model_reconciled_range(
         self,
@@ -527,7 +535,13 @@ class FormulaReadModelRepository:
                 f"Read model {read_model} has not passed freshness/reconciliation "
                 "for the requested range."
             )
-            raise FormulaDataUnavailableError(formula, reason)
+            raise FormulaDataUnavailableError(
+                formula,
+                reason,
+                read_model=read_model,
+                date_from=_safe_utc_datetime(date_from),
+                date_to=_safe_utc_datetime(date_to),
+            )
 
     async def require_devoluciones_reconciled_range(
         self,
