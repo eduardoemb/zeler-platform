@@ -55,9 +55,26 @@ Pilot: seller `82453304`; initial historical window 2026-08-08 through
   Ruff check/format and focused mypy pass.
 - Production validation pending: larger results must be measured for memory,
   response size and the end-to-end 30-second deadline before release.
-- Runtime harness pending; local Mongo integration unavailable as noted above.
+- Runtime harness: dedicated local Mongo 7 replica set, loopback port 27028,
+  container `zeler-goal-mongo`. Real Motor cursor reads return all 501/501/1,001
+  rows and exclude a second seller; 1 integration test passed. Random test DB
+  is removed by the test after use, never using production configuration.
+- Mongo/schema/drift/formula subset with dedicated local connection:
+  46 passed in 2.51s (no skips).
 - Rollback boundary: the three default limits in formulas/read_models.py and
   their boundary tests; no schema or persisted-data changes.
+
+## Remaining baseline quality findings
+
+- Root Ruff check passes. Root format check flags the existing
+  tests/integration/test_stock_time_forward_execution_rs0.py.
+- Root mypy found pre-existing errors in stock-time schema tests (2),
+  source-gated writer tests (3), reconciliation quota counter typing (1), and
+  quota advance test re-export (1). New Mongo test client annotation fixed.
+- Runtime Sheets API digest: cd3c541f85a47fa0093fda6958bd1dfb4759263c5c24a3d5b76fd78c8663a8dc.
+- Runtime Sheets worker digest: b2f820af4a5b0054ef084512430fb385684a078d918238827d3ffc2896008931.
+- No loaded zelerdata systemd units were listed; this alone does not exclude a
+  live manual reconciliation process. Source provenance still needs resolving.
 
 ## Next evidence/actions
 
