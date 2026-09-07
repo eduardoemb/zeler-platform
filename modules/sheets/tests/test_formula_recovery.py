@@ -425,7 +425,7 @@ async def test_app_wires_only_implemented_recovery_sources(recovery_db: Any) -> 
     await queue.enqueue(request())
     unsupported = RecoveryRequest(
         seller_id="pilot",
-        read_model="orders",
+        read_model="shipments",
         date_from=request().date_from,
         date_to=request().date_to,
     )
@@ -437,8 +437,13 @@ async def test_app_wires_only_implemented_recovery_sources(recovery_db: Any) -> 
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("read_model", "partial"), [("questions", False), ("orders", False), ("orders", True)]
+)
 async def test_http_missing_data_recovers_in_background_and_next_http_succeeds(
     recovery_db: Any,
+    read_model: str,
+    partial: bool,
 ) -> None:
     import httpx
 
@@ -458,11 +463,29 @@ async def test_http_missing_data_recovers_in_background_and_next_http_succeeds(
         seller_scopes=[SellerScope(seller_id="123456789", nickname="PILOT")],
     )
     calls: list[str] = []
+    order = {
+        "id": 42,
+        "seller": {"id": "123456789"},
+        "buyer": {} if partial else {"id": 123},
+        "status": "paid",
+        "date_created": "2026-08-20T10:00:00Z",
+        "last_updated": "2026-08-20T11:00:00Z",
+        "total_amount": 30,
+        "order_items": [{"item": {"id": "MLM42"}, "quantity": 1, "unit_price": 30}],
+    }
 
     class Gateway:
         async def fetch_resource(self, **kwargs: Any) -> dict[str, Any]:
             calls.append(kwargs["path"])
+            if read_model == "orders":
+                return {"paging": {"total": 1}, "results": [order]}
             return {"total": 0, "questions": []}
+
+        async def request(self, **kwargs: Any) -> httpx.Response:
+            calls.append(kwargs["path"])
+            if partial:
+                return httpx.Response(206, headers={"X-Content-Missing": "buyer"}, json=order)
+            return httpx.Response(200, json=order)
 
     queue = app.state.formula_recovery_queue
     await queue.ensure_indexes()
@@ -471,7 +494,9 @@ async def test_http_missing_data_recovers_in_background_and_next_http_succeeds(
         poll_interval=0.01,
     )
     payload = {
-        "formula": "ZELERDATA_PREGUNTAS",
+        "formula": "ZELERDATA_PREGUNTAS"
+        if read_model == "questions"
+        else "ZELERDATA_VENTASTOTALES",
         "cuenta": "PILOT",
         "args": {
             "fecha_inicial": "2026-08-08",
@@ -495,9 +520,70 @@ async def test_http_missing_data_recovers_in_background_and_next_http_succeeds(
                     await asyncio.sleep(0.01)
             ready = await client.post("/sheets/formulas:execute", headers=headers, json=payload)
             assert ready.json()["ok"] is True, ready.json()
-            assert len(calls) == 1
+            assert len(calls) == (1 if read_model == "questions" else 2)
+            if read_model == "orders":
+                assert ready.json()["values"] == [[30]]
         finally:
             await worker.stop()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "formula",
+    [
+        "ORDENES",
+        "VENTASTOTALES",
+        "UNIDADESVENDIDAS",
+        "ORDENESPORSKU",
+        "PRODUCTOSINVENTA",
+        "VENTAPORDIAS",
+        "VENTASYSTOCK",
+        "TOPVENTASUNIDADES",
+        "TOPVENTASDINERO",
+    ],
+)
+async def test_bounded_order_formulas_cannot_present_unproven_inventory_as_complete(
+    recovery_db: Any,
+    formula: str,
+) -> None:
+    from zeler_sheets.formulas.dispatcher import (
+        FormulaDataUnavailableError,
+        FormulaDispatcher,
+        FormulaExecutionContext,
+    )
+    from zeler_sheets.formulas.handlers_orders_questions import (
+        build_order_question_formula_handlers,
+    )
+    from zeler_sheets.formulas.read_models import FormulaReadModelRepository
+    from zeler_sheets.formulas.registry import FormulaRegistry
+
+    name = "ZELERDATA_" + formula
+    context = FormulaExecutionContext(
+        contract=FormulaRegistry.default().find_required(name),
+        cuenta="pilot",
+        seller_id="pilot",
+        seller_nickname="pilot",
+        token_id=uuid4().hex,
+        request_id=None,
+        args={
+            "fecha_inicial": "2026-08-08",
+            "fecha_final": "2026-09-06",
+            "skus": ["sku-42"],
+            "id_publicaciones": ["MLM42"],
+            "cantidad_top": 10,
+            "rango_dias": 30,
+        },
+    )
+    dispatcher = FormulaDispatcher(
+        build_order_question_formula_handlers(
+            FormulaReadModelRepository(db=recovery_db),
+            now_fn=lambda: datetime(2026, 9, 7, tzinfo=UTC),
+        )
+    )
+    with pytest.raises(FormulaDataUnavailableError) as missing:
+        await dispatcher.execute(context)
+    assert missing.value.read_model == "orders"
+    assert missing.value.date_from is not None and missing.value.date_to is not None
 
 
 @pytest.mark.asyncio

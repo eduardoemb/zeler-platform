@@ -3171,6 +3171,11 @@ async def test_formula_api_wires_batch_b_handlers_and_keeps_other_batch_b_data_u
 ):
     now = datetime(2026, 5, 13, 17, 0, tzinfo=UTC)
     app, db, token = await _app_with_token(now=now)
+    db["sheets_read_model_freshness"].documents["seller-1:orders"] = {
+        "_id": "seller-1:orders", "seller_id": "seller-1", "read_model": "orders",
+        "state": "reconciled", "date_from": datetime(2026, 5, 10, tzinfo=UTC),
+        "reconciled_until": datetime(2026, 5, 11, tzinfo=UTC),
+    }
     db["orders"].documents = {
         "order-1": _order_doc(
             "order-1",
@@ -3264,6 +3269,13 @@ async def test_formula_api_wires_batch_b_handlers_and_keeps_other_batch_b_data_u
 
 
 def _order_question_dispatcher(db: FakeDb, *, now_fn: Any | None = None) -> FormulaDispatcher:
+    # Calculation fixtures represent a complete inventory; missing/expired
+    # coverage is exercised against real Mongo in test_formula_recovery.py.
+    db["sheets_read_model_freshness"].documents["seller-1:orders"] = {
+        "_id": "seller-1:orders", "seller_id": "seller-1", "read_model": "orders",
+        "state": "reconciled", "date_from": datetime(2000, 1, 1, tzinfo=UTC),
+        "reconciled_until": datetime(2100, 1, 1, tzinfo=UTC),
+    }
     return FormulaDispatcher(
         build_order_question_formula_handlers(FormulaReadModelRepository(db=db), now_fn=now_fn)
     )

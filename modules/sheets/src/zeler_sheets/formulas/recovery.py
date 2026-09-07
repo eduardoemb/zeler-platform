@@ -26,7 +26,7 @@ RECOVERABLE_MODELS = frozenset(
 LEASE = timedelta(minutes=10)
 COOLDOWN = timedelta(minutes=15)
 MAX_ATTEMPTS = 3
-IMPLEMENTED_MODELS = frozenset({"questions"})
+IMPLEMENTED_MODELS = frozenset({"questions", "orders"})
 
 
 @dataclass(frozen=True)

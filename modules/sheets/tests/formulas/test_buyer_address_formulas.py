@@ -79,6 +79,10 @@ class FakeCollection:
         self.last_find_projection: dict[str, Any] | None = None
         self.find_calls: list[dict[str, dict[str, Any] | None]] = []
 
+    async def find_one(self, filter_spec: dict[str, Any]) -> dict[str, Any] | None:
+        rows = await self.find(filter_spec).to_list(1)
+        return rows[0] if rows else None
+
     def find(
         self,
         filter_spec: dict[str, Any],
@@ -347,6 +351,15 @@ async def test_compradores_returns_only_eight_approved_fields_and_safe_metadata(
 
 
 def _dispatcher(db: FakeDb) -> FormulaDispatcher:
+    # These address-projection fixtures have a complete one-day order inventory.
+    db["sheets_read_model_freshness"].documents["seller-1:orders"] = {
+        "_id": "seller-1:orders",
+        "seller_id": "seller-1",
+        "read_model": "orders",
+        "state": "reconciled",
+        "date_from": datetime(2026, 5, 10, tzinfo=UTC),
+        "reconciled_until": datetime(2026, 5, 11, tzinfo=UTC),
+    }
     return FormulaDispatcher(
         build_order_question_formula_handlers(FormulaReadModelRepository(db=db))
     )

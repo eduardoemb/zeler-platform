@@ -56,7 +56,7 @@ def test_phase3_main_schemas_are_concrete_validators_without_todo_placeholders()
 def test_entity_schemas_require_tenant_and_canonical_ids() -> None:
     expectations = {
         "items.json": {"_id", "seller_id", "title", "status", "schema_version"},
-        "orders.json": {"_id", "seller_id", "buyer_id", "status", "date_created", "schema_version"},
+        "orders.json": {"_id", "seller_id", "status", "date_created", "schema_version"},
         "questions.json": {
             "_id",
             "seller_id",
@@ -89,6 +89,11 @@ def test_entity_schemas_require_tenant_and_canonical_ids() -> None:
         assert isinstance(required_value, list)
         required = set(required_value)
         assert required_fields <= required
+
+    alternatives = _json_schema("orders.json")["oneOf"]
+    assert isinstance(alternatives, list)
+    assert alternatives[0]["required"] == ["buyer_id"]
+    assert alternatives[1]["required"] == ["unavailable_fields"]
 
 
 def test_orders_schema_allows_optional_meli_pack_id_without_requiring_it() -> None:

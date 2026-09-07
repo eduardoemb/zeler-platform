@@ -870,3 +870,53 @@ retain their contract; other product deployments remain out of scope.
   and protect all relevant readers. Do not restore the old required-buyer Mongo
   validator while partially populated orders exist; retain the compatible
   validator through a code rollback until those documents are resolved.
+
+## Work unit: bounded sales formulas request persistent recovery
+
+- Nine range-based order/sales handlers now share a coverage-checked read.
+  Ten new cases failed first: each of those handlers accepted unproven empty
+  inventory, and the local HTTP sales-total request returned success instead
+  of requesting recovery. They now emit structured orders/range unavailability.
+- Runtime order coverage no longer requires the legacy_imported basis used by
+  imported history models. Other models retain that requirement. Existing
+  reconciliation interval and expiry checks remain in use.
+- The opt-in recovery wiring now admits questions and orders; shipments and
+  other unfinished models remain excluded. The production flag has not been
+  enabled. Admission quotas and safe global activation remain unfinished.
+- Local authenticated ASGI HTTP plus actual Mongo tests cover questions,
+  complete orders and HTTP 206 orders with no cached buyer. First query requests
+  recovery without source calls; background work persists data/proof; the next
+  sales-total query returns 30 without another source call. All three HTTP
+  scenarios passed in 1.08s. This does not substitute for production HTTP smoke.
+- Calculation/address fixtures now explicitly declare their complete test
+  inventory; their fake collection supports find_one. The schema contract test
+  checks conditional buyer presence rather than the superseded unconditional
+  requirement. Tenant/ID requirements and buyer-address isolation assertions
+  remain intact. Negative coverage and conditional-validator behavior are
+  exercised against actual Mongo, not mocked away.
+- Rollback boundary: shared bounded-order read, runtime-order basis selection,
+  orders opt-in admission, and related tests. Pair Sheets API and worker images
+  with the compatible order validator; do not activate partial writers first.
+- Final regression: 3,655 passed, 9 skipped in 72.18s. Protected replica-set
+  suite separately: 8 passed in 2.24s. Remaining skip is Caddy's no-required-keys
+  contract case. Ruff check, format, mypy and diff whitespace checks pass.
+  No build, deploy, production schema change or production order write was
+  performed for these two work units.
+
+### Still required before production order-recovery activation
+
+- COMPRADORES reads by explicit order IDs and DIASDESDEULTIMAVENTA reads
+  all-history; neither is solved by the bounded-range helper. Handle missing
+  IDs and the latest-known-sale/unknown-history distinction explicitly.
+- Audit required fields per consumer, especially shipment/address/cost reads,
+  so explicit shipment_id gaps become required-data unavailability instead of
+  optional NA. Do not over-block formulas that only need available amounts.
+- Ranges beyond the queue's 90-day limit need bounded acquisition scheduling;
+  do not claim they are unrecoverable merely because of that internal limit.
+- Recheck cooldown scheduling: a request for still-missing fields can encounter
+  an already completed inventory job during cooldown. It must remain scheduled
+  for a later attempt without requiring another user recalculation; the current
+  enqueue implementation only reopens terminal jobs after available_at elapses.
+- Verify/release the pending schema/API/worker changes in the approved runtime,
+  then prove pilot order recovery and production formula reads. The last live
+  worker is still source d145d61 and the API source 4f65d6d, not these changes.

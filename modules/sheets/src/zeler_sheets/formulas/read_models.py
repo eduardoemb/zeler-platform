@@ -528,7 +528,7 @@ class FormulaReadModelRepository:
             marker,
             date_from=date_from,
             date_to=date_to,
-            coverage_basis="legacy_imported",
+            coverage_basis=None if read_model == ORDERS_READ_MODEL else "legacy_imported",
             exact_interval=read_model in INTERVAL_AGGREGATE_READ_MODELS,
         ):
             reason = (

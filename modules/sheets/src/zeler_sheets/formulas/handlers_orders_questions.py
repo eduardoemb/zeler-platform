@@ -15,7 +15,11 @@ from zeler_sheets.formulas.dispatcher import (
     FormulaHandler,
 )
 from zeler_sheets.formulas.output_normalization import NA_VALUE, normalize_response_rows
-from zeler_sheets.formulas.read_models import FormulaReadModelRepository, normalize_sku
+from zeler_sheets.formulas.read_models import (
+    ORDERS_READ_MODEL,
+    FormulaReadModelRepository,
+    normalize_sku,
+)
 
 BATCH_B_IMPLEMENTED_FORMULAS = frozenset(
     {
@@ -130,6 +134,25 @@ class OrderQuestionFormulaHandlers:
         self._repository = repository
         self._now_fn = now_fn or (lambda: datetime.now(UTC))
 
+    async def _find_orders(
+        self,
+        *,
+        context: FormulaExecutionContext,
+        date_from: datetime,
+        date_to: datetime,
+        status: str | None = None,
+    ) -> list[dict[str, Any]]:
+        await self._repository.require_read_model_reconciled_range(
+            seller_id=context.seller_id,
+            read_model=ORDERS_READ_MODEL,
+            date_from=date_from,
+            date_to=date_to,
+            formula=context.contract.name,
+        )
+        return await self._repository.find_orders(
+            seller_id=context.seller_id, date_from=date_from, date_to=date_to, status=status
+        )
+
     async def sheetseller_ordenes(self, context: FormulaExecutionContext) -> FormulaExecutionResult:
         timezone = _context_timezone(context)
         date_range = _date_range(
@@ -139,8 +162,8 @@ class OrderQuestionFormulaHandlers:
         )
         status_filter = _status_filter(context.args.get("estado", "todos"))
         buyer_selection = _buyer_selection(context.args.get("compradores", ""))
-        orders = await self._repository.find_orders(
-            seller_id=context.seller_id,
+        orders = await self._find_orders(
+            context=context,
             date_from=date_range.start,
             date_to=date_range.end,
             status=status_filter,
@@ -210,8 +233,8 @@ class OrderQuestionFormulaHandlers:
             timezone=_context_timezone(context),
         )
         status_filter = _status_filter(context.args.get("estado", "todos"))
-        orders = await self._repository.find_orders(
-            seller_id=context.seller_id,
+        orders = await self._find_orders(
+            context=context,
             date_from=date_range.start,
             date_to=date_range.end,
             status=status_filter,
@@ -237,8 +260,8 @@ class OrderQuestionFormulaHandlers:
             context.args.get("fecha_final"),
             timezone=_context_timezone(context),
         )
-        orders = await self._repository.find_orders(
-            seller_id=context.seller_id,
+        orders = await self._find_orders(
+            context=context,
             date_from=date_range.start,
             date_to=date_range.end,
         )
@@ -275,8 +298,8 @@ class OrderQuestionFormulaHandlers:
         )
         status_filter = _status_filter(context.args.get("estado", "todos"))
         buyer_selection = _buyer_selection(context.args.get("compradores", ""))
-        orders = await self._repository.find_orders(
-            seller_id=context.seller_id,
+        orders = await self._find_orders(
+            context=context,
             date_from=date_range.start,
             date_to=date_range.end,
             status=status_filter,
@@ -443,8 +466,8 @@ class OrderQuestionFormulaHandlers:
                 str(row.get("item_id", "")),
             ),
         )
-        orders = await self._repository.find_orders(
-            seller_id=context.seller_id,
+        orders = await self._find_orders(
+            context=context,
             date_from=date_range.start,
             date_to=date_range.end,
         )
@@ -501,8 +524,8 @@ class OrderQuestionFormulaHandlers:
         date_range = _last_days_range(
             self._now_fn(), range_days, timezone=_context_timezone(context)
         )
-        orders = await self._repository.find_orders(
-            seller_id=context.seller_id,
+        orders = await self._find_orders(
+            context=context,
             date_from=date_range.start,
             date_to=date_range.end,
         )
@@ -548,8 +571,8 @@ class OrderQuestionFormulaHandlers:
             (normalize_sku(row.get("normalized_sku", "")), str(row.get("item_id", ""))): row
             for row in rows
         }
-        orders = await self._repository.find_orders(
-            seller_id=context.seller_id,
+        orders = await self._find_orders(
+            context=context,
             date_from=date_ranges[30].start,
             date_to=date_ranges[30].end,
         )
@@ -604,8 +627,8 @@ class OrderQuestionFormulaHandlers:
             timezone=_context_timezone(context),
         )
         top_count = _positive_int(context.args.get("cantidad_top"))
-        orders = await self._repository.find_orders(
-            seller_id=context.seller_id,
+        orders = await self._find_orders(
+            context=context,
             date_from=date_range.start,
             date_to=date_range.end,
         )
@@ -654,8 +677,8 @@ class OrderQuestionFormulaHandlers:
             timezone=_context_timezone(context),
         )
         top_count = _positive_int(context.args.get("cantidad_top"))
-        orders = await self._repository.find_orders(
-            seller_id=context.seller_id,
+        orders = await self._find_orders(
+            context=context,
             date_from=date_range.start,
             date_to=date_range.end,
         )
