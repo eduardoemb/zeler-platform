@@ -26,7 +26,7 @@ RECOVERABLE_MODELS = frozenset(
 LEASE = timedelta(minutes=10)
 COOLDOWN = timedelta(minutes=15)
 MAX_ATTEMPTS = 3
-IMPLEMENTED_MODELS = frozenset({"questions", "orders"})
+IMPLEMENTED_MODELS = frozenset({"questions", "orders", "shipments"})
 
 
 @dataclass(frozen=True)
@@ -140,6 +140,10 @@ class FormulaRecoveryQueue:
     ) -> str:
         if request.read_model not in self.enabled_models:
             raise ValueError("recovery source is not enabled")
+        if request.read_model == "shipments" and not isinstance(
+            request, ShipmentIdsRecoveryRequest
+        ):
+            raise ValueError("shipment recovery requires explicit IDs")
         now = self.now()
         initial = {
             "_id": request.key,

@@ -174,7 +174,6 @@ async def test_ordenes_returns_order_table_with_status_buyer_filters_and_headers
             buyer_id="buyer-2",
             date_created="2026-05-11T08:15:00Z",
             total_amount="75.50",
-            shipment_id="shipment-2",
             items=[
                 {
                     "seller_sku": "sku-2",
@@ -191,7 +190,6 @@ async def test_ordenes_returns_order_table_with_status_buyer_filters_and_headers
             buyer_id="buyer-1",
             date_created="2026-05-10T10:30:00Z",
             total_amount="100.00",
-            shipment_id="shipment-1",
             items=[
                 {
                     "sku": "sku-1",
@@ -400,6 +398,8 @@ async def test_ordenes_compradores_boolean_flag_adds_buyer_columns_without_filte
         "shipment-1": {
             "_id": "shipment-1",
             "seller_id": "seller-1",
+            "formula_observed_at": datetime.now(UTC),
+            "real_shipping_cost": {"seller_cost": 0, "synced_at": datetime.now(UTC)},
             "receiver_address": {
                 "name": "SNAPSHOT_BUYER_OK",
                 "street_name": "SNAPSHOT_STREET_OK",
@@ -441,7 +441,7 @@ async def test_ordenes_compradores_boolean_flag_adds_buyer_columns_without_filte
             "",
             "",
             "",
-            "",
+            0,
             "paid",
             "SNAPSHOT_BUYER_OK",
             "SNAPSHOT_STREET_OK",
@@ -592,6 +592,8 @@ async def test_order_tables_preserve_meli_pack_id_as_id_carrito_for_buyer_varian
         "shipment-1": {
             "_id": "shipment-1",
             "seller_id": "seller-1",
+            "formula_observed_at": datetime.now(UTC),
+            "real_shipping_cost": {"seller_cost": 0, "synced_at": datetime.now(UTC)},
             "receiver_address": {
                 "name": "SNAPSHOT_BUYER_OK",
                 "street_name": "SNAPSHOT_STREET_OK",
@@ -603,6 +605,12 @@ async def test_order_tables_preserve_meli_pack_id_as_id_carrito_for_buyer_varian
                 "country": "SNAPSHOT_COUNTRY_OK",
             },
         }
+    }
+    db["shipments"].documents["shipment-2"] = {
+        "_id": "shipment-2", "seller_id": "seller-1",
+        "formula_observed_at": datetime.now(UTC),
+        "receiver_address": {"name": "SECOND_BUYER_OK"},
+        "real_shipping_cost": {"seller_cost": 0, "synced_at": datetime.now(UTC)},
     }
     dispatcher = _order_question_dispatcher(db)
 
@@ -635,7 +643,9 @@ async def test_order_tables_preserve_meli_pack_id_as_id_carrito_for_buyer_varian
             "SNAPSHOT_STATE_OK",
             "SNAPSHOT_COUNTRY_OK",
         ]
-        assert result.values[2][13:] == ["NA"] * len(BUYER_ADDRESS_LEGACY_HEADERS)
+        assert result.values[2][13:] == ["SECOND_BUYER_OK"] + ["NA"] * (
+            len(BUYER_ADDRESS_LEGACY_HEADERS) - 1
+        )
     else:
         assert "Nombre Comprador" not in result.values[0]
 
@@ -1984,16 +1994,19 @@ async def test_find_shipment_real_shipping_costs_returns_seller_scoped_seller_co
     }
     repository = FormulaReadModelRepository(db=db)
 
-    result = await repository.find_shipment_real_shipping_costs(
-        seller_id="seller-1",
-        shipment_ids=["ship-ok", "ship-ok", "ship-receiver-only", "ship-malformed", "missing"],
-    )
-
-    assert result == {"ship-ok": Decimal("27.90")}
+    with pytest.raises(FormulaDataUnavailableError) as missing:
+        await repository.find_shipment_real_shipping_costs(
+            seller_id="seller-1",
+            shipment_ids=["ship-ok", "ship-ok", "ship-receiver-only", "ship-malformed", "missing"],
+        )
+    assert missing.value.shipment_ids == ("ship-receiver-only", "ship-malformed", "missing")
     assert db["shipments"].last_find_filter == {
         "seller_id": "seller-1",
         "_id": {"$in": ["ship-ok", "ship-receiver-only", "ship-malformed", "missing"]},
     }
+    assert await repository.find_shipment_real_shipping_costs(
+        seller_id="seller-1", shipment_ids=["ship-ok"]
+    ) == {"ship-ok": Decimal("27.90")}
 
 
 @pytest.mark.asyncio
@@ -2076,14 +2089,14 @@ async def test_ordenes_fails_closed_without_seller_cost_and_ignores_estimates() 
     }
     dispatcher = _order_question_dispatcher(db)
 
-    result = await dispatcher.execute(
-        _context(
-            "ZELERDATA_ORDENES",
-            {"fecha_inicial": "2026-05-10", "fecha_final": "2026-05-10"},
+    with pytest.raises(FormulaDataUnavailableError) as missing:
+        await dispatcher.execute(
+            _context(
+                "ZELERDATA_ORDENES",
+                {"fecha_inicial": "2026-05-10", "fecha_final": "2026-05-10"},
+            )
         )
-    )
-
-    assert [row[11] for row in result.values] == ["NA", "NA"]
+    assert missing.value.shipment_ids == ("ship-receiver-only",)
 
 
 @pytest.mark.asyncio
@@ -3484,7 +3497,7 @@ def _shipment_doc(
         "schema_version": 1,
     }
     if real_shipping_cost is not None:
-        shipment["real_shipping_cost"] = real_shipping_cost
+        shipment["real_shipping_cost"] = {"synced_at": datetime.now(UTC), **real_shipping_cost}
     return shipment
 
 

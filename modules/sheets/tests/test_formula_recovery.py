@@ -15,6 +15,59 @@ from zeler_sheets.formulas.recovery import FormulaRecoveryQueue, RecoveryRequest
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("field", ["receiver_address", "real_shipping_cost"])
+@pytest.mark.parametrize("state", ["ready", "missing", "expired", "flagged", "future", "malformed"])
+async def test_shipment_fields_require_available_current_seller_data(
+    recovery_db: Any, field: str, state: str
+) -> None:
+    from zeler_sheets.formulas.dispatcher import FormulaDataUnavailableError
+    from zeler_sheets.formulas.read_models import FormulaReadModelRepository
+
+    observed = datetime.now(UTC) + (
+        timedelta(minutes=-16)
+        if state == "expired"
+        else timedelta(minutes=1)
+        if state == "future"
+        else timedelta(0)
+    )
+    if state != "missing":
+        await recovery_db.shipments.insert_one(
+            {
+                "_id": "3001",
+                "seller_id": "pilot",
+                "formula_observed_at": observed,
+                "receiver_address": {"name": "Synthetic Receiver"},
+                "real_shipping_cost": {"seller_cost": 12.5, "synced_at": observed},
+                "unavailable_fields": [field] if state == "flagged" else [],
+            }
+        )
+    repository = FormulaReadModelRepository(db=recovery_db)
+    if state == "malformed":
+        await recovery_db.shipments.update_one({"_id": "3001"}, {"$set": {field: "invalid"}})
+    method = (
+        repository.find_shipment_receiver_addresses
+        if field == "receiver_address"
+        else repository.find_shipment_real_shipping_costs
+    )
+    if state == "ready":
+        assert "3001" in await method(seller_id="pilot", shipment_ids=["3001"])
+        with pytest.raises(FormulaDataUnavailableError):
+            await method(seller_id="other", shipment_ids=["3001"])
+    else:
+        with pytest.raises(FormulaDataUnavailableError) as missing:
+            await method(seller_id="pilot", shipment_ids=["3001"])
+        assert missing.value.read_model == "shipments"
+        assert missing.value.shipment_ids == ("3001",)
+        if state == "flagged":
+            other = (
+                repository.find_shipment_real_shipping_costs
+                if field == "receiver_address"
+                else repository.find_shipment_receiver_addresses
+            )
+            assert "3001" in await other(seller_id="pilot", shipment_ids=["3001"])
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "failure",
     [
@@ -730,6 +783,8 @@ async def test_app_wires_only_implemented_recovery_sources(recovery_db: Any) -> 
         ("orders", True),
         ("order_ids", False),
         ("order_ids", True),
+        ("shipments", False),
+        ("shipments", True),
     ],
 )
 async def test_http_missing_data_recovers_in_background_and_next_http_succeeds(
@@ -765,6 +820,15 @@ async def test_http_missing_data_recovers_in_background_and_next_http_succeeds(
         "total_amount": 30,
         "order_items": [{"item": {"id": "MLM42"}, "quantity": 1, "unit_price": 30}],
     }
+    if read_model == "shipments":
+        await recovery_db.orders.insert_one(
+            {
+                "_id": "42",
+                "seller_id": "123456789",
+                "shipment_id": "3001",
+                "date_created": datetime(2026, 8, 20, tzinfo=UTC),
+            }
+        )
 
     class Gateway:
         async def fetch_resource(self, **kwargs: Any) -> dict[str, Any]:
@@ -775,6 +839,28 @@ async def test_http_missing_data_recovers_in_background_and_next_http_succeeds(
 
         async def request(self, **kwargs: Any) -> httpx.Response:
             calls.append(kwargs["path"])
+            if read_model == "shipments":
+                if kwargs["path"].endswith("/orders"):
+                    return httpx.Response(200, json=[{"order_id": "42", "seller_id": "123456789"}])
+                if kwargs["path"].endswith("/costs"):
+                    return httpx.Response(
+                        503 if partial else 200,
+                        json={"senders": [{"user_id": "123456789", "cost": 12.5}]},
+                    )
+                return httpx.Response(
+                    200,
+                    json={
+                        "id": 3001,
+                        "status": "ready_to_ship",
+                        "logistic": {"type": "fulfillment"},
+                        "date_created": "2026-08-20T10:00:00Z",
+                        "last_updated": "2026-08-20T11:00:00Z",
+                        "destination": {
+                            "receiver_name": "Synthetic Receiver",
+                            "shipping_address": {"street_name": "Synthetic Street"},
+                        },
+                    },
+                )
             if partial and read_model == "order_ids":
                 return httpx.Response(
                     206, headers={"X-Content-Missing": "seller"}, json={**order, "seller": {}}
@@ -794,6 +880,7 @@ async def test_http_missing_data_recovers_in_background_and_next_http_succeeds(
             "questions": "ZELERDATA_PREGUNTAS",
             "orders": "ZELERDATA_VENTASTOTALES",
             "order_ids": "ZELERDATA_COMPRADORES",
+            "shipments": "ZELERDATA_COMPRADORES",
         }[read_model],
         "cuenta": "PILOT",
         "args": {
@@ -803,7 +890,7 @@ async def test_http_missing_data_recovers_in_background_and_next_http_succeeds(
             "horario_final": "23:59",
         },
     }
-    if read_model == "order_ids":
+    if read_model in {"order_ids", "shipments"}:
         payload["args"] = {"id_ordenes": ["42"]}
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -816,16 +903,28 @@ async def test_http_missing_data_recovers_in_background_and_next_http_succeeds(
         await worker.start()
         try:
             async with asyncio.timeout(3):
-                while not await queue.collection.find_one({"state": "completed"}):
+                while not await queue.collection.find_one(
+                    {
+                        "state": {"$in": ["completed", "pending"]}
+                        if read_model == "shipments"
+                        else "completed",
+                        "attempts": 1,
+                    }
+                ):
                     await asyncio.sleep(0.01)
             ready = await client.post("/sheets/formulas:execute", headers=headers, json=payload)
             assert ready.json()["ok"] is True, ready.json()
-            assert len(calls) == {"questions": 1, "orders": 2, "order_ids": 3}[read_model]
+            assert (
+                len(calls)
+                == {"questions": 1, "orders": 2, "order_ids": 3, "shipments": 3}[read_model]
+            )
             if read_model == "orders":
                 assert ready.json()["values"] == [[30]]
             elif read_model == "order_ids":
                 assert len(ready.json()["values"]) == 1
                 assert await recovery_db.orders.count_documents({"_id": "42"}) == 1
+            elif read_model == "shipments":
+                assert ready.json()["values"][0][0] == "Synthetic Receiver"
         finally:
             await worker.stop()
 

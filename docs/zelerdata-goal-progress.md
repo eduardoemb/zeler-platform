@@ -1011,6 +1011,7 @@ retain their contract; other product deployments remain out of scope.
   replica-set tests passed separately in 2.68s; remaining skip is Caddy's
   no-required-keys case. Diff whitespace validation passed.
 
+
 ## Work unit: acquire owned shipment IDs and publish atomically
 
 - The recovery worker can process explicit shipment-ID jobs (up to 100 unique
@@ -1089,3 +1090,44 @@ retain their contract; other product deployments remain out of scope.
 - Final root regression: 3,680 passed, 9 skipped in 76.87s. Eight protected
   replica-set cases passed separately in 2.58s; remaining skip is Caddy's
   no-required-keys case. Diff whitespace validation passed.
+
+## Work unit: formulas request current required shipment fields
+
+- Receiver-address and realized-cost reads now require a usable seller-scoped
+  value, no unavailable flag for that field, and a source observation within
+  15 minutes. Addresses use formula_observed_at; costs use their own synced_at.
+  Missing, expired, future-dated, malformed and foreign-seller rows produce
+  structured shipment-ID recovery targets rather than a successful partial map.
+  An unavailable cost does not block an independently usable address, or vice versa.
+- HTTP schedules explicit shipment-ID jobs in batches of at most 100 under the
+  same total one-second insertion deadline used by order IDs. Shared scheduling
+  handles either ID type, not both at once. Opt-in API/worker source admission now
+  includes shipments; range-only shipment jobs remain rejected. Production's
+  global recovery flag was not changed.
+- Twelve scenarios failed first for permissive required-field reads and missing
+  HTTP recovery. They passed after the change (1.97s); two additional actual-Mongo
+  malformed-field cases pass. Authenticated local ASGI tests cover complete and
+  partial-cost shipment acquisition: first query requests recovery without a
+  source call, background work persists the address, and the second COMPRADORES
+  query returns it with no extra source calls, even while cost retry is pending.
+- Calculation fixtures explicitly supply current observations and actual costs
+  where those are needed. Obsolete all-NA expectations for absent/foreign/blank
+  shipments were replaced with unavailable assertions; tests still verify exact
+  safe address fields, seller scope, buyer filters, cart IDs and cost calculations.
+  Optional absent individual address fields still render NA. Address suite:
+  3 passed in 0.03s; order/item calculation suites: 82 passed in 0.38s.
+- Rollback boundary: required shipment field reads/projections, private error ID
+  metadata, HTTP scheduling and shipment opt-in admission with their regression
+  cases. Retain critical source/tenant validations if reverting UI-facing guards.
+  No production write, build or deployment occurred.
+- Before rollout, verify admission limits and prepare pilot shipment snapshots;
+  old production records without observation evidence will request recovery.
+  Build paired verified Sheets API/worker images with the compatible validators,
+  verify deployed source/digests and health, then exercise real pilot HTTP reads.
+  Remaining work includes non-address/cost shipment surfaces, minimum necessary
+  order selection for latest-cost calculations, event-driven refresh/retention,
+  wide-history acquisition, global admission controls and real Sheet acceptance.
+- Final root regression: 3,694 passed, 9 skipped in 75.13s. Eight protected
+  replica-set cases passed separately in 2.42s; remaining skip is Caddy's
+  no-required-keys case. Ruff check/format, mypy (500 files) and diff whitespace
+  validation passed.

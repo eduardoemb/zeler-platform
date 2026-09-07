@@ -8,7 +8,11 @@ from typing import Any
 
 import pytest
 
-from zeler_sheets.formulas.dispatcher import FormulaDispatcher, FormulaExecutionContext
+from zeler_sheets.formulas.dispatcher import (
+    FormulaDataUnavailableError,
+    FormulaDispatcher,
+    FormulaExecutionContext,
+)
 from zeler_sheets.formulas.handlers_orders_questions import build_order_question_formula_handlers
 from zeler_sheets.formulas.read_models import FormulaReadModelRepository
 from zeler_sheets.formulas.registry import FormulaRegistry
@@ -171,7 +175,7 @@ async def test_order_formulas_use_projected_shipment_snapshot_for_exact_buyer_fi
             "NA",
             "NA",
             "NA",
-            "NA",
+            0,
             "paid",
             *APPROVED_ADDRESS_VALUES,
         ],
@@ -193,7 +197,7 @@ async def test_order_formulas_use_projected_shipment_snapshot_for_exact_buyer_fi
 
 
 @pytest.mark.asyncio
-async def test_order_sku_formula_returns_na_for_missing_blank_or_unauthorized_snapshots() -> None:
+async def test_order_sku_formula_requires_missing_blank_or_unauthorized_snapshots() -> None:
     db = FakeDb()
     db["orders"].documents = {
         "missing-snapshot": _order_doc(
@@ -225,80 +229,26 @@ async def test_order_sku_formula_returns_na_for_missing_blank_or_unauthorized_sn
     }
     dispatcher = _dispatcher(db)
 
-    result = await dispatcher.execute(
-        _context(
-            "ZELERDATA_ORDENESPORSKU",
-            {
-                "skus": [["sku-a"], ["sku-b"], ["sku-c"]],
-                "fecha_inicial": "2026-05-10",
-                "fecha_final": "2026-05-10",
-                "estado": "paid",
-                "compradores": "si",
-                "encabezados": "si",
-            },
+    with pytest.raises(FormulaDataUnavailableError) as missing:
+        await dispatcher.execute(
+            _context(
+                "ZELERDATA_ORDENESPORSKU",
+                {
+                    "skus": [["sku-a"], ["sku-b"], ["sku-c"]],
+                    "fecha_inicial": "2026-05-10",
+                    "fecha_final": "2026-05-10",
+                    "estado": "paid",
+                    "compradores": "si",
+                    "encabezados": "si",
+                },
+            )
         )
-    )
-
-    assert result.values == [
-        ORDER_LINE_LEGACY_HEADERS + BUYER_ADDRESS_HEADERS,
-        [
-            "2026-05-10T10:30:00+00:00",
-            "missing-snapshot",
-            "Missing",
-            "SKU-A",
-            "MLA-A",
-            1,
-            "NA",
-            "NA",
-            "NA",
-            "NA",
-            "NA",
-            "NA",
-            "paid",
-            *(["NA"] * len(BUYER_ADDRESS_HEADERS)),
-        ],
-        [
-            "2026-05-10T10:30:00+00:00",
-            "blank-snapshot",
-            "Blank",
-            "SKU-B",
-            "MLA-B",
-            1,
-            "NA",
-            "NA",
-            "NA",
-            "NA",
-            "NA",
-            "NA",
-            "paid",
-            *(["NA"] * len(BUYER_ADDRESS_HEADERS)),
-        ],
-        [
-            "2026-05-10T10:30:00+00:00",
-            "wrong-seller-snapshot",
-            "Wrong seller",
-            "SKU-C",
-            "MLA-C",
-            1,
-            "NA",
-            "NA",
-            "NA",
-            "NA",
-            "NA",
-            "NA",
-            "paid",
-            *(["NA"] * len(BUYER_ADDRESS_HEADERS)),
-        ],
-    ]
-    assert result.meta == {
-        "orders_count": 3,
-        "status_filter": "paid",
-        "buyer_filter_count": 0,
-        "sku_filter_count": 3,
-        "columns": "legacy_order_lines_with_buyers",
+    assert set(missing.value.shipment_ids) == {
+        "shipment-missing",
+        "shipment-blank",
+        "shipment-wrong-seller",
     }
-    assert "WRONG_SELLER_MUST_NOT_LEAK" not in repr(result.values)
-    assert "WRONG_SELLER_MUST_NOT_LEAK" not in repr(result.meta)
+    assert "WRONG_SELLER_MUST_NOT_LEAK" not in str(missing.value)
 
 
 @pytest.mark.asyncio
@@ -325,27 +275,27 @@ async def test_compradores_returns_only_eight_approved_fields_and_safe_metadata(
     }
     dispatcher = _dispatcher(db)
 
-    result = await dispatcher.execute(
-        _context(
-            "ZELERDATA_COMPRADORES",
-            {"id_ordenes": [["pack-order"], ["missing-order"]], "encabezados": "si"},
+    with pytest.raises(FormulaDataUnavailableError):
+        await dispatcher.execute(
+            _context("ZELERDATA_COMPRADORES", {"id_ordenes": [["pack-order"], ["missing-order"]]})
         )
+    result = await dispatcher.execute(
+        _context("ZELERDATA_COMPRADORES", {"id_ordenes": ["pack-order"], "encabezados": "si"})
     )
 
     assert result.values == [
         BUYER_ADDRESS_HEADERS,
         APPROVED_ADDRESS_VALUES,
-        ["NA", "NA", "NA", "NA", "NA", "NA", "NA", "NA"],
     ]
     assert result.meta == {
-        "orders_count": 2,
+        "orders_count": 1,
         "address_available": 1,
-        "address_missing": 1,
+        "address_missing": 0,
         "columns": "buyer_address_snapshot",
     }
     assert db["orders"].last_find_filter == {
         "seller_id": "seller-1",
-        "_id": {"$in": ["pack-order", "missing-order"]},
+        "_id": {"$in": ["pack-order"]},
     }
     _assert_no_leaks(result.values, result.meta)
 
@@ -407,6 +357,8 @@ def _shipment_doc(
         "_id": shipment_id,
         "seller_id": seller_id,
         "receiver_address": receiver_address,
+        "formula_observed_at": datetime.now(UTC),
+        "real_shipping_cost": {"seller_cost": 0, "synced_at": datetime.now(UTC)},
         "schema_version": 1,
     }
 
@@ -465,6 +417,8 @@ def _project(doc: Mapping[str, Any], projection: Mapping[str, Any]) -> dict[str,
 def _shipment_projection() -> dict[str, int]:
     return {
         "_id": 1,
+        "formula_observed_at": 1,
+        "unavailable_fields": 1,
         "receiver_address.name": 1,
         "receiver_address.street_name": 1,
         "receiver_address.street_number": 1,

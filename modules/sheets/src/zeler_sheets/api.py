@@ -52,6 +52,7 @@ from zeler_sheets.formulas.recovery import (
     RECOVERABLE_MODELS,
     OrderIdsRecoveryRequest,
     RecoveryRequest,
+    ShipmentIdsRecoveryRequest,
 )
 from zeler_sheets.formulas.registry import FormulaRegistry
 from zeler_sheets.formulas.runtime_states import (
@@ -667,15 +668,19 @@ async def _request_formula_recovery(
     queue = getattr(request.app.state, "formula_recovery_queue", None)
     if queue is None or missing.read_model not in RECOVERABLE_MODELS:
         return False
-    if missing.order_ids:
+    if missing.order_ids or missing.shipment_ids:
+        if missing.order_ids and missing.shipment_ids:
+            return False
+        identities = missing.order_ids or missing.shipment_ids
+        request_type = OrderIdsRecoveryRequest if missing.order_ids else ShipmentIdsRecoveryRequest
         try:
             # Bound insertion time for the whole set, not separately per batch.
             async with asyncio.timeout(1.0):
-                for offset in range(0, len(missing.order_ids), 100):
+                for offset in range(0, len(identities), 100):
                     await queue.enqueue(
-                        OrderIdsRecoveryRequest(
-                            seller_id=context.seller_id,
-                            order_ids=missing.order_ids[offset : offset + 100],
+                        request_type(
+                            context.seller_id,
+                            identities[offset : offset + 100],
                             read_model=missing.read_model,
                         )
                     )

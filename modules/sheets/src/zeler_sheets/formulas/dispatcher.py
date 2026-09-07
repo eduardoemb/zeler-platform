@@ -37,6 +37,7 @@ class FormulaDataUnavailableError(Exception):
         date_from: datetime | None = None,
         date_to: datetime | None = None,
         order_ids: tuple[str, ...] = (),
+        shipment_ids: tuple[str, ...] = (),
     ) -> None:
         message = f"{formula} data is not available yet"
         if reason:
@@ -48,6 +49,7 @@ class FormulaDataUnavailableError(Exception):
         self.date_from = date_from
         self.date_to = date_to
         self.order_ids = order_ids
+        self.shipment_ids = shipment_ids
 
 
 FormulaHandler: TypeAlias = Callable[

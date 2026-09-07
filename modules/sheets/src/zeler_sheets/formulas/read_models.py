@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal, DecimalException
 from typing import Any, cast
 
@@ -54,6 +54,8 @@ PRODUCTIVE_READ_MODEL_STATES = frozenset({"fresh", "reconciled"})
 UNBUILT_BATCH_MARKERS: frozenset[str] = frozenset()
 SHIPMENT_RECEIVER_ADDRESS_PROJECTION = {
     "_id": 1,
+    "formula_observed_at": 1,
+    "unavailable_fields": 1,
     "receiver_address.name": 1,
     "receiver_address.street_name": 1,
     "receiver_address.street_number": 1,
@@ -65,7 +67,9 @@ SHIPMENT_RECEIVER_ADDRESS_PROJECTION = {
 }
 SHIPMENT_REAL_SHIPPING_COST_PROJECTION = {
     "_id": 1,
+    "unavailable_fields": 1,
     "real_shipping_cost.seller_cost": 1,
+    "real_shipping_cost.synced_at": 1,
 }
 
 
@@ -402,8 +406,15 @@ class FormulaReadModelRepository:
         for row in rows:
             shipment_id = str(row.get("_id") or "").strip()
             receiver_address = row.get("receiver_address")
-            if shipment_id and isinstance(receiver_address, dict):
+            if (
+                shipment_id
+                and isinstance(receiver_address, dict)
+                and any(
+                    isinstance(value, str) and value.strip() for value in receiver_address.values()
+                )
+            ):
                 snapshots[shipment_id] = receiver_address
+        _require_shipment_field(rows, normalized_shipment_ids, "receiver_address", set(snapshots))
         return snapshots
 
     async def find_shipment_real_shipping_costs(
@@ -438,6 +449,7 @@ class FormulaReadModelRepository:
             seller_cost = _finite_non_negative_decimal(projection.get("seller_cost"))
             if seller_cost is not None:
                 costs[shipment_id] = seller_cost
+        _require_shipment_field(rows, normalized_shipment_ids, "real_shipping_cost", set(costs))
         return costs
 
     async def find_questions(
@@ -657,6 +669,35 @@ def _raise_devoluciones_snapshot_unavailable(formula: str) -> None:
 
 def read_model_freshness_id(seller_id: str, read_model: str) -> str:
     return f"{seller_id}:{read_model}"
+
+
+def _require_shipment_field(
+    rows: list[dict[str, Any]], shipment_ids: list[str], field: str, available_ids: set[str]
+) -> None:
+    by_id = {str(row.get("_id")): row for row in rows}
+    now = datetime.now(UTC)
+    missing = []
+    for identity in shipment_ids:
+        row = by_id.get(identity, {})
+        observed = _safe_utc_datetime(
+            row.get("formula_observed_at")
+            if field == "receiver_address"
+            else (row.get("real_shipping_cost") or {}).get("synced_at")
+        )
+        if (
+            identity not in available_ids
+            or field in (row.get("unavailable_fields") or [])
+            or observed is None
+            or not now - timedelta(minutes=15) < observed <= now
+        ):
+            missing.append(identity)
+    if missing:
+        raise FormulaDataUnavailableError(
+            "Shipment",
+            f"Required {field} is unavailable or has not been refreshed.",
+            read_model="shipments",
+            shipment_ids=tuple(missing),
+        )
 
 
 def _find_with_optional_projection(

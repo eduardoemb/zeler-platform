@@ -702,6 +702,7 @@ def _shipment_doc(
     if seller_cost is not None:
         doc["real_shipping_cost"] = {
             "source": "/shipments/{shipment_id}/costs",
+            "synced_at": datetime.now(UTC),
             "seller_cost": seller_cost,
         }
     if estimated_shipping_at is not None:
