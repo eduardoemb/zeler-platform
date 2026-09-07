@@ -82,6 +82,7 @@ class SheetsEventPersistence:
         resource: dict[str, Any],
         operation: DevolucionesOperationContext | None = None,
         session: Any = None,
+        unavailable_fields: frozenset[str] = frozenset(),
     ) -> None:
         if session is not None and not event_type.startswith(("questions.", "orders.")):
             raise ValueError("external transaction is only supported for questions and orders")
@@ -92,7 +93,11 @@ class SheetsEventPersistence:
             if operation is None:
                 raise ValueError("operation is required for covered order writes")
             await self._persist_order(
-                seller_id=str(seller_id), resource=resource, operation=operation, session=session
+                seller_id=str(seller_id),
+                resource=resource,
+                operation=operation,
+                session=session,
+                unavailable_fields=unavailable_fields,
             )
             return
         if event_type.startswith("shipments."):
@@ -743,7 +748,10 @@ class SheetsEventPersistence:
         resource: dict[str, Any],
         operation: DevolucionesOperationContext,
         session: Any = None,
+        unavailable_fields: frozenset[str] = frozenset(),
     ) -> None:
+        if unavailable_fields - {"buyer", "shipping", "seller", "feedback", "mediations"}:
+            raise ValueError("unsupported unavailable order fields")
         observed_at = require_bson_ms_utc_datetime(self._clock())
         order_id = _string_id(resource.get("_id") or resource.get("id"))
         updated = (
@@ -758,12 +766,20 @@ class SheetsEventPersistence:
                 **_session_kwargs(session),
             )
             merged = dict(resource)
+            for field, identity in (("buyer", "buyer_id"), ("shipping", "shipment_id")):
+                if field in unavailable_fields:
+                    merged[field] = {}
+                    merged.pop(identity, None)
+            if "feedback" in unavailable_fields:
+                merged.pop("feedback", None)
+                if existing is not None and existing.get("feedback") is not None:
+                    merged["feedback"] = existing["feedback"]
             if existing is not None:
                 for field, identity in (("buyer", "buyer_id"), ("shipping", "shipment_id")):
-                    absent = field not in resource or resource[field] == {}
+                    absent = field not in merged or merged[field] == {}
                     if field == "shipping" and "no_shipping" in (resource.get("tags") or []):
                         absent = False
-                    if absent and identity not in resource and existing.get(identity):
+                    if absent and identity not in merged and existing.get(identity):
                         merged[field] = {"id": existing[identity]}
             document = _canonical_order_document(
                 merged,

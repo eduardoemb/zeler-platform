@@ -17,7 +17,15 @@ from zeler_sheets.formulas.recovery import FormulaRecoveryQueue, RecoveryRequest
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "failure",
-    [None, "empty", "missing_total", "foreign_detail", "extra_mongo_row", "partial_response"],
+    [
+        None,
+        "empty",
+        "missing_total",
+        "foreign_detail",
+        "extra_mongo_row",
+        "partial_response",
+        "partial_recovered",
+    ],
 )
 async def test_order_recovery_publishes_only_complete_owned_inventory(
     recovery_db: Any, failure: str | None
@@ -52,6 +60,21 @@ async def test_order_recovery_publishes_only_complete_owned_inventory(
         await recovery_db.orders.insert_one(
             {"_id": "999", "seller_id": "pilot", "date_created": datetime(2026, 8, 20)}
         )
+    if failure == "partial_recovered":
+        from zeler_sheets.event_persistence import _canonical_order_document
+
+        for resource in resources:
+            await recovery_db.orders.insert_one(
+                _canonical_order_document(
+                    {
+                        **resource,
+                        "shipping": {"id": 456},
+                        "feedback": {"sale": {"fulfilled": True}},
+                    },
+                    seller_id="pilot",
+                    sale_fee_synced_at=datetime.now(UTC),
+                )
+            )
     before = await recovery_db.orders.find({}).to_list(None)
     calls: list[str] = []
 
@@ -77,13 +100,27 @@ async def test_order_recovery_publishes_only_complete_owned_inventory(
                 resource = {**resource, "seller": {"id": "foreign"}}
             if failure == "partial_response":
                 return httpx.Response(206, headers={"X-Content-Missing": "buyer"}, json=resource)
+            if failure == "partial_recovered":
+                return httpx.Response(
+                    206,
+                    headers={"X-Content-Missing": "buyer, shipping, feedback, seller"},
+                    json={
+                        **resource,
+                        "buyer": {},
+                        "shipping": {},
+                        "seller": {},
+                        "feedback": {},
+                        "status": "cancelled",
+                        "last_updated": "2026-08-20T12:00:00Z",
+                    },
+                )
             return httpx.Response(200, json=resource)
 
     await FormulaRecoveryWorker(db=recovery_db, gateway=Gateway(), queue=queue).process_one()
     assert calls, "order source acquisition must actually run"
     job = await queue.collection.find_one({"_id": requested.key})
     marker = await recovery_db.sheets_read_model_freshness.find_one({"_id": "pilot:orders"})
-    if failure not in {None, "empty"}:
+    if failure not in {None, "empty", "partial_recovered"}:
         assert job["state"] == "failed"
         assert await recovery_db.orders.find({}).to_list(None) == before
         assert marker is None
@@ -100,6 +137,12 @@ async def test_order_recovery_publishes_only_complete_owned_inventory(
             {"_id": "pilot:devoluciones"}
         )
         assert operation["state"] == "succeeded"
+        if failure == "partial_recovered":
+            for stored in await recovery_db.orders.find({}).to_list(None):
+                assert stored["status"] == "cancelled"
+                assert stored["buyer_id"] == "123"
+                assert stored["shipment_id"] == "456"
+                assert stored["feedback"] == {"sale": {"fulfilled": True}}
 
 
 @pytest.mark.asyncio

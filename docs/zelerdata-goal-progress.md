@@ -791,10 +791,55 @@ All-history absence and latest-known-sale evidence need distinct treatment.
   The negative cases assert source acquisition actually executed, not merely
   that the unimplemented worker rejected the model.
 - Recovery, event persistence, historical backfill and core lease suites:
-  155 passed in the focused run; exact duration is in the session evidence.
+  155 passed in 7.35s.
   Root static checks pass. No production recovery or image deployment yet.
 - Rollback boundary: the order acquisition branch and shared coverage/publish
   extraction, with these tests. Automatic admission still enables only
   questions. Field-aware partial-response fallback and formula range checks
   remain required before enabling orders; this worker stage is not the final
   fallback contract or a proof of all eleven order/sales formulas.
+
+## Work unit: partial order response fallback uses owned Mongo state
+
+- A real-Mongo regression first rejected HTTP 206 despite existing normalized
+  buyer/shipment identities. Order recovery now consumes X-Content-Missing
+  explicitly and passes only its allowlisted field names to the order writer.
+  Missing/malformed partial metadata still cannot prove complete recovery.
+- Buyer and shipment fallback reads the same seller's current order inside the
+  publication transaction, never a detached or other-seller snapshot. A known
+  no_shipping state still prevents resurrection. If seller is unavailable in
+  detail, the matching search row must explicitly establish its owner; any
+  contradictory owner remains rejected.
+- Previously stored feedback is retained when upstream marks it unavailable.
+  That is last-known data, not newly verified feedback: the existing covered
+  order operation invalidates devoluciones readiness, which is not promoted
+  by this order inventory recovery. No raw response or auth data is persisted.
+- The partial-source regression proves cancelled status updates while buyer,
+  shipment and prior feedback survive. The no-cache control does not publish
+  completion. Fields declared unavailable are not trusted merely because the
+  response body happens to contain a value.
+- Focused suites: 156 passed in 7.54s. Full regression initially found one
+  test double with the old private writer signature; it now accepts the new
+  optional parameters while asserting the unchanged default/context contract.
+  Final full regression: 3,642 passed, 9 skipped in 71.55s. The eight protected
+  replica-set tests separately passed in 3.44s; the remaining skip is Caddy's
+  no-required-keys case. Ruff, format and mypy pass (500 files).
+- Rollback boundary: unavailable-field handling in recovery and order
+  persistence plus its regression/test-double update. Automatic admission is
+  still questions-only and the production flag remains off. No build, deploy
+  or production mutation was performed for these three work units.
+
+Before activation, connect truthful range checks and recovery to the eleven
+order/sales handlers and prove a missing-data/next-HTTP-query cycle. Do not treat
+the current blanket buyer/shipment requirement as final: each formula must
+require only the fields needed for its result, so missing buyer information
+must not prevent a complete sales-total calculation. Resolve this together
+with partial normalized persistence/field availability, not by returning a
+misleading zero or discarding the available amounts. The all-history last-sale
+case, recovery admission controls and other model dependencies remain open.
+
+The pending runtime consumer is sheets-worker; a verified new image and a
+controlled pilot order recovery are required before claiming live support.
+Pair the release with the forthcoming API range/admission changes rather than
+activate this staging implementation alone. Existing non-session core callers
+retain their contract; other product deployments remain out of scope.

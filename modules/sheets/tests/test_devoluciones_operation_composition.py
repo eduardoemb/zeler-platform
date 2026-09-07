@@ -64,8 +64,12 @@ async def test_event_persistence_passes_same_context_to_nested_order_writer(
         seller_id: str,
         resource: dict[str, Any],
         operation: DevolucionesOperationContext,
+        session: Any = None,
+        unavailable_fields: frozenset[str] = frozenset(),
     ) -> None:
         del self, seller_id, resource
+        assert session is None
+        assert unavailable_fields == frozenset()
         captured.append(operation)
 
     monkeypatch.setattr(SheetsEventPersistence, "_persist_order", persist_order)

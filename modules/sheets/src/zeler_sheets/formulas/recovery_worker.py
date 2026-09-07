@@ -113,6 +113,7 @@ class FormulaRecoveryWorker:
         seller_id = job["seller_id"]
         marker_before, start, end = await self._coverage(job)
         resources: list[dict[str, Any]] = []
+        unavailable_fields: dict[str, frozenset[str]] = {}
         seen: set[str] = set()
         total: int | None = None
         while True:
@@ -150,25 +151,49 @@ class FormulaRecoveryWorker:
                 response = await self.detail_gateway.request(
                     method="GET", seller_id=seller_id, path=f"/orders/{identity}"
                 )
-                if response.status_code != 200 or response.headers.get("X-Content-Missing"):
-                    raise ValueError("order source requires partial-field reconciliation")
+                missing = frozenset(
+                    field.strip().lower()
+                    for field in response.headers.get("X-Content-Missing", "").split(",")
+                    if field.strip()
+                )
+                if (
+                    response.status_code not in {200, 206}
+                    or (response.status_code == 206 and not missing)
+                    or missing - {"buyer", "shipping", "seller", "feedback", "mediations"}
+                ):
+                    raise ValueError("order source partial fields are not supported")
                 detail = response.json()
                 seller = detail.get("seller") if isinstance(detail, dict) else None
                 owners = (
                     detail.get("seller_id") if isinstance(detail, dict) else None,
                     seller.get("id") if isinstance(seller, dict) else None,
                 )
+                search_seller = row.get("seller")
+                search_owners = (
+                    row.get("seller_id"),
+                    search_seller.get("id") if isinstance(search_seller, dict) else None,
+                )
                 if (
                     not isinstance(detail, dict)
                     or str(detail.get("id")) != identity
                     or _date(detail.get("date_created")) != created
-                    or not any(owner is not None for owner in owners)
-                    or any(owner is not None and str(owner) != seller_id for owner in owners)
+                    or not (
+                        any(owner is not None for owner in owners)
+                        or (
+                            "seller" in missing
+                            and any(owner is not None for owner in search_owners)
+                        )
+                    )
+                    or any(
+                        owner is not None and str(owner) != seller_id
+                        for owner in (*owners, *search_owners)
+                    )
                     or not isinstance(detail.get("order_items"), list)
                     or not detail["order_items"]
                 ):
                     raise ValueError("order detail scope or required data mismatch")
                 resources.append(detail)
+                unavailable_fields[identity] = missing
             if len(seen) == total:
                 break
             if not rows or len(seen) > total:
@@ -183,7 +208,15 @@ class FormulaRecoveryWorker:
         )
         published = False
         try:
-            await self._publish(job, marker_before, start, end, resources, operation=operation)
+            await self._publish(
+                job,
+                marker_before,
+                start,
+                end,
+                resources,
+                operation=operation,
+                unavailable_fields=unavailable_fields,
+            )
             published = True
         finally:
             if not published:
@@ -265,10 +298,12 @@ class FormulaRecoveryWorker:
         resources: list[dict[str, Any]],
         *,
         operation: DevolucionesOperationContext | None = None,
+        unavailable_fields: dict[str, frozenset[str]] | None = None,
     ) -> None:
         seller_id = job["seller_id"]
         read_model = job["read_model"]
         marker_id = f"{seller_id}:{read_model}"
+        unavailable_fields = unavailable_fields or {}
         marker = {
             "_id": marker_id,
             "seller_id": seller_id,
@@ -317,12 +352,13 @@ class FormulaRecoveryWorker:
                     resource=resource,
                     session=session,
                     operation=operation,
+                    unavailable_fields=unavailable_fields.get(str(resource["id"]), frozenset()),
                 )
             persisted = (
                 await self.db[read_model]
                 .find(
                     {"seller_id": seller_id, "date_created": {"$gte": start, "$lt": end}},
-                    {"_id": 1, "buyer_id": 1, "items": 1},
+                    {"_id": 1, "buyer_id": 1, "items": 1, "shipment_id": 1, "tags": 1},
                     session=session,
                 )
                 .to_list(length=None)
@@ -330,7 +366,14 @@ class FormulaRecoveryWorker:
             if {str(row["_id"]) for row in persisted} != {str(row["id"]) for row in resources}:
                 raise ValueError("persisted inventory differs from authoritative source")
             if read_model == "orders" and any(
-                not row.get("buyer_id") or not row.get("items") for row in persisted
+                not row.get("buyer_id")
+                or not row.get("items")
+                or (
+                    "shipping" in unavailable_fields.get(str(row["_id"]), frozenset())
+                    and not row.get("shipment_id")
+                    and "no_shipping" not in (row.get("tags") or [])
+                )
+                for row in persisted
             ):
                 raise ValueError("persisted order required data unavailable")
             await self.db["sheets_read_model_freshness"].replace_one(
