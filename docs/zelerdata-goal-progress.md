@@ -908,15 +908,38 @@ retain their contract; other product deployments remain out of scope.
 - COMPRADORES reads by explicit order IDs and DIASDESDEULTIMAVENTA reads
   all-history; neither is solved by the bounded-range helper. Handle missing
   IDs and the latest-known-sale/unknown-history distinction explicitly.
-- Audit required fields per consumer, especially shipment/address/cost reads,
-  so explicit shipment_id gaps become required-data unavailability instead of
-  optional NA. Do not over-block formulas that only need available amounts.
+- Continue the required-field audit beyond the explicit shipment_id guard
+  below: missing shipment snapshots and required address/cost fields still need
+  their own acquisition and availability handling.
 - Ranges beyond the queue's 90-day limit need bounded acquisition scheduling;
   do not claim they are unrecoverable merely because of that internal limit.
-- Recheck cooldown scheduling: a request for still-missing fields can encounter
-  an already completed inventory job during cooldown. It must remain scheduled
-  for a later attempt without requiring another user recalculation; the current
-  enqueue implementation only reopens terminal jobs after available_at elapses.
 - Verify/release the pending schema/API/worker changes in the approved runtime,
   then prove pilot order recovery and production formula reads. The last live
   worker is still source d145d61 and the API source 4f65d6d, not these changes.
+
+## Work unit: retain recovery requests and expose required shipment gaps
+
+- Requests arriving during a completed/failed job's cooldown now remain pending
+  with the original deadline. Twenty concurrent requests keep one job; the worker
+  can claim it after the deadline without another user recalculation. Both
+  terminal-state regression cases failed before the fix.
+- ORDENES, ORDENESPORSKU and COMPRADORES reject explicitly unavailable shipment
+  identity when needed for shipping cost/address. The structured error identifies
+  orders and their creation-time interval for asynchronous recovery. Sales totals
+  continue using available amounts; unrelated SKU rows do not require that
+  shipment. Genuine optional absence retains existing behavior.
+- The actual-Mongo partial-order test failed first for shipping. After the fix,
+  recovery and buyer-address suites passed: 56 tests in 8.46s. The gateway fixture
+  records no additional source calls during formula evaluation. This is local
+  source-fixture/Mongo evidence, not a production HTTP or real Sheet result.
+- Rollback boundary: terminal-job requeue behavior and shipment-identity helper,
+  its five call sites and associated regression changes. No stored order schema
+  change belongs to this unit. Reverting the guard must not accompany activation
+  of partial-order writers.
+- No build/deploy or production mutation in this unit. Sheets API and worker
+  need new verified images once the remaining activation gates above are met;
+  verify deployed source/digest, health and controlled pilot recovery then.
+- Root regression: 3,657 passed, 9 skipped in 72.98s. The eight protected Mongo
+  cases passed separately in 2.48s with the dedicated replica-set test variable;
+  the remaining skip is Caddy's no-required-keys case. Ruff check/format, mypy
+  (500 source files) and diff whitespace checks passed.

@@ -187,12 +187,14 @@ class OrderQuestionFormulaHandlers:
             for line in _order_lines(order, sku_resolver=sku_resolver)
         ]
         receiver_addresses = await _receiver_addresses_for_orders(
+            context=context,
             repository=self._repository,
             seller_id=context.seller_id,
             orders=filtered_orders,
             enabled=buyer_selection.include_buyer_columns,
         )
         real_shipping_costs = await _real_shipping_costs_for_orders(
+            context=context,
             repository=self._repository,
             seller_id=context.seller_id,
             orders=filtered_orders,
@@ -325,12 +327,14 @@ class OrderQuestionFormulaHandlers:
             if line.sku == requested_sku
         ]
         receiver_addresses = await _receiver_addresses_for_orders(
+            context=context,
             repository=self._repository,
             seller_id=context.seller_id,
-            orders=filtered_orders,
+            orders=[order for order, _line in filtered_lines],
             enabled=buyer_selection.include_buyer_columns,
         )
         real_shipping_costs = await _real_shipping_costs_for_orders(
+            context=context,
             repository=self._repository,
             seller_id=context.seller_id,
             orders=[order for order, _line in filtered_lines],
@@ -382,6 +386,7 @@ class OrderQuestionFormulaHandlers:
             if order_id in orders_by_id
         ]
         receiver_addresses = await _receiver_addresses_for_orders(
+            context=context,
             repository=self._repository,
             seller_id=context.seller_id,
             orders=ordered_orders,
@@ -1137,12 +1142,36 @@ async def _item_formula_rows_for_pairs(
     }
 
 
+def _require_shipment_identity(
+    context: FormulaExecutionContext, orders: Sequence[Mapping[str, Any]]
+) -> None:
+    unavailable = [
+        order for order in orders if "shipment_id" in (order.get("unavailable_fields") or [])
+    ]
+    if not unavailable:
+        return
+    dates = [
+        _as_utc_datetime(created)
+        for order in unavailable
+        if (created := _optional_datetime(order.get("date_created"))) is not None
+    ]
+    raise FormulaDataUnavailableError(
+        context.contract.name,
+        "Required shipment identity is unavailable for shipping costs or receiver address.",
+        read_model="orders",
+        date_from=min(dates) if dates else None,
+        date_to=max(dates) + timedelta(milliseconds=1) if dates else None,
+    )
+
+
 async def _real_shipping_costs_for_orders(
     *,
+    context: FormulaExecutionContext,
     repository: FormulaReadModelRepository,
     seller_id: str,
     orders: Sequence[Mapping[str, Any]],
 ) -> dict[str, Decimal]:
+    _require_shipment_identity(context, orders)
     shipment_ids = list(
         dict.fromkeys(shipment_id for order in orders if (shipment_id := _shipment_id(order)))
     )
@@ -1157,6 +1186,7 @@ async def _real_shipping_costs_for_orders(
 
 async def _receiver_addresses_for_orders(
     *,
+    context: FormulaExecutionContext,
     repository: FormulaReadModelRepository,
     seller_id: str,
     orders: Sequence[Mapping[str, Any]],
@@ -1164,6 +1194,7 @@ async def _receiver_addresses_for_orders(
 ) -> dict[str, dict[str, Any]]:
     if not enabled:
         return {}
+    _require_shipment_identity(context, orders)
     shipment_ids = list(
         dict.fromkeys(shipment_id for order in orders if (shipment_id := _shipment_id(order)))
     )

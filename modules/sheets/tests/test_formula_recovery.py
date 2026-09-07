@@ -15,8 +15,10 @@ from zeler_sheets.formulas.recovery import FormulaRecoveryQueue, RecoveryRequest
 
 
 @pytest.mark.asyncio
-async def test_missing_buyer_keeps_complete_sales_but_rejects_buyer_filter(
+@pytest.mark.parametrize("missing_field", ["buyer", "shipping"])
+async def test_missing_identity_keeps_sales_but_rejects_consumers_that_require_it(
     recovery_db: Any,
+    missing_field: str,
 ) -> None:
     import json
     from pathlib import Path
@@ -46,12 +48,14 @@ async def test_missing_buyer_keeps_complete_sales_but_rejects_buyer_filter(
     resource = {
         "id": 42,
         "seller": {"id": "pilot"},
-        "buyer": {},
+        "buyer": {} if missing_field == "buyer" else {"id": 123},
         "status": "paid",
         "date_created": "2026-08-20T10:00:00Z",
         "last_updated": "2026-08-20T11:00:00Z",
         "total_amount": 30,
-        "order_items": [{"item": {"id": "MLM42"}, "quantity": 1, "unit_price": 30}],
+        "order_items": [
+            {"item": {"id": "MLM42", "seller_sku": "sku-42"}, "quantity": 1, "unit_price": 30}
+        ],
     }
     calls: list[str] = []
 
@@ -62,20 +66,25 @@ async def test_missing_buyer_keeps_complete_sales_but_rejects_buyer_filter(
 
         async def request(self, **kwargs: Any) -> httpx.Response:
             calls.append(kwargs["path"])
-            return httpx.Response(206, headers={"X-Content-Missing": "buyer"}, json=resource)
+            return httpx.Response(206, headers={"X-Content-Missing": missing_field}, json=resource)
 
     await FormulaRecoveryWorker(db=recovery_db, gateway=Gateway(), queue=queue).process_one()
     job = await queue.collection.find_one({"_id": requested.key})
     assert job["state"] == "completed", job.get("failure_reason")
     stored = await recovery_db.orders.find_one({"_id": "42"})
-    assert "buyer_id" not in stored
-    assert stored["unavailable_fields"] == ["buyer_id"]
+    identity_field = "buyer_id" if missing_field == "buyer" else "shipment_id"
+    assert identity_field not in stored
+    assert stored["unavailable_fields"] == [identity_field]
     undeclared = {key: value for key, value in stored.items() if key != "unavailable_fields"}
     for invalid in (
-        undeclared,
-        {**undeclared, "unavailable_fields": ["feedback"]},
-        {**stored, "buyer_id": "123"},
-        {**stored, "unavailable_fields": ["buyer_id", "unexpected"]},
+        ()
+        if missing_field == "shipping"
+        else (
+            undeclared,
+            {**undeclared, "unavailable_fields": ["feedback"]},
+            {**stored, "buyer_id": "123"},
+            {**stored, "unavailable_fields": ["buyer_id", "unexpected"]},
+        )
     ):
         with pytest.raises(WriteError):
             await recovery_db.orders.insert_one({**invalid, "_id": "invalid"})
@@ -94,9 +103,24 @@ async def test_missing_buyer_keeps_complete_sales_but_rejects_buyer_filter(
 
     result = await handlers.sheetseller_ventas_totales(context("ZELERDATA_VENTASTOTALES"))
     assert result.values == [[30]]
-    with pytest.raises(FormulaDataUnavailableError) as missing:
-        await handlers.sheetseller_ordenes(context("ZELERDATA_ORDENES", compradores="123"))
-    assert missing.value.read_model == "orders"
+    if missing_field == "buyer":
+        with pytest.raises(FormulaDataUnavailableError) as missing:
+            await handlers.sheetseller_ordenes(context("ZELERDATA_ORDENES", compradores="123"))
+        assert missing.value.read_model == "orders"
+    else:
+        for method, name, args in (
+            (handlers.sheetseller_ordenes, "ORDENES", {}),
+            (handlers.sheetseller_ordenes_por_sku, "ORDENESPORSKU", {"skus": ["sku-42"]}),
+            (handlers.sheetseller_compradores, "COMPRADORES", {"id_ordenes": ["42"]}),
+        ):
+            with pytest.raises(FormulaDataUnavailableError) as missing:
+                await method(context("ZELERDATA_" + name, **args))
+            assert missing.value.read_model == "orders"
+            assert missing.value.date_from is not None and missing.value.date_to is not None
+        # An unrelated SKU has no displayed order; it must not require this shipment.
+        await handlers.sheetseller_ordenes_por_sku(
+            context("ZELERDATA_ORDENESPORSKU", skus=["unrelated"], compradores="si")
+        )
     assert len(calls) == 2  # Formula evaluation never re-fetches the source.
     assert calls[-1] == "/orders/42"
 
@@ -980,18 +1004,28 @@ async def test_claim_excludes_other_workers_and_fences_expired_attempt(recovery_
 
 
 @pytest.mark.asyncio
-async def test_completed_request_has_cooldown_then_can_repair_again(recovery_db: Any) -> None:
+@pytest.mark.parametrize("succeeded", [True, False])
+async def test_terminal_request_stays_scheduled_through_cooldown_without_another_recalculation(
+    recovery_db: Any,
+    succeeded: bool,
+) -> None:
     clock = [datetime(2026, 9, 7, tzinfo=UTC)]
     queue = FormulaRecoveryQueue(recovery_db, now=lambda: clock[0])
     await queue.enqueue(request())
     claimed = await queue.claim()
     assert claimed is not None
-    assert await queue.finish(claimed, succeeded=True)
-    await queue.enqueue(request())
+    assert await queue.finish(claimed, succeeded=succeeded)
+    terminal = await queue.collection.find_one({"_id": request().key})
+    await asyncio.gather(*(queue.enqueue(request()) for _ in range(20)))
+    scheduled = await queue.collection.find_one({"_id": request().key})
+    assert scheduled["state"] == "pending"
+    assert scheduled["available_at"] == terminal["available_at"]
+    assert await queue.collection.count_documents({}) == 1
     assert await queue.claim() is None
     clock[0] += timedelta(minutes=16)
-    await queue.enqueue(request())
-    assert await queue.claim() is not None
+    next_attempt = await queue.claim()
+    assert next_attempt is not None
+    assert next_attempt["attempts"] == 1
 
 
 def test_unrecoverable_history_is_not_scheduled() -> None:

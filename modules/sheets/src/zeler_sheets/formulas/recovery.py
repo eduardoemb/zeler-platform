@@ -106,11 +106,12 @@ class FormulaRecoveryQueue:
             await self.collection.update_one(
                 {"_id": request.key}, {"$setOnInsert": initial}, upsert=True
             )
+        # Retain a request made during cooldown without advancing its deadline.
+        # The worker can claim it when due, even if the user never recalculates again.
         await self.collection.update_one(
             {
                 "_id": request.key,
                 "state": {"$in": ["completed", "failed"]},
-                "available_at": {"$lte": now},
             },
             {"$set": {"state": "pending", "attempts": 0, "updated_at": now}},
         )
