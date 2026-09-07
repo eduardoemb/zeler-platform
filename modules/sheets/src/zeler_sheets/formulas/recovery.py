@@ -25,6 +25,7 @@ RECOVERABLE_MODELS = frozenset(
 )
 LEASE = timedelta(minutes=10)
 COOLDOWN = timedelta(minutes=15)
+MAX_ATTEMPTS = 3
 
 
 @dataclass(frozen=True)
@@ -89,8 +90,25 @@ class FormulaRecoveryQueue:
 
     async def claim(self) -> dict[str, Any] | None:
         now = self.now()
+        await self.collection.update_many(
+            {
+                "state": "running",
+                "lease_until": {"$lte": now},
+                "attempts": {"$gte": MAX_ATTEMPTS},
+            },
+            {
+                "$set": {
+                    "state": "failed",
+                    "failure_reason": "attempts_exhausted",
+                    "updated_at": now,
+                    "available_at": now + COOLDOWN,
+                },
+                "$unset": {"lease_until": "", "attempt_token": ""},
+            },
+        )
         claimed = await self.collection.find_one_and_update(
             {
+                "attempts": {"$lt": MAX_ATTEMPTS},
                 "available_at": {"$lte": now},
                 "$or": [
                     {"state": "pending"},
@@ -119,17 +137,40 @@ class FormulaRecoveryQueue:
         )
         return bool(result.matched_count)
 
-    async def finish(self, job: dict[str, Any], *, succeeded: bool) -> bool:
+    async def finish(
+        self,
+        job: dict[str, Any],
+        *,
+        succeeded: bool,
+        retryable: bool = False,
+        failure_reason: str = "recovery_failed",
+    ) -> bool:
         now = self.now()
+        retry = not succeeded and retryable and job["attempts"] < MAX_ATTEMPTS
+        if failure_reason not in {
+            "recovery_failed",
+            "source_temporarily_unavailable",
+            "source_rejected",
+            "source_incomplete",
+            "storage_unavailable",
+        }:
+            raise ValueError("unsupported public recovery failure reason")
+        fields = {
+            "state": "completed" if succeeded else "pending" if retry else "failed",
+            "available_at": now
+            + (timedelta(seconds=30 * 2 ** (job["attempts"] - 1)) if retry else COOLDOWN),
+            "updated_at": now,
+        }
+        unset = {"lease_until": "", "attempt_token": ""}
+        if succeeded:
+            unset["failure_reason"] = ""
+        else:
+            fields["failure_reason"] = failure_reason
         result = await self.collection.update_one(
             self._owned(job, now),
             {
-                "$set": {
-                    "state": "completed" if succeeded else "failed",
-                    "available_at": now + COOLDOWN,
-                    "updated_at": now,
-                },
-                "$unset": {"lease_until": "", "attempt_token": ""},
+                "$set": fields,
+                "$unset": unset,
             },
         )
         return bool(result.matched_count)

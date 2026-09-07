@@ -165,6 +165,83 @@ def request(seller_id: str = "pilot") -> RecoveryRequest:
 
 
 @pytest.mark.asyncio
+async def test_transient_source_failure_retries_without_another_formula(recovery_db: Any) -> None:
+    import httpx
+
+    from zeler_sheets.formulas.recovery_worker import FormulaRecoveryWorker
+
+    clock = [datetime.now(UTC)]
+    queue = FormulaRecoveryQueue(recovery_db, now=lambda: clock[0])
+    await queue.enqueue(request())
+
+    class Gateway:
+        calls = 0
+
+        async def fetch_resource(self, **kwargs: Any) -> dict[str, Any]:
+            self.calls += 1
+            if self.calls == 1:
+                raise httpx.ConnectError("sensitive upstream diagnostic")
+            return {"total": 0, "questions": []}
+
+    worker = FormulaRecoveryWorker(db=recovery_db, gateway=Gateway(), queue=queue)
+    assert await worker.process_one()
+    job = await queue.collection.find_one({"_id": request().key})
+    assert job["state"] == "pending"
+    assert job["failure_reason"] == "source_temporarily_unavailable"
+    assert "sensitive" not in str(job)
+    assert not await worker.process_one()
+    clock[0] += timedelta(minutes=5)
+    assert await worker.process_one()
+    job = await queue.collection.find_one({"_id": request().key})
+    assert job["state"] == "completed"
+    assert "failure_reason" not in job
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status, attempts", [(429, 3), (503, 3), (403, 1)])
+async def test_upstream_status_controls_bounded_retries(
+    recovery_db: Any, status: int, attempts: int
+) -> None:
+    import httpx
+
+    from zeler_sheets.formulas.recovery_worker import FormulaRecoveryWorker
+
+    clock = [datetime.now(UTC)]
+    queue = FormulaRecoveryQueue(recovery_db, now=lambda: clock[0])
+    await queue.enqueue(request())
+
+    class Gateway:
+        async def fetch_resource(self, **kwargs: Any) -> dict[str, Any]:
+            response = httpx.Response(status, request=httpx.Request("GET", "https://example.test"))
+            response.raise_for_status()
+            raise AssertionError("failure response must raise")
+
+    worker = FormulaRecoveryWorker(db=recovery_db, gateway=Gateway(), queue=queue)
+    for _ in range(attempts):
+        assert await worker.process_one()
+        clock[0] += timedelta(minutes=5)
+    assert not await worker.process_one()
+    job = await queue.collection.find_one({"_id": request().key})
+    assert job["state"] == "failed"
+    assert job["attempts"] == attempts
+
+
+@pytest.mark.asyncio
+async def test_crashed_recovery_stops_after_three_attempts(recovery_db: Any) -> None:
+    clock = [datetime.now(UTC)]
+    queue = FormulaRecoveryQueue(recovery_db, now=lambda: clock[0])
+    await queue.enqueue(request())
+    for expected in range(1, 4):
+        job = await queue.claim()
+        assert job is not None and job["attempts"] == expected
+        clock[0] += timedelta(minutes=11)
+    assert await queue.claim() is None
+    job = await queue.collection.find_one({"_id": request().key})
+    assert job["state"] == "failed"
+    assert job["failure_reason"] == "attempts_exhausted"
+
+
+@pytest.mark.asyncio
 async def test_concurrent_cells_share_one_persisted_recovery(recovery_db: Any) -> None:
     now = datetime(2026, 9, 7, tzinfo=UTC)
     queue = FormulaRecoveryQueue(recovery_db, now=lambda: now)

@@ -195,3 +195,22 @@ Pilot: seller `82453304`; initial historical window 2026-08-08 through
 - Next functional work remains recovery admission/retries, source coverage and
   worker/API startup integration. These green gates do not prove production
   recovery, 52 live formulas, app surfaces or a real Google Sheet.
+
+## Work unit: bounded automatic recovery retries
+
+- Two new real-Mongo tests failed before implementation: transient gateway
+  failures required another formula request, and repeated worker crashes had
+  unlimited attempts. Both are now corrected.
+- Retry connection/timeouts, HTTP 429/5xx and database failures with persisted
+  30/60-second backoff and at most three claims per request cycle. Expired
+  third attempts become failed; obsolete owners retain no completion rights.
+- Non-transient source rejections and incomplete source inventories fail closed.
+  Failure reasons are allowlisted codes, not exception text or remote payloads;
+  successful transactional completion clears the prior failure reason.
+- Verification: recovery and formula API tests **43 passed in 2.69s**, using
+  actual local Mongo and controlled upstream responses. Includes 403 versus
+  429/503 retry behavior, automatic resume, coalescing and lease fences.
+- Runtime activation remains pending; this changes persisted queue execution
+  behavior but does not yet connect the API/worker startup. Rollback boundary:
+  retry/attempt logic in recovery.py, worker error classification and associated
+  tests; no production migrations or deployments have occurred.

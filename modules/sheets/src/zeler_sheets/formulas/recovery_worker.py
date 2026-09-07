@@ -7,6 +7,9 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 from urllib.parse import urlencode
 
+import httpx
+from pymongo.errors import PyMongoError
+
 from zeler_sheets.event_persistence import SheetsEventPersistence
 from zeler_sheets.formulas.recovery import COOLDOWN, FormulaRecoveryQueue
 
@@ -34,6 +37,30 @@ class FormulaRecoveryWorker:
                 if job["read_model"] != "questions":
                     raise ValueError("recovery source not implemented")
                 await self._questions(job)
+        except httpx.HTTPStatusError as exc:
+            transient = exc.response.status_code == 429 or exc.response.status_code >= 500
+            await self.queue.finish(
+                job,
+                succeeded=False,
+                retryable=transient,
+                failure_reason="source_temporarily_unavailable" if transient else "source_rejected",
+            )
+        except (httpx.TransportError, TimeoutError):
+            await self.queue.finish(
+                job,
+                succeeded=False,
+                retryable=True,
+                failure_reason="source_temporarily_unavailable",
+            )
+        except PyMongoError:
+            await self.queue.finish(
+                job,
+                succeeded=False,
+                retryable=True,
+                failure_reason="storage_unavailable",
+            )
+        except ValueError:
+            await self.queue.finish(job, succeeded=False, failure_reason="source_incomplete")
         except Exception:  # noqa: BLE001 - never log upstream payloads or credentials.
             await self.queue.finish(job, succeeded=False)
         return True
@@ -149,7 +176,7 @@ class FormulaRecoveryWorker:
                         "updated_at": now,
                         "available_at": now + COOLDOWN,
                     },
-                    "$unset": {"attempt_token": "", "lease_until": ""},
+                    "$unset": {"attempt_token": "", "lease_until": "", "failure_reason": ""},
                 },
                 session=session,
             )
