@@ -584,6 +584,37 @@ async def test_missing_identity_keeps_sales_but_rejects_consumers_that_require_i
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("case", ["invalid_identity", "over_budget"])
+async def test_known_order_detail_acquisition_is_bounded(recovery_db: Any, case: str) -> None:
+    from zeler_sheets.formulas.recovery_worker import FormulaRecoveryWorker
+
+    requested = RecoveryRequest("pilot", "orders", request().date_from, request().date_to)
+    queue = FormulaRecoveryQueue(recovery_db, enabled_models=frozenset({"orders"}))
+    await queue.enqueue(requested)
+    identities = ["invalid"] if case == "invalid_identity" else [str(i) for i in range(10001)]
+    await recovery_db.orders.insert_many(
+        [
+            {"_id": identity, "seller_id": "pilot", "date_created": datetime(2026, 8, 20)}
+            for identity in identities
+        ]
+    )
+
+    class Gateway:
+        async def fetch_resource(self, **kwargs: Any) -> dict[str, Any]:
+            return {"paging": {"total": 0}, "results": []}
+
+        async def request(self, **kwargs: Any) -> Any:
+            pytest.fail("invalid or over-budget identities must not trigger detail acquisition")
+
+    await FormulaRecoveryWorker(db=recovery_db, gateway=Gateway(), queue=queue).process_one()
+    job = await queue.collection.find_one({"_id": requested.key})
+    assert job["state"] == "failed"
+    assert job["failure_reason"] == "source_incomplete"
+    assert await recovery_db.sheets_read_model_freshness.count_documents({}) == 0
+    assert await recovery_db.orders.count_documents({}) == len(identities)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "failure",
     [
@@ -594,6 +625,14 @@ async def test_missing_identity_keeps_sales_but_rejects_consumers_that_require_i
         "extra_mongo_row",
         "partial_response",
         "partial_recovered",
+        "extra_confirmed",
+        "extra_partial",
+        "extra_empty_search",
+        "extra_foreign",
+        "extra_missing_owner",
+        "extra_wrong_id",
+        "extra_outside",
+        "extra_404",
     ],
 )
 async def test_order_recovery_publishes_only_complete_owned_inventory(
@@ -625,7 +664,7 @@ async def test_order_recovery_publishes_only_complete_owned_inventory(
         }
         for identity in (42, 43)
     ]
-    if failure == "extra_mongo_row":
+    if failure and failure.startswith("extra_"):
         await recovery_db.orders.insert_one(
             {"_id": "999", "seller_id": "pilot", "date_created": datetime(2026, 8, 20)}
         )
@@ -654,7 +693,7 @@ async def test_order_recovery_publishes_only_complete_owned_inventory(
             assert seller_id == "pilot"
             calls.append(path)
             offset = int(parse_qs(urlsplit(path).query)["offset"][0])
-            if failure == "empty":
+            if failure in {"empty", "extra_empty_search"}:
                 return {"paging": {"total": 0}, "results": []}
             return {
                 "paging": {} if failure == "missing_total" else {"total": 2},
@@ -664,6 +703,22 @@ async def test_order_recovery_publishes_only_complete_owned_inventory(
         async def request(self, *, method: str, seller_id: str, path: str) -> httpx.Response:
             assert method == "GET" and seller_id == "pilot"
             calls.append(path)
+            if path == "/orders/999" and failure != "extra_mongo_row":
+                extra = {**resources[0], "id": 999, "status": "cancelled"}
+                if failure == "extra_foreign":
+                    extra["seller"] = {"id": "foreign"}
+                elif failure == "extra_missing_owner":
+                    extra["seller"] = {}
+                elif failure == "extra_wrong_id":
+                    extra["id"] = 998
+                elif failure == "extra_outside":
+                    extra["date_created"] = "2025-01-01T00:00:00Z"
+                elif failure == "extra_404":
+                    return httpx.Response(404, json={})
+                elif failure == "extra_partial":
+                    extra["buyer"] = {}
+                    return httpx.Response(206, headers={"X-Content-Missing": "buyer"}, json=extra)
+                return httpx.Response(200, json=extra)
             resource = resources[int(path.rsplit("/", 1)[1]) - 42]
             if failure == "foreign_detail":
                 resource = {**resource, "seller": {"id": "foreign"}}
@@ -689,16 +744,43 @@ async def test_order_recovery_publishes_only_complete_owned_inventory(
     assert calls, "order source acquisition must actually run"
     job = await queue.collection.find_one({"_id": requested.key})
     marker = await recovery_db.sheets_read_model_freshness.find_one({"_id": "pilot:orders"})
-    if failure not in {None, "empty", "partial_recovered", "partial_response"}:
+    if failure not in {
+        None,
+        "empty",
+        "partial_recovered",
+        "partial_response",
+        "extra_confirmed",
+        "extra_partial",
+        "extra_empty_search",
+    }:
         assert job["state"] == "failed"
         assert await recovery_db.orders.find({}).to_list(None) == before
         assert marker is None
     else:
         assert job["state"] == "completed", job.get("failure_reason")
         assert await recovery_db.orders.count_documents({"seller_id": "pilot"}) == (
-            0 if failure == "empty" else 2
+            0
+            if failure == "empty"
+            else 1
+            if failure == "extra_empty_search"
+            else 3
+            if failure in {"extra_confirmed", "extra_partial"}
+            else 2
         )
-        assert len(calls) == (1 if failure == "empty" else 4)
+        assert len(calls) == (
+            1
+            if failure == "empty"
+            else 2
+            if failure == "extra_empty_search"
+            else 5
+            if failure in {"extra_confirmed", "extra_partial"}
+            else 4
+        )
+        if failure in {"extra_confirmed", "extra_partial", "extra_empty_search"}:
+            extra_stored = await recovery_db.orders.find_one({"_id": "999"})
+            assert extra_stored["status"] == "cancelled"
+            if failure == "extra_partial":
+                assert extra_stored["unavailable_fields"] == ["buyer_id"]
         assert read_model_reconciliation_marker_covers(
             marker, date_from=requested.date_from, date_to=requested.date_to
         )

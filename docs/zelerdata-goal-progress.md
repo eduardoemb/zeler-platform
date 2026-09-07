@@ -1457,3 +1457,39 @@ retain their contract; other product deployments remain out of scope.
   whole goal blocked. Required formula HTTP, real Sheet, app and hardening checks
   remain open. Automatic recovery stays disabled until the defect is corrected
   and the controlled worker test passes.
+
+## Work unit: validate known orders omitted from seller search
+
+- Order recovery now augments completed search enumeration with persisted IDs
+  in the same seller/date range. IDs absent from search are fetched by detail
+  before publication. A shared detail validator checks identity, current source
+  owner, date range, nonempty items and supported partial-response metadata.
+  Local seller attribution cannot substitute for a missing source owner.
+- The existing search/date equality check remains for enumerated rows. Known
+  omitted rows are accepted only when their own detail proves scope, then join
+  the same normalized publication, inventory comparison and completion transaction.
+  No records are deleted to force search-only equality. Missing/invalid detail
+  prevents complete coverage; existing records and proof remain unchanged.
+- The union of searched/known identities stays within the existing 10,000-order
+  budget. The Mongo identity scan is capped at 10,001 and malformed identities
+  are rejected before direct acquisition. The 240-second worker limit remains.
+- Three cases failed before implementation. Regressions cover a confirmed
+  cancelled extra, supported partial buyer detail, empty search with a known
+  legitimate order, foreign/missing owner, wrong ID, outside-range dates and 404.
+  Additional tests reject malformed/over-budget known IDs without detail calls.
+- This corrects the search-only assumption exposed by the productive test,
+  but is not yet a successful repetition of that test. Legacy no-expiry markers,
+  large coverage unions and genuinely unavailable known detail remain explicit
+  limitations; no new productive data, flag or image changes occurred here.
+- Rollback boundary: known-ID acquisition and shared order-detail validation in
+  the worker plus their regression cases. No schema or data rollback is needed;
+  reverting reintroduces the observed inventory failure, so keep automatic
+  recovery off. Build a new verified Sheets worker image, deploy it with exact
+  digest/health checks, and repeat the pilot job after its normal cooldown.
+  Sheets API behavior is unchanged and does not need rebuilding for this unit.
+- Local verification: `uv run pytest modules/sheets/tests/test_formula_recovery.py`
+  with the task-owned replica set passed 112 tests in 16.29s. Root regression
+  passed 3,718 tests with 9 skips in 82.33s; the eight protected Mongo cases passed
+  separately in 2.46s. Remaining skip is Caddy's no-required-keys case. Ruff
+  check/format, mypy (501 files) and whitespace checks pass. These do not replace
+  productive pilot, authenticated HTTP or real Sheet evidence.

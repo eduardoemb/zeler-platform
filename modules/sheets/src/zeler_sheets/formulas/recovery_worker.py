@@ -327,56 +327,36 @@ class FormulaRecoveryWorker:
                 created = _date(row.get("date_created"))
                 if not start <= created < end:
                     raise ValueError("order search outside requested range")
-                response = await self.detail_gateway.request(
-                    method="GET", seller_id=seller_id, path=f"/orders/{identity}"
+                detail, missing = await self._order_detail(
+                    seller_id, identity, start, end, search_row=row
                 )
-                missing = frozenset(
-                    field.strip().lower()
-                    for field in response.headers.get("X-Content-Missing", "").split(",")
-                    if field.strip()
-                )
-                if (
-                    response.status_code not in {200, 206}
-                    or (response.status_code == 206 and not missing)
-                    or missing - {"buyer", "shipping", "seller", "feedback", "mediations"}
-                ):
-                    raise ValueError("order source partial fields are not supported")
-                detail = response.json()
-                seller = detail.get("seller") if isinstance(detail, dict) else None
-                owners = (
-                    detail.get("seller_id") if isinstance(detail, dict) else None,
-                    seller.get("id") if isinstance(seller, dict) else None,
-                )
-                search_seller = row.get("seller")
-                search_owners = (
-                    row.get("seller_id"),
-                    search_seller.get("id") if isinstance(search_seller, dict) else None,
-                )
-                if (
-                    not isinstance(detail, dict)
-                    or str(detail.get("id")) != identity
-                    or _date(detail.get("date_created")) != created
-                    or not (
-                        any(owner is not None for owner in owners)
-                        or (
-                            "seller" in missing
-                            and any(owner is not None for owner in search_owners)
-                        )
-                    )
-                    or any(
-                        owner is not None and str(owner) != seller_id
-                        for owner in (*owners, *search_owners)
-                    )
-                    or not isinstance(detail.get("order_items"), list)
-                    or not detail["order_items"]
-                ):
-                    raise ValueError("order detail scope or required data mismatch")
                 resources.append(detail)
                 unavailable_fields[identity] = missing
             if len(seen) == total:
                 break
             if not rows or len(seen) > total:
                 raise ValueError("incomplete order search")
+
+        # Seller search can omit legitimate cancelled orders. Revalidate known
+        # identities by detail; local ownership alone is never source evidence.
+        known = (
+            await self.db.orders.find(
+                {"seller_id": seller_id, "date_created": {"$gte": start, "$lt": end}},
+                {"_id": 1},
+            )
+            .limit(10001)
+            .to_list(length=None)
+        )
+        known_ids = {str(row["_id"]) for row in known}
+        if len(known_ids | seen) > 10000:
+            raise ValueError("known order inventory is over recovery budget")
+        for identity in sorted(known_ids - seen):
+            if not identity.isascii() or not identity.isdecimal():
+                raise ValueError("known order identity is invalid")
+            detail, missing = await self._order_detail(seller_id, identity, start, end)
+            resources.append(detail)
+            unavailable_fields[identity] = missing
+            seen.add(identity)
 
         if not set(job.get("order_ids", ())).issubset(seen):
             raise ValueError("requested orders absent from authoritative inventory")
@@ -405,6 +385,58 @@ class FormulaRecoveryWorker:
                     await finish_devoluciones_operation(
                         db=self.db, operation=operation, succeeded=False
                     )
+
+    async def _order_detail(
+        self,
+        seller_id: str,
+        identity: str,
+        start: datetime,
+        end: datetime,
+        *,
+        search_row: dict[str, Any] | None = None,
+    ) -> tuple[dict[str, Any], frozenset[str]]:
+        response = await self.detail_gateway.request(
+            method="GET", seller_id=seller_id, path=f"/orders/{identity}"
+        )
+        missing = frozenset(
+            field.strip().lower()
+            for field in response.headers.get("X-Content-Missing", "").split(",")
+            if field.strip()
+        )
+        if (
+            response.status_code not in {200, 206}
+            or (response.status_code == 206 and not missing)
+            or missing - {"buyer", "shipping", "seller", "feedback", "mediations"}
+        ):
+            raise ValueError("order source partial fields are not supported")
+        detail = response.json()
+        if not isinstance(detail, dict):
+            raise ValueError("order detail is not an object")
+        seller = detail.get("seller")
+        owners = (detail.get("seller_id"), seller.get("id") if isinstance(seller, dict) else None)
+        row = search_row or {}
+        search_seller = row.get("seller")
+        search_owners = (
+            row.get("seller_id"),
+            search_seller.get("id") if isinstance(search_seller, dict) else None,
+        )
+        created = _date(detail.get("date_created"))
+        if (
+            str(detail.get("id")) != identity
+            or not start <= created < end
+            or (search_row is not None and created != _date(row.get("date_created")))
+            or not (
+                any(owner is not None for owner in owners)
+                or ("seller" in missing and any(owner is not None for owner in search_owners))
+            )
+            or any(
+                owner is not None and str(owner) != seller_id for owner in (*owners, *search_owners)
+            )
+            or not isinstance(detail.get("order_items"), list)
+            or not detail["order_items"]
+        ):
+            raise ValueError("order detail scope or required data mismatch")
+        return detail, missing
 
     async def _questions(self, job: dict[str, Any]) -> None:
         seller_id = job["seller_id"]
