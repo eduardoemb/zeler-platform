@@ -282,3 +282,23 @@ Pilot: seller `82453304`; initial historical window 2026-08-08 through
   memory and live end-to-end response timing also remain unverified.
 - Rollback boundary: the two reader default limits and the expanded Mongo
   boundary harness. No persistence schema or production data changed.
+
+## Work unit: complete history rows and catalog sales inputs
+
+- Six formula boundary tests first returned 1,000 of 1,001 rows: stockout
+  duration, active-stock time, weekly stock, price history, catalog time and
+  withdrawals. Their full-range calls now request all rows; five corresponding
+  reader defaults no longer silently cap results. Seller/interval/coverage
+  filters remain unchanged.
+- Extended the actual local Mongo boundary harness for all five collections,
+  including foreign-seller rows, to check more than test-double behavior.
+- Catalog sales previously truncated at 5,000 orders. A failing 5,001-order
+  case demonstrated undercounting in all six sales windows; that query now
+  reads the complete requested range.
+- Verification: Mongo boundary, remaining-formula, item/shipping/catalog and
+  reader tests **63 passed in 5.09s**. Ruff, formatting and mypy pass globally.
+- Other explicit item/shipping/catalog heuristics and source completeness
+  guards still require inspection; this is not all-formula/live acceptance.
+  Large-result latency/memory measurement remains pending.
+- Rollback boundary: seven complete-range caller limits, five reader defaults
+  and associated boundary regressions. No production state changed.

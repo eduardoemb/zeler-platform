@@ -295,7 +295,7 @@ class FormulaReadModelRepository:
         date_from: Any,
         date_to: Any,
         item_ids: list[str] | tuple[str, ...] | None = None,
-        limit: int = 1000,
+        limit: int | None = None,
     ) -> list[dict[str, Any]]:
         filter_spec = _seller_exact_interval_filter(
             seller_id=seller_id,
@@ -313,7 +313,7 @@ class FormulaReadModelRepository:
         *,
         seller_id: str,
         item_ids: list[str] | tuple[str, ...] | None = None,
-        limit: int = 1000,
+        limit: int | None = None,
     ) -> list[dict[str, Any]]:
         filter_spec: dict[str, Any] = {"seller_id": seller_id}
         if item_ids:
@@ -325,7 +325,7 @@ class FormulaReadModelRepository:
         self,
         *,
         seller_id: str,
-        limit: int = 1000,
+        limit: int | None = None,
     ) -> list[dict[str, Any]]:
         cursor = self._stockout_snapshots.find({"seller_id": seller_id}).sort(
             [("item_id", 1), ("_id", 1)]
@@ -340,7 +340,7 @@ class FormulaReadModelRepository:
         date_to: Any,
         item_ids: list[str] | tuple[str, ...] | None = None,
         skus: list[str] | tuple[str, ...] | None = None,
-        limit: int = 1000,
+        limit: int | None = None,
     ) -> list[dict[str, Any]]:
         filter_spec = _seller_exact_interval_filter(
             seller_id=seller_id,
@@ -364,7 +364,7 @@ class FormulaReadModelRepository:
         seller_id: str,
         date_from: Any,
         date_to: Any,
-        limit: int = 1000,
+        limit: int | None = None,
     ) -> list[dict[str, Any]]:
         filter_spec: dict[str, Any] = {
             "seller_id": seller_id,

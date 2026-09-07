@@ -82,6 +82,86 @@ NOW = datetime(2026, 6, 15, 12, 0, tzinfo=UTC)
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("formula", "model"),
+    [
+        ("ZELERDATA_TIEMPOSINSTOCK", "stockout_snapshots"),
+        ("ZELERDATA_TIEMPOSTOCKACTIVO", "stock_time_metrics"),
+        ("ZELERDATA_SEMANASCONSTOCK", "stock_time_metrics"),
+        ("ZELERDATA_PRECIOHISTORICO", "price_history_snapshots"),
+        ("ZELERDATA_CATALOGOTIEMPO", "catalog_time_metrics"),
+        ("ZELERDATA_RETIROS", "full_withdrawals"),
+    ],
+)
+async def test_history_formulas_do_not_truncate_complete_read_models(
+    formula: str, model: str
+) -> None:
+    db = FakeDb()
+    start = datetime(2026, 6, 1, tzinfo=UTC)
+    end = datetime(2026, 6, 15, tzinfo=UTC)
+    _mark_read_model_fresh(
+        db,
+        model,
+        date_from=start,
+        fresh_until=NOW + timedelta(days=1)
+        if model in {"stockout_snapshots", "price_history_snapshots"}
+        else end,
+    )
+    db[f"sheets_{model}"].documents = {
+        str(i): {
+            "_id": str(i),
+            "seller_id": "seller-1",
+            "item_id": f"MLM{i}",
+            "date_from": start,
+            "date_to": end,
+            "created_at": start,
+            "current_stock": 0,
+            "out_of_stock_since": start,
+        }
+        for i in range(1001)
+    }
+    result = await _dispatcher(db).execute(
+        _context(
+            formula,
+            {
+                "fecha_inicial": "2026-06-01",
+                "fecha_final": "2026-06-14",
+                "id_publicaciones": "todos",
+                "skus": "todos",
+                "encabezados": False,
+            },
+        )
+    )
+    assert result.meta["rows_count"] == 1001
+    assert len(result.values) == 1001
+
+
+@pytest.mark.asyncio
+async def test_catalog_sales_include_orders_beyond_the_old_5000_row_cap() -> None:
+    db = FakeDb()
+    for model in (
+        CATALOG_BUYBOX_SNAPSHOTS_READ_MODEL,
+        ITEM_FORMULA_ROWS_READ_MODEL,
+        ORDERS_READ_MODEL,
+    ):
+        _mark_read_model_fresh(db, model)
+    db["sheets_item_formula_rows"].documents = {
+        "item": _item_row(
+            item_id="MLA1",
+            sku="sku-1",
+            title="Catalog item",
+            catalog_product_id="CAT-1",
+            price=Decimal("100"),
+        )
+    }
+    db["orders"].documents = {
+        str(i): _order_doc(str(i), days_ago=1, quantity=1) for i in range(5001)
+    }
+    result = await _dispatcher(db).execute(_context("ZELERDATA_CATALOGO", {"encabezados": False}))
+    assert result.values[0][9:15] == [5001] * 6
+
+
+@pytest.mark.asyncio
 async def test_catalogo_uses_local_item_catalog_buybox_and_sales_snapshots() -> None:
     db = FakeDb()
     _mark_read_model_fresh(db, CATALOG_BUYBOX_SNAPSHOTS_READ_MODEL)

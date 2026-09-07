@@ -185,7 +185,7 @@ class RemainingPhase4FormulaHandlers:
             seller_id=context.seller_id,
             date_from=now - timedelta(days=max(CATALOGO_SALES_WINDOWS)),
             date_to=_day_end(now),
-            limit=5000,
+            limit=None,
         )
         sales_by_item = _sales_windows_by_item(orders, now=now)
         values: list[list[Any]] = _header_row(context.args.get("encabezados"), CATALOGO_HEADERS)
@@ -216,7 +216,7 @@ class RemainingPhase4FormulaHandlers:
         )
         snapshots = await self._repository.find_stockout_snapshots(
             seller_id=context.seller_id,
-            limit=1000,
+            limit=None,
         )
         out_of_stock = [snapshot for snapshot in snapshots if _is_currently_out_of_stock(snapshot)]
         values: list[list[Any]] = _header_row(
@@ -250,7 +250,7 @@ class RemainingPhase4FormulaHandlers:
             date_from=date_from,
             date_to=date_to,
             item_ids=item_ids,
-            limit=1000,
+            limit=None,
         )
         values: list[list[Any]] = _header_row(
             context.args.get("encabezados"), TIEMPO_STOCK_ACTIVO_HEADERS
@@ -282,7 +282,7 @@ class RemainingPhase4FormulaHandlers:
             date_to=date_to,
             item_ids=item_ids,
             skus=skus,
-            limit=1000,
+            limit=None,
         )
         week_headers = _week_headers(metrics)
         headers = [*SEMANAS_CON_STOCK_BASE_HEADERS, *week_headers]
@@ -307,7 +307,7 @@ class RemainingPhase4FormulaHandlers:
         rows = await self._repository.find_price_history_snapshots(
             seller_id=context.seller_id,
             item_ids=item_ids,
-            limit=1000,
+            limit=None,
         )
         values: list[list[Any]] = _header_row(
             context.args.get("encabezados"), PRECIO_HISTORICO_HEADERS
@@ -340,7 +340,7 @@ class RemainingPhase4FormulaHandlers:
             date_from=date_from,
             date_to=date_to,
             item_ids=item_ids,
-            limit=1000,
+            limit=None,
         )
         values: list[list[Any]] = _header_row(
             context.args.get("encabezados"), CATALOGOTIEMPO_HEADERS
@@ -366,7 +366,7 @@ class RemainingPhase4FormulaHandlers:
             seller_id=context.seller_id,
             date_from=date_from,
             date_to=date_to,
-            limit=1000,
+            limit=None,
         )
         values: list[list[Any]] = _header_row(context.args.get("encabezados"), RETIROS_HEADERS)
         header_rows = len(values)

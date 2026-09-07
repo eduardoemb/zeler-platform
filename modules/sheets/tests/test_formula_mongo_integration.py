@@ -37,10 +37,49 @@ async def test_complete_formula_sources_remain_seller_scoped_in_mongo() -> None:
             ("find_sku_index_rows", "sheets_item_sku_index", 501, {}),
             ("find_orders", "orders", 1001, {"date_from": start, "date_to": end}),
             ("find_questions", "questions", 1001, {"date_from": start, "date_to": end}),
+            ("find_stockout_snapshots", "sheets_stockout_snapshots", 1001, {}),
+            ("find_price_history_snapshots", "sheets_price_history_snapshots", 1001, {}),
+            (
+                "find_stock_time_metrics",
+                "sheets_stock_time_metrics",
+                1001,
+                {"date_from": start, "date_to": end},
+            ),
+            (
+                "find_catalog_time_metrics",
+                "sheets_catalog_time_metrics",
+                1001,
+                {"date_from": start, "date_to": end},
+            ),
+            (
+                "find_full_withdrawals",
+                "sheets_full_withdrawals",
+                1001,
+                {"date_from": start, "date_to": end},
+            ),
         ):
             await database[collection].insert_many(
-                [{"_id": str(i), "seller_id": "pilot", "date_created": start} for i in range(count)]
-                + [{"_id": "foreign", "seller_id": "another-seller", "date_created": start}]
+                [
+                    {
+                        "_id": str(i),
+                        "seller_id": "pilot",
+                        "date_created": start,
+                        "created_at": start,
+                        "date_from": start,
+                        "date_to": end,
+                    }
+                    for i in range(count)
+                ]
+                + [
+                    {
+                        "_id": "foreign",
+                        "seller_id": "another-seller",
+                        "date_created": start,
+                        "created_at": start,
+                        "date_from": start,
+                        "date_to": end,
+                    }
+                ]
             )
             rows = await getattr(repository, method)(seller_id="pilot", **kwargs)
             assert len(rows) == count
