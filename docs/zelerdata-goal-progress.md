@@ -332,3 +332,25 @@ Pilot: seller `82453304`; initial historical window 2026-08-08 through
   tests **134 passed in 1.20s**. Ruff, format and mypy pass globally.
 - Rollback boundary: three heuristic limit arguments and their regressions.
   No runtime activation, production data change or live-completeness claim.
+
+## Work unit: preserve order partial-content evidence through gateway
+
+- Official source checked: https://developers.mercadolibre.com.mx/gestiona-ventas
+  (indexed text available; direct fetch returned 403). The late-September 2026
+  deprecation notice concerns the current order-shipment view; do not interpret
+  it as proof that every /orders endpoint is being retired. Hosted shipment
+  responses are arrays. Order partial responses use HTTP 206 and
+  X-Content-Missing to identify absent fields.
+- Current proxy already forwards X-Api-Version/X-New-Domain request headers,
+  but stripped X-Content-Missing on responses. New authenticated integration
+  test reproduced the missing header; explicitly forward it while keeping
+  unrelated response headers excluded. Status and JSON body remain unchanged.
+- Verification: gateway-flow and client tests **17 passed in 3.50s** using local
+  Mongo and mocked upstream; root Ruff, format and mypy pass.
+- Important remaining gap: fetch_resource returns only JSON, so Sheets source
+  acquisition still needs explicit partial-content/field-completeness handling.
+  No hosted order-shipment acquisition/normalization was found in Sheets. Do
+  not mark the new-order-contract requirement verified from this transport fix.
+- Rollback boundary: one response header and its authenticated regression.
+  Gateway image must eventually be rebuilt/deployed alongside relevant Sheets
+  images; no image build, deployment or live contract test happened in this unit.

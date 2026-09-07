@@ -384,6 +384,35 @@ async def test_proxy_out_of_scope_path_returns_403(
 
 
 @pytest.mark.asyncio
+async def test_order_proxy_preserves_partial_content_metadata_and_view_headers(
+    proxy_client: httpx.AsyncClient,
+    proxy_db: Any,
+) -> None:
+    _, database = proxy_db
+    _seed_account(database)
+    database.module_registry.update_one(
+        {"_id": "repricer"},
+        {"$set": {"allowed_meli_scopes": ["GET /orders/*"]}},
+    )
+    with respx.mock as mock:
+        upstream = mock.get("https://api.mercadolibre.com/orders/42").respond(
+            206,
+            json={"id": 42, "buyer": {}},
+            headers={"X-Content-Missing": "buyer,shipping", "X-Private-Upstream": "not-forwarded"},
+        )
+        response = await proxy_client.get(
+            "/proxy/meli/orders/42",
+            headers={**_auth_header(), "X-Api-Version": "2", "X-New-Domain": "true"},
+        )
+    assert response.status_code == 206
+    assert response.json() == {"id": 42, "buyer": {}}
+    assert response.headers["X-Content-Missing"] == "buyer,shipping"
+    assert "X-Private-Upstream" not in response.headers
+    assert upstream.calls.last.request.headers["X-Api-Version"] == "2"
+    assert upstream.calls.last.request.headers["X-New-Domain"] == "true"
+
+
+@pytest.mark.asyncio
 async def test_rate_limit_exceeded_returns_429(
     proxy_client: httpx.AsyncClient, proxy_db: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -338,6 +338,9 @@ def _response_headers(response: httpx.Response) -> dict[str, str]:
     upstream_attempts = response.headers.get("X-Zeler-Upstream-Attempts")
     if upstream_attempts is not None:
         headers["X-Zeler-Upstream-Attempts"] = upstream_attempts
+    missing_content = response.headers.get("X-Content-Missing")
+    if missing_content is not None:
+        headers["X-Content-Missing"] = missing_content
     return headers
 
 
