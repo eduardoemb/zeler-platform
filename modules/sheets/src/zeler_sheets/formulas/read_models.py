@@ -102,7 +102,7 @@ class FormulaReadModelRepository:
         skus: list[str] | tuple[str, ...] | None = None,
         item_ids: list[str] | tuple[str, ...] | None = None,
         variation_ids: list[Any] | tuple[Any, ...] | None = None,
-        limit: int = 500,
+        limit: int | None = None,
     ) -> list[dict[str, Any]]:
         filter_spec = _seller_item_filter(
             seller_id=seller_id, skus=skus, item_ids=item_ids, variation_ids=variation_ids
@@ -119,7 +119,7 @@ class FormulaReadModelRepository:
         skus: list[str] | tuple[str, ...] | None = None,
         item_ids: list[str] | tuple[str, ...] | None = None,
         inventory_ids: list[str] | tuple[str, ...] | None = None,
-        limit: int | None = 500,
+        limit: int | None = None,
         sort_by: str = "sku",
     ) -> list[dict[str, Any]]:
         filter_spec = _seller_item_filter(
@@ -143,7 +143,7 @@ class FormulaReadModelRepository:
         date_from: Any,
         date_to: Any,
         status: str | None = None,
-        limit: int = 1000,
+        limit: int | None = None,
     ) -> list[dict[str, Any]]:
         filter_spec: dict[str, Any] = _seller_date_filter(
             seller_id=seller_id,

@@ -51,6 +51,34 @@ _UNSET = object()
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("method", "collection", "count", "kwargs"),
+    [
+        ("find_item_formula_rows", "sheets_item_formula_rows", 501, {}),
+        ("find_sku_index_rows", "sheets_item_sku_index", 501, {}),
+        (
+            "find_orders",
+            "orders",
+            1001,
+            {"date_from": "2026-08-08", "date_to": "2026-09-07"},
+        ),
+    ],
+)
+async def test_formula_sources_do_not_silently_truncate_complete_results(
+    method: str, collection: str, count: int, kwargs: dict[str, Any]
+) -> None:
+    db = FakeDb([])
+    db._collections[collection] = FakeCollection(
+        [{"_id": str(index), "seller_id": "seller-1"} for index in range(count)]
+    )
+    repository = FormulaReadModelRepository(db=db)
+
+    rows = await getattr(repository, method)(seller_id="seller-1", **kwargs)
+
+    assert len(rows) == count
+
+
+@pytest.mark.asyncio
 async def test_item_formula_rows_can_use_publication_order_without_500_row_truncation() -> None:
     rows = [
         {"_id": f"row-{index}", "seller_id": "seller-1", "item_id": f"MLA{index:03d}"}
