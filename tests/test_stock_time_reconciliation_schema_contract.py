@@ -10,7 +10,7 @@ from zeler_platform_core.cli.export_schemas import ENTITY_SCHEMAS, _validator_pa
 ROOT = Path(__file__).resolve().parents[1]
 COLLECTION = "sheets_stock_time_reconciliation_operations"
 PREIMAGE_COLLECTION = "sheets_stock_time_reconciliation_preimages"
-SHA256 = {
+SHA256: dict[str, Any] = {
     "bsonType": "string",
     "minLength": 64,
     "maxLength": 64,

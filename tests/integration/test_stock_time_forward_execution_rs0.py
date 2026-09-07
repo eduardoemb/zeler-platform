@@ -66,9 +66,7 @@ def _loopback_uri(uri: str) -> bool:
 
 async def _install_contract(db: Any) -> None:
     for name in COLLECTIONS:
-        schema = json.loads(
-            (ROOT / f"infra/mongo/schemas/{name}.json").read_text(encoding="utf-8")
-        )
+        schema = json.loads((ROOT / f"infra/mongo/schemas/{name}.json").read_text(encoding="utf-8"))
         indexes = json.loads(
             (ROOT / f"infra/mongo/indexes/{name}.json").read_text(encoding="utf-8")
         )
@@ -78,9 +76,7 @@ async def _install_contract(db: Any) -> None:
         )
         collection = db[name]
         for definition in indexes:
-            await collection.create_index(
-                list(definition["keys"].items()), **definition["options"]
-            )
+            await collection.create_index(list(definition["keys"].items()), **definition["options"])
         listed = await db.command("listCollections", filter={"name": name})
         options = listed["cursor"]["firstBatch"][0]["options"]
         assert options["validator"] == validator

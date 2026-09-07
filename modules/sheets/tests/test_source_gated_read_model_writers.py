@@ -1006,10 +1006,13 @@ def test_stock_time_action_planner_classifies_and_orders_every_action() -> None:
         plan.estimated_bson_bytes + plan.estimated_json_bytes
     )
     no_op = plan.actions[2]
+    assert no_op._document is not None
+    assert no_op._preimage is not None
     assert no_op._document["title"] == "same"
     assert no_op._preimage["revision"] == "n" * 64
     with pytest.raises(TypeError):
-        no_op._document["title"] = "mutated"
+        # Deliberately attempt the mutation forbidden by the Mapping type.
+        no_op._document["title"] = "mutated"  # type: ignore[index]
 
 
 def test_stock_time_action_planner_insert_only_has_no_preimage() -> None:

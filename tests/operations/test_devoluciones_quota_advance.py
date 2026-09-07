@@ -6,6 +6,7 @@ from uuid import uuid4
 
 import pytest
 from infra.operations import devoluciones_quota_advance as advance_module
+from infra.operations.zelerdata_read_model_reconcile import readback_devoluciones_quota_run
 
 from zeler_platform_core.devoluciones_readiness import DevolucionesOperationContext
 
@@ -174,7 +175,7 @@ async def test_full_range_readback_counts_exact_complete_claims() -> None:
         for index, count in enumerate((1, 2))
     ]
 
-    proof = await advance_module.readback_devoluciones_quota_run(
+    proof = await readback_devoluciones_quota_run(
         db=ClaimsDatabase(),
         run={"seller_id": "82453304", "start": start, "end": end},
         windows=windows,

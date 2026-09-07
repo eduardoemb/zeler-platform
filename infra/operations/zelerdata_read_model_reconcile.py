@@ -1365,7 +1365,7 @@ async def advance_devoluciones_quota_run(
                 **session_kwargs,
             )
             return
-        aggregate_proof = {
+        aggregate_proof: dict[str, int | str] = {
             key: int(proof[key])
             for key in ("expected_count", "persisted_count", "complete_count", "missing_count")
         }
