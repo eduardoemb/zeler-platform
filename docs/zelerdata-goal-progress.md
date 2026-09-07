@@ -1276,3 +1276,35 @@ retain their contract; other product deployments remain out of scope.
   and gateway `2d4a514cab2d` still healthy with zero restarts and the same images.
   Diff whitespace validation passed. Documentation rollback removes only this
   checkpoint; image recovery is independent and uses the registry digests above.
+
+## Work unit: bounded, reversible shipment date normalization
+
+- Added `infra.operations.shipment_date_repair.repair_shipment_dates` for an
+  operator-supplied backup of at most 100 same-seller shipment identities and
+  date pairs. It accepts only timezone-aware ISO strings exactly representable
+  as BSON milliseconds. One snapshot/majority transaction compares original
+  dates and seller identity before each date-only update; any mismatch aborts
+  the entire batch. It neither refreshes formula evidence nor contacts Meli.
+- Five tests failed first, then passed against local Mongo: exact offset/instant
+  conversion, concurrent-date-change rollback, foreign seller, naive date and
+  precision-loss rejection. All 102 recovery tests passed in 10.21s with the
+  task-owned replica set. Ruff check/format and mypy (501 files) pass.
+- Production read-only preflight found exactly 47 pilot shipments and 94
+  timezone-aware millisecond dates, with no rejected values. Before mutation,
+  created `/var/lib/zeler-platform/repairs/shipment-dates-148c8ae.bson` on the
+  approved VM: 7,367 bytes, root-owned mode 0600 in the existing 0700 directory.
+  Backup contains only seller/shipment identity and the two original dates;
+  no document payload or backup content was emitted outside the VM.
+- Execution gate: use the reviewed helper from the exact pushed source inside
+  the approved runtime, loading this backup locally on the VM. After execution,
+  compare both dates with converted backup values and recheck the main shipment
+  schema without altering validators. A failed comparison must stop the rollout.
+- Rollback is a separate guarded date-only transaction: for each backup identity
+  require the current two dates equal its converted values, then restore only
+  its original strings. Abort if any dates changed since repair; never replace
+  whole documents or overwrite later events. Do not restore strings after a
+  stricter date validator is activated without first resolving compatibility.
+  Keep this restricted backup under the goal's retention/deletion hardening scope.
+- This operator-only helper is not called by service entrypoints and does not
+  itself require a new image. Pending API/worker behavior still requires verified
+  Cloud Build images and productive pilot/HTTP/Sheet checks; the goal stays open.

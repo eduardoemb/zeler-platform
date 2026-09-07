@@ -60,6 +60,49 @@ async def test_recovery_pilot_scope_limits_admission_claim_and_expiry(recovery_d
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("failure", [None, "concurrent", "foreign", "naive", "precision"])
+async def test_shipment_date_repair_is_exact_scoped_and_atomic(
+    recovery_db: Any, failure: str | None
+) -> None:
+    from infra.operations.shipment_date_repair import repair_shipment_dates
+
+    originals = [
+        {
+            "_id": identity,
+            "seller_id": "pilot",
+            "date_created": "2026-09-01T01:00:00.123-06:00",
+            "last_updated": "2026-09-02T07:00:00+00:00",
+        }
+        for identity in ("1", "2")
+    ]
+    await recovery_db.shipments.insert_many([{**row, "status": "delivered"} for row in originals])
+    if failure == "concurrent":
+        await recovery_db.shipments.update_one(
+            {"_id": "2"}, {"$set": {"last_updated": "2026-09-03T00:00:00Z"}}
+        )
+    elif failure == "foreign":
+        originals[1]["seller_id"] = "other"
+    elif failure == "naive":
+        originals[1]["date_created"] = "2026-09-01T01:00:00"
+    elif failure == "precision":
+        originals[1]["date_created"] = "2026-09-01T01:00:00.123456Z"
+    before = await recovery_db.shipments.find({}).sort("_id").to_list(None)
+    if failure:
+        with pytest.raises((ValueError, RuntimeError)):
+            await repair_shipment_dates(recovery_db, seller_id="pilot", originals=originals)
+        assert await recovery_db.shipments.find({}).sort("_id").to_list(None) == before
+    else:
+        assert await repair_shipment_dates(recovery_db, seller_id="pilot", originals=originals) == 2
+        rows = await recovery_db.shipments.find({}).sort("_id").to_list(None)
+        for prior, row in zip(before, rows, strict=True):
+            assert row == {
+                **prior,
+                "date_created": datetime(2026, 9, 1, 7, 0, 0, 123000),
+                "last_updated": datetime(2026, 9, 2, 7),
+            }
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("flagged", [False, True])
 async def test_shipment_event_retains_recovered_fields_without_refreshing_them(
     recovery_db: Any, flagged: bool
