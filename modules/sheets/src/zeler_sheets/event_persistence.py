@@ -1103,6 +1103,9 @@ def _canonical_shipment_document(resource: dict[str, Any], *, seller_id: str) ->
 def _canonical_question_document(
     resource: dict[str, Any], *, seller_id: str, observed_at: datetime
 ) -> dict[str, Any]:
+    source_seller_id = resource.get("seller_id")
+    if source_seller_id is not None and str(source_seller_id).strip() != str(seller_id).strip():
+        raise ValueError("question seller scope mismatch")
     question_id = _string_id(resource.get("_id") or resource.get("id"))
     date_updated = (
         resource.get("date_updated") or resource.get("last_updated") or resource.get("updated_at")

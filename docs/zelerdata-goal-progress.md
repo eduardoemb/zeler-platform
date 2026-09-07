@@ -578,3 +578,56 @@ Pilot: seller `82453304`; initial historical window 2026-08-08 through
   Worker rebuild and controlled retry still required for live acceptance.
   The failed durable job must not be confused with successful persistence or
   authenticated HTTP/Google Sheets formula verification.
+
+## Corrected worker release — source 0b83408
+
+- Cloud Build 3b766f92-da1d-48ca-ba90-125a32b03e4b succeeded from exact
+  source 0b8340864946ab5dfef9c5c11319fcec095e627f. Provenance verifier
+  confirmed the connected repository, build, revision and immutable digest
+  sha256:6ac235ab1d3b26dc157998bde42df91ad2963019f10f74417e9a96afba08acee.
+- Only sheets-worker was replaced, after preflight at 5.1 GiB free and an
+  exact-one Compose replacement. Running digest matches, container healthy,
+  zero restarts, worker health ready; automatic recovery remains disabled.
+  Rollback image is the prior worker digest 9903cd1ddcb932e6f252f0a95445f60e41e9d2478910407345fff192bcf641e5;
+  backup suffix .pre-sheets-worker-0b83408. The API remains on its verified
+  4f65d6d image; this correction changes only worker-executed code.
+- Post-pull disk free is 4.6 GiB. Restore the 5 GiB preflight margin before
+  another pull; no further image build is implied by this operational record.
+- Browser-use is installed but the CLI differs from the skill's current
+  syntax: it exposes --connect, not a connect subcommand. An isolated
+  zeler-goal session using --connect could not find Chrome remote debugging.
+  Asked the user whether to enable their Chrome debugging or select a profile
+  for managed Chromium. No cookies/credentials were extracted and no UI or
+  real Google Sheet acceptance is claimed from this diagnostic.
+- Removed only the unused local copy of original Sheets worker digest
+  b2f820af4a5b0054ef084512430fb385684a078d918238827d3ffc2896008931 after
+  confirming no container referenced it. It remains recoverable from Artifact
+  Registry. Recent rollback images and all volumes were retained. Free disk
+  returned to 5.1 GiB.
+- Retried the same job only after its cooldown elapsed. It fetched six search
+  pages and 50 details, then failed source_incomplete in 15.275 seconds.
+  A read-only diagnostic stopped before transaction creation and confirmed
+  all 50 source details normalize successfully, but Mongo has 52 rows in the
+  expanded interval. The marker remained unchanged; no recovery completion.
+- Direct detail checks of the two extra numeric question IDs returned HTTP
+  200, matching question identities and dates, but explicit nonempty numeric
+  seller IDs different from the pilot. Both are ANSWERED. This confirms two
+  misattributed question records, not missing API data. Do not drop the scope
+  check or silently accept these records to make recovery pass.
+
+## Work unit: reject explicit foreign ownership during question persistence
+
+- A new regression reproduced the write boundary flaw: a resource naming a
+  different seller was normalized under the caller's seller without rejection.
+- Canonical question normalization now rejects an explicit source seller that
+  differs from the requested seller, before any question or marker write.
+  Historical callers omitting seller_id remain supported; this does not prove
+  ownership for absent-source-owner payloads or close the broader isolation
+  audit for other resources.
+- Event persistence, historical backfill and real-Mongo recovery tests:
+  130 passed in 4.28s.
+  Root Ruff, format and mypy pass.
+- Rollback boundary: explicit question-owner validation and its regression.
+  Worker deployment and backed-up repair of exactly the two confirmed foreign
+  rows remain required. No reassignment to another user/account is authorized
+  by this repair, and no production row has yet been removed.

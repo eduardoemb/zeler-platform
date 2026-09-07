@@ -1357,6 +1357,20 @@ async def test_empty_resource_insert_races_promote_fresh_orders_shipments_and_qu
 
 
 @pytest.mark.asyncio
+async def test_question_source_owner_mismatch_cannot_write_pilot_data() -> None:
+    db = FakeDb()
+    persistence = SheetsEventPersistence(db=db, clock=lambda: NOW)
+    with pytest.raises(ValueError, match="question seller scope mismatch"):
+        await persistence.persist(
+            event_type="questions.new",
+            seller_id=82453304,
+            resource={**_question_resource(status="ANSWERED"), "seller_id": 99999999},
+        )
+    assert not db["questions"].documents
+    assert not db["sheets_read_model_freshness"].documents
+
+
+@pytest.mark.asyncio
 async def test_question_webhook_creates_and_updates_formula_facing_read_model() -> None:
     db = FakeDb()
     persistence = SheetsEventPersistence(db=db, clock=lambda: NOW)
