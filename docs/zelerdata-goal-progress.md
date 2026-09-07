@@ -1413,3 +1413,47 @@ retain their contract; other product deployments remain out of scope.
   required for this checkpoint. Next prove controlled pilot recovery, real HTTP
   formula behavior, authenticated app surfaces and Google Sheets; all global
   acceptance requirements remain open until the corresponding evidence exists.
+
+## Operational checkpoint: controlled pilot order recovery
+
+- Inspected the pilot queue in the deployed worker: only one completed question
+  job existed, with no order jobs. Kept API/worker automatic recovery flags off.
+- The first preflight stopped before enqueue because the effective coverage was
+  wider than the requested August 8–September 6 dates. Existing order coverage
+  starts June 1; the worker preserves it by reacquiring the complete union through
+  September 7 exclusive (98 days). A read-only gateway search reported 1,069
+  source orders. No marker was deleted or shortened to force the smaller test.
+- After explicitly bounding that observed union, enqueued one pilot-only orders
+  request: `ebf5decad5d7272397c1cce22e81cd5158259dea80d2d4412eebee0d817297d4`.
+  Executed the deployed `FormulaRecoveryWorker.process_one` inside the approved
+  runtime, using normal bootstrap search and Sheets detail gateway clients.
+  Queue admission/claim is limited to seller 82453304 and orders; no other account
+  or model is processed. The existing 240-second acquisition/publication limit
+  remains in force. This is an operator-run worker test, not authenticated HTTP
+  formula acceptance and not automatic poller activation.
+- The controlled attempt finished failed/source_incomplete after 187.233s:
+  22 search calls and 1,069 detail calls, one attempt. The order publication did
+  not complete; the operation is failed and the old July 10 coverage endpoint
+  remains, without a new expiry/proof. No automatic retry or lease override was
+  started. Do not report this as successful recovery.
+- Independent read-only inventory comparison found 1,069 IDs in the search,
+  1,073 stored IDs in the effective interval, six source IDs absent in Mongo and
+  ten Mongo IDs absent from search. Direct API detail checks for all ten extras
+  confirmed matching pilot ownership and dates inside the interval. These are
+  not foreign or out-of-range records and must not be deleted to force equality.
+- Official Mercado Libre documentation confirms seller search excludes certain
+  cancelled orders: [Search orders](https://developers.mercadolibre.com.mx/en_us/manage-sales).
+  The observed discrepancy invalidates the assumption that seller-search IDs
+  alone exhaust the authoritative inventory. The precise exclusion reason for
+  each of these ten orders was not established by the aggregate owner/date check.
+- Next correction must combine bounded search acquisition with direct validation
+  of known persisted identities absent from search, retaining only source-proven
+  seller/date matches and handling genuinely unavailable detail explicitly. Keep
+  atomic publication and source ownership checks; do not remove legitimate orders
+  or silently label a search-only partial inventory complete. Also revisit legacy
+  no-expiry coverage and union bounds. No new executable code/image changed in
+  this checkpoint; rollback of its documentation does not modify stored data.
+- This failure is actionable live evidence, not a reason to close or mark the
+  whole goal blocked. Required formula HTTP, real Sheet, app and hardening checks
+  remain open. Automatic recovery stays disabled until the defect is corrected
+  and the controlled worker test passes.
