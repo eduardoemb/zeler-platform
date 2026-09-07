@@ -842,8 +842,19 @@ class Shipment(UtcDatetimeMixin, SellerScopedDocument):
     logistic_type: ShipmentLogisticType
     receiver_address: ReceiverAddressSnapshot | None = None
     real_shipping_cost: ShipmentRealShippingCostProjection | None = None
+    formula_observed_at: datetime | None = None
+    unavailable_fields: list[Literal["receiver_address", "real_shipping_cost"]] = Field(
+        default_factory=list
+    )
     date_created: datetime
     last_updated: datetime
+
+    @field_validator("unavailable_fields")
+    @classmethod
+    def _unique_unavailable_fields(
+        cls, value: list[Literal["receiver_address", "real_shipping_cost"]]
+    ) -> list[Literal["receiver_address", "real_shipping_cost"]]:
+        return sorted(set(value))
 
     @field_validator("order_id", mode="before")
     @classmethod

@@ -1164,10 +1164,13 @@ def _canonical_shipment_document(resource: dict[str, Any], *, seller_id: str) ->
     except ValidationError:
         msg = "shipment resource failed validation"
         raise ValueError(msg) from None
-    return cast(
+    document = cast(
         "dict[str, Any]",
         _bson_safe(model.model_dump(by_alias=True, mode="python", exclude_none=True)),
     )
+    if not document.get("unavailable_fields"):
+        document.pop("unavailable_fields", None)
+    return document
 
 
 def _canonical_question_document(

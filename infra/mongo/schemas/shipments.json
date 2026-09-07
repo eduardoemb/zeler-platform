@@ -12,6 +12,9 @@
       "date_created": {
         "bsonType": "date"
       },
+      "formula_observed_at": {
+        "bsonType": "date"
+      },
       "last_updated": {
         "bsonType": "date"
       },
@@ -165,6 +168,16 @@
           "string",
           "null"
         ]
+      },
+      "unavailable_fields": {
+        "bsonType": "array",
+        "items": {
+          "enum": [
+            "receiver_address",
+            "real_shipping_cost"
+          ]
+        },
+        "uniqueItems": true
       }
     },
     "required": [

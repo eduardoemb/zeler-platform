@@ -1050,3 +1050,42 @@ retain their contract; other product deployments remain out of scope.
 - Final regression: 3,677 passed, 9 skipped in 76.55s. Eight protected replica-set
   cases passed separately in 2.49s; remaining skip is Caddy's no-required-keys
   case. Ruff check/format, mypy (500 files) and diff whitespace checks passed.
+
+## Work unit: preserve usable shipment fields during partial acquisition
+
+- Shipment documents can record `formula_observed_at` and an allowlisted,
+  deduplicated `unavailable_fields` list for receiver address and real shipping
+  cost. This timestamp records acquisition, not freshness of flagged fields.
+  Core model and schema exporter agree; regeneration changed only shipments.json.
+  Legacy canonical documents still omit empty availability metadata.
+- Missing or failed seller-cost acquisition no longer discards independently
+  acquired address/status data. Hidden/absent address is explicitly unavailable,
+  not silently certified as optional absence. Another sender's cost is never
+  substituted. Upstream diagnostics are not stored.
+- Inside the publication transaction, missing fields can retain the previous
+  same-seller Mongo value while remaining flagged. The cached cost's original
+  synced_at is preserved, including UTC restoration for naive Mongo decoding;
+  no field is stamped freshly sourced merely because fallback found a value.
+- Transient cost failures atomically persist usable fields and schedule the
+  existing bounded retry. They do not mark the job completed prematurely.
+  The regression advances the clock without enqueuing another request, restores
+  source availability, and verifies job completion, refreshed cost/address and
+  removal of the unavailable flags.
+- Tests failed first for missing observation metadata, discarded partial
+  acquisition and cancelled retries. The 12 actual-Mongo acquisition scenarios
+  now pass in 2.33s, retaining previous tenant, stale-write, lease and rollback
+  checks. Ruff check/format and mypy (500 files) pass.
+- Rollback boundary: optional shipment availability model/schema fields,
+  partial acquisition and transaction-local fallback/retry, with regressions.
+  Keep the compatible validator if rolling code back with flagged documents
+  present. No build/deploy or production schema/data mutation occurred.
+- Not activated: formula readers must honor field availability and observation
+  freshness, HTTP must schedule shipment IDs, and readiness/admission controls
+  must be verified before enabling. Event-driven shipment writes still need
+  equivalent enrichment/retention treatment. This unit does not prove those
+  requirements or production/Google Sheet acceptance. Plan a verified Sheets
+  worker image and paired API/validator rollout after those gates, then check
+  deployed source/digest, health and controlled pilot field recovery.
+- Final root regression: 3,680 passed, 9 skipped in 76.87s. Eight protected
+  replica-set cases passed separately in 2.58s; remaining skip is Caddy's
+  no-required-keys case. Diff whitespace validation passed.

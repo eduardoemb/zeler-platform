@@ -22,7 +22,11 @@ from zeler_platform_core.devoluciones_readiness import (
     operation_lease_guard,
 )
 from zeler_platform_core.models.entities import ShipmentRealShippingCostProjection
-from zeler_sheets.event_persistence import SheetsEventPersistence, _canonical_shipment_document
+from zeler_sheets.event_persistence import (
+    SheetsEventPersistence,
+    _canonical_shipment_document,
+    _receiver_address_snapshot,
+)
 from zeler_sheets.formulas.read_models import read_model_reconciliation_marker_covers
 from zeler_sheets.formulas.recovery import (
     COOLDOWN,
@@ -96,6 +100,7 @@ class FormulaRecoveryWorker:
     async def _shipments(self, job: dict[str, Any]) -> None:
         requested = ShipmentIdsRecoveryRequest(job["seller_id"], tuple(job["shipment_ids"]))
         resources: list[dict[str, Any]] = []
+        retry_partial = False
         for identity in requested.shipment_ids:
             relation_response = await self.detail_gateway.request(
                 method="GET",
@@ -141,24 +146,43 @@ class FormulaRecoveryWorker:
                 )
             ):
                 raise ValueError("shipment detail scope mismatch")
-            cost_response = await self.detail_gateway.request(
-                method="GET",
-                seller_id=requested.seller_id,
-                path=f"/shipments/{identity}/costs",
-                headers={"x-format-new": "true"},
-            )
-            if cost_response.status_code != 200:
-                raise ValueError("shipment costs incomplete")
-            cost = ShipmentRealShippingCostProjection.from_meli_costs_payload(
-                cost_response.json(), seller_id=requested.seller_id, synced_at=self.queue.now()
-            )
+            observed_at = self.queue.now()
+            cost = None
+            try:
+                cost_response = await self.detail_gateway.request(
+                    method="GET",
+                    seller_id=requested.seller_id,
+                    path=f"/shipments/{identity}/costs",
+                    headers={"x-format-new": "true"},
+                )
+                if cost_response.status_code == 200:
+                    cost = ShipmentRealShippingCostProjection.from_meli_costs_payload(
+                        cost_response.json(), seller_id=requested.seller_id, synced_at=observed_at
+                    )
+                elif cost_response.status_code == 429 or cost_response.status_code >= 500:
+                    retry_partial = True
+            except httpx.HTTPStatusError as exc:
+                retry_partial |= exc.response.status_code == 429 or exc.response.status_code >= 500
+            except (httpx.TransportError, TimeoutError, GatewayRateLimitError):
+                retry_partial = True
+            except ValueError:
+                # Independently acquired address/status remain useful. Never
+                # attach the upstream diagnostic or substitute another sender's cost.
+                pass
+            unavailable = []
             if cost is None:
-                raise ValueError("shipment seller cost unavailable")
+                unavailable.append("real_shipping_cost")
+            if _receiver_address_snapshot(detail) is None:
+                unavailable.append("receiver_address")
             resources.append(
                 {
                     **detail,
                     "order_id": owned_orders[0],
-                    "real_shipping_cost": cost.model_dump(mode="python", exclude_none=True),
+                    "real_shipping_cost": cost.model_dump(mode="python", exclude_none=True)
+                    if cost
+                    else None,
+                    "formula_observed_at": observed_at,
+                    "unavailable_fields": sorted(unavailable),
                 }
             )
         # Explicit IDs do not prove a historical inventory. Publish only these
@@ -167,10 +191,28 @@ class FormulaRecoveryWorker:
             await self.db.client.start_session() as session,
             session.start_transaction(),
         ):
-            if not await self.queue.finish(job, succeeded=True, session=session):
+            if not await self.queue.finish(
+                job,
+                succeeded=not retry_partial,
+                retryable=retry_partial,
+                failure_reason="source_temporarily_unavailable",
+                session=session,
+            ):
                 raise ValueError("shipment recovery lease lost before publication")
             writer = SheetsEventPersistence(db=self.db, clock=self.queue.now)
             for resource in resources:
+                prior = await self.db["shipments"].find_one(
+                    {"_id": str(resource["id"]), "seller_id": requested.seller_id}, session=session
+                )
+                for field in resource["unavailable_fields"]:
+                    if prior and isinstance(prior.get(field), dict):
+                        resource[field] = dict(prior[field])
+                        if field == "receiver_address":
+                            resource.pop("destination", None)
+                        elif isinstance(resource[field].get("synced_at"), datetime):
+                            # Default Mongo decoding omits tzinfo; do not change
+                            # the cached observation time while normalizing it.
+                            resource[field]["synced_at"] = _utc(resource[field]["synced_at"])
                 await writer.persist(
                     event_type="shipments.updated",
                     seller_id=requested.seller_id,

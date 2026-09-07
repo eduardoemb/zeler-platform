@@ -27,6 +27,9 @@ from zeler_sheets.formulas.recovery import FormulaRecoveryQueue, RecoveryRequest
         "foreign_cost",
         "existing_foreign",
         "newer_snapshot",
+        "cost_error",
+        "hidden_address",
+        "cached_fields",
     ],
 )
 async def test_shipment_id_recovery_publishes_owned_detail_and_costs_atomically(
@@ -45,11 +48,12 @@ async def test_shipment_id_recovery_publishes_owned_detail_and_costs_atomically(
     await recovery_db.create_collection(
         "shipments", validator={"$jsonSchema": schema["$jsonSchema"]}
     )
-    queue = FormulaRecoveryQueue(recovery_db)
+    clock = [datetime.now(UTC)]
+    queue = FormulaRecoveryQueue(recovery_db, now=lambda: clock[0])
     requested = ShipmentIdsRecoveryRequest("pilot", ("3001", "3002"))
     await queue.enqueue(requested)
     prior = None
-    if failure in {"existing_foreign", "newer_snapshot"}:
+    if failure in {"existing_foreign", "newer_snapshot", "cached_fields"}:
         await recovery_db.shipments.insert_one(
             {
                 "_id": "3002",
@@ -58,10 +62,26 @@ async def test_shipment_id_recovery_publishes_owned_detail_and_costs_atomically(
                 "status": "delivered",
                 "logistic_type": "fulfillment",
                 "date_created": datetime(2026, 8, 20, 10, tzinfo=UTC),
-                "last_updated": datetime(2026, 8, 21, tzinfo=UTC),
+                "last_updated": datetime(
+                    2026, 8, 20 if failure == "cached_fields" else 21, tzinfo=UTC
+                ),
                 "schema_version": 1,
             }
         )
+        if failure == "cached_fields":
+            await recovery_db.shipments.update_one(
+                {"_id": "3002"},
+                {
+                    "$set": {
+                        "receiver_address": {"name": "Previous Receiver"},
+                        "real_shipping_cost": {
+                            "source": "/shipments/{shipment_id}/costs",
+                            "seller_cost": Decimal128("99"),
+                            "synced_at": datetime(2026, 8, 20, tzinfo=UTC),
+                        },
+                    }
+                },
+            )
         prior = await recovery_db.shipments.find_one({"_id": "3002"})
     calls: list[str] = []
 
@@ -84,6 +104,12 @@ async def test_shipment_id_recovery_publishes_owned_detail_and_costs_atomically(
                 )
             assert kwargs["headers"] == {"x-format-new": "true"}
             if path.endswith("/costs"):
+                if second and failure in {"cost_error", "cached_fields"}:
+                    raise httpx.HTTPStatusError(
+                        "UPSTREAM_MUST_NOT_PERSIST",
+                        request=httpx.Request("GET", "https://example.test"),
+                        response=httpx.Response(503),
+                    )
                 if second and failure == "lease_lost":
                     await queue.collection.update_one(
                         {"_id": requested.key}, {"$set": {"attempt_token": "superseded"}}
@@ -113,7 +139,9 @@ async def test_shipment_id_recovery_publishes_owned_detail_and_costs_atomically(
                     },
                     "date_created": "2026-08-20T10:00:00Z",
                     "last_updated": "2026-08-20T11:00:00Z",
-                    "destination": {
+                    "destination": {}
+                    if second and failure in {"hidden_address", "cached_fields"}
+                    else {
                         "receiver_name": "Synthetic Receiver",
                         "receiver_phone": "PHONE_MUST_NOT_PERSIST",
                         "shipping_address": {"street_name": "Synthetic Street"},
@@ -123,22 +151,56 @@ async def test_shipment_id_recovery_publishes_owned_detail_and_costs_atomically(
 
     await FormulaRecoveryWorker(db=recovery_db, gateway=Gateway(), queue=queue).process_one()
     job = await queue.collection.find_one({"_id": requested.key})
-    if failure:
+    partial_fields = failure in {"foreign_cost", "cost_error", "hidden_address", "cached_fields"}
+    if failure and not partial_fields:
         assert job["state"] != "completed"
         assert await recovery_db.shipments.count_documents({}) == (1 if prior else 0)
         if prior:
             assert await recovery_db.shipments.find_one({"_id": "3002"}) == prior
     else:
-        assert job["state"] == "completed", job.get("failure_reason")
+        expected_state = "pending" if failure in {"cost_error", "cached_fields"} else "completed"
+        assert job["state"] == expected_state, job.get("failure_reason")
         stored = await recovery_db.shipments.find({}).to_list(None)
         assert len(stored) == 2
         assert all(row["seller_id"] == "pilot" and row["order_id"] == "42" for row in stored)
-        assert all(row["real_shipping_cost"]["seller_cost"] == Decimal128("12.5") for row in stored)
-        assert all(row["receiver_address"]["name"] == "Synthetic Receiver" for row in stored)
+        assert all(isinstance(row["formula_observed_at"], datetime) for row in stored)
+        first, second_row = sorted(stored, key=lambda row: row["_id"])
+        assert first["real_shipping_cost"]["seller_cost"] == Decimal128("12.5")
+        assert first["receiver_address"]["name"] == "Synthetic Receiver"
+        expected_missing = []
+        if failure in {"foreign_cost", "cost_error", "cached_fields"}:
+            expected_missing.append("real_shipping_cost")
+        else:
+            assert second_row["real_shipping_cost"]["seller_cost"] == Decimal128("12.5")
+        if failure in {"hidden_address", "cached_fields"}:
+            expected_missing.append("receiver_address")
+        else:
+            assert second_row["receiver_address"]["name"] == "Synthetic Receiver"
+        assert second_row.get("unavailable_fields", []) == sorted(expected_missing)
+        if failure == "cached_fields":
+            assert prior is not None
+            for field in expected_missing:
+                assert second_row[field] == prior[field]
+        elif failure in {"foreign_cost", "cost_error"}:
+            assert "real_shipping_cost" not in second_row
+        elif failure == "hidden_address":
+            assert "receiver_address" not in second_row
         assert "MUST_NOT_PERSIST" not in repr(stored)
         assert len(calls) == 6
     # An explicit ID set is not evidence of complete shipment history.
     assert await recovery_db.sheets_read_model_freshness.count_documents({}) == 0
+    if failure in {"cost_error", "cached_fields"}:
+        # A transient field failure retries without another formula request.
+        assert await queue.claim() is None
+        clock[0] += timedelta(minutes=1)
+        failure = None
+        await FormulaRecoveryWorker(db=recovery_db, gateway=Gateway(), queue=queue).process_one()
+        retried = await queue.collection.find_one({"_id": requested.key})
+        assert retried["state"] == "completed"
+        recovered = await recovery_db.shipments.find_one({"_id": "3002"})
+        assert not recovered.get("unavailable_fields")
+        assert recovered["real_shipping_cost"]["seller_cost"] == Decimal128("12.5")
+        assert recovered["receiver_address"]["name"] == "Synthetic Receiver"
 
 
 @pytest.mark.asyncio

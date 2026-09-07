@@ -489,6 +489,12 @@ ENTITY_SCHEMAS: dict[str, dict[str, Any]] = {
             "logistic_type": {"bsonType": "string"},
             "real_shipping_cost": SHIPMENT_REAL_SHIPPING_COST,
             "receiver_address": RECEIVER_ADDRESS_SNAPSHOT,
+            "formula_observed_at": DATE,
+            "unavailable_fields": {
+                "bsonType": "array",
+                "uniqueItems": True,
+                "items": {"enum": ["receiver_address", "real_shipping_cost"]},
+            },
             "date_created": DATE,
             "last_updated": DATE,
             **SCHEMA_VERSION,
