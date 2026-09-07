@@ -1,12 +1,15 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
 
 from zeler_sheets.formulas.dispatcher import FormulaDataUnavailableError
-from zeler_sheets.formulas.read_models import FormulaReadModelRepository
+from zeler_sheets.formulas.read_models import (
+    FormulaReadModelRepository,
+    read_model_reconciliation_marker_covers,
+)
 
 
 class FakeCursor:
@@ -53,6 +56,21 @@ class FakeDb:
 
 
 _UNSET = object()
+
+
+def test_expired_recovery_proof_does_not_authorize_formula_reads() -> None:
+    now = datetime.now(UTC)
+    marker = {
+        "state": "reconciled",
+        "date_from": now - timedelta(days=30),
+        "reconciled_until": now,
+        "valid_until": now - timedelta(seconds=1),
+    }
+    assert not read_model_reconciliation_marker_covers(
+        marker,
+        date_from=now - timedelta(days=2),
+        date_to=now,
+    )
 
 
 @pytest.mark.asyncio

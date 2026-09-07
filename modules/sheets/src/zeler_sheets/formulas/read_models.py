@@ -692,6 +692,10 @@ def read_model_reconciliation_marker_covers(
 ) -> bool:
     if not isinstance(marker, dict):
         return False
+    if marker.get("valid_until") is not None:
+        valid_until = _safe_utc_datetime(marker["valid_until"])
+        if valid_until is None or valid_until <= datetime.now(UTC):
+            return False
     if str(marker.get("state") or "").strip().casefold() != RECONCILED_READ_MODEL_STATE:
         return False
     if (

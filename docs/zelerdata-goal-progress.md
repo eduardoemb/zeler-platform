@@ -110,3 +110,30 @@ Pilot: seller `82453304`; initial historical window 2026-08-08 through
   lease. Avoid blindly invoking that broad path for each missing model.
 - Rollback boundary: new recovery module and tests, optional API scheduling
   helper, and exception metadata. No production schema/data changes occurred.
+
+## Work unit: question recovery executor
+
+- Added bounded question scan/detail recovery through gateway clients, reusing
+  SheetsEventPersistence for normalized writes. Search and detail clients can
+  retain their existing distinct module identities.
+- Tests first demonstrated missing execution, false coverage with extra local
+  rows, rejection of a valid reused scan cursor, and acceptance of expired
+  proof. Each corresponding correction now passes.
+- Executor verifies remote total/unique identities, date and seller scope,
+  required answer detail, and exact persisted inventory before publication.
+  Marker publication and job completion share a Mongo transaction guarded by
+  the current lease token. Explicit proof expiry now blocks reconciled reads.
+- Real-Mongo recovery + reader + HTTP tests: 44 passed in 1.82s; focused mypy
+  and Ruff pass. Gateway calls are controlled doubles in these tests.
+- Live read-only verification from approved worker container: scan returned
+  total 252, first and second pages 50 each, scroll available. Detail retrieved
+  with the existing sheets identity had matching seller/question scope and
+  a creation date. No production data was written.
+- A prior wider diagnostic ended with HTTPStatusError without a captured
+  status; it is not evidence of complete live recovery. Narrow subsequent scan
+  and detail checks succeeded. Full date-window counts remain unverified.
+- Still pending: other recovery sources, startup wiring, schemas/indexes,
+  bounded retries/queue admission, deletion lifecycle and deployment. Do not
+  deploy the executor as full ZelerData recovery yet.
+- Rollback boundary: recovery_worker.py, its tests and optional valid_until
+  enforcement in read_models.py. No production write or deployment occurred.
