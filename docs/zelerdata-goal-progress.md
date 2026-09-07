@@ -372,3 +372,63 @@ Pilot: seller `82453304`; initial historical window 2026-08-08 through
   no-shipping controls. Ruff, format and mypy pass globally.
 - Rollback boundary: transaction-local identity fallback, checkpoint timestamp
   normalization and associated tests. No schema change or production mutation.
+
+## Runtime release — 2026-09-07, source 35bed8c
+
+- Root regression with local Mongo: **3,611 passed, 9 skipped in 70.99s**.
+  Eight protected replica-set scenarios were then run with their explicit local
+  URI and no ambient MONGO_URI: **8 passed in 3.55s**. The remaining skip is
+  the Caddy service's empty required-key case. Ruff, format (500 files) and
+  mypy (500 source files) pass. Deprecation warnings remain.
+- Published exact source commit
+  `35bed8c8fea1bbaef9bd481f36709dd0128e3e9a` to GitHub main.
+  Built only gateway, sheets-api and sheets-worker, one verified Cloud Build
+  per image, from the connected repository at that revision; no local image
+  build or upload of the dirty checkout.
+- All three builds succeeded. The repository provenance verifier confirmed
+  each image's digest, successful build, exact source revision and connected
+  repository. Build IDs and immutable image digests:
+
+| Service | Cloud Build ID | Image digest |
+| --- | --- | --- |
+| gateway | 55f419ff-9898-4fc2-af29-2d30af1a70ce | sha256:2d4a514cab2d3ddca7e95109aeedc1e11e41115f8c09fddedd850aa0dc9ef130 |
+| sheets-api | 277bbd50-5a8e-48cb-a8d4-917f9f320fbf | sha256:b03d53422a57202974f77e70d651731ca01317aa7d3e7448d4592c71364defaf |
+| sheets-worker | 647379f2-4a81-41a5-8d04-86d5b3796316 | sha256:ab91fe179dd4124e68f3f3ec11e9c7eca0624fe485ab8753f262e8fe26817646 |
+
+- Image repository prefix:
+  `us-central1-docker.pkg.dev/zeler-platform-dev/zeler-platform/`.
+  Each service was replaced individually with `up -d --no-deps`, after
+  free-space preflight and an exact-one Compose image replacement assertion.
+  Preflight free space was 7.5 / 7.1 / 6.6 GiB before the successive pulls.
+- Rollback authority is each previous running image, not a moving tag:
+  gateway `sha256:2e06dd93345e5b3f2cb3f6385e74c5227d3a41fd785de908c06d31402d3c8a68`;
+  sheets-api `sha256:cd3c541f85a47fa0093fda6958bd1dfb4759263c5c24a3d5b76fd78c8663a8dc`;
+  sheets-worker `sha256:b2f820af4a5b0054ef084512430fb385684a078d918238827d3ffc2896008931`.
+  Compose backups remain at
+  `/opt/zeler-platform/docker-compose.yml.pre-<service>-35bed8c`.
+  Revert only the affected service image using the section 5 runbook, then
+  prove its running digest, health and relevant smoke. No Mongo volumes or
+  unrelated product services were altered by deployment commands.
+- Gateway initially returned HTTP 502 during startup, then became healthy
+  with zero restarts and HTTPS health 200. A real authenticated, read-only
+  questions scan through the new gateway returned HTTP 200, 50 rows,
+  total 252 and a scroll cursor; no question contents or credentials emitted.
+- Sheets API became healthy with zero restarts. HTTPS health returns 200;
+  Mongo, RabbitMQ, registry and claims-DLQ checks all pass. Live inventory is
+  HTTP 200 with 52 implemented formulas. Inventory is not execution proof.
+  Recovery flag remains disabled. No smoke credential is configured in the
+  API container; authenticated all-formula execution remains unproven.
+- Final runtime inspection: all three running digests equal the verified
+  images above, all containers healthy, all restart counters zero. The worker
+  health endpoint reports ready, RabbitMQ ok and sync_jobs_poller ok; recovery
+  is also disabled in the worker. Root disk has 6.1 GiB free after deployment.
+- Read-only readiness check inside the new worker remains degraded:
+  7 missing, 9 reconciled, 1 stale; 17 productive-window blockers. No missing
+  data was repaired merely by deploying code. This release proves image
+  correspondence and basic operational boundaries, not global data readiness,
+  complete formula execution, new-order migration or the 30-second SLA.
+- Next: complete field-aware order acquisition and asynchronous persistent
+  recovery, then verify the pilot window and authenticated formula results.
+  The final Google Sheet, existing app surfaces and minimum sensitive-data
+  controls remain mandatory. A documentation-only follow-up commit does not
+  require rebuilding these images; future runtime changes do.
