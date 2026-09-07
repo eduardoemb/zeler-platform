@@ -5,6 +5,7 @@ import json
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from typing import Any
+from urllib.parse import parse_qs, urlsplit
 from uuid import uuid4
 
 import pytest
@@ -23,6 +24,43 @@ from zeler_sheets.historical_meli_backfill import (
     sanitize_historical_meli_summary,
     validate_cli_safety,
 )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("last_page", "last_total"),
+    [([{"id": 2}], 2), ([], 2), ([{"id": 1}], 2), ([{"id": 2}], 1), ([{"id": 2}], None)],
+)
+async def test_order_inventory_short_page_does_not_prove_completion(
+    last_page: list[dict[str, int]],
+    last_total: int | None,
+) -> None:
+    offsets: list[int] = []
+
+    class Gateway:
+        async def fetch_resource(self, *, seller_id: str, path: str) -> dict[str, Any]:
+            assert seller_id == "82453304"
+            offset = int(parse_qs(urlsplit(path).query)["offset"][0])
+            offsets.append(offset)
+            return {
+                "results": [{"id": 1}] if offset == 0 else last_page,
+                "paging": {"total": 2 if offset == 0 else last_total},
+            }
+
+    async def acquire() -> list[dict[str, Any]]:
+        return await historical_backfill_module._search_orders(
+            gateway=Gateway(),
+            seller_id="82453304",
+            date_range=parse_inclusive_date_range("2026-08-08", "2026-09-06"),
+            max_orders=None,
+        )
+
+    if last_page == [{"id": 2}] and last_total == 2:
+        assert await acquire() == [{"id": 1}, {"id": 2}]
+    else:
+        with pytest.raises(ValueError, match="order inventory incomplete"):
+            await acquire()
+    assert offsets == [0, 1]
 
 
 @pytest.fixture(autouse=True)

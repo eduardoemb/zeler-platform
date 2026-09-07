@@ -620,6 +620,8 @@ async def _search_orders(
     max_orders: int | None,
 ) -> list[dict[str, Any]]:
     orders: list[dict[str, Any]] = []
+    seen_ids: set[str] = set()
+    expected_total: int | None = None
     offset = 0
     while True:
         remaining = None if max_orders is None else max_orders - len(orders)
@@ -636,13 +638,25 @@ async def _search_orders(
             ),
         )
         page_orders = _page_results(page)
-        orders.extend(page_orders[:remaining])
         paging = page.get("paging", {}) if isinstance(page, dict) else {}
         total = _optional_int(paging.get("total")) if isinstance(paging, dict) else None
-        if not page_orders or len(page_orders) < limit:
+        if expected_total is not None and total != expected_total:
+            raise ValueError("order inventory incomplete: total changed during acquisition")
+        expected_total = total
+        if not page_orders:
+            if total is not None and offset < total:
+                raise ValueError("order inventory incomplete: empty page before total")
             break
-        offset += limit
+        for order in page_orders[:remaining]:
+            order_id = _resource_id(order)
+            if order_id is None or order_id in seen_ids:
+                raise ValueError("order inventory incomplete: missing or repeated identity")
+            seen_ids.add(order_id)
+            orders.append(order)
+        offset += len(page_orders)
         if total is not None and offset >= total:
+            break
+        if total is None and len(page_orders) < limit:
             break
     return orders
 

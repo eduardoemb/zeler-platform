@@ -432,3 +432,30 @@ Pilot: seller `82453304`; initial historical window 2026-08-08 through
   The final Google Sheet, existing app surfaces and minimum sensitive-data
   controls remain mandatory. A documentation-only follow-up commit does not
   require rebuilding these images; future runtime changes do.
+
+## Work unit: do not stop order acquisition at a short page
+
+- Three new regressions initially failed: a short first page silently returned
+  one order while the source total was two; an empty subsequent page and a
+  repeated identity were never inspected. Two further regressions proved a
+  changed or disappearing total could also be accepted as complete.
+- Order acquisition now advances by the received row count, continues short
+  pages when the source total requires more rows, and rejects premature empty
+  pages, missing/repeated identities and changes to a previously observed total.
+  Explicit max_orders remains an operator cap, not proof of full coverage.
+  Sources without total metadata still need a separate completeness contract.
+- Verification: historical backfill, event persistence and recovery tests
+  **125 passed in 4.22s**; root Ruff, format and mypy pass. The five new
+  pagination scenarios use an injected source, not production fault injection.
+- Runtime boundary evidence: from the approved worker container, a read-only
+  gateway search for the pilot and Aug 8–Sep 6 returned HTTP 200, one requested
+  row and total 100. One corresponding order detail returned HTTP 200, no
+  X-Content-Missing header, and present buyer/seller/shipping/items/payments/
+  created/updated fields. Output contained only status, counts and presence
+  booleans. This is not complete interval or HTTP 206 acceptance evidence.
+- Rollback boundary: _search_orders pagination/completeness checks and their
+  tests; no schema or persisted-data migration. The new code is not deployed.
+  Both Sheets images include this module and will need new Cloud Build images
+  before productive acceptance of this correction; gateway has no new change.
+  Verify complete pilot acquisition and truthful unavailable results after
+  that deployment. Field-aware partial detail recovery remains unfinished.
