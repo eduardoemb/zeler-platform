@@ -631,3 +631,60 @@ Pilot: seller `82453304`; initial historical window 2026-08-08 through
   Worker deployment and backed-up repair of exactly the two confirmed foreign
   rows remain required. No reassignment to another user/account is authorized
   by this repair, and no production row has yet been removed.
+
+## Verified question recovery and ownership repair — source abf84b4
+
+The controlled pilot question recovery now completes, and all 50 persisted
+documents match fresh canonical Mercado Libre details. This proves the question
+recovery path only; automatic recovery remains disabled and global acceptance
+items above remain open.
+
+- Cloud Build `4aa66e34-b70b-4244-965a-4d9ebace97fa` succeeded from exact
+  source `abf84b4b00912f16beb5aeae13fd49f7c655abf0`. The provenance verifier
+  matched connected repository, revision, build and worker digest
+  `sha256:03d5a2c2378a7d4e5133bb37185313559d49f21703778e3854dcfd673b011016`.
+  Only sheets-worker was replaced. Running digest matches; healthy, zero
+  restarts, internal health HTTP 200/ready. API remains on source 4f65d6d.
+- Before replacement, exactly two complete original foreign-question rows and
+  source ownership proofs were backed up inside the VM at
+  `/var/lib/zeler-platform/repairs/question-owner-abf84b4.bson` (root, mode
+  0600, parent 0700). No payload or foreign identity left the runtime. This
+  restricted backup is not evidence of application-level encryption; account
+  for it and its container copy in the final retention/deletion hardening.
+- Fresh source detail checks reconfirmed both foreign owners and matching IDs
+  and dates. A Mongo transaction compared both full rows against the backup
+  before deleting exactly those two pilot-scoped rows. Neither falls inside
+  the previously validated June 1–July 11 coverage; the prior marker was
+  compared and retained unchanged. Expanded-interval inventory became 50.
+  No record was reassigned to another seller. Removal is recoverable from the
+  restricted backup, but restoration would require a separately justified,
+  ownership-aware repair, not blindly reinserting the misattributed records.
+- The same job `ce00248f852738303b602c86572cda2e8badfcaf369a6edf7e5dfd500b75827d`
+  was retried after its cooldown, with no other pending/running recovery job.
+  Six search calls and 50 detail calls completed in 8.281 seconds. Transactional
+  publication recorded 50 questions and coverage June 1–September 7 exclusive;
+  exact persisted/source identity sets match. Proof expires after 15 minutes;
+  this successful run is not a promise of indefinitely fresh coverage.
+- Two subsequent internal PREGUNTASKPI queries for August 8–September 6 read
+  Mongo and returned 3 questions, in 0.0171s and 0.0040s. Recovery-client call
+  counters did not increase. These are operator diagnostics, not authenticated
+  HTTP/Google Sheets acceptance or a measured end-to-end p95.
+- An independent read-only pass fetched all 50 details again and compared
+  BSON-normalized canonical documents with Mongo: 50 exact matches, no field
+  differences, all source sellers match the pilot.
+- Rollback worker digest is
+  `sha256:6ac235ab1d3b26dc157998bde42df91ad2963019f10f74417e9a96afba08acee`;
+  Compose backup suffix `.pre-sheets-worker-abf84b4`. A code rollback does not
+  restore removed data. Disk free after pull is 4.6 GiB: restore the 5 GiB
+  preflight margin before another pull; retain Mongo volumes and rollback images.
+- Authenticated smoke remains pending. Its existing host runner requires the
+  documented human readiness/authorization gate and an approved platform user
+  identity; no runner invocation or credential workaround was performed.
+- Post-release regression: `MONGO_URI=<task-owned loopback replica set> uv run
+  pytest` finished with 3,627 passed, 9 skipped in 69.24s. The eight protected
+  stock-time replica-set tests were then run with MONGO_URI unset and the
+  dedicated ZELER_RS0_TEST_URI: 8 passed in 3.54s. The remaining skip is the
+  Caddy contract's no-required-keys case. Ruff check, format (500 files), mypy
+  (500 files) and diff whitespace checks pass. This evidence-only update needs
+  no additional image; the affected worker source already matches its verified
+  deployed image.
