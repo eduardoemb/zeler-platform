@@ -1493,3 +1493,14 @@ retain their contract; other product deployments remain out of scope.
   separately in 2.46s. Remaining skip is Caddy's no-required-keys case. Ruff
   check/format, mypy (501 files) and whitespace checks pass. These do not replace
   productive pilot, authenticated HTTP or real Sheet evidence.
+- Built the affected worker alone from pushed source
+  `9f57afaead67b92ef1ce7d17e83919fc3a28621e` through the connected repository.
+  Cloud Build `dd7bfddf-1d71-4284-9b0c-c6f8add91ee9` completed SUCCESS with
+  VERIFIED provenance requested. Immutable image:
+  `us-central1-docker.pkg.dev/zeler-platform-dev/zeler-platform/sheets-worker@sha256:98d5e0e475f53b2cd3287c1b8ffbba8346e2d18eff81521360b26ca576ce64e5`.
+  The repository verifier confirmed the SLSA subject, build, exact source,
+  connected repository and project identity. Sanitized binding map:
+  `/tmp/zeler-known-orders-build.UeJgfe/image_to_commit.json`.
+  This image has not been deployed. The currently running worker remains the
+  previous `ec056fc54922` image; next deploy this verified fix and repeat the
+  controlled job without overriding cooldown or declaring success from local tests.
