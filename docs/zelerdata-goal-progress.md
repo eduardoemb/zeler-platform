@@ -1504,3 +1504,54 @@ retain their contract; other product deployments remain out of scope.
   This image has not been deployed. The currently running worker remains the
   previous `ec056fc54922` image; next deploy this verified fix and repeat the
   controlled job without overriding cooldown or declaring success from local tests.
+
+## Operational checkpoint: deploy known-order fix and repeat the pilot job
+
+- Verified selected main `4e792545a116e698d16bfa9437499238be5145cd` differs from
+  image source `9f57afaead67b92ef1ce7d17e83919fc3a28621e` only in this ledger.
+  Rechecked successful Cloud Build `dd7bfddf-1d71-4284-9b0c-c6f8add91ee9`, source
+  and digest. Deployed only Sheets worker at
+  `sha256:98d5e0e475f53b2cd3287c1b8ffbba8346e2d18eff81521360b26ca576ce64e5`.
+- Capacity preflight passed before targeted pull/recreation. To preserve margin,
+  removed unused local worker image
+  `sha256:03d5a2c2378a7d4e5133bb37185313559d49f21703778e3854dcfd673b011016`
+  after checking every container reference and continued registry availability.
+  It is recoverable by digest pull; no containers or volumes were pruned.
+  Free space was 5.62 GiB before pull and 5.12 GiB afterward.
+- Compose backup: `/opt/zeler-platform/docker-compose.yml.pre-sheets-worker-9f57afa`.
+  Immediate rollback is the retained worker image `ec056fc54922`; restore only
+  that service's exact prior image, keep compatible validators, and leave
+  automatic recovery disabled. API/gateway images and feature flags were not changed.
+- Reopened the same pilot order request through normal queue admission:
+  `ebf5decad5d7272397c1cce22e81cd5158259dea80d2d4412eebee0d817297d4`.
+  Its prior cooldown still had 132 seconds at inspection. The operator process
+  polls the deployed worker until this job is due and stops after one processed
+  job; it does not change `available_at`, skip ownership checks or enable global
+  polling. Effective coverage remains June 1–September 7 exclusive to preserve
+  earlier coverage, with the initially requested August range inside it.
+- The repeated job completed successfully: 22 search calls, 1,079 detail calls,
+  no failure reason. The measured 260.734 seconds include waiting for the
+  existing cooldown plus processing; this is not a formula latency or an
+  acquisition-only duration. The worker's per-job 240-second timeout was unchanged.
+- Independent Mongo readback found exactly 1,079 pilot orders in the effective
+  union, completed job state, June 1–September 7 exclusive coverage with an
+  unexpired proof, and zero orders with explicit field gaps in that interval.
+  The ten valid known orders omitted from search were retained/reacquired; the
+  six source orders previously absent could join the atomic publication without
+  deleting legitimate records. This resolves the observed inventory mismatch.
+- Before completion, the API container's Mongo-only VENTASTOTALES handler for
+  August 8–September 6 returned DATA_UNAVAILABLE in 0.0142s. After publication,
+  the same handler returned ready over 100 orders in 0.0225s. The diagnostic
+  constructed no gateway client and printed no financial values or PII. It is
+  explicitly an internal operator read, not authenticated HTTP, real Sheets,
+  all-52 acceptance or a p95 benchmark.
+- No automatic API/worker recovery flag was enabled. No new repository code or
+  tests changed during this operational checkpoint; source regression evidence
+  is recorded in the preceding unit. Runtime now has the verified worker fix;
+  no further worker build is needed for this ledger-only update. Continue with
+  shipment recovery and the outstanding end-to-end/authenticated acceptance gates.
+- A second separate API-container Mongo-only read again returned ready over 100
+  orders in 0.0277s. Post-recovery API and worker checks were healthy, zero
+  restarts, HTTP 200/ready=true, with automatic recovery still disabled.
+  Whitespace validation passed. No rollback was needed; do not roll back valid
+  source data simply to recreate the prior failure.
