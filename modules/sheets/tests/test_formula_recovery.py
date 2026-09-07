@@ -15,6 +15,78 @@ from zeler_sheets.formulas.recovery import FormulaRecoveryQueue, RecoveryRequest
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("transaction", ["none", "commit", "abort", "inactive"])
+async def test_current_shipment_projection_joins_recovery_transaction(
+    recovery_db: Any, transaction: str
+) -> None:
+    import json
+    from pathlib import Path
+
+    from zeler_sheets.event_persistence import SheetsEventPersistence
+
+    schema = json.loads(Path("infra/mongo/schemas/shipments.json").read_text())
+    await recovery_db.create_collection(
+        "shipments", validator={"$jsonSchema": schema["$jsonSchema"]}
+    )
+    resource = {
+        "id": 3001,
+        # Supplied by the caller's verified order/shipment relationship, not
+        # expected in the current /shipments detail response.
+        "order_id": 42,
+        "status": "ready_to_ship",
+        "logistic": {"type": "fulfillment", "direction": "forward", "mode": "me2"},
+        "date_created": "2026-08-20T10:00:00Z",
+        "last_updated": "2026-08-20T11:00:00Z",
+        "destination": {
+            "receiver_name": "Synthetic Receiver",
+            "receiver_phone": "PHONE_MUST_NOT_PERSIST",
+            "shipping_address": {
+                "street_name": "Synthetic Street",
+                "street_number": 12,
+                "city": {"name": "Synthetic City"},
+                "latitude": "GEO_MUST_NOT_PERSIST",
+            },
+        },
+    }
+    writer = SheetsEventPersistence(db=recovery_db)
+
+    async def write(session: Any = None) -> None:
+        await writer.persist(
+            event_type="shipments.updated", seller_id="pilot", resource=resource, session=session
+        )
+
+    if transaction == "none":
+        await write()
+    else:
+        async with await recovery_db.client.start_session() as session:
+            if transaction == "inactive":
+                with pytest.raises(ValueError, match="active transaction"):
+                    await write(session)
+                assert await recovery_db.shipments.count_documents({}) == 0
+                return
+            session.start_transaction()
+            await write(session)
+            assert await recovery_db.shipments.count_documents({}) == 0
+            if transaction == "commit":
+                await session.commit_transaction()
+            else:
+                await session.abort_transaction()
+    stored = await recovery_db.shipments.find_one({"_id": "3001"})
+    if transaction == "abort":
+        assert stored is None
+        return
+    assert stored["logistic_type"] == "fulfillment"
+    assert stored["receiver_address"] == {
+        "name": "Synthetic Receiver",
+        "street_name": "Synthetic Street",
+        "street_number": "12",
+        "city": "Synthetic City",
+    }
+    assert "destination" not in stored and "logistic" not in stored
+    assert "MUST_NOT_PERSIST" not in repr(stored)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("missing_field", ["buyer", "shipping"])
 async def test_missing_identity_keeps_sales_but_rejects_consumers_that_require_it(
     recovery_db: Any,

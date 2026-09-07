@@ -84,8 +84,12 @@ class SheetsEventPersistence:
         session: Any = None,
         unavailable_fields: frozenset[str] = frozenset(),
     ) -> None:
-        if session is not None and not event_type.startswith(("questions.", "orders.")):
-            raise ValueError("external transaction is only supported for questions and orders")
+        if session is not None and not event_type.startswith(
+            ("questions.", "orders.", "shipments.")
+        ):
+            raise ValueError(
+                "external transaction is only supported for questions, orders and shipments"
+            )
         if event_type.startswith("items."):
             await self._persist_item(seller_id=str(seller_id), resource=resource)
             return
@@ -101,7 +105,9 @@ class SheetsEventPersistence:
             )
             return
         if event_type.startswith("shipments."):
-            await self._persist_shipment(seller_id=str(seller_id), resource=resource)
+            await self._persist_shipment(
+                seller_id=str(seller_id), resource=resource, session=session
+            )
             return
         if event_type.startswith("questions."):
             await self._persist_question(
@@ -845,13 +851,18 @@ class SheetsEventPersistence:
         normalized_sku = sku_index_doc.get("normalized_sku")
         return any(existing.get("normalized_sku") != normalized_sku for existing in existing_docs)
 
-    async def _persist_shipment(self, *, seller_id: str, resource: dict[str, Any]) -> None:
+    async def _persist_shipment(
+        self, *, seller_id: str, resource: dict[str, Any], session: Any = None
+    ) -> None:
+        if session is not None and not session.in_transaction:
+            raise ValueError("shipment recovery requires an active transaction")
         document = _canonical_shipment_document(resource, seller_id=seller_id)
         await _replace_resource_if_fresh(
             self._db["shipments"],
             document,
             seller_id=seller_id,
             freshness_fields=("last_updated",),
+            session=session,
         )
 
     async def _persist_question(
@@ -1135,6 +1146,7 @@ def _canonical_order_document(
 
 def _canonical_shipment_document(resource: dict[str, Any], *, seller_id: str) -> dict[str, Any]:
     shipment_id = _string_id(resource.get("_id") or resource.get("id"))
+    logistic = resource.get("logistic")
     try:
         model = Shipment.model_validate(
             {
@@ -1142,6 +1154,9 @@ def _canonical_shipment_document(resource: dict[str, Any], *, seller_id: str) ->
                 "_id": shipment_id,
                 "seller_id": seller_id,
                 "order_id": _shipment_order_id(resource),
+                "logistic_type": logistic.get("type")
+                if isinstance(logistic, dict)
+                else resource.get("logistic_type"),
                 "receiver_address": _receiver_address_snapshot(resource),
                 "schema_version": current_schema_version("shipments"),
             }
@@ -1925,6 +1940,12 @@ def _question_from_user_id(resource: dict[str, Any]) -> str:
 
 def _receiver_address_snapshot(resource: dict[str, Any]) -> dict[str, Any] | None:
     raw_address = resource.get("receiver_address")
+    destination = resource.get("destination")
+    if isinstance(destination, dict):
+        address = destination.get("shipping_address")
+        if not isinstance(address, dict):
+            return None
+        raw_address = {**address, "receiver_name": destination.get("receiver_name")}
     if not isinstance(raw_address, dict):
         return None
 

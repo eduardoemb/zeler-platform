@@ -978,3 +978,35 @@ retain their contract; other product deployments remain out of scope.
   3,664 passed, 9 skipped in 74.59s. Eight protected replica-set cases separately
   passed in 2.42s; remaining skip is Caddy's no-required-keys case. Ruff check,
   format, mypy (500 files) and diff whitespace checks passed.
+
+## Work unit: normalize current shipment detail in recovery transactions
+
+- Current shipment details normalize `logistic.type` and
+  `destination.shipping_address` plus `destination.receiver_name` into the
+  existing Mongo fields. Legacy-shaped inputs remain supported for proven
+  callers. The same eight address fields are retained; raw destination data,
+  phone and geolocation are not added to the stored formula projection.
+- Source: [Mercado Libre shipment contract](https://developers.mercadolibre.com.mx/envios),
+  checked September 7, 2026. It documents `x-format-new: true`, discontinued
+  detail `order_id`, and address hiding before confirmed payment. Caller-side
+  order linkage still must be established through a verified relationship;
+  this normalizer does not invent it or mark hidden addresses optional.
+- Shipment persistence now joins an explicitly active caller transaction.
+  The actual-Mongo validator test failed first for normalization and unsupported
+  transactions, then passed for ordinary write, commit, abort and inactive
+  session rejection (4 passed in 0.82s). Committed projections are readable;
+  aborted writes remain absent. Existing freshness/tenant write filters remain.
+- Persistence and recovery suites before the additional inactive-session case:
+  129 passed in 10.47s. Mypy passed for 500 files; Ruff check/format passed.
+- Rollback boundary: current-shape extraction and shipment session propagation
+  with these regression cases. No Mongo schema change. Do not roll the worker
+  back past this boundary while relying on transactional shipment recovery.
+- Not activated: shipment recovery jobs, required address/cost availability,
+  relationship fetching, current source request headers and formula-triggered
+  shipment acquisition. These remain part of the goal, not deferred out of scope.
+  No production write/build/deploy occurred. The Sheets worker needs a verified
+  Cloud Build image after its acquisition path is completed, followed by source
+  digest, health and controlled pilot shipment/formula verification.
+- Final root regression: 3,668 passed, 9 skipped in 74.69s. Eight protected
+  replica-set tests passed separately in 2.68s; remaining skip is Caddy's
+  no-required-keys case. Diff whitespace validation passed.
