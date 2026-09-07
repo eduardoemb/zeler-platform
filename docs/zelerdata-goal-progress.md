@@ -1754,3 +1754,36 @@ retain their contract; other product deployments remain out of scope.
   Rollback is limited to the two fetch-helper checks and their regression tests;
   no schema/data reversal is needed. Keep catalog automatic recovery disabled
   until its complete acquisition/publication path is verified.
+
+## Current item acquisition: live inventory and search omissions
+
+- From main `3b2641a4b11d335cbacb941919ebe686c444b2f0`, performed read-only
+  pilot source/Mongo comparison inside the approved VM/API container through
+  the normal bootstrap gateway client. No formula request, raw payload logging,
+  local production Mongo connection, writes or feature-flag changes were used.
+- A bounded scan returned **1,900 unique IDs in 19 pages**, with unchanged total,
+  no duplicates and count equal to the source total. Mongo contained **1,562**
+  pilot items: **356 source IDs absent from Mongo**, **18 stored IDs absent from
+  search**. One multiget verified HTTP 200, requested identities and pilot
+  ownership for 20 missing items. Scan plus that sample took **4.928s**; this is
+  acquisition latency, not formula HTTP latency or proof of all 1,900 details.
+- A separate scan/comparison and detail check of the 18 omissions took **4.023s**:
+  **12 HTTP-200 pilot-owned details** (5 paused, 7 closed) and **6 HTTP 404**.
+  Do not delete the 18 because search omitted them, or label the six 404s
+  permanently unrecoverable. Retain their known data while distinguishing
+  current source availability from persisted historical evidence.
+- This changes the implementation path: `run_item_detail_enrichment` currently
+  loads only existing Mongo items, so it cannot discover the 356 missing IDs.
+  Current-item recovery needs source discovery plus known-ID revalidation,
+  bounded detail/enrichment, normalized persistence and honest per-field/current
+  inventory coverage. A source-search-only equality gate or an all-history
+  order backfill would not satisfy this evidence. Do not make six unavailable
+  details prevent unrelated available item data from being useful.
+- Source contract checked against Mercado Libre's
+  [Items and searches documentation](https://developers.mercadolibre.com.mx/es_mx/items-y-busquedas):
+  scan pagination for larger inventories and multiget batches up to 20. The
+  live results above verify the exercised pilot paths, not every documented
+  variant. Unit tests/rollback are N/A for this read-only checkpoint; the only
+  repository change is this evidence record. The prior catalog identity fix
+  still requires verified Sheets image builds and rollout; no new rebuild is
+  required solely for this documentation. The global goal remains open.
