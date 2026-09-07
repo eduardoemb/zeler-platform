@@ -1626,3 +1626,44 @@ retain their contract; other product deployments remain out of scope.
   their tests and rollout notes together, with recovery disabled. Existing job
   documents stay compatible; the unused index/guard need not be deleted for an
   image rollback. Do not delete normalized customer data or accepted jobs.
+
+## Operational checkpoint: deploy bounded recovery admission
+
+- Built both Sheets images from pushed main
+  `f7589c95f95fac93204a9fcf46bd760f10ea38cd`, one image per Cloud Build with
+  `requestedVerifyOption: VERIFIED`. The repository provenance verifier accepted
+  each exact source commit, connected repository, SLSA subject digest and build:
+  - API build `acc5a410-f001-4a64-93cc-517c80f59ab3`, image
+    `sheets-api@sha256:f2c929e3fb43df0fec66eaa59b99cef8c180e39bc375b2e106a23ab4c506bdd3`.
+  - Worker build `6edd910f-a258-4251-a1e1-08165e63b9f2`, image
+    `sheets-worker@sha256:603dce2137f2952ce9f1f70e18687132a8f7cec771a2f2dbdee1ffc62542eb1b`.
+  Both use the `us-central1-docker.pkg.dev/zeler-platform-dev/zeler-platform/`
+  repository prefix. Temporary build/verification files are under
+  `/tmp/zeler-admission-build.TCiSFi`; the checked-in verifier is authoritative.
+- VM capacity was 5.11 GiB before deployment. Removed only unused local image
+  copies `sheets-worker@sha256:b8edfdf59627d1c24fa9d2594048d145aa94a8aa16d039442b819d2bd097b945`
+  and `sheets-api@sha256:f9b07c9de23c1a4f0bc611963ceb4b09c96d25c34715c08f3cb2333c70ac8d0f`
+  after checking all container references and confirming both digests remain
+  recoverable in Artifact Registry. No volumes, customer data or containers were
+  pruned. Capacity rose to 6.12 GiB and ended at 5.11 GiB after both pulls.
+- Each service passed dry-run and real deploy preflight plus the 5 GiB checks
+  before pull/recreation. Replaced exactly one Compose image at a time, worker
+  first and API second. Independent final inspection confirmed both actual
+  running image IDs equal their verified digests, Docker health is healthy,
+  restart counts are zero, and `/health` responds HTTP 200. An initial probe of
+  `/ready` used an unsupported route; the corrected probe used the implemented
+  `/health` endpoint and did not require any runtime fix.
+- Recovery remains disabled in both containers. This proves image rollout and
+  service health, not productive quota enforcement, automatic recovery, all-52
+  authenticated HTTP, Google Sheets or frontend acceptance. No repository code,
+  production Mongo documents, validators or recovery flags changed in this
+  checkpoint. Prior local test evidence remains applicable; new unit tests are
+  N/A for this operational-only update. No additional image rebuild is needed
+  for this documentation-only record.
+- Rollback authorities retained locally are the prior running API digest
+  `c41c4c4c9bb7105d37de73414c2005b877a2fad9c3d18fb62af2a4c1171408ce`
+  and worker digest `98d5e0e475f53b2cd3287c1b8ffbba8346e2d18eff81521360b26ca576ce64e5`.
+  Backups are `/opt/zeler-platform/docker-compose.yml.pre-sheets-api-f7589c9`
+  and `.pre-sheets-worker-f7589c9`. Restore only the affected image line and
+  verify its health; never restore the entire backup over the other service's
+  newer configuration. Keep recovery disabled and retain compatible validators.
