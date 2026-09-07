@@ -244,3 +244,23 @@ Pilot: seller `82453304`; initial historical window 2026-08-08 through
 - Rollback boundary: activation flag plumbing, optional extra pollers, queue
   index/source selection, BSON interval rounding and corresponding tests. No
   production configuration/data migration has occurred.
+
+## Work unit: atomic, fenced question recovery writes
+
+- Real-Mongo regressions demonstrated rows persisting after lease expiry and
+  partial rows after a later resource failed validation. Previously only the
+  final marker/job state shared a transaction; data writes were outside it.
+- Normalized question persistence now accepts an explicit session (rejected for
+  other event types). Recovery acquires data outside the transaction, then
+  commits every row, inventory readback, coverage and job completion together
+  under the current attempt's lease. Failures roll back the complete unit.
+- A separate regression demonstrated overwriting a coverage marker changed
+  during acquisition. Compare the marker captured before remote acquisition
+  inside the transaction; competing publication aborts without touching rows
+  or the newer marker. Existing question freshness rules still apply.
+- Verification: recovery, event-persistence and formula API tests **111 passed
+  in 4.02s**, with three new failure scenarios reproduced before correction.
+  Root Ruff, formatting and mypy remain clean. Production remains unchanged.
+- Rollback boundary: optional question-only session propagation, recovery
+  transaction scope/preimage guard and associated tests. Remaining admission,
+  schemas, source expansion and live acceptance are not proven by this unit.

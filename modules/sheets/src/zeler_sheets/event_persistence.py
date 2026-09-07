@@ -81,7 +81,10 @@ class SheetsEventPersistence:
         seller_id: int | str,
         resource: dict[str, Any],
         operation: DevolucionesOperationContext | None = None,
+        session: Any = None,
     ) -> None:
+        if session is not None and not event_type.startswith("questions."):
+            raise ValueError("external transaction is only supported for questions")
         if event_type.startswith("items."):
             await self._persist_item(seller_id=str(seller_id), resource=resource)
             return
@@ -96,7 +99,9 @@ class SheetsEventPersistence:
             await self._persist_shipment(seller_id=str(seller_id), resource=resource)
             return
         if event_type.startswith("questions."):
-            await self._persist_question(seller_id=str(seller_id), resource=resource)
+            await self._persist_question(
+                seller_id=str(seller_id), resource=resource, session=session
+            )
 
     async def _persist_item(self, *, seller_id: str, resource: dict[str, Any]) -> None:
         observed_at = require_bson_ms_utc_datetime(self._clock())
@@ -808,7 +813,13 @@ class SheetsEventPersistence:
             freshness_fields=("last_updated",),
         )
 
-    async def _persist_question(self, *, seller_id: str, resource: dict[str, Any]) -> None:
+    async def _persist_question(
+        self,
+        *,
+        seller_id: str,
+        resource: dict[str, Any],
+        session: Any = None,
+    ) -> None:
         observed_at = require_bson_ms_utc_datetime(self._clock())
         document = _canonical_question_document(
             resource,
@@ -820,22 +831,32 @@ class SheetsEventPersistence:
             document,
             seller_id=seller_id,
             present_freshness_fields=_question_present_freshness_fields(resource),
+            session=session,
         )
         if question_written:
             await self._mark_questions_read_model_freshness(
                 seller_id=seller_id,
                 question=document,
                 observed_at=observed_at,
+                session=session,
             )
 
     async def _mark_questions_read_model_freshness(
-        self, *, seller_id: str, question: dict[str, Any], observed_at: datetime
+        self,
+        *,
+        seller_id: str,
+        question: dict[str, Any],
+        observed_at: datetime,
+        session: Any = None,
     ) -> None:
         if bson_ms_utc_datetime(question.get("date_created")) is None:
             return
         collection = self._db[READ_MODEL_FRESHNESS_COLLECTION]
         marker_id = read_model_freshness_id(seller_id, QUESTIONS_READ_MODEL)
-        existing = await collection.find_one({"_id": marker_id, "seller_id": seller_id})
+        existing = await collection.find_one(
+            {"_id": marker_id, "seller_id": seller_id},
+            **_session_kwargs(session),
+        )
         existing_fresh_until = (
             bson_ms_utc_datetime(existing.get("fresh_until"))
             if isinstance(existing, dict)
@@ -866,9 +887,15 @@ class SheetsEventPersistence:
             },
             marker,
             upsert=False,
+            **_session_kwargs(session),
         )
         if result.matched_count == 0 and existing is None:
-            await collection.update_one({"_id": marker_id}, {"$setOnInsert": marker}, upsert=True)
+            await collection.update_one(
+                {"_id": marker_id},
+                {"$setOnInsert": marker},
+                upsert=True,
+                **_session_kwargs(session),
+            )
 
 
 def _canonical_item_document(
@@ -1234,8 +1261,9 @@ async def _replace_question_if_fresh(
     *,
     seller_id: str,
     present_freshness_fields: Sequence[str],
+    session: Any = None,
 ) -> bool:
-    if await _insert_resource_if_absent(collection, document, seller_id=seller_id):
+    if await _insert_resource_if_absent(collection, document, seller_id=seller_id, session=session):
         return True
     result = await collection.replace_one(
         _question_write_filter(
@@ -1245,6 +1273,7 @@ async def _replace_question_if_fresh(
         ),
         document,
         upsert=False,
+        **_session_kwargs(session),
     )
     matched_count = int(result.matched_count)
     return matched_count > 0

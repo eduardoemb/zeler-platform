@@ -99,6 +99,57 @@ async def test_http_missing_data_recovers_in_background_and_next_http_succeeds(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["expired_lease", "invalid_second_row", "newer_recovery"])
+async def test_failed_recovery_cannot_leave_partial_writes_or_change_prior_proof(
+    recovery_db: Any,
+    failure: str,
+) -> None:
+    from zeler_sheets.formulas.recovery_worker import FormulaRecoveryWorker
+
+    clock = [datetime.now(UTC)]
+    queue = FormulaRecoveryQueue(recovery_db, now=lambda: clock[0])
+    await queue.enqueue(request())
+    await recovery_db.sheets_read_model_freshness.insert_one(
+        {"_id": "pilot:questions", "seller_id": "pilot", "state": "reconciled", "proof": "prior"}
+    )
+    resource = {
+        "id": 42,
+        "seller_id": "pilot",
+        "item_id": "MLM42",
+        "text": "Available?",
+        "status": "UNANSWERED",
+        "from": {"id": 123},
+        "date_created": "2026-08-20T10:00:00Z",
+    }
+
+    class Gateway:
+        async def fetch_resource(self, **kwargs: Any) -> dict[str, Any]:
+            if "search?" in kwargs["path"]:
+                if failure == "newer_recovery":
+                    await recovery_db.sheets_read_model_freshness.update_one(
+                        {"_id": "pilot:questions"},
+                        {"$set": {"proof": "newer"}},
+                    )
+                rows = (
+                    [resource, {**resource, "id": 43}]
+                    if failure == "invalid_second_row"
+                    else [resource]
+                )
+                return {"total": len(rows), "questions": rows}
+            if failure == "expired_lease":
+                clock[0] += timedelta(minutes=11)
+            if kwargs["path"].endswith("/43"):
+                return {**resource, "id": 43, "status": "INVALID"}
+            return resource
+
+    await FormulaRecoveryWorker(db=recovery_db, gateway=Gateway(), queue=queue).process_one()
+    assert await recovery_db.questions.count_documents({}) == 0
+    marker = await recovery_db.sheets_read_model_freshness.find_one({"_id": "pilot:questions"})
+    assert marker["state"] == "reconciled"
+    assert marker["proof"] == ("newer" if failure == "newer_recovery" else "prior")
+
+
+@pytest.mark.asyncio
 async def test_question_recovery_persists_data_and_unlocks_next_query(recovery_db: Any) -> None:
     from zeler_sheets.formulas.read_models import FormulaReadModelRepository
     from zeler_sheets.formulas.recovery_worker import FormulaRecoveryWorker

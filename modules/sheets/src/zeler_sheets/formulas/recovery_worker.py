@@ -71,6 +71,10 @@ class FormulaRecoveryWorker:
 
     async def _questions(self, job: dict[str, Any]) -> None:
         seller_id = job["seller_id"]
+        marker_id = f"{seller_id}:questions"
+        marker_before = await self.db["sheets_read_model_freshness"].find_one(
+            {"_id": marker_id, "seller_id": seller_id},
+        )
         start = _utc(job["date_from"])
         end = _utc(job["date_to"])
         resources: list[dict[str, Any]] = []
@@ -132,27 +136,6 @@ class FormulaRecoveryWorker:
             if not isinstance(scroll, str) or not scroll:
                 raise ValueError("question continuation unavailable")
 
-        marker_id = f"{seller_id}:questions"
-        # Invalidate before writes: a partial write must not retain prior proof.
-        await self.db["sheets_read_model_freshness"].update_one(
-            {"_id": marker_id, "seller_id": seller_id},
-            {"$set": {"state": "stale", "updated_at": self.queue.now()}},
-        )
-        writer = SheetsEventPersistence(db=self.db, clock=self.queue.now)
-        for resource in resources:
-            await writer.persist(
-                event_type="questions.updated", seller_id=seller_id, resource=resource
-            )
-        persisted = (
-            await self.db["questions"]
-            .find(
-                {"seller_id": seller_id, "date_created": {"$gte": start, "$lt": end}},
-                {"_id": 1},
-            )
-            .to_list(length=None)
-        )
-        if {str(row["_id"]) for row in persisted} != {str(row["id"]) for row in resources}:
-            raise ValueError("persisted question inventory differs from authoritative source")
         marker = {
             "_id": marker_id,
             "seller_id": seller_id,
@@ -166,12 +149,19 @@ class FormulaRecoveryWorker:
             "source": "zelerdata_read_model_reconcile",
             "schema_version": 1,
         }
-        # Publish proof and terminal job state together, only for the live owner.
+        # Source acquisition happens outside Mongo transactions. Publish all
+        # normalized rows, coverage and completion atomically for the live owner.
         async with (
             await self.db.client.start_session() as session,
             session.start_transaction(),
         ):
             now = self.queue.now()
+            current_marker = await self.db["sheets_read_model_freshness"].find_one(
+                {"_id": marker_id, "seller_id": seller_id},
+                session=session,
+            )
+            if current_marker != marker_before:
+                raise ValueError("question coverage changed during source acquisition")
             finished = await self.queue.collection.update_one(
                 self.queue._owned(job, now),
                 {
@@ -186,6 +176,25 @@ class FormulaRecoveryWorker:
             )
             if finished.matched_count != 1:
                 raise ValueError("recovery lease lost before publication")
+            writer = SheetsEventPersistence(db=self.db, clock=self.queue.now)
+            for resource in resources:
+                await writer.persist(
+                    event_type="questions.updated",
+                    seller_id=seller_id,
+                    resource=resource,
+                    session=session,
+                )
+            persisted = (
+                await self.db["questions"]
+                .find(
+                    {"seller_id": seller_id, "date_created": {"$gte": start, "$lt": end}},
+                    {"_id": 1},
+                    session=session,
+                )
+                .to_list(length=None)
+            )
+            if {str(row["_id"]) for row in persisted} != {str(row["id"]) for row in resources}:
+                raise ValueError("persisted question inventory differs from authoritative source")
             await self.db["sheets_read_model_freshness"].replace_one(
                 {"_id": marker_id, "seller_id": seller_id},
                 marker,
