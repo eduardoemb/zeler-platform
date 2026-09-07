@@ -1198,3 +1198,40 @@ retain their contract; other product deployments remain out of scope.
   separately with `ZELER_RS0_TEST_URI` and no ambient `MONGO_URI`: 8 passed in
   2.57s. Remaining skip is Caddy's no-required-keys case. Ruff check/format,
   mypy (500 source files) and diff whitespace checks passed.
+
+## Work unit: retain recovered shipment fields across ordinary events
+
+- Ordinary shipment writes without a formula observation no longer erase the
+  stored address, independent shipping cost, original observation timestamp or
+  unavailability flags when those fields are absent from the incoming normalized
+  document. A Mongo update pipeline retains only these four fields, then overlays
+  the canonical document; unknown legacy/raw fields are not carried forward.
+- Retention and the existing seller/freshness guard execute atomically, with no
+  read-then-write merge race. Recovery publications containing an observation
+  still use their existing transactional replacement path, including clearing
+  resolved gaps. Incoming explicit normalized values take precedence; an ordinary
+  event does not refresh the retained observation or remove previous gap flags.
+- Two Mongo regression cases reproduced missing addresses before the fix, after
+  correcting the fixture's required shipment fields. Tests now verify delivered
+  status, unchanged cost/address/proof, retained flags, removal of a synthetic raw
+  sentinel, and continued DATA_UNAVAILABLE for expired retained fields. Existing
+  stale-write and recovery transaction tests remain in the focused suite.
+- No build, production data change or deployment occurred. This closes the
+  destructive replacement gap, not the outstanding event acquisition/new order
+  relationship contract or productive HTTP/Sheet acceptance requirements.
+- Rollback boundary: the ordinary shipment update branch and its Mongo/fake
+  regression coverage. No schema migration is introduced. Rolling it back can
+  again erase enrichment on events, so keep recovery disabled when reverting.
+  Sheets worker requires a new verified Cloud Build image with the pending paired
+  API/validator release. Verify deployed source/digest, health, and a pilot event
+  after recovery: status advances while retained fields and timestamps survive.
+- Focused local Mongo harness:
+  `uv run pytest modules/sheets/tests/test_formula_recovery.py modules/sheets/tests/test_event_persistence.py`
+  with the task-owned replica set: 163 passed in 8.97s. The first root run found
+  a historical-backfill fake without pipeline support; after adapting that fake,
+  `uv run pytest modules/sheets/tests/test_historical_meli_backfill.py` passed
+  all 40 tests in 0.27s. No production behavior was changed to satisfy the fake.
+- Final root regression: 3,703 passed, 9 skipped in 78.30s. The eight protected
+  stock-time-forward replica-set cases passed separately in 2.62s; the remaining
+  skip is Caddy's no-required-keys case. Ruff check/format, mypy (500 files) and
+  diff whitespace checks passed. These local results do not close live acceptance.

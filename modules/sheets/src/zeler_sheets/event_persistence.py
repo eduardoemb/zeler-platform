@@ -857,6 +857,31 @@ class SheetsEventPersistence:
         if session is not None and not session.in_transaction:
             raise ValueError("shipment recovery requires an active transaction")
         document = _canonical_shipment_document(resource, seller_id=seller_id)
+        if "formula_observed_at" not in document:
+            collection = self._db["shipments"]
+            if await _insert_resource_if_absent(
+                collection, document, seller_id=seller_id, session=session
+            ):
+                return
+            # A status event does not reacquire independent formula fields. Retain
+            # their original values/proof atomically, without copying legacy raw data.
+            retained = {
+                field: f"${field}"
+                for field in (
+                    "receiver_address",
+                    "real_shipping_cost",
+                    "formula_observed_at",
+                    "unavailable_fields",
+                )
+            }
+            await collection.update_one(
+                _fresh_resource_write_filter(
+                    document, seller_id=seller_id, freshness_fields=("last_updated",)
+                ),
+                [{"$replaceWith": {"$mergeObjects": [retained, {"$literal": document}]}}],
+                **_session_kwargs(session),
+            )
+            return
         await _replace_resource_if_fresh(
             self._db["shipments"],
             document,

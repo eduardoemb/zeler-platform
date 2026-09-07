@@ -60,6 +60,62 @@ async def test_recovery_pilot_scope_limits_admission_claim_and_expiry(recovery_d
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("flagged", [False, True])
+async def test_shipment_event_retains_recovered_fields_without_refreshing_them(
+    recovery_db: Any, flagged: bool
+) -> None:
+    from zeler_sheets.event_persistence import SheetsEventPersistence
+    from zeler_sheets.formulas.dispatcher import FormulaDataUnavailableError
+    from zeler_sheets.formulas.read_models import FormulaReadModelRepository
+
+    observed = datetime.now(UTC) - timedelta(hours=2)
+    original = {
+        "_id": "3001",
+        "seller_id": "pilot",
+        "order_id": "42",
+        "status": "shipped",
+        "last_updated": observed,
+        "receiver_address": {"name": "Synthetic Receiver"},
+        "real_shipping_cost": {"seller_cost": 12.5, "synced_at": observed},
+        "formula_observed_at": observed,
+        "unavailable_fields": ["real_shipping_cost"] if flagged else [],
+        "legacy_raw": "must not survive normalization",
+    }
+    await recovery_db.shipments.insert_one(original)
+    prior = await recovery_db.shipments.find_one({"_id": "3001"})
+    writer = SheetsEventPersistence(db=recovery_db)
+    await writer.persist(
+        event_type="shipments.updated",
+        seller_id="pilot",
+        resource={
+            "id": "3001",
+            "order_id": "42",
+            "status": "delivered",
+            "logistic_type": "fulfillment",
+            "date_created": observed,
+            "last_updated": observed + timedelta(hours=1),
+        },
+    )
+    stored = await recovery_db.shipments.find_one({"_id": "3001"})
+    assert stored["status"] == "delivered"
+    for field in (
+        "receiver_address",
+        "real_shipping_cost",
+        "formula_observed_at",
+        "unavailable_fields",
+    ):
+        assert stored[field] == prior[field]
+    assert "legacy_raw" not in stored
+    repository = FormulaReadModelRepository(db=recovery_db)
+    for read in (
+        repository.find_shipment_receiver_addresses,
+        repository.find_shipment_real_shipping_costs,
+    ):
+        with pytest.raises(FormulaDataUnavailableError):
+            await read(seller_id="pilot", shipment_ids=["3001"])
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("field", ["receiver_address", "real_shipping_cost"])
 @pytest.mark.parametrize("state", ["ready", "missing", "expired", "flagged", "future", "malformed"])
 async def test_shipment_fields_require_available_current_seller_data(

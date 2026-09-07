@@ -151,6 +151,17 @@ class FakeCollection:
     ) -> FakeReplaceResult:
         for document in self.documents.values():
             if _matches_filter(document, filter_spec):
+                if isinstance(update, list):
+                    retained, literal = update[0]["$replaceWith"]["$mergeObjects"]
+                    replacement = {
+                        field: document[path[1:]]
+                        for field, path in retained.items()
+                        if path[1:] in document
+                    }
+                    replacement.update(literal["$literal"])
+                    document.clear()
+                    document.update(replacement)
+                    return FakeReplaceResult()
                 for path, value in update.get("$set", {}).items():
                     _set_path(document, path, value)
                 for path in update.get("$unset", {}):
