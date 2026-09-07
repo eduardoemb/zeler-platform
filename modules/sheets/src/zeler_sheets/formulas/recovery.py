@@ -12,6 +12,8 @@ from uuid import uuid4
 
 from pymongo import ReturnDocument
 from pymongo.errors import DuplicateKeyError
+from pymongo.read_concern import ReadConcern
+from pymongo.write_concern import WriteConcern
 
 RECOVERABLE_MODELS = frozenset(
     {
@@ -131,13 +133,21 @@ class FormulaRecoveryQueue:
         now: Callable[[], datetime] | None = None,
         enabled_models: frozenset[str] = RECOVERABLE_MODELS,
         allowed_sellers: frozenset[str] | None = None,
+        max_active_jobs_per_seller: int = 20,
     ) -> None:
+        if type(max_active_jobs_per_seller) is not int or max_active_jobs_per_seller < 1:
+            raise ValueError("recovery capacity must be a positive integer")
         self.collection = db["sheets_formula_recovery_jobs"]
+        self.admission = db["sheets_formula_recovery_admission"]
+        self.max_active_jobs_per_seller = max_active_jobs_per_seller
         self.now = now or (lambda: datetime.now(UTC))
         self.enabled_models = enabled_models
         self.allowed_sellers = allowed_sellers
 
     async def ensure_indexes(self) -> None:
+        await self.collection.create_index(
+            [("seller_id", 1), ("state", 1)], name="recovery_seller_active"
+        )
         await self.collection.create_index(
             [("state", 1), ("read_model", 1), ("available_at", 1), ("_id", 1)],
             name="recovery_claim",
@@ -175,20 +185,44 @@ class FormulaRecoveryQueue:
             initial["shipment_ids"] = list(request.shipment_ids)
         else:
             initial.update(date_from=request.date_from, date_to=request.date_to)
-        # A simultaneous upsert can already have persisted this exact request.
+        # One guard per seller (identity/revision only) serializes admission
+        # across API processes. Seed outside the transaction to handle first use.
         with suppress(DuplicateKeyError):
-            await self.collection.update_one(
-                {"_id": request.key}, {"$setOnInsert": initial}, upsert=True
+            await self.admission.update_one(
+                {"_id": request.seller_id}, {"$setOnInsert": {"revision": 0}}, upsert=True
             )
-        # Retain a request made during cooldown without advancing its deadline.
-        # The worker can claim it when due, even if the user never recalculates again.
-        await self.collection.update_one(
-            {
-                "_id": request.key,
-                "state": {"$in": ["completed", "failed"]},
-            },
-            {"$set": {"state": "pending", "attempts": 0, "updated_at": now}},
-        )
+
+        async def admit(session: Any) -> None:
+            # A count followed by insertion without this write can oversubscribe
+            # under snapshot isolation. Transaction retries refresh the snapshot.
+            await self.admission.update_one(
+                {"_id": request.seller_id}, {"$inc": {"revision": 1}}, session=session
+            )
+            existing = await self.collection.find_one({"_id": request.key}, session=session)
+            if existing is not None and existing["state"] in {"pending", "running"}:
+                return
+            active = await self.collection.count_documents(
+                {"seller_id": request.seller_id, "state": {"$in": ["pending", "running"]}},
+                limit=self.max_active_jobs_per_seller,
+                session=session,
+            )
+            if active >= self.max_active_jobs_per_seller:
+                raise ValueError("recovery seller capacity reached")
+            if existing is None:
+                await self.collection.insert_one(initial, session=session)
+            else:
+                # Cooldown is not advanced by a new request. Reopening consumes
+                # capacity, but completing a job frees it without a second counter.
+                await self.collection.update_one(
+                    {"_id": request.key},
+                    {"$set": {"state": "pending", "attempts": 0, "updated_at": now}},
+                    session=session,
+                )
+
+        async with await self.collection.database.client.start_session() as session:
+            await session.with_transaction(
+                admit, read_concern=ReadConcern("snapshot"), write_concern=WriteConcern("majority")
+            )
         return request.key
 
     async def claim(self) -> dict[str, Any] | None:

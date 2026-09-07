@@ -130,6 +130,17 @@ Libre. Disable recovery in both services to stop future admission/claims; alread
 running work must finish or be stopped through the normal worker lifecycle.
 Persisted data and queued jobs are not deleted by disabling the feature.
 
+Recovery admission caps each seller at 20 pending/running jobs across models,
+including jobs waiting for cooldown. This is an initial operational bound, not
+a measured throughput target. Duplicate active requests remain accepted at the
+limit; new requests and terminal-job reopenings are refused until capacity frees.
+Formula reads remain Mongo-only and queue admission retains its one-second HTTP
+budget. Admission uses replica-set transactions and one identity/revision guard
+per seller in `sheets_formula_recovery_admission`, plus the jobs' seller/state
+index. Include that guard in authorized seller deletion; never delete it while
+admission is active. The cap does not establish global fairness, API-call quotas
+or completed-job retention, and does not by itself authorize wider rollout.
+
 **Important**: Always use Cloud Build. Never `docker build` locally on Mac.
 
 Build from the connected repository at one exact commit already present in

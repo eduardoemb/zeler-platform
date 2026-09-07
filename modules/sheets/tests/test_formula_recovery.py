@@ -1644,6 +1644,96 @@ async def test_crashed_recovery_stops_after_three_attempts(recovery_db: Any) -> 
 
 
 @pytest.mark.asyncio
+async def test_recovery_admission_is_bounded_under_concurrent_distinct_requests(
+    recovery_db: Any,
+) -> None:
+    from zeler_sheets.formulas.recovery import OrderIdsRecoveryRequest
+
+    queue = FormulaRecoveryQueue(recovery_db, max_active_jobs_per_seller=3)
+    await queue.ensure_indexes()
+    requests = [OrderIdsRecoveryRequest("pilot", (str(i),)) for i in range(20)]
+    results = await asyncio.gather(
+        *(queue.enqueue(item) for item in requests), return_exceptions=True
+    )
+    accepted = [result for result in results if isinstance(result, str)]
+    assert len(accepted) == 3
+    assert all(
+        isinstance(result, str) or isinstance(result, ValueError) and "capacity" in str(result)
+        for result in results
+    )
+    assert await queue.collection.count_documents({"seller_id": "pilot"}) == 3
+    for item in requests:
+        if item.key in accepted:
+            assert await queue.enqueue(item) == item.key
+    assert await queue.enqueue(OrderIdsRecoveryRequest("other", ("1",)))
+    claimed = await queue.claim()
+    assert claimed is not None
+    # Running work consumes the same slot as pending work.
+    with pytest.raises(ValueError, match="capacity"):
+        await queue.enqueue(OrderIdsRecoveryRequest("pilot", ("100",)))
+
+
+@pytest.mark.asyncio
+async def test_cancelled_recovery_admission_does_not_consume_capacity(
+    recovery_db: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    queue = FormulaRecoveryQueue(recovery_db, max_active_jobs_per_seller=1)
+    inserted = asyncio.Event()
+    original = queue.collection.insert_one
+
+    async def pause_after_insert(*args: Any, **kwargs: Any) -> Any:
+        result = await original(*args, **kwargs)
+        inserted.set()
+        await asyncio.Event().wait()
+        return result
+
+    monkeypatch.setattr(queue.collection, "insert_one", pause_after_insert)
+    pending = asyncio.create_task(queue.enqueue(request()))
+    await asyncio.wait_for(inserted.wait(), timeout=5)
+    pending.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await pending
+    assert await queue.collection.count_documents({}) == 0
+    monkeypatch.setattr(queue.collection, "insert_one", original)
+    assert await queue.enqueue(request()) == request().key
+
+
+@pytest.mark.parametrize("capacity", [0, -1, True, 1.5])
+def test_recovery_capacity_must_be_positive_integer(capacity: Any) -> None:
+    with pytest.raises(ValueError, match="capacity"):
+        FormulaRecoveryQueue({}, max_active_jobs_per_seller=capacity)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("succeeded", [True, False])
+async def test_recovery_terminal_reopening_respects_capacity_and_cooldown(
+    recovery_db: Any, succeeded: bool
+) -> None:
+    from zeler_sheets.formulas.recovery import OrderIdsRecoveryRequest
+
+    queue = FormulaRecoveryQueue(recovery_db, max_active_jobs_per_seller=1)
+    first = OrderIdsRecoveryRequest("pilot", ("1",))
+    second = OrderIdsRecoveryRequest("pilot", ("2",))
+    await queue.enqueue(first)
+    claimed = await queue.claim()
+    assert claimed is not None
+    assert await queue.finish(claimed, succeeded=succeeded)
+    terminal = await queue.collection.find_one({"_id": first.key})
+    await queue.enqueue(second)
+    with pytest.raises(ValueError, match="capacity"):
+        await queue.enqueue(first)
+    assert await queue.collection.find_one({"_id": first.key}) == terminal
+    claimed = await queue.claim()
+    assert claimed is not None
+    assert await queue.finish(claimed, succeeded=True)
+    assert await queue.enqueue(first) == first.key
+    reopened = await queue.collection.find_one({"_id": first.key})
+    assert reopened["state"] == "pending"
+    assert reopened["available_at"] == terminal["available_at"]
+    assert await queue.claim() is None
+
+
+@pytest.mark.asyncio
 async def test_concurrent_cells_share_one_persisted_recovery(recovery_db: Any) -> None:
     now = datetime(2026, 9, 7, tzinfo=UTC)
     queue = FormulaRecoveryQueue(recovery_db, now=lambda: now)

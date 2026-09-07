@@ -1591,3 +1591,38 @@ retain their contract; other product deployments remain out of scope.
 - Requested the real ZelerData user identity and an authorized test Sheet through
   the user-input channel for the pending authenticated/Google Sheets acceptance.
   No user token was minted, copied or bypassed. The global goal remains open.
+
+## Recovery admission: bound distinct work per seller
+
+- Added an initial cap of 20 pending/running recovery jobs per seller across
+  models. Existing active requests still coalesce at capacity; reopening terminal
+  jobs consumes capacity without advancing their cooldown. Completion frees
+  capacity naturally from job state, without a separate decrement counter.
+- A snapshot/majority transaction and one seller identity/revision guard in
+  `sheets_formula_recovery_admission` serialize concurrent admission. The new
+  seller/state index bounds the active-job lookup. No source payload is stored
+  in the guard; authorized seller deletion must include it with admission stopped.
+  Cancellation aborts uncommitted admission. The HTTP insertion budget remains
+  one second and formulas still do not call Mercado Libre or wait for recovery.
+- Evidence: the initial three focused cases failed before implementation.
+  `uv run pytest modules/sheets/tests/test_formula_recovery.py` then passed
+  **120 tests in 22.66s** against the dedicated local Mongo replica set. Twenty
+  concurrent distinct requests admitted exactly three at a configured test cap
+  of three; duplicates, another seller, running jobs, terminal cooldown reopening
+  and cancellation were independently checked. This is a real local queue
+  boundary test, not productive HTTP or a Google Sheet acceptance result.
+- Root `uv run pytest` with the dedicated local replica-set test database:
+  **3726 passed, 9 skipped, 356 warnings in 83.35s**. The protected stock-time
+  acquisition/execution/rollback suite was also run separately with ambient
+  `MONGO_URI` unset: **8 passed in 3.09s**. Ruff check/format, mypy over 501
+  source files and `git diff --check` passed.
+- No productive deployment or feature flag changed in this unit. Both Sheets
+  images package the changed queue, so build new verified Cloud Build images for
+  `sheets-api` and `sheets-worker`, verify exact source/digest and runtime health,
+  then exercise scoped admission before considering automatic pilot activation.
+  The cap is not measured throughput, global fairness, API-call quota or retention
+  completion. Item/catalog recovery and the global acceptance work remain open.
+- Rollback boundary: remove the admission changes in `formulas/recovery.py`,
+  their tests and rollout notes together, with recovery disabled. Existing job
+  documents stay compatible; the unused index/guard need not be deleted for an
+  image rollback. Do not delete normalized customer data or accepted jobs.
