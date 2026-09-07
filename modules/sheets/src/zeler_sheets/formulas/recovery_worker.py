@@ -229,4 +229,7 @@ def _date(value: Any) -> datetime:
     parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
     if parsed.tzinfo is None:
         raise ValueError("question date timezone unavailable")
-    return parsed.astimezone(UTC)
+    parsed = parsed.astimezone(UTC)
+    # Search can include microseconds omitted by detail responses. Compare at
+    # BSON's millisecond precision, also used by persisted request boundaries.
+    return parsed - timedelta(microseconds=parsed.microsecond % 1000)

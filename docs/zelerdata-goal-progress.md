@@ -536,3 +536,45 @@ Pilot: seller `82453304`; initial historical window 2026-08-08 through
   recovery still disabled, and prove completion, persisted values and a second
   formula query without source calls. Automatic admission controls and the
   other recovery models remain unfinished; this is not global activation.
+
+## Runtime release and first controlled recovery — source 4f65d6d
+
+- Regression: 3,624 passed, 9 skipped in 70.84s; protected replica-set suite
+  separately 8 passed in 14.87s. Root Ruff, format and mypy pass.
+- Verified Cloud Build source: 4f65d6db950f00e97127ffc546dfb7506ced57ec.
+  API build 45e06398-5e7d-4ebd-a31f-dab8db79c57f produced
+  sha256:f9b07c9de23c1a4f0bc611963ceb4b09c96d25c34715c08f3cb2333c70ac8d0f;
+  worker build e0a08c5b-9cd0-463e-a018-76e25f8bddb3 produced
+  sha256:9903cd1ddcb932e6f252f0a95445f60e41e9d2478910407345fff192bcf641e5.
+  Both passed digest/build/source/connected-repository provenance checks.
+- Both running digests now match these images; both healthy, zero restarts.
+  API HTTPS health returned 200/ready. Targeted replacements used the runbook
+  preflight and exact-one-image checks. Disk free after release: 5.1 GiB;
+  recheck before further pulls. No other product was deployed.
+- Rollback API digest: b03d53422a57202974f77e70d651731ca01317aa7d3e7448d4592c71364defaf;
+  rollback worker digest: ab91fe179dd4124e68f3f3ec11e9c7eca0624fe485ab8753f262e8fe26817646.
+  Compose backups use suffix .pre-<service>-4f65d6d. Images use the same
+  Artifact Registry service repositories recorded above.
+- One controlled recovery job was persisted for pilot questions, Aug 8–Sep 6:
+  ce00248f852738303b602c86572cda2e8badfcaf369a6edf7e5dfd500b75827d.
+  Automatic recovery remains off. It failed source_incomplete after five
+  search calls and one detail, 1.281 seconds; no completion was published.
+  The existing June 1–July 11 reconciled marker remained unchanged.
+- Read-only diagnosis identified matching question/seller identities, valid
+  answer/schema, but search/detail creation times differed by 435 microseconds
+  within the same BSON millisecond. Exact datetime equality rejected the row.
+
+## Work unit: compare question timestamps at persistent precision
+
+- New actual-Mongo regression reproduced the 435-microsecond failure; exact
+  timestamps passed, and a different-millisecond control remained rejected.
+- Recovery source dates now normalize to UTC BSON milliseconds, consistent
+  with persistent request boundaries. Seller/identity checks and validation
+  of explicit timezone remain intact. This is not a general time tolerance.
+- Recovery/read-model suites: 38 passed in 4.30s. Ruff, format and mypy pass.
+  Test Mongo had stopped during the environment transition; only the task-owned
+  current container was restarted, not the old container sharing its data.
+- Rollback boundary: source-date millisecond normalization and its regression.
+  Worker rebuild and controlled retry still required for live acceptance.
+  The failed durable job must not be confused with successful persistence or
+  authenticated HTTP/Google Sheets formula verification.

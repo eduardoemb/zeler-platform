@@ -199,7 +199,17 @@ async def test_failed_recovery_cannot_leave_partial_writes_or_change_prior_proof
 
 
 @pytest.mark.asyncio
-async def test_question_recovery_persists_data_and_unlocks_next_query(recovery_db: Any) -> None:
+@pytest.mark.parametrize(
+    ("search_date", "succeeds"),
+    [
+        ("2026-08-20T10:00:00Z", True),
+        ("2026-08-20T10:00:00.000435Z", True),
+        ("2026-08-20T10:00:00.001435Z", False),
+    ],
+)
+async def test_question_recovery_persists_data_and_unlocks_next_query(
+    recovery_db: Any, search_date: str, succeeds: bool
+) -> None:
     from zeler_sheets.formulas.read_models import FormulaReadModelRepository
     from zeler_sheets.formulas.recovery_worker import FormulaRecoveryWorker
 
@@ -223,7 +233,7 @@ async def test_question_recovery_persists_data_and_unlocks_next_query(recovery_d
             assert seller_id == "pilot"
             calls.append(path)
             if path.startswith("/questions/search?"):
-                return {"total": 1, "questions": [resource]}
+                return {"total": 1, "questions": [{**resource, "date_created": search_date}]}
             raise AssertionError("search identity must not fetch question details")
 
     class Details:
@@ -236,6 +246,12 @@ async def test_question_recovery_persists_data_and_unlocks_next_query(recovery_d
         db=recovery_db, gateway=Gateway(), detail_gateway=Details(), queue=queue
     )
     assert await worker.process_one()
+    if not succeeds:
+        job = await queue.collection.find_one({"_id": request().key})
+        assert job["state"] == "failed"
+        assert job["failure_reason"] == "source_incomplete"
+        assert await recovery_db.questions.count_documents({}) == 0
+        return
     repository = FormulaReadModelRepository(db=recovery_db)
     await repository.require_questions_read_model_productive(
         seller_id="pilot",
