@@ -176,7 +176,7 @@ class RemainingPhase4FormulaHandlers:
         ]
         buybox_rows = await self._repository.find_catalog_buybox_snapshots(
             seller_id=context.seller_id,
-            limit=max(1000, len(catalog_rows)),
+            limit=None,
         )
         buybox_by_item_id = {
             str(row.get("item_id") or "").strip(): row for row in buybox_rows if row.get("item_id")

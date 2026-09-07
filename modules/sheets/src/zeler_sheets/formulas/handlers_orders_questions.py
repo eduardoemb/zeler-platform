@@ -1041,7 +1041,7 @@ async def _sku_resolver_for_orders(
         seller_id=seller_id,
         item_ids=item_ids,
         variation_ids=None,
-        limit=max(500, len(item_ids) * 10),
+        limit=None,
     )
     return _OrderSkuResolver(rows)
 

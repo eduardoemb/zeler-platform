@@ -9,7 +9,11 @@ from motor.motor_asyncio import AsyncIOMotorClient
 from pymongo.errors import ServerSelectionTimeoutError
 
 from zeler_sheets.formulas.dispatcher import FormulaExecutionContext
-from zeler_sheets.formulas.handlers_orders_questions import OrderQuestionFormulaHandlers
+from zeler_sheets.formulas.handlers_core import _dashboard_sku_resolver_for_orders
+from zeler_sheets.formulas.handlers_orders_questions import (
+    OrderQuestionFormulaHandlers,
+    _sku_resolver_for_orders,
+)
 from zeler_sheets.formulas.read_models import FormulaReadModelRepository
 from zeler_sheets.formulas.registry import FormulaRegistry
 from zeler_sheets.unit_costs import UnitCostLookup
@@ -128,6 +132,27 @@ async def test_complete_formula_sources_remain_seller_scoped_in_mongo() -> None:
         costs = await repository.find_unit_costs(seller_id="pilot", lookups=lookups)
         assert len(costs) == 1001
         assert all(value == 7 for value in costs.values())
+        await database.sheets_item_sku_index.insert_many(
+            [
+                {
+                    "_id": f"variant-{i:04d}",
+                    "seller_id": "pilot",
+                    "item_id": "MLM1",
+                    "variation_id": str(i),
+                    "normalized_sku": f"SKU-{i:04d}",
+                }
+                for i in range(501)
+            ]
+        )
+        line = {"item_id": "MLM1", "variation_id": "500"}
+        orders = [{"items": [line]}]
+        sales = await _sku_resolver_for_orders(
+            repository=repository, seller_id="pilot", orders=orders
+        )
+        dashboard = await _dashboard_sku_resolver_for_orders(
+            repository=repository, seller_id="pilot", orders=orders
+        )
+        assert [sales.resolve(line).sku, dashboard.resolve("MLM1", "500")] == ["SKU-0500"] * 2
     finally:
         if created:
             await client.drop_database(database.name)

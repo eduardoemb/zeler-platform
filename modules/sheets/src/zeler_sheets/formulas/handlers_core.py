@@ -642,7 +642,7 @@ async def _dashboard_sku_resolver_for_orders(
     rows = await repository.find_sku_index_rows(
         seller_id=seller_id,
         item_ids=item_ids,
-        limit=max(500, len(item_ids) * 10),
+        limit=None,
     )
     return _DashboardSkuResolver(rows)
 

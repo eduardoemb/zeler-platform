@@ -318,3 +318,17 @@ Pilot: seller `82453304`; initial historical window 2026-08-08 through
   Remaining heuristic SKU/item joins and catalog buybox enrichment are pending.
 - Rollback boundary: five handler limit arguments, two reader defaults and
   their boundary tests. No production data or deployment changed.
+
+## Work unit: complete SKU and buybox joins
+
+- Actual Mongo test demonstrated sales and dashboard SKU resolvers both
+  returning an empty SKU for a stored variation beyond their 500-row heuristic.
+  They now read every seller/item-matching index row; ambiguity rules remain.
+- Catalog's buybox join returned NA for stored winner data when 1,000 unrelated
+  snapshots sorted first. Reused the exact-output catalog regression with that
+  additional inventory; it failed before removal of the heuristic and passes
+  afterwards, preserving all winner/price/competitor fields.
+- Verification: Mongo boundary, core, order/question and remaining-formula
+  tests **134 passed in 1.20s**. Ruff, format and mypy pass globally.
+- Rollback boundary: three heuristic limit arguments and their regressions.
+  No runtime activation, production data change or live-completeness claim.

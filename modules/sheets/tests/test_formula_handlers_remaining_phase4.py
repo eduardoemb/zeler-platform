@@ -162,7 +162,10 @@ async def test_catalog_sales_include_orders_beyond_the_old_5000_row_cap() -> Non
 
 
 @pytest.mark.asyncio
-async def test_catalogo_uses_local_item_catalog_buybox_and_sales_snapshots() -> None:
+@pytest.mark.parametrize("unrelated_buyboxes", [0, 1000])
+async def test_catalogo_uses_local_item_catalog_buybox_and_sales_snapshots(
+    unrelated_buyboxes: int,
+) -> None:
     db = FakeDb()
     _mark_read_model_fresh(db, CATALOG_BUYBOX_SNAPSHOTS_READ_MODEL)
     _mark_read_model_fresh(db, ITEM_FORMULA_ROWS_READ_MODEL)
@@ -192,6 +195,12 @@ async def test_catalogo_uses_local_item_catalog_buybox_and_sales_snapshots() -> 
             "only_competitor": "No",
         }
     }
+    db["sheets_catalog_buybox_snapshots"].documents.update(
+        {
+            f"other-{i}": {"_id": f"other-{i}", "seller_id": "seller-1", "item_id": f"AAA{i}"}
+            for i in range(unrelated_buyboxes)
+        }
+    )
     db["orders"].documents = {
         "ORDER-7": _order_doc("ORDER-7", days_ago=2, quantity=1),
         "ORDER-15": _order_doc("ORDER-15", days_ago=10, quantity=2),
