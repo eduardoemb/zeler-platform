@@ -765,6 +765,10 @@ def devoluciones_reconciliation_marker_covers(
 def _read_model_freshness_marker_covers(marker: Any, *, date_to: Any) -> bool:
     if not isinstance(marker, dict):
         return False
+    if marker.get("valid_until") is not None:
+        valid_until = _safe_utc_datetime(marker["valid_until"])
+        if valid_until is None or valid_until <= datetime.now(UTC):
+            return False
     state = str(marker.get("state") or "").strip().casefold()
     if state not in PRODUCTIVE_READ_MODEL_STATES:
         return False

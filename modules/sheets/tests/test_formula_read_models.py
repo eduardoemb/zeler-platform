@@ -74,6 +74,38 @@ def test_expired_recovery_proof_does_not_authorize_formula_reads() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("state", ["fresh", "reconciled"])
+@pytest.mark.parametrize("validity", ["expired", "invalid", "valid"])
+async def test_productive_gate_respects_proof_expiration(state: str, validity: str) -> None:
+    now = datetime.now(UTC)
+    expiry = {
+        "expired": now - timedelta(seconds=1),
+        "invalid": "not-a-date",
+        "valid": now + timedelta(minutes=5),
+    }[validity]
+
+    class MarkerCollection(FakeCollection):
+        async def find_one(self, filter_spec: dict[str, Any]) -> dict[str, Any]:
+            assert filter_spec["seller_id"] == "seller-1"
+            return {"state": state, "fresh_until": now, "valid_until": expiry}
+
+    db = FakeDb([])
+    db._collections["sheets_read_model_freshness"] = MarkerCollection([])
+    repository = FormulaReadModelRepository(db=db)
+
+    async def check() -> None:
+        await repository.require_read_model_productive(
+            seller_id="seller-1", read_model="orders", date_to=now, formula="ZELERDATA_TEST"
+        )
+
+    if validity == "valid":
+        await check()
+    else:
+        with pytest.raises(FormulaDataUnavailableError):
+            await check()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("method", "read_model", "has_start"),
     [

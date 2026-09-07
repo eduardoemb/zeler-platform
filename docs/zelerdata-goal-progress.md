@@ -459,3 +459,53 @@ Pilot: seller `82453304`; initial historical window 2026-08-08 through
   before productive acceptance of this correction; gateway has no new change.
   Verify complete pilot acquisition and truthful unavailable results after
   that deployment. Field-aware partial detail recovery remains unfinished.
+
+## Work unit: enforce expiration in generic formula freshness checks
+
+- Generic productive-model checks accepted expired or malformed valid_until
+  values whenever fresh_until covered the requested end. Four new regressions
+  failed for fresh/reconciled markers; two valid-proof controls already passed.
+- The generic gate now rejects expired/malformed explicit validity, matching
+  the existing reconciled-range gate. Existing markers without valid_until
+  are unchanged; migrating those proofs and guarding all order consumers
+  remain separate incomplete requirements.
+- Verification: repository, item/shipping/catalog, remaining-formula and
+  calculator tests plus the actual Mongo boundary harness **82 passed in
+  0.94s**. Mongo demonstrates BSON-decoded expired proof rejection followed
+  by acceptance after valid renewal in a disposable local test database.
+  Root Ruff, format and mypy pass.
+- Rollback boundary: four-line validity check and associated regressions;
+  no production data writes or schema migration. Not deployed: Sheets API
+  needs a new Cloud Build image and live expired/valid proof acceptance after
+  this change. Keep it with the pending Sheets release; gateway is unchanged.
+
+## Pilot data comparison — approved runtime, read-only
+
+- Gateway pagination returned 100 unique order IDs in the requested Aug 8–
+  Sep 6 range with a stable total. All 100 are present in seller-scoped Mongo;
+  the Mongo date-window count is also 100. None of those persisted orders
+  lack buyer_id, nonempty items or last_updated. Their 97 unique shipment
+  references all resolve in the seller-scoped shipments collection.
+- These results contradict an assumption that the degraded status report
+  implies absent orders or shipments. Its 17 productive-window blockers are
+  marker evidence, not 17 proven underlying data defects. Actual order values,
+  shipment fields and the formula-specific date/freshness contracts must be
+  checked before repairing or certifying coverage.
+- A paced, read-only comparison fetched all 100 order details through the
+  gateway, then compared the current canonical projection against Mongo.
+  All normalized successfully without partial-content responses. 51 matched
+  exactly; 49 differed by list comparison. Differences were confined to tags
+  (49) and last_updated (4). Buyer/shipment/pack identifiers, status, creation
+  and closing dates, amounts, normalized items and feedback matched in all
+  compared documents. Acquisition-only sale_fee_synced_at was excluded;
+  list ordering was not normalized. This is not proof that all 49 differences
+  are business-value changes, nor proof of new-order-contract completeness.
+- A separate search-result tag comparison over the same 100 orders found
+  99 identical lists and one changed set: delivered replaced not_delivered.
+  Search and detail responses therefore must not be treated interchangeably
+  when explaining these differences. No stored order or marker was modified.
+- A bounded follow-up of 10 actual detail responses compared tags as sets:
+  9 differed only in ordering, 1 had different tag values. Do not report the
+  earlier 49 list differences as 49 business-data defects. Future complete
+  reconciliation comparisons must normalize set-valued tags; the four
+  updated timestamps and any substantive tag drift still need recovery.

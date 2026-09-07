@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import uuid4
 
@@ -8,7 +8,7 @@ import pytest
 from motor.motor_asyncio import AsyncIOMotorClient
 from pymongo.errors import ServerSelectionTimeoutError
 
-from zeler_sheets.formulas.dispatcher import FormulaExecutionContext
+from zeler_sheets.formulas.dispatcher import FormulaDataUnavailableError, FormulaExecutionContext
 from zeler_sheets.formulas.handlers_core import _dashboard_sku_resolver_for_orders
 from zeler_sheets.formulas.handlers_orders_questions import (
     OrderQuestionFormulaHandlers,
@@ -36,6 +36,27 @@ async def test_complete_formula_sources_remain_seller_scoped_in_mongo() -> None:
         repository = FormulaReadModelRepository(db=database)
         start = datetime(2026, 8, 8, tzinfo=UTC)
         end = datetime(2026, 9, 7, tzinfo=UTC)
+        await database.sheets_read_model_freshness.insert_one(
+            {
+                "_id": "pilot:orders",
+                "seller_id": "pilot",
+                "read_model": "orders",
+                "state": "reconciled",
+                "fresh_until": end,
+                "valid_until": datetime.now(UTC) - timedelta(seconds=1),
+            }
+        )
+        with pytest.raises(FormulaDataUnavailableError):
+            await repository.require_read_model_productive(
+                seller_id="pilot", read_model="orders", date_to=end, formula="ZELERDATA_TEST"
+            )
+        await database.sheets_read_model_freshness.update_one(
+            {"_id": "pilot:orders"},
+            {"$set": {"valid_until": datetime.now(UTC) + timedelta(minutes=5)}},
+        )
+        await repository.require_read_model_productive(
+            seller_id="pilot", read_model="orders", date_to=end, formula="ZELERDATA_TEST"
+        )
         for method, collection, count, kwargs in (
             ("find_item_formula_rows", "sheets_item_formula_rows", 501, {}),
             ("find_sku_index_rows", "sheets_item_sku_index", 501, {}),
