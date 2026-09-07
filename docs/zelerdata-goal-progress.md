@@ -1787,3 +1787,44 @@ retain their contract; other product deployments remain out of scope.
   repository change is this evidence record. The prior catalog identity fix
   still requires verified Sheets image builds and rollout; no new rebuild is
   required solely for this documentation. The global goal remains open.
+
+## Item discovery now feeds the existing enrichment workflow
+
+- Added opt-in `--discover-current-items` to `--source items-enrich`, and
+  `discover_current_items=True` to the existing Python entrypoint. It scans
+  current seller IDs, unions them with known Mongo IDs (including search
+  omissions), then reuses existing multiget ownership validation, optional
+  enrichment and canonical Item normalization. No new collection or alternate
+  raw-payload persistence path was added.
+- Discovery requires a numeric seller, stable total, unique valid IDs and a
+  complete count; it permits short pages/reused cursors and caps the inventory
+  at 10,000 IDs, scan at 201 pages/180 seconds, and detail batches at 20.
+  Combining discovery with an explicit item filter is rejected. The CLI rejects
+  discovery on another source before connecting. These are scan bounds, not a
+  deadline for the complete enrichment operation.
+- New documents are inserted only after all planned detail/enrichment/schema
+  validation; a concurrent insert raises without overwriting that document.
+  Existing 404 handling preserves known historical records while available
+  items proceed. Dry run does not insert. No formula projection or completeness
+  marker is published by this operation; follow the existing enrichment-before-
+  projection ordering. `items_read` still counts existing Mongo inputs, while
+  validated/planned/updated counts can include discovered new items.
+- TDD: initial four real-Mongo scenarios and the CLI-scope case failed before
+  their changes. Recovery plus Sheets backfill suites passed **274 tests in
+  22.91s**; checks include new-item insertion, dry run, foreign source rejection,
+  concurrent insert preservation, historical 404 retention and scan integrity.
+  Root: **3743 passed, 9 skipped, 356 warnings in 85.92s**. Protected stock-time
+  suite separately: **8 passed in 2.11s**. Ruff check/format, mypy (501 files)
+  and whitespace checks passed. The persistence harness uses actual dedicated
+  local Mongo and synthetic source responses, not productive acceptance.
+- Not deployed or connected to formula recovery yet. Existing-item updates
+  retain their previous behavior; review/guard concurrent updates before broad
+  productive discovery writes. Still needed: productive discovery/enrichment,
+  projected-row verification and asynchronous item/catalog job integration with
+  honest coverage. Both Sheets images need verified Cloud Build refreshes and
+  runtime verification for this change and the pending catalog identity fix;
+  last verified deployed executable source remains `f7589c9`.
+- Rollback removes the discovery flag, scanner, union/insert branch and associated
+  tests, preserving the prior enrichment path. Do not delete successfully
+  normalized discovered data on rollback. Pilot recovery configuration is
+  unchanged and the global goal remains active.

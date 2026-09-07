@@ -31,6 +31,136 @@ def test_runtime_recovery_seller_list_is_explicit_and_validated() -> None:
 
 
 @pytest.mark.asyncio
+async def test_item_discovery_cli_rejects_wrong_source_before_connection() -> None:
+    from zeler_sheets.sheetseller_backfill import _run_cli, build_arg_parser
+
+    args = build_arg_parser().parse_args(["--seller-id", "82453304", "--discover-current-items"])
+    with pytest.raises(SystemExit, match="items-enrich"):
+        await _run_cli(args)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "failure", [None, "duplicate", "changed_total", "empty", "cursor", "budget", "identity"]
+)
+async def test_item_discovery_requires_complete_bounded_scan(failure: str | None) -> None:
+    from zeler_sheets.sheetseller_backfill import _discover_current_item_ids
+
+    pages = [
+        {"paging": {"total": 3}, "results": [f"MLA{i}"], "scroll_id": "same-cursor"}
+        for i in range(1, 4)
+    ]
+    if failure == "duplicate":
+        pages[1]["results"] = ["MLA1"]
+    elif failure == "changed_total":
+        pages[1]["paging"] = {"total": 2}
+    elif failure == "empty":
+        pages[1]["results"] = []
+    elif failure == "cursor":
+        pages[0].pop("scroll_id")
+    elif failure == "budget":
+        pages[0]["paging"] = {"total": 10001}
+    elif failure == "identity":
+        pages[0]["results"] = ["../invalid"]
+    paths = []
+
+    class Gateway:
+        async def fetch_resource(self, *, seller_id: str, path: str) -> Any:
+            assert seller_id == "82453304"
+            paths.append(path)
+            return pages.pop(0)
+
+    if failure:
+        with pytest.raises(ValueError, match="item discovery"):
+            await _discover_current_item_ids(Gateway(), seller_id="82453304")
+    else:
+        assert await _discover_current_item_ids(Gateway(), seller_id="82453304") == {
+            "MLA1",
+            "MLA2",
+            "MLA3",
+        }
+        assert len(paths) == 3 and paths[1] == paths[2]
+    assert len(paths) <= 3
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("scenario", ["write", "dry_run", "foreign_source", "concurrent"])
+async def test_item_discovery_enriches_new_items_and_preserves_unavailable_history(
+    recovery_db: Any, scenario: str
+) -> None:
+    from pymongo.errors import DuplicateKeyError
+
+    from zeler_sheets.sheetseller_backfill import run_item_detail_enrichment
+
+    old = {"_id": "MLA2", "seller_id": "82453304", "status": "closed"}
+    await recovery_db.items.insert_one(old)
+    calls: list[str] = []
+
+    class Gateway:
+        async def fetch_resource(self, *, seller_id: str, path: str) -> Any:
+            assert seller_id == "82453304"
+            calls.append(path)
+            if path.startswith("/users/"):
+                return {"paging": {"total": 1}, "results": ["MLA1"]}
+            assert path == "/items?ids=MLA1,MLA2"
+            if scenario == "concurrent":
+                await recovery_db.items.insert_one(
+                    {"_id": "MLA1", "seller_id": "other", "title": "must survive"}
+                )
+            return [
+                {"code": 404, "body": {"id": "MLA2"}},
+                {
+                    "code": 200,
+                    "body": {
+                        "id": "MLA1",
+                        "seller_id": "other" if scenario == "foreign_source" else seller_id,
+                        "title": "Synthetic item",
+                        "price": 10,
+                        "base_price": 10,
+                        "category_id": "MLA123",
+                        "available_quantity": 2,
+                        "status": "active",
+                        "attributes": [],
+                        "variations": [],
+                        "date_created": "2026-09-01T00:00:00Z",
+                        "last_updated": "2026-09-07T00:00:00Z",
+                        "raw_sentinel": "discard",
+                    },
+                },
+            ]
+
+    async def run() -> Any:
+        return await run_item_detail_enrichment(
+            db=recovery_db,
+            gateway=Gateway(),
+            seller_id="82453304",
+            discover_current_items=True,
+            dry_run=scenario == "dry_run",
+        )
+
+    if scenario in {"foreign_source", "concurrent"}:
+        with pytest.raises(DuplicateKeyError if scenario == "concurrent" else RuntimeError):
+            await run()
+    else:
+        summary = await run()
+        assert summary.item_details_stale_unavailable == 1
+        assert summary.items_validated == 1
+        assert summary.items_updated == (1 if scenario == "write" else 0)
+    assert await recovery_db.items.find_one({"_id": "MLA2"}) == old
+    new = await recovery_db.items.find_one({"_id": "MLA1"})
+    if scenario == "write":
+        assert new["seller_id"] == "82453304" and new["title"] == "Synthetic item"
+        assert isinstance(new["last_meli_sync_at"], datetime)
+        assert "raw_sentinel" not in new
+    elif scenario == "concurrent":
+        assert new == {"_id": "MLA1", "seller_id": "other", "title": "must survive"}
+    else:
+        assert new is None
+    assert len(calls) == 2
+    assert await recovery_db.sheets_read_model_freshness.count_documents({}) == 0
+
+
+@pytest.mark.asyncio
 async def test_recovery_pilot_scope_limits_admission_claim_and_expiry(recovery_db: Any) -> None:
     now = datetime.now(UTC)
     unrestricted = FormulaRecoveryQueue(recovery_db, now=lambda: now)

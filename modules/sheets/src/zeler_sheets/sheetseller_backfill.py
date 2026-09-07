@@ -6,6 +6,7 @@ import hashlib
 import json
 import math
 import os
+import re
 from collections.abc import Mapping, Sequence
 from contextlib import nullcontext
 from dataclasses import asdict, dataclass
@@ -13,7 +14,7 @@ from dataclasses import field as dataclass_field
 from datetime import UTC, date, datetime, timedelta
 from decimal import ROUND_HALF_UP, Decimal, DecimalException, InvalidOperation
 from typing import Any, Protocol, cast
-from urllib.parse import quote
+from urllib.parse import quote, urlencode
 
 import httpx
 from bson.decimal128 import Decimal128
@@ -328,6 +329,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="Explicitly write idempotent read-model upserts.",
     )
     parser.add_argument(
+        "--discover-current-items",
+        action="store_true",
+        help="With items-enrich, discover current seller items before enriching known and new IDs.",
+    )
+    parser.add_argument(
         "--enable-sale-price",
         action="store_true",
         dest="sale_price_enabled",
@@ -630,6 +636,50 @@ async def run_observed_pause_basis_repair(
     )
 
 
+async def _discover_current_item_ids(gateway: MeliItemGatewayClient, *, seller_id: str) -> set[str]:
+    if not seller_id.isascii() or not seller_id.isdecimal():
+        raise ValueError("item discovery requires a numeric seller")
+    seen: set[str] = set()
+    expected: int | None = None
+    scroll: str | None = None
+    # The source cursor expires; never let discovery wait indefinitely or grow
+    # without bound. Short pages and a reused scroll token are both supported.
+    async with asyncio.timeout(180):
+        for _ in range(201):
+            params = {"search_type": "scan", "limit": "100"}
+            if scroll is not None:
+                params["scroll_id"] = scroll
+            page = await gateway.fetch_resource(
+                seller_id=seller_id, path=f"/users/{seller_id}/items/search?{urlencode(params)}"
+            )
+            if not isinstance(page, dict) or not isinstance(page.get("paging"), dict):
+                raise ValueError("item discovery response is incomplete")
+            total = page["paging"].get("total")
+            if type(total) is not int or not 0 <= total <= 10000:
+                raise ValueError("item discovery total is invalid or exceeds budget")
+            if expected is None:
+                expected = total
+            rows = page.get("results")
+            if (
+                total != expected
+                or not isinstance(rows, list)
+                or any(
+                    not isinstance(row, str) or not re.fullmatch(r"ML[A-Z][0-9]+", row)
+                    for row in rows
+                )
+                or len(rows) != len(set(rows))
+                or seen.intersection(rows)
+            ):
+                raise ValueError("item discovery inventory changed or is malformed")
+            seen.update(rows)
+            if len(seen) == expected:
+                return seen
+            scroll = page.get("scroll_id")
+            if len(seen) > expected or not rows or not isinstance(scroll, str) or not scroll:
+                raise ValueError("item discovery inventory is incomplete")
+    raise ValueError("item discovery page budget exceeded")
+
+
 async def run_item_detail_enrichment(
     *,
     db: Any,
@@ -640,14 +690,25 @@ async def run_item_detail_enrichment(
     sale_price_enabled: bool = False,
     listing_fixed_fee_enabled: bool = False,
     item_ids: Sequence[str] | None = None,
+    discover_current_items: bool = False,
 ) -> ItemDetailEnrichmentSummary:
     if batch_size < 1:
         msg = "batch_size must be positive"
         raise ValueError(msg)
 
+    if discover_current_items and (item_ids is not None or batch_size > 20):
+        raise ValueError("item discovery requires unfiltered scope and batches of at most 20")
     existing_items = await _load_seller_items(db=db, seller_id=seller_id, item_ids=item_ids)
     site_id = await _load_seller_site_id(db=db, seller_id=seller_id)
     existing_by_id = {_item_id(item): item for item in existing_items}
+    new_item_ids: set[str] = set()
+    if discover_current_items:
+        discovered = await _discover_current_item_ids(gateway, seller_id=seller_id)
+        if len(discovered | existing_by_id.keys()) > 10000:
+            raise ValueError("item discovery and known inventory exceed budget")
+        new_item_ids = discovered - existing_by_id.keys()
+        for item_id in sorted(new_item_ids):
+            existing_by_id[item_id] = {"_id": item_id, "seller_id": seller_id}
     item_ids = sorted(existing_by_id)
     synced_at = datetime.now(UTC)
     write_plans: list[tuple[dict[str, Any], dict[str, Any], bool, bool, bool]] = []
@@ -1116,6 +1177,12 @@ async def run_item_detail_enrichment(
             clear_listing_fixed_fee,
             clear_listing_fee_projection,
         ) in write_plans:
+            if document["_id"] in new_item_ids:
+                # Insert only after normal detail ownership/schema/enrichment
+                # checks. A concurrent insert must never be overwritten here.
+                await items_collection.insert_one(document, bypass_document_validation=False)
+                items_updated += 1
+                continue
             update: dict[str, Any] = {"$set": document}
             unset_fields: dict[str, str] = {}
             if clear_current_promotion:
@@ -4129,6 +4196,7 @@ async def _run_cli(args: argparse.Namespace) -> BackfillCliSummary:
                 sale_price_enabled=bool(args.sale_price_enabled),
                 listing_fixed_fee_enabled=bool(args.listing_fixed_fee_enabled),
                 item_ids=item_ids,
+                discover_current_items=bool(args.discover_current_items),
             )
         if args.source == "shipments-costs":
             from google.cloud import kms_v1
@@ -4177,6 +4245,8 @@ def _require_order_dates(args: argparse.Namespace) -> tuple[str, str]:
 
 
 def _validate_cli_safety(args: argparse.Namespace) -> None:
+    if args.discover_current_items and (args.source != "items-enrich" or args.item_ids is not None):
+        raise SystemExit("--discover-current-items requires unfiltered --source items-enrich")
     if (
         args.source == "observed-pause-basis-repair"
         and not bool(args.dry_run)
