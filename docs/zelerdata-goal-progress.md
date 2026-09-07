@@ -1235,3 +1235,44 @@ retain their contract; other product deployments remain out of scope.
   stock-time-forward replica-set cases passed separately in 2.62s; the remaining
   skip is Caddy's no-required-keys case. Ruff check/format, mypy (500 files) and
   diff whitespace checks passed. These local results do not close live acceptance.
+
+## Operational checkpoint: restore VM capacity and audit validator compatibility
+
+- Confirmed selected main commit `c82b5bec2a5b8e4896278f1e9d2f28ef91f1ff12` and
+  preserved unrelated untracked work. No build, service recreation, data repair
+  or validator mutation occurred in this checkpoint.
+- Removed only two unused local image copies, after checking every container
+  reference and confirming both digests still exist in Artifact Registry:
+  Sheets worker `sha256:ab91fe179dd4124e68f3f3ec11e9c7eca0624fe485ab8753f262e8fe26817646`
+  and Sheets API `sha256:cd3c541f85a47fa0093fda6958bd1dfb4759263c5c24a3d5b76fd78c8663a8dc`.
+  Running images and immediate rollback images were retained. No volumes or
+  containers were removed. Both deleted copies are recoverable by digest pull.
+- Root free space increased from 4.54 to 5.62 GiB, above the 5 GiB capacity floor.
+  Run the full service-specific deploy preflight again immediately before a pull;
+  this capacity observation alone is not a deployment authorization receipt.
+- Inside the approved worker container, using `/app/.venv/bin/python`, checked
+  production documents against main's orders/shipments `$jsonSchema` payloads.
+  Existing validators differ from main; both are configured strict/error.
+  Orders: 2,429 documents, zero invalid under the proposed schema. Shipments:
+  2,374 documents, 47 invalid. All 47 belong to the pilot and have string-valued
+  `date_created` and `last_updated`; no other property violations or missing
+  required fields were found. Only aggregate counts/types were emitted.
+- Diagnostic correction: the first probe mistakenly included deployment metadata
+  (`validationLevel`/`validationAction`) as query predicates and reported all
+  documents invalid. That result is discarded; the counts above use only the
+  `$jsonSchema` validator. System Python also lacked pymongo, so the successful
+  probe used the documented runtime virtual environment.
+- Next release gate: validate and reversibly normalize those 47 date pairs in
+  the approved runtime context, preserving instants and unrelated fields; recheck
+  zero invalid documents before applying compatible validators. This does not
+  prove source completeness/freshness or replace new-contract acquisition.
+- Verification is the production read-only compatibility/count audit plus exact
+  image-reference/registry checks and measured capacity. Unit tests are N/A for
+  this documentation-only repository change; no executable code changed.
+  Pending Sheets API/worker changes still require new verified Cloud Build images,
+  exact deployed-source checks and pilot recovery/HTTP verification after the
+  outstanding release gates. The full goal remains open.
+- Post-cleanup inspection confirmed API `f9b07c9de23c`, worker `b8edfdf59627`
+  and gateway `2d4a514cab2d` still healthy with zero restarts and the same images.
+  Diff whitespace validation passed. Documentation rollback removes only this
+  checkpoint; image recovery is independent and uses the registry digests above.
