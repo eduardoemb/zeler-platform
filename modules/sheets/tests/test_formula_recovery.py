@@ -31,6 +31,64 @@ def test_runtime_recovery_seller_list_is_explicit_and_validated() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "change", [None, "price", "status", "delete", "stale_source", "undated_source"]
+)
+async def test_item_enrichment_cannot_overwrite_newer_or_concurrent_state(
+    recovery_db: Any, change: str | None
+) -> None:
+    from zeler_sheets.sheetseller_backfill import run_item_detail_enrichment
+
+    original = {
+        "_id": "MLA1",
+        "seller_id": "82453304",
+        "title": "Old title",
+        "price": 10,
+        "base_price": 10,
+        "category_id": "MLA123",
+        "available_quantity": 2,
+        "status": "active",
+        "date_created": datetime(2026, 9, 1),
+        "last_updated": datetime(2026, 9, 7),
+        "attributes": [],
+        "variations": [],
+    }
+    await recovery_db.items.insert_one(original)
+    expected = dict(original)
+
+    class Gateway:
+        async def fetch_resource(self, *, seller_id: str, path: str) -> Any:
+            assert path == "/items?ids=MLA1"
+            if change in {"price", "status"}:
+                fields = {"price": 99} if change == "price" else {"status": "paused"}
+                await recovery_db.items.update_one({"_id": "MLA1"}, {"$set": fields})
+                expected.update(fields)
+            elif change == "delete":
+                await recovery_db.items.delete_one({"_id": "MLA1"})
+            detail = {**original, "id": "MLA1", "title": "Source title"}
+            if change == "stale_source":
+                detail["last_updated"] = datetime(2026, 9, 6, tzinfo=UTC)
+            elif change == "undated_source":
+                detail.pop("last_updated")
+            return [{"code": 200, "body": detail}]
+
+    if change:
+        with pytest.raises(RuntimeError, match="item.*(changed|older)"):
+            await run_item_detail_enrichment(
+                db=recovery_db, gateway=Gateway(), seller_id="82453304", dry_run=False
+            )
+        assert await recovery_db.items.find_one({"_id": "MLA1"}) == (
+            None if change == "delete" else expected
+        )
+    else:
+        summary = await run_item_detail_enrichment(
+            db=recovery_db, gateway=Gateway(), seller_id="82453304", dry_run=False
+        )
+        assert summary.items_updated == 1
+        assert (await recovery_db.items.find_one({"_id": "MLA1"}))["title"] == "Source title"
+
+
+@pytest.mark.asyncio
 async def test_item_discovery_cli_rejects_wrong_source_before_connection() -> None:
     from zeler_sheets.sheetseller_backfill import _run_cli, build_arg_parser
 

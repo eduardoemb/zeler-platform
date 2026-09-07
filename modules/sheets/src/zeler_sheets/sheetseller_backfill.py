@@ -1148,6 +1148,16 @@ async def run_item_detail_enrichment(
                 seller_id=seller_id,
                 synced_at=synced_at,
             )
+            prior_updated = bson_ms_utc_datetime(
+                _coerce_datetime_value(existing_item.get("last_updated"))
+            )
+            source_updated = bson_ms_utc_datetime(
+                _coerce_datetime_value(detail.get("last_updated"))
+            )
+            if prior_updated is not None and (
+                source_updated is None or source_updated < prior_updated
+            ):
+                raise RuntimeError("item source is older or lacks a comparable update timestamp")
             items_validated += 1
             if (
                 not clear_current_promotion
@@ -1193,12 +1203,19 @@ async def run_item_detail_enrichment(
                 unset_fields["listing_fee_projection"] = ""
             if unset_fields:
                 update["$unset"] = unset_fields
-            await items_collection.update_one(
-                filter_spec,
+            result = await items_collection.update_one(
+                {
+                    **filter_spec,
+                    # Match the complete original, not just the source timestamp:
+                    # status/enrichment events can change fields at the same time.
+                    "$expr": {"$eq": ["$$ROOT", {"$literal": existing_by_id[document["_id"]]}]},
+                },
                 update,
                 upsert=False,
                 bypass_document_validation=False,
             )
+            if result.matched_count != 1:
+                raise RuntimeError("item changed during enrichment; retry from current state")
             items_updated += 1
 
     return ItemDetailEnrichmentSummary(

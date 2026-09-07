@@ -88,6 +88,11 @@ class FakeCollection:
 
 def _matches_filter(document: dict[str, Any], filter_spec: dict[str, Any]) -> bool:
     for key, expected in filter_spec.items():
+        if key == "$expr":
+            assert expected["$eq"][0] == "$$ROOT"
+            if document != expected["$eq"][1]["$literal"]:
+                return False
+            continue
         if key == "$or":
             if not any(_matches_filter(document, option) for option in expected):
                 return False

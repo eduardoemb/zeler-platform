@@ -1828,3 +1828,38 @@ retain their contract; other product deployments remain out of scope.
   tests, preserving the prior enrichment path. Do not delete successfully
   normalized discovered data on rollback. Pilot recovery configuration is
   unchanged and the global goal remains active.
+
+## Item enrichment preserves concurrent and newer persisted state
+
+- Existing-item enrichment now writes only while the complete Mongo document
+  still equals the original read snapshot, using an atomic `$expr`/`$literal`
+  equality guard. Checking only `last_updated` would miss concurrent status or
+  enrichment changes at the same timestamp. Deleted documents are not recreated
+  and unmatched writes are not reported as successful updates.
+- Rejects an older detail timestamp, or a missing comparable source timestamp
+  when Mongo already has one. It compares the actual source detail timestamp,
+  not the canonical merged document, which could inherit Mongo's timestamp.
+  Static failures require retrying from current data; no source payload is
+  included. New-item insert-only behavior is unchanged.
+- Real local Mongo tests reproduced concurrent price/status changes, deletion,
+  stale source and undated source before the checks; they now preserve stored
+  state, while an unchanged input still enriches successfully. The recovery and
+  backfill suites passed **280 tests in 23.58s**. The consumer suite's fake Mongo
+  matcher was extended to evaluate the guard; **8 tests passed in 0.27s**.
+  Protected stock-time tests separately passed **8 in 2.29s**. No productive
+  execution or deployment occurred in this unit.
+- Final root suite with the dedicated local replica set: **3749 passed,
+  9 skipped, 356 warnings in 87.82s**. Ruff check/format, mypy over 501 source
+  files and `git diff --check` passed on the final executable snapshot.
+- The enrichment batch is not an all-or-nothing transaction: a conflict can
+  occur after earlier item writes succeeded. No completeness marker is emitted,
+  and retries must re-read current state. This is a per-document lost-update
+  guard, not automatic job scheduling, projected-row acceptance or proof that all
+  required item fields are available.
+- Both Sheets images need verified Cloud Build refreshes for the pending
+  catalog identity, discovery and update-guard changes; deployed executable
+  source was last verified at `f7589c9`. Verify dry-run/source discovery, guarded
+  enrichment and independent persisted/projection results in the pilot runtime
+  before claiming productive completion. Rollback removes these checks and test
+  changes only; no schema or customer-data rollback is required. Keep broad
+  discovery writes off if reverting the concurrent-write protection.

@@ -175,6 +175,11 @@ class FakeCollection:
             raise AssertionError("order repair must update existing canonical orders only")
         doc_id = str(filter_spec["_id"])
         current = dict(self.documents[doc_id])
+        if "$expr" in filter_spec:
+            expression = filter_spec["$expr"]
+            assert expression["$eq"][0] == "$$ROOT"
+            if current != expression["$eq"][1]["$literal"]:
+                return FakeReplaceResult(matched_count=0, modified_count=0)
         for path, value in update.get("$set", {}).items():
             _set_path(current, path, value)
         for path in update.get("$unset", {}):
@@ -2042,7 +2047,11 @@ async def test_item_detail_enrichment_fetches_canonical_ids_and_writes_formula_f
     assert db["items"].find_filters == [{"seller_id": "82453304"}]
     assert len(db["items"].update_calls) == 1
     filter_spec, update, options = db["items"].update_calls[0]
-    assert filter_spec == {"_id": "MLA1", "seller_id": "82453304"}
+    assert filter_spec == {
+        "_id": "MLA1",
+        "seller_id": "82453304",
+        "$expr": {"$eq": ["$$ROOT", {"$literal": canonical}]},
+    }
     assert options == {"upsert": False, "bypass_document_validation": False}
     set_fields = update["$set"]
     assert isinstance(set_fields["last_meli_sync_at"], datetime)
