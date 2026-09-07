@@ -9,6 +9,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from bson.decimal128 import Decimal128
 
 from zeler_sheets.formulas.dispatcher import (
+    FormulaDataUnavailableError,
     FormulaExecutionContext,
     FormulaExecutionResult,
     FormulaHandler,
@@ -144,6 +145,7 @@ class OrderQuestionFormulaHandlers:
             date_to=date_range.end,
             status=status_filter,
         )
+        _require_buyer_filter_data(context, orders, buyer_selection, date_range)
         filtered_orders = _filter_orders_by_buyers(orders, buyer_selection.buyer_filter)
         sku_resolver = await _sku_resolver_for_orders(
             repository=self._repository,
@@ -284,6 +286,7 @@ class OrderQuestionFormulaHandlers:
             seller_id=context.seller_id,
             orders=orders,
         )
+        _require_buyer_filter_data(context, orders, buyer_selection, date_range)
         filtered_orders = _filter_orders_by_buyers(orders, buyer_selection.buyer_filter)
         item_rows = await _item_formula_rows_for_orders(
             repository=self._repository,
@@ -950,6 +953,25 @@ def _buyer_boolean_flag(value: Any) -> bool | None:
     if flattened[0] in {"no", "falso", "false", "0"}:
         return False
     return None
+
+
+def _require_buyer_filter_data(
+    context: FormulaExecutionContext,
+    orders: Sequence[Mapping[str, Any]],
+    selection: _BuyerSelection,
+    date_range: _DateRange,
+) -> None:
+    if selection.buyer_filter and any(
+        not _buyer_id(order) or "buyer_id" in (order.get("unavailable_fields") or [])
+        for order in orders
+    ):
+        raise FormulaDataUnavailableError(
+            context.contract.name,
+            "Required buyer identity is unavailable for buyer filtering.",
+            read_model="orders",
+            date_from=date_range.start,
+            date_to=date_range.end,
+        )
 
 
 def _filter_orders_by_buyers(

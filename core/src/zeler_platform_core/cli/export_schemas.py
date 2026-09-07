@@ -376,7 +376,6 @@ ENTITY_SCHEMAS: dict[str, dict[str, Any]] = {
         "required": [
             "_id",
             "seller_id",
-            "buyer_id",
             "status",
             "date_created",
             "total_amount",
@@ -396,8 +395,28 @@ ENTITY_SCHEMAS: dict[str, dict[str, Any]] = {
             "meli_pack_id": {"bsonType": ["string", "long", "int", "null"]},
             "tags": {"bsonType": "array"},
             "feedback": {"bsonType": ["object", "null"]},
+            "unavailable_fields": {
+                "bsonType": "array",
+                "uniqueItems": True,
+                "items": {"enum": ["buyer_id", "shipment_id", "feedback"]},
+            },
             **SCHEMA_VERSION,
         },
+        "oneOf": [
+            {
+                "required": ["buyer_id"],
+                "properties": {
+                    "unavailable_fields": {"items": {"enum": ["shipment_id", "feedback"]}}
+                },
+            },
+            {
+                "required": ["unavailable_fields"],
+                "not": {"required": ["buyer_id"]},
+                "properties": {
+                    "unavailable_fields": {"not": {"items": {"enum": ["shipment_id", "feedback"]}}}
+                },
+            },
+        ],
     },
     "questions": {
         "required": [

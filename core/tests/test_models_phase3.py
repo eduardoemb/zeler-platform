@@ -113,6 +113,27 @@ def test_order_accepts_meli_partially_refunded_status() -> None:
     assert order.status == "partially_refunded"
 
 
+def test_order_requires_explicit_unavailable_buyer_without_inventing_an_identity() -> None:
+    base = {
+        "id": 123,
+        "seller_id": 456,
+        "status": "paid",
+        "date_created": NOW,
+        "total_amount": Decimal("10.00"),
+        "schema_version": 1,
+    }
+    partial = Order.model_validate({**base, "unavailable_fields": ["buyer_id"]})
+    assert partial.buyer_id is None
+    assert "buyer_id" not in partial.model_dump(exclude_none=True)
+    for invalid in (
+        base,
+        {**base, "unavailable_fields": ["feedback"]},
+        {**base, "buyer_id": 789, "unavailable_fields": ["buyer_id"]},
+    ):
+        with pytest.raises(ValidationError, match="buyer absence"):
+            Order.model_validate(invalid)
+
+
 def test_order_coerces_optional_meli_pack_id_and_drops_blank_values() -> None:
     packed_order = Order.model_validate(
         {

@@ -1,6 +1,45 @@
 {
   "$jsonSchema": {
     "bsonType": "object",
+    "oneOf": [
+      {
+        "properties": {
+          "unavailable_fields": {
+            "items": {
+              "enum": [
+                "shipment_id",
+                "feedback"
+              ]
+            }
+          }
+        },
+        "required": [
+          "buyer_id"
+        ]
+      },
+      {
+        "not": {
+          "required": [
+            "buyer_id"
+          ]
+        },
+        "properties": {
+          "unavailable_fields": {
+            "not": {
+              "items": {
+                "enum": [
+                  "shipment_id",
+                  "feedback"
+                ]
+              }
+            }
+          }
+        },
+        "required": [
+          "unavailable_fields"
+        ]
+      }
+    ],
     "properties": {
       "_id": {
         "bsonType": [
@@ -158,12 +197,22 @@
           "int",
           "long"
         ]
+      },
+      "unavailable_fields": {
+        "bsonType": "array",
+        "items": {
+          "enum": [
+            "buyer_id",
+            "shipment_id",
+            "feedback"
+          ]
+        },
+        "uniqueItems": true
       }
     },
     "required": [
       "_id",
       "seller_id",
-      "buyer_id",
       "status",
       "date_created",
       "total_amount",

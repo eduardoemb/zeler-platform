@@ -358,7 +358,14 @@ class FormulaRecoveryWorker:
                 await self.db[read_model]
                 .find(
                     {"seller_id": seller_id, "date_created": {"$gte": start, "$lt": end}},
-                    {"_id": 1, "buyer_id": 1, "items": 1, "shipment_id": 1, "tags": 1},
+                    {
+                        "_id": 1,
+                        "buyer_id": 1,
+                        "items": 1,
+                        "shipment_id": 1,
+                        "tags": 1,
+                        "unavailable_fields": 1,
+                    },
                     session=session,
                 )
                 .to_list(length=None)
@@ -366,12 +373,13 @@ class FormulaRecoveryWorker:
             if {str(row["_id"]) for row in persisted} != {str(row["id"]) for row in resources}:
                 raise ValueError("persisted inventory differs from authoritative source")
             if read_model == "orders" and any(
-                not row.get("buyer_id")
+                (not row.get("buyer_id") and "buyer_id" not in row.get("unavailable_fields", []))
                 or not row.get("items")
                 or (
                     "shipping" in unavailable_fields.get(str(row["_id"]), frozenset())
                     and not row.get("shipment_id")
                     and "no_shipping" not in (row.get("tags") or [])
+                    and "shipment_id" not in row.get("unavailable_fields", [])
                 )
                 for row in persisted
             ):

@@ -843,3 +843,30 @@ controlled pilot order recovery are required before claiming live support.
 Pair the release with the forthcoming API range/admission changes rather than
 activate this staging implementation alone. Existing non-session core callers
 retain their contract; other product deployments remain out of scope.
+
+## Work unit: unavailable buyer does not erase usable order amounts
+
+- A new real-Mongo test first failed because a partial source order without a
+  cached buyer could not be persisted. Order normalization now omits the absent
+  buyer ID and explicitly records unavailable_fields. No placeholder identity
+  is manufactured. Source-available complete documents retain their old shape.
+- Core validation and the exported Mongo order validator require the buyer
+  omission to match the unavailable marker. Mongo tests reject undeclared
+  absence, unrelated flags, contradictory identity/flag and unknown field names.
+  The allowed normalized field names are buyer_id, shipment_id and feedback.
+- Recovery can publish an authoritative inventory with explicit field gaps.
+  Last-known feedback remains marked unavailable when not freshly sourced;
+  existing identity fallback and no_shipping behavior are preserved.
+- A validated Mongo recovery test proves sales total 30 remains usable while
+  buyer-filtered ORDENES raises structured DATA_UNAVAILABLE instead of silently
+  excluding the order. Both buyer-filter call sites share that check. No source
+  call occurs during either calculation. This is not yet a range-coverage or
+  authenticated HTTP acceptance claim.
+- Model, schema export, recovery, order/question formula and persistence suites:
+  199 passed in 6.22s. Static checks pass. No production schema/data mutation.
+- Rollback boundary: explicit order-field availability, buyer omission model
+  and Mongo schema, and buyer-filter guards with their tests. Production rollout
+  must apply the compatible order validator before any partial writer is enabled
+  and protect all relevant readers. Do not restore the old required-buyer Mongo
+  validator while partially populated orders exist; retain the compatible
+  validator through a code rollback until those documents are resolved.

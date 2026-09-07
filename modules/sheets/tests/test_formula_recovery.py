@@ -15,6 +15,93 @@ from zeler_sheets.formulas.recovery import FormulaRecoveryQueue, RecoveryRequest
 
 
 @pytest.mark.asyncio
+async def test_missing_buyer_keeps_complete_sales_but_rejects_buyer_filter(
+    recovery_db: Any,
+) -> None:
+    import json
+    from pathlib import Path
+
+    import httpx
+    from pymongo.errors import WriteError
+
+    from zeler_sheets.formulas.dispatcher import (
+        FormulaDataUnavailableError,
+        FormulaExecutionContext,
+    )
+    from zeler_sheets.formulas.handlers_orders_questions import OrderQuestionFormulaHandlers
+    from zeler_sheets.formulas.read_models import FormulaReadModelRepository
+    from zeler_sheets.formulas.recovery_worker import FormulaRecoveryWorker
+    from zeler_sheets.formulas.registry import FormulaRegistry
+
+    schema = json.loads(Path("infra/mongo/schemas/orders.json").read_text())
+    await recovery_db.create_collection("orders", validator={"$jsonSchema": schema["$jsonSchema"]})
+    requested = RecoveryRequest(
+        seller_id="pilot",
+        read_model="orders",
+        date_from=request().date_from,
+        date_to=request().date_to,
+    )
+    queue = FormulaRecoveryQueue(recovery_db, enabled_models=frozenset({"orders"}))
+    await queue.enqueue(requested)
+    resource = {
+        "id": 42,
+        "seller": {"id": "pilot"},
+        "buyer": {},
+        "status": "paid",
+        "date_created": "2026-08-20T10:00:00Z",
+        "last_updated": "2026-08-20T11:00:00Z",
+        "total_amount": 30,
+        "order_items": [{"item": {"id": "MLM42"}, "quantity": 1, "unit_price": 30}],
+    }
+    calls: list[str] = []
+
+    class Gateway:
+        async def fetch_resource(self, **kwargs: Any) -> dict[str, Any]:
+            calls.append(kwargs["path"])
+            return {"paging": {"total": 1}, "results": [resource]}
+
+        async def request(self, **kwargs: Any) -> httpx.Response:
+            calls.append(kwargs["path"])
+            return httpx.Response(206, headers={"X-Content-Missing": "buyer"}, json=resource)
+
+    await FormulaRecoveryWorker(db=recovery_db, gateway=Gateway(), queue=queue).process_one()
+    job = await queue.collection.find_one({"_id": requested.key})
+    assert job["state"] == "completed", job.get("failure_reason")
+    stored = await recovery_db.orders.find_one({"_id": "42"})
+    assert "buyer_id" not in stored
+    assert stored["unavailable_fields"] == ["buyer_id"]
+    undeclared = {key: value for key, value in stored.items() if key != "unavailable_fields"}
+    for invalid in (
+        undeclared,
+        {**undeclared, "unavailable_fields": ["feedback"]},
+        {**stored, "buyer_id": "123"},
+        {**stored, "unavailable_fields": ["buyer_id", "unexpected"]},
+    ):
+        with pytest.raises(WriteError):
+            await recovery_db.orders.insert_one({**invalid, "_id": "invalid"})
+    handlers = OrderQuestionFormulaHandlers(FormulaReadModelRepository(db=recovery_db))
+
+    def context(name: str, **args: Any) -> FormulaExecutionContext:
+        return FormulaExecutionContext(
+            contract=FormulaRegistry.default().find_required(name),
+            cuenta="pilot",
+            seller_id="pilot",
+            seller_nickname="pilot",
+            token_id=uuid4().hex,
+            request_id=None,
+            args={"fecha_inicial": "2026-08-08", "fecha_final": "2026-09-06", **args},
+        )
+
+    result = await handlers.sheetseller_ventas_totales(context("ZELERDATA_VENTASTOTALES"))
+    assert result.values == [[30]]
+    with pytest.raises(FormulaDataUnavailableError) as missing:
+        await handlers.sheetseller_ordenes(context("ZELERDATA_ORDENES", compradores="123"))
+    assert missing.value.read_model == "orders"
+    assert len(calls) == 2  # Formula evaluation never re-fetches the source.
+    assert calls[-1] == "/orders/42"
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "failure",
     [
@@ -120,7 +207,7 @@ async def test_order_recovery_publishes_only_complete_owned_inventory(
     assert calls, "order source acquisition must actually run"
     job = await queue.collection.find_one({"_id": requested.key})
     marker = await recovery_db.sheets_read_model_freshness.find_one({"_id": "pilot:orders"})
-    if failure not in {None, "empty", "partial_recovered"}:
+    if failure not in {None, "empty", "partial_recovered", "partial_response"}:
         assert job["state"] == "failed"
         assert await recovery_db.orders.find({}).to_list(None) == before
         assert marker is None
@@ -137,6 +224,10 @@ async def test_order_recovery_publishes_only_complete_owned_inventory(
             {"_id": "pilot:devoluciones"}
         )
         assert operation["state"] == "succeeded"
+        if failure == "partial_response":
+            for stored in await recovery_db.orders.find({}).to_list(None):
+                assert "buyer_id" not in stored
+                assert stored["unavailable_fields"] == ["buyer_id"]
         if failure == "partial_recovered":
             for stored in await recovery_db.orders.find({}).to_list(None):
                 assert stored["status"] == "cancelled"

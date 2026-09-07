@@ -593,7 +593,7 @@ class OrderItem(UtcDatetimeMixin, PriceMixin):
 
 
 class Order(UtcDatetimeMixin, PriceMixin, SellerScopedDocument):
-    buyer_id: str
+    buyer_id: str | None = None
     status: OrderStatus
     date_created: datetime
     date_closed: datetime | None = None
@@ -604,11 +604,21 @@ class Order(UtcDatetimeMixin, PriceMixin, SellerScopedDocument):
     meli_pack_id: str | None = None
     tags: list[str] = Field(default_factory=list)
     feedback: dict[str, Any] | None = None
+    unavailable_fields: list[Literal["buyer_id", "shipment_id", "feedback"]] = Field(
+        default_factory=list
+    )
 
     @field_validator("buyer_id", mode="before")
     @classmethod
-    def _coerce_buyer_id(cls, value: object) -> str:
-        return _coerce_str(value)
+    def _coerce_buyer_id(cls, value: object) -> str | None:
+        return None if value is None else _coerce_str(value)
+
+    @model_validator(mode="after")
+    def _buyer_absence_is_explicit(self) -> Order:
+        self.unavailable_fields = sorted(set(self.unavailable_fields))
+        if (self.buyer_id is None) != ("buyer_id" in self.unavailable_fields):
+            raise ValueError("buyer absence must match unavailable_fields")
+        return self
 
     @field_validator("shipment_id", "meli_pack_id", mode="before")
     @classmethod

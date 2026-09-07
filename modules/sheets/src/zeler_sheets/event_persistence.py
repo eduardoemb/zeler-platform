@@ -785,6 +785,7 @@ class SheetsEventPersistence:
                 merged,
                 seller_id=seller_id,
                 sale_fee_synced_at=observed_at,
+                unavailable_fields=unavailable_fields,
             )
             order_written = await _replace_resource_if_fresh(
                 self._db["orders"],
@@ -1069,7 +1070,11 @@ def _state_synced_at(item: dict[str, Any], state: Any) -> datetime:
 
 
 def _canonical_order_document(
-    resource: dict[str, Any], *, seller_id: str, sale_fee_synced_at: datetime
+    resource: dict[str, Any],
+    *,
+    seller_id: str,
+    sale_fee_synced_at: datetime,
+    unavailable_fields: frozenset[str] = frozenset(),
 ) -> dict[str, Any]:
     seller = resource.get("seller")
     source_owners = (
@@ -1087,23 +1092,45 @@ def _canonical_order_document(
         or resource.get("date_last_updated")
         or resource.get("updated_at")
     )
+    buyer_id: str | None
+    missing: list[str] = []
+    try:
+        buyer_id = _buyer_id(resource)
+    except ValueError:
+        if "buyer" not in unavailable_fields:
+            raise
+        buyer_id = None
+        missing.append("buyer_id")
+    shipment_id = _shipment_id(resource)
+    if (
+        "shipping" in unavailable_fields
+        and shipment_id is None
+        and "no_shipping" not in (resource.get("tags") or [])
+    ):
+        missing.append("shipment_id")
+    if "feedback" in unavailable_fields:
+        missing.append("feedback")
     model = Order.model_validate(
         {
             **resource,
             "_id": order_id,
             "seller_id": seller_id,
             "last_updated": last_updated,
-            "buyer_id": _buyer_id(resource),
-            "shipment_id": _shipment_id(resource),
+            "buyer_id": buyer_id,
+            "shipment_id": shipment_id,
+            "unavailable_fields": missing,
             "meli_pack_id": _meli_pack_id(resource),
             "items": _order_items(resource, sale_fee_synced_at=sale_fee_synced_at),
             "schema_version": current_schema_version("orders"),
         }
     )
-    return cast(
+    document = cast(
         "dict[str, Any]",
         _bson_safe(model.model_dump(by_alias=True, mode="python", exclude_none=True)),
     )
+    if not missing:
+        document.pop("unavailable_fields", None)
+    return document
 
 
 def _canonical_shipment_document(resource: dict[str, Any], *, seller_id: str) -> dict[str, Any]:
