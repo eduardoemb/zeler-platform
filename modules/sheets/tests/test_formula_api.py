@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
@@ -26,6 +27,43 @@ from zeler_sheets.formulas.recovery import RecoveryRequest
 
 class FakeUpdateResult:
     modified_count = 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("endpoint", ["execute", "batch"])
+async def test_formula_deadline_cancels_work_before_sheets_limit(
+    monkeypatch: pytest.MonkeyPatch, endpoint: str
+) -> None:
+    from zeler_sheets import api
+
+    monkeypatch.setattr(api, "FORMULA_DEADLINE_SECONDS", 0.02, raising=False)
+    cancelled = asyncio.Event()
+
+    async def slow_handler(context: Any) -> FormulaExecutionResult:
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cancelled.set()
+        raise AssertionError("unreachable")
+
+    app, _db, token = await _app_with_token(
+        now=datetime(2026, 5, 13, 12, tzinfo=UTC),
+        formula_dispatcher=slow_handler,
+    )
+    payload = {"formula": "ZELERDATA_SKU", "cuenta": "HOPEMOB", "args": {}}
+    async with (
+        httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client,
+        asyncio.timeout(1),
+    ):
+        response = await client.post(
+            f"/sheets/formulas:{endpoint}",
+            headers={"Authorization": f"Bearer {token}"},
+            json=payload if endpoint == "execute" else {"requests": [payload]},
+        )
+    assert response.status_code == 503
+    assert response.json()["error"]["code"] == "INTERNAL"
+    assert response.json()["error"]["retryable"] is True
+    assert cancelled.is_set()
 
 
 @pytest.mark.asyncio

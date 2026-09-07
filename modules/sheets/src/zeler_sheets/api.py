@@ -57,6 +57,8 @@ from zeler_sheets.formulas.runtime_states import (
 )
 from zeler_sheets.formulas.schemas import FormulaContract
 
+FORMULA_DEADLINE_SECONDS = 20.0
+
 
 class ExportConfigPayload(BaseModel):
     spreadsheet_id: str
@@ -477,9 +479,10 @@ def build_router(
             )
         )
 
-    @router.post("/formulas:execute")
-    async def execute_formula(request: Request, payload: FormulaExecutePayload) -> JSONResponse:
-        body, status = await _execute_formula_payload(
+    async def execute_payload(
+        request: Request, payload: FormulaExecutePayload
+    ) -> tuple[dict[str, Any], int]:
+        return await _execute_formula_payload(
             request,
             payload,
             registry=registry,
@@ -490,27 +493,36 @@ def build_router(
             audit_hook=formula_audit_hook,
             rate_limit_hook=formula_rate_limit_hook,
         )
-        return JSONResponse(status_code=status, content=jsonable_encoder(body))
+
+    @router.post("/formulas:execute")
+    async def execute_formula(request: Request, payload: FormulaExecutePayload) -> JSONResponse:
+        try:
+            async with asyncio.timeout(FORMULA_DEADLINE_SECONDS):
+                body, status = await execute_payload(request, payload)
+                return JSONResponse(status_code=status, content=jsonable_encoder(body))
+        except TimeoutError:
+            return _formula_deadline_response()
 
     @router.post("/formulas:batch")
     async def execute_formula_batch(request: Request, payload: FormulaBatchPayload) -> JSONResponse:
-        results = []
-        for formula_request in payload.requests:
-            body, status = await _execute_formula_payload(
-                request,
-                formula_request,
-                registry=registry,
-                dispatcher=dispatcher,
-                now=now,
-                token_pepper=extension_token_pepper,
-                token_factory=extension_token_factory,
-                audit_hook=formula_audit_hook,
-                rate_limit_hook=formula_rate_limit_hook,
-            )
-            results.append({"status": status, "body": body})
-        return JSONResponse(jsonable_encoder({"ok": True, "results": results}))
+        try:
+            async with asyncio.timeout(FORMULA_DEADLINE_SECONDS):
+                results = []
+                for formula_request in payload.requests:
+                    body, status = await execute_payload(request, formula_request)
+                    results.append({"status": status, "body": body})
+                return JSONResponse(jsonable_encoder({"ok": True, "results": results}))
+        except TimeoutError:
+            return _formula_deadline_response()
 
     return router
+
+
+def _formula_deadline_response() -> JSONResponse:
+    body, status = _formula_error(
+        "INTERNAL", "formula execution deadline exceeded", status_code=503, retryable=True
+    )
+    return JSONResponse(status_code=status, content=body)
 
 
 def _authorize(request: Request, seller_id: str | int | None = None) -> JSONResponse | None:

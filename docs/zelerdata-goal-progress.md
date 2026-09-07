@@ -137,3 +137,27 @@ Pilot: seller `82453304`; initial historical window 2026-08-08 through
   deploy the executor as full ZelerData recovery yet.
 - Rollback boundary: recovery_worker.py, its tests and optional valid_until
   enforcement in read_models.py. No production write or deployment occurred.
+
+## Work unit: bounded formula HTTP execution
+
+- Individual and batch endpoints now share a 20-second overall async deadline,
+  covering token validation, data reads and execution; batch uses one budget
+  for the whole batch. Timeout cancels work and returns retryable INTERNAL/503.
+- Tests with a nonterminating handler first failed at the test watchdog and
+  now prove cancellation and a stable response for both endpoints.
+- Shared payload execution removes duplicated argument wiring between routes.
+- Formula API tests: 30 passed in 0.62s; focused Ruff/mypy pass.
+- This does not prove the end-to-end 30-second limit: synchronous CPU work,
+  JSON serialization, network and Apps Script overhead still need live timing.
+- Rollback boundary: deadline constant, two route wrappers/shared execution
+  closure, timeout response and the two timeout tests. No data migration.
+
+## Baseline quality corrections
+
+- Corrected mixed-type proof annotations, schema fixture typing, optional
+  immutable mapping assertions, canonical readback import and formatting.
+- Root Ruff check and format now pass; mypy passes for all 500 source files.
+- Focused affected tests: 38 passed in 0.31s. Runtime behavior is unchanged:
+  corrections are typing/test expectations/formatting only.
+- Full regression is running against the dedicated local Mongo replica set;
+  record terminal result before treating the overall gates as satisfied.
