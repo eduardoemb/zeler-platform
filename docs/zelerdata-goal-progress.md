@@ -1555,3 +1555,39 @@ retain their contract; other product deployments remain out of scope.
   restarts, HTTP 200/ready=true, with automatic recovery still disabled.
   Whitespace validation passed. No rollback was needed; do not roll back valid
   source data simply to recreate the prior failure.
+
+## Operational checkpoint: recover pilot shipment addresses and costs
+
+- At main `63b60b9591b1fedb9d45ebd949b50f6853c0ef4d`, preflight found 97 distinct
+  shipment IDs referenced by the pilot's August 8–September 6 orders. All 97
+  existed in Mongo, none had a recent formula observation, and no shipment
+  recovery jobs existed. No identities, addresses or financial values were emitted.
+- Ran one shipment-only, pilot-scoped job through the deployed worker inside
+  the approved VM/container:
+  `d9030f3ecfe275f47bbf3401eec1a3875b88de40ec303f8bf0cd19895c507044`.
+  The job completed in 44.739s with no failure reason: 97 relationship, 97 detail
+  and 97 cost requests through the normal gateway, all 291 returning HTTP 200.
+  This exercised the implemented new shipment relationship/detail headers against
+  the live API; it does not prove the entire order-to-shipment migration complete.
+- Independent Mongo readback found all 97 requested shipments with addresses,
+  costs and observation timestamps, and zero explicit field gaps. Existing
+  normalization/owner checks and the transaction remained in force. No historical
+  shipment inventory marker was invented from this ID-scoped acquisition.
+- Before publication, the API-container Mongo-only ORDENES handler with buyer
+  columns returned DATA_UNAVAILABLE for shipments in 0.0961s. After publication,
+  the same August-range handler returned ready over 100 orders in 0.0924s.
+  These are internal operator reads, not authenticated HTTP, a real Sheet, all-52
+  acceptance or a latency percentile. Output values/PII were not printed.
+- Automatic recovery remains disabled. No repository executable code, build,
+  deployment, feature flag, other account or other product changed in this
+  checkpoint. Existing API/worker images remain the intended versions for this
+  work; no rebuild is needed for the documentation update. Unit tests are N/A
+  for this operational-only checkpoint; runtime evidence is the completed job,
+  source response counts and independent stored-data/handler checks.
+- Rollback must not delete valid normalized source data merely to restore the
+  previous unavailable state. Keep recovery off if a later issue arises and
+  diagnose exact affected fields before any guarded repair. The normal previous
+  image rollback boundaries and compatible validators remain unchanged.
+- Requested the real ZelerData user identity and an authorized test Sheet through
+  the user-input channel for the pending authenticated/Google Sheets acceptance.
+  No user token was minted, copied or bypassed. The global goal remains open.
