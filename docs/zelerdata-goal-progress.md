@@ -1164,3 +1164,37 @@ retain their contract; other product deployments remain out of scope.
 - Final root regression: 3,696 passed, 9 skipped in 79.50s. Eight protected
   replica-set tests passed separately in 2.53s; remaining skip is Caddy's
   no-required-keys case. Ruff check/format, mypy and diff whitespace checks pass.
+
+## Work unit: restrict automatic recovery to explicitly configured sellers
+
+- Sheets API and worker now read `ZELERDATA_FORMULA_RECOVERY_SELLERS` alongside
+  the existing enable flag. Missing/blank configuration enables no sellers;
+  comma-separated numeric IDs are required and wildcards are rejected. The
+  deployment runbook names the agreed pilot and paired-image activation gate.
+- Queue admission, worker claims and exhausted-lease cleanup obey the seller
+  scope. Existing jobs belonging to other sellers remain untouched. Internal
+  callers can still explicitly construct an unrestricted queue; production
+  entrypoints always supply the parsed scope. This is a pilot gate, not a
+  replacement for quotas/fairness before broader activation.
+- Five regression cases failed before implementation. The local Mongo harness
+  verifies pilot admission/claim, rejection outside scope, preservation of
+  foreign expired jobs, and an empty scope. API construction also verifies
+  propagation. `uv run pytest modules/sheets/tests/test_formula_recovery.py`
+  with the task-owned local replica set: 95 passed in 10.34s.
+- Read-only VM inspection reconfirmed Sheets API `f9b07c9de23c`, worker
+  `b8edfdf59627` and gateway `2d4a514cab2d` healthy with zero restarts. Recovery
+  remains disabled on both Sheets services. Root free space is 4.54 GiB, below
+  the required 5 GiB pull/Compose floor. No production mutation or deployment
+  occurred; these checks do not constitute formula HTTP acceptance.
+- Rollback boundary: this seller parser, API/worker wiring, queue filters and
+  corresponding tests/runbook changes. Disable recovery on both services before
+  rolling back to images without the gate; otherwise the old flag is unscoped.
+  No schemas or persisted records need removal. New verified Cloud Build images
+  are required for Sheets API and worker after the remaining validator/event
+  ingestion gates and VM capacity preflight. Verify deployed source/digest,
+  health, pilot recovery and outside-scope rejection before activation.
+- Final root regression (`uv run pytest` with the local replica set): 3,701
+  passed, 9 skipped in 75.92s. The protected stock-time-forward suites ran
+  separately with `ZELER_RS0_TEST_URI` and no ambient `MONGO_URI`: 8 passed in
+  2.57s. Remaining skip is Caddy's no-required-keys case. Ruff check/format,
+  mypy (500 source files) and diff whitespace checks passed.

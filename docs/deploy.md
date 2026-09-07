@@ -113,6 +113,23 @@ docker compose version
 
 ## 2. Image Build & Push (Cloud Build — NEVER local)
 
+### ZelerData recovery pilot gate
+
+Formula recovery requires both `ZELERDATA_FORMULA_RECOVERY_ENABLED=true` and
+`ZELERDATA_FORMULA_RECOVERY_SELLERS=82453304` on Sheets API and Sheets worker
+for the agreed pilot. Both services must use verified images containing this
+seller gate before activation. Missing/blank seller configuration admits and
+claims no jobs; malformed IDs or wildcards fail startup. Other sellers' queued
+jobs, including expired leases, remain untouched by the scoped worker.
+
+Keep recovery disabled until compatible orders/shipments validators and the
+remaining rollout gates are verified. This allowlist does not replace admission
+quotas or prove readiness for all sellers. Check a pilot recovery end to end and
+rejection outside that scope; no formula HTTP request should wait for Mercado
+Libre. Disable recovery in both services to stop future admission/claims; already
+running work must finish or be stopped through the normal worker lifecycle.
+Persisted data and queued jobs are not deleted by disabling the feature.
+
 **Important**: Always use Cloud Build. Never `docker build` locally on Mac.
 
 Build from the connected repository at one exact commit already present in

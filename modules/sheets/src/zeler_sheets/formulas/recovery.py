@@ -29,6 +29,16 @@ MAX_ATTEMPTS = 3
 IMPLEMENTED_MODELS = frozenset({"questions", "orders", "shipments"})
 
 
+def recovery_sellers(value: str | None) -> frozenset[str]:
+    """Runtime recovery is closed unless sellers are explicitly configured."""
+    if not value or not value.strip():
+        return frozenset()
+    sellers = frozenset(part.strip() for part in value.split(","))
+    if any(not seller.isascii() or not seller.isdecimal() for seller in sellers):
+        raise ValueError("formula recovery requires explicit numeric seller IDs")
+    return sellers
+
+
 @dataclass(frozen=True)
 class RecoveryRequest:
     seller_id: str
@@ -120,10 +130,12 @@ class FormulaRecoveryQueue:
         *,
         now: Callable[[], datetime] | None = None,
         enabled_models: frozenset[str] = RECOVERABLE_MODELS,
+        allowed_sellers: frozenset[str] | None = None,
     ) -> None:
         self.collection = db["sheets_formula_recovery_jobs"]
         self.now = now or (lambda: datetime.now(UTC))
         self.enabled_models = enabled_models
+        self.allowed_sellers = allowed_sellers
 
     async def ensure_indexes(self) -> None:
         await self.collection.create_index(
@@ -138,6 +150,8 @@ class FormulaRecoveryQueue:
     async def enqueue(
         self, request: RecoveryRequest | OrderIdsRecoveryRequest | ShipmentIdsRecoveryRequest
     ) -> str:
+        if self.allowed_sellers is not None and request.seller_id not in self.allowed_sellers:
+            raise ValueError("recovery seller is not enabled")
         if request.read_model not in self.enabled_models:
             raise ValueError("recovery source is not enabled")
         if request.read_model == "shipments" and not isinstance(
@@ -179,8 +193,14 @@ class FormulaRecoveryQueue:
 
     async def claim(self) -> dict[str, Any] | None:
         now = self.now()
+        seller_filter = (
+            {"seller_id": {"$in": sorted(self.allowed_sellers)}}
+            if self.allowed_sellers is not None
+            else {}
+        )
         await self.collection.update_many(
             {
+                **seller_filter,
                 "state": "running",
                 "lease_until": {"$lte": now},
                 "attempts": {"$gte": MAX_ATTEMPTS},
@@ -197,6 +217,7 @@ class FormulaRecoveryQueue:
         )
         claimed = await self.collection.find_one_and_update(
             {
+                **seller_filter,
                 "attempts": {"$lt": MAX_ATTEMPTS},
                 "read_model": {"$in": sorted(self.enabled_models)},
                 "available_at": {"$lte": now},

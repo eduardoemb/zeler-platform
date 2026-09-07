@@ -14,6 +14,51 @@ from pymongo.errors import ServerSelectionTimeoutError
 from zeler_sheets.formulas.recovery import FormulaRecoveryQueue, RecoveryRequest
 
 
+@pytest.mark.parametrize("value", [None, "", "  "])
+def test_runtime_recovery_requires_explicit_sellers(value: str | None) -> None:
+    from zeler_sheets.formulas.recovery import recovery_sellers
+
+    assert recovery_sellers(value) == frozenset()
+
+
+def test_runtime_recovery_seller_list_is_explicit_and_validated() -> None:
+    from zeler_sheets.formulas.recovery import recovery_sellers
+
+    assert recovery_sellers(" 82453304, 42,82453304 ") == frozenset({"82453304", "42"})
+    for value in ("*", "82453304,", "pilot", "１２３"):
+        with pytest.raises(ValueError):
+            recovery_sellers(value)
+
+
+@pytest.mark.asyncio
+async def test_recovery_pilot_scope_limits_admission_claim_and_expiry(recovery_db: Any) -> None:
+    now = datetime.now(UTC)
+    unrestricted = FormulaRecoveryQueue(recovery_db, now=lambda: now)
+    requests = {
+        seller: RecoveryRequest(seller, "orders", now - timedelta(days=1), now)
+        for seller in ("pilot", "other", "expired")
+    }
+    for request in requests.values():
+        await unrestricted.enqueue(request)
+    await unrestricted.collection.update_one(
+        {"_id": requests["expired"].key},
+        {"$set": {"state": "running", "attempts": 3, "lease_until": now}},
+    )
+    before = await unrestricted.collection.find_one({"_id": requests["expired"].key})
+    queue = FormulaRecoveryQueue(recovery_db, now=lambda: now, allowed_sellers=frozenset({"pilot"}))
+    with pytest.raises(ValueError, match="seller"):
+        await queue.enqueue(requests["other"])
+    assert await queue.enqueue(requests["pilot"]) == requests["pilot"].key
+    claimed = await queue.claim()
+    assert claimed is not None and claimed["seller_id"] == "pilot"
+    assert await queue.claim() is None
+    assert await unrestricted.collection.find_one({"_id": requests["expired"].key}) == before
+    disabled = FormulaRecoveryQueue(recovery_db, allowed_sellers=frozenset())
+    assert await disabled.claim() is None
+    with pytest.raises(ValueError, match="seller"):
+        await disabled.enqueue(requests["pilot"])
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("field", ["receiver_address", "real_shipping_cost"])
 @pytest.mark.parametrize("state", ["ready", "missing", "expired", "flagged", "future", "malformed"])
@@ -758,9 +803,17 @@ async def test_order_partial_update_uses_same_seller_state_in_real_transaction(
 async def test_app_wires_only_implemented_recovery_sources(recovery_db: Any) -> None:
     from zeler_sheets.app import build_app
 
-    app = build_app(mongo_db=recovery_db, formula_recovery_enabled=True)
+    app = build_app(
+        mongo_db=recovery_db,
+        formula_recovery_enabled=True,
+        formula_recovery_sellers=frozenset({"pilot"}),
+    )
     queue = app.state.formula_recovery_queue
     await queue.enqueue(request())
+    with pytest.raises(ValueError, match="seller"):
+        await queue.enqueue(
+            RecoveryRequest("other", "orders", request().date_from, request().date_to)
+        )
     unsupported = RecoveryRequest(
         seller_id="pilot",
         read_model="shipments",

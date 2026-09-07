@@ -38,7 +38,11 @@ from zeler_platform_core.runtime.worker_health import WorkerHealthSidecar
 from zeler_sheets.claim_projection import project_claim
 from zeler_sheets.devoluciones_reconciliation import GatewayDevolucionesSource
 from zeler_sheets.event_persistence import SheetsEventPersistence, StatusObservationContentionError
-from zeler_sheets.formulas.recovery import IMPLEMENTED_MODELS, FormulaRecoveryQueue
+from zeler_sheets.formulas.recovery import (
+    IMPLEMENTED_MODELS,
+    FormulaRecoveryQueue,
+    recovery_sellers,
+)
 from zeler_sheets.formulas.recovery_worker import FormulaRecoveryWorker
 from zeler_sheets.google_errors import (
     GoogleSheetsApiError,
@@ -1181,7 +1185,11 @@ async def run() -> None:
 
     recovery_pollers: tuple[SyncJobsPollerSupervisor, ...] = ()
     if _env_flag_enabled("ZELERDATA_FORMULA_RECOVERY_ENABLED"):
-        recovery_queue = FormulaRecoveryQueue(db, enabled_models=IMPLEMENTED_MODELS)
+        recovery_queue = FormulaRecoveryQueue(
+            db,
+            enabled_models=IMPLEMENTED_MODELS,
+            allowed_sellers=recovery_sellers(os.environ.get("ZELERDATA_FORMULA_RECOVERY_SELLERS")),
+        )
         await recovery_queue.ensure_indexes()
         recovery = SyncJobsPollerSupervisor(
             FormulaRecoveryWorker(
