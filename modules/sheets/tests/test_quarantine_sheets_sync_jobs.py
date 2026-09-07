@@ -134,7 +134,7 @@ def test_quarantine_migration_runs_against_local_mongo(default_mongo_uri: str) -
         pytest.skip("runtime harness is restricted to loopback Mongo")
 
     client: MongoClient[dict[str, Any]] = MongoClient(
-        default_mongo_uri, serverSelectionTimeoutMS=500
+        default_mongo_uri, serverSelectionTimeoutMS=500, tz_aware=True
     )
     database = client["zeler_platform_test_sheets_sync_jobs_quarantine"]
     try:

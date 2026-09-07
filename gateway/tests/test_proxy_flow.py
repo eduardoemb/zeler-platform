@@ -385,8 +385,9 @@ async def test_proxy_out_of_scope_path_returns_403(
 
 @pytest.mark.asyncio
 async def test_rate_limit_exceeded_returns_429(
-    proxy_client: httpx.AsyncClient, proxy_db: Any
+    proxy_client: httpx.AsyncClient, proxy_db: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    monkeypatch.setenv("GATEWAY_PROXY_RATE_LIMIT", "60")
     _, database = proxy_db
     _seed_account(database)
     now = datetime.now(UTC)
