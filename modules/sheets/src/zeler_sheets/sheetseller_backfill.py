@@ -691,6 +691,7 @@ async def run_item_detail_enrichment(
     listing_fixed_fee_enabled: bool = False,
     item_ids: Sequence[str] | None = None,
     discover_current_items: bool = False,
+    inventory_gateway: MeliItemGatewayClient | None = None,
 ) -> ItemDetailEnrichmentSummary:
     if batch_size < 1:
         msg = "batch_size must be positive"
@@ -703,7 +704,9 @@ async def run_item_detail_enrichment(
     existing_by_id = {_item_id(item): item for item in existing_items}
     new_item_ids: set[str] = set()
     if discover_current_items:
-        discovered = await _discover_current_item_ids(gateway, seller_id=seller_id)
+        discovered = await _discover_current_item_ids(
+            inventory_gateway if inventory_gateway is not None else gateway, seller_id=seller_id
+        )
         if len(discovered | existing_by_id.keys()) > 10000:
             raise ValueError("item discovery and known inventory exceed budget")
         new_item_ids = discovered - existing_by_id.keys()
@@ -4201,9 +4204,18 @@ async def _run_cli(args: argparse.Namespace) -> BackfillCliSummary:
         if args.source == "items-enrich":
             from google.cloud import kms_v1
 
+            kms_client = kms_v1.KeyManagementServiceClient()
             gateway = MeliGatewayClient(
                 os.environ.get("GATEWAY_BASE_URL", DEFAULT_GATEWAY_BASE_URL),
-                MeliGatewayAuth("sheets", kms_v1.KeyManagementServiceClient()),
+                MeliGatewayAuth("sheets", kms_client),
+            )
+            inventory_gateway = (
+                MeliGatewayClient(
+                    os.environ.get("GATEWAY_BASE_URL", DEFAULT_GATEWAY_BASE_URL),
+                    MeliGatewayAuth("bootstrap", kms_client),
+                )
+                if args.discover_current_items
+                else None
             )
             return await run_item_detail_enrichment(
                 db=client[mongo_db_name],
@@ -4214,6 +4226,7 @@ async def _run_cli(args: argparse.Namespace) -> BackfillCliSummary:
                 listing_fixed_fee_enabled=bool(args.listing_fixed_fee_enabled),
                 item_ids=item_ids,
                 discover_current_items=bool(args.discover_current_items),
+                inventory_gateway=inventory_gateway,
             )
         if args.source == "shipments-costs":
             from google.cloud import kms_v1

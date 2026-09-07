@@ -1863,3 +1863,60 @@ retain their contract; other product deployments remain out of scope.
   before claiming productive completion. Rollback removes these checks and test
   changes only; no schema or customer-data rollback is required. Keep broad
   discovery writes off if reverting the concurrent-write protection.
+
+## Operational checkpoint: deploy item discovery and guarded enrichment
+
+- Built and verified both images from main
+  `d8b3a390291a794f109ff6f5d591bf05f2f85183`, one image per Cloud Build with
+  VERIFIED provenance. Exact source/repository/build/SLSA digest checks passed:
+  - API build `20122f6a-bed2-4dec-b0cc-3c147ff8ee3d`, image
+    `sheets-api@sha256:a4f62877759b00eedafeddb750735710047edcb68624fa7f215ccb71f2b77cf3`.
+  - Worker build `21831493-15d7-4ba9-9c7e-9c110fdd6682`, image
+    `sheets-worker@sha256:64b87403ec0d3655eedd8d57ee68352fd8ede1c5a9fbb516130fdf5d0867d015`.
+  Both use the existing Artifact Registry repository prefix. Temporary build
+  configs/verifier are in `/tmp/zeler-item-build.HLGhj6`.
+- Removed only unused local image copies at worker digest
+  `ec056fc549222b97387dec5950b50af213f1224c569a37da1b19ed9b9033734d` and API digest
+  `c41c4c4c9bb7105d37de73414c2005b877a2fad9c3d18fb62af2a4c1171408ce`, after checking
+  all container references and confirming Artifact Registry recovery. No volumes
+  or customer records were deleted. Free space went from 5.10 to 6.11 GiB and
+  ended at 5.10 GiB after both pulls.
+- No recovery jobs were running or pending for the pilot at the deployment
+  precheck. Dry/real preflight and capacity checks passed before each targeted
+  worker/API update. Final running image IDs equal the verified digests, both
+  services are healthy with zero restarts and HTTP 200 `/health`, and recovery
+  remains enabled exclusively for `82453304`. No other product was recreated.
+- Backups: `/opt/zeler-platform/docker-compose.yml.pre-sheets-worker-d8b3a39`
+  and `.pre-sheets-api-d8b3a39`. Rollback images retained locally are worker
+  `603dce2137f2952ce9f1f70e18687132a8f7cec771a2f2dbdee1ffc62542eb1b` and API
+  `f2c929e3fb43df0fec66eaa59b99cef8c180e39bc375b2e106a23ab4c506bdd3`.
+  Restore only the affected image line, preserve the pilot environment and
+  compatible validators, and verify health. Keep broad item discovery writes
+  off if reverting their guard. Deployment health is not formula acceptance.
+
+## Item inventory uses its authorized gateway client
+
+- The first productive discovery/enrichment dry run failed on its first scan:
+  HTTP 403 after 0.885s, no writes. A narrow follow-up confirmed the gateway's
+  `out_of_scope` response. Registry seeds authorize `/users/*/items/search` for
+  bootstrap, not Sheets; Sheets retains detail/enrichment scopes.
+- The existing entrypoint now accepts a separate inventory gateway. The CLI
+  creates the bootstrap client only when discovery is requested, sharing the
+  existing KMS client; all detail/enrichment calls stay on Sheets. No registry
+  scope, OAuth token, user authorization or module permission was bypassed or
+  expanded. Four routing/persistence cases failed before this change, then
+  passed with explicitly separate source clients; two CLI wiring cases cover
+  discovery on/off. The focused six cases passed in 0.91s.
+- These routing changes are newer than the deployed `d8b3a39` images. Both
+  Sheets images need another verified build/rollout before claiming the normal
+  CLI discovery path works productively. The operator-only routed dry run uses
+  the existing clients as a diagnostic and is not evidence that the deployed
+  CLI already contains this fix. Rollback removes only the inventory-client
+  parameter/wiring and its tests; no data/schema reversal is needed.
+- Root verification with the dedicated local replica set:
+  `MONGO_URI='<dedicated local replica set>' uv run pytest --tb=short` returned
+  **3751 passed, 9 skipped, 356 warnings in 87.10s**. The protected stock-time
+  suite separately passed **8 tests in 1.96s**. Ruff check/format, mypy over
+  501 source files and whitespace checks passed. Productive full enrichment
+  remains a read-only diagnostic in progress; this is not persistence or
+  formula acceptance.

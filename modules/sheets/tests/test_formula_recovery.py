@@ -89,6 +89,48 @@ async def test_item_enrichment_cannot_overwrite_newer_or_concurrent_state(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("discovery", [False, True])
+async def test_item_enrichment_cli_uses_bootstrap_only_for_inventory(
+    monkeypatch: pytest.MonkeyPatch, discovery: bool
+) -> None:
+    from google.cloud import kms_v1
+    from motor import motor_asyncio
+
+    import zeler_platform_core.auth.meli_gateway_auth as auth_module
+    import zeler_platform_core.clients.meli_gateway_client as client_module
+    import zeler_sheets.sheetseller_backfill as backfill
+
+    class Client:
+        def __init__(self, *_: Any) -> None:
+            pass
+
+        def __getitem__(self, _: str) -> None:
+            return None
+
+        def close(self) -> None:
+            pass
+
+    async def enrich(**kwargs: Any) -> str:
+        assert kwargs["gateway"] == "sheets"
+        assert kwargs["inventory_gateway"] == ("bootstrap" if discovery else None)
+        assert kwargs["discover_current_items"] is discovery
+        return "verified"
+
+    monkeypatch.setenv("MONGO_URI", "mongodb://127.0.0.1:27028/unused_mock")
+    monkeypatch.setenv("MONGO_DB", "unused_mock")
+    monkeypatch.setattr(motor_asyncio, "AsyncIOMotorClient", Client)
+    monkeypatch.setattr(kms_v1, "KeyManagementServiceClient", lambda: None)
+    monkeypatch.setattr(auth_module, "MeliGatewayAuth", lambda module, _: module)
+    monkeypatch.setattr(client_module, "MeliGatewayClient", lambda _, auth: auth)
+    monkeypatch.setattr(backfill, "run_item_detail_enrichment", enrich)
+    arguments = ["--seller-id", "82453304", "--source", "items-enrich"]
+    if discovery:
+        arguments.append("--discover-current-items")
+    result: Any = await backfill._run_cli(backfill.build_arg_parser().parse_args(arguments))
+    assert result == "verified"
+
+
+@pytest.mark.asyncio
 async def test_item_discovery_cli_rejects_wrong_source_before_connection() -> None:
     from zeler_sheets.sheetseller_backfill import _run_cli, build_arg_parser
 
@@ -158,8 +200,6 @@ async def test_item_discovery_enriches_new_items_and_preserves_unavailable_histo
         async def fetch_resource(self, *, seller_id: str, path: str) -> Any:
             assert seller_id == "82453304"
             calls.append(path)
-            if path.startswith("/users/"):
-                return {"paging": {"total": 1}, "results": ["MLA1"]}
             assert path == "/items?ids=MLA1,MLA2"
             if scenario == "concurrent":
                 await recovery_db.items.insert_one(
@@ -187,10 +227,17 @@ async def test_item_discovery_enriches_new_items_and_preserves_unavailable_histo
                 },
             ]
 
+    class InventoryGateway:
+        async def fetch_resource(self, *, seller_id: str, path: str) -> Any:
+            assert seller_id == "82453304" and path.startswith("/users/82453304/items/search?")
+            calls.append(path)
+            return {"paging": {"total": 1}, "results": ["MLA1"]}
+
     async def run() -> Any:
         return await run_item_detail_enrichment(
             db=recovery_db,
             gateway=Gateway(),
+            inventory_gateway=InventoryGateway(),
             seller_id="82453304",
             discover_current_items=True,
             dry_run=scenario == "dry_run",
