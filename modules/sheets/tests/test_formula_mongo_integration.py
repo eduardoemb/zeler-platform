@@ -8,7 +8,11 @@ import pytest
 from motor.motor_asyncio import AsyncIOMotorClient
 from pymongo.errors import ServerSelectionTimeoutError
 
+from zeler_sheets.formulas.dispatcher import FormulaExecutionContext
+from zeler_sheets.formulas.handlers_orders_questions import OrderQuestionFormulaHandlers
 from zeler_sheets.formulas.read_models import FormulaReadModelRepository
+from zeler_sheets.formulas.registry import FormulaRegistry
+from zeler_sheets.unit_costs import UnitCostLookup
 
 
 @pytest.mark.asyncio
@@ -32,6 +36,7 @@ async def test_complete_formula_sources_remain_seller_scoped_in_mongo() -> None:
             ("find_item_formula_rows", "sheets_item_formula_rows", 501, {}),
             ("find_sku_index_rows", "sheets_item_sku_index", 501, {}),
             ("find_orders", "orders", 1001, {"date_from": start, "date_to": end}),
+            ("find_questions", "questions", 1001, {"date_from": start, "date_to": end}),
         ):
             await database[collection].insert_many(
                 [{"_id": str(i), "seller_id": "pilot", "date_created": start} for i in range(count)]
@@ -40,6 +45,48 @@ async def test_complete_formula_sources_remain_seller_scoped_in_mongo() -> None:
             rows = await getattr(repository, method)(seller_id="pilot", **kwargs)
             assert len(rows) == count
             assert {row["seller_id"] for row in rows} == {"pilot"}
+        await database.sheets_read_model_freshness.insert_one(
+            {
+                "_id": "pilot:questions",
+                "seller_id": "pilot",
+                "read_model": "questions",
+                "state": "reconciled",
+                "date_from": start,
+                "reconciled_until": end,
+            }
+        )
+        result = await OrderQuestionFormulaHandlers(repository).sheetseller_preguntas_kpi(
+            FormulaExecutionContext(
+                contract=FormulaRegistry.default().find_required("ZELERDATA_PREGUNTASKPI"),
+                cuenta="PILOT",
+                seller_id="pilot",
+                seller_nickname="PILOT",
+                token_id=uuid4().hex,
+                args={"fecha_inicio": "2026-08-08", "fecha_final": "2026-09-06"},
+                request_id=None,
+            )
+        )
+        assert ["Total preguntas", 1001] in result.values
+        lookups = [
+            UnitCostLookup(seller_id="pilot", normalized_sku=f"SKU-{i:04d}") for i in range(1001)
+        ]
+        await database.seller_unit_costs.insert_many(
+            [
+                {
+                    "_id": str(i),
+                    "seller_id": "pilot",
+                    "normalized_sku": lookup.normalized_sku,
+                    "unit_cost": 7,
+                    "effective_from": start,
+                    "status": "active",
+                    "currency": "MXN",
+                }
+                for i, lookup in enumerate(lookups)
+            ]
+        )
+        costs = await repository.find_unit_costs(seller_id="pilot", lookups=lookups)
+        assert len(costs) == 1001
+        assert all(value == 7 for value in costs.values())
     finally:
         if created:
             await client.drop_database(database.name)

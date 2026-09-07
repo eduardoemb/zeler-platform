@@ -264,3 +264,21 @@ Pilot: seller `82453304`; initial historical window 2026-08-08 through
 - Rollback boundary: optional question-only session propagation, recovery
   transaction scope/preimage guard and associated tests. Remaining admission,
   schemas, source expansion and live acceptance are not proven by this unit.
+
+## Work unit: complete question and unit-cost reads
+
+- Extended the real-Mongo boundary harness: questions stopped at 1,000 of
+  1,001 stored rows; after correcting that, the 1,001st valid unit cost still
+  resolved to NA solely because its source query stopped at 1,000 documents.
+- Removed default truncation for find_questions and find_unit_costs; explicit
+  limits remain an opt-in repository capability. Questions/KPI callers request
+  complete ranges and cost callers can resolve all matching persisted costs.
+- Harness proves seller isolation, an actual PREGUNTASKPI result of 1,001,
+  and resolution of every one of 1,001 valid unit costs, not only list lengths.
+- Verification: Mongo boundary, read-model, order/question handler and unit
+  cost tests **74 passed in 0.75s**; root Ruff/format/mypy clean. No deployment.
+- Remaining fixed/heuristic limits in catalog/history/other handlers still need
+  review; this is not proof that all 52 formulas are complete. Large-input CPU,
+  memory and live end-to-end response timing also remain unverified.
+- Rollback boundary: the two reader default limits and the expanded Mongo
+  boundary harness. No persistence schema or production data changed.

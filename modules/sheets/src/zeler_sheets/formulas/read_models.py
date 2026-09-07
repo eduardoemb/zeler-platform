@@ -446,7 +446,7 @@ class FormulaReadModelRepository:
         seller_id: str,
         date_from: Any,
         date_to: Any,
-        limit: int = 1000,
+        limit: int | None = None,
     ) -> list[dict[str, Any]]:
         filter_spec = _seller_date_filter(
             seller_id=seller_id,
@@ -611,7 +611,7 @@ class FormulaReadModelRepository:
         *,
         seller_id: str,
         lookups: list[UnitCostLookup] | tuple[UnitCostLookup, ...],
-        limit: int = 1000,
+        limit: int | None = None,
     ) -> dict[UnitCostLookup, Any]:
         normalized_lookups = [
             lookup for lookup in lookups if lookup.normalized_sku or lookup.item_id
