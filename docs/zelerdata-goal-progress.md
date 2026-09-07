@@ -774,3 +774,27 @@ All-history absence and latest-known-sale evidence need distinct treatment.
   prerequisite, not enabled order recovery. The pending worker implementation
   is its intended runtime consumer; deploy together after its acceptance.
   Existing callers keep their transaction/lease contract unchanged.
+
+## Work unit: complete order inventory recovery worker
+
+- Added order acquisition to the recovery worker, not to automatic admission.
+  It follows short search pages to a stable required total, validates detail
+  identity/owner/date/items, acquires the existing covered-order operation,
+  and publishes rows, SKU indexes, coverage, job completion and operation
+  success in one transaction. Empty authoritative inventory is supported.
+- Questions and orders reuse coverage-union and atomic-publication code.
+  Existing question regressions remain green. Orders additionally verify
+  persisted buyer/item availability and the live covered-order operation.
+- Real-Mongo scenarios first failed because order acquisition never ran. They
+  now prove successful and empty recovery, missing total, foreign detail,
+  extra Mongo inventory and refusal to claim an HTTP 206 response complete.
+  The negative cases assert source acquisition actually executed, not merely
+  that the unimplemented worker rejected the model.
+- Recovery, event persistence, historical backfill and core lease suites:
+  155 passed in the focused run; exact duration is in the session evidence.
+  Root static checks pass. No production recovery or image deployment yet.
+- Rollback boundary: the order acquisition branch and shared coverage/publish
+  extraction, with these tests. Automatic admission still enables only
+  questions. Field-aware partial-response fallback and formula range checks
+  remain required before enabling orders; this worker stage is not the final
+  fallback contract or a proof of all eleven order/sales formulas.

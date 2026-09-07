@@ -15,6 +15,94 @@ from zeler_sheets.formulas.recovery import FormulaRecoveryQueue, RecoveryRequest
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "failure",
+    [None, "empty", "missing_total", "foreign_detail", "extra_mongo_row", "partial_response"],
+)
+async def test_order_recovery_publishes_only_complete_owned_inventory(
+    recovery_db: Any, failure: str | None
+) -> None:
+    import httpx
+
+    from zeler_sheets.formulas.read_models import read_model_reconciliation_marker_covers
+    from zeler_sheets.formulas.recovery_worker import FormulaRecoveryWorker
+
+    requested = RecoveryRequest(
+        seller_id="pilot",
+        read_model="orders",
+        date_from=request().date_from,
+        date_to=request().date_to,
+    )
+    queue = FormulaRecoveryQueue(recovery_db, enabled_models=frozenset({"orders"}))
+    await queue.enqueue(requested)
+    resources = [
+        {
+            "id": identity,
+            "seller": {"id": "pilot"},
+            "buyer": {"id": 123},
+            "status": "paid",
+            "date_created": "2026-08-20T10:00:00Z",
+            "last_updated": "2026-08-20T11:00:00Z",
+            "total_amount": 30,
+            "order_items": [{"item": {"id": "MLM42"}, "quantity": 1, "unit_price": 30}],
+        }
+        for identity in (42, 43)
+    ]
+    if failure == "extra_mongo_row":
+        await recovery_db.orders.insert_one(
+            {"_id": "999", "seller_id": "pilot", "date_created": datetime(2026, 8, 20)}
+        )
+    before = await recovery_db.orders.find({}).to_list(None)
+    calls: list[str] = []
+
+    class Gateway:
+        async def fetch_resource(self, *, seller_id: str, path: str) -> dict[str, Any]:
+            from urllib.parse import parse_qs, urlsplit
+
+            assert seller_id == "pilot"
+            calls.append(path)
+            offset = int(parse_qs(urlsplit(path).query)["offset"][0])
+            if failure == "empty":
+                return {"paging": {"total": 0}, "results": []}
+            return {
+                "paging": {} if failure == "missing_total" else {"total": 2},
+                "results": resources[offset : offset + 1],
+            }
+
+        async def request(self, *, method: str, seller_id: str, path: str) -> httpx.Response:
+            assert method == "GET" and seller_id == "pilot"
+            calls.append(path)
+            resource = resources[int(path.rsplit("/", 1)[1]) - 42]
+            if failure == "foreign_detail":
+                resource = {**resource, "seller": {"id": "foreign"}}
+            if failure == "partial_response":
+                return httpx.Response(206, headers={"X-Content-Missing": "buyer"}, json=resource)
+            return httpx.Response(200, json=resource)
+
+    await FormulaRecoveryWorker(db=recovery_db, gateway=Gateway(), queue=queue).process_one()
+    assert calls, "order source acquisition must actually run"
+    job = await queue.collection.find_one({"_id": requested.key})
+    marker = await recovery_db.sheets_read_model_freshness.find_one({"_id": "pilot:orders"})
+    if failure not in {None, "empty"}:
+        assert job["state"] == "failed"
+        assert await recovery_db.orders.find({}).to_list(None) == before
+        assert marker is None
+    else:
+        assert job["state"] == "completed", job.get("failure_reason")
+        assert await recovery_db.orders.count_documents({"seller_id": "pilot"}) == (
+            0 if failure == "empty" else 2
+        )
+        assert len(calls) == (1 if failure == "empty" else 4)
+        assert read_model_reconciliation_marker_covers(
+            marker, date_from=requested.date_from, date_to=requested.date_to
+        )
+        operation = await recovery_db.sheets_devoluciones_operations.find_one(
+            {"_id": "pilot:devoluciones"}
+        )
+        assert operation["state"] == "succeeded"
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("outcome", ["commit", "abort", "expired_lease", "no_transaction"])
 async def test_order_write_joins_recovery_transaction_without_losing_lease_guard(
     recovery_db: Any, outcome: str
