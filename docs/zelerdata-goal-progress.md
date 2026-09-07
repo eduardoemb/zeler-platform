@@ -161,3 +161,21 @@ Pilot: seller `82453304`; initial historical window 2026-08-08 through
   corrections are typing/test expectations/formatting only.
 - Full regression is running against the dedicated local Mongo replica set;
   record terminal result before treating the overall gates as satisfied.
+
+## Work unit: real-Mongo regression corrections
+
+- First full replica-set regression: 3,578 passed, 3 failed, 9 skipped in
+  66.73s. A separate invocation overriding pytest addopts failed collection
+  because it removed the repository's required importlib mode; it is not a
+  product defect. Subsequent runs preserve repository options.
+- Reproduced all three failures in isolation. The proxy test seeded a limit
+  of 60 while runtime defaults to 600; it now explicitly selects its test
+  limit. The quarantine assertion now requests timezone-aware BSON decoding.
+- Actual recovery defect: prepared-window replay compared naive BSON UTC to
+  aware domain dates; read-next also rejected default Mongo decoding. Normalize
+  only database-read dates, keeping timezone validation on domain inputs.
+- Existing failing transaction test now proves replay, resume and obsolete
+  owner rejection against actual Mongo. Focused suite: 13 passed in 0.74s;
+  root Ruff, formatting and mypy remain clean (500 source files).
+- Rollback boundaries: recovery date decoding is independent of the two test
+  fixture corrections. No production data or deployment changed.

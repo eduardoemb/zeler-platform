@@ -225,7 +225,7 @@ class MongoRunWindowRepository:
             run = await self._db[RUNS_COLLECTION].find_one({"_id": run_id}, session=session)
             if run is None:
                 return None
-            start, end = _utc(run["start"], "start"), _utc(run["end"], "end")
+            start, end = _mongo_utc(run["start"]), _mongo_utc(run["end"])
             for index in range(int(run["window_count"])):
                 window = RunWindow(
                     run_id, index, start, min(start + timedelta(days=WINDOW_DAYS), end)
@@ -253,10 +253,17 @@ def _prepared_window_matches(
     return (
         document.get("run_id") == window.run_id
         and document.get("index") == window.index
-        and document.get("start") == window.start
-        and document.get("end") == window.end
+        and isinstance(document.get("start"), datetime)
+        and _mongo_utc(document["start"]) == window.start
+        and isinstance(document.get("end"), datetime)
+        and _mongo_utc(document["end"]) == window.end
         and document.get("idempotency_key") == idempotency_key
     )
+
+
+def _mongo_utc(value: datetime) -> datetime:
+    """BSON dates decode as naive UTC unless the client enables tz_aware."""
+    return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
 
 
 async def _session(db: Any) -> Any:
