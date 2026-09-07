@@ -179,3 +179,19 @@ Pilot: seller `82453304`; initial historical window 2026-08-08 through
   root Ruff, formatting and mypy remain clean (500 source files).
 - Rollback boundaries: recovery date decoding is independent of the two test
   fixture corrections. No production data or deployment changed.
+- The first rerun was invalidated by the dedicated local Mongo exhausting its
+  default file-descriptor limit (WiredTiger error 24), not a disk-space or
+  production failure. Preserved its volumes and stopped container as
+  `zeler-goal-mongo-low-ulimit`; replacement `zeler-goal-mongo` shares those
+  volumes with explicit `nofile=65536:65536`. Never run both concurrently.
+- The eight protected stock-time transaction tests require `MONGO_URI` absent
+  and a loopback `ZELER_RS0_TEST_URI`. With the repaired local replica set:
+  all 8 passed in 3.55s. The normal root invocation skips them by design.
+- Final full regression after fixture/decoding corrections and local Mongo
+  repair: **3,581 passed, 9 skipped in 66.62s**. Eight skips are covered by the
+  separate successful protected invocation; the remaining Caddy parameter has
+  no required keys. Existing asyncio/anyio deprecation warnings remain (348).
+  Root Ruff check, format check and mypy also exit zero.
+- Next functional work remains recovery admission/retries, source coverage and
+  worker/API startup integration. These green gates do not prove production
+  recovery, 52 live formulas, app surfaces or a real Google Sheet.
