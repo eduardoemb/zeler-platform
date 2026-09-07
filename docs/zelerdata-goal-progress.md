@@ -509,3 +509,30 @@ Pilot: seller `82453304`; initial historical window 2026-08-08 through
   earlier 49 list differences as 49 business-data defects. Future complete
   reconciliation comparisons must normalize set-valued tags; the four
   updated timestamps and any substantive tag drift still need recovery.
+
+## Work unit: retain question coverage through source revalidation
+
+- Approved-runtime preflight found no recovery jobs and automatic recovery
+  disabled. The current questions marker is reconciled from June 1 through
+  July 11, without an explicit expiration. Recovering only Aug 8–Sep 6 would
+  replace that marker and remove previously recognized historical coverage.
+  No production job or data write was started during this preflight.
+- A new actual-Mongo regression failed: recovery fetched only the August
+  question, omitting June and the July gap. The worker now expands acquisition
+  to the union of a still-valid prior reconciled interval and the requested
+  interval, fetching details throughout the gap as well. Coverage is published
+  only after full source acquisition and the existing atomic readback checks.
+- The reverse-direction regression also passes: an older query cannot erase
+  a newer proven interval. Expired/invalid prior proofs are not promoted by
+  this extension. Existing 10,000-source-question and 240-second execution
+  bounds remain; preserving a wider interval may require more source calls
+  than the requested range. Source failure leaves the prior proof untouched.
+- Verification: recovery and read-model suites **36 passed in 4.47s**, with
+  real Mongo transactions and mocked MercadoLibre source responses. Root
+  Ruff, format and mypy pass. No schema change or extra coverage store.
+- Rollback boundary: prior-range acquisition expansion and its bidirectional
+  regressions. Not deployed. Build the pending Sheets API/worker release from
+  its exact main commit, then run one controlled pilot recovery with automatic
+  recovery still disabled, and prove completion, persisted values and a second
+  formula query without source calls. Automatic admission controls and the
+  other recovery models remain unfinished; this is not global activation.

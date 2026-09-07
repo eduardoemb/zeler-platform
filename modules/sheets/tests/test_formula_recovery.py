@@ -255,6 +255,67 @@ async def test_question_recovery_persists_data_and_unlocks_next_query(recovery_d
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("prior_is_later", [False, True])
+async def test_question_recovery_rechecks_prior_coverage_and_the_gap(
+    recovery_db: Any, prior_is_later: bool
+) -> None:
+    from zeler_sheets.formulas.read_models import FormulaReadModelRepository
+    from zeler_sheets.formulas.recovery_worker import FormulaRecoveryWorker
+
+    prior_start = datetime(2026, 6, 1, tzinfo=UTC)
+    prior_end = datetime(2026, 7, 11, tzinfo=UTC)
+    earliest = prior_start
+    requested = request()
+    if prior_is_later:
+        requested = RecoveryRequest("pilot", "questions", prior_start, prior_end)
+        prior_start, prior_end = request().date_from, request().date_to
+    await recovery_db.sheets_read_model_freshness.insert_one(
+        {
+            "_id": "pilot:questions",
+            "seller_id": "pilot",
+            "read_model": "questions",
+            "state": "reconciled",
+            "date_from": prior_start,
+            "reconciled_until": prior_end,
+        }
+    )
+    resources = [
+        {
+            "id": 40 + month,
+            "seller_id": "pilot",
+            "item_id": "MLM42",
+            "text": "Available?",
+            "status": "UNANSWERED",
+            "from": {"id": 123},
+            "date_created": f"2026-{month:02d}-20T10:00:00Z",
+        }
+        for month in (6, 7, 8)
+    ]
+    fetched: list[int] = []
+
+    class Gateway:
+        async def fetch_resource(self, *, seller_id: str, path: str) -> dict[str, Any]:
+            assert seller_id == "pilot"
+            if path.startswith("/questions/search?"):
+                return {"total": 3, "questions": resources}
+            question_id = int(path.rsplit("/", 1)[-1])
+            fetched.append(question_id)
+            return next(row for row in resources if row["id"] == question_id)
+
+    queue = FormulaRecoveryQueue(recovery_db)
+    await queue.enqueue(requested)
+    await FormulaRecoveryWorker(db=recovery_db, queue=queue, gateway=Gateway()).process_one()
+    assert fetched == [46, 47, 48]
+    assert await recovery_db.questions.count_documents({"seller_id": "pilot"}) == 3
+    await FormulaReadModelRepository(db=recovery_db).require_questions_read_model_productive(
+        seller_id="pilot",
+        date_from=earliest,
+        date_to=request().date_to,
+        formula="ZELERDATA_PREGUNTAS",
+    )
+
+
+@pytest.mark.asyncio
 async def test_incomplete_remote_search_cannot_publish_coverage(recovery_db: Any) -> None:
     from zeler_sheets.formulas.recovery_worker import FormulaRecoveryWorker
 

@@ -12,6 +12,7 @@ from pymongo.errors import PyMongoError
 
 from zeler_platform_core.clients.meli_gateway_client import GatewayRateLimitError
 from zeler_sheets.event_persistence import SheetsEventPersistence
+from zeler_sheets.formulas.read_models import read_model_reconciliation_marker_covers
 from zeler_sheets.formulas.recovery import COOLDOWN, FormulaRecoveryQueue
 
 
@@ -77,6 +78,21 @@ class FormulaRecoveryWorker:
         )
         start = _utc(job["date_from"])
         end = _utc(job["date_to"])
+        if marker_before is not None:
+            prior_start = marker_before.get("date_from")
+            prior_end = marker_before.get("reconciled_until")
+            if read_model_reconciliation_marker_covers(
+                marker_before, date_from=prior_start, date_to=prior_end
+            ):
+                # Reacquire the whole union (including any gap), rather than
+                # erase earlier coverage or extend proof without source data.
+                start = min(
+                    start,
+                    _utc(prior_start) if isinstance(prior_start, datetime) else _date(prior_start),
+                )
+                end = max(
+                    end, _utc(prior_end) if isinstance(prior_end, datetime) else _date(prior_end)
+                )
         resources: list[dict[str, Any]] = []
         seen: set[str] = set()
         total: int | None = None
