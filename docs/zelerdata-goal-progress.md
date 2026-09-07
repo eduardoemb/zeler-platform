@@ -1308,3 +1308,24 @@ retain their contract; other product deployments remain out of scope.
 - This operator-only helper is not called by service entrypoints and does not
   itself require a new image. Pending API/worker behavior still requires verified
   Cloud Build images and productive pilot/HTTP/Sheet checks; the goal stays open.
+- Final local regression: 3,708 passed, 9 skipped in 79.11s; eight protected
+  stock-time-forward Mongo cases passed separately in 1.56s. Remaining skip is
+  Caddy's no-required-keys case. Ruff check/format, mypy and whitespace checks pass.
+- Executed reviewed source `3f5ee2021838fa77f3a9d085ff10b2b58d9de821` inside
+  the existing worker container without changing its image or filesystem.
+  The helper's SHA-256 was checked before execution:
+  `e482a722d2331ab3e6583ab44feee0bce9687b5d2bb23a4836ab9878f51b7876`.
+  The root-only VM backup was piped directly into the runtime; no credentials,
+  identities or original date values were printed or transferred locally.
+- Production result: 47 shipment documents repaired in one transaction, all 94
+  dates independently compared with the converted backup originals, zero shipment
+  documents invalid under main's proposed schema afterward. Only the two date
+  fields were updated. Validators, formula observation timestamps, feature flags
+  and other collections were not modified. The rollback backup remains available.
+  This resolves the identified type-compatibility gap, not source completeness or
+  productive formula/Sheet acceptance.
+- Post-repair inspection: Sheets API `f9b07c9de23c`, worker `b8edfdf59627` and
+  gateway `2d4a514cab2d` retained their running images, healthy with zero restarts.
+  They still do not include the staged API/worker changes on main. Apply compatible
+  validators and verify new images/pilot behavior through the outstanding release
+  gates; do not treat this date repair as a completed deployment.
