@@ -1329,3 +1329,49 @@ retain their contract; other product deployments remain out of scope.
   They still do not include the staged API/worker changes on main. Apply compatible
   validators and verify new images/pilot behavior through the outstanding release
   gates; do not treat this date repair as a completed deployment.
+
+## Operational checkpoint: apply compatible orders and shipments validators
+
+- At main `71f6c1b4178349ff697288811e341a1668a8f750`, rechecked both proposed
+  `$jsonSchema` payloads against production: zero invalid documents. Backed up
+  both existing validator/options sets to root-only VM file
+  `/var/lib/zeler-platform/repairs/formula-validators-71f6c1b.bson` (4,009 bytes,
+  mode 0600 under the 0700 repairs directory). It contains schema configuration,
+  not document data or credentials.
+- Inside the approved worker runtime, compared current options with the backup
+  before mutation, then applied only orders and shipments through majority-
+  acknowledged `collMod`. Both resulting validators match the committed schemas
+  exactly, with strict/error enforcement and zero invalid documents afterward.
+  No indexes, document data, other collections, images or feature flags changed.
+- Verification: validator application/idempotency/failure suites passed 10 tests
+  in 0.06s; the local Mongo recovery suite passed 102 tests in 16.01s. These tests
+  include complete/partial order and shipment publication under current schemas.
+  The production result is schema compatibility, not formula HTTP acceptance.
+- Rollback boundary: only the two backed-up validator/options sets. Before
+  reverting either, recheck current configuration and compatibility of every
+  document with its old validator. Once partial orders exist, blindly restoring
+  the old required-buyer schema can reject valid writes; keep the compatible
+  schema when rolling back application images unless safety is proved.
+- Started one verified Cloud Build per affected Sheets image from this exact
+  connected-repository commit, without uploading the local checkout:
+  API `223142bd-0fcb-4196-ac41-2183517d2f8b`; worker
+  `07724522-d44f-420c-affa-6604141978dc`. Both were observed WORKING. Build
+  completion, immutable digest/provenance verification and deployment are separate
+  gates; neither service has been pulled/recreated by this checkpoint.
+- Both builds subsequently completed SUCCESS. Using the repository's
+  `verify_image_to_commit`, verified each single-image SLSA subject, build,
+  connected repository, source commit, project ID and project number. Immutable
+  images ready for the controlled rollout:
+  - Sheets API: `us-central1-docker.pkg.dev/zeler-platform-dev/zeler-platform/sheets-api@sha256:c41c4c4c9bb7105d37de73414c2005b877a2fad9c3d18fb62af2a4c1171408ce`.
+  - Sheets worker: `us-central1-docker.pkg.dev/zeler-platform-dev/zeler-platform/sheets-worker@sha256:ec056fc549222b97387dec5950b50af213f1224c569a37da1b19ed9b9033734d`.
+- Local sanitized binding maps are under `/tmp/zeler-recovery-build.IltD0b/`
+  as `sheets-api-image_to_commit.json` and `sheets-worker-image_to_commit.json`.
+  Build configurations in the same directory requested VERIFIED provenance and
+  produced one image each. These files are convenience evidence; authoritative
+  build and registry records must be rechecked before deployment.
+- After validator activation, Sheets API, worker and gateway remained healthy
+  with zero restarts. Recovery remained disabled. Runtime still uses the older
+  API/worker images; next run the capacity/provenance preflight, deploy the exact
+  verified images through targeted service replacement, check digest/health and
+  then prove pilot behavior. No new build is needed for this documentation-only
+  checkpoint; the full goal remains unproven until live acceptance is complete.
