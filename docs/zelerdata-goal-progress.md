@@ -1667,3 +1667,57 @@ retain their contract; other product deployments remain out of scope.
   and `.pre-sheets-worker-f7589c9`. Restore only the affected image line and
   verify its health; never restore the entire backup over the other service's
   newer configuration. Keep recovery disabled and retain compatible validators.
+
+## Operational checkpoint: automatic recovery enabled for the pilot
+
+- At main `7e5f0ba3a894be8d14ab35ed334293285c09a927`, runtime preflight
+  confirmed the verified admission images, 5.11 GiB free, strict/error orders
+  and shipments validators with the required partial-data fields, three
+  completed pilot jobs and no active nonpilot jobs. No credentials or source
+  payloads were emitted. All Mongo operations ran inside the approved VM/API
+  container, never through a local production Mongo client.
+- Exercised the deployed queue with an explicit pilot allowlist and default
+  capacity 20. A nonpilot request was rejected before mutation. Reopened the
+  existing questions job
+  `ce00248f852738303b602c86572cda2e8badfcaf369a6edf7e5dfd500b75827d`
+  and repeated it under the same one-second admission budget used by HTTP:
+  **0.0642s and 0.0106s**, one pending job, unchanged cooldown and no additional
+  job documents. Normal index initialization added the seller/state index and
+  successful admission created the pilot identity/revision guard. This verifies
+  live admission/coalescing/isolation, not a productive saturation test of all
+  20 slots or authenticated HTTP.
+- Enabled `ZELERDATA_FORMULA_RECOVERY_ENABLED=true` and
+  `ZELERDATA_FORMULA_RECOVERY_SELLERS=82453304` on the worker first. The normal
+  resident poller claimed and completed the questions job in **one attempt**,
+  with no failure reason; independent Mongo inspection showed fresh coverage
+  and completion at `2026-09-07T23:16:10.449Z`. No operator `process_one` call
+  was used. There remained zero active nonpilot jobs. The total pilot questions
+  collection count was 101, which is not a count of rows acquired in this run.
+- After that verification, enabled the same exact pilot scope on the API.
+  Each change passed dry-run/real preflight, preserved the immutable image,
+  changed only the selected service's two environment keys (checked against
+  rendered Compose), and recreated only that service. Final independent checks
+  showed both runtime environments pilot-only/enabled, both verified image IDs
+  unchanged, Docker health healthy, zero restarts and HTTP 200 from `/health`.
+  Free capacity remained 5.11 GiB. Other products and sellers were not activated.
+- The API-container Mongo-only PREGUNTASKPI handler returned ready with three
+  questions for August 8–September 6 in **0.0215s**. The initial operator probe
+  mistakenly supplied the orders argument `fecha_inicial`; correcting it to the
+  existing questions contract `fecha_inicio` resolved that probe error without
+  changing application code. This is not authenticated HTTP, a real Sheet,
+  all-52 acceptance or a p95 measurement. Those acceptance gates remain open,
+  along with item/catalog recovery and minimum hardening.
+- Rollback: set recovery enabled to false on both Sheets services and recreate
+  each with normal capacity/health checks; keep the pilot allowlist and current
+  images. Stop or allow any already-running job to finish through normal worker
+  lifecycle handling. Do not delete queued jobs, guard metadata or normalized
+  data. Backups are
+  `/opt/zeler-platform/docker-compose.yml.pre-pilot-recovery-sheets-worker-7e5f0ba`
+  and `.pre-pilot-recovery-sheets-api-7e5f0ba`; never restore either whole file
+  over subsequent service configuration. Validators stay compatible.
+- This checkpoint changes runtime configuration, indexes, queue state and
+  normally recovered question data, not repository executable code. Prior unit
+  evidence applies; the acceptance evidence for this operational unit is live
+  admission, automatic completion, stored freshness and independent service
+  checks. No new Cloud Build image is needed for this documentation record:
+  both deployed images still match executable main source `f7589c9`.
