@@ -1375,3 +1375,41 @@ retain their contract; other product deployments remain out of scope.
   verified images through targeted service replacement, check digest/health and
   then prove pilot behavior. No new build is needed for this documentation-only
   checkpoint; the full goal remains unproven until live acceptance is complete.
+
+## Operational checkpoint: deploy the verified recovery-capable Sheets pair
+
+- Confirmed main `df16a8baa460cb48e6d7ae560f59797ae9badb82` differs from the
+  verified image source `71f6c1b4178349ff697288811e341a1668a8f750` only in this
+  progress document. Rechecked both successful Cloud Build records, exact source
+  revision and image digests. No new build or executable repository change.
+- VM dry-run and real capacity preflights passed. Replaced exactly one Compose
+  image occurrence per service, first worker then API, with targeted pull and
+  `up -d --no-deps`. Backups are
+  `/opt/zeler-platform/docker-compose.yml.pre-sheets-worker-71f6c1b` and
+  `/opt/zeler-platform/docker-compose.yml.pre-sheets-api-71f6c1b`.
+- Worker now runs `sha256:ec056fc549222b97387dec5950b50af213f1224c569a37da1b19ed9b9033734d`;
+  API now runs `sha256:c41c4c4c9bb7105d37de73414c2005b877a2fad9c3d18fb62af2a4c1171408ce`.
+  Both correspond to the verified build IDs recorded immediately above.
+- Preserved immediate rollback authorities: worker
+  `sha256:b8edfdf59627d1c24fa9d2594048d145aa94a8aa16d039442b819d2bd097b945`
+  and API `sha256:f9b07c9de23c1a4f0bc611963ceb4b09c96d25c34715c08f3cb2333c70ac8d0f`.
+  Restore only the affected service's image, not the entire Compose backup;
+  retain compatible Mongo validators and keep recovery disabled on rollback.
+- To preserve the 5 GiB floor before the API pull/recreation, removed only unused
+  local worker image `sha256:6ac235ab1d3b26dc157998bde42df91ad2963019f10f74417e9a96afba08acee`
+  after rechecking all container references and its continued registry presence.
+  It is recoverable by digest pull. No containers or volumes were pruned. Free
+  space was 5.62 GiB before each pull and 5.12 GiB after the completed pair.
+- No feature flags, seller scope, Mongo data or other product services were
+  changed. Automatic recovery remains deliberately disabled; deploying code is
+  not evidence of background recovery or productive formula/Sheet acceptance.
+- Final runtime checks confirmed both exact new digests, Docker health healthy,
+  zero restarts, and `/health` HTTP 200 with `ready=true` inside each service.
+  Gateway retained digest `2d4a514cab2d`, healthy with zero restarts. No rollback
+  was needed. Whitespace validation passed; unit tests are N/A for this
+  documentation-only change (the image source's tests are recorded above).
+- Runtime now includes the staged Sheets code at the verified source commit;
+  current main adds only evidence documentation. No further image rebuild is
+  required for this checkpoint. Next prove controlled pilot recovery, real HTTP
+  formula behavior, authenticated app surfaces and Google Sheets; all global
+  acceptance requirements remain open until the corresponding evidence exists.
