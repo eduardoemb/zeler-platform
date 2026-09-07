@@ -8,7 +8,7 @@ from decimal import Decimal, InvalidOperation
 from typing import Any, cast
 
 from bson.decimal128 import Decimal128
-from pydantic import ValidationError
+from pydantic import TypeAdapter, ValidationError
 
 from zeler_platform_core.devoluciones_readiness import (
     DevolucionesOperationContext,
@@ -744,11 +744,31 @@ class SheetsEventPersistence:
         operation: DevolucionesOperationContext,
     ) -> None:
         observed_at = require_bson_ms_utc_datetime(self._clock())
-        document = _canonical_order_document(
-            resource, seller_id=seller_id, sale_fee_synced_at=observed_at
+        order_id = _string_id(resource.get("_id") or resource.get("id"))
+        updated = (
+            resource.get("last_updated")
+            or resource.get("date_last_updated")
+            or resource.get("updated_at")
         )
 
         async def write(session: Any) -> None:
+            existing = await self._db["orders"].find_one(
+                {"_id": order_id, "seller_id": seller_id},
+                **_session_kwargs(session),
+            )
+            merged = dict(resource)
+            if existing is not None:
+                for field, identity in (("buyer", "buyer_id"), ("shipping", "shipment_id")):
+                    absent = field not in resource or resource[field] == {}
+                    if field == "shipping" and "no_shipping" in (resource.get("tags") or []):
+                        absent = False
+                    if absent and identity not in resource and existing.get(identity):
+                        merged[field] = {"id": existing[identity]}
+            document = _canonical_order_document(
+                merged,
+                seller_id=seller_id,
+                sale_fee_synced_at=observed_at,
+            )
             order_written = await _replace_resource_if_fresh(
                 self._db["orders"],
                 document,
@@ -767,8 +787,10 @@ class SheetsEventPersistence:
             operation=operation,
             seller_id=seller_id,
             checkpoint={
-                "order_id": document["_id"],
-                "last_updated": document.get("last_updated"),
+                "order_id": order_id,
+                "last_updated": TypeAdapter(datetime).validate_python(updated)
+                if updated is not None
+                else None,
             },
             writer=write,
         )

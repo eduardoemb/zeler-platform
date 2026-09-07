@@ -15,6 +15,55 @@ from zeler_sheets.formulas.recovery import FormulaRecoveryQueue, RecoveryRequest
 
 
 @pytest.mark.asyncio
+async def test_order_partial_update_uses_same_seller_state_in_real_transaction(
+    recovery_db: Any,
+) -> None:
+    from zeler_platform_core.devoluciones_readiness import acquire_devoluciones_operation
+    from zeler_sheets.event_persistence import SheetsEventPersistence
+
+    operation = await acquire_devoluciones_operation(
+        db=recovery_db,
+        seller_id="pilot",
+        scope="devoluciones",
+        operation_id=uuid4().hex,
+        attempt_token=uuid4().hex,
+    )
+    writer = SheetsEventPersistence(db=recovery_db)
+    resource = {
+        "id": 42,
+        "seller_id": "pilot",
+        "buyer": {"id": 123},
+        "shipping": {"id": 456},
+        "status": "paid",
+        "date_created": "2026-08-20T10:00:00Z",
+        "last_updated": "2026-08-20T11:00:00Z",
+        "total_amount": 30,
+        "order_items": [],
+    }
+    await writer.persist(
+        event_type="orders.updated", seller_id="pilot", resource=resource, operation=operation
+    )
+    await writer.persist(
+        event_type="orders.updated",
+        seller_id="pilot",
+        operation=operation,
+        resource={
+            **resource,
+            "buyer": {},
+            "shipping": {},
+            "status": "cancelled",
+            "last_updated": "2026-08-20T12:00:00Z",
+        },
+    )
+    stored = await recovery_db.orders.find_one({"_id": "42", "seller_id": "pilot"})
+    assert (stored["status"], stored["buyer_id"], stored["shipment_id"]) == (
+        "cancelled",
+        "123",
+        "456",
+    )
+
+
+@pytest.mark.asyncio
 async def test_app_wires_only_implemented_recovery_sources(recovery_db: Any) -> None:
     from zeler_sheets.app import build_app
 

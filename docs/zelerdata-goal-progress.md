@@ -354,3 +354,21 @@ Pilot: seller `82453304`; initial historical window 2026-08-08 through
 - Rollback boundary: one response header and its authenticated regression.
   Gateway image must eventually be rebuilt/deployed alongside relevant Sheets
   images; no image build, deployment or live contract test happened in this unit.
+
+## Work unit: preserve known identities during sparse order updates
+
+- A regression with an existing order and a newer response containing empty
+  buyer/shipping objects failed before saving the new status: buyer identity
+  validation ran without consulting known Mongo state.
+- Read the same seller/order inside the existing fenced transaction before
+  canonical normalization. Missing/empty objects can reuse observed buyer and
+  shipment identifiers; explicit null shipping and no_shipping do not revive
+  a previous shipment. Existing monotonic write checks and SKU refresh remain.
+- No unknown buyer ID is fabricated for a new partial order. Such orders still
+  require field-aware recovery; this fix is not complete 206 handling and does
+  not establish completeness of any order interval.
+- Verification: persistence, historical backfill and recovery tests **120 passed
+  in 4.15s**, including actual Mongo transactional fallback, explicit-clear and
+  no-shipping controls. Ruff, format and mypy pass globally.
+- Rollback boundary: transaction-local identity fallback, checkpoint timestamp
+  normalization and associated tests. No schema change or production mutation.

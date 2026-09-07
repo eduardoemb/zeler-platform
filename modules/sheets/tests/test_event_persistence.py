@@ -1193,6 +1193,44 @@ async def test_order_missing_freshness_fields_cannot_regress_closed_order() -> N
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("shipping", "tags", "expected_shipment"),
+    [
+        ({}, [], "555"),
+        (None, [], None),
+        ({}, ["no_shipping"], None),
+    ],
+)
+async def test_order_sparse_update_preserves_previously_observed_buyer_and_shipment(
+    shipping: Any,
+    tags: list[str],
+    expected_shipment: str | None,
+) -> None:
+    db = FakeDb()
+    persistence = SheetsEventPersistence(db=db, clock=lambda: NOW)
+    initial = _order_resource_at(
+        status="paid",
+        total_amount="299.90",
+        date_closed="2026-05-29T10:05:00+00:00",
+        last_updated="2026-05-29T10:06:00+00:00",
+    )
+    await persistence.persist(event_type="orders.updated", seller_id=82453304, resource=initial)
+    sparse = {
+        **initial,
+        "last_updated": "2026-05-29T10:07:00+00:00",
+        "buyer": {},
+        "shipping": shipping,
+        "tags": tags,
+        "status": "cancelled",
+    }
+    await persistence.persist(event_type="orders.updated", seller_id=82453304, resource=sparse)
+    stored = db["orders"].documents["2001"]
+    assert stored["status"] == "cancelled"
+    assert stored["buyer_id"] == "123"
+    assert stored.get("shipment_id") == expected_shipment
+
+
+@pytest.mark.asyncio
 async def test_order_status_only_update_uses_last_updated_as_monotonic_freshness() -> None:
     db = FakeDb()
     db["orders"].documents["2001"] = {
