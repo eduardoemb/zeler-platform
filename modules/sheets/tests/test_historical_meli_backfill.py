@@ -1292,6 +1292,52 @@ async def test_historical_backfill_fails_closed_on_unresolved_non_return_claim()
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("path", "replacement"),
+    [
+        ("/products/CAT-MLA1", {"id": "CAT-OTHER"}),
+        ("/products/CAT-MLA1", {}),
+        ("/items/MLA1/price_to_win?version=v2", {"item_id": "MLA2"}),
+        ("/items/MLA1/price_to_win?version=v2", {"catalog_product_id": "CAT-OTHER"}),
+        ("/items/MLA1/price_to_win?version=v2", None),
+    ],
+)
+async def test_catalog_invalid_identity_aborts_before_backfill_writes(
+    path: str, replacement: Any
+) -> None:
+    class InvalidCatalogGateway(FakeCatalogGateway):
+        async def fetch_resource(self, *, seller_id: str, path: str) -> Any:
+            if path == invalid_path:
+                return replacement
+            return await super().fetch_resource(seller_id=seller_id, path=path)
+
+    invalid_path = path
+    db = FakeDb()
+    with pytest.raises(ValueError, match="catalog.*response"):
+        await run_historical_meli_backfill(
+            db=db,
+            gateway=FakeGateway(),
+            order_detail_gateway=FakeOrderDetailGateway(),
+            catalog_gateway=InvalidCatalogGateway(),
+            seller_id="82453304",
+            date_from="2026-05-01",
+            date_to="2026-05-01",
+            dry_run=False,
+            approved_runtime=True,
+            max_orders=1,
+            include_catalog_snapshots=True,
+        )
+    for collection in (
+        "orders",
+        "items",
+        "shipments",
+        "sheets_catalog_product_snapshots",
+        "sheets_catalog_buybox_snapshots",
+    ):
+        assert db[collection].documents == {}
+
+
+@pytest.mark.asyncio
 async def test_historical_backfill_reconciles_catalog_product_and_buybox_snapshots() -> None:
     db = FakeDb()
     gateway = FakeGateway()

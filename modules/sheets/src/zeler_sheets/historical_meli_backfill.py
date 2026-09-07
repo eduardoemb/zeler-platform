@@ -752,8 +752,9 @@ async def _fetch_catalog_product_snapshots(
             seller_id=seller_id, path=f"/products/{catalog_product_id}"
         )
         snapshot = _catalog_product_snapshot(resource, seller_id=seller_id)
-        if snapshot is not None:
-            snapshots.append(snapshot)
+        if snapshot is None or snapshot["catalog_product_id"] != catalog_product_id:
+            raise ValueError("catalog product response does not match requested identity")
+        snapshots.append(snapshot)
     return snapshots
 
 
@@ -767,8 +768,13 @@ async def _fetch_catalog_buybox_snapshots(
             path=f"/items/{row.item_id}/price_to_win?version=v2",
         )
         snapshot = _catalog_buybox_snapshot(resource, seller_id=seller_id, source=row)
-        if snapshot is not None:
-            snapshots.append(snapshot)
+        if (
+            snapshot is None
+            or snapshot["item_id"] != row.item_id
+            or snapshot["catalog_product_id"] != row.catalog_product_id
+        ):
+            raise ValueError("catalog buybox response does not match requested identity")
+        snapshots.append(snapshot)
     return snapshots
 
 

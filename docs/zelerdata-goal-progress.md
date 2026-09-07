@@ -1721,3 +1721,36 @@ retain their contract; other product deployments remain out of scope.
   admission, automatic completion, stored freshness and independent service
   checks. No new Cloud Build image is needed for this documentation record:
   both deployed images still match executable main source `f7589c9`.
+
+## Catalog recovery prerequisite: bind responses to requested identities
+
+- The existing historical catalog acquisition accepted another product/item's
+  identity and silently omitted unnormalizable responses. It now rejects a
+  product snapshot unless its identity matches the requested product, and a
+  buybox snapshot unless both item and catalog identities match the source row.
+  Static errors contain no remote payload. Acquisition fails before backfill
+  writes; this does not establish completeness of every optional snapshot field.
+- TDD: five cases failed before implementation. The complete historical-backfill
+  suite then passed **45 tests in 0.27s**, including the existing successful
+  catalog case and five rejection cases checking no backfill collections were
+  written. This harness uses fake gateways/storage, not live source acceptance.
+  Root tests with the dedicated local replica set: **3731 passed, 9 skipped,
+  356 warnings in 85.44s**. Protected stock-time tests separately with ambient
+  `MONGO_URI` unset: **8 passed in 2.67s**. Ruff check/format, mypy over 501
+  source files and whitespace checks passed.
+- Read-only pilot counts from the approved VM/API container: 1,562 stored items,
+  2,302 item formula rows, 386 catalog product snapshots and 473 buybox snapshots.
+  Stored items link to 761 distinct catalog products through 1,209 items. These
+  are stored counts, not verified current source inventory or a freshness proof.
+- Automatic item/catalog acquisition is still unimplemented. The historical
+  entrypoint derives item work from historical orders and can include claims;
+  do not wire that entire operation into a catalog miss. Reuse validated
+  normalization with bounded current-source acquisition and honest inventory/
+  snapshot coverage. Pilot questions/orders/shipments recovery remains enabled.
+- No production code or configuration changed here. Both Sheets images package
+  this module and need new verified Cloud Build images before this correction
+  runs there; last verified images use executable source `f7589c9`. Verify
+  catalog identity rejection, valid acquisition and service health on rollout.
+  Rollback is limited to the two fetch-helper checks and their regression tests;
+  no schema/data reversal is needed. Keep catalog automatic recovery disabled
+  until its complete acquisition/publication path is verified.
