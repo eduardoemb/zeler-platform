@@ -214,3 +214,33 @@ Pilot: seller `82453304`; initial historical window 2026-08-08 through
   behavior but does not yet connect the API/worker startup. Rollback boundary:
   retry/attempt logic in recovery.py, worker error classification and associated
   tests; no production migrations or deployments have occurred.
+
+## Work unit: connect formula recovery to API and worker lifecycles
+
+- `ZELERDATA_FORMULA_RECOVERY_ENABLED` enables the API queue and co-resident
+  worker executor; default is disabled. Runtime queues accept/claim only
+  implemented sources (currently questions), so unsupported orders/catalog
+  cannot falsely report that a working recovery was requested.
+- Reuses the existing poller supervisor with concurrent sync/recovery lifecycle
+  management and a dedicated recovery health component. Search uses bootstrap
+  identity; details reuse the worker's sheets gateway client. Startup ensures
+  claim and expired-lease indexes, without adding a new service.
+- New integration tests initially failed for absent startup/lifecycle wiring.
+  Full authenticated HTTP -> durable Mongo queue -> supervised recovery -> HTTP
+  integration exposed BSON precision loss: the recovered range failed to cover
+  its original microsecond endpoint. Recovery intervals now round outward to
+  BSON milliseconds. The next HTTP request succeeds after persisted proof, and
+  the first HTTP request makes zero gateway calls.
+- The real gateway raises its own GatewayRateLimitError for HTTP 429, unlike
+  the earlier generic HTTP double; added a failing regression then included it
+  in bounded transient retry handling.
+- Focused recovery, HTTP and worker lifecycle tests: 51 passed in 3.48s;
+  root Ruff, formatting and mypy pass. Full local replica-set regression:
+  **3,590 passed, 9 skipped in 76.67s**; the same protected stock-time tests
+  require their separate invocation, and Caddy has no required-key parameter.
+- No production activation yet. Queue admission/schema, write fencing across
+  competing recovery intervals/events, remaining sources and productive/live
+  acceptance remain necessary before activating recovery as the full solution.
+- Rollback boundary: activation flag plumbing, optional extra pollers, queue
+  index/source selection, BSON interval rounding and corresponding tests. No
+  production configuration/data migration has occurred.

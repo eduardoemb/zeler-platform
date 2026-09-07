@@ -38,6 +38,8 @@ from zeler_platform_core.runtime.worker_health import WorkerHealthSidecar
 from zeler_sheets.claim_projection import project_claim
 from zeler_sheets.devoluciones_reconciliation import GatewayDevolucionesSource
 from zeler_sheets.event_persistence import SheetsEventPersistence, StatusObservationContentionError
+from zeler_sheets.formulas.recovery import IMPLEMENTED_MODELS, FormulaRecoveryQueue
+from zeler_sheets.formulas.recovery_worker import FormulaRecoveryWorker
 from zeler_sheets.google_errors import (
     GoogleSheetsApiError,
     RetryableGoogleSheetsApiError,
@@ -149,31 +151,31 @@ async def run_worker_lifecycles(
     runner: Any,
     poller: Any | None,
     shutdown_event: asyncio.Event,
+    *,
+    extra_pollers: tuple[Any, ...] = (),
 ) -> None:
     await runner.start()
-    if poller is None:
+    started = []
+    waits: list[asyncio.Task[Any]] = []
+    try:
+        for current in ((poller,) if poller is not None else ()) + extra_pollers:
+            await current.start()
+            started.append(current)
+            waits.append(asyncio.create_task(current.wait()))
+        shutdown_wait = asyncio.create_task(shutdown_event.wait())
+        waits.append(shutdown_wait)
+        done, _ = await asyncio.wait(waits, return_when=asyncio.FIRST_COMPLETED)
+        for completed in done - {shutdown_wait}:
+            await completed
+            raise RuntimeError("sheets background poller stopped unexpectedly")
+    finally:
         try:
-            await shutdown_event.wait()
+            await asyncio.gather(*(current.stop() for current in reversed(started)))
         finally:
             await runner.close()
-        return
-
-    await poller.start()
-    shutdown_wait = asyncio.create_task(shutdown_event.wait())
-    poller_wait = asyncio.create_task(poller.wait())
-    try:
-        done, _ = await asyncio.wait(
-            {shutdown_wait, poller_wait}, return_when=asyncio.FIRST_COMPLETED
-        )
-        if poller_wait in done:
-            await poller_wait
-            raise RuntimeError("sync jobs poller stopped unexpectedly")
-    finally:
-        await poller.stop()
-        await runner.close()
-        shutdown_wait.cancel()
-        poller_wait.cancel()
-        await asyncio.gather(shutdown_wait, poller_wait, return_exceptions=True)
+            for task in waits:
+                task.cancel()
+            await asyncio.gather(*waits, return_exceptions=True)
 
 
 @dataclass(frozen=True)
@@ -1177,6 +1179,25 @@ async def run() -> None:
         poller = active_poller
         component_status["sync_jobs_poller"] = lambda: active_poller.health_status
 
+    recovery_pollers: tuple[SyncJobsPollerSupervisor, ...] = ()
+    if _env_flag_enabled("ZELERDATA_FORMULA_RECOVERY_ENABLED"):
+        recovery_queue = FormulaRecoveryQueue(db, enabled_models=IMPLEMENTED_MODELS)
+        await recovery_queue.ensure_indexes()
+        recovery = SyncJobsPollerSupervisor(
+            FormulaRecoveryWorker(
+                db=db,
+                queue=recovery_queue,
+                gateway=make_meli_gateway_client(
+                    module_id="bootstrap",
+                    kms_client=kms_client,
+                    base_url=os.environ.get("GATEWAY_BASE_URL", DEFAULT_GATEWAY_BASE_URL),
+                ),
+                detail_gateway=handler._gateway_client,
+            )
+        )
+        recovery_pollers = (recovery,)
+        component_status["formula_recovery"] = lambda: recovery.health_status
+
     sidecar = WorkerHealthSidecar(
         runner,
         port=int(os.environ.get("WORKER_HEALTH_PORT", "8080")),
@@ -1184,7 +1205,7 @@ async def run() -> None:
     )
     await sidecar.start()
     try:
-        await run_worker_lifecycles(runner, poller, shutdown_event)
+        await run_worker_lifecycles(runner, poller, shutdown_event, extra_pollers=recovery_pollers)
     finally:
         await sidecar.stop()
         mongo_client.close()

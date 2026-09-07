@@ -15,6 +15,90 @@ from zeler_sheets.formulas.recovery import FormulaRecoveryQueue, RecoveryRequest
 
 
 @pytest.mark.asyncio
+async def test_app_wires_only_implemented_recovery_sources(recovery_db: Any) -> None:
+    from zeler_sheets.app import build_app
+
+    app = build_app(mongo_db=recovery_db, formula_recovery_enabled=True)
+    queue = app.state.formula_recovery_queue
+    await queue.enqueue(request())
+    unsupported = RecoveryRequest(
+        seller_id="pilot",
+        read_model="orders",
+        date_from=request().date_from,
+        date_to=request().date_to,
+    )
+    with pytest.raises(ValueError):
+        await queue.enqueue(unsupported)
+    assert await queue.collection.count_documents({}) == 1
+    disabled = build_app(mongo_db=recovery_db)
+    assert not hasattr(disabled.state, "formula_recovery_queue")
+
+
+@pytest.mark.asyncio
+async def test_http_missing_data_recovers_in_background_and_next_http_succeeds(
+    recovery_db: Any,
+) -> None:
+    import httpx
+
+    from zeler_sheets.app import build_app
+    from zeler_sheets.consumer import SyncJobsPollerSupervisor
+    from zeler_sheets.extension_tokens import ExtensionTokenService, SellerScope
+    from zeler_sheets.formulas.recovery_worker import FormulaRecoveryWorker
+
+    app = build_app(mongo_db=recovery_db, formula_recovery_enabled=True)
+    app.state.extension_token_pepper = uuid4().hex
+    token = await ExtensionTokenService(
+        db=recovery_db,
+        token_pepper=app.state.extension_token_pepper,
+    ).create_token(
+        owner_user_id="test-user",
+        label="Local recovery integration",
+        seller_scopes=[SellerScope(seller_id="123456789", nickname="PILOT")],
+    )
+    calls: list[str] = []
+
+    class Gateway:
+        async def fetch_resource(self, **kwargs: Any) -> dict[str, Any]:
+            calls.append(kwargs["path"])
+            return {"total": 0, "questions": []}
+
+    queue = app.state.formula_recovery_queue
+    await queue.ensure_indexes()
+    worker = SyncJobsPollerSupervisor(
+        FormulaRecoveryWorker(db=recovery_db, gateway=Gateway(), queue=queue),
+        poll_interval=0.01,
+    )
+    payload = {
+        "formula": "ZELERDATA_PREGUNTAS",
+        "cuenta": "PILOT",
+        "args": {
+            "fecha_inicial": "2026-08-08",
+            "fecha_final": "2026-09-06",
+            "horario_inicial": "00:00",
+            "horario_final": "23:59",
+        },
+    }
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        headers = {"Authorization": f"Bearer {token.token_once}"}
+        missing = await client.post("/sheets/formulas:execute", headers=headers, json=payload)
+        assert missing.json()["error"]["code"] == "DATA_UNAVAILABLE"
+        assert missing.json()["meta"]["recovery_requested"] is True
+        assert calls == []
+        await worker.start()
+        try:
+            async with asyncio.timeout(3):
+                while not await queue.collection.find_one({"state": "completed"}):
+                    await asyncio.sleep(0.01)
+            ready = await client.post("/sheets/formulas:execute", headers=headers, json=payload)
+            assert ready.json()["ok"] is True, ready.json()
+            assert len(calls) == 1
+        finally:
+            await worker.stop()
+
+
+@pytest.mark.asyncio
 async def test_question_recovery_persists_data_and_unlocks_next_query(recovery_db: Any) -> None:
     from zeler_sheets.formulas.read_models import FormulaReadModelRepository
     from zeler_sheets.formulas.recovery_worker import FormulaRecoveryWorker
@@ -165,9 +249,14 @@ def request(seller_id: str = "pilot") -> RecoveryRequest:
 
 
 @pytest.mark.asyncio
-async def test_transient_source_failure_retries_without_another_formula(recovery_db: Any) -> None:
+@pytest.mark.parametrize("failure", ["connection", "gateway_quota"])
+async def test_transient_source_failure_retries_without_another_formula(
+    recovery_db: Any,
+    failure: str,
+) -> None:
     import httpx
 
+    from zeler_platform_core.clients.meli_gateway_client import GatewayRateLimitError
     from zeler_sheets.formulas.recovery_worker import FormulaRecoveryWorker
 
     clock = [datetime.now(UTC)]
@@ -180,6 +269,13 @@ async def test_transient_source_failure_retries_without_another_formula(recovery
         async def fetch_resource(self, **kwargs: Any) -> dict[str, Any]:
             self.calls += 1
             if self.calls == 1:
+                if failure == "gateway_quota":
+                    raise GatewayRateLimitError(
+                        retry_after_seconds=30,
+                        response=httpx.Response(
+                            429, request=httpx.Request("GET", "https://example.test")
+                        ),
+                    )
                 raise httpx.ConnectError("sensitive upstream diagnostic")
             return {"total": 0, "questions": []}
 

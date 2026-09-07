@@ -26,6 +26,7 @@ RECOVERABLE_MODELS = frozenset(
 LEASE = timedelta(minutes=10)
 COOLDOWN = timedelta(minutes=15)
 MAX_ATTEMPTS = 3
+IMPLEMENTED_MODELS = frozenset({"questions"})
 
 
 @dataclass(frozen=True)
@@ -42,6 +43,14 @@ class RecoveryRequest:
             raise ValueError("recovery dates must include timezone")
         if not timedelta(0) < self.date_to - self.date_from <= timedelta(days=90):
             raise ValueError("recovery range must be positive and at most 90 days")
+        # BSON stores milliseconds: expand rather than truncate the requested
+        # interval so persisted coverage still contains its original endpoints.
+        start = self.date_from.astimezone(UTC)
+        end = self.date_to.astimezone(UTC)
+        object.__setattr__(
+            self, "date_from", start - timedelta(microseconds=start.microsecond % 1000)
+        )
+        object.__setattr__(self, "date_to", end + timedelta(microseconds=(-end.microsecond) % 1000))
 
     @property
     def key(self) -> str:
@@ -55,11 +64,30 @@ class RecoveryRequest:
 
 
 class FormulaRecoveryQueue:
-    def __init__(self, db: Any, *, now: Callable[[], datetime] | None = None) -> None:
+    def __init__(
+        self,
+        db: Any,
+        *,
+        now: Callable[[], datetime] | None = None,
+        enabled_models: frozenset[str] = RECOVERABLE_MODELS,
+    ) -> None:
         self.collection = db["sheets_formula_recovery_jobs"]
         self.now = now or (lambda: datetime.now(UTC))
+        self.enabled_models = enabled_models
+
+    async def ensure_indexes(self) -> None:
+        await self.collection.create_index(
+            [("state", 1), ("read_model", 1), ("available_at", 1), ("_id", 1)],
+            name="recovery_claim",
+        )
+        await self.collection.create_index(
+            [("state", 1), ("lease_until", 1)],
+            name="recovery_expired_lease",
+        )
 
     async def enqueue(self, request: RecoveryRequest) -> str:
+        if request.read_model not in self.enabled_models:
+            raise ValueError("recovery source is not enabled")
         now = self.now()
         initial = {
             "_id": request.key,
@@ -109,6 +137,7 @@ class FormulaRecoveryQueue:
         claimed = await self.collection.find_one_and_update(
             {
                 "attempts": {"$lt": MAX_ATTEMPTS},
+                "read_model": {"$in": sorted(self.enabled_models)},
                 "available_at": {"$lte": now},
                 "$or": [
                     {"state": "pending"},

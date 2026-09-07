@@ -10,6 +10,7 @@ from urllib.parse import urlencode
 import httpx
 from pymongo.errors import PyMongoError
 
+from zeler_platform_core.clients.meli_gateway_client import GatewayRateLimitError
 from zeler_sheets.event_persistence import SheetsEventPersistence
 from zeler_sheets.formulas.recovery import COOLDOWN, FormulaRecoveryQueue
 
@@ -28,6 +29,9 @@ class FormulaRecoveryWorker:
         self.detail_gateway = detail_gateway if detail_gateway is not None else gateway
         self.queue = queue
 
+    async def process_once(self) -> str:
+        return "processed" if await self.process_one() else "idle"
+
     async def process_one(self) -> bool:
         job = await self.queue.claim()
         if job is None:
@@ -45,7 +49,7 @@ class FormulaRecoveryWorker:
                 retryable=transient,
                 failure_reason="source_temporarily_unavailable" if transient else "source_rejected",
             )
-        except (httpx.TransportError, TimeoutError):
+        except (httpx.TransportError, TimeoutError, GatewayRateLimitError):
             await self.queue.finish(
                 job,
                 succeeded=False,

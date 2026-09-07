@@ -15,6 +15,7 @@ from zeler_sheets.api import build_router
 from zeler_sheets.consumer import claims_queue_state
 from zeler_sheets.extension_token_encryption import build_extension_token_cipher
 from zeler_sheets.formulas.audit import FormulaAuditService
+from zeler_sheets.formulas.recovery import IMPLEMENTED_MODELS, FormulaRecoveryQueue
 from zeler_sheets.google_oauth_router import build_router as build_google_oauth_router
 from zeler_sheets.sheets_config import SheetsSettings, get_settings
 
@@ -57,9 +58,15 @@ def build_app(
     settings: SheetsSettings | None = None,
     http_client_factory: Callable[[], httpx.AsyncClient] | None = None,
     claims_dlq_state: ClaimsDlqStateSource | None = None,
+    formula_recovery_enabled: bool = False,
 ) -> FastAPI:
     app = FastAPI(title="zeler-sheets")
     app.state.mongo_db = mongo_db
+    if formula_recovery_enabled:
+        app.state.formula_recovery_queue = FormulaRecoveryQueue(
+            mongo_db,
+            enabled_models=IMPLEMENTED_MODELS,
+        )
     if kms_client is not None:
         app.state.kms_client = kms_client
     if settings is not None:
@@ -108,6 +115,8 @@ def build_app(
 
     async def register_startup() -> None:
         await register_module(manifest, mongo_db)
+        if formula_recovery_enabled:
+            await app.state.formula_recovery_queue.ensure_indexes()
 
     app.router.on_startup.append(register_startup)
     return app
@@ -141,4 +150,6 @@ def make_app() -> FastAPI:
         kms_client=kms.KeyManagementServiceClient(),
         settings=get_settings(),
         claims_dlq_state=claims_state,
+        formula_recovery_enabled=os.environ.get("ZELERDATA_FORMULA_RECOVERY_ENABLED", "").lower()
+        in {"1", "true", "yes", "on"},
     )

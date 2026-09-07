@@ -144,3 +144,34 @@ async def test_ordered_shutdown_stops_poller_before_amqp() -> None:
     await run_worker_lifecycles(Runner(), Poller(), shutdown)
 
     assert calls == ["amqp_start", "poller_start", "poller_stop", "amqp_close"]
+
+
+@pytest.mark.asyncio
+async def test_recovery_runs_alongside_sync_and_stops_with_amqp() -> None:
+    calls: list[str] = []
+    shutdown = asyncio.Event()
+
+    class Runner:
+        async def start(self) -> None:
+            calls.append("amqp_start")
+
+        async def close(self) -> None:
+            calls.append("amqp_close")
+
+    class Processor:
+        def __init__(self, name: str) -> None:
+            self.name = name
+
+        async def process_once(self) -> str:
+            calls.append(self.name)
+            if "sync" in calls and "recovery" in calls:
+                shutdown.set()
+            return "idle"
+
+    sync = SyncJobsPollerSupervisor(Processor("sync"))
+    recovery = SyncJobsPollerSupervisor(Processor("recovery"))
+    async with asyncio.timeout(2):
+        await run_worker_lifecycles(Runner(), sync, shutdown, extra_pollers=(recovery,))
+    assert "sync" in calls and "recovery" in calls
+    assert calls[-1] == "amqp_close"
+    assert sync.health_status == recovery.health_status == "stopped"
