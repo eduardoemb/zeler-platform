@@ -83,8 +83,8 @@ class SheetsEventPersistence:
         operation: DevolucionesOperationContext | None = None,
         session: Any = None,
     ) -> None:
-        if session is not None and not event_type.startswith("questions."):
-            raise ValueError("external transaction is only supported for questions")
+        if session is not None and not event_type.startswith(("questions.", "orders.")):
+            raise ValueError("external transaction is only supported for questions and orders")
         if event_type.startswith("items."):
             await self._persist_item(seller_id=str(seller_id), resource=resource)
             return
@@ -92,7 +92,7 @@ class SheetsEventPersistence:
             if operation is None:
                 raise ValueError("operation is required for covered order writes")
             await self._persist_order(
-                seller_id=str(seller_id), resource=resource, operation=operation
+                seller_id=str(seller_id), resource=resource, operation=operation, session=session
             )
             return
         if event_type.startswith("shipments."):
@@ -742,6 +742,7 @@ class SheetsEventPersistence:
         seller_id: str,
         resource: dict[str, Any],
         operation: DevolucionesOperationContext,
+        session: Any = None,
     ) -> None:
         observed_at = require_bson_ms_utc_datetime(self._clock())
         order_id = _string_id(resource.get("_id") or resource.get("id"))
@@ -793,6 +794,7 @@ class SheetsEventPersistence:
                 else None,
             },
             writer=write,
+            **_session_kwargs(session),
         )
 
     async def _refresh_order_line_sku_index(

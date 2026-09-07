@@ -757,3 +757,20 @@ question transaction implementation. Handle partial source responses and prior
 Mongo fields explicitly. The last-sale handler requests from 1970; applying the
 queue's 90-day request limit blindly would make it permanently unrecoverable.
 All-history absence and latest-known-sale evidence need distinct treatment.
+
+## Work unit: atomic order recovery publication prerequisite
+
+- Four new real-Mongo scenarios first failed because the order writer rejected
+  all external sessions. Covered order writes can now join an existing active
+  transaction while retaining the same server-time operation lease guard.
+  Calls without a session retain the existing owned-transaction path.
+- Commit, deliberate rollback, expired lease and session-without-transaction
+  cases prove that order, SKU index and a recovery completion record commit
+  together or remain absent. No production data was used or changed.
+- Recovery, event persistence, historical backfill and core lease suites:
+  149 passed in 5.58s. Ruff, format and mypy pass (500 files).
+- Rollback boundary: optional session support in guarded_devoluciones_write
+  and Sheets order persistence, plus the transaction regression. This is a
+  prerequisite, not enabled order recovery. The pending worker implementation
+  is its intended runtime consumer; deploy together after its acceptance.
+  Existing callers keep their transaction/lease contract unchanged.

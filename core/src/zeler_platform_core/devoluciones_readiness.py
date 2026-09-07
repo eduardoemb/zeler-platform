@@ -305,26 +305,35 @@ async def guarded_devoluciones_write(
     seller_id: str,
     checkpoint: Mapping[str, Any],
     writer: Callable[[Any], Awaitable[Any] | Any],
+    session: Any = None,
 ) -> Any:
     _ensure_live_owner(operation)
     if _required_identity(seller_id, "seller_id") != operation.seller_id:
         raise DevolucionesLeaseLostError("mutation seller does not match operation seller")
-    async with await _start_session(db) as session, session.start_transaction():
+
+    async def guarded_write(transaction_session: Any) -> Any:
         result = await db[DEVOLUCIONES_OPERATIONS_COLLECTION].update_one(
             operation_lease_guard(operation),
             {
                 "$set": {"checkpoint": dict(checkpoint)},
                 "$currentDate": {"updated_at": True},
             },
-            session=session,
+            session=transaction_session,
         )
         if getattr(result, "matched_count", 0) != 1:
             operation.lease_lost = True
             raise DevolucionesLeaseLostError("devoluciones operation lease guard failed")
-        write_result = writer(session)
+        write_result = writer(transaction_session)
         if inspect.isawaitable(write_result):
             return await write_result
         return write_result
+
+    if session is not None:
+        if not session.in_transaction:
+            raise ValueError("covered write requires an active transaction")
+        return await guarded_write(session)
+    async with await _start_session(db) as owned_session, owned_session.start_transaction():
+        return await guarded_write(owned_session)
 
 
 def _ensure_live_owner(operation: DevolucionesOperationContext) -> None:

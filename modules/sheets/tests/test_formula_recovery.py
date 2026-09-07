@@ -15,6 +15,73 @@ from zeler_sheets.formulas.recovery import FormulaRecoveryQueue, RecoveryRequest
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("outcome", ["commit", "abort", "expired_lease", "no_transaction"])
+async def test_order_write_joins_recovery_transaction_without_losing_lease_guard(
+    recovery_db: Any, outcome: str
+) -> None:
+    from zeler_platform_core.devoluciones_readiness import (
+        DevolucionesLeaseLostError,
+        acquire_devoluciones_operation,
+    )
+    from zeler_sheets.event_persistence import SheetsEventPersistence
+
+    operation = await acquire_devoluciones_operation(
+        db=recovery_db,
+        seller_id="pilot",
+        scope="devoluciones",
+        operation_id=uuid4().hex,
+        attempt_token=uuid4().hex,
+    )
+    if outcome == "expired_lease":
+        await recovery_db.sheets_devoluciones_operations.update_one(
+            {"_id": "pilot:devoluciones"}, {"$set": {"lease_until": datetime(2000, 1, 1)}}
+        )
+    writer = SheetsEventPersistence(db=recovery_db)
+    resource = {
+        "id": 42,
+        "seller": {"id": "pilot"},
+        "buyer": {"id": 123},
+        "status": "paid",
+        "date_created": "2026-08-20T10:00:00Z",
+        "last_updated": "2026-08-20T11:00:00Z",
+        "total_amount": 30,
+        "order_items": [
+            {"item": {"id": "MLM42", "seller_sku": "sku-42"}, "quantity": 1, "unit_price": 30}
+        ],
+    }
+
+    async def write(session: Any) -> None:
+        await writer.persist(
+            event_type="orders.updated",
+            seller_id="pilot",
+            resource=resource,
+            operation=operation,
+            session=session,
+        )
+        await recovery_db.sheets_formula_recovery_jobs.insert_one(
+            {"_id": "atomic-completion", "state": "completed"}, session=session
+        )
+
+    async with await recovery_db.client.start_session() as session:
+        if outcome == "no_transaction":
+            with pytest.raises(ValueError, match="active transaction"):
+                await write(session)
+        elif outcome == "commit":
+            async with session.start_transaction():
+                await write(session)
+        else:
+            error = DevolucionesLeaseLostError if outcome == "expired_lease" else RuntimeError
+            with pytest.raises(error):
+                async with session.start_transaction():
+                    await write(session)
+                    raise RuntimeError("abort the entire recovery publication")
+    expected = 1 if outcome == "commit" else 0
+    assert await recovery_db.orders.count_documents({}) == expected
+    assert await recovery_db.sheets_item_sku_index.count_documents({}) == expected
+    assert await recovery_db.sheets_formula_recovery_jobs.count_documents({}) == expected
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "source_owner",
     [
