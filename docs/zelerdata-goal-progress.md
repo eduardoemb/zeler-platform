@@ -2957,3 +2957,42 @@ retain their contract; other product deployments remain out of scope.
   and worker `55e10b4593b0ccb5df81a513daf9ce10be26c5da1516d85e7b7b6fb8a72f8512`
   healthy. Both must be rebuilt from the intended source before deployment of
   this unit; deploy the worker before exposing the new API recovery admissions.
+
+## Inventory recovery images deployed; pilot sweep started
+
+- API and worker now run source `b74b758a7a7ec1ee826ddd660b7d2ab40839d9f9`.
+  Each Cloud Build produced one image and passed exact-source provenance
+  verification. Worker build `14f50a78-cb48-429e-b706-e1af06d84fd8` produced
+  `50c87edc6503317b283c625a965fd46690dd304af1829a56a77c8fe66855f651`;
+  API build `cbcff1fe-1b02-4d38-8dbd-c6ea9f0865ed` produced
+  `02b4788b7da0d3ec46d766473f96590ded22fc8e1769cfea33ca48f2a6bc3d0a`.
+  The worker was deployed first. Authoritative container inspection confirmed
+  both exact digests healthy with zero restarts; the API deploy also verified
+  HTTP `/health` 200. No other product was deployed.
+- Before pulling, narrowly scoped cleanup removed only two unused local image
+  references: API `ef49b4d24bf62a9e31b5e9b83fbd5ec61d3983e020775922e168e544d21e0fc0`
+  and worker `2aa013bb375c1d14c5dd516f39f472879336c923d69acf425a34be9e1c97b806`.
+  Both were checked against all containers and remain recoverable from Artifact
+  Registry. Current and rollback images were protected. Free root space rose
+  from 4,881,522,688 to 5,966,884,864 bytes; each deployment enforced the 5 GiB
+  pre-pull gate. After the API deployment, 4,880,760,832 bytes remained. No data,
+  volumes or remote artifacts were deleted.
+- Rollback authorities are the prior running API
+  `f8ccf361eb7e54639d6a6a6128ea4e7841c1e519b98bd37b8ff8dbdf8c633cfe`
+  and worker `55e10b4593b0ccb5df81a513daf9ce10be26c5da1516d85e7b7b6fb8a72f8512`.
+  Compose backups are `/opt/zeler-platform/docker-compose.yml.pre-sheets-api-b74b758`
+  and its `pre-sheets-worker-b74b758` counterpart. A worker rollback must account
+  for the new inventory job before removing inventory support; preserve acquired
+  data. Recover disk margin before any further pull.
+- The approved API-container probe admitted exactly one pilot inventory job,
+  `5f2485d573679264481950cce24b1373d2eb93f11c1f79ea2aca606b92d20a8f`, through
+  the actual private API admission helper. Its exclusive mode-0600 receipt is
+  `/var/lib/zeler-platform/repairs/inventory-b74b758.json`. Before admission,
+  internal CALCULADORA/CALIDAD both returned DATA_UNAVAILABLE in 0.0024/0.0020s.
+  The global marker fingerprint was unchanged. Subsequent probes must observe
+  this same job rather than re-admit it. This is internal runtime evidence, not
+  authenticated HTTP, all-field correctness or real Google Sheets acceptance.
+- The supervisor waits only when idle, not between successful batches. Live
+  sweep duration and source/scan freshness still need measurement: completing
+  acquisition alone does not prove that the whole inventory is readable within
+  its 15-minute evidence window. No claim of full-inventory acceptance yet.
