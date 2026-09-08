@@ -332,7 +332,8 @@ async def run_historical_meli_backfill(
         orders = list(orders_by_id.values())
         order_ids = _unique_strings(_resource_id(order) for order in orders)
     claim_ids = _unique_strings(_resource_id(claim) for claim in claims)
-    catalog_scope: list[CatalogSnapshotSource] = []
+    catalog_product_scope: list[str] = []
+    catalog_buybox_scope: list[CatalogSnapshotSource] = []
     catalog_product_snapshots: list[dict[str, Any]] = []
     catalog_buybox_snapshots: list[dict[str, Any]] = []
     shipment_ids = _bounded_values(
@@ -358,19 +359,21 @@ async def run_historical_meli_backfill(
             await _catalog_snapshot_source_rows(db=db, seller_id=seller_id),
             _catalog_snapshot_source_rows_from_resources(items),
         )
+        catalog_product_scope = _unique_strings(
+            identity
+            for row in catalog_scope
+            for identity in (row.catalog_product_id, *row.variation_catalog_product_ids)
+        )
+        catalog_buybox_scope = [row for row in catalog_scope if row.catalog_product_id is not None]
         catalog_product_snapshots = await _fetch_catalog_product_snapshots(
             gateway=catalog_gateway,
             seller_id=seller_id,
-            catalog_product_ids=_unique_strings(
-                identity
-                for row in catalog_scope
-                for identity in (row.catalog_product_id, *row.variation_catalog_product_ids)
-            ),
+            catalog_product_ids=catalog_product_scope,
         )
         catalog_buybox_snapshots = await _fetch_catalog_buybox_snapshots(
             gateway=catalog_gateway,
             seller_id=seller_id,
-            source_rows=[row for row in catalog_scope if row.catalog_product_id is not None],
+            source_rows=catalog_buybox_scope,
         )
     catalog_product_ids = _unique_strings(
         snapshot.get("catalog_product_id") for snapshot in catalog_product_snapshots
@@ -543,11 +546,9 @@ async def run_historical_meli_backfill(
         questions_fetched=len(questions),
         claims_found=len(claim_ids),
         claims_fetched=len(claims),
-        catalog_product_snapshots_found=len(
-            _unique_strings(row.catalog_product_id for row in catalog_scope)
-        ),
+        catalog_product_snapshots_found=len(catalog_product_scope),
         catalog_product_snapshots_fetched=len(catalog_product_snapshots),
-        catalog_buybox_snapshots_found=len(catalog_scope),
+        catalog_buybox_snapshots_found=len(catalog_buybox_scope),
         catalog_buybox_snapshots_fetched=len(catalog_buybox_snapshots),
         buyer_address_pii_mode=include_buyer_address_pii,
         output_mode="sanitized_aggregate",

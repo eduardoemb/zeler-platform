@@ -4219,3 +4219,40 @@ lint `34262518703` passed and test `34262518663` still running.
 
 Rollback remains the service-specific image bindings documented above. These
 legitimately acquired costs must remain persisted; rollback is not data deletion.
+
+## Catalog participation evidence and acquisition count correction
+
+A read-only approved-runtime probe selected 20 owned pilot publications with
+stored product links and fetched their current item details through the normal
+Sheets gateway (four batches of five). Every response identity and seller was
+checked. All 20 still had product links, but **19 returned `catalog_listing=false`
+and only one returned `true`**. Mongo retained a known boolean for **zero** of
+these 20. This is a bounded sample, not a seller-wide participation estimate.
+Script: `/tmp/zeler-catalog-participation-probe.py` (local and VM). No business
+data was written, and no IDs, customer values or credentials were printed.
+
+This evidence rules out inferring participation from `catalog_product_id` alone.
+Next preserve the explicit source boolean through normalization/persistence and
+use it in the relevant formula and buybox-selection consumers, while keeping
+unknown distinct from false. The live probe does not implement that fix; current
+runtime classification/automatic catalog recovery must not be declared correct.
+
+Review also caught a reporting inconsistency in the preceding variation-source
+change: acquisition included variation products, but `snapshots_found` still
+counted parent links and counted association-free rows as buybox candidates.
+Two added assertions failed (**2 failed in 0.28s**). Product and buybox source
+lists are now computed once and reused for both requests and counters, preventing
+the report from describing a different scope than acquisition.
+
+Verification: `uv run pytest modules/sheets/tests/test_historical_meli_backfill.py
+--tb=short` — **54 passed in 0.24s**; Ruff check/format, mypy (505 files), and
+diff check pass. A new full root run was not performed for this counter-only
+correction. The existing historical harness verifies scoped requests, persistence
+and report counts; live corrected-counter acceptance remains pending deployment.
+Rollback is the source-list reuse/count calculation and its two assertions in
+the historical module/tests, not acquired data or the prior variation fix.
+
+No deployment occurred. Worker remains `a607932`, API `29c3832`; before using
+the corrected historical/reconcile catalog path, include these source-selection
+and reporting fixes in a verified Sheets image and check persisted catalog
+results. They do not justify another inventory sweep or changes to other products.

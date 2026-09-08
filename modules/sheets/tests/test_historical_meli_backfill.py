@@ -1404,6 +1404,8 @@ async def test_catalog_acquisition_includes_variations_and_prefers_fetched_assoc
     )
     expected = {"VAR-FRESH", "VAR-STORED"} | (set() if parent_removed else {"CAT-MLA1"})
     assert set(summary.catalog_product_ids) == expected
+    assert summary.catalog_product_snapshots_found == len(expected)
+    assert summary.catalog_buybox_snapshots_found == int(not parent_removed)
     assert summary.written_catalog_product_snapshots == len(expected)
     assert set(db["sheets_catalog_product_snapshots"].documents) == {
         f"82453304:{identity}" for identity in expected
