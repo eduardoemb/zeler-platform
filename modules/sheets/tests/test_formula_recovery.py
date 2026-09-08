@@ -321,6 +321,104 @@ async def test_recovery_does_not_duplicate_current_stock_under_historical_sku(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("existing_row", [False, True])
+@pytest.mark.parametrize("history_age", [timedelta(minutes=10), timedelta(0)])
+@pytest.mark.parametrize("with_variations", [False, True])
+async def test_backfill_keeps_snapshot_status_over_conflicting_older_history(
+    recovery_db: Any, existing_row: bool, history_age: timedelta, with_variations: bool
+) -> None:
+    from zeler_sheets.formulas.read_models import FormulaReadModelRepository
+    from zeler_sheets.sheetseller_backfill import build_formula_row_doc, run_sheetseller_backfill
+
+    now = datetime(2026, 9, 8, 12, tzinfo=UTC)
+    item = {
+        "_id": "MLA1",
+        "seller_id": "82453304",
+        "status": "active",
+        "price": 100,
+        "available_quantity": 7,
+        "date_created": now - timedelta(days=1),
+        "last_updated": now - timedelta(hours=1),
+        "last_meli_sync_at": now,
+        "attributes": [] if with_variations else [{"id": "SELLER_SKU", "value_name": "CURRENT"}],
+        "variations": [{"id": 1, "seller_custom_field": "CURRENT", "available_quantity": 7}]
+        if with_variations
+        else [],
+    }
+    history = {
+        "_id": "82453304:MLA1",
+        "seller_id": "82453304",
+        "item_id": "MLA1",
+        "current_status": "paused",
+        "first_observed_at": now - timedelta(days=1),
+        "last_observed_at": now - history_age,
+        "status_started_at": now - timedelta(days=1),
+        "paused_since": now - timedelta(days=1),
+        "last_status_change_at": now - timedelta(days=1),
+        "schema_version": 1,
+    }
+    await recovery_db.items.insert_one(item)
+    await recovery_db.item_status_states.insert_one(history)
+    persisted_history = await recovery_db.item_status_states.find_one({"_id": history["_id"]})
+    if existing_row:
+        stale = {**item, "status": "paused", "status_observed_at": now - history_age}
+        await recovery_db.sheets_item_formula_rows.insert_one(
+            build_formula_row_doc(
+                stale,
+                seller_id="82453304",
+                sku="CURRENT",
+                variation_id="1" if with_variations else None,
+            )
+        )
+    for _ in range(2):
+        await run_sheetseller_backfill(db=recovery_db, seller_id="82453304", dry_run=False)
+        rows, missing = await FormulaReadModelRepository(
+            db=recovery_db
+        ).find_recent_item_formula_rows(
+            seller_id="82453304", item_ids=["MLA1"], formula="ZELERDATA_CALCULADORA", now=now
+        )
+        assert missing == ()
+        assert len(rows) == 1
+        assert rows[0]["current"]["status"] == "active"
+        if not with_variations:
+            assert rows[0]["current"]["status_observed_at"].replace(tzinfo=UTC) == now
+        assert not any(
+            field in rows[0]["current"]
+            for field in ("paused_since", "status_started_at", "last_status_change_at")
+        )
+        assert (
+            await recovery_db.item_status_states.find_one({"_id": history["_id"]})
+            == persisted_history
+        )
+
+
+@pytest.mark.parametrize(
+    "snapshot_status,snapshot_age", [("paused", 0), ("active", 1), ("active", None)]
+)
+def test_snapshot_precedence_retains_matching_or_newer_history(
+    snapshot_status: str, snapshot_age: int | None
+) -> None:
+    from zeler_sheets.sheetseller_backfill import _status_history_for_snapshot
+
+    observed = datetime(2026, 9, 8, 12, tzinfo=UTC)
+    history = {
+        "current_status": "paused",
+        "last_observed_at": observed,
+        "paused_since": observed - timedelta(days=1),
+    }
+    assert (
+        _status_history_for_snapshot(
+            history,
+            status=snapshot_status,
+            observed_at=observed - timedelta(minutes=snapshot_age)
+            if snapshot_age is not None
+            else None,
+        )
+        == history
+    )
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("with_variations", [False, True])
 async def test_native_sku_event_keeps_recovered_projection_readable(
     recovery_db: Any, with_variations: bool

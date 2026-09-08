@@ -2618,7 +2618,9 @@ def _item_with_status_history(
 ) -> dict[str, Any]:
     if status_state is None:
         return _item_without_status_history(item)
-    status_state = normalize_status_history_datetimes(status_state)
+    status_state = _status_history_for_snapshot(
+        status_state, status=item.get("status"), observed_at=item.get("last_meli_sync_at")
+    )
     enriched = dict(item)
     enriched["status"] = status_state["current_status"]
     for field in (
@@ -2634,6 +2636,25 @@ def _item_with_status_history(
         if (value := bson_ms_utc_datetime(status_state.get(field))) is not None:
             enriched[field] = value
     return enriched
+
+
+def _status_history_for_snapshot(
+    status_state: dict[str, Any], *, status: Any, observed_at: Any
+) -> dict[str, Any]:
+    state = normalize_status_history_datetimes(status_state)
+    snapshot_time = bson_ms_utc_datetime(observed_at)
+    history_time = bson_ms_utc_datetime(state.get("last_observed_at"))
+    if (
+        status
+        and status != state.get("current_status")
+        and snapshot_time is not None
+        and history_time is not None
+        and snapshot_time >= history_time
+    ):
+        # The snapshot proves the current status, not when the transition began.
+        # Keep persisted history untouched; do not attach its conflicting durations.
+        return {"current_status": status, "last_observed_at": snapshot_time}
+    return state
 
 
 async def _replace_item_only_projection(
@@ -2796,10 +2817,15 @@ def _formula_row_with_status_history(
     refreshed = _formula_row_without_status_history(formula_row_doc)
     if status_state is None:
         return refreshed
-    status_state = normalize_status_history_datetimes(status_state)
     current = refreshed.get("current")
     if not isinstance(current, dict):
         return refreshed
+    snapshot = refreshed.get("source_snapshot")
+    status_state = _status_history_for_snapshot(
+        status_state,
+        status=current.get("status"),
+        observed_at=snapshot.get("observed_at") if isinstance(snapshot, dict) else None,
+    )
     current["status"] = status_state["current_status"]
     if (last_observed_at := bson_ms_utc_datetime(status_state.get("last_observed_at"))) is not None:
         current["status_observed_at"] = last_observed_at

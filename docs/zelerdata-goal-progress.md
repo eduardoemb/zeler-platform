@@ -3457,3 +3457,34 @@ retain their contract; other product deployments remain out of scope.
   Remaining functional work includes stale status precedence during backfill,
   current complete inventory and all-52/user-facing acceptance before hardening
   closure. Do not recreate incorrect duplicate rows during rollback.
+
+## Work unit: backfill status follows the newer observed snapshot
+
+- Four initial real-Mongo regressions reproduced an active snapshot becoming
+  paused from older or equal-time conflicting history. Backfill now compares
+  `last_meli_sync_at` (and the projection's source receipt at write time) with
+  `last_observed_at`, rather than using the item's modification time as an
+  observation. On a conflicting tie, the persisted Mercado Libre snapshot wins.
+- The shared precedence helper is applied during item enrichment and the final
+  status-state reread. A newer/equal snapshot supplies current status and its
+  observation time, not guessed transition start/duration scalars. Matching
+  history, newer history and legacy rows without snapshot evidence retain their
+  prior behavior. No status-history source or transition collection is mutated.
+- Focused coverage: **11 passed in 1.94s**, including eight real-Mongo cases for
+  parent/variation rows, existing/absent rows, older/tied history, repeated
+  backfill, source-bound readability and unchanged persisted history; three
+  controls retain matching/newer history or history without snapshot evidence.
+  Earlier combined recovery/backfill/native-event suite: **460 passed in 46.03s**.
+  Protected Mongo integration: **8 passed in 2.37s**. Ruff check/format and mypy
+  (505 files) pass. Full normal-allocator root suite with local Mongo:
+  **3,917 passed, 9 skipped, 356 warnings in 108.90s**. Eight protected skips
+  passed separately above; the remaining skip needs Caddy keys.
+- Runtime scope: Sheets worker and future bootstrap runs use this backfill;
+  formula API handlers are unchanged. Production verification of this new
+  precedence is still pending, not implied by the prior SKU pilot. Build a new
+  verified Sheets worker image before activation and compare a bounded pilot's
+  conflicting source/history against the persisted formula status and missing
+  duration fields. Refresh bootstrap's image before a future applicable run.
+- Rollback boundary: remove the shared precedence helper and its two call sites
+  together with the regression tests. No schema/data migration or external
+  side effect has run for this change. Do not synthesize history to roll back.
