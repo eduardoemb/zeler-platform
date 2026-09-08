@@ -403,7 +403,7 @@ class FormulaReadModelRepository:
 
     async def find_recent_catalog_product_inventory(
         self, *, seller_id: str, formula: str, now: datetime
-    ) -> tuple[list[dict[str, Any]], tuple[str, ...], tuple[str, ...], bool]:
+    ) -> tuple[list[dict[str, Any]], tuple[str, ...], tuple[str, ...], bool, tuple[str, ...]]:
         rows, _, missing_items, current = await self.find_recent_item_inventory(
             seller_id=seller_id, formula=formula, now=now
         )
@@ -448,21 +448,43 @@ class FormulaReadModelRepository:
             else []
         )
         ready = []
+        source_missing: set[str] = set()
         for snapshot in snapshots:
             observed = _safe_utc_datetime(snapshot.get("snapshot_at"))
             title = snapshot.get("title")
-            if (
+            if not (
                 snapshot.get("_id") == f"{seller_id}:{snapshot.get('catalog_product_id')}"
                 and observed is not None
-                and now - timedelta(minutes=15) < observed <= now
+                and observed <= now
                 and snapshot.get("source") in {"sheets_backfill", "historical_meli_backfill"}
+            ):
+                continue
+            unavailable = snapshot.get("source_unavailable")
+            checked = (
+                _safe_utc_datetime(unavailable.get("observed_at"))
+                if isinstance(unavailable, dict)
+                else None
+            )
+            known_missing = (
+                isinstance(unavailable, dict)
+                and unavailable.get("reason") == "catalog_product_not_found"
+                and checked is not None
+                and now - timedelta(minutes=15) < checked <= now
+                and checked >= observed
+            )
+            if known_missing:
+                source_missing.add(snapshot["catalog_product_id"])
+            if (
+                (now - timedelta(minutes=15) < observed or known_missing)
                 and isinstance(title, str)
                 and bool(title.strip())
                 and {"description", "image_url", "attributes"} <= snapshot.keys()
             ):
+                # A fresh 404 can use the last known payload, but the caller
+                # must label it cached and must not claim current completeness.
                 ready.append(snapshot)
         missing = tuple(sorted(product_ids - {row["catalog_product_id"] for row in ready}))
-        return ready, missing, tuple(sorted(invalid_items)), current
+        return ready, missing, tuple(sorted(invalid_items)), current, tuple(sorted(source_missing))
 
     async def find_catalog_buybox_snapshots(
         self,

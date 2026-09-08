@@ -316,6 +316,7 @@ class ItemShippingCatalogFormulaHandlers:
             missing,
             missing_items,
             inventory_current,
+            source_missing,
         ) = await self._repository.find_recent_catalog_product_inventory(
             seller_id=context.seller_id,
             formula=context.contract.name,
@@ -326,6 +327,8 @@ class ItemShippingCatalogFormulaHandlers:
         )
         values = _header_row(context.args.get("encabezados"), headers)
         by_id = {snapshot["catalog_product_id"]: snapshot for snapshot in snapshots}
+        cached_ids = set(by_id) & set(source_missing)
+        recoverable = tuple(identity for identity in missing if identity not in source_missing)
         for identity in sorted(set(by_id) | set(missing)):
             values.append(
                 _catalogo_completo_row(by_id[identity])[: len(headers)]
@@ -343,12 +346,12 @@ class ItemShippingCatalogFormulaHandlers:
                 read_model=ITEM_FORMULA_ROWS_READ_MODEL,
                 item_ids=missing_items if inventory_current else (),
             )
-        elif missing:
+        elif recoverable:
             recovery = FormulaDataUnavailableError(
                 context.contract.name,
                 "Catalog products are missing, expired or unverified.",
                 read_model=CATALOG_PRODUCT_SNAPSHOTS_READ_MODEL,
-                catalog_product_ids=missing,
+                catalog_product_ids=recoverable,
             )
         return FormulaExecutionResult(
             values=values,
@@ -356,17 +359,30 @@ class ItemShippingCatalogFormulaHandlers:
             meta={
                 "rows_count": len(by_id) + len(missing) + int(inventory_gap),
                 "available_products": len(by_id),
+                "cached_products": len(cached_ids),
+                "source_unavailable_products": len(source_missing),
+                "unavailable_product_reasons": {
+                    identity: "catalog_product_not_found" for identity in source_missing
+                },
+                "cached_product_observed_at": {
+                    identity: _as_utc_datetime(by_id[identity]["snapshot_at"])
+                    for identity in sorted(cached_ids)
+                },
                 "unavailable_products": len(missing),
                 "unavailable_items": len(missing_items),
                 "inventory_enumeration_current": inventory_current,
-                "catalog_products_complete": not inventory_gap and not missing,
+                "catalog_products_complete": not inventory_gap
+                and not missing
+                and not source_missing,
                 **(
                     {
                         "unavailable_reason": "inventory_incomplete"
                         if inventory_gap
                         else "catalog_products_missing_or_expired"
+                        if recoverable
+                        else "catalog_product_not_found"
                     }
-                    if recovery
+                    if recovery or source_missing
                     else {}
                 ),
                 "columns": "catalog_complete_current" if complete else "catalog_legacy_simple",

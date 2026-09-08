@@ -54,6 +54,17 @@ from zeler_sheets.sheetseller_backfill import (
 )
 
 
+def _catalog_snapshot_filter(seller_id: str, identity: str, observed: datetime) -> dict[str, Any]:
+    return {
+        "_id": f"{seller_id}:{identity}",
+        "seller_id": seller_id,
+        "$and": [
+            {"$or": [{field: {"$lte": observed}}, {field: {"$exists": False}}]}
+            for field in ("snapshot_at", "source_unavailable.observed_at")
+        ],
+    }
+
+
 class FormulaRecoveryWorker:
     def __init__(
         self,
@@ -170,6 +181,11 @@ class FormulaRecoveryWorker:
                     or not isinstance(resource.get("title") or resource.get("name"), str)
                 ):
                     raise ValueError("catalog product identity or title is unavailable")
+            except httpx.HTTPStatusError as exc:
+                if exc.response.status_code == 404:
+                    await self._catalog_product_not_found(job, identity, observed)
+                    return None
+                return exc
             except (httpx.HTTPError, TimeoutError, GatewayRateLimitError, ValueError) as exc:
                 return exc
             if (
@@ -183,14 +199,7 @@ class FormulaRecoveryWorker:
             # newer observation; a duplicate ID then means it already won.
             with suppress(DuplicateKeyError):
                 await self.db["sheets_catalog_product_snapshots"].replace_one(
-                    {
-                        "_id": snapshot["_id"],
-                        "seller_id": requested.seller_id,
-                        "$or": [
-                            {"snapshot_at": {"$lte": observed}},
-                            {"snapshot_at": {"$exists": False}},
-                        ],
-                    },
+                    _catalog_snapshot_filter(requested.seller_id, identity, observed),
                     snapshot,
                     upsert=True,
                 )
@@ -243,6 +252,33 @@ class FormulaRecoveryWorker:
             )
             raise transient or failures[0]
         await self.queue.finish(job, succeeded=True)
+
+    async def _catalog_product_not_found(
+        self, job: dict[str, Any], identity: str, observed: datetime
+    ) -> None:
+        if await self.queue.collection.find_one(self.queue._owned(job, self.queue.now())) is None:
+            raise ValueError("catalog recovery lease lost before unavailable observation")
+        with suppress(DuplicateKeyError):
+            await self.db["sheets_catalog_product_snapshots"].update_one(
+                _catalog_snapshot_filter(job["seller_id"], identity, observed),
+                {
+                    "$set": {
+                        "source_unavailable": {
+                            "reason": "catalog_product_not_found",
+                            "observed_at": observed,
+                        }
+                    },
+                    "$setOnInsert": {
+                        "_id": f"{job['seller_id']}:{identity}",
+                        "seller_id": job["seller_id"],
+                        "catalog_product_id": identity,
+                        "snapshot_at": observed,
+                        "source": "sheets_backfill",
+                        "schema_version": 1,
+                    },
+                },
+                upsert=True,
+            )
 
     async def _items(self, job: dict[str, Any]) -> None:
         if job.get("inventory_scope") is True:

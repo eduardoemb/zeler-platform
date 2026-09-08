@@ -585,6 +585,15 @@ ENTITY_SCHEMAS: dict[str, dict[str, Any]] = {
             "image_url": {"bsonType": ["string", "null"]},
             "permalink": {"bsonType": ["string", "null"]},
             "attributes": {"bsonType": ["array", "object", "null"]},
+            "source_unavailable": {
+                "bsonType": "object",
+                "additionalProperties": False,
+                "required": ["reason", "observed_at"],
+                "properties": {
+                    "reason": {"enum": ["catalog_product_not_found"]},
+                    "observed_at": DATE,
+                },
+            },
             "snapshot_at": DATE,
             "source": READ_MODEL_PROJECTOR_SOURCE,
             **SCHEMA_VERSION,

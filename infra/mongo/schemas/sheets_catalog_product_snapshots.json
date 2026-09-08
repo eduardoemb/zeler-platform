@@ -55,6 +55,24 @@
           "manual_reconciliation"
         ]
       },
+      "source_unavailable": {
+        "additionalProperties": false,
+        "bsonType": "object",
+        "properties": {
+          "observed_at": {
+            "bsonType": "date"
+          },
+          "reason": {
+            "enum": [
+              "catalog_product_not_found"
+            ]
+          }
+        },
+        "required": [
+          "reason",
+          "observed_at"
+        ]
+      },
       "title": {
         "bsonType": [
           "string",

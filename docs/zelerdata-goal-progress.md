@@ -21,6 +21,48 @@ Keep unrelated `.codegraph/` files untouched in both repositories.
 Pilot: seller `82453304`; initial historical window 2026-08-08 through
 2026-09-06, plus current snapshots. Other products are out of scope.
 
+## Persist per-product not-found observations and cached fallback — 2026-09-08
+
+Catalog recovery now persists an HTTP 404 as optional `source_unavailable`
+metadata on that product snapshot: reason `catalog_product_not_found` and the
+actual request-start `observed_at`. It does not erase an earlier payload or
+advance its `snapshot_at`; a never-acquired product gets identity/source metadata
+only, not invented title/description values. Both positive and not-found writes
+are guarded against newer positive or negative observations. A later successful
+response replaces the payload and clears the unavailable marker. Other 4xx,
+429 and 5xx retain their prior rejection/retry behavior.
+
+The two current catalog formulas consume this observation without synchronous
+Mercado Libre calls. A current 404 with no purpose-complete stored payload emits
+DATA_UNAVAILABLE and a per-product reason. If a trusted older payload exists,
+it is returned as cached, with its original UTC observation date in metadata;
+`catalog_products_complete` stays false. Neither case requeues the known 404
+while its observation remains current. Expired/future-dated observations cannot
+suppress recovery or make an old cached payload current. Inventory and item-source
+coverage checks remain unchanged, as do the three-/six-column contracts.
+
+Four HTTP cases failed before the change, then both formulas passed available,
+missing and cached scenarios against Mongo with the actual product validator.
+They prove two subsequent reads make no upstream calls, preserve cached fields
+and their original date, explain the 404 and resume recovery after expiry or an
+invalid future date. Eight additional cases cover newer positive/negative writes,
+clearing the marker on recovery and separate 403/429/503 handling. These 14 cases
+passed in 4.52 seconds; recovery/formula suites passed 361 tests in 47.08 seconds,
+and eight protected replica-set tests passed in 3.20 seconds. Ruff check/format,
+mypy (505 files), schema generation and diff checks passed.
+Root regression passed 4,068 tests with nine expected skips and 356 warnings
+in 127.36 seconds.
+
+Before runtime validation, apply only the additive product-snapshot validator
+property from the generated schema, then build and verify separate Sheets API
+and worker images from the committed source (also including `02ccbaf` concurrency).
+Current production still uses worker `0db69e5` and API `c90a941`; this behavior is
+not yet deployed. Rollback reverts the worker/reader/handler change and its tests,
+retaining the optional validator property so newly written observations remain
+valid. No stored payload needs deletion. Real pilot convergence, authenticated
+production HTTP, visible Sheet/app behavior and the remaining goal gates are
+still unproven; local HTTP tests do not close those gates.
+
 ## Bounded concurrent catalog acquisition and rejected-resource diagnosis — 2026-09-08
 
 Catalog-product recovery now acquires at most four products concurrently, in

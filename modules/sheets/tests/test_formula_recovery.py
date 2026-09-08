@@ -50,19 +50,35 @@ async def test_catalog_refresh_cooldown_ages_from_acquisition_start(recovery_db:
 @pytest.mark.parametrize(
     "formula,width", [("ZELERDATA_OBTENER_CATALOGO", 3), ("ZELERDATA_CATALOGO_COMPLETO", 6)]
 )
+@pytest.mark.parametrize("product_state", ["available", "missing", "cached"])
 async def test_catalog_product_http_admission_reaches_worker_and_persists(
-    recovery_db: Any, formula: str, width: int
+    recovery_db: Any, formula: str, width: int, product_state: str
 ) -> None:
+    import json
+    from pathlib import Path
+
     import httpx
 
     from zeler_sheets.app import build_app
     from zeler_sheets.extension_tokens import ExtensionTokenService, SellerScope
     from zeler_sheets.formulas.recovery import ItemInventoryRecoveryRequest
     from zeler_sheets.formulas.recovery_worker import FormulaRecoveryWorker
+    from zeler_sheets.historical_meli_backfill import _catalog_product_snapshot
     from zeler_sheets.sheetseller_backfill import run_sheetseller_backfill
 
     seller = "82453304"
     now = datetime.now(UTC)
+    schema = json.loads(
+        Path("infra/mongo/schemas/sheets_catalog_product_snapshots.json").read_text()
+    )
+    await recovery_db.create_collection(
+        "sheets_catalog_product_snapshots", validator={"$jsonSchema": schema["$jsonSchema"]}
+    )
+    cached = _catalog_product_snapshot({"id": "MLA1", "name": "Cached product"}, seller_id=seller)
+    assert cached is not None
+    cached["snapshot_at"] = (now - timedelta(days=1)).replace(microsecond=0)
+    if product_state == "cached":
+        await recovery_db.sheets_catalog_product_snapshots.insert_one(cached)
     await recovery_db.items.insert_one(
         {
             "_id": "MLA10",
@@ -103,6 +119,10 @@ async def test_catalog_product_http_admission_reaches_worker_and_persists(
         async def fetch_resource(self, *, seller_id: str, path: str) -> Any:
             assert seller_id == seller and path in {"/products/MLA1", "/products/MLA2"}
             calls.append(path)
+            if path == "/products/MLA1" and product_state != "available":
+                httpx.Response(
+                    404, request=httpx.Request("GET", "https://gateway.test")
+                ).raise_for_status()
             return {
                 "id": path.rsplit("/", 1)[1],
                 "name": "Recovered product",
@@ -124,11 +144,48 @@ async def test_catalog_product_http_admission_reaches_worker_and_persists(
         for _ in range(2):
             ready = await client.post("/sheets/formulas:execute", headers=headers, json=payload)
             assert ready.status_code == 200
-            assert (
-                ready.json()["values"]
-                == [["Recovered product", "Recovered description", *(["NA"] * (width - 2))]] * 2
+            recovered = ["Recovered product", "Recovered description", *(["NA"] * (width - 2))]
+            expected_first = (
+                recovered
+                if product_state == "available"
+                else ["Cached product", *(["NA"] * (width - 1))]
+                if product_state == "cached"
+                else ["DATA_UNAVAILABLE"] * width
             )
-            assert ready.json()["meta"]["catalog_products_complete"] is True
+            assert ready.json()["values"] == [expected_first, recovered]
+            meta = ready.json()["meta"]
+            assert meta["catalog_products_complete"] is (product_state == "available")
+            assert "recovery_requested" not in meta
+            if product_state != "available":
+                assert meta["unavailable_product_reasons"] == {"MLA1": "catalog_product_not_found"}
+                assert meta["cached_products"] == int(product_state == "cached")
+                assert meta["source_unavailable_products"] == 1
+                if product_state == "cached":
+                    assert (
+                        datetime.fromisoformat(meta["cached_product_observed_at"]["MLA1"])
+                        == cached["snapshot_at"]
+                    )
+        stored = await recovery_db.sheets_catalog_product_snapshots.find_one(
+            {"_id": f"{seller}:MLA1"}
+        )
+        if product_state != "available":
+            assert stored["source_unavailable"]["reason"] == "catalog_product_not_found"
+            if product_state == "cached":
+                assert {key: stored[key] for key in cached} == {
+                    **cached,
+                    "snapshot_at": cached["snapshot_at"].replace(tzinfo=None),
+                }
+            for checked_at in (now - timedelta(minutes=16), now + timedelta(minutes=1)):
+                await recovery_db.sheets_catalog_product_snapshots.update_one(
+                    {"_id": f"{seller}:MLA1"},
+                    {"$set": {"source_unavailable.observed_at": checked_at}},
+                )
+                expired = await client.post(
+                    "/sheets/formulas:execute", headers=headers, json=payload
+                )
+                assert expired.json()["values"][0] == ["DATA_UNAVAILABLE"] * width
+                assert expired.json()["meta"]["recovery_requested"] is True
+                assert expired.json()["meta"]["source_unavailable_products"] == 0
         assert sorted(calls) == ["/products/MLA1", "/products/MLA2"]
     assert (
         await queue.collection.count_documents(
@@ -266,6 +323,86 @@ async def test_catalog_product_worker_persists_available_resources_without_globa
     )
     assert "date_from" not in job and "item_ids" not in job
     assert job["catalog_product_ids"] == ["MLA1", "MLA2"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "status,existing_state",
+    [
+        (404, "old"),
+        (403, "old"),
+        (429, "old"),
+        (503, "old"),
+        (404, "newer_positive"),
+        (404, "newer_negative"),
+        (200, "newer_negative"),
+        (200, "old_negative"),
+    ],
+)
+async def test_catalog_source_observations_preserve_newer_data_and_classify_errors(
+    recovery_db: Any, status: int, existing_state: str
+) -> None:
+    import httpx
+
+    from zeler_sheets.formulas.recovery import CatalogProductIdsRecoveryRequest
+    from zeler_sheets.formulas.recovery_worker import FormulaRecoveryWorker
+    from zeler_sheets.historical_meli_backfill import _catalog_product_snapshot
+
+    now = datetime.now(UTC).replace(microsecond=0)
+    await recovery_db.items.insert_one(
+        {"_id": "MLA10", "seller_id": "82453304", "catalog_product_id": "MLA1"}
+    )
+    prior = _catalog_product_snapshot({"id": "MLA1", "name": "Prior"}, seller_id="82453304")
+    assert prior is not None
+    prior["snapshot_at"] = (
+        now + timedelta(seconds=1)
+        if existing_state == "newer_positive"
+        else now - timedelta(days=1)
+    )
+    if "negative" in existing_state:
+        prior["source_unavailable"] = {
+            "reason": "catalog_product_not_found",
+            "observed_at": now + timedelta(seconds=1)
+            if existing_state == "newer_negative"
+            else now - timedelta(minutes=16),
+        }
+    await recovery_db.sheets_catalog_product_snapshots.insert_one(prior)
+    stored_prior = await recovery_db.sheets_catalog_product_snapshots.find_one(
+        {"_id": prior["_id"]}
+    )
+    queue = FormulaRecoveryQueue(recovery_db, now=lambda: now)
+    key = await queue.enqueue(CatalogProductIdsRecoveryRequest("82453304", ("MLA1",)))
+
+    class Gateway:
+        async def fetch_resource(self, *, seller_id: str, path: str) -> dict[str, Any]:
+            assert seller_id == "82453304" and path == "/products/MLA1"
+            httpx.Response(
+                status, request=httpx.Request("GET", "https://gateway.test")
+            ).raise_for_status()
+            return {"id": "MLA1", "name": "Recovered"}
+
+    assert await FormulaRecoveryWorker(db=recovery_db, queue=queue, gateway=Gateway()).process_one()
+    row = await recovery_db.sheets_catalog_product_snapshots.find_one({"_id": prior["_id"]})
+    job = await queue.collection.find_one({"_id": key})
+    if status in {403, 429, 503}:
+        assert row == stored_prior
+        assert job["state"] == ("failed" if status == 403 else "pending")
+        assert job["failure_reason"] == (
+            "source_rejected" if status == 403 else "source_temporarily_unavailable"
+        )
+    else:
+        assert job["state"] == "completed"
+        if existing_state.startswith("newer"):
+            assert row == stored_prior
+        elif status == 404:
+            assert {key: row[key] for key in prior} == stored_prior
+            assert row["source_unavailable"] == {
+                "reason": "catalog_product_not_found",
+                "observed_at": now.replace(tzinfo=None),
+            }
+        else:
+            assert row["title"] == "Recovered" and row["snapshot_at"] == now.replace(tzinfo=None)
+            assert "source_unavailable" not in row
 
 
 @pytest.mark.asyncio
