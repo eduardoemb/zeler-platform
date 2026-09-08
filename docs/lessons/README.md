@@ -66,6 +66,7 @@ repeat failures, and promote stable knowledge to its proper operational form.
 | L-007 | ZelerData | Enrichment before item write | active |
 | L-008 | Python | Exception suppression control flow | active |
 | L-009 | Delivery | Good-enough completion boundary | active |
+| L-010 | ZelerData | Discovery and detail client scopes | active |
 
 ## Cloud Build and VM deployment
 
@@ -124,6 +125,13 @@ repeat failures, and promote stable knowledge to its proper operational form.
 - proven path: Complete reconciliation with `items-enrich --enable-sale-price --enable-listing-fixed-fee`, then run `items --write`.
 - failed path: Write items before enrichment; formula projections can remain stale.
 - verification/source: validated reconciliation sequence and Sheets item enrichment paths.
+- status: active
+
+### L-010 — Keep recovery discovery and detail identities distinct
+- area: ZelerData gateway recovery
+- proven path: Use the Sheets detail client for `/products/*`; bootstrap is the discovery client. Test both as separate clients with their real permission boundary.
+- failed path: Share one permissive fake for both clients; catalog tests passed while production bootstrap requests received 403 despite Sheets having the required scope.
+- verification/source: `modules/sheets/tests/test_formula_recovery.py::test_catalog_product_worker_persists_available_resources_without_global_coverage`, `infra/mongo/seeds/module_registry.admin_clients.json`, and the read-only two-identity VM probe recorded in `docs/zelerdata-goal-progress.md`.
 - status: active
 
 ## Python safety

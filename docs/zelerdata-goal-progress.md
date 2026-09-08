@@ -21,7 +21,67 @@ Keep unrelated `.codegraph/` files untouched in both repositories.
 Pilot: seller `82453304`; initial historical window 2026-08-08 through
 2026-09-06, plus current snapshots. Other products are out of scope.
 
-## Catalog recovery client correction — 2026-09-08 (not deployed)
+## Catalog detail-client rollout — 2026-09-08
+
+Worker source `f4fee302073693ed5df2f17202ded42b866b30a7` is deployed as
+`sha256:5d27006e97150292a3d5bdda1e3bf5fca596fc06cfd8a58f6186d25d4141ab65`.
+Cloud Build `44b00de5-99ad-4f30-b572-1507b47b10f5` succeeded from that exact
+connected-repository commit, one worker image with requested verification.
+Digest/build/source checks passed locally and in the VM canonical image map.
+CI test `34275324620` and lint `34275324769` both succeeded before activation.
+
+Only the worker was replaced, with no dependencies restarted. It passed HTTP
+health 200 with zero restarts. API remains the prior `a5fe92a` image; no API code,
+Mongo schema or permissions changed. Immediate worker rollback is
+`sha256:7dde61dfd30a17560bf581cc62315d4f7901531a88f0f94c8da1bb172cfacc5f`,
+with Compose backup `.pre-sheets-worker-activate-f4fee30` for service-scoped
+reversal. Artifacts: `/tmp/zeler-catalog-client.Mgb5Vu/` locally and on the VM.
+
+To retain the 5 GiB floor, removed only the unused local worker image
+`sha256:98d5e0e475f53b2cd3287c1b8ffbba8346e2d18eff81521360b26ca576ce64e5`,
+after verifying that exact digest remains in Artifact Registry and no running
+or stopped container uses it. Six current/prior protected Sheets images were
+retained; no volumes, business data or other services were removed. The new pull
+took 16.65s, left Compose unchanged, and passed preflight with automatic cleanup
+disabled. Post-activation free space: 5,378,048,000 bytes; recheck before further
+pulls or Compose activity because the margin remains small.
+
+`pilot.py prepare` succeeded once, reopening one existing rejected 20-product
+job through the normal queue without changing its prior `available_at`:
+`1333321b97d9281d74b57caaf81a3eba4259e4951d9d0d910f8b7bf0e098506f`.
+It was pending, attempt zero, with 130.62s scheduled wait and zero newly acquired
+products. The retained `source_rejected` reason describes the previous attempt,
+not a new rejection. Global coverage markers were unchanged. Protected receipt:
+`/var/lib/zeler-platform/repairs/catalog-detail-client-f4fee30.json`.
+Use `pilot.py status` for this same job; never repeat `prepare` or shorten cooldown.
+This operator repair does not substitute for current whole-catalog coverage,
+authenticated production HTTP or the real Sheet validation.
+
+The same job subsequently completed on attempt one: all 20 requested product
+snapshots were newly acquired after the receipt, with matching identities,
+valid titles, purpose-field keys and `sheets_backfill` source. No failure reason
+remained and global markers were unchanged. Snapshot observation times span
+3.652s; that is not the whole wall-clock job duration. The status read occurred
+183.35s after preparation, including its preserved initial cooldown. This proves
+the repaired production worker can persist the previously rejected products,
+not that all catalog products or all 52 formulas are now validated.
+A second read at 263.30s confirmed the same 20 persisted snapshots without
+re-enqueueing the product job or making gateway calls from the read harness.
+
+After the previous inventory had completed and expired, one new genuine
+inventory request was admitted with no active jobs. It reuses deterministic job
+`5f2485d573679264481950cce24b1373d2eb93f11c1f79ea2aca606b92d20a8f`,
+now pending, attempt zero and immediately eligible, with the processing offset
+cleared by the normal queue. Its retained 1,900 IDs are the old enumeration until
+the worker rediscovers them; they are not new coverage evidence. New protected
+receipt: `/var/lib/zeler-platform/repairs/catalog-inventory-f4fee30.json`.
+`/tmp/zeler-catalog-client.Mgb5Vu/inventory.py prepare` succeeded once; observe
+with `status`, never repeat prepare or restart the worker during acquisition.
+Use `products.py` in the same directory for readers/admission with the new worker
+image guard. Avoid repeated full-inventory reads while measuring acquisition;
+the lightweight job status is sufficient until completion.
+
+## Catalog recovery client correction — 2026-09-08
 
 The full pilot inventory completed 1,900/1,900 publications with zero unavailable
 items, approximately 846 seconds after discovery. Immediately afterward the two
