@@ -3090,7 +3090,23 @@ async def test_item_detail_enrichment_keeps_base_enrichment_when_sale_price_unav
 
 
 @pytest.mark.asyncio
-async def test_item_detail_enrichment_clears_stale_promo_on_authoritative_absence() -> None:
+@pytest.mark.parametrize(
+    ("payload", "malformed"),
+    [
+        ({"amount": "149.90", "regular_amount": "149.90", "currency_id": "MXN"}, False),
+        ({"amount": "149.90", "regular_amount": None, "currency_id": "MXN"}, False),
+        ({}, True),
+        ({"amount": "149.90", "currency_id": "MXN"}, True),
+        ({"amount": "149.90", "regular_amount": None, "currency_id": ""}, True),
+        ({"amount": -1, "regular_amount": None, "currency_id": "MXN"}, True),
+        ({"amount": True, "regular_amount": None, "currency_id": "MXN"}, True),
+        ({"amount": "149.90", "regular_amount": "invalid", "currency_id": "MXN"}, True),
+        ([], True),
+    ],
+)
+async def test_item_detail_enrichment_distinguishes_absent_from_malformed_promo(
+    payload: Any, malformed: bool
+) -> None:
     canonical = _item_doc("MLA1", attributes=[{"id": "SELLER_SKU", "value_name": "sku-1"}])
     stale_promotion = {
         "source": "/items/{id}/sale_price",
@@ -3119,11 +3135,7 @@ async def test_item_detail_enrichment_clears_stale_promo_on_authoritative_absenc
     gateway = FakeItemGateway(
         {
             "/items?ids=MLA1": [{"code": 200, "body": detail}],
-            "/items/MLA1/sale_price?context=channel_marketplace": {
-                "amount": "149.90",
-                "regular_amount": "149.90",
-                "currency_id": "MXN",
-            },
+            "/items/MLA1/sale_price?context=channel_marketplace": payload,
         }
     )
 
@@ -3143,15 +3155,18 @@ async def test_item_detail_enrichment_clears_stale_promo_on_authoritative_absenc
     assert item_update.get("$unset") == {"current_promotion": ""}
     assert "current_promotion" not in db["items"].documents["MLA1"]
     state = db["items"].documents["MLA1"]["enrichment_state"]["current_promotion"]
-    assert state["status"] == "authoritative_absent"
-    assert state["reason"] == "no_trusted_promotion"
+    assert state["status"] == ("malformed" if malformed else "authoritative_absent")
+    assert state["reason"] == ("malformed_response" if malformed else "no_trusted_promotion")
     refreshed_row = db["sheets_item_formula_rows"].documents["82453304:SKU-1:MLA1"]
     assert "current_promotion" not in refreshed_row["current"]
-    assert dashboard.values[0][-1] == "NA"
+    assert dashboard.values[0][-1] == ("DATA_UNAVAILABLE" if malformed else "NA")
 
 
 @pytest.mark.asyncio
-async def test_item_detail_enrichment_clears_stale_promo_on_sale_price_403() -> None:
+@pytest.mark.parametrize("status_code", [403, 404])
+async def test_item_detail_enrichment_clears_stale_promo_on_sale_price_rejection(
+    status_code: int,
+) -> None:
     canonical = _item_doc("MLA1", attributes=[{"id": "SELLER_SKU", "value_name": "sku-1"}])
     canonical["current_promotion"] = {
         "source": "/items/{id}/sale_price",
@@ -3174,7 +3189,7 @@ async def test_item_detail_enrichment_clears_stale_promo_on_sale_price_403() -> 
             "/items/MLA1/sale_price?context=channel_marketplace": httpx.HTTPStatusError(
                 "forbidden sale price source",
                 request=request,
-                response=httpx.Response(403, request=request),
+                response=httpx.Response(status_code, request=request),
             ),
         }
     )
@@ -3194,9 +3209,12 @@ async def test_item_detail_enrichment_clears_stale_promo_on_sale_price_403() -> 
     assert item_update.get("$unset") == {"current_promotion": ""}
     assert "current_promotion" not in persisted
     state = persisted["enrichment_state"]["current_promotion"]
-    assert state["status"] == "unauthorized"
-    assert state["reason"] == "http_403"
-    assert summary.diagnostic_reason_counts == {"current_promotion:unauthorized:http_403": 1}
+    expected_status = "unauthorized" if status_code == 403 else "malformed"
+    assert state["status"] == expected_status
+    assert state["reason"] == f"http_{status_code}"
+    assert summary.diagnostic_reason_counts == {
+        f"current_promotion:{expected_status}:http_{status_code}": 1
+    }
 
 
 @pytest.mark.parametrize(
@@ -3264,7 +3282,9 @@ async def test_item_detail_enrichment_preserves_stale_promo_without_authoritativ
     assert refreshed_row["current"]["current_promotion"]["sale_amount"].to_decimal() == Decimal(
         "99.90"
     )
-    assert dashboard.values[0][-1] == Decimal("99.90")
+    assert dashboard.values[0][-1] == (
+        "DATA_UNAVAILABLE" if expected_reason is not None else Decimal("99.90")
+    )
     state = persisted["enrichment_state"]["current_promotion"]
     if expected_reason is None:
         assert state["status"] == "trusted"

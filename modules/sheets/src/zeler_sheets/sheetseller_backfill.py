@@ -2295,6 +2295,9 @@ def build_formula_row_doc(
         "shipping_payer": _shipping_payer(item.get("shipping")),
         **status_history_scalars,
     }
+    enrichment = schema_safe_enrichment_state(item.get("enrichment_state"))
+    if enrichment is not None:
+        current["enrichment_state"] = enrichment
     if resolved_variation_id is not None:
         current.update(
             _variation_safe_current_fields(
@@ -3008,8 +3011,36 @@ async def _resolve_sale_price_projection(
             path=_sale_price_path(item_id),
         )
     except (RuntimeError, GatewayRateLimitError, httpx.HTTPStatusError, httpx.RequestError) as exc:
+        if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code == 404:
+            # A missing price resource does not prove that the item has no promotion.
+            return None, EnrichmentFailure(
+                status="malformed", reason="http_404", preserve_existing=False
+            )
         return None, classify_fetch_exception(exc)
-    return project_sale_price_projection(response, synced_at=synced_at), None
+    malformed = EnrichmentFailure(
+        status="malformed", reason="malformed_response", preserve_existing=False
+    )
+    if not isinstance(response, dict) or "regular_amount" not in response:
+        return None, malformed
+    amount = _safe_decimal(response.get("amount"))
+    currency = response.get("currency_id")
+    if (
+        isinstance(response.get("amount"), bool)
+        or amount is None
+        or amount <= 0
+        or not isinstance(currency, str)
+        or re.fullmatch(r"[A-Z]{3}", currency) is None
+    ):
+        return None, malformed
+    if response["regular_amount"] is None:
+        return None, None
+    regular = _safe_decimal(response["regular_amount"])
+    if isinstance(response["regular_amount"], bool) or regular is None or regular <= 0:
+        return None, malformed
+    if amount >= regular:
+        return None, None
+    projection = project_sale_price_projection(response, synced_at=synced_at)
+    return (projection, None) if projection is not None else (None, malformed)
 
 
 async def _resolve_shipment_real_shipping_cost_projection(

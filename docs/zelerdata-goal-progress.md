@@ -2039,3 +2039,56 @@ retain their contract; other product deployments remain out of scope.
   availability semantics and authenticated formula/Sheet/app acceptance remain
   open. The bounded operator process is terminal; do not rerun it blindly as
   a status check because it selects and writes the next missing batch.
+
+## Promotion absence is distinct from acquisition failure
+
+- Sale-price acquisition now requires a well-formed positive amount, currency
+  and an explicitly present `regular_amount`. An explicit null regular amount
+  or a valid non-discounted price can represent absence; missing/malformed
+  fields or a rejected discounted projection produce `malformed_response`, not
+  `authoritative_absent`. The official
+  [price contract](https://developers.mercadolibre.com.mx/api-de-precios) and
+  [sale-price example](https://developers.mercadolibre.com.mx/en_us/en_us/price-apl)
+  distinguish nullable regular price from missing required response data.
+- Formula-row projection now carries schema-normalized enrichment state into
+  `current`. Dashboard promotion cells honor that state: explicit acquisition
+  failures yield `DATA_UNAVAILABLE`, and authoritative absence yields `NA`.
+  A previously persisted promotion retained after a transient failure remains
+  stored, but is no longer displayed as a current promotional price. Acquisition
+  reasons remain available in normalized state; no raw API response is retained.
+- Seven malformed-response cases initially reproduced false absence; a separate
+  transient-failure case reproduced a stale promotional price being displayed.
+  The corrected acquisition → projection → dispatcher suite passed **22 focused
+  cases in 0.23s**. This changes an unsafe prior test expectation deliberately,
+  to honor the goal's prohibition on stale data being presented as current.
+- A read-only source audit of the last productive 20-item sync cohort found
+  **20 well-formed responses with explicit null regular amounts**, no malformed
+  required fields, and no writes. This supports absence for that cohort at the
+  audit time; it does not establish freshness for every item or future queries.
+- Existing rows without enrichment state retain their legacy reader behavior
+  pending acquisition/reprojection; state freshness/expiry and public reason
+  reporting still need full acceptance. This unit does not complete automatic
+  item/catalog recovery or the 52-formula/real-Sheet/app checks.
+- Not deployed in this unit. Both Sheets images require verified Cloud Build
+  refreshes from the resulting executable commit, health/source verification,
+  and pilot reprojection/HTTP checks. Current deployed executable source remains
+  `d29ae5218efd92f229edf58f0cfbb37b8d963f96`. Rollback removes the resolver shape
+  checks, projected enrichment state and promo-cell gate with their tests;
+  retain acquired customer data and do not treat rollback as approval to display
+  failed/stale promotion data.
+- A source HTTP 404 also no longer proves promotion absence: the sale-price
+  resolver records `malformed/http_404` instead of the generic fetch classifier's
+  `authoritative_absent`. The new rejection case failed before this correction;
+  final focused promotion/source cases passed **23 tests in 0.23s**. Other
+  resources' generic HTTP classification is unchanged.
+- Final root suite with the dedicated local replica set: **3779 passed,
+  9 skipped, 356 warnings in 87.56s**. Protected stock-time tests separately
+  passed **8 in 2.19s**. Ruff check/format, mypy (501 files) and whitespace
+  checks passed. The read-model Mongo schema permits this normalized `current`
+  metadata; no validator relaxation was made.
+- Consumer review found a remaining separate path:
+  `handlers_quality_calculator._selected_price` reads the promotion directly
+  and falls back to the ordinary price for `tipo_precio=promo`. Apply the same
+  availability contract there, including dependent net/margin results, before
+  claiming all promotion consumers are correct. This dashboard unit alone is
+  not calculator acceptance.

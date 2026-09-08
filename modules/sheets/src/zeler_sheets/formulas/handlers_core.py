@@ -1167,6 +1167,13 @@ def _promo_price(row: Mapping[str, Any]) -> Any:
     current = row.get("current", {})
     if not isinstance(current, Mapping):
         return NA_VALUE
+    enrichment = current.get("enrichment_state")
+    state = enrichment.get("current_promotion") if isinstance(enrichment, Mapping) else None
+    if isinstance(state, Mapping):
+        if state.get("status") == "authoritative_absent":
+            return NA_VALUE
+        if state.get("status") != "trusted":
+            return "DATA_UNAVAILABLE"
     projection = current.get("current_promotion")
     if not isinstance(projection, Mapping):
         return NA_VALUE
