@@ -39,13 +39,13 @@ from zeler_sheets.remaining_read_model_writers import (
     record_stockout_observation,
 )
 from zeler_sheets.sheetseller_backfill import (
-    _formula_row_id,
     build_formula_row_doc,
     build_order_line_formula_row_docs,
     build_order_line_sku_index_docs,
     build_sku_index_docs,
     build_variation_formula_row_docs,
     extract_safe_order_item_identity,
+    resolve_variation_sku,
     run_sheetseller_backfill,
 )
 from zeler_sheets.status_history import (
@@ -557,8 +557,12 @@ class SheetsEventPersistence:
         item_id = str(item["_id"])
         if (
             not sku_index_docs
+            or any(
+                isinstance(variation, dict) and resolve_variation_sku(variation).sku is None
+                for variation in item.get("variations", [])
+            )
             or await self._db["sheets_item_formula_rows"].find_one(
-                {"_id": _formula_row_id(seller_id=seller_id, normalized_sku="", item_id=item_id)}
+                {"seller_id": seller_id, "item_id": item_id, "normalized_sku": ""}
             )
             is not None
         ):
@@ -607,7 +611,7 @@ class SheetsEventPersistence:
         # Settle any row/index written late against the persisted source.
         if (
             await self._db["sheets_item_formula_rows"].find_one(
-                {"_id": _formula_row_id(seller_id=seller_id, normalized_sku="", item_id=item_id)}
+                {"seller_id": seller_id, "item_id": item_id, "normalized_sku": ""}
             )
             is not None
         ):

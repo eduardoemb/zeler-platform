@@ -456,12 +456,7 @@ async def run_sheetseller_backfill(
         if not sku_index_docs and not formula_row_docs:
             continue
 
-        if not (
-            item_sku.ambiguous
-            or variation_ambiguous
-            or variation_ambiguous_identity
-            or (variation_docs and variation_skips)
-        ):
+        if not (item_sku.ambiguous or variation_ambiguous or variation_ambiguous_identity):
             stamp_item_projection(formula_row_docs, source_item)
 
         sku_index_upserts += len(sku_index_docs)
@@ -489,28 +484,56 @@ async def run_sheetseller_backfill(
             item_only_id = _formula_row_id(
                 seller_id=seller_id, normalized_sku="", item_id=_item_id(item)
             )
+            variation_identity_changed = False
             if (
-                all(doc["normalized_sku"] for doc in formula_row_docs)
-                and await formula_rows_collection.find_one({"_id": item_only_id}) is not None
-            ) or (
-                not any(doc["normalized_sku"] for doc in formula_row_docs)
-                and (
-                    await formula_rows_collection.find_one(
-                        {
-                            "seller_id": seller_id,
-                            "item_id": _item_id(item),
-                            "normalized_sku": {"$ne": ""},
-                        }
+                any(
+                    doc.get("variation_id") and not doc["normalized_sku"]
+                    for doc in formula_row_docs
+                )
+                or await formula_rows_collection.find_one(
+                    {
+                        "seller_id": seller_id,
+                        "item_id": _item_id(item),
+                        "variation_id": {"$ne": None},
+                        "normalized_sku": "",
+                    }
+                )
+                is not None
+            ):
+                prior_rows = await formula_rows_collection.find(
+                    {"seller_id": seller_id, "item_id": _item_id(item)}
+                ).to_list(length=10001)
+                if len(prior_rows) > 10000:
+                    raise ValueError("item projection exceeds transition budget")
+                variation_identity_changed = bool(prior_rows) and {
+                    row["_id"] for row in prior_rows
+                } != {row["_id"] for row in formula_row_docs}
+            if (
+                variation_identity_changed
+                or (
+                    all(doc["normalized_sku"] for doc in formula_row_docs)
+                    and await formula_rows_collection.find_one({"_id": item_only_id}) is not None
+                )
+                or (
+                    not any(doc["normalized_sku"] for doc in formula_row_docs)
+                    and (
+                        await formula_rows_collection.find_one(
+                            {
+                                "seller_id": seller_id,
+                                "item_id": _item_id(item),
+                                "normalized_sku": {"$ne": ""},
+                            }
+                        )
+                        is not None
+                        or await sku_index_collection.find_one(
+                            {
+                                "seller_id": seller_id,
+                                "item_id": _item_id(item),
+                                "source": {"$ne": "order_line"},
+                            }
+                        )
+                        is not None
                     )
-                    is not None
-                    or await sku_index_collection.find_one(
-                        {
-                            "seller_id": seller_id,
-                            "item_id": _item_id(item),
-                            "source": {"$ne": "order_line"},
-                        }
-                    )
-                    is not None
                 )
             ):
                 await _replace_item_only_projection(
@@ -2038,6 +2061,34 @@ def build_variation_formula_row_docs(
             continue
         seen_ids.add(row_id)
         docs.append(formula_row)
+    # SKU is an optional lookup key, not a variation's identity. Keep rows
+    # for identified variations even when no truthful SKU index can be made.
+    variations = item.get("variations") or []
+    raw_ids: set[str] = set()
+    for variation in variations:
+        if not isinstance(variation, dict):
+            ambiguous += 1
+            continue
+        identity = _optional_string(variation.get("id") or variation.get("variation_id"))
+        if identity is None or identity in raw_ids:
+            ambiguous += 1
+            continue
+        raw_ids.add(identity)
+        candidate = resolve_variation_sku(variation)
+        if candidate.sku is not None or candidate.ambiguous:
+            continue
+        inventory_id = _optional_string(variation.get("inventory_id"))
+        missing_source += int(inventory_id is None)
+        docs.append(
+            build_formula_row_doc(
+                item,
+                seller_id=seller_id,
+                variation_id=identity,
+                variation=variation,
+                inventory_id=inventory_id,
+                allow_missing_sku=True,
+            )
+        )
     return docs, missing_source, ambiguous
 
 
@@ -2300,7 +2351,9 @@ def build_formula_row_doc(
     variation: dict[str, Any] | None = None,
     allow_missing_sku: bool = False,
 ) -> dict[str, Any]:
-    resolved_sku = sku or extract_seller_sku(item)
+    resolved_sku = (
+        sku if variation_id is not None and allow_missing_sku else sku or extract_seller_sku(item)
+    )
     if resolved_sku is None and not allow_missing_sku:
         msg = "item does not contain a SELLER_SKU attribute"
         raise ValueError(msg)
@@ -2639,10 +2692,14 @@ async def _replace_item_only_projection(
         obsolete = [doc["_id"] for doc in prior_rows if doc["_id"] not in retained]
         if obsolete:
             await rows.delete_many({**scope, "_id": {"$in": obsolete}}, session=session)
-        if not any(doc["normalized_sku"] for doc in row_docs):
-            await db[ITEM_SKU_INDEX_COLLECTION].delete_many(
-                {**scope, "source": {"$ne": "order_line"}}, session=session
-            )
+        await db[ITEM_SKU_INDEX_COLLECTION].delete_many(
+            {
+                **scope,
+                "source": {"$ne": "order_line"},
+                "_id": {"$nin": [doc["_id"] for doc in sku_docs]},
+            },
+            session=session,
+        )
 
     async with await db.client.start_session() as session:
         await session.with_transaction(

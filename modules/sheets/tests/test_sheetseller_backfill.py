@@ -1667,19 +1667,19 @@ async def test_backfill_writes_item_and_variation_identity_rows_idempotently() -
         items_with_sku=1,
         skipped_missing_sku=0,
         sku_index_upserts=3,
-        formula_row_upserts=3,
+        formula_row_upserts=4,
         variation_sku_rows=2,
         skipped_missing_variation_sku=1,
         skipped_ambiguous_sku=0,
-        planned=3,
-        updated=3,
+        planned=4,
+        updated=4,
         unchanged=0,
-        skipped_missing_source=5,
+        skipped_missing_source=7,
         skipped_ambiguous=0,
         errors=0,
     )
     assert second.updated == 0
-    assert second.unchanged == 3
+    assert second.unchanged == 4
     assert sorted(db["sheets_item_sku_index"].documents) == [
         "82453304:ITEM-SKU:MLA1:item",
         "82453304:VAR-101:MLA1:101",
@@ -1983,8 +1983,8 @@ async def test_backfill_dry_run_counts_variations_without_writing() -> None:
     summary = await run_sheetseller_backfill(db=db, seller_id="82453304", dry_run=True)
 
     assert summary.sku_index_upserts == 1
-    assert summary.formula_row_upserts == 1
-    assert summary.planned == 1
+    assert summary.formula_row_upserts == 2
+    assert summary.planned == 2
     assert summary.variation_sku_rows == 1
     assert summary.skipped_missing_sku == 1
     assert summary.skipped_missing_variation_sku == 1

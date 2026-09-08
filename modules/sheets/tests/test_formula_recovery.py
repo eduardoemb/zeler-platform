@@ -163,6 +163,153 @@ async def test_calculator_recovers_through_real_worker_and_source_bound_projecti
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("parent_sku", [None, "PARENT"])
+@pytest.mark.parametrize("native_event", [False, True])
+@pytest.mark.parametrize("first_sku", [None, "KNOWN"])
+async def test_variations_without_sku_remain_complete_and_change_identity_safely(
+    recovery_db: Any, parent_sku: str | None, native_event: bool, first_sku: str | None
+) -> None:
+    import json
+    from pathlib import Path
+
+    from zeler_sheets.event_persistence import SheetsEventPersistence
+    from zeler_sheets.formulas.dispatcher import FormulaDispatcher, FormulaExecutionContext
+    from zeler_sheets.formulas.handlers_quality_calculator import (
+        build_quality_calculator_formula_handlers,
+    )
+    from zeler_sheets.formulas.read_models import FormulaReadModelRepository
+    from zeler_sheets.formulas.registry import FormulaRegistry
+    from zeler_sheets.sheetseller_backfill import run_sheetseller_backfill
+
+    schema = json.loads(Path("infra/mongo/schemas/sheets_item_formula_rows.json").read_text())
+    await recovery_db.create_collection(
+        "sheets_item_formula_rows", validator={"$jsonSchema": schema["$jsonSchema"]}
+    )
+    now = datetime(2026, 9, 7, 12, tzinfo=UTC)
+    item: dict[str, Any] = {
+        "_id": "MLA1",
+        "seller_id": "82453304",
+        "title": "Mixed SKU variants",
+        "price": 100,
+        "available_quantity": 20,
+        "currency_id": "ARS",
+        "status": "active",
+        "last_meli_sync_at": now,
+        "last_updated": now,
+        "date_created": now,
+        "attributes": [{"id": "SELLER_SKU", "value_name": parent_sku}] if parent_sku else [],
+        "variations": [
+            {"id": 1, "seller_custom_field": first_sku, "available_quantity": 2},
+            {"id": 2, "available_quantity": 7},
+            {"id": 3, "available_quantity": 11},
+        ],
+    }
+    await recovery_db.items.insert_one(item)
+    reader = FormulaReadModelRepository(db=recovery_db)
+    clock = [now]
+    writer = SheetsEventPersistence(db=recovery_db, clock=lambda: clock[0])
+    for step, sku in enumerate((None, "ADDED", None)):
+        variation = item["variations"][1]
+        if sku is None:
+            variation.pop("seller_custom_field", None)
+        else:
+            variation["seller_custom_field"] = sku
+        if native_event:
+            resource = {
+                **item,
+                "id": "MLA1",
+                "seller_id": 82453304,
+                "date_created": "2026-09-01T00:00:00Z",
+                "last_updated": f"2026-09-07T12:0{step}:00Z",
+            }
+            now = datetime(2026, 9, 7, 12, step, tzinfo=UTC)
+            clock[0] = now
+            await writer.persist(
+                event_type="items.updated", seller_id="82453304", resource=resource
+            )
+        else:
+            await recovery_db.items.replace_one({"_id": "MLA1"}, item)
+            await run_sheetseller_backfill(db=recovery_db, seller_id="82453304", dry_run=False)
+        rows, missing = await reader.find_recent_item_formula_rows(
+            seller_id="82453304", item_ids=["MLA1"], formula="ZELERDATA_CALCULADORA", now=now
+        )
+        assert missing == ()
+        assert len(rows) == 3 + int(parent_sku is not None)
+        by_variation = {row["variation_id"]: row for row in rows}
+        assert by_variation["2"]["sku"] == sku
+        assert by_variation["3"]["sku"] is None
+        assert by_variation["2"]["current"]["available_quantity"] == 7
+        assert by_variation["3"]["current"]["available_quantity"] == 11
+        result = await FormulaDispatcher(
+            build_quality_calculator_formula_handlers(reader, now_fn=lambda: clock[0])
+        ).execute(
+            FormulaExecutionContext(
+                contract=FormulaRegistry.default().find_required("ZELERDATA_CALCULADORA"),
+                cuenta="test",
+                seller_id="82453304",
+                seller_nickname="",
+                token_id="",
+                request_id=None,
+                args={"id_publicaciones": ["MLA1"], "encabezados": False},
+            )
+        )
+        assert result.meta["partial_misses"] == 0
+        assert result.recovery is None
+        assert any(row[1] == "NA" and row[4] == 100 for row in result.values)
+        indexes = await recovery_db.sheets_item_sku_index.find({}).to_list(None)
+        assert all(row["sku"] for row in indexes)
+        assert {row["variation_id"] for row in indexes if row["variation_id"]} == (
+            ({"1"} if first_sku else set()) | ({"2"} if sku else set())
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("invalid", ["missing_id", "duplicate_id", "malformed", "ambiguous_sku"])
+async def test_missing_sku_support_does_not_certify_unidentified_variations(
+    recovery_db: Any, invalid: str
+) -> None:
+    from zeler_sheets.formulas.dispatcher import FormulaDataUnavailableError
+    from zeler_sheets.formulas.read_models import FormulaReadModelRepository
+    from zeler_sheets.sheetseller_backfill import run_sheetseller_backfill
+
+    broken: Any = {
+        "missing_id": {},
+        "duplicate_id": {"id": 1},
+        "malformed": "not a variation",
+        "ambiguous_sku": {
+            "id": 2,
+            "attributes": [
+                {"id": "SELLER_SKU", "value_name": "A"},
+                {"id": "SELLER_SKU", "value_name": "B"},
+            ],
+        },
+    }[invalid]
+    now = datetime(2026, 9, 7, 12, tzinfo=UTC)
+    await recovery_db.items.insert_one(
+        {
+            "_id": "MLA1",
+            "seller_id": "82453304",
+            "price": 100,
+            "date_created": now,
+            "last_updated": now,
+            "last_meli_sync_at": now,
+            "variations": [{"id": 1}, broken],
+        }
+    )
+    await run_sheetseller_backfill(db=recovery_db, seller_id="82453304", dry_run=False)
+    assert (
+        await recovery_db.sheets_item_formula_rows.count_documents(
+            {"source_snapshot": {"$exists": True}}
+        )
+        == 0
+    )
+    with pytest.raises(FormulaDataUnavailableError):
+        await FormulaReadModelRepository(db=recovery_db).find_recent_item_formula_rows(
+            seller_id="82453304", item_ids=["MLA1"], formula="ZELERDATA_CALCULADORA", now=now
+        )
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("failure_mode", ["none", "retry_last", "exhaust_first"])
 async def test_inventory_recovery_resumes_bounded_batches_without_global_readiness(
     recovery_db: Any,

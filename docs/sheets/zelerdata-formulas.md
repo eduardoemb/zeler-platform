@@ -83,6 +83,13 @@ rows. Missing publications are not optional fields and must not become `NA`.
 If no selected publication is verified, the existing formula-level unavailable
 response remains.
 
+A variation with a stable ID does not need a SKU to retain its formula row.
+Backfill and item events preserve those rows with an absent SKU (`NA` in the
+formula output), without borrowing the publication's SKU or creating a false
+SKU-index entry. When a SKU appears or disappears, row identities and current
+SKU-index entries are reconciled together. Missing/duplicate variation IDs and
+ambiguous SKUs still prevent certifying the publication as complete.
+
 Whole-inventory CALCULADORA and CALIDAD can also use a recovery enumeration
 observed within 15 minutes. Its clock starts when discovery was claimed and is
 not refreshed by subsequent batches. Only publications in that enumeration are

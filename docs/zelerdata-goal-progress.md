@@ -3035,3 +3035,48 @@ retain their contract; other product deployments remain out of scope.
   does not establish the native crash's cause or full-root acceptance; retain
   the earlier explicitly qualified `PYTHONMALLOC=malloc` evidence. No product
   code or runtime configuration was changed during this observation unit.
+
+## Identified variations remain readable without a SKU
+
+- A failing real-Mongo regression reproduced the pilot defect: mixed-SKU
+  publications lost all source-bound read availability because two identified
+  variants had no SKU. The shared row builder now retains those variants using
+  their own IDs, with null SKU and no invented SKU-index entry. It does not copy
+  a parent's SKU. Native item events use the same reconciliation path.
+- When SKU availability changes, the existing transactional identity replacement
+  removes obsolete rows and current SKU-index entries while retaining historical
+  order-line entries. Unchanged identity sets use the normal update path rather
+  than adding a transaction for each refresh. Missing/duplicate IDs, malformed
+  variants and ambiguous SKUs still withhold source receipts; the completeness
+  check was not simply disabled to accept a partial variation set.
+- Tests cover all-SKU-absent and mixed inventories, with/without a parent SKU,
+  backfill and native events, and absent → present → absent SKU transitions.
+  Real Mongo applies the actual formula-row validator; source-bound reads and
+  CALCULADORA retain publication prices with `NA` SKU, zero missing publications
+  and no redundant recovery request. Existing idempotency expectations now count
+  the formerly omitted row. This verifies identity/availability, not independent
+  correctness of every cost or variation-specific field.
+- Final focused recovery/backfill suite: **369 passed in 39.38s** under the
+  normal allocator. Event/quality-calculator regression: **108 passed in 0.28s**.
+  Protected integration: **8 passed in 3.05s**. Ruff check/format, mypy (503
+  files) and whitespace checks pass. Full-root evidence follows separately.
+- Live observation of the unchanged `b74b758` worker confirmed a separate
+  operational failure: at **916.02 seconds** of scan age, offset **900/1,900**,
+  both inventory formulas returned formula-level DATA_UNAVAILABLE, despite the
+  job still running and previously recovered rows remaining in Mongo. No global
+  marker changed. Scan expiration now contradicts full-inventory operational
+  acceptance; optimizing recovery/read continuity remains required, not polish.
+- Rollback this unit by reverting its shared row builder, identity reconciliation,
+  native-event routing and corresponding tests/docs together; preserve canonical
+  acquired data and account for existing null-SKU variation rows. No production
+  schema change or deployment occurred. Sheets worker requires a verified new
+  Cloud Build image after the sweep/freshness defect is addressed, plus pilot
+  variant-transition and full-inventory recovery/read validation. The API does
+  not need rebuilding solely for this projection-writer change.
+- Final root run with command-scoped `PYTHONMALLOC=malloc`: **3,875 passed,
+  9 skipped, 356 warnings in 105.31s**. The protected cases skipped by the ambient
+  URI were accepted separately as recorded above. This is conditional allocator
+  evidence; it does not resolve the normal-allocator native crash. No interpreter,
+  dependency or production allocator setting was changed.
+- Final read-only container inspection confirms both `b74b758` digests remain
+  healthy with zero restarts. The running worker does not yet include this fix.
