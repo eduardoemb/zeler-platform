@@ -202,12 +202,24 @@ class QualityCalculatorFormulaHandlers:
         if not enumeration_current:
             values.append(_expired_inventory_warning(len(CALCULADORA_HEADERS)))
             rows_count += 1
+        present_ids = {str(row["item_id"]) for row in rows}
+        unavailable_field_items = {
+            str(row[0])
+            for row in values[header_rows:]
+            if row[0] in present_ids and "DATA_UNAVAILABLE" in row[4:9]
+        }
+        recovery_items = tuple(sorted(set(unavailable_items) | unavailable_field_items))
         return FormulaExecutionResult(
             values=normalize_response_rows(values, header_rows=header_rows),
             meta={
                 "partial_misses": missing_count,
                 "rows_count": rows_count,
                 "columns": "modern_cost_projection",
+                **(
+                    {"unavailable_field_items": sorted(unavailable_field_items)}
+                    if unavailable_field_items
+                    else {}
+                ),
                 **(
                     {
                         "inventory_rows_complete": enumeration_current and not unavailable_items,
@@ -228,11 +240,13 @@ class QualityCalculatorFormulaHandlers:
             recovery=(
                 FormulaDataUnavailableError(
                     context.contract.name,
-                    "Selected publications are missing, incomplete or stale.",
+                    "Selected publications or their price/cost fields are unavailable.",
                     read_model=ITEM_FORMULA_ROWS_READ_MODEL,
-                    item_ids=() if inventory_scope else unavailable_items,
+                    item_ids=()
+                    if inventory_scope and (unavailable_items or not enumeration_current)
+                    else recovery_items,
                 )
-                if unavailable_items or not enumeration_current
+                if recovery_items or not enumeration_current
                 else None
             ),
         )

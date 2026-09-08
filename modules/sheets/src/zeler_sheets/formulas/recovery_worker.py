@@ -193,6 +193,14 @@ class FormulaRecoveryWorker:
         partial = (
             any(result.item_details_stale_unavailable > 0 for result in acquired)
             or stored_ids != requested.item_ids
+            or (
+                job.get("inventory_scope") is not True
+                and any(
+                    count > 0 and ":transient:" in reason
+                    for result in acquired
+                    for reason, count in result.diagnostic_reason_counts.items()
+                )
+            )
         )
         if not partial:
             try:

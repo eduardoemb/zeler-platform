@@ -79,7 +79,7 @@ async def test_item_recovery_bounds_concurrency_and_joins_all_acquisition_tasks(
                     for identity in batch
                 ]
             )
-            return SimpleNamespace(item_details_stale_unavailable=0)
+            return SimpleNamespace(item_details_stale_unavailable=0, diagnostic_reason_counts={})
         finally:
             await asyncio.sleep(0)
             active -= 1
@@ -244,7 +244,9 @@ async def test_calculator_recovers_through_real_worker_and_source_bound_projecti
         assert await worker.process_one()
         job = await queue.collection.find_one({"seller_id": "82453304"})
         assert job["attempts"] == 2
-    assert job["state"] == "completed", job.get("failure_reason")
+    # Item rows are already readable, but the synthetic fee/promotion
+    # endpoints still fail transiently and must retain their bounded retry.
+    assert job["state"] == "pending", job.get("failure_reason")
     calls_after_recovery = list(gateway.calls)
     result = await dispatcher.execute(context)
     assert gateway.calls == calls_after_recovery
@@ -569,7 +571,9 @@ async def test_variations_without_sku_remain_complete_and_change_identity_safely
             )
         )
         assert result.meta["partial_misses"] == 0
-        assert result.recovery is None
+        assert result.recovery is not None
+        assert result.recovery.item_ids == ("MLA1",)
+        assert result.meta["unavailable_field_items"] == ["MLA1"]
         assert any(row[1] == "NA" and row[4] == 100 for row in result.values)
         indexes = await recovery_db.sheets_item_sku_index.find({}).to_list(None)
         assert all(row["sku"] for row in indexes)
@@ -754,6 +758,10 @@ async def test_inventory_recovery_resumes_bounded_batches_without_global_readine
             assert result.meta["partial_misses"] == missing
             if missing or expired:
                 assert result.recovery is not None and result.recovery.item_ids == ()
+            elif formula == "ZELERDATA_CALCULADORA":
+                assert result.recovery is not None
+                assert result.recovery.item_ids == tuple(identities)
+                assert result.meta["unavailable_field_items"] == identities
             else:
                 assert result.recovery is None
         assert (scans, len(batches)) == before
@@ -1101,7 +1109,8 @@ async def test_selected_calculator_reads_complete_recent_projection_without_inve
         assert result.meta["unavailable_items"] == ["MLA2"]
         assert result.meta["unavailable_reason"] == "missing_incomplete_or_stale_projection"
         assert result.recovery is not None
-        assert result.recovery.item_ids == ("MLA2",)
+        assert result.recovery.item_ids == ("MLA1", "MLA2")
+        assert result.meta["unavailable_field_items"] == ["MLA1"]
     elif invalid:
         with pytest.raises(FormulaDataUnavailableError) as error:
             await FormulaDispatcher(handlers).execute(context)
@@ -1116,8 +1125,13 @@ async def test_selected_calculator_reads_complete_recent_projection_without_inve
 @pytest.mark.asyncio
 @pytest.mark.parametrize("partial", [False, True])
 @pytest.mark.parametrize("lose_lease", [False, True])
+@pytest.mark.parametrize("transient_enrichment", [False, True])
 async def test_explicit_item_recovery_uses_bounded_acquisition_without_global_marker(
-    recovery_db: Any, monkeypatch: pytest.MonkeyPatch, partial: bool, lose_lease: bool
+    recovery_db: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    partial: bool,
+    lose_lease: bool,
+    transient_enrichment: bool,
 ) -> None:
     from types import SimpleNamespace
 
@@ -1149,7 +1163,8 @@ async def test_explicit_item_recovery_uses_bounded_acquisition_without_global_ma
         assert not kwargs["dry_run"]
         calls.append("acquire")
         for identity in ("MLA1",) if partial else ("MLA1", "MLA2"):
-            await recovery_db.items.insert_one(
+            await recovery_db.items.replace_one(
+                {"_id": identity},
                 {
                     "_id": identity,
                     "seller_id": "82453304",
@@ -1160,13 +1175,19 @@ async def test_explicit_item_recovery_uses_bounded_acquisition_without_global_ma
                     "last_meli_sync_at": queue.now(),
                     "attributes": [],
                     "variations": [],
-                }
+                },
+                upsert=True,
             )
         if lose_lease:
             await queue.collection.update_one(
                 {"_id": key}, {"$set": {"lease_until": datetime(2000, 1, 1, tzinfo=UTC)}}
             )
-        return SimpleNamespace(item_details_stale_unavailable=int(partial))
+        return SimpleNamespace(
+            item_details_stale_unavailable=int(partial),
+            diagnostic_reason_counts={"listing_price_fixed_fee:transient:rate_limited": 1}
+            if transient_enrichment and calls.count("acquire") == 1
+            else {},
+        )
 
     async def project(**kwargs: Any) -> Any:
         assert kwargs["item_ids"] == (("MLA1",) if partial else ("MLA1", "MLA2"))
@@ -1182,8 +1203,16 @@ async def test_explicit_item_recovery_uses_bounded_acquisition_without_global_ma
     assert await worker.process_one()
     assert calls == (["acquire"] if lose_lease else ["acquire", "project"])
     assert (await queue.collection.find_one({"_id": key}))["state"] == (
-        "running" if lose_lease else "pending" if partial else "completed"
+        "running" if lose_lease else "pending" if partial or transient_enrichment else "completed"
     )
+    if transient_enrichment and not partial and not lose_lease:
+        pending = await queue.collection.find_one({"_id": key})
+        assert pending["available_at"] > pending["updated_at"]
+        retry_at = pending["available_at"].replace(tzinfo=UTC)
+        queue.now = lambda: retry_at
+        assert await worker.process_one()
+        assert (await queue.collection.find_one({"_id": key}))["state"] == "completed"
+        assert calls == ["acquire", "project", "acquire", "project"]
     assert await recovery_db.sheets_read_model_freshness.count_documents({}) == 0
     with pytest.raises(ValueError):
         ItemIdsRecoveryRequest("82453304", tuple(f"MLA{i}" for i in range(21)))
@@ -1198,6 +1227,135 @@ async def test_explicit_item_recovery_uses_bounded_acquisition_without_global_ma
                 datetime(2026, 9, 2, tzinfo=UTC),
             )
         )
+
+
+@pytest.mark.asyncio
+async def test_http_cost_gap_queues_only_affected_item_and_recovers_without_inventory(
+    recovery_db: Any,
+) -> None:
+    import httpx
+
+    from zeler_sheets.app import build_app
+    from zeler_sheets.extension_tokens import ExtensionTokenService, SellerScope
+    from zeler_sheets.formulas.recovery_worker import FormulaRecoveryWorker
+    from zeler_sheets.sheetseller_backfill import (
+        run_item_detail_enrichment,
+        run_sheetseller_backfill,
+    )
+
+    seller = "82453304"
+    await recovery_db.meli_accounts.insert_one(
+        {"_id": "test", "seller_id": seller, "site_id": "MLA"}
+    )
+    calls = []
+
+    class Gateway:
+        unavailable = True
+
+        async def fetch_resource(self, *, seller_id: str, path: str) -> Any:
+            assert seller_id == seller
+            calls.append(path)
+            if path == "/items?ids=MLA1":
+                return [
+                    {
+                        "code": 200,
+                        "body": {
+                            "id": "MLA1",
+                            "seller_id": seller,
+                            "title": "Synthetic item",
+                            "price": 100,
+                            "base_price": 100,
+                            "currency_id": "ARS",
+                            "site_id": "MLA",
+                            "category_id": "MLA123",
+                            "listing_type_id": "gold_special",
+                            "available_quantity": 1,
+                            "status": "active",
+                            "attributes": [],
+                            "variations": [],
+                            "shipping": {
+                                "mode": "me2",
+                                "logistic_type": "fulfillment",
+                                "free_shipping": False,
+                            },
+                            "date_created": "2026-09-01T00:00:00Z",
+                            "last_updated": "2026-09-07T00:00:00Z",
+                        },
+                    }
+                ]
+            if "/sale_price" in path:
+                return {"amount": 100, "regular_amount": 100, "currency_id": "ARS"}
+            assert path.startswith("/sites/MLA/listing_prices?")
+            if self.unavailable:
+                from zeler_platform_core.clients.meli_gateway_client import GatewayRateLimitError
+
+                raise GatewayRateLimitError(retry_after_seconds=5, response=httpx.Response(429))
+            return {
+                "sale_fee_amount": 10,
+                "currency_id": "ARS",
+                "sale_fee_details": {"percentage_fee": 10, "fixed_fee": 2},
+            }
+
+    gateway = Gateway()
+    await run_item_detail_enrichment(
+        db=recovery_db,
+        gateway=gateway,
+        seller_id=seller,
+        acquire_item_ids=["MLA1"],
+        dry_run=False,
+        sale_price_enabled=True,
+        listing_fixed_fee_enabled=True,
+    )
+    await run_sheetseller_backfill(
+        db=recovery_db, seller_id=seller, item_ids=["MLA1"], dry_run=False
+    )
+    calls.clear()
+    app = build_app(
+        mongo_db=recovery_db,
+        formula_recovery_enabled=True,
+        formula_recovery_sellers=frozenset({seller}),
+    )
+    app.state.extension_token_pepper = uuid4().hex
+    token = await ExtensionTokenService(
+        db=recovery_db, token_pepper=app.state.extension_token_pepper
+    ).create_token(
+        owner_user_id="test-user",
+        label="Cost recovery",
+        seller_scopes=[SellerScope(seller_id=seller, nickname="PILOT")],
+    )
+    queue = app.state.formula_recovery_queue
+    await queue.ensure_indexes()
+    payload = {
+        "formula": "ZELERDATA_CALCULADORA",
+        "cuenta": "PILOT",
+        "args": {"id_publicaciones": ["MLA1"], "encabezados": False},
+    }
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        headers = {"Authorization": f"Bearer {token.token_once}"}
+        missing = await client.post("/sheets/formulas:execute", headers=headers, json=payload)
+        assert missing.status_code == 200
+        body = missing.json()
+        assert body["ok"] is True
+        assert body["values"][0][4] == 100
+        assert body["values"][0][6] == "DATA_UNAVAILABLE"
+        assert body["meta"]["recovery_requested"] is True
+        assert calls == []
+        job = await queue.collection.find_one({"seller_id": seller})
+        assert job["item_ids"] == ["MLA1"] and not job.get("inventory_scope")
+        gateway.unavailable = False
+        assert await FormulaRecoveryWorker(
+            db=recovery_db, gateway=gateway, queue=queue
+        ).process_one()
+        acquired_calls = list(calls)
+        ready = await client.post("/sheets/formulas:execute", headers=headers, json=payload)
+        assert ready.status_code == 200
+        assert ready.json()["values"][0][5:9] == [0, 10, 10, 2]
+        assert ready.json()["values"][0][13:] == [12, 88]
+        assert not ready.json()["meta"].get("recovery_requested", False)
+        assert calls == acquired_calls
+    assert await recovery_db.sheets_read_model_freshness.count_documents({}) == 0
 
 
 @pytest.mark.asyncio

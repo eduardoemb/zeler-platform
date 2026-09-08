@@ -3902,3 +3902,64 @@ The catalog-price correction `471b4fb` passed CI lint `34255935674` and test
 verified Sheets runtime image containing `471b4fb` and verify the real catalog
 normalization/persistence/read path. No image rebuild is needed for this
 evidence-only update itself.
+
+## Cost gaps: targeted admission and transient enrichment retry
+
+Read-only VM inspection traced the 218 unavailable calculator cells to **37
+publications**, not missing inventory rows. The probe examined stored field
+states without claiming that these later reads were still fresh. No business
+data was written. Script: `/tmp/zeler-cost-gaps-q5RZkE.py`; local artifacts:
+`/tmp/zeler-cost-gaps.q5RZkE/`.
+
+| Source field | Publications / rows | Stored row reasons |
+| --- | ---: | --- |
+| Seller shipping cost | 18 / 18 | 11 transient/rate_limited; 7 basis_mismatch/basis_changed |
+| Listing fee | 37 / 40 | 27 transient/rate_limited; 13 basis_mismatch/basis_changed |
+| Fixed fee | 37 / 40 | 40 transient/rate_limited |
+
+The corresponding parent item states agree. Eleven shipping values and 24
+listing/fixed-fee values were retained, but cannot be presented as current after
+failed acquisition or a changed basis. These states support retry, not permanent
+absence or zero costs. There were zero running recovery jobs during inspection.
+
+Two local gaps were reproduced and fixed:
+
+- CALCULADORA now requests existing targeted-item recovery when a present row's
+  selected price or cost fields are unavailable. IDs are deduplicated across
+  variations and exposed as `unavailable_field_items`; row-completeness metadata
+  remains about row coverage. Missing/expired whole inventories still use their
+  existing inventory request. Optional NA and trusted values do not themselves
+  trigger recovery. No upstream calls were added to formula execution.
+- Selected-item jobs now retain the existing bounded retry when enrichment
+  diagnostics report a transient failure, even if base item details and row
+  receipts are valid. Available projections still publish before retry. Whole
+  inventory checkpointing is unchanged; no new queue, quota, concurrency or
+  freshness policy was introduced.
+
+Eight initial handler cases failed because no recovery was requested; the real
+Mongo selected-job case failed because it incorrectly completed after transient
+enrichment. Handler tests: **50 passed in 0.10s**. Affected projection, identity,
+inventory and retry cases: **23 passed in 7.60s**, including a successful next
+attempt after the queued delay. Old tests expecting no recovery for present but
+unacquired fields were updated without weakening values, identity or receipt
+checks.
+
+A local authenticated ASGI HTTP + real-Mongo test passed in **0.71s**: first HTTP
+returns available price plus unavailable fees and queues only the affected item;
+the worker publishes recovered costs; the second HTTP reads costs **0/10/10/2**,
+total **12**, net **88**, without another upstream call or a global freshness
+marker. This is synthetic local integration, not production HTTP acceptance.
+Protected Mongo tests: **8 passed in 3.27s**. Ruff check/format and mypy (505
+files) pass. The continuation reran `uv run pytest --tb=short -q` against
+the local replica set: completed successfully (exit 0), with nine expected
+skips. Eight are the protected Mongo cases, rerun separately with
+`ZELER_RS0_TEST_URI` and no ambient `MONGO_URI` (exit 0); the remaining skip is
+the Caddy required-keys check. The extra quiet flag suppressed totals and
+duration, so no elapsed-time claim is made for this rerun.
+
+Rollback boundary: CALCULADORA field-gap recovery selection/metadata and selected
+worker transient-diagnostic handling, with their tests. Existing recovered data
+must not be removed. Both **Sheets API and Sheets worker** need verified images
+for this unit. Deploy worker before API, then admit and verify the actual bounded
+pilot cost repairs. Production repair and future freshness maintenance remain
+unproved; do not re-run the 1,900-item sweep for this field-level diagnosis.

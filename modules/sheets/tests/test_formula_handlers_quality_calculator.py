@@ -101,6 +101,58 @@ def test_source_bound_calculator_requires_recent_cost_acquisition(minutes: int |
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("inventory_scope", [False, True])
+@pytest.mark.parametrize(
+    "field",
+    [
+        "seller_shipping_cost",
+        "listing_fee_projection",
+        "listing_price_fixed_fee",
+        "current_promotion",
+    ],
+)
+async def test_calculator_requests_targeted_recovery_for_present_unavailable_fields(
+    inventory_scope: bool, field: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db = FakeDb()
+    _mark_read_model_fresh(db, ITEM_FORMULA_ROWS_READ_MODEL)
+    row = _item_row(item_id="MLA1", sku="sku-1", title="Test", status="active")
+    row["current"]["enrichment_state"] = {field: {"status": "transient", "synced_at": NOW}}
+    db["sheets_item_formula_rows"].documents[row["_id"]] = row
+    repository = FormulaReadModelRepository(db=db)
+    if inventory_scope:
+
+        async def missing_marker(**kwargs: Any) -> None:
+            raise FormulaDataUnavailableError(
+                "ZELERDATA_CALCULADORA", read_model=ITEM_FORMULA_ROWS_READ_MODEL
+            )
+
+        async def current_inventory(**kwargs: Any) -> Any:
+            return [row], ["MLA1"], (), True
+
+        monkeypatch.setattr(repository, "require_read_model_productive", missing_marker)
+        monkeypatch.setattr(repository, "find_recent_item_inventory", current_inventory)
+    result = await FormulaDispatcher(
+        build_quality_calculator_formula_handlers(repository, now_fn=lambda: NOW)
+    ).execute(
+        _context(
+            "ZELERDATA_CALCULADORA",
+            {
+                "encabezados": "si",
+                "tipo_precio": "promo" if field == "current_promotion" else "actual",
+                **({} if inventory_scope else {"id_publicaciones": ["MLA1"]}),
+            },
+        )
+    )
+    assert result.meta["partial_misses"] == 0
+    assert result.recovery is not None
+    assert result.recovery.item_ids == ("MLA1",)
+    assert result.meta["unavailable_field_items"] == ["MLA1"]
+    if inventory_scope:
+        assert result.meta["inventory_rows_complete"] is True
+
+
+@pytest.mark.asyncio
 async def test_calculator_missing_freshness_carries_explicit_recovery_scope() -> None:
     handlers = build_quality_calculator_formula_handlers(
         FormulaReadModelRepository(db=FakeDb()), now_fn=lambda: NOW
@@ -288,6 +340,11 @@ async def test_calculator_promo_price_and_net_obey_acquisition_state(
         assert result.values[0][4] == (expected_price if kind == "promo" else 100)
         assert result.values[0][13] == 20
         assert result.values[0][14] == (expected_net if kind == "promo" else 80)
+        if kind == "promo" and expected_price == "DATA_UNAVAILABLE":
+            assert result.recovery is not None
+            assert result.recovery.item_ids == ("MLA1",)
+        else:
+            assert result.recovery is None
 
 
 @pytest.mark.asyncio
