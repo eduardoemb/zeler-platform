@@ -484,9 +484,10 @@ async def run_sheetseller_backfill(
             item_only_id = _formula_row_id(
                 seller_id=seller_id, normalized_sku="", item_id=_item_id(item)
             )
-            variation_identity_changed = False
+            projection_identity_changed = False
             if (
-                any(
+                order_line_identities_by_item.get(_item_id(item))
+                or any(
                     doc.get("variation_id") and not doc["normalized_sku"]
                     for doc in formula_row_docs
                 )
@@ -505,11 +506,11 @@ async def run_sheetseller_backfill(
                 ).to_list(length=10001)
                 if len(prior_rows) > 10000:
                     raise ValueError("item projection exceeds transition budget")
-                variation_identity_changed = bool(prior_rows) and {
+                projection_identity_changed = bool(prior_rows) and {
                     row["_id"] for row in prior_rows
                 } != {row["_id"] for row in formula_row_docs}
             if (
-                variation_identity_changed
+                projection_identity_changed
                 or (
                     all(doc["normalized_sku"] for doc in formula_row_docs)
                     and await formula_rows_collection.find_one({"_id": item_only_id}) is not None
@@ -2180,8 +2181,19 @@ def _pause_basis_scalar_fields(basis: datetime, *, prefix: str = "") -> dict[str
 def build_order_line_formula_row_docs(
     item: dict[str, Any], *, order_line_identities: Sequence[dict[str, Any]], seller_id: str
 ) -> list[dict[str, Any]]:
+    # Historical order identities remain available for order lookup, but must
+    # not duplicate current stock/prices when this identity has a direct SKU.
+    direct_keys = {
+        (str(doc.get("item_id") or ""), _optional_string(doc.get("variation_id")))
+        for doc in build_sku_index_docs(item, seller_id=seller_id)
+    }
     rows: list[dict[str, Any]] = []
     for identity in order_line_identities:
+        if (
+            str(identity.get("item_id") or ""),
+            _optional_string(identity.get("variation_id")),
+        ) in direct_keys:
+            continue
         sku = _optional_string(identity.get("sku") or identity.get("normalized_sku"))
         if sku is None:
             continue

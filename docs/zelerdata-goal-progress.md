@@ -3381,3 +3381,33 @@ retain their contract; other product deployments remain out of scope.
   audit plus isolated local diagnostic, not implementation of the hardening
   phase that the user placed after functional stabilization. Do not report
   deletion or audit isolation as complete from current tests or runbooks.
+
+## Work unit: historical SKU identities must not duplicate current publications
+
+- Reproduced in real local Mongo: backfill added a historical order-line SKU row
+  alongside the direct current SKU for the same item/variation, duplicating
+  stock/prices. Some existing groups instead became unreadable from mismatched
+  receipts. Four regression cases failed before the fix: item/variation identity,
+  with/without an existing obsolete row.
+- Moved the already-proven native-event filtering rule into the shared order-line
+  row builder, removing the duplicate private event filter. A direct current SKU
+  wins for its item/variation; historical SKU index entries remain available for
+  order lookup. This does not redefine fallback where no direct SKU exists.
+- Backfill checks row identity changes for items with historical order identities,
+  using its existing bounded 10,001-row read and transaction replacement path.
+  Existing obsolete rows are removed atomically, not merely left unstamped.
+  The transaction still guards newer projections/status and seller/item scope.
+  No new queue, global freshness marker or historical source deletion was added.
+- New real-Mongo cases passed **4/4 in 1.08s**, including repeat idempotency,
+  preservation of the historical index and a foreign seller's row. Full Sheets:
+  **1,641 passed in 51.49s**; protected Mongo integration: **8 passed in 3.42s**.
+  Ruff check/format and mypy (505 files) pass. Final normal-allocator root suite
+  with local Mongo: **3,906 passed, 9 skipped, 356 warnings in 112.47s**. Eight
+  protected cases were exercised separately above; the remaining skip needs
+  Caddy keys. This is not a production data or all-formula acceptance result.
+- Rollback boundary: shared filtering/identity-transition trigger, removed native
+  duplicate filter and tests together. No production repair has run; rollback
+  must not recreate incorrect duplicate rows. The deployed worker is still source
+  `6098a93`; a new verified Sheets worker image is required before runtime
+  acceptance. Bootstrap also calls this backfill: update its image before a future
+  bootstrap run requiring the correction. API handlers are unchanged.

@@ -590,9 +590,6 @@ class SheetsEventPersistence:
         order_line_identities = await self._load_order_line_sku_identities(
             item_id=str(item["_id"]), seller_id=seller_id
         )
-        order_line_identities = _missing_order_line_identities(
-            order_line_identities, sku_index_docs
-        )
         formula_row_docs.extend(
             build_order_line_formula_row_docs(
                 item,
@@ -1896,24 +1893,6 @@ def _normalize_status_state(state: dict[str, Any] | None) -> dict[str, Any] | No
         if field in normalized and normalized[field] is None:
             normalized.pop(field, None)
     return normalized
-
-
-def _missing_order_line_identities(
-    order_line_identities: Sequence[dict[str, Any]], sku_index_docs: Sequence[dict[str, Any]]
-) -> list[dict[str, Any]]:
-    direct_identity_keys = {
-        (str(doc.get("item_id") or ""), _optional_string(doc.get("variation_id")))
-        for doc in sku_index_docs
-    }
-    return [
-        identity
-        for identity in order_line_identities
-        if (
-            str(identity.get("item_id") or ""),
-            _optional_string(identity.get("variation_id")),
-        )
-        not in direct_identity_keys
-    ]
 
 
 def _bson_safe(value: Any) -> Any:

@@ -258,6 +258,70 @@ async def test_calculator_recovers_through_real_worker_and_source_bound_projecti
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("with_variations", [False, True])
+@pytest.mark.parametrize("existing_duplicate", [False, True])
+async def test_recovery_does_not_duplicate_current_stock_under_historical_sku(
+    recovery_db: Any, with_variations: bool, existing_duplicate: bool
+) -> None:
+    from zeler_sheets.formulas.read_models import FormulaReadModelRepository
+    from zeler_sheets.sheetseller_backfill import build_formula_row_doc, run_sheetseller_backfill
+
+    now = datetime(2026, 9, 8, 12, tzinfo=UTC)
+    item = {
+        "_id": "MLA1",
+        "seller_id": "82453304",
+        "price": 100,
+        "available_quantity": 7,
+        "date_created": now,
+        "last_updated": now,
+        "last_meli_sync_at": now,
+        "attributes": [] if with_variations else [{"id": "SELLER_SKU", "value_name": "CURRENT"}],
+        "variations": [{"id": 1, "seller_custom_field": "CURRENT", "available_quantity": 7}]
+        if with_variations
+        else [],
+    }
+    await recovery_db.items.insert_one(item)
+    historical: dict[str, Any] = {
+        "_id": "historical-order-identity",
+        "seller_id": "82453304",
+        "item_id": "MLA1",
+        "sku": "OLD",
+        "normalized_sku": "OLD",
+        "variation_id": "1" if with_variations else None,
+        "source": "order_line",
+        "updated_at": now,
+    }
+    await recovery_db.sheets_item_sku_index.insert_one(historical)
+    historical_before = await recovery_db.sheets_item_sku_index.find_one({"_id": historical["_id"]})
+    if existing_duplicate:
+        await recovery_db.sheets_item_formula_rows.insert_one(
+            build_formula_row_doc(
+                item, seller_id="82453304", sku="OLD", variation_id=historical["variation_id"]
+            )
+        )
+    foreign = {"_id": "foreign-row", "seller_id": "42", "item_id": "MLA1"}
+    await recovery_db.sheets_item_formula_rows.insert_one(foreign)
+    for _ in range(2):
+        await run_sheetseller_backfill(db=recovery_db, seller_id="82453304", dry_run=False)
+        rows, missing = await FormulaReadModelRepository(
+            db=recovery_db
+        ).find_recent_item_formula_rows(
+            seller_id="82453304", item_ids=["MLA1"], formula="ZELERDATA_CALCULADORA", now=now
+        )
+        assert missing == ()
+        assert len(rows) == 1
+        assert rows[0]["sku"] == "CURRENT"
+        assert rows[0]["current"]["available_quantity"] == 7
+        assert (
+            await recovery_db.sheets_item_sku_index.find_one({"_id": historical["_id"]})
+            == historical_before
+        )
+        assert (
+            await recovery_db.sheets_item_formula_rows.find_one({"_id": "foreign-row"}) == foreign
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("with_variations", [False, True])
 async def test_native_sku_event_keeps_recovered_projection_readable(
     recovery_db: Any, with_variations: bool
 ) -> None:
