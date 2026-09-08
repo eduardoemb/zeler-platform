@@ -149,6 +149,25 @@ class ItemIdsRecoveryRequest:
         ).hexdigest()
 
 
+@dataclass(frozen=True)
+class ItemInventoryRecoveryRequest:
+    seller_id: str
+    read_model: str = "item_formula_rows"
+
+    def __post_init__(self) -> None:
+        if (
+            re.fullmatch(r"[0-9]+", self.seller_id) is None
+            or self.read_model != "item_formula_rows"
+        ):
+            raise ValueError("inventory recovery requires a numeric seller")
+
+    @property
+    def key(self) -> str:
+        return hashlib.sha256(
+            "\0".join((self.seller_id, self.read_model, "inventory")).encode()
+        ).hexdigest()
+
+
 class FormulaRecoveryQueue:
     def __init__(
         self,
@@ -186,7 +205,8 @@ class FormulaRecoveryQueue:
         request: RecoveryRequest
         | OrderIdsRecoveryRequest
         | ShipmentIdsRecoveryRequest
-        | ItemIdsRecoveryRequest,
+        | ItemIdsRecoveryRequest
+        | ItemInventoryRecoveryRequest,
     ) -> str:
         if self.allowed_sellers is not None and request.seller_id not in self.allowed_sellers:
             raise ValueError("recovery seller is not enabled")
@@ -197,9 +217,9 @@ class FormulaRecoveryQueue:
         ):
             raise ValueError("shipment recovery requires explicit IDs")
         if request.read_model == "item_formula_rows" and not isinstance(
-            request, ItemIdsRecoveryRequest
+            request, (ItemIdsRecoveryRequest, ItemInventoryRecoveryRequest)
         ):
-            raise ValueError("item recovery requires explicit IDs")
+            raise ValueError("item recovery requires explicit IDs or an inventory request")
         now = self.now()
         initial = {
             "_id": request.key,
@@ -217,6 +237,8 @@ class FormulaRecoveryQueue:
             initial["shipment_ids"] = list(request.shipment_ids)
         elif isinstance(request, ItemIdsRecoveryRequest):
             initial["item_ids"] = list(request.item_ids)
+        elif isinstance(request, ItemInventoryRecoveryRequest):
+            initial["inventory_scope"] = True
         else:
             initial.update(date_from=request.date_from, date_to=request.date_to)
         # One guard per seller (identity/revision only) serializes admission
@@ -249,7 +271,20 @@ class FormulaRecoveryQueue:
                 # capacity, but completing a job frees it without a second counter.
                 await self.collection.update_one(
                     {"_id": request.key},
-                    {"$set": {"state": "pending", "attempts": 0, "updated_at": now}},
+                    {
+                        "$set": {"state": "pending", "attempts": 0, "updated_at": now},
+                        **(
+                            {
+                                "$unset": {
+                                    "inventory_ids": "",
+                                    "inventory_offset": "",
+                                    "inventory_unavailable_ids": "",
+                                }
+                            }
+                            if isinstance(request, ItemInventoryRecoveryRequest)
+                            else {}
+                        ),
+                    },
                     session=session,
                 )
 
@@ -258,6 +293,66 @@ class FormulaRecoveryQueue:
                 admit, read_concern=ReadConcern("snapshot"), write_concern=WriteConcern("majority")
             )
         return request.key
+
+    async def checkpoint_inventory(
+        self,
+        job: dict[str, Any],
+        *,
+        item_ids: list[str],
+        offset: int,
+        unavailable: bool = False,
+    ) -> bool:
+        if (
+            job.get("inventory_scope") is not True
+            or len(item_ids) > 10000
+            or item_ids != sorted(set(item_ids))
+            or any(re.fullmatch(r"ML[A-Z][0-9]+", identity) is None for identity in item_ids)
+            or type(offset) is not int
+            or type(unavailable) is not bool
+            or (unavailable and "inventory_ids" not in job)
+            or not 0 <= offset <= len(item_ids)
+            or ("inventory_ids" not in job and offset != 0)
+            or (
+                "inventory_ids" in job
+                and (
+                    item_ids != job["inventory_ids"]
+                    or not job["inventory_offset"] < offset <= job["inventory_offset"] + 20
+                )
+            )
+        ):
+            raise ValueError("invalid inventory checkpoint")
+        now = self.now()
+        completed = offset == len(item_ids)
+        missing = sorted(
+            set(job.get("inventory_unavailable_ids", []))
+            | (set(item_ids[job["inventory_offset"] : offset]) if unavailable else set())
+        )
+        terminal_failure = completed and bool(missing)
+        result = await self.collection.update_one(
+            self._owned(job, now),
+            {
+                "$set": {
+                    "inventory_ids": item_ids,
+                    "inventory_offset": offset,
+                    "inventory_unavailable_ids": missing,
+                    "state": "failed"
+                    if terminal_failure
+                    else "completed"
+                    if completed
+                    else "pending",
+                    "attempts": 0,
+                    "updated_at": now,
+                    "available_at": now + COOLDOWN if completed else now,
+                    **({"failure_reason": "source_incomplete"} if terminal_failure else {}),
+                },
+                "$unset": {
+                    "attempt_token": "",
+                    "lease_until": "",
+                    **({"failure_reason": ""} if not terminal_failure else {}),
+                },
+            },
+        )
+        return bool(result.matched_count)
 
     async def claim(self) -> dict[str, Any] | None:
         now = self.now()
@@ -337,6 +432,19 @@ class FormulaRecoveryQueue:
             "storage_unavailable",
         }:
             raise ValueError("unsupported public recovery failure reason")
+        if (
+            not succeeded
+            and not retry
+            and job.get("inventory_scope") is True
+            and "inventory_ids" in job
+            and failure_reason in {"source_incomplete", "source_temporarily_unavailable"}
+        ):
+            return await self.checkpoint_inventory(
+                job,
+                item_ids=job["inventory_ids"],
+                offset=min(job["inventory_offset"] + 20, len(job["inventory_ids"])),
+                unavailable=True,
+            )
         fields = {
             "state": "completed" if succeeded else "pending" if retry else "failed",
             "available_at": now

@@ -39,7 +39,11 @@ from zeler_sheets.formulas.recovery import (
     OrderIdsRecoveryRequest,
     ShipmentIdsRecoveryRequest,
 )
-from zeler_sheets.sheetseller_backfill import run_item_detail_enrichment, run_sheetseller_backfill
+from zeler_sheets.sheetseller_backfill import (
+    _discover_current_item_ids,
+    run_item_detail_enrichment,
+    run_sheetseller_backfill,
+)
 
 
 class FormulaRecoveryWorker:
@@ -106,7 +110,34 @@ class FormulaRecoveryWorker:
         return True
 
     async def _items(self, job: dict[str, Any]) -> None:
-        requested = ItemIdsRecoveryRequest(job["seller_id"], tuple(job["item_ids"]))
+        if job.get("inventory_scope") is True:
+            if "inventory_ids" not in job:
+                identities = sorted(
+                    await _discover_current_item_ids(self.gateway, seller_id=job["seller_id"])
+                )
+                await self.queue.checkpoint_inventory(job, item_ids=identities, offset=0)
+                return
+            identities = job["inventory_ids"]
+            offset = job["inventory_offset"]
+            requested = ItemIdsRecoveryRequest(
+                job["seller_id"], tuple(identities[offset : offset + 20])
+            )
+        else:
+            requested = ItemIdsRecoveryRequest(job["seller_id"], tuple(job["item_ids"]))
+        partial = await self._acquire_item_batch(job, requested)
+        if not partial and job.get("inventory_scope") is True:
+            await self.queue.checkpoint_inventory(
+                job, item_ids=identities, offset=offset + len(requested.item_ids)
+            )
+            return
+        await self.queue.finish(
+            job, succeeded=not partial, retryable=partial, failure_reason="source_incomplete"
+        )
+
+    async def _acquire_item_batch(
+        self, job: dict[str, Any], requested: ItemIdsRecoveryRequest
+    ) -> bool:
+        """Acquire and project one batch; return whether recovery remains incomplete."""
         if await self.queue.collection.find_one(self.queue._owned(job, self.queue.now())) is None:
             raise ValueError("item recovery lease lost before acquisition")
         acquired = await run_item_detail_enrichment(
@@ -152,12 +183,7 @@ class FormulaRecoveryWorker:
                 partial = bool(missing)
             except FormulaDataUnavailableError:
                 partial = True
-        await self.queue.finish(
-            job,
-            succeeded=not partial,
-            retryable=partial,
-            failure_reason="source_incomplete",
-        )
+        return partial
 
     async def _shipments(self, job: dict[str, Any]) -> None:
         requested = ShipmentIdsRecoveryRequest(job["seller_id"], tuple(job["shipment_ids"]))

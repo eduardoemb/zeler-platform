@@ -2857,3 +2857,49 @@ retain their contract; other product deployments remain out of scope.
   Read-only runtime inspection still found the `f51c374` worker digest
   `55e10b4593b0ccb5df81a513daf9ce10be26c5da1516d85e7b7b6fb8a72f8512`
   healthy with zero restarts; it does not yet contain this completion check.
+
+## Inventory acquisition resumes through the existing recovery queue
+
+- Item-model misses without explicit IDs can now admit one coalesced inventory
+  request per seller through the existing bounded API queue path. Authentication,
+  seller allowlists, capacity admission and cooldown remain in place. No formula
+  executes a MercadoLibre call or waits for discovery/acquisition.
+- A worker claim first runs the existing bounded discovery (10,000 IDs maximum,
+  201 pages, 180 seconds) and checkpoints its sorted IDs. Subsequent claims each
+  acquire/project at most 20 publications through the existing source-bound
+  verification path. Mongo stores the next offset; a restarted worker resumes
+  there without repeating discovery or earlier successful batches.
+- Checkpoints require the current unexpired attempt token, immutable discovered
+  IDs and forward progress bounded to one batch. They release the lease and reset
+  the per-batch attempt counter. HTTP-transient failures retain the offset for
+  retry. Exhausted/source-incomplete batches record their IDs and advance so later
+  publications can still be acquired; any recorded unavailable batch makes the
+  final job failed/source_incomplete, not completed. Storage/authorization failures
+  retain the existing fail-closed behavior. Reopening a terminal request clears
+  its prior scan/progress while preserving the existing cooldown.
+- Failing tests first demonstrated missing inventory admission/checkpoints and,
+  separately, that an exhausted batch stopped all subsequent acquisition. The
+  real-Mongo 21-publication tests now cover normal restart, a transient final
+  batch, exhausted first-batch recovery followed by a successful later batch,
+  and expired-lease checkpoint rejection. They use actual acquisition/projection
+  code with simulated upstream responses, not production or live Sheets evidence.
+- This unit deliberately writes no aggregate freshness marker. Completion means
+  that acquisition finished; a new full-inventory read must still prove scan age,
+  inventory membership and current source-bound completeness. That reader is
+  pending, so do not deploy this admission path as a claimed full-inventory fix.
+  Existing selected-ID reads continue to use independently verified projections.
+- Rollback removes inventory request/admission/checkpoint/worker dispatch together
+  with these tests; preserve acquired data and account for pending inventory jobs
+  before reverting worker support. No runtime mutation occurred. API and worker
+  will need verified builds after the aggregate reader is ready, plus pilot
+  restart/recovery-to-inventory-read verification and disk preflight.
+- Final focused inventory scenarios: **4 passed in 1.74s**. Normal-allocator root
+  regression: **3,856 passed, 9 skipped, 356 warnings in 95.32s**. Protected
+  integration was run separately: **8 passed in 3.16s**. Ruff check/format,
+  mypy (503 files) and whitespace checks pass. The earlier 3,855-test run preceded
+  the exhausted-batch correction and is not the final evidence.
+- Read-only runtime inspection confirmed the existing API
+  `f8ccf361eb7e54639d6a6a6128ea4e7841c1e519b98bd37b8ff8dbdf8c633cfe`
+  and worker `55e10b4593b0ccb5df81a513daf9ce10be26c5da1516d85e7b7b6fb8a72f8512`
+  digests remain healthy. Neither contains this inventory workflow; retain them
+  until the read-side proof and verified replacement images are ready.

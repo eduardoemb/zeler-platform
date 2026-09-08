@@ -51,6 +51,7 @@ from zeler_sheets.formulas.read_models import FormulaReadModelRepository
 from zeler_sheets.formulas.recovery import (
     RECOVERABLE_MODELS,
     ItemIdsRecoveryRequest,
+    ItemInventoryRecoveryRequest,
     OrderIdsRecoveryRequest,
     RecoveryRequest,
     ShipmentIdsRecoveryRequest,
@@ -687,6 +688,15 @@ async def _request_formula_recovery(
                             read_model=missing.read_model,
                         )
                     )
+        except (ValueError, PyMongoError, TimeoutError):
+            return False
+        return True
+    if missing.read_model == "item_formula_rows":
+        if missing.order_ids or missing.shipment_ids:
+            return False
+        try:
+            async with asyncio.timeout(1):
+                await queue.enqueue(ItemInventoryRecoveryRequest(context.seller_id))
         except (ValueError, PyMongoError, TimeoutError):
             return False
         return True

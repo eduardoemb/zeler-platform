@@ -163,6 +163,160 @@ async def test_calculator_recovers_through_real_worker_and_source_bound_projecti
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("failure_mode", ["none", "retry_last", "exhaust_first"])
+async def test_inventory_recovery_resumes_bounded_batches_without_global_readiness(
+    recovery_db: Any,
+    failure_mode: str,
+) -> None:
+    from types import SimpleNamespace
+    from urllib.parse import parse_qs, urlparse
+
+    import httpx
+
+    from zeler_sheets.api import _request_formula_recovery
+    from zeler_sheets.formulas.dispatcher import FormulaDataUnavailableError
+    from zeler_sheets.formulas.recovery import IMPLEMENTED_MODELS, ItemInventoryRecoveryRequest
+    from zeler_sheets.formulas.recovery_worker import FormulaRecoveryWorker
+
+    identities = [f"MLA{i:03d}" for i in range(21)]
+    batches: list[list[str]] = []
+    scans = 0
+    failed = False
+
+    class Gateway:
+        async def fetch_resource(self, *, seller_id: str, path: str) -> Any:
+            nonlocal scans, failed
+            assert seller_id == "82453304"
+            if path.startswith("/users/82453304/items/search?"):
+                scans += 1
+                return {"paging": {"total": 21}, "results": identities}
+            if path.startswith("/items?ids="):
+                batch = parse_qs(urlparse(path).query)["ids"][0].split(",")
+                batches.append(batch)
+                if (failure_mode == "retry_last" and batch == identities[20:] and not failed) or (
+                    failure_mode == "exhaust_first" and batch == identities[:20]
+                ):
+                    failed = True
+                    response = httpx.Response(
+                        503, request=httpx.Request("GET", "https://example.invalid")
+                    )
+                    raise httpx.HTTPStatusError(
+                        "synthetic transient request", request=response.request, response=response
+                    )
+                return [
+                    {
+                        "code": 200,
+                        "body": {
+                            "id": identity,
+                            "seller_id": 82453304,
+                            "title": "Inventory item",
+                            "price": 100,
+                            "base_price": 100,
+                            "currency_id": "ARS",
+                            "category_id": "MLA123",
+                            "available_quantity": 1,
+                            "status": "active",
+                            "listing_type_id": "gold_special",
+                            "date_created": "2026-09-01T00:00:00Z",
+                            "last_updated": "2026-09-01T00:00:00Z",
+                            "attributes": [],
+                            "variations": [],
+                            "shipping": {"free_shipping": False},
+                        },
+                    }
+                    for identity in batch
+                ]
+            response = httpx.Response(503, request=httpx.Request("GET", "https://example.invalid"))
+            raise httpx.HTTPStatusError(
+                "synthetic unavailable cost", request=response.request, response=response
+            )
+
+    gateway = Gateway()
+    queue = FormulaRecoveryQueue(
+        recovery_db, enabled_models=IMPLEMENTED_MODELS, allowed_sellers=frozenset({"82453304"})
+    )
+    request = ItemInventoryRecoveryRequest("82453304")
+    http_request: Any = SimpleNamespace(
+        app=SimpleNamespace(state=SimpleNamespace(formula_recovery_queue=queue))
+    )
+    context: Any = SimpleNamespace(seller_id="82453304")
+    assert await _request_formula_recovery(
+        http_request,
+        context,
+        FormulaDataUnavailableError("ZELERDATA_CALCULADORA", read_model="item_formula_rows"),
+    )
+    assert scans == 0 and batches == []
+    assert await queue.enqueue(request) == request.key
+    worker = FormulaRecoveryWorker(db=recovery_db, gateway=gateway, queue=queue)
+    assert await worker.process_one()
+    job = await queue.collection.find_one({"_id": request.key})
+    assert job["state"] == "pending" and job["inventory_offset"] == 0
+    assert job["inventory_ids"] == identities
+    assert scans == 1 and batches == []
+    assert await worker.process_one()
+    job = await queue.collection.find_one({"_id": request.key})
+    if failure_mode == "exhaust_first":
+        for _ in range(2):
+            assert job["state"] == "pending" and job["inventory_offset"] == 0
+            retry_at = job["available_at"].replace(tzinfo=UTC)
+
+            def retry_clock(at: datetime = retry_at) -> datetime:
+                return at
+
+            queue.now = retry_clock
+            assert await worker.process_one()
+            job = await queue.collection.find_one({"_id": request.key})
+    assert job["state"] == "pending" and job["inventory_offset"] == 20
+    restarted = FormulaRecoveryWorker(db=recovery_db, gateway=gateway, queue=queue)
+    assert await restarted.process_one()
+    job = await queue.collection.find_one({"_id": request.key})
+    if failure_mode == "retry_last":
+        assert job["state"] == "pending" and job["inventory_offset"] == 20
+        retry_at = job["available_at"].replace(tzinfo=UTC)
+        queue.now = lambda: retry_at
+        assert await restarted.process_one()
+        job = await queue.collection.find_one({"_id": request.key})
+    assert job["state"] == ("failed" if failure_mode == "exhaust_first" else "completed")
+    assert job["inventory_offset"] == 21
+    assert job.get("inventory_unavailable_ids", []) == (
+        identities[:20] if failure_mode == "exhaust_first" else []
+    )
+    assert batches == [identities[:20]] * (3 if failure_mode == "exhaust_first" else 1) + [
+        identities[20:]
+    ] + ([identities[20:]] if failure_mode == "retry_last" else [])
+    assert scans == 1
+    assert await recovery_db.sheets_item_formula_rows.count_documents(
+        {"source_snapshot": {"$exists": True}}
+    ) == (1 if failure_mode == "exhaust_first" else 21)
+    assert await recovery_db.sheets_read_model_freshness.count_documents({}) == 0
+    await queue.enqueue(request)
+    reopened = await queue.collection.find_one({"_id": request.key})
+    assert "inventory_ids" not in reopened and "inventory_offset" not in reopened
+    assert "inventory_unavailable_ids" not in reopened
+    assert reopened["available_at"] == job["available_at"]
+
+
+@pytest.mark.asyncio
+async def test_inventory_checkpoint_cannot_advance_after_lease_loss(recovery_db: Any) -> None:
+    from zeler_sheets.formulas.recovery import LEASE, ItemInventoryRecoveryRequest
+
+    now = datetime(2026, 9, 7, 12, tzinfo=UTC)
+    queue = FormulaRecoveryQueue(recovery_db, now=lambda: now)
+    key = await queue.enqueue(ItemInventoryRecoveryRequest("82453304"))
+    old = await queue.claim()
+    now += LEASE
+    current = await queue.claim()
+    assert old is not None and current is not None
+    assert not await queue.checkpoint_inventory(old, item_ids=["MLA1"], offset=0)
+    stored = await queue.collection.find_one({"_id": key})
+    assert "inventory_ids" not in stored
+    assert stored["attempt_token"] == current["attempt_token"]
+    assert await queue.checkpoint_inventory(current, item_ids=["MLA1"], offset=0)
+    stored = await queue.collection.find_one({"_id": key})
+    assert stored["state"] == "pending" and stored["attempts"] == 0
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "invalid",
     [
