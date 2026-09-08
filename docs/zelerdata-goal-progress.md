@@ -3165,3 +3165,34 @@ retain their contract; other product deployments remain out of scope.
   cooldown was observed elapsed with zero running recovery jobs; no new pilot
   was admitted. Diagnose image retrieval before attempting another deployment.
   Do not rerun the original deployment helper: its exclusive backup already exists.
+
+## Parallel worker activated; new full-inventory pilot admitted
+
+- Current VM diagnostics reached Artifact Registry (`/v2/` returned the expected
+  unauthenticated 401 in 0.05s) and read the authenticated image manifest in
+  4.39s. A separately observed immutable-digest pull then succeeded in **12.76s**
+  after preflight with 5,421,924,352 free bytes. Compose stayed unchanged during
+  the download. This does not establish the earlier timeout's cause.
+- Activated the cached verified worker digest
+  `3ac69caf5cea44692e249f44deef6a280c4d89083c6c9fd582fcc5b4ecb8717b` from
+  `ad8d42b2e1362394113a33bb4501c85694e7e644`, using `--pull never` and targeting
+  only Sheets worker after confirming zero running recovery jobs. Docker health
+  is healthy, restarts **0**, and HTTP `/health` is **200**. Free space after
+  activation is 4,878,905,344 bytes; restore margin before another image pull.
+- Rollback remains worker digest
+  `50c87edc6503317b283c625a965fd46690dd304af1829a56a77c8fe66855f651`.
+  The activation backup is
+  `/opt/zeler-platform/docker-compose.yml.pre-sheets-worker-activate-ad8d42b`;
+  preserve the separate earlier failed-attempt backup too. API was not recreated.
+  Subsequent main commits so far contain documentation only, not omitted runtime
+  code. No further build is required merely for these evidence updates.
+- After checking the new worker's exact digest/health, terminal prior job and
+  elapsed cooldown, the approved internal API-container probe admitted a new
+  inventory sweep through the existing API admission helper. It reuses key
+  `5f2485d573679264481950cce24b1373d2eb93f11c1f79ea2aca606b92d20a8f` and has
+  exclusive mode-0600 receipt
+  `/var/lib/zeler-platform/repairs/inventory-parallel-ad8d42b.json`.
+  Initial reads were DATA_UNAVAILABLE in 0.0041s each; old enumeration membership
+  remains stored but expired until rediscovery. No global marker changed.
+  Observe this same sweep; do not repeat `prepare`. Full-inventory throughput,
+  final freshness and authenticated Sheets/application acceptance remain pending.
