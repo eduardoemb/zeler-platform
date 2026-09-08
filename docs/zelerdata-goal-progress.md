@@ -2480,3 +2480,51 @@ retain their contract; other product deployments remain out of scope.
   protected stock-time suites passed **8 tests in 2.45s**. Ruff check/format,
   mypy (502 files), and whitespace checks pass. Read-only VM inspection again
   confirmed the exact `898c916` API/worker image digests healthy.
+
+## No-SKU source released to pilot runtime
+
+- Both Sheets services now run source
+  `f74f3f15c450e29a4fe81485471c6875145441ad`. Each image passed the repository's
+  single-subject provenance verifier against its exact connected repository,
+  successful Cloud Build, source commit and immutable digest.
+- API: build `5176b4bc-f2ae-4989-a82f-fb018730076c`, digest
+  `ef49b4d24bf62a9e31b5e9b83fbd5ec61d3983e020775922e168e544d21e0fc0`.
+  Worker: build `cf4cb05c-34ba-4c5e-a25c-9c51ea0eb0ee`, digest
+  `98cabd3eaf4607a49b08102854289ff898e5359b861f3ac025efd5884ceb5c26`.
+- Targeted worker-then-API deployment passed preflight before each pull,
+  exact-one Compose replacement and pilot recovery configuration checks.
+  Both containers became healthy with zero restarts and `/health` HTTP 200.
+  No other service was recreated. The worker had zero running recovery jobs
+  at its deployment gate.
+- Rollback authority is the previously running `898c916` pair: API digest
+  `d9b86c8403e1ac27314893b04be5a5d446215957a006e8c644217061b4370641`, worker
+  `2aa013bb375c1d14c5dd516f39f472879336c923d69acf425a34be9e1c97b806`.
+  Compose backups end in `.pre-sheets-worker-f74f3f1` and
+  `.pre-sheets-api-f74f3f1`; restore only the affected image line, not the entire
+  backup over unrelated changes. Do not roll back normalized source data.
+- Pre-release scoped Mongo inspection found 1,918 stored source items, 2,834
+  formula rows, 15 stored items without rows, and no item-only rows. These stored
+  counts include history and do not prove the current MercadoLibre inventory.
+- Free space after both pulls was 4,887,502,848 bytes, below the next-pull
+  5 GiB floor. Before another release, recheck space and perform narrowly
+  verified unused-image cleanup while retaining the current/rollback pair;
+  do not prune volumes or infer authority to resize the disk.
+- A fresh MercadoLibre inventory scan found 1,900 current items, of which 10 had
+  no formula rows. A bounded operator run validated all 10 in dry-run, acquired
+  and enriched them through the gateway, and persisted 12 rows (nine item-only).
+  Independent live-validator queries accepted all selected source/row/index
+  documents. The selected projection had no mixed item-only/SKU identity.
+  All 1,900 IDs from that scan were then represented by formula rows.
+- Recovery completed in **18.655 seconds** with zero unavailable item details.
+  This is operator timing, not formula HTTP latency. No whole-inventory freshness
+  marker was advanced; row presence does not prove every field fresh or the 52
+  formulas accepted. The mutating recovery invocation is terminal and must not
+  be restarted as an observation probe.
+- Final read-only inspection from the API container independently found 2,846
+  total rows, nine item-only rows and zero mixed identities. Five stored items
+  still lack rows outside the just-scanned current inventory; no historical
+  source was deleted. Both exact released digests remain healthy, zero-restart,
+  with recovery enabled only for pilot `82453304`.
+- This ledger-only commit does not require another image build: the intended
+  runtime source is `f74f3f1` and both deployed images match it. Authenticated
+  HTTP/Google Sheet acceptance and full temporal completeness remain outstanding.
