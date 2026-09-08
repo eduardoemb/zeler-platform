@@ -275,6 +275,7 @@ async def test_item_catalog_handlers_use_local_rows_and_catalog_snapshots() -> N
             "price": Decimal("120"),
             "winning_price": Decimal("118"),
             "competitor_count": 2,
+            "competitors_sharing_first_place": 2,
             "only_competitor": "No",
         }
     }
@@ -348,7 +349,8 @@ async def test_item_catalog_handlers_use_local_rows_and_catalog_snapshots() -> N
 
 
 @pytest.mark.asyncio
-async def test_catalogo_buybox_uses_schema_valid_competitor_count_for_winner_count_column() -> None:
+@pytest.mark.parametrize("shared,expected", [(0, 0), (3, 3), (None, "NA")])
+async def test_catalogo_buybox_uses_source_shared_count(shared: Any, expected: Any) -> None:
     db = FakeDb()
     _mark_read_model_fresh(db, CATALOG_BUYBOX_SNAPSHOTS_READ_MODEL)
     db["sheets_catalog_buybox_snapshots"].documents = {
@@ -363,6 +365,7 @@ async def test_catalogo_buybox_uses_schema_valid_competitor_count_for_winner_cou
             "price": Decimal("119"),
             "winning_price": Decimal("118"),
             "competitor_count": 4,
+            "competitors_sharing_first_place": shared,
             "only_competitor": "No",
         }
     }
@@ -382,12 +385,12 @@ async def test_catalogo_buybox_uses_schema_valid_competitor_count_for_winner_cou
             "# DE GANADORES",
             "UNICO COMPETIDOR",
         ],
-        ["Schema-valid buybox item", "MLA1", "CAT-1", 9, "sharing", 119, 118, 4, "No"],
+        ["Schema-valid buybox item", "MLA1", "CAT-1", 9, "sharing", 119, 118, expected, "No"],
     ]
 
 
 @pytest.mark.asyncio
-async def test_catalogo_buybox_preserves_legacy_winner_count_fallback() -> None:
+async def test_catalogo_buybox_does_not_infer_shared_count_from_legacy_totals() -> None:
     db = FakeDb()
     _mark_read_model_fresh(db, CATALOG_BUYBOX_SNAPSHOTS_READ_MODEL)
     db["sheets_catalog_buybox_snapshots"].documents = {
@@ -402,6 +405,7 @@ async def test_catalogo_buybox_preserves_legacy_winner_count_fallback() -> None:
             "price": Decimal("120"),
             "winning_price": Decimal("118"),
             "winner_count": 2,
+            "competitor_count": 8,
             "only_competitor": "No",
         }
     }
@@ -409,6 +413,9 @@ async def test_catalogo_buybox_preserves_legacy_winner_count_fallback() -> None:
 
     result = await dispatcher.execute(_context("ZELERDATA_CATALOGOBUYBOX", {"encabezados": "si"}))
 
+    assert (
+        result.meta["unavailable_reason"] == "catalog_competition_shared_count_missing_or_invalid"
+    )
     assert result.values[1] == [
         "Legacy buybox item",
         "MLA1",
@@ -417,7 +424,7 @@ async def test_catalogo_buybox_preserves_legacy_winner_count_fallback() -> None:
         "winning",
         120,
         118,
-        2,
+        "DATA_UNAVAILABLE",
         "No",
     ]
 

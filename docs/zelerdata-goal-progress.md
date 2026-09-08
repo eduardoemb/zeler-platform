@@ -21,6 +21,43 @@ Keep unrelated `.codegraph/` files untouched in both repositories.
 Pilot: seller `82453304`; initial historical window 2026-08-08 through
 2026-09-06, plus current snapshots. Other products are out of scope.
 
+## Buybox shared-first-place values no longer use competitor totals — 2026-09-08
+
+CATALOGOBUYBOX now reads `competitors_sharing_first_place` for its existing
+`# DE GANADORES` column, using the same source-value helper as CATALOGO. It no
+longer substitutes `competitor_count` or the unverified legacy `winner_count`.
+Zero remains zero, an explicitly acquired null becomes NA, and missing/invalid
+source counts become DATA_UNAVAILABLE with a reason in buybox response metadata.
+The nine-column contract and header remain unchanged. The helper preserves the
+source count; it does not infer a global winner total or add one to shared counts.
+
+The [official competition contract](https://developers.mercadolibre.com.mx/en_us/introduction-services/catalog-competition)
+distinguishes shared first place from total competition and specifies zero for
+winning and null for competing/listed. The legacy product handler also selected
+this source field, but incorrectly merged null and zero into a unique-winner
+message; that inference was not restored. The common helper was moved from the
+CATALOGO handler into `catalog_values.py` for these two proven consumers. Removed
+the now-unreferenced `_first_present` compatibility helper after repository search.
+
+Four focused cases first failed in 0.09s: source zero, positive, null and an
+absent source field with both legacy totals present. After correction the two
+handler suites passed 83 tests in 0.25s, including unchanged CATALOGO behavior;
+the missing-count case checks the explicit unavailable reason. Protected Mongo
+tests passed eight cases in 2.45s. Ruff check/format, mypy (506 files), generated
+schema drift and diff checks pass. Full regression passed 4,070 tests with nine
+expected skips and 356 warnings in 125.30s. The eight protected skips were run
+separately; the remaining skip concerns Caddy keys. The unused helper removal
+was also followed by the focused 83-test run and static checks.
+
+This is a local handler correction, not live formula acceptance. Runtime still
+uses `449a382`; only a new Sheets API image is required for the visible behavior.
+Do not deploy during the active inventory/product observer, whose image guards
+remain pinned to that source. Before runtime acceptance, build the committed
+source, verify provenance/CI and check actual buybox persistence and formula output.
+Buybox membership, freshness and automatic acquisition remain open; this change
+does not claim that missing buybox data is irrecoverable. Rollback restores the
+two handlers and their helper/test change, without schema or data rollback.
+
 ## Real not-found observation persisted; fresh inventory in progress — 2026-09-08
 
 The deployed worker persisted `catalog_product_not_found` for the one still

@@ -7,6 +7,7 @@ from typing import Any
 
 from bson.decimal128 import Decimal128
 
+from zeler_sheets.formulas.catalog_values import catalog_shared_users
 from zeler_sheets.formulas.dispatcher import (
     FormulaDataUnavailableError,
     FormulaExecutionContext,
@@ -408,7 +409,15 @@ class ItemShippingCatalogFormulaHandlers:
         values.extend(_catalogo_buybox_row(snapshot) for snapshot in snapshots)
         return FormulaExecutionResult(
             values=values,
-            meta={"rows_count": len(snapshots), "columns": "catalog_buybox_current"},
+            meta={
+                "rows_count": len(snapshots),
+                "columns": "catalog_buybox_current",
+                **(
+                    {"unavailable_reason": "catalog_competition_shared_count_missing_or_invalid"}
+                    if any(catalog_shared_users(row) == "DATA_UNAVAILABLE" for row in snapshots)
+                    else {}
+                ),
+            },
         )
 
     async def sheetseller_catalogos_sin_vincular(
@@ -554,7 +563,7 @@ def _catalogo_buybox_row(snapshot: Mapping[str, Any]) -> list[Any]:
         _catalog_value(snapshot, "buybox_status"),
         _sheet_optional_number(snapshot.get("price")),
         _sheet_optional_number(snapshot.get("winning_price")),
-        _sheet_optional_number(_first_present(snapshot, "competitor_count", "winner_count")),
+        catalog_shared_users(snapshot),
         _catalog_value(snapshot, "only_competitor"),
     ]
 
@@ -828,14 +837,6 @@ def _shipment_carrier(shipment: Mapping[str, Any]) -> str:
 def _catalog_value(snapshot: Mapping[str, Any], field: str) -> Any:
     value = snapshot.get(field)
     return value if value is not None and str(value).strip() else NA_VALUE
-
-
-def _first_present(snapshot: Mapping[str, Any], *fields: str) -> Any:
-    for field in fields:
-        value = snapshot.get(field)
-        if value is not None and str(value).strip():
-            return value
-    return None
 
 
 def _catalog_attribute(snapshot: Mapping[str, Any], attribute_id: str) -> Any:
