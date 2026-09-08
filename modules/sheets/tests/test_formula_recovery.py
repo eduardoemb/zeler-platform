@@ -31,6 +31,124 @@ def test_runtime_recovery_seller_list_is_explicit_and_validated() -> None:
 
 
 @pytest.mark.asyncio
+async def test_no_sku_event_reconciliation_is_bounded_under_source_contention(
+    recovery_db: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import zeler_sheets.event_persistence as events
+    from zeler_sheets.sheetseller_backfill import run_sheetseller_backfill
+
+    calls = 0
+
+    async def change_source_after_projection(**kwargs: Any) -> Any:
+        nonlocal calls
+        result = await run_sheetseller_backfill(**kwargs)
+        calls += 1
+        await recovery_db.items.update_one(
+            {"_id": "MLA1", "seller_id": "82453304"},
+            {"$set": {"title": f"Concurrent source {calls}"}},
+        )
+        return result
+
+    monkeypatch.setattr(events, "run_sheetseller_backfill", change_source_after_projection)
+    writer = events.SheetsEventPersistence(
+        db=recovery_db, clock=lambda: datetime(2026, 9, 7, 12, tzinfo=UTC)
+    )
+    with pytest.raises(RuntimeError, match="bounded reconciliation"):
+        await writer.persist(
+            event_type="items.updated",
+            seller_id="82453304",
+            resource={
+                "id": "MLA1",
+                "seller_id": 82453304,
+                "title": "Initial source",
+                "price": 100,
+                "currency_id": "ARS",
+                "category_id": "MLA123",
+                "available_quantity": 2,
+                "status": "active",
+                "date_created": "2026-09-01T00:00:00Z",
+                "last_updated": "2026-09-07T00:00:00Z",
+                "attributes": [],
+                "variations": [],
+            },
+        )
+    assert calls == 3
+    assert (await recovery_db.items.find_one({"_id": "MLA1"}))["title"] == ("Concurrent source 3")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("sku_level", ["item", "variation"])
+async def test_older_no_sku_event_finishing_last_preserves_newer_identity(
+    recovery_db: Any, monkeypatch: pytest.MonkeyPatch, sku_level: str
+) -> None:
+    import zeler_sheets.sheetseller_backfill as backfill
+    from zeler_sheets.event_persistence import SheetsEventPersistence
+
+    paused = asyncio.Event()
+    release = asyncio.Event()
+    original = backfill._replace_formula_row_from_backfill_if_current
+
+    async def pause_old_write(collection: Any, doc: dict[str, Any], **kwargs: Any) -> bool:
+        if doc["normalized_sku"] == "" and doc["current"]["title"] == "Older event":
+            paused.set()
+            await asyncio.wait_for(release.wait(), timeout=10)
+        return await original(collection, doc, **kwargs)
+
+    monkeypatch.setattr(backfill, "_replace_formula_row_from_backfill_if_current", pause_old_write)
+    old = {
+        "id": "MLA1",
+        "seller_id": 82453304,
+        "title": "Older event",
+        "price": 100,
+        "base_price": 100,
+        "currency_id": "ARS",
+        "category_id": "MLA123",
+        "available_quantity": 2,
+        "status": "active",
+        "date_created": "2026-09-01T00:00:00Z",
+        "last_updated": "2026-09-07T00:00:00Z",
+        "attributes": [],
+        "variations": [],
+    }
+    newer = {
+        **old,
+        "title": "Newer event",
+        "last_updated": "2026-09-07T00:01:00Z",
+        "attributes": [{"id": "SELLER_SKU", "value_name": "SKU-1"}] if sku_level == "item" else [],
+        "variations": [{"id": 101, "seller_custom_field": "SKU-1"}]
+        if sku_level == "variation"
+        else [],
+    }
+    old_writer = SheetsEventPersistence(
+        db=recovery_db, clock=lambda: datetime(2026, 9, 7, 12, tzinfo=UTC)
+    )
+    new_writer = SheetsEventPersistence(
+        db=recovery_db, clock=lambda: datetime(2026, 9, 7, 12, 1, tzinfo=UTC)
+    )
+    pending = asyncio.create_task(
+        old_writer.persist(event_type="items.updated", seller_id="82453304", resource=old)
+    )
+    try:
+        await asyncio.wait_for(paused.wait(), timeout=10)
+        await new_writer.persist(event_type="items.updated", seller_id="82453304", resource=newer)
+        release.set()
+        await asyncio.wait_for(pending, timeout=10)
+    finally:
+        release.set()
+        if not pending.done():
+            pending.cancel()
+        await asyncio.gather(pending, return_exceptions=True)
+    source = await recovery_db.items.find_one({"_id": "MLA1"})
+    assert source["title"] == "Newer event"
+    rows = await recovery_db.sheets_item_formula_rows.find(
+        {"seller_id": "82453304", "item_id": "MLA1"}
+    ).to_list(length=10)
+    assert len(rows) == 1
+    assert rows[0]["sku"] == "SKU-1"
+    assert rows[0]["current"]["title"] == "Newer event"
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("retry_failure", [False, True])
 @pytest.mark.parametrize("sku_level", ["item", "variation"])
 async def test_item_events_project_no_sku_and_identity_transitions_without_enrichment(

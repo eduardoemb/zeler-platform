@@ -2429,3 +2429,29 @@ retain their contract; other product deployments remain out of scope.
 - Protected stock-time suites separately passed **8 tests in 3.39s**. Final
   read-only runtime inspection confirms both `898c916` Sheets image digests
   remain healthy. Neither pending no-SKU source change has been deployed yet.
+
+## Late no-SKU event reconciles the persisted winner
+
+- A controlled real-Mongo interleaving reproduced two formula rows when an old
+  no-SKU event paused immediately before its row write and a newer parent-SKU or
+  variation-SKU event completed first. The canonical item was already current;
+  the delayed projection alone introduced the duplicate and old title.
+- The event-to-backfill path now compares the scoped source before and after
+  projection and repeats from Mongo when it changed. Three unsuccessful passes
+  raise a retryable failure rather than acknowledging an unsettled projection.
+  This adds no collection, lock, API request or formula-side waiting.
+- Both original failing interleavings now preserve one current row. A separate
+  real-Mongo test verifies the three-pass contention limit and preservation of
+  the latest source. The focused no-SKU/transition suite passed **17 tests in
+  5.02s**; protected stock-time suites passed **8 tests in 2.29s**.
+- This proves the delayed no-SKU backfill path, not every interleaving of the
+  independent normal-SKU writer or standalone operator backfill. Check those
+  boundaries before claiming complete concurrent identity consistency.
+- Rollback removes only the bounded reconciliation loop and its three regression
+  cases. It does not undo prior no-SKU support or modify normalized source data.
+  No production mutation or deployment occurred. Read-only inspection confirms
+  the existing `898c916` API/worker digests remain healthy; both Sheets images
+  still require a verified Cloud Build release of the pending source changes,
+  followed by runtime health and current pilot row-identity/coverage checks.
+- Full root regression passed **3,826 tests, 9 skipped, 356 warnings in 91.12s**.
+  Ruff check/format, mypy (502 files), and whitespace validation also pass.
