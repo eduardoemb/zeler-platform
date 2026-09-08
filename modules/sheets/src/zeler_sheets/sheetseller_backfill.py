@@ -1070,6 +1070,8 @@ async def run_item_detail_enrichment(
                     )
             elif "current_promotion" in existing_by_id[item_id]:
                 detail["current_promotion"] = existing_by_id[item_id]["current_promotion"]
+            listing_fee_response: dict[str, Any] | None = None
+            listing_fee_context = None
             if site_id is not None:
                 listing_fee_context = build_listing_fee_projection_context(
                     site_id=site_id, detail=detail
@@ -1208,16 +1210,25 @@ async def run_item_detail_enrichment(
                     detail["listing_price_fixed_fee"] = None
                     clear_listing_fixed_fee = "listing_price_fixed_fee" in existing_by_id[item_id]
                 else:
-                    listing_fixed_fee_requested += 1
-                    (
-                        fixed_fee_projection,
-                        fixed_fee_failure,
-                    ) = await _resolve_listing_price_fixed_fee_projection(
-                        gateway=gateway,
-                        seller_id=seller_id,
-                        params=listing_params,
-                        synced_at=synced_at,
-                    )
+                    # Both projections consume the same quote only when every
+                    # input matches. Keep reuse local to this item/observation;
+                    # failed requests and different bases still query normally.
+                    if listing_fee_response is not None and listing_fee_context == listing_params:
+                        fixed_fee_projection = project_listing_price_fixed_fee_projection(
+                            listing_fee_response, params=listing_params, synced_at=synced_at
+                        )
+                        fixed_fee_failure = None
+                    else:
+                        listing_fixed_fee_requested += 1
+                        (
+                            fixed_fee_projection,
+                            fixed_fee_failure,
+                        ) = await _resolve_listing_price_fixed_fee_projection(
+                            gateway=gateway,
+                            seller_id=seller_id,
+                            params=listing_params,
+                            synced_at=synced_at,
+                        )
                     existing_fixed_fee = existing_item.get("listing_price_fixed_fee")
                     if fixed_fee_projection is None:
                         if fixed_fee_failure is not None:

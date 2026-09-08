@@ -3671,3 +3671,58 @@ retain their contract; other product deployments remain out of scope.
   bootstrap still needs a current verified image before a future invocation of
   corrected backfill. All-52 authenticated HTTP, real Sheets/app, inventory
   freshness and minimum hardening remain required before closing the goal.
+
+## Inventory timing: reuse identical listing quotes, not more concurrency
+
+Read-only runtime profiling on worker `69d66ad` separated acquisition from
+stored projection preparation for two 20-item samples (inventory offsets 0 and
+940). Both used the worker's four concurrent five-item sub-batches, the normal
+Sheets gateway, and `dry_run=True`; there were zero running recovery jobs before
+and after. No business data was written. Operator script:
+`/tmp/zeler-inventory-profile-vPWWns.py`; local artifacts:
+`/tmp/zeler-inventory-profile.vPWWns/`.
+
+| Measurement | Offset 0 | Offset 940 |
+| --- | ---: | ---: |
+| Acquisition dry run | 3.7336s | 7.9203s |
+| Stored projection dry run | 0.1214s | 0.3247s |
+| Historical SKU loader | 0.0092s, 6 groups | 0.0094s, 6 groups |
+| Status loader | 0.0329s, 1,529 groups | 0.0330s, 1,529 groups |
+| Listing-price requests | 40 | 40 |
+| Summed listing-price request time | 6.7520s | 8.1160s |
+| Variation detail requests | 5 | 30 |
+
+Both samples validated 20 items with zero stale-item failures or gateway errors.
+Summed request times overlap across concurrent tasks; they are not wall-clock
+savings. Dry runs exclude writes, and projection reads the existing stored
+snapshot, not the newly fetched in-memory detail. This is not an end-to-end
+inventory benchmark or p95. It makes seller-wide loader optimization a lower
+priority than redundant upstream work for these samples.
+
+The general listing-fee and fixed-fee projections each request `listing_prices`.
+They use distinct consumers and must both remain, but can use one successful
+response when their complete parameter dictionaries are equal. The work unit
+reuses that response only within the same item observation. Different bases or
+a failed first request retain the independent lookup. No cross-item cache,
+freshness extension, new concurrency, queue or persistence model is introduced.
+The fixed-fee requested counter now counts only actual dedicated requests;
+its enriched counter still counts successfully projected values.
+
+The new identical-quote test initially failed on the extra request; controls for
+different bases and first-request failure already passed. After implementation,
+`uv run pytest modules/sheets/tests/test_sheetseller_backfill.py --tb=short`:
+**154 passed in 0.31s**. Protected Mongo acquisition/execution/rollback suite:
+**8 passed in 2.84s**. Ruff check/format, mypy (505 files) and diff check pass.
+Full normal-allocator root suite with local replica-set Mongo:
+**3,937 passed, 9 skipped, 356 warnings in 108.17s**. Eight root skips are the
+protected Mongo cases separately passed above; the remaining skip needs Caddy
+keys. A verified worker release and post-change runtime measurement are pending.
+The rollback boundary is the per-item listing response/context initialization,
+shared-response branch, and its regression test in the two backfill files.
+Reverting must not delete normalized quotes already legitimately persisted.
+
+The affected active service is **Sheets worker**; build a verified image and
+repeat the same bounded profile before a justified full-inventory validation.
+Bootstrap also imports the backfill and needs the change in its image before
+its next run; no bootstrap invocation is required for this work unit. The API
+does not execute enrichment and needs no deployment for this optimization.

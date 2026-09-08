@@ -3926,6 +3926,66 @@ async def test_item_detail_enrichment_dry_run_accepts_existing_fixed_fee_naive_s
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("scenario", ["shared", "different_basis", "first_request_failed"])
+async def test_item_enrichment_reuses_only_successful_identical_listing_quote(
+    scenario: str,
+) -> None:
+    db = FakeDb([_item_doc("MLA1")])
+    db["meli_accounts"].documents["account"] = {
+        "seller_id": "82453304",
+        "site_id": "MLA",
+    }
+    detail = _item_detail("MLA1")
+    detail.update(
+        currency_id="ARS",
+        listing_type_id="gold_special",
+        shipping={"mode": "me2", "logistic_type": "fulfillment", "free_shipping": False},
+    )
+    if scenario == "different_basis":
+        detail["shipping_modes"] = ["me2"]
+    context = build_listing_fee_projection_context(site_id="MLA", detail=detail)
+    assert context is not None
+    general_path = listing_fee_projection_path(context)
+    fixed_path = (
+        "/sites/MLA/listing_prices?price=123.45&category_id=MLA-CAT&currency_id=ARS"
+        "&listing_type_id=gold_special&shipping_mode=me2&logistic_type=fulfillment"
+    )
+    quote = {
+        "sale_fee_amount": "15.99",
+        "currency_id": "ARS",
+        "sale_fee_details": {"percentage_fee": "12", "fixed_fee": "5.25"},
+    }
+    gateway = FakeItemGateway(
+        {
+            "/items?ids=MLA1": [{"code": 200, "body": detail}],
+            general_path: RuntimeError("unavailable")
+            if scenario == "first_request_failed"
+            else quote,
+            fixed_path: quote,
+        }
+    )
+    summary = await run_item_detail_enrichment(
+        db=db,
+        gateway=gateway,
+        seller_id="82453304",
+        dry_run=False,
+        listing_fixed_fee_enabled=True,
+    )
+    expected = [("82453304", "/items?ids=MLA1"), ("82453304", general_path)]
+    if scenario != "shared":
+        expected.append(("82453304", fixed_path))
+    assert gateway.calls == expected
+    persisted = db["items"].documents["MLA1"]
+    assert persisted["listing_price_fixed_fee"]["fixed_fee"].to_decimal() == Decimal("5.25")
+    assert summary.listing_fixed_fee_requested == int(scenario != "shared")
+    assert summary.listing_fixed_fee_enriched == 1
+    if scenario != "first_request_failed":
+        assert persisted["listing_fee_projection"]["sale_fee_amount"].to_decimal() == Decimal(
+            "15.99"
+        )
+
+
+@pytest.mark.asyncio
 async def test_item_detail_enrichment_fetches_gated_listing_fixed_fee_projection() -> None:
     canonical = _item_doc("MLA1", attributes=[{"id": "SELLER_SKU", "value_name": "sku-1"}])
     db = FakeDb([canonical])
