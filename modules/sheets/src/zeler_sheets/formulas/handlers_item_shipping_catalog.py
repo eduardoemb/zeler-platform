@@ -393,30 +393,57 @@ class ItemShippingCatalogFormulaHandlers:
     async def sheetseller_catalogo_buybox(
         self, context: FormulaExecutionContext
     ) -> FormulaExecutionResult:
-        await self._repository.require_read_model_productive(
+        (
+            snapshots,
+            missing,
+            missing_items,
+            current,
+        ) = await self._repository.find_recent_catalog_buybox_inventory(
             seller_id=context.seller_id,
-            read_model=CATALOG_BUYBOX_SNAPSHOTS_READ_MODEL,
-            date_to=_as_utc_datetime(self._now_fn()),
             formula=context.contract.name,
-        )
-        snapshots = await self._repository.find_catalog_buybox_snapshots(
-            seller_id=context.seller_id,
-            limit=None,
+            now=_as_utc_datetime(self._now_fn()),
         )
         values: list[list[Any]] = _header_row(
             context.args.get("encabezados"), list(CATALOGOBUYBOX_VISIBLE_HEADERS)
         )
-        values.extend(_catalogo_buybox_row(snapshot) for snapshot in snapshots)
+        by_id = {snapshot["item_id"]: snapshot for snapshot in snapshots}
+        recoverable = set(missing)
+        for identity in sorted(set(by_id) | set(missing)):
+            row = (
+                _catalogo_buybox_row(by_id[identity])
+                if identity in by_id
+                else ["DATA_UNAVAILABLE"] * 9
+            )
+            if "DATA_UNAVAILABLE" in row:
+                recoverable.add(identity)
+            values.append(row)
+        inventory_gap = not current or bool(missing_items)
+        if inventory_gap:
+            values.append(["DATA_UNAVAILABLE"] * 9)
+        reason = "inventory_incomplete" if inventory_gap else "buybox_missing_expired_or_incomplete"
+        recovery = None
+        if inventory_gap or recoverable:
+            recovery = FormulaDataUnavailableError(
+                context.contract.name,
+                "Buybox coverage is incomplete.",
+                read_model=ITEM_FORMULA_ROWS_READ_MODEL
+                if inventory_gap
+                else CATALOG_BUYBOX_SNAPSHOTS_READ_MODEL,
+                item_ids=(missing_items if current else ())
+                if inventory_gap
+                else tuple(sorted(recoverable)),
+            )
         return FormulaExecutionResult(
             values=values,
+            recovery=recovery,
             meta={
-                "rows_count": len(snapshots),
+                "rows_count": len(by_id) + len(missing) + int(inventory_gap),
                 "columns": "catalog_buybox_current",
-                **(
-                    {"unavailable_reason": "catalog_competition_shared_count_missing_or_invalid"}
-                    if any(catalog_shared_users(row) == "DATA_UNAVAILABLE" for row in snapshots)
-                    else {}
-                ),
+                "inventory_enumeration_current": current,
+                "unavailable_items": len(missing_items),
+                "unavailable_buybox_items": len(recoverable),
+                "buybox_complete": not inventory_gap and not recoverable,
+                **({"unavailable_reason": reason} if recovery else {}),
             },
         )
 
@@ -560,11 +587,17 @@ def _catalogo_buybox_row(snapshot: Mapping[str, Any]) -> list[Any]:
         _catalog_value(snapshot, "item_id"),
         _catalog_value(snapshot, "catalog_product_id"),
         _sheet_optional_number(snapshot.get("available_quantity")),
-        _catalog_value(snapshot, "buybox_status"),
-        _sheet_optional_number(snapshot.get("price")),
+        _catalog_value(snapshot, "buybox_status")
+        if snapshot.get("buybox_status")
+        else "DATA_UNAVAILABLE",
+        _sheet_optional_number(snapshot.get("price"))
+        if _optional_non_negative_decimal(snapshot.get("price")) is not None
+        else "DATA_UNAVAILABLE",
         _sheet_optional_number(snapshot.get("winning_price")),
         catalog_shared_users(snapshot),
-        _catalog_value(snapshot, "only_competitor"),
+        snapshot["only_competitor"]
+        if isinstance(snapshot.get("only_competitor"), bool)
+        else "DATA_UNAVAILABLE",
     ]
 
 

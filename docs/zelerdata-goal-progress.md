@@ -21,6 +21,44 @@ Keep unrelated `.codegraph/` files untouched in both repositories.
 Pilot: seller `82453304`; initial historical window 2026-08-08 through
 2026-09-06, plus current snapshots. Other products are out of scope.
 
+## CATALOGOBUYBOX reads current owned membership and requests missing IDs — 2026-09-08
+
+CATALOGOBUYBOX no longer reads all stored snapshots behind a global freshness
+marker. It derives membership from current source-verified item inventory,
+includes only explicit catalog participants, and rejects mismatched association,
+title/stock, source identity, future/expired snapshots and snapshots older than
+the canonical item observation. Inventory/source gaps request item recovery first;
+otherwise missing or incomplete competition rows request explicit buybox IDs.
+Valid rows remain visible alongside unavailable rows, preserving nine columns.
+Unknown sole-competitor values are DATA_UNAVAILABLE, not a complete optional NA;
+partial rows keep their other values and metadata explains incomplete coverage.
+
+The first real local HTTP-to-Mongo test failed because buybox still required the
+global marker. Five final cases now prove HTTP admission, worker persistence,
+two reads without more upstream calls, then rejection of changed associations,
+expired/future snapshots, another seller's snapshot, and partial purpose fields.
+They passed in 2.21s. Existing fake-handler tests were updated to seed verified
+inventory rather than certify arbitrary stored rows; all 43 passed in 0.33s.
+Protected Mongo tests: eight passed in 2.46s. Ruff check/format, mypy (506 files),
+schema drift and diff checks pass. Full regression passed 4,084 tests, nine
+expected skips and 356 warnings in 130.37s; eight protected skips ran separately.
+
+Before deployment, complete actual sole-competitor acquisition: the HTTP fixture
+supplies that field, whereas the live competition response does not establish it.
+The [official product-offer listing](https://developers.mercadolibre.com.mx/es_ar/envio/competencia-en-catalogo)
+provides paging totals and item identities. One read-only approved-runtime probe
+using Sheets credentials returned HTTP 200, total=1, offset=0, limit=100, one row,
+and the owned publication itself. Artifact: `/tmp/zeler-buybox-shared.8pPRC4/competition.py`.
+This validates access/one response shape, not all paging/absence cases, and wrote
+no business data or printed identifiers. Next acquire this purpose field safely,
+then extend source-bound recovery to the other CATALOGO consumer as required.
+
+No images were built/deployed. Runtime remains API `1131554`, worker `449a382`;
+these local changes and the preceding acquisition unit require verified API and
+worker images before live acceptance. Rollback removes the new repository read,
+buybox handler selection/recovery changes and associated fixtures/tests, retaining
+stored data. The full 52-formula and real-user-surface goal remains open.
+
 ## Bounded owned-publication buybox acquisition implemented locally — 2026-09-08
 
 The recovery worker now supports explicit buybox publication IDs through the

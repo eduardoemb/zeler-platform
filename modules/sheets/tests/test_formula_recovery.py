@@ -15,6 +15,143 @@ from zeler_sheets.formulas.recovery import FormulaRecoveryQueue, RecoveryRequest
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("mutation", ["association", "expired", "future", "foreign", "partial"])
+async def test_buybox_http_recovers_current_membership_then_reuses_mongo(
+    recovery_db: Any, mutation: str
+) -> None:
+    import httpx
+
+    from zeler_sheets.app import build_app
+    from zeler_sheets.extension_tokens import ExtensionTokenService, SellerScope
+    from zeler_sheets.formulas.recovery import ItemInventoryRecoveryRequest
+    from zeler_sheets.formulas.recovery_worker import FormulaRecoveryWorker
+    from zeler_sheets.sheetseller_backfill import run_sheetseller_backfill
+
+    now = datetime.now(UTC)
+    seller = "82453304"
+    await recovery_db.items.insert_many(
+        [
+            {
+                "_id": identity,
+                "seller_id": seller,
+                "catalog_listing": participating,
+                "catalog_product_id": "MLA9",
+                "title": "Publication",
+                "price": 120,
+                "available_quantity": 0,
+                "status": "active",
+                "attributes": [],
+                "variations": [],
+                "last_meli_sync_at": now,
+            }
+            for identity, participating in [("MLA1", True), ("MLA2", False)]
+        ]
+    )
+    await run_sheetseller_backfill(db=recovery_db, seller_id=seller, dry_run=False)
+    app = build_app(
+        mongo_db=recovery_db,
+        formula_recovery_enabled=True,
+        formula_recovery_sellers=frozenset({seller}),
+    )
+    app.state.extension_token_pepper = uuid4().hex
+    queue = app.state.formula_recovery_queue
+    await queue.ensure_indexes()
+    await queue.enqueue(ItemInventoryRecoveryRequest(seller))
+    job = await queue.claim()
+    assert await queue.checkpoint_inventory(job, item_ids=["MLA1", "MLA2"], offset=0)
+    job = await queue.claim()
+    assert await queue.checkpoint_inventory(job, item_ids=["MLA1", "MLA2"], offset=2)
+    token = await ExtensionTokenService(
+        db=recovery_db, token_pepper=app.state.extension_token_pepper
+    ).create_token(
+        owner_user_id="test-user",
+        label="Buybox bridge",
+        seller_scopes=[SellerScope(seller_id=seller, nickname="PILOT")],
+    )
+    calls = []
+
+    class Gateway:
+        async def fetch_resource(self, *, seller_id: str, path: str) -> Any:
+            assert seller_id == seller and path == "/items/MLA1/price_to_win?version=v2"
+            calls.append(path)
+            return {
+                "item_id": "MLA1",
+                "catalog_product_id": "MLA9",
+                "status": "winning",
+                "current_price": 120,
+                "winner": {"price": 119},
+                "competitors_sharing_first_place": 0,
+                "only_competitor": False,
+            }
+
+    payload = {
+        "formula": "ZELERDATA_CATALOGOBUYBOX",
+        "cuenta": "PILOT",
+        "args": {"encabezados": False},
+    }
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        headers = {"Authorization": f"Bearer {token.token_once}"}
+        first = await client.post("/sheets/formulas:execute", headers=headers, json=payload)
+        assert first.status_code == 200
+        assert first.json()["meta"]["recovery_requested"] is True
+        assert first.json()["values"] == [["DATA_UNAVAILABLE"] * 9]
+        assert calls == []
+        assert await FormulaRecoveryWorker(
+            db=recovery_db, queue=queue, gateway=Gateway()
+        ).process_one()
+        for _ in range(2):
+            ready = await client.post("/sheets/formulas:execute", headers=headers, json=payload)
+            assert ready.json()["values"] == [
+                ["Publication", "MLA1", "MLA9", 0, "winning", 120, 119, 0, False]
+            ]
+            assert ready.json()["meta"]["buybox_complete"] is True
+            assert "recovery_requested" not in ready.json()["meta"]
+        assert len(calls) == 1
+        if mutation == "association":
+            await recovery_db.items.update_one(
+                {"_id": "MLA1"}, {"$set": {"catalog_product_id": "MLA8"}}
+            )
+        else:
+            changed_fields = {
+                "expired": {"snapshot_at": now - timedelta(minutes=16)},
+                "future": {"snapshot_at": now + timedelta(hours=1)},
+                "foreign": {"seller_id": "42"},
+                "partial": {"only_competitor": None},
+            }[mutation]
+            await recovery_db.sheets_catalog_buybox_snapshots.update_one(
+                {"_id": f"{seller}:MLA1"}, {"$set": changed_fields}
+            )
+        changed = await client.post("/sheets/formulas:execute", headers=headers, json=payload)
+        assert changed.json()["meta"]["buybox_complete"] is False
+        assert changed.json()["meta"]["unavailable_reason"] == (
+            "inventory_incomplete"
+            if mutation == "association"
+            else "buybox_missing_expired_or_incomplete"
+        )
+        if mutation == "partial":
+            assert changed.json()["values"][0] == [
+                "Publication",
+                "MLA1",
+                "MLA9",
+                0,
+                "winning",
+                120,
+                119,
+                0,
+                "DATA_UNAVAILABLE",
+            ]
+        assert len(calls) == 1
+    assert (
+        await recovery_db.sheets_read_model_freshness.count_documents(
+            {"read_model": "catalog_buybox_snapshots"}
+        )
+        == 0
+    )
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "state", ["valid", "foreign", "not_catalog", "expired", "changed", "wrong_response", "newer"]
 )

@@ -101,6 +101,8 @@ async def test_catalog_outputs_include_every_stored_snapshot(formula: str, model
     }
     if model == CATALOG_PRODUCT_SNAPSHOTS_READ_MODEL:
         _seed_catalog_inventory(db)
+    else:
+        _seed_buybox_inventory(db)
     result = await _dispatcher(db).execute(_context(formula, {"encabezados": False}))
     assert result.meta["rows_count"] == 1001
     assert len(result.values) == 1001
@@ -299,6 +301,7 @@ async def test_item_catalog_handlers_use_local_rows_and_catalog_snapshots() -> N
     catalogo_completo = await dispatcher.execute(
         _context("ZELERDATA_CATALOGO_COMPLETO", {"encabezados": "si"})
     )
+    _seed_buybox_inventory(db)
     catalogo_buybox = await dispatcher.execute(
         _context("ZELERDATA_CATALOGOBUYBOX", {"encabezados": "si"})
     )
@@ -340,7 +343,7 @@ async def test_item_catalog_handlers_use_local_rows_and_catalog_snapshots() -> N
             "# DE GANADORES",
             "UNICO COMPETIDOR",
         ],
-        ["Super item", "MLA1", "CAT-1", 7, "winning", 120, 118, 2, "No"],
+        ["Super item", "MLA1", "MLM1", 7, "winning", 120, 118, 2, False],
     ]
     assert catalogos_sin_vincular.values == [
         ["ID PUBLICACION", "TITULO"],
@@ -369,6 +372,7 @@ async def test_catalogo_buybox_uses_source_shared_count(shared: Any, expected: A
             "only_competitor": "No",
         }
     }
+    _seed_buybox_inventory(db)
     dispatcher = _dispatcher(db)
 
     result = await dispatcher.execute(_context("ZELERDATA_CATALOGOBUYBOX", {"encabezados": "si"}))
@@ -385,7 +389,7 @@ async def test_catalogo_buybox_uses_source_shared_count(shared: Any, expected: A
             "# DE GANADORES",
             "UNICO COMPETIDOR",
         ],
-        ["Schema-valid buybox item", "MLA1", "CAT-1", 9, "sharing", 119, 118, expected, "No"],
+        ["Schema-valid buybox item", "MLA1", "MLM1", 9, "sharing", 119, 118, expected, False],
     ]
 
 
@@ -409,23 +413,22 @@ async def test_catalogo_buybox_does_not_infer_shared_count_from_legacy_totals() 
             "only_competitor": "No",
         }
     }
+    _seed_buybox_inventory(db)
     dispatcher = _dispatcher(db)
 
     result = await dispatcher.execute(_context("ZELERDATA_CATALOGOBUYBOX", {"encabezados": "si"}))
 
-    assert (
-        result.meta["unavailable_reason"] == "catalog_competition_shared_count_missing_or_invalid"
-    )
+    assert result.meta["unavailable_reason"] == "buybox_missing_expired_or_incomplete"
     assert result.values[1] == [
         "Legacy buybox item",
         "MLA1",
-        "CAT-1",
+        "MLM1",
         7,
         "winning",
         120,
         118,
         "DATA_UNAVAILABLE",
-        "No",
+        False,
     ]
 
 
@@ -664,7 +667,7 @@ async def test_item_shipping_catalog_formulas_require_fresh_read_model_marker(
     with pytest.raises(FormulaDataUnavailableError, match=formula) as error:
         await dispatcher.execute(_context(formula, args))
 
-    if read_model == CATALOG_PRODUCT_SNAPSHOTS_READ_MODEL:
+    if read_model in {CATALOG_PRODUCT_SNAPSHOTS_READ_MODEL, CATALOG_BUYBOX_SNAPSHOTS_READ_MODEL}:
         assert error.value.read_model == ITEM_FORMULA_ROWS_READ_MODEL
         assert "inventory" in str(error.value)
     else:
@@ -696,7 +699,7 @@ async def test_item_shipping_catalog_formulas_reject_stale_read_model_marker(
     with pytest.raises(FormulaDataUnavailableError, match=formula) as error:
         await dispatcher.execute(_context(formula, args))
 
-    if read_model == CATALOG_PRODUCT_SNAPSHOTS_READ_MODEL:
+    if read_model in {CATALOG_PRODUCT_SNAPSHOTS_READ_MODEL, CATALOG_BUYBOX_SNAPSHOTS_READ_MODEL}:
         assert error.value.read_model == ITEM_FORMULA_ROWS_READ_MODEL
         assert "inventory" in str(error.value)
     else:
@@ -769,13 +772,67 @@ def _context(formula: str, args: dict[str, Any]) -> FormulaExecutionContext:
         contract=FormulaRegistry.default().find_required(formula),
         cuenta="HOPEMOB",
         seller_id="82453304"
-        if formula in {"ZELERDATA_OBTENER_CATALOGO", "ZELERDATA_CATALOGO_COMPLETO"}
+        if formula
+        in {"ZELERDATA_OBTENER_CATALOGO", "ZELERDATA_CATALOGO_COMPLETO", "ZELERDATA_CATALOGOBUYBOX"}
         else "seller-1",
         seller_nickname="HOPEMOB",
         token_id="token-1",
         args=args,
         request_id="req-1",
     )
+
+
+def _seed_buybox_inventory(db: FakeDb) -> None:
+    from zeler_sheets.formulas.recovery import ItemInventoryRecoveryRequest
+    from zeler_sheets.item_projection import item_source_fingerprint
+
+    seller = "82453304"
+    ids = []
+    for index, snapshot in enumerate(db["sheets_catalog_buybox_snapshots"].documents.values()):
+        identity = snapshot["item_id"]
+        ids.append(identity)
+        snapshot.update(
+            _id=f"{seller}:{identity}",
+            seller_id=seller,
+            catalog_product_id="MLM1",
+            snapshot_at=NOW,
+            source="sheets_backfill",
+        )
+        snapshot.setdefault("title", "Publication")
+        snapshot.setdefault("available_quantity", 0)
+        snapshot["only_competitor"] = False
+        source = {
+            "_id": identity,
+            "seller_id": seller,
+            "catalog_listing": True,
+            "catalog_product_id": "MLM1",
+            "title": snapshot["title"],
+            "available_quantity": snapshot["available_quantity"],
+            "last_meli_sync_at": NOW,
+        }
+        db["items"].documents[f"buybox-{index}"] = source
+        db["sheets_item_formula_rows"].documents[f"buybox-{index}"] = {
+            "_id": f"{seller}:{identity}",
+            "seller_id": seller,
+            "item_id": identity,
+            "current": {"catalog_listing": True},
+            "source_snapshot": {
+                "fingerprint": item_source_fingerprint(source),
+                "observed_at": NOW,
+                "rows_count": 1,
+            },
+        }
+    key = ItemInventoryRecoveryRequest(seller).key
+    db["sheets_formula_recovery_jobs"].documents[key] = {
+        "_id": key,
+        "seller_id": seller,
+        "read_model": ITEM_FORMULA_ROWS_READ_MODEL,
+        "inventory_scope": True,
+        "state": "completed",
+        "inventory_ids": sorted(ids),
+        "inventory_observed_at": NOW,
+        "inventory_offset": len(ids),
+    }
 
 
 def _seed_catalog_inventory(db: FakeDb) -> None:

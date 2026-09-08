@@ -486,6 +486,76 @@ class FormulaReadModelRepository:
         missing = tuple(sorted(product_ids - {row["catalog_product_id"] for row in ready}))
         return ready, missing, tuple(sorted(invalid_items)), current, tuple(sorted(source_missing))
 
+    async def find_recent_catalog_buybox_inventory(
+        self, *, seller_id: str, formula: str, now: datetime
+    ) -> tuple[list[dict[str, Any]], tuple[str, ...], tuple[str, ...], bool]:
+        rows, _, missing_items, current = await self.find_recent_item_inventory(
+            seller_id=seller_id, formula=formula, now=now
+        )
+        trusted = {str(row["item_id"]): row["source_snapshot"] for row in rows}
+        sources = (
+            await self._db["items"]
+            .find({"seller_id": seller_id, "_id": {"$in": sorted(trusted)}})
+            .to_list(length=10001)
+            if trusted
+            else []
+        )
+        invalid = set(missing_items) | (set(trusted) - {str(row["_id"]) for row in sources})
+        participating = {}
+        for source in sources:
+            identity = str(source["_id"])
+            if item_source_fingerprint(source) != trusted[identity][
+                "fingerprint"
+            ] or _safe_utc_datetime(source.get("last_meli_sync_at")) != _safe_utc_datetime(
+                trusted[identity]["observed_at"]
+            ):
+                invalid.add(identity)
+                continue
+            if source.get("catalog_listing") is False:
+                continue
+            product = source.get("catalog_product_id")
+            if (
+                source.get("catalog_listing") is not True
+                or not isinstance(product, str)
+                or re.fullmatch(r"ML[A-Z][0-9]+", product) is None
+                or not isinstance(source.get("title"), str)
+                or not source["title"].strip()
+                or not isinstance(source.get("available_quantity"), int)
+                or isinstance(source.get("available_quantity"), bool)
+                or source["available_quantity"] < 0
+            ):
+                invalid.add(identity)
+                continue
+            participating[identity] = source
+        snapshots = (
+            await self._catalog_buybox_snapshots.find(
+                {"seller_id": seller_id, "item_id": {"$in": sorted(participating)}}
+            ).to_list(length=None)
+            if participating
+            else []
+        )
+        ready = []
+        for snapshot in snapshots:
+            identity = snapshot.get("item_id")
+            source = participating.get(identity)
+            observed = _safe_utc_datetime(snapshot.get("snapshot_at"))
+            synced = _safe_utc_datetime(source.get("last_meli_sync_at")) if source else None
+            if (
+                source
+                and observed is not None
+                and synced is not None
+                and now - timedelta(minutes=15) < observed <= now
+                and synced <= observed
+                and snapshot.get("_id") == f"{seller_id}:{identity}"
+                and snapshot.get("source") in {"sheets_backfill", "historical_meli_backfill"}
+                and snapshot.get("catalog_product_id") == source["catalog_product_id"]
+                and snapshot.get("title") == source["title"].strip()
+                and snapshot.get("available_quantity") == source.get("available_quantity")
+            ):
+                ready.append(snapshot)
+        missing = set(participating) - {row["item_id"] for row in ready}
+        return ready, tuple(sorted(missing)), tuple(sorted(invalid)), current
+
     async def find_catalog_buybox_snapshots(
         self,
         *,
