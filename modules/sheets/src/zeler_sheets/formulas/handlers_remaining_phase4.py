@@ -199,9 +199,19 @@ class RemainingPhase4FormulaHandlers:
             )
             for row in catalog_rows
         )
+        unavailable_shared = sum(row[21] == "DATA_UNAVAILABLE" for row in values[header_rows:])
         return FormulaExecutionResult(
             values=normalize_response_rows(values, header_rows=header_rows),
-            meta={"rows_count": len(catalog_rows), "columns": "legacy_catalog_matrix"},
+            meta={
+                "rows_count": len(catalog_rows),
+                "columns": "legacy_catalog_matrix",
+                "unavailable_shared_users": unavailable_shared,
+                **(
+                    {"unavailable_reason": "catalog_shared_users_not_acquired"}
+                    if unavailable_shared
+                    else {}
+                ),
+            },
         )
 
     async def sheetseller_tiempos_sin_stock(
@@ -411,10 +421,23 @@ def _catalogo_row(
         _sheet_optional_number(_first_value(buybox, "winning_price", "winner_price")),
         _selected_price(current, tipo_precio=tipo_precio),
         _first_value(buybox, "winning_user_id", "winner_user_id", "winner_user"),
-        _sheet_optional_number(_first_value(buybox, "competitor_count", "shared_users_count")),
+        _catalog_shared_users(buybox),
         _sheet_optional_number(_first_value(buybox, "price_to_win", "price_to_win_amount")),
         _first_value(buybox, "only_competitor", "unico_competidor"),
     ]
+
+
+def _catalog_shared_users(snapshot: Mapping[str, Any] | None) -> Any:
+    if snapshot is None or "competitors_sharing_first_place" not in snapshot:
+        return "DATA_UNAVAILABLE"
+    count = snapshot["competitors_sharing_first_place"]
+    if count is None:
+        return NA_VALUE
+    return (
+        int(count)
+        if isinstance(count, int) and not isinstance(count, bool) and count >= 0
+        else "DATA_UNAVAILABLE"
+    )
 
 
 def _stockout_row(snapshot: Mapping[str, Any], *, now: datetime, tipo_precio: Any) -> list[Any]:

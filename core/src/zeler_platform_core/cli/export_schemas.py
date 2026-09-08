@@ -555,6 +555,10 @@ ENTITY_SCHEMAS: dict[str, dict[str, Any]] = {
             "winning_price": NULLABLE_MONEY,
             "winning_user_id": {"bsonType": ["string", "long", "int", "null"]},
             "competitor_count": {"bsonType": ["int", "long", "null"]},
+            "competitors_sharing_first_place": {
+                "bsonType": ["int", "long", "null"],
+                "minimum": 0,
+            },
             "price_to_win": NULLABLE_MONEY,
             "only_competitor": {"bsonType": ["string", "bool", "null"]},
             "snapshot_at": DATE,

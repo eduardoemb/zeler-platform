@@ -115,7 +115,7 @@
         {"name": "PRECIO GANADOR CATALOGO", "source": "sheets_catalog_buybox_snapshots.winning_price", "status": "mvp"},
         {"name": "MI PRECIO ACTUAL CATALOGO", "source": "sheets_item_formula_rows.current.base_price | price", "status": "mvp"},
         {"name": "USUARIO GANADOR CATALOGO", "source": "sheets_catalog_buybox_snapshots.winning_user_id", "status": "mvp"},
-        {"name": "COMPARTIENDO CATALOGO CON USUARIOS", "source": "sheets_catalog_buybox_snapshots.competitor_count", "status": "mvp"},
+        {"name": "COMPARTIENDO CATALOGO CON USUARIOS", "source": "sheets_catalog_buybox_snapshots.competitors_sharing_first_place", "status": "mvp"},
         {"name": "PRICE TO WIN", "source": "sheets_catalog_buybox_snapshots.price_to_win", "status": "mvp"},
         {"name": "UNICO COMPETIDOR", "source": "sheets_catalog_buybox_snapshots.only_competitor", "status": "mvp"}
       ]

@@ -461,6 +461,10 @@ def test_catalog_snapshot_schemas_support_formula_handler_fields() -> None:
         "bsonType": ["decimal", "double", "int", "long", "null"]
     }
     assert buybox_schema["properties"]["competitor_count"] == {"bsonType": ["int", "long", "null"]}
+    assert buybox_schema["properties"]["competitors_sharing_first_place"] == {
+        "bsonType": ["int", "long", "null"],
+        "minimum": 0,
+    }
     assert "winner_count" not in buybox_schema["properties"]
 
 

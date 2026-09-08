@@ -35,6 +35,14 @@
           "null"
         ]
       },
+      "competitors_sharing_first_place": {
+        "bsonType": [
+          "int",
+          "long",
+          "null"
+        ],
+        "minimum": 0
+      },
       "item_id": {
         "bsonType": "string"
       },

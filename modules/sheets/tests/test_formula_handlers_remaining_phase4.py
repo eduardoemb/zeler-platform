@@ -7,6 +7,7 @@ from decimal import Decimal
 from typing import Any
 
 import pytest
+from bson.int64 import Int64
 
 from zeler_sheets.formulas.dispatcher import (
     FormulaDataUnavailableError,
@@ -159,6 +160,28 @@ async def test_catalog_sales_include_orders_beyond_the_old_5000_row_cap() -> Non
     }
     result = await _dispatcher(db).execute(_context("ZELERDATA_CATALOGO", {"encabezados": False}))
     assert result.values[0][9:15] == [5001] * 6
+    assert result.values[0][21] == "DATA_UNAVAILABLE"
+    assert result.meta["unavailable_shared_users"] == 1
+    assert result.meta["unavailable_reason"] == "catalog_shared_users_not_acquired"
+
+
+@pytest.mark.parametrize(
+    "snapshot,expected",
+    [
+        ({"competitor_count": 99}, "DATA_UNAVAILABLE"),
+        ({"competitors_sharing_first_place": 0, "competitor_count": 99}, 0),
+        ({"competitors_sharing_first_place": Int64(3)}, 3),
+        ({"competitors_sharing_first_place": None}, "NA"),
+        ({"competitors_sharing_first_place": True}, "DATA_UNAVAILABLE"),
+    ],
+)
+def test_catalogo_shared_users_keeps_absence_zero_and_unknown_distinct(
+    snapshot: dict[str, Any], expected: Any
+) -> None:
+    from zeler_sheets.formulas.handlers_remaining_phase4 import _catalogo_row
+
+    row = _catalogo_row({"item_id": "MLA1"}, buybox=snapshot, sales={}, tipo_precio="base")
+    assert row[21] == expected
 
 
 @pytest.mark.asyncio
@@ -186,11 +209,12 @@ async def test_catalogo_uses_local_item_catalog_buybox_and_sales_snapshots(
             "item_id": "MLA1",
             "catalog_product_id": "CAT-1",
             "catalog_url": "https://catalog.example/CAT-1",
-            "buybox_status": "winning",
+            "buybox_status": "sharing_first_place",
             "winning_time_percent": Decimal("75.5"),
             "winning_price": Decimal("95"),
             "winning_user_id": "seller-competitor",
-            "competitor_count": 3,
+            "competitor_count": 99,
+            "competitors_sharing_first_place": 3,
             "price_to_win": Decimal("94"),
             "only_competitor": "No",
         }
@@ -263,7 +287,7 @@ async def test_catalogo_uses_local_item_catalog_buybox_and_sales_snapshots(
             15,
             21,
             "active",
-            "winning",
+            "sharing_first_place",
             75.5,
             95,
             100,
@@ -273,7 +297,11 @@ async def test_catalogo_uses_local_item_catalog_buybox_and_sales_snapshots(
             "No",
         ],
     ]
-    assert result.meta == {"rows_count": 1, "columns": "legacy_catalog_matrix"}
+    assert result.meta == {
+        "rows_count": 1,
+        "columns": "legacy_catalog_matrix",
+        "unavailable_shared_users": 0,
+    }
 
 
 @pytest.mark.asyncio

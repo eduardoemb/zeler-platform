@@ -848,6 +848,13 @@ def _catalog_buybox_snapshot(
         return None
     winner = resource.get("winner")
     winning_price = winner.get("price") if isinstance(winner, dict) else None
+    shared_count = resource.get("competitors_sharing_first_place")
+    shared_field = (
+        {"competitors_sharing_first_place": shared_count}
+        if "competitors_sharing_first_place" in resource
+        and (shared_count is None or (type(shared_count) is int and shared_count >= 0))
+        else {}
+    )
     return {
         "_id": _catalog_buybox_snapshot_id(seller_id, item_id),
         "seller_id": seller_id,
@@ -862,6 +869,7 @@ def _catalog_buybox_snapshot(
         "winning_price": winning_price,
         "price_to_win": resource.get("price_to_win"),
         "competitor_count": _catalog_competitor_count(resource),
+        **shared_field,
         "only_competitor": resource.get("only_competitor"),
         "snapshot_at": datetime.now(UTC),
         "source": "historical_meli_backfill",

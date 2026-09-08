@@ -1578,6 +1578,22 @@ def test_catalog_buybox_takes_item_fields_from_item_detail(quantity: int | None)
     assert snapshot["price"] == 99
 
 
+@pytest.mark.parametrize("shared", [0, 3, None, True, -1, "3"])
+def test_catalog_buybox_preserves_official_shared_count_without_coercion(shared: Any) -> None:
+    snapshot = historical_backfill_module._catalog_buybox_snapshot(
+        {"competitors_sharing_first_place": shared, "competitor_count": 99},
+        seller_id="82453304",
+        source=historical_backfill_module.CatalogSnapshotSource(
+            item_id="MLA1", catalog_product_id="MLA123"
+        ),
+    )
+    assert snapshot is not None
+    if shared is None or (type(shared) is int and shared >= 0):
+        assert snapshot["competitors_sharing_first_place"] == shared
+    else:
+        assert "competitors_sharing_first_place" not in snapshot
+
+
 @pytest.mark.parametrize("content", ["Product description\nSecond line", "", None])
 def test_catalog_product_preserves_official_short_description(content: str | None) -> None:
     snapshot = historical_backfill_module._catalog_product_snapshot(

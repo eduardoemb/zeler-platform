@@ -332,9 +332,12 @@ def test_runtime_recovery_requires_explicit_sellers(value: str | None) -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("quantity", [0, 7, None])
+@pytest.mark.parametrize(
+    "quantity,shared,status",
+    [(0, 0, "winning"), (7, 3, "sharing_first_place"), (None, None, "not_listed")],
+)
 async def test_catalog_buybox_persists_item_fields_with_mongo_validator(
-    recovery_db: Any, quantity: int | None
+    recovery_db: Any, quantity: int | None, shared: int | None, status: str
 ) -> None:
     import json
     from pathlib import Path
@@ -365,7 +368,8 @@ async def test_catalog_buybox_persists_item_fields_with_mongo_validator(
         {
             "item_id": "MLA1",
             "catalog_product_id": None,
-            "status": "not_listed",
+            "status": status,
+            "competitors_sharing_first_place": shared,
             "current_price": None,
             "winner": None,
             "price_to_win": None,
@@ -381,7 +385,9 @@ async def test_catalog_buybox_persists_item_fields_with_mongo_validator(
     assert stored["title"] == "Stored publication"
     assert stored["available_quantity"] == quantity
     assert stored["catalog_product_id"] == "MLA123"
-    assert stored["buybox_status"] == "not_listed"
+    assert stored["buybox_status"] == status
+    assert "competitors_sharing_first_place" in stored
+    assert stored["competitors_sharing_first_place"] == shared
     assert stored["winning_price"] is None
     assert stored["price_to_win"] is None
 

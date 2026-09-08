@@ -21,6 +21,41 @@ Keep unrelated `.codegraph/` files untouched in both repositories.
 Pilot: seller `82453304`; initial historical window 2026-08-08 through
 2026-09-06, plus current snapshots. Other products are out of scope.
 
+## Catalog shared-user count — 2026-09-08 (not deployed)
+
+`CATALOGO` now reads `competitors_sharing_first_place` for its existing shared-user
+column, without substituting total competitors or an undocumented alias. The
+normalizer persists the official field when explicitly supplied as a nonnegative
+integer or null; it leaves missing/malformed values unacquired rather than
+coercing booleans, negative numbers or numeric strings. Mongo's additive optional
+field accepts nonnegative int/long/null, and the reader also handles BSON Int64.
+
+The existing 24-column matrix is unchanged: zero remains zero, an explicit null
+is NA, and absent/invalid data is DATA_UNAVAILABLE. Metadata reports the count
+of affected rows and `catalog_shared_users_not_acquired` when needed, preserving
+the other columns. The source-column fixture now names the actual field.
+This follows the official [catalog competition contract](https://developers.mercadolibre.com.mx/en_us/introduction-services/catalog-competition):
+the shared-first-place measure is not the total number of competitors and can
+be null for nonwinning states. It is not a global count of winners.
+
+TDD exposed nine acquisition/schema/consumer failures initially, plus the
+missing-field/zero/malformed distinctions and a BSON Int64 regression. The final
+focused historical/consumer/schema/recovery suite passed 433 tests in 52.66s,
+including three actual Mongo-validator persistence cases for zero, a positive
+shared count and null. Root regression passed 4,044 tests with nine expected
+skips and 356 warnings in 113.15s; the eight protected replica-set cases passed
+separately in 3.06s. Ruff check/format, mypy (505 files), schema export and diff
+checks passed. The remaining skip is the existing Caddy-key check.
+
+Before deployment, apply the additive buybox validator, then build/verify Sheets
+API and worker images from the intended commit and reacquire real buybox data.
+Do not interrupt the inventory/product recovery currently running on `f4fee30`.
+Rollback can revert the normalizer/reader/fixture change independently, retaining
+the optional validator property so already persisted snapshots remain valid.
+This unit does not fix `CATALOGOBUYBOX` winner-count semantics, other missing
+buybox purpose fields, automatic buybox recovery, current membership, or the
+remaining historical/order freshness gates; those remain required goal work.
+
 ## Catalog detail-client rollout — 2026-09-08
 
 Worker source `f4fee302073693ed5df2f17202ded42b866b30a7` is deployed as
