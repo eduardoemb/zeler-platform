@@ -3080,3 +3080,48 @@ retain their contract; other product deployments remain out of scope.
   dependency or production allocator setting was changed.
 - Final read-only container inspection confirms both `b74b758` digests remain
   healthy with zero restarts. The running worker does not yet include this fix.
+
+## Bounded parallel acquisition keeps recovery writes joined
+
+- Each existing 20-publication recovery claim now acquires at most four disjoint
+  sub-batches of five concurrently. Gateway routing, seller authentication,
+  response/rate-limit handling, claim size, projection checks and observation
+  timestamps remain unchanged. This increases batch-detail calls from one to
+  at most four per claim; it does not create another queue or operator worker.
+- A TaskGroup joins every sub-batch before projection or queue completion.
+  Ordinary failures are returned to the parent and re-raised after all siblings
+  finish, preserving the existing public failure classification. Cancellation
+  drains child tasks before returning, so no late acquisition write outlives
+  the cancelled claim handler. The owned-lease check still gates projection.
+- A failing synchronization test first demonstrated sequential acquisition.
+  The corrected test proves exactly four concurrent sub-batches, disjoint/full
+  20-ID coverage, completion only after all writes, retryable rate-limit handling
+  without premature projection, and cancellation with no outstanding task/write.
+  Existing real-Mongo 21-publication tests exercise the actual acquisition and
+  projection code with simulated upstream responses, including exhausted and
+  retried batches; their assertions now allow concurrent sub-batch ordering.
+- Normal-allocator recovery suite: **221 passed in 40.35s**. Protected integration:
+  **8 passed in 2.94s**. Full-root/static evidence follows below. These tests do
+  not establish live MercadoLibre throughput or all-inventory freshness.
+- Continued read-only observation of the original production job found offset
+  **1,560/1,900** at **1,513.45 seconds** of scan age, still running with 60 IDs
+  conservatively recorded across exhausted batches. Both formulas remained
+  unavailable because the enumeration had expired; marker fingerprints were
+  unchanged. Do not re-admit/restart that job merely to observe it.
+- Rollback removes only this worker-side sub-batching and its tests; canonical
+  writes and queue checkpoint format remain compatible. No deployment occurred.
+  Build one verified Sheets worker image containing this change and `7bb9033`,
+  then verify a new scoped pilot sweep, failure/retry behavior and final read
+  coverage within the original freshness bound. API rebuild is not required
+  for these worker-only execution changes. If the live sweep still outlasts
+  freshness, the goal remains incomplete; do not extend timestamps to pass.
+- Full Sheets suite under the normal allocator: **1,613 passed in 45.36s**.
+  Ruff check/format, mypy (503 files) and whitespace checks pass. The attempted
+  full-root run with `PYTHONMALLOC=malloc` instead exited **139/SIGSEGV** in
+  Publicador's `test_publicador_rabbitmq_check_calls_broker_transport`; malloc
+  is not a reliable workaround, and full-root acceptance for this unit remains
+  unproven. No dependency/interpreter/runtime setting was changed.
+- Read-only GitHub evidence confirms `7bb9033` completed test run `34193427168`
+  and lint run `34193427253` successfully. Those belong to the preceding variant
+  fix, not this pending change, and the workflow does not explicitly provision
+  Mongo; they do not replace the locally verified Mongo integration cases.

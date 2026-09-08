@@ -40,6 +40,7 @@ from zeler_sheets.formulas.recovery import (
     ShipmentIdsRecoveryRequest,
 )
 from zeler_sheets.sheetseller_backfill import (
+    ItemDetailEnrichmentSummary,
     _discover_current_item_ids,
     run_item_detail_enrichment,
     run_sheetseller_backfill,
@@ -140,15 +141,34 @@ class FormulaRecoveryWorker:
         """Acquire and project one batch; return whether recovery remains incomplete."""
         if await self.queue.collection.find_one(self.queue._owned(job, self.queue.now())) is None:
             raise ValueError("item recovery lease lost before acquisition")
-        acquired = await run_item_detail_enrichment(
-            db=self.db,
-            gateway=self.detail_gateway,
-            seller_id=requested.seller_id,
-            acquire_item_ids=requested.item_ids,
-            dry_run=False,
-            sale_price_enabled=True,
-            listing_fixed_fee_enabled=True,
-        )
+
+        async def acquire(ids: tuple[str, ...]) -> ItemDetailEnrichmentSummary | Exception:
+            try:
+                return await run_item_detail_enrichment(
+                    db=self.db,
+                    gateway=self.detail_gateway,
+                    seller_id=requested.seller_id,
+                    acquire_item_ids=ids,
+                    dry_run=False,
+                    sale_price_enabled=True,
+                    listing_fixed_fee_enabled=True,
+                )
+            except Exception as exc:  # noqa: BLE001 - preserve classification after joining siblings.
+                return exc
+
+        # At most four independent sub-batches. Join every write before
+        # projecting/finishing, including when the outer lease task is cancelled.
+        async with asyncio.TaskGroup() as group:
+            tasks = [
+                group.create_task(acquire(requested.item_ids[offset : offset + 5]))
+                for offset in range(0, len(requested.item_ids), 5)
+            ]
+        acquired = []
+        for task in tasks:
+            result = task.result()
+            if isinstance(result, Exception):
+                raise result
+            acquired.append(result)
         if await self.queue.collection.find_one(self.queue._owned(job, self.queue.now())) is None:
             raise ValueError("item recovery lease lost before projection")
         stored = (
@@ -169,7 +189,10 @@ class FormulaRecoveryWorker:
             )
         # A selected batch is not an inventory reconciliation. Preserve field
         # availability states and never publish a whole-seller freshness marker.
-        partial = acquired.item_details_stale_unavailable > 0 or stored_ids != requested.item_ids
+        partial = (
+            any(result.item_details_stale_unavailable > 0 for result in acquired)
+            or stored_ids != requested.item_ids
+        )
         if not partial:
             try:
                 _, missing = await FormulaReadModelRepository(

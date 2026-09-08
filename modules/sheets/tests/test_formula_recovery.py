@@ -31,6 +31,100 @@ def test_runtime_recovery_seller_list_is_explicit_and_validated() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("outcome", ["success", "rate_limit", "cancel"])
+async def test_item_recovery_bounds_concurrency_and_joins_all_acquisition_tasks(
+    recovery_db: Any, monkeypatch: pytest.MonkeyPatch, outcome: str
+) -> None:
+    from types import SimpleNamespace
+
+    import httpx
+
+    import zeler_sheets.formulas.recovery_worker as workers
+    from zeler_platform_core.clients.meli_gateway_client import GatewayRateLimitError
+    from zeler_sheets.formulas.recovery import IMPLEMENTED_MODELS, ItemIdsRecoveryRequest
+    from zeler_sheets.sheetseller_backfill import run_sheetseller_backfill
+
+    queue = FormulaRecoveryQueue(recovery_db, enabled_models=IMPLEMENTED_MODELS)
+    ids = tuple(f"MLA{i:03d}" for i in range(20))
+    key = await queue.enqueue(ItemIdsRecoveryRequest("82453304", ids))
+    started = asyncio.Event()
+    release = asyncio.Event()
+    active = 0
+    peak = 0
+    batches: list[tuple[str, ...]] = []
+
+    async def acquire(**kwargs: Any) -> Any:
+        nonlocal active, peak
+        batch = kwargs["acquire_item_ids"]
+        batches.append(batch)
+        active += 1
+        peak = max(peak, active)
+        if active == 4:
+            started.set()
+        try:
+            await release.wait()
+            if outcome == "rate_limit" and ids[0] in batch:
+                raise GatewayRateLimitError(retry_after_seconds=5, response=httpx.Response(429))
+            now = queue.now()
+            await recovery_db.items.insert_many(
+                [
+                    {
+                        "_id": identity,
+                        "seller_id": "82453304",
+                        "price": 100,
+                        "date_created": now,
+                        "last_updated": now,
+                        "last_meli_sync_at": now,
+                    }
+                    for identity in batch
+                ]
+            )
+            return SimpleNamespace(item_details_stale_unavailable=0)
+        finally:
+            await asyncio.sleep(0)
+            active -= 1
+
+    async def project(**kwargs: Any) -> Any:
+        assert active == 0
+        assert outcome == "success"
+        return await run_sheetseller_backfill(**kwargs)
+
+    monkeypatch.setattr(workers, "run_item_detail_enrichment", acquire)
+    monkeypatch.setattr(workers, "run_sheetseller_backfill", project)
+    task = asyncio.create_task(
+        workers.FormulaRecoveryWorker(db=recovery_db, gateway=object(), queue=queue).process_one()
+    )
+    try:
+        await asyncio.wait_for(started.wait(), timeout=2)
+        assert peak == 4 and sorted(len(batch) for batch in batches) == [5, 5, 5, 5]
+        assert sorted(identity for batch in batches for identity in batch) == list(ids)
+        if outcome == "cancel":
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        else:
+            release.set()
+            assert await asyncio.wait_for(task, timeout=5)
+        assert active == 0
+        job = await queue.collection.find_one({"_id": key})
+        if outcome == "success":
+            assert job["state"] == "completed"
+            assert await recovery_db.sheets_item_formula_rows.count_documents({}) == 20
+        elif outcome == "rate_limit":
+            assert job["state"] == "pending"
+            assert job["failure_reason"] == "source_temporarily_unavailable"
+            assert await recovery_db.sheets_item_formula_rows.count_documents({}) == 0
+        else:
+            assert job["state"] == "running"
+            assert await recovery_db.items.count_documents({}) == 0
+    finally:
+        release.set()
+        if not task.done():
+            task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("projection_fault", [None, "missing_receipt", "changed_source"])
 async def test_calculator_recovers_through_real_worker_and_source_bound_projection(
     recovery_db: Any,
@@ -341,7 +435,7 @@ async def test_inventory_recovery_resumes_bounded_batches_without_global_readine
                 batch = parse_qs(urlparse(path).query)["ids"][0].split(",")
                 batches.append(batch)
                 if (failure_mode == "retry_last" and batch == identities[20:] and not failed) or (
-                    failure_mode == "exhaust_first" and batch == identities[:20]
+                    failure_mode == "exhaust_first" and batch[0] in identities[:20]
                 ):
                     failed = True
                     response = httpx.Response(
@@ -473,9 +567,10 @@ async def test_inventory_recovery_resumes_bounded_batches_without_global_readine
     assert job.get("inventory_unavailable_ids", []) == (
         identities[:20] if failure_mode == "exhaust_first" else []
     )
-    assert batches == [identities[:20]] * (3 if failure_mode == "exhaust_first" else 1) + [
-        identities[20:]
-    ] + ([identities[20:]] if failure_mode == "retry_last" else [])
+    expected_batches = [identities[offset : offset + 5] for offset in range(0, 20, 5)] * (
+        3 if failure_mode == "exhaust_first" else 1
+    ) + [identities[20:]] * (2 if failure_mode == "retry_last" else 1)
+    assert sorted(batches) == sorted(expected_batches)
     assert scans == 1
     assert await recovery_db.sheets_item_formula_rows.count_documents(
         {"source_snapshot": {"$exists": True}}
