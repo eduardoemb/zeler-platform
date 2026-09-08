@@ -1049,8 +1049,8 @@ async def test_execute_calidad_requires_fresh_item_read_model_marker() -> None:
     assert body["ok"] is False
     assert body["error"]["code"] == "DATA_UNAVAILABLE"
     assert body["error"]["message"] == (
-        "ZELERDATA_CALIDAD data is not available yet: Read model "
-        "item_formula_rows has not passed freshness/reconciliation for the requested range."
+        "ZELERDATA_CALIDAD data is not available yet: "
+        "Current inventory enumeration is missing, malformed or expired."
     )
     assert body["values"] == [[f"DATA_UNAVAILABLE: {body['error']['message']}"]]
 

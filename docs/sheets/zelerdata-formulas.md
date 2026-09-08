@@ -81,7 +81,22 @@ metadata identifies `unavailable_items`, `unavailable_reason`, and
 IDs and reports `recovery_requested`; failed admission does not discard valid
 rows. Missing publications are not optional fields and must not become `NA`.
 If no selected publication is verified, the existing formula-level unavailable
-response remains. Whole-inventory requests still need inventory readiness proof.
+response remains.
+
+Whole-inventory CALCULADORA and CALIDAD can also use a recovery enumeration
+observed within 15 minutes. Its clock starts when discovery was claimed and is
+not refreshed by subsequent batches. Only publications in that enumeration are
+returned: each must pass the same source-bound row verification, otherwise its
+ID has explicit DATA_UNAVAILABLE cells. This permits useful rows during recovery
+without treating partial coverage as complete. `inventory_rows_complete` covers
+publication-row verification only; independently unavailable field values remain
+DATA_UNAVAILABLE. A recently verified empty enumeration returns an empty result.
+Missing or expired enumeration evidence retains formula-level unavailability
+and requests asynchronous inventory recovery. No new global marker is inferred
+from the recovery job's completion state.
+Reopening a recovery keeps its previous enumeration readable while it remains
+within that original age bound; a new discovery replaces it without extending
+the old observation's lifetime.
 
 To inspect which markers actually prove a seller scope, run the read-only status command from the approved runtime:
 

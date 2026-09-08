@@ -111,7 +111,7 @@ class FormulaRecoveryWorker:
 
     async def _items(self, job: dict[str, Any]) -> None:
         if job.get("inventory_scope") is True:
-            if "inventory_ids" not in job:
+            if "inventory_offset" not in job:
                 identities = sorted(
                     await _discover_current_item_ids(self.gateway, seller_id=job["seller_id"])
                 )

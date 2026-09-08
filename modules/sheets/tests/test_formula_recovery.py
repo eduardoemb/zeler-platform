@@ -248,11 +248,54 @@ async def test_inventory_recovery_resumes_bounded_batches_without_global_readine
     assert scans == 0 and batches == []
     assert await queue.enqueue(request) == request.key
     worker = FormulaRecoveryWorker(db=recovery_db, gateway=gateway, queue=queue)
+
+    async def read_inventory(missing: int) -> None:
+        from zeler_sheets.formulas.dispatcher import FormulaDispatcher, FormulaExecutionContext
+        from zeler_sheets.formulas.handlers_quality_calculator import (
+            build_quality_calculator_formula_handlers,
+        )
+        from zeler_sheets.formulas.read_models import FormulaReadModelRepository
+        from zeler_sheets.formulas.registry import FormulaRegistry
+
+        dispatcher = FormulaDispatcher(
+            build_quality_calculator_formula_handlers(
+                FormulaReadModelRepository(db=recovery_db), now_fn=queue.now
+            )
+        )
+        before = (scans, len(batches))
+        for formula in ("ZELERDATA_CALCULADORA", "ZELERDATA_CALIDAD"):
+            result = await dispatcher.execute(
+                FormulaExecutionContext(
+                    contract=FormulaRegistry.default().find_required(formula),
+                    cuenta="test",
+                    seller_id="82453304",
+                    seller_nickname="",
+                    token_id="",
+                    request_id=None,
+                    args={"id_publicaciones": [], "encabezados": False},
+                )
+            )
+            assert len(result.values) == 21
+            assert {row[0] for row in result.values} == set(identities)
+            assert (
+                sum(all(cell == "DATA_UNAVAILABLE" for cell in row[1:]) for row in result.values)
+                == missing
+            )
+            assert result.meta["inventory_rows_complete"] is (missing == 0)
+            assert result.meta["partial_misses"] == missing
+            if missing:
+                assert result.recovery is not None and result.recovery.item_ids == ()
+            else:
+                assert result.recovery is None
+        assert (scans, len(batches)) == before
+
     assert await worker.process_one()
     job = await queue.collection.find_one({"_id": request.key})
     assert job["state"] == "pending" and job["inventory_offset"] == 0
     assert job["inventory_ids"] == identities
     assert scans == 1 and batches == []
+    observed = job["inventory_observed_at"]
+    await read_inventory(21)
     assert await worker.process_one()
     job = await queue.collection.find_one({"_id": request.key})
     if failure_mode == "exhaust_first":
@@ -267,6 +310,8 @@ async def test_inventory_recovery_resumes_bounded_batches_without_global_readine
             assert await worker.process_one()
             job = await queue.collection.find_one({"_id": request.key})
     assert job["state"] == "pending" and job["inventory_offset"] == 20
+    assert job["inventory_observed_at"] == observed
+    await read_inventory(21 if failure_mode == "exhaust_first" else 1)
     restarted = FormulaRecoveryWorker(db=recovery_db, gateway=gateway, queue=queue)
     assert await restarted.process_one()
     job = await queue.collection.find_one({"_id": request.key})
@@ -289,11 +334,41 @@ async def test_inventory_recovery_resumes_bounded_batches_without_global_readine
         {"source_snapshot": {"$exists": True}}
     ) == (1 if failure_mode == "exhaust_first" else 21)
     assert await recovery_db.sheets_read_model_freshness.count_documents({}) == 0
+    await recovery_db.sheets_item_formula_rows.insert_one(
+        {
+            "_id": "unlisted-row",
+            "seller_id": "82453304",
+            "item_id": "MLA999",
+            "current": {"title": "Not in current inventory"},
+        }
+    )
+    await read_inventory(20 if failure_mode == "exhaust_first" else 0)
+    assert job["inventory_observed_at"] == observed
+    await queue.enqueue(request)
+    await read_inventory(20 if failure_mode == "exhaust_first" else 0)
+    await queue.collection.update_one(
+        {"_id": request.key},
+        {
+            "$set": {
+                "inventory_observed_at": queue.now() - timedelta(minutes=16),
+                "updated_at": queue.now(),
+            }
+        },
+    )
+    with pytest.raises(FormulaDataUnavailableError):
+        await read_inventory(0)
     await queue.enqueue(request)
     reopened = await queue.collection.find_one({"_id": request.key})
-    assert "inventory_ids" not in reopened and "inventory_offset" not in reopened
+    assert reopened["inventory_ids"] == identities and "inventory_offset" not in reopened
     assert "inventory_unavailable_ids" not in reopened
+    assert reopened["inventory_observed_at"] is not None
     assert reopened["available_at"] == job["available_at"]
+    next_scan_at = job["available_at"].replace(tzinfo=UTC)
+    queue.now = lambda: next_scan_at
+    assert await worker.process_one()
+    refreshed = await queue.collection.find_one({"_id": request.key})
+    assert scans == 2 and refreshed["inventory_offset"] == 0
+    assert refreshed["inventory_observed_at"].replace(tzinfo=UTC) == next_scan_at
 
 
 @pytest.mark.asyncio
@@ -314,6 +389,46 @@ async def test_inventory_checkpoint_cannot_advance_after_lease_loss(recovery_db:
     assert await queue.checkpoint_inventory(current, item_ids=["MLA1"], offset=0)
     stored = await queue.collection.find_one({"_id": key})
     assert stored["state"] == "pending" and stored["attempts"] == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "invalid", [None, "missing_time", "expired", "future", "duplicate", "foreign", "bad_offset"]
+)
+async def test_inventory_read_requires_recent_owned_enumeration(
+    recovery_db: Any,
+    invalid: str | None,
+) -> None:
+    from zeler_sheets.formulas.dispatcher import FormulaDataUnavailableError
+    from zeler_sheets.formulas.read_models import FormulaReadModelRepository
+    from zeler_sheets.formulas.recovery import ItemInventoryRecoveryRequest
+
+    now = datetime(2026, 9, 7, 12, tzinfo=UTC)
+    queue = FormulaRecoveryQueue(recovery_db, now=lambda: now)
+    key = await queue.enqueue(ItemInventoryRecoveryRequest("82453304"))
+    job = await queue.claim()
+    assert job is not None
+    assert await queue.checkpoint_inventory(job, item_ids=[], offset=0)
+    changes: dict[str, Any] = {
+        "missing_time": {"inventory_observed_at": None},
+        "expired": {"inventory_observed_at": now - timedelta(minutes=16)},
+        "future": {"inventory_observed_at": now + timedelta(minutes=1)},
+        "duplicate": {"inventory_ids": ["MLA1", "MLA1"]},
+        "foreign": {"seller_id": "42"},
+        "bad_offset": {"inventory_offset": True},
+    }
+    if invalid:
+        await queue.collection.update_one({"_id": key}, {"$set": changes[invalid]})
+    reader = FormulaReadModelRepository(db=recovery_db)
+    if invalid:
+        with pytest.raises(FormulaDataUnavailableError):
+            await reader.find_recent_item_inventory(
+                seller_id="82453304", formula="ZELERDATA_CALCULADORA", now=now
+            )
+    else:
+        assert await reader.find_recent_item_inventory(
+            seller_id="82453304", formula="ZELERDATA_CALCULADORA", now=now
+        ) == ([], [], ())
 
 
 @pytest.mark.asyncio

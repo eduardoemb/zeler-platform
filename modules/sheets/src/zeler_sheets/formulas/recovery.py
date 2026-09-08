@@ -276,7 +276,6 @@ class FormulaRecoveryQueue:
                         **(
                             {
                                 "$unset": {
-                                    "inventory_ids": "",
                                     "inventory_offset": "",
                                     "inventory_unavailable_ids": "",
                                 }
@@ -309,11 +308,11 @@ class FormulaRecoveryQueue:
             or any(re.fullmatch(r"ML[A-Z][0-9]+", identity) is None for identity in item_ids)
             or type(offset) is not int
             or type(unavailable) is not bool
-            or (unavailable and "inventory_ids" not in job)
+            or (unavailable and "inventory_offset" not in job)
             or not 0 <= offset <= len(item_ids)
-            or ("inventory_ids" not in job and offset != 0)
+            or ("inventory_offset" not in job and offset != 0)
             or (
-                "inventory_ids" in job
+                "inventory_offset" in job
                 and (
                     item_ids != job["inventory_ids"]
                     or not job["inventory_offset"] < offset <= job["inventory_offset"] + 20
@@ -335,6 +334,11 @@ class FormulaRecoveryQueue:
                     "inventory_ids": item_ids,
                     "inventory_offset": offset,
                     "inventory_unavailable_ids": missing,
+                    **(
+                        {"inventory_observed_at": job["updated_at"]}
+                        if "inventory_offset" not in job
+                        else {}
+                    ),
                     "state": "failed"
                     if terminal_failure
                     else "completed"
@@ -436,7 +440,7 @@ class FormulaRecoveryQueue:
             not succeeded
             and not retry
             and job.get("inventory_scope") is True
-            and "inventory_ids" in job
+            and "inventory_offset" in job
             and failure_reason in {"source_incomplete", "source_temporarily_unavailable"}
         ):
             return await self.checkpoint_inventory(

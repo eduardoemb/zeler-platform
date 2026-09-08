@@ -54,23 +54,65 @@ class QualityCalculatorFormulaHandlers:
         self._now_fn = now_fn or (lambda: datetime.now(UTC))
 
     async def sheetseller_calidad(self, context: FormulaExecutionContext) -> FormulaExecutionResult:
-        await self._repository.require_read_model_productive(
-            seller_id=context.seller_id,
-            read_model=ITEM_FORMULA_ROWS_READ_MODEL,
-            date_to=_as_utc_datetime(self._now_fn()),
-            formula=context.contract.name,
-        )
-        rows = await self._repository.find_item_formula_rows(
-            seller_id=context.seller_id,
-            limit=None,
-            sort_by="publication",
-        )
+        now = _as_utc_datetime(self._now_fn())
+        unavailable_items: tuple[str, ...] = ()
+        inventory_scope = False
+        try:
+            await self._repository.require_read_model_productive(
+                seller_id=context.seller_id,
+                read_model=ITEM_FORMULA_ROWS_READ_MODEL,
+                date_to=now,
+                formula=context.contract.name,
+            )
+        except FormulaDataUnavailableError:
+            rows, _, unavailable_items = await self._repository.find_recent_item_inventory(
+                seller_id=context.seller_id, formula=context.contract.name, now=now
+            )
+            inventory_scope = True
+        else:
+            rows = await self._repository.find_item_formula_rows(
+                seller_id=context.seller_id,
+                limit=None,
+                sort_by="publication",
+            )
         values: list[list[Any]] = _header_row(context.args.get("encabezados"), CALIDAD_HEADERS)
         header_rows = len(values)
         values.extend(_quality_row(row) for row in rows)
+        values.extend(
+            [item_id, *["DATA_UNAVAILABLE"] * (len(CALIDAD_HEADERS) - 1)]
+            for item_id in unavailable_items
+        )
         return FormulaExecutionResult(
             values=normalize_response_rows(values, header_rows=header_rows),
-            meta={"rows_count": len(rows), "columns": "modern_quality_projection"},
+            meta={
+                "rows_count": len(rows) + len(unavailable_items),
+                "columns": "modern_quality_projection",
+                **(
+                    {
+                        "inventory_rows_complete": not unavailable_items,
+                        "partial_misses": len(unavailable_items),
+                    }
+                    if inventory_scope
+                    else {}
+                ),
+                **(
+                    {
+                        "unavailable_items": list(unavailable_items),
+                        "unavailable_reason": "missing_incomplete_or_stale_projection",
+                    }
+                    if unavailable_items
+                    else {}
+                ),
+            },
+            recovery=(
+                FormulaDataUnavailableError(
+                    context.contract.name,
+                    "Inventory publications need recovery.",
+                    read_model=ITEM_FORMULA_ROWS_READ_MODEL,
+                )
+                if unavailable_items
+                else None
+            ),
         )
 
     async def sheetseller_calculadora(
@@ -79,6 +121,7 @@ class QualityCalculatorFormulaHandlers:
         requested_item_ids = _normalize_optional_item_ids(context.args.get("id_publicaciones"))
         now = _as_utc_datetime(self._now_fn())
         unavailable_items: tuple[str, ...] = ()
+        inventory_scope = False
         try:
             await self._repository.require_read_model_productive(
                 seller_id=context.seller_id,
@@ -89,13 +132,23 @@ class QualityCalculatorFormulaHandlers:
             )
         except FormulaDataUnavailableError:
             if not requested_item_ids:
-                raise
-            rows, unavailable_items = await self._repository.find_recent_item_formula_rows(
-                seller_id=context.seller_id,
-                item_ids=requested_item_ids,
-                formula=context.contract.name,
-                now=now,
-            )
+                (
+                    rows,
+                    requested_item_ids,
+                    unavailable_items,
+                ) = await self._repository.find_recent_item_inventory(
+                    seller_id=context.seller_id,
+                    formula=context.contract.name,
+                    now=now,
+                )
+                inventory_scope = True
+            else:
+                rows, unavailable_items = await self._repository.find_recent_item_formula_rows(
+                    seller_id=context.seller_id,
+                    item_ids=requested_item_ids,
+                    formula=context.contract.name,
+                    now=now,
+                )
         else:
             rows = await self._repository.find_item_formula_rows(
                 seller_id=context.seller_id,
@@ -141,6 +194,7 @@ class QualityCalculatorFormulaHandlers:
                 "partial_misses": missing_count,
                 "rows_count": rows_count,
                 "columns": "modern_cost_projection",
+                **({"inventory_rows_complete": not unavailable_items} if inventory_scope else {}),
                 **(
                     {
                         "unavailable_items": list(unavailable_items),
@@ -155,7 +209,7 @@ class QualityCalculatorFormulaHandlers:
                     context.contract.name,
                     "Selected publications are missing, incomplete or stale.",
                     read_model=ITEM_FORMULA_ROWS_READ_MODEL,
-                    item_ids=unavailable_items,
+                    item_ids=() if inventory_scope else unavailable_items,
                 )
                 if unavailable_items
                 else None

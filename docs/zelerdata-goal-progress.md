@@ -2903,3 +2903,57 @@ retain their contract; other product deployments remain out of scope.
   and worker `55e10b4593b0ccb5df81a513daf9ce10be26c5da1516d85e7b7b6fb8a72f8512`
   digests remain healthy. Neither contains this inventory workflow; retain them
   until the read-side proof and verified replacement images are ready.
+
+## Whole-inventory calculator and quality reads verify recovered membership
+
+- CALCULADORA without selected IDs and CALIDAD now have a Mongo-only inventory
+  fallback when the existing marker gate is unavailable. It requires a valid,
+  seller-owned enumeration observed within 15 minutes, then verifies each member's
+  source-bound rows independently. Unlisted stored rows are excluded. A verified
+  empty enumeration returns an empty result; absent, malformed, expired or future
+  evidence remains formula-level DATA_UNAVAILABLE.
+- Discovery records the time its worker claim began. Subsequent batches do not
+  renew that observation. Reopening terminal recovery retains the old enumeration
+  for reads within its original validity while clearing acquisition progress;
+  the next worker claim rediscovers and replaces it. A failing regression proved
+  that clearing the enumeration on reopening had unnecessarily hidden valid data.
+- During acquisition, verified publications remain visible and each unavailable
+  member has its ID plus DATA_UNAVAILABLE cells. `partial_misses`, unavailable IDs
+  and an explicit reason describe the gap. `inventory_rows_complete` certifies
+  row coverage only, not every field: independently unavailable costs remain
+  visible as DATA_UNAVAILABLE. Recovery instructions coalesce into the existing
+  inventory request instead of spawning duplicate per-ID jobs during the sweep.
+- Real-Mongo 21-publication tests exercise both formulas before, during and after
+  normal/retried/partially failed acquisition, plus read continuity when reopening
+  and a subsequent fresh scan. No read makes an upstream call. Additional cases
+  cover verified empty inventory, absent/expired/future time, duplicates, wrong
+  seller and malformed offset. Existing ASGI absence tests now expect the new
+  enumeration-unavailable reason. Upstream responses in these tests are simulated;
+  this is not productive HTTP or live Google Sheets acceptance.
+- Final focused inventory checks: **11 passed in 2.58s**. The earlier broader
+  recovery/API/calculator run passed **280 tests in 35.73s**, before the reopen
+  continuity correction. Protected integration: **8 passed in 3.25s**. Static
+  checks pass; final root evidence is recorded below.
+- Rollback removes this inventory reader/handler fallback and observation-time
+  changes together with their tests/docs; preserve acquired data. Existing marker
+  reads are not migrated by this unit, and marker-only operational readiness
+  reporting still needs reconciliation with this new evidence path. No global
+  freshness marker, production data change or deployment occurred. Both API and
+  worker require verified replacement images and a live inventory sweep/read
+  before claiming this path is operationally accepted.
+- One final-root attempt reported **3,862 passed and one failure**: the Repricer
+  import subprocess exited with signal 11, without a Python assertion from this
+  change. Its isolated test subsequently passed **1 test in 0.46s**, without any
+  Repricer, dependency or interpreter change. That isolated pass does not turn
+  the failed root attempt into a full-suite pass or establish the crash's cause.
+- The following normal-allocator attempt also segfaulted, this time during
+  Publicador/FastAPI route construction. The final diagnostic root run with
+  command-scoped `PYTHONMALLOC=malloc` passed **3,863 tests, 9 skipped, 356 warnings
+  in 102.52s**. No interpreter, dependency or production configuration was changed.
+  Normal-allocator full-root acceptance remains unproven for the final continuity
+  change. The final targeted inventory cases pass under the normal allocator.
+- Read-only runtime inspection still found API
+  `f8ccf361eb7e54639d6a6a6128ea4e7841c1e519b98bd37b8ff8dbdf8c633cfe`
+  and worker `55e10b4593b0ccb5df81a513daf9ce10be26c5da1516d85e7b7b6fb8a72f8512`
+  healthy. Both must be rebuilt from the intended source before deployment of
+  this unit; deploy the worker before exposing the new API recovery admissions.

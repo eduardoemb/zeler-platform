@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal, DecimalException
@@ -10,6 +11,7 @@ from zeler_sheets.devoluciones_reconciliation import (
     read_devoluciones_orders_by_id_keyset,
 )
 from zeler_sheets.formulas.dispatcher import FormulaDataUnavailableError
+from zeler_sheets.formulas.recovery import ItemInventoryRecoveryRequest
 from zeler_sheets.formulas.schemas import FormulaContract
 from zeler_sheets.item_projection import item_source_fingerprint
 from zeler_sheets.unit_costs import UnitCostLookup, resolve_unit_cost
@@ -140,6 +142,64 @@ class FormulaReadModelRepository:
         )
         cursor = self._item_formula_rows.find(filter_spec).sort(sort_spec)
         return cast("list[dict[str, Any]]", await cursor.to_list(length=limit))
+
+    async def find_recent_item_inventory(
+        self, *, seller_id: str, formula: str, now: datetime
+    ) -> tuple[list[dict[str, Any]], list[str], tuple[str, ...]]:
+        try:
+            request = ItemInventoryRecoveryRequest(seller_id)
+        except ValueError as exc:
+            raise FormulaDataUnavailableError(
+                formula,
+                "Current inventory enumeration is unavailable for this seller.",
+                read_model=ITEM_FORMULA_ROWS_READ_MODEL,
+            ) from exc
+        job = await self._db["sheets_formula_recovery_jobs"].find_one(
+            {
+                "_id": request.key,
+                "seller_id": seller_id,
+                "read_model": ITEM_FORMULA_ROWS_READ_MODEL,
+                "inventory_scope": True,
+            }
+        )
+        identities = job.get("inventory_ids") if job else None
+        observed = _safe_utc_datetime(job.get("inventory_observed_at")) if job else None
+        if (
+            not job
+            or not isinstance(identities, list)
+            or len(identities) > 10000
+            or any(
+                not isinstance(value, str) or re.fullmatch(r"ML[A-Z][0-9]+", value) is None
+                for value in identities
+            )
+            or identities != sorted(set(identities))
+            or observed is None
+            or not now - timedelta(minutes=15) < observed <= now
+            or job.get("state") not in {"pending", "running", "completed", "failed"}
+            or (
+                "inventory_offset" in job
+                and (
+                    type(job["inventory_offset"]) is not int
+                    or not 0 <= job["inventory_offset"] <= len(identities)
+                )
+            )
+        ):
+            raise FormulaDataUnavailableError(
+                formula,
+                "Current inventory enumeration is missing, malformed or expired.",
+                read_model=ITEM_FORMULA_ROWS_READ_MODEL,
+            )
+        if not identities:
+            return [], [], ()
+        try:
+            rows, missing = await self.find_recent_item_formula_rows(
+                seller_id=seller_id, item_ids=identities, formula=formula, now=now
+            )
+        except FormulaDataUnavailableError:
+            # Membership is known, but no safe matrix of source-bound rows was
+            # obtained. Preserve explicit unavailable IDs, never partial rows.
+            return [], identities, tuple(identities)
+        return rows, identities, missing
 
     async def find_recent_item_formula_rows(
         self, *, seller_id: str, item_ids: list[str], formula: str, now: datetime
