@@ -203,6 +203,57 @@ async def test_calidad_handler_can_be_reused_across_recalculations() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("state", "has_projection", "expected_price", "expected_net"),
+    [
+        ("trusted", True, 80, 60),
+        ("trusted", False, "DATA_UNAVAILABLE", "DATA_UNAVAILABLE"),
+        ("transient", True, "DATA_UNAVAILABLE", "DATA_UNAVAILABLE"),
+        ("malformed", False, "DATA_UNAVAILABLE", "DATA_UNAVAILABLE"),
+        ("unauthorized", False, "DATA_UNAVAILABLE", "DATA_UNAVAILABLE"),
+        ("authoritative_absent", False, "NA", "NA"),
+    ],
+)
+async def test_calculator_promo_price_and_net_obey_acquisition_state(
+    state: str, has_projection: bool, expected_price: Any, expected_net: Any
+) -> None:
+    db = FakeDb()
+    _mark_read_model_fresh(db, ITEM_FORMULA_ROWS_READ_MODEL)
+    row = _item_row(
+        item_id="MLA1",
+        sku="sku-1",
+        title="Synthetic",
+        status="active",
+        price=Decimal("100"),
+        seller_shipping_cost=Decimal("10"),
+        listing_fee_projection={"sale_fee_amount": Decimal("8")},
+        listing_price_fixed_fee={"fixed_fee": Decimal("2")},
+    )
+    row["current"]["enrichment_state"] = {"current_promotion": {"status": state, "synced_at": NOW}}
+    if has_projection:
+        row["current"]["current_promotion"] = {
+            "source": "/items/{id}/sale_price",
+            "sale_amount": Decimal("80"),
+            "regular_amount": Decimal("100"),
+            "currency_id": "MXN",
+            "reference_at": NOW,
+            "synced_at": NOW,
+        }
+    db["sheets_item_formula_rows"].documents[row["_id"]] = row
+    dispatcher = _dispatcher(db)
+    for kind in ("promo", "actual"):
+        result = await dispatcher.execute(
+            _context(
+                "ZELERDATA_CALCULADORA",
+                {"id_publicaciones": ["MLA1"], "tipo_precio": kind, "encabezados": "no"},
+            )
+        )
+        assert result.values[0][4] == (expected_price if kind == "promo" else 100)
+        assert result.values[0][13] == 20
+        assert result.values[0][14] == (expected_net if kind == "promo" else 80)
+
+
+@pytest.mark.asyncio
 async def test_calculadora_projects_costs_from_local_fee_shipping_and_catalog_data() -> None:
     db = FakeDb()
     _mark_read_model_fresh(db, ITEM_FORMULA_ROWS_READ_MODEL)

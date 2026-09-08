@@ -2092,3 +2092,35 @@ retain their contract; other product deployments remain out of scope.
   availability contract there, including dependent net/margin results, before
   claiming all promotion consumers are correct. This dashboard unit alone is
   not calculator acceptance.
+
+## Calculator shares the promotion availability contract
+
+- `tipo_precio=promo` no longer falls back to the ordinary price when the
+  requested promotional price is absent or unavailable. Explicit acquisition
+  failure yields `DATA_UNAVAILABLE` in price and dependent estimated net;
+  authoritative absence yields `NA` in both. Independently available shipping,
+  commission, fixed-fee and total-cost cells remain available. Ordinary/base
+  price selection is unchanged.
+- Dashboard and calculator now share the existing promotion reader and numeric
+  validation in `formulas/pricing.py`; the dashboard no longer owns a separate
+  implementation. A trusted state with a missing or malformed projection is
+  unavailable, not proof of absence. Legacy unmarked-row behavior remains a
+  separate acquisition/reprojection obligation, and temporal freshness still
+  requires the outstanding snapshot acceptance work.
+- Four calculator cases reproduced stale/fallback prices before implementation.
+  A fifth reproduced a trusted marker without its projection being reported as
+  absence. Six state scenarios now exercise both promo and ordinary modes through
+  the actual dispatcher, including preservation of valid cost totals. Combined
+  calculator/core/backfill suites passed **205 tests in 0.39s**; Ruff check/format
+  and mypy over 502 source files passed. No productive write occurred in this unit.
+- This change and the preceding promotion acquisition fix need verified new
+  Sheets API/worker images, pilot reprojection, health/source checks and formula
+  HTTP acceptance. Last verified deployed executable source is `d29ae52`.
+  Rollback restores the dashboard-local helper and calculator selection/output
+  code with their tests; no persisted data deletion is necessary. Reverting is
+  not permission to report unavailable promotional prices as actual values.
+- Final root regression with the dedicated local replica set: **3785 passed,
+  9 skipped, 356 warnings in 94.73s**. Protected stock-time suites separately
+  passed **8 tests in 11.91s**. Final Ruff check/format, mypy (502 files) and
+  whitespace checks passed; these are local verification, not productive HTTP
+  or Google Sheet acceptance.

@@ -14,6 +14,8 @@ from zeler_sheets.formulas.dispatcher import (
     FormulaHandler,
 )
 from zeler_sheets.formulas.output_normalization import NA_VALUE, normalize_response_rows
+from zeler_sheets.formulas.pricing import non_negative_decimal as _promo_decimal
+from zeler_sheets.formulas.pricing import promo_price as _promo_price
 from zeler_sheets.formulas.read_models import FormulaReadModelRepository, normalize_sku
 from zeler_sheets.status_history import effective_paused_days
 
@@ -1146,55 +1148,6 @@ def _listing_fee_optional_string_basis_matches(current_value: Any, projection_va
 
 def _projection_decimal(value: Any) -> Decimal | None:
     if value is None or isinstance(value, bool):
-        return None
-    if isinstance(value, Decimal128):
-        decimal_value = value.to_decimal()
-    elif isinstance(value, Decimal):
-        decimal_value = value
-    elif isinstance(value, int):
-        decimal_value = Decimal(value)
-    elif isinstance(value, float):
-        decimal_value = Decimal(str(value)) if math.isfinite(value) else Decimal("NaN")
-    else:
-        try:
-            decimal_value = Decimal(str(value))
-        except (InvalidOperation, ValueError):
-            return None
-    return decimal_value if decimal_value.is_finite() and decimal_value >= 0 else None
-
-
-def _promo_price(row: Mapping[str, Any]) -> Any:
-    current = row.get("current", {})
-    if not isinstance(current, Mapping):
-        return NA_VALUE
-    enrichment = current.get("enrichment_state")
-    state = enrichment.get("current_promotion") if isinstance(enrichment, Mapping) else None
-    if isinstance(state, Mapping):
-        if state.get("status") == "authoritative_absent":
-            return NA_VALUE
-        if state.get("status") != "trusted":
-            return "DATA_UNAVAILABLE"
-    projection = current.get("current_promotion")
-    if not isinstance(projection, Mapping):
-        return NA_VALUE
-    if projection.get("source") != "/items/{id}/sale_price":
-        return NA_VALUE
-    if not str(projection.get("currency_id") or "").strip():
-        return NA_VALUE
-    if projection.get("reference_at") is None or projection.get("synced_at") is None:
-        return NA_VALUE
-    sale_amount = _promo_decimal(projection.get("sale_amount"))
-    regular_amount = _promo_decimal(projection.get("regular_amount"))
-    if sale_amount is None or regular_amount is None or sale_amount >= regular_amount:
-        return NA_VALUE
-    raw_sale_amount = projection.get("sale_amount")
-    return (
-        raw_sale_amount.to_decimal() if isinstance(raw_sale_amount, Decimal128) else raw_sale_amount
-    )
-
-
-def _promo_decimal(value: Any) -> Decimal | None:
-    if isinstance(value, bool) or value is None:
         return None
     if isinstance(value, Decimal128):
         decimal_value = value.to_decimal()

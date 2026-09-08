@@ -17,6 +17,7 @@ from zeler_sheets.formulas.matrix_contracts import (
     CALIDAD_VISIBLE_HEADERS,
 )
 from zeler_sheets.formulas.output_normalization import NA_VALUE, normalize_response_rows
+from zeler_sheets.formulas.pricing import promo_price
 from zeler_sheets.formulas.read_models import (
     ITEM_FORMULA_ROWS_READ_MODEL,
     FormulaReadModelRepository,
@@ -164,13 +165,15 @@ def _calculator_row(row: Mapping[str, Any], *, tipo_precio: Any) -> list[Any]:
         fixed_fee_projection.get("fixed_fee") if fixed_fee_projection else None
     )
     total_costs = _total_costs(seller_shipping_cost, commission, fixed_fee)
-    net_amount = price - total_costs if price is not None and total_costs is not None else None
+    net_amount = (
+        price - total_costs if isinstance(price, Decimal) and total_costs is not None else None
+    )
     return [
         str(row.get("item_id") or ""),
         row.get("sku") or row.get("normalized_sku") or NA_VALUE,
         _current_value(current, "title"),
         _current_value(current, "currency_id"),
-        _sheet_optional_number(price),
+        price if isinstance(price, str) else _sheet_optional_number(price),
         _sheet_optional_number(seller_shipping_cost),
         _sheet_optional_number(commission),
         _sheet_optional_number(commission_percent),
@@ -180,7 +183,7 @@ def _calculator_row(row: Mapping[str, Any], *, tipo_precio: Any) -> list[Any]:
         _current_value(current, "shipping_logistic_type", "logistic_type"),
         _current_value(current, "listing_type_id"),
         _sheet_optional_number(total_costs),
-        _sheet_optional_number(net_amount),
+        price if isinstance(price, str) else _sheet_optional_number(net_amount),
     ]
 
 
@@ -266,14 +269,13 @@ def _projection_value(projection: Mapping[str, Any], *keys: str) -> Any:
     return None
 
 
-def _selected_price(current: Mapping[str, Any], *, tipo_precio: Any) -> Decimal | None:
+def _selected_price(current: Mapping[str, Any], *, tipo_precio: Any) -> Decimal | str | None:
     price_kind = str(tipo_precio or "actual").strip().casefold()
     if price_kind == "promo":
-        promotion = _optional_mapping(current.get("current_promotion"))
-        if promotion is not None:
-            promo_price = _optional_non_negative_decimal(promotion.get("sale_amount"))
-            if promo_price is not None:
-                return promo_price
+        selected = promo_price({"current": current})
+        if isinstance(selected, str) and selected in {NA_VALUE, "DATA_UNAVAILABLE"}:
+            return selected
+        return _optional_non_negative_decimal(selected)
     if price_kind == "base":
         base_price = _optional_non_negative_decimal(current.get("base_price"))
         if base_price is not None:
