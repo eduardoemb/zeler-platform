@@ -129,7 +129,7 @@ async def test_catalog_product_http_admission_reaches_worker_and_persists(
                 == [["Recovered product", "Recovered description", *(["NA"] * (width - 2))]] * 2
             )
             assert ready.json()["meta"]["catalog_products_complete"] is True
-        assert calls == ["/products/MLA1", "/products/MLA2"]
+        assert sorted(calls) == ["/products/MLA1", "/products/MLA2"]
     assert (
         await queue.collection.count_documents(
             {"state": "completed", "read_model": "catalog_product_snapshots"}
@@ -184,6 +184,7 @@ async def test_catalog_product_worker_persists_available_resources_without_globa
     assert await queue.enqueue(requested) == key
     assert await queue.collection.count_documents({}) == 1
     calls: list[str] = []
+    lease_revoked = asyncio.Event()
 
     class Gateway:
         async def fetch_resource(self, *, seller_id: str, path: str) -> dict[str, Any]:
@@ -200,6 +201,7 @@ async def test_catalog_product_worker_persists_available_resources_without_globa
                     await queue.collection.update_one(
                         {"_id": key}, {"$set": {"attempt_token": "new-owner"}}
                     )
+                    lease_revoked.set()
                 if outcome == "newer_snapshot":
                     from zeler_sheets.historical_meli_backfill import _catalog_product_snapshot
 
@@ -209,6 +211,8 @@ async def test_catalog_product_worker_persists_available_resources_without_globa
                     assert newer is not None
                     newer["snapshot_at"] = now + timedelta(seconds=1)
                     await recovery_db.sheets_catalog_product_snapshots.insert_one(newer)
+            if outcome == "lease_lost":
+                await lease_revoked.wait()
             return {
                 "id": path.rsplit("/", 1)[1],
                 "name": "Product",
@@ -236,9 +240,11 @@ async def test_catalog_product_worker_persists_available_resources_without_globa
         0 if outcome == "lease_lost" else 2 if outcome in {"success", "newer_snapshot"} else 1
     )
     assert len(stored) == expected
-    assert calls == (
-        ["/products/MLA1"] if outcome == "lease_lost" else ["/products/MLA1", "/products/MLA2"]
-    )
+    if outcome == "lease_lost":
+        assert "/products/MLA1" in calls
+        assert set(calls) <= {"/products/MLA1", "/products/MLA2"}
+    else:
+        assert sorted(calls) == ["/products/MLA1", "/products/MLA2"]
     for row in stored:
         assert row["seller_id"] == "82453304"
         newer = outcome == "newer_snapshot" and row["catalog_product_id"] == "MLA1"
@@ -260,6 +266,90 @@ async def test_catalog_product_worker_persists_available_resources_without_globa
     )
     assert "date_from" not in job and "item_ids" not in job
     assert job["catalog_product_ids"] == ["MLA1", "MLA2"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("outcome", ["success", "cancel", "storage_error"])
+async def test_catalog_worker_bounds_concurrency_and_joins_siblings(
+    recovery_db: Any, monkeypatch: pytest.MonkeyPatch, outcome: str
+) -> None:
+    from pymongo.errors import AutoReconnect
+
+    from zeler_sheets.formulas.recovery import CatalogProductIdsRecoveryRequest
+    from zeler_sheets.formulas.recovery_worker import FormulaRecoveryWorker
+
+    identities = tuple(f"MLA{index:02d}" for index in range(20))
+    await recovery_db.items.insert_one(
+        {
+            "_id": "MLA100",
+            "seller_id": "82453304",
+            "variations": [{"catalog_product_id": identity} for identity in identities],
+        }
+    )
+    queue = FormulaRecoveryQueue(recovery_db)
+    key = await queue.enqueue(CatalogProductIdsRecoveryRequest("82453304", identities))
+    started = asyncio.Event()
+    release = asyncio.Event()
+    active = 0
+    peak = 0
+    calls: list[str] = []
+
+    class Gateway:
+        async def fetch_resource(self, *, seller_id: str, path: str) -> dict[str, Any]:
+            nonlocal active, peak
+            assert seller_id == "82453304"
+            calls.append(path)
+            active += 1
+            peak = max(peak, active)
+            if active == 4:
+                started.set()
+            try:
+                await release.wait()
+                await asyncio.sleep(0)
+                return {"id": path.rsplit("/", 1)[1], "name": "Recovered product"}
+            finally:
+                active -= 1
+
+    if outcome == "storage_error":
+        collection_type = type(recovery_db.sheets_catalog_product_snapshots)
+        original = collection_type.replace_one
+
+        async def replace(collection: Any, query: Any, document: Any, **kwargs: Any) -> Any:
+            if (
+                collection.name == "sheets_catalog_product_snapshots"
+                and document["catalog_product_id"] == identities[0]
+            ):
+                raise AutoReconnect("synthetic persistence failure")
+            return await original(collection, query, document, **kwargs)
+
+        monkeypatch.setattr(collection_type, "replace_one", replace)
+    worker = FormulaRecoveryWorker(db=recovery_db, queue=queue, gateway=Gateway())
+    task = asyncio.create_task(worker.process_one())
+    try:
+        await asyncio.wait_for(started.wait(), timeout=2)
+        assert len(calls) == 4 and peak == 4
+        if outcome == "cancel":
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        else:
+            release.set()
+            assert await task
+    finally:
+        if not task.done():
+            task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+    assert active == 0 and peak == 4
+    job = await queue.collection.find_one({"_id": key})
+    stored = await recovery_db.sheets_catalog_product_snapshots.count_documents({})
+    if outcome == "success":
+        assert job["state"] == "completed" and stored == 20 and len(calls) == 20
+    elif outcome == "storage_error":
+        assert job["state"] == "pending" and job["failure_reason"] == "storage_unavailable"
+        assert stored == 3 and len(calls) == 4
+    else:
+        assert job["state"] == "running" and stored == 0
+    assert await recovery_db.sheets_read_model_freshness.count_documents({}) == 0
 
 
 @pytest.mark.asyncio

@@ -21,6 +21,48 @@ Keep unrelated `.codegraph/` files untouched in both repositories.
 Pilot: seller `82453304`; initial historical window 2026-08-08 through
 2026-09-06, plus current snapshots. Other products are out of scope.
 
+## Bounded concurrent catalog acquisition and rejected-resource diagnosis — 2026-09-08
+
+Catalog-product recovery now acquires at most four products concurrently, in
+joined waves within the existing 20-product job. It retains seller-association
+checks, per-resource timeout, lease checks, source timestamps and the conditional
+write that preserves newer observations. A task group drains started operations
+before the next wave or job completion; typed storage/implementation failures
+are re-raised after joining siblings instead of being hidden in an exception
+group. Existing source-error retry classification is unchanged. This changes
+neither queue capacity, freshness, API admission nor the seller rollout scope.
+
+Three event-gated real-Mongo tests failed on the sequential implementation, then
+passed with the bounded waves. They prove four concurrent requests without
+exceeding four, all 20 successful products persisted, cancellation of blocked
+fetches joined with no writes, and a storage error classified as retryable only
+after the three successful siblings persisted. The lease-loss test now gates
+responses on actual lease revocation rather than relying on sequential order;
+it still proves no snapshot is written after that simulated revocation.
+Focused worker/HTTP cases passed 12 tests in 3.34 seconds; the complete recovery
+suite passed 308 tests in 55.25 seconds. The eight protected replica-set tests
+passed separately in 2.10 seconds. Ruff check/format, mypy (505 files) and diff
+checks passed. Root regression passed 4,056 tests with nine expected skips and
+356 warnings in 122.69 seconds.
+
+A read-only approved-VM probe separately resolved the two `source_rejected` jobs:
+they contain 33 unique product IDs, 32 already acquired since the enumeration.
+Only one product remained missing; its current `/products/{id}` request through
+the legitimate Sheets client returned HTTP 404. Ownership association was checked
+before fetching and no business data was written. Artifact:
+`/tmp/zeler-projection-profile.97ePq6/rejections.py` locally and on the VM.
+This proves a current not-found response, not permanent impossibility or an
+exact reconstruction of the historical failures. Per-product unavailable-source
+observations/reasons still need persistence and consumer handling; rejecting a
+whole batch or repeatedly recovering its successful siblings is not that behavior.
+
+Rollback boundary: the bounded-wave wrapper in `FormulaRecoveryWorker` and its
+associated tests; no schema/data rollback. Only a new `sheets-worker` image is
+needed for this code. Runtime still uses `0db69e5`; the concurrent implementation
+has not been deployed or timed against the whole pilot catalog. Before the next
+full rollout acceptance run, address the known per-product unavailable reason
+and remaining admission/convergence gaps. The goal remains open.
+
 ## Full inventory faster, catalog convergence still incomplete — 2026-09-08
 
 The same `0db69e5` inventory acquisition completed 1,900/1,900 publications with

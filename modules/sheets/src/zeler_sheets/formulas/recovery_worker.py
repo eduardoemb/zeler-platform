@@ -152,7 +152,8 @@ class FormulaRecoveryWorker:
         if not set(ids) <= associated:
             raise ValueError("requested catalog products are not associated with this seller")
         failures: list[Exception] = []
-        for identity in ids:
+
+        async def acquire(identity: str) -> Exception | None:
             observed = self.queue.now()
             if await self.queue.collection.find_one(self.queue._owned(job, observed)) is None:
                 raise ValueError("catalog recovery lease lost")
@@ -170,8 +171,7 @@ class FormulaRecoveryWorker:
                 ):
                     raise ValueError("catalog product identity or title is unavailable")
             except (httpx.HTTPError, TimeoutError, GatewayRateLimitError, ValueError) as exc:
-                failures.append(exc)
-                continue
+                return exc
             if (
                 await self.queue.collection.find_one(self.queue._owned(job, self.queue.now()))
                 is None
@@ -194,6 +194,33 @@ class FormulaRecoveryWorker:
                     snapshot,
                     upsert=True,
                 )
+            return None
+
+        async def guarded_acquire(identity: str) -> Exception | None:
+            try:
+                return await acquire(identity)
+            except Exception as exc:  # noqa: BLE001 - preserve type after joining sibling writes.
+                return exc
+
+        # Join at most four independent acquisitions before admitting the next
+        # wave or finishing the lease. Cancellation also drains started writes.
+        for offset in range(0, len(ids), 4):
+            async with asyncio.TaskGroup() as group:
+                tasks = [
+                    group.create_task(guarded_acquire(identity))
+                    for identity in ids[offset : offset + 4]
+                ]
+            for task in tasks:
+                failure = task.result()
+                if failure is None:
+                    continue
+                if not isinstance(
+                    failure, (httpx.HTTPError, TimeoutError, GatewayRateLimitError, ValueError)
+                ):
+                    # Storage/implementation errors retain the outer worker's
+                    # classification, rather than becoming an ExceptionGroup.
+                    raise failure
+                failures.append(failure)
         if failures:
             # Keep successfully acquired products even when a sibling failed.
             # The outer worker applies the existing bounded retry policy.
