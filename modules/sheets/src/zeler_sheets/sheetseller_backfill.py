@@ -53,6 +53,7 @@ from zeler_sheets.enrichment import (
     trusted_state,
 )
 from zeler_sheets.formulas.read_models import normalize_sku
+from zeler_sheets.item_projection import stamp_item_projection
 from zeler_sheets.status_history import (
     bson_ms_utc_datetime,
     normalize_mongo_loaded_datetimes,
@@ -408,6 +409,7 @@ async def run_sheetseller_backfill(
     status_states_by_item = await load_item_status_states_by_item(db=db, seller_id=seller_id)
 
     for item in items:
+        source_item = item
         item = _item_with_status_history(item, status_states_by_item.get(_item_id(item)))
         sku_index_docs: list[dict[str, Any]]
         formula_row_docs: list[dict[str, Any]]
@@ -453,6 +455,14 @@ async def run_sheetseller_backfill(
 
         if not sku_index_docs and not formula_row_docs:
             continue
+
+        if not (
+            item_sku.ambiguous
+            or variation_ambiguous
+            or variation_ambiguous_identity
+            or (variation_docs and variation_skips)
+        ):
+            stamp_item_projection(formula_row_docs, source_item)
 
         sku_index_upserts += len(sku_index_docs)
         formula_row_upserts += len(formula_row_docs)

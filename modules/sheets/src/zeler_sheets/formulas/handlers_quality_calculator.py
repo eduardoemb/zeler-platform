@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Mapping, Sequence
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from bson.decimal128 import Decimal128
 
 from zeler_sheets.formulas.dispatcher import (
+    FormulaDataUnavailableError,
     FormulaExecutionContext,
     FormulaExecutionResult,
     FormulaHandler,
@@ -22,6 +23,7 @@ from zeler_sheets.formulas.read_models import (
     ITEM_FORMULA_ROWS_READ_MODEL,
     FormulaReadModelRepository,
 )
+from zeler_sheets.status_history import bson_ms_utc_datetime
 
 QUALITY_CALCULATOR_IMPLEMENTED_FORMULAS = frozenset({"ZELERDATA_CALIDAD", "ZELERDATA_CALCULADORA"})
 
@@ -75,26 +77,38 @@ class QualityCalculatorFormulaHandlers:
         self, context: FormulaExecutionContext
     ) -> FormulaExecutionResult:
         requested_item_ids = _normalize_optional_item_ids(context.args.get("id_publicaciones"))
-        await self._repository.require_read_model_productive(
-            seller_id=context.seller_id,
-            read_model=ITEM_FORMULA_ROWS_READ_MODEL,
-            date_to=_as_utc_datetime(self._now_fn()),
-            formula=context.contract.name,
-            item_ids=requested_item_ids,
-        )
-        rows = await self._repository.find_item_formula_rows(
-            seller_id=context.seller_id,
-            item_ids=requested_item_ids,
-            limit=None,
-            sort_by="publication",
-        )
+        now = _as_utc_datetime(self._now_fn())
+        try:
+            await self._repository.require_read_model_productive(
+                seller_id=context.seller_id,
+                read_model=ITEM_FORMULA_ROWS_READ_MODEL,
+                date_to=now,
+                formula=context.contract.name,
+                item_ids=requested_item_ids,
+            )
+        except FormulaDataUnavailableError:
+            if not requested_item_ids:
+                raise
+            rows = await self._repository.find_recent_item_formula_rows(
+                seller_id=context.seller_id,
+                item_ids=requested_item_ids,
+                formula=context.contract.name,
+                now=now,
+            )
+        else:
+            rows = await self._repository.find_item_formula_rows(
+                seller_id=context.seller_id,
+                item_ids=requested_item_ids,
+                limit=None,
+                sort_by="publication",
+            )
         values: list[list[Any]] = _header_row(context.args.get("encabezados"), CALCULADORA_HEADERS)
         header_rows = len(values)
         missing_count = 0
         if requested_item_ids is None:
             ordered_rows = sorted(rows, key=_row_sort_key)
             values.extend(
-                _calculator_row(row, tipo_precio=context.args.get("tipo_precio", "actual"))
+                _calculator_row(row, tipo_precio=context.args.get("tipo_precio", "actual"), now=now)
                 for row in ordered_rows
             )
             rows_count = len(ordered_rows)
@@ -111,7 +125,9 @@ class QualityCalculatorFormulaHandlers:
                 for row in current_rows:
                     rows_count += 1
                     values.append(
-                        _calculator_row(row, tipo_precio=context.args.get("tipo_precio", "actual"))
+                        _calculator_row(
+                            row, tipo_precio=context.args.get("tipo_precio", "actual"), now=now
+                        )
                     )
         return FormulaExecutionResult(
             values=normalize_response_rows(values, header_rows=header_rows),
@@ -150,8 +166,23 @@ def _quality_row(row: Mapping[str, Any]) -> list[Any]:
     ]
 
 
-def _calculator_row(row: Mapping[str, Any], *, tipo_precio: Any) -> list[Any]:
+def _calculator_row(
+    row: Mapping[str, Any], *, tipo_precio: Any, now: datetime | None = None
+) -> list[Any]:
     current = _current_mapping(row)
+    if now is not None and isinstance(row.get("source_snapshot"), Mapping):
+        states = dict(_optional_mapping(current.get("enrichment_state")) or {})
+        for field in (
+            "seller_shipping_cost",
+            "listing_fee_projection",
+            "listing_price_fixed_fee",
+            "current_promotion",
+        ):
+            state = _optional_mapping(states.get(field)) or {}
+            observed = bson_ms_utc_datetime(state.get("synced_at"))
+            if observed is None or not now - timedelta(minutes=15) < observed <= now:
+                states[field] = {"status": "unavailable", "reason": "stale_or_unverified"}
+        current = {**current, "enrichment_state": states}
     price = _selected_price(current, tipo_precio=tipo_precio)
     seller_shipping_cost = _acquired_cost(
         current, "seller_shipping_cost", current.get("seller_shipping_cost")

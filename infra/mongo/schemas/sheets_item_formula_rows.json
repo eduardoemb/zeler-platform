@@ -16,6 +16,16 @@
       "sku": {"bsonType": ["string", "null"]},
       "normalized_sku": {"bsonType": "string"},
       "item_id": {"bsonType": "string"},
+      "source_snapshot": {
+        "bsonType": "object",
+        "additionalProperties": false,
+        "required": ["observed_at", "fingerprint", "rows_count"],
+        "properties": {
+          "observed_at": {"bsonType": "date"},
+          "fingerprint": {"bsonType": "string", "pattern": "^[a-f0-9]{64}$"},
+          "rows_count": {"bsonType": ["int", "long"], "minimum": 1, "maximum": 10000}
+        }
+      },
       "variation_id": {"bsonType": ["string", "long", "int", "null"]},
       "inventory_id": {"bsonType": ["string", "null"]},
       "current": {

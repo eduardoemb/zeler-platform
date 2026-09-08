@@ -11,6 +11,7 @@ from zeler_sheets.devoluciones_reconciliation import (
 )
 from zeler_sheets.formulas.dispatcher import FormulaDataUnavailableError
 from zeler_sheets.formulas.schemas import FormulaContract
+from zeler_sheets.item_projection import item_source_fingerprint
 from zeler_sheets.unit_costs import UnitCostLookup, resolve_unit_cost
 
 ITEM_FORMULA_ROWS_COLLECTION = "sheets_item_formula_rows"
@@ -139,6 +140,54 @@ class FormulaReadModelRepository:
         )
         cursor = self._item_formula_rows.find(filter_spec).sort(sort_spec)
         return cast("list[dict[str, Any]]", await cursor.to_list(length=limit))
+
+    async def find_recent_item_formula_rows(
+        self, *, seller_id: str, item_ids: list[str], formula: str, now: datetime
+    ) -> list[dict[str, Any]]:
+        requested = set(item_ids)
+        rows = await self.find_item_formula_rows(
+            seller_id=seller_id, item_ids=item_ids, limit=10001, sort_by="publication"
+        )
+        sources = (
+            await self._db["items"]
+            .find({"seller_id": seller_id, "_id": {"$in": item_ids}})
+            .to_list(length=10001)
+        )
+        by_id = {str(source["_id"]): source for source in sources}
+        grouped: dict[str, list[dict[str, Any]]] = {}
+        for row in rows:
+            grouped.setdefault(str(row["item_id"]), []).append(row)
+        missing = []
+        for identity in sorted(requested):
+            source = by_id.get(identity)
+            group = grouped.get(identity, [])
+            observed = _safe_utc_datetime(source.get("last_meli_sync_at")) if source else None
+            if (
+                not source
+                or not group
+                or observed is None
+                or not now - timedelta(minutes=15) < observed <= now
+            ):
+                missing.append(identity)
+                continue
+            fingerprint = item_source_fingerprint(source)
+            if any(
+                not isinstance(snapshot := row.get("source_snapshot"), dict)
+                or snapshot.get("fingerprint") != fingerprint
+                or _safe_utc_datetime(snapshot.get("observed_at")) != observed
+                or type(snapshot.get("rows_count")) is not int
+                or snapshot["rows_count"] != len(group)
+                for row in group
+            ):
+                missing.append(identity)
+        if missing or len(rows) > 10000 or len(sources) > 10000:
+            raise FormulaDataUnavailableError(
+                formula,
+                "Selected item_formula_rows are missing, incomplete or not recently acquired.",
+                read_model=ITEM_FORMULA_ROWS_READ_MODEL,
+                item_ids=tuple(missing or sorted(requested)),
+            )
+        return rows
 
     async def find_orders(
         self,

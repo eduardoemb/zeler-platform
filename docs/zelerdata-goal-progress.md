@@ -2605,3 +2605,50 @@ retain their contract; other product deployments remain out of scope.
   No runtime mutation or deployment occurred. Sheets API and worker require new
   verified images after the read-side work, with pilot recovery-to-read and health
   verification; retain the current `f74f3f1` runtime pair meanwhile.
+
+## Selected calculator reads accept source-bound projection evidence
+
+- The shared backfill now stamps complete item projections with canonical
+  acquisition time (`last_meli_sync_at`), a deterministic BSON source fingerprint,
+  and the number of projected rows. It does not substitute source modification
+  time or the backfill's execution time for acquisition evidence. Ambiguous or
+  partially identified variation sets do not receive the stamp. The optional
+  `source_snapshot` schema bounds its shape and row count.
+- When inventory freshness is unavailable, CALCULADORA with explicit IDs can
+  read these source-bound rows from Mongo. Each selected publication must have a
+  source acquired within 15 minutes, matching fingerprints/timestamps on all its
+  rows, and the complete expected row count. Missing or invalid selections retain
+  explicit item IDs for the existing asynchronous recovery path. No MercadoLibre
+  request, projection, queue wait or marker write occurs in this read.
+- Existing productive inventory-marker reads are preserved; whole-inventory
+  requests still require that proof. This does not establish aggregate freshness,
+  per-publication fallback for all other formulas, or partial-success output when
+  one publication in a multi-publication selection is unavailable.
+- Source-stamped calculator rows additionally require recent acquisition states
+  for costs/promotion. Missing, expired or future-dated field evidence becomes
+  DATA_UNAVAILABLE and propagates to dependent totals; an independently acquired
+  current price remains usable. This is not a claim that all legacy unmarked
+  rows or every pricing-basis validation path has been migrated.
+- The failing real-Mongo case now reads two variations without a global marker
+  despite a 40-day-old source modification date. Five negative cases reject an
+  expired/future acquisition, missing row, changed source or absent receipt.
+  These run with the actual formula-row Mongo validator. Four cost-age cases
+  separately verify fresh, expired, future and absent evidence. Existing absence
+  tests now inspect structured read-model metadata rather than require the old
+  global-marker wording for a selected-row error.
+- Focused calculator/recovery/backfill regression passed **381 tests in 26.10s**;
+  protected integration passed **8 tests in 2.09s**. Ruff check/format, mypy
+  (503 files), and whitespace checks pass. General test runs encountered Python
+  segmentation faults in unrelated collection/routing paths; a separate allocator
+  diagnostic run is pending and must not be counted as a pass before completion.
+- No runtime mutation or deployment occurred. The current verified `f74f3f1`
+  API/worker digests remain healthy. Before release, validate/apply the bounded
+  row schema from the approved runtime, recover disk margin, build both affected
+  images, and prove the pilot recovery-to-selected-calculator read end to end.
+  Rollback removes stamping and the selected-read fallback with their tests;
+  retain normalized data and existing receipts rather than deleting history.
+- The final root run with command-scoped `PYTHONMALLOC=malloc` and the dedicated
+  local replica-set URI passed **3,843 tests, 9 skipped, 356 warnings in 97.51s**.
+  No dependency/interpreter or production configuration was changed. This proves
+  the suite under that allocator setting, not the cause of the intermittent
+  interpreter crashes. The normal allocator run remains unproven for this unit.

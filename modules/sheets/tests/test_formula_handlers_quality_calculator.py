@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
@@ -73,6 +73,31 @@ class FakeDb:
 
 NOW = datetime(2026, 6, 15, 12, 0, tzinfo=UTC)
 QUALITY_CALCULATED_AT = datetime(2026, 6, 14, 9, 30, tzinfo=UTC)
+
+
+@pytest.mark.parametrize("minutes", [-1, -16, 1, None])
+def test_source_bound_calculator_requires_recent_cost_acquisition(minutes: int | None) -> None:
+    from zeler_sheets.formulas.handlers_quality_calculator import _calculator_row
+
+    row = _item_row(
+        item_id="MLA1",
+        sku="SKU-1",
+        title="Test",
+        status="active",
+        seller_shipping_cost=Decimal("10"),
+    )
+    row["source_snapshot"] = {}
+    if minutes is not None:
+        row["current"]["enrichment_state"] = {
+            "seller_shipping_cost": {
+                "status": "trusted",
+                "synced_at": NOW + timedelta(minutes=minutes),
+            }
+        }
+    values = _calculator_row(row, tipo_precio="actual", now=NOW)
+    assert values[4] == 100
+    assert values[5] == (10 if minutes == -1 else "DATA_UNAVAILABLE")
+    assert values[13] == values[14] == "DATA_UNAVAILABLE"
 
 
 @pytest.mark.asyncio
@@ -481,8 +506,7 @@ async def test_quality_calculator_formulas_require_fresh_item_read_model_marker(
     with pytest.raises(FormulaDataUnavailableError, match=formula) as error:
         await dispatcher.execute(_context(formula, args))
 
-    assert ITEM_FORMULA_ROWS_READ_MODEL in str(error.value)
-    assert "freshness/reconciliation" in str(error.value)
+    assert error.value.read_model == ITEM_FORMULA_ROWS_READ_MODEL
 
 
 @pytest.mark.asyncio
@@ -503,8 +527,7 @@ async def test_quality_calculator_formulas_reject_stale_item_read_model_marker(
     with pytest.raises(FormulaDataUnavailableError, match=formula) as error:
         await dispatcher.execute(_context(formula, args))
 
-    assert ITEM_FORMULA_ROWS_READ_MODEL in str(error.value)
-    assert "freshness/reconciliation" in str(error.value)
+    assert error.value.read_model == ITEM_FORMULA_ROWS_READ_MODEL
 
 
 def _dispatcher(db: FakeDb) -> FormulaDispatcher:

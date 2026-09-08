@@ -31,6 +31,94 @@ def test_runtime_recovery_seller_list_is_explicit_and_validated() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "invalid", [None, "expired", "future", "missing_row", "changed_source", "missing_receipt"]
+)
+async def test_selected_calculator_reads_complete_recent_projection_without_inventory_marker(
+    recovery_db: Any, invalid: str | None
+) -> None:
+    import json
+    from pathlib import Path
+
+    from zeler_sheets.formulas.dispatcher import (
+        FormulaDataUnavailableError,
+        FormulaDispatcher,
+        FormulaExecutionContext,
+    )
+    from zeler_sheets.formulas.handlers_quality_calculator import (
+        build_quality_calculator_formula_handlers,
+    )
+    from zeler_sheets.formulas.read_models import FormulaReadModelRepository
+    from zeler_sheets.formulas.registry import FormulaRegistry
+    from zeler_sheets.sheetseller_backfill import run_sheetseller_backfill
+
+    schema = json.loads(Path("infra/mongo/schemas/sheets_item_formula_rows.json").read_text())
+    await recovery_db.create_collection(
+        "sheets_item_formula_rows", validator={"$jsonSchema": schema["$jsonSchema"]}
+    )
+    now = datetime(2026, 9, 7, 12, tzinfo=UTC)
+    observed = now - timedelta(minutes=1)
+    if invalid == "expired":
+        observed = now - timedelta(minutes=16)
+    if invalid == "future":
+        observed = now + timedelta(minutes=1)
+    await recovery_db.items.insert_one(
+        {
+            "_id": "MLA1",
+            "seller_id": "82453304",
+            "title": "Fresh acquisition, old modification",
+            "price": 100,
+            "base_price": 100,
+            "currency_id": "ARS",
+            "category_id": "MLA123",
+            "status": "active",
+            "available_quantity": 2,
+            "last_updated": now - timedelta(days=40),
+            "date_created": now - timedelta(days=50),
+            "last_meli_sync_at": observed,
+            "attributes": [],
+            "variations": [
+                {"id": 1, "seller_custom_field": "SKU-1"},
+                {"id": 2, "seller_custom_field": "SKU-2"},
+            ],
+        }
+    )
+    await run_sheetseller_backfill(
+        db=recovery_db, seller_id="82453304", item_ids=("MLA1",), dry_run=False
+    )
+    scope = {"seller_id": "82453304", "item_id": "MLA1"}
+    if invalid == "missing_row":
+        await recovery_db.sheets_item_formula_rows.delete_one(scope)
+    if invalid == "changed_source":
+        await recovery_db.items.update_one({"_id": "MLA1"}, {"$set": {"price": 200}})
+    if invalid == "missing_receipt":
+        await recovery_db.sheets_item_formula_rows.update_many(
+            scope, {"$unset": {"source_snapshot": ""}}
+        )
+    handlers = build_quality_calculator_formula_handlers(
+        FormulaReadModelRepository(db=recovery_db), now_fn=lambda: now
+    )
+    context = FormulaExecutionContext(
+        contract=FormulaRegistry.default().find_required("ZELERDATA_CALCULADORA"),
+        cuenta="test",
+        seller_id="82453304",
+        seller_nickname="",
+        token_id="",
+        request_id=None,
+        args={"id_publicaciones": ["MLA1"], "encabezados": False},
+    )
+    if invalid:
+        with pytest.raises(FormulaDataUnavailableError) as error:
+            await FormulaDispatcher(handlers).execute(context)
+        assert error.value.item_ids == ("MLA1",)
+    else:
+        result = await FormulaDispatcher(handlers).execute(context)
+        assert len(result.values) == 2
+        assert result.values[0][5] == "DATA_UNAVAILABLE"
+    assert await recovery_db.sheets_read_model_freshness.count_documents({}) == 0
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("partial", [False, True])
 @pytest.mark.parametrize("lose_lease", [False, True])
 async def test_explicit_item_recovery_uses_bounded_acquisition_without_global_marker(
