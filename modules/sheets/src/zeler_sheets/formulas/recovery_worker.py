@@ -47,6 +47,7 @@ from zeler_sheets.historical_meli_backfill import (
 )
 from zeler_sheets.sheetseller_backfill import (
     ItemDetailEnrichmentSummary,
+    RetryableItemAcquisitionError,
     _discover_current_item_ids,
     run_item_detail_enrichment,
     run_sheetseller_backfill,
@@ -98,7 +99,12 @@ class FormulaRecoveryWorker:
                 retryable=transient,
                 failure_reason="source_temporarily_unavailable" if transient else "source_rejected",
             )
-        except (httpx.TransportError, TimeoutError, GatewayRateLimitError):
+        except (
+            httpx.TransportError,
+            TimeoutError,
+            GatewayRateLimitError,
+            RetryableItemAcquisitionError,
+        ):
             await self.queue.finish(
                 job,
                 succeeded=False,

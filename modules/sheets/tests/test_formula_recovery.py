@@ -1037,7 +1037,9 @@ async def test_missing_sku_support_does_not_certify_unidentified_variations(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("failure_mode", ["none", "retry_last", "exhaust_first"])
+@pytest.mark.parametrize(
+    "failure_mode", ["none", "retry_last", "exhaust_first", "exhaust_first_embedded"]
+)
 async def test_inventory_recovery_resumes_bounded_batches_without_global_readiness(
     recovery_db: Any,
     failure_mode: str,
@@ -1052,6 +1054,8 @@ async def test_inventory_recovery_resumes_bounded_batches_without_global_readine
     from zeler_sheets.formulas.recovery import IMPLEMENTED_MODELS, ItemInventoryRecoveryRequest
     from zeler_sheets.formulas.recovery_worker import FormulaRecoveryWorker
 
+    embedded_failure = failure_mode.endswith("_embedded")
+    failure_mode = failure_mode.removesuffix("_embedded")
     identities = [f"MLA{i:03d}" for i in range(21)]
     batches: list[list[str]] = []
     scans = 0
@@ -1071,6 +1075,8 @@ async def test_inventory_recovery_resumes_bounded_batches_without_global_readine
                     failure_mode == "exhaust_first" and batch[0] in identities[:20]
                 ):
                     failed = True
+                    if embedded_failure:
+                        return [{"code": 503, "body": {"id": identity}} for identity in batch]
                     response = httpx.Response(
                         503, request=httpx.Request("GET", "https://example.invalid")
                     )
@@ -2242,6 +2248,80 @@ async def test_item_enrichment_cannot_overwrite_newer_or_concurrent_state(
         )
         assert summary.items_updated == 1
         assert (await recovery_db.items.find_one({"_id": "MLA1"}))["title"] == "Source title"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "failure", ["concurrent", "older", "undated", "429", "503", "foreign", "bug"]
+)
+async def test_item_worker_retries_known_acquisition_failures_only(
+    recovery_db: Any, failure: str
+) -> None:
+    import httpx
+
+    from zeler_sheets.formulas.recovery import ItemIdsRecoveryRequest
+    from zeler_sheets.formulas.recovery_worker import FormulaRecoveryWorker
+
+    original = {
+        "_id": "MLA1",
+        "seller_id": "82453304",
+        "title": "Publication",
+        "category_id": "MLA123",
+        "price": 10,
+        "base_price": 10,
+        "available_quantity": 2,
+        "status": "active",
+        "date_created": datetime(2026, 9, 1),
+        "last_updated": datetime(2026, 9, 7),
+        "attributes": [],
+        "variations": [],
+        "shipping": {"free_shipping": False},
+    }
+    await recovery_db.items.insert_one(original)
+    queue = FormulaRecoveryQueue(recovery_db)
+    key = await queue.enqueue(ItemIdsRecoveryRequest("82453304", ("MLA1",)))
+    calls = 0
+
+    class Gateway:
+        async def fetch_resource(self, *, seller_id: str, path: str) -> Any:
+            nonlocal calls
+            if path != "/items?ids=MLA1":
+                response = httpx.Response(404, request=httpx.Request("GET", "https://gateway.test"))
+                response.raise_for_status()
+            calls += 1
+            detail = {**await recovery_db.items.find_one({"_id": "MLA1"}), "id": "MLA1"}
+            if calls == 1:
+                if failure == "concurrent":
+                    await recovery_db.items.update_one({"_id": "MLA1"}, {"$set": {"price": 99}})
+                elif failure == "older":
+                    detail["last_updated"] = datetime(2026, 9, 6)
+                elif failure == "undated":
+                    detail.pop("last_updated")
+                elif failure in {"429", "503"}:
+                    return [{"code": int(failure), "body": {"id": "MLA1"}}]
+                elif failure == "foreign":
+                    detail["seller_id"] = "42"
+                else:
+                    raise RuntimeError("unexpected implementation failure")
+            return [{"code": 200, "body": detail}]
+
+    worker = FormulaRecoveryWorker(db=recovery_db, gateway=Gateway(), queue=queue)
+    assert await worker.process_one()
+    job = await queue.collection.find_one({"_id": key})
+    retryable = failure not in {"foreign", "bug"}
+    assert job["state"] == ("pending" if retryable else "failed"), job.get("failure_reason")
+    assert job["failure_reason"] == (
+        "source_temporarily_unavailable" if retryable else "recovery_failed"
+    )
+    stored = await recovery_db.items.find_one({"_id": "MLA1"})
+    assert stored == {**original, **({"price": 99} if failure == "concurrent" else {})}
+    if retryable:
+        retry_at = job["available_at"].replace(tzinfo=UTC)
+        queue.now = lambda: retry_at
+        assert await worker.process_one()
+        assert (await queue.collection.find_one({"_id": key}))["state"] == "completed"
+        assert calls == 2
+        assert await recovery_db.sheets_item_formula_rows.count_documents({}) == 1
 
 
 @pytest.mark.asyncio

@@ -82,6 +82,10 @@ SALE_PRICE_CONTEXT = "channel_marketplace"
 ITEM_ID_FILTER_SOURCES = frozenset({"items", "items-enrich", "observed-pause-basis-repair"})
 
 
+class RetryableItemAcquisitionError(RuntimeError):
+    """A temporary source failure or a changed observation; reacquire before writing."""
+
+
 def _should_preserve_listing_price_lookup_failure(failure: EnrichmentFailure) -> bool:
     return failure.status in {"transient", "unauthorized"}
 
@@ -1301,7 +1305,9 @@ async def run_item_detail_enrichment(
             if prior_updated is not None and (
                 source_updated is None or source_updated < prior_updated
             ):
-                raise RuntimeError("item source is older or lacks a comparable update timestamp")
+                raise RetryableItemAcquisitionError(
+                    "item source is older or lacks a comparable update timestamp"
+                )
             items_validated += 1
             if (
                 not clear_current_promotion
@@ -1359,7 +1365,9 @@ async def run_item_detail_enrichment(
                 bypass_document_validation=False,
             )
             if result.matched_count != 1:
-                raise RuntimeError("item changed during enrichment; retry from current state")
+                raise RetryableItemAcquisitionError(
+                    "item changed during enrichment; retry from current state"
+                )
             items_updated += 1
 
     return ItemDetailEnrichmentSummary(
@@ -3053,6 +3061,8 @@ def _validated_detail_entries_by_id(
             continue
         if status_code is not None and int(status_code) != 200:
             msg = f"item detail fetch failed with status {int(status_code)}"
+            if int(status_code) == 429 or 500 <= int(status_code) < 600:
+                raise RetryableItemAcquisitionError(msg)
             raise RuntimeError(msg)
         if not isinstance(body, dict):
             msg = "item detail body must be an object"

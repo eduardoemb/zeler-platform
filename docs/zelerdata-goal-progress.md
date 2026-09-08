@@ -21,6 +21,48 @@ Keep unrelated `.codegraph/` files untouched in both repositories.
 Pilot: seller `82453304`; initial historical window 2026-08-08 through
 2026-09-06, plus current snapshots. Other products are out of scope.
 
+## Inventory failure and bounded acquisition retry — 2026-09-08 (not deployed)
+
+The second genuine inventory acquisition on worker `f4fee30` stopped at
+1,460/1,900, attempt one, with `failure_reason=recovery_failed` and zero items
+recorded as unavailable. This is terminal incomplete acquisition, not success.
+`watch-products.py` observed that exact terminal state and exited without
+admitting products. Its one-shot protected receipt is
+`/var/lib/zeler-platform/repairs/catalog-product-admission-f4fee30.json`; do not
+restart the watcher or reinterpret its receipt as a live process.
+
+A read-only runtime probe of the next 20 IDs, four five-item batches through the
+Sheets client with `run_item_detail_enrichment(dry_run=True)`, validated all 20
+with zero stale entries. It made no business-data writes. Therefore the original
+generic failure was not reproduced and its exact historical cause remains
+unproven. Artifact: `/tmp/zeler-catalog-client.Mgb5Vu/failed-items.py`.
+
+Code review and failing real-Mongo worker tests demonstrated a related concrete
+failure class: an item changing during enrichment, an older/undated source, and
+429/5xx embedded in a successful multiget response were generic runtime errors
+and bypassed bounded retries. A single typed acquisition exception now routes
+only those known conditions through the existing 30/60-second retry policy.
+The full-source compare-and-swap and source-age checks remain intact; no failed
+observation is written. Unknown implementation errors and foreign-seller
+responses still fail, rather than being blindly retried.
+
+The corrected fixture reproduced all five cases as `recovery_failed` without the
+new catch, then seven focused cases passed in 1.72s with the catch: five recover
+on their next attempt and two unsafe/unknown cases stay failed. The existing
+inventory exhaustion test also exercises embedded 503 responses through the real
+parser, including the three-attempt cap, continued later batches and explicit
+unavailable membership. Acquisition/recovery verification passed 459 tests in
+65.72s. Root regression passed 4,052 tests, nine expected skips and 356 warnings
+in 121.05s; the eight protected replica-set cases passed separately in 3.17s.
+Ruff check/format, mypy on 505 source files and diff checks passed.
+
+Rollback boundary: the typed exception, its three acquisition raise sites, worker
+catch and their regression cases. No queue schema, cooldown bypass, new scheduler
+or credential change is introduced. A worker rebuild is required before a new
+production acquisition; this code fix does not prove the unknown original error
+cannot recur. The earlier shared-count change still also requires its additive
+buybox validator and an API rebuild.
+
 ## Catalog shared-user count — 2026-09-08 (not deployed)
 
 `CATALOGO` now reads `competitors_sharing_first_place` for its existing shared-user
