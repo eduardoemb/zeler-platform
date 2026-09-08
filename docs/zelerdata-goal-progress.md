@@ -2242,3 +2242,25 @@ retain their contract; other product deployments remain out of scope.
   stopped at startup; it is superseded by this fully connected run. Only
   `zeler-goal-mongo` was started, retaining its volume and leaving the older
   low-ulimit container stopped; `rs0-dev` was verified writable primary.
+
+## Calculator preserves actual losses
+
+- The calculator formatted estimated net with the non-negative input validator,
+  turning valid losses into `NA`. Only the computed Decimal net now uses the
+  signed numeric formatter; price/cost validation and unavailable sentinels are
+  unchanged. No new data, schema or projection is introduced.
+- Dispatcher regression scenarios first returned `NA` instead of -10 and -0.25;
+  break-even already returned zero. All three now pass. The focused command
+  `uv run pytest modules/sheets/tests/test_formula_handlers_quality_calculator.py
+  modules/sheets/tests/test_formula_handlers_core.py
+  modules/sheets/tests/test_sheetseller_backfill.py --tb=short` passed **229 tests
+  in 0.42s**. Root Ruff check/format, mypy (502 files), and whitespace checks pass.
+- Runtime acceptance remains pending the combined calculator release. Rollback
+  touches only the estimated-net output expression and these three regression
+  scenarios; no data rollback is needed. The previous cost-state correction and
+  this loss fix both require the affected Sheets image release and live checks.
+- Final local root regression: **3,809 passed, 9 skipped, 356 warnings in 89.58s**.
+  The protected stock-time suites separately passed **8 tests in 3.39s** with
+  the explicit local replica-set URI and `MONGO_URI` unset. Before release,
+  read-only VM inspection confirmed both prior `ab6e01f` Sheets images healthy
+  and 5,976,756,224 bytes free on root; capacity must be checked again before pull.

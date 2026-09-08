@@ -308,6 +308,32 @@ async def test_calculator_costs_and_totals_obey_acquisition_state(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(("price", "expected_net"), [("10", -10), ("19.75", -0.25), ("20", 0)])
+async def test_calculator_preserves_losses_and_break_even(price: str, expected_net: Any) -> None:
+    db = FakeDb()
+    _mark_read_model_fresh(db, ITEM_FORMULA_ROWS_READ_MODEL)
+    row = _item_row(
+        item_id="MLA1",
+        sku="sku-1",
+        title="Synthetic",
+        status="active",
+        price=Decimal(price),
+        seller_shipping_cost=Decimal("10"),
+        listing_fee_projection={"sale_fee_amount": Decimal("8")},
+        listing_price_fixed_fee={"fixed_fee": Decimal("2")},
+    )
+    db["sheets_item_formula_rows"].documents[row["_id"]] = row
+    result = await _dispatcher(db).execute(
+        _context(
+            "ZELERDATA_CALCULADORA",
+            {"id_publicaciones": ["MLA1"], "encabezados": "no"},
+        )
+    )
+    assert result.values[0][13] == 20
+    assert result.values[0][14] == expected_net
+
+
+@pytest.mark.asyncio
 async def test_calculadora_projects_costs_from_local_fee_shipping_and_catalog_data() -> None:
     db = FakeDb()
     _mark_read_model_fresh(db, ITEM_FORMULA_ROWS_READ_MODEL)

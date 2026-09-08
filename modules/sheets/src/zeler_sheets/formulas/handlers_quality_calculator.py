@@ -194,7 +194,9 @@ def _calculator_row(row: Mapping[str, Any], *, tipo_precio: Any) -> list[Any]:
         _current_value(current, "shipping_logistic_type", "logistic_type"),
         _current_value(current, "listing_type_id"),
         _sheet_optional_number(total_costs),
-        _sheet_optional_number(net_amount),
+        _sheet_number(net_amount)
+        if isinstance(net_amount, Decimal)
+        else _sheet_optional_number(net_amount),
     ]
 
 
