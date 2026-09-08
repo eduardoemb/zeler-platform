@@ -3357,3 +3357,27 @@ retain their contract; other product deployments remain out of scope.
   behavior remains source `6098a93`; no service-image rebuild is needed for this
   standalone operator tool. Its authorized runtime installation/execution and
   per-formula source-value checks remain pending.
+
+## Minimum-hardening audit: unresolved deletion and audit isolation
+
+- No seller/account erasure implementation was found in repository Python code
+  across gateway/core/Sheets/operations. Documentation requires including
+  `sheets_formula_recovery_jobs` and `sheets_formula_recovery_admission` with
+  admission stopped, but that instruction is not an executable deletion lifecycle.
+  This gate remains unproven; do not run ad-hoc production deletes or delete
+  shared platform collections belonging to other products.
+- Confirmed an audit-isolation defect in `formulas/audit.py::_audit_id`: provided
+  request IDs become `formula-audit-<request_id>` without seller/token scope.
+  `FormulaExecutePayload.request_id` is supplied by the caller and passed into
+  token validation/auditing. `DuplicateKeyError` is silently treated as a retry.
+- Local replica-set reproduction used two synthetic sellers/tokens with the same
+  request ID: **2 expected events, 1 stored event, 0 events for the second seller**.
+  The dedicated `zeler_goal_audit_probe_<uuid>` local test database was dropped
+  afterwards. No production data, credential, image or configuration changed.
+  Existing retry tests prove same-request deduplication, not cross-seller audit
+  independence. The fix must retain legitimate retries while scoping identity
+  to the authenticated account/token and relevant event, with regression coverage.
+- These findings are mandatory before goal closure. This was a read-only code
+  audit plus isolated local diagnostic, not implementation of the hardening
+  phase that the user placed after functional stabilization. Do not report
+  deletion or audit isolation as complete from current tests or runbooks.
