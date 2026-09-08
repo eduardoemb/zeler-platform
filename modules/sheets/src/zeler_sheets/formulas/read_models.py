@@ -401,6 +401,69 @@ class FormulaReadModelRepository:
         )
         return cast("list[dict[str, Any]]", await cursor.to_list(length=limit))
 
+    async def find_recent_catalog_product_inventory(
+        self, *, seller_id: str, formula: str, now: datetime
+    ) -> tuple[list[dict[str, Any]], tuple[str, ...], tuple[str, ...], bool]:
+        rows, _, missing_items, current = await self.find_recent_item_inventory(
+            seller_id=seller_id, formula=formula, now=now
+        )
+        product_ids: set[str] = set()
+        invalid_items = set(missing_items)
+        trusted = {str(row["item_id"]): row["source_snapshot"] for row in rows}
+        sources = (
+            await self._db["items"]
+            .find({"seller_id": seller_id, "_id": {"$in": sorted(trusted)}})
+            .to_list(length=10001)
+            if trusted
+            else []
+        )
+        invalid_items.update(set(trusted) - {str(source["_id"]) for source in sources})
+        for source in sources:
+            item_id = str(source["_id"])
+            if item_source_fingerprint(source) != trusted[item_id][
+                "fingerprint"
+            ] or _safe_utc_datetime(source.get("last_meli_sync_at")) != _safe_utc_datetime(
+                trusted[item_id]["observed_at"]
+            ):
+                invalid_items.add(item_id)
+                continue
+            # SKU-less parents may have only variant formula rows. Associations
+            # belong to the verified canonical item, not the set of SKU rows.
+            for resource in [source, *(source.get("variations") or [])]:
+                identity = resource.get("catalog_product_id")
+                if identity is None:
+                    continue
+                if (
+                    not isinstance(identity, str)
+                    or re.fullmatch(r"ML[A-Z][0-9]+", identity) is None
+                ):
+                    invalid_items.add(item_id)
+                    continue
+                product_ids.add(identity)
+        snapshots = (
+            await self.find_catalog_product_snapshots(
+                seller_id=seller_id, catalog_product_ids=sorted(product_ids)
+            )
+            if product_ids
+            else []
+        )
+        ready = []
+        for snapshot in snapshots:
+            observed = _safe_utc_datetime(snapshot.get("snapshot_at"))
+            title = snapshot.get("title")
+            if (
+                snapshot.get("_id") == f"{seller_id}:{snapshot.get('catalog_product_id')}"
+                and observed is not None
+                and now - timedelta(minutes=15) < observed <= now
+                and snapshot.get("source") in {"sheets_backfill", "historical_meli_backfill"}
+                and isinstance(title, str)
+                and bool(title.strip())
+                and {"description", "image_url", "attributes"} <= snapshot.keys()
+            ):
+                ready.append(snapshot)
+        missing = tuple(sorted(product_ids - {row["catalog_product_id"] for row in ready}))
+        return ready, missing, tuple(sorted(invalid_items)), current
+
     async def find_catalog_buybox_snapshots(
         self,
         *,

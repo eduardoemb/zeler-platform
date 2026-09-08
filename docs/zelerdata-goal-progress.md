@@ -21,6 +21,51 @@ Keep unrelated `.codegraph/` files untouched in both repositories.
 Pilot: seller `82453304`; initial historical window 2026-08-08 through
 2026-09-06, plus current snapshots. Other products are out of scope.
 
+## Current-inventory catalog consumers — 2026-09-08 (not deployed)
+
+OBTENER_CATALOGO and CATALOGO_COMPLETO now use the real product recovery bridge.
+They derive parent and variation product IDs from current, fingerprint-verified
+canonical items belonging to the inventory receipt. A SKU-less parent need not
+have its own formula row; its canonical association is still included. The
+canonical reread must still match the source fingerprint/observation so a changed
+item cannot silently reuse an older projection.
+
+Product reads are seller- and membership-scoped, require a nonfuture snapshot
+younger than 15 minutes, normalized acquisition source, a valid title and the
+purpose-field keys. Global catalog markers no longer authorize these reads.
+Missing products get explicit DATA_UNAVAILABLE rows and targeted async recovery;
+available products remain visible. Unknown/expired item inventory adds an
+unavailable coverage row and requests item recovery first. A proven empty current
+inventory returns an empty complete result, never all historical snapshots.
+Metadata explicitly reports completeness and the reason for unavailable data.
+
+- TDD: both actual formula HTTP paths failed before migration. Extending the
+  scenario to a SKU-less parent plus a variant then exposed the lost parent
+  association; the canonical-source reader fixed it.
+- Local runtime boundary: the actual application, token validation, inventory
+  receipt, canonical/projection Mongo reads, durable queue and worker participate
+  in `test_catalog_product_http_admission_reaches_worker_and_persists`.
+  Both formulas passed in 0.97s with parent and variant products: the first HTTP
+  request queues recovery with no gateway call, the worker persists both products,
+  and two later requests reuse them without new acquisition or a global marker.
+  This is synthetic local source data, not a production HTTP acceptance result.
+- Handler regression: 41 passed in 0.17s, including 1,001 current products,
+  unrelated snapshots, stale/future/missing/incomplete products, expired inventory,
+  unverified items and proven empty inventory. Old global-marker-only fixtures
+  were migrated to explicit inventory/source evidence.
+- Final root regression with loopback Mongo: 4,033 passed, nine skipped,
+  356 warnings in 119.16s. Protected replica-set tests ran separately: eight
+  passed in 3.21s. Ruff check/format, mypy (505 files), and diff checks passed.
+- Rollback boundary: the new repository reader, the two shared-handler entrypoints,
+  and their inventory/HTTP tests. No schema changes or business-data deletion.
+
+The last observed production images remain at `07c8ad3`; this migration and the
+preceding product worker/admission units are not deployed. Build new verified
+Sheets worker and API images, recheck VM capacity and image drift, then validate
+pilot HTTP recovery, persisted parent/variation products, subsequent reads and
+unchanged global coverage markers. Buybox/CATALOGO semantics and the other goal
+acceptance requirements remain open; this is not closure of all catalog work.
+
 ## Catalog HTTP recovery admission — 2026-09-08 (not deployed)
 
 Formula recovery errors/results can now carry explicit `catalog_product_ids`.

@@ -301,52 +301,76 @@ class ItemShippingCatalogFormulaHandlers:
     async def sheetseller_obtener_catalogo(
         self, context: FormulaExecutionContext
     ) -> FormulaExecutionResult:
-        await self._repository.require_read_model_productive(
-            seller_id=context.seller_id,
-            read_model=CATALOG_PRODUCT_SNAPSHOTS_READ_MODEL,
-            date_to=_as_utc_datetime(self._now_fn()),
-            formula=context.contract.name,
-        )
-        snapshots = await self._repository.find_catalog_product_snapshots(
-            seller_id=context.seller_id,
-            limit=None,
-        )
-        values: list[list[Any]] = _header_row(
-            context.args.get("encabezados"), list(OBTENER_CATALOGO_VISIBLE_HEADERS)
-        )
-        values.extend(
-            [
-                _catalog_value(snapshot, "title"),
-                _catalog_value(snapshot, "description"),
-                _image_formula(_catalog_value(snapshot, "image_url")),
-            ]
-            for snapshot in snapshots
-        )
-        return FormulaExecutionResult(
-            values=values,
-            meta={"rows_count": len(snapshots), "columns": "catalog_legacy_simple"},
-        )
+        return await self._catalog_products(context, complete=False)
 
     async def sheetseller_catalogo_completo(
         self, context: FormulaExecutionContext
     ) -> FormulaExecutionResult:
-        await self._repository.require_read_model_productive(
+        return await self._catalog_products(context, complete=True)
+
+    async def _catalog_products(
+        self, context: FormulaExecutionContext, *, complete: bool
+    ) -> FormulaExecutionResult:
+        (
+            snapshots,
+            missing,
+            missing_items,
+            inventory_current,
+        ) = await self._repository.find_recent_catalog_product_inventory(
             seller_id=context.seller_id,
-            read_model=CATALOG_PRODUCT_SNAPSHOTS_READ_MODEL,
-            date_to=_as_utc_datetime(self._now_fn()),
             formula=context.contract.name,
+            now=_as_utc_datetime(self._now_fn()),
         )
-        snapshots = await self._repository.find_catalog_product_snapshots(
-            seller_id=context.seller_id,
-            limit=None,
+        headers = list(
+            CATALOGO_COMPLETO_VISIBLE_HEADERS if complete else OBTENER_CATALOGO_VISIBLE_HEADERS
         )
-        values: list[list[Any]] = _header_row(
-            context.args.get("encabezados"), list(CATALOGO_COMPLETO_VISIBLE_HEADERS)
-        )
-        values.extend(_catalogo_completo_row(snapshot) for snapshot in snapshots)
+        values = _header_row(context.args.get("encabezados"), headers)
+        by_id = {snapshot["catalog_product_id"]: snapshot for snapshot in snapshots}
+        for identity in sorted(set(by_id) | set(missing)):
+            values.append(
+                _catalogo_completo_row(by_id[identity])[: len(headers)]
+                if identity in by_id
+                else ["DATA_UNAVAILABLE"] * len(headers)
+            )
+        inventory_gap = not inventory_current or bool(missing_items)
+        if inventory_gap:
+            values.append(["DATA_UNAVAILABLE"] * len(headers))
+        recovery = None
+        if inventory_gap:
+            recovery = FormulaDataUnavailableError(
+                context.contract.name,
+                "Current catalog inventory is incomplete or expired.",
+                read_model=ITEM_FORMULA_ROWS_READ_MODEL,
+                item_ids=missing_items if inventory_current else (),
+            )
+        elif missing:
+            recovery = FormulaDataUnavailableError(
+                context.contract.name,
+                "Catalog products are missing, expired or unverified.",
+                read_model=CATALOG_PRODUCT_SNAPSHOTS_READ_MODEL,
+                catalog_product_ids=missing,
+            )
         return FormulaExecutionResult(
             values=values,
-            meta={"rows_count": len(snapshots), "columns": "catalog_complete_current"},
+            recovery=recovery,
+            meta={
+                "rows_count": len(by_id) + len(missing) + int(inventory_gap),
+                "available_products": len(by_id),
+                "unavailable_products": len(missing),
+                "unavailable_items": len(missing_items),
+                "inventory_enumeration_current": inventory_current,
+                "catalog_products_complete": not inventory_gap and not missing,
+                **(
+                    {
+                        "unavailable_reason": "inventory_incomplete"
+                        if inventory_gap
+                        else "catalog_products_missing_or_expired"
+                    }
+                    if recovery
+                    else {}
+                ),
+                "columns": "catalog_complete_current" if complete else "catalog_legacy_simple",
+            },
         )
 
     async def sheetseller_catalogo_buybox(

@@ -99,9 +99,76 @@ async def test_catalog_outputs_include_every_stored_snapshot(formula: str, model
         }
         for i in range(1001)
     }
+    if model == CATALOG_PRODUCT_SNAPSHOTS_READ_MODEL:
+        _seed_catalog_inventory(db)
     result = await _dispatcher(db).execute(_context(formula, {"encabezados": False}))
     assert result.meta["rows_count"] == 1001
     assert len(result.values) == 1001
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "state",
+    [
+        "stale",
+        "future",
+        "missing",
+        "incomplete",
+        "inventory_expired",
+        "unverified_item",
+        "empty_inventory",
+    ],
+)
+@pytest.mark.parametrize(
+    "formula,width", [("ZELERDATA_OBTENER_CATALOGO", 3), ("ZELERDATA_CATALOGO_COMPLETO", 6)]
+)
+async def test_catalog_current_inventory_preserves_only_verified_products(
+    state: str, formula: str, width: int
+) -> None:
+    db = FakeDb()
+    products = db["sheets_catalog_product_snapshots"]
+    products.documents = {"first": {"title": "Available"}, "second": {"title": "Second"}}
+    _seed_catalog_inventory(db)
+    # A fresh-looking unrelated snapshot must never join the current inventory.
+    products.documents["unrelated"] = {
+        **products.documents["first"],
+        "_id": "82453304:MLM99",
+        "catalog_product_id": "MLM99",
+        "title": "Unrelated",
+    }
+    _mark_read_model_fresh(db, CATALOG_PRODUCT_SNAPSHOTS_READ_MODEL)
+    job = next(iter(db["sheets_formula_recovery_jobs"].documents.values()))
+    if state in {"stale", "future"}:
+        products.documents["second"]["snapshot_at"] = NOW + (
+            timedelta(minutes=-15) if state == "stale" else timedelta(seconds=1)
+        )
+    elif state == "missing":
+        del products.documents["second"]
+    elif state == "incomplete":
+        del products.documents["second"]["description"]
+    elif state == "inventory_expired":
+        job["inventory_observed_at"] = NOW - timedelta(minutes=15)
+    elif state == "unverified_item":
+        del db["sheets_item_formula_rows"].documents["catalog-1"]["source_snapshot"]
+    else:
+        job.update(inventory_ids=[], inventory_offset=0)
+    result = await _dispatcher(db).execute(_context(formula, {"encabezados": False}))
+    if state == "empty_inventory":
+        assert result.values == []
+        assert result.meta["catalog_products_complete"] is True
+        assert result.recovery is None
+        assert products.last_find_filter is None
+        return
+    assert result.values[0] == ["Available", *(["NA"] * (width - 1))]
+    assert result.values[-1] == ["DATA_UNAVAILABLE"] * width
+    assert result.meta["catalog_products_complete"] is False
+    assert not any("Unrelated" in row for row in result.values)
+    assert result.recovery is not None
+    if state in {"inventory_expired", "unverified_item"}:
+        assert result.recovery.read_model == ITEM_FORMULA_ROWS_READ_MODEL
+        assert result.recovery.item_ids == (() if state == "inventory_expired" else ("MLA1",))
+    else:
+        assert result.recovery.catalog_product_ids == ("MLM1",)
 
 
 @pytest.mark.asyncio
@@ -195,6 +262,7 @@ async def test_item_catalog_handlers_use_local_rows_and_catalog_snapshots() -> N
             "attributes": {"BRAND": "Acme", "MODEL": "M1", "GTIN": "789"},
         }
     }
+    _seed_catalog_inventory(db)
     db["sheets_catalog_buybox_snapshots"].documents = {
         "seller-1:MLA1": {
             "_id": "seller-1:MLA1",
@@ -589,8 +657,12 @@ async def test_item_shipping_catalog_formulas_require_fresh_read_model_marker(
     with pytest.raises(FormulaDataUnavailableError, match=formula) as error:
         await dispatcher.execute(_context(formula, args))
 
-    assert read_model in str(error.value)
-    assert "freshness/reconciliation" in str(error.value)
+    if read_model == CATALOG_PRODUCT_SNAPSHOTS_READ_MODEL:
+        assert error.value.read_model == ITEM_FORMULA_ROWS_READ_MODEL
+        assert "inventory" in str(error.value)
+    else:
+        assert read_model in str(error.value)
+        assert "freshness/reconciliation" in str(error.value)
 
 
 @pytest.mark.asyncio
@@ -617,8 +689,12 @@ async def test_item_shipping_catalog_formulas_reject_stale_read_model_marker(
     with pytest.raises(FormulaDataUnavailableError, match=formula) as error:
         await dispatcher.execute(_context(formula, args))
 
-    assert read_model in str(error.value)
-    assert "freshness/reconciliation" in str(error.value)
+    if read_model == CATALOG_PRODUCT_SNAPSHOTS_READ_MODEL:
+        assert error.value.read_model == ITEM_FORMULA_ROWS_READ_MODEL
+        assert "inventory" in str(error.value)
+    else:
+        assert read_model in str(error.value)
+        assert "freshness/reconciliation" in str(error.value)
 
 
 @pytest.mark.asyncio
@@ -685,12 +761,64 @@ def _context(formula: str, args: dict[str, Any]) -> FormulaExecutionContext:
     return FormulaExecutionContext(
         contract=FormulaRegistry.default().find_required(formula),
         cuenta="HOPEMOB",
-        seller_id="seller-1",
+        seller_id="82453304"
+        if formula in {"ZELERDATA_OBTENER_CATALOGO", "ZELERDATA_CATALOGO_COMPLETO"}
+        else "seller-1",
         seller_nickname="HOPEMOB",
         token_id="token-1",
         args=args,
         request_id="req-1",
     )
+
+
+def _seed_catalog_inventory(db: FakeDb) -> None:
+    from zeler_sheets.formulas.recovery import ItemInventoryRecoveryRequest
+    from zeler_sheets.item_projection import item_source_fingerprint
+
+    seller = "82453304"
+    ids = []
+    for index, snapshot in enumerate(db["sheets_catalog_product_snapshots"].documents.values()):
+        item_id, product_id = f"MLA{index}", f"MLM{index}"
+        ids.append(item_id)
+        snapshot.update(
+            _id=f"{seller}:{product_id}",
+            seller_id=seller,
+            catalog_product_id=product_id,
+            snapshot_at=NOW,
+            source="sheets_backfill",
+        )
+        snapshot.setdefault("title", "Product")
+        for field in ("description", "image_url", "attributes"):
+            snapshot.setdefault(field, None)
+        source = {
+            "_id": item_id,
+            "seller_id": seller,
+            "catalog_product_id": product_id,
+            "last_meli_sync_at": NOW,
+        }
+        db["items"].documents[f"catalog-{index}"] = source
+        db["sheets_item_formula_rows"].documents[f"catalog-{index}"] = {
+            "_id": f"{seller}:{item_id}",
+            "seller_id": seller,
+            "item_id": item_id,
+            "current": {"catalog_product_id": product_id},
+            "source_snapshot": {
+                "fingerprint": item_source_fingerprint(source),
+                "observed_at": NOW,
+                "rows_count": 1,
+            },
+        }
+    key = ItemInventoryRecoveryRequest(seller).key
+    db["sheets_formula_recovery_jobs"].documents[key] = {
+        "_id": key,
+        "seller_id": seller,
+        "read_model": "item_formula_rows",
+        "inventory_scope": True,
+        "state": "completed",
+        "inventory_ids": sorted(ids),
+        "inventory_observed_at": NOW,
+        "inventory_offset": len(ids),
+    }
 
 
 def _order_doc(
