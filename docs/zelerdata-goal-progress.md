@@ -3411,3 +3411,49 @@ retain their contract; other product deployments remain out of scope.
   `6098a93`; a new verified Sheets worker image is required before runtime
   acceptance. Bootstrap also calls this backfill: update its image before a future
   bootstrap run requiring the correction. API handlers are unchanged.
+
+## Runtime verification: historical SKU correction deployed
+
+- Worker source `749f296271748f7a5d723a2fb190a15eee02c6da` is now deployed by
+  digest `4fb14b0d69ee394f2db0bc9e9a90fd4a07a1be834a6195b2ac0a44b08a4daa41`.
+  Cloud Build `43ddd4d8-e72a-49fc-b0dc-5687ffffe8a4` succeeded; the canonical
+  provenance verifier bound image/build/connected repository/source locally and
+  merged the binding on the VM. Exact-source CI test `34246969190` and lint
+  `34246968962` both succeeded. No second build was submitted.
+- Worker-only activation passed preflight, exact Compose replacement, cached
+  immutable image, zero running recovery jobs, health HTTP **200**, healthy
+  container and **0 restarts**. API remains healthy at source `6098a93`, digest
+  `d9bfc8a87bf68765bb453618113402139dcd90abbb8d1d9ae3674b96ba2bc844`.
+  Worker rollback is digest
+  `5a70e40bafa593566bb3f371769854267ddfdabed2f01c9f81675844fc60d397`;
+  Compose backup is `docker-compose.yml.pre-sheets-worker-activate-749f296`.
+- Removed only unused old worker image
+  `50c87edc6503317b283c625a965fd46690dd304af1829a56a77c8fe66855f651`, after
+  checking every container, protecting four current/rollback images and
+  confirming Artifact Registry recoverability. No volumes/data were removed.
+  Pull took **14.24s**; final inspected root free space was **5,406,441,472 bytes**.
+- Read-only runtime sampling found **7** historical index entries/publications
+  and **3** persisted duplicate direct-identity groups. Enqueued those exact
+  seven publications once through the existing recovery queue; the normal
+  deployed worker completed job
+  `f497b2c60200df3064c355b16b91a5ab8f4adb47a91902e74829cd56c1b002af`
+  in **1 attempt**. Protected receipt:
+  `/var/lib/zeler-platform/repairs/historical-sku-selected-749f296.json` (0600).
+- Post-recovery verification used the receipt's same seven IDs, not a newly
+  selected subset: **0 duplicate direct-identity groups, 13 source-verified rows,
+  0 missing publications**, reader **0.0119s**. The current historical-source
+  index sample contained six entries; this probe does not independently prove
+  unchanged historical-index provenance. Global freshness markers and the
+  terminal full-inventory job remained byte-for-byte unchanged.
+- Whole-inventory CALCULADORA/CALIDAD returned **1,907 rows**, **1,893 missing
+  publications**, visible expiry warnings and incomplete/current=false metadata,
+  in **3.1542s / 1.8904s**; CALCULADORA exposed **13 numeric price rows**. These
+  internal runtime reads are not authenticated HTTP, p95, all-field correctness
+  or real Sheets acceptance. No complete-inventory claim is supported.
+- Local operator artifacts: `/tmp/zeler-sku-identity.qMOyWV/`. `pilot.py prepare`
+  has already executed; use only read-only status/probes to observe it. No new
+  service build is required for this evidence-only update. Bootstrap still
+  requires an updated image before a future run needing the shared correction.
+  Remaining functional work includes stale status precedence during backfill,
+  current complete inventory and all-52/user-facing acceptance before hardening
+  closure. Do not recreate incorrect duplicate rows during rollback.
