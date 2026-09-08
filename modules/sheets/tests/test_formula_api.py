@@ -30,6 +30,75 @@ class FakeUpdateResult:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "outcome", ["success", "duplicates", "capacity", "mixed", "invalid", "timeout"]
+)
+async def test_catalog_product_recovery_http_keeps_values_and_bounds_admission(
+    outcome: str,
+) -> None:
+    from zeler_sheets.formulas.dispatcher import FormulaDataUnavailableError
+    from zeler_sheets.formulas.recovery import CatalogProductIdsRecoveryRequest
+
+    identities = tuple(f"MLA{i}" for i in range(21))
+    if outcome == "duplicates":
+        identities = (*reversed(identities), *identities)
+    if outcome == "invalid":
+        identities = (*identities[:20], "../items")
+
+    async def handler(context: Any) -> FormulaExecutionResult:
+        return FormulaExecutionResult(
+            values=[["Available product", "Description", "NA"]],
+            meta={"partial_misses": 21},
+            recovery=FormulaDataUnavailableError(
+                context.contract.name,
+                read_model="catalog_product_snapshots",
+                catalog_product_ids=identities,
+                item_ids=("MLA99",) if outcome == "mixed" else (),
+            ),
+        )
+
+    app, _db, token = await _app_with_token(
+        now=datetime(2026, 5, 13, 12, tzinfo=UTC), formula_dispatcher=handler
+    )
+    queued: list[CatalogProductIdsRecoveryRequest] = []
+    cancelled = asyncio.Event()
+
+    class Queue:
+        async def enqueue(self, request: CatalogProductIdsRecoveryRequest) -> str:
+            queued.append(request)
+            if outcome == "capacity":
+                raise ValueError("capacity reached")
+            if outcome == "timeout":
+                try:
+                    await asyncio.Event().wait()
+                finally:
+                    cancelled.set()
+            return request.key
+
+    app.state.formula_recovery_queue = Queue()
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.post(
+            "/sheets/formulas:execute",
+            json={"formula": "ZELERDATA_OBTENER_CATALOGO", "cuenta": "HOPEMOB", "args": {}},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+    assert response.status_code == 200
+    assert response.json()["values"] == [["Available product", "Description", "NA"]]
+    assert response.json()["meta"]["recovery_requested"] is (outcome in {"success", "duplicates"})
+    assert len(queued) == (
+        2 if outcome in {"success", "duplicates"} else 0 if outcome in {"mixed", "invalid"} else 1
+    )
+    assert all(request.seller_id == "123456789" for request in queued)
+    if outcome in {"success", "duplicates"}:
+        assert [len(request.catalog_product_ids) for request in queued] == [20, 1]
+        assert set().union(*(request.catalog_product_ids for request in queued)) == set(identities)
+    if outcome == "timeout":
+        assert cancelled.is_set()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("admission_fails", [False, True])
 async def test_partial_formula_keeps_values_and_schedules_only_missing_items(
     admission_fails: bool,

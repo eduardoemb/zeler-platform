@@ -47,6 +47,84 @@ async def test_catalog_refresh_cooldown_ages_from_acquisition_start(recovery_db:
 
 
 @pytest.mark.asyncio
+async def test_catalog_product_http_admission_reaches_worker_and_persists(recovery_db: Any) -> None:
+    import httpx
+    from fastapi import FastAPI
+
+    from zeler_sheets.api import build_router
+    from zeler_sheets.extension_tokens import ExtensionTokenService, SellerScope
+    from zeler_sheets.formulas.dispatcher import FormulaDataUnavailableError, FormulaExecutionResult
+    from zeler_sheets.formulas.recovery import IMPLEMENTED_MODELS
+    from zeler_sheets.formulas.recovery_worker import FormulaRecoveryWorker
+
+    seller = "82453304"
+    await recovery_db.items.insert_one(
+        {"_id": "MLA10", "seller_id": seller, "catalog_product_id": "MLA1"}
+    )
+
+    # Isolate HTTP admission from the current-inventory consumer migration.
+    async def handler(context: Any) -> FormulaExecutionResult:
+        snapshot = await recovery_db.sheets_catalog_product_snapshots.find_one(
+            {"seller_id": context.seller_id, "catalog_product_id": "MLA1"}
+        )
+        if snapshot is None:
+            raise FormulaDataUnavailableError(
+                context.contract.name,
+                read_model="catalog_product_snapshots",
+                catalog_product_ids=("MLA1",),
+            )
+        return FormulaExecutionResult(
+            values=[[snapshot["title"], snapshot["description"]]], meta={}
+        )
+
+    app = FastAPI()
+    app.state.mongo_db = recovery_db
+    pepper = uuid4().hex
+    app.include_router(build_router(extension_token_pepper=pepper, formula_dispatcher=handler))
+    queue = FormulaRecoveryQueue(
+        recovery_db, enabled_models=IMPLEMENTED_MODELS, allowed_sellers=frozenset({seller})
+    )
+    app.state.formula_recovery_queue = queue
+    await queue.ensure_indexes()
+    token = await ExtensionTokenService(db=recovery_db, token_pepper=pepper).create_token(
+        owner_user_id="test-user",
+        label="Catalog bridge",
+        seller_scopes=[SellerScope(seller_id=seller, nickname="PILOT")],
+    )
+    calls: list[str] = []
+
+    class Gateway:
+        async def fetch_resource(self, *, seller_id: str, path: str) -> Any:
+            assert seller_id == seller and path == "/products/MLA1"
+            calls.append(path)
+            return {
+                "id": "MLA1",
+                "name": "Recovered product",
+                "short_description": {"type": "plaintext", "content": "Recovered description"},
+            }
+
+    payload = {"formula": "ZELERDATA_OBTENER_CATALOGO", "cuenta": "PILOT", "args": {}}
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        headers = {"Authorization": f"Bearer {token.token_once}"}
+        first = await client.post("/sheets/formulas:execute", headers=headers, json=payload)
+        assert first.json()["error"]["code"] == "DATA_UNAVAILABLE"
+        assert first.json()["meta"]["recovery_requested"] is True
+        assert calls == []
+        assert await FormulaRecoveryWorker(
+            db=recovery_db, queue=queue, gateway=Gateway()
+        ).process_one()
+        for _ in range(2):
+            ready = await client.post("/sheets/formulas:execute", headers=headers, json=payload)
+            assert ready.status_code == 200
+            assert ready.json()["values"] == [["Recovered product", "Recovered description"]]
+        assert calls == ["/products/MLA1"]
+    assert await queue.collection.count_documents({"state": "completed"}) == 1
+    assert await recovery_db.sheets_read_model_freshness.count_documents({}) == 0
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "outcome",
     ["success", "wrong_identity", "wrong_title", "transient", "lease_lost", "newer_snapshot"],

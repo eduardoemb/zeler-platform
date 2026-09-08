@@ -40,6 +40,7 @@ class FormulaDataUnavailableError(Exception):
         order_ids: tuple[str, ...] = (),
         shipment_ids: tuple[str, ...] = (),
         item_ids: tuple[str, ...] = (),
+        catalog_product_ids: tuple[str, ...] = (),
     ) -> None:
         message = f"{formula} data is not available yet"
         if reason:
@@ -53,6 +54,7 @@ class FormulaDataUnavailableError(Exception):
         self.order_ids = order_ids
         self.shipment_ids = shipment_ids
         self.item_ids = item_ids
+        self.catalog_product_ids = catalog_product_ids
 
 
 FormulaHandler: TypeAlias = Callable[

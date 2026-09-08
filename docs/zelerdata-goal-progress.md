@@ -21,6 +21,40 @@ Keep unrelated `.codegraph/` files untouched in both repositories.
 Pilot: seller `82453304`; initial historical window 2026-08-08 through
 2026-09-06, plus current snapshots. Other products are out of scope.
 
+## Catalog HTTP recovery admission — 2026-09-08 (not deployed)
+
+Formula recovery errors/results can now carry explicit `catalog_product_ids`.
+The API keeps them separate from publications, orders, shipments and date ranges;
+sorts/deduplicates the complete set; validates every batch before admission; and
+enqueues batches of at most 20 within a single one-second insertion budget.
+Capacity errors and timeout preserve already-calculated values and report that
+the complete recovery request was not admitted. No external API call is added
+to formula execution.
+
+- TDD: five HTTP scenarios initially returned 500 before the new error field and
+  dispatch branch. A sixth later exposed redundant batches for repeated/reordered
+  IDs. Final `test_formula_api.py`: 38 passed in 1.73s.
+- Local runtime boundary: `test_catalog_product_http_admission_reaches_worker_and_persists`
+  passed in 0.60s with real Mongo and authenticated local HTTP. An injected test
+  handler first reports missing product data; HTTP admits the durable job without
+  gateway calls; the actual worker obtains and persists it; two later HTTP reads
+  reuse it with no further gateway calls. This isolates admission/persistence;
+  it does **not** prove current production catalog handlers or inventory coverage.
+- Root regression before the final deduplication case: 4,017 passed, nine skipped,
+  356 warnings in 112.26s. Protected replica-set tests ran separately: eight
+  passed in 3.18s. Final API regression includes the deduplication change.
+  Ruff check/format, mypy (505 files), and diff checks passed.
+- Rollback boundary: the optional error field, product-specific admission branch,
+  and associated HTTP/runtime tests. No database schema/index or runtime changes.
+
+Next required step: migrate OBTENER_CATALOGO and CATALOGO_COMPLETO from global
+markers/all stored products to current-inventory membership, per-resource
+freshness, and partial-result recovery using this bridge. Until then, the normal
+handlers do not emit the new product requests. Both API and worker require new
+verified images after that consumer migration; the last observed production
+images are still from `07c8ad3`. Verify image drift again before rollout and
+prove the actual production formula → worker → Mongo → formula path afterward.
+
 ## Catalog product recovery worker — 2026-09-08 (not deployed)
 
 The queue/worker now support explicit catalog-product requests, separate from
