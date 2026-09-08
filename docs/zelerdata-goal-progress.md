@@ -21,6 +21,56 @@ Keep unrelated `.codegraph/` files untouched in both repositories.
 Pilot: seller `82453304`; initial historical window 2026-08-08 through
 2026-09-06, plus current snapshots. Other products are out of scope.
 
+## Full inventory faster, catalog convergence still incomplete — 2026-09-08
+
+The same `0db69e5` inventory acquisition completed 1,900/1,900 publications with
+zero unavailable IDs. Watch session `78965` is terminal, exit zero; do not restart
+it. Its final inventory probe reported age 689.51 seconds and last update 2.29
+seconds earlier, placing completion at approximately 687.22 seconds, versus
+896.44 for the previous run. This is a measured whole-inventory improvement of
+about 23%, not the larger improvement from the earlier 20-item sample.
+
+The watcher admitted product recovery through the normal helper while enumeration
+and all item sources were current. The first two actual handlers identified
+885 products, zero missing item sources and three-/six-column rows. They took
+9.2279/11.9843 seconds and reported zero/one available product. Admission returned
+false after partial enqueue; it did not mean that no work was admitted.
+
+Two subsequent normal `products.py recover` calls observed available products
+240/261 and 527/552, with current inventory and preserved incomplete metadata.
+Read durations were 10.9318/10.7749 and 7.2514/8.7006 seconds. The later request
+found enumeration expired, 100/120 unavailable item sources and 794/790 available
+products, so it correctly skipped further product admission. The changing counts
+are sequential observations, not a fixed-membership comparison. No observation
+timestamps, cooldowns or freshness markers were overridden.
+
+A separate lightweight VM probe confirmed 806 product snapshots acquired since
+this enumeration, with 43 completed, two failed and one pending product jobs.
+The two failed jobs reported `source_rejected`; this does not identify the exact
+upstream HTTP status or prove which individual products are unrecoverable.
+The normal request sequence had 920 product slots across job history; rebuilding
+groups from a changing missing set can overlap earlier batches. Do not interpret
+job slots or completed-job counts as unique/current product coverage. The pending
+job remains scheduled: a follow-up probe measured 499.07 seconds until its
+existing `available_at`, with no running product job. No cooldown was bypassed
+and no new inventory run was admitted after expiry.
+
+The recovered purpose data persists, but the end-to-end current catalog remains
+unproven: 79 products were still missing at the expired read, and that read itself
+no longer covered the full current membership. Next work must improve product
+acquisition/admission throughput and diagnose the rejected resources rather than
+repeat the identical sweep or relax the currentness test. The product worker is
+currently sequential per product, whereas item acquisition already uses four
+bounded concurrent sub-batches; full reads during acquisition also cost more than
+the approximately three-second idle samples. These identify investigation paths,
+not a claim that a particular next change will solve the complete problem.
+
+Evidence: `/tmp/zeler-projection-profile.97ePq6/{watch-products,products,progress}.py`
+on the approved VM, using the real worker, normal queue and Mongo-backed handlers.
+This is still operator evidence, not authenticated production HTTP/real Sheet
+acceptance. Documentation-only unit; no new build or deploy. Rollback removes
+this section alone. Worker remains `0db69e5`, API `c90a941`.
+
 ## Variation-attribute worker rollout — 2026-09-08
 
 `sheets-worker` now runs `0db69e5d9317b6f57c4d51d4521d4e6471c77956` as
