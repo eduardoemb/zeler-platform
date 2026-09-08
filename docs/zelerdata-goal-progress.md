@@ -3790,3 +3790,41 @@ markers unchanged. CALCULADORA had 298 numeric price cells. Counts are observed
 during concurrent progress, not an atomic end-to-end snapshot or proof of all
 fields. Observe this job to completion before evaluating freshness or admitting
 another whole-inventory sweep.
+
+## Catalog recovery audit: correct winner-price normalization first
+
+Four current consumers depend on catalog snapshots: OBTENER_CATALOGO and
+CATALOGO_COMPLETO use product snapshots; CATALOGOBUYBOX and CATALOGO use buybox
+snapshots. Both read models appear in `RECOVERABLE_MODELS`, but neither is in
+`IMPLEMENTED_MODELS`; runtime admission therefore rejects them. Existing snapshot
+acquisition is in the historical backfill, not the formula recovery worker.
+The catalog readers still rely on whole-model freshness markers and need an
+actual current-snapshot recovery/read contract, not merely enabled model names.
+
+Before wiring recovery, fixed a reproducible normalization error:
+`winning_price` was filled from the suggested `price_to_win`, while absent
+`price_to_win` could be filled from a legacy top-level `winning_price`. The
+documented API gives the actual winner in `winner.price` and the suggested price
+separately; these can differ, and the suggestion can be null.
+[Mercado Libre competition contract](https://developers.mercadolibre.com.mx/es_ar/como-empezar/competencia-en-catalogo)
+
+The normalizer now reads each canonical field independently. Missing/malformed
+winner containers remain unknown instead of borrowing the suggestion. It no
+longer accepts the undocumented top-level winner alias on this upstream path.
+Seven initial tests failed on the old behavior. After the change, historical
+backfill tests **52 passed in 0.28s**, including the existing persistence-path
+test now asserting winner 119 versus suggestion 118; item/shipping/catalog and
+remaining phase-four handler tests **62 passed in 0.19s**. Ruff check/format and
+mypy (505 files) pass. Full normal-allocator root suite with local replica-set
+Mongo: **3,944 passed, 9 skipped, 356 warnings in 107.92s**. The eight protected
+Mongo cases passed separately in **1.91s**; the remaining root skip needs Caddy
+keys.
+
+This does not repair existing production snapshots or enable automatic catalog
+recovery. Runtime proof still needs a real owned catalog item, verified upstream
+response, normalized publication and formula read. Do not re-label stored target
+prices as winners without refetching the source. The rollback boundary is
+`_catalog_buybox_snapshot` and its corresponding regression/fixture assertions.
+The historical backfill and operational reconcile caller need an image containing
+this change before their next invocation. The running inventory worker is still
+`62d799e`; do not interrupt its active sweep to deploy this unused recovery path.

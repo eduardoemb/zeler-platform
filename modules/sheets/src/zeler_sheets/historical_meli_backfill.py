@@ -812,6 +812,8 @@ def _catalog_buybox_snapshot(
     )
     if item_id is None or catalog_product_id is None:
         return None
+    winner = resource.get("winner")
+    winning_price = winner.get("price") if isinstance(winner, dict) else None
     return {
         "_id": _catalog_buybox_snapshot_id(seller_id, item_id),
         "seller_id": seller_id,
@@ -823,8 +825,8 @@ def _catalog_buybox_snapshot(
             resource.get("buybox_status") or resource.get("status") or resource.get("winner_status")
         ),
         "price": _first_non_null(resource, "price", "current_price", "item_price"),
-        "winning_price": _first_non_null(resource, "winning_price", "price_to_win"),
-        "price_to_win": _first_non_null(resource, "price_to_win", "winning_price"),
+        "winning_price": winning_price,
+        "price_to_win": resource.get("price_to_win"),
         "competitor_count": _catalog_competitor_count(resource),
         "only_competitor": resource.get("only_competitor"),
         "snapshot_at": datetime.now(UTC),

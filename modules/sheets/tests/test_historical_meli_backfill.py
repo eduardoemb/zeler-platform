@@ -1394,9 +1394,37 @@ async def test_historical_backfill_reconciles_catalog_product_and_buybox_snapsho
     assert buybox["available_quantity"] == 7
     assert buybox["buybox_status"] == "winning"
     assert buybox["price"] == 120
-    assert buybox["winning_price"] == 118
+    assert buybox["winning_price"] == 119
+    assert buybox["price_to_win"] == 118
     assert buybox["competitor_count"] == 2
     assert buybox["only_competitor"] == "No"
+
+
+@pytest.mark.parametrize(
+    ("resource", "winning_price", "target_price"),
+    [
+        ({"winner": {"price": 100}, "price_to_win": 90}, 100, 90),
+        ({"winner": None, "price_to_win": 90}, None, 90),
+        ({"winner": {"price": 100}, "price_to_win": None}, 100, None),
+        ({"winner": {"price": 100}}, 100, None),
+        ({"winner": {}, "price_to_win": 90}, None, 90),
+        ({"winner": [], "price_to_win": 90}, None, 90),
+        ({"winning_price": 80}, None, None),
+    ],
+)
+def test_catalog_buybox_keeps_winner_and_suggested_prices_distinct(
+    resource: dict[str, Any], winning_price: int | None, target_price: int | None
+) -> None:
+    snapshot = historical_backfill_module._catalog_buybox_snapshot(
+        resource,
+        seller_id="82453304",
+        source=historical_backfill_module.CatalogSnapshotSource(
+            item_id="MLA1", catalog_product_id="MLA123"
+        ),
+    )
+    assert snapshot is not None
+    assert snapshot["winning_price"] == winning_price
+    assert snapshot["price_to_win"] == target_price
 
 
 @pytest.mark.asyncio
@@ -1840,6 +1868,7 @@ def _price_to_win_detail() -> dict[str, Any]:
         "status": "winning",
         "current_price": 120,
         "price_to_win": 118,
+        "winner": {"item_id": "MLA2", "price": 119},
         "competitors": [{"item_id": "MLA2"}, {"item_id": "MLA3"}],
         "only_competitor": "No",
     }
