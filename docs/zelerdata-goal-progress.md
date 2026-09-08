@@ -86,6 +86,38 @@ columns remain usable, and formulas do not call Mercado Libre.
   its tests together; the additive persistence field can remain independently.
   Dashboard filtering and catalog snapshot consumers remain pending.
 
+## Historical buybox participation scope — 2026-09-08 (not deployed)
+
+Historical catalog acquisition now selects buybox requests only for explicit
+`catalog_listing=true`; product snapshots still include associated parent and
+variation products regardless of participation. Mongo source projection and
+fresh-response override preserve the boolean independently of those links.
+
+Unknown participation, or true participation without a parent product identity,
+refuses this historical backfill before catalog requests or business writes.
+This is an operator backfill precondition, not a change to formula availability:
+refresh item details first. It does not implement automatic catalog recovery,
+remove old snapshots, establish current catalog membership, or bypass item limits
+by silently acquiring all unknown stored publications. Those remain separate
+functional work; production has not been refreshed by this unit.
+
+- TDD: explicit true/false/unknown scope test initially had 2 failures and
+  1 pass; the historical suite now has 57 passed in 0.29s. Tests check product
+  acquisition remains intact for false, zero buybox calls/writes for false,
+  and no catalog calls or item/order writes for unknown.
+- Local Mongo source-projection test: 1 passed in 0.46s, preserving true/false,
+  deduplicated variation associations and seller isolation. No upstream live
+  calls or production writes were made for this unit.
+- Root regression with loopback Mongo: 3,991 passed, 9 skipped, 356 warnings
+  in 114.95s. Protected replica-set scenarios: 8 passed in 2.83s. Ruff check,
+  format, mypy (505 files) and diff checks passed.
+- Deployment: include this change in the next verified Sheets worker/API
+  images, after the additive item validators. Do not invoke a broad historical
+  backfill as a smoke test; verify a bounded owned-item catalog scope first.
+- Rollback boundary: source dataclass/projection/parser and participation scope
+  guard with their tests. The canonical persisted flag and calculator fix are
+  independent and need not be reverted.
+
 ## Baseline — 2026-09-07
 
 - Backend main: `c5a2e097e765a083fa1fff7fdec3782ef81fd998`.

@@ -85,20 +85,21 @@ async def test_catalog_source_projection_retains_variation_only_products_in_mong
                 "_id": "MLA1",
                 "seller_id": "82453304",
                 "catalog_product_id": None,
+                "catalog_listing": False,
                 "variations": [
                     {"id": 1, "catalog_product_id": "MLA10", "attributes": []},
                     {"id": 2, "catalog_product_id": "MLA10"},
                     {"id": 3, "catalog_product_id": "MLA11"},
                 ],
             },
-            {"_id": "MLA2", "seller_id": "82453304"},
+            {"_id": "MLA2", "seller_id": "82453304", "catalog_listing": True},
             {"_id": "MLA3", "seller_id": "42", "catalog_product_id": "MLA12"},
         ]
     )
     rows = await _catalog_snapshot_source_rows(db=recovery_db, seller_id="82453304")
     assert set(rows) == {
-        CatalogSnapshotSource("MLA1", None, ("MLA10", "MLA11")),
-        CatalogSnapshotSource("MLA2", None),
+        CatalogSnapshotSource("MLA1", None, ("MLA10", "MLA11"), False),
+        CatalogSnapshotSource("MLA2", None, catalog_listing=True),
     }
     assert await recovery_db.items.count_documents({}) == 3
     assert await recovery_db.sheets_catalog_product_snapshots.count_documents({}) == 0

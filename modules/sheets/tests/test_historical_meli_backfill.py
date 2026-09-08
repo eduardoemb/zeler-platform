@@ -1338,6 +1338,46 @@ async def test_catalog_invalid_identity_aborts_before_backfill_writes(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("participation", [True, False, None])
+async def test_catalog_buybox_requires_explicit_participation(participation: bool | None) -> None:
+    db = FakeDb()
+
+    class Gateway(FakeGateway):
+        async def fetch_resource(self, *, seller_id: str, path: str) -> Any:
+            response = await super().fetch_resource(seller_id=seller_id, path=path)
+            if path == "/items?ids=MLA1":
+                response[0]["body"]["catalog_listing"] = participation
+            return response
+
+    catalog_gateway = FakeCatalogGateway()
+    kwargs: dict[str, Any] = dict(
+        db=db,
+        gateway=Gateway(),
+        order_detail_gateway=FakeOrderDetailGateway(),
+        catalog_gateway=catalog_gateway,
+        seller_id="82453304",
+        date_from="2026-05-01",
+        date_to="2026-05-01",
+        dry_run=False,
+        approved_runtime=True,
+        max_orders=1,
+        include_catalog_snapshots=True,
+    )
+    if participation is None:
+        with pytest.raises(ValueError, match="catalog participation unavailable"):
+            await run_historical_meli_backfill(**kwargs)
+        assert catalog_gateway.calls == []
+        assert db["items"].documents == {}
+        assert db["orders"].documents == {}
+    else:
+        summary = await run_historical_meli_backfill(**kwargs)
+        assert summary.catalog_product_snapshots_found == 1
+        assert summary.catalog_buybox_snapshots_found == int(participation)
+        assert summary.written_catalog_buybox_snapshots == int(participation)
+        assert len(catalog_gateway.calls) == 1 + int(participation)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("parent_removed", [False, True])
 async def test_catalog_acquisition_includes_variations_and_prefers_fetched_associations(
     parent_removed: bool,
@@ -1349,6 +1389,7 @@ async def test_catalog_acquisition_includes_variations_and_prefers_fetched_assoc
                 "_id": "MLA1",
                 "seller_id": "82453304",
                 "catalog_product_id": "OLD-PARENT",
+                "catalog_listing": True,
                 "variations": [{"catalog_product_id": "OLD-VARIATION"}],
             },
             "MLA2": {
@@ -1356,6 +1397,7 @@ async def test_catalog_acquisition_includes_variations_and_prefers_fetched_assoc
                 "seller_id": "82453304",
                 "catalog_product_id": None,
                 "variations": [{"catalog_product_id": "VAR-STORED"}],
+                "catalog_listing": False,
             },
             "MLA3": {
                 "_id": "MLA3",
@@ -1370,6 +1412,7 @@ async def test_catalog_acquisition_includes_variations_and_prefers_fetched_assoc
             response = await super().fetch_resource(seller_id=seller_id, path=path)
             if path == "/items?ids=MLA1":
                 response[0]["body"]["catalog_product_id"] = None if parent_removed else "CAT-MLA1"
+                response[0]["body"]["catalog_listing"] = not parent_removed
                 response[0]["body"]["variations"] = [
                     {
                         "id": identity,
@@ -1921,6 +1964,7 @@ def _item_detail() -> dict[str, Any]:
         "attributes": [{"id": "SELLER_SKU", "value_name": "sku-1"}],
         "catalog_product_id": "CAT-MLA1",
         "variations": [],
+        "catalog_listing": True,
         "date_created": "2026-05-01T10:00:00+00:00",
         "last_updated": "2026-05-01T11:00:00+00:00",
     }

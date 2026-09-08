@@ -191,6 +191,7 @@ class CatalogSnapshotSource:
     item_id: str
     catalog_product_id: str | None
     variation_catalog_product_ids: tuple[str, ...] = ()
+    catalog_listing: bool | None = None
 
 
 def parse_inclusive_date_range(date_from: str, date_to: str) -> InclusiveDateRange:
@@ -364,7 +365,15 @@ async def run_historical_meli_backfill(
             for row in catalog_scope
             for identity in (row.catalog_product_id, *row.variation_catalog_product_ids)
         )
-        catalog_buybox_scope = [row for row in catalog_scope if row.catalog_product_id is not None]
+        if any(
+            row.catalog_listing is None
+            or (row.catalog_listing is True and row.catalog_product_id is None)
+            for row in catalog_scope
+        ):
+            raise ValueError(
+                "catalog participation unavailable; refresh item details before catalog backfill"
+            )
+        catalog_buybox_scope = [row for row in catalog_scope if row.catalog_listing is True]
         catalog_product_snapshots = await _fetch_catalog_product_snapshots(
             gateway=catalog_gateway,
             seller_id=seller_id,
@@ -711,7 +720,12 @@ def _build_question_search_path(*, seller_id: str, offset: int) -> str:
 async def _catalog_snapshot_source_rows(*, db: Any, seller_id: str) -> list[CatalogSnapshotSource]:
     cursor = db["items"].find(
         {"seller_id": seller_id},
-        {"_id": 1, "catalog_product_id": 1, "variations.catalog_product_id": 1},
+        {
+            "_id": 1,
+            "catalog_product_id": 1,
+            "variations.catalog_product_id": 1,
+            "catalog_listing": 1,
+        },
     )
     rows: list[CatalogSnapshotSource] = []
     async for item in cursor:
@@ -735,7 +749,15 @@ def _catalog_snapshot_source_rows_from_resources(
             if isinstance(variation, dict)
         )
         # Keep an empty association so fresh source data can remove a stored one.
-        rows.append(CatalogSnapshotSource(item_id, catalog_product_id, tuple(variation_ids)))
+        participation = resource.get("catalog_listing")
+        rows.append(
+            CatalogSnapshotSource(
+                item_id,
+                catalog_product_id,
+                tuple(variation_ids),
+                participation if isinstance(participation, bool) else None,
+            )
+        )
     return rows
 
 
