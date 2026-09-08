@@ -2124,3 +2124,66 @@ retain their contract; other product deployments remain out of scope.
   passed **8 tests in 11.91s**. Final Ruff check/format, mypy (502 files) and
   whitespace checks passed; these are local verification, not productive HTTP
   or Google Sheet acceptance.
+
+## Promotion/calculator image provenance
+
+- Built both Sheets images from pushed main
+  `ab6e01f60ad7b83402a822ef4325f0014d3bd175`, covering the promotion acquisition
+  and shared dashboard/calculator reader changes. Exact connected repository,
+  source, successful build and SLSA digest verification passed:
+  - API build `d11f4f80-ed24-468f-ab37-2aa049c8ca87`, image
+    `sheets-api@sha256:ec894447aa2eae1c5a2d0497938aa38034aafac394641fa7b4d5a1ab70aab9ff`.
+  - Worker build `845acd23-c284-47ea-a9e6-334609d4ac91`, image
+    `sheets-worker@sha256:1e83c732e90a78ee0464cc62453d4ce93f425c7c358a8d2b1a3a84de4bf6fe92`.
+  Existing Artifact Registry prefix is unchanged. Temporary configs/verifier:
+  `/tmp/zeler-promo-build.WkS0jv`.
+- The local SDK process twice exited with SIGSEGV while reading artifact
+  metadata. The existing builds were not restarted. Running the same verifier
+  with command-scoped `CLOUDSDK_PYTHON=/usr/bin/python3` completed both checks.
+  No credentials, project settings or SDK installation were changed; the
+  underlying bundled-interpreter crash cause is not established.
+- Before rollout, both existing services were healthy with zero restarts,
+  `/health` HTTP 200 and recovery enabled only for `82453304`. There were zero
+  running recovery jobs and zero pending pilot jobs. Removed only unreferenced
+  local worker `64b87403ec0d3655eedd8d57ee68352fd8ede1c5a9fbb516130fdf5d0867d015`
+  and API `a4f62877759b00eedafeddb750735710047edcb68624fa7f215ccb71f2b77cf3`
+  image copies after checking all containers and Artifact Registry recovery.
+  No data or volumes were deleted. Root free space increased from 5.58 to
+  6.59 GiB; the currently running image pair was retained for rollback.
+- The worker deployment returned successful dry/real preflight, pull and
+  targeted recreation, with backup
+  `/opt/zeler-platform/docker-compose.yml.pre-sheets-worker-ab6e01f`.
+  The API deployment observation handle disappeared when the execution
+  environment changed; it was not restarted. A new read-only VM inspection
+  proved both services running the verified `ab6e01f` digests above, healthy,
+  zero restarts and `/health` HTTP 200, still enabled only for the pilot.
+  Root free space after both deployments is **5.57 GiB**.
+- The prior running worker `d885b5117058456430d060d38cc11015995d8f9bcb8172914e6298fdc8abdfe7`
+  and API `80df92e6eb2b91e85e9b27c7700df4618b7211c814b1a013749a867ffb9c9433`
+  are the rollback authorities. Restore only the affected image line, preserve
+  pilot configuration and normalized data, and verify runtime health. Do not
+  restore an entire older Compose backup over unrelated service changes.
+- The original refresh diagnostic stopped before acquisition/writes because
+  the latest-sync cohort had changed to one document. A read-only check found
+  1,582 dated pilot items. Selection was changed to the 20 most recently synced
+  pilot items, with a deterministic ID tiebreaker and a hard 20-document limit;
+  no assumption was made that the original cohort remained unchanged.
+- The bounded operator refresh then validated all 20 items in dry-run at
+  **11.282s**, reacquired and guardedly updated all 20 by **21.402s**, and completed
+  projection plus persisted-row checks in **22.097s**. Independent live-validator
+  checks found zero invalid items and all 20 refreshed timestamps. It wrote
+  24 formula rows and 24 SKU-index upserts, with zero ambiguous identities or
+  projection errors. The diagnostic missing-field count was 17, not 17 failed
+  writes; all 24 planned formula rows persisted.
+- All 24 persisted rows carried promotion acquisition state. Reading those
+  actual Mongo rows through the deployed shared promotion reader and calculator
+  row function returned `NA` in all 24 dashboard promotion, calculator promo
+  price and dependent net cells, matching authoritative absence. No fallback
+  ordinary price was substituted. This is productive persisted-row evidence,
+  not authenticated HTTP dispatcher or real-Sheet acceptance, and no whole-
+  inventory completeness/freshness marker was published.
+- The operator process is terminal. `/tmp/zeler-promo-refresh.py` captures the
+  corrected bounded scenario; executing it again performs fresh API acquisition
+  and writes and must not be used as a read-only status probe. Remaining work
+  still includes full inventory acquisition, asynchronous item/catalog recovery,
+  temporal availability and the complete formula/Sheet/app acceptance gates.
