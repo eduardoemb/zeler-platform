@@ -2455,3 +2455,28 @@ retain their contract; other product deployments remain out of scope.
   followed by runtime health and current pilot row-identity/coverage checks.
 - Full root regression passed **3,826 tests, 9 skipped, 356 warnings in 91.12s**.
   Ruff check/format, mypy (502 files), and whitespace validation also pass.
+
+## Late SKU event also reconciles no-SKU transitions
+
+- Extending the same controlled Mongo interleaving in the reverse direction
+  reproduced an orphan parent-SKU index and, for a variation, a duplicated old
+  row after the newer no-SKU event completed. The native writer now checks for
+  an item-only row after its writes and shares the bounded reconciliation helper.
+- The shared backfill recognizes non-order-line SKU indexes without formula rows
+  as a transition requiring transactional cleanup. Canonical source items and
+  order-line identity evidence remain untouched.
+- The four interleavings (both directions, parent and variation SKU), plus the
+  contention budget test, passed **5 tests in 1.52s**. Native event/backfill
+  regression passed **217 tests in 0.37s**. This expands the existing regression
+  rather than duplicating a separate concurrency harness.
+- Rollback removes the native post-write reconciliation check and index-only
+  transition detection, and reverses the test expansion. It does not remove
+  normalized source data or the previous no-SKU-event correction.
+- No production mutation or build occurred in this unit. Pending no-SKU changes
+  still require new verified Sheets API/worker images, followed by health and
+  pilot identity/coverage checks. Local controlled interleavings are not evidence
+  of current production coverage or all 52 authenticated formula responses.
+- Root regression passed **3,828 tests, 9 skipped, 356 warnings in 90.99s**;
+  protected stock-time suites passed **8 tests in 2.45s**. Ruff check/format,
+  mypy (502 files), and whitespace checks pass. Read-only VM inspection again
+  confirmed the exact `898c916` API/worker image digests healthy.

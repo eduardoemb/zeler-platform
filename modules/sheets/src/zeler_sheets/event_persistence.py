@@ -564,18 +564,8 @@ class SheetsEventPersistence:
         ):
             # Share the no-SKU representation and atomic identity transitions;
             # do not publish a SKU-index entry before its row transition commits.
-            # Another event can change identity after the backfill has planned
-            # its writes. Re-project the persisted winner before acknowledging
-            # this event; repeated contention must retry, not report success.
-            scope = {"_id": item_id, "seller_id": seller_id}
-            for _ in range(3):
-                before = await self._db["items"].find_one(scope)
-                await run_sheetseller_backfill(
-                    db=self._db, seller_id=seller_id, item_ids=(item_id,), dry_run=False
-                )
-                if await self._db["items"].find_one(scope) == before:
-                    return
-            raise RuntimeError("item projection source changed during bounded reconciliation")
+            await self._reconcile_item_identity(seller_id=seller_id, item_id=item_id)
+            return
         for sku_index_doc in sku_index_docs:
             await self._db["sheets_item_sku_index"].replace_one(
                 {"_id": sku_index_doc["_id"]}, sku_index_doc, upsert=True
@@ -612,6 +602,29 @@ class SheetsEventPersistence:
                 await self._replace_formula_row_if_observation_current(
                     formula_row_doc, status_state=status_state, seller_id=seller_id
                 )
+
+        # A no-SKU event may have completed after our initial identity check.
+        # Settle any row/index written late against the persisted source.
+        if (
+            await self._db["sheets_item_formula_rows"].find_one(
+                {"_id": _formula_row_id(seller_id=seller_id, normalized_sku="", item_id=item_id)}
+            )
+            is not None
+        ):
+            await self._reconcile_item_identity(seller_id=seller_id, item_id=item_id)
+
+    async def _reconcile_item_identity(self, *, seller_id: str, item_id: str) -> None:
+        # Re-project the persisted winner before acknowledging this event;
+        # repeated contention must retry, not report success.
+        scope = {"_id": item_id, "seller_id": seller_id}
+        for _ in range(3):
+            before = await self._db["items"].find_one(scope)
+            await run_sheetseller_backfill(
+                db=self._db, seller_id=seller_id, item_ids=(item_id,), dry_run=False
+            )
+            if await self._db["items"].find_one(scope) == before:
+                return
+        raise RuntimeError("item projection source changed during bounded reconciliation")
 
     async def _replace_formula_row_if_observation_current(
         self, formula_row_doc: dict[str, Any], *, status_state: dict[str, Any], seller_id: str

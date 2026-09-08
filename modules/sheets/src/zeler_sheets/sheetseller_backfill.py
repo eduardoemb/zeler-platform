@@ -484,14 +484,24 @@ async def run_sheetseller_backfill(
                 and await formula_rows_collection.find_one({"_id": item_only_id}) is not None
             ) or (
                 not any(doc["normalized_sku"] for doc in formula_row_docs)
-                and await formula_rows_collection.find_one(
-                    {
-                        "seller_id": seller_id,
-                        "item_id": _item_id(item),
-                        "normalized_sku": {"$ne": ""},
-                    }
+                and (
+                    await formula_rows_collection.find_one(
+                        {
+                            "seller_id": seller_id,
+                            "item_id": _item_id(item),
+                            "normalized_sku": {"$ne": ""},
+                        }
+                    )
+                    is not None
+                    or await sku_index_collection.find_one(
+                        {
+                            "seller_id": seller_id,
+                            "item_id": _item_id(item),
+                            "source": {"$ne": "order_line"},
+                        }
+                    )
+                    is not None
                 )
-                is not None
             ):
                 await _replace_item_only_projection(
                     db=db,

@@ -78,8 +78,9 @@ async def test_no_sku_event_reconciliation_is_bounded_under_source_contention(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("sku_level", ["item", "variation"])
-async def test_older_no_sku_event_finishing_last_preserves_newer_identity(
-    recovery_db: Any, monkeypatch: pytest.MonkeyPatch, sku_level: str
+@pytest.mark.parametrize("reverse", [False, True])
+async def test_older_item_event_finishing_last_preserves_newer_identity(
+    recovery_db: Any, monkeypatch: pytest.MonkeyPatch, sku_level: str, reverse: bool
 ) -> None:
     import zeler_sheets.sheetseller_backfill as backfill
     from zeler_sheets.event_persistence import SheetsEventPersistence
@@ -95,6 +96,17 @@ async def test_older_no_sku_event_finishing_last_preserves_newer_identity(
         return await original(collection, doc, **kwargs)
 
     monkeypatch.setattr(backfill, "_replace_formula_row_from_backfill_if_current", pause_old_write)
+    native_original = SheetsEventPersistence._replace_formula_row_if_observation_current
+
+    async def pause_native_write(self: Any, doc: dict[str, Any], **kwargs: Any) -> None:
+        if reverse and doc["current"]["title"] == "Older event":
+            paused.set()
+            await asyncio.wait_for(release.wait(), timeout=10)
+        await native_original(self, doc, **kwargs)
+
+    monkeypatch.setattr(
+        SheetsEventPersistence, "_replace_formula_row_if_observation_current", pause_native_write
+    )
     old = {
         "id": "MLA1",
         "seller_id": 82453304,
@@ -119,6 +131,9 @@ async def test_older_no_sku_event_finishing_last_preserves_newer_identity(
         if sku_level == "variation"
         else [],
     }
+    if reverse:
+        for field in ("attributes", "variations"):
+            old[field], newer[field] = newer[field], old[field]
     old_writer = SheetsEventPersistence(
         db=recovery_db, clock=lambda: datetime(2026, 9, 7, 12, tzinfo=UTC)
     )
@@ -144,8 +159,11 @@ async def test_older_no_sku_event_finishing_last_preserves_newer_identity(
         {"seller_id": "82453304", "item_id": "MLA1"}
     ).to_list(length=10)
     assert len(rows) == 1
-    assert rows[0]["sku"] == "SKU-1"
+    assert rows[0]["sku"] == (None if reverse else "SKU-1")
     assert rows[0]["current"]["title"] == "Newer event"
+    assert await recovery_db.sheets_item_sku_index.count_documents(
+        {"seller_id": "82453304", "item_id": "MLA1"}
+    ) == int(not reverse)
 
 
 @pytest.mark.asyncio
