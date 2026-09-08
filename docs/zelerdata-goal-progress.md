@@ -2779,3 +2779,49 @@ retain their contract; other product deployments remain out of scope.
   occurred in this unit. Sheets API needs a new verified image and mixed-selection
   runtime verification; the already deployed worker supports explicit-ID jobs.
   Before any pull, recover the previously observed disk margin and recheck it.
+
+## Mixed-selection release verified with two real pilot publications
+
+- Sheets API now runs source `02adf597bacf943088c9af1a2e0e1eb2bc14e553`,
+  built once by `e8ebc36c-6961-4b7b-9552-fc9d820a5587`. The repository
+  provenance verifier bound its immutable digest
+  `f8ccf361eb7e54639d6a6a6128ea4e7841c1e519b98bd37b8ff8dbdf8c633cfe`
+  to that exact source before deployment. Target-only API deployment passed
+  preflight, reached healthy, returned HTTP `/health` 200 and had zero restarts.
+- Removed only the unused local API image
+  `d9b86c8403e1ac27314893b04be5a5d446215957a006e8c644217061b4370641`.
+  That exact digest remains in Artifact Registry and is recoverable. Checks
+  across all running/stopped containers found zero references; the current
+  `f51c374` and prior `f74f3f1` pairs were present and protected. Guards were
+  repeated immediately before non-force removal. No container, volume, source
+  data or remote artifact was deleted. Free space increased from
+  **4,883,820,544 to 5,426,511,872 bytes**; dry preflight then passed.
+- From the approved API-container context, the probe selected two existing
+  pilot item-only publications without source receipts. The normal running
+  worker recovered the first through real gateway/acquisition/projection paths.
+  An internal CALCULADORA dispatch then returned two rows in **0.0048s**:
+  the first retained its numeric price, while the second contained its ID plus
+  14 DATA_UNAVAILABLE cells. Metadata reported one missing publication, and the
+  actual API admission helper queued only that second ID.
+- Both jobs completed in **one attempt each**:
+  `4a40f97ce35343dcfd32ce21f0e1bae8f45421ae58f37624fa874095c4fcc9f4` and
+  `825719a75e5df1045e89f09acd459fc559346ccb56874ec4963e00727f693fd9`.
+  The final internal dispatch returned **two rows**, both numeric prices,
+  **zero partial misses and zero DATA_UNAVAILABLE cells**, in **0.0048s**.
+  The seller's global freshness-marker hash remained unchanged. The protected
+  receipt is `/var/lib/zeler-platform/repairs/calculator-mixed-02adf59.json`;
+  preparation and second admission are completed operations, not status probes.
+- This is real runtime recovery and Mongo-read evidence, not authenticated
+  productive HTTP, live Google Sheets acceptance, a p95 measurement, independent
+  verification of every cell, or proof of whole-inventory freshness. No second
+  operator worker, synthetic upstream payload or production validator change
+  was used. The full 52-formula mission remains open.
+- The worker was not recreated: digest
+  `55e10b4593b0ccb5df81a513daf9ce10be26c5da1516d85e7b7b6fb8a72f8512`
+  remained healthy with zero restarts. API rollback is the previously running
+  `c187698e5522dbf50952a6577511601143e25346bcfb836e5d494c7fa1f4be87`;
+  the Compose backup ends in `.pre-sheets-api-02adf59`. Restore only that image
+  line and verify API health/read behavior; preserve recovered data and jobs.
+- Post-deployment free space was **4,883,578,880 bytes**. Another pull requires
+  recovering capacity and passing preflight again. The API image now matches
+  the intended runtime change; this evidence-only commit needs no new build.
