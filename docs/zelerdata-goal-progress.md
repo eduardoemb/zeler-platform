@@ -2673,3 +2673,19 @@ retain their contract; other product deployments remain out of scope.
 - Rollback removes only the new integration test and this evidence record.
   Pending runtime changes still require release of Sheets API and worker, then
   a real pilot recovery-to-read check from the approved runtime context.
+
+## Disk margin recovered for source-freshness release
+
+- Removed only the unused local `ab6e01f` API/worker image references:
+  `ec894447aa2eae1c5a2d0497938aa38034aafac394641fa7b4d5a1ab70aab9ff` and
+  `1e83c732e90a78ee0464cc62453d4ce93f425c7c358a8d2b1a3a84de4bf6fe92`.
+  Both exact digests were verified present in Artifact Registry, so these local
+  copies are recoverable. Zero running or stopped containers referenced them.
+- The current `f74f3f1` pair and immediate rollback `898c916` pair were present
+  and excluded by image ID. Those checks were repeated immediately before
+  non-force removal. No volume, data, container or remote artifact was deleted.
+- Free space increased from **4,885,688,320** to **5,970,952,192 bytes**. The
+  removal invocation completed successfully and must not be repeated as a status
+  check. Recheck capacity before each subsequent image pull.
+- Post-cleanup dry preflight passed. Both exact `f74f3f1` running digests remain
+  healthy with zero restarts; no service was recreated during this maintenance.
