@@ -171,13 +171,23 @@ repository revision above, with one image per build. Last authoritative status:
 
 | Service | Build ID | Status |
 | --- | --- | --- |
-| Sheets API | `d517ab72-3560-4917-9da6-594a25426cf4` | WORKING |
-| Sheets worker | `67e264a7-22f3-489f-9926-dbe7de9aff80` | WORKING |
+| Sheets API | `d517ab72-3560-4917-9da6-594a25426cf4` | SUCCESS |
+| Sheets worker | `67e264a7-22f3-489f-9926-dbe7de9aff80` | SUCCESS |
 
-Continue observing these IDs; do not resubmit. Build completion, provenance and
-rollout are not yet established. GitHub test run `34265791402` was still running;
-lint run `34265791416` had succeeded. Deployment remains gated on CI, verified
-image/source correspondence, and fresh capacity checks.
+Do not resubmit these builds. Canonical `infra.deploy.provenance_check verify-image`
+passed separately for both using full Cloud Build and Artifact Registry provenance,
+expected connected repository, commit, project ID and project number. Immutable
+digests are:
+
+- API: `sha256:2c2c8bf22f7fbe21fc8253962e53fe5314dfbcf3bedc6f85b1f71f5f17cc311a`.
+- Worker: `sha256:5e6a0bae160b005a34efc0f7894de078b442ef99b63b8b0da7734a2ca6a43a18`.
+
+Full evidence and the verified local `image_to_commit.json` are in the temporary
+rollout directory above (`*-complete-build.json`, `*-artifact.json`). They have
+not yet been merged into the VM's provenance map or activated. GitHub test run
+`34265791402` was rechecked and still running; lint run `34265791416` succeeded.
+Deployment remains gated on CI and fresh capacity checks. The newer main commit
+only records this operational evidence; it does not require rebuilding these images.
 
 Pre-change health check: API digest `c679a81b…` and worker `65a8dcff…` healthy,
 zero restarts, 5,394,870,272 free root bytes. Those images lack the catalog changes.
