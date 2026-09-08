@@ -3253,3 +3253,36 @@ retain their contract; other product deployments remain out of scope.
   to observe it. The next availability fix must separate unverified inventory
   completeness from individually verified data without silently claiming a
   complete current inventory.
+
+## Work unit: retain verified rows across inventory enumeration expiry
+
+- Whole-inventory CALCULADORA/CALIDAD now distinguish unknown current membership
+  from the freshness/integrity of each previously known publication. A valid but
+  expired nonempty enumeration may supply IDs; only rows passing the unchanged
+  15-minute source age and complete fingerprint/count checks can supply values.
+  Missing/malformed/future/foreign membership still fails closed; expired empty
+  membership cannot certify an empty current inventory.
+- Each expired result appends a same-width warning row starting with
+  `DATA_UNAVAILABLE`, `inventory_enumeration_expired`. This must be in values,
+  since `Client.gs` returns the matrix rather than metadata. Metadata explicitly
+  sets `inventory_rows_complete=false` and `inventory_enumeration_current=false`;
+  `partial_misses` still counts known missing publications, not the warning.
+  Both formulas request coalesced async inventory recovery even if all known
+  publications are readable. Reads do not change observation times or markers.
+- Four real-Mongo tests first reproduced whole-result unavailability. After the
+  change, 12 cases cover both formulas, missing known publications, and current,
+  expired or changed canonical sources: **12 passed in 2.76s**. Existing sweep
+  resume tests now assert visible partial results after membership expiry while
+  retaining immutable checkpoint timestamps and correct rediscovery behavior.
+- Runtime harness: local replica-set Mongo and real dispatcher/backfill/reader;
+  no live API/Sheet acceptance claimed. This unit affects the Sheets API image.
+  Rollback is the reader's additional enumeration-status result, its two formula
+  consumers/warning and their tests/docs together; no data/schema migration.
+  Worker update from `e902eb5` remains separately required for native SKU receipts.
+- Final normal-allocator root suite with local Mongo: **3,892 passed, 9 skipped,
+  356 warnings in 109.31s**. Protected Mongo cases: **8 passed in 2.42s**; root
+  Ruff check/format and mypy (503 files) pass. The initial full run found one
+  unnecessary public error-message change; restoring the prior message preserved
+  its existing API test, then the entire suite passed. No test was removed.
+- Previous source `e902eb5` GitHub test `34242906407` and lint `34242906456`
+  completed successfully. This is not CI evidence for the newer unit.

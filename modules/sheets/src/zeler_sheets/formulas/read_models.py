@@ -145,7 +145,7 @@ class FormulaReadModelRepository:
 
     async def find_recent_item_inventory(
         self, *, seller_id: str, formula: str, now: datetime
-    ) -> tuple[list[dict[str, Any]], list[str], tuple[str, ...]]:
+    ) -> tuple[list[dict[str, Any]], list[str], tuple[str, ...], bool]:
         try:
             request = ItemInventoryRecoveryRequest(seller_id)
         except ValueError as exc:
@@ -174,7 +174,7 @@ class FormulaReadModelRepository:
             )
             or identities != sorted(set(identities))
             or observed is None
-            or not now - timedelta(minutes=15) < observed <= now
+            or observed > now
             or job.get("state") not in {"pending", "running", "completed", "failed"}
             or (
                 "inventory_offset" in job
@@ -189,8 +189,15 @@ class FormulaReadModelRepository:
                 "Current inventory enumeration is missing, malformed or expired.",
                 read_model=ITEM_FORMULA_ROWS_READ_MODEL,
             )
+        enumeration_current = now - timedelta(minutes=15) < observed
         if not identities:
-            return [], [], ()
+            if not enumeration_current:
+                raise FormulaDataUnavailableError(
+                    formula,
+                    "Empty inventory enumeration expired.",
+                    read_model=ITEM_FORMULA_ROWS_READ_MODEL,
+                )
+            return [], [], (), True
         try:
             rows, missing = await self.find_recent_item_formula_rows(
                 seller_id=seller_id, item_ids=identities, formula=formula, now=now
@@ -198,8 +205,11 @@ class FormulaReadModelRepository:
         except FormulaDataUnavailableError:
             # Membership is known, but no safe matrix of source-bound rows was
             # obtained. Preserve explicit unavailable IDs, never partial rows.
-            return [], identities, tuple(identities)
-        return rows, identities, missing
+            return [], identities, tuple(identities), enumeration_current
+        # Known membership remains useful, but only individually current,
+        # source-verified rows may survive an expired enumeration. The caller
+        # must expose unknown inventory coverage and request rediscovery.
+        return rows, identities, missing, enumeration_current
 
     async def find_recent_item_formula_rows(
         self, *, seller_id: str, item_ids: list[str], formula: str, now: datetime

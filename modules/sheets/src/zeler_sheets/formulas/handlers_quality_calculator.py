@@ -57,6 +57,7 @@ class QualityCalculatorFormulaHandlers:
         now = _as_utc_datetime(self._now_fn())
         unavailable_items: tuple[str, ...] = ()
         inventory_scope = False
+        enumeration_current = True
         try:
             await self._repository.require_read_model_productive(
                 seller_id=context.seller_id,
@@ -65,7 +66,12 @@ class QualityCalculatorFormulaHandlers:
                 formula=context.contract.name,
             )
         except FormulaDataUnavailableError:
-            rows, _, unavailable_items = await self._repository.find_recent_item_inventory(
+            (
+                rows,
+                _,
+                unavailable_items,
+                enumeration_current,
+            ) = await self._repository.find_recent_item_inventory(
                 seller_id=context.seller_id, formula=context.contract.name, now=now
             )
             inventory_scope = True
@@ -82,14 +88,17 @@ class QualityCalculatorFormulaHandlers:
             [item_id, *["DATA_UNAVAILABLE"] * (len(CALIDAD_HEADERS) - 1)]
             for item_id in unavailable_items
         )
+        if not enumeration_current:
+            values.append(_expired_inventory_warning(len(CALIDAD_HEADERS)))
         return FormulaExecutionResult(
             values=normalize_response_rows(values, header_rows=header_rows),
             meta={
-                "rows_count": len(rows) + len(unavailable_items),
+                "rows_count": len(values) - header_rows,
                 "columns": "modern_quality_projection",
                 **(
                     {
-                        "inventory_rows_complete": not unavailable_items,
+                        "inventory_rows_complete": enumeration_current and not unavailable_items,
+                        "inventory_enumeration_current": enumeration_current,
                         "partial_misses": len(unavailable_items),
                     }
                     if inventory_scope
@@ -110,7 +119,7 @@ class QualityCalculatorFormulaHandlers:
                     "Inventory publications need recovery.",
                     read_model=ITEM_FORMULA_ROWS_READ_MODEL,
                 )
-                if unavailable_items
+                if unavailable_items or not enumeration_current
                 else None
             ),
         )
@@ -122,6 +131,7 @@ class QualityCalculatorFormulaHandlers:
         now = _as_utc_datetime(self._now_fn())
         unavailable_items: tuple[str, ...] = ()
         inventory_scope = False
+        enumeration_current = True
         try:
             await self._repository.require_read_model_productive(
                 seller_id=context.seller_id,
@@ -136,6 +146,7 @@ class QualityCalculatorFormulaHandlers:
                     rows,
                     requested_item_ids,
                     unavailable_items,
+                    enumeration_current,
                 ) = await self._repository.find_recent_item_inventory(
                     seller_id=context.seller_id,
                     formula=context.contract.name,
@@ -188,13 +199,23 @@ class QualityCalculatorFormulaHandlers:
                             row, tipo_precio=context.args.get("tipo_precio", "actual"), now=now
                         )
                     )
+        if not enumeration_current:
+            values.append(_expired_inventory_warning(len(CALCULADORA_HEADERS)))
+            rows_count += 1
         return FormulaExecutionResult(
             values=normalize_response_rows(values, header_rows=header_rows),
             meta={
                 "partial_misses": missing_count,
                 "rows_count": rows_count,
                 "columns": "modern_cost_projection",
-                **({"inventory_rows_complete": not unavailable_items} if inventory_scope else {}),
+                **(
+                    {
+                        "inventory_rows_complete": enumeration_current and not unavailable_items,
+                        "inventory_enumeration_current": enumeration_current,
+                    }
+                    if inventory_scope
+                    else {}
+                ),
                 **(
                     {
                         "unavailable_items": list(unavailable_items),
@@ -211,10 +232,20 @@ class QualityCalculatorFormulaHandlers:
                     read_model=ITEM_FORMULA_ROWS_READ_MODEL,
                     item_ids=() if inventory_scope else unavailable_items,
                 )
-                if unavailable_items
+                if unavailable_items or not enumeration_current
                 else None
             ),
         )
+
+
+def _expired_inventory_warning(width: int) -> list[str]:
+    # Apps Script returns values, not metadata: incomplete coverage must remain
+    # visible in the spreadsheet even when every previously known ID is readable.
+    return [
+        "DATA_UNAVAILABLE",
+        "inventory_enumeration_expired",
+        *["DATA_UNAVAILABLE"] * (width - 2),
+    ]
 
 
 def _quality_row(row: Mapping[str, Any]) -> list[Any]:

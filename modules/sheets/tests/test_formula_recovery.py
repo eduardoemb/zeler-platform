@@ -549,7 +549,7 @@ async def test_inventory_recovery_resumes_bounded_batches_without_global_readine
     assert await queue.enqueue(request) == request.key
     worker = FormulaRecoveryWorker(db=recovery_db, gateway=gateway, queue=queue)
 
-    async def read_inventory(missing: int) -> None:
+    async def read_inventory(missing: int, *, expired: bool = False) -> None:
         from zeler_sheets.formulas.dispatcher import FormulaDispatcher, FormulaExecutionContext
         from zeler_sheets.formulas.handlers_quality_calculator import (
             build_quality_calculator_formula_handlers,
@@ -575,15 +575,22 @@ async def test_inventory_recovery_resumes_bounded_batches_without_global_readine
                     args={"id_publicaciones": [], "encabezados": False},
                 )
             )
-            assert len(result.values) == 21
-            assert {row[0] for row in result.values} == set(identities)
+            assert len(result.values) == 21 + int(expired)
+            publication_rows = result.values[:-1] if expired else result.values
+            if expired:
+                assert result.values[-1][:2] == [
+                    "DATA_UNAVAILABLE",
+                    "inventory_enumeration_expired",
+                ]
+            assert {row[0] for row in publication_rows} == set(identities)
             assert (
-                sum(all(cell == "DATA_UNAVAILABLE" for cell in row[1:]) for row in result.values)
+                sum(all(cell == "DATA_UNAVAILABLE" for cell in row[1:]) for row in publication_rows)
                 == missing
             )
-            assert result.meta["inventory_rows_complete"] is (missing == 0)
+            assert result.meta["inventory_rows_complete"] is (missing == 0 and not expired)
+            assert result.meta["inventory_enumeration_current"] is not expired
             assert result.meta["partial_misses"] == missing
-            if missing:
+            if missing or expired:
                 assert result.recovery is not None and result.recovery.item_ids == ()
             else:
                 assert result.recovery is None
@@ -656,8 +663,7 @@ async def test_inventory_recovery_resumes_bounded_batches_without_global_readine
             }
         },
     )
-    with pytest.raises(FormulaDataUnavailableError):
-        await read_inventory(0)
+    await read_inventory(20 if failure_mode == "exhaust_first" else 0, expired=True)
     await queue.enqueue(request)
     reopened = await queue.collection.find_one({"_id": request.key})
     assert reopened["inventory_ids"] == identities and "inventory_offset" not in reopened
@@ -729,7 +735,86 @@ async def test_inventory_read_requires_recent_owned_enumeration(
     else:
         assert await reader.find_recent_item_inventory(
             seller_id="82453304", formula="ZELERDATA_CALCULADORA", now=now
-        ) == ([], [], ())
+        ) == ([], [], (), True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("formula", ["ZELERDATA_CALCULADORA", "ZELERDATA_CALIDAD"])
+@pytest.mark.parametrize("missing_item", [False, True])
+@pytest.mark.parametrize("source_state", ["current", "expired", "changed"])
+async def test_expired_inventory_preserves_verified_rows_with_visible_warning(
+    recovery_db: Any, formula: str, missing_item: bool, source_state: str
+) -> None:
+    from zeler_sheets.formulas.dispatcher import FormulaDispatcher, FormulaExecutionContext
+    from zeler_sheets.formulas.handlers_quality_calculator import (
+        build_quality_calculator_formula_handlers,
+    )
+    from zeler_sheets.formulas.read_models import FormulaReadModelRepository
+    from zeler_sheets.formulas.recovery import ItemInventoryRecoveryRequest
+    from zeler_sheets.formulas.registry import FormulaRegistry
+    from zeler_sheets.sheetseller_backfill import run_sheetseller_backfill
+
+    now = datetime(2026, 9, 8, 12, tzinfo=UTC)
+    queue = FormulaRecoveryQueue(recovery_db, now=lambda: now - timedelta(minutes=16))
+    request = ItemInventoryRecoveryRequest("82453304")
+    await queue.enqueue(request)
+    job = await queue.claim()
+    assert job is not None
+    identities = ["MLA1", "MLA2"] if missing_item else ["MLA1"]
+    assert await queue.checkpoint_inventory(job, item_ids=identities, offset=0)
+    await recovery_db.items.insert_one(
+        {
+            "_id": "MLA1",
+            "seller_id": "82453304",
+            "title": "Recent publication",
+            "price": 100,
+            "last_updated": now,
+            "last_meli_sync_at": now,
+            "date_created": now,
+            "variations": [],
+        }
+    )
+    await run_sheetseller_backfill(db=recovery_db, seller_id="82453304", dry_run=False)
+    if source_state != "current":
+        await recovery_db.items.update_one(
+            {"_id": "MLA1"},
+            {
+                "$set": (
+                    {"last_meli_sync_at": now - timedelta(minutes=16)}
+                    if source_state == "expired"
+                    else {"title": "Unprojected source change"}
+                )
+            },
+        )
+    before = await queue.collection.find_one({"_id": request.key})
+    result = await FormulaDispatcher(
+        build_quality_calculator_formula_handlers(
+            FormulaReadModelRepository(db=recovery_db), now_fn=lambda: now
+        )
+    ).execute(
+        FormulaExecutionContext(
+            contract=FormulaRegistry.default().find_required(formula),
+            cuenta="test",
+            seller_id="82453304",
+            seller_nickname="",
+            token_id="",
+            request_id=None,
+            args={"encabezados": False},
+        )
+    )
+    assert result.values[0][0] == "MLA1"
+    assert result.values[0][2] == (
+        "Recent publication" if source_state == "current" else "DATA_UNAVAILABLE"
+    )
+    assert result.values[-1][:2] == ["DATA_UNAVAILABLE", "inventory_enumeration_expired"]
+    assert len(result.values) == len(identities) + 1
+    assert all(len(row) == len(result.values[0]) for row in result.values)
+    assert result.meta["inventory_rows_complete"] is False
+    assert result.meta["inventory_enumeration_current"] is False
+    assert result.meta["partial_misses"] == int(missing_item) + int(source_state != "current")
+    assert result.recovery is not None and result.recovery.item_ids == ()
+    assert await queue.collection.find_one({"_id": request.key}) == before
+    assert await recovery_db.sheets_read_model_freshness.count_documents({}) == 0
 
 
 @pytest.mark.asyncio

@@ -46,6 +46,14 @@ Google asks for the manifest scopes needed to show the ZelerData UI, call the Fo
 
 Supported and deferred formula behavior is documented in `docs/sheets/zelerdata-formulas.md`.
 
+For whole-inventory `ZELERDATA_CALCULADORA` and `ZELERDATA_CALIDAD`, an expired
+inventory enumeration does not hide individually recent, verified publications.
+The result includes a warning row beginning with `DATA_UNAVAILABLE` and
+`inventory_enumeration_expired`: additional publications may be missing, so do not
+treat the matrix as a complete current inventory. Unverified or expired publication
+data remains `DATA_UNAVAILABLE`. The API requests asynchronous recovery; the
+formula neither calls Mercado Libre nor waits for that recovery.
+
 ## Release boundary
 
 Repo changes prove source readiness only. Google Cloud project linkage, OAuth consent, immutable Apps Script version creation, Marketplace SDK listing, asset upload, review submission, and approved-context smoke tests are manual operator steps documented in `docs/sheets/zelerdata-marketplace-publication.md`.
