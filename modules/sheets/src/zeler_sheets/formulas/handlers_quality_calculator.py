@@ -206,7 +206,8 @@ class QualityCalculatorFormulaHandlers:
         unavailable_field_items = {
             str(row[0])
             for row in values[header_rows:]
-            if row[0] in present_ids and "DATA_UNAVAILABLE" in row[4:9]
+            if row[0] in present_ids
+            and ("DATA_UNAVAILABLE" in row[4:9] or row[10] == "DATA_UNAVAILABLE")
         }
         recovery_items = tuple(sorted(set(unavailable_items) | unavailable_field_items))
         return FormulaExecutionResult(
@@ -240,7 +241,8 @@ class QualityCalculatorFormulaHandlers:
             recovery=(
                 FormulaDataUnavailableError(
                     context.contract.name,
-                    "Selected publications or their price/cost fields are unavailable.",
+                    "Selected publications or their price/cost/catalog participation fields "
+                    "are unavailable.",
                     read_model=ITEM_FORMULA_ROWS_READ_MODEL,
                     item_ids=()
                     if inventory_scope and (unavailable_items or not enumeration_current)
@@ -345,7 +347,11 @@ def _calculator_row(
         _sheet_optional_number(commission_percent),
         _sheet_optional_number(fixed_fee),
         _current_value(current, "category_id"),
-        "CATALOGO" if _non_blank(current.get("catalog_product_id")) else "REGULAR",
+        "CATALOGO"
+        if current.get("catalog_listing") is True
+        else "REGULAR"
+        if current.get("catalog_listing") is False
+        else "DATA_UNAVAILABLE",
         _current_value(current, "shipping_logistic_type", "logistic_type"),
         _current_value(current, "listing_type_id"),
         _sheet_optional_number(total_costs),

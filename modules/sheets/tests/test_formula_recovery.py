@@ -1356,8 +1356,10 @@ async def test_explicit_item_recovery_uses_bounded_acquisition_without_global_ma
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("cost_gap", [True, False])
 async def test_http_cost_gap_queues_only_affected_item_and_recovers_without_inventory(
     recovery_db: Any,
+    cost_gap: bool,
 ) -> None:
     import httpx
 
@@ -1389,6 +1391,8 @@ async def test_http_cost_gap_queues_only_affected_item_and_recovers_without_inve
                             "id": "MLA1",
                             "seller_id": seller,
                             "title": "Synthetic item",
+                            "catalog_product_id": "MLA-PRODUCT-1",
+                            "catalog_listing": None if self.unavailable else False,
                             "price": 100,
                             "base_price": 100,
                             "currency_id": "ARS",
@@ -1412,7 +1416,7 @@ async def test_http_cost_gap_queues_only_affected_item_and_recovers_without_inve
             if "/sale_price" in path:
                 return {"amount": 100, "regular_amount": 100, "currency_id": "ARS"}
             assert path.startswith("/sites/MLA/listing_prices?")
-            if self.unavailable:
+            if self.unavailable and cost_gap:
                 from zeler_platform_core.clients.meli_gateway_client import GatewayRateLimitError
 
                 raise GatewayRateLimitError(retry_after_seconds=5, response=httpx.Response(429))
@@ -1465,7 +1469,8 @@ async def test_http_cost_gap_queues_only_affected_item_and_recovers_without_inve
         body = missing.json()
         assert body["ok"] is True
         assert body["values"][0][4] == 100
-        assert body["values"][0][6] == "DATA_UNAVAILABLE"
+        assert body["values"][0][6] == ("DATA_UNAVAILABLE" if cost_gap else 10)
+        assert body["values"][0][10] == "DATA_UNAVAILABLE"
         assert body["meta"]["recovery_requested"] is True
         assert calls == []
         job = await queue.collection.find_one({"seller_id": seller})
@@ -1479,6 +1484,7 @@ async def test_http_cost_gap_queues_only_affected_item_and_recovers_without_inve
         assert ready.status_code == 200
         assert ready.json()["values"][0][5:9] == [0, 10, 10, 2]
         assert ready.json()["values"][0][13:] == [12, 88]
+        assert ready.json()["values"][0][10] == "REGULAR"
         assert not ready.json()["meta"].get("recovery_requested", False)
         assert calls == acquired_calls
     assert await recovery_db.sheets_read_model_freshness.count_documents({}) == 0

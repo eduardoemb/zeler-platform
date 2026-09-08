@@ -109,6 +109,7 @@ def test_source_bound_calculator_requires_recent_cost_acquisition(minutes: int |
         "listing_fee_projection",
         "listing_price_fixed_fee",
         "current_promotion",
+        "catalog_listing",
     ],
 )
 async def test_calculator_requests_targeted_recovery_for_present_unavailable_fields(
@@ -118,6 +119,7 @@ async def test_calculator_requests_targeted_recovery_for_present_unavailable_fie
     _mark_read_model_fresh(db, ITEM_FORMULA_ROWS_READ_MODEL)
     row = _item_row(item_id="MLA1", sku="sku-1", title="Test", status="active")
     row["current"]["enrichment_state"] = {field: {"status": "transient", "synced_at": NOW}}
+    row["current"]["catalog_listing"] = None if field == "catalog_listing" else False
     db["sheets_item_formula_rows"].documents[row["_id"]] = row
     repository = FormulaReadModelRepository(db=db)
     if inventory_scope:
@@ -313,6 +315,7 @@ async def test_calculator_promo_price_and_net_obey_acquisition_state(
         sku="sku-1",
         title="Synthetic",
         status="active",
+        catalog_listing=False,
         price=Decimal("100"),
         seller_shipping_cost=Decimal("10"),
         listing_fee_projection={"sale_fee_amount": Decimal("8")},
@@ -428,6 +431,33 @@ async def test_calculator_preserves_losses_and_break_even(price: str, expected_n
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("participation", "expected"),
+    [(True, "CATALOGO"), (False, "REGULAR"), (None, "DATA_UNAVAILABLE")],
+)
+@pytest.mark.parametrize("product_id", [None, "CAT-1"])
+async def test_calculadora_classifies_explicit_participation_and_recovers_unknown(
+    participation: bool | None, expected: str, product_id: str | None
+) -> None:
+    db = FakeDb()
+    _mark_read_model_fresh(db, ITEM_FORMULA_ROWS_READ_MODEL)
+    row = _item_row(item_id="MLA1", sku="sku-1", title="Item", status="active")
+    row["current"]["catalog_product_id"] = product_id
+    row["current"]["catalog_listing"] = participation
+    db["sheets_item_formula_rows"].documents[row["_id"]] = row
+    result = await _dispatcher(db).execute(
+        _context("ZELERDATA_CALCULADORA", {"id_publicaciones": ["MLA1"]})
+    )
+    assert result.values[0][10] == expected
+    if participation is None:
+        assert result.recovery is not None
+        assert result.recovery.item_ids == ("MLA1",)
+        assert result.meta["unavailable_field_items"] == ["MLA1"]
+    else:
+        assert result.recovery is None
+
+
+@pytest.mark.asyncio
 async def test_calculadora_projects_costs_from_local_fee_shipping_and_catalog_data() -> None:
     db = FakeDb()
     _mark_read_model_fresh(db, ITEM_FORMULA_ROWS_READ_MODEL)
@@ -447,6 +477,7 @@ async def test_calculadora_projects_costs_from_local_fee_shipping_and_catalog_da
             listing_price_fixed_fee={"fixed_fee": Decimal("8")},
             category_id="MLA-CAT",
             catalog_product_id="CAT-1",
+            catalog_listing=True,
             logistic_type="fulfillment",
         ),
         "seller-1:SKU-2:MLA2": _item_row(
@@ -458,6 +489,7 @@ async def test_calculadora_projects_costs_from_local_fee_shipping_and_catalog_da
             base_price=Decimal("80"),
             category_id="MLA-OTHER",
             catalog_product_id=None,
+            catalog_listing=False,
             logistic_type="cross_docking",
         ),
     }
@@ -628,6 +660,7 @@ def _item_row(
     listing_price_fixed_fee: dict[str, Any] | None = None,
     category_id: str = "MLA-CAT",
     catalog_product_id: str | None = None,
+    catalog_listing: bool | None = None,
     logistic_type: str = "drop_off",
     health: Decimal | None = None,
     quality_projection: dict[str, Any] | None = None,
@@ -641,6 +674,7 @@ def _item_row(
         "currency_id": "MXN",
         "category_id": category_id,
         "catalog_product_id": catalog_product_id,
+        "catalog_listing": catalog_listing,
         "listing_type_id": "gold_special",
         "shipping_logistic_type": logistic_type,
         "permalink": f"https://meli.example/{item_id}",

@@ -28,10 +28,9 @@ The canonical item and formula-row projection now preserve Mercado Libre's
 malformed flags remain unknown; neither a product link nor a variation's link
 implies participation. Variations inherit the publication's participation flag.
 
-This is an acquisition/persistence unit, not a formula-classification fix.
-Calculator/dashboard/catalog consumers still need to use the explicit flag and
-request bounded recovery for unknown required values. Existing production data
-has not been backfilled or relabeled by this change.
+This is an acquisition/persistence unit. The subsequent calculator unit below
+uses the flag; dashboard/catalog consumers still require migration. Existing
+production data has not been backfilled or relabeled by these changes.
 
 - TDD: ten canonical-item/projection cases failed before the change, then passed
   (true, false, null, malformed string and integer, each for parent/variation).
@@ -54,6 +53,38 @@ has not been backfilled or relabeled by this change.
   corresponding schema additions and their tests together. An already-applied
   additive validator may remain; do not narrow it while stored documents retain
   the field. No business-data deletion is part of rollback.
+
+## Calculator participation and recovery — 2026-09-08 (not deployed)
+
+CALCULADORA now reports CATALOGO only for explicit `catalog_listing=true`,
+REGULAR only for false, and DATA_UNAVAILABLE for unknown participation.
+`catalog_product_id` no longer determines this classification. Missing
+participation joins existing price/cost gaps in bounded item recovery; available
+columns remain usable, and formulas do not call Mercado Libre.
+
+- TDD classification matrix: 4 failed and 2 passed before implementation;
+  all six combinations of participation and product-link presence pass now.
+- Quality/calculator suite: 58 passed in 0.11s, including selected-publication
+  and complete-inventory targeted recovery for a missing participation flag.
+- Root suite with loopback Mongo: 3,988 passed, 9 skipped, 356 warnings in
+  124.31s. Protected replica-set scenarios separately: 8 passed in 3.06s.
+  Ruff check/format, mypy (505 files) and diff checks passed.
+- Local HTTP/worker/Mongo boundary: the existing cost-recovery scenario now
+  also covers a catalog-only gap. Both passed in 0.99s. An authenticated local
+  HTTP read queues only the affected item, worker acquisition persists false
+  despite an associated product, and the next HTTP read returns REGULAR without
+  requesting recovery or making upstream calls. Gateway responses are synthetic;
+  this is not production HTTP or real-Sheet evidence.
+- Deployment still requires the preceding additive Mongo validators and new
+  Sheets API/worker images, then a bounded owned-item refresh and repeated
+  authenticated reads. Do not relabel old snapshots from product associations.
+- Read-only VM check after local verification: API digest `c679a81b…` and worker
+  digest `65a8dcff…` remain healthy with zero restarts; neither contains these
+  catalog changes. Free space was 5,395,533,824 bytes, barely above the 5 GiB
+  gate: recheck capacity before any pull/activation. No production writes here.
+- Rollback boundary: revert calculator classification/recovery selection and
+  its tests together; the additive persistence field can remain independently.
+  Dashboard filtering and catalog snapshot consumers remain pending.
 
 ## Baseline — 2026-09-07
 
