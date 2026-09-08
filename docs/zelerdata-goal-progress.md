@@ -21,6 +21,53 @@ Keep unrelated `.codegraph/` files untouched in both repositories.
 Pilot: seller `82453304`; initial historical window 2026-08-08 through
 2026-09-06, plus current snapshots. Other products are out of scope.
 
+## Catalog recovery client correction — 2026-09-08 (not deployed)
+
+The full pilot inventory completed 1,900/1,900 publications with zero unavailable
+items, approximately 846 seconds after discovery. Immediately afterward the two
+catalog consumers found 885 current associated products, no missing item sources,
+and no available current product snapshots. They returned truthful unavailable
+rows in 4.0505s and 5.5827s respectively, with the existing 3/6-column contracts.
+Earlier reads during inventory acquisition took 7.25–17.35s; those are operator
+dispatcher timings, not authenticated HTTP or Google Sheets latency evidence.
+
+One normal API recovery-helper invocation requested the 885 missing products.
+It admitted 20 jobs / 400 product slots before the bounded admission returned
+false. The next observation already showed ten failed jobs (`source_rejected`),
+nine pending and one running. No global freshness marker changed. Do not infer
+that all 885 products were queued or that unavailable data is irrecoverable.
+
+The rejection exposed a real client-selection defect: production wires
+`FormulaRecoveryWorker.gateway` to the bootstrap discovery identity and
+`detail_gateway` to the Sheets identity, but product acquisition used discovery.
+A read-only VM probe of one failed job's seller-associated product verified:
+bootstrap has no registered product scope and received HTTP 403; Sheets has the
+existing scope and received HTTP 200 with matching product identity and a title.
+No scopes, tokens, data or timestamps were modified by that probe.
+
+The correction routes product detail acquisition through `detail_gateway`, just
+as other detail reads do. The existing six persistence scenarios now use separate
+discovery/detail clients, with discovery explicitly returning 403. All six failed
+before the fix by observing forbidden discovery calls; afterward all ten catalog
+recovery tests passed in 2.11s, including the two real local HTTP/Mongo cases.
+Root regression passed: 4,033 tests, nine expected skips and 356 warnings in
+120.05s. The eight protected replica-set cases passed separately in 2.71s;
+the ninth skip is the existing Caddy-key check. Ruff check/format, mypy on 505
+source files and `git diff --check` passed.
+
+Runtime artifacts: `/tmp/zeler-catalog-consumers.5t16dm/products.py` (real readers
+and normal product admission, no direct Meli calls), `inventory.py status`, and
+`product-auth.py` (two authorized gateway reads with sanitized output). The
+original inventory job and receipt remain unchanged; do not rerun `prepare`.
+
+Rollback boundary: the product-fetch client selection and its separate-client
+regression fixture, plus this evidence. No schema, permission or API contract
+change is required. Only the worker image needs rebuilding for this correction;
+its deployed source must be verified before retrying product recovery. Inventory
+freshness now needs a new genuine acquisition, not refreshed timestamps. The
+near-15-minute inventory duration leaves little time for a subsequent full
+catalog acquisition; end-to-end current availability remains unproven.
+
 ## Catalog product runtime rollout — 2026-09-08
 
 Sheets API and worker now run source

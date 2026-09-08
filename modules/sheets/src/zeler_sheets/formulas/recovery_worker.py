@@ -152,7 +152,7 @@ class FormulaRecoveryWorker:
                 raise ValueError("catalog recovery lease lost")
             try:
                 async with asyncio.timeout(10):
-                    resource = await self.gateway.fetch_resource(
+                    resource = await self.detail_gateway.fetch_resource(
                         seller_id=requested.seller_id, path=f"/products/{identity}"
                     )
                 snapshot = _catalog_product_snapshot(resource, seller_id=requested.seller_id)

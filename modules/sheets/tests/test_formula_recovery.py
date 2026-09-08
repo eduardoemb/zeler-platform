@@ -218,7 +218,19 @@ async def test_catalog_product_worker_persists_available_resources_without_globa
                 "unneeded_payload": {"private": True},
             }
 
-    assert await FormulaRecoveryWorker(db=recovery_db, gateway=Gateway(), queue=queue).process_one()
+    bootstrap_calls: list[str] = []
+
+    class BootstrapGateway:
+        async def fetch_resource(self, *, seller_id: str, path: str) -> dict[str, Any]:
+            bootstrap_calls.append(path)
+            response = httpx.Response(403, request=httpx.Request("GET", "https://gateway.test"))
+            response.raise_for_status()
+            raise AssertionError("bootstrap must not acquire catalog product details")
+
+    assert await FormulaRecoveryWorker(
+        db=recovery_db, gateway=BootstrapGateway(), detail_gateway=Gateway(), queue=queue
+    ).process_one()
+    assert bootstrap_calls == []
     stored = await recovery_db.sheets_catalog_product_snapshots.find({}).to_list(10)
     expected = (
         0 if outcome == "lease_lost" else 2 if outcome in {"success", "newer_snapshot"} else 1
