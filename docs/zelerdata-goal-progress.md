@@ -1920,3 +1920,27 @@ retain their contract; other product deployments remain out of scope.
   501 source files and whitespace checks passed. Productive full enrichment
   remains a read-only diagnostic in progress; this is not persistence or
   formula acceptance.
+
+## Verified inventory-routing images await rollout
+
+- Routing fix and verification are pushed at main
+  `016e6bdc7729b95e673caf30df6a2b09796074f7`. Both single-image VERIFIED builds
+  succeeded and passed exact repository/source/build/SLSA digest verification:
+  - API: build `74f1bed4-1600-462c-b75f-f21e8d40a2e0`, image
+    `sheets-api@sha256:d85cbc4e027662461a359c56e0c069293306a6c2534c8ad6fc4fc0475b2c4a54`.
+  - Worker: build `cc83f765-0c73-4e65-9e2a-2d2acf4777c0`, image
+    `sheets-worker@sha256:6c406b58df0e084a290c194fb45f01f07bf19c0ff5fff3a56be93264ff82e399`.
+  Both use the existing Artifact Registry prefix. Configs and verifier are in
+  `/tmp/zeler-inventory-route-build.26vQkB`.
+- Not deployed at this checkpoint. The current worker is executing the bounded
+  read-only diagnostic; do not recreate it or restart the diagnostic blindly.
+  At 2026-09-08 00:00 UTC it had attempted 5,000 source calls, including 19 scan
+  pages, 63 detail batches and 1,247 sale-price lookups. Acquisition was still
+  running, with a 900-second operator timeout. No persistence or completeness
+  proof has been produced. Resume the existing process and record its terminal
+  result before deciding the next acquisition or rollout step.
+- This workload cannot be adopted unchanged into a recovery job with the
+  existing 240-second worker budget. Implement bounded, resumable enrichment
+  before automatic inventory recovery; retain Mongo-only formula HTTP reads.
+  Neither these builds nor the diagnostic replace the remaining authenticated
+  52-formula, real-Sheet and current-app acceptance checks.
