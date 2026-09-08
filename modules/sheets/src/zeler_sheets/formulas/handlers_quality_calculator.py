@@ -74,13 +74,14 @@ class QualityCalculatorFormulaHandlers:
     async def sheetseller_calculadora(
         self, context: FormulaExecutionContext
     ) -> FormulaExecutionResult:
+        requested_item_ids = _normalize_optional_item_ids(context.args.get("id_publicaciones"))
         await self._repository.require_read_model_productive(
             seller_id=context.seller_id,
             read_model=ITEM_FORMULA_ROWS_READ_MODEL,
             date_to=_as_utc_datetime(self._now_fn()),
             formula=context.contract.name,
+            item_ids=requested_item_ids,
         )
-        requested_item_ids = _normalize_optional_item_ids(context.args.get("id_publicaciones"))
         rows = await self._repository.find_item_formula_rows(
             seller_id=context.seller_id,
             item_ids=requested_item_ids,

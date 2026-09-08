@@ -50,6 +50,7 @@ from zeler_sheets.formulas.handlers_returns_histories_withdrawals import (
 from zeler_sheets.formulas.read_models import FormulaReadModelRepository
 from zeler_sheets.formulas.recovery import (
     RECOVERABLE_MODELS,
+    ItemIdsRecoveryRequest,
     OrderIdsRecoveryRequest,
     RecoveryRequest,
     ShipmentIdsRecoveryRequest,
@@ -668,6 +669,22 @@ async def _request_formula_recovery(
     queue = getattr(request.app.state, "formula_recovery_queue", None)
     if queue is None or missing.read_model not in RECOVERABLE_MODELS:
         return False
+    if missing.item_ids:
+        if missing.order_ids or missing.shipment_ids:
+            return False
+        try:
+            async with asyncio.timeout(1.0):
+                for offset in range(0, len(missing.item_ids), 20):
+                    await queue.enqueue(
+                        ItemIdsRecoveryRequest(
+                            context.seller_id,
+                            missing.item_ids[offset : offset + 20],
+                            read_model=missing.read_model,
+                        )
+                    )
+        except (ValueError, PyMongoError, TimeoutError):
+            return False
+        return True
     if missing.order_ids or missing.shipment_ids:
         if missing.order_ids and missing.shipment_ids:
             return False

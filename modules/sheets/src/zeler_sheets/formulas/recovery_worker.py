@@ -31,9 +31,11 @@ from zeler_sheets.formulas.read_models import read_model_reconciliation_marker_c
 from zeler_sheets.formulas.recovery import (
     COOLDOWN,
     FormulaRecoveryQueue,
+    ItemIdsRecoveryRequest,
     OrderIdsRecoveryRequest,
     ShipmentIdsRecoveryRequest,
 )
+from zeler_sheets.sheetseller_backfill import run_item_detail_enrichment, run_sheetseller_backfill
 
 
 class FormulaRecoveryWorker:
@@ -67,6 +69,8 @@ class FormulaRecoveryWorker:
                     await self._orders(job)
                 elif job["read_model"] == "shipments":
                     await self._shipments(job)
+                elif job["read_model"] == "item_formula_rows":
+                    await self._items(job)
                 else:
                     raise ValueError("recovery source not implemented")
         except httpx.HTTPStatusError as exc:
@@ -96,6 +100,47 @@ class FormulaRecoveryWorker:
         except Exception:  # noqa: BLE001 - never log upstream payloads or credentials.
             await self.queue.finish(job, succeeded=False)
         return True
+
+    async def _items(self, job: dict[str, Any]) -> None:
+        requested = ItemIdsRecoveryRequest(job["seller_id"], tuple(job["item_ids"]))
+        if await self.queue.collection.find_one(self.queue._owned(job, self.queue.now())) is None:
+            raise ValueError("item recovery lease lost before acquisition")
+        acquired = await run_item_detail_enrichment(
+            db=self.db,
+            gateway=self.detail_gateway,
+            seller_id=requested.seller_id,
+            acquire_item_ids=requested.item_ids,
+            dry_run=False,
+            sale_price_enabled=True,
+            listing_fixed_fee_enabled=True,
+        )
+        if await self.queue.collection.find_one(self.queue._owned(job, self.queue.now())) is None:
+            raise ValueError("item recovery lease lost before projection")
+        stored = (
+            await self.db["items"]
+            .find(
+                {"seller_id": requested.seller_id, "_id": {"$in": list(requested.item_ids)}},
+                {"_id": 1},
+            )
+            .to_list(length=21)
+        )
+        stored_ids = tuple(sorted(str(item["_id"]) for item in stored))
+        if stored_ids:
+            await run_sheetseller_backfill(
+                db=self.db,
+                seller_id=requested.seller_id,
+                item_ids=stored_ids,
+                dry_run=False,
+            )
+        # A selected batch is not an inventory reconciliation. Preserve field
+        # availability states and never publish a whole-seller freshness marker.
+        partial = acquired.item_details_stale_unavailable > 0 or stored_ids != requested.item_ids
+        await self.queue.finish(
+            job,
+            succeeded=not partial,
+            retryable=partial,
+            failure_reason="source_incomplete",
+        )
 
     async def _shipments(self, job: dict[str, Any]) -> None:
         requested = ShipmentIdsRecoveryRequest(job["seller_id"], tuple(job["shipment_ids"]))

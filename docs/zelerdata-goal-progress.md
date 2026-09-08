@@ -2563,3 +2563,45 @@ retain their contract; other product deployments remain out of scope.
   unit. Verification is the real-container read above plus inspection of the
   builder, handlers and recovery allowlist; additional test execution is N/A for
   this evidence-only record. Rollback removes only this ledger section.
+
+## Explicit calculator IDs enter bounded item recovery
+
+- Calculator freshness failures now carry normalized requested publication IDs
+  to the existing API recovery admission path. Requests are split into batches
+  of at most 20 under the existing one-second total admission budget; each batch
+  has a deterministic seller/model/sorted-ID key. Full-inventory/date-range item
+  requests are rejected rather than admitted to an unimplemented scan workflow.
+- The existing recovery worker handles these explicit batches using the normal
+  detail gateway and the previously verified bounded enrichment helper, with
+  promotion/fixed-fee acquisition enabled. It projects only scoped source items
+  actually present in Mongo; incomplete acquisition remains pending for the
+  existing retry policy. No new collection, worker or formula-side API call was
+  added. Seller admission, active-job capacity and cooldown controls are reused.
+- Ownership is checked before acquisition and again before projection. A lost
+  lease is not acknowledged as completed. Existing source acquisition retains
+  its full-preimage compare-and-swap guards; this unit does not make remote
+  acquisition/source persistence and job completion one atomic transaction.
+  Independently obtained source data can remain after lease loss. No inventory
+  freshness marker is published by this selected-ID workflow.
+- Failing tests first showed the absent request/metadata path and missing
+  calculator scope. Real-Mongo admission/claim tests now cover duplicate batches,
+  complete/partial acquisition, loss of lease before projection, ID/batch bounds
+  and rejection of item date ranges: **4 passed in 0.98s**. Acquisition/projection
+  calls are controlled doubles in those queue tests, not proof of a new live
+  MercadoLibre run; the underlying helper's earlier local/live evidence remains
+  separate. The calculator handler test verifies propagation of selected IDs.
+- Root regression before the two added lease-loss parameter cases passed
+  **3,831 tests, 9 skipped, 356 warnings in 93.15s**; all four final queue cases
+  passed separately. Protected integration: **8 passed in 3.28s**. Ruff, format,
+  mypy (502 files), and whitespace checks pass.
+- The global calculator read gate is deliberately unchanged. Completion of this
+  acquisition job does not yet make that read productive: per-publication source
+  receipts, selected-row completeness/expiry checks and aggregate recovery still
+  need implementation. Do not claim this unit fixes the full observed calculator
+  failure or all 52 formulas.
+- Rollback removes the item request/worker dispatch, API admission and calculator
+  metadata propagation together with these tests. Keep normalized data; disable
+  item job claims before reverting a deployed worker with pending item jobs.
+  No runtime mutation or deployment occurred. Sheets API and worker require new
+  verified images after the read-side work, with pilot recovery-to-read and health
+  verification; retain the current `f74f3f1` runtime pair meanwhile.

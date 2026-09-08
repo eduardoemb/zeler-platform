@@ -503,6 +503,7 @@ class FormulaReadModelRepository:
         read_model: str,
         date_to: Any,
         formula: str,
+        item_ids: list[str] | None = None,
     ) -> None:
         marker = await self._read_model_freshness.find_one(
             {
@@ -517,7 +518,11 @@ class FormulaReadModelRepository:
                 "for the requested range."
             )
             raise FormulaDataUnavailableError(
-                formula, reason, read_model=read_model, date_to=_safe_utc_datetime(date_to)
+                formula,
+                reason,
+                read_model=read_model,
+                date_to=_safe_utc_datetime(date_to),
+                item_ids=tuple(item_ids or ()),
             )
 
     async def require_read_model_reconciled_range(

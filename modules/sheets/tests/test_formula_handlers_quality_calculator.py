@@ -76,6 +76,18 @@ QUALITY_CALCULATED_AT = datetime(2026, 6, 14, 9, 30, tzinfo=UTC)
 
 
 @pytest.mark.asyncio
+async def test_calculator_missing_freshness_carries_explicit_recovery_scope() -> None:
+    handlers = build_quality_calculator_formula_handlers(
+        FormulaReadModelRepository(db=FakeDb()), now_fn=lambda: NOW
+    )
+    with pytest.raises(FormulaDataUnavailableError) as caught:
+        await FormulaDispatcher(handlers).execute(
+            _context("ZELERDATA_CALCULADORA", {"id_publicaciones": ["MLA1", "MLA2"]})
+        )
+    assert caught.value.item_ids == ("MLA1", "MLA2")
+
+
+@pytest.mark.asyncio
 async def test_calidad_uses_modern_local_quality_projection_without_suggested_price() -> None:
     db = FakeDb()
     _mark_read_model_fresh(db, ITEM_FORMULA_ROWS_READ_MODEL)

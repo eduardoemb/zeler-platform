@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import dataclass
@@ -28,7 +29,7 @@ RECOVERABLE_MODELS = frozenset(
 LEASE = timedelta(minutes=10)
 COOLDOWN = timedelta(minutes=15)
 MAX_ATTEMPTS = 3
-IMPLEMENTED_MODELS = frozenset({"questions", "orders", "shipments"})
+IMPLEMENTED_MODELS = frozenset({"questions", "orders", "shipments", "item_formula_rows"})
 
 
 def recovery_sellers(value: str | None) -> frozenset[str]:
@@ -125,6 +126,29 @@ class ShipmentIdsRecoveryRequest:
         ).hexdigest()
 
 
+@dataclass(frozen=True)
+class ItemIdsRecoveryRequest:
+    seller_id: str
+    item_ids: tuple[str, ...]
+    read_model: str = "item_formula_rows"
+
+    def __post_init__(self) -> None:
+        if (
+            re.fullmatch(r"[0-9]+", self.seller_id) is None
+            or self.read_model != "item_formula_rows"
+            or not 1 <= len(self.item_ids) <= 20
+            or any(re.fullmatch(r"ML[A-Z][0-9]+", value) is None for value in self.item_ids)
+        ):
+            raise ValueError("item recovery requires a seller and 1 to 20 publication IDs")
+        object.__setattr__(self, "item_ids", tuple(sorted(set(self.item_ids))))
+
+    @property
+    def key(self) -> str:
+        return hashlib.sha256(
+            "\0".join((self.seller_id, self.read_model, "ids", *self.item_ids)).encode()
+        ).hexdigest()
+
+
 class FormulaRecoveryQueue:
     def __init__(
         self,
@@ -158,7 +182,11 @@ class FormulaRecoveryQueue:
         )
 
     async def enqueue(
-        self, request: RecoveryRequest | OrderIdsRecoveryRequest | ShipmentIdsRecoveryRequest
+        self,
+        request: RecoveryRequest
+        | OrderIdsRecoveryRequest
+        | ShipmentIdsRecoveryRequest
+        | ItemIdsRecoveryRequest,
     ) -> str:
         if self.allowed_sellers is not None and request.seller_id not in self.allowed_sellers:
             raise ValueError("recovery seller is not enabled")
@@ -168,6 +196,10 @@ class FormulaRecoveryQueue:
             request, ShipmentIdsRecoveryRequest
         ):
             raise ValueError("shipment recovery requires explicit IDs")
+        if request.read_model == "item_formula_rows" and not isinstance(
+            request, ItemIdsRecoveryRequest
+        ):
+            raise ValueError("item recovery requires explicit IDs")
         now = self.now()
         initial = {
             "_id": request.key,
@@ -183,6 +215,8 @@ class FormulaRecoveryQueue:
             initial["order_ids"] = list(request.order_ids)
         elif isinstance(request, ShipmentIdsRecoveryRequest):
             initial["shipment_ids"] = list(request.shipment_ids)
+        elif isinstance(request, ItemIdsRecoveryRequest):
+            initial["item_ids"] = list(request.item_ids)
         else:
             initial.update(date_from=request.date_from, date_to=request.date_to)
         # One guard per seller (identity/revision only) serializes admission

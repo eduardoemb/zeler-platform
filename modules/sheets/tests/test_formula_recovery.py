@@ -31,6 +31,79 @@ def test_runtime_recovery_seller_list_is_explicit_and_validated() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("partial", [False, True])
+@pytest.mark.parametrize("lose_lease", [False, True])
+async def test_explicit_item_recovery_uses_bounded_acquisition_without_global_marker(
+    recovery_db: Any, monkeypatch: pytest.MonkeyPatch, partial: bool, lose_lease: bool
+) -> None:
+    from types import SimpleNamespace
+
+    import zeler_sheets.formulas.recovery_worker as workers
+    from zeler_sheets.api import _request_formula_recovery
+    from zeler_sheets.formulas.dispatcher import FormulaDataUnavailableError
+    from zeler_sheets.formulas.recovery import IMPLEMENTED_MODELS, ItemIdsRecoveryRequest
+
+    queue = FormulaRecoveryQueue(recovery_db, enabled_models=IMPLEMENTED_MODELS)
+    request = ItemIdsRecoveryRequest("82453304", ("MLA2", "MLA1", "MLA1"))
+    http_request: Any = SimpleNamespace(
+        app=SimpleNamespace(state=SimpleNamespace(formula_recovery_queue=queue))
+    )
+    context: Any = SimpleNamespace(seller_id="82453304")
+    missing = FormulaDataUnavailableError(
+        "ZELERDATA_CALCULADORA", read_model="item_formula_rows", item_ids=request.item_ids
+    )
+    assert await _request_formula_recovery(http_request, context, missing)
+    key = request.key
+    assert key == await queue.enqueue(ItemIdsRecoveryRequest("82453304", ("MLA1", "MLA2")))
+    calls = []
+    gateway = object()
+
+    async def acquire(**kwargs: Any) -> Any:
+        assert kwargs["gateway"] is gateway
+        assert kwargs["acquire_item_ids"] == ("MLA1", "MLA2")
+        assert kwargs["sale_price_enabled"] and kwargs["listing_fixed_fee_enabled"]
+        assert not kwargs["dry_run"]
+        calls.append("acquire")
+        for identity in ("MLA1",) if partial else ("MLA1", "MLA2"):
+            await recovery_db.items.insert_one({"_id": identity, "seller_id": "82453304"})
+        if lose_lease:
+            await queue.collection.update_one(
+                {"_id": key}, {"$set": {"lease_until": datetime(2000, 1, 1, tzinfo=UTC)}}
+            )
+        return SimpleNamespace(item_details_stale_unavailable=int(partial))
+
+    async def project(**kwargs: Any) -> Any:
+        assert kwargs["item_ids"] == (("MLA1",) if partial else ("MLA1", "MLA2"))
+        assert not kwargs["dry_run"]
+        calls.append("project")
+
+    monkeypatch.setattr(workers, "run_item_detail_enrichment", acquire)
+    monkeypatch.setattr(workers, "run_sheetseller_backfill", project)
+    worker = workers.FormulaRecoveryWorker(
+        db=recovery_db, gateway=object(), detail_gateway=gateway, queue=queue
+    )
+    assert await worker.process_one()
+    assert calls == (["acquire"] if lose_lease else ["acquire", "project"])
+    assert (await queue.collection.find_one({"_id": key}))["state"] == (
+        "running" if lose_lease else "pending" if partial else "completed"
+    )
+    assert await recovery_db.sheets_read_model_freshness.count_documents({}) == 0
+    with pytest.raises(ValueError):
+        ItemIdsRecoveryRequest("82453304", tuple(f"MLA{i}" for i in range(21)))
+    with pytest.raises(ValueError):
+        ItemIdsRecoveryRequest("82453304", ("../items",))
+    with pytest.raises(ValueError, match="explicit IDs"):
+        await queue.enqueue(
+            RecoveryRequest(
+                "82453304",
+                "item_formula_rows",
+                datetime(2026, 9, 1, tzinfo=UTC),
+                datetime(2026, 9, 2, tzinfo=UTC),
+            )
+        )
+
+
+@pytest.mark.asyncio
 async def test_no_sku_event_reconciliation_is_bounded_under_source_contention(
     recovery_db: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
