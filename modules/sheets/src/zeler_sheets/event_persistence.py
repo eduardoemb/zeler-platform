@@ -34,6 +34,7 @@ from zeler_sheets.formulas.read_models import (
     READ_MODEL_FRESHNESS_COLLECTION,
     read_model_freshness_id,
 )
+from zeler_sheets.item_projection import stamp_item_projection
 from zeler_sheets.remaining_read_model_writers import (
     record_price_history_observation,
     record_stockout_observation,
@@ -45,6 +46,7 @@ from zeler_sheets.sheetseller_backfill import (
     build_sku_index_docs,
     build_variation_formula_row_docs,
     extract_safe_order_item_identity,
+    resolve_seller_sku,
     resolve_variation_sku,
     run_sheetseller_backfill,
 )
@@ -579,8 +581,10 @@ class SheetsEventPersistence:
         with suppress(ValueError):
             formula_row_docs.append(build_formula_row_doc(item, seller_id=seller_id))
 
-        variation_formula_rows, _, _ = build_variation_formula_row_docs(
-            item, sku_index_docs, seller_id=seller_id
+        variation_formula_rows, _, ambiguous_variation_identity = build_variation_formula_row_docs(
+            item,
+            [doc for doc in sku_index_docs if doc.get("variation_id") is not None],
+            seller_id=seller_id,
         )
         formula_row_docs.extend(variation_formula_rows)
         order_line_identities = await self._load_order_line_sku_identities(
@@ -596,6 +600,18 @@ class SheetsEventPersistence:
                 seller_id=seller_id,
             )
         )
+
+        if (
+            not resolve_seller_sku(item).ambiguous
+            and not ambiguous_variation_identity
+            and not any(
+                isinstance(variation, dict) and resolve_variation_sku(variation).ambiguous
+                for variation in item.get("variations", [])
+            )
+        ):
+            # Bind this complete group to its actual observation, never to a
+            # later source. Readers reject it if a concurrent event supersedes it.
+            stamp_item_projection(formula_row_docs, item)
 
         for formula_row_doc in formula_row_docs:
             if status_state is None:

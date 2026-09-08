@@ -257,6 +257,65 @@ async def test_calculator_recovers_through_real_worker_and_source_bound_projecti
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("with_variations", [False, True])
+async def test_native_sku_event_keeps_recovered_projection_readable(
+    recovery_db: Any, with_variations: bool
+) -> None:
+    from zeler_sheets.event_persistence import SheetsEventPersistence
+    from zeler_sheets.formulas.read_models import FormulaReadModelRepository
+    from zeler_sheets.sheetseller_backfill import run_sheetseller_backfill
+
+    now = datetime(2026, 9, 7, 12, tzinfo=UTC)
+    item = {
+        "_id": "MLA1",
+        "seller_id": "82453304",
+        "title": "Recovered SKU publication",
+        "price": 100,
+        "available_quantity": 7,
+        "currency_id": "ARS",
+        "status": "active",
+        "last_meli_sync_at": now,
+        "last_updated": now,
+        "date_created": now,
+        "attributes": [{"id": "SELLER_SKU", "value_name": "PARENT"}],
+        "variations": (
+            [{"id": 1, "seller_custom_field": "VARIANT", "available_quantity": 7}]
+            if with_variations
+            else []
+        ),
+    }
+    await recovery_db.items.insert_one(item)
+    await run_sheetseller_backfill(db=recovery_db, seller_id="82453304", dry_run=False)
+    reader = FormulaReadModelRepository(db=recovery_db)
+    rows, missing = await reader.find_recent_item_formula_rows(
+        seller_id="82453304", item_ids=["MLA1"], formula="ZELERDATA_CALCULADORA", now=now
+    )
+    assert len(rows) == 1 + int(with_variations)
+    assert missing == ()
+
+    later = now + timedelta(minutes=1)
+    await SheetsEventPersistence(db=recovery_db, clock=lambda: later).persist(
+        event_type="items.updated",
+        seller_id="82453304",
+        resource={
+            **item,
+            "id": "MLA1",
+            "seller_id": 82453304,
+            "price": 120,
+            "date_created": now.isoformat(),
+            "last_updated": later.isoformat(),
+        },
+    )
+    rows, missing = await reader.find_recent_item_formula_rows(
+        seller_id="82453304", item_ids=["MLA1"], formula="ZELERDATA_CALCULADORA", now=later
+    )
+    assert len(rows) == 1 + int(with_variations)
+    assert missing == ()
+    assert all(row["current"]["price"].to_decimal() == 120 for row in rows)
+    assert await recovery_db.sheets_read_model_freshness.count_documents({}) == 0
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("parent_sku", [None, "PARENT"])
 @pytest.mark.parametrize("native_event", [False, True])
 @pytest.mark.parametrize("first_sku", [None, "KNOWN"])

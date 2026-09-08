@@ -3203,3 +3203,53 @@ retain their contract; other product deployments remain out of scope.
   Their missing counts differed while acquisition continued, so they are not
   an atomic cross-formula snapshot. No global marker changed. This early sample
   does not prove that the full sweep will finish inside 15 minutes.
+
+## Work unit: preserve native SKU projection receipts
+
+- Reproduced with real Mongo: an ordinary item event removed the source-bound
+  receipt from an already recovered publication, making it unreadable again.
+  Both new cases (parent SKU alone and parent plus variation SKU) failed with
+  `FormulaDataUnavailableError` before the correction.
+- The native writer now uses the existing source-stamp helper for an unambiguous
+  group, retaining its status/concurrency guards and order-line identity filter.
+  Only variation index entries go to the variation builder; parent entries must
+  not count as ambiguous variation identities. No upstream calls or extra
+  backfill were added. Independent readers still reject changed source hashes.
+- Rejected approach: unconditionally re-running the shared backfill after each
+  native SKU event broke two existing contracts (stale status and historical SKU
+  duplication). That approach was removed; the existing tests were preserved.
+- Local runtime harness: the two new cases passed in 0.75s; the full Sheets suite
+  passed **1,615 tests in 45.73s** with local replica-set Mongo. Protected Mongo
+  integration: **8 passed in 2.89s**. Root Ruff check/format and mypy (503 files)
+  pass. Full-root pytest with normal allocator and local Mongo: **3,880 passed,
+  9 skipped, 356 warnings in 103.46s**. Eight skipped protected Mongo cases passed
+  in the separate run above; the other skip requires Caddy keys. This successful
+  run does not establish a fix for earlier intermittent native interpreter crashes.
+- Rollback boundary: remove this event-writer stamping/filter change and its two
+  regression cases together; no schema, queue, deployment or data migration.
+  This correction is not deployed. It affects the Sheets worker image; verify a
+  recovered SKU publication stays readable after a newer native event on release.
+
+## Parallel inventory observation: freshness still expires
+
+- Same admitted sweep, no repeated `prepare`: offset **1,300/1,900**, attempt 1,
+  reason `source_incomplete`. A sanitized diagnostic found 19 matching receipts
+  and one absent receipt in its selected batch. This does not prove native events
+  caused that absence; SKU diagnostic helpers ran in the older API image.
+- At **748.25s** enumeration age: offset **1,460**, 20 exhausted-batch IDs;
+  CALCULADORA/CALIDAD returned partial data in **2.0282/2.098s**. At **867.65s**:
+  offset **1,620**, partial reads **8.071/6.4458s**. Reads are sequential, not atomic.
+- At **931.68s**, offset **1,720**, the same sweep remained running with 20
+  exhausted-batch IDs, but both formulas returned whole `DATA_UNAVAILABLE` in
+  **0.0063/0.0062s** because inventory membership expired. Global markers remained
+  unchanged. Bounded parallel acquisition alone does not satisfy ongoing read
+  availability; do not extend timestamps or claim full inventory acceptance.
+- Continue observing the existing sweep to terminal. Authenticated HTTP, real
+  Sheet/app acceptance and the full 52-formula goal remain open.
+- Terminal observation: **failed**, offset **1,900/1,900**, 20 exhausted-batch
+  IDs, observed enumeration age **1,037.70s** (elapsed **1,041.52s**; not the exact
+  completion timestamp). Both formulas remained whole `DATA_UNAVAILABLE` in
+  **0.0064/0.0055s**; global markers unchanged. Do not reopen this sweep merely
+  to observe it. The next availability fix must separate unverified inventory
+  completeness from individually verified data without silently claiming a
+  complete current inventory.
