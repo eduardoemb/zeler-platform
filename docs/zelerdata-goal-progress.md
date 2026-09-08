@@ -3286,3 +3286,11 @@ retain their contract; other product deployments remain out of scope.
   its existing API test, then the entire suite passed. No test was removed.
 - Previous source `e902eb5` GitHub test `34242906407` and lint `34242906456`
   completed successfully. This is not CI evidence for the newer unit.
+- Published implementation source **`6098a938e0e3d7c12d6dbe9696079122ee6abcce`**.
+  Cloud Build API **`23839edc-6cad-4790-ab74-46c5233be4f9`** and worker
+  **`cba6b56c-25db-4df5-8643-3cb75746dbe7`** were each confirmed **WORKING**
+  from that exact connected-repository revision, one image per verified build.
+  Observe those IDs; no deployment or new pilot admission has been performed.
+  Release files are in `/tmp/zeler-inventory-availability.7SEBfo/`. After success,
+  verify immutable digests/provenance, exact-source CI and VM disk preflight;
+  preserve current API `02b4788…` and worker `3ac69caf…` as rollback images.
