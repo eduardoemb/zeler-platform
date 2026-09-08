@@ -29,7 +29,9 @@ RECOVERABLE_MODELS = frozenset(
 LEASE = timedelta(minutes=10)
 COOLDOWN = timedelta(minutes=15)
 MAX_ATTEMPTS = 3
-IMPLEMENTED_MODELS = frozenset({"questions", "orders", "shipments", "item_formula_rows"})
+IMPLEMENTED_MODELS = frozenset(
+    {"questions", "orders", "shipments", "item_formula_rows", "catalog_product_snapshots"}
+)
 
 
 def recovery_sellers(value: str | None) -> frozenset[str]:
@@ -150,6 +152,35 @@ class ItemIdsRecoveryRequest:
 
 
 @dataclass(frozen=True)
+class CatalogProductIdsRecoveryRequest:
+    seller_id: str
+    catalog_product_ids: tuple[str, ...]
+    read_model: str = "catalog_product_snapshots"
+
+    def __post_init__(self) -> None:
+        if (
+            re.fullmatch(r"[0-9]+", self.seller_id) is None
+            or self.read_model != "catalog_product_snapshots"
+            or not 1 <= len(self.catalog_product_ids) <= 20
+            or any(
+                re.fullmatch(r"ML[A-Z][0-9]+", value) is None for value in self.catalog_product_ids
+            )
+        ):
+            raise ValueError("catalog recovery requires a seller and 1 to 20 product IDs")
+        object.__setattr__(
+            self, "catalog_product_ids", tuple(sorted(set(self.catalog_product_ids)))
+        )
+
+    @property
+    def key(self) -> str:
+        return hashlib.sha256(
+            "\0".join(
+                (self.seller_id, self.read_model, "products", *self.catalog_product_ids)
+            ).encode()
+        ).hexdigest()
+
+
+@dataclass(frozen=True)
 class ItemInventoryRecoveryRequest:
     seller_id: str
     read_model: str = "item_formula_rows"
@@ -206,6 +237,7 @@ class FormulaRecoveryQueue:
         | OrderIdsRecoveryRequest
         | ShipmentIdsRecoveryRequest
         | ItemIdsRecoveryRequest
+        | CatalogProductIdsRecoveryRequest
         | ItemInventoryRecoveryRequest,
     ) -> str:
         if self.allowed_sellers is not None and request.seller_id not in self.allowed_sellers:
@@ -216,6 +248,10 @@ class FormulaRecoveryQueue:
             request, ShipmentIdsRecoveryRequest
         ):
             raise ValueError("shipment recovery requires explicit IDs")
+        if request.read_model == "catalog_product_snapshots" and not isinstance(
+            request, CatalogProductIdsRecoveryRequest
+        ):
+            raise ValueError("catalog recovery requires explicit product IDs")
         if request.read_model == "item_formula_rows" and not isinstance(
             request, (ItemIdsRecoveryRequest, ItemInventoryRecoveryRequest)
         ):
@@ -237,6 +273,8 @@ class FormulaRecoveryQueue:
             initial["shipment_ids"] = list(request.shipment_ids)
         elif isinstance(request, ItemIdsRecoveryRequest):
             initial["item_ids"] = list(request.item_ids)
+        elif isinstance(request, CatalogProductIdsRecoveryRequest):
+            initial["catalog_product_ids"] = list(request.catalog_product_ids)
         elif isinstance(request, ItemInventoryRecoveryRequest):
             initial["inventory_scope"] = True
         else:
@@ -465,6 +503,11 @@ class FormulaRecoveryQueue:
             + (timedelta(seconds=30 * 2 ** (job["attempts"] - 1)) if retry else COOLDOWN),
             "updated_at": now,
         }
+        if succeeded and job["read_model"] == "catalog_product_snapshots":
+            observed = job["updated_at"]
+            if observed.tzinfo is None:
+                observed = observed.replace(tzinfo=UTC)
+            fields["available_at"] = max(now, observed + COOLDOWN)
         unset = {"lease_until": "", "attempt_token": ""}
         if succeeded:
             unset["failure_reason"] = ""

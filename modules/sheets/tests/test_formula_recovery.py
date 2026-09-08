@@ -14,6 +14,166 @@ from pymongo.errors import ServerSelectionTimeoutError
 from zeler_sheets.formulas.recovery import FormulaRecoveryQueue, RecoveryRequest
 
 
+def test_catalog_product_recovery_request_has_distinct_bounded_identity() -> None:
+    from zeler_sheets.formulas.recovery import CatalogProductIdsRecoveryRequest
+
+    request = CatalogProductIdsRecoveryRequest("82453304", ("MLA2", "MLA1", "MLA2"))
+    assert request.catalog_product_ids == ("MLA1", "MLA2")
+    assert request.key == CatalogProductIdsRecoveryRequest("82453304", ("MLA1", "MLA2")).key
+    assert request.key != CatalogProductIdsRecoveryRequest("42", ("MLA1", "MLA2")).key
+    for ids in [(), tuple(f"MLA{i}" for i in range(21)), ("../items",), ("MLA１",)]:
+        with pytest.raises(ValueError):
+            CatalogProductIdsRecoveryRequest("82453304", ids)
+    with pytest.raises(ValueError):
+        CatalogProductIdsRecoveryRequest("seller", ("MLA1",))
+    with pytest.raises(ValueError):
+        CatalogProductIdsRecoveryRequest("82453304", ("MLA1",), read_model="orders")
+
+
+@pytest.mark.asyncio
+async def test_catalog_refresh_cooldown_ages_from_acquisition_start(recovery_db: Any) -> None:
+    from zeler_sheets.formulas.recovery import COOLDOWN, CatalogProductIdsRecoveryRequest
+
+    started = datetime.now(UTC).replace(microsecond=0)
+    clock = [started]
+    queue = FormulaRecoveryQueue(recovery_db, now=lambda: clock[0])
+    key = await queue.enqueue(CatalogProductIdsRecoveryRequest("82453304", ("MLA1",)))
+    job = await queue.claim()
+    assert job is not None
+    clock[0] += timedelta(seconds=120)
+    assert await queue.finish(job, succeeded=True)
+    completed = await queue.collection.find_one({"_id": key})
+    assert completed["available_at"].replace(tzinfo=UTC) == started + COOLDOWN
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "outcome",
+    ["success", "wrong_identity", "wrong_title", "transient", "lease_lost", "newer_snapshot"],
+)
+async def test_catalog_product_worker_persists_available_resources_without_global_coverage(
+    recovery_db: Any, outcome: str
+) -> None:
+    import json
+    from pathlib import Path
+
+    import httpx
+
+    from zeler_sheets.formulas.recovery import IMPLEMENTED_MODELS, CatalogProductIdsRecoveryRequest
+    from zeler_sheets.formulas.recovery_worker import FormulaRecoveryWorker
+
+    schema = json.loads(
+        Path("infra/mongo/schemas/sheets_catalog_product_snapshots.json").read_text()
+    )
+    await recovery_db.create_collection(
+        "sheets_catalog_product_snapshots", validator={"$jsonSchema": schema["$jsonSchema"]}
+    )
+    await recovery_db.items.insert_many(
+        [
+            {
+                "_id": "MLA10",
+                "seller_id": "82453304",
+                "catalog_product_id": "MLA1",
+                "variations": [{"catalog_product_id": "MLA2"}],
+            },
+            {"_id": "MLA20", "seller_id": "42", "catalog_product_id": "MLA3"},
+        ]
+    )
+    now = datetime.now(UTC).replace(microsecond=0)
+    queue = FormulaRecoveryQueue(recovery_db, now=lambda: now, enabled_models=IMPLEMENTED_MODELS)
+    requested = CatalogProductIdsRecoveryRequest("82453304", ("MLA1", "MLA2"))
+    key = await queue.enqueue(requested)
+    assert await queue.enqueue(requested) == key
+    assert await queue.collection.count_documents({}) == 1
+    calls: list[str] = []
+
+    class Gateway:
+        async def fetch_resource(self, *, seller_id: str, path: str) -> dict[str, Any]:
+            assert seller_id == "82453304"
+            calls.append(path)
+            if path == "/products/MLA1":
+                if outcome == "wrong_identity":
+                    return {"id": "MLA3", "name": "Wrong product"}
+                if outcome == "wrong_title":
+                    return {"id": "MLA1", "name": 123}
+                if outcome == "transient":
+                    raise httpx.ConnectTimeout("upstream unavailable")
+                if outcome == "lease_lost":
+                    await queue.collection.update_one(
+                        {"_id": key}, {"$set": {"attempt_token": "new-owner"}}
+                    )
+                if outcome == "newer_snapshot":
+                    from zeler_sheets.historical_meli_backfill import _catalog_product_snapshot
+
+                    newer = _catalog_product_snapshot(
+                        {"id": "MLA1", "name": "Newer product"}, seller_id=seller_id
+                    )
+                    assert newer is not None
+                    newer["snapshot_at"] = now + timedelta(seconds=1)
+                    await recovery_db.sheets_catalog_product_snapshots.insert_one(newer)
+            return {
+                "id": path.rsplit("/", 1)[1],
+                "name": "Product",
+                "pictures": [{"url": "https://example.test/product.jpg"}],
+                "attributes": [{"id": "BRAND", "value_name": "Brand"}],
+                "access_token": "must-not-persist",
+                "unneeded_payload": {"private": True},
+            }
+
+    assert await FormulaRecoveryWorker(db=recovery_db, gateway=Gateway(), queue=queue).process_one()
+    stored = await recovery_db.sheets_catalog_product_snapshots.find({}).to_list(10)
+    expected = (
+        0 if outcome == "lease_lost" else 2 if outcome in {"success", "newer_snapshot"} else 1
+    )
+    assert len(stored) == expected
+    assert calls == (
+        ["/products/MLA1"] if outcome == "lease_lost" else ["/products/MLA1", "/products/MLA2"]
+    )
+    for row in stored:
+        assert row["seller_id"] == "82453304"
+        newer = outcome == "newer_snapshot" and row["catalog_product_id"] == "MLA1"
+        assert row["title"] == ("Newer product" if newer else "Product")
+        assert row["snapshot_at"].replace(tzinfo=UTC) == now + timedelta(seconds=int(newer))
+        assert "access_token" not in row and "unneeded_payload" not in row
+    assert await recovery_db.sheets_read_model_freshness.count_documents({}) == 0
+    job = await queue.collection.find_one({"_id": key})
+    assert (
+        job["state"]
+        == {
+            "success": "completed",
+            "wrong_identity": "failed",
+            "wrong_title": "failed",
+            "transient": "pending",
+            "lease_lost": "running",
+            "newer_snapshot": "completed",
+        }[outcome]
+    )
+    assert "date_from" not in job and "item_ids" not in job
+    assert job["catalog_product_ids"] == ["MLA1", "MLA2"]
+
+
+@pytest.mark.asyncio
+async def test_catalog_product_worker_rejects_other_seller_products_before_fetch(
+    recovery_db: Any,
+) -> None:
+    from zeler_sheets.formulas.recovery import CatalogProductIdsRecoveryRequest
+    from zeler_sheets.formulas.recovery_worker import FormulaRecoveryWorker
+
+    await recovery_db.items.insert_one(
+        {"_id": "MLA10", "seller_id": "42", "catalog_product_id": "MLA1"}
+    )
+    queue = FormulaRecoveryQueue(recovery_db)
+    key = await queue.enqueue(CatalogProductIdsRecoveryRequest("82453304", ("MLA1",)))
+
+    class Gateway:
+        async def fetch_resource(self, **kwargs: Any) -> Any:
+            pytest.fail("must not fetch an unassociated product")
+
+    await FormulaRecoveryWorker(db=recovery_db, gateway=Gateway(), queue=queue).process_one()
+    assert (await queue.collection.find_one({"_id": key}))["state"] == "failed"
+    assert await recovery_db.sheets_catalog_product_snapshots.count_documents({}) == 0
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("participation", [True, False, None])
 async def test_catalog_participation_persists_with_mongo_validators(

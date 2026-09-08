@@ -10,7 +10,7 @@ from urllib.parse import urlencode
 
 import httpx
 from bson import BSON
-from pymongo.errors import PyMongoError
+from pymongo.errors import DuplicateKeyError, PyMongoError
 
 from zeler_platform_core.clients.meli_gateway_client import GatewayRateLimitError
 from zeler_platform_core.devoluciones_readiness import (
@@ -35,10 +35,15 @@ from zeler_sheets.formulas.read_models import (
 )
 from zeler_sheets.formulas.recovery import (
     COOLDOWN,
+    CatalogProductIdsRecoveryRequest,
     FormulaRecoveryQueue,
     ItemIdsRecoveryRequest,
     OrderIdsRecoveryRequest,
     ShipmentIdsRecoveryRequest,
+)
+from zeler_sheets.historical_meli_backfill import (
+    _catalog_product_snapshot,
+    _catalog_snapshot_source_rows_from_resources,
 )
 from zeler_sheets.sheetseller_backfill import (
     ItemDetailEnrichmentSummary,
@@ -81,6 +86,8 @@ class FormulaRecoveryWorker:
                     await self._shipments(job)
                 elif job["read_model"] == "item_formula_rows":
                     await self._items(job)
+                elif job["read_model"] == "catalog_product_snapshots":
+                    await self._catalog_products(job)
                 else:
                     raise ValueError("recovery source not implemented")
         except httpx.HTTPStatusError as exc:
@@ -110,6 +117,99 @@ class FormulaRecoveryWorker:
         except Exception:  # noqa: BLE001 - never log upstream payloads or credentials.
             await self.queue.finish(job, succeeded=False)
         return True
+
+    async def _catalog_products(self, job: dict[str, Any]) -> None:
+        requested = CatalogProductIdsRecoveryRequest(
+            job["seller_id"], tuple(job["catalog_product_ids"])
+        )
+        ids = list(requested.catalog_product_ids)
+        sources = (
+            await self.db["items"]
+            .find(
+                {
+                    "seller_id": requested.seller_id,
+                    "$or": [
+                        {"catalog_product_id": {"$in": ids}},
+                        {"variations.catalog_product_id": {"$in": ids}},
+                    ],
+                },
+                {"_id": 1, "catalog_product_id": 1, "variations.catalog_product_id": 1},
+            )
+            .to_list(length=None)
+        )
+        associated = {
+            identity
+            for source in _catalog_snapshot_source_rows_from_resources(sources)
+            for identity in (source.catalog_product_id, *source.variation_catalog_product_ids)
+            if identity is not None
+        }
+        if not set(ids) <= associated:
+            raise ValueError("requested catalog products are not associated with this seller")
+        failures: list[Exception] = []
+        for identity in ids:
+            observed = self.queue.now()
+            if await self.queue.collection.find_one(self.queue._owned(job, observed)) is None:
+                raise ValueError("catalog recovery lease lost")
+            try:
+                async with asyncio.timeout(10):
+                    resource = await self.gateway.fetch_resource(
+                        seller_id=requested.seller_id, path=f"/products/{identity}"
+                    )
+                snapshot = _catalog_product_snapshot(resource, seller_id=requested.seller_id)
+                if (
+                    snapshot is None
+                    or snapshot["catalog_product_id"] != identity
+                    or not snapshot["title"]
+                    or not isinstance(resource.get("title") or resource.get("name"), str)
+                ):
+                    raise ValueError("catalog product identity or title is unavailable")
+            except (httpx.HTTPError, TimeoutError, GatewayRateLimitError, ValueError) as exc:
+                failures.append(exc)
+                continue
+            if (
+                await self.queue.collection.find_one(self.queue._owned(job, self.queue.now()))
+                is None
+            ):
+                raise ValueError("catalog recovery lease lost before persistence")
+            snapshot["snapshot_at"] = observed
+            snapshot["source"] = "sheets_backfill"
+            # Overlapping batches may finish out of order. Never replace a
+            # newer observation; a duplicate ID then means it already won.
+            with suppress(DuplicateKeyError):
+                await self.db["sheets_catalog_product_snapshots"].replace_one(
+                    {
+                        "_id": snapshot["_id"],
+                        "seller_id": requested.seller_id,
+                        "$or": [
+                            {"snapshot_at": {"$lte": observed}},
+                            {"snapshot_at": {"$exists": False}},
+                        ],
+                    },
+                    snapshot,
+                    upsert=True,
+                )
+        if failures:
+            # Keep successfully acquired products even when a sibling failed.
+            # The outer worker applies the existing bounded retry policy.
+            transient = next(
+                (
+                    failure
+                    for failure in failures
+                    if isinstance(
+                        failure, (httpx.TransportError, TimeoutError, GatewayRateLimitError)
+                    )
+                    or (
+                        isinstance(failure, httpx.HTTPStatusError)
+                        and (
+                            failure.response.status_code == 429
+                            or failure.response.status_code >= 500
+                        )
+                    )
+                ),
+                None,
+            )
+            raise transient or failures[0]
+        await self.queue.finish(job, succeeded=True)
 
     async def _items(self, job: dict[str, Any]) -> None:
         if job.get("inventory_scope") is True:

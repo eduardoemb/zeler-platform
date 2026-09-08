@@ -1578,6 +1578,20 @@ def test_catalog_buybox_takes_item_fields_from_item_detail(quantity: int | None)
     assert snapshot["price"] == 99
 
 
+@pytest.mark.parametrize("content", ["Product description\nSecond line", "", None])
+def test_catalog_product_preserves_official_short_description(content: str | None) -> None:
+    snapshot = historical_backfill_module._catalog_product_snapshot(
+        {
+            "id": "MLA123",
+            "name": "Product",
+            "short_description": {"type": "plaintext", "content": content},
+        },
+        seller_id="82453304",
+    )
+    assert snapshot is not None
+    assert snapshot["description"] == (content or None)
+
+
 @pytest.mark.asyncio
 async def test_historical_backfill_dedupes_shipment_cost_fetches_and_persists_projection() -> None:
     class SharedShipmentGateway:

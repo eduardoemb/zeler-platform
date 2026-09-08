@@ -21,6 +21,52 @@ Keep unrelated `.codegraph/` files untouched in both repositories.
 Pilot: seller `82453304`; initial historical window 2026-08-08 through
 2026-09-06, plus current snapshots. Other products are out of scope.
 
+## Catalog product recovery worker — 2026-09-08 (not deployed)
+
+The queue/worker now support explicit catalog-product requests, separate from
+publication IDs and date ranges: numeric seller, 1–20 validated product IDs,
+deduplicated identity and existing transactional seller admission. Range-shaped
+catalog requests are rejected. The API/formula bridge is still pending; this
+unit alone does not make user-triggered catalog recovery operational.
+
+The worker checks seller-associated parent/variation product IDs before any
+gateway call, fetches each product with a ten-second bound within the existing
+240-second job limit, verifies response identity and a textual nonempty title,
+and writes only normalized snapshots under seller-scoped IDs. Successful sibling
+products survive failures; transient failures use the existing bounded retry
+policy. Lease loss prevents subsequent writes. Older overlapping observations
+cannot replace newer snapshots. No whole-seller coverage marker is published.
+Successful refresh cooldown ages from acquisition start, not completion.
+
+Product normalization now retains official plaintext
+`short_description.content`, including paragraph boundaries; empty content stays
+absent. Contract source:
+[Mercado Libre product detail](https://developers.mercadolibre.com.mx/es_mx/buscador-de-productos).
+
+- TDD: six initial queue/worker cases failed before implementation. A malformed
+  title case then exposed coercion; a refresh-timing case exposed extra cooldown;
+  and a description case exposed discarded content. Each was fixed after failure.
+- Local runtime boundary: Mongo validator insert/read and real durable queue
+  processing cover parent/variation association, seller rejection, sibling
+  failures, retries, lease theft, and out-of-order snapshot writes. The eight
+  focused worker/request cases passed in 1.68s before adding the cooldown case.
+- Root regression before the final description/cooldown additions: 4,007 passed,
+  nine skipped, 356 warnings in 111.25s. Protected replica-set tests ran separately:
+  eight passed in 2.35s. Final affected-module rerun with loopback Mongo:
+  `test_historical_meli_backfill.py` plus `test_formula_recovery.py`:
+  358 passed in 53.13s, including the description and cooldown additions.
+- Ruff check/format, mypy (505 files), and diff checks passed after all code edits.
+- Rollback boundary: the product request type/admission, worker branch, successful
+  product cooldown rule, description mapping and their tests. No schema or index
+  change, business-data deletion, or production mutation was performed.
+
+Next: bridge missing product IDs from formulas into the queue and read current
+inventory-bound product snapshots with per-resource freshness and honest partial
+results. Catalog buybox recovery and count/reason semantics remain separate open
+work. Build verified worker/API images after the consumer unit, then prove the
+actual request → worker → Mongo → subsequent formula path in production; current
+deployed `07c8ad3` images do not contain this implementation.
+
 ## Catalog item-purpose fields — 2026-09-08 (not deployed)
 
 Buybox normalization now takes publication title and available quantity from

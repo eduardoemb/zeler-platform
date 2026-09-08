@@ -878,6 +878,11 @@ def _catalog_buybox_snapshot_id(seller_id: str, item_id: str) -> str:
 
 
 def _catalog_description(resource: dict[str, Any]) -> str | None:
+    short = resource.get("short_description")
+    if isinstance(short, dict) and short.get("type") == "plaintext":
+        content = short.get("content")
+        if isinstance(content, str):
+            return _optional_string(content)
     description = resource.get("description")
     if isinstance(description, dict):
         return _optional_string(description.get("plain_text") or description.get("text"))
