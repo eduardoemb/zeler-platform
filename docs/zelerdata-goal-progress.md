@@ -21,6 +21,44 @@ Keep unrelated `.codegraph/` files untouched in both repositories.
 Pilot: seller `82453304`; initial historical window 2026-08-08 through
 2026-09-06, plus current snapshots. Other products are out of scope.
 
+## Completed acquisition exposes catalog freshness starvation — 2026-09-08
+
+The same `c90a941` inventory job completed all 1,900 publications with zero
+unavailable IDs. Watch session `70728` is now terminal: its final probe observed
+`completed`, offset 1,900, enumeration age 904.66 seconds and time since the
+last update 8.22 seconds. Completion therefore occurred approximately 896.44
+seconds after enumeration, leaving under four seconds of the 15-minute window.
+The watcher exited with its freshness assertion, before product admission. This
+is a successful inventory acquisition but **not** current catalog coverage.
+Do not restart the watcher or inventory merely because this observation ended.
+
+A subsequent VM/API-container `products.py read` confirmed both real handlers
+remain incomplete. `OBTENER_CATALOGO` took 3.0095 seconds: zero current products,
+874 missing products and 80 unavailable item sources. `CATALOGO_COMPLETO` took
+2.9758 seconds: zero current products, 873 missing products and 100 unavailable
+item sources. Both reported expired enumeration and `inventory_incomplete`,
+with their unchanged three-/six-column contracts. These are sequential readings
+with independently evaluated freshness, not comparable fixed membership counts.
+The earlier stored job history remained one completed and 19 rejected product
+jobs (400 slots); it is not evidence of new admission. Global freshness markers
+were unchanged. No new recovery was admitted by this read-only probe.
+
+The current handler requests item recovery before product recovery whenever any
+inventory gap exists. Combined with this measured acquisition time, the serial
+dependency leaves effectively no time for acquiring the missing catalog products;
+early item observations also expire while later items finish. The next functional
+correction must address acquisition sequencing/throughput with a regression for
+whole-inventory convergence. Repeating the same sweep, stamping observation times
+at completion, or relaxing freshness solely to make the check pass does not prove
+the requested behavior. The original generic failure's exact cause remains
+unproven, although this run advanced past its former offset and completed.
+
+Evidence: `/tmp/zeler-catalog-retry.UAUPVJ/watch-products.py`, `inventory.py status`
+and `products.py read` on the approved VM. This is operator/runtime evidence,
+not authenticated production HTTP or a real Sheet smoke. Documentation-only
+unit: no executable change, build or deployment required; rollback removes this
+section alone. Both deployed service sources remain `c90a941`.
+
 ## Acquisition retry and shared-count rollout — 2026-09-08
 
 Both Sheets services now run source `c90a9410e0b19ede3919160d6f41c34a7179492f`,
