@@ -3294,3 +3294,43 @@ retain their contract; other product deployments remain out of scope.
   Release files are in `/tmp/zeler-inventory-availability.7SEBfo/`. After success,
   verify immutable digests/provenance, exact-source CI and VM disk preflight;
   preserve current API `02b4788…` and worker `3ac69caf…` as rollback images.
+
+## Runtime: inventory availability deployed and bounded recovery verified
+
+- Both builds succeeded with independently verified single-subject digest/build/
+  source provenance for **`6098a938e0e3d7c12d6dbe9696079122ee6abcce`**:
+  API `sha256:d9bfc8a87bf68765bb453618113402139dcd90abbb8d1d9ae3674b96ba2bc844`,
+  worker `sha256:5a70e40bafa593566bb3f371769854267ddfdabed2f01c9f81675844fc60d397`.
+  Exact-source test `34243742186` and lint `34243742367` completed successfully.
+  The VM provenance map contains both entries; subsequent main changes are docs-only.
+- Initial free space **4,866,322,432 bytes** was below the 5GiB gate. After proving
+  no container used them and confirming Artifact Registry recovery copies, removed
+  only old API `c187698…` and worker `55e10b4…`. Following healthy API replacement,
+  removed older API rollback `f8ccf36…`, preserving newly prior API `02b4788…`.
+  No volumes, production data or running containers were removed by cleanup.
+- Separate observed pulls took **13.15s API / 10.32s worker**, with Compose
+  unchanged during each pull. At least 5GiB remained before each pull/activation.
+  Each service was activated alone with `--no-deps --pull never`, after zero
+  running recovery jobs. Both exact digests became healthy, zero restarts,
+  `/health` HTTP 200; final free space **5,408,358,400 bytes**.
+  Backups: `/opt/zeler-platform/docker-compose.yml.pre-sheets-api-activate-6098a93`
+  and `.pre-sheets-worker-activate-6098a93`. Running rollback authorities remain
+  API `02b4788…` and worker `3ac69caf…`; no other product was deployed.
+- Internal API-container smoke first showed 1,900 unavailable publication rows
+  plus the expiry warning, no numeric prices, in **2.3654/1.6157s**. All old
+  observations had expired; this was not presented as recovered data.
+- A separate, single 20-ID request went through the existing API admission helper
+  and normal running worker. Job
+  `bce2e46e5f5c4d6e3fb78816949a0f4aa260aa7b7e5b6029cbf93122fbefb6bb`
+  **completed on attempt 1**. Receipt (0600):
+  `/var/lib/zeler-platform/repairs/inventory-availability-selected-6098a93.json`.
+  Do not repeat `prepare`; `/tmp/zeler-availability-pilot-6098a93.py status` is
+  read-only. The full-inventory job and global markers remained unchanged.
+- Subsequent CALCULADORA/CALIDAD whole-inventory reads retained the 20 recovered
+  publications: **1,904 rows**, **1,880 missing publications**, **23 numeric price
+  rows** in CALCULADORA (variants included), in **1.4357/1.3466s**. Both explicitly
+  reported incomplete coverage, expired enumeration and the visible warning.
+  This proves useful source-verified values survive expired enumeration after
+  normal async recovery. It does not certify every field, full current inventory,
+  native-event continuity in production, authenticated HTTP or real Sheet/app
+  acceptance. Those checks and the complete 52-formula goal remain open.
