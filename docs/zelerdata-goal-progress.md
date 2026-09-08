@@ -2689,3 +2689,54 @@ retain their contract; other product deployments remain out of scope.
   check. Recheck capacity before each subsequent image pull.
 - Post-cleanup dry preflight passed. Both exact `f74f3f1` running digests remain
   healthy with zero restarts; no service was recreated during this maintenance.
+
+## Source-bound calculator recovery released and verified on the pilot
+
+- Sheets API and worker now run source commit
+  `f51c374f2f1c4b3faa23c45f533f5beacfa074fc`. Both Cloud Builds succeeded and
+  the repository provenance verifier bound each immutable image to that source:
+
+  | Service | Build | SHA-256 image digest |
+  | --- | --- | --- |
+  | sheets-api | `c7e4b577-4a4a-492b-92fe-983ee4ebb002` | `c187698e5522dbf50952a6577511601143e25346bcfb836e5d494c7fa1f4be87` |
+  | sheets-worker | `a3c7f44b-8799-44c4-8a23-eda1c6d17754` | `55e10b4593b0ccb5df81a513daf9ce10be26c5da1516d85e7b7b6fb8a72f8512` |
+
+- From the approved VM/container context, the live formula-row validator matched
+  the prior schema exactly. All **2,846 rows** passed the proposed schema before
+  applying its optional `source_snapshot` property. The prior validator/options
+  were saved exclusively with mode 0600 under the protected repairs directory:
+  `/var/lib/zeler-platform/repairs/formula-source-snapshot-f51c374.json`.
+  The old-schema and zero-invalid-row guards were repeated before `collMod`, and
+  the resulting validator matched the proposal. No source records were deleted.
+- Deployment ran worker first, then API, with capacity/preflight, exact-one
+  Compose replacement and target-only recreation. Both services reached healthy,
+  HTTP `/health` **200**, with **zero restarts**. Recovery remained restricted to
+  seller `82453304`; the worker had zero running recovery jobs before recreation.
+- The real pilot check selected one stored item-only publication. Its initial
+  internal CALCULADORA dispatch returned DATA_UNAVAILABLE in **0.0150s**. An
+  explicit-ID request entered the normal queue, and the running worker completed
+  job `0732ce039d50b06bbaeecbfe2ba283ff6c4d421968c7f2a9ac8320f1e60a561b`
+  in **one attempt**, using the real gateway/acquisition/projection paths.
+  A subsequent internal API-container dispatch returned **one row**, numeric
+  price, and **zero DATA_UNAVAILABLE cells** in **0.0163s**. The seller's global
+  freshness-marker hash was unchanged. No second operator worker or synthetic
+  MercadoLibre response was used. The protected job receipt is
+  `/var/lib/zeler-platform/repairs/calculator-recovery-f51c374.json`; do not
+  re-enqueue this completed check merely to inspect its status.
+- This demonstrates one real selected-item recovery and subsequent Mongo read,
+  not independent correctness of every returned cell, authenticated HTTP
+  acceptance, p95 latency, whole-inventory freshness, or all 52 formulas. The
+  Google Sheet/app acceptance and broader recovery/freshness work remain open.
+- Rollback authority is the previously running `f74f3f1` pair: API
+  `ef49b4d24bf62a9e31b5e9b83fbd5ec61d3983e020775922e168e544d21e0fc0`, worker
+  `98cabd3eaf4607a49b08102854289ff898e5359b861f3ac025efd5884ceb5c26`.
+  Compose backups end in `.pre-sheets-api-f51c374` and
+  `.pre-sheets-worker-f51c374`; restore only the intended image line, not the
+  entire old Compose file. Before reverting item job support, stop new item
+  admissions/claims and account for pending jobs. Preserve normalized data and
+  source receipts; do not blindly restore the validator backup.
+- Free disk was **5,427,470,336 bytes** after the worker and **4,884,602,880 bytes**
+  after the API. Both pulls passed the 5 GiB pre-pull floor, but another pull now
+  requires recovering capacity first. No further build is required for this
+  source: both affected images match it. This evidence-only update changes no
+  runtime implementation and does not itself require rebuilding either image.
