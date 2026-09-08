@@ -160,7 +160,8 @@ async def test_buybox_http_recovers_current_membership_then_reuses_mongo(
                 "_id": f"{seller}:orders",
                 "seller_id": seller,
                 "read_model": "orders",
-                "state": "fresh",
+                "state": "reconciled",
+                "date_from": now - timedelta(days=400),
                 "reconciled_until": now + timedelta(days=1),
                 "last_event_synced_at": now + timedelta(days=1),
             }

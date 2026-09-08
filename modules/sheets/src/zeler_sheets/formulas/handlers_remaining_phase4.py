@@ -20,7 +20,6 @@ from zeler_sheets.formulas.read_models import (
     CATALOG_TIME_METRICS_READ_MODEL,
     FULL_WITHDRAWALS_READ_MODEL,
     ITEM_FORMULA_ROWS_READ_MODEL,
-    ORDERS_READ_MODEL,
     PRICE_HISTORY_SNAPSHOTS_READ_MODEL,
     STOCK_TIME_METRICS_READ_MODEL,
     STOCKOUT_SNAPSHOTS_READ_MODEL,
@@ -162,11 +161,15 @@ class RemainingPhase4FormulaHandlers:
         ) = await self._repository.find_recent_catalog_buybox_inventory(
             seller_id=context.seller_id, formula=context.contract.name, now=now, inventory=inventory
         )
-        await self._repository.require_read_model_productive(
+        (
+            sales_as_of,
+            covered_windows,
+            sales_recovery,
+        ) = await self._repository.catalog_sales_coverage(
             seller_id=context.seller_id,
-            read_model=ORDERS_READ_MODEL,
-            date_to=now,
             formula=context.contract.name,
+            now=now,
+            windows=CATALOGO_SALES_WINDOWS,
         )
         buybox_by_item_id = {
             str(row.get("item_id") or "").strip(): row for row in buybox_rows if row.get("item_id")
@@ -175,11 +178,13 @@ class RemainingPhase4FormulaHandlers:
         catalog_rows = [row for row in rows if row.get("item_id") in participating]
         orders = await self._repository.find_orders(
             seller_id=context.seller_id,
-            date_from=now - timedelta(days=max(CATALOGO_SALES_WINDOWS)),
-            date_to=_day_end(now),
+            date_from=(sales_as_of - timedelta(days=max(CATALOGO_SALES_WINDOWS))).replace(
+                hour=0, minute=0, second=0, microsecond=0
+            ),
+            date_to=sales_as_of,
             limit=None,
         )
-        sales_by_item = _sales_windows_by_item(orders, now=now)
+        sales_by_item = _sales_windows_by_item(orders, now=sales_as_of)
         values: list[list[Any]] = _header_row(context.args.get("encabezados"), CATALOGO_HEADERS)
         header_rows = len(values)
         values.extend(
@@ -192,6 +197,13 @@ class RemainingPhase4FormulaHandlers:
             for row in catalog_rows
         )
         unavailable_shared = sum(row[21] == "DATA_UNAVAILABLE" for row in values[header_rows:])
+        for value in values[header_rows:]:
+            for index, days in enumerate(CATALOGO_SALES_WINDOWS, start=9):
+                value[index] = (
+                    (0 if value[index] == NA_VALUE else value[index])
+                    if days in covered_windows
+                    else "DATA_UNAVAILABLE"
+                )
         recoverable = set(missing_buybox)
         for source, value in zip(catalog_rows, values[header_rows:], strict=True):
             if value[21] == "DATA_UNAVAILABLE" or value[23] == "DATA_UNAVAILABLE":
@@ -212,6 +224,8 @@ class RemainingPhase4FormulaHandlers:
                 if inventory_gap
                 else tuple(sorted(recoverable)),
             )
+        if recovery is None and catalog_rows:
+            recovery = sales_recovery
         return FormulaExecutionResult(
             values=normalize_response_rows(values, header_rows=header_rows),
             recovery=recovery,
@@ -221,11 +235,17 @@ class RemainingPhase4FormulaHandlers:
                 "unavailable_shared_users": unavailable_shared,
                 "inventory_enumeration_current": current and rows_current,
                 "unavailable_buybox_items": len(recoverable),
+                "sales_as_of": sales_as_of.isoformat(),
+                "unavailable_sales_windows": [
+                    days for days in CATALOGO_SALES_WINDOWS if days not in covered_windows
+                ],
                 **(
                     {
                         "unavailable_reason": "inventory_incomplete"
                         if inventory_gap
                         else "buybox_missing_expired_or_incomplete"
+                        if recoverable
+                        else "catalog_sales_interval_not_reconciled"
                     }
                     if recovery
                     else {}

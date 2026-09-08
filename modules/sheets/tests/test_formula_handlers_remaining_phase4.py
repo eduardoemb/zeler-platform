@@ -83,6 +83,75 @@ NOW = datetime(2026, 6, 15, 12, 0, tzinfo=UTC)
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("coverage", [0, 30, 400])
+async def test_catalog_sales_require_each_window_without_hiding_item_data(coverage: int) -> None:
+    db = FakeDb()
+    db["sheets_item_formula_rows"].documents["item"] = _item_row(
+        item_id="MLA1",
+        sku="sku",
+        title="Publication",
+        catalog_product_id="MLA9",
+        price=Decimal("100"),
+    )
+    _seed_catalog_inventory(db)
+    if coverage:
+        db["sheets_read_model_freshness"].documents["82453304:orders"] = {
+            "_id": "82453304:orders",
+            "seller_id": "82453304",
+            "read_model": "orders",
+            "state": "reconciled",
+            "date_from": NOW - timedelta(days=coverage),
+            "reconciled_until": NOW,
+        }
+    result = await _dispatcher(db).execute(_context("ZELERDATA_CATALOGO", {"encabezados": False}))
+    assert result.values[0][2] == "MLA1"
+    windows = (7, 15, 30, 60, 90, 365)
+    expected = [0 if coverage > days else "DATA_UNAVAILABLE" for days in windows]
+    assert result.values[0][9:15] == expected
+    assert result.meta["unavailable_sales_windows"] == [
+        days for days in windows if coverage <= days
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("age,coverage", [(5, 91), (16, 400), (5, 400)])
+async def test_catalog_sales_cut_is_recent_and_recovery_admission_stays_bounded(
+    age: int, coverage: int
+) -> None:
+    from zeler_sheets.formulas.recovery import RecoveryRequest
+
+    db = FakeDb()
+    end = NOW - timedelta(minutes=age)
+    db["sheets_read_model_freshness"].documents["82453304:orders"] = {
+        "_id": "82453304:orders",
+        "seller_id": "82453304",
+        "read_model": "orders",
+        "state": "reconciled",
+        "date_from": end - timedelta(days=coverage),
+        "reconciled_until": end,
+    }
+    as_of, covered, recovery = await FormulaReadModelRepository(db=db).catalog_sales_coverage(
+        seller_id="82453304",
+        formula="ZELERDATA_CATALOGO",
+        now=NOW,
+        windows=(7, 15, 30, 60, 90, 365),
+    )
+    assert as_of == (end if age == 5 else NOW)
+    assert covered == (
+        () if age == 16 else (7, 15, 30, 60, 90) if coverage == 91 else (7, 15, 30, 60, 90, 365)
+    )
+    if age == 5 and coverage == 400:
+        assert recovery is None
+    else:
+        assert recovery is not None
+        assert recovery.date_from is not None and recovery.date_to is not None
+        request = RecoveryRequest("82453304", "orders", recovery.date_from, recovery.date_to)
+        assert request.date_to - request.date_from <= timedelta(days=90)
+        if coverage == 91:
+            assert request.date_from.date() == (end - timedelta(days=365)).date()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("state", ["ready", "missing", "expired", "not_catalog"])
 async def test_catalogo_uses_verified_inventory_and_requests_missing_competition(
     state: str,
@@ -108,6 +177,7 @@ async def test_catalogo_uses_verified_inventory_and_requests_missing_competition
         state != "expired",
     )
     repository.find_orders.return_value = []
+    repository.catalog_sales_coverage.return_value = (NOW, (7, 15, 30, 60, 90, 365), None)
     result = await RemainingPhase4FormulaHandlers(
         repository, now_fn=lambda: NOW
     ).sheetseller_catalogo(_context("ZELERDATA_CATALOGO", {"encabezados": False}))
@@ -348,6 +418,8 @@ async def test_catalogo_uses_local_item_catalog_buybox_and_sales_snapshots(
         "unavailable_shared_users": 0,
         "inventory_enumeration_current": True,
         "unavailable_buybox_items": 0,
+        "sales_as_of": NOW.isoformat(),
+        "unavailable_sales_windows": [],
     }
 
 
@@ -385,6 +457,12 @@ async def test_catalogo_requires_fresh_item_rows_and_orders_markers(
         _mark_read_model_fresh(db, stale_read_model, fresh_until=NOW - timedelta(days=1))
     if expected_read_model == ORDERS_READ_MODEL:
         _seed_catalog_inventory(db)
+        result = await _dispatcher(db).execute(
+            _context("ZELERDATA_CATALOGO", {"encabezados": False})
+        )
+        assert result.values == []
+        assert result.recovery is None
+        return
     dispatcher = _dispatcher(db)
 
     with pytest.raises(FormulaDataUnavailableError, match="ZELERDATA_CATALOGO") as error:
@@ -856,6 +934,7 @@ def _mark_read_model_fresh(
     date_from: datetime | None = None,
 ) -> None:
     source_gated = {
+        ORDERS_READ_MODEL,
         STOCK_TIME_METRICS_READ_MODEL,
         CATALOG_TIME_METRICS_READ_MODEL,
         FULL_WITHDRAWALS_READ_MODEL,

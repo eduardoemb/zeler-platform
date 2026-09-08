@@ -260,6 +260,43 @@ class FormulaReadModelRepository:
         unavailable = set(missing)
         return [row for row in rows if str(row["item_id"]) not in unavailable], tuple(missing)
 
+    async def catalog_sales_coverage(
+        self, *, seller_id: str, formula: str, now: datetime, windows: tuple[int, ...]
+    ) -> tuple[datetime, tuple[int, ...], FormulaDataUnavailableError | None]:
+        marker = await self._read_model_freshness.find_one(
+            {"_id": f"{seller_id}:orders", "seller_id": seller_id, "read_model": ORDERS_READ_MODEL}
+        )
+        end = _safe_utc_datetime(marker.get("reconciled_until")) if marker else None
+        # A recent acquired cut is useful without pretending it is live data.
+        as_of = end if end is not None and now - timedelta(minutes=15) < end <= now else now
+        covered = tuple(
+            days
+            for days in windows
+            if read_model_reconciliation_marker_covers(
+                marker,
+                date_from=(as_of - timedelta(days=days)).replace(
+                    hour=0, minute=0, second=0, microsecond=0
+                ),
+                date_to=as_of,
+            )
+        )
+        missing = next((days for days in windows if days not in covered), None)
+        recovery = None
+        if missing is not None:
+            start = (as_of - timedelta(days=missing)).replace(
+                hour=0, minute=0, second=0, microsecond=0
+            )
+            # The worker reacquires the union with prior verified coverage,
+            # including any gap. Admission itself remains bounded to 90 days.
+            recovery = FormulaDataUnavailableError(
+                formula,
+                "Catalog sales interval is not reconciled.",
+                read_model=ORDERS_READ_MODEL,
+                date_from=start,
+                date_to=min(as_of, start + timedelta(days=90)),
+            )
+        return as_of, covered, recovery
+
     async def find_orders(
         self,
         *,

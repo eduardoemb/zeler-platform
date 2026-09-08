@@ -21,6 +21,40 @@ Keep unrelated `.codegraph/` files untouched in both repositories.
 Pilot: seller `82453304`; initial historical window 2026-08-08 through
 2026-09-06, plus current snapshots. Other products are out of scope.
 
+## Catalog sales validate each interval without hiding item columns — 2026-09-08
+
+CATALOGO no longer gates its whole matrix on a productive orders marker. Each
+sales window requires reconciled coverage from its calendar-day start through
+the reported `sales_as_of`. An acquired endpoint less than 15 minutes old can
+be reused at that explicit cut; an older endpoint cannot certify current sales.
+Covered windows with no sales return zero. Uncovered windows return
+DATA_UNAVAILABLE and are listed in `unavailable_sales_windows`; available item
+and competition columns remain visible. Historical calendar-day inclusion is
+preserved, and queries no longer include orders after the reported cut.
+
+After inventory/competition recovery, the first uncovered sales window requests
+orders acquisition. Admission is at most 90 days, including for a missing
+365-day window. The existing worker reacquires the union with prior reconciled
+coverage, including gaps; this is not a claim that 365-day production acquisition
+has succeeded or that its cost is bounded by the admission interval.
+
+Three new behavioral tests failed before implementation. The final handler suite
+passed 50 tests in 0.16s, including absent/partial/complete coverage, zero sales,
+recent versus expired cuts, and bounded recovery requests. The local HTTP/Mongo
+buybox/catalog harness passed ten tests in 4.03s. Its orders fixture now supplies
+reconciled range evidence, not just a globally fresh flag. Ruff check/format and
+mypy (506 files), schema and diff checks pass. Full regression with local
+replica-set Mongo: `uv run pytest --tb=short` passed 4,110 tests, nine expected
+skips and 356 warnings in 146.75s. The eight protected Mongo tests passed
+separately in 3.29s; the remaining skip is the optional Caddy environment check.
+
+No build or deployment occurred. Required next evidence includes live orders
+coverage extension and source-complete winner/time fields before full CATALOGO
+acceptance. Sheets API/worker images remain behind these local changes according
+to the last recorded runtime sources (`1131554`/`449a382`); verify provenance and
+recovery/readback when deploying. Rollback removes the catalog-specific coverage
+reader, per-window rendering/recovery and their tests, retaining persisted data.
+
 ## CATALOGO joins verified inventory to current owned competition — 2026-09-08
 
 CATALOGO now selects explicit catalog participants from the source-verified
