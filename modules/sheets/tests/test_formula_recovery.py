@@ -32,6 +32,140 @@ def test_runtime_recovery_seller_list_is_explicit_and_validated() -> None:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
+    "failure", [None, "write_failure", "newer_projection", "newer_status", "newer_status_reverse"]
+)
+@pytest.mark.parametrize("sku_level", ["item", "variation"])
+async def test_item_without_sku_remains_queryable_and_later_sku_does_not_duplicate_it(
+    recovery_db: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    failure: str | None,
+    sku_level: str,
+) -> None:
+    import json
+    from pathlib import Path
+
+    import zeler_sheets.sheetseller_backfill as backfill
+    from zeler_sheets.formulas.read_models import FormulaReadModelRepository
+    from zeler_sheets.sheetseller_backfill import run_sheetseller_backfill
+
+    observed = datetime(2026, 9, 7, tzinfo=UTC)
+    for collection in ("sheets_item_formula_rows", "sheets_item_sku_index"):
+        schema = json.loads(Path(f"infra/mongo/schemas/{collection}.json").read_text())
+        await recovery_db.create_collection(
+            collection, validator={"$jsonSchema": schema["$jsonSchema"]}
+        )
+    await recovery_db.items.insert_one(
+        {
+            "_id": "MLA1",
+            "seller_id": "82453304",
+            "title": "Synthetic item without SKU",
+            "price": 100,
+            "base_price": 100,
+            "currency_id": "ARS",
+            "category_id": "MLA123",
+            "available_quantity": 2,
+            "status": "active",
+            "date_created": observed,
+            "last_updated": observed,
+            "attributes": [],
+            "variations": [],
+        }
+    )
+    repository = FormulaReadModelRepository(db=recovery_db)
+    await run_sheetseller_backfill(db=recovery_db, seller_id="82453304", dry_run=False)
+    rows = await repository.find_item_formula_rows(seller_id="82453304", item_ids=["MLA1"])
+    assert len(rows) == 1
+    assert rows[0]["sku"] is None
+    assert rows[0]["current"]["title"] == "Synthetic item without SKU"
+    assert await repository.find_sku_index_rows(seller_id="82453304") == []
+    assert await repository.find_item_formula_rows(seller_id="other", item_ids=["MLA1"]) == []
+
+    if failure == "newer_projection":
+        await recovery_db.sheets_item_formula_rows.update_one(
+            {"_id": rows[0]["_id"]}, {"$set": {"updated_at": observed + timedelta(minutes=2)}}
+        )
+    if failure == "newer_status":
+        await recovery_db.sheets_item_formula_rows.update_one(
+            {"_id": rows[0]["_id"]},
+            {
+                "$set": {
+                    "current.status_observed_at": observed + timedelta(minutes=2),
+                    "current.status": "paused",
+                }
+            },
+        )
+    previous = await recovery_db.sheets_item_formula_rows.find_one({"_id": rows[0]["_id"]})
+    if failure == "write_failure":
+        original = backfill._replace_formula_row_from_backfill_if_current
+
+        async def fail_after_write(*args: Any, **kwargs: Any) -> bool:
+            await original(*args, **kwargs)
+            raise RuntimeError("synthetic transition failure")
+
+        monkeypatch.setattr(
+            backfill, "_replace_formula_row_from_backfill_if_current", fail_after_write
+        )
+
+    await recovery_db.items.update_one(
+        {"_id": "MLA1"},
+        {
+            "$set": {
+                "attributes": (
+                    [{"id": "SELLER_SKU", "value_name": "SKU-1"}] if sku_level == "item" else []
+                ),
+                "variations": (
+                    [{"id": 101, "seller_custom_field": "SKU-1"}]
+                    if sku_level == "variation"
+                    else []
+                ),
+                "last_updated": observed + timedelta(minutes=1),
+            }
+        },
+    )
+    if failure and failure != "newer_status_reverse":
+        with pytest.raises(RuntimeError):
+            await run_sheetseller_backfill(db=recovery_db, seller_id="82453304", dry_run=False)
+        assert await recovery_db.sheets_item_formula_rows.find({}).to_list(length=None) == [
+            previous
+        ]
+        assert await repository.find_sku_index_rows(seller_id="82453304") == []
+        return
+    await run_sheetseller_backfill(db=recovery_db, seller_id="82453304", dry_run=False)
+    rows = await repository.find_item_formula_rows(seller_id="82453304", item_ids=["MLA1"])
+    assert len(rows) == 1
+    assert rows[0]["sku"] == "SKU-1"
+    assert len(await repository.find_sku_index_rows(seller_id="82453304", skus=["SKU-1"])) == 1
+    if failure == "newer_status_reverse":
+        await recovery_db.sheets_item_formula_rows.update_one(
+            {"_id": rows[0]["_id"]},
+            {"$set": {"current.status_observed_at": observed + timedelta(minutes=4)}},
+        )
+    await recovery_db.items.update_one(
+        {"_id": "MLA1"},
+        {
+            "$set": {
+                "attributes": [],
+                "variations": [],
+                "last_updated": observed + timedelta(minutes=3),
+            }
+        },
+    )
+    if failure == "newer_status_reverse":
+        with pytest.raises(RuntimeError):
+            await run_sheetseller_backfill(db=recovery_db, seller_id="82453304", dry_run=False)
+        rows = await repository.find_item_formula_rows(seller_id="82453304", item_ids=["MLA1"])
+        assert len(rows) == 1 and rows[0]["sku"] == "SKU-1"
+        assert len(await repository.find_sku_index_rows(seller_id="82453304")) == 1
+    else:
+        await run_sheetseller_backfill(db=recovery_db, seller_id="82453304", dry_run=False)
+        rows = await repository.find_item_formula_rows(seller_id="82453304", item_ids=["MLA1"])
+        assert len(rows) == 1
+        assert rows[0]["sku"] is None
+        assert await repository.find_sku_index_rows(seller_id="82453304") == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
     "change", [None, "price", "status", "delete", "stale_source", "undated_source"]
 )
 async def test_item_enrichment_cannot_overwrite_newer_or_concurrent_state(

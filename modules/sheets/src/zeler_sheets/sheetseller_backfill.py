@@ -19,6 +19,8 @@ from urllib.parse import quote, urlencode
 import httpx
 from bson.decimal128 import Decimal128
 from pymongo.errors import DuplicateKeyError
+from pymongo.read_concern import ReadConcern
+from pymongo.write_concern import WriteConcern
 
 from zeler_platform_core.clients.meli_gateway_client import GatewayRateLimitError
 from zeler_platform_core.devoluciones_readiness import (
@@ -444,6 +446,11 @@ async def run_sheetseller_backfill(
         formula_row_docs.extend(order_line_formula_rows)
         formula_row_docs = _dedupe_formula_row_docs(formula_row_docs)
 
+        if not formula_row_docs and not item_sku.ambiguous and item_sku.sku is None:
+            formula_row_docs = [
+                build_formula_row_doc(item, seller_id=seller_id, allow_missing_sku=True)
+            ]
+
         if not sku_index_docs and not formula_row_docs:
             continue
 
@@ -469,6 +476,32 @@ async def run_sheetseller_backfill(
             changed_formula_rows.append(formula_row_doc)
 
         if not dry_run:
+            item_only_id = _formula_row_id(
+                seller_id=seller_id, normalized_sku="", item_id=_item_id(item)
+            )
+            if (
+                all(doc["normalized_sku"] for doc in formula_row_docs)
+                and await formula_rows_collection.find_one({"_id": item_only_id}) is not None
+            ) or (
+                not any(doc["normalized_sku"] for doc in formula_row_docs)
+                and await formula_rows_collection.find_one(
+                    {
+                        "seller_id": seller_id,
+                        "item_id": _item_id(item),
+                        "normalized_sku": {"$ne": ""},
+                    }
+                )
+                is not None
+            ):
+                await _replace_item_only_projection(
+                    db=db,
+                    seller_id=seller_id,
+                    item_only_id=item_only_id,
+                    sku_docs=sku_index_docs,
+                    row_docs=formula_row_docs,
+                )
+                updated += len(changed_formula_rows)
+                continue
             for sku_index_doc in sku_index_docs:
                 await sku_index_collection.replace_one(
                     {"_id": sku_index_doc["_id"]}, sku_index_doc, upsert=True
@@ -2244,13 +2277,14 @@ def build_formula_row_doc(
     variation_id: str | None = None,
     inventory_id: str | None = None,
     variation: dict[str, Any] | None = None,
+    allow_missing_sku: bool = False,
 ) -> dict[str, Any]:
     resolved_sku = sku or extract_seller_sku(item)
-    if resolved_sku is None:
+    if resolved_sku is None and not allow_missing_sku:
         msg = "item does not contain a SELLER_SKU attribute"
         raise ValueError(msg)
     item_id = _item_id(item)
-    normalized_sku = normalize_sku(resolved_sku)
+    normalized_sku = normalize_sku(resolved_sku) if resolved_sku is not None else ""
     date_created = item.get("date_created")
     updated_at = _updated_at(item)
     currency_id = _formula_row_currency_id(item)
@@ -2516,11 +2550,86 @@ def _item_with_status_history(
     return enriched
 
 
+async def _replace_item_only_projection(
+    *,
+    db: Any,
+    seller_id: str,
+    item_only_id: str,
+    sku_docs: list[dict[str, Any]],
+    row_docs: list[dict[str, Any]],
+) -> None:
+    rows = db[ITEM_FORMULA_ROWS_COLLECTION]
+
+    async def replace(session: Any) -> None:
+        item_id = row_docs[0]["item_id"]
+        scope = {"seller_id": seller_id, "item_id": item_id}
+        prior_rows = await rows.find(scope, session=session).to_list(length=10001)
+        if len(prior_rows) > 10000:
+            raise ValueError("item projection exceeds transition budget")
+        previous = await rows.find_one({"_id": item_only_id}, session=session)
+        if previous is not None and (
+            previous.get("seller_id") != seller_id
+            or previous.get("sku") is not None
+            or previous.get("normalized_sku") != ""
+        ):
+            raise ValueError("invalid item-only projection identity")
+        latest_prior_update = max(
+            (
+                value
+                for prior in prior_rows
+                if (value := bson_ms_utc_datetime(prior.get("updated_at"))) is not None
+            ),
+            default=None,
+        )
+        prior_status_observed = max(
+            (
+                value
+                for prior in prior_rows
+                if (value := _formula_row_status_observed_at(prior)) is not None
+            ),
+            default=None,
+        )
+        for doc in sku_docs:
+            await db[ITEM_SKU_INDEX_COLLECTION].replace_one(
+                {"_id": doc["_id"]}, doc, upsert=True, session=session
+            )
+        for doc in row_docs:
+            new_time = bson_ms_utc_datetime(doc.get("updated_at"))
+            if latest_prior_update is not None and (
+                new_time is None or latest_prior_update > new_time
+            ):
+                raise RuntimeError("newer item projection exists during SKU transition")
+            doc = await _formula_row_with_latest_status_state(db=db, formula_row_doc=doc)
+            observed = _formula_row_status_observed_at(doc)
+            if prior_status_observed is not None and (
+                observed is None or prior_status_observed > observed
+            ):
+                raise RuntimeError("newer item status exists during SKU transition")
+            if not await _replace_formula_row_from_backfill_if_current(
+                rows, doc, db=db, session=session
+            ):
+                raise RuntimeError("item projection changed during SKU transition")
+        retained = {doc["_id"] for doc in row_docs}
+        obsolete = [doc["_id"] for doc in prior_rows if doc["_id"] not in retained]
+        if obsolete:
+            await rows.delete_many({**scope, "_id": {"$in": obsolete}}, session=session)
+        if not any(doc["normalized_sku"] for doc in row_docs):
+            await db[ITEM_SKU_INDEX_COLLECTION].delete_many(
+                {**scope, "source": {"$ne": "order_line"}}, session=session
+            )
+
+    async with await db.client.start_session() as session:
+        await session.with_transaction(
+            replace, read_concern=ReadConcern("snapshot"), write_concern=WriteConcern("majority")
+        )
+
+
 async def _replace_formula_row_from_backfill_if_current(
-    collection: Any, formula_row_doc: dict[str, Any], *, db: Any
+    collection: Any, formula_row_doc: dict[str, Any], *, db: Any, session: Any = None
 ) -> bool:
+    options = {"session": session} if session is not None else {}
     for _ in range(FORMULA_ROW_REPLACE_ATTEMPTS):
-        existing = await collection.find_one({"_id": formula_row_doc["_id"]})
+        existing = await collection.find_one({"_id": formula_row_doc["_id"]}, **options)
         if existing is not None:
             latest_formula_row_doc = await _formula_row_with_latest_status_state(
                 db=db,
@@ -2544,6 +2653,7 @@ async def _replace_formula_row_from_backfill_if_current(
                 },
                 candidate,
                 upsert=False,
+                **options,
             )
             if result.matched_count > 0:
                 return True
@@ -2561,6 +2671,7 @@ async def _replace_formula_row_from_backfill_if_current(
                 },
                 latest_formula_row_doc,
                 upsert=True,
+                **options,
             )
         except DuplicateKeyError:
             continue

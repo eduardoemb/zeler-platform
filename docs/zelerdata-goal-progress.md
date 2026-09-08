@@ -2336,3 +2336,58 @@ retain their contract; other product deployments remain out of scope.
   cache cleanup, not a source/schema change requiring another Cloud Build.
 - Post-cleanup dry-run preflight passed, and read-only inspection confirmed both
   deployed `898c916` image digests still healthy. No deployment was performed.
+
+## Publication-ID access without an invented SKU
+
+- A real-Mongo regression reproduced the omitted-publication defect: an item
+  without any usable SKU generated zero formula rows. The projector now creates
+  one item-level row only when no parent, variation or order-line identity yields
+  a row and the parent SKU is not ambiguous. Its SKU is null; the empty normalized
+  key is an internal row identity, not a fabricated SKU. No entry is inserted into
+  the SKU index. Existing Mongo validators accept this representation unchanged.
+- When a real parent/variation SKU later appears, the old item-only row is
+  replaced together with the SKU-index update in a snapshot/majority transaction.
+  If the SKU is subsequently removed and no order-line identity supplies it,
+  obsolete current rows and non-order-line SKU-index entries are retired in the
+  same transaction. Operations are scoped to the seller and item. Canonical
+  normalized items and order-line identity evidence are not deleted.
+- Further failing scenarios reproduced a duplicate row after SKU removal and
+  replacement of a newer projection/status. Transition checks now reject older
+  projections/status observations, and a forced failure after a row write rolls
+  back both read models. The actual Mongo validators are enabled in these tests.
+  `uv run pytest modules/sheets/tests/test_formula_recovery.py -k
+  item_without_sku_remains --tb=short` passed **10 scenarios in 2.43s**, including
+  item and variation SKUs, inverse transitions and seller-scoped reads.
+- Review of the inverse transition additionally reproduced loss of a newer
+  status when removing the SKU. Both directions now compare against the newest
+  prior status observation, not only the item-only row's observation.
+- Existing dry-run/idempotence tests now count the additional non-SKU row while
+  preserving the unchanged SKU-index counts. The local query double now implements
+  `$ne` instead of silently ignoring it; transactional acceptance uses real Mongo,
+  not an emulated transaction. Root Ruff check/format, mypy (502 files), and
+  whitespace checks pass. No productive projection or deletion has occurred.
+- This is not whole-inventory reconciliation or automatic item recovery. Source
+  acquisition, full temporal coverage and authenticated formula/Sheet acceptance
+  remain required. Build and deploy new Sheets API/worker images from the verified
+  pushed source, then acquire/reproject the currently missing pilot publications
+  and verify schema, row coverage and ID-based formula behavior. Last verified
+  deployed source remains `898c916`.
+- Rollback removes the opt-in missing-SKU row construction and the atomic identity
+  transition/helper session support together with their regressions. Persisted
+  source items require no rollback; do not blindly delete already-created
+  item-only rows when reverting code. Restore derived rows only from the current
+  normalized source and verified identity evidence.
+- Final root regression with the dedicated local replica set: **3,819 passed,
+  9 skipped, 356 warnings in 90.23s**. The protected stock-time suites separately
+  passed **8 tests in 3.30s**. Read-only VM inspection still finds the verified
+  `898c916` API/worker digests healthy; the new source is not deployed.
+- Consumer audit found that `event_persistence._persist_item_read_models` also
+  constructs rows independently and still requires a SKU. The consumer invokes
+  this corrected backfill after acquisition only when ZelerData enrichment is
+  enabled. Verify/consolidate that event path before claiming continuous no-SKU
+  coverage; this unit proves the backfill and its identity transitions, not all
+  future event processing or automatic missing-model recovery.
+- Sanitized runtime checks found enrichment, sale-price and fixed-fee acquisition
+  enabled on the current worker. Thus the existing event consumer does invoke
+  the backfill after enrichment, but the earlier independent projection stage
+  still needs consolidation/transition verification; no feature flags changed.

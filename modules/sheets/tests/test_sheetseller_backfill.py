@@ -283,6 +283,8 @@ def _matches(doc: dict[str, Any], filter_spec: dict[str, Any]) -> bool:
             continue
         actual = _nested_value(doc, key)
         if isinstance(value, dict):
+            if "$ne" in value and actual == value["$ne"]:
+                return False
             if "$exists" in value:
                 exists = _nested_exists(doc, key)
                 if bool(value["$exists"]) is not exists:
@@ -1466,14 +1468,14 @@ async def test_backfill_dry_run_reads_seller_items_and_reports_counts_without_wr
         items_with_sku=2,
         skipped_missing_sku=1,
         sku_index_upserts=2,
-        formula_row_upserts=2,
+        formula_row_upserts=3,
         variation_sku_rows=0,
         skipped_missing_variation_sku=0,
         skipped_ambiguous_sku=0,
-        planned=2,
+        planned=3,
         updated=0,
         unchanged=0,
-        skipped_missing_source=2,
+        skipped_missing_source=3,
         skipped_ambiguous=0,
         errors=0,
     )
@@ -1550,14 +1552,14 @@ async def test_backfill_write_mode_upserts_both_read_models_and_is_idempotent() 
         items_with_sku=2,
         skipped_missing_sku=1,
         sku_index_upserts=2,
-        formula_row_upserts=2,
+        formula_row_upserts=3,
         variation_sku_rows=0,
         skipped_missing_variation_sku=0,
         skipped_ambiguous_sku=0,
-        planned=2,
-        updated=2,
+        planned=3,
+        updated=3,
         unchanged=0,
-        skipped_missing_source=2,
+        skipped_missing_source=3,
         skipped_ambiguous=0,
         errors=0,
     )
@@ -1568,14 +1570,14 @@ async def test_backfill_write_mode_upserts_both_read_models_and_is_idempotent() 
         items_with_sku=2,
         skipped_missing_sku=1,
         sku_index_upserts=2,
-        formula_row_upserts=2,
+        formula_row_upserts=3,
         variation_sku_rows=0,
         skipped_missing_variation_sku=0,
         skipped_ambiguous_sku=0,
         planned=0,
         updated=0,
-        unchanged=2,
-        skipped_missing_source=2,
+        unchanged=3,
+        skipped_missing_source=3,
         skipped_ambiguous=0,
         errors=0,
     )
@@ -1584,11 +1586,12 @@ async def test_backfill_write_mode_upserts_both_read_models_and_is_idempotent() 
         "82453304:SKU-1:MLA1:item",
     ]
     assert sorted(db["sheets_item_formula_rows"].documents) == [
+        "82453304::MLA3",
         "82453304:SKU 2:MLA2",
         "82453304:SKU-1:MLA1",
     ]
     assert len(db["sheets_item_sku_index"].replace_calls) == 4
-    assert len(db["sheets_item_formula_rows"].replace_calls) == 2
+    assert len(db["sheets_item_formula_rows"].replace_calls) == 3
     assert all(call[2] is True for call in db["sheets_item_sku_index"].replace_calls)
     assert all(
         call[0]
