@@ -3196,3 +3196,10 @@ retain their contract; other product deployments remain out of scope.
   remains stored but expired until rediscovery. No global marker changed.
   Observe this same sweep; do not repeat `prepare`. Full-inventory throughput,
   final freshness and authenticated Sheets/application acceptance remain pending.
+- First observed running sample reached offset **220/1,900** at **106.34 seconds**
+  of new enumeration age, with **zero exhausted-batch IDs**. Sequential internal
+  CALCULADORA/CALIDAD reads took **2.9006/2.5900 seconds** and retained verified
+  rows with explicit missing-publication cells; both declared incomplete coverage.
+  Their missing counts differed while acquisition continued, so they are not
+  an atomic cross-formula snapshot. No global marker changed. This early sample
+  does not prove that the full sweep will finish inside 15 minutes.
