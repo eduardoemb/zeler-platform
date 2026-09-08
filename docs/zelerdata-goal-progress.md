@@ -3334,3 +3334,26 @@ retain their contract; other product deployments remain out of scope.
   normal async recovery. It does not certify every field, full current inventory,
   native-event continuity in production, authenticated HTTP or real Sheet/app
   acceptance. Those checks and the complete 52-formula goal remain open.
+
+## Acceptance gap: execute 52 formulas, not only count them
+
+- Audited the existing fixed B1 smoke: it verifies an inventory count of 52 but
+  executes only DEVOLUCIONES for June 1–4. Its success cannot prove this Goal's
+  all-formula/current-window acceptance. B1 authorization, credential lifecycle,
+  runner and launcher were left unchanged; no live credential was created.
+- Added standalone operator CLI `zeler_sheets.scripts.goal_formula_smoke`: six
+  real pilot input fields generate all 52 requests from the canonical registry.
+  Validation/help make no HTTP calls; `--execute` and legitimate env-only
+  credentials are required for the fixed production URL. Each call has a 25s
+  deadline, no redirects/retries, and 401/403 stops the run.
+- Reports only names/statuses/counts/times, never data or credentials. HTTP 200,
+  missing/partial/empty data, and content requiring review are distinct. Even
+  exit 0 never certifies business correctness. This is not a p95 measurement.
+- TDD started with the missing module; focused new/legacy smoke and B1 runner/
+  adapter tests: **222 passed in 2.44s**. Ruff and mypy (505 files) pass. No live
+  HTTP smoke ran. User identity and authorized Sheet URL were requested again.
+  Operator steps/rollback: `docs/sheets/zelerdata-goal-http-smoke.md`.
+- This adds no service entrypoint or schema change. Active API/worker executable
+  behavior remains source `6098a93`; no service-image rebuild is needed for this
+  standalone operator tool. Its authorized runtime installation/execution and
+  per-formula source-value checks remain pending.
