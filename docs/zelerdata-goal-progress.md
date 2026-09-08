@@ -21,6 +21,70 @@ Keep unrelated `.codegraph/` files untouched in both repositories.
 Pilot: seller `82453304`; initial historical window 2026-08-08 through
 2026-09-06, plus current snapshots. Other products are out of scope.
 
+## Catalog product runtime rollout — 2026-09-08
+
+Sheets API and worker now run source
+`a5fe92aab98dbe1d35ed3d9c989a0d34416d698c`. This deploys the product worker,
+HTTP admission and current-inventory consumers described below; their earlier
+“not deployed” labels are historical. It does not close buybox or full-goal
+acceptance. Both containers passed HTTP health 200 with zero restarts.
+
+| Service | Verified Cloud Build | Deployed digest |
+| --- | --- | --- |
+| sheets-worker | `58a16b7b-1fc6-4972-95a3-fc408defb87e` | `sha256:7dde61dfd30a17560bf581cc62315d4f7901531a88f0f94c8da1bb172cfacc5f` |
+| sheets-api | `f1b51387-17f3-4230-9362-1e00728863db` | `sha256:542a54066589ef4417c29d33ce552d5f22eddcbb32c62a0adf31c8861be7aa27` |
+
+Both builds used the connected repository at that exact pushed commit, one image
+per build and requested verification. Digest/build/source provenance passed on
+the operator host and VM. The canonical VM image map contains both new entries
+and the retained prior entries. CI test `34271626578` and lint `34271626556`
+completed successfully before service replacement.
+
+Worker then API were pulled and activated independently, using exact single
+Compose substitutions, no dependency restarts, no running recovery jobs at the
+replacement checks, and the 5 GiB preflight/activation floor. Pulls took 16.42s
+and 18.93s respectively. Retained immediate rollback images are worker
+`sha256:5e6a0bae160b005a34efc0f7894de078b442ef99b63b8b0da7734a2ca6a43a18`
+and API `sha256:2c2c8bf22f7fbe21fc8253962e53fe5314dfbcf3bedc6f85b1f71f5f17cc311a`.
+Compose backups end in `.pre-sheets-worker-activate-a5fe92a` and
+`.pre-sheets-api-activate-a5fe92a`; use service-scoped reversal, not a broad
+restoration that could undo another service's later changes.
+
+Two unused old API images were removed only from the local Docker cache:
+`sha256:d9bfc8a87bf68765bb453618113402139dcd90abbb8d1d9ae3674b96ba2bc844`
+and `sha256:b03d53422a57202974f77e70d651731ca01317aa7d3e7448d4592c71364defaf`.
+Both exact digests were confirmed in Artifact Registry and unused by any running
+or stopped container before removal. Current/rollback images were retained;
+no volumes, business data or other services were removed. Post-rollout free
+space was 5,389,115,392 bytes, still close to the floor: recheck before every pull.
+
+Artifacts on operator host and VM: `/tmp/zeler-catalog-consumers.5t16dm/`, including
+builds, provenance, guarded pull/activation scripts and the read-only coverage
+probe. The probe ran inside the new API container and found 887 stored associated
+products, two explicitly known catalog participants, no active recovery jobs,
+and an expired inventory with 1,900 unavailable item sources. Zero products were
+currently verified by the consumer; stored associations are not current coverage.
+This was read-only and did not refresh timestamps or publish completeness markers.
+
+The operator then admitted the normal pilot inventory request once through
+`FormulaRecoveryQueue`, guarded by both new healthy image identities and no
+active recovery jobs. Job
+`5f2485d573679264481950cce24b1373d2eb93f11c1f79ea2aca606b92d20a8f`
+was pending, attempts zero, immediately available, with no new processing offset
+yet. Protected receipt: `/var/lib/zeler-platform/repairs/catalog-inventory-a5fe92a.json`.
+`inventory.py prepare` succeeded once; use `inventory.py status` for subsequent
+observation, never repeat prepare or stamp old inventory dates. This is an
+authorized operator recovery, not an authenticated end-user HTTP smoke.
+The next status read confirmed the worker running on attempt one with 140/1,900
+publications checkpointed and zero unavailable items recorded so far. This is
+in-progress evidence, not completed recovery or current product coverage.
+
+Next required evidence: refresh actual inventory through the normal worker,
+recover current product snapshots, measure partial-to-complete reads and verify
+authenticated production HTTP plus the real Sheet. Health/provenance alone do
+not prove formula correctness or data coverage. No additional image rebuild is
+needed for this evidence-only documentation change.
+
 ## Current-inventory catalog consumers — 2026-09-08 (not deployed)
 
 OBTENER_CATALOGO and CATALOGO_COMPLETO now use the real product recovery bridge.
