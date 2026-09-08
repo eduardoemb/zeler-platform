@@ -21,6 +21,64 @@ Keep unrelated `.codegraph/` files untouched in both repositories.
 Pilot: seller `82453304`; initial historical window 2026-08-08 through
 2026-09-06, plus current snapshots. Other products are out of scope.
 
+## Current catalog converged with two explained not-found products — 2026-09-08
+
+Both catalog handlers returned **883 available products plus two explained
+not-found rows**, covering all 885 product associations from the current
+1,900-publication inventory. No item sources were missing, no further recovery
+was requested and no product jobs remained pending/running. This is a bounded
+live backend result, not perpetual freshness or authenticated HTTP/Sheet acceptance.
+
+The existing inventory finished 1,900/1,900 with zero exhausted IDs; temporary
+source failures resumed through normal retries without a new sweep. At the first
+terminal watcher probe, enumeration age was 509.42s and time since completion
+21.39s, placing completion near 488.03s. Watch session **89549 is terminal,
+exit zero**; do not restart it or repeat inventory preparation.
+
+The watcher initially requested 884 recoverable products, excluding the previously
+observed 404. Normal subsequent admissions observed 400/404 available products
+and then 800/804 in sequential reads; the final 84-product request was fully
+admitted. Earlier false admission results represented partial enqueues. A second
+upstream not-found product was persisted during this recovery. The two historical
+source-rejected jobs remain as history; they are not current missing coverage.
+Job history contains 1,205 product slots, not 1,205 unique current products.
+
+Two read-only verification passes agreed on membership, values' availability,
+and reasons. The second pass reported:
+
+| Formula | Rows | Available products | Unavailable products | Read time |
+| --- | ---: | ---: | ---: | ---: |
+| OBTENER_CATALOGO | 885 | 883 | 2 | 3.1084s |
+| CATALOGO_COMPLETO | 885 | 883 | 2 | 2.6964s |
+
+Both had `inventory_enumeration_current=true`, `recovery_needed=false`, and
+exactly two `catalog_product_not_found` reasons. Their three-/six-column outputs
+contained six/twelve DATA_UNAVAILABLE cells respectively, entirely those two
+rows; cached-products count was zero. `catalog_products_complete` intentionally
+remains false: not-found rows must not be presented as complete available data.
+This establishes current source unavailability, not permanent impossibility.
+The second pass also hashed snapshots internally before/after the reads and
+confirmed they were unchanged; global freshness markers were unchanged too.
+Following inventory status showed enumeration age 713.94s, still within 900s.
+These are individual timings, not a measured p95 or Google Sheets execution time.
+
+Evidence: approved VM `/tmp/zeler-catalog-unavailable.I9e2ZV/products.py read`
+and `inventory.py status`, with original receipts retained. Product reads invoke
+the real Mongo-backed dispatcher without an upstream client; admissions use the
+normal API helper and queue. No data was fabricated, retimed or deleted. Runtime
+still uses API/worker `449a382`, and no deployment occurred during this check.
+The next availability cycle, buybox recovery and all-52/user-surface gates remain
+open; do not trigger another full inventory solely to recreate this receipt.
+
+The pending buybox API image build `e3a956fd-5b89-48b1-85bb-37c87023fafc`
+succeeded from `1131554b2ceffb5d9d787c92e587966bdc09d6c9`, producing digest
+`3ca3930db3b311bbe6b4d5ef2ee2c08ba53b412ca07c5aa1b3281d0d1222c41f`.
+Provenance passed locally and in the canonical VM map; artifacts are
+`/tmp/zeler-buybox-shared.8pPRC4/`. It has not been pulled or activated. Last CI
+observation: lint `34288359306` succeeded; test `34288359293` was still running.
+Recheck that same run before deployment; do not rebuild. Rollback remains the
+existing service-image boundaries and must preserve recovered snapshots.
+
 ## Buybox shared-first-place values no longer use competitor totals — 2026-09-08
 
 CATALOGOBUYBOX now reads `competitors_sharing_first_place` for its existing
