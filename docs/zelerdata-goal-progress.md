@@ -3488,3 +3488,47 @@ retain their contract; other product deployments remain out of scope.
 - Rollback boundary: remove the shared precedence helper and its two call sites
   together with the regression tests. No schema/data migration or external
   side effect has run for this change. Do not synthesize history to roll back.
+
+## Runtime verification: snapshot status precedence
+
+- Worker source `e6137076d76508472076c41e520f62eb110fad8e` is deployed as digest
+  `b47ec04c1442cad34ab79dbe2437c76047dea52a29d5205bba5df3af6fe3cc53`.
+  Build `a713c842-4bb0-4538-8d7f-2c04e73dbb49` succeeded; canonical provenance
+  was verified locally and merged on the VM. Exact-source test `34249063926`
+  and lint `34249063776` both succeeded before activation.
+- Worker-only activation passed free-space/preflight, exact Compose replacement,
+  zero running recoveries, health HTTP **200**, healthy container, **0 restarts**.
+  Rollback digest: `4fb14b0d69ee394f2db0bc9e9a90fd4a07a1be834a6195b2ac0a44b08a4daa41`;
+  backup: `docker-compose.yml.pre-sheets-worker-activate-e613707`. API remains
+  source `6098a93`, digest
+  `d9bfc8a87bf68765bb453618113402139dcd90abbb8d1d9ae3674b96ba2bc844`, healthy
+  with zero restarts. No API rebuild was required for this worker behavior.
+- Removed only unused old worker image
+  `3ac69caf5cea44692e249f44deef6a280c4d89083c6c9fd582fcc5b4ecb8717b`, after
+  checking all containers, protecting current/rollback images and confirming
+  Artifact Registry recovery. No volumes/data removed. Pull **15.17s**; final
+  inspected root free space **5,404,868,608 bytes**.
+- Read-only pilot discovery examined **1,529 states and matching items**, without
+  truncation at its 10,000-row bound: **3 conflicts**, all with newer snapshots.
+  Requested those three IDs once through the existing queue; deployed normal
+  worker completed job
+  `6f20ca2ce9d4896a3955f429da78ef975ad2983b5228bd0cf21fe692186a9ad3`
+  in **1 attempt**. Protected receipt (0600):
+  `/var/lib/zeler-platform/repairs/status-precedence-selected-e613707.json`.
+- Same-receipt verification found **5 source-verified rows, 0 missing items**.
+  The **2 parent rows** use the newer source status/observation without guessed
+  duration fields; **3 variation rows** match their own status or parent fallback
+  and do not inherit absent variation duration fields. Reader **0.0046s**.
+  The three source/history conflicts still exist: projection precedence was
+  repaired, not historical transitions fabricated. Global freshness markers and
+  the terminal full-inventory job remained byte-for-byte unchanged.
+- Whole-inventory CALCULADORA/CALIDAD returned **1,903 rows**, **1,894 missing
+  publications**, explicit expiry warnings, incomplete/current=false metadata,
+  in **1.6854s / 1.2124s**; CALCULADORA had **8 numeric price rows**. This is
+  internal runtime verification, not authenticated all-52 HTTP, p95 or real
+  Sheets acceptance. Full current inventory and mandatory hardening remain open.
+- Operator artifacts: `/tmp/zeler-status-precedence.E0JbMu/`; `pilot.py prepare`
+  already ran. Status/probe modes are read-only. This evidence-only update needs
+  no service rebuild. Bootstrap still needs an updated image before a future
+  run using the corrected backfill. Do not roll back by recreating wrong status
+  projections or inventing status-history records.
