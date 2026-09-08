@@ -264,6 +264,41 @@ The real Sheet URL and legitimately linked user identity were requested again;
 no credentials/tokens were requested or bypassed. Wider catalog recovery,
 coverage/freshness and minimum-hardening acceptance items remain open.
 
+## Catalog participation pilot recovered — 2026-09-08
+
+The deployed API/worker recovered explicit participation for 20 pilot publications
+through the existing item queue, then CALCULADORA reused the persisted result.
+Selection was 20 sorted owned product-linked publications from the recorded
+inventory IDs, not a new full-inventory scan or a claim of fresh global membership.
+
+Receipt: `/var/lib/zeler-platform/repairs/catalog-participation-07c8ad3.json`
+(created exclusively with mode 0600). Script:
+`/tmp/zeler-catalog-rollout.gE7bNb/pilot.py` locally and on VM. `prepare` was
+executed once; the job is terminal completed. Use `status` only for observation.
+
+| Observation | Evidence |
+| --- | --- |
+| Before recovery | All 20 stored flags unknown; selected CALCULADORA unavailable in 0.0131s; one bounded 20-item job queued through the API recovery helper |
+| Worker outcome | Completed on attempt 1, no failure reason |
+| Stored participation | 1 true, 19 false, 0 unknown |
+| First subsequent read | 23 rows, 0 partial misses, 0 unavailable cells/cost cells, 23 numeric prices, 0.0197s |
+| Independent repeated read | Same counts; 0.0231s; no recovery needed |
+| Classification | 1 CATALOGO row, 22 REGULAR rows including variants; all agree with canonical items |
+| Coverage safety | Global read-model markers unchanged throughout |
+
+The first successful observation was 51.39s after receipt creation and the second
+76.49s; these are observation ages, not measured worker execution duration.
+No new queue request, timestamp relabeling or coverage-marker rewrite was needed
+for the second read. These are point-in-time selected-publication results, not
+proof of perpetual freshness or all 52 formulas.
+
+This is real production VM/container, worker, gateway acquisition and Mongo-backed
+dispatcher evidence. It is **not authenticated formula HTTP or a real Google Sheet**:
+the operator helper invoked the deployed dispatcher/recovery helper directly and
+did not mint or bypass user credentials. Those acceptance checks remain open.
+Catalog snapshot recovery and current snapshot membership are still unimplemented
+in the automatic recovery worker; they must be completed before catalog acceptance.
+
 ## Baseline — 2026-09-07
 
 - Backend main: `c5a2e097e765a083fa1fff7fdec3782ef81fd998`.
