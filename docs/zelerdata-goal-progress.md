@@ -3125,3 +3125,12 @@ retain their contract; other product deployments remain out of scope.
   and lint run `34193427253` successfully. Those belong to the preceding variant
   fix, not this pending change, and the workflow does not explicitly provision
   Mongo; they do not replace the locally verified Mongo integration cases.
+- Worker build `27907157-6eb4-480e-bf9e-7d188943f93f` succeeded for exact source
+  `ad8d42b2e1362394113a33bb4501c85694e7e644`. Single-image/source provenance
+  verified digest `3ac69caf5cea44692e249f44deef6a280c4d89083c6c9fd582fcc5b4ecb8717b`.
+  No deployment started. Exact-source GitHub lint run `34193952814` passed;
+  test run `34193952783` / job `101957537104` was confirmed in progress in its
+  Pytest step. Observe those handles before deploying; do not substitute the
+  preceding commit's green result. Preserve running-worker rollback digest
+  `50c87edc6503317b283c625a965fd46690dd304af1829a56a77c8fe66855f651` and restore
+  the VM's required free-space margin before pulling.
