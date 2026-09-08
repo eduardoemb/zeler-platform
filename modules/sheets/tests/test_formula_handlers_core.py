@@ -516,7 +516,7 @@ async def test_publicaciones_dashboard_emit_na_for_deferred_fields_and_current_s
             "NA",
             "NA",
             "NA",
-            "No",
+            "DATA_UNAVAILABLE",
             "NA",
         ],
     ]
@@ -892,7 +892,7 @@ async def test_publicaciones_and_dashboard_render_variation_safe_row_values() ->
         ["paused", "NA", "NA", 3],
         ["NA", "NA", "NA", "NA"],
     ]
-    assert [row[21] for row in dashboard.values[1:]] == ["Sí", "No", "No"]
+    assert [row[21] for row in dashboard.values[1:]] == ["DATA_UNAVAILABLE"] * 3
 
 
 @pytest.mark.asyncio
@@ -1152,6 +1152,43 @@ async def test_publicaciones_and_dashboard_render_real_paused_days_only() -> Non
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("exclude_catalog", [False, True])
+async def test_dashboard_uses_explicit_participation_and_keeps_unknown_rows(
+    exclude_catalog: bool,
+) -> None:
+    db = FakeDb()
+    db["sheets_item_formula_rows"].documents = {
+        "regular": _dashboard_item(
+            "sku-1", "SKU-1", "MLA1", catalog_product_id="PRODUCT-1", catalog_listing=False
+        ),
+        "catalog": _dashboard_item("sku-2", "SKU-2", "MLA2", catalog_listing=True),
+        "unknown": _dashboard_item("sku-3", "SKU-3", "MLA3", catalog_product_id="PRODUCT-3"),
+        "unknown-variant": _dashboard_item("sku-4", "SKU-4", "MLA3"),
+    }
+    dispatcher = FormulaDispatcher(build_core_formula_handlers(FormulaReadModelRepository(db=db)))
+    result = await dispatcher.execute(
+        _context(
+            "ZELERDATA_DASHBOARDSINCATALOGO" if exclude_catalog else "ZELERDATA_DASHBOARD",
+            {"encabezados": "si"},
+        )
+    )
+    assert [row[0] for row in result.values[1:]] == (
+        ["MLA1", "MLA3", "MLA3"] if exclude_catalog else ["MLA1", "MLA2", "MLA3", "MLA3"]
+    )
+    assert [row[21] for row in result.values[1:]] == (
+        ["No", "DATA_UNAVAILABLE", "DATA_UNAVAILABLE"]
+        if exclude_catalog
+        else ["No", "Sí", "DATA_UNAVAILABLE", "DATA_UNAVAILABLE"]
+    )
+    assert result.recovery is not None
+    assert result.recovery.item_ids == ("MLA3",)
+    assert result.meta["unavailable_catalog_items"] == ["MLA3"]
+    if exclude_catalog:
+        assert result.meta["excluded_catalog_rows"] == 1
+        assert result.meta["catalog_filter_complete"] is False
+
+
+@pytest.mark.asyncio
 async def test_dashboard_returns_minimal_current_item_table_with_optional_headers() -> None:
     db = FakeDb()
     formula_rows = db["sheets_item_formula_rows"]
@@ -1164,6 +1201,7 @@ async def test_dashboard_returns_minimal_current_item_table_with_optional_header
             "item_id": "MLA1",
             "inventory_id": "INV-1",
             "current": {
+                "catalog_listing": False,
                 "title": "First listing",
                 "status": "active",
                 "available_quantity": 7,
@@ -1189,6 +1227,7 @@ async def test_dashboard_returns_minimal_current_item_table_with_optional_header
                 "category_id": "MLA-ACCESSORIES",
                 "thumbnail": None,
                 "catalog_product_id": "MLA-CATALOG-2",
+                "catalog_listing": True,
             },
         },
         "seller-2-sku-1-mla1": {
@@ -2178,7 +2217,7 @@ async def test_dashboard_sales_windows_use_sku_index_when_order_item_has_only_it
                 "",
                 "",
                 "",
-                "No",
+                "DATA_UNAVAILABLE",
             ],
         ]
     )
@@ -2274,7 +2313,7 @@ async def test_dashboard_sales_windows_resolve_item_variations_from_seller_sku_i
                 "",
                 "",
                 "",
-                "No",
+                "DATA_UNAVAILABLE",
             ],
             [
                 "MLA1",
@@ -2298,7 +2337,7 @@ async def test_dashboard_sales_windows_resolve_item_variations_from_seller_sku_i
                 "",
                 "",
                 "",
-                "No",
+                "DATA_UNAVAILABLE",
             ],
         ]
     )
@@ -2382,7 +2421,7 @@ async def test_dashboard_sales_windows_do_not_guess_item_level_sku_for_missing_v
                 "",
                 "",
                 "",
-                "No",
+                "DATA_UNAVAILABLE",
             ],
         ]
     )
@@ -2465,7 +2504,7 @@ async def test_dashboard_sales_windows_fall_back_to_unique_item_level_variation_
                 "",
                 "",
                 "",
-                "No",
+                "DATA_UNAVAILABLE",
             ],
         ]
     )
@@ -2476,7 +2515,7 @@ async def test_dashboard_sales_windows_fall_back_to_unique_item_level_variation_
 
 
 @pytest.mark.asyncio
-async def test_dashboard_sin_catalogo_excludes_rows_with_catalog_product_indicators() -> None:
+async def test_dashboard_sin_catalogo_excludes_only_explicit_catalog_participants() -> None:
     db = FakeDb()
     formula_rows = db["sheets_item_formula_rows"]
     formula_rows.documents = {
@@ -2488,6 +2527,7 @@ async def test_dashboard_sin_catalogo_excludes_rows_with_catalog_product_indicat
             "item_id": "MLA1",
             "current": {
                 "title": "Classic listing",
+                "catalog_listing": False,
                 "status": "active",
                 "available_quantity": 4,
                 "base_price": 20,
@@ -2505,6 +2545,7 @@ async def test_dashboard_sin_catalogo_excludes_rows_with_catalog_product_indicat
             "item_id": "MLA2",
             "current": {
                 "title": "Catalog listing",
+                "catalog_listing": True,
                 "status": "active",
                 "available_quantity": 8,
                 "base_price": 30,
@@ -2522,6 +2563,7 @@ async def test_dashboard_sin_catalogo_excludes_rows_with_catalog_product_indicat
             "item_id": "MLA3",
             "current": {
                 "title": "Blank catalog indicator listing",
+                "catalog_listing": False,
                 "status": "paused",
                 "available_quantity": 0,
                 "base_price": 5,
@@ -2598,6 +2640,7 @@ async def test_dashboard_sin_catalogo_excludes_rows_with_catalog_product_indicat
         "partial_misses": 0,
         "columns": "legacy_dashboard",
         "excluded_catalog_rows": 1,
+        "catalog_filter_complete": True,
     }
 
 

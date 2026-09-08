@@ -1474,6 +1474,15 @@ async def test_http_cost_gap_queues_only_affected_item_and_recovers_without_inve
         assert body["values"][0][10] == "DATA_UNAVAILABLE"
         assert body["meta"]["recovery_requested"] is True
         assert calls == []
+        for formula in ("ZELERDATA_DASHBOARD", "ZELERDATA_DASHBOARDSINCATALOGO"):
+            dashboard = await client.post(
+                "/sheets/formulas:execute",
+                headers=headers,
+                json={"formula": formula, "cuenta": "PILOT", "args": {"encabezados": False}},
+            )
+            assert dashboard.status_code == 200
+            assert dashboard.json()["values"][0][21] == "DATA_UNAVAILABLE"
+        assert calls == []
         job = await queue.collection.find_one({"seller_id": seller})
         assert job["item_ids"] == ["MLA1"] and not job.get("inventory_scope")
         gateway.unavailable = False
@@ -1487,6 +1496,15 @@ async def test_http_cost_gap_queues_only_affected_item_and_recovers_without_inve
         assert ready.json()["values"][0][13:] == [12, 88]
         assert ready.json()["values"][0][10] == "REGULAR"
         assert not ready.json()["meta"].get("recovery_requested", False)
+        for formula in ("ZELERDATA_DASHBOARD", "ZELERDATA_DASHBOARDSINCATALOGO"):
+            dashboard = await client.post(
+                "/sheets/formulas:execute",
+                headers=headers,
+                json={"formula": formula, "cuenta": "PILOT", "args": {"encabezados": False}},
+            )
+            assert dashboard.status_code == 200
+            assert dashboard.json()["values"][0][21] == "No"
+            assert not dashboard.json()["meta"].get("recovery_requested", False)
         assert calls == acquired_calls
     assert await recovery_db.sheets_read_model_freshness.count_documents({}) == 0
 

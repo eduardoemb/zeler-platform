@@ -29,7 +29,8 @@ malformed flags remain unknown; neither a product link nor a variation's link
 implies participation. Variations inherit the publication's participation flag.
 
 This is an acquisition/persistence unit. The subsequent calculator unit below
-uses the flag; dashboard/catalog consumers still require migration. Existing
+uses the flag; dashboards are migrated below, while catalog table consumers
+still require migration. Existing
 production data has not been backfilled or relabeled by these changes.
 
 - TDD: ten canonical-item/projection cases failed before the change, then passed
@@ -84,7 +85,7 @@ columns remain usable, and formulas do not call Mercado Libre.
   gate: recheck capacity before any pull/activation. No production writes here.
 - Rollback boundary: revert calculator classification/recovery selection and
   its tests together; the additive persistence field can remain independently.
-  Dashboard filtering and catalog snapshot consumers remain pending.
+  Dashboard filtering is migrated below; catalog snapshot consumers remain pending.
 
 ## Historical buybox participation scope — 2026-09-08 (not deployed)
 
@@ -117,6 +118,37 @@ functional work; production has not been refreshed by this unit.
 - Rollback boundary: source dataclass/projection/parser and participation scope
   guard with their tests. The canonical persisted flag and calculator fix are
   independent and need not be reverted.
+
+## Dashboard catalog classification and recovery — 2026-09-08 (not deployed)
+
+DASHBOARD and DASHBOARDSINCATALOGO now use explicit `catalog_listing`:
+true renders Sí, false renders No, unknown renders DATA_UNAVAILABLE.
+The exclusion filter removes only true participation. Unknown rows stay visible
+with their other available fields; `catalog_filter_complete=false` and a reason
+make unresolved membership explicit. Recovery requests deduplicate item IDs
+across variant/SKU rows and use the existing bounded item recovery path.
+
+- TDD: both mixed-participation dashboard cases failed before the change.
+  Core handler suite now passes 43 tests in 0.29s. Existing tests no longer
+  expect No from an absent flag; tests of known regular/catalog rows provide
+  the actual boolean explicitly.
+- Root suite with loopback Mongo: 3,993 passed, 9 skipped, 356 warnings in
+  114.05s. Protected replica-set scenarios: 8 passed in 3.28s. Ruff check/format,
+  mypy (505 files) and diff checks passed.
+- Local runtime boundary: the existing HTTP/worker/Mongo test now reads both
+  dashboards before and after acquisition. Both cost-gap/catalog-only scenarios
+  passed in 1.15s, showing DATA_UNAVAILABLE then No, preserved rows, no subsequent
+  recovery request, and no upstream calls from formula reads. This test extension
+  was run separately after root collection began. Upstream responses are
+  synthetic; it does not establish production HTTP or real Sheet behavior.
+- Scope caveat: this fixes participation and filtering, not the dashboards'
+  broader inventory/order coverage and freshness guarantees. Those still need
+  verification/correction; missing orders must not be assumed to prove zero sales.
+- Deployment requires the additive item validators and new Sheets API/worker
+  images. Verify scoped acquired values and repeated reads after rollout.
+- Rollback boundary: dashboard participation helper, rendering/filter/recovery
+  and corresponding tests. Canonical persistence, calculator and historical
+  acquisition fixes can remain independently. No data deletion is required.
 
 ## Baseline — 2026-09-07
 

@@ -9,6 +9,7 @@ from typing import Any
 from bson.decimal128 import Decimal128
 
 from zeler_sheets.formulas.dispatcher import (
+    FormulaDataUnavailableError,
     FormulaExecutionContext,
     FormulaExecutionResult,
     FormulaHandler,
@@ -16,7 +17,11 @@ from zeler_sheets.formulas.dispatcher import (
 from zeler_sheets.formulas.output_normalization import NA_VALUE, normalize_response_rows
 from zeler_sheets.formulas.pricing import non_negative_decimal as _promo_decimal
 from zeler_sheets.formulas.pricing import promo_price as _promo_price
-from zeler_sheets.formulas.read_models import FormulaReadModelRepository, normalize_sku
+from zeler_sheets.formulas.read_models import (
+    ITEM_FORMULA_ROWS_READ_MODEL,
+    FormulaReadModelRepository,
+    normalize_sku,
+)
 from zeler_sheets.status_history import effective_paused_days
 
 CORE_FORMULA_NAMES = frozenset(
@@ -495,7 +500,16 @@ class CoreFormulaHandlers:
             limit=None,
             sort_by="publication",
         )
-        visible_rows = [row for row in rows if not exclude_catalog or not _has_catalog_product(row)]
+        visible_rows = [
+            row for row in rows if not exclude_catalog or _catalog_participation(row) is not True
+        ]
+        unknown_catalog_items = sorted(
+            {
+                str(row["item_id"])
+                for row in visible_rows
+                if row.get("item_id") and _catalog_participation(row) is None
+            }
+        )
         sales_windows = await self._dashboard_sales_windows(context.seller_id, visible_rows)
         headers = list(DASHBOARD_LEGACY_HEADERS)
         tipo_precio = str(context.args.get("tipo_precio") or "").strip().casefold()
@@ -527,8 +541,21 @@ class CoreFormulaHandlers:
         }
         if exclude_catalog:
             meta["excluded_catalog_rows"] = len(rows) - len(visible_rows)
+            meta["catalog_filter_complete"] = not unknown_catalog_items
+        if unknown_catalog_items:
+            meta["unavailable_catalog_items"] = unknown_catalog_items
+            meta["unavailable_reason"] = "catalog_participation_unknown"
         return FormulaExecutionResult(
-            values=normalize_response_rows(values, header_rows=header_rows), meta=meta
+            values=normalize_response_rows(values, header_rows=header_rows),
+            meta=meta,
+            recovery=FormulaDataUnavailableError(
+                context.contract.name,
+                "Catalog participation is unavailable for some publications.",
+                read_model=ITEM_FORMULA_ROWS_READ_MODEL,
+                item_ids=tuple(unknown_catalog_items),
+            )
+            if unknown_catalog_items
+            else None,
         )
 
     async def _dashboard_sales_windows(
@@ -928,7 +955,11 @@ def _dashboard_row_base(
         _listing_fee_projection_value(row, "percentage_fee"),
         _listing_fee_projection_value(row, "sale_fee_amount"),
         _listing_fixed_fee(row),
-        "Sí" if _has_catalog_product(row) else "No",
+        "Sí"
+        if _catalog_participation(row) is True
+        else "No"
+        if _catalog_participation(row) is False
+        else "DATA_UNAVAILABLE",
     ]
 
 
@@ -1242,10 +1273,10 @@ def _item_quantity(item: Mapping[str, Any]) -> int:
         return 0
 
 
-def _has_catalog_product(row: Mapping[str, Any]) -> bool:
+def _catalog_participation(row: Mapping[str, Any]) -> bool | None:
     current = row.get("current", {})
-    value = current.get("catalog_product_id") if isinstance(current, Mapping) else None
-    return str(value or "").strip() != ""
+    value = current.get("catalog_listing") if isinstance(current, Mapping) else None
+    return value if isinstance(value, bool) else None
 
 
 def _image_variant(value: Any) -> str:
