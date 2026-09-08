@@ -2187,3 +2187,58 @@ retain their contract; other product deployments remain out of scope.
   and writes and must not be used as a read-only status probe. Remaining work
   still includes full inventory acquisition, asynchronous item/catalog recovery,
   temporal availability and the complete formula/Sheet/app acceptance gates.
+
+## Full pilot ID acquisition: independent readback
+
+- The missing-item operator's observation handle disappeared; it was not
+  restarted. A read-only check in the approved worker container found zero
+  matching acquisition processes. Two fresh source scans independently found
+  **1,900 current IDs**, all present among **1,918 persisted pilot items**,
+  preserving 18 historical IDs outside the scan. The live Mongo validator
+  rejected zero pilot items. The original final batch totals/timing were not
+  captured and are not claimed here.
+- There are **2,831 formula rows**, 529 carrying enrichment state. Eleven source
+  publications have no formula rows. A scoped dry-run confirmed 11 missing
+  parent SKUs and 10 missing variation SKUs; the projector's SKU requirement is
+  an unresolved omission for consumers that query by publication ID. No SKU
+  was invented, no data deleted and no whole-inventory freshness marker set.
+- Persisted current-source states expose remaining field acquisition work:
+  promotion: 1,890 authoritative absence, 6 unauthorized, 4 transient;
+  shipping: 1,894 trusted, 5 basis mismatch, 1 transient;
+  commission: 1,886 trusted, 10 basis mismatch, 2 unauthorized, 2 transient;
+  fixed fee: 1,885 trusted, 9 transient, 6 unauthorized. These are stored states,
+  not proof of present freshness. Zero missing IDs does not close field coverage,
+  reprojection, asynchronous recovery or authenticated formula acceptance.
+- The audit script `/tmp/zeler-audit-inventory.py` reads production only inside
+  the approved VM/container and prints aggregates. A local SDK exit 139 during
+  the second audit was followed by the same read-only check with command-scoped
+  system Python, which succeeded; no acquisition writes were repeated.
+
+## Calculator cost availability
+
+- The calculator previously used retained shipping, commission and fixed-fee
+  values even when their persisted acquisition state reported failure. It now
+  propagates `DATA_UNAVAILABLE` from failed acquisition or trusted-but-missing
+  numeric data into the affected cells, total costs and estimated net. Explicit
+  authoritative absence yields `NA`; independently valid price/cost cells remain
+  visible. Unmarked legacy rows keep their prior behavior pending reprojection
+  and temporal coverage work. This does not yet fix the separate dashboard cost
+  readers or validate calculator cost projections against current pricing basis.
+- Strict TDD reproduced 18 failures before implementation. The parameterized
+  dispatcher cases cover all three cost sources and seven state/value scenarios;
+  calculator/core/backfill suites passed **226 tests in 0.49s**. Ruff check/format,
+  mypy over 502 files and whitespace checks passed. Productive HTTP and real-Sheet
+  acceptance remain outstanding; this code has not been deployed.
+- Rollback is limited to calculator cost selection, sentinel propagation and the
+  associated tests. No data rollback or deletion is required. Both Sheets images
+  still have last verified source `ab6e01f`; build the affected API/worker images
+  from the next verified pushed main source, verify digest/health and pilot
+  cost-cell behavior before claiming runtime correction.
+- Final root `uv run pytest --tb=short` against the dedicated local replica set:
+  **3,806 passed, 9 skipped, 356 warnings in 90.80s**. The eight protected
+  stock-time tests were then run separately with `MONGO_URI` unset and the
+  explicit local `ZELER_RS0_TEST_URI`: **8 passed in 3.67s**. An earlier root run
+  omitted 19 extra Mongo integration tests because the local container was
+  stopped at startup; it is superseded by this fully connected run. Only
+  `zeler-goal-mongo` was started, retaining its volume and leaving the older
+  low-ulimit container stopped; `rs0-dev` was verified writable primary.

@@ -152,22 +152,33 @@ def _quality_row(row: Mapping[str, Any]) -> list[Any]:
 def _calculator_row(row: Mapping[str, Any], *, tipo_precio: Any) -> list[Any]:
     current = _current_mapping(row)
     price = _selected_price(current, tipo_precio=tipo_precio)
-    seller_shipping_cost = _optional_non_negative_decimal(current.get("seller_shipping_cost"))
-    fee_projection = _optional_mapping(current.get("listing_fee_projection"))
-    commission = _optional_non_negative_decimal(
-        fee_projection.get("sale_fee_amount") if fee_projection else None
+    seller_shipping_cost = _acquired_cost(
+        current, "seller_shipping_cost", current.get("seller_shipping_cost")
     )
-    commission_percent = _optional_non_negative_decimal(
-        fee_projection.get("percentage_fee") if fee_projection else None
+    fee_projection = _optional_mapping(current.get("listing_fee_projection"))
+    commission = _acquired_cost(
+        current,
+        "listing_fee_projection",
+        fee_projection.get("sale_fee_amount") if fee_projection else None,
+    )
+    commission_percent = _acquired_cost(
+        current,
+        "listing_fee_projection",
+        fee_projection.get("percentage_fee") if fee_projection else None,
     )
     fixed_fee_projection = _optional_mapping(current.get("listing_price_fixed_fee"))
-    fixed_fee = _optional_non_negative_decimal(
-        fixed_fee_projection.get("fixed_fee") if fixed_fee_projection else None
+    fixed_fee = _acquired_cost(
+        current,
+        "listing_price_fixed_fee",
+        fixed_fee_projection.get("fixed_fee") if fixed_fee_projection else None,
     )
     total_costs = _total_costs(seller_shipping_cost, commission, fixed_fee)
-    net_amount = (
-        price - total_costs if isinstance(price, Decimal) and total_costs is not None else None
-    )
+    if isinstance(price, str):
+        net_amount: Decimal | str | None = price
+    elif isinstance(total_costs, str):
+        net_amount = total_costs
+    else:
+        net_amount = price - total_costs if price is not None and total_costs is not None else None
     return [
         str(row.get("item_id") or ""),
         row.get("sku") or row.get("normalized_sku") or NA_VALUE,
@@ -183,7 +194,7 @@ def _calculator_row(row: Mapping[str, Any], *, tipo_precio: Any) -> list[Any]:
         _current_value(current, "shipping_logistic_type", "logistic_type"),
         _current_value(current, "listing_type_id"),
         _sheet_optional_number(total_costs),
-        price if isinstance(price, str) else _sheet_optional_number(net_amount),
+        _sheet_optional_number(net_amount),
     ]
 
 
@@ -285,10 +296,27 @@ def _selected_price(current: Mapping[str, Any], *, tipo_precio: Any) -> Decimal 
     )
 
 
-def _total_costs(*values: Decimal | None) -> Decimal | None:
+def _acquired_cost(current: Mapping[str, Any], field: str, value: Any) -> Decimal | str | None:
+    parsed = _optional_non_negative_decimal(value)
+    enrichment = _optional_mapping(current.get("enrichment_state"))
+    state = _optional_mapping(enrichment.get(field)) if enrichment else None
+    if state is None:
+        return parsed
+    if state.get("status") == "authoritative_absent":
+        return NA_VALUE
+    if state.get("status") != "trusted" or parsed is None:
+        return "DATA_UNAVAILABLE"
+    return parsed
+
+
+def _total_costs(*values: Decimal | str | None) -> Decimal | str | None:
+    if "DATA_UNAVAILABLE" in values:
+        return "DATA_UNAVAILABLE"
+    if NA_VALUE in values:
+        return NA_VALUE
     if any(value is None for value in values):
         return None
-    return sum((value for value in values if value is not None), Decimal("0"))
+    return sum((value for value in values if isinstance(value, Decimal)), Decimal("0"))
 
 
 def _current_mapping(row: Mapping[str, Any] | None) -> Mapping[str, Any]:
@@ -405,6 +433,8 @@ def _optional_non_negative_decimal(value: Any) -> Decimal | None:
 
 
 def _sheet_optional_number(value: Any) -> Any:
+    if isinstance(value, str) and value in {NA_VALUE, "DATA_UNAVAILABLE"}:
+        return value
     parsed = _optional_non_negative_decimal(value)
     if parsed is None:
         return NA_VALUE

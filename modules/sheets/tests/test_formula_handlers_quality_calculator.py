@@ -254,6 +254,60 @@ async def test_calculator_promo_price_and_net_obey_acquisition_state(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("field", "columns"),
+    [
+        ("seller_shipping_cost", [5]),
+        ("listing_fee_projection", [6, 7]),
+        ("listing_price_fixed_fee", [8]),
+    ],
+)
+@pytest.mark.parametrize(
+    ("state", "has_value", "expected"),
+    [
+        ("trusted", True, None),
+        ("trusted", False, "DATA_UNAVAILABLE"),
+        ("transient", True, "DATA_UNAVAILABLE"),
+        ("unauthorized", True, "DATA_UNAVAILABLE"),
+        ("basis_mismatch", True, "DATA_UNAVAILABLE"),
+        ("malformed", True, "DATA_UNAVAILABLE"),
+        ("authoritative_absent", True, "NA"),
+    ],
+)
+async def test_calculator_costs_and_totals_obey_acquisition_state(
+    field: str, columns: list[int], state: str, has_value: bool, expected: Any
+) -> None:
+    db = FakeDb()
+    _mark_read_model_fresh(db, ITEM_FORMULA_ROWS_READ_MODEL)
+    row = _item_row(
+        item_id="MLA1",
+        sku="sku-1",
+        title="Synthetic",
+        status="active",
+        price=Decimal("100"),
+        seller_shipping_cost=Decimal("10"),
+        listing_fee_projection={"sale_fee_amount": Decimal("8"), "percentage_fee": Decimal("8")},
+        listing_price_fixed_fee={"fixed_fee": Decimal("2")},
+    )
+    row["current"]["enrichment_state"] = {field: {"status": state, "synced_at": NOW}}
+    if not has_value:
+        row["current"].pop(field)
+    db["sheets_item_formula_rows"].documents[row["_id"]] = row
+    result = await _dispatcher(db).execute(
+        _context(
+            "ZELERDATA_CALCULADORA",
+            {"id_publicaciones": ["MLA1"], "tipo_precio": "actual", "encabezados": "no"},
+        )
+    )
+    cells = result.values[0]
+    assert cells[4] == 100
+    for column, value in {5: 10, 6: 8, 7: 8, 8: 2}.items():
+        assert cells[column] == (expected if column in columns and expected else value)
+    assert cells[13] == (expected or 20)
+    assert cells[14] == (expected or 80)
+
+
+@pytest.mark.asyncio
 async def test_calculadora_projects_costs_from_local_fee_shipping_and_catalog_data() -> None:
     db = FakeDb()
     _mark_read_model_fresh(db, ITEM_FORMULA_ROWS_READ_MODEL)
