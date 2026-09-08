@@ -184,9 +184,10 @@ digests are:
 
 Full evidence and the verified local `image_to_commit.json` are in the temporary
 rollout directory above (`*-complete-build.json`, `*-artifact.json`). They have
-not yet been merged into the VM's provenance map or activated. GitHub test run
-`34265791402` was rechecked and still running; lint run `34265791416` succeeded.
-Deployment remains gated on CI and fresh capacity checks. The newer main commit
+not yet been merged into the VM's provenance map or activated. Final recheck:
+GitHub test run `34265791402` and lint run `34265791416` both succeeded.
+Deployment remains gated on fresh capacity checks and VM provenance registration.
+The newer main commit
 only records this operational evidence; it does not require rebuilding these images.
 
 Pre-change health check: API digest `c679a81b…` and worker `65a8dcff…` healthy,
