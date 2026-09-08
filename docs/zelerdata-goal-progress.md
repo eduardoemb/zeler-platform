@@ -3963,3 +3963,28 @@ must not be removed. Both **Sheets API and Sheets worker** need verified images
 for this unit. Deploy worker before API, then admit and verify the actual bounded
 pilot cost repairs. Production repair and future freshness maintenance remain
 unproved; do not re-run the 1,900-item sweep for this field-level diagnosis.
+
+### Cost-recovery release prepared, not deployed
+
+Commit `29c38320cb4e3d09a5d284741cf4cb8fee0124aa` is pushed to `main`.
+Both one-image Cloud Builds succeeded and the canonical provenance verifier
+validated digest, build and exact connected-repository source locally:
+
+| Service | Build | Image digest |
+| --- | --- | --- |
+| Sheets worker | `5c63d9f1-c871-4951-97d7-030828524757` | `791e9c90eb9871b1e7573a429e013035ee8a279e064383a4fe77fd1030dfaea7` |
+| Sheets API | `a6a634d4-2929-4629-9c48-821e301430cb` | `c679a81b7ad3e0b026f8b4a8a4e1ff5bddc1387bcccbf59fc31cb808f70ab56c` |
+
+Artifacts and release state: `/tmp/zeler-cost-gaps.q5RZkE/`. CI lint
+`34259086965` passed; test `34259087298` was still running at this checkpoint.
+A separate collection check confirmed 3,966 root cases, consistent with the
+successful execution and its nine skips; no prior lost process result was reused.
+
+Read-only VM inspection found both existing services healthy with zero restarts:
+worker remains digest `d4a665c9...` (source `62d799e`), API `d9bfc8a8...`
+(source `6098a93`). Free space was 5,423,652,864 bytes, barely above the 5 GiB
+floor. No images were pulled or removed, no Compose edits were made, and no
+repair was admitted in this continuation. Before activating the prepared worker
+then API, recheck CI, validate provenance on the VM, ensure capacity while
+retaining current/rollback images, and verify scoped cost recovery afterward.
+No additional build is required for this documentation-only checkpoint.
