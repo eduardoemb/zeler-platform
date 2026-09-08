@@ -150,6 +150,44 @@ across variant/SKU rows and use the existing bounded item recovery path.
   and corresponding tests. Canonical persistence, calculator and historical
   acquisition fixes can remain independently. No data deletion is required.
 
+## Catalog rollout preparation — 2026-09-08
+
+Production Mongo now accepts optional `catalog_listing` in `items` and in
+`sheets_item_formula_rows.current`. A runtime-container comparison first proved
+that each live validator equaled the committed schema with only this field
+removed. The scoped collMod operation changed those two validators only, keeping
+strict/error enforcement; a separate subsequent read proved exact equality to
+the schemas from `07c8ad36e52451e13fa46167502972909b55d997`.
+No business documents or indexes were changed, and no service was restarted.
+
+Operational artifacts are at `/tmp/zeler-catalog-rollout.gE7bNb/` locally and
+(check script/schemas) on the VM. `check.py` defaults to read-only; `apply` was
+executed once successfully. Do not rerun mutations to obtain status. Rollback
+may leave the compatible additive validators in place; never remove the optional
+field from a validator while stored documents may contain it.
+
+Separate verified-option Cloud Builds were submitted from the exact connected
+repository revision above, with one image per build. Last authoritative status:
+
+| Service | Build ID | Status |
+| --- | --- | --- |
+| Sheets API | `d517ab72-3560-4917-9da6-594a25426cf4` | WORKING |
+| Sheets worker | `67e264a7-22f3-489f-9926-dbe7de9aff80` | WORKING |
+
+Continue observing these IDs; do not resubmit. Build completion, provenance and
+rollout are not yet established. GitHub test run `34265791402` was still running;
+lint run `34265791416` had succeeded. Deployment remains gated on CI, verified
+image/source correspondence, and fresh capacity checks.
+
+Pre-change health check: API digest `c679a81b…` and worker `65a8dcff…` healthy,
+zero restarts, 5,394,870,272 free root bytes. Those images lack the catalog changes.
+Capacity is barely above 5 GiB; perform a new preflight before pull and activation,
+preserve current/rollback images, and never remove Mongo volumes. Required runtime
+verification after rollout: bounded pilot acquisition persists explicit flags,
+repeated calculator/dashboard reads agree with them without unnecessary recovery,
+and formula calls remain below the Sheets deadline. This does not close the wider
+catalog recovery, all-52 HTTP, real-Sheet or minimum-hardening acceptance items.
+
 ## Baseline — 2026-09-07
 
 - Backend main: `c5a2e097e765a083fa1fff7fdec3782ef81fd998`.
