@@ -1986,3 +1986,56 @@ retain their contract; other product deployments remain out of scope.
   356 warnings in 85.56s**. Protected stock-time cases ran separately with
   `ZELER_RS0_TEST_URI` and no ambient `MONGO_URI`: **8 passed in 2.48s**.
   Final Ruff check/format, mypy (501 files) and whitespace checks passed.
+
+## Operational checkpoint: deploy bounded item acquisition
+
+- Both images were built from pushed main
+  `d29ae5218efd92f229edf58f0cfbb37b8d963f96` and verified against exact connected
+  repository/source/build/SLSA digest metadata:
+  - API build `3e895b8e-5add-44cd-879d-299381ed5815`, image
+    `sheets-api@sha256:80df92e6eb2b91e85e9b27c7700df4618b7211c814b1a013749a867ffb9c9433`.
+  - Worker build `8fdf089b-1b51-4282-9580-96fdfe209e90`, image
+    `sheets-worker@sha256:d885b5117058456430d060d38cc11015995d8f9bcb8172914e6298fdc8abdfe7`.
+  Artifact Registry prefix is unchanged. Build configs/verifier are in
+  `/tmp/zeler-item-batch-build.odBPPv`; the intermediate `016e6bd` pair was
+  never deployed.
+- Removed only unreferenced local worker `603dce2137f2952ce9f1f70e18687132a8f7cec771a2f2dbdee1ffc62542eb1b`
+  and API `f2c929e3fb43df0fec66eaa59b99cef8c180e39bc375b2e106a23ab4c506bdd3`
+  copies after checking all container references and Artifact Registry
+  recoverability. No customer records or volumes were deleted. Free space
+  increased from 5.09 to 6.10 GiB and finished at 5.09 GiB after both pulls.
+- Queue precheck showed zero running jobs and zero pending pilot jobs. Each
+  targeted deployment passed dry/real preflight, exact one-line replacement
+  and 5 GiB capacity checks. Worker then API were recreated; final probes show
+  both running the verified digests, healthy, zero restarts, HTTP 200 `/health`,
+  with recovery still enabled only for `82453304`. Other products were untouched.
+- Compose backups are `/opt/zeler-platform/docker-compose.yml.pre-sheets-worker-d29ae52`
+  and `.pre-sheets-api-d29ae52`. Previous running worker `64b87403ec0d3655eedd8d57ee68352fd8ede1c5a9fbb516130fdf5d0867d015`
+  and API `a4f62877759b00eedafeddb750735710047edcb68624fa7f215ccb71f2b77cf3`
+  remain the local rollback authorities. Restore only the affected image line,
+  preserve pilot configuration and schemas, and verify health. Retain normalized
+  acquired data; do not revert it merely because executable code is rolled back.
+- First productive bounded acquisition completed in **29.499s** (operator
+  scan + dry-run + fresh acquisition/write + projection, not formula HTTP).
+  A current 1,900-ID source scan found 1,562 persisted pilot items; the first
+  20 missing IDs were selected in memory. Dry-run validated all 20 in 16.845s.
+  Fresh write acquisition then inserted all 20 by 28.854s. Independent Mongo
+  checks found 20 refreshed documents and zero violations of the live validator.
+- Projecting that persisted batch wrote **24 formula rows and 24 SKU-index
+  upserts**, covering all 20 items, with zero projection errors or ambiguous
+  identities. Two items lacked parent-level SKU but variation rows supplied
+  their identities. All 24 rows had permalink/thumbnail, six had catalog IDs
+  and 22 had inventory IDs. The summary's `skipped_missing_source=18` counts
+  missing diagnostic fields, not 18 failed writes; all 24 planned rows persisted.
+- Read-only audit of the exact latest 20-item sync cohort found trusted shipping
+  costs, listing-fee projections and fixed fees for all 20. Promotion state was
+  `authoritative_absent/no_trusted_promotion` for all 20; this records persisted
+  classification, not independent proof of every upstream absence. The current
+  resolver returns the same empty projection for malformed/non-promotional
+  sale-price responses, so audit that distinction before claiming optional
+  absence is trustworthy. Six variation-detail lookups also enriched successfully.
+- No inventory completeness marker was published, and the remaining inventory
+  is not acquired by this one batch. Automatic item/catalog recovery, field
+  availability semantics and authenticated formula/Sheet/app acceptance remain
+  open. The bounded operator process is terminal; do not rerun it blindly as
+  a status check because it selects and writes the next missing batch.
