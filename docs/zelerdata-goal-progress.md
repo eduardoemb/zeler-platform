@@ -2996,3 +2996,21 @@ retain their contract; other product deployments remain out of scope.
   sweep duration and source/scan freshness still need measurement: completing
   acquisition alone does not prove that the whole inventory is readable within
   its 15-minute evidence window. No claim of full-inventory acceptance yet.
+- At 228.73 seconds the same live job had discovered **1,900 publications** and
+  checkpointed offset **120**, with **20 IDs** conservatively recorded for one
+  exhausted batch. Read-only diagnosis of that batch found 19 matching receipts
+  and one missing receipt; the latter had two skipped variation SKUs, with no
+  item-SKU or variation-identity ambiguity. This is incomplete projection
+  evidence, not proof that MercadoLibre cannot recover those fields. The worker
+  advanced after three attempts rather than blocking later batches.
+- Internal whole-inventory reads during the sweep returned verified rows plus
+  explicit missing-publication cells in **0.8222–1.5402 seconds** across observed
+  samples. At the latest sample CALCULADORA reported 1,801 missing publications
+  and CALIDAD 1,781; they ran sequentially while another batch published, so these
+  are separate observations, not an atomic cross-formula snapshot. Both reported
+  incomplete inventory coverage; the global marker fingerprint remained unchanged.
+  The sweep is still running and its complete/fresh end state is unproven.
+- Follow-up: inspect the partial-variation projection contract and measure the
+  full sweep against the 15-minute window without extending observation times
+  artificially. The documentation-only commits after `b74b758` do not affect
+  service images; no further build is needed for this evidence record alone.
