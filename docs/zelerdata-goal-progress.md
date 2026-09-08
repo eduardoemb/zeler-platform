@@ -21,6 +21,43 @@ Keep unrelated `.codegraph/` files untouched in both repositories.
 Pilot: seller `82453304`; initial historical window 2026-08-08 through
 2026-09-06, plus current snapshots. Other products are out of scope.
 
+## Variation-attribute worker rollout — 2026-09-08
+
+`sheets-worker` now runs `0db69e5d9317b6f57c4d51d4521d4e6471c77956` as
+`sha256:c3ad9eeba1e364ee2268fc3cbce9e811c79a997300029a8d51be862b38f7b647`.
+Cloud Build `0541e642-462e-45d4-8de5-b86c363c2fc5` succeeded from that exact
+connected-repository commit; digest/build/source provenance passed locally and
+in the VM canonical map. CI test `34282539619` and lint `34282539551` both
+succeeded before activation. Only the worker was replaced, without dependencies
+or running recovery jobs; HTTP health was 200 with zero restarts.
+
+The current rollback is worker
+`sha256:443691ebbe7fc488a1a7fb34d57a0e98e0628249864a02b5948f82738c62bf03`,
+with Compose backup `.pre-sheets-worker-activate-0db69e5`. API remains
+`c90a941`, digest
+`sha256:1702d8adc804f8b10a31eeb7b96e3e1d9964f94e5609643e74e8b6545036b391`;
+its active HTTP paths are unchanged by this acquisition-only fix.
+
+To preserve the 5 GiB floor, removed only the unused local worker image
+`sha256:7dde61dfd30a17560bf581cc62315d4f7901531a88f0f94c8da1bb172cfacc5f`
+after confirming exact Artifact Registry availability and no running/stopped
+container references. Current and immediate rollback images remained present;
+no business data or volumes were removed. Preflight with automatic cleanup
+disabled passed. Pull took 15.96 seconds and left Compose unchanged;
+post-activation free space was 5,891,936,256 bytes. Recheck before another pull.
+
+One normal inventory request was admitted after deployment with no active jobs,
+no cooldown override and no fabricated observation time. It reuses deterministic
+job `5f2485d573679264481950cce24b1373d2eb93f11c1f79ea2aca606b92d20a8f`.
+Initial state was pending, attempt zero and no offset; the retained old 1,900 IDs
+and expired enumeration were not new coverage. Receipt:
+`/var/lib/zeler-platform/repairs/catalog-inventory-0db69e5.json`.
+Observe this same run; do not repeat `inventory.py prepare`. The one-shot product
+watcher uses receipt `catalog-product-admission-0db69e5.json` and admits products
+only after a completed, still-current inventory. Full convergence remains open.
+Local/VM artifacts are `/tmp/zeler-projection-profile.97ePq6/`, including the
+verified build, pull/activation guards and the new inventory/product probes.
+
 ## Acquire variation attributes in the existing multiget — 2026-09-08
 
 Item enrichment now requests `include_attributes=all` in its existing multiget,
