@@ -31,8 +31,11 @@ def test_runtime_recovery_seller_list_is_explicit_and_validated() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("projection_fault", [None, "missing_receipt", "changed_source"])
 async def test_calculator_recovers_through_real_worker_and_source_bound_projection(
     recovery_db: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    projection_fault: str | None,
 ) -> None:
     import json
     from pathlib import Path
@@ -40,6 +43,7 @@ async def test_calculator_recovers_through_real_worker_and_source_bound_projecti
 
     import httpx
 
+    import zeler_sheets.formulas.recovery_worker as workers
     from zeler_sheets.api import _request_formula_recovery
     from zeler_sheets.formulas.dispatcher import (
         FormulaDataUnavailableError,
@@ -53,6 +57,19 @@ async def test_calculator_recovers_through_real_worker_and_source_bound_projecti
     from zeler_sheets.formulas.recovery import IMPLEMENTED_MODELS
     from zeler_sheets.formulas.recovery_worker import FormulaRecoveryWorker
     from zeler_sheets.formulas.registry import FormulaRegistry
+    from zeler_sheets.sheetseller_backfill import run_sheetseller_backfill as real_project
+
+    async def project_with_fault(**kwargs: Any) -> Any:
+        result = await real_project(**kwargs)
+        if projection_fault == "missing_receipt":
+            await recovery_db.sheets_item_formula_rows.update_many(
+                {"seller_id": "82453304"}, {"$unset": {"source_snapshot": ""}}
+            )
+        if projection_fault == "changed_source":
+            await recovery_db.items.update_one({"_id": "MLA1"}, {"$set": {"price": 101}})
+        return result
+
+    monkeypatch.setattr(workers, "run_sheetseller_backfill", project_with_fault)
 
     for name in ("items", "sheets_item_formula_rows", "sheets_item_sku_index"):
         schema = json.loads(Path(f"infra/mongo/schemas/{name}.json").read_text())
@@ -121,6 +138,18 @@ async def test_calculator_recovers_through_real_worker_and_source_bound_projecti
     worker = FormulaRecoveryWorker(db=recovery_db, gateway=gateway, queue=queue)
     assert await worker.process_one()
     job = await queue.collection.find_one({"seller_id": "82453304"})
+    if projection_fault:
+        assert job["state"] == "pending"
+        assert job["failure_reason"] == "source_incomplete"
+        with pytest.raises(FormulaDataUnavailableError):
+            await dispatcher.execute(context)
+        assert await recovery_db.sheets_read_model_freshness.count_documents({}) == 0
+        projection_fault = None
+        retry_at = job["available_at"].replace(tzinfo=UTC)
+        queue.now = lambda: retry_at
+        assert await worker.process_one()
+        job = await queue.collection.find_one({"seller_id": "82453304"})
+        assert job["attempts"] == 2
     assert job["state"] == "completed", job.get("failure_reason")
     calls_after_recovery = list(gateway.calls)
     result = await dispatcher.execute(context)
@@ -279,6 +308,7 @@ async def test_explicit_item_recovery_uses_bounded_acquisition_without_global_ma
     from zeler_sheets.api import _request_formula_recovery
     from zeler_sheets.formulas.dispatcher import FormulaDataUnavailableError
     from zeler_sheets.formulas.recovery import IMPLEMENTED_MODELS, ItemIdsRecoveryRequest
+    from zeler_sheets.sheetseller_backfill import run_sheetseller_backfill
 
     queue = FormulaRecoveryQueue(recovery_db, enabled_models=IMPLEMENTED_MODELS)
     request = ItemIdsRecoveryRequest("82453304", ("MLA2", "MLA1", "MLA1"))
@@ -302,7 +332,19 @@ async def test_explicit_item_recovery_uses_bounded_acquisition_without_global_ma
         assert not kwargs["dry_run"]
         calls.append("acquire")
         for identity in ("MLA1",) if partial else ("MLA1", "MLA2"):
-            await recovery_db.items.insert_one({"_id": identity, "seller_id": "82453304"})
+            await recovery_db.items.insert_one(
+                {
+                    "_id": identity,
+                    "seller_id": "82453304",
+                    "title": "Acquired item",
+                    "price": 100,
+                    "status": "active",
+                    "currency_id": "ARS",
+                    "last_meli_sync_at": queue.now(),
+                    "attributes": [],
+                    "variations": [],
+                }
+            )
         if lose_lease:
             await queue.collection.update_one(
                 {"_id": key}, {"$set": {"lease_until": datetime(2000, 1, 1, tzinfo=UTC)}}
@@ -313,6 +355,7 @@ async def test_explicit_item_recovery_uses_bounded_acquisition_without_global_ma
         assert kwargs["item_ids"] == (("MLA1",) if partial else ("MLA1", "MLA2"))
         assert not kwargs["dry_run"]
         calls.append("project")
+        await run_sheetseller_backfill(**kwargs)
 
     monkeypatch.setattr(workers, "run_item_detail_enrichment", acquire)
     monkeypatch.setattr(workers, "run_sheetseller_backfill", project)

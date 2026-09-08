@@ -27,7 +27,11 @@ from zeler_sheets.event_persistence import (
     _canonical_shipment_document,
     _receiver_address_snapshot,
 )
-from zeler_sheets.formulas.read_models import read_model_reconciliation_marker_covers
+from zeler_sheets.formulas.dispatcher import FormulaDataUnavailableError
+from zeler_sheets.formulas.read_models import (
+    FormulaReadModelRepository,
+    read_model_reconciliation_marker_covers,
+)
 from zeler_sheets.formulas.recovery import (
     COOLDOWN,
     FormulaRecoveryQueue,
@@ -135,6 +139,19 @@ class FormulaRecoveryWorker:
         # A selected batch is not an inventory reconciliation. Preserve field
         # availability states and never publish a whole-seller freshness marker.
         partial = acquired.item_details_stale_unavailable > 0 or stored_ids != requested.item_ids
+        if not partial:
+            try:
+                _, missing = await FormulaReadModelRepository(
+                    db=self.db
+                ).find_recent_item_formula_rows(
+                    seller_id=requested.seller_id,
+                    item_ids=list(requested.item_ids),
+                    formula="ZELERDATA_CALCULADORA",
+                    now=self.queue.now(),
+                )
+                partial = bool(missing)
+            except FormulaDataUnavailableError:
+                partial = True
         await self.queue.finish(
             job,
             succeeded=not partial,

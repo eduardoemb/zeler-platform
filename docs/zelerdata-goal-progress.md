@@ -2825,3 +2825,35 @@ retain their contract; other product deployments remain out of scope.
 - Post-deployment free space was **4,883,578,880 bytes**. Another pull requires
   recovering capacity and passing preflight again. The API image now matches
   the intended runtime change; this evidence-only commit needs no new build.
+
+## Item recovery completion requires a readable projection
+
+- While tracing full-inventory recovery prerequisites, real-Mongo fault tests
+  proved that a job could report completed after its source receipt disappeared
+  or its source changed following projection. The calculator correctly refused
+  those rows, so the job's success did not prove a productive subsequent read.
+- Before completing an acquired item batch, the worker now invokes the existing
+  source-bound projection reader for every requested ID. Missing, incomplete,
+  expired or source-mismatched groups retain the existing retryable
+  `source_incomplete` state. No new collection, queue or global marker is added.
+  Optional field unavailability remains distinct from missing projection proof.
+- The fault tests failed with completed instead of pending before the fix.
+  After removing the injected fault, the same jobs retry and complete on attempt
+  two; the actual calculator then reads their recovered projections. Only the
+  upstream boundary is simulated in these real-Mongo integration cases. The
+  bounded-admission/lease tests now use the real projector instead of a no-op.
+- Focused recovery/calculator suites: **237 passed in 32.37s**. Protected
+  integration: **8 passed in 2.61s**. Ruff check/format, mypy (503 files), and
+  whitespace checks pass. Normal-allocator root regression with the dedicated
+  local replica-set URI: **3,852 passed, 9 skipped, 356 warnings in 95.65s**.
+- Verification precedes queue completion; it is not atomic with concurrent item
+  writers and does not promise permanently fresh rows. Reads continue to check
+  their own source evidence. Resumable whole-inventory acquisition and aggregate
+  readiness are still required; a successful selected batch does not prove them.
+- Rollback removes this worker-side verification and its regression cases, with
+  no schema or data reversal. No runtime mutation occurred. Sheets worker needs
+  a new verified Cloud Build image and a real recovery-to-read smoke after deploy;
+  preserve the existing API and recover disk margin before another pull.
+  Read-only runtime inspection still found the `f51c374` worker digest
+  `55e10b4593b0ccb5df81a513daf9ce10be26c5da1516d85e7b7b6fb8a72f8512`
+  healthy with zero restarts; it does not yet contain this completion check.
