@@ -3610,3 +3610,64 @@ retain their contract; other product deployments remain out of scope.
 - Rollback boundary: `_recover_order_shipment`, its `_order_detail` call/import,
   and corresponding tests/fixture changes. No production relationship repair
   has run; rollback must not delete legitimately recovered persisted IDs.
+
+## Inventory completed, but full fresh coverage is not achieved
+
+- The corrected `e613707` sweep reached **completed, 1,900/1,900, zero unavailable
+  IDs**, with zero running recoveries. Its checkpoint duration was **1,004.513s**
+  (16m44.513s), measured from inventory observation to terminal job update, not
+  from a later operator poll. Receipt and job key are the same as the active
+  checkpoint above; do not run its `prepare` again.
+- Completion exceeded the 900-second freshness window. At the first terminal
+  observation, CALCULADORA and CALIDAD each returned **2,737 rows**, **300 missing
+  publications**, explicit expiry warnings, and both completeness/current flags
+  false. Reader times were **1.8163s / 1.487s**; CALCULADORA had **2,436 numeric
+  price cells**. These counts do not establish completeness of every field.
+  Global freshness markers remained unchanged.
+- This resolves the earlier exhausted-batch failures, not simultaneous fresh
+  inventory coverage. Investigate acquisition/projection timing before another
+  whole-inventory sweep. Do not extend timestamps or freshness limits merely to
+  turn this result green. Backfill currently reloads seller-wide historical SKU
+  identities and status states for each selected batch; this is an inspection
+  lead, not a measured bottleneck or authorization to weaken concurrency guards.
+
+## Worker 69d66ad deployed; live forward-relationship acceptance remains open
+
+- Source `69d66ad4e97e6db9a893e9ef570d78a47118d135` passed CI test run
+  `34251940206` and lint run `34251940230`. Verified Cloud Build
+  `e9473000-1c27-4e32-adf5-c2755869c96b` produced worker digest
+  `4d1936399c17e0bf0bff72ef51c841a0443e9eb8e0c03ffe674aa29d925020dd`.
+  Canonical provenance was verified and merged into the VM image/source map.
+- After the inventory job became terminal, worker-only activation passed health
+  HTTP 200 with zero restarts. The API remains source `6098a93`, digest
+  `d9bfc8a87bf68765bb453618113402139dcd90abbb8d1d9ae3674b96ba2bc844`.
+  Worker rollback is digest
+  `b47ec04c1442cad34ab79dbe2437c76047dea52a29d5205bba5df3af6fe3cc53`;
+  Compose backup is `docker-compose.yml.pre-sheets-worker-activate-69d66ad`.
+- Free-space gates passed before pull and activation. Removed only the unused
+  worker image `5a70e40bafa593566bb3f371769854267ddfdabed2f01c9f81675844fc60d397`
+  after checking all containers, protected current/rollback images and registry
+  recoverability. No volumes or customer data were removed. Post-activation
+  free space was **5,392,199,680 bytes**, close to the 5 GiB floor.
+- A bounded read-only scan of the pilot range found **100 stored orders, zero
+  unknown shipping links**. This is stored coverage, not complete API coverage;
+  there was no genuine missing-link candidate to repair. No production links
+  were removed to manufacture one.
+- Through the normal authenticated gateway, an owned in-range order detail
+  validated, but its forward relationship returned **404** with `hosted=true`.
+  Removing that query parameter also returned **404**, error code
+  `not_found_shipping_for_order_id`. A further selection explicitly requiring a
+  stored shipment and excluding `no_shipping` reproduced that code; its live
+  order detail had a shipping ID and did not declare `no_shipping`.
+- Local proxy code forwards query parameters and the new-domain header. Official
+  documentation still describes the hosted array contract, but these probes do
+  not prove its availability for this pilot relationship. Preserve available
+  Mongo/order data and truthful unavailability; do not claim live migration
+  acceptance or a successful missing-link repair. No business-data writes were
+  made by these probes. [Mercado Libre orders contract](https://developers.mercadolibre.com.mx/gestiona-ventas)
+- Operator artifacts: `/tmp/zeler-forward-shipment.tm6dP3/`. Cleanup, pull and
+  activation already ran; do not replay them. This evidence-only update requires
+  no new service image. The worker contains the intended executable change;
+  bootstrap still needs a current verified image before a future invocation of
+  corrected backfill. All-52 authenticated HTTP, real Sheets/app, inventory
+  freshness and minimum hardening remain required before closing the goal.
