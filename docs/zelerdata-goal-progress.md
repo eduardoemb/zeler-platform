@@ -4169,3 +4169,53 @@ Rollback boundary: catalog source extraction/merge, variation-product selection
 and the matching tests in `historical_meli_backfill.py` and its test modules.
 No recovered production data should be deleted. This local unit does not change
 the running inventory job or the deployed refresh-age worker.
+
+## Refresh-age inventory and cost follow-up: full current read verified
+
+The existing inventory job completed **1,900 / 1,900**, with zero exhausted IDs.
+`successful_eligibility_matches_observation` is **true**. The persisted next
+eligibility is **228.664s** after completion, consistent with a **671.336s**
+sweep and the original 900-second observation interval; completion did not add
+another 15-minute wait. No preparation was repeated and no timestamps or global
+freshness markers were changed manually.
+
+The first terminal read at observation age **737.73s** returned all 2,859 rows
+with current membership and zero partial misses. CALIDAD had zero unavailable
+cells; CALCULADORA still had 748 unavailable cells. The whole-inventory reader
+requested targeted field recovery for **58 publications / 141 variation rows**.
+The normal queue-admission helper scheduled three selected jobs (**20/20/18**),
+not another inventory. All three completed on their first attempt. At the
+43.16-second follow-up observation, those 141 rows had zero unavailable cells,
+no further recovery request, and a **0.0676s** Mongo-backed formula read.
+
+Final whole-inventory verification, at observation age **859.26s**:
+
+| Formula | Rows | Partial misses | Unavailable cells | Read duration |
+| --- | ---: | ---: | ---: | ---: |
+| CALCULADORA | 2,859 | 0 | 0 | 4.0180s |
+| CALIDAD | 2,859 | 0 | 0 | 2.8258s |
+
+Both reads reported current enumeration, complete inventory rows and no expiry
+warning. CALCULADORA had 2,859 numeric prices. Global freshness markers remained
+unchanged throughout. This proves a full current backend read at that time,
+**not perpetual freshness, all-52 authenticated HTTP or Google Sheets acceptance**.
+Do not extend these receipts or run another sweep solely to recreate this result.
+
+Receipts (VM, mode 0600) and commands:
+
+- Inventory: `/var/lib/zeler-platform/repairs/inventory-refresh-age-a607932.json`;
+  read-only `sudo python3 /tmp/zeler-refresh-age.uYUpMd/pilot.py status`.
+- Cost follow-up: `/var/lib/zeler-platform/repairs/inventory-cost-followup-a607932.json`;
+  read-only `sudo python3 /tmp/zeler-refresh-age.uYUpMd/cost-followup.py status`.
+- Both `prepare` modes have already executed; never repeat them as status checks.
+
+No repository executable changes, image rebuilds or deployments were needed in
+this verification unit. Runtime remains worker source `a607932`, API `29c3832`;
+catalog source-selection fix `e612473` is not deployed. Before invoking that
+corrected historical/reconcile path, include it in a verified Sheets image and
+verify catalog persistence/readback. Normal automatic catalog recovery and
+participation evidence remain unfinished. The last CI check for `e612473` showed
+lint `34262518703` passed and test `34262518663` still running.
+
+Rollback remains the service-specific image bindings documented above. These
+legitimately acquired costs must remain persisted; rollback is not data deletion.
