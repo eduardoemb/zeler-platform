@@ -3988,3 +3988,62 @@ repair was admitted in this continuation. Before activating the prepared worker
 then API, recheck CI, validate provenance on the VM, ensure capacity while
 retaining current/rollback images, and verify scoped cost recovery afterward.
 No additional build is required for this documentation-only checkpoint.
+
+## Cost recovery deployed and 37-publication repair verified
+
+Both Sheets services now run source
+`29c38320cb4e3d09a5d284741cf4cb8fee0124aa`, using the two verified digests
+listed above. CI test `34259087298` and lint `34259086965` passed. The canonical
+provenance verifier also validated each image on the VM and updated
+`/var/lib/zeler-platform/image_to_commit.json` before activation.
+
+Worker was activated before API. Each returned HTTP health **200**, with zero
+restarts. Pulls completed in **14.65s / 9.93s**, with Compose unchanged until
+explicit activation. Capacity was checked before each pull and activation.
+Unused local worker images `b47ec04c...` and then `4d193639...` were removed only
+after checking every container, protecting current/rollback images and confirming
+Artifact Registry recoverability. No volumes or business data were removed.
+Final observed free space was **5,414,514,688 bytes**: still close to the 5 GiB
+floor, so recheck capacity before any further image pull.
+
+Rollback authorities are the previous running images, retained locally:
+
+- Worker: `d4a665c9bf05fc4ee3463ca71b3c10a93cde06a7339250fcea6ca5e4537ff6a3`.
+- API: `d9bfc8a87bf68765bb453618113402139dcd90abbb8d1d9ae3674b96ba2bc844`.
+
+Compose backups are
+`/opt/zeler-platform/docker-compose.yml.pre-sheets-worker-activate-29c3832`
+and `...pre-sheets-api-activate-29c3832`. Roll back only the affected image
+binding/service, not an entire backup that would overwrite the other service's
+new binding. Never delete the recovered data as part of image rollback.
+
+The read-only pre-repair probe reconfirmed **37 affected publications**, the same
+stored field reasons, and no running jobs. An approved VM operator then invoked
+the deployed calculator dispatcher and normal API queue-admission helper for
+exactly those IDs. Two selected jobs (**20 + 17**, neither inventory-scoped)
+completed on their first attempt through the running worker. Receipt with IDs
+is mode 0600 at `/var/lib/zeler-platform/repairs/cost-recovery-29c3832.json`;
+IDs and customer field values were not printed. Do not repeat `pilot.py prepare`.
+
+| Verification | Result |
+| --- | --- |
+| Before admission | Required data unavailable; read 0.0162s |
+| First terminal observation, 21.20s after selection | 40 rows, zero partial misses, zero unavailable cells, 40 numeric prices; read 0.0305s |
+| Second read, 66.97s after selection | Same complete 40 rows, no recovery request; read 0.0355s |
+| Global freshness markers | Unchanged |
+| Stored cost-state scan of 2,859 rows | Zero affected publications for shipping, commission or fixed fee; zero running jobs |
+
+These are real production Mongo/worker/dispatcher results, **not authenticated
+HTTP or Google Sheets acceptance**. The last stored-state scan does not establish
+whole-inventory freshness; only the selected rows passed the current formula
+reader's freshness checks. Runtime scripts: `/tmp/zeler-cost-gaps.q5RZkE/`;
+read-only checks are `pilot.py status` and `inspect-after.py`. No new repository
+executable code or new root-test run was needed in this deployment-only unit;
+the preceding unit records the passing suite and HTTP/Mongo regression test.
+
+The images also contain the earlier catalog winner/target normalization fix,
+but existing catalog data and automatic catalog acquisition remain unverified.
+Next address continuous inventory refresh and catalog recovery, then complete
+all-52 authenticated HTTP and real Sheet/app acceptance and minimum hardening.
+The current `main` differs from image source only in progress documentation;
+no new build is required for this checkpoint.
