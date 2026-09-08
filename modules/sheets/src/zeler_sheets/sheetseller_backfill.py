@@ -329,6 +329,15 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="Explicitly write idempotent read-model upserts.",
     )
     parser.add_argument(
+        "--acquire-item-id",
+        action="append",
+        dest="acquire_item_ids",
+        help=(
+            "With items-enrich, acquire a batch of up to 20 known or missing publication IDs. "
+            "Repeat this flag for each ID; does not scan or mark inventory complete."
+        ),
+    )
+    parser.add_argument(
         "--discover-current-items",
         action="store_true",
         help="With items-enrich, discover current seller items before enriching known and new IDs.",
@@ -680,6 +689,35 @@ async def _discover_current_item_ids(gateway: MeliItemGatewayClient, *, seller_i
     raise ValueError("item discovery page budget exceeded")
 
 
+def _validate_item_acquisition_scope(
+    *,
+    seller_id: str,
+    acquire_item_ids: Sequence[str] | None,
+    item_ids: Sequence[str] | None,
+    discover_current_items: bool,
+    batch_size: int = ITEM_DETAIL_BATCH_SIZE,
+) -> None:
+    if acquire_item_ids is None:
+        return
+    if (
+        isinstance(acquire_item_ids, (str, bytes))
+        or not 1 <= len(acquire_item_ids) <= 20
+        or not isinstance(seller_id, str)
+        or re.fullmatch(r"[0-9]+", seller_id) is None
+        or any(
+            not isinstance(identity, str) or re.fullmatch(r"ML[A-Z][0-9]+", identity) is None
+            for identity in acquire_item_ids
+        )
+        or len(set(acquire_item_ids)) != len(acquire_item_ids)
+        or item_ids is not None
+        or discover_current_items
+        or not 1 <= batch_size <= 20
+    ):
+        raise ValueError(
+            "item acquisition requires an exclusive, valid seller batch of 1 to 20 IDs"
+        )
+
+
 async def run_item_detail_enrichment(
     *,
     db: Any,
@@ -692,26 +730,40 @@ async def run_item_detail_enrichment(
     item_ids: Sequence[str] | None = None,
     discover_current_items: bool = False,
     inventory_gateway: MeliItemGatewayClient | None = None,
+    acquire_item_ids: Sequence[str] | None = None,
 ) -> ItemDetailEnrichmentSummary:
+    _validate_item_acquisition_scope(
+        seller_id=seller_id,
+        acquire_item_ids=acquire_item_ids,
+        item_ids=item_ids,
+        discover_current_items=discover_current_items,
+        batch_size=batch_size,
+    )
     if batch_size < 1:
         msg = "batch_size must be positive"
         raise ValueError(msg)
 
     if discover_current_items and (item_ids is not None or batch_size > 20):
         raise ValueError("item discovery requires unfiltered scope and batches of at most 20")
-    existing_items = await _load_seller_items(db=db, seller_id=seller_id, item_ids=item_ids)
+    existing_items = await _load_seller_items(
+        db=db,
+        seller_id=seller_id,
+        item_ids=acquire_item_ids if acquire_item_ids is not None else item_ids,
+        allow_missing=acquire_item_ids is not None,
+    )
     site_id = await _load_seller_site_id(db=db, seller_id=seller_id)
     existing_by_id = {_item_id(item): item for item in existing_items}
     new_item_ids: set[str] = set()
+    discovered = set(acquire_item_ids or ())
     if discover_current_items:
         discovered = await _discover_current_item_ids(
             inventory_gateway if inventory_gateway is not None else gateway, seller_id=seller_id
         )
         if len(discovered | existing_by_id.keys()) > 10000:
             raise ValueError("item discovery and known inventory exceed budget")
-        new_item_ids = discovered - existing_by_id.keys()
-        for item_id in sorted(new_item_ids):
-            existing_by_id[item_id] = {"_id": item_id, "seller_id": seller_id}
+    new_item_ids = discovered - existing_by_id.keys()
+    for item_id in sorted(new_item_ids):
+        existing_by_id[item_id] = {"_id": item_id, "seller_id": seller_id}
     item_ids = sorted(existing_by_id)
     synced_at = datetime.now(UTC)
     write_plans: list[tuple[dict[str, Any], dict[str, Any], bool, bool, bool]] = []
@@ -2377,7 +2429,11 @@ def _formula_row_listing_price_shipping_basis_fields(item: dict[str, Any]) -> di
 
 
 async def _load_seller_items(
-    *, db: Any, seller_id: str, item_ids: Sequence[str] | None = None
+    *,
+    db: Any,
+    seller_id: str,
+    item_ids: Sequence[str] | None = None,
+    allow_missing: bool = False,
 ) -> list[dict[str, Any]]:
     filter_spec: dict[str, Any] = {"seller_id": seller_id}
     normalized_item_ids = _unique_non_blank_strings(item_ids or ())
@@ -2385,7 +2441,7 @@ async def _load_seller_items(
         filter_spec["_id"] = {"$in": normalized_item_ids}
     cursor = db[ITEMS_COLLECTION].find(filter_spec).sort([("_id", 1)])
     items = cast("list[dict[str, Any]]", await cursor.to_list(length=None))
-    if normalized_item_ids:
+    if normalized_item_ids and not allow_missing:
         found_item_ids = {_item_id(item) for item in items}
         missing_count = sum(1 for item_id in normalized_item_ids if item_id not in found_item_ids)
         if missing_count:
@@ -4224,9 +4280,10 @@ async def _run_cli(args: argparse.Namespace) -> BackfillCliSummary:
                 dry_run=args.dry_run,
                 sale_price_enabled=bool(args.sale_price_enabled),
                 listing_fixed_fee_enabled=bool(args.listing_fixed_fee_enabled),
-                item_ids=item_ids,
+                item_ids=item_ids or None,
                 discover_current_items=bool(args.discover_current_items),
                 inventory_gateway=inventory_gateway,
+                acquire_item_ids=args.acquire_item_ids,
             )
         if args.source == "shipments-costs":
             from google.cloud import kms_v1
@@ -4275,6 +4332,18 @@ def _require_order_dates(args: argparse.Namespace) -> tuple[str, str]:
 
 
 def _validate_cli_safety(args: argparse.Namespace) -> None:
+    if args.acquire_item_ids is not None:
+        if args.source != "items-enrich":
+            raise SystemExit("item acquisition requires --source items-enrich")
+        try:
+            _validate_item_acquisition_scope(
+                seller_id=args.seller_id,
+                acquire_item_ids=args.acquire_item_ids,
+                item_ids=args.item_ids,
+                discover_current_items=args.discover_current_items,
+            )
+        except ValueError as exc:
+            raise SystemExit(str(exc)) from None
     if args.discover_current_items and (args.source != "items-enrich" or args.item_ids is not None):
         raise SystemExit("--discover-current-items requires unfiltered --source items-enrich")
     if (

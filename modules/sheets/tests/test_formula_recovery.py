@@ -89,9 +89,9 @@ async def test_item_enrichment_cannot_overwrite_newer_or_concurrent_state(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("discovery", [False, True])
+@pytest.mark.parametrize("mode", ["existing", "discover", "acquire"])
 async def test_item_enrichment_cli_uses_bootstrap_only_for_inventory(
-    monkeypatch: pytest.MonkeyPatch, discovery: bool
+    monkeypatch: pytest.MonkeyPatch, mode: str
 ) -> None:
     from google.cloud import kms_v1
     from motor import motor_asyncio
@@ -112,8 +112,10 @@ async def test_item_enrichment_cli_uses_bootstrap_only_for_inventory(
 
     async def enrich(**kwargs: Any) -> str:
         assert kwargs["gateway"] == "sheets"
-        assert kwargs["inventory_gateway"] == ("bootstrap" if discovery else None)
-        assert kwargs["discover_current_items"] is discovery
+        assert kwargs["inventory_gateway"] == ("bootstrap" if mode == "discover" else None)
+        assert kwargs["discover_current_items"] is (mode == "discover")
+        assert kwargs["item_ids"] is None
+        assert kwargs["acquire_item_ids"] == (["MLA1"] if mode == "acquire" else None)
         return "verified"
 
     monkeypatch.setenv("MONGO_URI", "mongodb://127.0.0.1:27028/unused_mock")
@@ -124,8 +126,10 @@ async def test_item_enrichment_cli_uses_bootstrap_only_for_inventory(
     monkeypatch.setattr(client_module, "MeliGatewayClient", lambda _, auth: auth)
     monkeypatch.setattr(backfill, "run_item_detail_enrichment", enrich)
     arguments = ["--seller-id", "82453304", "--source", "items-enrich"]
-    if discovery:
+    if mode == "discover":
         arguments.append("--discover-current-items")
+    elif mode == "acquire":
+        arguments.extend(["--acquire-item-id", "MLA1"])
     result: Any = await backfill._run_cli(backfill.build_arg_parser().parse_args(arguments))
     assert result == "verified"
 
@@ -184,9 +188,10 @@ async def test_item_discovery_requires_complete_bounded_scan(failure: str | None
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("acquire", [False, True])
 @pytest.mark.parametrize("scenario", ["write", "dry_run", "foreign_source", "concurrent"])
 async def test_item_discovery_enriches_new_items_and_preserves_unavailable_history(
-    recovery_db: Any, scenario: str
+    recovery_db: Any, scenario: str, acquire: bool
 ) -> None:
     from pymongo.errors import DuplicateKeyError
 
@@ -194,6 +199,9 @@ async def test_item_discovery_enriches_new_items_and_preserves_unavailable_histo
 
     old = {"_id": "MLA2", "seller_id": "82453304", "status": "closed"}
     await recovery_db.items.insert_one(old)
+    unrelated = {"_id": "MLA3", "seller_id": "82453304", "status": "paused"}
+    if acquire:
+        await recovery_db.items.insert_one(unrelated)
     calls: list[str] = []
 
     class Gateway:
@@ -239,7 +247,8 @@ async def test_item_discovery_enriches_new_items_and_preserves_unavailable_histo
             gateway=Gateway(),
             inventory_gateway=InventoryGateway(),
             seller_id="82453304",
-            discover_current_items=True,
+            discover_current_items=not acquire,
+            acquire_item_ids=["MLA2", "MLA1"] if acquire else None,
             dry_run=scenario == "dry_run",
         )
 
@@ -261,7 +270,117 @@ async def test_item_discovery_enriches_new_items_and_preserves_unavailable_histo
         assert new == {"_id": "MLA1", "seller_id": "other", "title": "must survive"}
     else:
         assert new is None
-    assert len(calls) == 2
+    assert len(calls) == (1 if acquire else 2)
+    if acquire:
+        assert await recovery_db.items.find_one({"_id": "MLA3"}) == unrelated
+    assert await recovery_db.sheets_read_model_freshness.count_documents({}) == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "options",
+    [
+        {"acquire_item_ids": []},
+        {"acquire_item_ids": ["MLA1"] * 2},
+        {"acquire_item_ids": [f"MLA{i}" for i in range(21)]},
+        {"acquire_item_ids": ["MLA１"]},
+        {"acquire_item_ids": ["MLA1/other"]},
+        {"acquire_item_ids": ["MLA1"], "discover_current_items": True},
+        {"acquire_item_ids": ["MLA1"], "item_ids": ["MLA1"]},
+        {"acquire_item_ids": ["MLA1"], "seller_id": "other"},
+        {"acquire_item_ids": ["MLA1"], "batch_size": 21},
+    ],
+)
+async def test_item_acquisition_scope_fails_before_storage_or_network(
+    options: dict[str, Any],
+) -> None:
+    from zeler_sheets.sheetseller_backfill import run_item_detail_enrichment
+
+    unavailable: Any = None
+    with pytest.raises(ValueError, match="item acquisition"):
+        await run_item_detail_enrichment(
+            db=unavailable, gateway=unavailable, **({"seller_id": "82453304"} | options)
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "extra",
+    [
+        [],
+        ["--source", "items-enrich", "--item-id", "MLA1"],
+        ["--source", "items-enrich", "--discover-current-items"],
+        ["--source", "items-enrich", "--acquire-item-id", "MLA1"],
+    ],
+)
+async def test_item_acquisition_cli_rejects_invalid_scope_before_connect(extra: list[str]) -> None:
+    from zeler_sheets.sheetseller_backfill import _run_cli, build_arg_parser
+
+    args = build_arg_parser().parse_args(
+        ["--seller-id", "82453304", "--acquire-item-id", "MLA1", *extra]
+    )
+    with pytest.raises(SystemExit, match="item acquisition"):
+        await _run_cli(args)
+
+
+@pytest.mark.asyncio
+async def test_item_acquisition_batches_retry_without_rewriting_completed_batch(
+    recovery_db: Any,
+) -> None:
+    from zeler_sheets.sheetseller_backfill import run_item_detail_enrichment
+
+    fail_second = True
+    calls = []
+
+    class Gateway:
+        async def fetch_resource(self, *, seller_id: str, path: str) -> Any:
+            calls.append(path)
+            identity = path.removeprefix("/items?ids=")
+            if identity == "MLA2" and fail_second:
+                raise RuntimeError("synthetic acquisition failure")
+            if identity == "MLA3":
+                return [{"code": 404, "body": {"id": identity}}]
+            return [
+                {
+                    "code": 200,
+                    "body": {
+                        "id": identity,
+                        "seller_id": seller_id,
+                        "title": "Synthetic",
+                        "price": 10,
+                        "base_price": 10,
+                        "category_id": "MLA123",
+                        "available_quantity": 2,
+                        "status": "active",
+                        "attributes": [],
+                        "variations": [],
+                        "date_created": "2026-09-01T00:00:00Z",
+                        "last_updated": "2026-09-07T00:00:00Z",
+                    },
+                }
+            ]
+
+    async def run(identity: str) -> Any:
+        return await run_item_detail_enrichment(
+            db=recovery_db,
+            gateway=Gateway(),
+            seller_id="82453304",
+            acquire_item_ids=[identity],
+            dry_run=False,
+        )
+
+    assert (await run("MLA1")).items_updated == 1
+    first = await recovery_db.items.find_one({"_id": "MLA1"})
+    with pytest.raises(RuntimeError, match="synthetic acquisition"):
+        await run("MLA2")
+    assert await recovery_db.items.count_documents({}) == 1
+    fail_second = False
+    assert (await run("MLA2")).items_updated == 1
+    absent = await run("MLA3")
+    assert absent.items_updated == 0 and absent.item_details_stale_unavailable == 1
+    assert await recovery_db.items.count_documents({}) == 2
+    assert await recovery_db.items.find_one({"_id": "MLA1"}) == first
+    assert calls == ["/items?ids=MLA1", "/items?ids=MLA2", "/items?ids=MLA2", "/items?ids=MLA3"]
     assert await recovery_db.sheets_read_model_freshness.count_documents({}) == 0
 
 

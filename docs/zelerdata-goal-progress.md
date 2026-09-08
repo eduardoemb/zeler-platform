@@ -1944,3 +1944,45 @@ retain their contract; other product deployments remain out of scope.
   before automatic inventory recovery; retain Mongo-only formula HTTP reads.
   Neither these builds nor the diagnostic replace the remaining authenticated
   52-formula, real-Sheet and current-app acceptance checks.
+
+## Bounded item acquisition after the full-inventory timeout
+
+- The routed productive dry run terminated with `TimeoutError` at **900.003s**:
+  6,032 attempted calls (19 scans, 76 detail batches, 824 variation lookups,
+  1,498 sale-price lookups, 2,996 listing-price lookups and 619 shipping-option
+  lookups). No item/projection writes or completeness markers were produced.
+  This is an incomplete acquisition, not proof that remaining data is absent.
+  Do not repeat that full workload unchanged or place it in a 240-second job.
+- `run_item_detail_enrichment(acquire_item_ids=...)` now accepts an explicit
+  batch of 1–20 known or missing IDs. The operator CLI exposes repeated
+  `--acquire-item-id` flags with `--source items-enrich`; dry-run remains default.
+  It does not scan the inventory. Empty, duplicate, malformed, oversized or
+  conflicting scopes fail before storage/network access. Only the selected
+  seller/IDs are loaded; the existing `--item-id` missing-ID rejection remains.
+- New items use the existing ownership/schema/enrichment checks and insert-only
+  persistence. Existing documents retain the full-preimage concurrency guard;
+  404s preserve history and never insert placeholders. No batch creates a
+  whole-inventory freshness proof. Acquisition completes before writes within
+  each batch, but writes remain per-document, not a batch transaction. Retry a
+  failed batch from fresh stored state; previously completed batches need not
+  be reacquired. This primitive does not itself persist a resumable job cursor,
+  implement automatic scheduling or publish projected rows.
+- Stricter CLI wiring tests also exposed the unfiltered discovery path passing
+  `[]` where the helper requires `None`. The CLI now passes `None` for omitted
+  filters. Therefore the verified `016e6bd` images above must not be deployed
+  as the finished discovery/acquisition solution; they remain undeployed.
+- Initial acquisition tests failed before implementation; strengthened CLI
+  tests reproduced the empty-filter defect. The focused recovery/backfill run
+  with dedicated local Mongo passed **301 tests in 24.25s**. It includes bounded
+  scope, new-item dry-run/write, foreign ownership, concurrent insert, unrelated
+  data preservation, 404 absence and retrying a failed batch without rewriting
+  a completed batch. Ruff check and mypy over 501 files passed.
+- Rollback removes the acquisition argument/CLI wiring, optional missing-ID
+  loader behavior and its tests; retain the independent empty-filter correction.
+  Never delete successfully normalized items on rollback. Both Sheets images
+  need verified builds for this executable snapshot, capacity/preflight-gated
+  rollout and pilot batch persistence/projection checks before runtime acceptance.
+- Final root run with the dedicated local replica set: **3770 passed, 9 skipped,
+  356 warnings in 85.56s**. Protected stock-time cases ran separately with
+  `ZELER_RS0_TEST_URI` and no ambient `MONGO_URI`: **8 passed in 2.48s**.
+  Final Ruff check/format, mypy (501 files) and whitespace checks passed.
