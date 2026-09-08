@@ -4128,3 +4128,44 @@ acceptance**. Continue polling the existing job; never repeat preparation:
 No executable changes were made in this deployment-only unit; preceding local
 tests and current CI support the deployed source. Current `main` will differ
 only by this evidence document, which does not require another image build.
+
+## Catalog acquisition includes variation products and fresh associations
+
+The existing historical/reconcile catalog acquisition now includes product IDs
+from both the publication and its variations. Product requests are deduplicated;
+a variation-only association does not create an item-level buybox request.
+Freshly fetched item associations replace stored associations for the same item,
+including an explicitly removed parent association. Previously the merge kept
+the Mongo association first, causing a changed live buybox identity to fail or
+an already removed association to be queried again.
+
+The source query remains seller-scoped and projects only item identity, parent
+product ID and variation product IDs. An association-free item is kept in the
+in-memory merge so fresh absence can replace stale selection. This does **not**
+delete existing catalog snapshots or certify whole-seller snapshot freshness.
+No schema, endpoint, queue or formula-call API traffic was added.
+
+Two initial acquisition regression cases failed in **0.29s**. After correction,
+the historical suite passed **54 tests in 0.28s**, covering fetched replacement,
+removal, stored variation-only products, deduplication, seller isolation and
+catalog snapshot persistence through the existing test harness. The fixtures
+use valid variation SKUs; no-SKU identity reconciliation remains covered by its
+separate Mongo suite. A real-Mongo projection test passed **1 test in 0.46s**
+(278 deselected), confirming dotted-field projection and seller scope without
+writing snapshots. Protected Mongo suite: **8 passed in 2.32s**. Ruff check/format
+and mypy (505 files) pass. Full local replica-set suite (`uv run pytest
+--tb=short`): **3,966 passed, 9 skipped, 356 warnings in 113.03s**. Eight skips
+are the protected Mongo cases run separately; the remaining skip is Caddy keys.
+
+Runtime acceptance is pending: historical acquisition is not the running
+formula-recovery worker's catalog implementation. Its callers are the existing
+historical CLI/reconcile path. Before using this correction in that runtime,
+build a verified Sheets image containing the change and verify normalized
+product persistence/readback. Do not run a broad historical backfill merely to
+deploy it. Catalog participation, complete current membership, field completeness,
+and automatic recovery still need implementation/verification.
+
+Rollback boundary: catalog source extraction/merge, variation-product selection
+and the matching tests in `historical_meli_backfill.py` and its test modules.
+No recovered production data should be deleted. This local unit does not change
+the running inventory job or the deployed refresh-age worker.

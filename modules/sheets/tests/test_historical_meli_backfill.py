@@ -1338,6 +1338,82 @@ async def test_catalog_invalid_identity_aborts_before_backfill_writes(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("parent_removed", [False, True])
+async def test_catalog_acquisition_includes_variations_and_prefers_fetched_associations(
+    parent_removed: bool,
+) -> None:
+    db = FakeDb()
+    db["items"].documents.update(
+        {
+            "MLA1": {
+                "_id": "MLA1",
+                "seller_id": "82453304",
+                "catalog_product_id": "OLD-PARENT",
+                "variations": [{"catalog_product_id": "OLD-VARIATION"}],
+            },
+            "MLA2": {
+                "_id": "MLA2",
+                "seller_id": "82453304",
+                "catalog_product_id": None,
+                "variations": [{"catalog_product_id": "VAR-STORED"}],
+            },
+            "MLA3": {
+                "_id": "MLA3",
+                "seller_id": "42",
+                "catalog_product_id": "FOREIGN",
+            },
+        }
+    )
+
+    class Gateway(FakeGateway):
+        async def fetch_resource(self, *, seller_id: str, path: str) -> Any:
+            response = await super().fetch_resource(seller_id=seller_id, path=path)
+            if path == "/items?ids=MLA1":
+                response[0]["body"]["catalog_product_id"] = None if parent_removed else "CAT-MLA1"
+                response[0]["body"]["variations"] = [
+                    {
+                        "id": identity,
+                        "catalog_product_id": "VAR-FRESH",
+                        "attributes": [{"id": "SELLER_SKU", "value_name": f"sku-{identity}"}],
+                    }
+                    for identity in (1, 2)
+                ]
+            return response
+
+    class CatalogGateway(FakeCatalogGateway):
+        async def fetch_resource(self, *, seller_id: str, path: str) -> Any:
+            if path.startswith("/products/"):
+                self.calls.append((seller_id, path))
+                return {**_catalog_product_detail(), "id": path.removeprefix("/products/")}
+            assert not parent_removed
+            return await super().fetch_resource(seller_id=seller_id, path=path)
+
+    catalog_gateway = CatalogGateway()
+    summary = await run_historical_meli_backfill(
+        db=db,
+        gateway=Gateway(),
+        order_detail_gateway=FakeOrderDetailGateway(),
+        catalog_gateway=catalog_gateway,
+        seller_id="82453304",
+        date_from="2026-05-01",
+        date_to="2026-05-01",
+        dry_run=False,
+        approved_runtime=True,
+        max_orders=1,
+        include_catalog_snapshots=True,
+    )
+    expected = {"VAR-FRESH", "VAR-STORED"} | (set() if parent_removed else {"CAT-MLA1"})
+    assert set(summary.catalog_product_ids) == expected
+    assert summary.written_catalog_product_snapshots == len(expected)
+    assert set(db["sheets_catalog_product_snapshots"].documents) == {
+        f"82453304:{identity}" for identity in expected
+    }
+    assert len(catalog_gateway.calls) == len(expected) + int(not parent_removed)
+    assert summary.written_catalog_buybox_snapshots == int(not parent_removed)
+    assert all(seller == "82453304" for seller, _ in catalog_gateway.calls)
+
+
+@pytest.mark.asyncio
 async def test_historical_backfill_reconciles_catalog_product_and_buybox_snapshots() -> None:
     db = FakeDb()
     gateway = FakeGateway()

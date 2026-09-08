@@ -189,7 +189,8 @@ class ShipmentFetchResult:
 @dataclass(frozen=True)
 class CatalogSnapshotSource:
     item_id: str
-    catalog_product_id: str
+    catalog_product_id: str | None
+    variation_catalog_product_ids: tuple[str, ...] = ()
 
 
 def parse_inclusive_date_range(date_from: str, date_to: str) -> InclusiveDateRange:
@@ -360,12 +361,16 @@ async def run_historical_meli_backfill(
         catalog_product_snapshots = await _fetch_catalog_product_snapshots(
             gateway=catalog_gateway,
             seller_id=seller_id,
-            catalog_product_ids=_unique_strings(row.catalog_product_id for row in catalog_scope),
+            catalog_product_ids=_unique_strings(
+                identity
+                for row in catalog_scope
+                for identity in (row.catalog_product_id, *row.variation_catalog_product_ids)
+            ),
         )
         catalog_buybox_snapshots = await _fetch_catalog_buybox_snapshots(
             gateway=catalog_gateway,
             seller_id=seller_id,
-            source_rows=catalog_scope,
+            source_rows=[row for row in catalog_scope if row.catalog_product_id is not None],
         )
     catalog_product_ids = _unique_strings(
         snapshot.get("catalog_product_id") for snapshot in catalog_product_snapshots
@@ -704,19 +709,12 @@ def _build_question_search_path(*, seller_id: str, offset: int) -> str:
 
 async def _catalog_snapshot_source_rows(*, db: Any, seller_id: str) -> list[CatalogSnapshotSource]:
     cursor = db["items"].find(
-        {
-            "seller_id": seller_id,
-            "catalog_product_id": {"$exists": True, "$ne": None},
-        },
-        {"_id": 1, "catalog_product_id": 1},
+        {"seller_id": seller_id},
+        {"_id": 1, "catalog_product_id": 1, "variations.catalog_product_id": 1},
     )
     rows: list[CatalogSnapshotSource] = []
     async for item in cursor:
-        item_id = _optional_string(item.get("_id") or item.get("id"))
-        catalog_product_id = _optional_string(item.get("catalog_product_id"))
-        if item_id is None or catalog_product_id is None:
-            continue
-        rows.append(CatalogSnapshotSource(item_id=item_id, catalog_product_id=catalog_product_id))
+        rows.extend(_catalog_snapshot_source_rows_from_resources([item]))
     return rows
 
 
@@ -727,9 +725,16 @@ def _catalog_snapshot_source_rows_from_resources(
     for resource in resources:
         item_id = _resource_id(resource)
         catalog_product_id = _optional_string(resource.get("catalog_product_id"))
-        if item_id is None or catalog_product_id is None:
+        if item_id is None:
             continue
-        rows.append(CatalogSnapshotSource(item_id=item_id, catalog_product_id=catalog_product_id))
+        variations = resource.get("variations")
+        variation_ids = _unique_strings(
+            variation.get("catalog_product_id")
+            for variation in (variations if isinstance(variations, list) else [])
+            if isinstance(variation, dict)
+        )
+        # Keep an empty association so fresh source data can remove a stored one.
+        rows.append(CatalogSnapshotSource(item_id, catalog_product_id, tuple(variation_ids)))
     return rows
 
 
@@ -739,7 +744,7 @@ def _merge_catalog_snapshot_sources(
     by_item_id: dict[str, CatalogSnapshotSource] = {}
     for group in groups:
         for row in group:
-            by_item_id.setdefault(row.item_id, row)
+            by_item_id[row.item_id] = row
     return list(by_item_id.values())
 
 

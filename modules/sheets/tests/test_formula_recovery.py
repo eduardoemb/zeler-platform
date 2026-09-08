@@ -31,6 +31,40 @@ def test_runtime_recovery_seller_list_is_explicit_and_validated() -> None:
 
 
 @pytest.mark.asyncio
+async def test_catalog_source_projection_retains_variation_only_products_in_mongo(
+    recovery_db: Any,
+) -> None:
+    from zeler_sheets.historical_meli_backfill import (
+        CatalogSnapshotSource,
+        _catalog_snapshot_source_rows,
+    )
+
+    await recovery_db.items.insert_many(
+        [
+            {
+                "_id": "MLA1",
+                "seller_id": "82453304",
+                "catalog_product_id": None,
+                "variations": [
+                    {"id": 1, "catalog_product_id": "MLA10", "attributes": []},
+                    {"id": 2, "catalog_product_id": "MLA10"},
+                    {"id": 3, "catalog_product_id": "MLA11"},
+                ],
+            },
+            {"_id": "MLA2", "seller_id": "82453304"},
+            {"_id": "MLA3", "seller_id": "42", "catalog_product_id": "MLA12"},
+        ]
+    )
+    rows = await _catalog_snapshot_source_rows(db=recovery_db, seller_id="82453304")
+    assert set(rows) == {
+        CatalogSnapshotSource("MLA1", None, ("MLA10", "MLA11")),
+        CatalogSnapshotSource("MLA2", None),
+    }
+    assert await recovery_db.items.count_documents({}) == 3
+    assert await recovery_db.sheets_catalog_product_snapshots.count_documents({}) == 0
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("outcome", ["success", "rate_limit", "cancel"])
 async def test_item_recovery_bounds_concurrency_and_joins_all_acquisition_tasks(
     recovery_db: Any, monkeypatch: pytest.MonkeyPatch, outcome: str
