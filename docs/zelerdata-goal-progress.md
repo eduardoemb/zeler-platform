@@ -4084,3 +4084,47 @@ remain outstanding.
 Rollback boundary: the successful-inventory `available_at` calculation in
 `formulas/recovery.py`, its focused test and the matching formula-readiness
 documentation. Do not alter existing acquisition timestamps or recovered data.
+
+### Refresh-age worker deployed; live inventory in progress
+
+Source `a607932456a25b27b6f7d1871f3d4bf523260925` is deployed to Sheets worker
+as digest `65a8dcffe3ae125b94c3b50092af3e5fa08abd88921b8fe8ddc8b512940dc623`.
+Cloud Build `8ed7388d-cef9-4cb5-af7c-1bde7413af59` succeeded; canonical provenance
+checks passed locally and on the VM. CI test `34260903817` and lint
+`34260903789` passed before activation. Worker HTTP health is **200**, with
+zero restarts. API remains source `29c3832`, digest `c679a81b...`; no API change
+is needed for the inventory checkpoint calculation.
+
+Capacity checks protected both services' current/rollback images. The unused
+local API image `02b4788b...` was removed only after all-container checks and
+Artifact Registry recoverability confirmation; no volumes or data were removed.
+Worker pull took **12.63s** and did not change Compose. After activation,
+free space was **5,404,864,512 bytes**, so another pull still needs a fresh
+capacity check. Worker rollback is retained digest
+`791e9c90eb9871b1e7573a429e013035ee8a279e064383a4fe77fd1030dfaea7`;
+backup: `/opt/zeler-platform/docker-compose.yml.pre-sheets-worker-activate-a607932`.
+
+One normal inventory recovery was admitted from the deployed calculator's
+unavailable result. No timestamps were retimed and no global freshness marker
+was written. Initial reads honestly reported all 1,900 publications unavailable
+under their expired receipts. At **29.04s** after receipt selection, the worker
+was running at **60 / 1,900**, with zero exhausted/unavailable IDs and unchanged
+global markers. Membership observation age was **21.24s**; both calculator and
+quality reads showed current membership but incomplete rows. Their independently
+timed reads straddled worker checkpoints and must not be treated as one atomic
+row-count snapshot.
+
+This is an in-progress checkpoint, **not terminal eligibility or whole-inventory
+acceptance**. Continue polling the existing job; never repeat preparation:
+
+- Job: `5f2485d573679264481950cce24b1373d2eb93f11c1f79ea2aca606b92d20a8f`.
+- Receipt: `/var/lib/zeler-platform/repairs/inventory-refresh-age-a607932.json`.
+- Artifacts: `/tmp/zeler-refresh-age.uYUpMd/` (local and VM).
+- Read-only check: `sudo python3 /tmp/zeler-refresh-age.uYUpMd/pilot.py status`
+  on the VM. At successful completion, require
+  `successful_eligibility_matches_observation: true`, then verify formula values,
+  freshness and any recoverable field gaps separately.
+
+No executable changes were made in this deployment-only unit; preceding local
+tests and current CI support the deployed source. Current `main` will differ
+only by this evidence document, which does not require another image build.
