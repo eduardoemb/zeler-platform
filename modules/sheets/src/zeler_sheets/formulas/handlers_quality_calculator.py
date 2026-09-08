@@ -78,6 +78,7 @@ class QualityCalculatorFormulaHandlers:
     ) -> FormulaExecutionResult:
         requested_item_ids = _normalize_optional_item_ids(context.args.get("id_publicaciones"))
         now = _as_utc_datetime(self._now_fn())
+        unavailable_items: tuple[str, ...] = ()
         try:
             await self._repository.require_read_model_productive(
                 seller_id=context.seller_id,
@@ -89,7 +90,7 @@ class QualityCalculatorFormulaHandlers:
         except FormulaDataUnavailableError:
             if not requested_item_ids:
                 raise
-            rows = await self._repository.find_recent_item_formula_rows(
+            rows, unavailable_items = await self._repository.find_recent_item_formula_rows(
                 seller_id=context.seller_id,
                 item_ids=requested_item_ids,
                 formula=context.contract.name,
@@ -102,6 +103,11 @@ class QualityCalculatorFormulaHandlers:
                 limit=None,
                 sort_by="publication",
             )
+            if requested_item_ids:
+                represented = {str(row["item_id"]) for row in rows}
+                unavailable_items = tuple(
+                    item_id for item_id in requested_item_ids if item_id not in represented
+                )
         values: list[list[Any]] = _header_row(context.args.get("encabezados"), CALCULADORA_HEADERS)
         header_rows = len(values)
         missing_count = 0
@@ -120,7 +126,7 @@ class QualityCalculatorFormulaHandlers:
                 if not current_rows:
                     missing_count += 1
                     rows_count += 1
-                    values.append([item_id, *[NA_VALUE for _ in CALCULADORA_HEADERS[1:]]])
+                    values.append([item_id, *["DATA_UNAVAILABLE" for _ in CALCULADORA_HEADERS[1:]]])
                     continue
                 for row in current_rows:
                     rows_count += 1
@@ -135,7 +141,25 @@ class QualityCalculatorFormulaHandlers:
                 "partial_misses": missing_count,
                 "rows_count": rows_count,
                 "columns": "modern_cost_projection",
+                **(
+                    {
+                        "unavailable_items": list(unavailable_items),
+                        "unavailable_reason": "missing_incomplete_or_stale_projection",
+                    }
+                    if unavailable_items
+                    else {}
+                ),
             },
+            recovery=(
+                FormulaDataUnavailableError(
+                    context.contract.name,
+                    "Selected publications are missing, incomplete or stale.",
+                    read_model=ITEM_FORMULA_ROWS_READ_MODEL,
+                    item_ids=unavailable_items,
+                )
+                if unavailable_items
+                else None
+            ),
         )
 
 

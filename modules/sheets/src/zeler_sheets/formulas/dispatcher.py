@@ -25,6 +25,7 @@ class FormulaExecutionContext:
 class FormulaExecutionResult:
     values: list[list[Any]]
     meta: dict[str, Any]
+    recovery: FormulaDataUnavailableError | None = None
 
 
 class FormulaDataUnavailableError(Exception):

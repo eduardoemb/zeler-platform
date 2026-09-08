@@ -30,6 +30,59 @@ class FakeUpdateResult:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("admission_fails", [False, True])
+async def test_partial_formula_keeps_values_and_schedules_only_missing_items(
+    admission_fails: bool,
+) -> None:
+    from zeler_sheets.formulas.dispatcher import FormulaDataUnavailableError
+    from zeler_sheets.formulas.recovery import ItemIdsRecoveryRequest
+
+    async def handler(context: Any) -> FormulaExecutionResult:
+        return FormulaExecutionResult(
+            values=[["MLA1", 100], ["MLA2", "DATA_UNAVAILABLE"]],
+            meta={"partial_misses": 1},
+            recovery=FormulaDataUnavailableError(
+                context.contract.name, read_model="item_formula_rows", item_ids=("MLA2",)
+            ),
+        )
+
+    app, _db, token = await _app_with_token(
+        now=datetime(2026, 5, 13, 12, tzinfo=UTC), formula_dispatcher=handler
+    )
+    queued: list[ItemIdsRecoveryRequest] = []
+
+    class Queue:
+        async def enqueue(self, request: ItemIdsRecoveryRequest) -> str:
+            queued.append(request)
+            if admission_fails:
+                raise ValueError("capacity reached")
+            return request.key
+
+    app.state.formula_recovery_queue = Queue()
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.post(
+            "/sheets/formulas:execute",
+            json={
+                "formula": "ZELERDATA_CALCULADORA",
+                "cuenta": "HOPEMOB",
+                "args": {"id_publicaciones": ["MLA1", "MLA2"]},
+            },
+            headers={"Authorization": f"Bearer {token}"},
+        )
+    assert response.status_code == 200
+    assert response.json() == {
+        "ok": True,
+        "values": [["MLA1", 100], ["MLA2", "DATA_UNAVAILABLE"]],
+        "meta": {"partial_misses": 1, "recovery_requested": not admission_fails},
+    }
+    assert len(queued) == 1
+    assert queued[0].seller_id == "123456789"
+    assert queued[0].item_ids == ("MLA2",)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("endpoint", ["execute", "batch"])
 async def test_formula_deadline_cancels_work_before_sheets_limit(
     monkeypatch: pytest.MonkeyPatch, endpoint: str

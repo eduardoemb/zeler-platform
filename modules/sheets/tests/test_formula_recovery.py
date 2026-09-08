@@ -135,7 +135,19 @@ async def test_calculator_recovers_through_real_worker_and_source_bound_projecti
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "invalid", [None, "expired", "future", "missing_row", "changed_source", "missing_receipt"]
+    "invalid",
+    [
+        None,
+        "expired",
+        "future",
+        "missing_row",
+        "changed_source",
+        "missing_receipt",
+        "mixed_selection",
+        "mixed_stale",
+        "mixed_foreign",
+        "mixed_incomplete",
+    ],
 )
 async def test_selected_calculator_reads_complete_recent_projection_without_inventory_marker(
     recovery_db: Any, invalid: str | None
@@ -198,6 +210,21 @@ async def test_selected_calculator_reads_complete_recent_projection_without_inve
         await recovery_db.sheets_item_formula_rows.update_many(
             scope, {"$unset": {"source_snapshot": ""}}
         )
+    if invalid in {"mixed_stale", "mixed_foreign", "mixed_incomplete"}:
+        second = await recovery_db.items.find_one({"_id": "MLA1"})
+        second["_id"] = "MLA2"
+        if invalid == "mixed_stale":
+            second["last_meli_sync_at"] = now - timedelta(minutes=16)
+        if invalid == "mixed_foreign":
+            second["seller_id"] = "42"
+        await recovery_db.items.insert_one(second)
+        await run_sheetseller_backfill(
+            db=recovery_db, seller_id=second["seller_id"], item_ids=("MLA2",), dry_run=False
+        )
+        if invalid == "mixed_incomplete":
+            await recovery_db.sheets_item_formula_rows.delete_one(
+                {"seller_id": "82453304", "item_id": "MLA2"}
+            )
     handlers = build_quality_calculator_formula_handlers(
         FormulaReadModelRepository(db=recovery_db), now_fn=lambda: now
     )
@@ -210,7 +237,26 @@ async def test_selected_calculator_reads_complete_recent_projection_without_inve
         request_id=None,
         args={"id_publicaciones": ["MLA1"], "encabezados": False},
     )
-    if invalid:
+    if invalid and invalid.startswith("mixed_"):
+        context = FormulaExecutionContext(
+            contract=context.contract,
+            cuenta=context.cuenta,
+            seller_id=context.seller_id,
+            seller_nickname="",
+            token_id="",
+            request_id=None,
+            args={"id_publicaciones": ["MLA2", "MLA1"], "encabezados": False},
+        )
+        result = await FormulaDispatcher(handlers).execute(context)
+        assert len(result.values) == 3
+        assert result.values[0] == ["MLA2", *["DATA_UNAVAILABLE"] * 14]
+        assert [row[4] for row in result.values[1:]] == [100, 100]
+        assert result.meta["partial_misses"] == 1
+        assert result.meta["unavailable_items"] == ["MLA2"]
+        assert result.meta["unavailable_reason"] == "missing_incomplete_or_stale_projection"
+        assert result.recovery is not None
+        assert result.recovery.item_ids == ("MLA2",)
+    elif invalid:
         with pytest.raises(FormulaDataUnavailableError) as error:
             await FormulaDispatcher(handlers).execute(context)
         assert error.value.item_ids == ("MLA1",)

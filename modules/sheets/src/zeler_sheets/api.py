@@ -654,10 +654,15 @@ async def _execute_formula_payload(
             retryable=True,
         )
 
+    meta = dict(result.meta)
+    if result.recovery is not None:
+        meta["recovery_requested"] = await _request_formula_recovery(
+            request, context, result.recovery
+        )
     return {
         "ok": True,
         "values": _formula_json_safe(result.values),
-        "meta": _formula_json_safe(result.meta),
+        "meta": _formula_json_safe(meta),
     }, 200
 
 

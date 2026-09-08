@@ -2740,3 +2740,42 @@ retain their contract; other product deployments remain out of scope.
   requires recovering capacity first. No further build is required for this
   source: both affected images match it. This evidence-only update changes no
   runtime implementation and does not itself require rebuilding either image.
+
+## Mixed calculator selections retain verified publications
+
+- CALCULADORA no longer discards every verified publication when another
+  selected publication lacks a trustworthy projection. The source-bound reader
+  returns only complete, recent, seller-owned publication groups and separately
+  identifies unavailable IDs. It still rejects an entirely unavailable selection
+  or an exceeded query budget; it never returns surviving rows from an incomplete
+  variation group as a complete publication.
+- Missing selected publications produce their ID plus DATA_UNAVAILABLE cells,
+  not NA. Metadata reports the missing IDs and the explicit
+  `missing_incomplete_or_stale_projection` reason. The same missing-publication
+  representation applies to the existing inventory-marker read path. This does
+  not migrate that path's freshness proof or add whole-inventory recovery.
+- An optional internal recovery instruction accompanies the result. The API
+  uses the existing bounded queue admission with the authenticated seller and
+  only unavailable IDs, then retains the matrix even if admission fails.
+  `recovery_requested` reports the admission outcome. No inline MercadoLibre
+  request or worker wait was added. Apps Script's existing envelope reader
+  returns the matrix unchanged; no new frontend or add-on mechanism is needed.
+- The initial mixed-selection test failed with the previous whole-selection
+  exception. Authenticated ASGI tests also failed before the result/admission
+  path existed (after correcting their missing required request argument).
+  Real-Mongo cases now retain two verified variations while excluding an absent,
+  expired, foreign-seller or incomplete second publication. ASGI checks use a
+  controlled dispatcher/queue and prove retained values for successful and
+  rejected admission, with the authenticated seller scope. These are local
+  boundary tests, not productive HTTP or live Google Sheet acceptance.
+- Focused calculator/recovery/API suites: **267 passed in 32.73s**. Protected
+  integration: **8 passed in 2.96s**. Ruff check/format, mypy (503 files), and
+  whitespace checks pass. A root attempt with `PYTHONMALLOC=malloc` crashed in
+  pytest collection; it is not a pass. The subsequent normal-allocator root run
+  passed **3,850 tests, 9 skipped, 356 warnings in 96.68s** with the dedicated
+  local replica-set URI. This does not establish the interpreter crash's cause.
+- Rollback removes the partial-result/admission changes and associated tests/docs
+  together; it needs no Mongo schema or data rollback. No production mutation
+  occurred in this unit. Sheets API needs a new verified image and mixed-selection
+  runtime verification; the already deployed worker supports explicit-ID jobs.
+  Before any pull, recover the previously observed disk margin and recheck it.

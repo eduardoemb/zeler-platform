@@ -143,7 +143,7 @@ class FormulaReadModelRepository:
 
     async def find_recent_item_formula_rows(
         self, *, seller_id: str, item_ids: list[str], formula: str, now: datetime
-    ) -> list[dict[str, Any]]:
+    ) -> tuple[list[dict[str, Any]], tuple[str, ...]]:
         requested = set(item_ids)
         rows = await self.find_item_formula_rows(
             seller_id=seller_id, item_ids=item_ids, limit=10001, sort_by="publication"
@@ -180,14 +180,15 @@ class FormulaReadModelRepository:
                 for row in group
             ):
                 missing.append(identity)
-        if missing or len(rows) > 10000 or len(sources) > 10000:
+        if len(rows) > 10000 or len(sources) > 10000 or len(missing) == len(requested):
             raise FormulaDataUnavailableError(
                 formula,
                 "Selected item_formula_rows are missing, incomplete or not recently acquired.",
                 read_model=ITEM_FORMULA_ROWS_READ_MODEL,
-                item_ids=tuple(missing or sorted(requested)),
+                item_ids=tuple(sorted(requested)),
             )
-        return rows
+        unavailable = set(missing)
+        return [row for row in rows if str(row["item_id"]) not in unavailable], tuple(missing)
 
     async def find_orders(
         self,

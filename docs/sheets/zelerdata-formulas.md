@@ -71,6 +71,18 @@ ZelerData formulas are Google Sheets custom functions backed by the zeler-platfo
 
 These formulas are supported only after their read-model freshness markers prove the requested seller scope. When the required marker is missing, stale, failed, partial, or outside the requested range, the Formula API returns `DATA_UNAVAILABLE` instead of guessing values.
 
+For CALCULADORA with explicit publication IDs, an unavailable inventory marker
+can instead be satisfied per publication by a complete source-bound projection
+acquired within 15 minutes. A mixed selection keeps those verified publications
+and emits an ID plus `DATA_UNAVAILABLE` cells for each unavailable publication;
+it never serves the surviving fragment of an incomplete variation set. Response
+metadata identifies `unavailable_items`, `unavailable_reason`, and
+`partial_misses`. The API requests asynchronous recovery only for the missing
+IDs and reports `recovery_requested`; failed admission does not discard valid
+rows. Missing publications are not optional fields and must not become `NA`.
+If no selected publication is verified, the existing formula-level unavailable
+response remains. Whole-inventory requests still need inventory readiness proof.
+
 To inspect which markers actually prove a seller scope, run the read-only status command from the approved runtime:
 
 ```bash

@@ -467,27 +467,18 @@ async def test_calculadora_projects_costs_from_local_fee_shipping_and_catalog_da
         ],
         [
             "MLA-X",
-            "NA",
-            "NA",
-            "NA",
-            "NA",
-            "NA",
-            "NA",
-            "NA",
-            "NA",
-            "NA",
-            "NA",
-            "NA",
-            "NA",
-            "NA",
-            "NA",
+            *["DATA_UNAVAILABLE"] * 14,
         ],
     ]
     assert result.meta == {
         "partial_misses": 1,
         "rows_count": 3,
         "columns": "modern_cost_projection",
+        "unavailable_items": ["MLA-X"],
+        "unavailable_reason": "missing_incomplete_or_stale_projection",
     }
+    assert result.recovery is not None
+    assert result.recovery.item_ids == ("MLA-X",)
 
 
 @pytest.mark.asyncio
