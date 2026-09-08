@@ -21,7 +21,59 @@ Keep unrelated `.codegraph/` files untouched in both repositories.
 Pilot: seller `82453304`; initial historical window 2026-08-08 through
 2026-09-06, plus current snapshots. Other products are out of scope.
 
-## Inventory failure and bounded acquisition retry — 2026-09-08 (not deployed)
+## Acquisition retry and shared-count rollout — 2026-09-08
+
+Both Sheets services now run source `c90a9410e0b19ede3919160d6f41c34a7179492f`,
+including the shared-user count fix and bounded item-acquisition retry below.
+Each image was built separately from the exact pushed connected-repository
+commit with requested verification, and digest/build/source provenance passed
+locally and in the VM canonical map. CI test `34278851008` and lint
+`34278851027` both succeeded before activation.
+
+| Service | Successful Cloud Build | Deployed digest |
+| --- | --- | --- |
+| sheets-worker | `3bfb2c2c-0da4-4ac2-ae20-7361d1d83ab0` | `sha256:443691ebbe7fc488a1a7fb34d57a0e98e0628249864a02b5948f82738c62bf03` |
+| sheets-api | `c3daad42-1057-49f6-9504-d4a123c7edaa` | `sha256:1702d8adc804f8b10a31eeb7b96e3e1d9964f94e5609643e74e8b6545036b391` |
+
+The additive `competitors_sharing_first_place` validator was applied first to
+`sheets_catalog_buybox_snapshots` only. The guard confirmed the previous strict,
+error-action validator differed solely by that property; readback matched the
+expected schema. No business documents were modified by the schema operation.
+
+Worker then API were replaced independently with exact Compose substitutions,
+zero running recovery jobs at the gates, no dependency restarts, preflight and
+the 5 GiB floor. Both passed HTTP health 200 with zero restarts. Pulls took
+17.18s and 12.14s; post-activation free space was 5,911,506,944 bytes. Current
+rollback images remain worker
+`sha256:5d27006e97150292a3d5bdda1e3bf5fca596fc06cfd8a58f6186d25d4141ab65`
+and API `sha256:542a54066589ef4417c29d33ce552d5f22eddcbb32c62a0adf31c8861be7aa27`.
+Compose backups end in `.pre-sheets-worker-activate-c90a941` and
+`.pre-sheets-api-activate-c90a941`; reverse only the affected service.
+
+Three unused image copies were removed from local cache after confirming exact
+Artifact Registry availability and no running/stopped container references:
+worker `sha256:65a8dcffe3ae125b94c3b50092af3e5fa08abd88921b8fe8ddc8b512940dc623`,
+API `sha256:c679a81b7ad3e0b026f8b4a8a4e1ff5bddc1387bcccbf59fc31cb808f70ab56c`,
+and worker `sha256:5e6a0bae160b005a34efc0f7894de078b442ef99b63b8b0da7734a2ca6a43a18`.
+No volumes, business data or other services were removed; current/prior rollback
+images were retained. Artifacts: `/tmp/zeler-catalog-retry.UAUPVJ/` locally and
+on the VM, including schema guards, builds, provenance, pull/activation scripts
+and sanitized acquisition probes.
+
+One new genuine inventory acquisition was admitted through the normal queue
+after the previous terminal failure, without overriding cooldown or freshness.
+It reuses job `5f2485d573679264481950cce24b1373d2eb93f11c1f79ea2aca606b92d20a8f`.
+Initially pending/attempt zero with no new offset, it still carried old IDs and
+the old failure reason; these are not new coverage or a new failed attempt.
+Protected receipt: `/var/lib/zeler-platform/repairs/catalog-inventory-c90a941.json`.
+`inventory.py prepare` succeeded once. Observe the same job with `status` and
+the already-started one-shot `watch-products.py`; never repeat prepare or start
+another watcher while that observation is live. Its protected receipt ends in
+`catalog-product-admission-c90a941.json`. Product admission occurs only after a
+completed, still-current inventory through the normal helper. The full catalog,
+production authenticated formula smoke and real Sheet remain unproven.
+
+## Inventory failure and bounded acquisition retry — 2026-09-08
 
 The second genuine inventory acquisition on worker `f4fee30` stopped at
 1,460/1,900, attempt one, with `failure_reason=recovery_failed` and zero items
@@ -63,7 +115,7 @@ production acquisition; this code fix does not prove the unknown original error
 cannot recur. The earlier shared-count change still also requires its additive
 buybox validator and an API rebuild.
 
-## Catalog shared-user count — 2026-09-08 (not deployed)
+## Catalog shared-user count — 2026-09-08
 
 `CATALOGO` now reads `competitors_sharing_first_place` for its existing shared-user
 column, without substituting total competitors or an undocumented alias. The
