@@ -139,8 +139,9 @@ async def test_buybox_acquires_offer_count_without_inventing_sole_competitor(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("mutation", ["association", "expired", "future", "foreign", "partial"])
+@pytest.mark.parametrize("formula", ["ZELERDATA_CATALOGOBUYBOX", "ZELERDATA_CATALOGO"])
 async def test_buybox_http_recovers_current_membership_then_reuses_mongo(
-    recovery_db: Any, mutation: str
+    recovery_db: Any, mutation: str, formula: str
 ) -> None:
     import httpx
 
@@ -152,6 +153,18 @@ async def test_buybox_http_recovers_current_membership_then_reuses_mongo(
 
     now = datetime.now(UTC)
     seller = "82453304"
+    catalog = formula == "ZELERDATA_CATALOGO"
+    if catalog:
+        await recovery_db.sheets_read_model_freshness.insert_one(
+            {
+                "_id": f"{seller}:orders",
+                "seller_id": seller,
+                "read_model": "orders",
+                "state": "fresh",
+                "reconciled_until": now + timedelta(days=1),
+                "last_event_synced_at": now + timedelta(days=1),
+            }
+        )
     await recovery_db.items.insert_many(
         [
             {
@@ -216,7 +229,7 @@ async def test_buybox_http_recovers_current_membership_then_reuses_mongo(
             }
 
     payload = {
-        "formula": "ZELERDATA_CATALOGOBUYBOX",
+        "formula": formula,
         "cuenta": "PILOT",
         "args": {"encabezados": False},
     }
@@ -227,17 +240,27 @@ async def test_buybox_http_recovers_current_membership_then_reuses_mongo(
         first = await client.post("/sheets/formulas:execute", headers=headers, json=payload)
         assert first.status_code == 200
         assert first.json()["meta"]["recovery_requested"] is True
-        assert first.json()["values"] == [["DATA_UNAVAILABLE"] * 9]
+        if catalog:
+            assert first.json()["values"][0][2] == "MLA1"
+            assert first.json()["values"][0][23] == "DATA_UNAVAILABLE"
+        else:
+            assert first.json()["values"] == [["DATA_UNAVAILABLE"] * 9]
         assert calls == []
         assert await FormulaRecoveryWorker(
             db=recovery_db, queue=queue, gateway=Gateway()
         ).process_one()
         for _ in range(2):
             ready = await client.post("/sheets/formulas:execute", headers=headers, json=payload)
-            assert ready.json()["values"] == [
-                ["Publication", "MLA1", "MLA9", 0, "winning", 120, 119, 0, False]
-            ]
-            assert ready.json()["meta"]["buybox_complete"] is True
+            if catalog:
+                assert len(ready.json()["values"]) == 1
+                assert ready.json()["values"][0][2] == "MLA1"
+                assert ready.json()["values"][0][21:24] == [0, "NA", False]
+                assert ready.json()["meta"]["unavailable_buybox_items"] == 0
+            else:
+                assert ready.json()["values"] == [
+                    ["Publication", "MLA1", "MLA9", 0, "winning", 120, 119, 0, False]
+                ]
+                assert ready.json()["meta"]["buybox_complete"] is True
             assert "recovery_requested" not in ready.json()["meta"]
         assert len(calls) == 2
         if mutation == "association":
@@ -255,13 +278,14 @@ async def test_buybox_http_recovers_current_membership_then_reuses_mongo(
                 {"_id": f"{seller}:MLA1"}, {"$set": changed_fields}
             )
         changed = await client.post("/sheets/formulas:execute", headers=headers, json=payload)
-        assert changed.json()["meta"]["buybox_complete"] is False
+        if not catalog:
+            assert changed.json()["meta"]["buybox_complete"] is False
         assert changed.json()["meta"]["unavailable_reason"] == (
             "inventory_incomplete"
             if mutation == "association"
             else "buybox_missing_expired_or_incomplete"
         )
-        if mutation == "partial":
+        if mutation == "partial" and not catalog:
             assert changed.json()["values"][0] == [
                 "Publication",
                 "MLA1",

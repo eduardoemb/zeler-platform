@@ -9,6 +9,7 @@ from bson.decimal128 import Decimal128
 
 from zeler_sheets.formulas.catalog_values import catalog_shared_users
 from zeler_sheets.formulas.dispatcher import (
+    FormulaDataUnavailableError,
     FormulaExecutionContext,
     FormulaExecutionResult,
     FormulaHandler,
@@ -149,17 +150,17 @@ class RemainingPhase4FormulaHandlers:
         self, context: FormulaExecutionContext
     ) -> FormulaExecutionResult:
         now = _as_utc_datetime(self._now_fn())
-        await self._repository.require_read_model_productive(
-            seller_id=context.seller_id,
-            read_model=CATALOG_BUYBOX_SNAPSHOTS_READ_MODEL,
-            date_to=now,
-            formula=context.contract.name,
+        inventory = await self._repository.find_recent_item_inventory(
+            seller_id=context.seller_id, formula=context.contract.name, now=now
         )
-        await self._repository.require_read_model_productive(
-            seller_id=context.seller_id,
-            read_model=ITEM_FORMULA_ROWS_READ_MODEL,
-            date_to=now,
-            formula=context.contract.name,
+        rows, _, missing_rows, rows_current = inventory
+        (
+            buybox_rows,
+            missing_buybox,
+            missing_items,
+            current,
+        ) = await self._repository.find_recent_catalog_buybox_inventory(
+            seller_id=context.seller_id, formula=context.contract.name, now=now, inventory=inventory
         )
         await self._repository.require_read_model_productive(
             seller_id=context.seller_id,
@@ -167,21 +168,11 @@ class RemainingPhase4FormulaHandlers:
             date_to=now,
             formula=context.contract.name,
         )
-        rows = await self._repository.find_item_formula_rows(
-            seller_id=context.seller_id,
-            limit=None,
-            sort_by="publication",
-        )
-        catalog_rows = [
-            row for row in rows if _non_blank(_current_mapping(row).get("catalog_product_id"))
-        ]
-        buybox_rows = await self._repository.find_catalog_buybox_snapshots(
-            seller_id=context.seller_id,
-            limit=None,
-        )
         buybox_by_item_id = {
             str(row.get("item_id") or "").strip(): row for row in buybox_rows if row.get("item_id")
         }
+        participating = set(buybox_by_item_id) | set(missing_buybox)
+        catalog_rows = [row for row in rows if row.get("item_id") in participating]
         orders = await self._repository.find_orders(
             seller_id=context.seller_id,
             date_from=now - timedelta(days=max(CATALOGO_SALES_WINDOWS)),
@@ -201,15 +192,42 @@ class RemainingPhase4FormulaHandlers:
             for row in catalog_rows
         )
         unavailable_shared = sum(row[21] == "DATA_UNAVAILABLE" for row in values[header_rows:])
+        recoverable = set(missing_buybox)
+        for source, value in zip(catalog_rows, values[header_rows:], strict=True):
+            if value[21] == "DATA_UNAVAILABLE" or value[23] == "DATA_UNAVAILABLE":
+                recoverable.add(str(source["item_id"]))
+        invalid_items = tuple(sorted(set(missing_items) | set(missing_rows)))
+        inventory_gap = not current or not rows_current or bool(invalid_items)
+        if inventory_gap:
+            values.append(["DATA_UNAVAILABLE"] * len(CATALOGO_HEADERS))
+        recovery = None
+        if inventory_gap or recoverable:
+            recovery = FormulaDataUnavailableError(
+                context.contract.name,
+                "Catalog inventory or competition is incomplete.",
+                read_model=ITEM_FORMULA_ROWS_READ_MODEL
+                if inventory_gap
+                else CATALOG_BUYBOX_SNAPSHOTS_READ_MODEL,
+                item_ids=(invalid_items if current and rows_current else ())
+                if inventory_gap
+                else tuple(sorted(recoverable)),
+            )
         return FormulaExecutionResult(
             values=normalize_response_rows(values, header_rows=header_rows),
+            recovery=recovery,
             meta={
-                "rows_count": len(catalog_rows),
+                "rows_count": len(catalog_rows) + int(inventory_gap),
                 "columns": "legacy_catalog_matrix",
                 "unavailable_shared_users": unavailable_shared,
+                "inventory_enumeration_current": current and rows_current,
+                "unavailable_buybox_items": len(recoverable),
                 **(
-                    {"unavailable_reason": "catalog_shared_users_not_acquired"}
-                    if unavailable_shared
+                    {
+                        "unavailable_reason": "inventory_incomplete"
+                        if inventory_gap
+                        else "buybox_missing_expired_or_incomplete"
+                    }
+                    if recovery
                     else {}
                 ),
             },
@@ -424,7 +442,9 @@ def _catalogo_row(
         _first_value(buybox, "winning_user_id", "winner_user_id", "winner_user"),
         catalog_shared_users(buybox),
         _sheet_optional_number(_first_value(buybox, "price_to_win", "price_to_win_amount")),
-        _first_value(buybox, "only_competitor", "unico_competidor"),
+        buybox["only_competitor"]
+        if buybox is not None and isinstance(buybox.get("only_competitor"), bool)
+        else "DATA_UNAVAILABLE",
     ]
 
 

@@ -487,11 +487,18 @@ class FormulaReadModelRepository:
         return ready, missing, tuple(sorted(invalid_items)), current, tuple(sorted(source_missing))
 
     async def find_recent_catalog_buybox_inventory(
-        self, *, seller_id: str, formula: str, now: datetime
+        self,
+        *,
+        seller_id: str,
+        formula: str,
+        now: datetime,
+        inventory: tuple[list[dict[str, Any]], list[str], tuple[str, ...], bool] | None = None,
     ) -> tuple[list[dict[str, Any]], tuple[str, ...], tuple[str, ...], bool]:
-        rows, _, missing_items, current = await self.find_recent_item_inventory(
-            seller_id=seller_id, formula=formula, now=now
-        )
+        if inventory is None:
+            inventory = await self.find_recent_item_inventory(
+                seller_id=seller_id, formula=formula, now=now
+            )
+        rows, _, missing_items, current = inventory
         trusted = {str(row["item_id"]): row["source_snapshot"] for row in rows}
         sources = (
             await self._db["items"]

@@ -21,6 +21,39 @@ Keep unrelated `.codegraph/` files untouched in both repositories.
 Pilot: seller `82453304`; initial historical window 2026-08-08 through
 2026-09-06, plus current snapshots. Other products are out of scope.
 
+## CATALOGO joins verified inventory to current owned competition — 2026-09-08
+
+CATALOGO now selects explicit catalog participants from the source-verified
+inventory/buybox reader instead of accepting all product links and stored buybox
+rows behind global markers. Its item matrix and competition checks share the
+same inventory observation; the reader rechecks canonical source fingerprints.
+Expired inventory or missing item sources request inventory recovery first.
+Otherwise missing snapshots, unknown shared counts or unknown sole-competitor
+values request the explicit buybox IDs. Available item columns remain visible
+when competition is missing, and inventory gaps add a 24-column unavailable row.
+Sole competitor accepts a source boolean, never legacy strings or optional NA.
+
+Four new handler cases failed before implementation. Final handler suite:
+44 passed in 0.14s. The real local HTTP/Mongo harness now runs both CATALOGO and
+CATALOGOBUYBOX: ten cases passed in 4.70s, proving admission, worker persistence,
+two subsequent Mongo-only reads, and rejection of changed association,
+expired/future/foreign snapshots or partial sole-competitor fields. This is local
+acceptance with controlled gateway responses, not authenticated production smoke.
+Full regression (`uv run pytest --tb=short` with local replica-set Mongo):
+4,104 passed, nine expected skips and 356 warnings in 132.83s. Eight protected
+Mongo tests passed separately in 2.40s; the remaining skip is Caddy's optional
+environment check. Ruff check/format, mypy (506 files), schema and diff checks pass.
+
+Remaining CATALOGO gaps are explicit: the orders gate still checks a global
+productive marker rather than each sales window's coverage and may block the
+whole result; required winner/time fields still need purpose-complete acquisition
+and absence handling. This change does not certify the entire matrix as complete.
+No builds or deploys occurred. Verified Sheets API/worker images and live
+recovery/readback are still required before runtime acceptance; last recorded
+runtime is API `1131554`, worker `449a382`, not verified anew in this unit.
+Rollback removes this handler selection/recovery change and the optional shared
+inventory argument in the reader with their tests; it must retain acquired data.
+
 ## Buybox acquires sole-publication evidence from product offers — 2026-09-08
 
 The worker now fetches `/products/{product}/items` with the Sheets detail client

@@ -83,6 +83,49 @@ NOW = datetime(2026, 6, 15, 12, 0, tzinfo=UTC)
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("state", ["ready", "missing", "expired", "not_catalog"])
+async def test_catalogo_uses_verified_inventory_and_requests_missing_competition(
+    state: str,
+) -> None:
+    from unittest.mock import AsyncMock
+
+    from zeler_sheets.formulas.handlers_remaining_phase4 import RemainingPhase4FormulaHandlers
+
+    row = _item_row(
+        item_id="MLA1",
+        sku="sku",
+        title="Publication",
+        catalog_product_id="MLA9",
+        price=Decimal("100"),
+    )
+    snapshot = {"item_id": "MLA1", "competitors_sharing_first_place": 0, "only_competitor": False}
+    repository = AsyncMock(spec=FormulaReadModelRepository)
+    repository.find_recent_item_inventory.return_value = ([row], ["MLA1"], (), state != "expired")
+    repository.find_recent_catalog_buybox_inventory.return_value = (
+        [snapshot] if state in {"ready", "expired"} else [],
+        ("MLA1",) if state == "missing" else (),
+        (),
+        state != "expired",
+    )
+    repository.find_orders.return_value = []
+    result = await RemainingPhase4FormulaHandlers(
+        repository, now_fn=lambda: NOW
+    ).sheetseller_catalogo(_context("ZELERDATA_CATALOGO", {"encabezados": False}))
+    assert len(result.values) == (0 if state == "not_catalog" else 2 if state == "expired" else 1)
+    if state in {"missing", "expired"}:
+        assert result.recovery is not None
+        assert result.recovery.read_model == (
+            ITEM_FORMULA_ROWS_READ_MODEL
+            if state == "expired"
+            else CATALOG_BUYBOX_SNAPSHOTS_READ_MODEL
+        )
+        assert result.recovery.item_ids == (() if state == "expired" else ("MLA1",))
+    else:
+        assert result.recovery is None
+    repository.find_catalog_buybox_snapshots.assert_not_called()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("formula", "model"),
     [
@@ -111,7 +154,7 @@ async def test_history_formulas_do_not_truncate_complete_read_models(
     db[f"sheets_{model}"].documents = {
         str(i): {
             "_id": str(i),
-            "seller_id": "seller-1",
+            "seller_id": "82453304",
             "item_id": f"MLM{i}",
             "date_from": start,
             "date_to": end,
@@ -158,11 +201,12 @@ async def test_catalog_sales_include_orders_beyond_the_old_5000_row_cap() -> Non
     db["orders"].documents = {
         str(i): _order_doc(str(i), days_ago=1, quantity=1) for i in range(5001)
     }
+    _seed_catalog_inventory(db)
     result = await _dispatcher(db).execute(_context("ZELERDATA_CATALOGO", {"encabezados": False}))
     assert result.values[0][9:15] == [5001] * 6
     assert result.values[0][21] == "DATA_UNAVAILABLE"
     assert result.meta["unavailable_shared_users"] == 1
-    assert result.meta["unavailable_reason"] == "catalog_shared_users_not_acquired"
+    assert result.meta["unavailable_reason"] == "buybox_missing_expired_or_incomplete"
 
 
 @pytest.mark.parametrize(
@@ -194,7 +238,7 @@ async def test_catalogo_uses_local_item_catalog_buybox_and_sales_snapshots(
     _mark_read_model_fresh(db, ITEM_FORMULA_ROWS_READ_MODEL)
     _mark_read_model_fresh(db, ORDERS_READ_MODEL)
     db["sheets_item_formula_rows"].documents = {
-        "seller-1:SKU-1:MLA1": _item_row(
+        "82453304:SKU-1:MLA1": _item_row(
             item_id="MLA1",
             sku="sku-1",
             title="Catalog item",
@@ -203,9 +247,9 @@ async def test_catalogo_uses_local_item_catalog_buybox_and_sales_snapshots(
         ),
     }
     db["sheets_catalog_buybox_snapshots"].documents = {
-        "seller-1:MLA1": {
-            "_id": "seller-1:MLA1",
-            "seller_id": "seller-1",
+        "82453304:MLA1": {
+            "_id": "82453304:MLA1",
+            "seller_id": "82453304",
             "item_id": "MLA1",
             "catalog_product_id": "CAT-1",
             "catalog_url": "https://catalog.example/CAT-1",
@@ -221,7 +265,7 @@ async def test_catalogo_uses_local_item_catalog_buybox_and_sales_snapshots(
     }
     db["sheets_catalog_buybox_snapshots"].documents.update(
         {
-            f"other-{i}": {"_id": f"other-{i}", "seller_id": "seller-1", "item_id": f"AAA{i}"}
+            f"other-{i}": {"_id": f"other-{i}", "seller_id": "82453304", "item_id": f"AAA{i}"}
             for i in range(unrelated_buyboxes)
         }
     )
@@ -237,6 +281,7 @@ async def test_catalogo_uses_local_item_catalog_buybox_and_sales_snapshots(
             "ORDER-CANCELLED", days_ago=1, quantity=9, status="cancelled"
         ),
     }
+    _seed_catalog_inventory(db)
     dispatcher = _dispatcher(db)
 
     result = await dispatcher.execute(
@@ -271,7 +316,7 @@ async def test_catalogo_uses_local_item_catalog_buybox_and_sales_snapshots(
             "UNICO COMPETIDOR",
         ],
         [
-            "CAT-1",
+            "MLA9",
             "https://catalog.example/CAT-1",
             "MLA1",
             "https://meli.example/MLA1",
@@ -294,13 +339,15 @@ async def test_catalogo_uses_local_item_catalog_buybox_and_sales_snapshots(
             "seller-competitor",
             3,
             94,
-            "No",
+            False,
         ],
     ]
     assert result.meta == {
         "rows_count": 1,
         "columns": "legacy_catalog_matrix",
         "unavailable_shared_users": 0,
+        "inventory_enumeration_current": True,
+        "unavailable_buybox_items": 0,
     }
 
 
@@ -336,13 +383,14 @@ async def test_catalogo_requires_fresh_item_rows_and_orders_markers(
         _mark_read_model_fresh(db, read_model)
     if stale_read_model is not None:
         _mark_read_model_fresh(db, stale_read_model, fresh_until=NOW - timedelta(days=1))
+    if expected_read_model == ORDERS_READ_MODEL:
+        _seed_catalog_inventory(db)
     dispatcher = _dispatcher(db)
 
     with pytest.raises(FormulaDataUnavailableError, match="ZELERDATA_CATALOGO") as error:
         await dispatcher.execute(_context("ZELERDATA_CATALOGO", {"tipo_precio": "base"}))
 
-    assert expected_read_model in str(error.value)
-    assert "freshness/reconciliation" in str(error.value)
+    assert error.value.read_model == expected_read_model
 
 
 @pytest.mark.asyncio
@@ -356,9 +404,9 @@ async def test_stock_history_formulas_use_local_stock_read_models() -> None:
         fresh_until=datetime(2026, 6, 15, tzinfo=UTC),
     )
     db["sheets_stockout_snapshots"].documents = {
-        "seller-1:MLA1": {
-            "_id": "seller-1:MLA1",
-            "seller_id": "seller-1",
+        "82453304:MLA1": {
+            "_id": "82453304:MLA1",
+            "seller_id": "82453304",
             "item_id": "MLA1",
             "sku": "sku-1",
             "title": "No stock item",
@@ -369,9 +417,9 @@ async def test_stock_history_formulas_use_local_stock_read_models() -> None:
             "current_stock": 0,
             "out_of_stock_since": NOW - timedelta(days=4),
         },
-        "seller-1:MLA2": {
-            "_id": "seller-1:MLA2",
-            "seller_id": "seller-1",
+        "82453304:MLA2": {
+            "_id": "82453304:MLA2",
+            "seller_id": "82453304",
             "item_id": "MLA2",
             "sku": "sku-2",
             "title": "Has stock item",
@@ -381,9 +429,9 @@ async def test_stock_history_formulas_use_local_stock_read_models() -> None:
         },
     }
     db["sheets_stock_time_metrics"].documents = {
-        "seller-1:MLA1": {
-            "_id": "seller-1:MLA1",
-            "seller_id": "seller-1",
+        "82453304:MLA1": {
+            "_id": "82453304:MLA1",
+            "seller_id": "82453304",
             "item_id": "MLA1",
             "sku": "sku-1",
             "title": "Stock item",
@@ -479,9 +527,9 @@ async def test_price_and_catalog_time_formulas_use_local_history_read_models() -
         fresh_until=datetime(2026, 6, 15, tzinfo=UTC),
     )
     db["sheets_price_history_snapshots"].documents = {
-        "seller-1:MLA1": {
-            "_id": "seller-1:MLA1",
-            "seller_id": "seller-1",
+        "82453304:MLA1": {
+            "_id": "82453304:MLA1",
+            "seller_id": "82453304",
             "item_id": "MLA1",
             "title": "Price item",
             "prices": [
@@ -492,9 +540,9 @@ async def test_price_and_catalog_time_formulas_use_local_history_read_models() -
         }
     }
     db["sheets_catalog_time_metrics"].documents = {
-        "seller-1:MLA1": {
-            "_id": "seller-1:MLA1",
-            "seller_id": "seller-1",
+        "82453304:MLA1": {
+            "_id": "82453304:MLA1",
+            "seller_id": "82453304",
             "item_id": "MLA1",
             "title": "Catalog winner",
             "url": "https://meli.example/MLA1",
@@ -558,7 +606,7 @@ async def test_retiros_uses_local_full_withdrawal_read_model() -> None:
     db["sheets_full_withdrawals"].documents = {
         "withdrawal-1": {
             "_id": "withdrawal-1",
-            "seller_id": "seller-1",
+            "seller_id": "82453304",
             "withdrawal_id": "RET-1",
             "withdrawal_detail_id": "RET-1-ITEM-1",
             "inventory_id": "INV-MLA1",
@@ -571,7 +619,7 @@ async def test_retiros_uses_local_full_withdrawal_read_model() -> None:
         },
         "withdrawal-outside": {
             "_id": "withdrawal-outside",
-            "seller_id": "seller-1",
+            "seller_id": "82453304",
             "withdrawal_id": "RET-OLD",
             "created_at": datetime(2026, 5, 1, tzinfo=UTC),
         },
@@ -616,7 +664,7 @@ async def test_retiros_uses_local_full_withdrawal_read_model() -> None:
 @pytest.mark.parametrize(
     ("formula", "args", "read_model"),
     [
-        ("ZELERDATA_CATALOGO", {"tipo_precio": "base"}, CATALOG_BUYBOX_SNAPSHOTS_READ_MODEL),
+        ("ZELERDATA_CATALOGO", {"tipo_precio": "base"}, ITEM_FORMULA_ROWS_READ_MODEL),
         ("ZELERDATA_TIEMPOSINSTOCK", {"tipo_precio": "base"}, STOCKOUT_SNAPSHOTS_READ_MODEL),
         (
             "ZELERDATA_TIEMPOSTOCKACTIVO",
@@ -649,8 +697,10 @@ async def test_remaining_phase4_formulas_require_fresh_read_model_marker(
     with pytest.raises(FormulaDataUnavailableError, match=formula) as error:
         await dispatcher.execute(_context(formula, args))
 
-    assert read_model in str(error.value)
-    assert "freshness/reconciliation" in str(error.value)
+    assert error.value.read_model == read_model
+    assert (
+        "inventory enumeration" if formula == "ZELERDATA_CATALOGO" else "freshness/reconciliation"
+    ) in str(error.value)
 
 
 @pytest.mark.asyncio
@@ -683,9 +733,9 @@ async def test_source_gated_formulas_require_interval_marker_coverage_from_range
     formula: str, args: dict[str, Any], read_model: str
 ) -> None:
     db = FakeDb()
-    db["sheets_read_model_freshness"].documents[f"seller-1:{read_model}"] = {
-        "_id": f"seller-1:{read_model}",
-        "seller_id": "seller-1",
+    db["sheets_read_model_freshness"].documents[f"82453304:{read_model}"] = {
+        "_id": f"82453304:{read_model}",
+        "seller_id": "82453304",
         "read_model": read_model,
         "state": "reconciled",
         "date_from": datetime(2026, 6, 5, tzinfo=UTC),
@@ -702,7 +752,9 @@ async def test_source_gated_formulas_require_interval_marker_coverage_from_range
         await dispatcher.execute(_context(formula, args))
 
     assert read_model in str(error.value)
-    assert "freshness/reconciliation" in str(error.value)
+    assert (
+        "inventory enumeration" if formula == "ZELERDATA_CATALOGO" else "freshness/reconciliation"
+    ) in str(error.value)
 
 
 @pytest.mark.asyncio
@@ -715,9 +767,9 @@ async def test_interval_aggregate_formula_rejects_broader_marker_and_metric_row(
         fresh_until=datetime(2026, 7, 1, tzinfo=UTC),
     )
     db["sheets_stock_time_metrics"].documents = {
-        "seller-1:MLA1:SKU1:2026-06-01:2026-07-01": {
-            "_id": "seller-1:MLA1:SKU1:2026-06-01:2026-07-01",
-            "seller_id": "seller-1",
+        "82453304:MLA1:SKU1:2026-06-01:2026-07-01": {
+            "_id": "82453304:MLA1:SKU1:2026-06-01:2026-07-01",
+            "seller_id": "82453304",
             "item_id": "MLA1",
             "sku": "sku-1",
             "normalized_sku": "SKU-1",
@@ -748,7 +800,7 @@ async def test_interval_aggregate_formula_rejects_broader_marker_and_metric_row(
 @pytest.mark.parametrize(
     ("formula", "args", "read_model"),
     [
-        ("ZELERDATA_CATALOGO", {"tipo_precio": "base"}, CATALOG_BUYBOX_SNAPSHOTS_READ_MODEL),
+        ("ZELERDATA_CATALOGO", {"tipo_precio": "base"}, ITEM_FORMULA_ROWS_READ_MODEL),
         ("ZELERDATA_TIEMPOSINSTOCK", {"tipo_precio": "base"}, STOCKOUT_SNAPSHOTS_READ_MODEL),
         (
             "ZELERDATA_TIEMPOSTOCKACTIVO",
@@ -783,8 +835,10 @@ async def test_remaining_phase4_formulas_reject_stale_read_model_marker(
     with pytest.raises(FormulaDataUnavailableError, match=formula) as error:
         await dispatcher.execute(_context(formula, args))
 
-    assert read_model in str(error.value)
-    assert "freshness/reconciliation" in str(error.value)
+    assert error.value.read_model == read_model
+    assert (
+        "inventory enumeration" if formula == "ZELERDATA_CATALOGO" else "freshness/reconciliation"
+    ) in str(error.value)
 
 
 def _dispatcher(db: FakeDb) -> FormulaDispatcher:
@@ -807,9 +861,9 @@ def _mark_read_model_fresh(
         FULL_WITHDRAWALS_READ_MODEL,
     }
     source_gated_date_from = date_from or NOW - timedelta(days=400)
-    db["sheets_read_model_freshness"].documents[f"seller-1:{read_model}"] = {
-        "_id": f"seller-1:{read_model}",
-        "seller_id": "seller-1",
+    db["sheets_read_model_freshness"].documents[f"82453304:{read_model}"] = {
+        "_id": f"82453304:{read_model}",
+        "seller_id": "82453304",
         "read_model": read_model,
         "state": "reconciled" if read_model in source_gated else "fresh",
         "fresh_until": fresh_until,
@@ -826,12 +880,59 @@ def _context(formula: str, args: dict[str, Any]) -> FormulaExecutionContext:
     return FormulaExecutionContext(
         contract=FormulaRegistry.default().find_required(formula),
         cuenta="HOPEMOB",
-        seller_id="seller-1",
+        seller_id="82453304",
         seller_nickname="HOPEMOB",
         token_id="token-1",
         args=args,
         request_id="req-1",
     )
+
+
+def _seed_catalog_inventory(db: FakeDb) -> None:
+    from zeler_sheets.formulas.recovery import ItemInventoryRecoveryRequest
+    from zeler_sheets.item_projection import item_source_fingerprint
+
+    ids = []
+    for row in db["sheets_item_formula_rows"].documents.values():
+        identity = row["item_id"]
+        ids.append(identity)
+        row["current"].update(catalog_listing=True, catalog_product_id="MLA9")
+        source = {
+            "_id": identity,
+            "seller_id": "82453304",
+            **{
+                key: str(value) if isinstance(value, Decimal) else value
+                for key, value in row["current"].items()
+            },
+            "last_meli_sync_at": NOW,
+        }
+        db["items"].documents[identity] = source
+        row["source_snapshot"] = {
+            "fingerprint": item_source_fingerprint(source),
+            "observed_at": NOW,
+            "rows_count": 1,
+        }
+        snapshot = db["sheets_catalog_buybox_snapshots"].documents.get(f"82453304:{identity}")
+        if snapshot is not None:
+            snapshot.update(
+                catalog_product_id="MLA9",
+                title=source["title"],
+                available_quantity=source["available_quantity"],
+                snapshot_at=NOW,
+                source="sheets_backfill",
+                only_competitor=False,
+            )
+    key = ItemInventoryRecoveryRequest("82453304").key
+    db["sheets_formula_recovery_jobs"].documents[key] = {
+        "_id": key,
+        "seller_id": "82453304",
+        "read_model": ITEM_FORMULA_ROWS_READ_MODEL,
+        "inventory_scope": True,
+        "state": "completed",
+        "inventory_ids": sorted(ids),
+        "inventory_observed_at": NOW,
+        "inventory_offset": len(ids),
+    }
 
 
 def _item_row(
@@ -843,8 +944,8 @@ def _item_row(
     price: Decimal,
 ) -> dict[str, Any]:
     return {
-        "_id": f"seller-1:{sku.upper()}:{item_id}",
-        "seller_id": "seller-1",
+        "_id": f"82453304:{sku.upper()}:{item_id}",
+        "seller_id": "82453304",
         "item_id": item_id,
         "sku": sku,
         "normalized_sku": sku.upper(),
@@ -871,7 +972,7 @@ def _order_doc(
 ) -> dict[str, Any]:
     return {
         "_id": order_id,
-        "seller_id": "seller-1",
+        "seller_id": "82453304",
         "date_created": NOW - timedelta(days=days_ago),
         "status": status,
         "items": [
