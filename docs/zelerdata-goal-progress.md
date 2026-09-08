@@ -183,8 +183,8 @@ digests are:
 - Worker: `sha256:5e6a0bae160b005a34efc0f7894de078b442ef99b63b8b0da7734a2ca6a43a18`.
 
 Full evidence and the verified local `image_to_commit.json` are in the temporary
-rollout directory above (`*-complete-build.json`, `*-artifact.json`). They have
-not yet been merged into the VM's provenance map or activated. Final recheck:
+rollout directory above (`*-complete-build.json`, `*-artifact.json`). The subsequent
+worker-deployment section records VM proof registration and partial rollout. Final recheck:
 GitHub test run `34265791402` and lint run `34265791416` both succeeded.
 Deployment remains gated on fresh capacity checks and VM provenance registration.
 The newer main commit
@@ -198,6 +198,37 @@ verification after rollout: bounded pilot acquisition persists explicit flags,
 repeated calculator/dashboard reads agree with them without unnecessary recovery,
 and formula calls remain below the Sheets deadline. This does not close the wider
 catalog recovery, all-52 HTTP, real-Sheet or minimum-hardening acceptance items.
+
+## Catalog worker deployed — 2026-09-08
+
+Sheets worker now runs verified source `07c8ad36e52451e13fa46167502972909b55d997`,
+digest `sha256:5e6a0bae160b005a34efc0f7894de078b442ef99b63b8b0da7734a2ca6a43a18`.
+Activation reported healthy, zero restarts and HTTP `/health` 200. API remains on
+`sha256:c679a81b7ad3e0b026f8b4a8a4e1ff5bddc1387bcccbf59fc31cb808f70ab56c`;
+its new verified image is not pulled/activated yet. Functional pilot verification
+of acquired participation and the new API readers remains pending.
+
+Both new image proofs were independently verified in the VM with the canonical
+verifier and merged serially into `/var/lib/zeler-platform/image_to_commit.json`.
+Both Mongo validators were rechecked compatible before activation. Worker startup
+asserted zero running recovery jobs and preserved pilot-only recovery settings.
+
+To make room, only the unused local worker image
+`sha256:d4a665c9bf05fc4ee3463ca71b3c10a93cde06a7339250fcea6ca5e4537ff6a3`
+was removed after confirming no container referenced it, all four protected
+current/rollback images were present, and the exact digest remained in Artifact
+Registry. It is recoverable there. No Mongo volume or business data was removed.
+
+Worker pull preflight passed with 5,937,225,728 free bytes. Download completed in
+13.6s; Compose was unchanged until activation. After activation free space was
+5,394,132,992 bytes, barely over 5 GiB. Recheck and obtain capacity safely before
+pulling API; do not relax the floor or remove current/rollback images.
+
+Rollback worker image is `sha256:65a8dcffe3ae125b94c3b50092af3e5fa08abd88921b8fe8ddc8b512940dc623`.
+Compose backup: `/opt/zeler-platform/docker-compose.yml.pre-sheets-worker-activate-07c8ad3`.
+Rollback must replace only the worker image, preserving subsequent API changes.
+Scripts/evidence remain in `/tmp/zeler-catalog-rollout.gE7bNb/` locally and on VM;
+worker pull and activation are terminal successful operations, not status commands.
 
 ## Baseline — 2026-09-07
 
