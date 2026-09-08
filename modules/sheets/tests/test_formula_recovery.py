@@ -61,6 +61,61 @@ def test_runtime_recovery_requires_explicit_sellers(value: str | None) -> None:
     assert recovery_sellers(value) == frozenset()
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("quantity", [0, 7, None])
+async def test_catalog_buybox_persists_item_fields_with_mongo_validator(
+    recovery_db: Any, quantity: int | None
+) -> None:
+    import json
+    from pathlib import Path
+
+    from zeler_sheets.historical_meli_backfill import (
+        _catalog_buybox_snapshot,
+        _catalog_snapshot_source_rows,
+    )
+
+    validator = json.loads(
+        Path("infra/mongo/schemas/sheets_catalog_buybox_snapshots.json").read_text()
+    )
+    await recovery_db.create_collection(
+        "sheets_catalog_buybox_snapshots", validator={"$jsonSchema": validator["$jsonSchema"]}
+    )
+    await recovery_db.items.insert_one(
+        {
+            "_id": "MLA1",
+            "seller_id": "82453304",
+            "catalog_listing": True,
+            "catalog_product_id": "MLA123",
+            "title": "Stored publication",
+            "available_quantity": quantity,
+        }
+    )
+    sources = await _catalog_snapshot_source_rows(db=recovery_db, seller_id="82453304")
+    snapshot = _catalog_buybox_snapshot(
+        {
+            "item_id": "MLA1",
+            "catalog_product_id": None,
+            "status": "not_listed",
+            "current_price": None,
+            "winner": None,
+            "price_to_win": None,
+        },
+        seller_id="82453304",
+        source=sources[0],
+    )
+    assert snapshot is not None
+    await recovery_db.sheets_catalog_buybox_snapshots.insert_one(snapshot)
+    stored = await recovery_db.sheets_catalog_buybox_snapshots.find_one(
+        {"_id": "82453304:MLA1", "seller_id": "82453304"}
+    )
+    assert stored["title"] == "Stored publication"
+    assert stored["available_quantity"] == quantity
+    assert stored["catalog_product_id"] == "MLA123"
+    assert stored["buybox_status"] == "not_listed"
+    assert stored["winning_price"] is None
+    assert stored["price_to_win"] is None
+
+
 def test_runtime_recovery_seller_list_is_explicit_and_validated() -> None:
     from zeler_sheets.formulas.recovery import recovery_sellers
 
@@ -86,6 +141,8 @@ async def test_catalog_source_projection_retains_variation_only_products_in_mong
                 "seller_id": "82453304",
                 "catalog_product_id": None,
                 "catalog_listing": False,
+                "title": "Stored publication",
+                "available_quantity": 0,
                 "variations": [
                     {"id": 1, "catalog_product_id": "MLA10", "attributes": []},
                     {"id": 2, "catalog_product_id": "MLA10"},
@@ -98,7 +155,7 @@ async def test_catalog_source_projection_retains_variation_only_products_in_mong
     )
     rows = await _catalog_snapshot_source_rows(db=recovery_db, seller_id="82453304")
     assert set(rows) == {
-        CatalogSnapshotSource("MLA1", None, ("MLA10", "MLA11"), False),
+        CatalogSnapshotSource("MLA1", None, ("MLA10", "MLA11"), False, "Stored publication", 0),
         CatalogSnapshotSource("MLA2", None, catalog_listing=True),
     }
     assert await recovery_db.items.count_documents({}) == 3

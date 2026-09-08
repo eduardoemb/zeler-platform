@@ -21,6 +21,62 @@ Keep unrelated `.codegraph/` files untouched in both repositories.
 Pilot: seller `82453304`; initial historical window 2026-08-08 through
 2026-09-06, plus current snapshots. Other products are out of scope.
 
+## Catalog item-purpose fields — 2026-09-08 (not deployed)
+
+Buybox normalization now takes publication title and available quantity from
+the canonical item/detail source, not from the competition response. The Mongo
+source projection retains both fields; freshly acquired item sources still
+override stored ones. Zero stock stays zero; absent stock remains unknown.
+No extra formula-side acquisition or schema change is introduced.
+
+Read-only pilot evidence from the approved worker container, at source
+`07c8ad36e52451e13fa46167502972909b55d997`: one explicit catalog participant
+selected from the existing 20-item pilot receipt was checked through the normal
+Sheets gateway. The final probe made three calls (item, competition, product)
+and no business-data writes. Stored and current item product links agreed.
+The item was `under_review`; competition returned `not_listed` with
+`item_not_opted_in`, null product identity/prices/shared-first-place count,
+and no winner. Null competition identity is not evidence of a changed item
+association. Title and quantity were present in the item and absent from the
+competition response. Product detail provided `short_description`, not
+`description`. Only approved status labels and field presence/types were printed.
+Probe: `/tmp/zeler-catalog-purpose-probe.py` on the operator host and VM;
+selection receipt: `catalog-participation-07c8ad3.json` in the protected VM
+repairs directory. This is not an authenticated formula HTTP smoke.
+
+- TDD: three source-title/quantity cases failed before the fix, then passed.
+  `uv run pytest modules/sheets/tests/test_historical_meli_backfill.py --tb=short`:
+  60 passed in 0.28s.
+- Local Mongo boundary: `test_formula_recovery.py -k
+  'catalog_source_projection or catalog_buybox_persists'`: four passed in 1.11s.
+  Source projection, seller filtering, and validated snapshot insert/read cover
+  stock zero, positive stock, and unknown stock with an actual not-listed-shaped
+  competition response. These are synthetic local cases, not production writes.
+- Root regression with loopback Mongo: 3,999 passed, nine skipped, 356 warnings
+  in 108.01s. Eight skips are the protected replica-set tests, run separately
+  without ambient `MONGO_URI`: eight passed in 2.24s. The remaining skip needs
+  Caddy keys. Ruff check/format, mypy (505 files), and diff checks passed.
+- Rollback boundary: the two optional `CatalogSnapshotSource` fields, their
+  source projection/parser, buybox title/quantity mapping, and associated tests.
+  No schema narrowing or business-data deletion is needed.
+
+Still required: automatic catalog recovery and current-resource receipts,
+purpose-complete competition fields/reasons and product description mapping,
+and truthful consumers. Both current count consumers conflate
+`competitor_count` with shared-first-place/winner columns. The legacy reference
+reads `competitors_sharing_first_place`; Mercado Libre documents it separately
+from all competing publications. Do not derive total competition or sole
+competition from that field, and do not turn a not-listed response into a
+successful complete competitive snapshot. Reference:
+[Mercado Libre competition contract](https://developers.mercadolibre.com.mx/en_us/introduction-services/catalog-competition).
+
+At the probe, deployed API `2c2c8bf...` and worker `5e6a0bae...` remained healthy
+with zero restarts; free disk was 5,393,076,224 bytes. This code change is not in
+those images. Build a new verified Sheets worker image when the next catalog
+recovery unit is ready for rollout, then verify persistence and subsequent
+formula reads in the approved runtime context. Do not claim deployment from
+local tests; API consumer changes will also require an API image.
+
 ## Catalog participation persistence — 2026-09-08 (not deployed)
 
 The canonical item and formula-row projection now preserve Mercado Libre's

@@ -1511,7 +1511,7 @@ async def test_historical_backfill_reconciles_catalog_product_and_buybox_snapsho
     assert buybox["source"] == "historical_meli_backfill"
     assert buybox["item_id"] == "MLA1"
     assert buybox["catalog_product_id"] == "CAT-MLA1"
-    assert buybox["title"] == "Catalog buybox item"
+    assert buybox["title"] == "Premium widget"
     assert buybox["available_quantity"] == 7
     assert buybox["buybox_status"] == "winning"
     assert buybox["price"] == 120
@@ -1546,6 +1546,36 @@ def test_catalog_buybox_keeps_winner_and_suggested_prices_distinct(
     assert snapshot is not None
     assert snapshot["winning_price"] == winning_price
     assert snapshot["price_to_win"] == target_price
+
+
+@pytest.mark.parametrize("quantity", [0, 7, None])
+def test_catalog_buybox_takes_item_fields_from_item_detail(quantity: int | None) -> None:
+    source = historical_backfill_module._catalog_snapshot_source_rows_from_resources(
+        [
+            {
+                "id": "MLA1",
+                "catalog_product_id": "MLA123",
+                "catalog_listing": True,
+                "title": "Actual publication title",
+                "available_quantity": quantity,
+            }
+        ]
+    )[0]
+    snapshot = historical_backfill_module._catalog_buybox_snapshot(
+        {
+            "item_id": "MLA1",
+            "catalog_product_id": "MLA123",
+            "current_price": 99,
+            "title": "Not an item detail",
+            "available_quantity": 999,
+        },
+        seller_id="82453304",
+        source=source,
+    )
+    assert snapshot is not None
+    assert snapshot["title"] == "Actual publication title"
+    assert snapshot["available_quantity"] == quantity
+    assert snapshot["price"] == 99
 
 
 @pytest.mark.asyncio

@@ -192,6 +192,8 @@ class CatalogSnapshotSource:
     catalog_product_id: str | None
     variation_catalog_product_ids: tuple[str, ...] = ()
     catalog_listing: bool | None = None
+    title: str | None = None
+    available_quantity: int | None = None
 
 
 def parse_inclusive_date_range(date_from: str, date_to: str) -> InclusiveDateRange:
@@ -725,6 +727,8 @@ async def _catalog_snapshot_source_rows(*, db: Any, seller_id: str) -> list[Cata
             "catalog_product_id": 1,
             "variations.catalog_product_id": 1,
             "catalog_listing": 1,
+            "title": 1,
+            "available_quantity": 1,
         },
     )
     rows: list[CatalogSnapshotSource] = []
@@ -756,6 +760,8 @@ def _catalog_snapshot_source_rows_from_resources(
                 catalog_product_id,
                 tuple(variation_ids),
                 participation if isinstance(participation, bool) else None,
+                _optional_string(resource.get("title")),
+                _optional_int(resource.get("available_quantity")),
             )
         )
     return rows
@@ -847,8 +853,8 @@ def _catalog_buybox_snapshot(
         "seller_id": seller_id,
         "item_id": item_id,
         "catalog_product_id": catalog_product_id,
-        "title": _optional_string(resource.get("title") or resource.get("item_title")),
-        "available_quantity": _optional_int(resource.get("available_quantity")),
+        "title": source.title,
+        "available_quantity": source.available_quantity,
         "buybox_status": _optional_string(
             resource.get("buybox_status") or resource.get("status") or resource.get("winner_status")
         ),
