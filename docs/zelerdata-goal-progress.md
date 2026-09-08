@@ -2528,3 +2528,38 @@ retain their contract; other product deployments remain out of scope.
 - This ledger-only commit does not require another image build: the intended
   runtime source is `f74f3f1` and both deployed images match it. Authenticated
   HTTP/Google Sheet acceptance and full temporal completeness remain outstanding.
+
+## Runtime diagnosis: row coverage is not productive freshness
+
+- Read-only execution through the deployed API container's real formula
+  dispatcher exposed inconsistent availability on the pilot: `TITULO` returned
+  one selected no-SKU item's title in 0.0039s and `PUBLICACIONES` returned 2,846
+  rows in 0.1880s; `CALCULADORA` for that same item and `CALIDAD` raised
+  `FormulaDataUnavailableError(read_model="item_formula_rows")` in 0.0147s and
+  0.0021s. Only aggregate outcomes were printed. These are internal dispatcher
+  timings, not authenticated HTTP acceptance, and returned values were not
+  independently certified as temporally complete.
+- The productive marker exists but has no `valid_until`. Calculator/quality
+  enforce its coverage before reading rows; core title/publication handlers do
+  not enforce that same gate. Runtime `IMPLEMENTED_MODELS` excludes
+  `item_formula_rows`, so an unavailable item projection has no automatic worker
+  implementation despite its presence in `RECOVERABLE_MODELS`.
+- A second scoped read verified the selected canonical item's
+  `last_meli_sync_at` was only 265.6 seconds old, while its formula row has no
+  source-sync receipt. The row's `updated_at` was about 42 days old: the builder
+  intentionally derives it from source modification time, not acquisition time.
+  Do not reinterpret that old modification timestamp as proof the recently
+  acquired source is stale, or use projection execution time as proof of a new
+  MercadoLibre acquisition. The initial probe used nonexistent `synced_at`;
+  its null result was corrected by reading canonical `last_meli_sync_at`.
+- Next implementation must connect a trustworthy per-publication acquisition
+  receipt and complete selected-identity validation to bounded automatic item
+  recovery. Keep aggregate inventory completeness distinct from selected-row
+  availability, preserve per-field acquisition failures, and cover partial,
+  expired, future-dated and missing evidence. Do not bypass or advance the
+  global marker merely to make the calculator pass. Existing 20-item acquisition
+  and Mongo recovery queue are the starting points, not a second queue/worker.
+- No runtime mutation, marker renewal or code change occurred in this diagnostic
+  unit. Verification is the real-container read above plus inspection of the
+  builder, handlers and recovery allowlist; additional test execution is N/A for
+  this evidence-only record. Rollback removes only this ledger section.
