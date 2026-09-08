@@ -15,6 +15,129 @@ from zeler_sheets.formulas.recovery import FormulaRecoveryQueue, RecoveryRequest
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "case",
+    [
+        "sole",
+        "multiple",
+        "empty",
+        "other",
+        "paged",
+        "malformed",
+        "short_page",
+        "wrong_owner",
+        "duplicate",
+        "unavailable",
+        "retained",
+    ],
+)
+async def test_buybox_acquires_offer_count_without_inventing_sole_competitor(
+    recovery_db: Any, case: str
+) -> None:
+    import httpx
+
+    from zeler_sheets.formulas.recovery import ItemIdsRecoveryRequest
+    from zeler_sheets.formulas.recovery_worker import FormulaRecoveryWorker
+
+    now = datetime.now(UTC)
+    await recovery_db.items.insert_one(
+        {
+            "_id": "MLA1",
+            "seller_id": "82453304",
+            "catalog_listing": True,
+            "catalog_product_id": "MLA9",
+            "title": "Publication",
+            "available_quantity": 0,
+            "last_meli_sync_at": now - timedelta(seconds=1),
+        }
+    )
+    prior = {
+        "_id": "82453304:MLA1",
+        "seller_id": "82453304",
+        "item_id": "MLA1",
+        "snapshot_at": now - timedelta(minutes=1),
+        "only_competitor": True,
+        "price": 100,
+    }
+    if case == "retained":
+        await recovery_db.sheets_catalog_buybox_snapshots.insert_one(prior)
+        prior = await recovery_db.sheets_catalog_buybox_snapshots.find_one({"_id": prior["_id"]})
+    queue = FormulaRecoveryQueue(recovery_db)
+    key = await queue.enqueue(
+        ItemIdsRecoveryRequest("82453304", ("MLA1",), read_model="catalog_buybox_snapshots")
+    )
+    calls = []
+
+    class Gateway:
+        async def fetch_resource(self, *, seller_id: str, path: str) -> Any:
+            calls.append(path)
+            if path == "/items/MLA1/price_to_win?version=v2":
+                return {
+                    "item_id": "MLA1",
+                    "catalog_product_id": "MLA9",
+                    "status": "winning",
+                    "current_price": 120,
+                    "winner": {"price": 119},
+                    "competitors_sharing_first_place": 0,
+                    "competitor_count": 999,
+                    "only_competitor": True,
+                }
+            assert path == "/products/MLA9/items"
+            if case in {"unavailable", "retained"}:
+                httpx.Response(
+                    503, request=httpx.Request("GET", "https://gateway.test")
+                ).raise_for_status()
+            rows = [{"item_id": "MLA1", "seller_id": 82453304}]
+            if case == "multiple":
+                rows.append({"item_id": "MLA2", "seller_id": 42})
+            if case == "empty":
+                rows = []
+            if case == "other":
+                rows = [{"item_id": "MLA2", "seller_id": 42}]
+            if case == "wrong_owner":
+                rows[0]["seller_id"] = 42
+            if case == "duplicate":
+                rows.append(dict(rows[0]))
+            return {
+                "paging": {
+                    "total": True
+                    if case == "malformed"
+                    else 200
+                    if case == "paged"
+                    else 2
+                    if case == "short_page"
+                    else len(rows),
+                    "offset": 0,
+                    "limit": 1 if case == "paged" else 100,
+                },
+                "results": rows,
+            }
+
+    assert await FormulaRecoveryWorker(db=recovery_db, queue=queue, gateway=Gateway()).process_one()
+    stored = await recovery_db.sheets_catalog_buybox_snapshots.find_one({"_id": "82453304:MLA1"})
+    job = await queue.collection.find_one({"_id": key})
+    assert calls == ["/items/MLA1/price_to_win?version=v2", "/products/MLA9/items"]
+    if case == "retained":
+        assert stored == prior
+    elif case in {"malformed", "short_page", "wrong_owner", "duplicate", "unavailable"}:
+        assert stored["price"] == 120
+        assert stored["only_competitor"] is None
+        assert stored["competitor_count"] is None
+    else:
+        assert stored["only_competitor"] is (case == "sole")
+        assert stored["competitor_count"] == (
+            200 if case == "paged" else 2 if case == "multiple" else 0 if case == "empty" else 1
+        )
+    assert job["state"] == (
+        "pending"
+        if case in {"unavailable", "retained"}
+        else "failed"
+        if case in {"malformed", "short_page", "wrong_owner", "duplicate"}
+        else "completed"
+    )
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("mutation", ["association", "expired", "future", "foreign", "partial"])
 async def test_buybox_http_recovers_current_membership_then_reuses_mongo(
     recovery_db: Any, mutation: str
@@ -72,8 +195,17 @@ async def test_buybox_http_recovers_current_membership_then_reuses_mongo(
 
     class Gateway:
         async def fetch_resource(self, *, seller_id: str, path: str) -> Any:
-            assert seller_id == seller and path == "/items/MLA1/price_to_win?version=v2"
+            assert seller_id == seller
             calls.append(path)
+            if path == "/products/MLA9/items":
+                return {
+                    "paging": {"total": 2, "offset": 0, "limit": 100},
+                    "results": [
+                        {"item_id": "MLA1", "seller_id": 82453304},
+                        {"item_id": "MLA2", "seller_id": 42},
+                    ],
+                }
+            assert path == "/items/MLA1/price_to_win?version=v2"
             return {
                 "item_id": "MLA1",
                 "catalog_product_id": "MLA9",
@@ -81,7 +213,6 @@ async def test_buybox_http_recovers_current_membership_then_reuses_mongo(
                 "current_price": 120,
                 "winner": {"price": 119},
                 "competitors_sharing_first_place": 0,
-                "only_competitor": False,
             }
 
     payload = {
@@ -108,7 +239,7 @@ async def test_buybox_http_recovers_current_membership_then_reuses_mongo(
             ]
             assert ready.json()["meta"]["buybox_complete"] is True
             assert "recovery_requested" not in ready.json()["meta"]
-        assert len(calls) == 1
+        assert len(calls) == 2
         if mutation == "association":
             await recovery_db.items.update_one(
                 {"_id": "MLA1"}, {"$set": {"catalog_product_id": "MLA8"}}
@@ -142,7 +273,7 @@ async def test_buybox_http_recovers_current_membership_then_reuses_mongo(
                 0,
                 "DATA_UNAVAILABLE",
             ]
-        assert len(calls) == 1
+        assert len(calls) == 2
     assert (
         await recovery_db.sheets_read_model_freshness.count_documents(
             {"read_model": "catalog_buybox_snapshots"}
@@ -195,8 +326,17 @@ async def test_buybox_explicit_item_recovery_is_owned_fresh_and_source_bound(
 
     class Detail:
         async def fetch_resource(self, *, seller_id: str, path: str) -> Any:
-            assert seller_id == "82453304" and path == "/items/MLA1/price_to_win?version=v2"
+            assert seller_id == "82453304"
             calls.append(path)
+            if path == "/products/MLA2/items":
+                return {
+                    "paging": {"total": 2, "offset": 0, "limit": 100},
+                    "results": [
+                        {"item_id": "MLA1", "seller_id": 82453304},
+                        {"item_id": "MLA3", "seller_id": 42},
+                    ],
+                }
+            assert path == "/items/MLA1/price_to_win?version=v2"
             if state == "changed":
                 await recovery_db.items.update_one(
                     {"_id": "MLA1"}, {"$set": {"catalog_product_id": "MLA3"}}
@@ -231,6 +371,8 @@ async def test_buybox_explicit_item_recovery_is_owned_fresh_and_source_bound(
         assert calls == (
             []
             if state in {"foreign", "not_catalog", "expired"}
+            else ["/items/MLA1/price_to_win?version=v2", "/products/MLA2/items"]
+            if state == "changed"
             else ["/items/MLA1/price_to_win?version=v2"]
         )
     elif state == "newer":
@@ -242,6 +384,8 @@ async def test_buybox_explicit_item_recovery_is_owned_fresh_and_source_bound(
         assert snapshot["available_quantity"] == 0
         assert snapshot["winning_price"] == 119
         assert snapshot["competitors_sharing_first_place"] == 0
+        assert snapshot["competitor_count"] == 2
+        assert snapshot["only_competitor"] is False
         assert snapshot["source"] == "sheets_backfill"
         assert snapshot["snapshot_at"].replace(tzinfo=UTC) == now
     assert await recovery_db.sheets_read_model_freshness.count_documents({}) == 0

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from datetime import UTC, datetime, timedelta
@@ -54,6 +55,36 @@ from zeler_sheets.sheetseller_backfill import (
     run_item_detail_enrichment,
     run_sheetseller_backfill,
 )
+
+
+def _catalog_offer_count(resource: Any, *, item_id: str, seller_id: str) -> tuple[int, bool]:
+    if not isinstance(resource, dict):
+        raise ValueError("catalog offer listing is unavailable")
+    paging, rows = resource.get("paging"), resource.get("results")
+    if not isinstance(paging, dict) or not isinstance(rows, list):
+        raise ValueError("catalog offer paging is unavailable")
+    total, offset, limit = paging.get("total"), paging.get("offset"), paging.get("limit")
+    if (
+        type(total) is not int
+        or type(offset) is not int
+        or type(limit) is not int
+        or total < 0
+        or offset != 0
+        or limit <= 0
+        or len(rows) != min(total, limit)
+    ):
+        raise ValueError("catalog offer paging is inconsistent")
+    identities = []
+    for row in rows:
+        identity = row.get("item_id") if isinstance(row, dict) else None
+        if not isinstance(identity, str) or re.fullmatch(r"ML[A-Z][0-9]+", identity) is None:
+            raise ValueError("catalog offer identity is unavailable")
+        if identity == item_id and str(row.get("seller_id")) != seller_id:
+            raise ValueError("catalog offer ownership is inconsistent")
+        identities.append(identity)
+    if len(set(identities)) != len(identities):
+        raise ValueError("catalog offer identities are duplicated")
+    return total, total == 1 and identities == [item_id]
 
 
 def _catalog_snapshot_filter(seller_id: str, identity: str, observed: datetime) -> dict[str, Any]:
@@ -260,6 +291,20 @@ class FormulaRecoveryWorker:
                 or "competitors_sharing_first_place" not in snapshot
             ):
                 raise ValueError("buybox competition fields are unavailable")
+            offer_failure: Exception | None = None
+            snapshot.update(competitor_count=None, only_competitor=None)
+            try:
+                async with asyncio.timeout(10):
+                    offers = await self.detail_gateway.fetch_resource(
+                        seller_id=requested.seller_id,
+                        path=f"/products/{source.catalog_product_id}/items",
+                    )
+                count, only = _catalog_offer_count(
+                    offers, item_id=identity, seller_id=requested.seller_id
+                )
+                snapshot.update(competitor_count=count, only_competitor=only)
+            except (httpx.HTTPError, TimeoutError, GatewayRateLimitError, ValueError) as exc:
+                offer_failure = exc
             current = await self.db.items.find_one(
                 {"_id": identity, "seller_id": requested.seller_id}
             )
@@ -272,12 +317,21 @@ class FormulaRecoveryWorker:
                 raise ValueError("buybox recovery lease lost before persistence")
             snapshot.update(snapshot_at=observed, source="sheets_backfill")
             with suppress(DuplicateKeyError):
-                await self.db.sheets_catalog_buybox_snapshots.replace_one(
-                    _catalog_snapshot_filter(requested.seller_id, identity, observed),
-                    snapshot,
-                    upsert=True,
-                )
-            return None
+                if offer_failure is not None:
+                    # Preserve an earlier payload and its original timestamp.
+                    # With no prior snapshot, keep the acquired competition fields.
+                    await self.db.sheets_catalog_buybox_snapshots.update_one(
+                        {"_id": snapshot["_id"], "seller_id": requested.seller_id},
+                        {"$setOnInsert": snapshot},
+                        upsert=True,
+                    )
+                else:
+                    await self.db.sheets_catalog_buybox_snapshots.replace_one(
+                        _catalog_snapshot_filter(requested.seller_id, identity, observed),
+                        snapshot,
+                        upsert=True,
+                    )
+            return offer_failure
 
         await self._finish_catalog_batch(job, list(requested.item_ids), acquire)
 

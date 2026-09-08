@@ -21,6 +21,40 @@ Keep unrelated `.codegraph/` files untouched in both repositories.
 Pilot: seller `82453304`; initial historical window 2026-08-08 through
 2026-09-06, plus current snapshots. Other products are out of scope.
 
+## Buybox acquires sole-publication evidence from product offers — 2026-09-08
+
+The worker now fetches `/products/{product}/items` with the Sheets detail client
+after the version-v2 competition response. It persists the validated paging total,
+not the number of rows on a potentially paginated page. Sole competitor is true
+only for a total of one whose publication and seller match the requested item.
+This counts competing publications, not distinct sellers. Empty or other-only
+listings produce false; malformed paging, duplicate identities and conflicting
+ownership cannot establish the field. Values supplied by the competition payload
+are not trusted as substitutes for this acquisition.
+
+If offers fail, an existing snapshot and its timestamp remain untouched. With no
+snapshot, acquired competition fields persist while count/sole remain unknown.
+Retryable upstream failures keep the job pending; malformed source data fails it.
+No global marker, schema change or new synchronous formula API call is added.
+
+Verification: the initial eight acquisition tests were red before implementation.
+The recovery suite passed 342 tests in 63.05s; after adding three malformed-source
+cases, the focused buybox selection passed 27 tests in 4.93s. Its real local
+HTTP/Mongo harness now provides separate offer responses and proves repeated
+formula reads cause no additional upstream calls. Ruff check/format and mypy
+(506 files), schema drift and diff checks pass. Full regression:
+`uv run pytest --tb=short` with local replica-set Mongo passed 4,095 tests,
+nine expected skips and 356 warnings in 131.07s. The eight protected Mongo tests
+ran separately with `ZELER_RS0_TEST_URI` and passed in 2.40s; the other skip is
+the environment-dependent Caddy check.
+
+No build or deployment occurred. Live evidence remains the preceding read-only
+single-offer probe, not live acceptance of this worker. Before deploying verified
+Sheets API/worker images, finish the other CATALOGO consumer's source-bound
+selection and recovery. Rollback removes the offer parser/fetch/persistence branch
+and its tests from `recovery_worker.py` and `test_formula_recovery.py`, preserving
+prior acquisition behavior and stored data. The full goal remains open.
+
 ## CATALOGOBUYBOX reads current owned membership and requests missing IDs — 2026-09-08
 
 CATALOGOBUYBOX no longer reads all stored snapshots behind a global freshness
