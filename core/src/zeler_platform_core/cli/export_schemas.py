@@ -351,6 +351,7 @@ ENTITY_SCHEMAS: dict[str, dict[str, Any]] = {
             "listing_fee_projection": LISTING_FEE_PROJECTION,
             "enrichment_state": ITEM_ENRICHMENT_STATE,
             "catalog_product_id": {"bsonType": ["string", "null"]},
+            "catalog_listing": {"bsonType": ["bool", "null"]},
             "variations": {"bsonType": "array"},
             "attributes": {"bsonType": "array"},
             "shipping": {"bsonType": ["object", "null"]},

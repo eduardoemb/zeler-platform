@@ -432,6 +432,7 @@ class Item(UtcDatetimeMixin, PriceMixin, SellerScopedDocument):
     permalink: str | None = None
     thumbnail: str | None = None
     catalog_product_id: str | None = None
+    catalog_listing: bool | None = None
     inventory_id: str | None = None
     listing_type_id: str | None = None
     seller_shipping_cost: Decimal | None = None
@@ -449,6 +450,12 @@ class Item(UtcDatetimeMixin, PriceMixin, SellerScopedDocument):
     status_observed_at: datetime | None = None
     date_created: datetime
     last_updated: datetime
+
+    @field_validator("catalog_listing", mode="before")
+    @classmethod
+    def _catalog_participation(cls, value: Any) -> bool | None:
+        # An association is not participation; malformed/absent flags stay unknown.
+        return value if isinstance(value, bool) else None
 
     @field_validator(
         "permalink",

@@ -76,6 +76,33 @@ def _item_resource_at(*, title: str, price: str, last_updated: str) -> dict[str,
     }
 
 
+@pytest.mark.parametrize("participation", [True, False, None, "false", 1])
+@pytest.mark.parametrize("variation_id", [None, "10"])
+def test_catalog_participation_survives_canonical_item_and_formula_projection(
+    participation: Any, variation_id: str | None
+) -> None:
+    from zeler_sheets.sheetseller_backfill import build_formula_row_doc
+
+    resource = {
+        **_item_resource("active"),
+        "catalog_product_id": "MLA-CATALOG-1",
+        "catalog_listing": participation,
+    }
+    canonical = event_persistence_module._canonical_item_document(
+        resource, seller_id="123", synced_at=NOW
+    )
+    expected = participation if isinstance(participation, bool) else None
+    assert canonical.get("catalog_listing") is expected
+    row = build_formula_row_doc(
+        canonical,
+        seller_id="123",
+        sku="sku-1",
+        variation_id=variation_id,
+        variation={"id": 10, "catalog_product_id": "MLA-VARIANT-1"} if variation_id else None,
+    )
+    assert row["current"]["catalog_listing"] is expected
+
+
 def _order_resource_at(
     *, status: str, total_amount: str, date_closed: str | None, last_updated: str | None = None
 ) -> dict[str, Any]:

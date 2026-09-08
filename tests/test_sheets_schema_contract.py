@@ -649,6 +649,7 @@ def test_items_schema_supports_v2_formula_fields_without_raw_payload_drift() -> 
     assert schema["properties"]["permalink"] == {"bsonType": ["string", "null"]}
     assert schema["properties"]["thumbnail"] == {"bsonType": ["string", "null"]}
     assert schema["properties"]["catalog_product_id"] == {"bsonType": ["string", "null"]}
+    assert schema["properties"]["catalog_listing"] == {"bsonType": ["bool", "null"]}
     assert schema["properties"]["inventory_id"] == {"bsonType": ["string", "null"]}
     assert schema["properties"]["listing_type_id"] == {"bsonType": ["string", "null"]}
     assert schema["properties"]["seller_shipping_cost"] == {

@@ -21,6 +21,40 @@ Keep unrelated `.codegraph/` files untouched in both repositories.
 Pilot: seller `82453304`; initial historical window 2026-08-08 through
 2026-09-06, plus current snapshots. Other products are out of scope.
 
+## Catalog participation persistence — 2026-09-08 (not deployed)
+
+The canonical item and formula-row projection now preserve Mercado Libre's
+`catalog_listing` boolean independently of `catalog_product_id`. Missing or
+malformed flags remain unknown; neither a product link nor a variation's link
+implies participation. Variations inherit the publication's participation flag.
+
+This is an acquisition/persistence unit, not a formula-classification fix.
+Calculator/dashboard/catalog consumers still need to use the explicit flag and
+request bounded recovery for unknown required values. Existing production data
+has not been backfilled or relabeled by this change.
+
+- TDD: ten canonical-item/projection cases failed before the change, then passed
+  (true, false, null, malformed string and integer, each for parent/variation).
+- Focused regression: `uv run pytest modules/sheets/tests/test_event_persistence.py
+  modules/sheets/tests/test_sheetseller_backfill.py core/tests/test_models_phase3.py
+  tests/test_sheets_schema_contract.py --tb=short`: 283 passed.
+- Local runtime boundary: `test_formula_recovery.py -k catalog_participation`,
+  with the loopback replica-set fixture and committed Mongo validators:
+  3 passed. Canonical item insert/read followed by projection insert/read retains
+  true, false and unknown. This is not production or HTTP evidence.
+- Root regression with loopback Mongo: 3,976 passed, 9 skipped, 356 warnings
+  in 113.69s; the three new Mongo cases were added after root collection and
+  verified separately above. Protected replica-set tests: 8 passed in 2.30s.
+  Ruff check/format, mypy (505 files), schema export drift and diff checks passed.
+- Deployment gate: apply the additive `items` and `sheets_item_formula_rows`
+  validators in the approved VM context before deploying writers. The current
+  strict `items` validator otherwise rejects the new field. Verify accepted
+  writes and subsequent projection reads before changing consumer semantics.
+- Rollback boundary: revert the optional model field/normalizer, projection,
+  corresponding schema additions and their tests together. An already-applied
+  additive validator may remain; do not narrow it while stored documents retain
+  the field. No business-data deletion is part of rollback.
+
 ## Baseline — 2026-09-07
 
 - Backend main: `c5a2e097e765a083fa1fff7fdec3782ef81fd998`.

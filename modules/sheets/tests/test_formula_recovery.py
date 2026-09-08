@@ -14,6 +14,46 @@ from pymongo.errors import ServerSelectionTimeoutError
 from zeler_sheets.formulas.recovery import FormulaRecoveryQueue, RecoveryRequest
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("participation", [True, False, None])
+async def test_catalog_participation_persists_with_mongo_validators(
+    recovery_db: Any, participation: bool | None
+) -> None:
+    import json
+    from pathlib import Path
+
+    from zeler_sheets.event_persistence import _canonical_item_document
+    from zeler_sheets.sheetseller_backfill import build_formula_row_doc
+
+    for name in ("items", "sheets_item_formula_rows"):
+        validator = json.loads(Path(f"infra/mongo/schemas/{name}.json").read_text())
+        await recovery_db.create_collection(
+            name, validator={"$jsonSchema": validator["$jsonSchema"]}
+        )
+    now = datetime.now(UTC)
+    item = _canonical_item_document(
+        {
+            "id": "MLA1",
+            "title": "Catalog participation",
+            "price": 100,
+            "available_quantity": 1,
+            "status": "active",
+            "catalog_product_id": "MLA-PRODUCT-1",
+            "catalog_listing": participation,
+        },
+        seller_id="82453304",
+        synced_at=now,
+    )
+    await recovery_db.items.insert_one(item)
+    stored = await recovery_db.items.find_one({"_id": "MLA1"})
+    assert stored["catalog_product_id"] == "MLA-PRODUCT-1"
+    assert stored.get("catalog_listing") is participation
+    row = build_formula_row_doc(stored, seller_id="82453304", sku="sku-1")
+    await recovery_db.sheets_item_formula_rows.insert_one(row)
+    persisted = await recovery_db.sheets_item_formula_rows.find_one({"_id": row["_id"]})
+    assert persisted["current"]["catalog_listing"] is participation
+
+
 @pytest.mark.parametrize("value", [None, "", "  "])
 def test_runtime_recovery_requires_explicit_sellers(value: str | None) -> None:
     from zeler_sheets.formulas.recovery import recovery_sellers

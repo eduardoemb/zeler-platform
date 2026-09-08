@@ -39,6 +39,7 @@
           "price": {"bsonType": ["int", "long", "double", "decimal", "null"]},
           "base_price": {"bsonType": ["int", "long", "double", "decimal", "null"]},
           "catalog_product_id": {"bsonType": ["string", "null"]},
+          "catalog_listing": {"bsonType": ["bool", "null"]},
           "listing_type_id": {"bsonType": ["string", "null"]},
           "listing_fee_projection": {
             "bsonType": ["object", "null"],

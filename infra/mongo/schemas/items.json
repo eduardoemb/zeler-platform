@@ -35,6 +35,12 @@
           "null"
         ]
       },
+      "catalog_listing": {
+        "bsonType": [
+          "bool",
+          "null"
+        ]
+      },
       "catalog_product_id": {
         "bsonType": [
           "string",

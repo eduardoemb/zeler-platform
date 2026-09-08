@@ -2411,6 +2411,9 @@ def build_formula_row_doc(
         "permalink": _optional_string(item.get("permalink")),
         "thumbnail": _optional_string(item.get("thumbnail")),
         "catalog_product_id": _optional_string(item.get("catalog_product_id")),
+        "catalog_listing": item.get("catalog_listing")
+        if isinstance(item.get("catalog_listing"), bool)
+        else None,
         "listing_type_id": _optional_string(item.get("listing_type_id")),
         **(
             {"seller_shipping_cost": _schema_safe_numeric(item.get("seller_shipping_cost"))}
