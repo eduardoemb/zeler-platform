@@ -3134,3 +3134,34 @@ retain their contract; other product deployments remain out of scope.
   preceding commit's green result. Preserve running-worker rollback digest
   `50c87edc6503317b283c625a965fd46690dd304af1829a56a77c8fe66855f651` and restore
   the VM's required free-space margin before pulling.
+
+## Worker download timed out; running configuration restored
+
+- Exact-source test run `34193952783` for `ad8d42b` finished successfully; lint
+  had already passed. The original inventory job independently finished at
+  offset **1,900**, state **failed**, with **80 IDs** conservatively recorded
+  across four exhausted batches. At observation its enumeration age was
+  1,951.66 seconds and both inventory formulas were unavailable. No global
+  marker changed. This is not successful full-inventory acceptance.
+- Removed only unused local worker image reference
+  `98cabd3eaf4607a49b08102854289ff898e5359b861f3ac025efd5884ceb5c26`, after
+  confirming it remains in Artifact Registry and has no container references.
+  Current API/worker and their prior rollback images were protected. Free space
+  rose from **4,881,039,360 to 5,423,747,072 bytes**. No volumes, canonical data,
+  containers or remote artifacts were deleted.
+- The single-worker deployment passed preflight and saved
+  `/opt/zeler-platform/docker-compose.yml.pre-sheets-worker-ad8d42b`, but the
+  download command hit its 240-second timeout. Subsequent authoritative inspection
+  found the new image absent, zero active worker-pull processes, and the old
+  worker still healthy with zero restarts. No recreation had occurred. The
+  timeout does not establish why the download stalled.
+- Restored exactly the changed Compose reference to the existing running digest
+  `50c87edc6503317b283c625a965fd46690dd304af1829a56a77c8fe66855f651` and verified
+  rendered Compose plus container health. No service restart was needed. The
+  new verified image remains in Artifact Registry but **is not deployed**.
+- Prepared, but did not execute, `/tmp/zeler-parallel-pilot-ad8d42b.py` on the VM.
+  It requires the new worker digest/health, a terminal prior job and elapsed
+  cooldown, and writes an exclusive protected receipt before admission. The
+  cooldown was observed elapsed with zero running recovery jobs; no new pilot
+  was admitted. Diagnose image retrieval before attempting another deployment.
+  Do not rerun the original deployment helper: its exclusive backup already exists.
