@@ -4047,3 +4047,40 @@ Next address continuous inventory refresh and catalog recovery, then complete
 all-52 authenticated HTTP and real Sheet/app acceptance and minimum hardening.
 The current `main` differs from image source only in progress documentation;
 no new build is required for this checkpoint.
+
+## Successful inventory refresh no longer restarts the waiting period
+
+The queue applied a fresh 15-minute cooldown at the end of every inventory
+sweep, although the reader ages its membership from discovery. A real-Mongo
+clock test reproduced the unnecessary wait: a successful 13-minute sweep could
+not be claimed again until minute 28; a 17-minute sweep waited until minute 32.
+Initial regression result: **2 failed, 4 passed in 1.34s**.
+
+Successful inventory checkpoint completion now sets the next eligible time to
+the later of completion and discovery plus 15 minutes. The same cases become
+eligible at minute 15 and minute 17 respectively. Failed inventories retain
+their cooldown from completion; selected-item and date-range jobs are unchanged.
+No automatic recurring job, new queue, freshness extension or upstream call in
+a formula was added. A formula request still reopens the existing coalesced job.
+
+`uv run pytest modules/sheets/tests/test_formula_recovery.py -k 'inventory or
+cooldown' --tb=short`: **72 passed, 206 deselected in 12.73s**. The new cases
+exercise 0/13/17-minute success and failure, valid per-batch leases, concurrent
+request coalescing, unchanged observation time, expired inventory still rejected
+as current, and no self-restarting completed job. Protected Mongo regression
+suite: **8 passed in 2.35s**. Ruff check/format, mypy (505 files), and diff check
+pass. Full local replica-set suite (`uv run pytest --tb=short`): **3,963 passed,
+9 skipped, 356 warnings in 110.13s**. Eight skips are the protected Mongo cases
+run separately above; the remaining skip is the Caddy required-keys check.
+
+This is local Mongo queue/reader integration evidence, not a new production
+refresh acceptance. A new **Sheets worker** image is required to activate the
+changed checkpoint policy; the API admission code did not change. Existing
+production terminal records were not retimed. Verify the next actual successful
+inventory completion and its persisted eligibility before claiming this runtime
+behavior. Continuous fresh availability, catalog and all-52 HTTP/Sheet acceptance
+remain outstanding.
+
+Rollback boundary: the successful-inventory `available_at` calculation in
+`formulas/recovery.py`, its focused test and the matching formula-readiness
+documentation. Do not alter existing acquisition timestamps or recovered data.

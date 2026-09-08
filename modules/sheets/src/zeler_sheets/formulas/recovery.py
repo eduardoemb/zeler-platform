@@ -327,6 +327,16 @@ class FormulaRecoveryQueue:
             | (set(item_ids[job["inventory_offset"] : offset]) if unavailable else set())
         )
         terminal_failure = completed and bool(missing)
+        available_at = now
+        if completed:
+            available_at = now + COOLDOWN
+            if not terminal_failure:
+                # A successful scan ages from discovery, not completion. Do
+                # not add another full wait after its inventory has expired.
+                observed = job.get("inventory_observed_at") or job["updated_at"]
+                if observed.tzinfo is None:
+                    observed = observed.replace(tzinfo=UTC)
+                available_at = max(now, observed + COOLDOWN)
         result = await self.collection.update_one(
             self._owned(job, now),
             {
@@ -346,7 +356,7 @@ class FormulaRecoveryQueue:
                     else "pending",
                     "attempts": 0,
                     "updated_at": now,
-                    "available_at": now + COOLDOWN if completed else now,
+                    "available_at": available_at,
                     **({"failure_reason": "source_incomplete"} if terminal_failure else {}),
                 },
                 "$unset": {

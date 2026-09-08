@@ -849,6 +849,58 @@ async def test_inventory_recovery_resumes_bounded_batches_without_global_readine
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("duration_minutes", [0, 13, 17])
+@pytest.mark.parametrize("unavailable", [False, True])
+async def test_inventory_refresh_wait_does_not_restart_after_successful_sweep(
+    recovery_db: Any, duration_minutes: int, unavailable: bool
+) -> None:
+    from zeler_sheets.formulas.read_models import FormulaReadModelRepository
+    from zeler_sheets.formulas.recovery import COOLDOWN, ItemInventoryRecoveryRequest
+
+    started = datetime(2026, 9, 8, 12, tzinfo=UTC)
+    now = started
+    queue = FormulaRecoveryQueue(recovery_db, now=lambda: now)
+    request = ItemInventoryRecoveryRequest("82453304")
+    await queue.enqueue(request)
+    discovery = await queue.claim()
+    assert discovery is not None
+    identities = ["MLA1", "MLA2"]
+    assert await queue.checkpoint_inventory(discovery, item_ids=identities, offset=0)
+    for offset in (1, 2):
+        batch = await queue.claim()
+        assert batch is not None
+        # Each batch stays within its lease, including the 17-minute sweep.
+        now += timedelta(minutes=duration_minutes / 2)
+        assert await queue.checkpoint_inventory(
+            batch, item_ids=identities, offset=offset, unavailable=unavailable
+        )
+    terminal = await queue.collection.find_one({"_id": request.key})
+    due = now + COOLDOWN if unavailable else max(now, started + COOLDOWN)
+    assert terminal["available_at"].replace(tzinfo=UTC) == due
+    assert terminal["inventory_observed_at"].replace(tzinfo=UTC) == started
+    assert terminal["state"] == ("failed" if unavailable else "completed")
+    # Completion does not create a recurring scan without a formula request.
+    assert await queue.claim() is None
+    await asyncio.gather(*(queue.enqueue(request) for _ in range(3)))
+    scheduled = await queue.collection.find_one({"_id": request.key})
+    assert scheduled["available_at"] == terminal["available_at"]
+    assert await queue.collection.count_documents({}) == 1
+    if now < due:
+        assert await queue.claim() is None
+    now = due
+    # Scheduling must not extend the old inventory's freshness.
+    reader = FormulaReadModelRepository(db=recovery_db)
+    _, _, missing, current = await reader.find_recent_item_inventory(
+        seller_id="82453304", formula="ZELERDATA_CALCULADORA", now=now
+    )
+    assert not current and missing == tuple(identities)
+    next_scan = await queue.claim()
+    assert next_scan is not None and "inventory_offset" not in next_scan
+    assert await queue.claim() is None
+    assert await recovery_db.sheets_read_model_freshness.count_documents({}) == 0
+
+
+@pytest.mark.asyncio
 async def test_inventory_checkpoint_cannot_advance_after_lease_loss(recovery_db: Any) -> None:
     from zeler_sheets.formulas.recovery import LEASE, ItemInventoryRecoveryRequest
 

@@ -77,9 +77,11 @@ acquired within 15 minutes. A mixed selection keeps those verified publications
 and emits an ID plus `DATA_UNAVAILABLE` cells for each unavailable publication;
 it never serves the surviving fragment of an incomplete variation set. Response
 metadata identifies `unavailable_items`, `unavailable_reason`, and
-`partial_misses`. The API requests asynchronous recovery only for the missing
-IDs and reports `recovery_requested`; failed admission does not discard valid
-rows. Missing publications are not optional fields and must not become `NA`.
+`partial_misses`. The API requests asynchronous recovery for missing publications
+and present publications with unavailable selected price or cost fields (listed
+in `unavailable_field_items`). It reports `recovery_requested`; failed admission
+does not discard valid rows. Missing publications are not optional fields and
+must not become `NA`.
 If no selected publication is verified, the existing formula-level unavailable
 response remains.
 
@@ -98,12 +100,22 @@ ID has explicit DATA_UNAVAILABLE cells. This permits useful rows during recovery
 without treating partial coverage as complete. `inventory_rows_complete` covers
 publication-row verification only; independently unavailable field values remain
 DATA_UNAVAILABLE. A recently verified empty enumeration returns an empty result.
-Missing or expired enumeration evidence retains formula-level unavailability
-and requests asynchronous inventory recovery. No new global marker is inferred
-from the recovery job's completion state.
+Missing enumeration evidence retains formula-level unavailability. An expired
+nonempty enumeration can retain individually verified rows with an explicit
+expiry warning, never a complete-inventory claim. Both cases request asynchronous
+inventory recovery. No new global marker is inferred from the recovery job's
+completion state.
 Reopening a recovery keeps its previous enumeration readable while it remains
 within that original age bound; a new discovery replaces it without extending
 the old observation's lifetime.
+
+After a successful inventory sweep, a requested refresh becomes eligible when
+15 minutes have elapsed from discovery (or immediately if the sweep took longer).
+Completion does not restart that waiting period. A failed sweep retains a
+15-minute cooldown from completion. Repeated requests share one queued job and
+do not postpone its eligibility; a completed job does not restart itself without
+a request. This scheduling rule does not extend any data's freshness or make a
+formula wait for acquisition.
 
 To inspect which markers actually prove a seller scope, run the read-only status command from the approved runtime:
 
