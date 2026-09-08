@@ -2391,3 +2391,41 @@ retain their contract; other product deployments remain out of scope.
   enabled on the current worker. Thus the existing event consumer does invoke
   the backfill after enrichment, but the earlier independent projection stage
   still needs consolidation/transition verification; no feature flags changed.
+
+## Native item events reuse no-SKU projection
+
+- The native event writer now routes missing-SKU items and existing item-only
+  identities through the same scoped backfill used by recovery. This occurs
+  before separate SKU-index writes, avoiding a partially published index during
+  those transitions. Price/stockout observation recording and the established
+  normal-SKU event/status controls remain in place. No new collection, worker,
+  compatibility layer or formula-side MercadoLibre request was introduced.
+- A real-Mongo event sequence first reproduced zero rows for a no-SKU item. The
+  verified scenarios now cover no SKU → parent/variation SKU → no SKU, title and
+  active/paused status changes, an injected row-write failure followed by retry,
+  rejection of an older event and seller-scoped reads. They exercise the native
+  writer directly, without calling the consumer's later enrichment step.
+- Variation events exposed another failure: an identity transition was refused
+  because variation rows intentionally lack publication pause-history scalars.
+  The shared transition can now use the accepted item's status observation as
+  its temporal guard for those rows, without copying publication pause-history
+  scalars into a variation. Prior newer-status rejection tests remain passing.
+- `uv run pytest modules/sheets/tests/test_formula_recovery.py -k
+  'item_events_project_no_sku or item_without_sku_remains' --tb=short` passed
+  **14 tests in 3.79s**. Event-persistence/backfill suites passed **217 tests in
+  0.37s**. Their cursor double gained the actual sort/`$in` behavior needed by
+  the shared reader; transaction/retry evidence comes from real Mongo.
+- Root regression: **3,823 passed, 9 skipped, 356 warnings in 93.09s**. Ruff
+  check/format, mypy (502 files), and whitespace checks pass. These scenarios do
+  not prove every concurrent first-publication interleaving, complete inventory
+  freshness or authenticated HTTP/Sheet acceptance. No production write or
+  deployment occurred; the affected Sheets API/worker images still need release
+  and a current pilot coverage check from the approved runtime.
+- Rollback removes the event-to-backfill routing and the item-status observation
+  parameter used by variation transitions, together with these event scenarios.
+  Existing normalized source items require no rollback; retain derived rows and
+  rebuild from current source/identity evidence if needed. Automatic recovery of
+  a missing item/catalog model remains separate outstanding work.
+- Protected stock-time suites separately passed **8 tests in 3.39s**. Final
+  read-only runtime inspection confirms both `898c916` Sheets image digests
+  remain healthy. Neither pending no-SKU source change has been deployed yet.

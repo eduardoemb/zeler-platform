@@ -39,12 +39,14 @@ from zeler_sheets.remaining_read_model_writers import (
     record_stockout_observation,
 )
 from zeler_sheets.sheetseller_backfill import (
+    _formula_row_id,
     build_formula_row_doc,
     build_order_line_formula_row_docs,
     build_order_line_sku_index_docs,
     build_sku_index_docs,
     build_variation_formula_row_docs,
     extract_safe_order_item_identity,
+    run_sheetseller_backfill,
 )
 from zeler_sheets.status_history import (
     STATUS_HISTORY_DATETIME_FIELDS,
@@ -552,6 +554,20 @@ class SheetsEventPersistence:
             observation_basis="event_observed",
         )
         sku_index_docs = build_sku_index_docs(item, seller_id=seller_id)
+        item_id = str(item["_id"])
+        if (
+            not sku_index_docs
+            or await self._db["sheets_item_formula_rows"].find_one(
+                {"_id": _formula_row_id(seller_id=seller_id, normalized_sku="", item_id=item_id)}
+            )
+            is not None
+        ):
+            # Share the no-SKU representation and atomic identity transitions;
+            # do not publish a SKU-index entry before its row transition commits.
+            await run_sheetseller_backfill(
+                db=self._db, seller_id=seller_id, item_ids=(item_id,), dry_run=False
+            )
+            return
         for sku_index_doc in sku_index_docs:
             await self._db["sheets_item_sku_index"].replace_one(
                 {"_id": sku_index_doc["_id"]}, sku_index_doc, upsert=True

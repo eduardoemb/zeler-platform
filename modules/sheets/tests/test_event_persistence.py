@@ -152,6 +152,13 @@ class FakeCursor:
     def __init__(self, documents: list[dict[str, Any]]) -> None:
         self._documents = documents
 
+    def sort(self, fields: list[tuple[str, int]]) -> FakeCursor:
+        for field, direction in reversed(fields):
+            self._documents.sort(
+                key=lambda doc: str(_nested_value(doc, field) or ""), reverse=direction < 0
+            )
+        return self
+
     async def to_list(self, *, length: int | None = None) -> list[dict[str, Any]]:
         return self._documents[:length]
 
@@ -441,6 +448,10 @@ def _matches_filter(document: dict[str, Any], filter_spec: dict[str, Any]) -> bo
                 return False
             continue
         actual = _nested_value(document, key)
+        if isinstance(expected, dict) and "$in" in expected:
+            if actual not in expected["$in"]:
+                return False
+            continue
         if isinstance(expected, dict) and "$exists" in expected:
             exists = actual is not None
             if exists != expected["$exists"]:

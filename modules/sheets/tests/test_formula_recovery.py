@@ -31,6 +31,80 @@ def test_runtime_recovery_seller_list_is_explicit_and_validated() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("retry_failure", [False, True])
+@pytest.mark.parametrize("sku_level", ["item", "variation"])
+async def test_item_events_project_no_sku_and_identity_transitions_without_enrichment(
+    recovery_db: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    retry_failure: bool,
+    sku_level: str,
+) -> None:
+    import zeler_sheets.sheetseller_backfill as backfill
+    from zeler_sheets.event_persistence import SheetsEventPersistence
+    from zeler_sheets.formulas.read_models import FormulaReadModelRepository
+
+    clock = [datetime(2026, 9, 7, 12, tzinfo=UTC)]
+    writer = SheetsEventPersistence(db=recovery_db, clock=lambda: clock[0])
+    repository = FormulaReadModelRepository(db=recovery_db)
+    original = backfill._replace_formula_row_from_backfill_if_current
+    resources = []
+    for step, sku in enumerate((None, "SKU-1", None)):
+        clock[0] += timedelta(minutes=1)
+        resource = {
+            "id": "MLA1",
+            "seller_id": 82453304,
+            "title": f"Synthetic event {step}",
+            "price": 100,
+            "base_price": 100,
+            "currency_id": "ARS",
+            "category_id": "MLA123",
+            "available_quantity": 2,
+            "status": "paused" if sku else "active",
+            "date_created": "2026-09-01T00:00:00Z",
+            "last_updated": f"2026-09-07T00:0{step}:00Z",
+            "attributes": [{"id": "SELLER_SKU", "value_name": sku}]
+            if sku and sku_level == "item"
+            else [],
+            "variations": [{"id": 101, "seller_custom_field": sku}]
+            if sku and sku_level == "variation"
+            else [],
+        }
+        resources.append(resource)
+        if retry_failure and step == 1:
+
+            async def fail_after_write(*args: Any, **kwargs: Any) -> bool:
+                await original(*args, **kwargs)
+                raise RuntimeError("synthetic event projection failure")
+
+            with monkeypatch.context() as patch:
+                patch.setattr(
+                    backfill, "_replace_formula_row_from_backfill_if_current", fail_after_write
+                )
+                with pytest.raises(RuntimeError):
+                    await writer.persist(
+                        event_type="items.updated", seller_id="82453304", resource=resource
+                    )
+            failed_rows = await repository.find_item_formula_rows(
+                seller_id="82453304", item_ids=["MLA1"]
+            )
+            assert len(failed_rows) == 1 and failed_rows[0]["sku"] is None
+            assert await repository.find_sku_index_rows(seller_id="82453304") == []
+        await writer.persist(event_type="items.updated", seller_id="82453304", resource=resource)
+        rows = await repository.find_item_formula_rows(seller_id="82453304", item_ids=["MLA1"])
+        assert len(rows) == 1
+        assert rows[0]["sku"] == sku
+        assert rows[0]["current"]["title"] == f"Synthetic event {step}"
+        assert rows[0]["current"]["status"] == resource["status"]
+        assert len(await repository.find_sku_index_rows(seller_id="82453304")) == int(
+            sku is not None
+        )
+        assert await repository.find_item_formula_rows(seller_id="other", item_ids=["MLA1"]) == []
+    await writer.persist(event_type="items.updated", seller_id="82453304", resource=resources[0])
+    rows = await repository.find_item_formula_rows(seller_id="82453304", item_ids=["MLA1"])
+    assert len(rows) == 1 and rows[0]["current"]["title"] == "Synthetic event 2"
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "failure", [None, "write_failure", "newer_projection", "newer_status", "newer_status_reverse"]
 )

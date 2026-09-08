@@ -497,6 +497,7 @@ async def run_sheetseller_backfill(
                     db=db,
                     seller_id=seller_id,
                     item_only_id=item_only_id,
+                    item_status_observed_at=bson_ms_utc_datetime(item.get("status_observed_at")),
                     sku_docs=sku_index_docs,
                     row_docs=formula_row_docs,
                 )
@@ -2555,6 +2556,7 @@ async def _replace_item_only_projection(
     db: Any,
     seller_id: str,
     item_only_id: str,
+    item_status_observed_at: datetime | None,
     sku_docs: list[dict[str, Any]],
     row_docs: list[dict[str, Any]],
 ) -> None:
@@ -2601,6 +2603,10 @@ async def _replace_item_only_projection(
                 raise RuntimeError("newer item projection exists during SKU transition")
             doc = await _formula_row_with_latest_status_state(db=db, formula_row_doc=doc)
             observed = _formula_row_status_observed_at(doc)
+            if observed is None and not _formula_row_uses_item_status_history(doc):
+                # A variation does not inherit publication pause-history scalars,
+                # but its identity transition still belongs to this item snapshot.
+                observed = item_status_observed_at
             if prior_status_observed is not None and (
                 observed is None or prior_status_observed > observed
             ):
