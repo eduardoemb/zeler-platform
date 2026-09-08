@@ -2264,3 +2264,55 @@ retain their contract; other product deployments remain out of scope.
   the explicit local replica-set URI and `MONGO_URI` unset. Before release,
   read-only VM inspection confirmed both prior `ab6e01f` Sheets images healthy
   and 5,976,756,224 bytes free on root; capacity must be checked again before pull.
+
+## Calculator release image provenance
+
+- Built from pushed main `898c91671f72fc0941517c3b2fa947313f0c789c`, covering both
+  failed-cost availability and signed estimated-net output. Each successful
+  Cloud Build produced one image with `requestedVerifyOption: VERIFIED`; exact
+  repository/revision, build and single-subject SLSA checks passed:
+  - API build `79634177-c6c1-4a75-90bb-beb50197538a`, image
+    `sheets-api@sha256:d9b86c8403e1ac27314893b04be5a5d446215957a006e8c644217061b4370641`.
+  - Worker build `8c7af03d-7ab3-4313-adba-6d301588b37d`, image
+    `sheets-worker@sha256:2aa013bb375c1d14c5dd516f39f472879336c923d69acf425a34be9e1c97b806`.
+  Artifact Registry prefix remains unchanged. Build configs and the verifier
+  are under `/tmp/zeler-calculator-build.RzLBZh`; metadata commands used
+  command-scoped system Python for the previously observed SDK instability.
+- Rollback authorities are the previously running `ab6e01f` API
+  `ec894447aa2eae1c5a2d0497938aa38034aafac394641fa7b4d5a1ab70aab9ff`
+  and worker `1e83c732e90a78ee0464cc62453d4ce93f425c7c358a8d2b1a3a84de4bf6fe92`.
+  Restore only the affected image line and recreate that service if necessary;
+  preserve pilot configuration, normalized data and unrelated Compose changes.
+- Both targeted deployments passed dry/real preflight, exact-one Compose image
+  replacement and the pre-pull 5 GiB floor. Worker recovery had zero running
+  jobs before recreation; recovery configuration remained pilot-only. Backups:
+  `/opt/zeler-platform/docker-compose.yml.pre-sheets-worker-898c916` and
+  `/opt/zeler-platform/docker-compose.yml.pre-sheets-api-898c916`.
+  Both exact new digests became healthy with zero restarts and `/health` HTTP
+  200. Free bytes after worker were 5,433,823,232; after API, **4,891,086,848**.
+  Reclaim narrowly verified unused image space before any further image pull;
+  no image, volume or data cleanup was performed in this release.
+- A read-only check through the new worker's calculator over 2,831 actual Mongo
+  rows independently checked 2,813 numeric net results. It found zero negative
+  nets and zero projected failed-cost cells, so it does not prove those branches
+  with live data; controlled dispatcher tests cover them. In particular, source
+  acquisition failures were not yet represented in those persisted rows.
+- The bounded recovery operator then scanned current source IDs and selected
+  **all 17 current publications with recorded cost acquisition failures** (hard
+  cap 20). It dry-validated 17, freshly acquired and guardedly updated all 17,
+  verified zero live-schema violations, and updated/read back 27 formula rows.
+  All 27 rows reported trusted shipping, commission and fixed-fee states; none
+  of the selected 17 items retained a failed-cost state. Detail-unavailable count
+  was zero, and the complete operator took **26.648s**. This is operator duration,
+  not formula HTTP latency. No source failure was artificially introduced to
+  exercise the unavailable branch.
+- `/tmp/zeler-calculator-build.RzLBZh/recover_costs.py` performs fresh production
+  acquisition/writes and is terminal; do not execute it as a status probe. This
+  repair sets no whole-inventory freshness marker and does not close automatic
+  item/catalog recovery, legacy projection, missing-SKU or HTTP/Sheet acceptance.
+- Final read-only check through the deployed API container found **2,834 actual
+  persisted formula rows**, all with independently checked numeric net arithmetic.
+  None exercised a negative net or unavailable cost. This confirms the recovered
+  rows are readable by the API image, not authenticated formula dispatch, Google
+  Sheets execution, complete SKU coverage or present temporal freshness. Both
+  deployment processes and the bounded recovery process are terminal.
