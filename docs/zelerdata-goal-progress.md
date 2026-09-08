@@ -21,6 +21,51 @@ Keep unrelated `.codegraph/` files untouched in both repositories.
 Pilot: seller `82453304`; initial historical window 2026-08-08 through
 2026-09-06, plus current snapshots. Other products are out of scope.
 
+## Buybox resolves the winner publication to its seller — 2026-09-08
+
+The recovery worker now persists `winning_user_id`: an owned winning publication
+uses its verified seller; another winner is resolved from the validated offer
+page or a bounded Sheets-detail `/items/{winner_item_id}` fallback. The fallback
+must match the winner publication and catalog product and provide a numeric
+seller identity. Explicit `winner: null` persists null; an unacquired winner
+identity remains absent. CATALOGO distinguishes that absence as DATA_UNAVAILABLE
+and requests recovery, rather than treating an unknown winner as optional NA.
+Existing payload/timestamp preservation on secondary acquisition failures remains.
+
+The [official competition contract](https://developers.mercadolibre.com.mx/es_ar/competencia-en-catalogo)
+describes `winner.item_id`. A read-only approved-runtime probe of three current
+pilot publications returned that field without `seller_id` in all three cases.
+Each winner was the queried publication, matched one product-offer row with a
+numeric seller, and its detail endpoint returned HTTP 200 with matching item,
+product and seller. This proves three owned-winner source paths, not live external
+winner coverage. No business data or credentials were printed/written. Artifact:
+local `/tmp/zeler-winner-source.EanPDo/probe.py`; VM
+`sudo python3 /tmp/zeler-winner-source-probe.py`. Its API image/health guard passed.
+
+Next source lead: the legacy catalog percentage helper in
+`sheetsellerapi/src/colecciones/router_publicaciones.py` around line 4390 uses a
+30-day calendar window and `catalog_history`; it is not an instantaneous winner
+flag. The platform already has source-gated catalog history/metric writers in
+`source_gated_read_model_writers.py`. Inspect their actual coverage before joining
+that percentage; do not infer a historical ratio from today's winner or copy the
+legacy single-event whole-window assumption without evidence.
+
+Five acquisition assertions and one missing-value assertion failed before their
+respective changes. Final focused Mongo buybox tests: 36 passed in 7.47s,
+including own/external/on-page/fallback winner, wrong product and explicit null.
+Handler suite: 53 passed in 0.15s. Ruff check/format, mypy (506 files), schema
+and diff checks pass. Full local replica-set regression (`uv run pytest --tb=short`):
+4,117 passed, nine expected skips and 356 warnings in 124.55s. The eight protected
+Mongo tests passed separately in 2.59s; the other skip is Caddy's optional
+environment check. External-winner runtime acceptance
+and the historical winning-time percentage remain required, not inferred here.
+
+No images were built/deployed. The runtime API still matched the recorded
+`1131554` image; worker drift was not rechecked. Verified Sheets API/worker images
+must include these local changes before production recovery/readback acceptance.
+Rollback removes winner resolution and the corresponding CATALOGO absent-value
+handling/tests, preserving stored data and prior offer-count acquisition.
+
 ## Catalog sales validate each interval without hiding item columns — 2026-09-08
 
 CATALOGO no longer gates its whole matrix on a productive orders marker. Each

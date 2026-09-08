@@ -29,6 +29,10 @@ from zeler_sheets.formulas.recovery import FormulaRecoveryQueue, RecoveryRequest
         "duplicate",
         "unavailable",
         "retained",
+        "winner_other",
+        "winner_fallback",
+        "winner_mismatch",
+        "winner_null",
     ],
 )
 async def test_buybox_acquires_offer_count_without_inventing_sole_competitor(
@@ -77,10 +81,23 @@ async def test_buybox_acquires_offer_count_without_inventing_sole_competitor(
                     "catalog_product_id": "MLA9",
                     "status": "winning",
                     "current_price": 120,
-                    "winner": {"price": 119},
+                    "winner": None
+                    if case == "winner_null"
+                    else {
+                        "item_id": "MLA2"
+                        if case in {"winner_other", "winner_fallback", "winner_mismatch"}
+                        else "MLA1",
+                        "price": 119,
+                    },
                     "competitors_sharing_first_place": 0,
                     "competitor_count": 999,
                     "only_competitor": True,
+                }
+            if path == "/items/MLA2":
+                return {
+                    "id": "MLA2",
+                    "seller_id": 42,
+                    "catalog_product_id": "MLA8" if case == "winner_mismatch" else "MLA9",
                 }
             assert path == "/products/MLA9/items"
             if case in {"unavailable", "retained"}:
@@ -88,7 +105,7 @@ async def test_buybox_acquires_offer_count_without_inventing_sole_competitor(
                     503, request=httpx.Request("GET", "https://gateway.test")
                 ).raise_for_status()
             rows = [{"item_id": "MLA1", "seller_id": 82453304}]
-            if case == "multiple":
+            if case in {"multiple", "winner_other"}:
                 rows.append({"item_id": "MLA2", "seller_id": 42})
             if case == "empty":
                 rows = []
@@ -116,14 +133,23 @@ async def test_buybox_acquires_offer_count_without_inventing_sole_competitor(
     assert await FormulaRecoveryWorker(db=recovery_db, queue=queue, gateway=Gateway()).process_one()
     stored = await recovery_db.sheets_catalog_buybox_snapshots.find_one({"_id": "82453304:MLA1"})
     job = await queue.collection.find_one({"_id": key})
-    assert calls == ["/items/MLA1/price_to_win?version=v2", "/products/MLA9/items"]
+    assert calls == ["/items/MLA1/price_to_win?version=v2", "/products/MLA9/items"] + (
+        ["/items/MLA2"] if case in {"winner_fallback", "winner_mismatch"} else []
+    )
     if case == "retained":
         assert stored == prior
     elif case in {"malformed", "short_page", "wrong_owner", "duplicate", "unavailable"}:
         assert stored["price"] == 120
         assert stored["only_competitor"] is None
         assert stored["competitor_count"] is None
+    elif case.startswith("winner_"):
+        if case == "winner_mismatch":
+            assert "winning_user_id" not in stored
+        else:
+            assert stored["winning_user_id"] == (None if case == "winner_null" else "42")
+        assert stored["competitor_count"] == (2 if case == "winner_other" else 1)
     else:
+        assert stored["winning_user_id"] == "82453304"
         assert stored["only_competitor"] is (case == "sole")
         assert stored["competitor_count"] == (
             200 if case == "paged" else 2 if case == "multiple" else 0 if case == "empty" else 1
@@ -132,7 +158,7 @@ async def test_buybox_acquires_offer_count_without_inventing_sole_competitor(
         "pending"
         if case in {"unavailable", "retained"}
         else "failed"
-        if case in {"malformed", "short_page", "wrong_owner", "duplicate"}
+        if case in {"malformed", "short_page", "wrong_owner", "duplicate", "winner_mismatch"}
         else "completed"
     )
 
@@ -225,7 +251,7 @@ async def test_buybox_http_recovers_current_membership_then_reuses_mongo(
                 "catalog_product_id": "MLA9",
                 "status": "winning",
                 "current_price": 120,
-                "winner": {"price": 119},
+                "winner": {"item_id": "MLA1", "price": 119},
                 "competitors_sharing_first_place": 0,
             }
 
@@ -382,7 +408,7 @@ async def test_buybox_explicit_item_recovery_is_owned_fresh_and_source_bound(
                 "status": "winning",
                 "current_price": 120,
                 "competitors_sharing_first_place": 0,
-                "winner": {"price": 119},
+                "winner": {"item_id": "MLA1", "price": 119},
             }
 
     assert await FormulaRecoveryWorker(

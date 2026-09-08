@@ -206,7 +206,7 @@ class RemainingPhase4FormulaHandlers:
                 )
         recoverable = set(missing_buybox)
         for source, value in zip(catalog_rows, values[header_rows:], strict=True):
-            if value[21] == "DATA_UNAVAILABLE" or value[23] == "DATA_UNAVAILABLE":
+            if any(value[index] == "DATA_UNAVAILABLE" for index in (20, 21, 23)):
                 recoverable.add(str(source["item_id"]))
         invalid_items = tuple(sorted(set(missing_items) | set(missing_rows)))
         inventory_gap = not current or not rows_current or bool(invalid_items)
@@ -459,7 +459,9 @@ def _catalogo_row(
         ),
         _sheet_optional_number(_first_value(buybox, "winning_price", "winner_price")),
         _selected_price(current, tipo_precio=tipo_precio),
-        _first_value(buybox, "winning_user_id", "winner_user_id", "winner_user"),
+        buybox.get("winning_user_id", "DATA_UNAVAILABLE")
+        if buybox is not None
+        else "DATA_UNAVAILABLE",
         catalog_shared_users(buybox),
         _sheet_optional_number(_first_value(buybox, "price_to_win", "price_to_win_amount")),
         buybox["only_competitor"]

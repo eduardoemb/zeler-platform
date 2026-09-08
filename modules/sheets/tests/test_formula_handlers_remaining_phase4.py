@@ -82,6 +82,25 @@ class FakeDb:
 NOW = datetime(2026, 6, 15, 12, 0, tzinfo=UTC)
 
 
+@pytest.mark.parametrize(
+    "snapshot,expected",
+    [
+        ({}, "DATA_UNAVAILABLE"),
+        ({"winning_user_id": None}, None),
+        ({"winning_user_id": "42"}, "42"),
+    ],
+)
+def test_catalog_winner_missing_is_not_optional_absence(
+    snapshot: dict[str, Any], expected: Any
+) -> None:
+    from zeler_sheets.formulas.handlers_remaining_phase4 import _catalogo_row
+
+    assert (
+        _catalogo_row({"item_id": "MLA1"}, buybox=snapshot, sales={}, tipo_precio="base")[20]
+        == expected
+    )
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("coverage", [0, 30, 400])
 async def test_catalog_sales_require_each_window_without_hiding_item_data(coverage: int) -> None:
@@ -167,7 +186,12 @@ async def test_catalogo_uses_verified_inventory_and_requests_missing_competition
         catalog_product_id="MLA9",
         price=Decimal("100"),
     )
-    snapshot = {"item_id": "MLA1", "competitors_sharing_first_place": 0, "only_competitor": False}
+    snapshot = {
+        "item_id": "MLA1",
+        "competitors_sharing_first_place": 0,
+        "only_competitor": False,
+        "winning_user_id": "42",
+    }
     repository = AsyncMock(spec=FormulaReadModelRepository)
     repository.find_recent_item_inventory.return_value = ([row], ["MLA1"], (), state != "expired")
     repository.find_recent_catalog_buybox_inventory.return_value = (

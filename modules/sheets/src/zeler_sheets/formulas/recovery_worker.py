@@ -303,6 +303,38 @@ class FormulaRecoveryWorker:
                     offers, item_id=identity, seller_id=requested.seller_id
                 )
                 snapshot.update(competitor_count=count, only_competitor=only)
+                winner = resource.get("winner")
+                if "winner" in resource and winner is None:
+                    snapshot["winning_user_id"] = None
+                elif isinstance(winner, dict):
+                    winner_id = winner.get("item_id")
+                    if isinstance(winner_id, str) and re.fullmatch(r"ML[A-Z][0-9]+", winner_id):
+                        if winner_id == identity:
+                            snapshot["winning_user_id"] = requested.seller_id
+                        else:
+                            matches = [
+                                row for row in offers["results"] if row["item_id"] == winner_id
+                            ]
+                            if len(matches) == 1:
+                                winner_seller = matches[0].get("seller_id")
+                            else:
+                                async with asyncio.timeout(10):
+                                    detail = await self.detail_gateway.fetch_resource(
+                                        seller_id=requested.seller_id, path=f"/items/{winner_id}"
+                                    )
+                                if (
+                                    not isinstance(detail, dict)
+                                    or detail.get("id") != winner_id
+                                    or detail.get("catalog_product_id") != source.catalog_product_id
+                                ):
+                                    raise ValueError("winner publication identity is inconsistent")
+                                winner_seller = detail.get("seller_id")
+                            if (
+                                not str(winner_seller).isascii()
+                                or not str(winner_seller).isdecimal()
+                            ):
+                                raise ValueError("winner seller identity is unavailable")
+                            snapshot["winning_user_id"] = str(winner_seller)
             except (httpx.HTTPError, TimeoutError, GatewayRateLimitError, ValueError) as exc:
                 offer_failure = exc
             current = await self.db.items.find_one(
