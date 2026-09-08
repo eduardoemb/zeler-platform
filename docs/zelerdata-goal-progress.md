@@ -3532,3 +3532,47 @@ retain their contract; other product deployments remain out of scope.
   no service rebuild. Bootstrap still needs an updated image before a future
   run using the corrected backfill. Do not roll back by recreating wrong status
   projections or inventing status-history records.
+
+## Full inventory revalidation on corrected worker: active
+
+- Prior job was authoritatively terminal: failed/source_incomplete, offset 1,900,
+  20 unavailable IDs, elapsed cooldown, zero running recoveries. Those 20 IDs
+  now have matching source/group receipts under current code; this is not a
+  current-freshness claim. Deployed SKU/status corrections justify one new sweep.
+- Admitted full inventory once through the normal API recovery helper, running
+  worker source `e613707`, unchanged API source `6098a93`. Same coalesced job key:
+  `5f2485d573679264481950cce24b1373d2eb93f11c1f79ea2aca606b92d20a8f`.
+  New protected receipt (0600):
+  `/var/lib/zeler-platform/repairs/inventory-corrected-e613707.json`.
+  `/tmp/zeler-inventory-corrected-e613707.py prepare` already ran; observe only
+  `status` or `diagnose`. Local artifacts: `/tmp/zeler-inventory-e613707.dV849M/`.
+- Latest checkpoint: **running, offset 540/1,900, 0 unavailable IDs**, inventory
+  observation age **240.99s**, operator elapsed **249.56s**. CALCULADORA/CALIDAD
+  each returned 2,150 rows and 1,355 missing publications, in **2.7624s/1.9972s**;
+  795 numeric price rows in CALCULADORA. Membership is current but coverage is
+  explicitly incomplete. Global freshness markers unchanged. This is not a
+  terminal result, all-fields validation, authenticated HTTP or p95 evidence.
+- No new executable change/build/deployment occurred in this checkpoint. Both
+  service image sources remain as above; this evidence-only update needs no
+  image rebuild. Observe the existing job to completion before another sweep.
+
+## Current orders contract: forward shipment discovery remains missing
+
+- Official documentation checked September 8, 2026 describes the order shipment
+  Hosted View as an array, including single results. Select purchase shipments by
+  `type=forward`, not position; `204` can mean absence or delayed propagation.
+  Public routing uses `X-New-Domain`; the older view is scheduled for deprecation
+  at September's end. This does not mean the ordinary order-detail endpoint is
+  itself replaced. [Mercado Libre orders documentation](https://developers.mercadolibre.com.mx/gestiona-ventas)
+- Repository evidence: `FormulaRecoveryWorker._shipments` already consumes the
+  reverse relationship with its new-domain header and seller checks. In contrast,
+  `_order_detail` returns after ownership/date validation without consulting
+  `/orders/{id}/shipments`. `_shipment_id` in event persistence reads embedded
+  shipping or a top-level ID; shipping handlers consume that singular model.
+- Therefore a missing recoverable shipment link is not resolved by the forward
+  endpoint today. This is an implementation gap, not proof that every current
+  order response is incompatible. Next use a bounded asynchronous fallback after
+  order ownership verification, persist the verified purchase relationship, keep
+  partial data truthful, and test empty/partial/multiple/foreign cases. Do not
+  select a return shipment as the original or treat `204` as permanent absence.
+  Full orders-contract acceptance remains open; no adapter was changed here.
