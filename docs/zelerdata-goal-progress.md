@@ -3726,3 +3726,67 @@ repeat the same bounded profile before a justified full-inventory validation.
 Bootstrap also imports the backfill and needs the change in its image before
 its next run; no bootstrap invocation is required for this work unit. The API
 does not execute enrichment and needs no deployment for this optimization.
+
+## Listing-quote reuse deployed: fewer requests verified, full sweep pending
+
+- Verified Cloud Build `0eaab654-9922-44cf-b78f-03eb2589de90` succeeded for source
+  `62d799ea0bf7506b0dbfd979447287170101a98a`, worker digest
+  `d4a665c9bf05fc4ee3463ca71b3c10a93cde06a7339250fcea6ca5e4537ff6a3`.
+  CI test `34254320135` and lint `34254320209` succeeded. Canonical provenance
+  checks passed locally and on the VM; the VM image/source map was updated.
+- Worker-only activation passed HTTP health 200 with zero restarts. The API
+  remains source `6098a93`, digest
+  `d9bfc8a87bf68765bb453618113402139dcd90abbb8d1d9ae3674b96ba2bc844`.
+  Worker rollback is `69d66ad`, digest
+  `4d1936399c17e0bf0bff72ef51c841a0443e9eb8e0c03ffe674aa29d925020dd`.
+  Backup: `/opt/zeler-platform/docker-compose.yml.pre-sheets-worker-activate-62d799e`.
+- Removed only unused worker image
+  `4fb14b0d69ee394f2db0bc9e9a90fd4a07a1be834a6195b2ac0a44b08a4daa41`, after
+  checking all containers, four protected current/rollback images and registry
+  recoverability. No data or volumes removed. Preflight gates passed; pull took
+  **14.44s** and did not change Compose. Post-activation free space was
+  **5,390,544,896 bytes**, only slightly above the 5 GiB floor.
+- Repeated the same two dry-run samples through the normal gateway. Each now
+  makes **20 listing-price calls instead of 40**, with 20 validated items, zero
+  stale items and zero gateway errors. No business-data writes or running
+  recovery jobs were present in this measurement.
+
+| Measurement after deployment | Offset 0 | Offset 940 |
+| --- | ---: | ---: |
+| Acquisition dry run | 4.5379s | 5.7619s |
+| Stored projection dry run | 0.1186s | 0.3149s |
+| Listing-price calls | 20 | 20 |
+| Summed listing-price request time | 5.4758s | 3.8417s |
+
+The first sample was slower than baseline despite fewer calls; the second was
+faster. These are separate upstream observations, not a controlled estimate of
+full-sweep speedup. Request elimination is proven for both samples; completion
+within the freshness window is not. Profile script is now
+`/tmp/zeler-inventory-profile.vPWWns/profile.py`; the original baseline script
+at `/tmp/zeler-inventory-profile-vPWWns.py` still asserts the old worker digest.
+Do not rerun cleanup, pull or activation as status checks.
+
+The active worker contains the intended executable change. This evidence-only
+update needs no service rebuild. Bootstrap needs a current verified image before
+its next invocation of changed backfill. All-52 HTTP, real Sheets/app and the
+other goal acceptance requirements remain open.
+
+### Full inventory admitted once on 62d799e: running
+
+After the read-only comparison, admitted one full inventory recovery through the
+normal API helper using the formula's recovery request. This is internal runtime
+validation, not an authenticated HTTP smoke. The old coalesced job was terminal,
+its cooldown elapsed, and no recovery jobs were running before admission.
+Protected receipt: `/var/lib/zeler-platform/repairs/inventory-listing-reuse-62d799e.json`.
+Job: `5f2485d573679264481950cce24b1373d2eb93f11c1f79ea2aca606b92d20a8f`.
+`/tmp/zeler-inventory-profile.vPWWns/pilot.py prepare` already ran: only use
+`status`/`diagnose` for observation; never reopen it because a poll is slow.
+
+Latest checkpoint: **running, 200/1,900, zero unavailable IDs**, inventory age
+**54.33s**, operator elapsed **61.42s**. CALCULADORA/CALIDAD each returned 2,018
+rows in **1.9180s / 1.6012s**, with **1,720 / 1,714 missing publications** and
+incomplete coverage. Membership was current, no expiry warning, global freshness
+markers unchanged. CALCULADORA had 298 numeric price cells. Counts are observed
+during concurrent progress, not an atomic end-to-end snapshot or proof of all
+fields. Observe this job to completion before evaluating freshness or admitting
+another whole-inventory sweep.
