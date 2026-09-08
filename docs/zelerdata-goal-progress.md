@@ -21,6 +21,43 @@ Keep unrelated `.codegraph/` files untouched in both repositories.
 Pilot: seller `82453304`; initial historical window 2026-08-08 through
 2026-09-06, plus current snapshots. Other products are out of scope.
 
+## Real not-found observation persisted; fresh inventory in progress — 2026-09-08
+
+The deployed worker persisted `catalog_product_not_found` for the one still
+missing owned product identified from the prior source-rejected batches. The
+read-only precheck found no snapshot and no existing single-product job. One
+normal queue admission then completed on attempt one; the follow-up read found
+the snapshot, `source=sheets_backfill`, and the not-found observation aged
+23.079s. Title, description, image and attributes were absent, not fabricated.
+This proves a real upstream not-found observation persisted by the normal
+worker, not permanent source impossibility or whole-catalog acceptance.
+
+Job: `b4ee182b03ff37ec30230ca380bfaf9af7bbd7e49b3ae0a83d609c417de932ff`.
+Receipt: `/var/lib/zeler-platform/repairs/catalog-not-found-449a382.json`.
+Guarded artifact: `/tmp/zeler-catalog-unavailable.I9e2ZV/not-found.py` (VM and
+local). `prepare` has executed; do not repeat it. Its status selection is tied
+to the prior rejected batches and expects exactly one product without a stored
+title; if that source later recovers, re-resolve the scope instead of overriding
+the guard. This operator check is not authenticated production formula HTTP.
+
+After confirming no active recovery jobs, admitted one current inventory
+recovery for the newly deployed code. No cooldowns or timestamps were overridden.
+The retained old enumeration in the immediate pending response was not new
+coverage. The next fresh checkpoint reported **120/1,900**, zero unavailable
+IDs, enumeration age 23.77s and running state. This run is not complete.
+
+Observe the existing job
+`5f2485d573679264481950cce24b1373d2eb93f11c1f79ea2aca606b92d20a8f`;
+receipt `/var/lib/zeler-platform/repairs/catalog-inventory-449a382.json`.
+Artifacts are `/tmp/zeler-catalog-unavailable.I9e2ZV/{inventory,products,watch-products}.py`.
+The watcher is live in exec session **89549** and has its own exclusive receipt
+`catalog-product-admission-449a382.json`. Poll that handle; never restart from a
+stale progress report. It will make one normal product admission only after a
+complete still-current inventory. Subsequent catalog coverage and source-reason
+consumer verification remain required. No further build/deploy or executable
+repository changes occurred; rollback remains the preceding rollout boundary,
+not deletion of legitimately acquired observations.
+
 ## Catalog unavailable-source rollout verified — 2026-09-08
 
 Sheets API and worker now both run source
