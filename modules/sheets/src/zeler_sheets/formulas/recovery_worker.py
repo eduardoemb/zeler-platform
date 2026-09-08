@@ -26,6 +26,7 @@ from zeler_sheets.event_persistence import (
     SheetsEventPersistence,
     _canonical_shipment_document,
     _receiver_address_snapshot,
+    _shipment_id,
 )
 from zeler_sheets.formulas.dispatcher import FormulaDataUnavailableError
 from zeler_sheets.formulas.read_models import (
@@ -547,7 +548,50 @@ class FormulaRecoveryWorker:
             or not detail["order_items"]
         ):
             raise ValueError("order detail scope or required data mismatch")
-        return detail, missing
+        return await self._recover_order_shipment(seller_id, identity, detail, missing)
+
+    async def _recover_order_shipment(
+        self, seller_id: str, identity: str, detail: dict[str, Any], missing: frozenset[str]
+    ) -> tuple[dict[str, Any], frozenset[str]]:
+        if _shipment_id(detail) or "no_shipping" in (detail.get("tags") or []):
+            return detail, missing
+        unavailable = missing | {"shipping"}
+        try:
+            async with asyncio.timeout(5):
+                response = await self.detail_gateway.request(
+                    method="GET",
+                    seller_id=seller_id,
+                    path=f"/orders/{identity}/shipments?hosted=true",
+                    headers={"X-New-Domain": "true"},
+                )
+            # 204 also represents delayed propagation, not proven absence.
+            if response.status_code != 200:
+                return detail, unavailable
+            relations = response.json()
+        except (httpx.HTTPError, GatewayRateLimitError, TimeoutError, ValueError):
+            return detail, unavailable
+        if not isinstance(relations, list) or not 1 <= len(relations) <= 100:
+            return detail, unavailable
+        forward: set[str] = set()
+        for relation in relations:
+            if not isinstance(relation, dict) or any(
+                relation.get(field) is not None and str(relation[field]) != expected
+                for field, expected in (("order_id", identity), ("seller_id", seller_id))
+            ):
+                return detail, unavailable
+            if relation.get("type") == "forward":
+                shipment_id = str(relation.get("id"))
+                if not shipment_id.isascii() or not shipment_id.isdecimal():
+                    return detail, unavailable
+                forward.add(shipment_id)
+        if len(forward) != 1:
+            return detail, unavailable
+        shipping = detail.get("shipping")
+        recovered = {
+            **detail,
+            "shipping": {**(shipping if isinstance(shipping, dict) else {}), "id": forward.pop()},
+        }
+        return recovered, missing - {"shipping"}
 
     async def _questions(self, job: dict[str, Any]) -> None:
         seller_id = job["seller_id"]

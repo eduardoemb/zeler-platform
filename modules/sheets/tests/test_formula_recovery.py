@@ -2341,10 +2341,96 @@ async def test_current_shipment_projection_joins_recovery_transaction(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("partial", [False, True])
+async def test_order_detail_recovers_purchase_shipment_from_hosted_relationship(
+    partial: bool,
+) -> None:
+    from unittest.mock import Mock
+
+    import httpx
+
+    from zeler_sheets.formulas.recovery_worker import FormulaRecoveryWorker
+
+    resource = {
+        "id": 42,
+        "seller": {"id": "pilot"},
+        "date_created": "2026-08-20T10:00:00Z",
+        "order_items": [{"item": {"id": "MLM42"}, "quantity": 1, "unit_price": 30}],
+        "shipping": {},
+    }
+    calls: list[str] = []
+
+    class Gateway:
+        async def request(self, **kwargs: Any) -> httpx.Response:
+            calls.append(kwargs["path"])
+            assert kwargs["seller_id"] == "pilot"
+            if kwargs["path"] == "/orders/42":
+                return httpx.Response(
+                    206 if partial else 200,
+                    headers={"X-Content-Missing": "shipping,feedback"} if partial else {},
+                    json=resource,
+                )
+            assert kwargs["path"] == "/orders/42/shipments?hosted=true"
+            assert kwargs["headers"] == {"X-New-Domain": "true"}
+            return httpx.Response(
+                200, json=[{"id": 999, "type": "return"}, {"id": 456, "type": "forward"}]
+            )
+
+    worker = FormulaRecoveryWorker(db=None, queue=Mock(), gateway=Gateway())
+    detail, missing = await worker._order_detail(
+        "pilot", "42", request().date_from, request().date_to
+    )
+    assert calls == ["/orders/42", "/orders/42/shipments?hosted=true"]
+    assert detail["shipping"] == {"id": "456"}
+    assert missing == (frozenset({"feedback"}) if partial else frozenset())
+    assert resource["shipping"] == {}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "status,relations",
+    [
+        (204, None),
+        (503, {}),
+        (206, [{"id": 456, "type": "forward"}]),
+        (200, []),
+        (200, {"id": 456, "type": "forward"}),
+        (200, [{"id": 999, "type": "return"}]),
+        (200, [{"id": 456, "type": "forward"}, {"id": 789, "type": "forward"}]),
+        (200, [{"id": 456, "type": "forward", "seller_id": "foreign"}]),
+        (200, [{"id": 456, "type": "forward", "order_id": 999}]),
+        (200, [{"id": True, "type": "forward"}]),
+    ],
+)
+async def test_unresolved_forward_relationship_keeps_order_data_unavailable(
+    status: int, relations: Any
+) -> None:
+    from unittest.mock import Mock
+
+    import httpx
+
+    from zeler_sheets.formulas.recovery_worker import FormulaRecoveryWorker
+
+    resource = {"id": 42, "total_amount": 30}
+
+    class Gateway:
+        async def request(self, **kwargs: Any) -> httpx.Response:
+            return httpx.Response(status, json=relations)
+
+    detail, missing = await FormulaRecoveryWorker(
+        db=None, queue=Mock(), gateway=Gateway()
+    )._recover_order_shipment("pilot", "42", resource, frozenset({"feedback"}))
+    assert detail == resource
+    assert missing == frozenset({"shipping", "feedback"})
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("missing_field", ["buyer", "shipping"])
+@pytest.mark.parametrize("recover_shipping", [False, True])
 async def test_missing_identity_keeps_sales_but_rejects_consumers_that_require_it(
     recovery_db: Any,
     missing_field: str,
+    recover_shipping: bool,
 ) -> None:
     import json
     from pathlib import Path
@@ -2392,15 +2478,24 @@ async def test_missing_identity_keeps_sales_but_rejects_consumers_that_require_i
 
         async def request(self, **kwargs: Any) -> httpx.Response:
             calls.append(kwargs["path"])
+            if kwargs["path"].endswith("/shipments?hosted=true"):
+                if recover_shipping:
+                    return httpx.Response(200, json=[{"id": 456, "type": "forward"}])
+                return httpx.Response(204)
             return httpx.Response(206, headers={"X-Content-Missing": missing_field}, json=resource)
 
     await FormulaRecoveryWorker(db=recovery_db, gateway=Gateway(), queue=queue).process_one()
     job = await queue.collection.find_one({"_id": requested.key})
     assert job["state"] == "completed", job.get("failure_reason")
     stored = await recovery_db.orders.find_one({"_id": "42"})
+    if recover_shipping and missing_field == "shipping":
+        assert stored["shipment_id"] == "456"
+        assert "shipment_id" not in stored.get("unavailable_fields", [])
+        assert stored["total_amount"].to_decimal() == 30
+        return
     identity_field = "buyer_id" if missing_field == "buyer" else "shipment_id"
     assert identity_field not in stored
-    assert stored["unavailable_fields"] == [identity_field]
+    assert identity_field in stored["unavailable_fields"]
     undeclared = {key: value for key, value in stored.items() if key != "unavailable_fields"}
     for invalid in (
         ()
@@ -2447,8 +2542,38 @@ async def test_missing_identity_keeps_sales_but_rejects_consumers_that_require_i
         await handlers.sheetseller_ordenes_por_sku(
             context("ZELERDATA_ORDENESPORSKU", skus=["unrelated"], compradores="si")
         )
-    assert len(calls) == 2  # Formula evaluation never re-fetches the source.
-    assert calls[-1] == "/orders/42"
+    assert len(calls) == 3  # Only acquisition performs the additional relationship request.
+    assert calls[-1] == "/orders/42/shipments?hosted=true"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["timeout", "transport", "cancel"])
+async def test_order_shipment_fallback_preserves_data_but_propagates_cancellation(
+    failure: str,
+) -> None:
+    from unittest.mock import Mock
+
+    import httpx
+
+    from zeler_sheets.formulas.recovery_worker import FormulaRecoveryWorker
+
+    class Gateway:
+        async def request(self, **kwargs: Any) -> Any:
+            if failure == "cancel":
+                raise asyncio.CancelledError
+            if failure == "timeout":
+                raise TimeoutError
+            raise httpx.ReadTimeout("must not persist upstream error")
+
+    resource = {"id": 42, "total_amount": 30}
+    worker = FormulaRecoveryWorker(db=None, queue=Mock(), gateway=Gateway())
+    if failure == "cancel":
+        with pytest.raises(asyncio.CancelledError):
+            await worker._recover_order_shipment("pilot", "42", resource, frozenset())
+    else:
+        detail, missing = await worker._recover_order_shipment("pilot", "42", resource, frozenset())
+        assert detail == resource
+        assert missing == frozenset({"shipping"})
 
 
 @pytest.mark.asyncio
@@ -2568,9 +2693,13 @@ async def test_order_recovery_publishes_only_complete_owned_inventory(
                 "results": resources[offset : offset + 1],
             }
 
-        async def request(self, *, method: str, seller_id: str, path: str) -> httpx.Response:
+        async def request(
+            self, *, method: str, seller_id: str, path: str, headers: Any = None
+        ) -> httpx.Response:
             assert method == "GET" and seller_id == "pilot"
             calls.append(path)
+            if path.endswith("/shipments?hosted=true"):
+                return httpx.Response(204)
             if path == "/orders/999" and failure != "extra_mongo_row":
                 extra = {**resources[0], "id": 999, "status": "cancelled"}
                 if failure == "extra_foreign":
@@ -2638,17 +2767,17 @@ async def test_order_recovery_publishes_only_complete_owned_inventory(
         assert len(calls) == (
             1
             if failure == "empty"
-            else 2
+            else 3
             if failure == "extra_empty_search"
-            else 5
+            else 8
             if failure in {"extra_confirmed", "extra_partial"}
-            else 4
+            else 6
         )
         if failure in {"extra_confirmed", "extra_partial", "extra_empty_search"}:
             extra_stored = await recovery_db.orders.find_one({"_id": "999"})
             assert extra_stored["status"] == "cancelled"
             if failure == "extra_partial":
-                assert extra_stored["unavailable_fields"] == ["buyer_id"]
+                assert extra_stored["unavailable_fields"] == ["buyer_id", "shipment_id"]
         assert read_model_reconciliation_marker_covers(
             marker, date_from=requested.date_from, date_to=requested.date_to
         )
@@ -2659,7 +2788,7 @@ async def test_order_recovery_publishes_only_complete_owned_inventory(
         if failure == "partial_response":
             for stored in await recovery_db.orders.find({}).to_list(None):
                 assert "buyer_id" not in stored
-                assert stored["unavailable_fields"] == ["buyer_id"]
+                assert stored["unavailable_fields"] == ["buyer_id", "shipment_id"]
         if failure == "partial_recovered":
             for stored in await recovery_db.orders.find({}).to_list(None):
                 assert stored["status"] == "cancelled"
@@ -2921,6 +3050,7 @@ async def test_http_missing_data_recovers_in_background_and_next_http_succeeds(
         "last_updated": "2026-08-20T11:00:00Z",
         "total_amount": 30,
         "order_items": [{"item": {"id": "MLM42"}, "quantity": 1, "unit_price": 30}],
+        "tags": ["no_shipping"],
     }
     if read_model == "shipments":
         await recovery_db.orders.insert_one(

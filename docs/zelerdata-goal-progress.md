@@ -3576,3 +3576,37 @@ retain their contract; other product deployments remain out of scope.
   partial data truthful, and test empty/partial/multiple/foreign cases. Do not
   select a return shipment as the original or treat `204` as permanent absence.
   Full orders-contract acceptance remains open; no adapter was changed here.
+
+## Work unit: recover missing purchase shipment relationships
+
+- Two initial tests failed because `_order_detail` never queried the forward
+  relationship. After ownership/date validation, it now uses the normal detail
+  gateway for `/orders/{id}/shipments?hosted=true` with `X-New-Domain`, only when
+  the order lacks a shipment ID and does not explicitly declare `no_shipping`.
+  Contract source: [Mercado Libre orders](https://developers.mercadolibre.com.mx/gestiona-ventas).
+- A bounded array (at most 100 entries) must identify one distinct numeric
+  purchase shipment by `type=forward`. Returns are not purchase shipments;
+  conflicting optional seller/order identities invalidate the relationship.
+  The recovered ID enters the existing normalized, guarded order transaction;
+  only the resolved shipping-unavailable flag is cleared. Other partial fields
+  and the original input remain unchanged. No schema or new queue was added.
+- Empty, partial, unavailable, malformed, ambiguous or foreign relationships
+  preserve available order data and explicitly mark shipping unavailable, even
+  if the original response omitted a partial-content header. A 204 does not
+  prove permanent absence. Fallback has a five-second deadline; transport/rate
+  errors preserve partial data, while cancellation propagates. Existing trusted
+  Mongo field fallback remains in the existing writer.
+- Focused adapter/recovery/consumer/HTTP tests: **41 passed in 6.16s**, including
+  a real-Mongo purchase-ID publication. Updated fixture gateway behavior and
+  expected request counts for the extra asynchronous call; the no-shipping HTTP
+  fixture now explicitly declares that fact instead of assuming it from absence.
+  Full normal-allocator root suite: **3,934 passed, 9 skipped, 356 warnings in
+  107.42s**; protected Mongo integration **8 passed in 3.00s**. Ruff check/format,
+  mypy (505 files) and diff check pass. One remaining root skip needs Caddy keys.
+- A verified **Sheets worker** image and bounded live missing-link recovery are
+  still required. Formula HTTP handlers, bootstrap entrypoints and other products
+  are unchanged. Do not deploy over the active inventory recovery. This does not
+  complete multi-shipment modeling, every orders API migration or all-52 acceptance.
+- Rollback boundary: `_recover_order_shipment`, its `_order_detail` call/import,
+  and corresponding tests/fixture changes. No production relationship repair
+  has run; rollback must not delete legitimately recovered persisted IDs.
