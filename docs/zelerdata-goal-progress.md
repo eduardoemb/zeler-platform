@@ -3014,3 +3014,24 @@ retain their contract; other product deployments remain out of scope.
   full sweep against the 15-minute window without extending observation times
   artificially. The documentation-only commits after `b74b758` do not affect
   service images; no further build is needed for this evidence record alone.
+- Continued observation of the same job reached offset **560/1,900** at
+  **550.17 seconds**, still running with one exhausted 20-publication batch.
+  Both formula reads then reported **1,341** missing publications, 2,167 output
+  rows including placeholders, and incomplete coverage in 1.4453/1.4016 seconds.
+  Marker fingerprints remain unchanged. The observed duration makes completion
+  inside the 15-minute window doubtful, but expiration has not yet been observed.
+- Code inspection located the partial-variation cause: the SKU-index builder
+  omits variations lacking SKU, the formula-row builder consumes those index
+  documents, and backfill withholds its receipt when only some variations are
+  represented. A fix must preserve each identifiable variation without inventing
+  or inheriting a SKU, keep SKU lookup indexes truthful, and reconcile obsolete
+  row identities when SKU availability changes. Both backfill and native event
+  persistence consume the builder; modifying only the receipt condition would
+  falsely certify incomplete data. No such relaxation was made.
+- A new normal-allocator root attempt at `4e50c94` exited **139/SIGSEGV** during
+  `test_publicador_health_registers_mongo_rabbitmq_and_registry_checks`, inside
+  Pydantic/FastAPI route construction. The exact isolated test subsequently
+  passed **1 test in 0.19s** with no code, dependency or allocator change. This
+  does not establish the native crash's cause or full-root acceptance; retain
+  the earlier explicitly qualified `PYTHONMALLOC=malloc` evidence. No product
+  code or runtime configuration was changed during this observation unit.
