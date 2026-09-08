@@ -2316,3 +2316,23 @@ retain their contract; other product deployments remain out of scope.
   rows are readable by the API image, not authenticated formula dispatch, Google
   Sheets execution, complete SKU coverage or present temporal freshness. Both
   deployment processes and the bounded recovery process are terminal.
+
+## Post-calculator disk margin restored
+
+- Removed only two unused local image references from the older `d29ae52`
+  release: API `80df92e6eb2b91e85e9b27c7700df4618b7211c814b1a013749a867ffb9c9433`
+  and worker `d885b5117058456430d060d38cc11015995d8f9bcb8172914e6298fdc8abdfe7`.
+  Artifact Registry independently returned both exact digests before removal.
+  Checks against every running/stopped container found zero image references;
+  those checks were repeated immediately before the non-forced removals.
+- Current `898c916` and immediate rollback `ab6e01f` API/worker images were all
+  present and excluded by image ID, not merely tag. No container, volume, Mongo
+  document or remote registry artifact was deleted. The two local copies remain
+  recoverable by pulling their exact Artifact Registry digests.
+- Root free space increased from **4,890,542,080 to 5,975,814,144 bytes**, restoring
+  the 5 GiB pre-pull floor. The temporary operator
+  `/tmp/zeler-clean-calculator-old.py` has explicit check/remove modes and is
+  terminal; do not rerun removal as a status probe. This is operational image
+  cache cleanup, not a source/schema change requiring another Cloud Build.
+- Post-cleanup dry-run preflight passed, and read-only inspection confirmed both
+  deployed `898c916` image digests still healthy. No deployment was performed.
