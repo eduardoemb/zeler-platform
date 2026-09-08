@@ -21,6 +21,52 @@ Keep unrelated `.codegraph/` files untouched in both repositories.
 Pilot: seller `82453304`; initial historical window 2026-08-08 through
 2026-09-06, plus current snapshots. Other products are out of scope.
 
+## Buybox source-count API deployed; acquisition gap measured — 2026-09-08
+
+Sheets API now runs source `1131554b2ceffb5d9d787c92e587966bdc09d6c9`, digest
+`3ca3930db3b311bbe6b4d5ef2ee2c08ba53b412ca07c5aa1b3281d0d1222c41f`.
+Build `e3a956fd-5b89-48b1-85bb-37c87023fafc` and CI test `34288359293` / lint
+`34288359306` succeeded before activation; provenance was already verified
+locally and in the VM canonical map. Only the API was replaced, with no running
+recovery jobs and `--no-deps --pull never`. HTTP health is **200**, zero restarts.
+Worker remains `449a382`, digest `88a61a75...`; the shared-value helper change
+does not require a worker rebuild.
+
+The exact unused local API cache digest `542a5406...` was removed only after
+all-container and Artifact Registry recoverability checks. Active/rollback
+images remained present, with no volumes or data removed. Preflight passed
+with automatic cleanup disabled; pull took 11.48s and left Compose unchanged.
+Post-activation free space was 5,915,353,088 bytes; recheck before future pulls.
+API rollback is prior running digest
+`37b750d889046d8ee4fa9f5996afa7f0fdd36c85b9348b77f86628c3720f5c7e`, with backup
+`/opt/zeler-platform/docker-compose.yml.pre-sheets-api-activate-1131554`.
+Artifacts: `/tmp/zeler-buybox-shared.8pPRC4/` locally and on the VM. Pull,
+activation and cleanup scripts have succeeded and must not be repeated.
+
+A read-only approved-runtime probe then measured the remaining buybox gap:
+
+- 939 stored publications explicitly have `catalog_listing=true`.
+- 473 buybox snapshots exist in total; 330 match those participating item IDs.
+- None of those 330 snapshots is within the 15-minute freshness window, and
+  all 330 lack the source `competitors_sharing_first_place` field.
+- 609 participating item IDs have no stored buybox snapshot.
+- `catalog_buybox_snapshots` is not in the worker's implemented recovery models.
+- The real Mongo-backed CATALOGOBUYBOX handler returns DATA_UNAVAILABLE for
+  that read model (0.0016s), rather than a fabricated current result.
+
+Probe: `sudo python3 /tmp/zeler-buybox-shared.8pPRC4/buybox.py` on the VM.
+It prints counts/booleans only and makes no upstream requests or business-data
+writes. Participation counts describe stored explicit source flags, not a newly
+enumerated current source audit. This confirms acquisition/membership/freshness
+work remains; successful deployment does not prove buybox data acceptance.
+Next implement bounded owned-item buybox recovery and source-bound consumer
+coverage without forcing global freshness markers or masking missing fields.
+
+No new executable repository code was changed in this deployment unit; the
+preceding 4,070-test regression and successful CI support the deployed source.
+This documentation-only delta does not require another image. The full goal,
+authenticated HTTP/Sheet checks and remaining product requirements stay open.
+
 ## Current catalog converged with two explained not-found products — 2026-09-08
 
 Both catalog handlers returned **883 available products plus two explained
