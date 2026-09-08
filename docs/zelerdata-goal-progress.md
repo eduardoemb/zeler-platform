@@ -21,6 +21,62 @@ Keep unrelated `.codegraph/` files untouched in both repositories.
 Pilot: seller `82453304`; initial historical window 2026-08-08 through
 2026-09-06, plus current snapshots. Other products are out of scope.
 
+## Bounded owned-publication buybox acquisition implemented locally — 2026-09-08
+
+The recovery worker now supports explicit buybox publication IDs through the
+existing `ItemIdsRecoveryRequest` and API admission helper. Item-row and buybox
+requests retain different deterministic keys because their read models differ.
+Buybox date-range requests are rejected; no unbounded seller-wide source request
+or new collection is introduced. Jobs retain the existing 20-ID limit and share
+the catalog worker's four-at-a-time joined acquisition/error handling.
+
+Before fetching, all selected publications must belong to the seller, explicitly
+participate in catalog and have an acquired item observation within 15 minutes.
+Each buybox fetch uses the Sheets detail identity and the existing version-v2
+competition endpoint. Publication/product response identities, source title/stock,
+status and presence of a valid shared-first-place field are required. The worker
+rechecks the stored item document after fetching and checks its lease before
+persisting; changed source data is rejected. Conditional snapshot writes preserve
+newer observations. Snapshot time is acquisition start, and successful buybox
+renewal eligibility now uses that time, not completion plus another 15 minutes.
+No global freshness marker is advanced.
+
+Seven new Mongo cases initially failed because buybox item requests were rejected.
+They now cover valid persistence, foreign ownership, non-participation, stale item
+data, source change during fetching, wrong response identity and newer-snapshot
+preservation. Valid persistence uses the generated buybox Mongo validator and
+preserves zero stock/shared count and the actual winner price. A real Request /
+formula context test exercises the normal API helper and confirms explicit-ID
+admission plus date-range rejection. A separate added cooldown case failed before
+the eligibility correction. Existing catalog tests cover the shared bounded-wave
+runner and cancellation/error behavior; these are not live buybox measurements.
+
+Verification: initial seven red cases 1.31s; selected acquisition/catalog cases
+14 passed in 3.12s; recovery suite 327 passed in 56.03s before the final API and
+cooldown additions; final buybox/cooldown selection 13 passed in 2.70s. Full root
+regression collected before the final cooldown parameterization passed 4,078
+tests, nine expected skips and 356 warnings in 143.81s. The final cooldown change
+was verified by the focused selection afterward. Protected Mongo tests passed
+eight cases in 2.37s. Ruff check/format, mypy (506 files), schema drift and diff
+checks pass; a test-context typing error was fixed using the actual Request and
+FormulaExecutionContext types.
+
+This is acquisition plumbing, **not finished automatic formula recovery**. The
+current buybox formula still depends on the global marker and does not select
+owned missing IDs from current inventory. Next add source-bound membership,
+freshness/purpose-field reads and explicit recovery intents in its real consumers;
+then verify the full local HTTP-to-worker-to-Mongo-to-second-read path. In
+particular, a source change after the worker's last check still needs rejection
+by the consumer; this unit is not an atomic cross-collection source certificate.
+Other unacquired buybox purpose fields and genuine source absence remain open.
+
+No build/deploy or production data mutation occurred. Runtime remains API
+`1131554` and worker `449a382`. Include this unit with the consumer changes in
+verified API/worker images before live acceptance, rather than deploying an
+incomplete reader/worker contract. Rollback removes the buybox request/model
+support, worker method and shared-runner extraction plus associated tests; it
+requires no schema/data deletion and must retain any later legitimate snapshots.
+
 ## Buybox source-count API deployed; acquisition gap measured — 2026-09-08
 
 Sheets API now runs source `1131554b2ceffb5d9d787c92e587966bdc09d6c9`, digest

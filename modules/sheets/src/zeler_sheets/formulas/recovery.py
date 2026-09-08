@@ -30,7 +30,14 @@ LEASE = timedelta(minutes=10)
 COOLDOWN = timedelta(minutes=15)
 MAX_ATTEMPTS = 3
 IMPLEMENTED_MODELS = frozenset(
-    {"questions", "orders", "shipments", "item_formula_rows", "catalog_product_snapshots"}
+    {
+        "questions",
+        "orders",
+        "shipments",
+        "item_formula_rows",
+        "catalog_product_snapshots",
+        "catalog_buybox_snapshots",
+    }
 )
 
 
@@ -137,7 +144,7 @@ class ItemIdsRecoveryRequest:
     def __post_init__(self) -> None:
         if (
             re.fullmatch(r"[0-9]+", self.seller_id) is None
-            or self.read_model != "item_formula_rows"
+            or self.read_model not in {"item_formula_rows", "catalog_buybox_snapshots"}
             or not 1 <= len(self.item_ids) <= 20
             or any(re.fullmatch(r"ML[A-Z][0-9]+", value) is None for value in self.item_ids)
         ):
@@ -252,6 +259,10 @@ class FormulaRecoveryQueue:
             request, CatalogProductIdsRecoveryRequest
         ):
             raise ValueError("catalog recovery requires explicit product IDs")
+        if request.read_model == "catalog_buybox_snapshots" and not isinstance(
+            request, ItemIdsRecoveryRequest
+        ):
+            raise ValueError("buybox recovery requires explicit publication IDs")
         if request.read_model == "item_formula_rows" and not isinstance(
             request, (ItemIdsRecoveryRequest, ItemInventoryRecoveryRequest)
         ):
@@ -503,7 +514,10 @@ class FormulaRecoveryQueue:
             + (timedelta(seconds=30 * 2 ** (job["attempts"] - 1)) if retry else COOLDOWN),
             "updated_at": now,
         }
-        if succeeded and job["read_model"] == "catalog_product_snapshots":
+        if succeeded and job["read_model"] in {
+            "catalog_product_snapshots",
+            "catalog_buybox_snapshots",
+        }:
             observed = job["updated_at"]
             if observed.tzinfo is None:
                 observed = observed.replace(tzinfo=UTC)

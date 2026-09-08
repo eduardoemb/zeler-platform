@@ -14,6 +14,150 @@ from pymongo.errors import ServerSelectionTimeoutError
 from zeler_sheets.formulas.recovery import FormulaRecoveryQueue, RecoveryRequest
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "state", ["valid", "foreign", "not_catalog", "expired", "changed", "wrong_response", "newer"]
+)
+async def test_buybox_explicit_item_recovery_is_owned_fresh_and_source_bound(
+    recovery_db: Any, state: str
+) -> None:
+    from zeler_sheets.formulas.recovery import IMPLEMENTED_MODELS, ItemIdsRecoveryRequest
+    from zeler_sheets.formulas.recovery_worker import FormulaRecoveryWorker
+
+    if state == "valid":
+        import json
+        from pathlib import Path
+
+        schema = json.loads(
+            Path("infra/mongo/schemas/sheets_catalog_buybox_snapshots.json").read_text()
+        )
+        await recovery_db.create_collection(
+            "sheets_catalog_buybox_snapshots", validator={"$jsonSchema": schema["$jsonSchema"]}
+        )
+
+    now = datetime.now(UTC).replace(microsecond=0)
+    item = {
+        "_id": "MLA1",
+        "seller_id": "42" if state == "foreign" else "82453304",
+        "catalog_listing": state != "not_catalog",
+        "catalog_product_id": "MLA2",
+        "title": "Owned publication",
+        "available_quantity": 0,
+        "last_meli_sync_at": now - timedelta(minutes=16 if state == "expired" else 1),
+    }
+    await recovery_db.items.insert_one(item)
+    queue = FormulaRecoveryQueue(recovery_db, now=lambda: now, enabled_models=IMPLEMENTED_MODELS)
+    request = ItemIdsRecoveryRequest("82453304", ("MLA1",), read_model="catalog_buybox_snapshots")
+    assert request.key != ItemIdsRecoveryRequest("82453304", ("MLA1",)).key
+    await queue.enqueue(request)
+    calls = []
+
+    class Discovery:
+        async def fetch_resource(self, **kwargs: Any) -> Any:
+            raise AssertionError("buybox must use the Sheets detail client")
+
+    class Detail:
+        async def fetch_resource(self, *, seller_id: str, path: str) -> Any:
+            assert seller_id == "82453304" and path == "/items/MLA1/price_to_win?version=v2"
+            calls.append(path)
+            if state == "changed":
+                await recovery_db.items.update_one(
+                    {"_id": "MLA1"}, {"$set": {"catalog_product_id": "MLA3"}}
+                )
+            if state == "newer":
+                await recovery_db.sheets_catalog_buybox_snapshots.insert_one(
+                    {
+                        "_id": "82453304:MLA1",
+                        "seller_id": seller_id,
+                        "item_id": "MLA1",
+                        "snapshot_at": now + timedelta(seconds=1),
+                        "title": "Newer",
+                    }
+                )
+            return {
+                "item_id": "MLA9" if state == "wrong_response" else "MLA1",
+                "catalog_product_id": "MLA2",
+                "status": "winning",
+                "current_price": 120,
+                "competitors_sharing_first_place": 0,
+                "winner": {"price": 119},
+            }
+
+    assert await FormulaRecoveryWorker(
+        db=recovery_db, queue=queue, gateway=Discovery(), detail_gateway=Detail()
+    ).process_one()
+    job = await queue.collection.find_one({"_id": request.key})
+    snapshot = await recovery_db.sheets_catalog_buybox_snapshots.find_one({"_id": "82453304:MLA1"})
+    if state in {"foreign", "not_catalog", "expired", "changed", "wrong_response"}:
+        assert snapshot is None
+        assert job["state"] == "failed"
+        assert calls == (
+            []
+            if state in {"foreign", "not_catalog", "expired"}
+            else ["/items/MLA1/price_to_win?version=v2"]
+        )
+    elif state == "newer":
+        assert snapshot["title"] == "Newer"
+        assert job["state"] == "completed"
+    else:
+        assert job["state"] == "completed"
+        assert snapshot["title"] == "Owned publication"
+        assert snapshot["available_quantity"] == 0
+        assert snapshot["winning_price"] == 119
+        assert snapshot["competitors_sharing_first_place"] == 0
+        assert snapshot["source"] == "sheets_backfill"
+        assert snapshot["snapshot_at"].replace(tzinfo=UTC) == now
+    assert await recovery_db.sheets_read_model_freshness.count_documents({}) == 0
+
+
+@pytest.mark.asyncio
+async def test_buybox_api_admits_only_explicit_item_recovery(recovery_db: Any) -> None:
+    from types import SimpleNamespace
+
+    from starlette.requests import Request
+
+    from zeler_sheets.api import _request_formula_recovery
+    from zeler_sheets.formulas.dispatcher import (
+        FormulaDataUnavailableError,
+        FormulaExecutionContext,
+    )
+    from zeler_sheets.formulas.recovery import IMPLEMENTED_MODELS
+    from zeler_sheets.formulas.registry import FormulaRegistry
+
+    queue = FormulaRecoveryQueue(recovery_db, enabled_models=IMPLEMENTED_MODELS)
+    request = Request(
+        {
+            "type": "http",
+            "app": SimpleNamespace(state=SimpleNamespace(formula_recovery_queue=queue)),
+        }
+    )
+    context = FormulaExecutionContext(
+        contract=FormulaRegistry.default().find_required("ZELERDATA_CATALOGOBUYBOX"),
+        cuenta="pilot",
+        seller_id="82453304",
+        seller_nickname="",
+        token_id="",
+        request_id=None,
+        args={"encabezados": False},
+    )
+    missing = FormulaDataUnavailableError(
+        "ZELERDATA_CATALOGOBUYBOX",
+        "Missing competition",
+        read_model="catalog_buybox_snapshots",
+        item_ids=("MLA1", "MLA2"),
+    )
+    assert await _request_formula_recovery(request, context, missing)
+    jobs = await queue.collection.find({}).to_list(10)
+    assert len(jobs) == 1
+    assert jobs[0]["item_ids"] == ["MLA1", "MLA2"]
+    assert jobs[0]["read_model"] == "catalog_buybox_snapshots"
+    now = datetime.now(UTC)
+    with pytest.raises(ValueError, match="explicit publication IDs"):
+        await queue.enqueue(
+            RecoveryRequest("82453304", "catalog_buybox_snapshots", now - timedelta(days=1), now)
+        )
+
+
 def test_catalog_product_recovery_request_has_distinct_bounded_identity() -> None:
     from zeler_sheets.formulas.recovery import CatalogProductIdsRecoveryRequest
 
@@ -31,13 +175,25 @@ def test_catalog_product_recovery_request_has_distinct_bounded_identity() -> Non
 
 
 @pytest.mark.asyncio
-async def test_catalog_refresh_cooldown_ages_from_acquisition_start(recovery_db: Any) -> None:
-    from zeler_sheets.formulas.recovery import COOLDOWN, CatalogProductIdsRecoveryRequest
+@pytest.mark.parametrize("buybox", [False, True])
+async def test_catalog_refresh_cooldown_ages_from_acquisition_start(
+    recovery_db: Any, buybox: bool
+) -> None:
+    from zeler_sheets.formulas.recovery import (
+        COOLDOWN,
+        CatalogProductIdsRecoveryRequest,
+        ItemIdsRecoveryRequest,
+    )
 
     started = datetime.now(UTC).replace(microsecond=0)
     clock = [started]
     queue = FormulaRecoveryQueue(recovery_db, now=lambda: clock[0])
-    key = await queue.enqueue(CatalogProductIdsRecoveryRequest("82453304", ("MLA1",)))
+    request = (
+        ItemIdsRecoveryRequest("82453304", ("MLA1",), read_model="catalog_buybox_snapshots")
+        if buybox
+        else CatalogProductIdsRecoveryRequest("82453304", ("MLA1",))
+    )
+    key = await queue.enqueue(request)
     job = await queue.claim()
     assert job is not None
     clock[0] += timedelta(seconds=120)

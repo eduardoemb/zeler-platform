@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -42,6 +43,7 @@ from zeler_sheets.formulas.recovery import (
     ShipmentIdsRecoveryRequest,
 )
 from zeler_sheets.historical_meli_backfill import (
+    _catalog_buybox_snapshot,
     _catalog_product_snapshot,
     _catalog_snapshot_source_rows_from_resources,
 )
@@ -100,6 +102,8 @@ class FormulaRecoveryWorker:
                     await self._items(job)
                 elif job["read_model"] == "catalog_product_snapshots":
                     await self._catalog_products(job)
+                elif job["read_model"] == "catalog_buybox_snapshots":
+                    await self._catalog_buybox(job)
                 else:
                     raise ValueError("recovery source not implemented")
         except httpx.HTTPStatusError as exc:
@@ -162,7 +166,6 @@ class FormulaRecoveryWorker:
         }
         if not set(ids) <= associated:
             raise ValueError("requested catalog products are not associated with this seller")
-        failures: list[Exception] = []
 
         async def acquire(identity: str) -> Exception | None:
             observed = self.queue.now()
@@ -204,6 +207,87 @@ class FormulaRecoveryWorker:
                     upsert=True,
                 )
             return None
+
+        await self._finish_catalog_batch(job, ids, acquire)
+
+    async def _catalog_buybox(self, job: dict[str, Any]) -> None:
+        requested = ItemIdsRecoveryRequest(
+            job["seller_id"], tuple(job["item_ids"]), read_model="catalog_buybox_snapshots"
+        )
+        items = await self.db.items.find(
+            {"seller_id": requested.seller_id, "_id": {"$in": list(requested.item_ids)}}
+        ).to_list(20)
+        by_id = {item["_id"]: item for item in items}
+        if set(by_id) != set(requested.item_ids):
+            raise ValueError("buybox publications must belong to the requested seller")
+        now = self.queue.now()
+        for item in items:
+            synced = item.get("last_meli_sync_at")
+            if not isinstance(synced, datetime):
+                raise ValueError("buybox requires acquired publication data")
+            synced = synced.replace(tzinfo=UTC) if synced.tzinfo is None else synced.astimezone(UTC)
+            if item.get("catalog_listing") is not True or not now - COOLDOWN < synced <= now:
+                raise ValueError("buybox requires fresh explicit catalog participation")
+
+        async def acquire(identity: str) -> Exception | None:
+            item = by_id[identity]
+            source = _catalog_snapshot_source_rows_from_resources([item])[0]
+            if (
+                not source.catalog_product_id
+                or not source.title
+                or source.available_quantity is None
+            ):
+                raise ValueError("buybox publication purpose fields are unavailable")
+            observed = self.queue.now()
+            if await self.queue.collection.find_one(self.queue._owned(job, observed)) is None:
+                raise ValueError("buybox recovery lease lost")
+            async with asyncio.timeout(10):
+                resource = await self.detail_gateway.fetch_resource(
+                    seller_id=requested.seller_id, path=f"/items/{identity}/price_to_win?version=v2"
+                )
+            if (
+                not isinstance(resource, dict)
+                or resource.get("item_id") != identity
+                or resource.get("catalog_product_id") != source.catalog_product_id
+            ):
+                raise ValueError("buybox response identity is unverified")
+            snapshot = _catalog_buybox_snapshot(
+                resource, seller_id=requested.seller_id, source=source
+            )
+            if (
+                snapshot is None
+                or not snapshot["buybox_status"]
+                or "competitors_sharing_first_place" not in snapshot
+            ):
+                raise ValueError("buybox competition fields are unavailable")
+            current = await self.db.items.find_one(
+                {"_id": identity, "seller_id": requested.seller_id}
+            )
+            if current is None or BSON.encode(current) != BSON.encode(item):
+                raise ValueError("buybox publication changed during acquisition")
+            if (
+                await self.queue.collection.find_one(self.queue._owned(job, self.queue.now()))
+                is None
+            ):
+                raise ValueError("buybox recovery lease lost before persistence")
+            snapshot.update(snapshot_at=observed, source="sheets_backfill")
+            with suppress(DuplicateKeyError):
+                await self.db.sheets_catalog_buybox_snapshots.replace_one(
+                    _catalog_snapshot_filter(requested.seller_id, identity, observed),
+                    snapshot,
+                    upsert=True,
+                )
+            return None
+
+        await self._finish_catalog_batch(job, list(requested.item_ids), acquire)
+
+    async def _finish_catalog_batch(
+        self,
+        job: dict[str, Any],
+        ids: list[str],
+        acquire: Callable[[str], Awaitable[Exception | None]],
+    ) -> None:
+        failures: list[Exception] = []
 
         async def guarded_acquire(identity: str) -> Exception | None:
             try:
