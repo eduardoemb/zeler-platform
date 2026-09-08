@@ -2652,3 +2652,24 @@ retain their contract; other product deployments remain out of scope.
   No dependency/interpreter or production configuration was changed. This proves
   the suite under that allocator setting, not the cause of the intermittent
   interpreter crashes. The normal allocator run remains unproven for this unit.
+
+## Recovery-to-calculator integration verified before release
+
+- A new real-Mongo test starts with an unavailable calculator selection, uses
+  the API's real queue admission path and real recovery worker, and runs the
+  actual acquisition, normalization, projection and source-bound reader. Only
+  the external MercadoLibre boundary is simulated; source, row and SKU-index
+  collections use the real repository validators.
+- The first calculation/admission makes no upstream calls. After worker
+  completion, the second calculation returns the newly acquired title/price and
+  authoritative zero seller-shipping cost without further upstream calls.
+  Simulated unavailable promotion/fee endpoints remain DATA_UNAVAILABLE in cost
+  cells and dependent totals; no global freshness marker is written.
+- Focused integration: **1 passed in 0.54s**. Full recovery/calculator suites:
+  **231 passed in 32.94s**, with command-scoped `PYTHONMALLOC=malloc`. Ruff,
+  format, mypy (503 files) and whitespace checks pass. Runtime implementation
+  is unchanged from `61f1aa3`; its earlier 3,843-test root result remains separate
+  from this additional test. This is not authenticated live HTTP acceptance.
+- Rollback removes only the new integration test and this evidence record.
+  Pending runtime changes still require release of Sheets API and worker, then
+  a real pilot recovery-to-read check from the approved runtime context.

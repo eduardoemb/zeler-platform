@@ -31,6 +31,109 @@ def test_runtime_recovery_seller_list_is_explicit_and_validated() -> None:
 
 
 @pytest.mark.asyncio
+async def test_calculator_recovers_through_real_worker_and_source_bound_projection(
+    recovery_db: Any,
+) -> None:
+    import json
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    import httpx
+
+    from zeler_sheets.api import _request_formula_recovery
+    from zeler_sheets.formulas.dispatcher import (
+        FormulaDataUnavailableError,
+        FormulaDispatcher,
+        FormulaExecutionContext,
+    )
+    from zeler_sheets.formulas.handlers_quality_calculator import (
+        build_quality_calculator_formula_handlers,
+    )
+    from zeler_sheets.formulas.read_models import FormulaReadModelRepository
+    from zeler_sheets.formulas.recovery import IMPLEMENTED_MODELS
+    from zeler_sheets.formulas.recovery_worker import FormulaRecoveryWorker
+    from zeler_sheets.formulas.registry import FormulaRegistry
+
+    for name in ("items", "sheets_item_formula_rows", "sheets_item_sku_index"):
+        schema = json.loads(Path(f"infra/mongo/schemas/{name}.json").read_text())
+        await recovery_db.create_collection(name, validator={"$jsonSchema": schema["$jsonSchema"]})
+
+    class Gateway:
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+
+        async def fetch_resource(self, *, seller_id: str, path: str) -> Any:
+            assert seller_id == "82453304"
+            self.calls.append(path)
+            if path == "/items?ids=MLA1":
+                return [
+                    {
+                        "code": 200,
+                        "body": {
+                            "id": "MLA1",
+                            "seller_id": 82453304,
+                            "title": "Recovered publication",
+                            "price": 100,
+                            "base_price": 100,
+                            "currency_id": "ARS",
+                            "category_id": "MLA123",
+                            "available_quantity": 2,
+                            "status": "active",
+                            "listing_type_id": "gold_special",
+                            "date_created": "2026-09-01T00:00:00Z",
+                            "last_updated": "2026-09-01T00:00:00Z",
+                            "attributes": [],
+                            "variations": [],
+                            "shipping": {"free_shipping": False},
+                        },
+                    }
+                ]
+            # Independently unavailable fee/promotion endpoints must not hide
+            # the freshly acquired title/price or become fabricated zero costs.
+            response = httpx.Response(503, request=httpx.Request("GET", "https://example.invalid"))
+            raise httpx.HTTPStatusError(
+                "synthetic upstream unavailable", request=response.request, response=response
+            )
+
+    gateway = Gateway()
+    queue = FormulaRecoveryQueue(
+        recovery_db, enabled_models=IMPLEMENTED_MODELS, allowed_sellers=frozenset({"82453304"})
+    )
+    context = FormulaExecutionContext(
+        contract=FormulaRegistry.default().find_required("ZELERDATA_CALCULADORA"),
+        cuenta="test",
+        seller_id="82453304",
+        seller_nickname="",
+        token_id="",
+        request_id=None,
+        args={"id_publicaciones": ["MLA1"], "encabezados": False},
+    )
+    dispatcher = FormulaDispatcher(
+        build_quality_calculator_formula_handlers(FormulaReadModelRepository(db=recovery_db))
+    )
+    with pytest.raises(FormulaDataUnavailableError) as unavailable:
+        await dispatcher.execute(context)
+    request: Any = SimpleNamespace(
+        app=SimpleNamespace(state=SimpleNamespace(formula_recovery_queue=queue))
+    )
+    assert await _request_formula_recovery(request, context, unavailable.value)
+    assert gateway.calls == []
+    worker = FormulaRecoveryWorker(db=recovery_db, gateway=gateway, queue=queue)
+    assert await worker.process_one()
+    job = await queue.collection.find_one({"seller_id": "82453304"})
+    assert job["state"] == "completed", job.get("failure_reason")
+    calls_after_recovery = list(gateway.calls)
+    result = await dispatcher.execute(context)
+    assert gateway.calls == calls_after_recovery
+    assert len(result.values) == 1
+    assert result.values[0][2] == "Recovered publication"
+    assert result.values[0][4:6] == [100, 0]
+    assert result.values[0][6] == "DATA_UNAVAILABLE"
+    assert result.values[0][13:15] == ["DATA_UNAVAILABLE", "DATA_UNAVAILABLE"]
+    assert await recovery_db.sheets_read_model_freshness.count_documents({}) == 0
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "invalid", [None, "expired", "future", "missing_row", "changed_source", "missing_receipt"]
 )
