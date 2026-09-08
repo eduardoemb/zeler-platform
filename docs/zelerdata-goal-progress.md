@@ -230,6 +230,40 @@ Rollback must replace only the worker image, preserving subsequent API changes.
 Scripts/evidence remain in `/tmp/zeler-catalog-rollout.gE7bNb/` locally and on VM;
 worker pull and activation are terminal successful operations, not status commands.
 
+## Catalog API deployed — 2026-09-08
+
+Sheets API now also runs source `07c8ad36e52451e13fa46167502972909b55d997`,
+digest `sha256:2c2c8bf22f7fbe21fc8253962e53fe5314dfbcf3bedc6f85b1f71f5f17cc311a`.
+Activation reported healthy, zero restarts and HTTP `/health` 200. Worker remains
+on verified digest `5e6a0bae…` from the same source; this operation did not restart
+it. Newer main commits are evidence-only, so no additional image build is needed
+for them. This is rollout/health evidence, not acceptance of formula correctness.
+
+The only removed local image was the now-unused older worker digest
+`sha256:791e9c90eb9871b1e7573a429e013035ee8a279e064383a4fe77fd1030dfaea7`.
+Pre-removal checks proved no container referenced it, current/rollback images
+for API and worker were present, and its exact digest remained in Artifact Registry.
+It is recoverable there; no volumes, Mongo documents or indexes were removed.
+
+API pull passed the standard dry-run and active preflight with 5,937,004,544 free
+bytes, completed in 12.16s, verified the digest locally and left Compose unchanged.
+Activation then asserted the disk floor, pilot-only recovery configuration,
+zero running recovery jobs and exactly one old image occurrence. It changed only
+the API service with `--no-deps --pull never`. Free bytes after health: 5,393,899,520.
+The remaining margin is small: continue enforcing the 5 GiB preflight floor.
+
+API rollback image is `sha256:c679a81b7ad3e0b026f8b4a8a4e1ff5bddc1387bcccbf59fc31cb808f70ab56c`;
+backup is `/opt/zeler-platform/docker-compose.yml.pre-sheets-api-activate-07c8ad3`.
+Rollback must replace only the API image, preserving the deployed worker.
+`cleanup-api.py remove`, `pull-api.py` and `activate-api.py` in the rollout directory
+are completed mutations, not status commands; do not repeat them for observation.
+
+Next: bounded pilot acquisition and subsequent Mongo-backed formula reads, then
+authenticated production formula HTTP and a real authorized Sheet/app session.
+The real Sheet URL and legitimately linked user identity were requested again;
+no credentials/tokens were requested or bypassed. Wider catalog recovery,
+coverage/freshness and minimum-hardening acceptance items remain open.
+
 ## Baseline — 2026-09-07
 
 - Backend main: `c5a2e097e765a083fa1fff7fdec3782ef81fd998`.
