@@ -3828,3 +3828,77 @@ prices as winners without refetching the source. The rollback boundary is
 The historical backfill and operational reconcile caller need an image containing
 this change before their next invocation. The running inventory worker is still
 `62d799e`; do not interrupt its active sweep to deploy this unused recovery path.
+
+### Pilot catalog scope is broader than current snapshot coverage
+
+A read-only VM/runtime probe restricted item reads to the existing 1,900-ID pilot
+inventory and seller `82453304`. It found 1,900 stored items, 1,460 with a parent
+catalog product, 858 distinct parent products, and 385 distinct variation
+products. **27 variation products are absent from the parent-product set**.
+Snapshot collections contain 386 product records and 473 buybox records for this
+seller; these whole-seller counts do not prove current membership or freshness.
+
+All 1,460 parent-linked items have an unknown/non-boolean `catalog_listing` value
+in storage; none are explicitly true or false. The shared Item model currently
+does not declare that field. Do not infer catalog participation solely from a
+product association. The historical scope helper currently reads only parent
+product IDs and cannot distinguish this state. Current product recovery must
+cover variation-only product IDs, and buybox acquisition needs source-verified
+participation/ownership rather than treating all eligible items as participants.
+This is a concrete prerequisite for the remaining automatic catalog workflow,
+not a completed recovery implementation.
+
+Probe: `/tmp/zeler-catalog-scope-eg2xPT.py`; local artifacts:
+`/tmp/zeler-catalog-scope.eg2xPT/`. Output contains only counts; no upstream calls,
+business-data writes, queue mutations or freshness-marker changes were made.
+
+## Inventory 62d799e completed within freshness; cost fields remain incomplete
+
+The same coalesced inventory job is terminal **completed, 1,900/1,900, zero
+unavailable IDs**, with zero running recovery jobs. Exact checkpoint duration:
+**787.736s (13m07.736s)**, compared with **1,004.513s** for the previous corrected
+sweep. These are observed production runs, not a controlled attribution of all
+timing differences to quote reuse. The receipt remains
+`/var/lib/zeler-platform/repairs/inventory-listing-reuse-62d799e.json`; do not
+repeat `prepare`.
+
+The first observation straddled final-batch publication: job state was completed
+when read afterward, while formulas had seen 20 missing items. A second read
+after terminal state confirmed **2,859 rows, zero missing publications,
+inventory_rows_complete=true, inventory_enumeration_current=true**, no expiry
+warning and unchanged global freshness markers for both formulas. Observation
+age was **833.33s**. CALCULADORA returned in **2.2051s**, CALIDAD in **1.4112s**.
+All 2,859 CALCULADORA rows had numeric price cells. This proves a fresh complete
+inventory-row view at that observation, not perpetual freshness or all fields.
+
+CALIDAD had zero unavailable cells. CALCULADORA had **218 unavailable cells**.
+A further read-only column probe, still reporting complete/current inventory,
+localized them as follows:
+
+| Column | Unavailable cells |
+| --- | ---: |
+| COSTO ENVIO VENDEDOR | 18 |
+| COMISION | 40 |
+| % COMISION | 40 |
+| COSTO FIJO POR UNIDAD | 40 |
+| TOTAL COSTOS | 40 |
+| NETO ESTIMADO | 40 |
+
+The counts alone do not identify whether each source is recoverable, rejected,
+missing parameters or malformed. Next inspect the affected normalized field
+states and actual API bases, then recover where possible. Do not turn these
+cells into zero or optional absence to claim acceptance. Script:
+`/tmp/zeler-inventory-profile.vPWWns/columns.py`.
+
+Continuous freshness remains unproved: inventory observations and field receipts
+expire after 15 minutes, and the terminal queue cooldown is another 15 minutes
+from completion. Inspect refresh admission/maintenance before claiming future
+consultations remain current; do not rerun entire inventories in a blind loop.
+All-52 authenticated HTTP and real Sheet/app acceptance remain outstanding.
+
+The catalog-price correction `471b4fb` passed CI lint `34255935674` and test
+`34255935806`. It is not deployed: active worker remains source `62d799e`, API
+`6098a93`. Before invoking corrected historical acquisition/reconcile, build a
+verified Sheets runtime image containing `471b4fb` and verify the real catalog
+normalization/persistence/read path. No image rebuild is needed for this
+evidence-only update itself.
