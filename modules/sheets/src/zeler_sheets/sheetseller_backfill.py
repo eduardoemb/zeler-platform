@@ -3013,7 +3013,7 @@ def _chunks(items: Sequence[str], size: int) -> Sequence[list[str]]:
 
 
 def _item_detail_batch_path(item_ids: Sequence[str]) -> str:
-    return f"/items?ids={','.join(item_ids)}"
+    return f"/items?ids={','.join(item_ids)}&include_attributes=all"
 
 
 def _variation_detail_path(*, item_id: str, variation_id: str) -> str:

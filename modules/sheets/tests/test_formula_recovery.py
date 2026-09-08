@@ -584,7 +584,7 @@ async def test_calculator_recovers_through_real_worker_and_source_bound_projecti
         async def fetch_resource(self, *, seller_id: str, path: str) -> Any:
             assert seller_id == "82453304"
             self.calls.append(path)
-            if path == "/items?ids=MLA1":
+            if path == "/items?ids=MLA1&include_attributes=all":
                 return [
                     {
                         "code": 200,
@@ -1723,7 +1723,7 @@ async def test_http_cost_gap_queues_only_affected_item_and_recovers_without_inve
         async def fetch_resource(self, *, seller_id: str, path: str) -> Any:
             assert seller_id == seller
             calls.append(path)
-            if path == "/items?ids=MLA1":
+            if path == "/items?ids=MLA1&include_attributes=all":
                 return [
                     {
                         "code": 200,
@@ -2220,7 +2220,7 @@ async def test_item_enrichment_cannot_overwrite_newer_or_concurrent_state(
 
     class Gateway:
         async def fetch_resource(self, *, seller_id: str, path: str) -> Any:
-            assert path == "/items?ids=MLA1"
+            assert path == "/items?ids=MLA1&include_attributes=all"
             if change in {"price", "status"}:
                 fields = {"price": 99} if change == "price" else {"status": "paused"}
                 await recovery_db.items.update_one({"_id": "MLA1"}, {"$set": fields})
@@ -2285,7 +2285,7 @@ async def test_item_worker_retries_known_acquisition_failures_only(
     class Gateway:
         async def fetch_resource(self, *, seller_id: str, path: str) -> Any:
             nonlocal calls
-            if path != "/items?ids=MLA1":
+            if path != "/items?ids=MLA1&include_attributes=all":
                 response = httpx.Response(404, request=httpx.Request("GET", "https://gateway.test"))
                 response.raise_for_status()
             calls += 1
@@ -2444,7 +2444,7 @@ async def test_item_discovery_enriches_new_items_and_preserves_unavailable_histo
         async def fetch_resource(self, *, seller_id: str, path: str) -> Any:
             assert seller_id == "82453304"
             calls.append(path)
-            assert path == "/items?ids=MLA1,MLA2"
+            assert path == "/items?ids=MLA1,MLA2&include_attributes=all"
             if scenario == "concurrent":
                 await recovery_db.items.insert_one(
                     {"_id": "MLA1", "seller_id": "other", "title": "must survive"}
@@ -2463,7 +2463,13 @@ async def test_item_discovery_enriches_new_items_and_preserves_unavailable_histo
                         "available_quantity": 2,
                         "status": "active",
                         "attributes": [],
-                        "variations": [],
+                        "variations": [
+                            {
+                                "id": 101,
+                                "available_quantity": 0,
+                                "attributes": [{"id": "SELLER_SKU", "value_name": "VAR-101"}],
+                            }
+                        ],
                         "date_created": "2026-09-01T00:00:00Z",
                         "last_updated": "2026-09-07T00:00:00Z",
                         "raw_sentinel": "discard",
@@ -2502,6 +2508,17 @@ async def test_item_discovery_enriches_new_items_and_preserves_unavailable_histo
         assert new["seller_id"] == "82453304" and new["title"] == "Synthetic item"
         assert isinstance(new["last_meli_sync_at"], datetime)
         assert "raw_sentinel" not in new
+        assert new["variations"][0]["attributes"] == [{"id": "SELLER_SKU", "value_name": "VAR-101"}]
+        from zeler_sheets.sheetseller_backfill import run_sheetseller_backfill
+
+        await run_sheetseller_backfill(
+            db=recovery_db, seller_id="82453304", item_ids=["MLA1"], dry_run=False
+        )
+        row = await recovery_db.sheets_item_formula_rows.find_one(
+            {"_id": "82453304:VAR-101:MLA1:101"}
+        )
+        assert row["current"]["available_quantity"] == 0
+        assert row["source_snapshot"]["fingerprint"]
     elif scenario == "concurrent":
         assert new == {"_id": "MLA1", "seller_id": "other", "title": "must survive"}
     else:
@@ -2571,7 +2588,7 @@ async def test_item_acquisition_batches_retry_without_rewriting_completed_batch(
     class Gateway:
         async def fetch_resource(self, *, seller_id: str, path: str) -> Any:
             calls.append(path)
-            identity = path.removeprefix("/items?ids=")
+            identity = path.removeprefix("/items?ids=").removesuffix("&include_attributes=all")
             if identity == "MLA2" and fail_second:
                 raise RuntimeError("synthetic acquisition failure")
             if identity == "MLA3":
@@ -2616,7 +2633,12 @@ async def test_item_acquisition_batches_retry_without_rewriting_completed_batch(
     assert absent.items_updated == 0 and absent.item_details_stale_unavailable == 1
     assert await recovery_db.items.count_documents({}) == 2
     assert await recovery_db.items.find_one({"_id": "MLA1"}) == first
-    assert calls == ["/items?ids=MLA1", "/items?ids=MLA2", "/items?ids=MLA2", "/items?ids=MLA3"]
+    assert calls == [
+        "/items?ids=MLA1&include_attributes=all",
+        "/items?ids=MLA2&include_attributes=all",
+        "/items?ids=MLA2&include_attributes=all",
+        "/items?ids=MLA3&include_attributes=all",
+    ]
     assert await recovery_db.sheets_read_model_freshness.count_documents({}) == 0
 
 

@@ -213,7 +213,7 @@ class EnrichmentGatewayClient(FakeGatewayClient):
         }
         if path == "/items/MLA123":
             return item_resource
-        if path == "/items?ids=MLA123":
+        if path == "/items?ids=MLA123&include_attributes=all":
             return {"results": [{"code": 200, "body": item_resource}]}
         if path == f"/users/{seller_id}/shipping_options/free?item_id=MLA123":
             return {"coverage": {"all_country": {"list_cost": "83.25"}}}
@@ -372,7 +372,7 @@ async def test_item_event_enrichment_wiring_refreshes_formula_rows_when_enabled(
     )
 
     assert result == "no_export"
-    assert ("123456789", "/items?ids=MLA123") in gateway.calls
+    assert ("123456789", "/items?ids=MLA123&include_attributes=all") in gateway.calls
     assert (
         "123456789",
         "/users/123456789/shipping_options/free?item_id=MLA123",

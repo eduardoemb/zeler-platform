@@ -21,6 +21,53 @@ Keep unrelated `.codegraph/` files untouched in both repositories.
 Pilot: seller `82453304`; initial historical window 2026-08-08 through
 2026-09-06, plus current snapshots. Other products are out of scope.
 
+## Acquire variation attributes in the existing multiget — 2026-09-08
+
+Item enrichment now requests `include_attributes=all` in its existing multiget,
+preserving the individual-variation fallback when no usable SKU is returned.
+This removes a demonstrated source of redundant requests without dropping
+purpose fields, increasing concurrency, changing freshness or adding a cache.
+The [official variation contract](https://developers.mercadolibre.com.mx/en_us/variations)
+documents the parameter for variation attributes; the approved runtime probe
+also verified it works on this seller's multiget responses.
+
+Read-only profiling used the last 20 IDs of the completed pilot inventory,
+the actual Sheets gateway identity, four concurrent five-item sub-batches and
+`dry_run=True`. Original acquisition validated all 20 in 5.2167 seconds with
+93 requests: four multigets, 34 variation details, 20 sale prices, 20 listing
+prices and 15 shipping options. Adding the parameter validated the same 20 in
+3.2432 seconds with 59 requests and no individual variation calls. These are
+two sequential samples, not a p95 measurement or proof of whole-inventory
+convergence. No business data was written by either sample.
+
+Projection was checked separately: 20 items in 0.2357 seconds, including
+0.0089 seconds to load six order-line identity groups and 0.0362 seconds to load
+1,529 status records. The broad status read is not the main measured delay;
+it was intentionally left unchanged. Artifacts are under local
+`/tmp/zeler-projection-profile.97ePq6/`, with VM scripts
+`/tmp/zeler-projection-profile-97ePq6.py`,
+`/tmp/zeler-acquisition-profile-97ePq6.py` (original query) and
+`/tmp/zeler-acquisition-attributes-97ePq6.py` (candidate query).
+
+The new regression failed on the old multiget path and passed with the single
+query change. It verifies persisted variation attributes, no redundant detail
+call and a source-bound formula row retaining zero stock. Eight existing
+real-Mongo acquisition cases now additionally cover that enriched variation,
+while retaining dry-run, ownership, concurrent-write and unavailable-history
+checks; all eight passed in 1.55 seconds. Existing fallback tests remain.
+The acquisition/recovery/history/event suite passed 537 tests in 45.73 seconds.
+Root regression passed 4,053 tests with nine expected skips and 356 warnings in
+121.94 seconds; the eight protected replica-set cases passed separately in
+2.48 seconds. Ruff check/format, mypy on 505 files and diff checks passed.
+
+The affected normal runtime paths are Sheets recovery and item-event acquisition
+in `sheets-worker`; no formula HTTP handler starts acquisition. Build and verify
+a worker image from the committed change before claiming it runs in production,
+then measure one full inventory and actual catalog-product recovery. The current
+worker still runs `c90a941`. Rollback is the query parameter and its associated
+fixtures/regression only; no schema or data rollback is needed. Full catalog
+convergence and the remaining goal acceptance gates remain open.
+
 ## Completed acquisition exposes catalog freshness starvation — 2026-09-08
 
 The same `c90a941` inventory job completed all 1,900 publications with zero

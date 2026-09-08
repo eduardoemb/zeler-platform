@@ -1999,7 +1999,7 @@ async def test_item_detail_enrichment_fetches_canonical_ids_and_writes_formula_f
     db = FakeDb([canonical, _item_doc("MLB1", seller_id="999")])
     gateway = FakeItemGateway(
         {
-            "/items?ids=MLA1": [
+            "/items?ids=MLA1&include_attributes=all": [
                 {
                     "code": 200,
                     "body": {
@@ -2045,7 +2045,7 @@ async def test_item_detail_enrichment_fetches_canonical_ids_and_writes_formula_f
         variation_details_unavailable=1,
     )
     assert gateway.calls == [
-        ("82453304", "/items?ids=MLA1"),
+        ("82453304", "/items?ids=MLA1&include_attributes=all"),
         ("82453304", "/items/MLA1/variations/101"),
     ]
     assert db["items"].find_filters == [{"seller_id": "82453304"}]
@@ -2115,7 +2115,7 @@ async def test_item_detail_enrichment_continues_after_stale_item_detail_404() ->
     )
     gateway = FakeItemGateway(
         {
-            "/items?ids=MLA1,MLA2,MLA3": [
+            "/items?ids=MLA1,MLA2,MLA3&include_attributes=all": [
                 {"code": 200, "body": _item_detail("MLA1")},
                 {"code": 404, "body": {"id": "MLA2", "message": "not_found"}},
                 {"code": 200, "body": _item_detail("MLA3")},
@@ -2137,7 +2137,7 @@ async def test_item_detail_enrichment_continues_after_stale_item_detail_404() ->
     assert summary.as_dict()["item_details_stale_unavailable"] == 1
     assert "not_found" not in str(summary.as_dict())
     assert [call[0]["_id"] for call in db["items"].update_calls] == ["MLA1", "MLA3"]
-    assert gateway.calls == [("82453304", "/items?ids=MLA1,MLA2,MLA3")]
+    assert gateway.calls == [("82453304", "/items?ids=MLA1,MLA2,MLA3&include_attributes=all")]
 
 
 @pytest.mark.asyncio
@@ -2151,7 +2151,7 @@ async def test_item_detail_enrichment_continues_after_bodyless_stale_item_detail
     )
     gateway = FakeItemGateway(
         {
-            "/items?ids=MLA1,MLA2,MLA3": [
+            "/items?ids=MLA1,MLA2,MLA3&include_attributes=all": [
                 {"code": 200, "body": _item_detail("MLA1")},
                 {"code": 404},
                 {"code": 200, "body": _item_detail("MLA3")},
@@ -2174,7 +2174,7 @@ async def test_item_detail_enrichment_continues_after_bodyless_stale_item_detail
     assert [call[0]["_id"] for call in db["items"].update_calls] == ["MLA1", "MLA3"]
     assert sorted(db["items"].documents) == ["MLA1", "MLA2", "MLA3"]
     assert db["items"].documents["MLA2"]["title"] == "Title MLA2"
-    assert gateway.calls == [("82453304", "/items?ids=MLA1,MLA2,MLA3")]
+    assert gateway.calls == [("82453304", "/items?ids=MLA1,MLA2,MLA3&include_attributes=all")]
 
 
 @pytest.mark.asyncio
@@ -2191,7 +2191,7 @@ async def test_item_detail_enrichment_rejects_200_item_detail_without_id() -> No
     malformed_detail.pop("_id", None)
     gateway = FakeItemGateway(
         {
-            "/items?ids=MLA1,MLA2,MLA3": [
+            "/items?ids=MLA1,MLA2,MLA3&include_attributes=all": [
                 {"code": 200, "body": _item_detail("MLA1")},
                 {"code": 200, "body": malformed_detail},
                 {"code": 200, "body": _item_detail("MLA3")},
@@ -2208,7 +2208,7 @@ async def test_item_detail_enrichment_rejects_200_item_detail_without_id() -> No
         )
 
     assert db["items"].update_calls == []
-    assert gateway.calls == [("82453304", "/items?ids=MLA1,MLA2,MLA3")]
+    assert gateway.calls == [("82453304", "/items?ids=MLA1,MLA2,MLA3&include_attributes=all")]
 
 
 @pytest.mark.asyncio
@@ -2222,7 +2222,7 @@ async def test_item_detail_enrichment_item_id_filter_fetches_only_requested_item
     )
     gateway = FakeItemGateway(
         {
-            "/items?ids=MLA1,MLA3": [
+            "/items?ids=MLA1,MLA3&include_attributes=all": [
                 {"code": 200, "body": _item_detail("MLA1")},
                 {"code": 200, "body": _item_detail("MLA3")},
             ]
@@ -2241,7 +2241,7 @@ async def test_item_detail_enrichment_item_id_filter_fetches_only_requested_item
     assert summary.items_validated == 2
     assert summary.items_planned == 2
     assert db["items"].find_filters == [{"seller_id": "82453304", "_id": {"$in": ["MLA3", "MLA1"]}}]
-    assert gateway.calls == [("82453304", "/items?ids=MLA1,MLA3")]
+    assert gateway.calls == [("82453304", "/items?ids=MLA1,MLA3&include_attributes=all")]
     assert db["items"].update_calls == []
 
 
@@ -2269,6 +2269,37 @@ async def test_item_detail_enrichment_item_id_filter_fails_when_requested_items_
 
 
 @pytest.mark.asyncio
+async def test_item_detail_enrichment_requests_variation_attributes_in_multiget() -> None:
+    db = FakeDb([_item_doc("MLA1")])
+    detail = _item_detail("MLA1")
+    detail["variations"] = [
+        {
+            "id": 101,
+            "inventory_id": "INV-101",
+            "available_quantity": 0,
+            "attributes": [{"id": "SELLER_SKU", "value_name": "VAR-101"}],
+        }
+    ]
+    gateway = FakeItemGateway(
+        {"/items?ids=MLA1&include_attributes=all": [{"code": 200, "body": detail}]}
+    )
+
+    summary = await run_item_detail_enrichment(
+        db=db, gateway=gateway, seller_id="82453304", dry_run=False
+    )
+    await run_sheetseller_backfill(db=db, seller_id="82453304", dry_run=False)
+
+    assert gateway.calls == [("82453304", "/items?ids=MLA1&include_attributes=all")]
+    assert summary.items_validated == 1
+    assert summary.variation_details_requested == 0
+    stored = db["items"].documents["MLA1"]["variations"][0]
+    assert stored["attributes"] == detail["variations"][0]["attributes"]
+    row = db["sheets_item_formula_rows"].documents["82453304:VAR-101:MLA1:101"]
+    assert row["current"]["available_quantity"] == 0
+    assert row["source_snapshot"]["fingerprint"]
+
+
+@pytest.mark.asyncio
 async def test_item_detail_enrichment_fetches_variation_detail_sku_for_missing_variations() -> None:
     canonical = _item_doc(
         "MLA1",
@@ -2290,7 +2321,7 @@ async def test_item_detail_enrichment_fetches_variation_detail_sku_for_missing_v
     ]
     gateway = FakeItemGateway(
         {
-            "/items?ids=MLA1": [{"code": 200, "body": detail}],
+            "/items?ids=MLA1&include_attributes=all": [{"code": 200, "body": detail}],
             "/items/MLA1/variations/101": {
                 "id": 101,
                 "inventory_id": "INV-101",
@@ -2310,7 +2341,7 @@ async def test_item_detail_enrichment_fetches_variation_detail_sku_for_missing_v
 
     assert summary.items_updated == 1
     assert gateway.calls == [
-        ("82453304", "/items?ids=MLA1"),
+        ("82453304", "/items?ids=MLA1&include_attributes=all"),
         ("82453304", "/items/MLA1/variations/101"),
     ]
     stored_variation = db["items"].documents["MLA1"]["variations"][0]
@@ -2340,7 +2371,7 @@ async def test_item_detail_enrichment_keeps_base_item_when_variation_detail_unav
     detail["variations"] = [{"id": 101, "inventory_id": "INV-101", "available_quantity": 0}]
     gateway = FakeItemGateway(
         {
-            "/items?ids=MLA1": [{"code": 200, "body": detail}],
+            "/items?ids=MLA1&include_attributes=all": [{"code": 200, "body": detail}],
             "/items/MLA1/variations/101": RuntimeError("variation detail unavailable"),
         }
     )
@@ -2371,7 +2402,7 @@ async def test_item_detail_enrichment_counts_unavailable_variation_detail_withou
     detail["variations"] = [{"id": 101, "inventory_id": "INV-101", "available_quantity": 0}]
     gateway = FakeItemGateway(
         {
-            "/items?ids=MLA1": [{"code": 200, "body": detail}],
+            "/items?ids=MLA1&include_attributes=all": [{"code": 200, "body": detail}],
             "/items/MLA1/variations/101": {"id": 999, "attributes": []},
         }
     )
@@ -2398,7 +2429,7 @@ async def test_item_detail_enrichment_enriches_free_shipping_cost_and_non_free_z
     non_free_detail["shipping"] = {"free_shipping": False, "logistic_type": "drop_off"}
     gateway = FakeItemGateway(
         {
-            "/items?ids=MLA1,MLA2": [
+            "/items?ids=MLA1,MLA2&include_attributes=all": [
                 {"code": 200, "body": free_detail},
                 {"code": 200, "body": non_free_detail},
             ],
@@ -2413,7 +2444,7 @@ async def test_item_detail_enrichment_enriches_free_shipping_cost_and_non_free_z
     )
 
     assert gateway.calls == [
-        ("82453304", "/items?ids=MLA1,MLA2"),
+        ("82453304", "/items?ids=MLA1,MLA2&include_attributes=all"),
         ("82453304", "/users/82453304/shipping_options/free?item_id=MLA1"),
     ]
     assert summary.as_dict() | {"dry_run": False} == summary.as_dict()
@@ -2444,7 +2475,7 @@ async def test_item_detail_enrichment_keeps_cost_absent_when_source_denied_or_ma
     malformed_detail["shipping"] = {"free_shipping": True}
     gateway = FakeItemGateway(
         {
-            "/items?ids=MLA1,MLA2": [
+            "/items?ids=MLA1,MLA2&include_attributes=all": [
                 {"code": 200, "body": denied_detail},
                 {"code": 200, "body": malformed_detail},
             ],
@@ -2481,7 +2512,7 @@ async def test_item_detail_enrichment_keeps_cost_absent_on_http_status_error() -
     )
     gateway = FakeItemGateway(
         {
-            "/items?ids=MLA1": [{"code": 200, "body": denied_detail}],
+            "/items?ids=MLA1&include_attributes=all": [{"code": 200, "body": denied_detail}],
             "/users/82453304/shipping_options/free?item_id=MLA1": httpx.HTTPStatusError(
                 "forbidden shipping options source",
                 request=request,
@@ -2522,7 +2553,7 @@ async def test_item_detail_enrichment_keeps_cost_absent_on_gateway_rate_limit() 
     )
     gateway = FakeItemGateway(
         {
-            "/items?ids=MLA1": [{"code": 200, "body": detail}],
+            "/items?ids=MLA1&include_attributes=all": [{"code": 200, "body": detail}],
             "/users/82453304/shipping_options/free?item_id=MLA1": GatewayRateLimitError(
                 retry_after_seconds=5,
                 response=response,
@@ -2560,7 +2591,7 @@ async def test_item_detail_enrichment_keeps_cost_absent_on_shipping_request_erro
     request = httpx.Request("GET", "https://gateway.example/proxy/meli/users/82453304")
     gateway = FakeItemGateway(
         {
-            "/items?ids=MLA1": [{"code": 200, "body": detail}],
+            "/items?ids=MLA1&include_attributes=all": [{"code": 200, "body": detail}],
             "/users/82453304/shipping_options/free?item_id=MLA1": httpx.RequestError(
                 "timeout fetching seller 82453304 shipping for item MLA1",
                 request=request,
@@ -2617,7 +2648,7 @@ async def test_item_detail_enrichment_preserves_trusted_cost_on_transient_failur
     request = httpx.Request("GET", "https://gateway.example/proxy/meli/users/82453304")
     gateway = FakeItemGateway(
         {
-            "/items?ids=MLA1": [{"code": 200, "body": detail}],
+            "/items?ids=MLA1&include_attributes=all": [{"code": 200, "body": detail}],
             "/users/82453304/shipping_options/free?item_id=MLA1": httpx.RequestError(
                 "timeout fetching seller 82453304 shipping for item MLA1",
                 request=request,
@@ -2672,7 +2703,7 @@ async def test_item_detail_enrichment_clears_seller_shipping_cost_on_transient_b
     request = httpx.Request("GET", "https://gateway.example/proxy/meli/users/82453304")
     gateway = FakeItemGateway(
         {
-            "/items?ids=MLA1": [{"code": 200, "body": detail}],
+            "/items?ids=MLA1&include_attributes=all": [{"code": 200, "body": detail}],
             "/users/82453304/shipping_options/free?item_id=MLA1": httpx.RequestError(
                 "timeout fetching seller 82453304 shipping for item MLA1",
                 request=request,
@@ -2805,7 +2836,7 @@ async def test_item_detail_enrichment_preserves_all_snapshots_on_transient_failu
     )
     gateway = FakeItemGateway(
         {
-            "/items?ids=MLA1": [{"code": 200, "body": detail}],
+            "/items?ids=MLA1&include_attributes=all": [{"code": 200, "body": detail}],
             "/users/82453304/shipping_options/free?item_id=MLA1": httpx.RequestError(
                 "timeout fetching seller 82453304 shipping for item MLA1",
                 request=request,
@@ -2888,7 +2919,7 @@ async def test_item_detail_enrichment_clears_cost_on_authoritative_denial() -> N
     )
     gateway = FakeItemGateway(
         {
-            "/items?ids=MLA1": [{"code": 200, "body": detail}],
+            "/items?ids=MLA1&include_attributes=all": [{"code": 200, "body": detail}],
             "/users/82453304/shipping_options/free?item_id=MLA1": httpx.HTTPStatusError(
                 "forbidden shipping source",
                 request=request,
@@ -3008,7 +3039,7 @@ async def test_item_detail_enrichment_preserves_na_when_sale_price_gate_disabled
     db = FakeDb([canonical])
     gateway = FakeItemGateway(
         {
-            "/items?ids=MLA1": [
+            "/items?ids=MLA1&include_attributes=all": [
                 {"code": 200, "body": _item_detail("MLA1")},
             ]
         }
@@ -3021,7 +3052,7 @@ async def test_item_detail_enrichment_preserves_na_when_sale_price_gate_disabled
         dry_run=False,
     )
 
-    assert gateway.calls == [("82453304", "/items?ids=MLA1")]
+    assert gateway.calls == [("82453304", "/items?ids=MLA1&include_attributes=all")]
     assert summary.sale_price_requested == 0
     assert summary.sale_price_promotions_enriched == 0
     persisted = db["items"].update_calls[0][1]["$set"]
@@ -3034,7 +3065,7 @@ async def test_item_detail_enrichment_fetches_gated_sale_price_projection() -> N
     db = FakeDb([canonical])
     gateway = FakeItemGateway(
         {
-            "/items?ids=MLA1": [{"code": 200, "body": _item_detail("MLA1")}],
+            "/items?ids=MLA1&include_attributes=all": [{"code": 200, "body": _item_detail("MLA1")}],
             "/items/MLA1/sale_price?context=channel_marketplace": {
                 "amount": "99.90",
                 "regular_amount": "149.90",
@@ -3055,7 +3086,7 @@ async def test_item_detail_enrichment_fetches_gated_sale_price_projection() -> N
     )
 
     assert gateway.calls == [
-        ("82453304", "/items?ids=MLA1"),
+        ("82453304", "/items?ids=MLA1&include_attributes=all"),
         ("82453304", "/items/MLA1/sale_price?context=channel_marketplace"),
     ]
     assert summary.sale_price_requested == 1
@@ -3073,7 +3104,7 @@ async def test_item_detail_enrichment_keeps_base_enrichment_when_sale_price_unav
     db = FakeDb([canonical])
     gateway = FakeItemGateway(
         {
-            "/items?ids=MLA1": [{"code": 200, "body": _item_detail("MLA1")}],
+            "/items?ids=MLA1&include_attributes=all": [{"code": 200, "body": _item_detail("MLA1")}],
             "/items/MLA1/sale_price?context=channel_marketplace": RuntimeError("unavailable"),
         }
     )
@@ -3139,7 +3170,7 @@ async def test_item_detail_enrichment_distinguishes_absent_from_malformed_promo(
     detail["attributes"] = [{"id": "SELLER_SKU", "value_name": "sku-1"}]
     gateway = FakeItemGateway(
         {
-            "/items?ids=MLA1": [{"code": 200, "body": detail}],
+            "/items?ids=MLA1&include_attributes=all": [{"code": 200, "body": detail}],
             "/items/MLA1/sale_price?context=channel_marketplace": payload,
         }
     )
@@ -3190,7 +3221,7 @@ async def test_item_detail_enrichment_clears_stale_promo_on_sale_price_rejection
     request = httpx.Request("GET", "https://gateway.example/proxy/meli/items/MLA1")
     gateway = FakeItemGateway(
         {
-            "/items?ids=MLA1": [{"code": 200, "body": detail}],
+            "/items?ids=MLA1&include_attributes=all": [{"code": 200, "body": detail}],
             "/items/MLA1/sale_price?context=channel_marketplace": httpx.HTTPStatusError(
                 "forbidden sale price source",
                 request=request,
@@ -3261,7 +3292,7 @@ async def test_item_detail_enrichment_preserves_stale_promo_without_authoritativ
     detail = _item_detail("MLA1")
     detail["attributes"] = [{"id": "SELLER_SKU", "value_name": "sku-1"}]
     gateway_payloads: dict[str, Any | Exception] = {
-        "/items?ids=MLA1": [{"code": 200, "body": detail}],
+        "/items?ids=MLA1&include_attributes=all": [{"code": 200, "body": detail}],
     }
     if sale_price_enabled:
         gateway_payloads["/items/MLA1/sale_price?context=channel_marketplace"] = sale_price_payload
@@ -3531,7 +3562,7 @@ async def test_item_detail_enrichment_fetches_listing_prices_and_denormalizes_pr
     )
     gateway = FakeItemGateway(
         {
-            "/items?ids=MLA1": [{"code": 200, "body": detail}],
+            "/items?ids=MLA1&include_attributes=all": [{"code": 200, "body": detail}],
             listing_price_path: {
                 "sale_fee_amount": "155.99",
                 "currency_id": "ARS",
@@ -3549,7 +3580,10 @@ async def test_item_detail_enrichment_fetches_listing_prices_and_denormalizes_pr
     )
     await run_sheetseller_backfill(db=db, seller_id="82453304", dry_run=False)
 
-    assert gateway.calls == [("82453304", "/items?ids=MLA1"), ("82453304", listing_price_path)]
+    assert gateway.calls == [
+        ("82453304", "/items?ids=MLA1&include_attributes=all"),
+        ("82453304", listing_price_path),
+    ]
     assert summary.listing_prices_requested == 1
     assert summary.listing_fee_projections_enriched == 1
     assert summary.listing_fee_projections_unavailable == 0
@@ -3595,7 +3629,7 @@ async def test_item_detail_enrichment_clears_stale_listing_fee_projection_failur
     )
     gateway = FakeItemGateway(
         {
-            "/items?ids=MLA1,MLA2": [
+            "/items?ids=MLA1,MLA2&include_attributes=all": [
                 {"code": 200, "body": detail_missing},
                 {"code": 200, "body": detail_invalid},
             ],
@@ -3646,7 +3680,7 @@ async def test_item_detail_enrichment_clears_stale_listing_fee_on_basis_mismatch
     request = httpx.Request("GET", "https://gateway.example/proxy/meli/sites/MLA")
     gateway = FakeItemGateway(
         {
-            "/items?ids=MLA1": [{"code": 200, "body": detail}],
+            "/items?ids=MLA1&include_attributes=all": [{"code": 200, "body": detail}],
             listing_price_path: httpx.RequestError(
                 "timeout fetching listing prices for seller 82453304 item MLA1",
                 request=request,
@@ -3713,7 +3747,7 @@ async def test_item_detail_enrichment_clears_listing_fee_on_transient_shipping_b
     request = httpx.Request("GET", "https://gateway.example/proxy/meli/sites/MLA")
     gateway = FakeItemGateway(
         {
-            "/items?ids=MLA1": [{"code": 200, "body": detail}],
+            "/items?ids=MLA1&include_attributes=all": [{"code": 200, "body": detail}],
             listing_price_path: httpx.RequestError(
                 "timeout fetching listing prices for seller 82453304 item MLA1",
                 request=request,
@@ -3911,7 +3945,9 @@ async def test_item_detail_enrichment_dry_run_accepts_existing_fixed_fee_naive_s
             "shipping": {"mode": "me2", "logistic_type": "fulfillment", "free_shipping": False},
         }
     )
-    gateway = FakeItemGateway({"/items?ids=MLA1": [{"code": 200, "body": detail}]})
+    gateway = FakeItemGateway(
+        {"/items?ids=MLA1&include_attributes=all": [{"code": 200, "body": detail}]}
+    )
 
     summary = await run_item_detail_enrichment(
         db=db,
@@ -3923,7 +3959,7 @@ async def test_item_detail_enrichment_dry_run_accepts_existing_fixed_fee_naive_s
     assert summary.items_validated == 1
     assert summary.listing_fixed_fee_requested == 0
     assert summary.listing_fixed_fee_enriched == 0
-    assert gateway.calls == [("82453304", "/items?ids=MLA1")]
+    assert gateway.calls == [("82453304", "/items?ids=MLA1&include_attributes=all")]
     assert db["items"].update_calls == []
 
 
@@ -3959,7 +3995,7 @@ async def test_item_enrichment_reuses_only_successful_identical_listing_quote(
     }
     gateway = FakeItemGateway(
         {
-            "/items?ids=MLA1": [{"code": 200, "body": detail}],
+            "/items?ids=MLA1&include_attributes=all": [{"code": 200, "body": detail}],
             general_path: RuntimeError("unavailable")
             if scenario == "first_request_failed"
             else quote,
@@ -3973,7 +4009,7 @@ async def test_item_enrichment_reuses_only_successful_identical_listing_quote(
         dry_run=False,
         listing_fixed_fee_enabled=True,
     )
-    expected = [("82453304", "/items?ids=MLA1"), ("82453304", general_path)]
+    expected = [("82453304", "/items?ids=MLA1&include_attributes=all"), ("82453304", general_path)]
     if scenario != "shared":
         expected.append(("82453304", fixed_path))
     assert gateway.calls == expected
@@ -4005,7 +4041,7 @@ async def test_item_detail_enrichment_fetches_gated_listing_fixed_fee_projection
     )
     gateway = FakeItemGateway(
         {
-            "/items?ids=MLA1": [{"code": 200, "body": detail}],
+            "/items?ids=MLA1&include_attributes=all": [{"code": 200, "body": detail}],
             listing_price_path: {
                 "sale_fee_details": {"fixed_fee": "1350.25"},
                 "currency_id": "ARS",
@@ -4023,7 +4059,7 @@ async def test_item_detail_enrichment_fetches_gated_listing_fixed_fee_projection
     )
 
     assert gateway.calls == [
-        ("82453304", "/items?ids=MLA1"),
+        ("82453304", "/items?ids=MLA1&include_attributes=all"),
         ("82453304", listing_price_path),
     ]
     assert summary.listing_fixed_fee_requested == 1
@@ -4069,7 +4105,7 @@ async def test_item_detail_enrichment_clears_stale_listing_fixed_fee_failures() 
     )
     gateway = FakeItemGateway(
         {
-            "/items?ids=MLA1,MLA2": [
+            "/items?ids=MLA1,MLA2&include_attributes=all": [
                 {"code": 200, "body": detail_missing},
                 {"code": 200, "body": detail_rate_limited},
             ],
@@ -4158,7 +4194,7 @@ async def test_item_detail_enrichment_preserves_listing_fee_and_fixed_fee_on_403
     )
     gateway = FakeItemGateway(
         {
-            "/items?ids=MLA1": [{"code": 200, "body": detail}],
+            "/items?ids=MLA1&include_attributes=all": [{"code": 200, "body": detail}],
             listing_fee_path: httpx.HTTPStatusError(
                 "forbidden",
                 request=httpx.Request("GET", "https://gateway.example/listing-fee"),
@@ -4182,7 +4218,7 @@ async def test_item_detail_enrichment_preserves_listing_fee_and_fixed_fee_on_403
 
     persisted = db["items"].documents["MLA1"]
     assert gateway.calls == [
-        ("82453304", "/items?ids=MLA1"),
+        ("82453304", "/items?ids=MLA1&include_attributes=all"),
         ("82453304", listing_fee_path),
         ("82453304", fixed_fee_path),
     ]
@@ -4244,7 +4280,7 @@ async def test_item_detail_enrichment_normalizes_preserved_listing_fee_datetime(
     )
     gateway = FakeItemGateway(
         {
-            "/items?ids=MLA1": [{"code": 200, "body": detail}],
+            "/items?ids=MLA1&include_attributes=all": [{"code": 200, "body": detail}],
             listing_fee_path: httpx.HTTPStatusError(
                 "forbidden",
                 request=httpx.Request("GET", "https://gateway.example/listing-fee"),
@@ -4320,7 +4356,7 @@ async def test_item_detail_enrichment_clears_stale_listing_fixed_fee_when_item_u
     )
     gateway = FakeItemGateway(
         {
-            "/items?ids=MLA1": [{"code": 200, "body": detail}],
+            "/items?ids=MLA1&include_attributes=all": [{"code": 200, "body": detail}],
             listing_price_path: {"sale_fee_details": {"fixed_fee": "not-a-decimal"}},
         }
     )
@@ -4355,7 +4391,9 @@ async def test_item_detail_enrichment_writes_mongo_schema_safe_date_and_price_ty
     detail["base_price"] = "210.00"
     detail["date_created"] = NOW.isoformat()
     detail["last_updated"] = NOW.isoformat()
-    gateway = FakeItemGateway({"/items?ids=MLA1": [{"code": 200, "body": detail}]})
+    gateway = FakeItemGateway(
+        {"/items?ids=MLA1&include_attributes=all": [{"code": 200, "body": detail}]}
+    )
 
     await run_item_detail_enrichment(db=db, gateway=gateway, seller_id="82453304", dry_run=False)
 
@@ -4377,7 +4415,9 @@ async def test_item_detail_enrichment_dry_run_accepts_naive_existing_status_obse
     canonical = _item_doc("MLA1")
     canonical["status_observed_at"] = datetime(2026, 5, 31, 10, 30)
     db = FakeDb([canonical])
-    gateway = FakeItemGateway({"/items?ids=MLA1": [{"code": 200, "body": _item_detail("MLA1")}]})
+    gateway = FakeItemGateway(
+        {"/items?ids=MLA1&include_attributes=all": [{"code": 200, "body": _item_detail("MLA1")}]}
+    )
 
     summary = await run_item_detail_enrichment(
         db=db,
@@ -4397,7 +4437,9 @@ async def test_item_detail_enrichment_dry_run_reports_plan_without_writes() -> N
     canonical = _item_doc("MLA1")
     canonical["price"] = Decimal("123.45")
     db = FakeDb([canonical])
-    gateway = FakeItemGateway({"/items?ids=MLA1": [{"code": 200, "body": _item_detail("MLA1")}]})
+    gateway = FakeItemGateway(
+        {"/items?ids=MLA1&include_attributes=all": [{"code": 200, "body": _item_detail("MLA1")}]}
+    )
 
     summary = await run_item_detail_enrichment(db=db, gateway=gateway, seller_id="82453304")
 
@@ -4416,8 +4458,8 @@ async def test_item_detail_enrichment_api_failure_writes_nothing_for_any_batch()
     db = FakeDb([first, second])
     gateway = FakeItemGateway(
         {
-            "/items?ids=MLA1": [{"code": 200, "body": _item_detail("MLA1")}],
-            "/items?ids=MLA2": RuntimeError("gateway failure"),
+            "/items?ids=MLA1&include_attributes=all": [{"code": 200, "body": _item_detail("MLA1")}],
+            "/items?ids=MLA2&include_attributes=all": RuntimeError("gateway failure"),
         }
     )
 
@@ -4443,7 +4485,9 @@ async def test_item_detail_enrichment_persists_only_canonical_item_fields() -> N
             "raw_payload": {"anything": "must-not-persist"},
         }
     )
-    gateway = FakeItemGateway({"/items?ids=MLA1": [{"code": 200, "body": raw_detail}]})
+    gateway = FakeItemGateway(
+        {"/items?ids=MLA1&include_attributes=all": [{"code": 200, "body": raw_detail}]}
+    )
 
     summary = await run_item_detail_enrichment(
         db=db, gateway=gateway, seller_id="82453304", dry_run=False
@@ -4463,7 +4507,9 @@ async def test_item_detail_enrichment_summary_is_sanitized_and_useful() -> None:
     db = FakeDb([current])
     detail = _item_detail("MLA1")
     detail["permalink"] = "https://articulo.example/MLA1"
-    gateway = FakeItemGateway({"/items?ids=MLA1": [{"code": 200, "body": detail}]})
+    gateway = FakeItemGateway(
+        {"/items?ids=MLA1&include_attributes=all": [{"code": 200, "body": detail}]}
+    )
 
     summary = await run_item_detail_enrichment(
         db=db, gateway=gateway, seller_id="82453304", dry_run=False
