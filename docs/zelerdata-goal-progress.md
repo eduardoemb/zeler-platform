@@ -21,6 +21,58 @@ Keep unrelated `.codegraph/` files untouched in both repositories.
 Pilot: seller `82453304`; initial historical window 2026-08-08 through
 2026-09-06, plus current snapshots. Other products are out of scope.
 
+## Catalog unavailable-source rollout verified — 2026-09-08
+
+Sheets API and worker now both run source
+`449a3826db7ec40804c3bd7954cc246a56263f5d`, including bounded catalog acquisition
+and per-product not-found persistence. Both report HTTP health **200** and zero
+restarts. CI test `34286628759` and lint `34286628787` completed successfully
+before activation. Separate Cloud Builds succeeded; digest/build/source bindings
+were verified locally and sequentially into the VM canonical provenance map.
+
+| Service | Cloud Build | Deployed digest |
+| --- | --- | --- |
+| sheets-worker | `5364808d-1a6a-4ecc-840c-74146f3c017f` | `88a61a753deebdc887291ef3314087d3740212f5c3d8ffa1ddc3dd36c71f80fa` |
+| sheets-api | `e65cc95e-9247-41b1-907c-383e744c8c35` | `37b750d889046d8ee4fa9f5996afa7f0fdd36c85b9348b77f86628c3720f5c7e` |
+
+Before activation, the approved runtime-container check proved the production
+product-snapshot validator differed only by the new `source_unavailable`
+property. Applied that additive property alone and read back exact equality with
+the generated schema; strict/error validation remained enabled. No business
+documents were modified by this schema operation. Retain this optional property
+on rollback so new observations stay valid.
+
+Both pulls passed capacity/preflight with automatic cleanup disabled and left
+Compose unchanged; worker pull took 12.92s and API pull 11.21s. Each activation
+required no running recovery jobs, replaced exactly its own image binding and
+used `--no-deps --pull never`. To preserve the 5 GiB floor, removed only unused
+local cache images worker `5d27006e...` and API `2c2c8bf2...`, after exact registry
+recoverability and all-container checks. No volumes/data were removed. Current
+and immediate rollback images stayed present. Final free space was
+5,880,037,376 bytes; recheck before any subsequent pull/Compose activity.
+
+Rollback authorities are the previous running worker digest
+`c3ad9eeba1e364ee2268fc3cbce9e811c79a997300029a8d51be862b38f7b647`
+and API digest
+`1702d8adc804f8b10a31eeb7b96e3e1d9964f94e5609643e74e8b6545036b391`.
+Compose backups end in `.pre-sheets-worker-activate-449a382` and
+`.pre-sheets-api-activate-449a382`. Artifacts and guarded scripts are in
+`/tmp/zeler-catalog-unavailable.I9e2ZV/` locally and on the VM. Pull, activation
+and cache-removal scripts have executed successfully; do not repeat them.
+
+The post-deploy read-only progress probe found 44 completed and two failed
+catalog-product jobs, no pending jobs, and 806 snapshots acquired since the last
+inventory enumeration. The inventory remains completed 1,900/1,900 with zero
+unavailable IDs, but enumeration age was 3,031.36s: this is expired evidence,
+not current catalog coverage. No inventory was restarted in this rollout unit.
+Next verify actual not-found persistence and fresh whole-catalog convergence
+through normal recovery; neither is proved by health checks or existing snapshots.
+Authenticated all-52 HTTP, real Sheet/app, and the remaining goal gates stay open.
+
+This unit only deploys the already-tested implementation and records evidence;
+no new executable repository change or regression run was needed. A subsequent
+documentation-only commit does not require another service image.
+
 ## Persist per-product not-found observations and cached fallback — 2026-09-08
 
 Catalog recovery now persists an HTTP 404 as optional `source_unavailable`
