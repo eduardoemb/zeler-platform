@@ -21,6 +21,54 @@ Keep unrelated `.codegraph/` files untouched in both repositories.
 Pilot: seller `82453304`; initial historical window 2026-08-08 through
 2026-09-06, plus current snapshots. Other products are out of scope.
 
+## Corrected catalog intent deployed; current inventory recovery started
+
+Both Sheets services now run exact source
+`3b27cf4bd73678151b2375029971afff3221e82e`. GitHub Actions lint
+`34304958522` and test `34304958509` completed successfully before activation.
+The existing builds were reused, not rebuilt:
+
+| Service | Successful build | Deployed digest |
+| --- | --- | --- |
+| sheets-worker | `804a6a93-0a95-4a83-9bda-9c3477e25dae` | `sha256:7833b95553c02792d205756c3fbd2935a9240b930e5c9f93c14e0c5b6aa53155` |
+| sheets-api | `42652820-3356-4b22-863c-8c1977b1b743` | `sha256:87a56f17a5da0eda05f8931497646e15cd9fdc84d5e4bf05af9d3f15e7c2d565` |
+
+Digest/build/connected-repository/source verification passed locally and on the
+VM; the canonical image map was updated. Local temporary files from the earlier
+session were absent. Recovered existing helpers from the VM and adapted their
+exact digest/source guards in `/tmp/zeler-catalog-resume.E4rN37/`, then copied
+the corrected helpers and freshly fetched provenance artifacts to VM `/tmp/`.
+No business logic or test changes were made in this rollout.
+
+Fresh preflight found 6,468,100,096 free bytes and both prior services healthy
+with zero restarts. Guarded worker/API pulls passed in 11.17/10.87 seconds,
+respectively, with Compose unchanged. Worker was activated before API; each
+activation verified its expected prior digest, pilot settings, zero running
+recovery jobs, cached image and source mapping. Both finished healthy with
+HTTP 200 and zero restarts. Free space after activation: 5,380,644,864 bytes.
+Backups are `/opt/zeler-platform/docker-compose.yml.pre-sheets-worker-activate-3b27cf4`
+and the corresponding `pre-sheets-api-activate-3b27cf4` file.
+
+At `2026-09-09T03:24:56.253Z`, normal queue admission reopened the pilot inventory
+job `5f2485d573679264481950cce24b1373d2eb93f11c1f79ea2aca606b92d20a8f`
+exactly once. VM helper: `/tmp/corrected-current-inventory.py`; receipt:
+`/var/lib/zeler-platform/repairs/current-inventory-3b27cf4.json` (0600).
+Initial state was pending, attempts zero, offset unset. The 1,900 IDs and
+01:08:42 observation shown at admission belong to the prior enumeration, not
+proof of a new completed sweep. Continue with helper mode `status`; do not
+repeat `enqueue` or restart on an observation timeout.
+
+At `03:25:37.252Z`, the same job was running on attempt one, with a new
+`03:24:57.065Z` enumeration of 1,900 identities, offset 240 and zero unavailable
+items so far. This confirms worker execution and durable progress, not completion.
+
+Next prove current enumeration and normal catalog recovery beyond 400 IDs, then
+read back actual formula coverage. Deployment/health does not establish full
+seller coverage, all-52 HTTP acceptance, Google Sheets acceptance or historical
+completeness. Rollback API to `1904ed9...` first to stop new large admissions;
+do not return the worker to `d2ccd62...` while large intents remain active.
+Drain/resolve them with the new worker without deleting durable recovery data.
+
 ## Catalog-intent activation stopped by stale HTTP test expectations
 
 Both connected-repository builds succeeded for exact source
