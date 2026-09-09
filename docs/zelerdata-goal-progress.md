@@ -20,6 +20,34 @@ Keep unrelated `.codegraph/` files untouched in both repositories.
 
 ## Real Google Sheet: all-52 first pass and user add-on update, 2026-09-09
 
+### Current hosted order relationship: one live positive control
+
+A read-only approved-runtime probe selected the two newest stored pilot orders
+with shipment links, bounded to August 8 through September 9. Each detail was
+validated for order identity and seller before requesting the hosted relationship
+through the normal Sheets gateway. One **September 9** order returned **HTTP 200,
+an array, one forward shipment, and a match to the persisted shipment ID**. The
+other relationship returned **404 / known not-found**. No IDs, PII, tokens or raw
+payloads were printed, and no business data or queue records were changed.
+
+This adds a positive live control to the earlier all-404 observations. It proves
+the new endpoint/array format is available for one real pilot relationship, not
+universal coverage or repair of a genuinely absent link. The current official
+[orders contract](https://developers.mercadolibre.com.mx/gestiona-ventas) was
+rechecked: hosted results are arrays and purchase shipments are selected by
+`type=forward`; a 204 can reflect asynchronous propagation. Existing focused
+adapter/cancellation tests passed **5 tests in 0.23s**, with no skips. Full orders
+migration and purpose-complete formula acceptance remain open.
+Command: `uv run pytest modules/sheets/tests/test_formula_recovery.py -k
+'order_detail_recovers_purchase_shipment or order_shipment_fallback' --tb=short`.
+This evidence-only documentation unit has no runtime rollback or new image;
+reverting its two documentation files must not revert services or acquired data.
+
+Meanwhile the inventory job advanced from offset 340 to **940**, still running
+on its first attempt. At the earlier offset-340 cut the actual reader returned
+478 trusted rows and 1,560 unavailable items out of 1,900. Do not replay its
+admission or manufacture freshness while it is acquiring.
+
 ### Demand-triggered renewal of still-current inventory
 
 The API now requests the next inventory sweep when a successful response
@@ -37,9 +65,39 @@ buybox test now verifies the additional inventory job is deferred until its
 existing ten-minute due time, preserves the observation cut, and does not
 prevent immediate price/competition repair. Combined API/recovery suites:
 **452 passed in 93.05s**, without skips. Ruff and focused API mypy passed.
-Runtime verification is still pending. Only **sheets-api** requires a new image;
+Sustained-renewal runtime verification is still pending. The image change was
+limited to **sheets-api**;
 rollback removes this admission hook/meta field and its tests, with no schema
 or data migration.
+
+Committed/pushed as `6cc570b8f68ada56bddbdeb353d7742df143bf0d`.
+API-only Cloud Build `27b6e6d2-7110-43eb-a60b-ab81096f42d8` succeeded;
+image `us-central1-docker.pkg.dev/zeler-platform-dev/zeler-platform/sheets-api@sha256:ec04713bd400cb6f11fc1327ed56b6244cad08f95762a2ca35588ce56b64e417`;
+config `/tmp/zeler-inventory-renewal.VMU23J/cloudbuild.yaml`. CI lint
+`34384766073` and test `34384766021` passed. The production API now runs this
+verified image: activation completed healthy, zero restarts, with worker
+identity/start time unchanged. Backup:
+`/opt/zeler-platform/docker-compose.yml.pre-sheets-api-6cc570b`.
+Rollback API remains `7ddca362...`; no images or data were deleted in this
+activation. Free space passed the 5-GiB floor before Compose activity.
+
+The post-activation replay changed only A5801, A18321, A22321 and A38901 in
+`Goal_Pruebas_20260909` (two trailing account spaces to three, same normalized
+pilot). New production serialization events were HTTP 200: CATALOGOBUYBOX
+6,874.536ms, CATALOGO 7,181.874ms, OBTENER_CATALOGO 7,204.109ms and
+CATALOGO_COMPLETO 7,277.993ms. Connector readback at **10.293 seconds** from
+write initiation showed results, still containing DATA_UNAVAILABLE. This is
+a bounded response observation for these four calls, not a p95 measurement
+or complete-data acceptance. Native rendered layout remains unverified;
+only anchor values were written, preserving formatting and original tabs.
+
+The approved-runtime reader then found **82 trusted rows, 1,900 inventory
+items, 1,840 unavailable items, current enumeration**. The inventory job was
+running at offset 40 and product recovery was pending at offset 60. This
+confirms real demand started acquisition; it does not yet prove preventive
+renewal of a fully current inventory. Next let this acquisition progress,
+then test a current read and verify its deferred renewal without changing
+timestamps or directly preparing another queue job.
 
 Separately, the pilot sweep initiated by the real Sheet completed. The actual
 VM/container read-model reader returned **2,859 trusted rows across 1,900
@@ -73,15 +131,27 @@ new duplicate assertion from the healthcheck test file. The image's runtime
 content is unchanged by this test-only follow-up; no rebuild is needed for it.
 The combined Dockerfile, runtime-contract, entrypoint and supervisor checks
 passed **82 tests in 2.88s** after correcting the stale expectation.
-Local helpers: `/tmp/zeler-worker-signals.uRArwZ/`. This image is **not deployed**;
-the running worker is the verified `36f9d28` image from attempt 2 below.
+Local helpers: `/tmp/zeler-worker-signals.uRArwZ/`. Before activation, the running
+worker was the verified `36f9d28` image from attempt 2 below; the completed
+activation and signal verification are recorded after the preparation details.
 
 The new image was verified and downloaded. Removed only unused local worker
 `7833b955...` after all-container, current Compose, protection-file and Artifact
 Registry checks; no volumes/data touched. Free disk returned to 5,859,319,808
-bytes. Prepared VM helper `/tmp/activate-worker-signals-fc642de.py` has not run;
+bytes. At preparation, VM helper `/tmp/activate-worker-signals-fc642de.py` had not run;
 it preserves the currently running `7a380060...` worker as rollback and checks
 Python PID 1. Pilot acquisition advanced 520 → 1,180 → 1,580 during this work.
+
+Activation completed: worker `9cf679bb...`, source `fc642de`, verified Python
+PID 1, stable healthy state, zero restarts; API identity/start time unchanged.
+Backup `/opt/zeler-platform/docker-compose.yml.pre-sheets-worker-fc642de`.
+The scoped pilot queue was empty again before launching
+`/tmp/verify-worker-stop-fc642de.py` for a controlled stop/start verification.
+That verification completed: clean stop in **1.777 seconds**, exit code 0,
+not OOM; the same container restarted and remained healthy on repeated checks.
+API identity/start time stayed unchanged. The new worker's stop-signal behavior
+is now runtime-proven. No additional worker build is required for the API-only
+renewal change.
 
 Post-deployment Sheet replay changed only the four owned anchor account
 expressions from one trailing space to two (same normalized seller). Production
