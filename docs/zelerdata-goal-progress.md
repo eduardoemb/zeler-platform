@@ -21,6 +21,60 @@ Keep unrelated `.codegraph/` files untouched in both repositories.
 Pilot: seller `82453304`; initial historical window 2026-08-08 through
 2026-09-06, plus current snapshots. Other products are out of scope.
 
+## Acquired-price worker deployed; both real missing prices recovered
+
+Cloud Build `da17604f-0c14-43ad-b618-d5068e90377f` succeeded for exact connected
+repository source `f598ed20379fad7d9acd0f6174abd29e6831506a`. The worker image is
+`us-central1-docker.pkg.dev/zeler-platform-dev/zeler-platform/sheets-worker@sha256:d2ccd62a30fb407dd268190f1c254c9d4035563c0f0911d99107af80e189bae3`.
+Digest/build/source verification passed locally and on the VM, updating the
+canonical image map. Artifacts and guarded helpers are in local
+`/tmp/zeler-catalog-rollout.tdDS4D/` and VM `/tmp/` with `price-worker-*`,
+`pull-price-worker.py`, `activate-price-worker.py`, and `two-price-cases.py`.
+
+Only unused worker cache `d3bee37...` was removed after checking every container,
+the Compose configuration, protected images and its availability in Artifact
+Registry. It freed 543,514,624 bytes; no volumes or business data were removed.
+The new image pull completed in 14.37 seconds, leaving 5,384,400,896 free bytes
+and Compose unchanged. An initial SCP connection closed before transferring
+the artifacts; the verifier refused missing input and no pull occurred until
+the transfer and verification succeeded.
+
+CI test `34302749490` and lint `34302749492` both passed before activation.
+The worker now runs the verified image above, source `f598ed2`, with HTTP health
+200 and zero restarts. Activation checked capacity, zero running recovery jobs,
+the pilot recovery settings, exact image provenance and the unchanged healthy
+API. Backup: `/opt/zeler-platform/docker-compose.yml.pre-sheets-worker-activate-f598ed2`.
+Free space after activation was 5,384,175,616 bytes. Worker rollback is the prior
+`0cb733...` image; the API remains `1904ed9...` at source `f4573de`.
+
+The frozen two-item refresh job `c467f3...` was reopened once through normal
+admission at `02:28:26.734Z` and completed at `02:28:28.680Z` on September 9.
+No source timestamps or global freshness markers were manually advanced.
+Buybox job `ea3b67...` was reopened once at `02:29:10.793Z`, ending
+`failed/source_rejected` at `02:29:11.269Z`: the independent offers resource
+remains rejected, not silently complete. At `02:29:40.674Z`, both snapshots had
+numeric prices equal to their acquired canonical price, current competition
+cuts and source alignment. Their original offers cuts and value hashes remained
+unchanged. Neither prior row had a known numeric offer count; this is not live
+proof of retaining an existing numeric count.
+
+Mongo-only dispatcher readback returned CATALOGOBUYBOX in **1.2652s**, three rows
+of width nine (two items and an explicit inventory gap). Unavailable cells fell
+from 13 to 11; both item rows now have all first eight columns available, with
+only column 8 (sole-competitor flag, zero-based) unavailable. CATALOGO took
+**1.3843s**, retaining 42 unavailable cells and the explicit unreconciled-history
+reason for both items. Registry remained exact at 11 scopes/6 topics and global
+freshness markers were unchanged. This proves the price fallback, not current
+whole-seller coverage, authenticated HTTP or a real Google Sheet.
+
+Read-only follow-up on the VM: `sudo python3 /tmp/two-price-cases.py status`
+and `sudo python3 /tmp/two-offers-read.py`. Both `refresh` and `recover` already
+executed; do not repeat them as status checks. The immutable sample receipt
+remains `/var/lib/zeler-platform/repairs/two-offers-cases-f4573de.json`.
+Remaining work includes full-seller freshness/recovery, unresolved offer and
+historical data, all-52/end-user acceptance and minimum hardening. This evidence
+note needs no additional image build; the worker runtime change is deployed.
+
 ## Missing competition price uses the verified acquired selling price
 
 The recovery worker now fills a null/missing competition price from the owned,
