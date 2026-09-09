@@ -23,6 +23,20 @@ Pilot: seller `82453304`; initial historical window 2026-08-08 through
 
 ## Independent catalog recovery no longer waits for every inventory item
 
+Post-sweep production evidence confirms the dependency, not just an intermediate
+state. The existing inventory job completed at `2026-09-09T03:33:28.221Z`, offset
+1,900/1,900, zero unavailable inventory items, with the `03:24:57.065Z` discovery
+cut. It was not restarted. At `03:34:09Z`, `/tmp/current-catalog-coverage.py`
+found all item projections trusted (2,859 SKU rows for 1,900 identities), 936
+missing buybox snapshots and two invalid catalog participants. Both invalid
+participants have an invalid/missing `catalog_product_id`; this is distinct
+from missing item projections and is not yet proof of permanent API absence.
+Both deployed catalog handlers requested only those two item IDs, not the 936
+known buybox identities. Read times: 4.337/4.5364 seconds. Registry remained
+exactly 11/6 and global markers unchanged. No raw identity, price or customer data
+was printed. The fix is committed/pushed as `555be9e`; its CI runs
+`34307610607` (test) and `34307610515` (lint) were still in progress at this check.
+
 During the live inventory sweep, the deployed Mongo-only dispatcher reported
 322 missing buybox snapshots but requested only 1,339 missing item projections;
 `CATALOGO` similarly requested inventory only despite 335 missing buybox items.
