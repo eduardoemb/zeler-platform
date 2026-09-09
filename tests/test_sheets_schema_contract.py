@@ -645,6 +645,35 @@ def test_sheets_item_formula_rows_schema_supports_bounded_listing_fee_projection
     assert_bounded_listing_fee_projection_schema(current_properties["listing_fee_projection"])
 
 
+def test_quality_projection_is_bounded_in_canonical_and_formula_storage() -> None:
+    canonical = _validator_payload(ENTITY_SCHEMAS["items"])["$jsonSchema"]["properties"]
+    item_file = json.loads((ROOT / "infra/mongo/schemas/items.json").read_text())
+    row_file = json.loads((ROOT / "infra/mongo/schemas/sheets_item_formula_rows.json").read_text())
+    projection = canonical["quality_projection"]
+    assert item_file["$jsonSchema"]["properties"]["quality_projection"] == projection
+    assert (
+        row_file["$jsonSchema"]["properties"]["current"]["properties"]["quality_projection"]
+        == projection
+    )
+    assert projection["additionalProperties"] is False
+    assert set(projection["required"]) == {
+        "source",
+        "entity_id",
+        "score",
+        "level",
+        "calculated_at",
+        "observed_at",
+        "components",
+        "pending_actions",
+    }
+    properties = projection["properties"]
+    assert properties["score"]["minimum"] == 0
+    assert properties["score"]["maximum"] == 100
+    assert properties["components"]["additionalProperties"] is False
+    assert set(properties["components"]["properties"]) == {"gtin", "images", "title", "shipping"}
+    assert "quality_projection" in canonical["enrichment_state"]["properties"]
+
+
 def test_items_schema_supports_v2_formula_fields_without_raw_payload_drift() -> None:
     validator = json.loads((ROOT / "infra/mongo/schemas/items.json").read_text())
     schema = validator["$jsonSchema"]
@@ -801,3 +830,18 @@ def test_sheets_manifest_allows_catalog_product_scope() -> None:
 
     assert "GET /products/*" in manifest.allowed_meli_scopes
     assert "POST /products/*" not in manifest.allowed_meli_scopes
+
+
+def test_sheets_quality_performance_scope_is_readonly_and_resource_specific() -> None:
+    from fnmatch import fnmatchcase
+
+    from zeler_platform_core.runtime.manifest import validate_manifest
+
+    manifest = validate_manifest("modules/sheets/manifest.yaml")
+    seed = json.loads(Path("infra/mongo/seeds/module_registry.admin_clients.json").read_text())
+    sheets = next(row for row in seed["documents"] if row["_id"] == "sheets")
+    for scopes in (manifest.allowed_meli_scopes, sheets["allowed_meli_scopes"]):
+        assert "GET /item/*/performance" in scopes
+        assert any(fnmatchcase("GET /item/MLM123/performance", scope) for scope in scopes)
+        assert not any(fnmatchcase("PUT /item/MLM123/performance", scope) for scope in scopes)
+        assert not any(fnmatchcase("GET /item/MLM123/unrelated", scope) for scope in scopes)

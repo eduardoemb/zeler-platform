@@ -177,14 +177,17 @@ async def test_calidad_uses_modern_local_quality_projection_without_suggested_pr
             title="Quality item",
             status="active",
             quality_projection={
-                "score": Decimal("0.88"),
+                "source": "/item/{id}/performance",
+                "entity_id": "MLA1",
+                "observed_at": NOW,
+                "score": 88.0,
                 "level": "good",
                 "calculated_at": QUALITY_CALCULATED_AT,
                 "components": {
-                    "gtin": {"status": "ok", "score": Decimal("1")},
-                    "images": {"status": "warning", "score": Decimal("0.7")},
-                    "title": {"status": "ok", "score": Decimal("0.9")},
-                    "shipping": {"status": "ok", "score": Decimal("1")},
+                    "gtin": {"status": "COMPLETED", "score": 100.0},
+                    "images": {"status": "PENDING", "score": 70.0},
+                    "title": {"status": "COMPLETED", "score": 90.0},
+                    "shipping": {"status": "COMPLETED", "score": 100.0},
                 },
                 "pending_actions": ["ADD_IMAGES", "IMPROVE_TITLE"],
             },
@@ -232,17 +235,17 @@ async def test_calidad_uses_modern_local_quality_projection_without_suggested_pr
             "https://meli.example/MLA1",
             7,
             "gold_special",
-            0.88,
+            88,
             "good",
             "2026-06-14T09:30:00+00:00",
-            "ok",
-            1,
-            "warning",
-            0.7,
-            "ok",
-            0.9,
-            "ok",
-            1,
+            "COMPLETED",
+            100,
+            "PENDING",
+            70,
+            "COMPLETED",
+            90,
+            "COMPLETED",
+            100,
             "ADD_IMAGES | IMPROVE_TITLE",
         ],
         [
@@ -253,21 +256,61 @@ async def test_calidad_uses_modern_local_quality_projection_without_suggested_pr
             "https://meli.example/MLA2",
             7,
             "gold_special",
-            0.51,
-            "regular",
-            "NA",
-            "NA",
-            "NA",
-            "NA",
-            "NA",
-            "NA",
-            "NA",
-            "NA",
-            "NA",
-            "NA",
+            *["DATA_UNAVAILABLE"] * 12,
         ],
     ]
-    assert result.meta == {"rows_count": 2, "columns": "modern_quality_projection"}
+    assert result.meta == {
+        "rows_count": 2,
+        "columns": "modern_quality_projection",
+        "quality_unavailable_items": ["MLA2"],
+        "quality_unavailable_reason": "missing_malformed_or_stale_quality_acquisition",
+    }
+    assert result.recovery is not None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("condition", ["fresh", "missing", "expired", "wrong_item", "future"])
+async def test_calidad_only_uses_owned_current_acquisition(condition: str) -> None:
+    db = FakeDb()
+    _mark_read_model_fresh(db, ITEM_FORMULA_ROWS_READ_MODEL)
+    quality = {
+        "source": "/item/{id}/performance",
+        "entity_id": "MLA1",
+        "score": 69.0,
+        "level": "Good",
+        "calculated_at": QUALITY_CALCULATED_AT,
+        "observed_at": NOW,
+        "components": {},
+        "pending_actions": [],
+    }
+    if condition == "missing":
+        quality = {}
+    elif condition == "expired":
+        quality["observed_at"] = NOW - timedelta(minutes=15)
+    elif condition == "wrong_item":
+        quality["entity_id"] = "MLA2"
+    elif condition == "future":
+        quality["observed_at"] = NOW + timedelta(seconds=1)
+    db["sheets_item_formula_rows"].documents = {
+        "one": _item_row(
+            item_id="MLA1",
+            sku="sku-1",
+            title="Known title",
+            status="active",
+            quality_projection=quality,
+            health=Decimal("0.9"),
+        )
+    }
+    result = await _dispatcher(db).execute(_context("ZELERDATA_CALIDAD", {"encabezados": "no"}))
+    assert result.values[0][:4] == ["MLA1", "sku-1", "Known title", "active"]
+    if condition == "fresh":
+        assert result.values[0][7:9] == [69, "Good"]
+        assert result.values[0][10:] == ["NA"] * 9
+        assert result.recovery is None
+    else:
+        assert result.values[0][7:] == ["DATA_UNAVAILABLE"] * 12
+        assert result.recovery is not None
+        assert result.meta["quality_unavailable_items"] == ["MLA1"]
 
 
 @pytest.mark.asyncio

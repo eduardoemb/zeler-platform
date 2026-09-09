@@ -2312,6 +2312,15 @@ async def test_inventory_recovery_resumes_bounded_batches_without_global_readine
                     }
                     for identity in batch
                 ]
+            if path.startswith("/item/") and path.endswith("/performance"):
+                return {
+                    "entity_type": "ITEM",
+                    "entity_id": path.split("/")[2],
+                    "score": 69,
+                    "level": "Good",
+                    "calculated_at": "2026-09-01T00:00:00Z",
+                    "buckets": [],
+                }
             response = httpx.Response(503, request=httpx.Request("GET", "https://example.invalid"))
             raise httpx.HTTPStatusError(
                 "synthetic unavailable cost", request=response.request, response=response
@@ -2835,6 +2844,7 @@ async def test_explicit_item_recovery_uses_bounded_acquisition_without_global_ma
         assert kwargs["gateway"] is gateway
         assert kwargs["acquire_item_ids"] == ("MLA1", "MLA2")
         assert kwargs["sale_price_enabled"] and kwargs["listing_fixed_fee_enabled"]
+        assert kwargs["quality_enabled"] is True
         assert not kwargs["dry_run"]
         calls.append("acquire")
         for identity in ("MLA1",) if partial else ("MLA1", "MLA2"):
@@ -2964,6 +2974,15 @@ async def test_http_cost_gap_queues_only_affected_item_and_recovers_without_inve
                 ]
             if "/sale_price" in path:
                 return {"amount": 100, "regular_amount": 100, "currency_id": "ARS"}
+            if path == "/item/MLA1/performance":
+                return {
+                    "entity_type": "ITEM",
+                    "entity_id": "MLA1",
+                    "score": 69,
+                    "level": "Good",
+                    "calculated_at": "2026-09-01T00:00:00Z",
+                    "buckets": [],
+                }
             assert path.startswith("/sites/MLA/listing_prices?")
             if self.unavailable and cost_gap:
                 from zeler_platform_core.clients.meli_gateway_client import GatewayRateLimitError
@@ -3130,6 +3149,15 @@ async def test_http_buybox_price_gap_recovers_item_then_competition(
                     "current_price": None,
                     "competitors_sharing_first_place": 0,
                     "winner": {"item_id": "MLA1", "price": 99},
+                }
+            if path == "/item/MLA1/performance":
+                return {
+                    "entity_type": "ITEM",
+                    "entity_id": "MLA1",
+                    "score": 69,
+                    "level": "Good",
+                    "calculated_at": "2026-09-01T00:00:00Z",
+                    "buckets": [],
                 }
             assert path == "/products/MLA9/items"
             return {
@@ -3700,6 +3728,15 @@ async def test_item_worker_retries_known_acquisition_failures_only(
     class Gateway:
         async def fetch_resource(self, *, seller_id: str, path: str) -> Any:
             nonlocal calls
+            if path == "/item/MLA1/performance":
+                return {
+                    "entity_type": "ITEM",
+                    "entity_id": "MLA1",
+                    "score": 69,
+                    "level": "Good",
+                    "calculated_at": "2026-09-01T00:00:00Z",
+                    "buckets": [],
+                }
             if path != "/items?ids=MLA1&include_attributes=all":
                 response = httpx.Response(404, request=httpx.Request("GET", "https://gateway.test"))
                 response.raise_for_status()
@@ -5681,6 +5718,73 @@ async def recovery_db() -> AsyncIterator[Any]:
         if connected:
             await client.drop_database(db.name)
         client.close()
+
+
+@pytest.mark.asyncio
+async def test_quality_projection_roundtrips_with_real_mongo_validators(recovery_db: Any) -> None:
+    import json
+    from pathlib import Path
+
+    from pymongo.errors import WriteError
+
+    from zeler_sheets.quality import project_item_quality
+    from zeler_sheets.sheetseller_backfill import build_formula_row_doc
+
+    now = datetime(2026, 9, 9, tzinfo=UTC)
+    quality = project_item_quality(
+        {
+            "entity_type": "ITEM",
+            "entity_id": "MLA1",
+            "score": 69,
+            "level": "Good",
+            "calculated_at": now.isoformat(),
+            "buckets": [],
+        },
+        item_id="MLA1",
+        observed_at=now,
+    )
+    for name in ("items", "sheets_item_formula_rows"):
+        schema = json.loads(Path(f"infra/mongo/schemas/{name}.json").read_text())
+        await recovery_db.create_collection(name, validator={"$jsonSchema": schema["$jsonSchema"]})
+    item = {
+        "_id": "MLA1",
+        "seller_id": "82453304",
+        "title": "Quality publication",
+        "price": 100,
+        "base_price": 100,
+        "available_quantity": 2,
+        "status": "active",
+        "category_id": "MLA123",
+        "date_created": now,
+        "last_updated": now,
+        "last_meli_sync_at": now,
+        "schema_version": 2,
+        "quality_projection": quality,
+    }
+    await recovery_db.items.insert_one(item)
+    row = build_formula_row_doc(item, seller_id="82453304", sku="quality-sku")
+    await recovery_db.sheets_item_formula_rows.insert_one(row)
+    for name, path in (
+        ("items", "quality_projection"),
+        ("sheets_item_formula_rows", "current.quality_projection"),
+    ):
+        collection = recovery_db[name]
+        stored = await collection.find_one({})
+        observed = (
+            stored["quality_projection"]
+            if name == "items"
+            else stored["current"]["quality_projection"]
+        )
+        assert observed["score"] == 69
+        assert observed["level"] == "Good"
+        assert observed["observed_at"].replace(tzinfo=UTC) == now
+        for field, value in (
+            ("score", 101),
+            ("raw_payload", {"private": "discard"}),
+            ("components.unknown", {"status": "PENDING", "score": 0}),
+        ):
+            with pytest.raises(WriteError):
+                await collection.update_one({}, {"$set": {f"{path}.{field}": value}})
 
 
 @pytest.mark.asyncio

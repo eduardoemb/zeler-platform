@@ -20,6 +20,127 @@ Keep unrelated `.codegraph/` files untouched in both repositories.
 
 ## Real Google Sheet: all-52 first pass and user add-on update, 2026-09-09
 
+### Quality acquisition gap: confirmed missing source path and permission
+
+Latest local gate: after the environment transition lost the earlier process
+handle, a new authorized full run against the dedicated local replica set
+completed with **4,213 passed, nine skipped, zero failures** in **156.18s**.
+Eight stock-time integration cases intentionally reject ambient `MONGO_URI`;
+the remaining skip is Caddy's inapplicable required-key check. Those skips are
+non-acceptance, not proven stock-time behavior. No quality acquisition or
+recovery tests were skipped. Production acquisition and real-Sheet readback
+remain pending. The deployment must retain a rollback image compatible with
+the reviewed 12-scope/six-routing-key registration before activation.
+
+Local implementation now connects bounded performance acquisition to canonical
+items, formula rows and the existing recovery worker. The reader validates item
+identity and acquisition age (the existing 15-minute current-data window), keeps
+source score/level, and reports unavailable quality separately from known item
+columns. Legacy health-based level inference was removed. Failed acquisition
+preserves the prior quality observation; a performance 404 remains retryable,
+not evidence of permanent optional absence.
+
+Focused verification: 160 enrichment tests, 122 handler/API tests, and eight
+bounded-worker cases passed. Real local Mongo accepted both normalized storage
+forms and rejected out-of-range scores, unknown components and raw payloads
+(`test_quality_projection_roundtrips_with_real_mongo_validators`). The first
+full recovery run had 388 passes and six failures: test gateways lacked the new
+performance response or expected quality completion without acquisition. Their
+eight parametrized regression cases passed after correcting those fixtures.
+Full recovery/root reruns are pending; do not infer production acceptance.
+
+The subsequent root run completed with **4,162 passed, eight failed, 52 skipped**
+(191.65s). Seven failures were the old registry count/enrichment metadata and
+retry fixtures, now corrected (180 core tests and seven retry cases pass).
+The eighth exposed the deploy verifier's old canonical registration fingerprint:
+the reviewed contract now includes 12 scopes and six routing keys. Update the
+verifier and its probe expectations together; do not bypass rollback attestation.
+Its complete preflight suite passed 83 tests after that change. A clean root
+rerun remains required. Most Mongo skips used the default development port,
+not the dedicated recovery Mongo on 27028; those skips are not passing evidence.
+
+Runtime rollout still requires compatible validators for `items` and
+`sheets_item_formula_rows`, the reviewed Sheets gateway scope, and verified new
+Sheets API/worker images. No runtime changes have been applied for this unit.
+Rollback stops the new worker/API behavior and restores the prior images;
+additive validators may remain so persisted quality is not deleted or rejected.
+The source rollback boundary is the quality producer/model/schema/reader path,
+its single worker option and corresponding tests; unrelated inventory renewal
+and other products remain outside this unit.
+
+Repository tracing found `quality_projection` populated only by test fixtures,
+not by Sheets acquisition/persistence. The reader also accepts three alternate
+projection names and legacy health; none establishes production acquisition.
+The official [quality contract](https://developers.mercadolibre.com.mx/es_ar/preguntas-y-respuestas/calidad-de-publicaciones)
+uses `GET /item/{id}/performance`, with source score 0–100, source level and
+calculation time, plus bucket variables/rules. It is not the old health resource
+or the unrelated purchase-experience metric. The legacy acquisition reference
+also consumes that singular path, but its fallback zeros must not be copied.
+
+An approved-runtime read-only probe selected one owned active pilot item:
+the current Sheets registry did **not** permit this path and the normal gateway
+returned **403**. This is a platform permission gap, not proof that Mercado Libre
+withholds the pilot's quality data. No permission or business data was patched
+in production and no token was copied or printed.
+
+Local prerequisite: add only `GET /item/*/performance` to the Sheets manifest
+and its admin seed. New scope regression initially failed (1 failed in 0.18s),
+then `uv run pytest tests/test_sheets_schema_contract.py
+modules/sheets/tests/test_app_phase6.py --tb=short` passed **32 tests in 0.56s**.
+The test checks the exact resource and rejects writes/unrelated singular-item
+paths. Existing startup expectations were updated; Ruff and diff checks pass.
+
+**Not deployed or complete:** keep this scope with the upcoming acquisition,
+source-bound persistence and reader correction. Preserve source percentage/level
+rather than applying the current legacy 0–1 buckets to a 0–100 score. Normalize
+the existing twelve columns from verified variables; only confirmed absent
+optional components may be NA. Missing acquisition is not confirmed absence.
+Use asynchronous recovery and trusted Mongo fallback without invalidating item
+fingerprints or relabeling old observations. A normal owned live performance
+response and persisted readback remain required before acceptance.
+
+Rollback of this local prerequisite removes its one manifest/seed scope and
+matching tests in `test_sheets_schema_contract.py` and `test_app_phase6.py`;
+it does not delete acquired data. No new image is requested for this permission
+alone while the functional producer remains unfinished.
+
+### Real Sheet current-read renewal verified; quality fields remain absent
+
+The demanded inventory completed **1,900/1,900**. At observation age 563.152s,
+the persisted next due time was still **36.848s away** (observation + 600s).
+The actual CALIDAD handler returned **2,859 rows × 19 columns**, complete/current
+inventory, zero partial misses, no recovery, and zero DATA_UNAVAILABLE cells.
+
+Changed only `Goal_Pruebas_20260909!A29321` from
+`=ZELERDATA_CALIDAD($A$2,"si")` to `=ZELERDATA_CALIDAD($A$2&" ","si")`.
+The account resolves to the same pilot. First connector readback had results
+at **6.245 seconds** from write initiation; a new production HTTP 200
+serialization event measured **2,591.99ms**. Full bounded readback of
+`A29322:S32181` found 2,859 populated rows, zero cell errors and zero
+DATA_UNAVAILABLE. Ordered publication membership fingerprints and NA counts
+matched the backend cut. This is membership/count corroboration, not an
+independent field-by-field source audit or a p95 sample.
+
+After this real current read, the existing inventory job changed from completed
+to **pending**, retained all 1,900 identities and its observation cut, and had
+**7.434s remaining until the same due time**. Subsequent readback found it
+**running at offset 160**, with a new observation age of 36.364s. No operator
+enqueue, timestamp edit, worker restart or new deployment was used. This proves
+demanded preventive admission and execution for one cycle, not perpetual
+freshness or every formula's final correctness.
+
+**Remaining data gap:** both backend and Sheet contained **34,330 NA cells**.
+Columns H:S (all twelve quality fields) were NA for every one of the 2,859
+rows; the remainder was 18 SKU cells and four stock cells. No NA was silently
+counted as verified source absence. Next trace acquisition/persistence of quality
+fields and the four missing stock values. A repository search found no quality
+acquisition references in the item backfill/event persistence paths inspected;
+this is a lead requiring contract/source verification, not proof of impossibility.
+
+Only the anchor's value changed; original tabs, validation and formatting were
+preserved. Native rendered layout remains unverified. This evidence-only update
+requires no image rebuild and must not be rolled back by deleting acquired data.
+
 ### Current hosted order relationship: one live positive control
 
 A read-only approved-runtime probe selected the two newest stored pilot orders

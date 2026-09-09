@@ -411,6 +411,40 @@ class ItemEnrichmentFieldState(UtcDatetimeMixin):
         return UtcDatetimeMixin._datetime_must_be_aware(value)
 
 
+class ItemQualityComponent(UtcDatetimeMixin):
+    model_config = ConfigDict(extra="forbid")
+
+    status: Literal["PENDING", "COMPLETED"]
+    score: float = Field(ge=0, le=100, strict=True, allow_inf_nan=False)
+
+
+class ItemQualityProjection(UtcDatetimeMixin):
+    model_config = ConfigDict(extra="forbid")
+
+    source: Literal["/item/{id}/performance"]
+    entity_id: str = Field(pattern=r"^ML[A-Z][0-9]+$")
+    score: float = Field(ge=0, le=100, strict=True, allow_inf_nan=False)
+    level: str = Field(min_length=1, max_length=80)
+    calculated_at: datetime
+    observed_at: datetime
+    components: dict[str, ItemQualityComponent]
+    pending_actions: list[str] = Field(max_length=200)
+
+    @field_validator("calculated_at", "observed_at")
+    @classmethod
+    def _aware_quality_cut(cls, value: datetime) -> datetime:
+        UtcDatetimeMixin._datetime_must_be_aware(value)
+        if value.tzinfo is None:
+            raise ValueError("quality timestamps require timezone")
+        return value
+
+    @model_validator(mode="after")
+    def _quality_cut_order(self) -> ItemQualityProjection:
+        if self.calculated_at > self.observed_at:
+            raise ValueError("quality calculation is in the future")
+        return self
+
+
 class ItemEnrichmentState(UtcDatetimeMixin):
     model_config = ConfigDict(arbitrary_types_allowed=True, extra="forbid")
 
@@ -418,6 +452,7 @@ class ItemEnrichmentState(UtcDatetimeMixin):
     current_promotion: ItemEnrichmentFieldState | None = None
     listing_fee_projection: ItemEnrichmentFieldState | None = None
     listing_price_fixed_fee: ItemEnrichmentFieldState | None = None
+    quality_projection: ItemEnrichmentFieldState | None = None
 
 
 class Item(UtcDatetimeMixin, PriceMixin, SellerScopedDocument):
@@ -442,6 +477,7 @@ class Item(UtcDatetimeMixin, PriceMixin, SellerScopedDocument):
     attributes: list[dict[str, Any]] = Field(default_factory=list)
     shipping: dict[str, Any] | None = None
     health: float | None = None
+    quality_projection: ItemQualityProjection | None = None
     current_promotion: PromoPriceProjection | None = None
     listing_price_fixed_fee: ListingPriceFixedFeeProjection | None = None
     listing_fee_projection: ListingFeeProjection | None = None

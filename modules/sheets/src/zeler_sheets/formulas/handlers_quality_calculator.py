@@ -6,7 +6,9 @@ from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from bson.decimal128 import Decimal128
+from pydantic import ValidationError
 
+from zeler_platform_core.models.entities import ItemQualityProjection
 from zeler_sheets.formulas.dispatcher import (
     FormulaDataUnavailableError,
     FormulaExecutionContext,
@@ -83,7 +85,12 @@ class QualityCalculatorFormulaHandlers:
             )
         values: list[list[Any]] = _header_row(context.args.get("encabezados"), CALIDAD_HEADERS)
         header_rows = len(values)
-        values.extend(_quality_row(row) for row in rows)
+        quality_unavailable: set[str] = set()
+        for row in rows:
+            quality_row = _quality_row(row, now=now)
+            values.append(quality_row)
+            if quality_row[7] == "DATA_UNAVAILABLE":
+                quality_unavailable.add(str(row.get("item_id") or ""))
         values.extend(
             [item_id, *["DATA_UNAVAILABLE"] * (len(CALIDAD_HEADERS) - 1)]
             for item_id in unavailable_items
@@ -95,6 +102,16 @@ class QualityCalculatorFormulaHandlers:
             meta={
                 "rows_count": len(values) - header_rows,
                 "columns": "modern_quality_projection",
+                **(
+                    {
+                        "quality_unavailable_items": sorted(quality_unavailable),
+                        "quality_unavailable_reason": (
+                            "missing_malformed_or_stale_quality_acquisition"
+                        ),
+                    }
+                    if quality_unavailable
+                    else {}
+                ),
                 **(
                     {
                         "inventory_rows_complete": enumeration_current and not unavailable_items,
@@ -119,7 +136,7 @@ class QualityCalculatorFormulaHandlers:
                     "Inventory publications need recovery.",
                     read_model=ITEM_FORMULA_ROWS_READ_MODEL,
                 )
-                if unavailable_items or not enumeration_current
+                if unavailable_items or quality_unavailable or not enumeration_current
                 else None
             ),
         )
@@ -264,11 +281,9 @@ def _expired_inventory_warning(width: int) -> list[str]:
     ]
 
 
-def _quality_row(row: Mapping[str, Any]) -> list[Any]:
+def _quality_row(row: Mapping[str, Any], *, now: datetime) -> list[Any]:
     current = _current_mapping(row)
-    projection = _quality_projection(current)
-    score = _quality_score(current, projection)
-    return [
+    base = [
         str(row.get("item_id") or ""),
         row.get("sku") or row.get("normalized_sku") or NA_VALUE,
         _current_value(current, "title"),
@@ -276,8 +291,25 @@ def _quality_row(row: Mapping[str, Any]) -> list[Any]:
         _current_value(current, "permalink", "url"),
         _sheet_optional_number(current.get("available_quantity")),
         _current_value(current, "listing_type_id"),
-        _sheet_optional_number(score),
-        _quality_level(projection, score=score),
+    ]
+    raw = current.get("quality_projection")
+    if not isinstance(raw, Mapping):
+        return [*base, *["DATA_UNAVAILABLE"] * 12]
+    projection = dict(raw)
+    for key in ("calculated_at", "observed_at"):
+        projection[key] = bson_ms_utc_datetime(projection.get(key))
+    try:
+        quality = ItemQualityProjection.model_validate(projection)
+    except ValidationError:
+        return [*base, *["DATA_UNAVAILABLE"] * 12]
+    if quality.entity_id != str(row.get("item_id")) or not (
+        now - timedelta(minutes=15) < quality.observed_at <= now
+    ):
+        return [*base, *["DATA_UNAVAILABLE"] * 12]
+    return [
+        *base,
+        _sheet_optional_number(quality.score),
+        quality.level,
         _datetime_cell(_projection_value(projection, "calculated_at", "synced_at", "updated_at")),
         _component_status(projection, "gtin"),
         _component_score(projection, "gtin"),
@@ -359,38 +391,6 @@ def _calculator_row(
         if isinstance(net_amount, Decimal)
         else _sheet_optional_number(net_amount),
     ]
-
-
-def _quality_projection(current: Mapping[str, Any]) -> Mapping[str, Any]:
-    for key in ("quality_projection", "quality_performance", "quality", "health_projection"):
-        value = current.get(key)
-        if isinstance(value, Mapping):
-            return value
-    return {}
-
-
-def _quality_score(current: Mapping[str, Any], projection: Mapping[str, Any]) -> Decimal | None:
-    for value in (
-        _projection_value(projection, "score", "quality_score", "health"),
-        current.get("health"),
-    ):
-        score = _optional_non_negative_decimal(value)
-        if score is not None:
-            return score
-    return None
-
-
-def _quality_level(projection: Mapping[str, Any], *, score: Decimal | None) -> Any:
-    raw_level = _projection_value(projection, "level", "quality_level")
-    if raw_level is not None and str(raw_level).strip():
-        return str(raw_level).strip()
-    if score is None:
-        return NA_VALUE
-    if score >= Decimal("0.8"):
-        return "good"
-    if score >= Decimal("0.5"):
-        return "regular"
-    return "poor"
 
 
 def _component_status(projection: Mapping[str, Any], *keys: str) -> Any:

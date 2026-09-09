@@ -575,6 +575,7 @@ class FormulaRecoveryWorker:
                     dry_run=False,
                     sale_price_enabled=True,
                     listing_fixed_fee_enabled=True,
+                    quality_enabled=True,
                 )
             except Exception as exc:  # noqa: BLE001 - preserve classification after joining siblings.
                 return exc

@@ -61,6 +61,7 @@ def test_exported_items_schema_includes_enrichment_state_metadata(tmp_path: Path
         "current_promotion",
         "listing_fee_projection",
         "listing_price_fixed_fee",
+        "quality_projection",
     }
     assert field_state["additionalProperties"] is False
     assert field_state["required"] == ["source", "status", "synced_at"]

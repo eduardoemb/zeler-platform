@@ -136,6 +136,49 @@ ITEM_ENRICHMENT_FIELD_STATE = {
         "basis": ITEM_ENRICHMENT_BASIS,
     },
 }
+ITEM_QUALITY_COMPONENT = {
+    "bsonType": "object",
+    "additionalProperties": False,
+    "required": ["status", "score"],
+    "properties": {
+        "status": {"enum": ["PENDING", "COMPLETED"]},
+        "score": {"bsonType": ["double", "int", "long"], "minimum": 0, "maximum": 100},
+    },
+}
+ITEM_QUALITY_PROJECTION = {
+    "bsonType": ["object", "null"],
+    "additionalProperties": False,
+    "required": [
+        "source",
+        "entity_id",
+        "score",
+        "level",
+        "calculated_at",
+        "observed_at",
+        "components",
+        "pending_actions",
+    ],
+    "properties": {
+        "source": {"enum": ["/item/{id}/performance"]},
+        "entity_id": {"bsonType": "string", "pattern": "^ML[A-Z][0-9]+$"},
+        "score": {"bsonType": ["double", "int", "long"], "minimum": 0, "maximum": 100},
+        "level": {"bsonType": "string", "minLength": 1, "maxLength": 80},
+        "calculated_at": DATE,
+        "observed_at": DATE,
+        "components": {
+            "bsonType": "object",
+            "additionalProperties": False,
+            "properties": {
+                name: ITEM_QUALITY_COMPONENT for name in ("gtin", "images", "title", "shipping")
+            },
+        },
+        "pending_actions": {
+            "bsonType": "array",
+            "maxItems": 200,
+            "items": {"bsonType": "string", "minLength": 1, "maxLength": 128},
+        },
+    },
+}
 ITEM_ENRICHMENT_STATE = {
     "additionalProperties": False,
     "bsonType": ["object", "null"],
@@ -144,6 +187,7 @@ ITEM_ENRICHMENT_STATE = {
         "current_promotion": ITEM_ENRICHMENT_FIELD_STATE,
         "listing_fee_projection": ITEM_ENRICHMENT_FIELD_STATE,
         "listing_price_fixed_fee": ITEM_ENRICHMENT_FIELD_STATE,
+        "quality_projection": ITEM_ENRICHMENT_FIELD_STATE,
     },
 }
 ORDER_ITEM = {
@@ -350,6 +394,7 @@ ENTITY_SCHEMAS: dict[str, dict[str, Any]] = {
             "listing_price_fixed_fee": LISTING_PRICE_FIXED_FEE_PROJECTION,
             "listing_fee_projection": LISTING_FEE_PROJECTION,
             "enrichment_state": ITEM_ENRICHMENT_STATE,
+            "quality_projection": ITEM_QUALITY_PROJECTION,
             "catalog_product_id": {"bsonType": ["string", "null"]},
             "catalog_listing": {"bsonType": ["bool", "null"]},
             "variations": {"bsonType": "array"},

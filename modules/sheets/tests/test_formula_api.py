@@ -1426,7 +1426,16 @@ async def test_execute_calidad_uses_default_runtime_handler() -> None:
                 "permalink": "https://meli.example/MLA1",
                 "available_quantity": 4,
                 "listing_type_id": "gold_special",
-                "health": 0.82,
+                "quality_projection": {
+                    "source": "/item/{id}/performance",
+                    "entity_id": "MLA1",
+                    "score": 82.0,
+                    "level": "Good",
+                    "calculated_at": now,
+                    "observed_at": now,
+                    "components": {},
+                    "pending_actions": [],
+                },
             },
         }
     }
@@ -1456,8 +1465,8 @@ async def test_execute_calidad_uses_default_runtime_handler() -> None:
         "https://meli.example/MLA1",
         4,
         "gold_special",
-        0.82,
-        "good",
+        82,
+        "Good",
     ]
     assert body["meta"] == {"rows_count": 1, "columns": "modern_quality_projection"}
 

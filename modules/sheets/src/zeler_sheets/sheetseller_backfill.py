@@ -54,6 +54,7 @@ from zeler_sheets.enrichment import (
 )
 from zeler_sheets.formulas.read_models import normalize_sku
 from zeler_sheets.item_projection import stamp_item_projection
+from zeler_sheets.quality import QUALITY_SOURCE, project_item_quality
 from zeler_sheets.status_history import (
     bson_ms_utc_datetime,
     normalize_mongo_loaded_datetimes,
@@ -809,6 +810,7 @@ async def run_item_detail_enrichment(
     batch_size: int = ITEM_DETAIL_BATCH_SIZE,
     sale_price_enabled: bool = False,
     listing_fixed_fee_enabled: bool = False,
+    quality_enabled: bool = False,
     item_ids: Sequence[str] | None = None,
     discover_current_items: bool = False,
     inventory_gateway: MeliItemGatewayClient | None = None,
@@ -1288,6 +1290,42 @@ async def run_item_detail_enrichment(
                             synced_at=synced_at,
                             basis=listing_params,
                         )
+            if quality_enabled:
+                try:
+                    async with asyncio.timeout(5):
+                        performance = await gateway.fetch_resource(
+                            seller_id=seller_id, path=f"/item/{item_id}/performance"
+                        )
+                    detail["quality_projection"] = project_item_quality(
+                        performance, item_id=item_id, observed_at=datetime.now(UTC)
+                    )
+                    item_enrichment_state["quality_projection"] = trusted_state(
+                        source=QUALITY_SOURCE, synced_at=synced_at
+                    )
+                except (httpx.HTTPError, GatewayRateLimitError, TimeoutError, ValueError) as exc:
+                    # Preserve the prior acquisition cut, never refresh old quality
+                    # merely because the publication itself was fetched successfully.
+                    detail["quality_projection"] = existing_item.get("quality_projection")
+                    failure = classify_fetch_exception(exc)
+                    status, reason = failure.status, failure.reason
+                    if isinstance(exc, TimeoutError):
+                        status, reason = "transient", "request_timeout"
+                    elif isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code == 404:
+                        # Performance can be generated later; this is not evidence
+                        # that optional quality fields are authoritatively absent.
+                        status, reason = "transient", "performance_not_generated"
+                    increment_reason_count(
+                        diagnostic_reason_counts,
+                        field="quality_projection",
+                        status=status,
+                        reason=reason,
+                    )
+                    item_enrichment_state["quality_projection"] = enrichment_state(
+                        source=QUALITY_SOURCE,
+                        status=status,
+                        reason=reason,
+                        synced_at=synced_at,
+                    )
             if item_enrichment_state:
                 detail["enrichment_state"] = item_enrichment_state
             document = _canonical_item_detail_document(
@@ -2424,6 +2462,11 @@ def build_formula_row_doc(
         else None,
         "listing_type_id": _optional_string(item.get("listing_type_id")),
         **(
+            {"quality_projection": item["quality_projection"]}
+            if item.get("quality_projection")
+            else {}
+        ),
+        **(
             {"seller_shipping_cost": _schema_safe_numeric(item.get("seller_shipping_cost"))}
             if "seller_shipping_cost" in item
             else {}
@@ -3227,6 +3270,8 @@ def _canonical_item_detail_document(
     document = normalize_status_history_datetimes(model.model_dump(by_alias=True, mode="python"))
     if document.get("status_observed_at") is None:
         document.pop("status_observed_at", None)
+    if document.get("quality_projection") is None:
+        document.pop("quality_projection", None)
     for money_field in ("price", "base_price", "seller_shipping_cost"):
         document[money_field] = _schema_safe_numeric(document.get(money_field))
     fixed_fee = _schema_safe_listing_fixed_fee(document.get("listing_price_fixed_fee"))

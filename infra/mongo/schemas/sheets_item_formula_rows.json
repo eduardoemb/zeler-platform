@@ -41,6 +41,169 @@
           "catalog_product_id": {"bsonType": ["string", "null"]},
           "catalog_listing": {"bsonType": ["bool", "null"]},
           "listing_type_id": {"bsonType": ["string", "null"]},
+          "quality_projection": {
+            "bsonType": [
+              "object",
+              "null"
+            ],
+            "additionalProperties": false,
+            "required": [
+              "source",
+              "entity_id",
+              "score",
+              "level",
+              "calculated_at",
+              "observed_at",
+              "components",
+              "pending_actions"
+            ],
+            "properties": {
+              "source": {
+                "enum": [
+                  "/item/{id}/performance"
+                ]
+              },
+              "entity_id": {
+                "bsonType": "string",
+                "pattern": "^ML[A-Z][0-9]+$"
+              },
+              "score": {
+                "bsonType": [
+                  "double",
+                  "int",
+                  "long"
+                ],
+                "minimum": 0,
+                "maximum": 100
+              },
+              "level": {
+                "bsonType": "string",
+                "minLength": 1,
+                "maxLength": 80
+              },
+              "calculated_at": {
+                "bsonType": "date"
+              },
+              "observed_at": {
+                "bsonType": "date"
+              },
+              "components": {
+                "bsonType": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "gtin": {
+                    "bsonType": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "status",
+                      "score"
+                    ],
+                    "properties": {
+                      "status": {
+                        "enum": [
+                          "PENDING",
+                          "COMPLETED"
+                        ]
+                      },
+                      "score": {
+                        "bsonType": [
+                          "double",
+                          "int",
+                          "long"
+                        ],
+                        "minimum": 0,
+                        "maximum": 100
+                      }
+                    }
+                  },
+                  "images": {
+                    "bsonType": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "status",
+                      "score"
+                    ],
+                    "properties": {
+                      "status": {
+                        "enum": [
+                          "PENDING",
+                          "COMPLETED"
+                        ]
+                      },
+                      "score": {
+                        "bsonType": [
+                          "double",
+                          "int",
+                          "long"
+                        ],
+                        "minimum": 0,
+                        "maximum": 100
+                      }
+                    }
+                  },
+                  "title": {
+                    "bsonType": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "status",
+                      "score"
+                    ],
+                    "properties": {
+                      "status": {
+                        "enum": [
+                          "PENDING",
+                          "COMPLETED"
+                        ]
+                      },
+                      "score": {
+                        "bsonType": [
+                          "double",
+                          "int",
+                          "long"
+                        ],
+                        "minimum": 0,
+                        "maximum": 100
+                      }
+                    }
+                  },
+                  "shipping": {
+                    "bsonType": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "status",
+                      "score"
+                    ],
+                    "properties": {
+                      "status": {
+                        "enum": [
+                          "PENDING",
+                          "COMPLETED"
+                        ]
+                      },
+                      "score": {
+                        "bsonType": [
+                          "double",
+                          "int",
+                          "long"
+                        ],
+                        "minimum": 0,
+                        "maximum": 100
+                      }
+                    }
+                  }
+                }
+              },
+              "pending_actions": {
+                "bsonType": "array",
+                "maxItems": 200,
+                "items": {
+                  "bsonType": "string",
+                  "minLength": 1,
+                  "maxLength": 128
+                }
+              }
+            }
+          },
           "listing_fee_projection": {
             "bsonType": ["object", "null"],
             "additionalProperties": false,

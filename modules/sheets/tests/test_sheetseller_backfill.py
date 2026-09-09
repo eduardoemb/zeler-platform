@@ -1993,6 +1993,111 @@ async def test_backfill_dry_run_counts_variations_without_writing() -> None:
 
 
 @pytest.mark.asyncio
+async def test_item_quality_acquisition_reaches_canonical_and_formula_projection() -> None:
+    db = FakeDb([_item_doc("MLA1")])
+    performance = {
+        "entity_type": "ITEM",
+        "entity_id": "MLA1",
+        "score": 69,
+        "level": "Good",
+        "calculated_at": NOW.isoformat(),
+        "buckets": [
+            {
+                "variables": [
+                    {"key": "GTIN", "status": "COMPLETED", "score": 100, "rules": []},
+                    {
+                        "key": "PICTURES",
+                        "status": "PENDING",
+                        "score": 0,
+                        "rules": [{"key": "ADD_PICTURES", "status": "PENDING"}],
+                    },
+                ]
+            }
+        ],
+        "unused_payload": {"secret": "never-persist"},
+    }
+    gateway = FakeItemGateway(
+        {
+            "/items?ids=MLA1&include_attributes=all": [{"code": 200, "body": _item_detail("MLA1")}],
+            "/item/MLA1/performance": performance,
+        }
+    )
+    await run_item_detail_enrichment(
+        db=db, gateway=gateway, seller_id="82453304", dry_run=False, quality_enabled=True
+    )
+    persisted = db["items"].update_calls[0][1]["$set"]
+    quality = persisted["quality_projection"]
+    assert quality["score"] == 69
+    assert quality["level"] == "Good"
+    assert quality["components"] == {
+        "gtin": {"status": "COMPLETED", "score": 100},
+        "images": {"status": "PENDING", "score": 0},
+    }
+    assert quality["pending_actions"] == ["ADD_PICTURES"]
+    assert quality["entity_id"] == "MLA1"
+    assert quality["source"] == "/item/{id}/performance"
+    assert quality["calculated_at"] == NOW
+    assert quality["observed_at"] >= persisted["last_meli_sync_at"]
+    assert "unused_payload" not in quality
+    row = build_formula_row_doc(persisted, seller_id="82453304", sku="sku-1")
+    assert row["current"]["quality_projection"] == quality
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("failure_kind", "status", "reason"),
+    [
+        (403, "unauthorized", "http_403"),
+        (404, "transient", "performance_not_generated"),
+        ("timeout", "transient", "request_timeout"),
+        ("identity", "malformed", "source_error"),
+    ],
+)
+async def test_quality_failure_preserves_prior_acquisition_cut(
+    failure_kind: int | str, status: str, reason: str
+) -> None:
+    prior = {
+        "source": "/item/{id}/performance",
+        "entity_id": "MLA1",
+        "score": 69.0,
+        "level": "Good",
+        "calculated_at": NOW,
+        "observed_at": NOW,
+        "components": {},
+        "pending_actions": [],
+    }
+    item = _item_doc("MLA1")
+    item["quality_projection"] = prior
+    db = FakeDb([item])
+    response: Any = {"entity_type": "ITEM", "entity_id": "MLA2"}
+    if isinstance(failure_kind, int):
+        request = httpx.Request("GET", "https://gateway.test/item/MLA1/performance")
+        response = httpx.HTTPStatusError(
+            "source failed",
+            request=request,
+            response=httpx.Response(failure_kind, request=request),
+        )
+    elif failure_kind == "timeout":
+        response = TimeoutError()
+    gateway = FakeItemGateway(
+        {
+            "/items?ids=MLA1&include_attributes=all": [{"code": 200, "body": _item_detail("MLA1")}],
+            "/item/MLA1/performance": response,
+        }
+    )
+    summary = await run_item_detail_enrichment(
+        db=db, gateway=gateway, seller_id="82453304", dry_run=False, quality_enabled=True
+    )
+    persisted = db["items"].update_calls[0][1]["$set"]
+    assert persisted["quality_projection"] == prior
+    assert summary.diagnostic_reason_counts[f"quality_projection:{status}:{reason}"] == 1
+    state = persisted["enrichment_state"]["quality_projection"]
+    assert state["status"] == status
+    assert state["reason"] == reason
+    assert persisted["last_meli_sync_at"] > prior["observed_at"]
+
+
+@pytest.mark.asyncio
 async def test_item_detail_enrichment_fetches_canonical_ids_and_writes_formula_fields() -> None:
     canonical = _item_doc("MLA1", attributes=[{"id": "SELLER_SKU", "value_name": "sku-1"}])
     canonical["price"] = Decimal("123.45")
