@@ -23,8 +23,10 @@ Pilot: seller `82453304`; initial historical window 2026-08-08 through
 
 ## Buybox price dependency: local end-to-end recovery correction
 
-Images for source `3a5a016a4279815e76f5d7ff420ae20af76ccb10` are built but
-**not deployed**. Each single-image Cloud Build succeeded; digest/build/source
+Images for source `3a5a016a4279815e76f5d7ff420ae20af76ccb10` are now
+**deployed**, worker first and then API. Both explicit health endpoints returned
+HTTP 200, Docker health was healthy and restart counts were zero. Each
+single-image Cloud Build succeeded; digest/build/source
 verification passed locally and on the VM:
 
 - API build `6ec13922-046e-4c24-8428-e299c43d803d`, image
@@ -36,9 +38,36 @@ Both image names use repository prefix
 `us-central1-docker.pkg.dev/zeler-platform-dev/zeler-platform/`.
 Local build configs/receipts: `/tmp/zeler-price-dependency.wCVhKC/`.
 VM receipts: `/tmp/{api,worker}-{build,artifact}.json`; canonical provenance map
-was updated through the verifier. Reuse these builds; do not rebuild on a wait.
-CI lint `34310663151` passed; test run `34310663198` was confirmed still executing
-its Pytest step. Poll that same run before activation.
+was updated through the verifier and both bindings were read back successfully.
+CI lint `34310663151` and test `34310663198` both passed before activation.
+Reuse these builds; the later evidence-only commits require no new image.
+
+Backups are `/opt/zeler-platform/docker-compose.yml.pre-sheets-worker-activate-3a5a016`
+and `/opt/zeler-platform/docker-compose.yml.pre-sheets-api-activate-3a5a016`.
+Rollback authorities are the previous running worker `7833b955...` and API
+`3c9d72f0...`, both retained. No whole-Compose rollback is implied: replace only
+the affected service binding, preserve acquired data and the compatible worker's
+durable catalog jobs. The worker activation helper's final extra health probe
+initially used the API port default and failed; read-only Docker inspection
+proved the new worker healthy, then the correct `WORKER_HEALTH_PORT` probe
+returned 200. Activation was not repeated. Corrected local helper and read-only
+probe live in `/tmp/zeler-price-dependency.wCVhKC/`.
+
+For pull capacity, also removed unused API cache `87a56f17...` and worker cache
+`d2ccd62a...` only after all-container/Compose checks and Artifact Registry
+availability confirmation. Current and special rollback images were preserved;
+no data or volumes were deleted. Worker pull took 13.54s; API pull took 8.26s.
+Both pulls left Compose unchanged and passed the 5 GiB guard. Final API health
+observation had 5,896,896,512 bytes free. Runtime helpers are `/tmp/pull-worker.py`,
+`/tmp/pull-api.py`, `/tmp/activate-price-worker.py`, `/tmp/activate-price-api.py`
+and `/tmp/check-price-worker-health.py`; do not repeat completed mutations.
+
+Post-deployment read-only pilot check at `2026-09-09T04:33:49.825599Z` still
+found the same **15 missing prices**, all with transient promotion enrichment
+and no safe fallback. No recovery was enqueued by this read: deployment alone
+does not acquire data. `/tmp/price-gap-readback.py` checks these gaps with the
+new API digest guard. Revalidate current item freshness before bounded recovery;
+do not replay the already completed 936-ID intent merely to reproduce evidence.
 
 Preflight found both existing services healthy with zero restarts, API `6cd66e9`
 and worker `3b27cf4`; they do not contain this correction. Removed only unused
@@ -77,11 +106,18 @@ format check and mypy passed (507 files). Broader regression across
 
 Rollback boundary: remove the reader fallback and worker-owned price enrichment
 with their matching tests; preserve legitimately acquired Mongo data. This unit
-affects **sheets-api and sheets-worker** images. The built images above are not
-deployed. Verify CI, image provenance and approved-runtime price
-recovery/readback before claiming the 15 live price gaps resolved. All-52 HTTP,
+affects **sheets-api and sheets-worker** images. Their deployed source matches
+this correction. Verify approved-runtime price recovery/readback before claiming
+the 15 live price gaps resolved. All-52 HTTP,
 real Sheets/app, sustained freshness and the other goal acceptance gates remain
 open.
+
+Read-only hardening diagnostic also confirmed `_audit_id` collides for two
+different sellers/tokens sharing the same caller-supplied `request_id`.
+`FormulaAuditService.record` ignores duplicate-key insertion, so audit identity
+is not tenant-scoped. The diagnostic used synthetic local inputs and no
+production data; no audit implementation changed in this deployment unit.
+Retain this as an unresolved minimum-hardening gate, not a new goal requirement.
 
 ## Full pilot catalog admitted after inventory completion; observing the same intent
 
