@@ -1024,7 +1024,7 @@ def _runtime_probe() -> dict[str, Any]:
         "entrypoint_import": True,
         "module_id": "sheets",
         "registry_fingerprint": canonical_sheets_registration_fingerprint(),
-        "scope_count": 12,
+        "scope_count": 13,
         "routing_key_count": 6,
     }
 
@@ -1235,7 +1235,7 @@ fi
         "image_id": image_id,
         "source_commit": source_commit,
         "registry_fingerprint": canonical_sheets_registration_fingerprint(),
-        "scope_count": 12,
+        "scope_count": 13,
         "routing_key_count": 6,
     }
     env = {

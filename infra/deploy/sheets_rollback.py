@@ -16,6 +16,7 @@ CANONICAL_SHEETS_SCOPES = (
     "GET /items",
     "GET /items/*",
     "GET /item/*/performance",
+    "GET /user-product/*/performance",
     "GET /products/*",
     "GET /sites/*/listing_prices",
     "GET /users/*/shipping_options/free",
@@ -58,7 +59,7 @@ _IMAGE_REF_PATTERN = re.compile(
     r"(?P<repository>[a-z0-9.-]+/[a-z0-9._/-]+)@sha256:(?P<digest>[0-9a-f]{64})"
 )
 _CANONICAL_FULL_REGISTRATION_FINGERPRINT = (
-    "39b3d5ef3dacadc60d0f74c0c4ad54e5f06ae41ab609eb573b4ced95d636ff42"
+    "98cd1f6c9eba470251fdfc5e120b635e4928f9defd28af7cfff0510a63f2c96a"
 )
 
 

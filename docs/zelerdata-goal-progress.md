@@ -20,6 +20,33 @@ Keep unrelated `.codegraph/` files untouched in both repositories.
 
 ## Real Google Sheet: all-52 first pass and user add-on update, 2026-09-09
 
+### Catalog quality: dedicated User Product route permission
+
+A bounded approved-runtime probe selected an owned active catalog publication
+whose recorded quality failure was HTTP 400. Fresh item detail returned 200 and
+contained a user-product relationship; `/item/{id}/performance` returned 400
+(`bad_request`, unsupported entity). Calling the documented
+`/user-product/{id}/performance` through the normal Sheets gateway returned
+**403 `out_of_scope`**. This is a demonstrated module permission gap, not proof
+that Mercado Libre cannot supply the quality. The alternative upstream response
+remains unverified until the specific permission is active.
+Reference: [official quality contract](https://developers.mercadolibre.com.ar/es_ar/descripcion-de-articulos/calidad-de-publicaciones).
+
+The permission-only unit adds `GET /user-product/*/performance` to the Sheets
+manifest, seed and canonical rollback contract, with startup/registration and
+negative unrelated-route/write-method assertions. No wildcard product write or
+unrelated endpoint is added. Its test first failed on the absent permission;
+the combined focal verification is 288 passing tests. The canonical contract
+is now **13 scopes / six routing keys**, fingerprint
+`98cd1f6c9eba470251fdfc5e120b635e4928f9defd28af7cfff0510a63f2c96a`.
+This independently buildable permission baseline is needed before releasing
+the new acquisition behavior so rollback startup cannot remove its scope.
+Rollback of this unit is its manifest/seed/contract and matching tests, only
+when no active worker requires the new route. Do not credit the permission-only
+baseline with fallback acquisition or persistence of the alternative source.
+Current deployed API/worker remain `febea19` with 12 scopes; the permission
+baseline needs separate verified Sheets API/worker builds and runtime checks.
+
 ### USER_PRODUCT persistence and real Sheet readback
 
 Normal async recovery now persists the deployed quality projection. Approved

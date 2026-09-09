@@ -21,6 +21,7 @@ allowed_meli_scopes:
   - GET /items
   - GET /items/*
   - GET /item/*/performance
+  - GET /user-product/*/performance
   - GET /products/*
   - GET /sites/*/listing_prices
   - GET /users/*/shipping_options/free

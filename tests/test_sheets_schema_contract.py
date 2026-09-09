@@ -841,6 +841,14 @@ def test_sheets_quality_performance_scope_is_readonly_and_resource_specific() ->
     seed = json.loads(Path("infra/mongo/seeds/module_registry.admin_clients.json").read_text())
     sheets = next(row for row in seed["documents"] if row["_id"] == "sheets")
     for scopes in (manifest.allowed_meli_scopes, sheets["allowed_meli_scopes"]):
+        assert "GET /user-product/*/performance" in scopes
+        assert any(fnmatchcase("GET /user-product/MLMU123/performance", scope) for scope in scopes)
+        assert not any(
+            fnmatchcase("PUT /user-product/MLMU123/performance", scope) for scope in scopes
+        )
+        assert not any(
+            fnmatchcase("GET /user-product/MLMU123/unrelated", scope) for scope in scopes
+        )
         assert "GET /item/*/performance" in scopes
         assert any(fnmatchcase("GET /item/MLM123/performance", scope) for scope in scopes)
         assert not any(fnmatchcase("PUT /item/MLM123/performance", scope) for scope in scopes)
