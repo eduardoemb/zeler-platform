@@ -20,7 +20,65 @@ Keep unrelated `.codegraph/` files untouched in both repositories.
 
 ## Real Google Sheet: all-52 first pass and user add-on update, 2026-09-09
 
+### Worker stop-signal correction
+
+The live old worker's PID 1 was `sh`. Its Dockerfile used a shell command
+without `exec`, while Python registers SIGTERM/SIGINT shutdown handlers.
+Removed that unnecessary shell by making the existing Python module the
+exec-form CMD. No dependency, scope, queue, or data contract changes.
+
+TDD: the new Dockerfile regression failed against the shell CMD (1 failed,
+2 passed), then the Dockerfile/runtime-contract suites passed **42 tests**.
+Existing entrypoint/supervisor tests passed **19 tests**, including signal
+registration, waiting for in-flight work and ordered shutdown. This is local
+evidence; a new worker image must prove Python PID 1 and graceful stop in runtime.
+Rollback changes only the CMD and its focused regression. The operational
+activation helper must still allow more time than Docker's stop grace.
+
 ### Catalog replay and demanded inventory refresh lead time
+
+Follow-up for source `36f9d2838e46575f77e59be63e77e0a5c993c0fc`:
+the complete recovery suite passed **393 tests in 90.48s**, without skips,
+against the dedicated local Mongo fixture. CI test `34380882968` and lint
+`34380882853` passed. Cloud Build `c71e0233-6c24-412e-bbd7-88dc77709889`
+succeeded; the canonical verifier bound the exact connected-repository source to
+`us-central1-docker.pkg.dev/zeler-platform-dev/zeler-platform/sheets-worker@sha256:7a38006071832901ef1c4b747901e583376e638b27fa2754fd0f682f59e81936`.
+The first VM pull reached its 240-second bound (`TimeoutExpired`). A read-only
+check found no new image, no disk exhaustion, and a reachable registry (expected
+unauthenticated 401). A single 90-second retry succeeded: ten layers completed.
+Removed only the unused local worker image `88a61a75...`, after checking all
+container references, current Compose, protection files, and recoverability in
+Artifact Registry. No volumes/data were touched; free disk returned above 5 GiB.
+
+The helper `/tmp/activate-refresh-lead-36f9d28.py` was invoked once and verified
+the VM provenance, but Compose activation exceeded its 120-second bound. The
+helper restored Compose and confirmed healthy rollback to worker `5f23d9ba...`.
+The API remained on `7ddca362...`. Do not count `36f9d28` as deployed or blindly
+repeat activation. Backup: `/opt/zeler-platform/docker-compose.yml.pre-sheets-worker-36f9d28`.
+Scoped reads found no pending/running pilot jobs before download and activation.
+Investigate the activation timeout before retrying; no Sheet replay was issued
+in this follow-up because the new worker did not activate.
+
+The subsequent runtime check contradicted the first rollback health result:
+Docker completed a delayed SIGKILL and the old worker exited 137 (not OOM).
+The helper's outer 120-second timeout equaled Compose's 120-second stop grace,
+so it began rollback while the daemon was still stopping the container. Restored
+the old worker with the existing Compose configuration and reverified both
+services healthy. Compose dry-run with the new digest succeeded in 0.33s.
+The corrected attempt-2 helper gives Compose 240 seconds for its 120-second
+stop grace and verifies running/healthy state twice, ten seconds apart. This
+fixes the operational wait race, not the worker's slow graceful shutdown.
+
+Attempt 2 completed: worker `7a380060...`, source `36f9d28`, running and healthy
+on repeated checks, zero restarts; API container identity/start time unchanged.
+Compose has no command/entrypoint override, so the separate PID-1 Dockerfile
+correction will take effect in its next image. Preserve worker `5f23d9ba...`
+as the rollback authority for this completed deployment. Do not repeat attempt 2.
+
+Read-path review confirms catalog recovery is requested on missing/expired
+coverage, not merely because the successful-job refresh interval has elapsed.
+Therefore the 10-minute eligibility change does **not** establish refresh before
+expiry or continuous availability. Keep the demand-path acceptance open.
 
 After diagnostic API activation, new requests from the four authorized test
 anchors were confirmed in production logs: CATALOGO_COMPLETO 6,955.788ms,

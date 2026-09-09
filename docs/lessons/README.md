@@ -67,6 +67,7 @@ repeat failures, and promote stable knowledge to its proper operational form.
 | L-008 | Python | Exception suppression control flow | active |
 | L-009 | Delivery | Good-enough completion boundary | active |
 | L-010 | ZelerData | Discovery and detail client scopes | active |
+| L-011 | VM deploy | Worker signals and stop deadlines | active |
 
 ## Cloud Build and VM deployment
 
@@ -119,6 +120,13 @@ repeat failures, and promote stable knowledge to its proper operational form.
 - status: promoted/reference
 
 ## ZelerData
+
+### L-011 — Deliver stop signals to the worker and await Docker completion
+- area: VM deployment and worker lifecycle
+- proven path: Run the Sheets Python module directly as PID 1; give the deployment wrapper more time than Docker's stop grace, and verify stable running/healthy state after Compose completes.
+- failed path: Shell CMD without `exec` plus equal outer/Compose deadlines caused a late SIGKILL after an apparent healthy rollback.
+- verification/source: `tests/test_dockerfile_healthcheck.py::test_sheets_worker_receives_stop_signals_as_pid_one`, worker lifecycle tests, and the runtime events in `docs/zelerdata-goal-progress.md`. New-image graceful stop remains a runtime verification gate.
+- status: active
 
 ### L-007 — Enrich before writing items
 - area: ZelerData

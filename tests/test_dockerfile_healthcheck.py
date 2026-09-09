@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -27,6 +28,16 @@ def test_worker_dockerfile_has_healthcheck() -> None:
     missing = [path for path in WORKER_DOCKERFILES if _missing(path, "'WORKER_HEALTH_PORT','8080'")]
 
     assert missing == []
+
+
+def test_sheets_worker_receives_stop_signals_as_pid_one() -> None:
+    content = (ROOT / "modules" / "sheets" / "Dockerfile.worker").read_text()
+    commands = [
+        line.removeprefix("CMD ") for line in content.splitlines() if line.startswith("CMD ")
+    ]
+
+    assert len(commands) == 1
+    assert json.loads(commands[0]) == [".venv/bin/python", "-m", "zeler_sheets"]
 
 
 def _missing(path: Path, port_expr: str) -> bool:
