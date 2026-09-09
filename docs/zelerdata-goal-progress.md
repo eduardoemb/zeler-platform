@@ -21,6 +21,70 @@ Keep unrelated `.codegraph/` files untouched in both repositories.
 Pilot: seller `82453304`; initial historical window 2026-08-08 through
 2026-09-06, plus current snapshots. Other products are out of scope.
 
+## Full pilot catalog admitted after inventory completion; observing the same intent
+
+Terminal result: at `2026-09-09T03:58:31.640Z`, the same catalog intent reached
+**936/936** without readmission. All **936 primary snapshots** were persisted;
+**921 have prices**, **257 have offer counts**. Its 47 chunks recorded failures
+and the terminal state is `failed/source_rejected`, not complete fields. The
+observer finished successfully after terminal readback; it is no longer running.
+This now proves both durable >400-ID admission and traversal of the entire live
+intent despite per-chunk source failures. No business flags or global coverage
+markers were patched to obtain that result.
+
+Readback started at `03:58:53.385Z`: inventory enumeration current, all 1,900 item
+identities backed by 2,859 trusted SKU rows, **936 current buybox snapshots**, and
+the same two invalid catalog-product identities. `CATALOGOBUYBOX` returned 937
+rows (including the explicit inventory-gap row), with 921 rows having all first
+eight columns available. Remaining unavailable item columns were price and sole
+competitor. Read times were 9.2372s (buybox) and 8.4575s (`CATALOGO`); these single
+operator reads do not establish p95, authenticated HTTP or Google Sheets latency.
+Historical winning-time coverage remains explicitly unavailable for all 936.
+Registry remained exactly 11 scopes/6 topics; global markers were unchanged.
+
+Read-only `/tmp/catalog-price-gaps.py` identified **15 missing prices** whose
+canonical items have valid base prices but `current_promotion` acquisition state
+`transient`, aligned to the item cut. The conservative current-price fallback
+correctly does not assert that a potentially promoted base price is the current
+sale price. These are **recoverable dependencies**, not proven permanent absence;
+next verify that formula-triggered recovery refreshes the item enrichment as well
+as the competition snapshot. Do not treat catalogue replay alone as a fix or
+weaken the promotion guard. Sustained freshness between sweeps remains unproven.
+
+The inventory admitted by the prior formula completed at 1,900/1,900, observed
+terminal at `2026-09-09T03:54:53.622Z`. A bounded VM observer then executed the
+deployed buybox handler once and admitted its actual dependencies: two item IDs
+and **all 936 buybox IDs in one durable intent**. Admission took 0.0336s; read
+plus admission 4.8709s. Both admissions succeeded, with global freshness markers
+unchanged. This is real >400-ID admission through the normal API admission helper,
+but remains operator-backend evidence, not authenticated HTTP or Google Sheets.
+
+Receipt (0600): `/var/lib/zeler-platform/repairs/post-inventory-catalog-6cd66e9.json`.
+Catalog job: `4f96227ca77a9e3487b8183b8386b6adad843985993ad3f4ca000a7547bb2e08`.
+Two-item job: `4e927e871aef344acdd68544ef8479c613efd0fb4662021a4ab8b48d3d50db89`.
+Both were pending at `03:55:01.002Z`; catalog cursor was zero and all 936 IDs were
+persisted. Do not repeat enqueue. VM `/tmp/post-inventory-catalog-pilot.py status`
+observes these jobs. `/tmp/observe-full-catalog.py` polls the catalog job and runs
+the read-only current-coverage helper once it is terminal; observation expiry does
+not restart work. Local helper copies are in `/tmp/zeler-independent-recovery.6thjHk/`.
+The preceding `/tmp/await-inventory-catalog.py` observer finished successfully;
+it is not a background producer or a permanent runtime service.
+
+Two bounded six-request offer comparisons were read-only. The first received
+gateway `429/rate_limit_exceeded` for both samples and all three endpoints. A
+later comparison, after the window elapsed, found both samples paused, competition
+HTTP 200 / `not_listed`, and active product HTTP 200. The sample with no stored
+offer count received offers HTTP 404 / `not_found`; the stored-count control
+received offers HTTP 200 with paging. Thus paused status alone cannot imply zero
+offers or permanent absence. No third comparison was launched.
+
+Read-only gateway inspection confirmed its configured limit matches the code's
+600-per-minute default; at `03:53:18.203Z` the current Sheets window had 103
+attempts and was below the limit. No limiter, scope, retry policy or production
+environment value was changed. Rate limiting explains transient refusals, not
+permanent data absence. End-to-end freshness, terminal acquisition and formula
+readback must still be measured before declaring the full catalog accepted.
+
 ## Independent recovery deployed; 152-ID live intent traversed despite partial source failures
 
 Sheets API now runs source `6cd66e94416b0ac5572aca70cadd0189c2010e52`, image
