@@ -21,6 +21,44 @@ Keep unrelated `.codegraph/` files untouched in both repositories.
 Pilot: seller `82453304`; initial historical window 2026-08-08 through
 2026-09-06, plus current snapshots. Other products are out of scope.
 
+## Competition rollout: schema ready, images verified — 2026-09-09 UTC
+
+The additive `sheets_catalog_competition_observations` collection is now present
+in production with the checked-in strict/error validator and the non-TTL
+`idx_catalog_competition_seller_item_observed` index. An approved VM/API-container
+check first confirmed the collection was absent; apply created it, and a separate
+read-only check confirmed the exact schema/index with zero observations. No
+existing data, registry documents, queues or service images were changed.
+The guarded command was `sudo python3 /tmp/zeler-catalog-rollout-schema.py`
+with `check`, then `apply`, then `check`. Local and VM script/schema/index hashes
+matched before execution. Reversing a service release must retain this collection
+and any subsequently acquired observations, not delete them.
+
+Both connected-repository builds of
+`99f933ae78a5c76a1064fb7ce2398fa5bb5b1c16` succeeded:
+
+| Service | Cloud Build | Immutable digest |
+| --- | --- | --- |
+| Sheets API | `b6cceb52-6613-4d75-87a8-0805e46d8686` | `sha256:09443897564002c72055b98de3af66162468200791327e9a49b45d054e7e48b9` |
+| Sheets worker | `d90f4734-86e1-40e1-a154-30bab7c993b2` | `sha256:ae3c245d2cb344e9beb86dd526fc3c66716557747bb73e903948c9de4a29b279` |
+
+`infra.deploy.provenance_check verify-image` independently passed for both
+Artifact Registry/SLSA records with the exact source, connected repository and
+GCP project identity. Evidence is in local `/tmp/zeler-catalog-rollout.tdDS4D/`;
+the production provenance map has not yet been updated. GitHub lint
+`34294456170` and test `34294456190` both passed. No new executable repository
+code changed in this evidence unit, so no additional local regression was run.
+
+Activation remains pending: revalidate capacity and active jobs, resolve the
+11-scope/5-topic to 11-scope/6-topic rollback boundary, and verify the image
+runtime contract before service-only activation. Build provenance alone does
+not prove registration compatibility. Do not relabel a previous image as
+six-topic compatible. Then verify normal/replay bindings, actual acquisition
+and formula reads. The last verified running sources remain API `1131554`
+(digest `3ca3930...`) and worker `449a382` (digest `88a61a7...`), so current
+`99f933a` behavior is not yet runtime acceptance. No additional build of the
+same source is needed; deploy the already verified images once gates pass.
+
 ## Competition notifications have a persisted acquisition path — 2026-09-08
 
 Sheets now handles `catalog_item_competition_status.updated` explicitly. It
