@@ -21,6 +21,55 @@ Keep unrelated `.codegraph/` files untouched in both repositories.
 Pilot: seller `82453304`; initial historical window 2026-08-08 through
 2026-09-06, plus current snapshots. Other products are out of scope.
 
+## Reader/writer corrections deployed; current inventory recovery running
+
+Approved service-only rollout now runs API source `c6b540b` at digest
+`sha256:155a13ab9a06a144cffa1ef243d0486e3c982f937c7ef9223ef91e4a8149d752`
+and worker source `29e88e5` at
+`sha256:d3bee37f73336de7e6d27415c24d2f2a8a121c5e5e5b9ff25fd0c883a94ae0a3`.
+Worker Cloud Build `68323bfa-1743-4a9c-832e-6d83f43f7a32` succeeded; both image
+proofs passed exact-source verification into the canonical VM map. Both sources
+passed GitHub lint/test (worker test `34297295104`, lint `34297294831`; API test
+`34296728426`, lint `34296728441`). No new build was started in this rollout.
+
+Free space and zero running recoveries were checked before each activation.
+Exact unused cache images API `37b750d...` and worker `c3ad9ee...` were removed
+after all-container checks, retaining current/immediate rollback images. They
+remain recoverable from Artifact Registry; no volume or data was deleted.
+Each single image replacement used a unique backup, `up --no-deps --pull never`,
+and reached HTTP health 200 with zero restarts. Backups end in
+`.pre-sheets-api-activate-c6b540b` and `.pre-sheets-worker-activate-29e88e5`.
+Prior running rollback digests are API `0944389...` and worker `ae3c245...`, both
+with competition support. Preserve acquired data if rollback becomes necessary.
+
+The read-only API smoke returned unavailable inventory rows with correct widths
+9/24/3/6 in 1.2966/1.8193/1.3366/1.2799 seconds for CATALOGOBUYBOX/CATALOGO/
+OBTENER_CATALOGO/CATALOGO_COMPLETO. Registry was exactly 11/6 and markers unchanged.
+Zero current participating rows meant the history-specific metadata branch was
+not live-data acceptance. This is explicit expiry, not a complete formula result.
+The worker image's canonicalizer accepted a real stored order and rejected its
+in-memory copies missing quantity or unit price with the static expected error;
+Mongo readback was identical. That probe made no business writes and does not
+replace full source-response recovery acceptance.
+
+Because the real reads exposed expired inventory, the normal admission queue
+was invoked once for pilot `82453304`. No dates/cooldowns/coverage markers were
+edited. Receipt: `/var/lib/zeler-platform/repairs/current-inventory-29e88e5.json`.
+Observe with `sudo python3 /tmp/current-inventory.py status`; **do not repeat
+`enqueue`**. It reopened canonical job
+`5f2485d573679264481950cce24b1373d2eb93f11c1f79ea2aca606b92d20a8f`.
+At `2026-09-09T01:08:57.721800Z`, the job was running, attempt one, offset
+40/1,900, zero unavailable IDs, with new observation
+`2026-09-09T01:08:42.144000Z`. Both services remained healthy with zero restarts
+and 5,906,173,952 free bytes. Do not deploy over this active recovery or treat
+the receipt alone as current state; poll the same job. Completion and subsequent
+catalog/buybox/formula acceptance remain pending.
+
+No executable repository changes in this rollout unit. Worker includes the
+current writer change; API includes the reader change. The source difference
+between them is the worker persistence guard plus tests/docs. No additional
+image rebuild is needed solely for this evidence update.
+
 ## Orders: missing line amounts must not overwrite acquired values
 
 Review of the current orders contract reconfirmed that `gross_price` is a
