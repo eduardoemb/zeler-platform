@@ -22,7 +22,47 @@ Keep unrelated `.codegraph/` files untouched in both repositories.
 
 ### Quality acquisition gap: confirmed missing source path and permission
 
-Local USER_PRODUCT correction is implemented; production deployment is pending.
+USER_PRODUCT correction `febea1901f860748e6e5fd4d0858be79d81b1666` is deployed
+to Sheets API and worker. Exact-commit CI passed: lint `34396073764`, test
+`34396073794`. Separate verified Cloud Builds and canonical provenance checks
+bind the following images to that source:
+
+| Service | Build | Immutable digest |
+| --- | --- | --- |
+| sheets-api | `63bab5cc-833e-42a3-a4f4-fa7dab58eabf` | `sha256:45c29c343ee93b1977d55c63882a8c5603867a9f80c5692fff74128ade4577d7` |
+| sheets-worker | `7b5dc764-bc9c-410e-84e5-88c066184734` | `sha256:329cc4d0c03c40d6415270789b4fc5d180a3c12b040b883e7aef98b4a28f57a8` |
+
+Both images use the existing Artifact Registry service repositories under
+`us-central1-docker.pkg.dev/zeler-platform-dev/zeler-platform/`.
+Before deployment, `items` and `sheets_item_formula_rows` validators matched
+the prior source exactly; their additive updates were applied from the approved
+VM/container context and read back with strict/error validation unchanged.
+No business documents were changed by this validator operation.
+The API runtime contract was verified for both new and rollback images.
+Unit `zeler-quality-febea19` finished with `Result=success`, `ExecMainStatus=0`,
+and `activation_complete=true`; both exact new images passed repeated health
+checks. The shared provenance map preserves earlier bindings. Compose backup:
+`/opt/zeler-platform/docker-compose.yml.pre-quality-febea19`.
+Rollback is the prior healthy `0c80a97` API/worker pair, whose full digests and
+build bindings are recorded below; it retains the 12-scope contract but rejects
+USER_PRODUCT quality rather than fabricating values. Do not delete acquired
+data during rollback or rerun the completed activation unit as a status check.
+
+Post-deploy read-only probe, run in `zeler-platform-sheets-worker-1` from
+`/tmp/zeler-user-product-performance-probe.py`: an owned active non-catalog
+item detail and its performance endpoint both returned HTTP 200. The response
+was USER_PRODUCT and its identity matched the fresh owned item relationship.
+The deployed normalizer accepted it, producing three components and five
+pending actions. No identifiers, payloads, tokens or personal values were
+printed. This proves the formerly rejected live contract, **not acquisition
+persistence, all-52 acceptance or the real Sheet result**. Next verify normal
+async recovery persistence/readback and the owned Sheet quality section.
+
+After both pulls, root free space was 14,229,340,160 bytes, above the 5 GiB
+floor; disk capacity remains 30 GiB. Preserve the user's end-of-mission request
+to evaluate returning to the original 20 GiB via a separately agreed migration.
+No further disk resize, other-product deployment or data deletion occurred.
+
 Strict-TDD regression first failed six cases, including acquisition/persistence
 and unknown relationship rejection. The normalizer now accepts the observed
 USER_PRODUCT response only when its identity matches the fresh item detail's
@@ -43,8 +83,8 @@ detail. Therefore the root count is broad regression evidence, not proof of a
 clean full run of the final exact checkout; CI must verify that final commit.
 The nine skips are the same eight ambient-URI stock-time cases (separately
 verified earlier) and one inapplicable Caddy required-key check.
-Deployment requires updated `items` and `sheets_item_formula_rows` validators
-before the next API/worker images. No additional gateway scope or separate
+Deployment used updated `items` and `sheets_item_formula_rows` validators
+before the new API/worker images. No additional gateway scope or separate
 user-product endpoint is introduced. Rollback boundary is this identity binding
 model/producer/reader/schema correction; prior deployed images must not be
 credited with support for this response. Production acquisition/readback and
