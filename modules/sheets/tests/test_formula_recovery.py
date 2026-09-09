@@ -695,6 +695,194 @@ async def test_buybox_explicit_item_recovery_is_owned_fresh_and_source_bound(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("read_model", ["catalog_buybox_snapshots", "catalog_product_snapshots"])
+async def test_catalog_recovery_retains_full_request_beyond_active_job_capacity(
+    recovery_db: Any, read_model: str
+) -> None:
+    from types import SimpleNamespace
+
+    from zeler_sheets.api import _request_formula_recovery
+    from zeler_sheets.formulas.dispatcher import FormulaDataUnavailableError
+    from zeler_sheets.formulas.recovery import IMPLEMENTED_MODELS
+
+    queue = FormulaRecoveryQueue(recovery_db, enabled_models=IMPLEMENTED_MODELS)
+    request: Any = SimpleNamespace(
+        app=SimpleNamespace(state=SimpleNamespace(formula_recovery_queue=queue))
+    )
+    context: Any = SimpleNamespace(seller_id="82453304")
+    field = "item_ids" if read_model == "catalog_buybox_snapshots" else "catalog_product_ids"
+    identities = tuple(f"MLA{index}" for index in range(1, 402))
+    missing = FormulaDataUnavailableError(
+        "ZELERDATA_CATALOGOBUYBOX" if field == "item_ids" else "ZELERDATA_CATALOGO",
+        read_model=read_model,
+        item_ids=identities if field == "item_ids" else (),
+        catalog_product_ids=identities if field == "catalog_product_ids" else (),
+    )
+
+    admitted = await _request_formula_recovery(request, context, missing)
+
+    jobs = await queue.collection.find({"seller_id": "82453304"}).to_list(100)
+    persisted = {identity for job in jobs for identity in job.get(field, [])}
+    assert persisted == set(identities), "Recovery must persist the tail, not require another call"
+    assert admitted is True
+    assert len(jobs) <= queue.max_active_jobs_per_seller
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("read_model", ["catalog_buybox_snapshots", "catalog_product_snapshots"])
+@pytest.mark.parametrize("failure_status", [None, 403, 503])
+async def test_catalog_intent_resumes_chunks_after_restart_and_bounded_failure(
+    recovery_db: Any, read_model: str, failure_status: int | None
+) -> None:
+    from types import SimpleNamespace
+
+    import httpx
+
+    from zeler_sheets.api import _request_formula_recovery
+    from zeler_sheets.formulas.dispatcher import FormulaDataUnavailableError
+    from zeler_sheets.formulas.recovery import IMPLEMENTED_MODELS
+    from zeler_sheets.formulas.recovery_worker import FormulaRecoveryWorker
+
+    now = datetime.now(UTC).replace(microsecond=0)
+    ids = tuple(f"MLA{index:04d}" for index in range(401 if failure_status is None else 41))
+    await recovery_db.items.insert_many(
+        [
+            {
+                "_id": identity,
+                "seller_id": "82453304",
+                "catalog_listing": True,
+                "catalog_product_id": identity,
+                "title": "Owned item",
+                "available_quantity": 1,
+                "last_meli_sync_at": now,
+            }
+            for identity in ids
+        ]
+    )
+    field = "item_ids" if read_model == "catalog_buybox_snapshots" else "catalog_product_ids"
+    queue = FormulaRecoveryQueue(recovery_db, now=lambda: now, enabled_models=IMPLEMENTED_MODELS)
+    http_request: Any = SimpleNamespace(
+        app=SimpleNamespace(state=SimpleNamespace(formula_recovery_queue=queue))
+    )
+    context: Any = SimpleNamespace(seller_id="82453304")
+    missing = FormulaDataUnavailableError(
+        "ZELERDATA_CATALOGO",
+        read_model=read_model,
+        item_ids=ids if field == "item_ids" else (),
+        catalog_product_ids=ids if field == "catalog_product_ids" else (),
+    )
+    assert await _request_formula_recovery(http_request, context, missing)
+    calls: list[str] = []
+
+    class Gateway:
+        async def fetch_resource(self, *, seller_id: str, path: str) -> Any:
+            assert seller_id == "82453304"
+            identity = path.split("/")[2]
+            if path.endswith("/items"):
+                return {
+                    "paging": {"total": 1, "offset": 0, "limit": 100},
+                    "results": [{"item_id": identity, "seller_id": seller_id}],
+                }
+            calls.append(identity)
+            if identity == ids[0] and failure_status:
+                response = httpx.Response(
+                    failure_status, request=httpx.Request("GET", "https://example.invalid")
+                )
+                raise httpx.HTTPStatusError(
+                    "synthetic failure", request=response.request, response=response
+                )
+            return {
+                "id": identity,
+                "item_id": identity,
+                "name": "Product",
+                "status": "winning",
+                "current_price": 100,
+                "competitors_sharing_first_place": 0,
+            }
+
+    for _ in range((len(ids) + 19) // 20 + 2):
+        # Reconstruct the worker: progress must not live in process memory.
+        before = len(calls)
+        assert await FormulaRecoveryWorker(
+            db=recovery_db, gateway=Gateway(), queue=queue
+        ).process_one()
+        assert len(calls) - before <= 20
+        jobs = await queue.collection.find({}).to_list(30)
+        assert len(jobs) == 1
+        job = jobs[0]
+        if job["state"] in {"completed", "failed"}:
+            break
+        now = job["available_at"].replace(tzinfo=UTC)
+    assert job["catalog_offset"] == len(ids)
+    assert job["state"] == ("failed" if failure_status else "completed")
+    assert set(calls) == set(ids)
+    assert calls.count(ids[0]) == (3 if failure_status == 503 else 1)
+    assert calls.count(ids[-1]) == 1
+    assert await recovery_db[f"sheets_{read_model}"].count_documents({}) == len(ids) - bool(
+        failure_status
+    )
+    assert await recovery_db.sheets_read_model_freshness.count_documents({}) == 0
+
+
+@pytest.mark.asyncio
+async def test_catalog_intent_lease_exhaustion_advances_and_reopening_resets_progress(
+    recovery_db: Any,
+) -> None:
+    from zeler_sheets.formulas.recovery import IMPLEMENTED_MODELS, CatalogRecoveryRequest
+
+    now = datetime.now(UTC).replace(microsecond=0)
+    queue = FormulaRecoveryQueue(recovery_db, now=lambda: now, enabled_models=IMPLEMENTED_MODELS)
+    request = CatalogRecoveryRequest(
+        "82453304", "catalog_product_snapshots", tuple(f"MLA{i}" for i in range(41))
+    )
+    await queue.enqueue(request)
+    first = await queue.claim()
+    assert first is not None and await queue.finish(first, succeeded=True)
+    await queue.enqueue(request)
+    second = await queue.claim()
+    assert second is not None and second["catalog_offset"] == 20
+    assert not await queue.finish(first, succeeded=True)
+    await queue.collection.update_one(
+        {"_id": request.key}, {"$set": {"lease_until": now - timedelta(seconds=1), "attempts": 3}}
+    )
+    final = await queue.claim()
+    assert final is not None and final["catalog_offset"] == 40
+    assert final["attempts"] == 1
+    assert await queue.finish(final, succeeded=True)
+    done = await queue.collection.find_one({"_id": request.key})
+    assert done["state"] == "failed" and done["catalog_failed_offsets"] == [20]
+    await queue.enqueue(request)
+    reopened = await queue.collection.find_one({"_id": request.key})
+    assert reopened["catalog_offset"] == 0
+    assert "catalog_failed_offsets" not in reopened and "catalog_failure_reason" not in reopened
+    assert reopened["available_at"] == done["available_at"]
+    assert await queue.claim() is None
+
+
+@pytest.mark.asyncio
+async def test_catalog_intent_rejects_invalid_tail_before_any_admission(recovery_db: Any) -> None:
+    from types import SimpleNamespace
+
+    from zeler_sheets.api import _request_formula_recovery
+    from zeler_sheets.formulas.dispatcher import FormulaDataUnavailableError
+
+    queue = FormulaRecoveryQueue(recovery_db)
+    request: Any = SimpleNamespace(
+        app=SimpleNamespace(state=SimpleNamespace(formula_recovery_queue=queue))
+    )
+    context: Any = SimpleNamespace(seller_id="82453304")
+    for ids in (
+        tuple(f"MLA{i}" for i in range(401)) + ("../invalid",),
+        tuple(f"MLA{i}" for i in range(10001)),
+    ):
+        missing = FormulaDataUnavailableError(
+            "ZELERDATA_CATALOGO", read_model="catalog_product_snapshots", catalog_product_ids=ids
+        )
+        assert not await _request_formula_recovery(request, context, missing)
+        assert await queue.collection.count_documents({}) == 0
+
+
+@pytest.mark.asyncio
 async def test_buybox_api_admits_only_explicit_item_recovery(recovery_db: Any) -> None:
     from types import SimpleNamespace
 

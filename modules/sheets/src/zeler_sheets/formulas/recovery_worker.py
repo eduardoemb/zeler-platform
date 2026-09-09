@@ -40,6 +40,7 @@ from zeler_sheets.formulas.read_models import (
 from zeler_sheets.formulas.recovery import (
     COOLDOWN,
     CatalogProductIdsRecoveryRequest,
+    CatalogRecoveryRequest,
     FormulaRecoveryQueue,
     ItemIdsRecoveryRequest,
     OrderIdsRecoveryRequest,
@@ -98,6 +99,17 @@ def _catalog_snapshot_filter(seller_id: str, identity: str, observed: datetime) 
             for field in ("snapshot_at", "source_unavailable.observed_at")
         ],
     }
+
+
+def _catalog_chunk(job: dict[str, Any], field: str) -> tuple[str, ...]:
+    ids = tuple(job[field])
+    if "catalog_offset" not in job:
+        return ids
+    intent = CatalogRecoveryRequest(job["seller_id"], job["read_model"], ids)
+    offset = job["catalog_offset"]
+    if ids != intent.ids or type(offset) is not int or not 0 <= offset < len(ids) or offset % 20:
+        raise ValueError("invalid catalog continuation")
+    return ids[offset : offset + 20]
 
 
 class FormulaRecoveryWorker:
@@ -174,7 +186,7 @@ class FormulaRecoveryWorker:
 
     async def _catalog_products(self, job: dict[str, Any]) -> None:
         requested = CatalogProductIdsRecoveryRequest(
-            job["seller_id"], tuple(job["catalog_product_ids"])
+            job["seller_id"], _catalog_chunk(job, "catalog_product_ids")
         )
         ids = list(requested.catalog_product_ids)
         sources = (
@@ -245,7 +257,9 @@ class FormulaRecoveryWorker:
 
     async def _catalog_buybox(self, job: dict[str, Any]) -> None:
         requested = ItemIdsRecoveryRequest(
-            job["seller_id"], tuple(job["item_ids"]), read_model="catalog_buybox_snapshots"
+            job["seller_id"],
+            _catalog_chunk(job, "item_ids"),
+            read_model="catalog_buybox_snapshots",
         )
         items = await self.db.items.find(
             {"seller_id": requested.seller_id, "_id": {"$in": list(requested.item_ids)}}

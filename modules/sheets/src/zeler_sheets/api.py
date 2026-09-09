@@ -51,6 +51,7 @@ from zeler_sheets.formulas.read_models import FormulaReadModelRepository
 from zeler_sheets.formulas.recovery import (
     RECOVERABLE_MODELS,
     CatalogProductIdsRecoveryRequest,
+    CatalogRecoveryRequest,
     ItemIdsRecoveryRequest,
     ItemInventoryRecoveryRequest,
     OrderIdsRecoveryRequest,
@@ -689,6 +690,11 @@ async def _request_formula_recovery(
             async with asyncio.timeout(1.0):
                 # Validate the entire request before admitting any batch.
                 identities = tuple(sorted(set(missing.catalog_product_ids)))
+                if len(identities) > 20:
+                    await queue.enqueue(
+                        CatalogRecoveryRequest(context.seller_id, missing.read_model, identities)
+                    )
+                    return True
                 batches = [
                     CatalogProductIdsRecoveryRequest(
                         context.seller_id,
@@ -707,6 +713,13 @@ async def _request_formula_recovery(
             return False
         try:
             async with asyncio.timeout(1.0):
+                if missing.read_model == "catalog_buybox_snapshots" and len(missing.item_ids) > 20:
+                    await queue.enqueue(
+                        CatalogRecoveryRequest(
+                            context.seller_id, missing.read_model, tuple(missing.item_ids)
+                        )
+                    )
+                    return True
                 for offset in range(0, len(missing.item_ids), 20):
                     await queue.enqueue(
                         ItemIdsRecoveryRequest(

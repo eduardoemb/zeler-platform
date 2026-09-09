@@ -188,6 +188,31 @@ class CatalogProductIdsRecoveryRequest:
 
 
 @dataclass(frozen=True)
+class CatalogRecoveryRequest:
+    """One durable intent, executed in bounded catalog chunks by the worker."""
+
+    seller_id: str
+    read_model: str
+    ids: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        if (
+            re.fullmatch(r"[0-9]+", self.seller_id) is None
+            or self.read_model not in {"catalog_product_snapshots", "catalog_buybox_snapshots"}
+            or not 1 <= len(self.ids) <= 10000
+            or any(re.fullmatch(r"ML[A-Z][0-9]+", value) is None for value in self.ids)
+        ):
+            raise ValueError("catalog intent requires a seller and at most 10000 explicit IDs")
+        object.__setattr__(self, "ids", tuple(sorted(set(self.ids))))
+
+    @property
+    def key(self) -> str:
+        return hashlib.sha256(
+            "\0".join((self.seller_id, self.read_model, "catalog_intent", *self.ids)).encode()
+        ).hexdigest()
+
+
+@dataclass(frozen=True)
 class ItemInventoryRecoveryRequest:
     seller_id: str
     read_model: str = "item_formula_rows"
@@ -245,6 +270,7 @@ class FormulaRecoveryQueue:
         | ShipmentIdsRecoveryRequest
         | ItemIdsRecoveryRequest
         | CatalogProductIdsRecoveryRequest
+        | CatalogRecoveryRequest
         | ItemInventoryRecoveryRequest,
     ) -> str:
         if self.allowed_sellers is not None and request.seller_id not in self.allowed_sellers:
@@ -256,11 +282,11 @@ class FormulaRecoveryQueue:
         ):
             raise ValueError("shipment recovery requires explicit IDs")
         if request.read_model == "catalog_product_snapshots" and not isinstance(
-            request, CatalogProductIdsRecoveryRequest
+            request, (CatalogProductIdsRecoveryRequest, CatalogRecoveryRequest)
         ):
             raise ValueError("catalog recovery requires explicit product IDs")
         if request.read_model == "catalog_buybox_snapshots" and not isinstance(
-            request, ItemIdsRecoveryRequest
+            request, (ItemIdsRecoveryRequest, CatalogRecoveryRequest)
         ):
             raise ValueError("buybox recovery requires explicit publication IDs")
         if request.read_model == "item_formula_rows" and not isinstance(
@@ -278,7 +304,14 @@ class FormulaRecoveryQueue:
             "updated_at": now,
             "available_at": now,
         }
-        if isinstance(request, OrderIdsRecoveryRequest):
+        if isinstance(request, CatalogRecoveryRequest):
+            field = (
+                "item_ids"
+                if request.read_model == "catalog_buybox_snapshots"
+                else "catalog_product_ids"
+            )
+            initial.update({field: list(request.ids), "catalog_offset": 0})
+        elif isinstance(request, OrderIdsRecoveryRequest):
             initial["order_ids"] = list(request.order_ids)
         elif isinstance(request, ShipmentIdsRecoveryRequest):
             initial["shipment_ids"] = list(request.shipment_ids)
@@ -321,7 +354,16 @@ class FormulaRecoveryQueue:
                 await self.collection.update_one(
                     {"_id": request.key},
                     {
-                        "$set": {"state": "pending", "attempts": 0, "updated_at": now},
+                        "$set": {
+                            "state": "pending",
+                            "attempts": 0,
+                            "updated_at": now,
+                            **(
+                                {"catalog_offset": 0}
+                                if isinstance(request, CatalogRecoveryRequest)
+                                else {}
+                            ),
+                        },
                         **(
                             {
                                 "$unset": {
@@ -330,6 +372,13 @@ class FormulaRecoveryQueue:
                                 }
                             }
                             if isinstance(request, ItemInventoryRecoveryRequest)
+                            else {
+                                "$unset": {
+                                    "catalog_failed_offsets": "",
+                                    "catalog_failure_reason": "",
+                                }
+                            }
+                            if isinstance(request, CatalogRecoveryRequest)
                             else {}
                         ),
                     },
@@ -424,9 +473,26 @@ class FormulaRecoveryQueue:
             if self.allowed_sellers is not None
             else {}
         )
+        # A crashed final attempt must not strand the remaining catalog chunks.
+        # Claim its expired lease atomically before recording the failed chunk.
+        exhausted_catalog = await self.collection.find_one_and_update(
+            {
+                **seller_filter,
+                "state": "running",
+                "catalog_offset": {"$exists": True},
+                "read_model": {"$in": sorted(self.enabled_models)},
+                "lease_until": {"$lte": now},
+                "attempts": {"$gte": MAX_ATTEMPTS},
+            },
+            {"$set": {"lease_until": now + LEASE, "attempt_token": uuid4().hex}},
+            return_document=ReturnDocument.AFTER,
+        )
+        if exhausted_catalog:
+            await self.finish(exhausted_catalog, succeeded=False)
         await self.collection.update_many(
             {
                 **seller_filter,
+                "catalog_offset": {"$exists": False},
                 "state": "running",
                 "lease_until": {"$lte": now},
                 "attempts": {"$gte": MAX_ATTEMPTS},
@@ -508,7 +574,7 @@ class FormulaRecoveryQueue:
                 offset=min(job["inventory_offset"] + 20, len(job["inventory_ids"])),
                 unavailable=True,
             )
-        fields = {
+        fields: dict[str, Any] = {
             "state": "completed" if succeeded else "pending" if retry else "failed",
             "available_at": now
             + (timedelta(seconds=30 * 2 ** (job["attempts"] - 1)) if retry else COOLDOWN),
@@ -527,6 +593,33 @@ class FormulaRecoveryQueue:
             unset["failure_reason"] = ""
         else:
             fields["failure_reason"] = failure_reason
+        if "catalog_offset" in job and not retry:
+            field = (
+                "item_ids"
+                if job["read_model"] == "catalog_buybox_snapshots"
+                else "catalog_product_ids"
+            )
+            ids, offset = job[field], job["catalog_offset"]
+            if type(offset) is not int or not 0 <= offset < len(ids) or offset % 20:
+                raise ValueError("invalid catalog continuation offset")
+            next_offset = min(offset + 20, len(ids))
+            failed = list(job.get("catalog_failed_offsets", []))
+            if not succeeded:
+                failed.append(offset)
+                fields["catalog_failure_reason"] = failure_reason
+            done = next_offset == len(ids)
+            fields.update(
+                catalog_offset=next_offset,
+                catalog_failed_offsets=failed,
+                attempts=0,
+                state=("failed" if failed else "completed") if done else "pending",
+                available_at=now + COOLDOWN if done else now,
+            )
+            if failed:
+                unset.pop("failure_reason", None)
+                fields["failure_reason"] = (
+                    fields.get("catalog_failure_reason") or job["catalog_failure_reason"]
+                )
         result = await self.collection.update_one(
             self._owned(job, now),
             {

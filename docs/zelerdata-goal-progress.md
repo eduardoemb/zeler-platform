@@ -21,6 +21,54 @@ Keep unrelated `.codegraph/` files untouched in both repositories.
 Pilot: seller `82453304`; initial historical window 2026-08-08 through
 2026-09-06, plus current snapshots. Other products are out of scope.
 
+## Catalog recovery retains complete intent and resumes bounded chunks
+
+Large product/buybox requests now persist one validated, seller-scoped intent
+with up to 10,000 explicit IDs before returning, within the existing one-second
+admission budget. The worker processes at most 20 identities per claimed chunk,
+using the existing four-acquisition concurrency and source/ownership checks.
+`catalog_offset` advances under the owned lease; no continuation depends on a
+second formula call or in-memory worker state. Small requests keep their existing
+20-ID contracts. Seller capacity remains 20 active jobs, not 20 expanded batches.
+
+Transient failures retain bounded retries on the current chunk. Terminal failure
+records its offset/reason and advances to the next chunk, preserving successful
+snapshots; the overall job remains failed when any chunk failed. A crash on the
+last permitted attempt atomically reacquires the expired lease to record that
+failed chunk and continue the tail, without another upstream attempt. Repeated
+admission of a pending intent leaves its cursor unchanged. Reopening a terminal
+intent resets progress/failure offsets without bypassing its cooldown.
+
+TDD initially produced **8 failures in 2.73s**, covering lost tail admission and
+restart/error continuation; expired-final-lease regression separately failed in
+**0.39s**. After correction, focused tests passed **9 in 8.06s**, including full
+401-ID acquisition/persistence for both models, 41-ID 403/503 cases, stale-owner
+rejection, final-lease exhaustion and cooldown-preserving reopening. Command:
+`MONGO_URI=<local replica-set URI> uv run pytest
+modules/sheets/tests/test_formula_recovery.py -k 'catalog_intent or
+retains_full_request' --tb=short`. Final focused run including invalid-tail,
+oversize and pending readmission checks: **10 passed in 7.90s**. Expanded recovery,
+item/shipping/catalog handlers, phase-4 handlers and schema suite: **518 passed
+in 83.39s** (collected before the final supplemental checks). Protected suite:
+**8 passed in 2.53s**. Ruff check/format and mypy (507 files) pass. Full-root local
+execution was not repeated after the recorded native interpreter failures;
+complete CI and real-runtime acceptance remain required.
+
+Deployment remains pending and affects **both Sheets images**. Verify recovery
+collection options/indexes in the VM, then deploy the **worker before the API**:
+the old worker cannot execute large intents. Before rolling back the worker,
+stop new large admissions and resolve/drain pending intents with the new worker;
+do not delete intent documents or recovered data. This change adds fields to the
+existing recovery collection, not a new collection or a business-schema change.
+Rollback scope is the new intent type, admission branch, cursor/lease continuation
+and tests. The latest deployed worker remains `f598ed2`, API `f4573de`.
+
+After deployment, prove a full pilot catalog request progresses beyond 400 IDs
+through the normal asynchronous path, with current source data, bounded HTTP
+latency and explicit remaining unavailable fields. Local mocked-upstream Mongo
+tests do not establish live seller completeness, historical coverage or all-52
+Google Sheets acceptance.
+
 ## Catalog scale defect reproduced; offer absence is not proven
 
 Read-only six-request probe `/tmp/offers-availability.py` on the approved VM
