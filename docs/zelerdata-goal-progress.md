@@ -21,7 +21,7 @@ Keep unrelated `.codegraph/` files untouched in both repositories.
 Pilot: seller `82453304`; initial historical window 2026-08-08 through
 2026-09-06, plus current snapshots. Other products are out of scope.
 
-## Optional product response fix deployed; secondary acquisition still incomplete
+## Optional product response fix deployed; source acquisition still incomplete
 
 Cloud Build `c1ea0ae9-f913-4011-b805-c97de9c943eb` succeeded for source
 `b26389469fa85ee9e19f0c0fcbe5853be7150e5f`, producing worker digest
@@ -44,7 +44,7 @@ It ended `failed/source_rejected` at `01:36:56.385Z`, attempt one. At the
 `01:37:27.362Z` status read, 20 snapshots existed (four before the attempt), with
 18 fresh snapshots matching canonical product/title/stock and acquired after
 the item sync. This is material acquisition, **not** full purpose-field acceptance.
-Do not blindly re-enqueue; diagnose the rejected secondary source next.
+Do not blindly re-enqueue; identify the rejected source endpoint next.
 Read-only status: `sudo python3 /tmp/retry-buybox-product.py status`.
 The helper's `refresh` and `recover` modes have already run and must not be repeated
 merely to recreate this receipt.
@@ -65,7 +65,7 @@ before diagnosing them. Do not infer catalog participation from missing product 
 
 This evidence-only follow-up needs no new image. The intended acquisition source
 `b263894` matches the running worker; further runtime verification is still needed
-for secondary source rejection and complete formula behavior.
+for source rejection and complete formula behavior.
 
 ## Completed inventory exposed an over-strict competition response check
 
