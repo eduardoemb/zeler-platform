@@ -178,7 +178,7 @@ async def test_registration_upserts_module_registry_doc() -> None:
 
 
 @pytest.mark.asyncio
-async def test_sheets_registration_converges_seed_startup_and_restart_to_exact_11_6() -> None:
+async def test_sheets_registration_converges_seed_startup_and_restart_to_exact_12_6() -> None:
     root = Path(__file__).resolve().parents[2]
     manifest = validate_manifest(root / "modules" / "sheets" / "manifest.yaml")
     seed = json.loads(
@@ -207,11 +207,12 @@ async def test_sheets_registration_converges_seed_startup_and_restart_to_exact_1
         "catalog_item_competition_status.*",
         "claims.updated",
     ]
-    assert len(manifest.allowed_meli_scopes) == 11
+    assert len(manifest.allowed_meli_scopes) == 12
+    assert "GET /item/*/performance" in manifest.allowed_meli_scopes
     assert first_start == crash_restart
     assert first_start["allowed_meli_scopes"] == seeded_sheets["allowed_meli_scopes"]
     assert first_start["routing_keys"] == seeded_sheets["routing_keys"]
-    assert len(first_start["allowed_meli_scopes"]) == 11
+    assert len(first_start["allowed_meli_scopes"]) == 12
     assert len(first_start["routing_keys"]) == 6
 
 

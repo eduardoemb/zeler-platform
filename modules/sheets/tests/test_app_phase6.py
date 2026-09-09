@@ -75,6 +75,7 @@ def test_sheets_manifest_validates_owned_collections_and_readonly_scopes() -> No
     assert manifest.allowed_meli_scopes == [
         "GET /items",
         "GET /items/*",
+        "GET /item/*/performance",
         "GET /products/*",
         "GET /sites/*/listing_prices",
         "GET /users/*/shipping_options/free",
@@ -131,6 +132,7 @@ async def test_sheets_startup_registers_manifest_and_health_ready() -> None:
         "allowed_meli_scopes": [
             "GET /items",
             "GET /items/*",
+            "GET /item/*/performance",
             "GET /products/*",
             "GET /sites/*/listing_prices",
             "GET /users/*/shipping_options/free",

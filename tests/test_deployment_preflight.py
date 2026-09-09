@@ -1024,7 +1024,7 @@ def _runtime_probe() -> dict[str, Any]:
         "entrypoint_import": True,
         "module_id": "sheets",
         "registry_fingerprint": canonical_sheets_registration_fingerprint(),
-        "scope_count": 11,
+        "scope_count": 12,
         "routing_key_count": 6,
     }
 
@@ -1235,7 +1235,7 @@ fi
         "image_id": image_id,
         "source_commit": source_commit,
         "registry_fingerprint": canonical_sheets_registration_fingerprint(),
-        "scope_count": 11,
+        "scope_count": 12,
         "routing_key_count": 6,
     }
     env = {
@@ -1462,7 +1462,7 @@ def test_deploy_wrapper_validates_sanitized_immutable_rollback_evidence(
     proof = json.loads(Path(env["SHEETS_ROLLBACK_PROOF_FILE"]).read_text(encoding="utf-8"))
     assert proof["image_ref"].endswith("a" * 64)
     assert proof["image_id"] == "sha256:" + "f" * 64
-    assert "Sheets rollback attestation passed: exact 11 scopes/5 routing keys." in completed.stdout
+    assert "Sheets rollback attestation passed: exact 12 scopes/6 routing keys." in completed.stdout
     assert "Artifact Registry and Cloud Build provenance: verified" in completed.stdout
     assert "MONGO_URI" not in completed.stdout
     assert "SHEETS_ROLLBACK_ENTRYPOINT" not in completed.stdout

@@ -115,6 +115,25 @@ docker compose version
 
 ### ZelerData recovery pilot gate
 
+The quality acquisition rollout adds the exact read-only scope
+`GET /item/*/performance`: Sheets registration now has 12 scopes and six routing
+keys. The manifest, seed and rollback verifier must agree. Prepare a verified
+rollback API image with this registration contract before activating quality;
+an older image that restores 11 scopes is not a compatible rollback authority.
+The permission/attestation commit is a buildable compatibility baseline, not
+proof of quality acquisition or authorization to deploy the scope alone.
+
+Deploy the functional API/worker only after applying its additive `items` and
+`sheets_item_formula_rows` validators from the approved VM context. Verify an
+owned performance response, persistent readback and the real CALIDAD formula.
+Reverting functional images must preserve the registration contract and stored
+quality data. Keep the previous runtime digests recorded throughout the rollout.
+
+Local compatibility checks: `uv run pytest tests/test_deployment_preflight.py`
+passed 83 tests; registration startup/restart and manifest tests are in
+`core/tests/test_runtime_phase4.py` and `modules/sheets/tests/test_app_phase6.py`.
+Runtime image attestation remains a deployment gate, not implied by these tests.
+
 Formula recovery requires both `ZELERDATA_FORMULA_RECOVERY_ENABLED=true` and
 `ZELERDATA_FORMULA_RECOVERY_SELLERS=82453304` on Sheets API and Sheets worker
 for the agreed pilot. Both services must use verified images containing this

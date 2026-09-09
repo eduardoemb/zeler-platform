@@ -15,6 +15,7 @@ from urllib.parse import urlparse
 CANONICAL_SHEETS_SCOPES = (
     "GET /items",
     "GET /items/*",
+    "GET /item/*/performance",
     "GET /products/*",
     "GET /sites/*/listing_prices",
     "GET /users/*/shipping_options/free",
@@ -57,7 +58,7 @@ _IMAGE_REF_PATTERN = re.compile(
     r"(?P<repository>[a-z0-9.-]+/[a-z0-9._/-]+)@sha256:(?P<digest>[0-9a-f]{64})"
 )
 _CANONICAL_FULL_REGISTRATION_FINGERPRINT = (
-    "2d41800b9a245051081f85b8bfc2ef738010c1504c55ad286d8a2cef1bcd2552"
+    "39b3d5ef3dacadc60d0f74c0c4ad54e5f06ae41ab609eb573b4ced95d636ff42"
 )
 
 
