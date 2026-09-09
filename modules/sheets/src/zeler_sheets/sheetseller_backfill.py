@@ -1297,7 +1297,10 @@ async def run_item_detail_enrichment(
                             seller_id=seller_id, path=f"/item/{item_id}/performance"
                         )
                     detail["quality_projection"] = project_item_quality(
-                        performance, item_id=item_id, observed_at=datetime.now(UTC)
+                        performance,
+                        item_id=item_id,
+                        observed_at=datetime.now(UTC),
+                        user_product_id=detail.get("user_product_id"),
                     )
                     item_enrichment_state["quality_projection"] = trusted_state(
                         source=QUALITY_SOURCE, synced_at=synced_at
@@ -2444,6 +2447,7 @@ def build_formula_row_doc(
         variation_id=resolved_variation_id,
     )
     current = {
+        **({"user_product_id": item["user_product_id"]} if "user_product_id" in item else {}),
         "title": item.get("title"),
         "status": item.get("status"),
         "available_quantity": item.get("available_quantity"),
@@ -3259,6 +3263,9 @@ def _canonical_item_detail_document(
         "last_meli_sync_at": synced_at,
         "schema_version": current_schema_version("items"),
     }
+    if "user_product_id" in existing or "user_product_id" in detail:
+        # Full item detail is the current relationship authority, including absence.
+        payload["user_product_id"] = detail.get("user_product_id")
     payload = normalize_status_history_datetimes(payload)
     payload = normalize_mongo_loaded_datetimes(payload)
     fixed_fee = payload.get("listing_price_fixed_fee")
@@ -3268,6 +3275,12 @@ def _canonical_item_detail_document(
         )
     model = Item.model_validate(payload)
     document = normalize_status_history_datetimes(model.model_dump(by_alias=True, mode="python"))
+    if "user_product_id" not in payload:
+        document.pop("user_product_id", None)
+    if model.quality_projection is not None:
+        document["quality_projection"] = model.quality_projection.model_dump(
+            mode="python", exclude_unset=True
+        )
     if document.get("status_observed_at") is None:
         document.pop("status_observed_at", None)
     if document.get("quality_projection") is None:

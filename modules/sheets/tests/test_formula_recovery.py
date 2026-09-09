@@ -5721,7 +5721,10 @@ async def recovery_db() -> AsyncIterator[Any]:
 
 
 @pytest.mark.asyncio
-async def test_quality_projection_roundtrips_with_real_mongo_validators(recovery_db: Any) -> None:
+@pytest.mark.parametrize("entity_type", ["ITEM", "USER_PRODUCT"])
+async def test_quality_projection_roundtrips_with_real_mongo_validators(
+    recovery_db: Any, entity_type: str
+) -> None:
     import json
     from pathlib import Path
 
@@ -5733,14 +5736,15 @@ async def test_quality_projection_roundtrips_with_real_mongo_validators(recovery
     now = datetime(2026, 9, 9, tzinfo=UTC)
     quality = project_item_quality(
         {
-            "entity_type": "ITEM",
-            "entity_id": "MLA1",
+            "entity_type": entity_type,
+            "entity_id": "MLA1" if entity_type == "ITEM" else "MLAU123",
             "score": 69,
             "level": "Good",
             "calculated_at": now.isoformat(),
             "buckets": [],
         },
         item_id="MLA1",
+        user_product_id="MLAU123",
         observed_at=now,
     )
     for name in ("items", "sheets_item_formula_rows"):
@@ -5760,6 +5764,7 @@ async def test_quality_projection_roundtrips_with_real_mongo_validators(recovery
         "last_meli_sync_at": now,
         "schema_version": 2,
         "quality_projection": quality,
+        "user_product_id": "MLAU123",
     }
     await recovery_db.items.insert_one(item)
     row = build_formula_row_doc(item, seller_id="82453304", sku="quality-sku")
@@ -5776,6 +5781,9 @@ async def test_quality_projection_roundtrips_with_real_mongo_validators(recovery
             else stored["current"]["quality_projection"]
         )
         assert observed["score"] == 69
+        assert observed["entity_type"] == entity_type
+        assert observed["entity_id"] == quality["entity_id"]
+        assert observed["item_id"] == "MLA1"
         assert observed["level"] == "Good"
         assert observed["observed_at"].replace(tzinfo=UTC) == now
         for field, value in (

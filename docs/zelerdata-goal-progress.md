@@ -22,6 +22,141 @@ Keep unrelated `.codegraph/` files untouched in both repositories.
 
 ### Quality acquisition gap: confirmed missing source path and permission
 
+Local USER_PRODUCT correction is implemented; production deployment is pending.
+Strict-TDD regression first failed six cases, including acquisition/persistence
+and unknown relationship rejection. The normalizer now accepts the observed
+USER_PRODUCT response only when its identity matches the fresh item detail's
+`user_product_id`. Projections retain `entity_type`, upstream `entity_id` and
+bound `item_id`; canonical items and current formula rows retain the relationship.
+The reader rejects changed/missing user-product relationships and mismatched
+item bindings. Existing ITEM projections remain readable; failed acquisition
+preserves their previous representation and observation time.
+
+Focused verification: **258 passed**, plus **two real local Mongo roundtrips**
+covering ITEM and USER_PRODUCT while still rejecting invalid scores, raw payloads
+and unknown components. Root Ruff and Mypy (509 source files) passed; generated
+schema drift check passed. The root run completed with **4,219 passed, nine
+skipped, 356 warnings in 156.21s**. It began before the final missing-relationship
+correction: that regression first failed because the old link survived, then
+passed in the 258-test focal run after clearing the link from fresh full item
+detail. Therefore the root count is broad regression evidence, not proof of a
+clean full run of the final exact checkout; CI must verify that final commit.
+The nine skips are the same eight ambient-URI stock-time cases (separately
+verified earlier) and one inapplicable Caddy required-key check.
+Deployment requires updated `items` and `sheets_item_formula_rows` validators
+before the next API/worker images. No additional gateway scope or separate
+user-product endpoint is introduced. Rollback boundary is this identity binding
+model/producer/reader/schema correction; prior deployed images must not be
+credited with support for this response. Production acquisition/readback and
+real Sheets acceptance remain pending.
+
+Post-deploy contract diagnosis, 2026-09-09: the initial item's identifier format
+is valid; its HTTP 400 is `bad_request` with sanitized source-error vocabulary
+indicating an unsupported product/entity, not evidence of a malformed item ID.
+Do not generalize that result to the seller or to permanent data absence.
+
+A separate owned active **non-catalog** pilot item returned HTTP 200 both for
+`GET /items/{id}` and `GET /item/{id}/performance`. The item response contains a
+`user_product_id`; the performance response has `entity_type=USER_PRODUCT`, and
+its `entity_id` matches that exact owned item relationship (not the item ID).
+The deployed normalizer rejects it as `quality source identity mismatch`
+because it only accepts ITEM. This is a demonstrated compatibility defect, not
+missing upstream quality. No raw payloads or identifiers were printed or
+persisted by these diagnostic probes. The official
+[quality contract](https://developers.mercadolibre.com.ar/es_ar/administra-proyectos-aplicaciones/calidad-de-publicaciones)
+documents both ITEM and USER_PRODUCT entities. Next correction must retain the
+verified item-to-user-product relationship, support this observed response,
+persist its source identity truthfully and keep rejecting unrelated entities;
+start with a failing regression. Direct use of the separate user-product path
+has not been verified or authorized through a new registry scope, and is not
+needed to explain the observed successful item-path response.
+
+Quality API and worker activation completed on 2026-09-09. VM systemd unit
+`zeler-quality-0c80a97` finished with `Result=success`, `ExecMainStatus=0` and
+`activation_complete=true`. Both services passed repeated healthy-state checks
+with the verified `0c80a979688a8c0a70beaa62cc89f747380cc0f9` images listed below.
+The canonical repository API runtime-contract verifier accepted both the new API
+and compatible baseline API; all four images passed external provenance checks
+again from the VM. The shared image-to-commit map was merged without removing
+previous entries. Compose backup: `/opt/zeler-platform/docker-compose.yml.pre-quality-0c80a97`.
+The failure-conditional fallback is the compatible `28d8ed4` API/worker pair;
+it was not activated. Only the two Sheets services were targeted with `--no-deps`.
+
+First post-deploy owned-active-item performance probe through the normal Sheets
+gateway client returned **HTTP 400**, not a valid quality projection. It printed
+no item ID, token or response payload and made no persistence writes. This does
+not prove permanent source absence or successful quality acquisition. Diagnose
+the rejection before accepting CALIDAD; persistent acquisition and real-Sheet
+readback remain outstanding despite healthy deployed services.
+
+Quality validators applied and read back on 2026-09-09 from the approved VM
+runtime container. Before changing anything, both `items` and
+`sheets_item_formula_rows` matched the exact `28d8ed4` baseline, with strict/error
+validation. The scoped `collMod` operations then installed the reviewed
+`0c80a97` validators; both post-write reads matched exactly and retained
+strict/error validation. No business documents, indexes, seeds or other
+collections were modified. Baseline and new schema contracts remain in
+`/tmp/zeler-quality-validator-contracts.json` on the VM. The first apply attempt
+lost SSH during connection establishment; a read-only check confirmed both
+validators were still baseline before retrying successfully. Service image
+activation and quality acquisition/readback remain pending. Additive validators
+may remain during image rollback so persisted quality is not lost.
+
+Capacity blocker resolved with explicit user authorization on 2026-09-09:
+boot disk `platform-vm` (`pd-balanced`, `us-central1-a`) grew from **20 GiB to
+30 GiB**. Its existing ext4 root partition `/dev/sda1` was extended online
+after a dry run confirmed its start sector stayed unchanged. Root available
+space became **15,322,804,224 bytes**, above the 5 GiB deployment floor. No VM
+restart was requested; the separate 50 GiB Mongo data disk was not resized.
+The user requests returning to the original capacity at mission completion if
+possible. Preserve that follow-up: [GCP does not support shrinking an existing
+Persistent Disk](https://docs.cloud.google.com/compute/docs/disks/resize-persistent-disk).
+Returning to 20 GiB would require evaluating a smaller-disk migration, capacity
+headroom and an outage/recovery plan; do not promise an in-place shrink or
+perform that migration without discussing it with the user. This capacity
+change does not itself activate the quality images or prove formula behavior.
+
+Deployment preparation, 2026-09-09: GitHub test run `34391302400` and lint run
+`34391302423` both succeeded for `0c80a979688a8c0a70beaa62cc89f747380cc0f9`.
+Four Cloud Build images passed the canonical external provenance verifier and
+were pulled by immutable digest onto the VM:
+
+| Role | Build ID | Image digest |
+| --- | --- | --- |
+| Compatible API rollback, `28d8ed4` | `b6d7de7a-2017-45f3-8873-6452c75e60d2` | `sha256:99fe18f2a9964b7486445031588065dd1cd7d1c514e4df7d7625a9893cb4ada6` |
+| Compatible worker rollback, `28d8ed4` | `08cc2b66-9a03-40ee-a06d-ecc1a6866e85` | `sha256:eda3358b1138eaa033af8bd23be5fb9d2820ca3f3d2eb9974f1f50fb7fd9caf9` |
+| Quality API, `0c80a97` | `5f9e5da4-fc4c-4bbe-8614-af1e2e34c106` | `sha256:56225360c6ff57670a42931a0e2fb2f88326928729d169b6eb351e848e2c5ce0` |
+| Quality worker, `0c80a97` | `4736735b-39f7-4564-9883-81b7ffc60fa7` | `sha256:eba8953d3ff9ff07b9da8600021283cf11ae7b312acff38d74efacffa58eb1f3` |
+
+All four passed isolated, network-disabled entrypoint import and exact
+12-scope/six-routing-key registration fingerprint probes. The first temporary
+probe referenced a nonexistent `zeler_sheets.worker` module; correcting the
+harness to `zeler_sheets.formulas.recovery_worker` produced the four passing
+results without changing product code.
+
+Only three unused, unprotected local Sheets image copies were removed after
+confirming their immutable artifacts remained recoverable in Artifact Registry:
+worker `5f23d9b…`, APIs `14509bb…` and `3ca3930…`. No containers, volumes,
+business data or active/previous rollback images were removed. Capacity passed
+the 5 GiB floor before each pull, but after all four pulls only **4,916,715,520
+bytes** remained, below the **5,368,709,120-byte** activation floor. Do not run
+Compose until capacity is restored. No validator, registration or service
+activation occurred. Existing API `ec04713…` and worker `9cf679b…` remained
+healthy; actual performance acquisition and real-Sheet CALIDAD readback remain
+unverified. This preparation is not production acceptance.
+
+The eight stock-time tests skipped by the root run were subsequently executed
+separately against the dedicated loopback replica set on port 27028, with
+ambient `MONGO_URI` unset and `ZELER_RS0_TEST_URI` explicitly selected. All eight
+passed with no skips (exit 0): acquisition, mixed-plan transaction commit,
+external target drift rejection, validation-failure transaction abort, exact
+rollback restoration, CLI rollback preflight, terminal rollback drift and
+atomic inverse rollback failure. The command selected
+`tests/integration/test_stock_time_forward_{acquisition,execution,rollback}_rs0.py`.
+These tests use isolated disposable databases; no production Mongo access or
+product code change was involved. This closes the local skipped-test evidence
+gap, not the real-Sheet stock-time acceptance requirement.
+
 Latest local gate: after the environment transition lost the earlier process
 handle, a new authorized full run against the dedicated local replica set
 completed with **4,213 passed, nine skipped, zero failures** in **156.18s**.

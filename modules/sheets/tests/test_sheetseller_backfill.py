@@ -1993,11 +1993,17 @@ async def test_backfill_dry_run_counts_variations_without_writing() -> None:
 
 
 @pytest.mark.asyncio
-async def test_item_quality_acquisition_reaches_canonical_and_formula_projection() -> None:
+@pytest.mark.parametrize("entity_type", ["ITEM", "USER_PRODUCT"])
+async def test_item_quality_acquisition_reaches_canonical_and_formula_projection(
+    entity_type: str,
+) -> None:
     db = FakeDb([_item_doc("MLA1")])
+    detail = _item_detail("MLA1")
+    detail["user_product_id"] = "MLAU123"
+    entity_id = "MLA1" if entity_type == "ITEM" else "MLAU123"
     performance = {
-        "entity_type": "ITEM",
-        "entity_id": "MLA1",
+        "entity_type": entity_type,
+        "entity_id": entity_id,
         "score": 69,
         "level": "Good",
         "calculated_at": NOW.isoformat(),
@@ -2018,7 +2024,7 @@ async def test_item_quality_acquisition_reaches_canonical_and_formula_projection
     }
     gateway = FakeItemGateway(
         {
-            "/items?ids=MLA1&include_attributes=all": [{"code": 200, "body": _item_detail("MLA1")}],
+            "/items?ids=MLA1&include_attributes=all": [{"code": 200, "body": detail}],
             "/item/MLA1/performance": performance,
         }
     )
@@ -2034,13 +2040,30 @@ async def test_item_quality_acquisition_reaches_canonical_and_formula_projection
         "images": {"status": "PENDING", "score": 0},
     }
     assert quality["pending_actions"] == ["ADD_PICTURES"]
-    assert quality["entity_id"] == "MLA1"
+    assert quality["entity_id"] == entity_id
+    assert quality["entity_type"] == entity_type
+    assert quality["item_id"] == "MLA1"
+    assert persisted["user_product_id"] == "MLAU123"
     assert quality["source"] == "/item/{id}/performance"
     assert quality["calculated_at"] == NOW
     assert quality["observed_at"] >= persisted["last_meli_sync_at"]
     assert "unused_payload" not in quality
     row = build_formula_row_doc(persisted, seller_id="82453304", sku="sku-1")
     assert row["current"]["quality_projection"] == quality
+    assert row["current"]["user_product_id"] == "MLAU123"
+
+
+def test_fresh_item_detail_clears_missing_user_product_relationship() -> None:
+    from zeler_sheets.sheetseller_backfill import _canonical_item_detail_document
+
+    existing = _item_doc("MLA1")
+    existing["user_product_id"] = "MLAU123"
+    document = _canonical_item_detail_document(
+        existing=existing, detail=_item_detail("MLA1"), seller_id="82453304", synced_at=NOW
+    )
+    assert document["user_product_id"] is None
+    row = build_formula_row_doc(document, seller_id="82453304", sku="sku-1")
+    assert row["current"]["user_product_id"] is None
 
 
 @pytest.mark.asyncio

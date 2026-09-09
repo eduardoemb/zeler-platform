@@ -422,7 +422,9 @@ class ItemQualityProjection(UtcDatetimeMixin):
     model_config = ConfigDict(extra="forbid")
 
     source: Literal["/item/{id}/performance"]
-    entity_id: str = Field(pattern=r"^ML[A-Z][0-9]+$")
+    entity_type: Literal["ITEM", "USER_PRODUCT"] = "ITEM"
+    entity_id: str = Field(pattern=r"^ML[A-Z]U?[0-9]+$")
+    item_id: str | None = Field(default=None, pattern=r"^ML[A-Z][0-9]+$")
     score: float = Field(ge=0, le=100, strict=True, allow_inf_nan=False)
     level: str = Field(min_length=1, max_length=80)
     calculated_at: datetime
@@ -440,6 +442,11 @@ class ItemQualityProjection(UtcDatetimeMixin):
 
     @model_validator(mode="after")
     def _quality_cut_order(self) -> ItemQualityProjection:
+        if self.entity_type == "USER_PRODUCT":
+            if self.item_id is None or not self.entity_id.startswith(self.item_id[:3] + "U"):
+                raise ValueError("quality user product requires a same-site item binding")
+        elif self.entity_id[3:4] == "U" or self.item_id not in (None, self.entity_id):
+            raise ValueError("quality item identity mismatch")
         if self.calculated_at > self.observed_at:
             raise ValueError("quality calculation is in the future")
         return self
@@ -456,6 +463,7 @@ class ItemEnrichmentState(UtcDatetimeMixin):
 
 
 class Item(UtcDatetimeMixin, PriceMixin, SellerScopedDocument):
+    user_product_id: str | None = Field(default=None, pattern=r"^ML[A-Z]U[0-9]+$")
     title: str
     price: Decimal
     base_price: Decimal

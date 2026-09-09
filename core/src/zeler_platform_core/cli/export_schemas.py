@@ -160,7 +160,9 @@ ITEM_QUALITY_PROJECTION = {
     ],
     "properties": {
         "source": {"enum": ["/item/{id}/performance"]},
-        "entity_id": {"bsonType": "string", "pattern": "^ML[A-Z][0-9]+$"},
+        "entity_type": {"enum": ["ITEM", "USER_PRODUCT"]},
+        "entity_id": {"bsonType": "string", "pattern": "^ML[A-Z]U?[0-9]+$"},
+        "item_id": {"bsonType": ["string", "null"], "pattern": "^ML[A-Z][0-9]+$"},
         "score": {"bsonType": ["double", "int", "long"], "minimum": 0, "maximum": 100},
         "level": {"bsonType": "string", "minLength": 1, "maxLength": 80},
         "calculated_at": DATE,
@@ -395,6 +397,7 @@ ENTITY_SCHEMAS: dict[str, dict[str, Any]] = {
             "listing_fee_projection": LISTING_FEE_PROJECTION,
             "enrichment_state": ITEM_ENRICHMENT_STATE,
             "quality_projection": ITEM_QUALITY_PROJECTION,
+            "user_product_id": {"bsonType": ["string", "null"], "pattern": "^ML[A-Z]U[0-9]+$"},
             "catalog_product_id": {"bsonType": ["string", "null"]},
             "catalog_listing": {"bsonType": ["bool", "null"]},
             "variations": {"bsonType": "array"},

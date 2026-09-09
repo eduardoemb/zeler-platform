@@ -9,11 +9,15 @@ QUALITY_SOURCE = "/item/{id}/performance"
 _COMPONENTS = {"GTIN": "gtin", "PICTURES": "images", "TITLE": "title", "ME": "shipping"}
 
 
-def project_item_quality(resource: Any, *, item_id: str, observed_at: datetime) -> dict[str, Any]:
-    if (
-        not isinstance(resource, dict)
-        or resource.get("entity_type") != "ITEM"
-        or resource.get("entity_id") != item_id
+def project_item_quality(
+    resource: Any, *, item_id: str, observed_at: datetime, user_product_id: str | None = None
+) -> dict[str, Any]:
+    if not isinstance(resource, dict) or not (
+        resource.get("entity_type") == "ITEM"
+        and resource.get("entity_id") == item_id
+        or resource.get("entity_type") == "USER_PRODUCT"
+        and user_product_id is not None
+        and resource.get("entity_id") == user_product_id
     ):
         raise ValueError("quality source identity mismatch")
     buckets = resource.get("buckets")
@@ -50,7 +54,9 @@ def project_item_quality(resource: Any, *, item_id: str, observed_at: datetime) 
     return ItemQualityProjection.model_validate(
         {
             "source": QUALITY_SOURCE,
-            "entity_id": item_id,
+            "entity_type": resource["entity_type"],
+            "entity_id": resource["entity_id"],
+            "item_id": item_id,
             "score": resource.get("score"),
             "level": resource.get("level"),
             "calculated_at": resource.get("calculated_at"),

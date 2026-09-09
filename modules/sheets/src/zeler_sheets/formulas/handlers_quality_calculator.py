@@ -302,7 +302,12 @@ def _quality_row(row: Mapping[str, Any], *, now: datetime) -> list[Any]:
         quality = ItemQualityProjection.model_validate(projection)
     except ValidationError:
         return [*base, *["DATA_UNAVAILABLE"] * 12]
-    if quality.entity_id != str(row.get("item_id")) or not (
+    bound_item_id = quality.item_id or quality.entity_id
+    if quality.entity_type == "USER_PRODUCT" and quality.entity_id != current.get(
+        "user_product_id"
+    ):
+        return [*base, *["DATA_UNAVAILABLE"] * 12]
+    if bound_item_id != str(row.get("item_id")) or not (
         now - timedelta(minutes=15) < quality.observed_at <= now
     ):
         return [*base, *["DATA_UNAVAILABLE"] * 12]
