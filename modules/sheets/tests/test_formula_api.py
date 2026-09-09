@@ -447,7 +447,7 @@ async def test_build_app_persists_sanitized_formula_audit_record() -> None:
     occurred_at = audit_doc.pop("occurred_at")
     assert isinstance(occurred_at, datetime)
     assert audit_doc == {
-        "_id": "formula-audit-req-production-audit",
+        "_id": audit_doc["_id"],
         "token_id": next(iter(db.sheets_extension_tokens.documents.values()))["_id"],
         "seller_id": "123456789",
         "seller_nickname": "HOPEMOB",
@@ -519,7 +519,8 @@ async def test_build_app_persists_denied_audit_without_updating_last_used(
     assert response.status_code == status_code
     assert response.json()["error"]["code"] == error_code
     assert next(iter(db.sheets_extension_tokens.documents.values()))["last_used_at"] is None
-    audit = db["sheets_formula_audit"].documents[f"formula-audit-{request_id}"]
+    audit = next(iter(db["sheets_formula_audit"].documents.values()))
+    assert audit["request_id"] == request_id
     assert isinstance(audit["occurred_at"], datetime)
     assert audit["outcome"] == "denied"
     assert audit["error_code"] == error_code
@@ -552,8 +553,36 @@ async def test_build_app_repeats_request_id_idempotently_without_rewriting_audit
         == {"ok": True, "values": [[""]], "meta": {"partial_misses": 1}}
     )
     assert len(audit.documents) == 1
-    assert audit.documents["formula-audit-req-repeated"]["outcome"] == "allowed"
-    assert audit.operations == [("insert", "formula-audit-req-repeated")]
+    audit_doc = next(iter(audit.documents.values()))
+    assert audit_doc["outcome"] == "allowed"
+    assert audit.operations == [("insert", audit_doc["_id"])]
+
+
+@pytest.mark.asyncio
+async def test_build_app_keeps_same_request_id_audit_for_each_linked_seller() -> None:
+    db = FakeDb()
+    audit = db["sheets_formula_audit"]
+    audit.duplicate_aware = True
+    app, _ = await _production_app(db)
+    issued = await _token_service(db, now=datetime(2026, 5, 13, 12, 0, tzinfo=UTC)).create_token(
+        owner_user_id="user-1",
+        label="Two accounts",
+        seller_scopes=[
+            SellerScope(seller_id="123456789", nickname="HOPEMOB"),
+            SellerScope(seller_id="456", nickname="SECOND"),
+        ],
+    )
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        for cuenta in ["HOPEMOB", "SECOND", "HOPEMOB"]:
+            response = await _execute(
+                client, issued.token_once, cuenta=cuenta, request_id="same-id"
+            )
+            assert response.status_code == 200
+    assert len(audit.documents) == 2
+    assert {row["seller_id"] for row in audit.documents.values()} == {"123456789", "456"}
+    assert all(row["outcome"] == "allowed" for row in audit.documents.values())
 
 
 @pytest.mark.asyncio
@@ -618,7 +647,9 @@ async def test_build_app_allowed_updates_last_used_before_audit_insert() -> None
 
     assert response.status_code == 200
     assert db.sheets_extension_tokens.operations[-1] == ("update", token_id)
-    assert db["sheets_formula_audit"].operations == [("insert", "formula-audit-req-ordered")]
+    audit_doc = next(iter(db["sheets_formula_audit"].documents.values()))
+    assert audit_doc["request_id"] == "req-ordered"
+    assert db["sheets_formula_audit"].operations == [("insert", audit_doc["_id"])]
 
 
 @pytest.mark.asyncio

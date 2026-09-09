@@ -139,9 +139,11 @@ async def test_formula_audit_service_persists_redacted_request_decisions() -> No
     )
 
     docs = list(db["sheets_formula_audit"].documents.values())
+    assert len(docs[0]["_id"]) == len("formula-audit-") + 64
+    assert "req-1" not in docs[0]["_id"]
     assert docs == [
         {
-            "_id": "formula-audit-req-1",
+            "_id": docs[0]["_id"],
             "token_id": "sheets-ext-token-abc",
             "seller_id": "123456789",
             "seller_nickname": "HOPEMOB",
@@ -182,9 +184,30 @@ async def test_formula_audit_service_replays_duplicate_request_id_without_warnin
     assert entries == []
     docs = list(collection.documents.values())
     assert len(docs) == 1
-    assert docs[0]["_id"] == "formula-audit-req-replay"
+    assert docs[0]["request_id"] == "req-replay"
     assert docs[0]["outcome"] == "allowed"
     assert docs[0]["error_code"] is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("request_id", ["shared-request", None])
+@pytest.mark.parametrize("changed_field", ["seller_id", "token_id", "formula"])
+async def test_formula_audit_identity_is_scoped(request_id: str | None, changed_field: str) -> None:
+    now = datetime(2026, 5, 13, 15, 30, tzinfo=UTC)
+    db = FakeDb()
+    collection = db["sheets_formula_audit"]
+    collection._duplicate_aware = True
+    service = FormulaAuditService(db=db, now_fn=lambda: now)
+    event = {
+        "seller_id": "123",
+        "token_id": "token-a",
+        "formula": "ZELERDATA_PRECIO",
+        "request_id": request_id,
+        "outcome": "allowed",
+    }
+    await service.record(event)
+    await service.record({**event, changed_field: "different"})
+    assert len(collection.documents) == 2
 
 
 @pytest.mark.asyncio
@@ -345,7 +368,10 @@ async def test_extension_token_validation_awaits_persistent_audit_and_rate_limit
             request_id="req-limited",
         )
 
-    audit_docs = db["sheets_formula_audit"].documents
+    audit_docs = {
+        f"formula-audit-{doc['request_id']}": doc
+        for doc in db["sheets_formula_audit"].documents.values()
+    }
     assert allowed.seller_id == "seller-1"
     assert exc_info.value.code == "RATE_LIMITED"
     assert audit_docs["formula-audit-req-allowed"]["outcome"] == "allowed"

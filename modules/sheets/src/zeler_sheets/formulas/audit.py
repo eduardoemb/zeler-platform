@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
@@ -51,9 +53,15 @@ class FormulaAuditService:
 
 def _audit_id(event: dict[str, Any], *, occurred_at: datetime) -> str:
     request_id = event.get("request_id")
-    if request_id:
-        return f"formula-audit-{request_id}"
-    token_id = str(event.get("token_id", "unknown-token"))
-    formula = str(event.get("formula", "unknown-formula"))
-    timestamp = int(occurred_at.timestamp() * 1_000_000)
-    return f"formula-audit-{token_id}-{formula}-{timestamp}"
+    identity = [
+        str(event["seller_id"]),
+        str(event["token_id"]),
+        str(event["formula"]),
+        ["request", request_id]
+        if request_id
+        else ["time", int(occurred_at.timestamp() * 1_000_000)],
+    ]
+    # Caller-supplied request IDs are only idempotent within this scope.
+    # Structured encoding prevents delimiter collisions between components.
+    digest = hashlib.sha256(json.dumps(identity, separators=(",", ":")).encode()).hexdigest()
+    return f"formula-audit-{digest}"

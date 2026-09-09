@@ -21,6 +21,31 @@ Keep unrelated `.codegraph/` files untouched in both repositories.
 Pilot: seller `82453304`; initial historical window 2026-08-08 through
 2026-09-06, plus current snapshots. Other products are out of scope.
 
+## Tenant-scoped formula audit identity: verified locally, not deployed
+
+Formula audit IDs now hash a structured identity containing seller, token,
+formula and request ID (or the existing timestamp fallback). Reusing a client
+request ID across sellers/tokens/formulas no longer silently drops later audit
+records through duplicate-key handling. Same-scope replays remain idempotent.
+HTTP payloads, audit fields, indexes and record schema are unchanged; repository
+search found the old ID layout consumed only by its tests. Existing records are
+preserved, not migrated or deleted. A replay spanning rollout may append one new
+scoped record alongside its legacy record; it must not match the unsafe global ID.
+
+TDD: scope regression initially **4 failed, 2 passed in 0.12s**. API/foundation/
+extension-token service and API suites then passed **87 tests in 3.89s**, including
+one token's two seller scopes using the same HTTP request ID and a replay.
+Real local Mongo concurrent insertion/replay with four scopes and a preserved
+legacy record passed **1 test in 0.39s** (`test_formula_recovery.py -k
+formula_audit_scope`). Ruff check/format and mypy pass (507 files).
+
+Rollback boundary is `_audit_id` and its matching tests; never delete audit
+history. Reverting reinstates the known collision and is not an acceptable
+hardening completion. A new verified **sheets-api** image and runtime audit
+readback are still required; production currently runs `3a5a016` and does not
+contain this fix. The other minimum-hardening and functional acceptance gates
+remain open. No production data was accessed or changed by these audit tests.
+
 ## Buybox price dependency: local end-to-end recovery correction
 
 The 15 previously missing pilot prices were acquired and persisted after rollout.

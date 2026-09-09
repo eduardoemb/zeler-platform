@@ -15,6 +15,41 @@ from zeler_sheets.formulas.recovery import FormulaRecoveryQueue, RecoveryRequest
 
 
 @pytest.mark.asyncio
+async def test_formula_audit_scope_and_replay_use_real_mongo_uniqueness(recovery_db: Any) -> None:
+    from zeler_sheets.formulas.audit import FormulaAuditService
+
+    now = datetime.now(UTC)
+    service = FormulaAuditService(db=recovery_db, now_fn=lambda: now)
+    event = {
+        "seller_id": "123",
+        "token_id": "token-a",
+        "formula": "ZELERDATA_PRECIO",
+        "request_id": "shared-request",
+        "outcome": "allowed",
+    }
+    # Historical records remain readable; they cannot suppress a new scoped event.
+    await recovery_db.sheets_formula_audit.insert_one(
+        {"_id": "formula-audit-shared-request", **event}
+    )
+    events = [
+        event,
+        {**event, "seller_id": "456"},
+        {**event, "token_id": "token-b"},
+        {**event, "formula": "ZELERDATA_STOCK"},
+    ]
+    await asyncio.gather(*(service.record(row) for row in events * 2))
+    rows = await recovery_db.sheets_formula_audit.find({"occurred_at": {"$exists": True}}).to_list(
+        10
+    )
+    assert len(rows) == 4
+    assert {(row["seller_id"], row["token_id"], row["formula"]) for row in rows} == {
+        (row["seller_id"], row["token_id"], row["formula"]) for row in events
+    }
+    assert await recovery_db.sheets_formula_audit.count_documents({}) == 5
+    assert all(len(row["_id"]) == len("formula-audit-") + 64 for row in rows)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "case", ["valid", "missing_product", "null_product", "foreign", "wrong_product", "bad_path"]
 )
