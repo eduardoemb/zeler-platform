@@ -159,7 +159,7 @@ ITEM_QUALITY_PROJECTION = {
         "pending_actions",
     ],
     "properties": {
-        "source": {"enum": ["/item/{id}/performance"]},
+        "source": {"enum": ["/item/{id}/performance", "/user-product/{id}/performance"]},
         "entity_type": {"enum": ["ITEM", "USER_PRODUCT"]},
         "entity_id": {"bsonType": "string", "pattern": "^ML[A-Z]U?[0-9]+$"},
         "item_id": {"bsonType": ["string", "null"], "pattern": "^ML[A-Z][0-9]+$"},

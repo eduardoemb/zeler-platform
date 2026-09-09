@@ -61,7 +61,8 @@
             "properties": {
               "source": {
                 "enum": [
-                  "/item/{id}/performance"
+                  "/item/{id}/performance",
+                  "/user-product/{id}/performance"
                 ]
               },
               "entity_id": {

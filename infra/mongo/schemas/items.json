@@ -1110,7 +1110,8 @@
           },
           "source": {
             "enum": [
-              "/item/{id}/performance"
+              "/item/{id}/performance",
+              "/user-product/{id}/performance"
             ]
           }
         },

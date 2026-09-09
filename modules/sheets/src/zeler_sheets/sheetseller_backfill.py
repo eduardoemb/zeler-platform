@@ -54,7 +54,7 @@ from zeler_sheets.enrichment import (
 )
 from zeler_sheets.formulas.read_models import normalize_sku
 from zeler_sheets.item_projection import stamp_item_projection
-from zeler_sheets.quality import QUALITY_SOURCE, project_item_quality
+from zeler_sheets.quality import QUALITY_SOURCE, USER_PRODUCT_QUALITY_SOURCE, project_item_quality
 from zeler_sheets.status_history import (
     bson_ms_utc_datetime,
     normalize_mongo_loaded_datetimes,
@@ -1291,19 +1291,36 @@ async def run_item_detail_enrichment(
                             basis=listing_params,
                         )
             if quality_enabled:
+                quality_source = QUALITY_SOURCE
                 try:
                     async with asyncio.timeout(5):
-                        performance = await gateway.fetch_resource(
-                            seller_id=seller_id, path=f"/item/{item_id}/performance"
-                        )
+                        try:
+                            performance = await gateway.fetch_resource(
+                                seller_id=seller_id, path=f"/item/{item_id}/performance"
+                            )
+                        except httpx.HTTPStatusError as exc:
+                            user_product_id = detail.get("user_product_id")
+                            if exc.response.status_code != 400 or not (
+                                isinstance(user_product_id, str)
+                                and re.fullmatch(
+                                    re.escape(item_id[:3]) + r"U[0-9]+", user_product_id
+                                )
+                            ):
+                                raise
+                            quality_source = USER_PRODUCT_QUALITY_SOURCE
+                            performance = await gateway.fetch_resource(
+                                seller_id=seller_id,
+                                path=f"/user-product/{user_product_id}/performance",
+                            )
                     detail["quality_projection"] = project_item_quality(
                         performance,
                         item_id=item_id,
                         observed_at=datetime.now(UTC),
                         user_product_id=detail.get("user_product_id"),
+                        source=quality_source,
                     )
                     item_enrichment_state["quality_projection"] = trusted_state(
-                        source=QUALITY_SOURCE, synced_at=synced_at
+                        source=quality_source, synced_at=synced_at
                     )
                 except (httpx.HTTPError, GatewayRateLimitError, TimeoutError, ValueError) as exc:
                     # Preserve the prior acquisition cut, never refresh old quality
@@ -1324,7 +1341,7 @@ async def run_item_detail_enrichment(
                         reason=reason,
                     )
                     item_enrichment_state["quality_projection"] = enrichment_state(
-                        source=QUALITY_SOURCE,
+                        source=quality_source,
                         status=status,
                         reason=reason,
                         synced_at=synced_at,

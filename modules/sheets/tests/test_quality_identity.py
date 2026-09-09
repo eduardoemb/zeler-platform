@@ -37,3 +37,27 @@ def test_quality_reader_requires_current_owned_user_product_relationship() -> No
 def test_quality_rejects_unverified_user_product(linked_id: str | None) -> None:
     with pytest.raises(ValueError):
         project_item_quality(resource(), item_id="MLA1", user_product_id=linked_id, observed_at=NOW)
+
+
+def test_user_product_endpoint_preserves_source_and_rejects_item_response() -> None:
+    quality = project_item_quality(
+        resource(),
+        item_id="MLA1",
+        user_product_id="MLAU123",
+        observed_at=NOW,
+        source="/user-product/{id}/performance",
+    )
+    assert quality["source"] == "/user-product/{id}/performance"
+    row = {
+        "item_id": "MLA1",
+        "current": {"quality_projection": quality, "user_product_id": "MLAU123"},
+    }
+    assert _quality_row(row, now=NOW)[7] == 69
+    with pytest.raises(ValueError):
+        project_item_quality(
+            {**resource(), "entity_type": "ITEM", "entity_id": "MLA1"},
+            item_id="MLA1",
+            user_product_id="MLAU123",
+            observed_at=NOW,
+            source="/user-product/{id}/performance",
+        )

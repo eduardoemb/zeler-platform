@@ -5721,9 +5721,16 @@ async def recovery_db() -> AsyncIterator[Any]:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("entity_type", ["ITEM", "USER_PRODUCT"])
+@pytest.mark.parametrize(
+    ("entity_type", "source"),
+    [
+        ("ITEM", "/item/{id}/performance"),
+        ("USER_PRODUCT", "/item/{id}/performance"),
+        ("USER_PRODUCT", "/user-product/{id}/performance"),
+    ],
+)
 async def test_quality_projection_roundtrips_with_real_mongo_validators(
-    recovery_db: Any, entity_type: str
+    recovery_db: Any, entity_type: str, source: str
 ) -> None:
     import json
     from pathlib import Path
@@ -5746,6 +5753,7 @@ async def test_quality_projection_roundtrips_with_real_mongo_validators(
         item_id="MLA1",
         user_product_id="MLAU123",
         observed_at=now,
+        source=source,
     )
     for name in ("items", "sheets_item_formula_rows"):
         schema = json.loads(Path(f"infra/mongo/schemas/{name}.json").read_text())
@@ -5782,6 +5790,7 @@ async def test_quality_projection_roundtrips_with_real_mongo_validators(
         )
         assert observed["score"] == 69
         assert observed["entity_type"] == entity_type
+        assert observed["source"] == source
         assert observed["entity_id"] == quality["entity_id"]
         assert observed["item_id"] == "MLA1"
         assert observed["level"] == "Good"

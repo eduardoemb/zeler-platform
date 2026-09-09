@@ -22,6 +22,38 @@ Keep unrelated `.codegraph/` files untouched in both repositories.
 
 ### Catalog quality: dedicated User Product route permission
 
+The acquisition correction now tries the dedicated User Product route only
+after item-performance HTTP 400 and only with a fresh same-site, syntactically
+valid link from the owned item detail. Both requests share the existing
+five-second acquisition timeout. There is no fallback for 401/403, no stale-link
+reuse and no direct Mercado Libre request from formula HTTP. Persisted quality
+and enrichment state retain the actual endpoint source; the model rejects an
+ITEM entity returned under the User Product source. Failed fallback preserves
+the prior quality and observation time without claiming refreshed completeness.
+
+Strict TDD first produced three failures (missing persisted fallback result,
+unsupported source parameter, missing permission), then passed. Verification:
+288 focal tests; three actual local Mongo validator roundtrips for both endpoint
+sources; eight stock-time cases separately passed; 13 acquisition quality cases
+passed after adding absent/fresh-cross-site link guards. Ruff check/format,
+Mypy (509 files) and generated schema drift passed. The broad root run finished
+with 4,226 passed, nine skipped and one failure: the cached 12-scope assertion
+in `core/tests/test_runtime_phase4.py`, corrected in `f131587` and verified by
+the 180 core tests. It is not a clean exact-final root receipt; final-commit CI
+must pass before deployment. A prior root invocation incorrectly cleared
+configured `addopts`, causing import collection errors; the normal invocation
+retained repository `--import-mode=importlib` and reached the above result.
+
+Permission baseline source is `f1315870374f1fcd150740f6a7567462e06f6d63`.
+Its verified-mode builds were submitted: API `a63420d1-4ca0-4f07-b614-ac505b7ade66`,
+worker `8d68372c-00bd-443e-9d08-139925d3eded`; completion/provenance verification
+is pending. The acquisition unit requires its own exact-commit API/worker
+images and additive `items`/`sheets_item_formula_rows` validators before use.
+Rollback is the compatible 13-scope baseline pair, not removal of recovered data.
+No new images or validators from these units have been deployed yet. Live
+alternative-route success, acquisition persistence and real Sheets coverage
+remain pending; the deployed source remains `febea19`.
+
 A bounded approved-runtime probe selected an owned active catalog publication
 whose recorded quality failure was HTTP 400. Fresh item detail returned 200 and
 contained a user-product relationship; `/item/{id}/performance` returned 400

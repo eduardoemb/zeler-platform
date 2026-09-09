@@ -6,11 +6,17 @@ from typing import Any
 from zeler_platform_core.models.entities import ItemQualityComponent, ItemQualityProjection
 
 QUALITY_SOURCE = "/item/{id}/performance"
+USER_PRODUCT_QUALITY_SOURCE = "/user-product/{id}/performance"
 _COMPONENTS = {"GTIN": "gtin", "PICTURES": "images", "TITLE": "title", "ME": "shipping"}
 
 
 def project_item_quality(
-    resource: Any, *, item_id: str, observed_at: datetime, user_product_id: str | None = None
+    resource: Any,
+    *,
+    item_id: str,
+    observed_at: datetime,
+    user_product_id: str | None = None,
+    source: str = QUALITY_SOURCE,
 ) -> dict[str, Any]:
     if not isinstance(resource, dict) or not (
         resource.get("entity_type") == "ITEM"
@@ -53,7 +59,7 @@ def project_item_quality(
                     actions.add(key)
     return ItemQualityProjection.model_validate(
         {
-            "source": QUALITY_SOURCE,
+            "source": source,
             "entity_type": resource["entity_type"],
             "entity_id": resource["entity_id"],
             "item_id": item_id,

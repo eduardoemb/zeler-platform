@@ -1993,9 +1993,12 @@ async def test_backfill_dry_run_counts_variations_without_writing() -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("entity_type", ["ITEM", "USER_PRODUCT"])
+@pytest.mark.parametrize(
+    ("entity_type", "fallback"), [("ITEM", False), ("USER_PRODUCT", False), ("USER_PRODUCT", True)]
+)
 async def test_item_quality_acquisition_reaches_canonical_and_formula_projection(
     entity_type: str,
+    fallback: bool,
 ) -> None:
     db = FakeDb([_item_doc("MLA1")])
     detail = _item_detail("MLA1")
@@ -2022,10 +2025,15 @@ async def test_item_quality_acquisition_reaches_canonical_and_formula_projection
         ],
         "unused_payload": {"secret": "never-persist"},
     }
+    request = httpx.Request("GET", "https://gateway.test/item/MLA1/performance")
+    rejected = httpx.HTTPStatusError(
+        "unsupported entity", request=request, response=httpx.Response(400, request=request)
+    )
     gateway = FakeItemGateway(
         {
             "/items?ids=MLA1&include_attributes=all": [{"code": 200, "body": detail}],
-            "/item/MLA1/performance": performance,
+            "/item/MLA1/performance": rejected if fallback else performance,
+            "/user-product/MLAU123/performance": performance,
         }
     )
     await run_item_detail_enrichment(
@@ -2044,13 +2052,43 @@ async def test_item_quality_acquisition_reaches_canonical_and_formula_projection
     assert quality["entity_type"] == entity_type
     assert quality["item_id"] == "MLA1"
     assert persisted["user_product_id"] == "MLAU123"
-    assert quality["source"] == "/item/{id}/performance"
+    assert quality["source"] == (
+        "/user-product/{id}/performance" if fallback else "/item/{id}/performance"
+    )
+    assert persisted["enrichment_state"]["quality_projection"]["source"] == quality["source"]
     assert quality["calculated_at"] == NOW
     assert quality["observed_at"] >= persisted["last_meli_sync_at"]
     assert "unused_payload" not in quality
     row = build_formula_row_doc(persisted, seller_id="82453304", sku="sku-1")
     assert row["current"]["quality_projection"] == quality
     assert row["current"]["user_product_id"] == "MLAU123"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fresh_link", [None, "MLBU123"])
+async def test_quality_fallback_requires_fresh_same_site_user_product(
+    fresh_link: str | None,
+) -> None:
+    existing = {**_item_doc("MLA1"), "user_product_id": "MLAU123"}
+    detail = _item_detail("MLA1")
+    if fresh_link is not None:
+        detail["user_product_id"] = fresh_link
+    request = httpx.Request("GET", "https://gateway.test/item/MLA1/performance")
+    rejected = httpx.HTTPStatusError(
+        "unsupported entity", request=request, response=httpx.Response(400, request=request)
+    )
+    gateway = FakeItemGateway(
+        {
+            "/items?ids=MLA1&include_attributes=all": [{"code": 200, "body": detail}],
+            "/item/MLA1/performance": rejected,
+        }
+    )
+    db = FakeDb([existing])
+    await run_item_detail_enrichment(
+        db=db, gateway=gateway, seller_id="82453304", dry_run=False, quality_enabled=True
+    )
+    assert not any(path.startswith("/user-product/") for _, path in gateway.calls)
+    assert not db["items"].update_calls[0][1]["$set"].get("quality_projection")
 
 
 def test_fresh_item_detail_clears_missing_user_product_relationship() -> None:
@@ -2076,8 +2114,9 @@ def test_fresh_item_detail_clears_missing_user_product_relationship() -> None:
         ("identity", "malformed", "source_error"),
     ],
 )
+@pytest.mark.parametrize("fallback", [False, True])
 async def test_quality_failure_preserves_prior_acquisition_cut(
-    failure_kind: int | str, status: str, reason: str
+    failure_kind: int | str, status: str, reason: str, fallback: bool
 ) -> None:
     prior = {
         "source": "/item/{id}/performance",
@@ -2102,10 +2141,16 @@ async def test_quality_failure_preserves_prior_acquisition_cut(
         )
     elif failure_kind == "timeout":
         response = TimeoutError()
+    detail = {**_item_detail("MLA1"), "user_product_id": "MLAU123"}
+    request = httpx.Request("GET", "https://gateway.test/item/MLA1/performance")
+    rejected = httpx.HTTPStatusError(
+        "unsupported entity", request=request, response=httpx.Response(400, request=request)
+    )
     gateway = FakeItemGateway(
         {
-            "/items?ids=MLA1&include_attributes=all": [{"code": 200, "body": _item_detail("MLA1")}],
-            "/item/MLA1/performance": response,
+            "/items?ids=MLA1&include_attributes=all": [{"code": 200, "body": detail}],
+            "/item/MLA1/performance": rejected if fallback else response,
+            "/user-product/MLAU123/performance": response,
         }
     )
     summary = await run_item_detail_enrichment(
@@ -2115,6 +2160,10 @@ async def test_quality_failure_preserves_prior_acquisition_cut(
     assert persisted["quality_projection"] == prior
     assert summary.diagnostic_reason_counts[f"quality_projection:{status}:{reason}"] == 1
     state = persisted["enrichment_state"]["quality_projection"]
+    assert state["source"] == (
+        "/user-product/{id}/performance" if fallback else "/item/{id}/performance"
+    )
+    assert (("82453304", "/user-product/MLAU123/performance") in gateway.calls) is fallback
     assert state["status"] == status
     assert state["reason"] == reason
     assert persisted["last_meli_sync_at"] > prior["observed_at"]

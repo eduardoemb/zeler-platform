@@ -421,7 +421,7 @@ class ItemQualityComponent(UtcDatetimeMixin):
 class ItemQualityProjection(UtcDatetimeMixin):
     model_config = ConfigDict(extra="forbid")
 
-    source: Literal["/item/{id}/performance"]
+    source: Literal["/item/{id}/performance", "/user-product/{id}/performance"]
     entity_type: Literal["ITEM", "USER_PRODUCT"] = "ITEM"
     entity_id: str = Field(pattern=r"^ML[A-Z]U?[0-9]+$")
     item_id: str | None = Field(default=None, pattern=r"^ML[A-Z][0-9]+$")
@@ -442,6 +442,8 @@ class ItemQualityProjection(UtcDatetimeMixin):
 
     @model_validator(mode="after")
     def _quality_cut_order(self) -> ItemQualityProjection:
+        if self.source == "/user-product/{id}/performance" and self.entity_type != "USER_PRODUCT":
+            raise ValueError("user product quality source requires user product identity")
         if self.entity_type == "USER_PRODUCT":
             if self.item_id is None or not self.entity_id.startswith(self.item_id[:3] + "U"):
                 raise ValueError("quality user product requires a same-site item binding")
