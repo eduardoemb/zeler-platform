@@ -530,6 +530,33 @@ ENTITY_SCHEMAS: dict[str, dict[str, Any]] = {
             **SCHEMA_VERSION,
         },
     },
+    "sheets_catalog_competition_observations": {
+        "additionalProperties": False,
+        "required": [
+            "_id",
+            "seller_id",
+            "item_id",
+            "catalog_product_id",
+            "observed_at",
+            "status",
+            "available_quantity",
+            "coverage_basis",
+            "source",
+            "schema_version",
+        ],
+        "properties": {
+            **ID_STRING,
+            "seller_id": {"bsonType": "string", "pattern": "^[0-9]+$"},
+            "item_id": {"bsonType": "string", "pattern": "^ML[A-Z][0-9]+$"},
+            "catalog_product_id": {"bsonType": "string", "pattern": "^ML[A-Z][0-9]+$"},
+            "observed_at": DATE,
+            "status": {"bsonType": "string", "minLength": 1},
+            "available_quantity": {"bsonType": ["int", "long"], "minimum": 0},
+            "coverage_basis": {"enum": ["observed_only"]},
+            "source": {"enum": ["meli_price_to_win"]},
+            **SCHEMA_VERSION,
+        },
+    },
     "sheets_catalog_buybox_snapshots": {
         "additionalProperties": False,
         "required": [

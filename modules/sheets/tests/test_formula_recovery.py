@@ -15,6 +15,59 @@ from zeler_sheets.formulas.recovery import FormulaRecoveryQueue, RecoveryRequest
 
 
 @pytest.mark.asyncio
+async def test_catalog_observations_preserve_cuts_and_reject_conflicting_retries(
+    recovery_db: Any,
+) -> None:
+    import json
+    from pathlib import Path
+
+    from pymongo.errors import DuplicateKeyError, WriteError
+
+    from zeler_sheets.catalog_observations import record_catalog_observation
+
+    schema = json.loads(
+        Path("infra/mongo/schemas/sheets_catalog_competition_observations.json").read_text()
+    )
+    await recovery_db.create_collection(
+        "sheets_catalog_competition_observations", validator={"$jsonSchema": schema["$jsonSchema"]}
+    )
+    now = datetime.now(UTC).replace(microsecond=0)
+    snapshot = {
+        "seller_id": "82453304",
+        "item_id": "MLA1",
+        "catalog_product_id": "MLA9",
+        "snapshot_at": now,
+        "buybox_status": "winning",
+        "available_quantity": 0,
+        "unneeded_raw_payload": "discard",
+    }
+    await record_catalog_observation(recovery_db, snapshot)
+    await record_catalog_observation(recovery_db, snapshot)
+    await record_catalog_observation(
+        recovery_db,
+        {**snapshot, "snapshot_at": now + timedelta(minutes=1), "buybox_status": "competing"},
+    )
+    with pytest.raises(DuplicateKeyError):
+        await record_catalog_observation(recovery_db, {**snapshot, "buybox_status": "listed"})
+    rows = (
+        await recovery_db.sheets_catalog_competition_observations.find({"seller_id": "82453304"})
+        .sort("observed_at", 1)
+        .to_list(10)
+    )
+    assert len(rows) == 2
+    assert [row["status"] for row in rows] == ["winning", "competing"]
+    assert all(
+        row["coverage_basis"] == "observed_only" and "unneeded_raw_payload" not in row
+        for row in rows
+    )
+    with pytest.raises(WriteError):
+        await recovery_db.sheets_catalog_competition_observations.update_one(
+            {"_id": rows[0]["_id"]}, {"$set": {"coverage_basis": "legacy_imported"}}
+        )
+    assert await recovery_db.sheets_read_model_freshness.count_documents({}) == 0
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "case",
     [
@@ -416,7 +469,9 @@ async def test_buybox_explicit_item_recovery_is_owned_fresh_and_source_bound(
     ).process_one()
     job = await queue.collection.find_one({"_id": request.key})
     snapshot = await recovery_db.sheets_catalog_buybox_snapshots.find_one({"_id": "82453304:MLA1"})
+    observations = await recovery_db.sheets_catalog_competition_observations.find({}).to_list(10)
     if state in {"foreign", "not_catalog", "expired", "changed", "wrong_response"}:
+        assert observations == []
         assert snapshot is None
         assert job["state"] == "failed"
         assert calls == (
@@ -430,6 +485,12 @@ async def test_buybox_explicit_item_recovery_is_owned_fresh_and_source_bound(
         assert snapshot["title"] == "Newer"
         assert job["state"] == "completed"
     else:
+        assert len(observations) == 1
+        assert observations[0]["seller_id"] == "82453304"
+        assert observations[0]["item_id"] == "MLA1"
+        assert observations[0]["status"] == "winning"
+        assert observations[0]["coverage_basis"] == "observed_only"
+        assert observations[0]["observed_at"].replace(tzinfo=UTC) == now
         assert job["state"] == "completed"
         assert snapshot["title"] == "Owned publication"
         assert snapshot["available_quantity"] == 0

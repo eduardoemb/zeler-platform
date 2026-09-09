@@ -1,0 +1,6 @@
+[
+  {
+    "keys": {"seller_id": 1, "item_id": 1, "observed_at": 1},
+    "options": {"name": "idx_catalog_competition_seller_item_observed"}
+  }
+]

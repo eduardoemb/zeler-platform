@@ -24,6 +24,7 @@ from zeler_platform_core.devoluciones_readiness import (
     operation_lease_guard,
 )
 from zeler_platform_core.models.entities import ShipmentRealShippingCostProjection
+from zeler_sheets.catalog_observations import record_catalog_observation
 from zeler_sheets.event_persistence import (
     SheetsEventPersistence,
     _canonical_shipment_document,
@@ -348,6 +349,7 @@ class FormulaRecoveryWorker:
             ):
                 raise ValueError("buybox recovery lease lost before persistence")
             snapshot.update(snapshot_at=observed, source="sheets_backfill")
+            await record_catalog_observation(self.db, snapshot)
             with suppress(DuplicateKeyError):
                 if offer_failure is not None:
                     # Preserve an earlier payload and its original timestamp.

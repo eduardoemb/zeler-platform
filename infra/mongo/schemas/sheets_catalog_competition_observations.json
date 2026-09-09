@@ -1,0 +1,64 @@
+{
+  "$jsonSchema": {
+    "additionalProperties": false,
+    "bsonType": "object",
+    "properties": {
+      "_id": {
+        "bsonType": "string"
+      },
+      "available_quantity": {
+        "bsonType": [
+          "int",
+          "long"
+        ],
+        "minimum": 0
+      },
+      "catalog_product_id": {
+        "bsonType": "string",
+        "pattern": "^ML[A-Z][0-9]+$"
+      },
+      "coverage_basis": {
+        "enum": [
+          "observed_only"
+        ]
+      },
+      "item_id": {
+        "bsonType": "string",
+        "pattern": "^ML[A-Z][0-9]+$"
+      },
+      "observed_at": {
+        "bsonType": "date"
+      },
+      "schema_version": {
+        "bsonType": "int"
+      },
+      "seller_id": {
+        "bsonType": "string",
+        "pattern": "^[0-9]+$"
+      },
+      "source": {
+        "enum": [
+          "meli_price_to_win"
+        ]
+      },
+      "status": {
+        "bsonType": "string",
+        "minLength": 1
+      }
+    },
+    "required": [
+      "_id",
+      "seller_id",
+      "item_id",
+      "catalog_product_id",
+      "observed_at",
+      "status",
+      "available_quantity",
+      "coverage_basis",
+      "source",
+      "schema_version"
+    ]
+  },
+  "validationAction": "error",
+  "validationLevel": "strict"
+}

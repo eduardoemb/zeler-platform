@@ -21,6 +21,49 @@ Keep unrelated `.codegraph/` files untouched in both repositories.
 Pilot: seller `82453304`; initial historical window 2026-08-08 through
 2026-09-06, plus current snapshots. Other products are out of scope.
 
+## Buybox recovery retains native competition observations — 2026-09-08
+
+Verified owned-publication recovery now appends the acquired status, stock,
+product identity and observation time to
+`sheets_catalog_competition_observations` before updating the replaceable buybox
+snapshot. It uses the existing ownership/source and lease checks; foreign,
+non-participating, stale or changed items do not produce observations. These
+records are explicitly `observed_only`, not continuous interval proof or imported
+legacy history. No global freshness marker is advanced and no percentage is
+fabricated. Unknown upstream states remain source observations, not assumed wins.
+
+The recorder persists only purpose fields, not raw payloads. Its identity binds
+seller, publication and millisecond-normalized acquisition time. Identical retries
+are no-ops, later observations preserve earlier cuts, and a conflicting payload
+at the same cut raises rather than rewriting history. A dedicated strict schema
+and seller/item/time index keep these records separate from legacy import inputs;
+there is no TTL. The generated schema is checked in but not applied to production.
+
+The initial owned-worker assertion failed before implementation. Focused real
+Mongo verification (`test_formula_recovery.py -k 'buybox or catalog_observations'`):
+37 passed in 10.37s. It covers persistence from normal recovery, exclusion of
+invalid ownership/source states, replay, chronology, conflict preservation, raw
+field omission and validator rejection of `legacy_imported` coverage. Ruff
+check/format, mypy (507 files), schema and diff checks pass. The root run passed
+4,117 tests with nine expected skips and 356 warnings in 135.36s, with one failure:
+the explicit schema inventory omitted the new collection. Both expected and
+active-schema sets now include it; the failing test passed separately in 0.01s.
+No executable change followed the root run and it was not repeated after that
+test-inventory correction. Eight protected Mongo tests passed separately in 2.87s.
+
+Next wire actual competition notifications to this recorder through a validated
+persistence branch before subscribing the queue. Capture an observation at fetch
+time, not a retroactive state at notification time; replay and outage handling
+must not turn sparse observations into complete coverage. CATALOGO's missing
+historical percentage and forward coverage/readback acceptance remain open.
+
+No production writes, builds or deployments occurred. Apply the additive
+collection validator/index from the approved runtime before activating a verified
+Sheets worker image, then verify observation persistence/replay without changing
+historical markers. Pending API changes also require a verified API image.
+Rollback removes the recorder call/module and matching schema/index/tests;
+retain any legitimately persisted observations. Runtime drift was not rechecked.
+
 ## Production has no catalog-time history to join — 2026-09-08
 
 A narrowly scoped approved-runtime Mongo probe found 1,918 pilot `items`, but
