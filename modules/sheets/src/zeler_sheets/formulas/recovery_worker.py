@@ -280,9 +280,14 @@ class FormulaRecoveryWorker:
             if (
                 not isinstance(resource, dict)
                 or resource.get("item_id") != identity
-                or resource.get("catalog_product_id") != source.catalog_product_id
+                or (
+                    resource.get("catalog_product_id") is not None
+                    and resource["catalog_product_id"] != source.catalog_product_id
+                )
             ):
                 raise ValueError("buybox response identity is unverified")
+            # price_to_win may omit the product. The owned, fresh item supplies
+            # it; the canonical item is rechecked before any snapshot is stored.
             snapshot = _catalog_buybox_snapshot(
                 resource, seller_id=requested.seller_id, source=source
             )

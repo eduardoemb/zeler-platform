@@ -21,6 +21,56 @@ Keep unrelated `.codegraph/` files untouched in both repositories.
 Pilot: seller `82453304`; initial historical window 2026-08-08 through
 2026-09-06, plus current snapshots. Other products are out of scope.
 
+## Completed inventory exposed an over-strict competition response check
+
+The existing inventory job completed at `2026-09-09T01:18:06.822Z`: offset
+1,900/1,900, zero unavailable IDs, acquisition cut `01:08:42.144Z` (564.678
+seconds). It was not restarted. During acquisition the four backend formula
+reads returned widths 9/24/3/6 in 10.4439/14.9521/10.1077/9.9088 seconds;
+CATALOGO retained 936 participating rows plus an explicit incomplete row, with
+history reason `catalog_history_not_reconciled`. These are Mongo-backed operator
+reads, not authenticated HTTP or Google Sheets acceptance. Markers were unchanged.
+
+After completion, the canonical reader found 936 missing buyboxes and two
+invalid publications. Both invalid sources lacked `catalog_product_id`; title,
+quantity and boolean participation were present. Source comparison for these two
+remains pending. Other verified publications were not blocked by those rows.
+
+One normal recovery batch for 20 verified participants was admitted at
+`01:20:02.129Z`, key
+`835e036f53dcb2d87638a974015c57c3fca0f2a488f35712185ca1455c3e3573`.
+It terminated `failed/source_incomplete` at `01:20:04.444Z`, attempt one. Four
+snapshots already existed before admission; their count is not new acquisition
+evidence. Do not blindly repeat admission. Receipt:
+`/var/lib/zeler-platform/repairs/current-buybox-29e88e5.json`; status helper
+`sudo python3 /tmp/current-buybox.py status`.
+
+A read-only worker-container probe queried three batch members through the
+Sheets gateway identity. All three responses were HTTP 200, matched `item_id`,
+had status and normalized sharing fields, but had no non-null product ID. Their
+owned canonical items had fresh product, title and quantity. The strict equality
+check rejected the response before persistence. No probe business data was written.
+Helper: `/tmp/buybox-source.py`; no raw responses or customer fields were printed.
+
+Recovery and notification acquisition now permit an absent/null response product
+ID only by using the separately acquired owned item's product. Explicit conflicting
+product IDs and wrong item IDs still fail. Recovery retains the canonical BSON
+recheck before writes; notification persistence still validates the source product.
+Four new absent/null TDD cases failed before the fix; all 16 focused Mongo cases
+then passed in 2.93 seconds, including ownership, expiry, changed source, conflicting
+product, replay and acknowledgement failure. Static checks pass for 507 files.
+The first full regression terminated with interpreter SIGSEGV/139 during collection;
+the new normal run passed: 4,137 tests, nine expected skips and 356 warnings in
+138.62 seconds. The eight protected Mongo tests passed separately in 3.35 seconds;
+the remaining skip is the optional Caddy check. The failed invocation is not
+acceptance evidence.
+
+Rollback is the optional-response-product guard in `catalog_observations.py` and
+`formulas/recovery_worker.py` with its tests. No schema or data change is required.
+This source correction is not deployed: build a new Sheets worker image from the
+verified commit, then verify the failed batch via real source acquisition and
+Mongo-backed reads. API formula readers do not use either changed acquisition path.
+
 ## Reader/writer corrections deployed; current inventory recovery running
 
 Approved service-only rollout now runs API source `c6b540b` at digest

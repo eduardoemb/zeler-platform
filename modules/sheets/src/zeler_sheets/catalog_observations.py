@@ -44,7 +44,10 @@ async def acquire_catalog_event(
     if (
         not isinstance(competition, dict)
         or competition.get("item_id") != identity
-        or competition.get("catalog_product_id") != item.get("catalog_product_id")
+        or (
+            competition.get("catalog_product_id") is not None
+            and competition["catalog_product_id"] != item.get("catalog_product_id")
+        )
     ):
         raise ValueError("catalog notification product identity changed")
     await record_catalog_observation(

@@ -15,7 +15,9 @@ from zeler_sheets.formulas.recovery import FormulaRecoveryQueue, RecoveryRequest
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("case", ["valid", "foreign", "wrong_product", "bad_path"])
+@pytest.mark.parametrize(
+    "case", ["valid", "missing_product", "null_product", "foreign", "wrong_product", "bad_path"]
+)
 async def test_competition_notification_persists_before_ack_and_replay(
     recovery_db: Any, case: str
 ) -> None:
@@ -38,11 +40,16 @@ async def test_competition_notification_persists_before_ack_and_replay(
                     "available_quantity": 2,
                 }
             assert path == "/items/MLA1/price_to_win?version=v2"
-            return {
+            result: dict[str, Any] = {
                 "item_id": "MLA1",
                 "catalog_product_id": "MLA8" if case == "wrong_product" else "MLA9",
                 "status": "sharing_first_place",
             }
+            if case == "missing_product":
+                result.pop("catalog_product_id")
+            elif case == "null_product":
+                result["catalog_product_id"] = None
+            return result
 
     store = AsyncMock()
     store.is_duplicate.return_value = False
@@ -58,7 +65,7 @@ async def test_competition_notification_persists_before_ack_and_replay(
         "/orders/1" if case == "bad_path" else "/items/MLA1/price_to_win",
         "event-key",
     )
-    if case != "valid":
+    if case not in {"valid", "missing_product", "null_product"}:
         with pytest.raises(ValueError):
             await handler.handle(event)
         assert await recovery_db.sheets_catalog_competition_observations.count_documents({}) == 0
@@ -460,7 +467,19 @@ async def test_buybox_http_recovers_current_membership_then_reuses_mongo(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "state", ["valid", "foreign", "not_catalog", "expired", "changed", "wrong_response", "newer"]
+    "state",
+    [
+        "valid",
+        "missing_product",
+        "null_product",
+        "wrong_product",
+        "foreign",
+        "not_catalog",
+        "expired",
+        "changed",
+        "wrong_response",
+        "newer",
+    ],
 )
 async def test_buybox_explicit_item_recovery_is_owned_fresh_and_source_bound(
     recovery_db: Any, state: str
@@ -527,14 +546,19 @@ async def test_buybox_explicit_item_recovery_is_owned_fresh_and_source_bound(
                         "title": "Newer",
                     }
                 )
-            return {
+            result: dict[str, Any] = {
                 "item_id": "MLA9" if state == "wrong_response" else "MLA1",
-                "catalog_product_id": "MLA2",
+                "catalog_product_id": "MLA3" if state == "wrong_product" else "MLA2",
                 "status": "winning",
                 "current_price": 120,
                 "competitors_sharing_first_place": 0,
                 "winner": {"item_id": "MLA1", "price": 119},
             }
+            if state == "missing_product":
+                result.pop("catalog_product_id")
+            elif state == "null_product":
+                result["catalog_product_id"] = None
+            return result
 
     assert await FormulaRecoveryWorker(
         db=recovery_db, queue=queue, gateway=Discovery(), detail_gateway=Detail()
@@ -542,7 +566,7 @@ async def test_buybox_explicit_item_recovery_is_owned_fresh_and_source_bound(
     job = await queue.collection.find_one({"_id": request.key})
     snapshot = await recovery_db.sheets_catalog_buybox_snapshots.find_one({"_id": "82453304:MLA1"})
     observations = await recovery_db.sheets_catalog_competition_observations.find({}).to_list(10)
-    if state in {"foreign", "not_catalog", "expired", "changed", "wrong_response"}:
+    if state in {"foreign", "not_catalog", "expired", "changed", "wrong_response", "wrong_product"}:
         assert observations == []
         assert snapshot is None
         assert job["state"] == "failed"
