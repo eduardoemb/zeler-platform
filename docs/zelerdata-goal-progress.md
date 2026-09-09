@@ -21,6 +21,42 @@ Keep unrelated `.codegraph/` files untouched in both repositories.
 Pilot: seller `82453304`; initial historical window 2026-08-08 through
 2026-09-06, plus current snapshots. Other products are out of scope.
 
+## Buybox price dependency: local end-to-end recovery correction
+
+The missing-price recovery now resolves item enrichment inside the existing
+durable catalog job when neither competition nor verified canonical enrichment
+provides the price. It reacquires competition against the refreshed item cut,
+with at most one enrichment attempt per item per worker attempt. No extra queue
+type, schema, formula-side Mercado Libre call or relaxed freshness guard is added.
+The Mongo reader can also use an already verified canonical price when the
+snapshot omits it; primary competition price retains precedence.
+
+The first real-Mongo HTTP test exposed a rejected approach: independently queued
+item and competition jobs both completed, but competition ran first and the
+later item update invalidated its snapshot. Those extra dependency jobs and the
+temporary reader flag were removed. The replacement preserves available
+competition/offer fields on transient enrichment failure and retries through the
+existing bounded policy rather than declaring missing prices complete.
+
+Focused verification: `test_formula_recovery.py -k 'http_buybox_price_gap or
+explicit_item_recovery'` passed **29 tests in 7.31s**. The authenticated local
+HTTP harness covers admission, real Mongo persistence, worker acquisition,
+temporary failure/retry and subsequent Mongo-only HTTP readback; Mercado Libre
+responses are synthetic, not a production acceptance receipt. Protected Mongo
+acquisition/execution/rollback suites passed **8 tests in 3.03s**. Ruff check,
+format check and mypy passed (507 files). Broader regression across
+`test_formula_recovery.py`, `test_formula_api.py` and
+`test_formula_handlers_item_shipping_catalog.py` passed **482 tests in 88.51s**;
+`test_formula_handlers_remaining_phase4.py` passed **63 tests in 0.15s**.
+
+Rollback boundary: remove the reader fallback and worker-owned price enrichment
+with their matching tests; preserve legitimately acquired Mongo data. This unit
+affects **sheets-api and sheets-worker** images. Neither has been built or deployed
+for this correction. Verify CI, image provenance and approved-runtime price
+recovery/readback before claiming the 15 live price gaps resolved. All-52 HTTP,
+real Sheets/app, sustained freshness and the other goal acceptance gates remain
+open.
+
 ## Full pilot catalog admitted after inventory completion; observing the same intent
 
 Terminal result: at `2026-09-09T03:58:31.640Z`, the same catalog intent reached

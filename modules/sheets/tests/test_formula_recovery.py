@@ -525,6 +525,8 @@ async def test_buybox_http_recovers_current_membership_then_reuses_mongo(
 async def test_buybox_explicit_item_recovery_is_owned_fresh_and_source_bound(
     recovery_db: Any, state: str
 ) -> None:
+    import httpx
+
     from zeler_sheets.formulas.recovery import IMPLEMENTED_MODELS, ItemIdsRecoveryRequest
     from zeler_sheets.formulas.recovery_worker import FormulaRecoveryWorker
 
@@ -593,6 +595,12 @@ async def test_buybox_explicit_item_recovery_is_owned_fresh_and_source_bound(
     assert request.key != ItemIdsRecoveryRequest("82453304", ("MLA1",)).key
     await queue.enqueue(request)
     calls = []
+    price_dependency_missing = state in {
+        "missing_price_transient",
+        "missing_price_stale",
+        "missing_price_currency",
+        "missing_price_bool",
+    }
 
     class Discovery:
         async def fetch_resource(self, **kwargs: Any) -> Any:
@@ -602,6 +610,13 @@ async def test_buybox_explicit_item_recovery_is_owned_fresh_and_source_bound(
         async def fetch_resource(self, *, seller_id: str, path: str) -> Any:
             assert seller_id == "82453304"
             calls.append(path)
+            if path == "/items?ids=MLA1&include_attributes=all":
+                assert price_dependency_missing
+                raise httpx.HTTPStatusError(
+                    "Unavailable",
+                    request=httpx.Request("GET", "https://test/items"),
+                    response=httpx.Response(503),
+                )
             if path == "/products/MLA2/items":
                 return {
                     "paging": {"total": 2, "offset": 0, "limit": 100},
@@ -668,7 +683,8 @@ async def test_buybox_explicit_item_recovery_is_owned_fresh_and_source_bound(
         assert observations[0]["status"] == "winning"
         assert observations[0]["coverage_basis"] == "observed_only"
         assert observations[0]["observed_at"].replace(tzinfo=UTC) == now
-        assert job["state"] == "completed"
+        assert job["state"] == ("pending" if price_dependency_missing else "completed")
+        assert ("/items?ids=MLA1&include_attributes=all" in calls) == price_dependency_missing
         assert snapshot["title"] == "Owned publication"
         assert snapshot["available_quantity"] == 0
         assert snapshot["winning_price"] == 119
@@ -2999,6 +3015,204 @@ async def test_http_cost_gap_queues_only_affected_item_and_recovers_without_inve
             assert dashboard.status_code == 200
             assert dashboard.json()["values"][0][21] == "No"
             assert not dashboard.json()["meta"].get("recovery_requested", False)
+        assert calls == acquired_calls
+    assert await recovery_db.sheets_read_model_freshness.count_documents({}) == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("retry_first", [False, True])
+async def test_http_buybox_price_gap_recovers_item_then_competition(
+    recovery_db: Any, retry_first: bool
+) -> None:
+    import httpx
+
+    from zeler_platform_core.clients.meli_gateway_client import GatewayRateLimitError
+    from zeler_sheets.app import build_app
+    from zeler_sheets.extension_tokens import ExtensionTokenService, SellerScope
+    from zeler_sheets.formulas.recovery import ItemInventoryRecoveryRequest
+    from zeler_sheets.formulas.recovery_worker import FormulaRecoveryWorker
+    from zeler_sheets.sheetseller_backfill import (
+        run_item_detail_enrichment,
+        run_sheetseller_backfill,
+    )
+
+    seller = "82453304"
+    calls: list[str] = []
+
+    class Gateway:
+        unavailable = True
+
+        async def fetch_resource(self, *, seller_id: str, path: str) -> Any:
+            assert seller_id == seller
+            calls.append(path)
+            if path == "/items?ids=MLA1&include_attributes=all":
+                return [
+                    {
+                        "code": 200,
+                        "body": {
+                            "id": "MLA1",
+                            "seller_id": seller,
+                            "title": "Publication",
+                            "catalog_product_id": "MLA9",
+                            "catalog_listing": True,
+                            "price": 100,
+                            "base_price": 100,
+                            "currency_id": "ARS",
+                            "site_id": "MLA",
+                            "category_id": "MLA123",
+                            "listing_type_id": "gold_special",
+                            "available_quantity": 7,
+                            "status": "active",
+                            "attributes": [],
+                            "variations": [],
+                            "shipping": {
+                                "mode": "me2",
+                                "logistic_type": "fulfillment",
+                                "free_shipping": False,
+                            },
+                            "date_created": "2026-09-01T00:00:00Z",
+                            "last_updated": "2026-09-07T00:00:00Z",
+                        },
+                    }
+                ]
+            if path == "/items/MLA1/sale_price?context=channel_marketplace":
+                if self.unavailable:
+                    raise GatewayRateLimitError(retry_after_seconds=5, response=httpx.Response(429))
+                return {"amount": 100, "regular_amount": 100, "currency_id": "ARS"}
+            if path.startswith("/sites/MLA/listing_prices?"):
+                return {
+                    "sale_fee_amount": 10,
+                    "currency_id": "ARS",
+                    "sale_fee_details": {"percentage_fee": 10, "fixed_fee": 2},
+                }
+            if path == "/items/MLA1/price_to_win?version=v2":
+                return {
+                    "item_id": "MLA1",
+                    "status": "winning",
+                    "current_price": None,
+                    "competitors_sharing_first_place": 0,
+                    "winner": {"item_id": "MLA1", "price": 99},
+                }
+            assert path == "/products/MLA9/items"
+            return {
+                "paging": {"total": 1, "offset": 0, "limit": 100},
+                "results": [{"item_id": "MLA1", "seller_id": 82453304}],
+            }
+
+    gateway = Gateway()
+    await run_item_detail_enrichment(
+        db=recovery_db,
+        gateway=gateway,
+        seller_id=seller,
+        acquire_item_ids=["MLA1"],
+        dry_run=False,
+        sale_price_enabled=True,
+        listing_fixed_fee_enabled=True,
+    )
+    await run_sheetseller_backfill(
+        db=recovery_db, seller_id=seller, item_ids=["MLA1"], dry_run=False
+    )
+    now = datetime.now(UTC)
+    await recovery_db.sheets_formula_recovery_jobs.insert_one(
+        {
+            "_id": ItemInventoryRecoveryRequest(seller).key,
+            "seller_id": seller,
+            "read_model": "item_formula_rows",
+            "inventory_scope": True,
+            "state": "completed",
+            "inventory_ids": ["MLA1"],
+            "inventory_offset": 1,
+            "inventory_observed_at": now,
+        }
+    )
+    await recovery_db.sheets_catalog_buybox_snapshots.insert_one(
+        {
+            "_id": f"{seller}:MLA1",
+            "seller_id": seller,
+            "item_id": "MLA1",
+            "catalog_product_id": "MLA9",
+            "title": "Publication",
+            "available_quantity": 7,
+            "source": "sheets_backfill",
+            "snapshot_at": now,
+            "offers_snapshot_at": now,
+            "price": None,
+            "buybox_status": "winning",
+            "winning_price": 99,
+            "competitors_sharing_first_place": 0,
+            "competitor_count": 1,
+            "only_competitor": True,
+        }
+    )
+    app = build_app(
+        mongo_db=recovery_db,
+        formula_recovery_enabled=True,
+        formula_recovery_sellers=frozenset({seller}),
+    )
+    app.state.extension_token_pepper = uuid4().hex
+    token = await ExtensionTokenService(
+        db=recovery_db, token_pepper=app.state.extension_token_pepper
+    ).create_token(
+        owner_user_id="test-user",
+        label="Price recovery",
+        seller_scopes=[SellerScope(seller_id=seller, nickname="PILOT")],
+    )
+    queue = app.state.formula_recovery_queue
+    await queue.ensure_indexes()
+    payload = {
+        "formula": "ZELERDATA_CATALOGOBUYBOX",
+        "cuenta": "PILOT",
+        "args": {"encabezados": False},
+    }
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        headers = {"Authorization": f"Bearer {token.token_once}"}
+        calls.clear()
+        response = await client.post("/sheets/formulas:execute", headers=headers, json=payload)
+        assert response.status_code == 200 and response.json()["values"][0][5] == "DATA_UNAVAILABLE"
+        assert len(response.json()["values"]) == 1
+        assert calls == []
+        jobs = await queue.collection.find({"state": "pending"}).to_list(10)
+        assert {job["read_model"]: job["item_ids"] for job in jobs} == {
+            "catalog_buybox_snapshots": ["MLA1"],
+        }
+        worker = FormulaRecoveryWorker(db=recovery_db, gateway=gateway, queue=queue)
+        if retry_first:
+            assert await worker.process_one()
+            pending = await queue.collection.find_one({"_id": jobs[0]["_id"]})
+            assert pending["state"] == "pending"
+            partial = await recovery_db.sheets_catalog_buybox_snapshots.find_one(
+                {"_id": f"{seller}:MLA1"}
+            )
+            assert partial["snapshot_at"] > now.replace(tzinfo=None)
+            assert partial["price"] is None
+            assert partial["competitor_count"] == 1
+            assert pending["available_at"] > pending["updated_at"]
+            # Elapse the retry delay in this isolated test database, without
+            # putting acquisition cuts ahead of the HTTP reader's real clock.
+            await queue.collection.update_one(
+                {"_id": pending["_id"]}, {"$set": {"available_at": datetime.now(UTC)}}
+            )
+        gateway.unavailable = False
+        assert await worker.process_one()
+        processed = await queue.collection.find({"item_ids": ["MLA1"]}).to_list(10)
+        assert {
+            job["read_model"]: (job["state"], job.get("failure_reason")) for job in processed
+        } == {
+            "catalog_buybox_snapshots": ("completed", None),
+        }, calls
+        stored_item = await recovery_db.items.find_one({"_id": "MLA1"})
+        stored_snapshot = await recovery_db.sheets_catalog_buybox_snapshots.find_one(
+            {"_id": f"{seller}:MLA1"}
+        )
+        assert stored_snapshot["price"].to_decimal() == 100
+        assert stored_snapshot["snapshot_at"] >= stored_item["last_meli_sync_at"]
+        acquired_calls = list(calls)
+        response = await client.post("/sheets/formulas:execute", headers=headers, json=payload)
+        assert response.status_code == 200
+        assert response.json()["values"][0][5] == 100
+        assert not response.json()["meta"].get("recovery_requested", False)
         assert calls == acquired_calls
     assert await recovery_db.sheets_read_model_freshness.count_documents({}) == 0
 

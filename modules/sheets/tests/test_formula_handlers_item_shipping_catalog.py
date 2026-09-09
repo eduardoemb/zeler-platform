@@ -433,6 +433,59 @@ async def test_catalogo_buybox_does_not_infer_shared_count_from_legacy_totals() 
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("state", ["transient", "missing", "mismatched_cut", "cached", "primary"])
+async def test_buybox_missing_price_requests_recovery_or_uses_verified_cache(
+    state: str,
+) -> None:
+    from zeler_sheets.item_projection import item_source_fingerprint
+
+    db = FakeDb()
+    db["sheets_catalog_buybox_snapshots"].documents["snapshot"] = {
+        "item_id": "MLA1",
+        "title": "Publication",
+        "available_quantity": 7,
+        "buybox_status": "winning",
+        "price": 120 if state == "primary" else None,
+        "winning_price": 119,
+        "competitors_sharing_first_place": 0,
+        "competitor_count": 2,
+    }
+    _seed_buybox_inventory(db)
+    source = db["items"].documents["buybox-0"]
+    source.update(price=150, currency_id="ARS")
+    if state != "missing":
+        source["enrichment_state"] = {
+            "current_promotion": {
+                "status": "authoritative_absent"
+                if state in {"cached", "mismatched_cut"}
+                else "transient",
+                "source": "/items/{id}/sale_price",
+                "synced_at": NOW - timedelta(minutes=1) if state == "mismatched_cut" else NOW,
+            }
+        }
+    db["sheets_item_formula_rows"].documents["buybox-0"]["source_snapshot"]["fingerprint"] = (
+        item_source_fingerprint(source)
+    )
+
+    result = await _dispatcher(db).execute(
+        _context("ZELERDATA_CATALOGOBUYBOX", {"encabezados": False})
+    )
+
+    assert result.values[0][:5] == ["Publication", "MLA1", "MLM1", 7, "winning"]
+    assert len(result.values) == 1
+    if state in {"primary", "cached"}:
+        assert result.values[0][5] == (120 if state == "primary" else 150)
+        assert result.recovery is None
+        assert result.additional_recoveries == ()
+    else:
+        assert result.values[0][5] == "DATA_UNAVAILABLE"
+        assert result.recovery is not None
+        assert result.recovery.read_model == CATALOG_BUYBOX_SNAPSHOTS_READ_MODEL
+        assert result.recovery.item_ids == ("MLA1",)
+        assert result.additional_recoveries == ()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("latest_state", ["ready", "missing_cost", "missing_identity"])
 async def test_costo_envio_vendedor_uses_latest_realized_shipment_cost_per_unit(
     latest_state: str,

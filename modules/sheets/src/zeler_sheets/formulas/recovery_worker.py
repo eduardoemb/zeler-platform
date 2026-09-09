@@ -276,7 +276,12 @@ class FormulaRecoveryWorker:
             if item.get("catalog_listing") is not True or not now - COOLDOWN < synced <= now:
                 raise ValueError("buybox requires fresh explicit catalog participation")
 
-        async def acquire(identity: str) -> Exception | None:
+        async def acquire(
+            identity: str,
+            *,
+            enriched: bool = False,
+            dependency_failure: Exception | None = None,
+        ) -> Exception | None:
             item = by_id[identity]
             source = _catalog_snapshot_source_rows_from_resources([item])[0]
             if (
@@ -314,7 +319,39 @@ class FormulaRecoveryWorker:
                 raise ValueError("buybox competition fields are unavailable")
             if snapshot.get("price") is None:
                 snapshot["price"] = acquired_current_price(item)
-            offer_failure: Exception | None = None
+                if snapshot["price"] is None and not enriched:
+                    # Resolve the price dependency under this durable intent;
+                    # independent item/catalog jobs can run in either order.
+                    try:
+                        partial = await self._acquire_item_batch(
+                            job, ItemIdsRecoveryRequest(requested.seller_id, (identity,))
+                        )
+                        if partial:
+                            dependency_failure = RetryableItemAcquisitionError(
+                                "buybox price dependency incomplete"
+                            )
+                    except (
+                        httpx.HTTPError,
+                        TimeoutError,
+                        GatewayRateLimitError,
+                        RetryableItemAcquisitionError,
+                    ) as exc:
+                        dependency_failure = exc
+                    refreshed = await self.db.items.find_one(
+                        {"_id": identity, "seller_id": requested.seller_id}
+                    )
+                    if refreshed is None or refreshed.get("catalog_listing") is not True:
+                        raise ValueError("buybox participation changed during enrichment")
+                    by_id[identity] = refreshed
+                    # Acquire competition again against the new canonical cut.
+                    return await acquire(
+                        identity, enriched=True, dependency_failure=dependency_failure
+                    )
+                if snapshot["price"] is None:
+                    dependency_failure = dependency_failure or ValueError(
+                        "buybox current price remains unavailable"
+                    )
+            offer_failure = dependency_failure
             snapshot.update(competitor_count=None, only_competitor=None, offers_snapshot_at=None)
             offers: dict[str, Any] = {"results": []}
             try:
@@ -330,7 +367,7 @@ class FormulaRecoveryWorker:
                     competitor_count=count, only_competitor=only, offers_snapshot_at=observed
                 )
             except (httpx.HTTPError, TimeoutError, GatewayRateLimitError, ValueError) as exc:
-                offer_failure = exc
+                offer_failure = offer_failure or exc
                 offers = {"results": []}
                 prior = await self.db.sheets_catalog_buybox_snapshots.find_one(
                     {"_id": snapshot["_id"], "seller_id": requested.seller_id}
@@ -427,7 +464,14 @@ class FormulaRecoveryWorker:
                 if failure is None:
                     continue
                 if not isinstance(
-                    failure, (httpx.HTTPError, TimeoutError, GatewayRateLimitError, ValueError)
+                    failure,
+                    (
+                        httpx.HTTPError,
+                        TimeoutError,
+                        GatewayRateLimitError,
+                        RetryableItemAcquisitionError,
+                        ValueError,
+                    ),
                 ):
                     # Storage/implementation errors retain the outer worker's
                     # classification, rather than becoming an ExceptionGroup.
@@ -441,7 +485,13 @@ class FormulaRecoveryWorker:
                     failure
                     for failure in failures
                     if isinstance(
-                        failure, (httpx.TransportError, TimeoutError, GatewayRateLimitError)
+                        failure,
+                        (
+                            httpx.TransportError,
+                            TimeoutError,
+                            GatewayRateLimitError,
+                            RetryableItemAcquisitionError,
+                        ),
                     )
                     or (
                         isinstance(failure, httpx.HTTPStatusError)

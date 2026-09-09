@@ -11,6 +11,7 @@ from zeler_sheets.devoluciones_reconciliation import (
     read_devoluciones_orders_by_id_keyset,
 )
 from zeler_sheets.formulas.dispatcher import FormulaDataUnavailableError
+from zeler_sheets.formulas.pricing import acquired_current_price
 from zeler_sheets.formulas.recovery import ItemInventoryRecoveryRequest
 from zeler_sheets.formulas.schemas import FormulaContract
 from zeler_sheets.item_projection import item_source_fingerprint
@@ -596,6 +597,8 @@ class FormulaReadModelRepository:
                 and snapshot.get("title") == source["title"].strip()
                 and snapshot.get("available_quantity") == source.get("available_quantity")
             ):
+                if snapshot.get("price") is None:
+                    snapshot = {**snapshot, "price": acquired_current_price(source)}
                 offers_at = _safe_utc_datetime(snapshot.get("offers_snapshot_at", observed))
                 ready.append(
                     snapshot
