@@ -28,6 +28,7 @@ RECOVERABLE_MODELS = frozenset(
 )
 LEASE = timedelta(minutes=10)
 COOLDOWN = timedelta(minutes=15)
+INVENTORY_REFRESH_INTERVAL = timedelta(minutes=10)
 MAX_ATTEMPTS = 3
 IMPLEMENTED_MODELS = frozenset(
     {
@@ -429,12 +430,12 @@ class FormulaRecoveryQueue:
         if completed:
             available_at = now + COOLDOWN
             if not terminal_failure:
-                # A successful scan ages from discovery, not completion. Do
-                # not add another full wait after its inventory has expired.
+                # Permit a demanded refresh before the reader's 15-minute
+                # expiry. Completion itself does not schedule another scan.
                 observed = job.get("inventory_observed_at") or job["updated_at"]
                 if observed.tzinfo is None:
                     observed = observed.replace(tzinfo=UTC)
-                available_at = max(now, observed + COOLDOWN)
+                available_at = max(now, observed + INVENTORY_REFRESH_INTERVAL)
         result = await self.collection.update_one(
             self._owned(job, now),
             {

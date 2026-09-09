@@ -2495,7 +2495,9 @@ async def test_inventory_refresh_wait_does_not_restart_after_successful_sweep(
             batch, item_ids=identities, offset=offset, unavailable=unavailable
         )
     terminal = await queue.collection.find_one({"_id": request.key})
-    due = now + COOLDOWN if unavailable else max(now, started + COOLDOWN)
+    # A requested successful refresh must be eligible before the 15-minute
+    # reader expiry, without making completion start an autonomous scan.
+    due = now + COOLDOWN if unavailable else max(now, started + timedelta(minutes=10))
     assert terminal["available_at"].replace(tzinfo=UTC) == due
     assert terminal["inventory_observed_at"].replace(tzinfo=UTC) == started
     assert terminal["state"] == ("failed" if unavailable else "completed")
@@ -2513,7 +2515,8 @@ async def test_inventory_refresh_wait_does_not_restart_after_successful_sweep(
     _, _, missing, current = await reader.find_recent_item_inventory(
         seller_id="82453304", formula="ZELERDATA_CALCULADORA", now=now
     )
-    assert not current and missing == tuple(identities)
+    assert current is (now - started < timedelta(minutes=15))
+    assert missing == tuple(identities)
     next_scan = await queue.claim()
     assert next_scan is not None and "inventory_offset" not in next_scan
     assert await queue.claim() is None

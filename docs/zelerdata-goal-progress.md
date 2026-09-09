@@ -20,7 +20,76 @@ Keep unrelated `.codegraph/` files untouched in both repositories.
 
 ## Real Google Sheet: all-52 first pass and user add-on update, 2026-09-09
 
-### Bounded execution diagnostics prepared; runtime activation pending
+### Catalog replay and demanded inventory refresh lead time
+
+After diagnostic API activation, new requests from the four authorized test
+anchors were confirmed in production logs: CATALOGO_COMPLETO 6,955.788ms,
+CATALOGOBUYBOX 7,254.380ms, OBTENER_CATALOGO 7,287.785ms, CATALOGO 7,044.896ms;
+all HTTP 200. Only the account expression gained trailing whitespace, normalized
+by the existing account resolver, to change evaluated arguments and avoid cached
+custom-function results. First-three-row readback still contained unavailable
+data, so this does not clear correctness or populated-catalog latency.
+
+A VM-scoped read found all 1,900 canonical items and 2,859 projection rows:
+261 trusted sources, 1,639 expired sources, no observed fingerprint/observation/
+row-count mismatch among the fresh sources. The inventory job was running at
+checkpoint 180, alongside a pending product-snapshot recovery. This identifies
+source expiry as the dominant availability failure at that cut, not data loss.
+
+Successful inventory recovery previously could not run again before discovery
+plus 15 minutes, exactly when its reader evidence expires. The local change
+permits a **requested** refresh at discovery plus 10 minutes (or completion if
+later), without starting autonomous scans. Failures retain the 15-minute cooldown;
+reader expiry, source timestamps and seller capacity remain unchanged. This
+only removes the admission wait: the demand path and acquisition throughput
+still need to prove sustained coverage. Do not label this a complete fix.
+
+TDD: after restarting the existing dedicated loopback Mongo test container on
+27028, the revised clock test produced 2 failures/4 passes against old code.
+With the change, inventory/capacity/cooldown tests passed **85 tests in 17.92s**,
+without skips. Ruff check/format and focused mypy passed. Random test databases
+were cleaned by the fixture, not production. Only **sheets-worker** needs a new
+image for this behavior; it is not deployed yet. Rollback restores the successful
+inventory scheduling interval and its clock-test expectations; no schema/data
+migration is involved.
+
+### Bounded execution diagnostics deployed; catalog reproduction pending
+
+Build/pull follow-up for source `a2b084bd0b637106a18b35d56d8c8811f6bd4f37`:
+Cloud Build `ac887c98-7041-4bdb-9295-f6ce5582f4ee` succeeded. The canonical
+`verify_image_to_commit` verified the connected repository, exact revision,
+build and immutable image
+`us-central1-docker.pkg.dev/zeler-platform-dev/zeler-platform/sheets-api@sha256:7ddca362ea8876ad870b4f80a7a0f45aa1f43741be13ae54ffe83f50d0fd203f`.
+This image is downloaded on the VM; do not rebuild or repeat the pull.
+CI lint `34378845022` and test `34378844903` both completed successfully.
+
+The pull reduced free disk below 5 GiB. Removed only the unused local API image
+`d9203ac5...` after confirming zero container references, no current Compose or
+checked rollback-protection references, and continued availability in Artifact
+Registry. No volumes/data were removed. Free disk returned to 5,873,590,272 bytes.
+The current healthy API `14509bbf...` remains the rollback authority; the healthy
+worker `5f23d9ba...` remains unchanged.
+
+Helpers are `/tmp/zeler-formula-trace.nYKdxg/` locally. VM
+`/tmp/pull-formula-trace-a2b084b.py` completed; the prepared
+`/tmp/activate-formula-trace-a2b084b.py` was invoked once and failed before
+activation: the preflight defaults to `/usr/bin/gcloud`, absent on this VM, while
+the installed executable is `/snap/bin/gcloud`. Compose was restored and the
+previous API remained healthy. Read-only metadata checks and the canonical
+verifier passed inside the VM using the actual executable; no permissions changed.
+
+The corrected `/tmp/activate-formula-trace-a2b084b-attempt2.py` completed:
+API `7ddca362...`, source `a2b084b`, healthy, zero restarts. Worker container ID
+and start time were unchanged. It supplied `ZELER_GCLOUD_BIN=/snap/bin/gcloud`,
+verified a dedicated provenance file, then used the canonical merge/writer to
+preserve the existing shared image map. Backup:
+`/opt/zeler-platform/docker-compose.yml.pre-sheets-api-a2b084b-attempt2`.
+Do not repeat activation. External `/health` returned 200; an unauthenticated
+formula request returned 401 and emitted the bounded `formula_execution` event
+(SKU, serialization, 401, 0.349ms), with no sensitive keys. Runtime logging uses
+the console renderer, not JSON; JSON-only log parsing misses these events.
+This denial probe is not authenticated formula acceptance. Reproduce the four
+populated catalog requests through the user's Sheet next.
 
 The inventory checkpoint advanced from 240 to 580 of 1,900, with zero recorded
 unavailable IDs and 1,040 canonical items acquired within 15 minutes. This is
@@ -42,10 +111,9 @@ changed API passed. The audit-failure regression still proves token denial and
 one audit warning, alongside the new execution event.
 
 Runtime harness: local ASGI requests through token validation and the endpoint;
-real production emission is pending. Only **sheets-api** needs a new Cloud Build
-image and scoped deployment; worker code did not change. After activation,
-verify digest/health and reproduce populated catalog calls from the authorized
-Sheet, confirming bounded log fields and the actual timeout phase. Do not count
+production emission and deployment are now verified above. Only **sheets-api**
+changed; no further image is needed for this unit. Reproduce populated catalog
+calls from the authorized Sheet, checking the actual timeout phase. Do not count
 this diagnostic unit as the catalog fix. Rollback removes only the endpoint
 logging/phase annotations and their tests; it does not alter data or schemas.
 
