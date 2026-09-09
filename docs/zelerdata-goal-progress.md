@@ -21,6 +21,65 @@ Keep unrelated `.codegraph/` files untouched in both repositories.
 Pilot: seller `82453304`; initial historical window 2026-08-08 through
 2026-09-06, plus current snapshots. Other products are out of scope.
 
+## Competition rollout: worker active and real notification persisted — 2026-09-09 UTC
+
+Both Sheets services now run verified source `99f933a`: API digest `0944389...`
+and worker digest
+`sha256:ae3c245d2cb344e9beb86dd526fc3c66716557747bb73e903948c9de4a29b279`.
+The worker's Artifact Registry/Cloud Build proof was verified into the canonical
+VM map before service-only activation. Source CI remained green. Preflight
+confirmed no running recovery jobs; the exact worker image binding was backed
+up to `/opt/zeler-platform/docker-compose.yml.pre-sheets-worker-activate-99f933a`.
+`/tmp/zeler-competition-activate-worker.py` used `up --no-deps --pull never`;
+health reached HTTP 200 with zero restarts. Final API and worker identity checks
+both matched the source and remained healthy with zero restarts.
+
+To retain the 5 GiB disk floor after the pull, exact unused API cache digest
+`sha256:1702d8adc804f8b10a31eeb7b96e3e1d9964f94e5609643e74e8b6545036b391`
+was checked against all containers and removed. Current and immediate rollback
+images stayed present. The 543,309,824-byte recovery touched no volumes or
+business data; Artifact Registry retains the removed image. Final free space
+was 5,908,267,008 bytes.
+
+Read-only management API inspection confirmed the real
+`catalog_item_competition_status.*` bindings from both `meli.events` and
+`zeler.sheets.replay` to `zeler.sheets.events`, one live consumer, and zero
+ready/unacknowledged messages. Mongo had zero pilot observations but **223 real
+stored competition notifications**; the latest receipt was
+`2026-09-08T23:47:16.395000+00:00`.
+
+The bounded runtime harness `/tmp/zeler-competition-replay-one.py` selected
+that one real notification, preserving its original identity/resource through
+the gateway's canonical classifier/envelope. `prepare` saved a VM-only 0600
+receipt at `/var/lib/zeler-platform/repairs/catalog-notification-99f933a.json`.
+Two intentional `publish` calls sent that same event only to the Sheets replay
+exchange, never the shared product exchange. The normal worker persisted one
+observation and its seller-scoped processing confirmation. Acquisition time was
+after harness preparation, not the old notification time; source was
+`meli_price_to_win`, basis `observed_only`. Subsequent `status` confirmed exactly
+one row and identical BSON fingerprint after duplicate delivery. The queue was
+again empty and the total pilot observation count was one. No fake notification,
+manual token, rewritten coverage marker or unrelated product replay was used.
+
+This proves real stored-event replay through broker/consumer/acquisition/Mongo
+and unchanged observation on duplicate delivery. It does not prove a newly
+arriving upstream notification, continuous history, runtime HTTP-call counts on
+the duplicate, current formula completeness or all-52/Sheets acceptance. The
+no-refetch branch has the focused code-test evidence recorded below; unchanged
+Mongo alone is not an upstream-call measurement. Do not repeat `prepare` or
+publish again merely to recreate this receipt.
+
+Failure boundary after this activation: retain the new API, all observations
+and durable queued messages. If consumer acceptance fails, stop only the new
+Sheets worker and investigate/fix forward; do not start the previous generic
+consumer on queued competition events, purge queues or run the unrelated broad
+DEVOLUCIONES rollback. A backward-compatible consumer rollback is not proven.
+No failure occurred and the worker was left running. No repository executable
+code changed in this rollout unit, so no new regression run/build was needed.
+Main's subsequent differences are documentation only; verified runtime source
+is current for executable behavior. Remaining work includes historical-field
+truthfulness, full current acquisition/formula acceptance and the goal ledger.
+
 ## Competition rollout: API active, worker still pending — 2026-09-09 UTC
 
 The Sheets API now runs the verified `99f933a` image
