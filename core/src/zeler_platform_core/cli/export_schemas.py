@@ -588,6 +588,7 @@ ENTITY_SCHEMAS: dict[str, dict[str, Any]] = {
             },
             "price_to_win": NULLABLE_MONEY,
             "only_competitor": {"bsonType": ["string", "bool", "null"]},
+            "offers_snapshot_at": {"bsonType": ["date", "null"]},
             "snapshot_at": DATE,
             "source": READ_MODEL_PROJECTOR_SOURCE,
             **SCHEMA_VERSION,

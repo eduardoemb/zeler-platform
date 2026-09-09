@@ -298,7 +298,8 @@ class FormulaRecoveryWorker:
             ):
                 raise ValueError("buybox competition fields are unavailable")
             offer_failure: Exception | None = None
-            snapshot.update(competitor_count=None, only_competitor=None)
+            snapshot.update(competitor_count=None, only_competitor=None, offers_snapshot_at=None)
+            offers: dict[str, Any] = {"results": []}
             try:
                 async with asyncio.timeout(10):
                     offers = await self.detail_gateway.fetch_resource(
@@ -308,7 +309,24 @@ class FormulaRecoveryWorker:
                 count, only = _catalog_offer_count(
                     offers, item_id=identity, seller_id=requested.seller_id
                 )
-                snapshot.update(competitor_count=count, only_competitor=only)
+                snapshot.update(
+                    competitor_count=count, only_competitor=only, offers_snapshot_at=observed
+                )
+            except (httpx.HTTPError, TimeoutError, GatewayRateLimitError, ValueError) as exc:
+                offer_failure = exc
+                offers = {"results": []}
+                prior = await self.db.sheets_catalog_buybox_snapshots.find_one(
+                    {"_id": snapshot["_id"], "seller_id": requested.seller_id}
+                )
+                if prior and prior.get("catalog_product_id") == source.catalog_product_id:
+                    # Preserve known offers with their own acquisition cut, never
+                    # relabel them with the freshly acquired competition time.
+                    snapshot.update(
+                        competitor_count=prior.get("competitor_count"),
+                        only_competitor=prior.get("only_competitor"),
+                        offers_snapshot_at=prior.get("offers_snapshot_at", prior["snapshot_at"]),
+                    )
+            try:
                 winner = resource.get("winner")
                 if "winner" in resource and winner is None:
                     snapshot["winning_user_id"] = None
@@ -342,7 +360,7 @@ class FormulaRecoveryWorker:
                                 raise ValueError("winner seller identity is unavailable")
                             snapshot["winning_user_id"] = str(winner_seller)
             except (httpx.HTTPError, TimeoutError, GatewayRateLimitError, ValueError) as exc:
-                offer_failure = exc
+                offer_failure = offer_failure or exc
             current = await self.db.items.find_one(
                 {"_id": identity, "seller_id": requested.seller_id}
             )
@@ -356,20 +374,11 @@ class FormulaRecoveryWorker:
             snapshot.update(snapshot_at=observed, source="sheets_backfill")
             await record_catalog_observation(self.db, snapshot)
             with suppress(DuplicateKeyError):
-                if offer_failure is not None:
-                    # Preserve an earlier payload and its original timestamp.
-                    # With no prior snapshot, keep the acquired competition fields.
-                    await self.db.sheets_catalog_buybox_snapshots.update_one(
-                        {"_id": snapshot["_id"], "seller_id": requested.seller_id},
-                        {"$setOnInsert": snapshot},
-                        upsert=True,
-                    )
-                else:
-                    await self.db.sheets_catalog_buybox_snapshots.replace_one(
-                        _catalog_snapshot_filter(requested.seller_id, identity, observed),
-                        snapshot,
-                        upsert=True,
-                    )
+                await self.db.sheets_catalog_buybox_snapshots.replace_one(
+                    _catalog_snapshot_filter(requested.seller_id, identity, observed),
+                    snapshot,
+                    upsert=True,
+                )
             return offer_failure
 
         await self._finish_catalog_batch(job, list(requested.item_ids), acquire)

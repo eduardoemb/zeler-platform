@@ -46,6 +46,12 @@
       "item_id": {
         "bsonType": "string"
       },
+      "offers_snapshot_at": {
+        "bsonType": [
+          "date",
+          "null"
+        ]
+      },
       "only_competitor": {
         "bsonType": [
           "string",

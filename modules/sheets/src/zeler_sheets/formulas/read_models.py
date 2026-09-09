@@ -596,7 +596,12 @@ class FormulaReadModelRepository:
                 and snapshot.get("title") == source["title"].strip()
                 and snapshot.get("available_quantity") == source.get("available_quantity")
             ):
-                ready.append(snapshot)
+                offers_at = _safe_utc_datetime(snapshot.get("offers_snapshot_at", observed))
+                ready.append(
+                    snapshot
+                    if offers_at is not None and now - timedelta(minutes=15) < offers_at <= now
+                    else {**snapshot, "competitor_count": None, "only_competitor": None}
+                )
         missing = set(participating) - {row["item_id"] for row in ready}
         return ready, tuple(sorted(missing)), tuple(sorted(invalid)), current
 

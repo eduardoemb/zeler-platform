@@ -21,6 +21,56 @@ Keep unrelated `.codegraph/` files untouched in both repositories.
 Pilot: seller `82453304`; initial historical window 2026-08-08 through
 2026-09-06, plus current snapshots. Other products are out of scope.
 
+## Preserve current competition independently of missing offers
+
+The read-only `/tmp/buybox-rejection-source.py` probe established the endpoint
+failure on both stale members of the 20-item batch: competition returned HTTP
+200 with matching item identity, while `/products/{product}/items` returned 404.
+One current control returned 200 for both endpoints, with valid offers list and
+paging total. No data or job was changed. A 404 here is not proof that historic
+offers are permanently unrecoverable.
+
+The worker previously retained the entire old snapshot after any offers failure.
+It now persists acquired competition and independently resolves the winner.
+Previously acquired offer count/sole-competitor values survive for the same
+product, retaining their original optional `offers_snapshot_at` cut. A failed
+first acquisition writes null for that cut; a successful one writes the actual
+acquisition cut. The reader uses these fields only while their own cut is valid
+and within 15 minutes. Expired values remain stored but render unavailable without
+hiding current competition. Existing snapshots lacking this new field use their
+original single `snapshot_at`, preserving the previously verified producer contract.
+Canonical ownership, BSON reread, lease and newer-snapshot guards remain intact.
+
+Six focused cases failed before the change: retained 503/404 prevented the new
+price from being stored, and both HTTP formulas treated expired/null offer cuts
+as complete. The updated Mongo/HTTP/recovery suite passes 41 cases in 12.48 seconds,
+including independently resolving a foreign winner when the offers endpoint fails.
+Ruff, format, mypy (507 files) and exported schema drift checks pass.
+Three default full runs terminated with SIGSEGV/139 during collection; a separate
+collect-only run passed. The local interpreter is Python 3.11.0rc1. An isolated
+managed Python 3.11.15 run with `--locked` dependencies reached execution but
+terminated with `Illegal instruction`/132 around 15%, outside this changed path.
+Neither error has a proven root cause and neither run counts as acceptance.
+The complete recovery file, both affected handler suites and Sheets schema tests
+passed together: 501 tests in 73.85 seconds. Protected Mongo scenarios passed
+separately: eight tests in 3.01 seconds. The full regression remains pending in CI;
+do not deploy this change until that gate is complete. The repository environment
+and lockfile were not replaced to obtain these results.
+
+Deployment is pending and ordered: apply the additive nullable-date schema for
+`sheets_catalog_buybox_snapshots`, activate the new Sheets API reader, then activate
+the new worker. **Do not deploy the worker ahead of the API**: an older reader
+would mistake retained offers for newly acquired fields. Both images need rebuilding.
+Verify the two real 404 cases after refreshing only the required item data, prove
+current competition remains readable and retained offer cuts do not advance on
+failure, then continue full-seller/52-formula acceptance. No freshness marker or
+global inventory coverage may be fabricated to make the smoke green.
+
+Rollback: return the worker first to its prior digest; retain the new API reader
+while any independently dated snapshots exist. Reverting that reader requires
+first ensuring those snapshots cannot be misread by the old reader. Keep the
+additive schema and persisted offer data; do not delete them to simplify rollback.
+
 ## Optional product response fix deployed; source acquisition still incomplete
 
 Cloud Build `c1ea0ae9-f913-4011-b805-c97de9c943eb` succeeded for source

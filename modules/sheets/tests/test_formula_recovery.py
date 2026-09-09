@@ -155,6 +155,8 @@ async def test_catalog_observations_preserve_cuts_and_reject_conflicting_retries
         "duplicate",
         "unavailable",
         "retained",
+        "retained_404",
+        "winner_offers_unavailable",
         "winner_other",
         "winner_fallback",
         "winner_mismatch",
@@ -185,11 +187,13 @@ async def test_buybox_acquires_offer_count_without_inventing_sole_competitor(
         "_id": "82453304:MLA1",
         "seller_id": "82453304",
         "item_id": "MLA1",
+        "catalog_product_id": "MLA9",
         "snapshot_at": now - timedelta(minutes=1),
+        "competitor_count": 1,
         "only_competitor": True,
         "price": 100,
     }
-    if case == "retained":
+    if case in {"retained", "retained_404"}:
         await recovery_db.sheets_catalog_buybox_snapshots.insert_one(prior)
         prior = await recovery_db.sheets_catalog_buybox_snapshots.find_one({"_id": prior["_id"]})
     queue = FormulaRecoveryQueue(recovery_db)
@@ -211,7 +215,13 @@ async def test_buybox_acquires_offer_count_without_inventing_sole_competitor(
                     if case == "winner_null"
                     else {
                         "item_id": "MLA2"
-                        if case in {"winner_other", "winner_fallback", "winner_mismatch"}
+                        if case
+                        in {
+                            "winner_other",
+                            "winner_fallback",
+                            "winner_mismatch",
+                            "winner_offers_unavailable",
+                        }
                         else "MLA1",
                         "price": 119,
                     },
@@ -226,9 +236,10 @@ async def test_buybox_acquires_offer_count_without_inventing_sole_competitor(
                     "catalog_product_id": "MLA8" if case == "winner_mismatch" else "MLA9",
                 }
             assert path == "/products/MLA9/items"
-            if case in {"unavailable", "retained"}:
+            if case in {"unavailable", "retained", "retained_404", "winner_offers_unavailable"}:
                 httpx.Response(
-                    503, request=httpx.Request("GET", "https://gateway.test")
+                    404 if case == "retained_404" else 503,
+                    request=httpx.Request("GET", "https://gateway.test"),
                 ).raise_for_status()
             rows = [{"item_id": "MLA1", "seller_id": 82453304}]
             if case in {"multiple", "winner_other"}:
@@ -260,10 +271,17 @@ async def test_buybox_acquires_offer_count_without_inventing_sole_competitor(
     stored = await recovery_db.sheets_catalog_buybox_snapshots.find_one({"_id": "82453304:MLA1"})
     job = await queue.collection.find_one({"_id": key})
     assert calls == ["/items/MLA1/price_to_win?version=v2", "/products/MLA9/items"] + (
-        ["/items/MLA2"] if case in {"winner_fallback", "winner_mismatch"} else []
+        ["/items/MLA2"]
+        if case in {"winner_fallback", "winner_mismatch", "winner_offers_unavailable"}
+        else []
     )
-    if case == "retained":
-        assert stored == prior
+    if case in {"retained", "retained_404"}:
+        assert stored["price"] == 120
+        assert stored["snapshot_at"] > prior["snapshot_at"]
+        assert stored["offers_snapshot_at"] == prior["snapshot_at"]
+        assert stored["only_competitor"] is True
+        assert stored["competitor_count"] == 1
+        assert stored["winning_user_id"] == "82453304"
     elif case in {"malformed", "short_page", "wrong_owner", "duplicate", "unavailable"}:
         assert stored["price"] == 120
         assert stored["only_competitor"] is None
@@ -273,7 +291,9 @@ async def test_buybox_acquires_offer_count_without_inventing_sole_competitor(
             assert "winning_user_id" not in stored
         else:
             assert stored["winning_user_id"] == (None if case == "winner_null" else "42")
-        assert stored["competitor_count"] == (2 if case == "winner_other" else 1)
+        assert stored["competitor_count"] == (
+            None if case == "winner_offers_unavailable" else 2 if case == "winner_other" else 1
+        )
     else:
         assert stored["winning_user_id"] == "82453304"
         assert stored["only_competitor"] is (case == "sole")
@@ -282,15 +302,26 @@ async def test_buybox_acquires_offer_count_without_inventing_sole_competitor(
         )
     assert job["state"] == (
         "pending"
-        if case in {"unavailable", "retained"}
+        if case in {"unavailable", "retained", "winner_offers_unavailable"}
         else "failed"
-        if case in {"malformed", "short_page", "wrong_owner", "duplicate", "winner_mismatch"}
+        if case
+        in {
+            "malformed",
+            "short_page",
+            "wrong_owner",
+            "duplicate",
+            "winner_mismatch",
+            "retained_404",
+        }
         else "completed"
     )
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("mutation", ["association", "expired", "future", "foreign", "partial"])
+@pytest.mark.parametrize(
+    "mutation",
+    ["association", "expired", "future", "foreign", "partial", "expired_offers", "missing_offers"],
+)
 @pytest.mark.parametrize("formula", ["ZELERDATA_CATALOGOBUYBOX", "ZELERDATA_CATALOGO"])
 async def test_buybox_http_recovers_current_membership_then_reuses_mongo(
     recovery_db: Any, mutation: str, formula: str
@@ -432,6 +463,8 @@ async def test_buybox_http_recovers_current_membership_then_reuses_mongo(
                 "future": {"snapshot_at": now + timedelta(hours=1)},
                 "foreign": {"seller_id": "42"},
                 "partial": {"only_competitor": None},
+                "expired_offers": {"offers_snapshot_at": now - timedelta(minutes=16)},
+                "missing_offers": {"offers_snapshot_at": None},
             }[mutation]
             await recovery_db.sheets_catalog_buybox_snapshots.update_one(
                 {"_id": f"{seller}:MLA1"}, {"$set": changed_fields}
@@ -444,7 +477,7 @@ async def test_buybox_http_recovers_current_membership_then_reuses_mongo(
             if mutation == "association"
             else "buybox_missing_expired_or_incomplete"
         )
-        if mutation == "partial" and not catalog:
+        if mutation in {"partial", "expired_offers", "missing_offers"} and not catalog:
             assert changed.json()["values"][0] == [
                 "Publication",
                 "MLA1",
