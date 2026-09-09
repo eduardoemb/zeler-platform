@@ -21,6 +21,62 @@ Keep unrelated `.codegraph/` files untouched in both repositories.
 Pilot: seller `82453304`; initial historical window 2026-08-08 through
 2026-09-06, plus current snapshots. Other products are out of scope.
 
+## Competition rollout: API active, worker still pending — 2026-09-09 UTC
+
+The Sheets API now runs the verified `99f933a` image
+`sha256:09443897564002c72055b98de3af66162468200791327e9a49b45d054e7e48b9`.
+The canonical VM image-to-commit map was updated through provenance verification,
+not manual relabeling. CI for that source passed lint and test. Only evidence
+documentation differs between the image source and the subsequent main commit.
+
+Before activation, isolated, read-only, network-disabled image probes imported
+the real entrypoint and checked complete manifest fingerprints: prior API
+`3ca3930...` has 11 scopes/5 topics; candidate `0944389...` has 11 scopes/6 topics.
+This is a staged API-only rollout, not the DEVOLUCIONES timer/topology rollback
+procedure. No worker, RabbitMQ binding, gateway or timer was changed. While that
+boundary remains true, failed API acceptance can restore the prior running API
+digest and its own five-topic registration via normal startup. Do not claim
+that prior image satisfies the six-topic contract. After activating the new
+consumer, re-evaluate rollback with queued competition events retained: starting
+an old generic consumer against those messages is not a proven safe rollback.
+
+Preflight found zero running recovery jobs and sufficient disk before pull.
+The pull reduced free space slightly below 5 GiB; activation did not proceed
+until exact unused worker cache digest
+`sha256:443691ebbe7fc488a1a7fb34d57a0e98e0628249864a02b5948f82738c62bf03`
+was removed after checking every container. All current/prior rollback images
+were retained. This recovered 543,305,728 bytes; Artifact Registry can restore
+the removed image. No volume or business data was removed. Before Compose,
+capacity and zero running recovery jobs were checked again.
+
+`/tmp/zeler-competition-activate-api.py` changed exactly one image binding,
+saved `/opt/zeler-platform/docker-compose.yml.pre-sheets-api-activate-99f933a`,
+and ran service-only `up --no-deps --pull never`. The API became healthy with
+HTTP 200 and zero restarts. A subsequent check confirmed source/image identity,
+worker source `449a382` unchanged and healthy, and 5,909,164,032 free bytes.
+
+Approved-container read-only smoke (`/tmp/zeler-competition-api-smoke.py`):
+
+| Formula | Rows | Columns | Unavailable cells | Seconds |
+| --- | ---: | ---: | ---: | ---: |
+| CATALOGOBUYBOX | 3 | 9 | 27 | 1.8239 |
+| CATALOGO | 3 | 24 | 42 | 2.2329 |
+| OBTENER_CATALOGO | 3 | 3 | 9 | 1.7359 |
+| CATALOGO_COMPLETO | 3 | 6 | 18 | 1.9509 |
+
+All four requested recovery metadata; none enqueued work or called Mercado
+Libre. Exact live registry/manifest equality (11/6) and unchanged global markers
+were verified. These operator backend reads do not prove data completeness,
+authenticated HTTP, Google Sheets acceptance or p95. The first smoke harness
+omitted the separate CATALOGO handler bundle; its immediate unavailable result
+was a harness error, superseded by the corrected four-handler results above.
+
+No executable repository changes or additional regression run were needed for
+this deployment unit. Remaining runtime drift is the Sheets worker: activate
+the already built `ae3c245...` image from `99f933a` after its gates, then verify
+normal/replay bindings, pilot acquisition, persistence/replay and current formula
+results. Do not rebuild the same source just because this evidence was committed.
+
 ## Competition rollout: schema ready, images verified — 2026-09-09 UTC
 
 The additive `sheets_catalog_competition_observations` collection is now present
