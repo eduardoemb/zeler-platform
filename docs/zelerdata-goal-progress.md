@@ -21,6 +21,45 @@ Keep unrelated `.codegraph/` files untouched in both repositories.
 Pilot: seller `82453304`; initial historical window 2026-08-08 through
 2026-09-06, plus current snapshots. Other products are out of scope.
 
+## Independent offer cuts deployed in schema → API → worker order
+
+Both Sheets services now run source `f4573de10271dafc73a9d6f48418872479db2fcf`:
+
+- API build `513de250-a8d3-434f-a2f2-cab2435e2cfd`, digest
+  `sha256:1904ed9bad23d3902075f86f428ab9a142fce79bfee73289af87bbef06b972b7`.
+- Worker build `3d5c1f88-9c10-4844-850b-d46e22427b2a`, digest
+  `sha256:0cb733d96532584af5ae6e34622a58aab18e66484fb39c1d47cd1dd5d49fd84b`.
+
+Both builds succeeded and passed local plus VM digest/build/source verification
+into the canonical image map. GitHub lint `34300767649` and test `34300767575`
+succeeded before schema application or service activation. This closes the CI
+gate, not the previously failed local full-runtime executions or end-user acceptance.
+
+The runtime validator exactly matched the prior schema before `collMod`. Only
+nullable `offers_snapshot_at` was added, retaining strict/error and all indexes.
+Schema was applied before the API, and API health was verified before worker
+activation. Final read-only checks confirmed the new exact schema, both expected
+running digests/source commits, HTTP health 200, zero restarts and zero running
+recovery jobs. Free space was 5,402,595,328 bytes at the final observation.
+
+To maintain the 5 GiB floor, removed only unused cache worker `ae3c245...` and,
+after API activation, API `0944389...`; each released about 543 MB. Every container
+was checked, current/immediate rollback images were retained, and both removed
+images were verified recoverable in Artifact Registry. No volumes or business
+documents were deleted. Pulls took 16.52 seconds (API) and 11.66 seconds (worker).
+Unique Compose backups end in `.pre-sheets-api-activate-f4573de` and
+`.pre-sheets-worker-activate-f4573de`. Prior running images were API `155a13...`
+and worker `f70530...`; the reader rollback restriction below still applies once
+independently dated snapshots are written.
+
+No recovery was re-enqueued in this rollout. Next: use the two precisely identified
+404 cases from `/tmp/buybox-rejection-source.py`, refresh only their required item
+data, and prove new competition persists while old offer cuts remain unchanged.
+Existing temporary probes with old image guards must be adapted, not blindly run.
+Read-only deployed-schema helper: `/tmp/offers-schema-active.py check`.
+Full 52-formula HTTP, real Sheet/app, full seller coverage and minimum hardening
+remain open. This evidence-only commit does not require another image build.
+
 ## Preserve current competition independently of missing offers
 
 The read-only `/tmp/buybox-rejection-source.py` probe established the endpoint
