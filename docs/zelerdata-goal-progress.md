@@ -23,6 +23,32 @@ Pilot: seller `82453304`; initial historical window 2026-08-08 through
 
 ## Buybox price dependency: local end-to-end recovery correction
 
+Images for source `3a5a016a4279815e76f5d7ff420ae20af76ccb10` are built but
+**not deployed**. Each single-image Cloud Build succeeded; digest/build/source
+verification passed locally and on the VM:
+
+- API build `6ec13922-046e-4c24-8428-e299c43d803d`, image
+  `sheets-api@sha256:d9203ac552bd1ebd96e751f1cf87becbe0308e1caee7a5628cc40282905f30cf`.
+- Worker build `fa757d7b-0cc4-45c5-b3b8-8cab066926cf`, image
+  `sheets-worker@sha256:5f23d9ba77c64d20715ed0cc70794fd7a8b52362f4dbb216c2cccbc54961c40c`.
+
+Both image names use repository prefix
+`us-central1-docker.pkg.dev/zeler-platform-dev/zeler-platform/`.
+Local build configs/receipts: `/tmp/zeler-price-dependency.wCVhKC/`.
+VM receipts: `/tmp/{api,worker}-{build,artifact}.json`; canonical provenance map
+was updated through the verifier. Reuse these builds; do not rebuild on a wait.
+CI lint `34310663151` passed; test run `34310663198` was confirmed still executing
+its Pytest step. Poll that same run before activation.
+
+Preflight found both existing services healthy with zero restarts, API `6cd66e9`
+and worker `3b27cf4`; they do not contain this correction. Removed only unused
+API cache image `1904ed9...`, after all-container/Compose/protected-image checks
+and confirming its Artifact Registry availability. Freed 543,547,392 bytes,
+leaving 5,905,989,632 bytes free at that observation. No data, volumes or Compose
+bindings changed. Recheck capacity before each pull/activation; this margin may
+not accommodate both new images while preserving the 5 GiB floor. Preserve the
+currently running images as rollback authorities and the special rollback images.
+
 The missing-price recovery now resolves item enrichment inside the existing
 durable catalog job when neither competition nor verified canonical enrichment
 provides the price. It reacquires competition against the refreshed item cut,
@@ -51,8 +77,8 @@ format check and mypy passed (507 files). Broader regression across
 
 Rollback boundary: remove the reader fallback and worker-owned price enrichment
 with their matching tests; preserve legitimately acquired Mongo data. This unit
-affects **sheets-api and sheets-worker** images. Neither has been built or deployed
-for this correction. Verify CI, image provenance and approved-runtime price
+affects **sheets-api and sheets-worker** images. The built images above are not
+deployed. Verify CI, image provenance and approved-runtime price
 recovery/readback before claiming the 15 live price gaps resolved. All-52 HTTP,
 real Sheets/app, sustained freshness and the other goal acceptance gates remain
 open.
