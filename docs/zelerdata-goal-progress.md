@@ -20,6 +20,38 @@ Keep unrelated `.codegraph/` files untouched in both repositories.
 
 ## Real Google Sheet: all-52 first pass and user add-on update, 2026-09-09
 
+### USER_PRODUCT persistence and real Sheet readback
+
+Normal async recovery now persists the deployed quality projection. Approved
+VM/container read-only counts grew from 104 items / 142 formula rows to
+208 items / 271 rows with fresh quality; the latter included 159 USER_PRODUCT
+items and 157 USER_PRODUCT rows. These are observations during a running
+inventory, not equal-time complete coverage. In a bounded fresh USER_PRODUCT
+sample, **20/20** formula-row projections matched their canonical item quality
+and user-product link, and **20/20** were accepted by the deployed formula reader.
+Probe: `/tmp/zeler-user-product-status.py`, executed inside the Sheets worker.
+Only counts, queue states and boolean comparison results were emitted.
+The inventory was still running at offset 1,880, attempt 1; another item recovery
+job remained pending. No jobs were manually inserted or freshness markers changed.
+
+In the authorized `Goal_Pruebas_20260909` tab, only `A29321` was updated to
+`=ZELERDATA_CALIDAD($A$2&"   ","si")` to recalculate using the unchanged
+canonical account. Token/input cells, other tabs and formatting were untouched.
+Connector readback of `H29322:H32181` returned 2,792 populated score cells:
+**218 numeric, 2,574 DATA_UNAVAILABLE, zero NA and zero cell errors**.
+The range was inspected about 15 seconds after the write response; this is not
+a whole-function execution measurement or a p95 receipt. Layout was checked
+through cell metadata only, not a native browser render.
+
+This proves live source -> normal recovery -> Mongo -> formula reader -> real
+Google Sheet for a bounded subset. It does **not** close quality coverage,
+explain every remaining unavailable row, reconcile the changed inventory count,
+or establish all-52 acceptance. Let the existing recovery finish, inspect its
+terminal state and remaining source reasons, then verify complete current
+readback without repeatedly forcing inventory sweeps.
+Runtime remains exact source `febea19`; this evidence-only change requires no
+new image. Rollback remains the image pair below, not deletion of recovered data.
+
 ### Quality acquisition gap: confirmed missing source path and permission
 
 USER_PRODUCT correction `febea1901f860748e6e5fd4d0858be79d81b1666` is deployed
