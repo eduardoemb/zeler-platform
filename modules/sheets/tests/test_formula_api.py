@@ -30,6 +30,90 @@ class FakeUpdateResult:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("outcome", ["success", "capacity", "database", "timeout", "disabled"])
+async def test_current_inventory_requests_refresh_without_losing_usable_values(
+    outcome: str,
+) -> None:
+    from zeler_sheets.formulas.recovery import ItemInventoryRecoveryRequest
+
+    async def handler(context: Any) -> FormulaExecutionResult:
+        return FormulaExecutionResult(
+            values=[["MLA1", 12]],
+            meta={"inventory_enumeration_current": True, "inventory_rows_complete": True},
+        )
+
+    app, _db, token = await _app_with_token(
+        now=datetime(2026, 5, 13, 12, tzinfo=UTC), formula_dispatcher=handler
+    )
+    queued: list[Any] = []
+    cancelled = False
+
+    class Queue:
+        async def enqueue(self, request: Any) -> str:
+            nonlocal cancelled
+            queued.append(request)
+            if outcome == "capacity":
+                raise ValueError("capacity reached")
+            if outcome == "database":
+                raise PyMongoError("database unavailable")
+            if outcome == "timeout":
+                try:
+                    await asyncio.Event().wait()
+                finally:
+                    cancelled = True
+            return str(request.key)
+
+    if outcome != "disabled":
+        app.state.formula_recovery_queue = Queue()
+    started = asyncio.get_running_loop().time()
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await _execute(client, token, formula="ZELERDATA_CATALOGO", args={})
+    assert asyncio.get_running_loop().time() - started < 1.6
+    assert response.status_code == 200
+    assert response.json() == {
+        "ok": True,
+        "values": [["MLA1", 12]],
+        "meta": {
+            "inventory_enumeration_current": True,
+            "inventory_rows_complete": True,
+            "inventory_refresh_requested": outcome == "success",
+        },
+    }
+    assert len(queued) == (0 if outcome == "disabled" else 1)
+    if queued:
+        assert isinstance(queued[0], ItemInventoryRecoveryRequest)
+        assert queued[0].seller_id == "123456789"
+    assert cancelled is (outcome == "timeout")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("current", [False, None, "true", 1])
+async def test_refresh_requires_explicit_current_inventory_metadata(current: Any) -> None:
+    async def handler(context: Any) -> FormulaExecutionResult:
+        return FormulaExecutionResult(
+            values=[[12]], meta={"inventory_enumeration_current": current}
+        )
+
+    app, _db, token = await _app_with_token(
+        now=datetime(2026, 5, 13, 12, tzinfo=UTC), formula_dispatcher=handler
+    )
+
+    class Queue:
+        async def enqueue(self, request: Any) -> str:
+            pytest.fail("not a current inventory response")
+
+    app.state.formula_recovery_queue = Queue()
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await _execute(client, token, formula="ZELERDATA_SKU", args={})
+    assert response.status_code == 200
+    assert "inventory_refresh_requested" not in response.json()["meta"]
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "scenario",
     [
@@ -125,7 +209,7 @@ async def test_independent_recoveries_keep_values_and_share_latency_budget(outco
     async def handler(context: Any) -> FormulaExecutionResult:
         return FormulaExecutionResult(
             values=[["available", "DATA_UNAVAILABLE"]],
-            meta={},
+            meta={"inventory_enumeration_current": True},
             recovery=FormulaDataUnavailableError(
                 context.contract.name,
                 read_model="item_formula_rows",
@@ -173,6 +257,7 @@ async def test_independent_recoveries_keep_values_and_share_latency_budget(outco
     assert response.status_code == 200
     assert response.json()["values"] == [["available", "DATA_UNAVAILABLE"]]
     assert response.json()["meta"]["recovery_requested"] is (outcome != "all_timeout")
+    assert "inventory_refresh_requested" not in response.json()["meta"]
     assert {request.read_model: request.item_ids for request in queued} == {
         "item_formula_rows": ("MLA2",),
         "catalog_buybox_snapshots": ("MLA1",),

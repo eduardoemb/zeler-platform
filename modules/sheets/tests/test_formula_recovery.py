@@ -3151,6 +3151,7 @@ async def test_http_buybox_price_gap_recovers_item_then_competition(
         db=recovery_db, seller_id=seller, item_ids=["MLA1"], dry_run=False
     )
     now = datetime.now(UTC)
+    now = now.replace(microsecond=(now.microsecond // 1000) * 1000)
     await recovery_db.sheets_formula_recovery_jobs.insert_one(
         {
             "_id": ItemInventoryRecoveryRequest(seller).key,
@@ -3161,6 +3162,7 @@ async def test_http_buybox_price_gap_recovers_item_then_competition(
             "inventory_ids": ["MLA1"],
             "inventory_offset": 1,
             "inventory_observed_at": now,
+            "available_at": now + timedelta(minutes=10),
         }
     )
     await recovery_db.sheets_catalog_buybox_snapshots.insert_one(
@@ -3212,6 +3214,12 @@ async def test_http_buybox_price_gap_recovers_item_then_competition(
         assert len(response.json()["values"]) == 1
         assert calls == []
         jobs = await queue.collection.find({"state": "pending"}).to_list(10)
+        refresh = [job for job in jobs if job.get("inventory_scope")]
+        assert len(refresh) == 1
+        assert refresh[0]["available_at"] == (now + timedelta(minutes=10)).replace(tzinfo=None)
+        assert refresh[0]["inventory_observed_at"] == now.replace(tzinfo=None)
+        assert response.json()["meta"]["inventory_refresh_requested"] is True
+        jobs = [job for job in jobs if not job.get("inventory_scope")]
         assert {job["read_model"]: job["item_ids"] for job in jobs} == {
             "catalog_buybox_snapshots": ["MLA1"],
         }

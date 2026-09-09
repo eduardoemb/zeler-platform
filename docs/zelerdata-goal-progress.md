@@ -20,6 +20,34 @@ Keep unrelated `.codegraph/` files untouched in both repositories.
 
 ## Real Google Sheet: all-52 first pass and user add-on update, 2026-09-09
 
+### Demand-triggered renewal of still-current inventory
+
+The API now requests the next inventory sweep when a successful response
+explicitly reports a current inventory enumeration. It reuses the existing
+one-second admission helper, queue key, cooldown and capacity controls; no
+autonomous loop or Mercado Libre call is added to formula execution. Required
+item recovery takes precedence over preventive renewal. Returned values and
+freshness remain unchanged, including when admission is disabled, fails or
+times out. `inventory_refresh_requested` reports admission separately from
+missing-data recovery.
+
+TDD: five initial cases failed for absent renewal; four precedence cases then
+caught redundant renewal alongside required item recovery. The real-Mongo
+buybox test now verifies the additional inventory job is deferred until its
+existing ten-minute due time, preserves the observation cut, and does not
+prevent immediate price/competition repair. Combined API/recovery suites:
+**452 passed in 93.05s**, without skips. Ruff and focused API mypy passed.
+Runtime verification is still pending. Only **sheets-api** requires a new image;
+rollback removes this admission hook/meta field and its tests, with no schema
+or data migration.
+
+Separately, the pilot sweep initiated by the real Sheet completed. The actual
+VM/container read-model reader returned **2,859 trusted rows across 1,900
+inventory items, zero missing items, enumeration current**. This proves current
+inventory at that cut, not buybox/product/sales completeness or sustained
+availability. The worker signal-fix deployment started only after the scoped
+pending/running job list became empty.
+
 ### Worker stop-signal correction
 
 The live old worker's PID 1 was `sh`. Its Dockerfile used a shell command

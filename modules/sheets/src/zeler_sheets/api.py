@@ -685,20 +685,41 @@ async def _execute_formula_payload(
         *((result.recovery,) if result.recovery is not None else ()),
         *result.additional_recoveries,
     )
-    if recoveries:
+    refresh_inventory = meta.get("inventory_enumeration_current") is True and not any(
+        missing.read_model == "item_formula_rows" for missing in recoveries
+    )
+    if recoveries or refresh_inventory:
         request.state.formula_phase = "recovery"
         # Independent missing models share the existing one-second admission
         # window; an unavailable inventory item must not starve known catalog IDs.
         admitted = await asyncio.gather(
-            *(_request_formula_recovery(request, context, missing) for missing in recoveries)
+            *(_request_formula_recovery(request, context, missing) for missing in recoveries),
+            *([_request_inventory_refresh(request, context)] if refresh_inventory else []),
         )
-        meta["recovery_requested"] = any(admitted)
+        if recoveries:
+            meta["recovery_requested"] = any(admitted[: len(recoveries)])
+        if refresh_inventory:
+            meta["inventory_refresh_requested"] = admitted[-1]
     request.state.formula_phase = "serialization"
     return {
         "ok": True,
         "values": _formula_json_safe(result.values),
         "meta": _formula_json_safe(meta),
     }, 200
+
+
+async def _request_inventory_refresh(request: Request, context: FormulaExecutionContext) -> bool:
+    queue = getattr(request.app.state, "formula_recovery_queue", None)
+    if queue is None:
+        return False
+    try:
+        # A real read requests the next sweep; queue cooldown/deduplication
+        # decides when it runs. Keep the current values and freshness intact.
+        async with asyncio.timeout(1):
+            await queue.enqueue(ItemInventoryRecoveryRequest(context.seller_id))
+    except (ValueError, PyMongoError, TimeoutError):
+        return False
+    return True
 
 
 async def _request_formula_recovery(
@@ -766,12 +787,7 @@ async def _request_formula_recovery(
     if missing.read_model == "item_formula_rows":
         if missing.order_ids or missing.shipment_ids:
             return False
-        try:
-            async with asyncio.timeout(1):
-                await queue.enqueue(ItemInventoryRecoveryRequest(context.seller_id))
-        except (ValueError, PyMongoError, TimeoutError):
-            return False
-        return True
+        return await _request_inventory_refresh(request, context)
     if missing.order_ids or missing.shipment_ids:
         if missing.order_ids and missing.shipment_ids:
             return False
