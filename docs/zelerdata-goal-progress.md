@@ -21,6 +21,52 @@ Keep unrelated `.codegraph/` files untouched in both repositories.
 Pilot: seller `82453304`; initial historical window 2026-08-08 through
 2026-09-06, plus current snapshots. Other products are out of scope.
 
+## Optional product response fix deployed; secondary acquisition still incomplete
+
+Cloud Build `c1ea0ae9-f913-4011-b805-c97de9c943eb` succeeded for source
+`b26389469fa85ee9e19f0c0fcbe5853be7150e5f`, producing worker digest
+`sha256:f70530a507c2302eaa373e07269fccf90af9b45a3dc724ac3086ab110f25569d`.
+Local and VM provenance verification passed into the canonical image map.
+GitHub test `34299202036` and lint `34299202086` both succeeded before activation.
+The single-service rollout checked zero running recoveries and the 5 GiB floor;
+pull took 12.68 seconds, with Compose unchanged until activation. New worker
+health is HTTP 200, zero restarts. Backup:
+`/opt/zeler-platform/docker-compose.yml.pre-sheets-worker-activate-b263894`.
+Rollback is the prior running worker digest `d3bee37...`; API remains `155a13...`
+from `c6b540b`, unchanged. No other service or data volume was modified.
+
+The exact 20 publications from the failed buybox batch were refreshed through
+normal item recovery, not by repeating the full inventory. Item job
+`40efa1115603f57de2fa79521d34f535e5853dbd926b9c2c63db43be69dce7a9`
+completed at `2026-09-09T01:36:10.399Z`, attempt one. After source-bound row
+verification, the same buybox job `835e036...` was reopened at `01:36:52.872Z`.
+It ended `failed/source_rejected` at `01:36:56.385Z`, attempt one. At the
+`01:37:27.362Z` status read, 20 snapshots existed (four before the attempt), with
+18 fresh snapshots matching canonical product/title/stock and acquired after
+the item sync. This is material acquisition, **not** full purpose-field acceptance.
+Do not blindly re-enqueue; diagnose the rejected secondary source next.
+Read-only status: `sudo python3 /tmp/retry-buybox-product.py status`.
+The helper's `refresh` and `recover` modes have already run and must not be repeated
+merely to recreate this receipt.
+
+The unchanged API's Mongo-only four-formula smoke now returned 21/21/22/22 rows
+with widths 9/24/3/6 in 1.2137/1.6257/1.6544/1.1657 seconds. Buybox and CATALOGO
+returned useful fields plus 60/203 unavailable cells respectively; expired global
+inventory and historical gaps remained explicit. Product matrices remained
+unavailable. Registry stayed exactly 11 scopes/6 topics and freshness markers
+were unchanged. These are operator backend observations, not authenticated HTTP,
+full-seller coverage, or real Google Sheet acceptance.
+
+A separate attempt to select the earlier two invalid publications by current
+`catalog_listing=true` and null product failed its selection assertion before
+source evidence was returned. It does not establish why those two original rows
+were invalid; reacquire their precise identities from a current reader result
+before diagnosing them. Do not infer catalog participation from missing product alone.
+
+This evidence-only follow-up needs no new image. The intended acquisition source
+`b263894` matches the running worker; further runtime verification is still needed
+for secondary source rejection and complete formula behavior.
+
 ## Completed inventory exposed an over-strict competition response check
 
 The existing inventory job completed at `2026-09-09T01:18:06.822Z`: offset
