@@ -35,6 +35,37 @@ evidence; a new worker image must prove Python PID 1 and graceful stop in runtim
 Rollback changes only the CMD and its focused regression. The operational
 activation helper must still allow more time than Docker's stop grace.
 
+Committed/pushed as `fc642deae15a3ba9b1423e36848c5e73f116487e`.
+Cloud Build `3b04fb93-3785-4b8e-b9ce-a1b12dc249de` succeeded; worker image
+`us-central1-docker.pkg.dev/zeler-platform-dev/zeler-platform/sheets-worker@sha256:9cf679bb5803ae4f2a8b4d24cd2c522ec5cbd195ad2d8b8e39a8d4734aff0657`.
+CI lint `34383367259` passed; test `34383367174` ended with 1 failure,
+3,807 passes and 393 skips: the existing Dockerfile contract still required
+the removed shell. Updated that existing test for Sheets only and removed the
+new duplicate assertion from the healthcheck test file. The image's runtime
+content is unchanged by this test-only follow-up; no rebuild is needed for it.
+The combined Dockerfile, runtime-contract, entrypoint and supervisor checks
+passed **82 tests in 2.88s** after correcting the stale expectation.
+Local helpers: `/tmp/zeler-worker-signals.uRArwZ/`. This image is **not deployed**;
+the running worker is the verified `36f9d28` image from attempt 2 below.
+
+The new image was verified and downloaded. Removed only unused local worker
+`7833b955...` after all-container, current Compose, protection-file and Artifact
+Registry checks; no volumes/data touched. Free disk returned to 5,859,319,808
+bytes. Prepared VM helper `/tmp/activate-worker-signals-fc642de.py` has not run;
+it preserves the currently running `7a380060...` worker as rollback and checks
+Python PID 1. Pilot acquisition advanced 520 → 1,180 → 1,580 during this work.
+
+Post-deployment Sheet replay changed only the four owned anchor account
+expressions from one trailing space to two (same normalized seller). Production
+confirmed new HTTP 200 events: CATALOGOBUYBOX 7,576.578ms, CATALOGO_COMPLETO
+7,403.748ms, OBTENER_CATALOGO 7,686.024ms, CATALOGO 7,535.278ms. Readback at
+45.5 seconds still showed DATA_UNAVAILABLE, so neither complete data nor the
+whole-function 30-second bound is proven by this cut. Existing formats were
+preserved; native rendered layout was not verified. The scoped recovery job
+was running at inventory checkpoint 200 after the calls, confirming that this
+real Sheet demand initiated acquisition. Allow it to progress before another
+worker deployment; then re-read values and source completeness.
+
 ### Catalog replay and demanded inventory refresh lead time
 
 Follow-up for source `36f9d2838e46575f77e59be63e77e0a5c993c0fc`:

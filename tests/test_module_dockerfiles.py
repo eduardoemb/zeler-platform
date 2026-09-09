@@ -109,4 +109,9 @@ def test_worker_dockerfile_cmd_matches_contract(module_name: str) -> None:
     text = dockerfile_path(module_name, "worker").read_text()
 
     assert "uv run" not in text
-    assert f'CMD ["sh", "-c", ".venv/bin/python -m zeler_{module_name}"]' in text
+    expected = (
+        'CMD [".venv/bin/python", "-m", "zeler_sheets"]'
+        if module_name == "sheets"
+        else f'CMD ["sh", "-c", ".venv/bin/python -m zeler_{module_name}"]'
+    )
+    assert expected in text
