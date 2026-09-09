@@ -22,6 +22,44 @@ Keep unrelated `.codegraph/` files untouched in both repositories.
 
 ### Catalog quality: dedicated User Product route permission
 
+**Deployed and live alternative route verified:** Sheets API and worker now run
+`c532ebf18fb10300a09cbfca26a3a4a91a5516c6`. Exact-source CI passed (lint
+`34399657839`, test `34399657805`); the permission baseline `f131587` also passed
+CI (lint `34399399310`, test `34399399264`). All four one-image Cloud Builds
+completed with verified provenance, checked locally and again from the VM.
+
+| Role/service | Source | Build | Immutable digest |
+| --- | --- | --- | --- |
+| Active API | `c532ebf` | `5c5e2356-1a93-491d-b16f-56499d011734` | `sha256:26ec71960971e978f19f0eedb5254c445963776413b19418f42d62961f8d3b21` |
+| Active worker | `c532ebf` | `855a1a30-ece8-4aef-95a8-cb4d91e5c0cd` | `sha256:7e9fec01ce40d41ec1ced3fcab7cba2c76604e509c707ab08c476586bb23dee5` |
+| Compatible rollback API | `f131587` | `a63420d1-4ca0-4f07-b614-ac505b7ade66` | `sha256:54b181885387cd05c267a8413cd0844e89b7385cd5f6c19e83ffa8722bec993a` |
+| Compatible rollback worker | `f131587` | `8d68372c-00bd-443e-9d08-139925d3eded` | `sha256:361460a512d9d4212f5635187a4e9aff7da711fbd456f4577b4bd9a12ae4269a` |
+
+Repositories remain `us-central1-docker.pkg.dev/zeler-platform-dev/zeler-platform/`
+plus `sheets-api` or `sheets-worker`. Isolated canonical API probes confirmed
+the exact 13-scope/six-routing-key contract for active and rollback images.
+The two Mongo validators matched the prior deployed source before the additive
+update and matched the new source afterward, with strict/error preserved.
+This changed no business documents. Unit `zeler-quality-c532ebf` completed with
+exit 0, `Result=success`, `activation_complete=true` and repeated healthy checks
+for both exact active images. Never rerun that completed unit as a status check.
+Compose backup: `/opt/zeler-platform/docker-compose.yml.pre-quality-c532ebf`.
+All prior provenance bindings and images were retained. After four pulls,
+12,044,632,064 bytes remained free, above the 5 GiB preflight floor; boot disk
+remains 30 GiB and the end-of-mission original-capacity evaluation still applies.
+
+Read-only approved-worker probe `/tmp/zeler-up-fallback-route-probe.py` selected
+an owned active catalog publication with the earlier item-performance HTTP 400.
+Fresh item detail returned 200, with a user-product link. The dedicated
+User Product performance request now returned **200**, `entity_type=USER_PRODUCT`,
+and its identity matched that exact fresh link. The deployed normalizer accepted
+the actual alternative source with three components and five pending actions.
+No raw response, identifier, token or personal data was printed or persisted by
+this probe. This proves the formerly scope-blocked alternative API contract,
+not seller-wide acquisition or formula coverage. Next use normal formula
+recovery, verify persisted alternative-source projections and re-read the real
+Sheet; do not replace that acceptance with direct probe-only success.
+
 The acquisition correction now tries the dedicated User Product route only
 after item-performance HTTP 400 and only with a fresh same-site, syntactically
 valid link from the owned item detail. Both requests share the existing
@@ -47,12 +85,10 @@ retained repository `--import-mode=importlib` and reached the above result.
 Permission baseline source is `f1315870374f1fcd150740f6a7567462e06f6d63`.
 Its verified-mode builds were submitted: API `a63420d1-4ca0-4f07-b614-ac505b7ade66`,
 worker `8d68372c-00bd-443e-9d08-139925d3eded`; completion/provenance verification
-is pending. The acquisition unit requires its own exact-commit API/worker
-images and additive `items`/`sheets_item_formula_rows` validators before use.
+and deployment preparation subsequently passed as recorded above.
 Rollback is the compatible 13-scope baseline pair, not removal of recovered data.
-No new images or validators from these units have been deployed yet. Live
-alternative-route success, acquisition persistence and real Sheets coverage
-remain pending; the deployed source remains `febea19`.
+Live alternative-route success is verified above; normal acquisition persistence
+and real Sheets coverage for that source remain pending.
 
 A bounded approved-runtime probe selected an owned active catalog publication
 whose recorded quality failure was HTTP 400. Fresh item detail returned 200 and
