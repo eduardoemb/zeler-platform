@@ -21,6 +21,42 @@ Keep unrelated `.codegraph/` files untouched in both repositories.
 Pilot: seller `82453304`; initial historical window 2026-08-08 through
 2026-09-06, plus current snapshots. Other products are out of scope.
 
+## Catalog scale defect reproduced; offer absence is not proven
+
+Read-only six-request probe `/tmp/offers-availability.py` on the approved VM
+worker (`d2ccd62...`) examined the same frozen two-item receipt. Both canonical
+items are paused. For each, competition returns HTTP 200 with `status=not_listed`,
+no winner, no product ID and no `only_competitor` field. The owned catalog product
+returns HTTP 200, `status=active`, zero children and no buybox winner. Its offers
+listing returns HTTP 404 / `not_found`. No business data was written. Thus the
+product itself is not missing or inactive; neither a total of zero nor permanent
+unrecoverability is established. Keep the unavailable offer flag explicit.
+
+The official [competition listing contract](https://developers.mercadolibre.com.mx/es_ar/envio/competencia-en-catalogo)
+still identifies `/products/{product_id}/items` as the offer listing. The
+[product contract](https://developers.mercadolibre.com.mx/es_mx/buscador-de-productos)
+distinguishes active terminal products from parent/inactive products. No verified
+alternate source for this count was found; the two-case evidence does not justify
+guessing a boolean or excluding paused publications from the current surfaces.
+
+Separately, a real local Mongo test exposed lost recovery intent at seller scale.
+`_request_formula_recovery` admits batches of 20 until the seller's 20-active-job
+capacity is reached, then returns false without persisting the remaining IDs.
+A single call with 401 IDs persisted only 400 for both product and buybox models.
+No durable continuation exists for the final ID; another caller invocation is
+currently necessary. The one-second admission budget can also truncate admission,
+but this test specifically reproduced the capacity boundary, not a timeout.
+
+TDD: `MONGO_URI=<local replica-set URI> uv run pytest
+modules/sheets/tests/test_formula_recovery.py
+-k retains_full_request_beyond_active_job_capacity --tb=short`:
+**2 failed, 380 deselected in 0.96s**. New tests remain uncommitted pending the
+implementation. Next retain full bounded catalog intent durably, process it in
+bounded resumable chunks, and preserve seller capacity, leases, retry limits and
+the HTTP budget. Do not fix by raising capacity or requiring another formula call.
+No executable production change or new build occurred in this investigation;
+worker remains source `f598ed2`, API `f4573de`. All full-goal gates remain open.
+
 ## Acquired-price worker deployed; both real missing prices recovered
 
 Cloud Build `da17604f-0c14-43ad-b618-d5068e90377f` succeeded for exact connected
