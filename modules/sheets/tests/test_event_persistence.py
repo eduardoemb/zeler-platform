@@ -2984,6 +2984,27 @@ async def test_item_event_clears_trusted_seller_shipping_when_basis_changes() ->
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("missing_field", ["quantity", "unit_price"])
+async def test_incomplete_order_amounts_do_not_replace_known_order(missing_field: str) -> None:
+    from copy import deepcopy
+
+    db = FakeDb()
+    persistence = SheetsEventPersistence(db=db, clock=lambda: NOW)
+    resource = _order_resource_at(status="paid", total_amount="250", date_closed=None)
+    resource["order_items"][0].update(quantity=2, unit_price="125")
+    await persistence.persist(event_type="orders.updated", seller_id=82453304, resource=resource)
+    before = deepcopy(db["orders"].documents["2001"])
+    del resource["order_items"][0][missing_field]
+
+    with pytest.raises(ValueError):
+        await persistence.persist(
+            event_type="orders.updated", seller_id=82453304, resource=resource
+        )
+
+    assert db["orders"].documents["2001"] == before
+
+
+@pytest.mark.asyncio
 async def test_persists_order_for_sheetseller_order_formulas() -> None:
     db = FakeDb()
     persistence = SheetsEventPersistence(db=db, clock=lambda: NOW)

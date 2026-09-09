@@ -21,6 +21,50 @@ Keep unrelated `.codegraph/` files untouched in both repositories.
 Pilot: seller `82453304`; initial historical window 2026-08-08 through
 2026-09-06, plus current snapshots. Other products are out of scope.
 
+## Orders: missing line amounts must not overwrite acquired values
+
+Review of the current orders contract reconfirmed that `gross_price` is a
+line-total measure, not a replacement for the unit price consumed by existing
+sales formulas. No new gross-price or billing surface was added. The separate
+hosted-shipment migration and its previously observed pilot 404 remain open;
+the order-detail endpoint itself is still documented.
+[Mercado Libre orders](https://developers.mercadolibre.com.mx/gestiona-ventas).
+
+Repository inspection exposed an independent integrity defect: `_order_items`
+substituted quantity one or unit price zero when a detail omitted those fields.
+Two TDD cases reproduced successful persistence of incomplete input. The writer
+now requires those source values before canonicalization and raises a static
+error if either is absent/null, before replacing the stored order. This preserves
+the prior acquired document and prevents manufactured sales values. It does not
+infer net unit price from gross totals or mix old and new line amounts.
+
+The 78 persistence tests pass in 0.32s. The 17 real-Mongo order-recovery cases
+pass in 3.81s, including both missing fields: prior documents remain unchanged,
+the incomplete recovery fails and no reconciled coverage marker is published.
+This does not claim per-field partial-order acquisition is complete: accepting
+available portions of an incomplete new line without inventing its missing
+amount remains separate work. Existing stored data stays consultable under its
+normal coverage contract. Static checks pass (507 files). The initial full run
+terminated with interpreter SIGSEGV/exit 139; it is not acceptance evidence.
+After that process was confirmed terminal, a fresh full run completed normally:
+4,132 passed, nine expected skips and 356 warnings in 133.86s. The eight protected
+Mongo tests passed separately in 2.68s; the other skip is the optional Caddy check.
+
+Rollback is the required-line-value guard and associated persistence/recovery
+assertions; no Mongo schema, data deletion, new queue or compatibility layer is
+introduced. This writer correction is not deployed. Include it in the next
+verified Sheets worker image and validate missing-detail behavior, retained data
+and truthful recovery state from the approved runtime context.
+
+Separately, Cloud Build `9c28f597-36b2-4f75-87bf-87f71b812e2e` succeeded for
+API source `c6b540b0b9d74030ca6e8823d5600fdd1ba4de6e`, producing
+`sha256:155a13ab9a06a144cffa1ef243d0486e3c982f937c7ef9223ef91e4a8149d752`.
+The local verifier passed exact source/repository/project and Artifact Registry
+provenance. Files are `/tmp/zeler-catalog-rollout.tdDS4D/history-{build,artifact}.json`;
+no production map update, pull or activation occurred. This image contains the
+historical-percentage reader correction, not the later order writer change.
+Do not rebuild it merely because it is waiting for rollout gates.
+
 ## CATALOGO no longer treats current snapshots as historical percentages
 
 The historical percentage column no longer accepts `winning_time_percent`,

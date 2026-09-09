@@ -1917,10 +1917,14 @@ def _order_items(resource: dict[str, Any], *, sale_fee_synced_at: datetime) -> l
         identity = extract_safe_order_item_identity(raw_item)
         if "item_id" not in identity:
             continue
+        quantity = raw_item.get("qty", raw_item.get("quantity"))
+        unit_price = raw_item.get("unit_price")
+        if quantity is None or unit_price is None:
+            raise ValueError("order line quantity and unit price must be acquired")
         normalized: dict[str, Any] = {
             "item_id": identity["item_id"],
-            "qty": raw_item.get("qty", raw_item.get("quantity", 1)),
-            "unit_price": raw_item.get("unit_price", 0),
+            "qty": quantity,
+            "unit_price": unit_price,
         }
         nested_item = raw_item.get("item")
         title = nested_item.get("title") if isinstance(nested_item, dict) else None

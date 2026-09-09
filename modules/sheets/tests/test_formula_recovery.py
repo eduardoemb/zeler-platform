@@ -4218,6 +4218,8 @@ async def test_known_order_detail_acquisition_is_bounded(recovery_db: Any, case:
         "extra_wrong_id",
         "extra_outside",
         "extra_404",
+        "missing_quantity",
+        "missing_unit_price",
     ],
 )
 async def test_order_recovery_publishes_only_complete_owned_inventory(
@@ -4236,7 +4238,7 @@ async def test_order_recovery_publishes_only_complete_owned_inventory(
     )
     queue = FormulaRecoveryQueue(recovery_db, enabled_models=frozenset({"orders"}))
     await queue.enqueue(requested)
-    resources = [
+    resources: list[dict[str, Any]] = [
         {
             "id": identity,
             "seller": {"id": "pilot"},
@@ -4253,7 +4255,7 @@ async def test_order_recovery_publishes_only_complete_owned_inventory(
         await recovery_db.orders.insert_one(
             {"_id": "999", "seller_id": "pilot", "date_created": datetime(2026, 8, 20)}
         )
-    if failure == "partial_recovered":
+    if failure in {"partial_recovered", "missing_quantity", "missing_unit_price"}:
         from zeler_sheets.event_persistence import _canonical_order_document
 
         for resource in resources:
@@ -4309,6 +4311,10 @@ async def test_order_recovery_publishes_only_complete_owned_inventory(
                     return httpx.Response(206, headers={"X-Content-Missing": "buyer"}, json=extra)
                 return httpx.Response(200, json=extra)
             resource = resources[int(path.rsplit("/", 1)[1]) - 42]
+            if failure in {"missing_quantity", "missing_unit_price"}:
+                line = dict(resource["order_items"][0])
+                del line[failure.removeprefix("missing_")]
+                resource = {**resource, "order_items": [line]}
             if failure == "foreign_detail":
                 resource = {**resource, "seller": {"id": "foreign"}}
             if failure == "partial_response":
