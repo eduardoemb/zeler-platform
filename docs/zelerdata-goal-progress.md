@@ -21,6 +21,50 @@ Keep unrelated `.codegraph/` files untouched in both repositories.
 Pilot: seller `82453304`; initial historical window 2026-08-08 through
 2026-09-06, plus current snapshots. Other products are out of scope.
 
+## Real 404 cases now persist competition without advancing retained offer cuts
+
+The two exact stale members of the earlier 20-item batch were resolved from their
+stored source/snapshot cuts. Private receipt (mode 0600):
+`/var/lib/zeler-platform/repairs/two-offers-cases-f4573de.json`. It retains identities,
+original cuts and offer-field hashes, not raw source responses. All operations ran
+through the approved API container against the expected API `1904ed9...` and worker
+`0cb733d...` images.
+
+Only these two items were admitted for refresh. Item job
+`c467f3f14eafe0e7488eccd4b3f721798646c98f1d2d4696c79947d697124549`
+completed at `2026-09-09T02:04:07.932Z`. After verifying their current source-bound
+rows, buybox job
+`ea3b67b16ebeed2eadf03cb1ab19a1bc33f6bb252261d42860ee2be102f9f834`
+was admitted once and ended `failed/source_rejected` at `02:04:36.565Z`.
+Do not repeat `prepare`, `refresh` or `recover`; read-only status is
+`sudo python3 /tmp/two-offers-cases.py status`.
+
+At `02:05:10.925Z` and `02:07:22.354Z`, both snapshots had newer, current competition
+cuts aligned with the acquired item product/title/stock. Each had explicit
+`offers_snapshot_at` equal to its recorded prior cut; offer-value hashes were
+unchanged. Neither prior snapshot had known offer count/sole-competitor values.
+Thus the live evidence proves current competition persists despite rejection and
+the old cuts are not advanced, but does **not** prove retention of a real prior
+numeric offer count (that case is covered by local Mongo tests).
+
+Mongo-only formula observations returned three rows each: two publications and
+an explicit inventory gap, widths 9/24. CATALOGOBUYBOX took 2.1099 seconds and
+CATALOGO 2.0206 seconds; repeat reads took 2.0614/1.525 seconds. They retained
+13/42 unavailable cells respectively; no publication had all first eight buybox
+columns available. Detailed counts isolated missing buybox columns 5 and 8
+(zero-based): current price and sole-competitor flag. History remains explicitly
+unreconciled for both publications. Registry was exactly 11/6 and global markers
+were unchanged. This is partial backend acceptance, not full formula or Sheet/HTTP
+acceptance, and no global inventory freshness was fabricated.
+
+The follow-up read found numeric, non-null `items.price` in both freshly acquired
+canonical documents, but null snapshot price. Next: verify the formula's price
+semantics against the acquired selling-price fields, then connect the justified
+Mongo fallback instead of leaving recoverable price unavailable. The independent
+offers 404 must remain explicit; it does not justify inventing a competitor flag.
+No executable source or deployment change was made in this evidence unit; both
+running sources remain `f4573de`. No image rebuild is needed for this note.
+
 ## Independent offer cuts deployed in schema → API → worker order
 
 Both Sheets services now run source `f4573de10271dafc73a9d6f48418872479db2fcf`:
