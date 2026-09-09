@@ -6,9 +6,11 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from time import monotonic
 from typing import Any, cast
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+import structlog
 from bson.decimal128 import Decimal128
 from fastapi import APIRouter, Request, Response
 from fastapi.encoders import jsonable_encoder
@@ -505,12 +507,29 @@ def build_router(
 
     @router.post("/formulas:execute")
     async def execute_formula(request: Request, payload: FormulaExecutePayload) -> JSONResponse:
+        started = monotonic()
+        status = 500
+        request.state.formula_phase = "validation"
         try:
             async with asyncio.timeout(FORMULA_DEADLINE_SECONDS):
-                body, status = await execute_payload(request, payload)
-                return JSONResponse(status_code=status, content=jsonable_encoder(body))
+                body, response_status = await execute_payload(request, payload)
+                request.state.formula_phase = "serialization"
+                response = JSONResponse(status_code=response_status, content=jsonable_encoder(body))
+                status = response_status
+                return response
         except TimeoutError:
+            status = 503
             return _formula_deadline_response()
+        finally:
+            # Only bounded server-owned labels: no cuenta, arguments, request ID,
+            # response values, token or exception text may enter this event.
+            structlog.get_logger(__name__).info(
+                "formula_execution",
+                formula=payload.formula if registry.find(payload.formula) else "unknown",
+                phase=request.state.formula_phase,
+                status=status,
+                duration_ms=round((monotonic() - started) * 1000, 3),
+            )
 
     @router.post("/formulas:batch")
     async def execute_formula_batch(request: Request, payload: FormulaBatchPayload) -> JSONResponse:
@@ -602,6 +621,7 @@ async def _execute_formula_payload(
         rate_limit_hook=rate_limit_hook,
     )
     try:
+        request.state.formula_phase = "authentication"
         validation = await token_service.validate_token(
             _bearer_token(request),
             cuenta=payload.cuenta,
@@ -627,6 +647,7 @@ async def _execute_formula_payload(
             status_code=400,
         )
 
+    request.state.formula_phase = "seller_context"
     context = FormulaExecutionContext(
         contract=contract,
         cuenta=payload.cuenta,
@@ -638,8 +659,10 @@ async def _execute_formula_payload(
         seller_timezone=await _seller_timezone(request, validation.seller_id),
     )
     try:
+        request.state.formula_phase = "dispatch"
         result = await _dispatch_formula(_runtime_dispatcher(request, dispatcher, now=now), context)
     except FormulaDataUnavailableError as exc:
+        request.state.formula_phase = "recovery"
         if await _request_formula_recovery(request, context, exc):
             body, status = _formula_error(
                 "DATA_UNAVAILABLE",
@@ -663,12 +686,14 @@ async def _execute_formula_payload(
         *result.additional_recoveries,
     )
     if recoveries:
+        request.state.formula_phase = "recovery"
         # Independent missing models share the existing one-second admission
         # window; an unavailable inventory item must not starve known catalog IDs.
         admitted = await asyncio.gather(
             *(_request_formula_recovery(request, context, missing) for missing in recoveries)
         )
         meta["recovery_requested"] = any(admitted)
+    request.state.formula_phase = "serialization"
     return {
         "ok": True,
         "values": _formula_json_safe(result.values),

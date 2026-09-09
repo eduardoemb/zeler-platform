@@ -31,6 +31,92 @@ class FakeUpdateResult:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
+    "scenario",
+    [
+        "success",
+        "unknown",
+        "exception",
+        "dispatch_timeout",
+        "auth_timeout",
+        "recovery_timeout",
+        "serialization_exception",
+    ],
+)
+async def test_formula_execution_log_is_bounded_and_identifies_timeout_phase(
+    monkeypatch: pytest.MonkeyPatch, scenario: str
+) -> None:
+    from zeler_sheets import api
+
+    private = "private-argument-and-exception"
+
+    async def handler(context: Any) -> FormulaExecutionResult:
+        if scenario == "exception":
+            raise RuntimeError(private)
+        if scenario == "dispatch_timeout":
+            await asyncio.Event().wait()
+        if scenario == "recovery_timeout":
+            from zeler_sheets.formulas.dispatcher import FormulaDataUnavailableError
+
+            raise FormulaDataUnavailableError(context.contract.name, read_model="item_formula_rows")
+        return FormulaExecutionResult(values=[[private]], meta={})
+
+    app, _db, token = await _app_with_token(
+        now=datetime(2026, 5, 13, 12, tzinfo=UTC), formula_dispatcher=handler
+    )
+    monkeypatch.setattr(api, "FORMULA_DEADLINE_SECONDS", 0.02)
+    if scenario == "auth_timeout":
+
+        async def blocked_auth(*args: Any, **kwargs: Any) -> None:
+            await asyncio.Event().wait()
+
+        monkeypatch.setattr(ExtensionTokenService, "validate_token", blocked_auth)
+    if scenario == "recovery_timeout":
+
+        class Queue:
+            async def enqueue(self, request: Any) -> None:
+                await asyncio.Event().wait()
+
+        app.state.formula_recovery_queue = Queue()
+    if scenario == "serialization_exception":
+
+        def broken_encoder(*args: Any, **kwargs: Any) -> Any:
+            raise ValueError(private)
+
+        monkeypatch.setattr(api, "jsonable_encoder", broken_encoder)
+    formula = private if scenario == "unknown" else "ZELERDATA_SKU"
+    with structlog.testing.capture_logs() as entries:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app, raise_app_exceptions=False),
+            base_url="http://test",
+        ) as client:
+            response = await _execute(client, token, formula=formula, args={"private": private})
+    logs = [entry for entry in entries if entry.get("event") == "formula_execution"]
+    assert len(logs) == 1
+    log = logs[0]
+    assert set(log) == {"event", "log_level", "formula", "phase", "status", "duration_ms"}
+    assert log["formula"] == ("unknown" if scenario == "unknown" else formula)
+    assert (
+        log["status"]
+        == response.status_code
+        == (503 if scenario.endswith("timeout") else 500 if scenario.endswith("exception") else 200)
+    )
+    assert log["phase"] == (
+        "authentication"
+        if scenario == "auth_timeout"
+        else "dispatch"
+        if scenario == "dispatch_timeout"
+        else "recovery"
+        if scenario == "recovery_timeout"
+        else "serialization"
+    )
+    assert isinstance(log["duration_ms"], (int, float)) and log["duration_ms"] >= 0
+    assert private not in str(log)
+    assert token not in str(log)
+    assert "HOPEMOB" not in str(log)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
     "outcome", ["success", "primary_capacity", "primary_timeout", "all_timeout"]
 )
 async def test_independent_recoveries_keep_values_and_share_latency_budget(outcome: str) -> None:
@@ -629,8 +715,10 @@ async def test_build_app_revoked_denial_preserved_when_audit_write_fails() -> No
 
     assert response.status_code == 401
     assert response.json()["error"]["code"] == "TOKEN_REVOKED"
-    assert len(entries) == 1
-    assert entries[0]["error_code"] == "TOKEN_REVOKED"
+    audit_entries = [entry for entry in entries if entry["event"] == "formula.audit.write_failed"]
+    assert len(audit_entries) == 1
+    assert audit_entries[0]["error_code"] == "TOKEN_REVOKED"
+    assert [entry["status"] for entry in entries if entry["event"] == "formula_execution"] == [401]
 
 
 @pytest.mark.asyncio

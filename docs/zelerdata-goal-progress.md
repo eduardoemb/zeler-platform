@@ -18,10 +18,147 @@ Keep unrelated `.codegraph/` files untouched in both repositories.
 - [ ] Evidence-backed simplification and preserved verified consumers.
 - [ ] Deployed source/image correspondence and final regression/smoke.
 
+## Real Google Sheet: all-52 first pass and user add-on update, 2026-09-09
+
+### Bounded execution diagnostics prepared; runtime activation pending
+
+The inventory checkpoint advanced from 240 to 580 of 1,900, with zero recorded
+unavailable IDs and 1,040 canonical items acquired within 15 minutes. This is
+ongoing acquisition evidence, not stable full-inventory availability.
+
+The single-formula HTTP endpoint now emits one `formula_execution` event with
+only registry-bounded formula name (or `unknown`), phase, HTTP status and monotonic
+duration. Timeout phases distinguish authentication, seller context, dispatch,
+recovery and serialization. No account, arguments, caller request ID, response
+values or exception text is supplied to the event. This uses existing logging,
+not a new service or collection. Batch telemetry is unchanged. Formula outputs,
+freshness, recovery policy and the 20-second deadline are unchanged.
+
+TDD: five initial cases failed for the absent event; seven diagnostic cases now
+cover success, unknown names, handler failure, authentication/dispatch/recovery
+timeouts and serialization failure. The focused API/token/foundations/contracts/
+HTTP-smoke suites passed **103 tests in 4.15s**. Ruff check/format and mypy for the
+changed API passed. The audit-failure regression still proves token denial and
+one audit warning, alongside the new execution event.
+
+Runtime harness: local ASGI requests through token validation and the endpoint;
+real production emission is pending. Only **sheets-api** needs a new Cloud Build
+image and scoped deployment; worker code did not change. After activation,
+verify digest/health and reproduce populated catalog calls from the authorized
+Sheet, confirming bounded log fields and the actual timeout phase. Do not count
+this diagnostic unit as the catalog fix. Rollback removes only the endpoint
+logging/phase annotations and their tests; it does not alter data or schemas.
+
+### Sheet observations
+
+User authorized formula writes in the existing private spreadsheet
+`1NUYbJUgYEc6SumZ_IwOWXj_d9MC4grGO5c2XRrAM858`. Google Drive/Sheets connector
+access succeeded without exposing a token or changing sharing. Created only
+`Goal_Pruebas_20260909` (`sheetId=1903536092`); original tabs remain untouched.
+The index in A10:D62 links to 52 separate output sections. Column C preserves
+initial classifications and D records the post-update observation. Each formula
+uses the canonical local signature; scoped queries use the existing pilot
+publication/SKU, date queries use 2026-08-08 through 2026-09-06. COMPRADORES uses
+one real owned order selected read-only from production Mongo inside the API
+container on the approved VM. No token was extracted or copied.
+
+Initial first-four-row observations: 24 responses needing data review, 25 with
+DATA_UNAVAILABLE, one unknown function (CATALOGO_COMPLETO), one header-only and
+one empty response. A bounded production audit aggregation confirmed all 38
+recognized formulas in the first three groups reached the API with allowed
+authorization; this was not a full 52-status HTTP trace.
+
+The user subsequently updated the four Apps Script files in the same project.
+Readback across all 52 output anchors now shows 31 responses needing review,
+15 with DATA_UNAVAILABLE, four SERVICE_UNAVAILABLE, one header-only and one empty.
+CATALOGO_COMPLETO is now recognized. Do not attribute every availability change
+to the add-on: asynchronous acquisition also ran between observations.
+
+CATALOGO, CATALOGOBUYBOX, CATALOGO_COMPLETO and OBTENER_CATALOGO still returned
+SERVICE_UNAVAILABLE after an explicit four-formula replay using TO_TEXT on the
+same account reference. They were LOADING at the 21.489s observation and terminal
+at 32.632s; these are polling bounds, not execution durations or p95. A read-only
+runtime dispatcher probe completed all four without exceptions (938, 938, 834,
+834 rows), but bypassed HTTP authentication, deadline and recovery admission.
+Thus that direct result does not clear the real Sheets failure. The API has a
+20s deadline returning 503. A subsequent Caddy access-log aggregation (only
+timestamp/status/duration/response size, no headers or request bodies) confirmed
+the last four replay requests returned 503 in 25.818–26.186s, each 166 bytes.
+This supports deadline investigation; it does not identify the slow phase.
+
+Further isolation on 2026-09-09:
+
+- Four concurrent read-only dispatcher calls plus JSON-safe serialization took
+  11.803–12.887s, with 650/802 rows. These still bypass HTTP/auth/admission.
+- No container CPU quota or cgroup CPU throttling was present at inspection.
+- Rewriting A5801 with an equivalent account expression produced no new Caddy
+  request and retained SERVICE_UNAVAILABLE. Do not count expression-only changes
+  with unchanged evaluated arguments as fresh custom-function executions.
+- Changing the supported header argument from `si` to `sí` produced a new
+  authenticated Sheets request: HTTP 200 in 2.364s, 513 bytes. Readback preserved
+  the formula and showed a header plus DATA_UNAVAILABLE, not a complete catalog.
+  Current-data membership had changed; this is not a like-for-like latency pass.
+- The subsequent VM-scoped inventory check found one active pending recovery
+  job, 1,900 inventory IDs, checkpoint 240, discovery age 59s and 700/1,918
+  canonical items acquired within 15 minutes. Recovery is running, not blocked
+  on user action. Sustained availability across the acquisition cycle remains
+  unproven; rerun populated catalog requests before judging latency fixed.
+
+These counts inspect only the first four rows per output, not whole-matrix
+completeness or correctness. Full-output checks, source comparisons, all-52 HTTP
+status evidence, latency measurements and app acceptance remain open. Native
+rendering was unavailable; formula/style readback used the Sheets API. No build,
+deployment, runtime code change or ad-hoc production repair occurred in this unit.
+
 Pilot: seller `82453304`; initial historical window 2026-08-08 through
 2026-09-06, plus current snapshots. Other products are out of scope.
 
-## Tenant-scoped formula audit identity: verified locally, not deployed
+## Tenant-scoped formula audit identity: deployed and read-only runtime checks passed
+
+On resumed verification on 2026-09-09, GCP access succeeded. The read-only
+`/tmp/zeler-catalog-rollout-preflight.py` confirmed API source `57e106e` at
+the intended `14509bbf...` digest and worker source `3a5a016` at `5f23d9ba...`.
+Both services were healthy with zero restarts; free space was 5,897,539,584 bytes.
+No activation, build or rollback was repeated.
+
+After inspecting the VM copy of `/tmp/check-runtime-audit.py`, its read-only
+execution passed: runtime identities separate seller/token/formula scopes,
+same-scope replay is stable, and production audit indexes are compatible.
+This executed the loaded API code with synthetic in-memory identities and read
+Mongo index metadata only: **no production audit writes and no authenticated
+HTTP verification**. The previously unconfirmed activation is now confirmed;
+all-52 HTTP, real Sheet/app and the remaining hardening gates remain open.
+The earlier local `/tmp/zeler-audit-scope.SHm996/` helper directory was absent
+in this resumed environment; the inspected VM helper remains the evidence path.
+
+API image for source `57e106eb00fe3cb0ecb1d6c2c8b43fd55e3c5661` is built,
+verified locally and on the VM, and downloaded; **activation and final health
+are now verified**:
+`us-central1-docker.pkg.dev/zeler-platform-dev/zeler-platform/sheets-api@sha256:14509bbffbe36757853357b9fa7be67168361eeb05d879e3b310d017cdb0fdbb`.
+Build `a4db454e-0aa2-460a-a649-88f0818e7baa` succeeded; reuse it. CI lint
+`34312143957` and test `34312143905` both passed before activation.
+The activation process emitted `activating_cached_image` and created backup
+`/opt/zeler-platform/docker-compose.yml.pre-sheets-api-activate-57e106e`.
+Observation was interrupted by an environment permission change; the local
+process handle was subsequently absent. A read-only VM check then failed with
+GCP reauthentication required. This is not evidence of either deployment failure
+or successful final health. Do not repeat activation or rebuild the image.
+The recovery procedure was to first inspect the running digest/health through
+`/tmp/zeler-catalog-rollout-preflight.py`, then run `/tmp/check-runtime-audit.py`
+only if the intended API image is active. Both checks have now passed as recorded
+above. No rollback has been performed.
+
+Local artifacts/helpers: `/tmp/zeler-audit-scope.SHm996/`; VM provenance inputs
+`/tmp/audit-build.json`, `/tmp/audit-artifact.json`, recorded by the canonical
+verifier. `/tmp/pull-audit-api.py` already completed in 11.29s with Compose
+unchanged. Only unused older API cache `3c9d72f0...` was removed after checking
+all containers, Compose, protected images and Artifact Registry recovery.
+No data/volumes were deleted; free space after pull was 5,895,331,840 bytes.
+The pre-activation API `d9203ac5...` is retained as the rollback authority; worker
+`5f23d9ba...` does not need rebuilding. `/tmp/activate-audit-api.py` was invoked
+once; do not use it as a status command.
+Local `check-runtime-audit.py` is a read-only post-activation identity/index probe,
+not an authenticated HTTP or production audit-write test.
 
 Formula audit IDs now hash a structured identity containing seller, token,
 formula and request ID (or the existing timestamp fallback). Reusing a client
@@ -41,9 +178,9 @@ formula_audit_scope`). Ruff check/format and mypy pass (507 files).
 
 Rollback boundary is `_audit_id` and its matching tests; never delete audit
 history. Reverting reinstates the known collision and is not an acceptable
-hardening completion. A new verified **sheets-api** image and runtime audit
-readback are still required; production currently runs `3a5a016` and does not
-contain this fix. The other minimum-hardening and functional acceptance gates
+hardening completion. The verified **sheets-api** image already exists; runtime
+audit identity/index readback and current-image confirmation passed after the
+interrupted observation. The other minimum-hardening and functional acceptance gates
 remain open. No production data was accessed or changed by these audit tests.
 
 ## Buybox price dependency: local end-to-end recovery correction
@@ -6089,6 +6226,19 @@ retain their contract; other product deployments remain out of scope.
   per-formula source-value checks remain pending.
 
 ## Minimum-hardening audit: unresolved deletion and audit isolation
+
+Follow-up on 2026-09-09: the audit-identity defect described below is now fixed
+and deployed; see the runtime verification at the top of this file. Deletion
+remains unproven. A renewed focused run passed **40 tests in 0.45s** across
+`test_observability_logging.py`, `test_google_token_encryption.py`,
+`test_extension_tokens.py` and `test_extension_token_api.py`; formula foundations
+passed **13 tests in 0.10s**. Google credential tests exercise account-bound AAD
+with fake KMS; extension lifecycle tests use a fake cipher. Audit failure tests
+verify bounded logs without secrets. These are not proof of production KMS IAM,
+business-data encryption or complete log sanitization: the shared logging suite
+tests rendering/tracing, and its processor chain has no general redactor.
+Do not treat credential revocation/deletion as erasure of seller business data.
+No production data or executable code changed in this follow-up.
 
 - No seller/account erasure implementation was found in repository Python code
   across gateway/core/Sheets/operations. Documentation requires including
