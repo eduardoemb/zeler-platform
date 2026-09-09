@@ -235,6 +235,12 @@ class RemainingPhase4FormulaHandlers:
                 "unavailable_shared_users": unavailable_shared,
                 "inventory_enumeration_current": current and rows_current,
                 "unavailable_buybox_items": len(recoverable),
+                "unavailable_winning_time_items": len(catalog_rows),
+                **(
+                    {"winning_time_unavailable_reason": "catalog_history_not_reconciled"}
+                    if catalog_rows
+                    else {}
+                ),
                 "sales_as_of": sales_as_of.isoformat(),
                 "unavailable_sales_windows": [
                     days for days in CATALOGO_SALES_WINDOWS if days not in covered_windows
@@ -246,8 +252,10 @@ class RemainingPhase4FormulaHandlers:
                         else "buybox_missing_expired_or_incomplete"
                         if recoverable
                         else "catalog_sales_interval_not_reconciled"
+                        if recovery
+                        else "catalog_history_not_reconciled"
                     }
-                    if recovery
+                    if recovery or catalog_rows
                     else {}
                 ),
             },
@@ -454,9 +462,10 @@ def _catalogo_row(
         *[_sheet_optional_number(sales.get(window)) for window in CATALOGO_SALES_WINDOWS],
         _current_value(current, "status"),
         _first_value(buybox, "buybox_status", "winner_status", "status"),
-        _sheet_optional_number(
-            _first_value(buybox, "winning_time_percent", "winning_percent", "catalog_win_percent")
-        ),
+        # Current competition states do not establish time spent competing or
+        # winning. This column needs reconciled interval history, not a snapshot
+        # alias or a percentage inferred from a single acquired observation.
+        "DATA_UNAVAILABLE",
         _sheet_optional_number(_first_value(buybox, "winning_price", "winner_price")),
         _selected_price(current, tipo_precio=tipo_precio),
         buybox.get("winning_user_id", "DATA_UNAVAILABLE")

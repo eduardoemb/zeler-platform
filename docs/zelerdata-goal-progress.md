@@ -21,6 +21,45 @@ Keep unrelated `.codegraph/` files untouched in both repositories.
 Pilot: seller `82453304`; initial historical window 2026-08-08 through
 2026-09-06, plus current snapshots. Other products are out of scope.
 
+## CATALOGO no longer treats current snapshots as historical percentages
+
+The historical percentage column no longer accepts `winning_time_percent`,
+`winning_percent` or `catalog_win_percent` from a current buybox snapshot.
+Repository search found no current producer for those snapshot fields; the
+separate historical metric writer does not make them a verified source for
+this matrix. Neither a missing snapshot nor one winning observation proves
+optional absence, zero, 100% or any other percentage across an interval.
+
+The column now returns `DATA_UNAVAILABLE`, with
+`winning_time_unavailable_reason=catalog_history_not_reconciled` and an affected
+item count in metadata. Inventory, current competition, prices and independently
+covered sales remain available. History absence alone does not enqueue repeated
+buybox recovery. Existing inventory/buybox/sales recovery still retains its
+priority and reason; the history-specific reason remains alongside it. Empty
+catalog inventories do not report missing historical rows.
+
+This is a truthfulness correction, **not a completed historical implementation**:
+the current matrix has no verified interval-history source for this column.
+Connecting genuinely covered history, or establishing that the requested past
+cannot be recovered, remains in the goal. Stored observation samples must not
+be promoted to full-period coverage merely to return a number.
+
+TDD reproduced seven failures (NA, unverified numeric aliases and missing
+reason). The handler suite now passes 59 tests in 0.15s. Ten authenticated local
+HTTP/real-Mongo cases pass in 4.15s, preserving the 24-column matrix, explained
+historical unavailability, current buybox values and no redundant recovery on
+repeat reads. Ruff check/format and mypy (507 files) pass. Full local replica-set
+regression (`uv run pytest --tb=short`) passed 4,128 tests, nine expected skips
+and 356 warnings in 134.22s. Eight protected Mongo tests passed separately in
+3.41s; the remaining skip is the optional Caddy environment check.
+
+Rollback is limited to this percentage-source rejection, its metadata and
+associated assertions in the handler/recovery tests; no observations or source
+records are removed. This unit is not deployed. Runtime last verified API/worker
+source remains `99f933a`. Include this reader correction in the next verified
+Sheets API image and confirm production response values/reason and repeat-read
+queue behavior. Do not infer production acceptance from the local HTTP harness.
+
 ## Competition rollout: worker active and real notification persisted — 2026-09-09 UTC
 
 Both Sheets services now run verified source `99f933a`: API digest `0944389...`

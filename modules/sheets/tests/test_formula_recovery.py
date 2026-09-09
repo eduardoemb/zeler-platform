@@ -402,6 +402,12 @@ async def test_buybox_http_recovers_current_membership_then_reuses_mongo(
                 assert ready.json()["values"][0][2] == "MLA1"
                 assert ready.json()["values"][0][21:24] == [0, "NA", False]
                 assert ready.json()["meta"]["unavailable_buybox_items"] == 0
+                assert ready.json()["values"][0][17] == "DATA_UNAVAILABLE"
+                assert ready.json()["meta"]["unavailable_winning_time_items"] == 1
+                assert (
+                    ready.json()["meta"]["winning_time_unavailable_reason"]
+                    == "catalog_history_not_reconciled"
+                )
             else:
                 assert ready.json()["values"] == [
                     ["Publication", "MLA1", "MLA9", 0, "winning", 120, 119, 0, False]

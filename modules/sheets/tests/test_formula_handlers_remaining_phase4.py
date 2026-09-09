@@ -83,6 +83,27 @@ NOW = datetime(2026, 6, 15, 12, 0, tzinfo=UTC)
 
 
 @pytest.mark.parametrize(
+    "snapshot",
+    [
+        None,
+        {},
+        {"winning_time_percent": Decimal("75.5")},
+        {"winning_percent": 100},
+        {"catalog_win_percent": 0},
+        {"buybox_status": "winning", "snapshot_at": NOW},
+    ],
+)
+def test_catalog_current_snapshot_does_not_certify_historical_percentage(
+    snapshot: dict[str, Any] | None,
+) -> None:
+    from zeler_sheets.formulas.handlers_remaining_phase4 import _catalogo_row
+
+    result = _catalogo_row({"item_id": "MLA1"}, buybox=snapshot, sales={}, tipo_precio="base")
+    assert len(result) == 24
+    assert result[17] == "DATA_UNAVAILABLE"
+
+
+@pytest.mark.parametrize(
     "snapshot,expected",
     [
         ({}, "DATA_UNAVAILABLE"),
@@ -216,6 +237,13 @@ async def test_catalogo_uses_verified_inventory_and_requests_missing_competition
         assert result.recovery.item_ids == (() if state == "expired" else ("MLA1",))
     else:
         assert result.recovery is None
+    if state == "ready":
+        assert result.values[0][17] == "DATA_UNAVAILABLE"
+        assert result.meta["unavailable_winning_time_items"] == 1
+        assert result.meta["winning_time_unavailable_reason"] == "catalog_history_not_reconciled"
+        assert result.meta["unavailable_reason"] == "catalog_history_not_reconciled"
+    if state == "not_catalog":
+        assert "winning_time_unavailable_reason" not in result.meta
     repository.find_catalog_buybox_snapshots.assert_not_called()
 
 
@@ -427,7 +455,7 @@ async def test_catalogo_uses_local_item_catalog_buybox_and_sales_snapshots(
             21,
             "active",
             "sharing_first_place",
-            75.5,
+            "DATA_UNAVAILABLE",
             95,
             100,
             "seller-competitor",
@@ -442,6 +470,9 @@ async def test_catalogo_uses_local_item_catalog_buybox_and_sales_snapshots(
         "unavailable_shared_users": 0,
         "inventory_enumeration_current": True,
         "unavailable_buybox_items": 0,
+        "unavailable_winning_time_items": 1,
+        "winning_time_unavailable_reason": "catalog_history_not_reconciled",
+        "unavailable_reason": "catalog_history_not_reconciled",
         "sales_as_of": NOW.isoformat(),
         "unavailable_sales_windows": [],
     }
