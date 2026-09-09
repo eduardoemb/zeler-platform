@@ -15,6 +15,64 @@ from zeler_sheets.formulas.recovery import FormulaRecoveryQueue, RecoveryRequest
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("header", ["buyer", "[buyer]", "[ buyer, shipping ]", "[seller]"])
+async def test_order_partial_header_formats_preserve_missing_fields(header: str) -> None:
+    import httpx
+
+    from zeler_sheets.formulas.recovery_worker import FormulaRecoveryWorker
+
+    expected = frozenset(part.strip() for part in header.strip("[] ").split(","))
+    resource = {
+        "id": 42,
+        "seller": {} if "seller" in expected else {"id": "123"},
+        "date_created": "2026-08-20T10:00:00Z",
+        "order_items": [{"item": {"id": "MLM42"}, "quantity": 1, "unit_price": 30}],
+        "tags": ["no_shipping"],
+    }
+
+    class Gateway:
+        async def request(self, **kwargs: Any) -> httpx.Response:
+            return httpx.Response(206, headers={"X-Content-Missing": header}, json=resource)
+
+    queue = FormulaRecoveryQueue(
+        {"sheets_formula_recovery_jobs": None, "sheets_formula_recovery_admission": None}
+    )
+    worker = FormulaRecoveryWorker(db=None, queue=queue, gateway=Gateway())
+    located = await worker._locate_orders({"seller_id": "123", "order_ids": ["42"]})
+    _, missing = await worker._order_detail(
+        "123",
+        "42",
+        located["date_from"],
+        located["date_to"],
+        search_row={**resource, "seller": {"id": "123"}},
+    )
+    assert missing == expected
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "header", ["[unexpected]", "[buyer", "buyer]", "[[buyer]]", "[]", "[buyer,,shipping]"]
+)
+async def test_order_partial_header_rejects_unknown_or_malformed_fields(header: str) -> None:
+    import httpx
+
+    from zeler_sheets.formulas.recovery_worker import FormulaRecoveryWorker
+
+    class Gateway:
+        async def request(self, **kwargs: Any) -> httpx.Response:
+            return httpx.Response(206, headers={"X-Content-Missing": header}, json={})
+
+    queue = FormulaRecoveryQueue(
+        {"sheets_formula_recovery_jobs": None, "sheets_formula_recovery_admission": None}
+    )
+    worker = FormulaRecoveryWorker(db=None, queue=queue, gateway=Gateway())
+    with pytest.raises(ValueError):
+        await worker._order_detail(
+            "123", "42", datetime(2026, 8, 1, tzinfo=UTC), datetime(2026, 9, 1, tzinfo=UTC)
+        )
+
+
+@pytest.mark.asyncio
 async def test_formula_audit_scope_and_replay_use_real_mongo_uniqueness(recovery_db: Any) -> None:
     from zeler_sheets.formulas.audit import FormulaAuditService
 
@@ -4623,10 +4681,12 @@ async def test_unresolved_forward_relationship_keeps_order_data_unavailable(
 @pytest.mark.asyncio
 @pytest.mark.parametrize("missing_field", ["buyer", "shipping"])
 @pytest.mark.parametrize("recover_shipping", [False, True])
+@pytest.mark.parametrize("bracketed", [False, True])
 async def test_missing_identity_keeps_sales_but_rejects_consumers_that_require_it(
     recovery_db: Any,
     missing_field: str,
     recover_shipping: bool,
+    bracketed: bool,
 ) -> None:
     import json
     from pathlib import Path
@@ -4678,7 +4738,11 @@ async def test_missing_identity_keeps_sales_but_rejects_consumers_that_require_i
                 if recover_shipping:
                     return httpx.Response(200, json=[{"id": 456, "type": "forward"}])
                 return httpx.Response(204)
-            return httpx.Response(206, headers={"X-Content-Missing": missing_field}, json=resource)
+            return httpx.Response(
+                206,
+                headers={"X-Content-Missing": f"[{missing_field}]" if bracketed else missing_field},
+                json=resource,
+            )
 
     await FormulaRecoveryWorker(db=recovery_db, gateway=Gateway(), queue=queue).process_one()
     job = await queue.collection.find_one({"_id": requested.key})

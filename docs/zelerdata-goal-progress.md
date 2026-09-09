@@ -20,9 +20,53 @@ Keep unrelated `.codegraph/` files untouched in both repositories.
 
 ## Real Google Sheet: all-52 first pass and user add-on update, 2026-09-09
 
+### Order recovery: bracketed missing-content header fix (local, not deployed)
+
+The failed orders job targeted May 1–30; its existing coverage expanded acquisition
+to May 1–September 10 (132 days). Two read-only source searches returned 1,231
+orders for the requested interval and 2,359 for the union: neither exceeds the
+10,000-order budget. Fifty initial details passed (HTTP 200). Sanitized gateway
+logs for the original job interval showed 873 HTTP 200, two 404 and one 206,
+without 429. The locally owned order behind that 206 was re-read through the
+normal Sheets identity: `X-Content-Missing: [buyer]`, valid identity, seller and
+nonempty order items. No identifiers, buyer data or credentials were output.
+
+The parser previously treated `[buyer]` as an unknown field. A shared parser now
+accepts the observed non-JSON bracketed list and existing comma-separated fields,
+retaining the known-field allowlist and rejecting malformed/unknown headers.
+Both order location and detail validation use it. Missing buyer/shipping data
+remains explicitly unavailable; no scope, schema or purpose requirement changed.
+TDD first failed three bracketed-header cases (seven passed); the corrected
+header and Mongo consumer tests passed 18 cases. Full recovery suite: **410
+passed in 86.59s**. Root Ruff check/format and Mypy passed (509 files).
+
+Runtime verification remains pending: build/deploy the changed Sheets image(s),
+re-read the same partial response through the deployed parser, then verify normal
+recovery persistence and consumers. The runtime still uses `7256f84`, without
+this fix. Rollback removes only the header parser and its tests from
+`formulas/recovery_worker.py` and `test_formula_recovery.py`; legitimately stored
+partial-data documents remain compatible and must not be deleted.
+
 ### Catalog quality: dedicated User Product route permission
 
-**Next optimization implemented locally, not deployed:** quality acquisition now
+**Route-reuse optimization deployed; full-cycle freshness still fails:** the normal
+Sheet-triggered inventory cycle completed 1,900/1,900 at 21:43:03.921 UTC from
+enumeration 21:27:33.450 UTC: **930.471 seconds (15m30.471s)**. The previous
+cycle took 1,160.896 seconds; this run was 230.425 seconds shorter, but exceeded
+the unchanged 900-second enumeration window. Live-service variation means this
+before/after comparison is not an isolated causal benchmark or p95.
+At age 919.919 seconds, offset was 1,860 and enumeration had already expired;
+at terminal readback (age 961.042), only 1,720 member items remained fresh.
+All 2,859 membership projection rows persisted. Twenty sampled fresh User
+Product quality rows matched canonical state and passed the reader. Existing
+source gaps remained (including performance-not-generated, HTTP 400 and rate
+limits); completing traversal does not certify every field. No operator
+readmission, timestamp refresh, quota change, service restart or freshness-window
+extension was used during this cycle. Next work must reduce remaining acquisition
+or scheduling cost and prove useful full fresh coverage, not repeat an unchanged
+cycle or declare completion from offset alone.
+
+Quality acquisition now
 reuses an already learned User Product endpoint only when fresh owned item detail
 reconfirms the exact same valid, same-site User Product relationship as the stored
 item. It reuses no quality values or timestamps: the endpoint is requested again
@@ -39,7 +83,70 @@ Ruff check/format and Mypy passed (509 files). This is not measured production
 savings. Runtime verification must compare request counts and full inventory
 freshness under the unchanged quota. Rollback is just this route-selection change
 and its tests; existing persisted quality, schemas and scope remain compatible
-with deployed `c532ebf`. New images and exact-source CI are still pending.
+with deployed `c532ebf`. Source is `7256f84e3708e5111959af943c7e73ee00f1e580`.
+API build `7f757af6-a243-4511-bb96-64564ece03ec` and worker build
+`3ef288ca-c936-4523-85ec-9350d01cccf3` succeeded, each with one image and verified
+provenance checked against the exact connected-repository commit. API digest:
+`sha256:d55f8bb4057e54919b0630cf05dc32a28a78901a16013ecaa80726f36ee71ea4`;
+worker digest:
+`sha256:7c39fc98174082a5ef8e5b1b359b71ec8634b33d499d753676c27046a6aa75f1`.
+CI lint `34404144321` and test `34404144688` both passed. VM disk preflight
+passed (at least 5 GiB free). Download unit `zeler-route-reuse-pull-7256f84`
+started at 21:03:39 UTC, reverified API provenance from the VM and then timed out
+after its 300-second Docker pull budget. It is terminal `failed`, result
+`exit-code`, status 1; the target API image was confirmed absent afterward.
+No worker pull, runtime activation or new inventory admission occurred. Do not
+restart the same unit on the basis of old progress messages. Diagnose the pull
+before a separately identified retry. A successful read-only diagnostic then
+confirmed registry reachability (unauthenticated HTTP 401 in 0.176 seconds),
+12,008,148,992 free root bytes, and an installed credential helper that returned
+credentials in 6.327 seconds without reauthentication. No credential values were
+printed. Docker's matching resolution failure contained `context canceled`;
+this does not establish the cause of the original stall. One separately named
+bounded retry, `zeler-route-reuse-pull-retry-7256f84`, completed successfully:
+terminal inactive/dead, exit 0, both exact RepoDigests verified locally on the VM,
+10,920,464,384 root bytes free afterward. The prior failed unit remains terminal.
+The isolated API contract probe passed for both new and rollback images.
+Activation unit `zeler-route-reuse-activate-7256f84` completed terminal
+inactive/dead, exit 0, with explicit activation completion for `7256f84`.
+All four image/source proofs passed. Recovery inactivity was rechecked after
+provenance and before the Compose write. Both new services passed two stable
+health observations with their expected digests. No rollback was needed.
+Rollback is the compatible `c532ebf` pair. Do not resubmit completed builds.
+
+Post-deployment acquisition dry runs reused the same three five-item inventory
+offsets (0, 950, 1895). All validated five items with zero writes. They made
+17/20/20 calls in 3.4165/3.8878/3.5989 seconds, versus the prior
+20/24/20 calls in 3.9505/4.4749/3.8910 seconds. Total calls fell from 64 to 57
+(seven redundant item-quality requests removed, 10.94% of sampled calls).
+User Product request counts and sampled failures remained 3/4/0 and 3/2/0:
+the optimization did not manufacture missing quality. Timing is a bounded
+before/after sample subject to live-service variation, not p95 or whole-inventory
+acceptance. A normal Sheet-triggered full inventory recovery and freshness
+verification remain required; no full inventory job was admitted by these probes.
+
+The subsequent real Sheet pass changed only `Goal_Pruebas_20260909!A29321`
+from the five-space to six-space token-expression variant after metadata and
+CellData readback; token values were not read. Formula and header readback passed,
+with original formatting/validation untouched. Bounded H29322:H33319 returned
+332 numeric quality values, 1,980 DATA_UNAVAILABLE, zero NA and zero cell errors.
+Readback occurred 18.227 seconds after the write began; this is not internal
+execution latency or p95. Native visual fit was not verified.
+Approved-runtime reads found the inventory job pending with expired enumeration,
+and a separate orders job running alongside pending catalog jobs. This is not
+proof of a stalled worker or completed inventory recovery. No queue priority,
+coverage timestamp or production data was manually changed. Observe the normal
+worker transition before evaluating whole-inventory performance.
+
+Follow-up runtime observation confirmed that transition without operator
+readmission: inventory enumeration renewed at 21:27:33.450 UTC and reached
+offset 100 at age 38.654 seconds, then 200 at age 95.196 seconds. At the latter
+read it was pending, attempt 1, with a 30-second scheduled retry (available
+21:29:12.762 UTC). Enumeration was still current; 360 member items were fresh,
+which includes prior observations and is not a processed-count substitute.
+Full recovery and freshness acceptance remain unproven. Separately, the current
+audit foundations/API tests passed 20 tests (52 deselected); the old collision
+finding below was already corrected by `57e106e`, not a new defect to reimplement.
 
 **Normal pass finished, freshness acceptance failed:** the inventory job reached
 `completed`, offset 1,900, at 20:48:41.629 UTC. Its enumeration was observed at

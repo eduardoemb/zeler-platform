@@ -112,6 +112,21 @@ def _catalog_chunk(job: dict[str, Any], field: str) -> tuple[str, ...]:
     return ids[offset : offset + 20]
 
 
+def _order_missing_fields(response: httpx.Response) -> frozenset[str]:
+    header = response.headers.get("X-Content-Missing", "").strip().lower()
+    # Mercado Libre also emits a bracketed, non-JSON list such as [buyer].
+    if header.startswith("[") and header.endswith("]"):
+        header = header[1:-1].strip()
+    if not header:
+        return frozenset()
+    if re.fullmatch(r"[a-z_]+(?:\s*,\s*[a-z_]+)*", header) is None:
+        raise ValueError("order source partial fields are not supported")
+    missing = frozenset(field.strip() for field in header.split(","))
+    if missing - {"buyer", "shipping", "seller", "feedback", "mediations"}:
+        raise ValueError("order source partial fields are not supported")
+    return missing
+
+
 class FormulaRecoveryWorker:
     def __init__(
         self,
@@ -784,10 +799,9 @@ class FormulaRecoveryWorker:
                 detail.get("seller_id") if isinstance(detail, dict) else None,
                 seller.get("id") if isinstance(seller, dict) else None,
             )
-            seller_unavailable = response.status_code == 206 and "seller" in {
-                field.strip().lower()
-                for field in response.headers.get("X-Content-Missing", "").split(",")
-            }
+            seller_unavailable = response.status_code == 206 and "seller" in _order_missing_fields(
+                response
+            )
             if (
                 not isinstance(detail, dict)
                 or str(detail.get("id")) != identity
@@ -941,16 +955,8 @@ class FormulaRecoveryWorker:
         response = await self.detail_gateway.request(
             method="GET", seller_id=seller_id, path=f"/orders/{identity}"
         )
-        missing = frozenset(
-            field.strip().lower()
-            for field in response.headers.get("X-Content-Missing", "").split(",")
-            if field.strip()
-        )
-        if (
-            response.status_code not in {200, 206}
-            or (response.status_code == 206 and not missing)
-            or missing - {"buyer", "shipping", "seller", "feedback", "mediations"}
-        ):
+        missing = _order_missing_fields(response)
+        if response.status_code not in {200, 206} or (response.status_code == 206 and not missing):
             raise ValueError("order source partial fields are not supported")
         detail = response.json()
         if not isinstance(detail, dict):
