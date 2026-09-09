@@ -2091,6 +2091,65 @@ async def test_quality_fallback_requires_fresh_same_site_user_product(
     assert not db["items"].update_calls[0][1]["$set"].get("quality_projection")
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("prior_source", "prior_status", "fresh_link", "reuse_route"),
+    [
+        ("/user-product/{id}/performance", "trusted", "MLAU123", True),
+        ("/user-product/{id}/performance", "transient", "MLAU123", True),
+        ("/user-product/{id}/performance", "trusted", "MLAU456", False),
+        ("/user-product/{id}/performance", "trusted", None, False),
+        ("/user-product/{id}/performance", "trusted", "MLBU123", False),
+        ("/item/{id}/performance", "trusted", "MLAU123", False),
+    ],
+)
+async def test_quality_reuses_known_route_only_for_reconfirmed_user_product(
+    prior_source: str, prior_status: str, fresh_link: str | None, reuse_route: bool
+) -> None:
+    existing = {**_item_doc("MLA1"), "user_product_id": "MLAU123"}
+    existing["enrichment_state"] = {
+        "quality_projection": {
+            "source": prior_source,
+            "status": prior_status,
+            "synced_at": NOW,
+            "reason": "performance_not_generated" if prior_status == "transient" else None,
+        }
+    }
+    detail = _item_detail("MLA1")
+    if fresh_link is not None:
+        detail["user_product_id"] = fresh_link
+    performance = {
+        "entity_type": "USER_PRODUCT" if reuse_route else "ITEM",
+        "entity_id": "MLAU123" if reuse_route else "MLA1",
+        "score": 69,
+        "level": "Good",
+        "calculated_at": NOW.isoformat(),
+        "buckets": [
+            {"variables": [{"key": "GTIN", "status": "COMPLETED", "score": 100, "rules": []}]}
+        ],
+    }
+    gateway = FakeItemGateway(
+        {
+            "/items?ids=MLA1&include_attributes=all": [{"code": 200, "body": detail}],
+            "/item/MLA1/performance": performance,
+            "/user-product/MLAU123/performance": performance,
+        }
+    )
+    db = FakeDb([existing])
+    await run_item_detail_enrichment(
+        db=db, gateway=gateway, seller_id="82453304", dry_run=False, quality_enabled=True
+    )
+    assert (("82453304", "/item/MLA1/performance") in gateway.calls) is not reuse_route
+    assert (("82453304", "/user-product/MLAU123/performance") in gateway.calls) is reuse_route
+    persisted = db["items"].update_calls[0][1]["$set"]
+    quality = persisted["quality_projection"]
+    assert quality["entity_type"] == performance["entity_type"]
+    assert quality["source"] == (
+        "/user-product/{id}/performance" if reuse_route else "/item/{id}/performance"
+    )
+    assert quality["observed_at"] >= persisted["last_meli_sync_at"]
+
+
 def test_fresh_item_detail_clears_missing_user_product_relationship() -> None:
     from zeler_sheets.sheetseller_backfill import _canonical_item_detail_document
 
@@ -2108,15 +2167,18 @@ def test_fresh_item_detail_clears_missing_user_product_relationship() -> None:
 @pytest.mark.parametrize(
     ("failure_kind", "status", "reason"),
     [
+        (400, "malformed", "http_400"),
         (403, "unauthorized", "http_403"),
         (404, "transient", "performance_not_generated"),
         ("timeout", "transient", "request_timeout"),
         ("identity", "malformed", "source_error"),
     ],
 )
-@pytest.mark.parametrize("fallback", [False, True])
+@pytest.mark.parametrize(
+    ("fallback", "known_route"), [(False, False), (True, False), (False, True)]
+)
 async def test_quality_failure_preserves_prior_acquisition_cut(
-    failure_kind: int | str, status: str, reason: str, fallback: bool
+    failure_kind: int | str, status: str, reason: str, fallback: bool, known_route: bool
 ) -> None:
     prior = {
         "source": "/item/{id}/performance",
@@ -2130,6 +2192,16 @@ async def test_quality_failure_preserves_prior_acquisition_cut(
     }
     item = _item_doc("MLA1")
     item["quality_projection"] = prior
+    if known_route:
+        item["user_product_id"] = "MLAU123"
+        item["enrichment_state"] = {
+            "quality_projection": {
+                "source": "/user-product/{id}/performance",
+                "status": "transient",
+                "reason": "performance_not_generated",
+                "synced_at": NOW,
+            }
+        }
     db = FakeDb([item])
     response: Any = {"entity_type": "ITEM", "entity_id": "MLA2"}
     if isinstance(failure_kind, int):
@@ -2160,10 +2232,15 @@ async def test_quality_failure_preserves_prior_acquisition_cut(
     assert persisted["quality_projection"] == prior
     assert summary.diagnostic_reason_counts[f"quality_projection:{status}:{reason}"] == 1
     state = persisted["enrichment_state"]["quality_projection"]
+    used_user_product = fallback or known_route or failure_kind == 400
     assert state["source"] == (
-        "/user-product/{id}/performance" if fallback else "/item/{id}/performance"
+        "/user-product/{id}/performance" if used_user_product else "/item/{id}/performance"
     )
-    assert (("82453304", "/user-product/MLAU123/performance") in gateway.calls) is fallback
+    assert gateway.calls.count(("82453304", "/user-product/MLAU123/performance")) == int(
+        used_user_product
+    )
+    if known_route:
+        assert ("82453304", "/item/MLA1/performance") not in gateway.calls
     assert state["status"] == status
     assert state["reason"] == reason
     assert persisted["last_meli_sync_at"] > prior["observed_at"]

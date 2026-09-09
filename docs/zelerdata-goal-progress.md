@@ -22,6 +22,95 @@ Keep unrelated `.codegraph/` files untouched in both repositories.
 
 ### Catalog quality: dedicated User Product route permission
 
+**Next optimization implemented locally, not deployed:** quality acquisition now
+reuses an already learned User Product endpoint only when fresh owned item detail
+reconfirms the exact same valid, same-site User Product relationship as the stored
+item. It reuses no quality values or timestamps: the endpoint is requested again
+and its response undergoes the existing identity validation. Changed, missing or
+cross-site links retain item-first discovery and the guarded HTTP-400 fallback.
+A known-route failure does not retry through another endpoint to bypass denial.
+The supported endpoint is documented in [Mercado Libre listings quality](https://developers.mercadolibre.com.ar/en_us/trends/listings-quality).
+
+TDD reproduced two redundant item calls; both now pass alongside four routing
+guards. Known-route 400/403/404/timeout/identity failures preserve the prior acquisition
+cut, with no item fallback or duplicate User Product call. The three related test
+files passed 250 tests; the recovery suite passed 396 tests in 87.55 seconds. Root
+Ruff check/format and Mypy passed (509 files). This is not measured production
+savings. Runtime verification must compare request counts and full inventory
+freshness under the unchanged quota. Rollback is just this route-selection change
+and its tests; existing persisted quality, schemas and scope remain compatible
+with deployed `c532ebf`. New images and exact-source CI are still pending.
+
+**Normal pass finished, freshness acceptance failed:** the inventory job reached
+`completed`, offset 1,900, at 20:48:41.629 UTC. Its enumeration was observed at
+20:29:20.733: elapsed **1,160.896 seconds (19m20.896s)**. The subsequent read
+found only 1,600 fresh member items and expired enumeration. Alternative-source
+quality was persisted in 233 canonical items and 233 formula rows; all 20 sampled
+fresh rows still matched canonical values and passed the reader. Completion is
+not proof that all required source fields exist: recorded quality reasons still
+included 1,184 `performance_not_generated`, 235 `http_400`, and 29 `rate_limited`.
+
+Read-only approved-runtime timing narrowed, but did not settle, the bottleneck.
+Three 20-item projection dry runs took 0.3115/0.4336/0.4976 seconds, zero writes;
+these exclude real write cost. After completion, one five-item acquisition dry
+run took 3.9505 seconds, zero writes, making 20 calls: one item batch, five sale
+prices, five listing prices, five item-quality calls (all failed), three
+User Product quality calls (all failed), and one shipping call. Endpoint timing
+totaled approximately 3.9234 seconds. This is one bounded sample, not a seller-wide
+latency distribution or proof that redundant quality calls explain the full gap.
+No new full-inventory job was admitted by these probes.
+
+Two additional five-item acquisition dry runs (offsets 950 and 1,895) took
+4.4749 and 3.8910 seconds, zero writes, and made 24 and 20 calls respectively.
+Across the three samples this is 64 calls for 15 publications. The gateway's
+effective proxy limit was confirmed equal to its default 600/minute, shared per
+module/seller; the later current-window counter was below the limit, which is
+not evidence about earlier windows. Extrapolating these samples gives roughly
+8,107 calls / 13.5 minutes of quota for the pilot before contention/retries.
+This is an estimate, not measured whole-pass request volume. Failed item-quality
+calls account for 13 of the sample's 64 calls. Review redundant acquisition and
+retry work before changing concurrency; do not automatically raise the shared
+gateway quota or weaken the 15-minute reader contract.
+
+**Throughput acceptance gap confirmed (20:44 UTC):** the same normal inventory
+job remained running at offset 1,480 of 1,900 when its enumeration age reached
+928.669 seconds. The existing 900-second reader window correctly reported
+`inventory_enumeration_current=false`; 1,480 member items were individually
+fresh. Thus this production pass cannot establish simultaneously current whole
+inventory coverage, regardless of its eventual terminal status. Do not extend
+freshness, rewrite observation times, restart this worker or manually enqueue a
+replacement to conceal the gap. Inspect acquisition cost and retry delays,
+reduce demonstrated redundant work, then verify a complete normal pass.
+
+At that read, 203 canonical items and 203 formula rows held alternative-source
+quality. A 20-row fresh sample still matched canonical data and passed the
+reader. Source-state counts included 1,036 `performance_not_generated`, 413 old
+`http_400`, and 29 `rate_limited`; these are mid-run observations, not terminal
+classification of all inventory. The focused quality/calculator/acquisition
+suite passed 81 tests (156 deselected). No executable code, image, runtime
+configuration or business-data repair changed during this verification.
+
+**Normal recovery and subsequent Sheet read now demonstrated (20:35 UTC):**
+recalculating only `Goal_Pruebas_20260909!A29321` admitted the existing normal
+inventory recovery; no operator job insertion or freshness-marker edit occurred.
+The job progressed through offset 400 of 1,900 discovered publications. At that
+observation, 33 canonical items and 29 formula rows held alternative-endpoint
+quality; the worker was still projecting, so these were not an atomic snapshot.
+A bounded sample of 20 fresh alternative-source rows matched canonical quality
+and User Product binding exactly, and all 20 passed the deployed formula reader.
+
+A subsequent real Sheet recalculation returned 65 numeric quality scores,
+2,005 `DATA_UNAVAILABLE` rows, zero `NA`, and zero cell errors in the reserved
+score range. The anchor retained its header and original formatting; only its
+formula value changed. Readback occurred 14.081 seconds after the write, which
+is not a whole-function latency measurement or a p95 receipt. Native rendered
+layout remains unverified. Mongo holds 2,859 projected rows for the 1,900-member
+inventory, including variants; unavailable publications may instead occupy one
+placeholder row, so changing output row counts alone do not prove data loss.
+Complete current coverage and the terminal recovery result remain pending.
+The latest source-state counts included 291 `performance_not_generated` and
+29 `rate_limited` observations; neither is proof of permanent unavailability.
+
 **Deployed and live alternative route verified:** Sheets API and worker now run
 `c532ebf18fb10300a09cbfca26a3a4a91a5516c6`. Exact-source CI passed (lint
 `34399657839`, test `34399657805`); the permission baseline `f131587` also passed
@@ -87,8 +176,8 @@ Its verified-mode builds were submitted: API `a63420d1-4ca0-4f07-b614-ac505b7ade
 worker `8d68372c-00bd-443e-9d08-139925d3eded`; completion/provenance verification
 and deployment preparation subsequently passed as recorded above.
 Rollback is the compatible 13-scope baseline pair, not removal of recovered data.
-Live alternative-route success is verified above; normal acquisition persistence
-and real Sheets coverage for that source remain pending.
+Live alternative-route success, sampled normal persistence and a subsequent
+Sheet response are verified above; full source-specific Sheet coverage remains pending.
 
 A bounded approved-runtime probe selected an owned active catalog publication
 whose recorded quality failure was HTTP 400. Fresh item detail returned 200 and

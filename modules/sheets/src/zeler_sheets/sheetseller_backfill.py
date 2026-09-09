@@ -1292,19 +1292,37 @@ async def run_item_detail_enrichment(
                         )
             if quality_enabled:
                 quality_source = QUALITY_SOURCE
+                user_product_id = detail.get("user_product_id")
+                valid_user_product = (
+                    isinstance(user_product_id, str)
+                    and re.fullmatch(re.escape(item_id[:3]) + r"U[0-9]+", user_product_id)
+                    is not None
+                )
+                # Reuse only the route, never the observation. Fresh owned detail
+                # must reconfirm the same relationship learned by prior acquisition.
+                if (
+                    valid_user_product
+                    and existing_item.get("user_product_id") == user_product_id
+                    and item_enrichment_state.get("quality_projection", {}).get("source")
+                    == USER_PRODUCT_QUALITY_SOURCE
+                ):
+                    quality_source = USER_PRODUCT_QUALITY_SOURCE
                 try:
                     async with asyncio.timeout(5):
                         try:
                             performance = await gateway.fetch_resource(
-                                seller_id=seller_id, path=f"/item/{item_id}/performance"
+                                seller_id=seller_id,
+                                path=(
+                                    f"/user-product/{user_product_id}/performance"
+                                    if quality_source == USER_PRODUCT_QUALITY_SOURCE
+                                    else f"/item/{item_id}/performance"
+                                ),
                             )
                         except httpx.HTTPStatusError as exc:
-                            user_product_id = detail.get("user_product_id")
-                            if exc.response.status_code != 400 or not (
-                                isinstance(user_product_id, str)
-                                and re.fullmatch(
-                                    re.escape(item_id[:3]) + r"U[0-9]+", user_product_id
-                                )
+                            if (
+                                exc.response.status_code != 400
+                                or quality_source != QUALITY_SOURCE
+                                or not valid_user_product
                             ):
                                 raise
                             quality_source = USER_PRODUCT_QUALITY_SOURCE
