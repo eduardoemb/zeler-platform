@@ -512,6 +512,14 @@ async def test_buybox_http_recovers_current_membership_then_reuses_mongo(
         "changed",
         "wrong_response",
         "newer",
+        "missing_price_base",
+        "missing_price_promo",
+        "missing_price_transient",
+        "missing_price_stale",
+        "missing_price_currency",
+        "missing_price_bool",
+        "missing_price_zero",
+        "price_precedence",
     ],
 )
 async def test_buybox_explicit_item_recovery_is_owned_fresh_and_source_bound(
@@ -520,7 +528,7 @@ async def test_buybox_explicit_item_recovery_is_owned_fresh_and_source_bound(
     from zeler_sheets.formulas.recovery import IMPLEMENTED_MODELS, ItemIdsRecoveryRequest
     from zeler_sheets.formulas.recovery_worker import FormulaRecoveryWorker
 
-    if state == "valid":
+    if state == "valid" or state.startswith("missing_price") or state == "price_precedence":
         import json
         from pathlib import Path
 
@@ -532,7 +540,7 @@ async def test_buybox_explicit_item_recovery_is_owned_fresh_and_source_bound(
         )
 
     now = datetime.now(UTC).replace(microsecond=0)
-    item = {
+    item: dict[str, Any] = {
         "_id": "MLA1",
         "seller_id": "42" if state == "foreign" else "82453304",
         "catalog_listing": state != "not_catalog",
@@ -541,6 +549,44 @@ async def test_buybox_explicit_item_recovery_is_owned_fresh_and_source_bound(
         "available_quantity": 0,
         "last_meli_sync_at": now - timedelta(minutes=16 if state == "expired" else 1),
     }
+    if state.startswith("missing_price") or state == "price_precedence":
+        synced = item["last_meli_sync_at"]
+        promoted = state in {
+            "missing_price_promo",
+            "missing_price_stale",
+            "missing_price_currency",
+            "price_precedence",
+        }
+        item.update(
+            price=True
+            if state == "missing_price_bool"
+            else 0
+            if state == "missing_price_zero"
+            else 150,
+            currency_id="ARS",
+            enrichment_state={
+                "current_promotion": {
+                    "source": "/items/{id}/sale_price",
+                    "status": "transient"
+                    if state == "missing_price_transient"
+                    else "trusted"
+                    if promoted
+                    else "authoritative_absent",
+                    "synced_at": synced,
+                }
+            },
+        )
+        if promoted:
+            item["current_promotion"] = {
+                "source": "/items/{id}/sale_price",
+                "sale_amount": 100,
+                "regular_amount": 150,
+                "currency_id": "BRL" if state == "missing_price_currency" else "ARS",
+                "synced_at": synced - timedelta(minutes=30)
+                if state == "missing_price_stale"
+                else synced,
+                "reference_at": synced,
+            }
     await recovery_db.items.insert_one(item)
     queue = FormulaRecoveryQueue(recovery_db, now=lambda: now, enabled_models=IMPLEMENTED_MODELS)
     request = ItemIdsRecoveryRequest("82453304", ("MLA1",), read_model="catalog_buybox_snapshots")
@@ -591,6 +637,8 @@ async def test_buybox_explicit_item_recovery_is_owned_fresh_and_source_bound(
                 result.pop("catalog_product_id")
             elif state == "null_product":
                 result["catalog_product_id"] = None
+            if state.startswith("missing_price"):
+                result["current_price"] = None
             return result
 
     assert await FormulaRecoveryWorker(
@@ -624,6 +672,20 @@ async def test_buybox_explicit_item_recovery_is_owned_fresh_and_source_bound(
         assert snapshot["title"] == "Owned publication"
         assert snapshot["available_quantity"] == 0
         assert snapshot["winning_price"] == 119
+        if state.startswith("missing_price") or state == "price_precedence":
+            assert (
+                snapshot["price"]
+                == {
+                    "missing_price_base": 150,
+                    "missing_price_promo": 100,
+                    "missing_price_transient": None,
+                    "missing_price_stale": None,
+                    "missing_price_currency": None,
+                    "missing_price_bool": None,
+                    "missing_price_zero": 0,
+                    "price_precedence": 120,
+                }[state]
+            )
         assert snapshot["competitors_sharing_first_place"] == 0
         assert snapshot["competitor_count"] == 2
         assert snapshot["only_competitor"] is False

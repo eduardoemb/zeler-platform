@@ -21,6 +21,48 @@ Keep unrelated `.codegraph/` files untouched in both repositories.
 Pilot: seller `82453304`; initial historical window 2026-08-08 through
 2026-09-06, plus current snapshots. Other products are out of scope.
 
+## Missing competition price uses the verified acquired selling price
+
+The recovery worker now fills a null/missing competition price from the owned,
+fresh canonical item, without adding API requests. A verified absence of promotion
+uses the item's numeric price; a trusted promotion uses its sale amount. The
+promotion state must belong to the same acquisition cut as the item. Promotional
+projection currency and cut must also match. Transient, stale, malformed or
+currency-conflicting evidence does not authorize substitution. An existing
+competition price remains authoritative, including when a promotion is stored.
+Explicit numeric zero is retained; boolean and invalid prices are rejected.
+
+This addresses the two-case follow-up probe in `/tmp/buybox-price-source.py`:
+both live competition responses had null current price and currency, while the
+canonical items had numeric prices and authoritative absence of promotion.
+It does not manufacture offer counts or historical coverage. The existing lease,
+seller ownership and canonical BSON recheck still guard persistence.
+
+TDD command: `MONGO_URI=<local replica-set URI> uv run pytest
+modules/sheets/tests/test_formula_recovery.py -k buybox_explicit_item_recovery
+--tb=short`. Before implementation: **3 failed, 15 passed in 3.95s** (normal,
+promotional and zero fallback). After: **18 passed in 4.04s**. The new cases use
+the strict snapshot validator in real local Mongo. Ruff check/format and mypy
+(507 files) pass. Protected acquisition/execution/rollback suite: **8 passed in
+2.96s**. Expanded recovery/handler/schema regression: **509 passed in 72.97s**
+(`test_formula_recovery.py`, `test_formula_handlers_item_shipping_catalog.py`,
+`test_formula_handlers_remaining_phase4.py`, `test_sheets_schema_contract.py`,
+with the local replica-set URI). No new full-root run was attempted after the
+previously recorded native interpreter failures; these scoped results do not
+replace the complete CI gate or production acceptance.
+
+Runtime acceptance is pending. Only `sheets-worker` consumes the new helper;
+the API's existing promotional reader is unchanged. Build a verified worker
+image from the committed source, then refresh/recover the frozen two-item sample
+through normal admission and verify numeric persisted price and Mongo-only
+readback. Do not replay old helpers with obsolete image guards or reuse expired
+source timestamps. The last verified API/worker source remains `f4573de`.
+This is not all-52 HTTP, real Sheet or full-seller acceptance.
+
+Rollback boundary: remove the worker's null-price substitution and the added
+`acquired_current_price` helper plus its cases; retain independently dated offer
+handling, schema and legitimately acquired data. No schema migration is needed.
+
 ## Real 404 cases now persist competition without advancing retained offer cuts
 
 The two exact stale members of the earlier 20-item batch were resolved from their

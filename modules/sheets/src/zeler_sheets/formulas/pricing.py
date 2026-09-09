@@ -4,12 +4,49 @@ from __future__ import annotations
 
 import math
 from collections.abc import Mapping
+from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from bson.decimal128 import Decimal128
 
 from zeler_sheets.formulas.output_normalization import NA_VALUE
+
+
+def acquired_current_price(item: Mapping[str, Any]) -> Any:
+    """Use a price only from the item's verified promotion acquisition cut."""
+    synced = item.get("last_meli_sync_at")
+    enrichment = item.get("enrichment_state")
+    state = enrichment.get("current_promotion") if isinstance(enrichment, Mapping) else None
+    currency = item.get("currency_id")
+    if (
+        not isinstance(synced, datetime)
+        or not isinstance(state, Mapping)
+        or state.get("source") != "/items/{id}/sale_price"
+        or state.get("synced_at") != synced
+        or not isinstance(currency, str)
+        or not currency.strip()
+    ):
+        return None
+    if state.get("status") == "authoritative_absent":
+        value = item.get("price")
+    elif state.get("status") == "trusted":
+        projection = item.get("current_promotion")
+        if (
+            not isinstance(projection, Mapping)
+            or projection.get("synced_at") != synced
+            or projection.get("currency_id") != currency
+            or not isinstance(projection.get("reference_at"), datetime)
+            or non_negative_decimal(promo_price({"current": item})) is None
+        ):
+            return None
+        value = projection.get("sale_amount")
+    else:
+        return None
+    # Keep BSON numeric types: parseable strings are not a numeric snapshot.
+    if not isinstance(value, (int, float, Decimal128)) or non_negative_decimal(value) is None:
+        return None
+    return value
 
 
 def promo_price(row: Mapping[str, Any]) -> Any:

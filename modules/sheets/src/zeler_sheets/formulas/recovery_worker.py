@@ -32,6 +32,7 @@ from zeler_sheets.event_persistence import (
     _shipment_id,
 )
 from zeler_sheets.formulas.dispatcher import FormulaDataUnavailableError
+from zeler_sheets.formulas.pricing import acquired_current_price
 from zeler_sheets.formulas.read_models import (
     FormulaReadModelRepository,
     read_model_reconciliation_marker_covers,
@@ -297,6 +298,8 @@ class FormulaRecoveryWorker:
                 or "competitors_sharing_first_place" not in snapshot
             ):
                 raise ValueError("buybox competition fields are unavailable")
+            if snapshot.get("price") is None:
+                snapshot["price"] = acquired_current_price(item)
             offer_failure: Exception | None = None
             snapshot.update(competitor_count=None, only_competitor=None, offers_snapshot_at=None)
             offers: dict[str, Any] = {"results": []}
