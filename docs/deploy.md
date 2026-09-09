@@ -1027,7 +1027,8 @@ timer acceptance fails:
 2. The executor disables the timer, stales readiness, unbinds claims, restores
    worker/source images, verifies Artifact Registry/Cloud Build provenance when
    API rollback is requested, starts the exact Compose image, checks the running
-   RepoDigest, and requires healthy exact 11/5 registration.
+   RepoDigest, and requires healthy exact 11/6 registration (11 upstream scopes,
+   six routing keys including catalog competition and passive claims).
 3. If safe provenance/image/health is unavailable, the executor stops
    `sheets-api` and fails closed. It never starts the old 8/4 writer.
 4. Retain verified idempotent claim/order facts; do not delete proven data.

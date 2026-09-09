@@ -30,6 +30,7 @@ CANONICAL_SHEETS_ROUTING_KEYS = (
     "orders.*",
     "shipments.*",
     "questions.*",
+    "catalog_item_competition_status.*",
     "claims.updated",
 )
 ROLLBACK_COMPATIBLE_ALLOWED_TREE = (
@@ -56,7 +57,7 @@ _IMAGE_REF_PATTERN = re.compile(
     r"(?P<repository>[a-z0-9.-]+/[a-z0-9._/-]+)@sha256:(?P<digest>[0-9a-f]{64})"
 )
 _CANONICAL_FULL_REGISTRATION_FINGERPRINT = (
-    "5c578997b6786c5fc12dfa6ddb1fa6cd41960d680a96cb8ae1e858ce79be82f4"
+    "2d41800b9a245051081f85b8bfc2ef738010c1504c55ad286d8a2cef1bcd2552"
 )
 
 

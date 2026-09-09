@@ -600,6 +600,11 @@
       "routing_key": "questions.*"
     },
     {
+      "source": "meli.events",
+      "destination": "zeler.sheets.events",
+      "routing_key": "catalog_item_competition_status.*"
+    },
+    {
       "source": "zeler.sheets.replay",
       "destination": "zeler.sheets.events",
       "routing_key": "items.*"
@@ -618,6 +623,11 @@
       "source": "zeler.sheets.replay",
       "destination": "zeler.sheets.events",
       "routing_key": "questions.*"
+    },
+    {
+      "source": "zeler.sheets.replay",
+      "destination": "zeler.sheets.events",
+      "routing_key": "catalog_item_competition_status.*"
     },
     {
       "source": "zeler.sheets.user_products.dlx",

@@ -21,6 +21,52 @@ Keep unrelated `.codegraph/` files untouched in both repositories.
 Pilot: seller `82453304`; initial historical window 2026-08-08 through
 2026-09-06, plus current snapshots. Other products are out of scope.
 
+## Competition notifications have a persisted acquisition path — 2026-09-08
+
+Sheets now handles `catalog_item_competition_status.updated` explicitly. It
+validates the resource path, fetches current item ownership/stock and version-v2
+competition through the Sheets gateway, checks publication/product identities,
+and persists an `observed_only` state at acquisition time. Each upstream fetch
+has a ten-second timeout. It does not invent a transition at notification time,
+append new event types to customer spreadsheets or certify a historical period.
+
+Notification observation identity binds seller, publication and event key. A
+retry after persistence but before processing confirmation finds the observation
+and makes no upstream calls. Concurrent delivery keeps the first persisted cut,
+without replacing it with a later response. Consumer idempotency for this topic
+is seller-scoped. The earlier snapshot-time recorder behavior remains unchanged.
+
+The manifest, default routing and checked-in RabbitMQ definitions now include
+the competition topic for both the regular and replay exchanges. No production
+queue was changed in this unit. Four new Mongo consumer cases initially failed;
+the focused persistence selection now passes five tests in 0.84s, including
+post-persistence confirmation failure/retry, foreign seller, wrong product and
+invalid resource path. Two binding assertions failed before routing was added;
+the final runner/topology selection passed 26 tests in 0.28s. Ruff check/format,
+mypy (507 files) and diff checks pass. The first root run identified four stale
+registration expectations: manifest/startup/seed and the pinned full-registration
+fingerprint. The seed and deployment verifier now match the canonical manifest:
+11 unchanged upstream scopes, six routing keys including passive claims. The
+focused registration/topology/deployment suite passed 122 tests in 3.05s after
+the correction. A fresh full local replica-set regression (`uv run pytest
+--tb=short`) passed 4,122 tests, nine expected skips and 356 warnings in 134.96s.
+Eight protected Mongo tests passed separately in 3.17s; the other skip is the
+optional Caddy environment check. Schema drift checks also pass.
+
+Before runtime activation, apply the observation schema/index from the approved
+context and deploy the verified Sheets worker with this handler. Verify normal
+and replay bindings, seller isolation, legitimate live observation persistence
+and duplicate replay without upstream refetch; initial schema/current-source
+rollout and API acceptance remain pending. This unit did not build or deploy,
+and did not recheck runtime drift. Pending API code also needs a verified image.
+Revalidate rollback compatibility against the new registration fingerprint;
+do not relabel old provenance records as satisfying the six-routing-key contract.
+
+Rollback removes the competition branch, notification-key recorder option and
+the new topic's two bindings/default/manifest entries, retaining persisted
+observations and the preceding normal-recovery recorder. Sparse observations
+still do not prove uninterrupted historical coverage or a winning-time ratio.
+
 ## Buybox recovery retains native competition observations — 2026-09-08
 
 Verified owned-publication recovery now appends the acquired status, stock,

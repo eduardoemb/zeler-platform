@@ -40,6 +40,7 @@
         "orders.*",
         "shipments.*",
         "questions.*",
+        "catalog_item_competition_status.*",
         "claims.updated"
       ],
       "owned_collections": [

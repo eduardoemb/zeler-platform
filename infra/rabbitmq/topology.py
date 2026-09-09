@@ -12,7 +12,13 @@ QUEUE_BINDINGS = {
     "zeler.repricer.items_prices": ["items.price_updated"],
     "zeler.repricer.price_suggestion": ["price_suggestion.*"],
     "zeler.repricer.sweep": ["repricer.sweep.requested"],
-    "zeler.sheets.events": ["items.*", "orders.*", "shipments.*", "questions.*"],
+    "zeler.sheets.events": [
+        "items.*",
+        "orders.*",
+        "shipments.*",
+        "questions.*",
+        "catalog_item_competition_status.*",
+    ],
     "zeler.sheets.user_products": ["user_products.*"],
     "zeler.autoreply.events": ["questions.new", "messages.new"],
     "zeler.publicador.questions": ["questions.*"],
@@ -20,7 +26,13 @@ QUEUE_BINDINGS = {
 }
 
 SHEETS_REPLAY_QUEUE_BINDINGS = {
-    "zeler.sheets.events": ["items.*", "orders.*", "shipments.*", "questions.*"],
+    "zeler.sheets.events": [
+        "items.*",
+        "orders.*",
+        "shipments.*",
+        "questions.*",
+        "catalog_item_competition_status.*",
+    ],
 }
 
 ACTIVE_QUEUE_DEAD_LETTER_ROUTING_KEYS = {

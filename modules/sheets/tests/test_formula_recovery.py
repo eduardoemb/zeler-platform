@@ -15,6 +15,72 @@ from zeler_sheets.formulas.recovery import FormulaRecoveryQueue, RecoveryRequest
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("case", ["valid", "foreign", "wrong_product", "bad_path"])
+async def test_competition_notification_persists_before_ack_and_replay(
+    recovery_db: Any, case: str
+) -> None:
+    from unittest.mock import AsyncMock
+
+    from zeler_sheets.consumer import SheetsEvent, SheetsEventHandler
+
+    calls = []
+    before = datetime.now(UTC) - timedelta(seconds=1)
+
+    class Gateway:
+        async def fetch_resource(self, *, seller_id: Any, path: str) -> dict[str, Any]:
+            calls.append(path)
+            assert str(seller_id) == "82453304"
+            if path == "/items/MLA1":
+                return {
+                    "id": "MLA1",
+                    "seller_id": 42 if case == "foreign" else 82453304,
+                    "catalog_product_id": "MLA9",
+                    "available_quantity": 2,
+                }
+            assert path == "/items/MLA1/price_to_win?version=v2"
+            return {
+                "item_id": "MLA1",
+                "catalog_product_id": "MLA8" if case == "wrong_product" else "MLA9",
+                "status": "sharing_first_place",
+            }
+
+    store = AsyncMock()
+    store.is_duplicate.return_value = False
+    store.mark_processed.side_effect = [RuntimeError("ack storage unavailable"), None]
+    sheets = AsyncMock()
+    handler = SheetsEventHandler(
+        db=recovery_db, gateway_client=Gateway(), sheets_client=sheets, idempotency_store=store
+    )
+    event = SheetsEvent(
+        "event",
+        "catalog_item_competition_status.updated",
+        82453304,
+        "/orders/1" if case == "bad_path" else "/items/MLA1/price_to_win",
+        "event-key",
+    )
+    if case != "valid":
+        with pytest.raises(ValueError):
+            await handler.handle(event)
+        assert await recovery_db.sheets_catalog_competition_observations.count_documents({}) == 0
+        store.mark_processed.assert_not_called()
+        if case == "bad_path":
+            assert calls == []
+        return
+    with pytest.raises(RuntimeError, match="ack storage"):
+        await handler.handle(event)
+    assert await handler.handle(event) == "observed"
+    store.mark_processed.assert_called_with("catalog:82453304:event-key")
+    assert calls == ["/items/MLA1", "/items/MLA1/price_to_win?version=v2"]
+    rows = await recovery_db.sheets_catalog_competition_observations.find({}).to_list(10)
+    assert len(rows) == 1
+    assert rows[0]["observed_at"].replace(tzinfo=UTC) >= before
+    assert rows[0]["status"] == "sharing_first_place"
+    assert rows[0]["available_quantity"] == 2
+    assert rows[0]["coverage_basis"] == "observed_only"
+    sheets.append_row.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_catalog_observations_preserve_cuts_and_reject_conflicting_retries(
     recovery_db: Any,
 ) -> None:

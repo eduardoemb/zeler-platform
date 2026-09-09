@@ -1025,7 +1025,7 @@ def _runtime_probe() -> dict[str, Any]:
         "module_id": "sheets",
         "registry_fingerprint": canonical_sheets_registration_fingerprint(),
         "scope_count": 11,
-        "routing_key_count": 5,
+        "routing_key_count": 6,
     }
 
 
@@ -1236,7 +1236,7 @@ fi
         "source_commit": source_commit,
         "registry_fingerprint": canonical_sheets_registration_fingerprint(),
         "scope_count": 11,
-        "routing_key_count": 5,
+        "routing_key_count": 6,
     }
     env = {
         **os.environ,

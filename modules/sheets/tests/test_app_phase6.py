@@ -62,6 +62,7 @@ def test_sheets_manifest_validates_owned_collections_and_readonly_scopes() -> No
         "orders.*",
         "shipments.*",
         "questions.*",
+        "catalog_item_competition_status.*",
         "claims.updated",
     ]
     assert manifest.owned_collections == [
@@ -145,6 +146,7 @@ async def test_sheets_startup_registers_manifest_and_health_ready() -> None:
             "orders.*",
             "shipments.*",
             "questions.*",
+            "catalog_item_competition_status.*",
             "claims.updated",
         ],
         "owned_collections": [

@@ -5,6 +5,7 @@ subscribed_events:
   - orders.*
   - shipments.*
   - questions.*
+  - catalog_item_competition_status.*
 passive_consumers:
   - queue_name: zeler.sheets.claims
     routing_keys:

@@ -35,6 +35,7 @@ from zeler_platform_core.events.idempotency import IdempotencyStore as CoreIdemp
 from zeler_platform_core.runtime.manifest import validate_manifest
 from zeler_platform_core.runtime.retry_delay import RETRY_ATTEMPT_HEADER, RetryDelayPublisher
 from zeler_platform_core.runtime.worker_health import WorkerHealthSidecar
+from zeler_sheets.catalog_observations import acquire_catalog_event
 from zeler_sheets.claim_projection import project_claim
 from zeler_sheets.devoluciones_reconciliation import GatewayDevolucionesSource
 from zeler_sheets.event_persistence import SheetsEventPersistence, StatusObservationContentionError
@@ -63,7 +64,13 @@ SHEETS_EVENTS_DLQ = f"{SHEETS_EVENTS_QUEUE}.dlq"
 SHEETS_CLAIMS_QUEUE = "zeler.sheets.claims"
 SHEETS_DELIVERY_LIMIT = 5
 DEFAULT_PREFETCH_COUNT = 10
-SHEETS_DEFAULT_ROUTING_KEYS = ("items.*", "orders.*", "shipments.*", "questions.*")
+SHEETS_DEFAULT_ROUTING_KEYS = (
+    "items.*",
+    "orders.*",
+    "shipments.*",
+    "questions.*",
+    "catalog_item_competition_status.*",
+)
 MISSING_RABBITMQ_URL_MESSAGE = "error: RABBITMQ_URL is required"
 MISSING_MONGO_URI_MESSAGE = "error: MONGO_URI is required"
 MISSING_MONGO_DB_MESSAGE = "error: MONGO_DB is required"
@@ -900,8 +907,24 @@ class SheetsEventHandler:
         *,
         operation: DevolucionesOperationContext | None = None,
     ) -> str:
-        if await self._idempotency_store.is_duplicate(event.idempotency_key):
+        processing_key = (
+            f"catalog:{event.seller_id}:{event.idempotency_key}"
+            if event.event_type == "catalog_item_competition_status.updated"
+            else event.idempotency_key
+        )
+        if await self._idempotency_store.is_duplicate(processing_key):
             return "duplicate"
+
+        if event.event_type == "catalog_item_competition_status.updated":
+            await acquire_catalog_event(
+                db=self._db,
+                gateway=self._gateway_client,
+                seller_id=str(event.seller_id),
+                resource=event.resource,
+                event_key=event.idempotency_key,
+            )
+            await self._idempotency_store.mark_processed(processing_key)
+            return "observed"
 
         fetch_path = _fetch_resource_path_for_event(event)
         owns_operation = operation is None and event.event_type.startswith(("orders.", "claims."))
