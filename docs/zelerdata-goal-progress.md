@@ -21,6 +21,54 @@ Keep unrelated `.codegraph/` files untouched in both repositories.
 Pilot: seller `82453304`; initial historical window 2026-08-08 through
 2026-09-06, plus current snapshots. Other products are out of scope.
 
+## Catalog-intent activation stopped by stale HTTP test expectations
+
+Both connected-repository builds succeeded for exact source
+`f6ae9dd173ebe4660c434eea8ce2b7ec5fd0af53`:
+
+| Service | Build | Digest |
+| --- | --- | --- |
+| sheets-worker | `b7304036-28c9-4723-b833-1216286dee3d` | `sha256:e35c888272c405b1381271e06765a6044e618da3bf8aaadd5a6b0e3092e11662` |
+| sheets-api | `05c2752a-36d9-429e-befc-d0e5543f5832` | `sha256:cdf4343e30d28b41afedb0e792b908cb6ee4725d6761e6b33a72b11fdaeb08d2` |
+
+Image references use `us-central1-docker.pkg.dev/zeler-platform-dev/zeler-platform/`
+plus the service name and digest. Digest/build/source verification passed locally
+and on the VM, updating `/var/lib/zeler-platform/image_to_commit.json`. Artifacts
+and guarded helpers are in local `/tmp/zeler-catalog-rollout.tdDS4D/` and VM
+`/tmp/`: `intent-{worker,api}-{build,artifact}.json`, `pull-intent-{worker,api}.py`,
+`activate-intent-{worker,api}.py`, and `intent-storage-check.py`.
+
+Approved-runtime storage check found no recovery-collection validator, all three
+expected recovery indexes, zero pending/running jobs and zero existing large
+intents. No schema mutation was necessary. Removed only unused old cache worker
+`f70530...` and API `155a13...`, after checking every container, Compose, protected
+images and Artifact Registry availability. Each removal freed 543,498,240 bytes;
+both images remain recoverable. No volumes or business data were removed.
+
+Pulls completed in 11.86 seconds (worker) and 9.06 seconds (API), leaving
+5,382,758,400 free bytes with Compose unchanged. CI lint `34304308632` passed;
+test `34304308697` **failed**: **2 failed, 3,778 passed, 390 skipped in 467.22s**.
+Both failures are `test_catalog_product_recovery_http_keeps_values_and_bounds_admission`
+(`success`, `duplicates`), which still expected two 20/1 jobs for 21 IDs. The new
+contract intentionally persists one complete intent. Activation did not run.
+
+The HTTP test now requires exactly one typed catalog intent containing every
+deduplicated ID, while retaining checks for seller scope, available response
+values, invalid/mixed inputs, capacity rejection and timeout cancellation. This
+is a test-expectation correction, not removal of the HTTP contract. The full API
+suite (`uv run pytest modules/sheets/tests/test_formula_api.py --tb=short`) passed
+**38 tests in 1.69s**; Ruff check/format and mypy (507 files) pass. No executable
+code changed after source `f6ae9dd`. Do not deploy the cached builds based on a failed CI gate;
+verify the corrected main commit and its exact build/source mapping first.
+Then require fresh capacity/readiness checks and activate worker before API.
+Current rollback images remain worker `d2ccd62...` and API
+`1904ed9...`; never return to an old worker while new large intents remain active.
+The real >400-ID recovery and complete formula acceptance remain pending.
+Prepared `/tmp/intent-current-inventory.py` has **not** been enqueued and still
+guards the cached-but-not-deployed digests. Its intended receipt
+`/var/lib/zeler-platform/repairs/current-inventory-f6ae9dd.json` has not been created
+by this session. Adapt image guards to the actually approved deployment before use.
+
 ## Catalog recovery retains complete intent and resumes bounded chunks
 
 Large product/buybox requests now persist one validated, seller-scoped intent

@@ -37,7 +37,7 @@ async def test_catalog_product_recovery_http_keeps_values_and_bounds_admission(
     outcome: str,
 ) -> None:
     from zeler_sheets.formulas.dispatcher import FormulaDataUnavailableError
-    from zeler_sheets.formulas.recovery import CatalogProductIdsRecoveryRequest
+    from zeler_sheets.formulas.recovery import CatalogRecoveryRequest
 
     identities = tuple(f"MLA{i}" for i in range(21))
     if outcome == "duplicates":
@@ -60,11 +60,11 @@ async def test_catalog_product_recovery_http_keeps_values_and_bounds_admission(
     app, _db, token = await _app_with_token(
         now=datetime(2026, 5, 13, 12, tzinfo=UTC), formula_dispatcher=handler
     )
-    queued: list[CatalogProductIdsRecoveryRequest] = []
+    queued: list[CatalogRecoveryRequest] = []
     cancelled = asyncio.Event()
 
     class Queue:
-        async def enqueue(self, request: CatalogProductIdsRecoveryRequest) -> str:
+        async def enqueue(self, request: CatalogRecoveryRequest) -> str:
             queued.append(request)
             if outcome == "capacity":
                 raise ValueError("capacity reached")
@@ -87,13 +87,12 @@ async def test_catalog_product_recovery_http_keeps_values_and_bounds_admission(
     assert response.status_code == 200
     assert response.json()["values"] == [["Available product", "Description", "NA"]]
     assert response.json()["meta"]["recovery_requested"] is (outcome in {"success", "duplicates"})
-    assert len(queued) == (
-        2 if outcome in {"success", "duplicates"} else 0 if outcome in {"mixed", "invalid"} else 1
-    )
+    assert len(queued) == (0 if outcome in {"mixed", "invalid"} else 1)
     assert all(request.seller_id == "123456789" for request in queued)
     if outcome in {"success", "duplicates"}:
-        assert [len(request.catalog_product_ids) for request in queued] == [20, 1]
-        assert set().union(*(request.catalog_product_ids for request in queued)) == set(identities)
+        assert isinstance(queued[0], CatalogRecoveryRequest)
+        assert queued[0].read_model == "catalog_product_snapshots"
+        assert queued[0].ids == tuple(sorted(set(identities)))
     if outcome == "timeout":
         assert cancelled.is_set()
 
