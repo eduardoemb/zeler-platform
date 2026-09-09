@@ -20,7 +20,32 @@ Keep unrelated `.codegraph/` files untouched in both repositories.
 
 ## Real Google Sheet: all-52 first pass and user add-on update, 2026-09-09
 
-### Order recovery: bracketed missing-content header fix (local, not deployed)
+### Order projection identity: SKU mismatch corrected locally
+
+A read-only VM/container probe of the pilot's 100 orders isolated the remaining
+fixed-fee NA: the canonical item exists, exactly one formula projection exists,
+and its fixed fee passes the current reader validation. The order and projection
+both have no variation, but their SKUs differ. No production data was changed.
+
+Order tables now fetch seller-scoped projections by item ID and associate them
+by item/variation identity, preserving the historical order SKU and SKU filtering.
+Duplicate projections for an identity are not selected arbitrarily. Other
+SKU-based consumers retain their existing lookup contract. This also removes
+the order projection query's arbitrary 500-row/multiplier cap.
+
+TDD reproduced four failures: two renamed-SKU cases and two wrong-variation
+matches. All 66 order/question handler cases pass after the correction;
+`uv run pytest modules/sheets/tests/test_formula_handlers*.py -q` passes all
+316 cases. Root Ruff check, format check and Mypy (509 files) passed.
+Runtime verification of the changed behavior is **pending**: the read-only probe
+proves the defect, not the deployed fix. Build/deploy the Sheets API from the
+verified commit, then repeat the real Sheet order read and check the fee cell.
+Rollback boundary: the order-only projection lookup and associated regression
+tests in `handlers_orders_questions.py` and its handler test file; no schema,
+worker, token, or production-data migration is involved. This does not resolve
+the wider missing/ambiguous projection availability contract or other goal gates.
+
+### Order recovery: bracketed missing-content header fix (worker deployed)
 
 The failed orders job targeted May 1–30; its existing coverage expanded acquisition
 to May 1–September 10 (132 days). Two read-only source searches returned 1,231
@@ -40,10 +65,87 @@ TDD first failed three bracketed-header cases (seven passed); the corrected
 header and Mongo consumer tests passed 18 cases. Full recovery suite: **410
 passed in 86.59s**. Root Ruff check/format and Mypy passed (509 files).
 
-Runtime verification remains pending: build/deploy the changed Sheets image(s),
-re-read the same partial response through the deployed parser, then verify normal
-recovery persistence and consumers. The runtime still uses `7256f84`, without
-this fix. Rollback removes only the header parser and its tests from
+Worker source `aee2ef1905e49e077bae6a9fb37dbaeecb10e5e5` is now deployed.
+CI test run `34410085664` passed. Cloud Build
+`1ebdf444-1499-4006-a549-f308deafa0cf` produced worker digest
+`sha256:637a335e0b68955acff21c6d09f8246788080cdd57eb4f7b8c07f06e4adbc732`.
+The VM reverified both new and prior worker provenance, enforced the 5 GiB
+disk floor and checked for running recovery jobs before replacement. Unit
+`zeler-order-header-activate-aee2ef1` finished successfully with explicit
+`activation_complete`, stable worker health, and unchanged healthy API container.
+Only the worker was replaced; the API remains on `7256f84`. The prior worker
+digest `sha256:7c39fc98174082a5ef8e5b1b359b71ec8634b33d499d753676c27046a6aa75f1`
+and Compose backup `docker-compose.yml.pre-order-header-aee2ef1` are retained.
+
+The deployed parser passed a synthetic HTTP 206 `[buyer]` assertion. A follow-up
+read-only probe confirmed local ownership of the same real order, then invoked
+the deployed `FormulaRecoveryWorker._order_detail` through the normal Sheets
+gateway identity, including its shipment recovery path. It passed with matching
+identity and exactly `buyer` marked unavailable. No queue claim/publication or
+Mongo writes occurred. This verifies the real partial-detail path, not full
+recovery or coverage. Normal recovery persistence and consumers remain pending.
+Normal Sheet retry was then requested only at
+`Goal_Pruebas_20260909!A42901`, retaining August 8–September 6 and existing filters.
+VM readback showed the corresponding August 8 07:00–September 7 07:00 job
+completed at 23:08:45.438 UTC; two newer-range jobs also completed. The Mongo
+coverage marker spanned August 8 07:00–September 10 07:00, updated at
+23:09:29.837 UTC. The May job was running at 23:09:30.703 UTC (its old
+`failure_reason` is not a new terminal failure). No direct queue edits occurred.
+A subsequent normal formula re-evaluation still displayed `DATA_UNAVAILABLE:
+Actualización solicitada; vuelve a intentar.` at the anchor. Investigate the
+consumer/cache/coverage difference before claiming success. Only the formula
+value changed; target validation/format fields remained absent and untouched.
+Native visual fit and whole-function latency were not measured by this readback.
+The deployed API handler was subsequently invoked read-only with the exact
+`_seller_timezone` account resolver and identical formula arguments. It passed
+order coverage but raised at `_real_shipping_costs_for_orders` →
+`find_shipment_real_shipping_costs` → `_require_shipment_field`: **96 shipment
+costs unavailable or stale**. This is the next recovery dependency, not evidence
+that the completed order coverage failed. No HTTP authentication was exercised,
+queue jobs admitted, or data written by this diagnostic. An initial diagnostic
+with a hard-coded Mexico City timezone was invalid for comparison and discarded.
+Next inspect shipment recovery state and distinguish absent, explicitly
+unavailable, and expired cost observations; do not reread all orders or label
+these costs permanently unavailable without source evidence.
+Follow-up classification found all 96 documents and costs present, with no
+explicit unavailable flags or missing observations: all 96 were expired.
+Matching recovery state showed one running job (23:13:30.743 UTC) and one
+pending job, without operator queue changes. A subsequent invocation of the
+same deployed API handler returned **101 rows**, no primary recovery and no
+additional recoveries. The reader now accepts the persisted dependencies.
+This is a read-only internal handler result, not HTTP authentication, a Google
+Sheets readback, or a source-to-result correctness/count audit. Those checks
+remain necessary before accepting the formula.
+For the exact requested interval and account-resolved timezone, a read-only
+bootstrap discovery probe reported 100 source orders and 100 Mongo orders.
+Both source pages (50 each) retained the same total and unique IDs. All 100
+identities matched Mongo; status mismatches and total-amount mismatches were
+both zero. The repository's `find_orders` has no default 100-row limit.
+This supports count/identity/status/amount correctness for the interval, not
+every output column or Sheets display. No source payloads or identifiers were
+printed and no data was written.
+The real Sheet was then re-evaluated only at
+`Goal_Pruebas_20260909!A42901` (three trailing spaces in the token expression;
+dates and filters unchanged). Bounded readback of `A42901:AD43002` returned
+101 populated rows, 13 columns each: one header plus 100 data rows, zero native
+cell errors and zero `DATA_UNAVAILABLE` cells. Twelve `NA` cells remain:
+11 in `ID Carrito`, one in `Costo Por Unidad`; their source semantics still
+need checking. Readback arrived 12.377 seconds after the write acknowledgement,
+not a measurement of Apps Script execution or p95. No token value or personal
+data was output. Only the anchor formula changed; formatting was preserved.
+Native rendered visual fit remains unverified; this establishes returned cell
+content, not a complete 52-formula acceptance or every-column correctness.
+Read-only detail requests for all 11 orders with missing Mongo `meli_pack_id`
+confirmed matching order/seller identities and absent source `pack_id` in all
+11 cases. Those cart `NA` values have source evidence. The one fixed-fee `NA`
+was traced through the actual SKU resolver and item-row lookup: its required
+item formula row is absent, so no listing-price fixed-fee projection is found.
+This is not verified optional source absence. Next determine why that owned
+order line has no row and recover its product data when possible; do not accept
+the remaining `NA` as permanent or change it to zero. No production data writes
+or identifiers/payload output occurred in these probes.
+Deployment health alone does not establish formula or order coverage acceptance.
+Rollback removes only the header parser and its tests from
 `formulas/recovery_worker.py` and `test_formula_recovery.py`; legitimately stored
 partial-data documents remain compatible and must not be deleted.
 

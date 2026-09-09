@@ -179,7 +179,6 @@ class OrderQuestionFormulaHandlers:
             repository=self._repository,
             seller_id=context.seller_id,
             orders=filtered_orders,
-            sku_resolver=sku_resolver,
         )
         order_lines = [
             (order, line)
@@ -317,7 +316,6 @@ class OrderQuestionFormulaHandlers:
             repository=self._repository,
             seller_id=context.seller_id,
             orders=filtered_orders,
-            sku_resolver=sku_resolver,
         )
         filtered_lines = [
             (order, line)
@@ -1113,19 +1111,29 @@ async def _item_formula_rows_for_orders(
     repository: FormulaReadModelRepository,
     seller_id: str,
     orders: Sequence[Mapping[str, Any]],
-    sku_resolver: _OrderSkuResolver,
 ) -> dict[tuple[str, str], Mapping[str, Any]]:
-    pairs = [
-        (sku_resolver.resolve(item).sku, _item_id(item))
+    identities = {
+        (_item_id(item), _item_variation_id(item))
         for order in orders
         for item in _order_items(order)
-        if sku_resolver.resolve(item).sku and _item_id(item)
-    ]
-    return await _item_formula_rows_for_pairs(
-        repository=repository,
+        if _item_id(item)
+    }
+    if not identities:
+        return {}
+    # SKU is mutable; an order retains the SKU used at purchase time.
+    rows = await repository.find_item_formula_rows(
         seller_id=seller_id,
-        pairs=pairs,
+        item_ids=sorted({item_id for item_id, _ in identities}),
+        limit=None,
     )
+    grouped: dict[tuple[str, str], list[Mapping[str, Any]]] = {}
+    for row in rows:
+        identity = (str(row.get("item_id") or ""), _normalize_variation_id(row.get("variation_id")))
+        if identity in identities:
+            grouped.setdefault(identity, []).append(row)
+    return {
+        identity: candidates[0] for identity, candidates in grouped.items() if len(candidates) == 1
+    }
 
 
 async def _item_formula_rows_for_pairs(
@@ -1309,7 +1317,7 @@ def _order_line_row(
     timezone: tzinfo,
     include_buyer_columns: bool,
 ) -> list[Any]:
-    row = item_rows.get((line.sku, line.item_id))
+    row = item_rows.get((line.item_id, line.variation_id))
     commission_percent, commission_amount, _ = _realized_commission_values(line)
     values = [
         _sheet_datetime(order.get("date_created"), timezone=timezone),

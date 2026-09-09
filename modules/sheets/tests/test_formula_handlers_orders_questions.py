@@ -18,6 +18,7 @@ from zeler_sheets.formulas.dispatcher import (
     FormulaExecutionContext,
 )
 from zeler_sheets.formulas.handlers_orders_questions import (
+    _item_formula_rows_for_orders,
     _OrderSkuResolver,
     build_order_question_formula_handlers,
 )
@@ -1257,7 +1258,14 @@ async def test_ordenes_por_sku_enriches_canonical_order_items_from_seller_sku_in
 
 
 @pytest.mark.asyncio
-async def test_order_tables_use_listing_fixed_fee_projection_without_seller_cost_lookup() -> None:
+@pytest.mark.parametrize("current_sku", ["sku-1", "renamed-sku"])
+@pytest.mark.parametrize("order_variant,row_variant,expected_fee", [
+    (101, "101", 1350.25), (None, None, 1350.25), (101, "102", "NA"), (None, "101", "NA"),
+])
+async def test_order_tables_use_listing_fixed_fee_projection_without_seller_cost_lookup(
+    current_sku: str, order_variant: int | None, row_variant: str | None,
+    expected_fee: float | str,
+) -> None:
     db = FakeDb()
     db["orders"].documents = {
         "order-1": _order_doc(
@@ -1267,7 +1275,7 @@ async def test_order_tables_use_listing_fixed_fee_projection_without_seller_cost
             date_created=datetime(2026, 5, 10, 8, 0, tzinfo=UTC),
             total_amount=39,
             items=[
-                {"sku": "sku-1", "item_id": "MLA1", "variation_id": 101, "qty": 2},
+                {"sku": "sku-1", "item_id": "MLA1", "variation_id": order_variant, "qty": 2},
                 {"sku": "sku-2", "item_id": "MLA2", "qty": 1, "sale_fee": 7},
             ],
         )
@@ -1276,10 +1284,10 @@ async def test_order_tables_use_listing_fixed_fee_projection_without_seller_cost
         "row-1": {
             "_id": "row-1",
             "seller_id": "seller-1",
-            "sku": "sku-1",
-            "normalized_sku": "SKU-1",
+            "sku": current_sku,
+            "normalized_sku": current_sku.upper(),
             "item_id": "MLA1",
-            "variation_id": "101",
+            "variation_id": row_variant,
             "current": {
                 "base_price": 12345.67,
                 "category_id": "MLA-CAT",
@@ -1353,9 +1361,41 @@ async def test_order_tables_use_listing_fixed_fee_projection_without_seller_cost
         )
     )
 
-    assert [row[8:11] for row in orders.values] == [["NA", "NA", 1350.25], ["NA", "NA", "NA"]]
-    assert by_sku.values[0][8:11] == ["NA", "NA", 1350.25]
+    assert [row[8:11] for row in orders.values] == [["NA", "NA", expected_fee], ["NA", "NA", "NA"]]
+    assert by_sku.values[0][8:11] == ["NA", "NA", expected_fee]
     assert db["seller_unit_costs"].find_filters == []
+    assert orders.values[0][3] == "SKU-1"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("duplicate", [False, True])
+async def test_order_projection_identity_rejects_ambiguity_and_other_sellers(
+    duplicate: bool,
+) -> None:
+    db = FakeDb()
+    own = {"_id": "own", "seller_id": "seller-1", "item_id": "MLA1",
+           "variation_id": "101", "normalized_sku": "NEW"}
+    db["sheets_item_formula_rows"].documents = {
+        "own": own,
+        "foreign": {**own, "_id": "foreign", "seller_id": "seller-2"},
+        "other-variant": {**own, "_id": "other-variant", "variation_id": "102"},
+    }
+    if duplicate:
+        db["sheets_item_formula_rows"].documents["duplicate"] = {
+            **own, "_id": "duplicate", "normalized_sku": "OLD",
+        }
+    orders = [_order_doc(
+        "order-1", seller_id="seller-1", status="paid",
+        date_created=datetime(2026, 5, 10, tzinfo=UTC), total_amount=1,
+        items=[{"sku": "historical", "item_id": "MLA1", "variation_id": 101, "qty": 1}],
+    )]
+    result = await _item_formula_rows_for_orders(
+        repository=FormulaReadModelRepository(db=db), seller_id="seller-1", orders=orders,
+    )
+    assert result == ({} if duplicate else {("MLA1", "101"): own})
+    assert db["sheets_item_formula_rows"].last_find_filter == {
+        "seller_id": "seller-1", "item_id": {"$in": ["MLA1"]},
+    }
 
 
 @pytest.mark.asyncio
