@@ -23,6 +23,33 @@ Pilot: seller `82453304`; initial historical window 2026-08-08 through
 
 ## Buybox price dependency: local end-to-end recovery correction
 
+The 15 previously missing pilot prices were acquired and persisted after rollout.
+At `2026-09-09T04:38:39.936669Z`, all **15 canonical prices** were verified and
+all **15 buybox prices** were present, current, and matched canonical product,
+title, quantity and acquisition ordering. The item recovery completed on its
+first attempt. The catalog intent traversed **15/15**, but remained truthfully
+`failed/source_rejected`: only **1/15 snapshots has an offer count**. This proves
+the selected price repair, not complete competition fields, sustained freshness,
+all-52 authenticated HTTP or a real Google Sheet.
+
+The initial read at `04:36:17.556427Z` found all 15 canonical items expired and no
+safe prices. A normal scoped item job refreshed them first, then a normal catalog
+intent refreshed the same identities. No 936-ID replay, broad inventory sweep,
+manual business-field patch or global freshness-marker change occurred. This is
+operator queue/runtime evidence; the single-intent missing-price dependency path
+remains covered by the local HTTP/Mongo harness, not a manufactured production
+failure. Do not claim this two-stage live repair proved that exact branch live.
+
+Receipt: `/var/lib/zeler-platform/repairs/price-dependency-3a5a016.json` (0600).
+Item key `fd4d1ade90838082a5ea2fb94bdeedeefa922e1c0c62543e5d2d717ce0f67eb4`;
+catalog key `c44f47906407e35e8ec245fa5e1c7607e21c46261b9f2cdf553ec9faf4566986`.
+Both jobs are terminal. Use `sudo python3 /tmp/recover-price-pilot.py status`
+for read-only observation; `plan`, `items` and `catalog` already executed and
+must not be repeated. Local helper is under `/tmp/zeler-price-dependency.wCVhKC/`.
+An initial launcher import error occurred before admission (host Python 3.10
+does not expose `datetime.UTC`); status proved no job before the corrected
+launcher admitted the first request. No token, raw payload or PII was printed.
+
 Images for source `3a5a016a4279815e76f5d7ff420ae20af76ccb10` are now
 **deployed**, worker first and then API. Both explicit health endpoints returned
 HTTP 200, Docker health was healthy and restart counts were zero. Each
@@ -107,8 +134,8 @@ format check and mypy passed (507 files). Broader regression across
 Rollback boundary: remove the reader fallback and worker-owned price enrichment
 with their matching tests; preserve legitimately acquired Mongo data. This unit
 affects **sheets-api and sheets-worker** images. Their deployed source matches
-this correction. Verify approved-runtime price recovery/readback before claiming
-the 15 live price gaps resolved. All-52 HTTP,
+this correction. The selected price recovery/readback is recorded above; full
+catalog field availability is not achieved. All-52 HTTP,
 real Sheets/app, sustained freshness and the other goal acceptance gates remain
 open.
 
