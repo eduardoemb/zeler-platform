@@ -340,6 +340,7 @@ class ItemShippingCatalogFormulaHandlers:
         if inventory_gap:
             values.append(["DATA_UNAVAILABLE"] * len(headers))
         recovery = None
+        additional_recoveries = []
         if inventory_gap:
             recovery = FormulaDataUnavailableError(
                 context.contract.name,
@@ -347,16 +348,21 @@ class ItemShippingCatalogFormulaHandlers:
                 read_model=ITEM_FORMULA_ROWS_READ_MODEL,
                 item_ids=missing_items if inventory_current else (),
             )
-        elif recoverable:
-            recovery = FormulaDataUnavailableError(
+        if recoverable:
+            catalog_recovery = FormulaDataUnavailableError(
                 context.contract.name,
                 "Catalog products are missing, expired or unverified.",
                 read_model=CATALOG_PRODUCT_SNAPSHOTS_READ_MODEL,
                 catalog_product_ids=recoverable,
             )
+            if recovery is None:
+                recovery = catalog_recovery
+            else:
+                additional_recoveries.append(catalog_recovery)
         return FormulaExecutionResult(
             values=values,
             recovery=recovery,
+            additional_recoveries=tuple(additional_recoveries),
             meta={
                 "rows_count": len(by_id) + len(missing) + int(inventory_gap),
                 "available_products": len(by_id),
@@ -422,6 +428,7 @@ class ItemShippingCatalogFormulaHandlers:
             values.append(["DATA_UNAVAILABLE"] * 9)
         reason = "inventory_incomplete" if inventory_gap else "buybox_missing_expired_or_incomplete"
         recovery = None
+        additional_recoveries: tuple[FormulaDataUnavailableError, ...] = ()
         if inventory_gap or recoverable:
             recovery = FormulaDataUnavailableError(
                 context.contract.name,
@@ -433,9 +440,19 @@ class ItemShippingCatalogFormulaHandlers:
                 if inventory_gap
                 else tuple(sorted(recoverable)),
             )
+        if inventory_gap and recoverable:
+            additional_recoveries = (
+                FormulaDataUnavailableError(
+                    context.contract.name,
+                    "Known catalog items need competition recovery.",
+                    read_model=CATALOG_BUYBOX_SNAPSHOTS_READ_MODEL,
+                    item_ids=tuple(sorted(recoverable)),
+                ),
+            )
         return FormulaExecutionResult(
             values=values,
             recovery=recovery,
+            additional_recoveries=additional_recoveries,
             meta={
                 "rows_count": len(by_id) + len(missing) + int(inventory_gap),
                 "columns": "catalog_buybox_current",

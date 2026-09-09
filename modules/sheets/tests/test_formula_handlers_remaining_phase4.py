@@ -249,6 +249,88 @@ async def test_catalogo_uses_verified_inventory_and_requests_missing_competition
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
+    "formula",
+    [
+        "ZELERDATA_CATALOGO",
+        "ZELERDATA_CATALOGOBUYBOX",
+        "ZELERDATA_OBTENER_CATALOGO",
+        "ZELERDATA_CATALOGO_COMPLETO",
+    ],
+)
+async def test_catalog_recovery_does_not_starve_known_items_behind_inventory_gap(
+    formula: str,
+) -> None:
+    from unittest.mock import AsyncMock
+
+    from zeler_sheets.formulas.handlers_item_shipping_catalog import (
+        build_item_shipping_catalog_formula_handlers,
+    )
+
+    repository = AsyncMock(spec=FormulaReadModelRepository)
+    row = _item_row(
+        item_id="MLA1",
+        sku="sku",
+        title="Publication",
+        catalog_product_id="MLA9",
+        price=Decimal("100"),
+    )
+    repository.find_recent_item_inventory.return_value = (
+        [row],
+        ["MLA1", "MLA2"],
+        ("MLA2",),
+        True,
+    )
+    repository.find_recent_catalog_buybox_inventory.return_value = (
+        [],
+        ("MLA1",),
+        ("MLA2",),
+        True,
+    )
+    repository.find_recent_catalog_product_inventory.return_value = (
+        [],
+        ("MLA9",),
+        ("MLA2",),
+        True,
+        (),
+    )
+    repository.find_orders.return_value = []
+    repository.catalog_sales_coverage.return_value = (NOW, (7, 15, 30, 60, 90, 365), None)
+    handlers = build_item_shipping_catalog_formula_handlers(repository, now_fn=lambda: NOW)
+    handlers.update(build_remaining_phase4_formula_handlers(repository, now_fn=lambda: NOW))
+    result = await FormulaDispatcher(handlers).execute(_context(formula, {"encabezados": False}))
+    assert result.recovery is not None
+    requested = (result.recovery, *result.additional_recoveries)
+    product = formula in {"ZELERDATA_OBTENER_CATALOGO", "ZELERDATA_CATALOGO_COMPLETO"}
+    assert {
+        request.read_model: request.item_ids or request.catalog_product_ids for request in requested
+    } == {
+        ITEM_FORMULA_ROWS_READ_MODEL: ("MLA2",),
+        "catalog_product_snapshots" if product else CATALOG_BUYBOX_SNAPSHOTS_READ_MODEL: ("MLA9",)
+        if product
+        else ("MLA1",),
+    }
+    assert any(all(cell == "DATA_UNAVAILABLE" for cell in row) for row in result.values)
+
+    if formula == "ZELERDATA_CATALOGO":
+        sales_recovery = FormulaDataUnavailableError(
+            formula,
+            read_model=ORDERS_READ_MODEL,
+            date_from=NOW - timedelta(days=30),
+            date_to=NOW,
+        )
+        repository.catalog_sales_coverage.return_value = (NOW, (), sales_recovery)
+        result = await FormulaDispatcher(handlers).execute(
+            _context(formula, {"encabezados": False})
+        )
+        assert sales_recovery in result.additional_recoveries
+        assert {request.read_model for request in result.additional_recoveries} == {
+            CATALOG_BUYBOX_SNAPSHOTS_READ_MODEL,
+            ORDERS_READ_MODEL,
+        }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
     ("formula", "model"),
     [
         ("ZELERDATA_TIEMPOSINSTOCK", "stockout_snapshots"),

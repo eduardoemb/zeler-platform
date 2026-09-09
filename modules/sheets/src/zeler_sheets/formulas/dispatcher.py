@@ -26,6 +26,7 @@ class FormulaExecutionResult:
     values: list[list[Any]]
     meta: dict[str, Any]
     recovery: FormulaDataUnavailableError | None = None
+    additional_recoveries: tuple[FormulaDataUnavailableError, ...] = ()
 
 
 class FormulaDataUnavailableError(Exception):

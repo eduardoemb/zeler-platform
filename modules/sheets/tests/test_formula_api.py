@@ -31,6 +31,78 @@ class FakeUpdateResult:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
+    "outcome", ["success", "primary_capacity", "primary_timeout", "all_timeout"]
+)
+async def test_independent_recoveries_keep_values_and_share_latency_budget(outcome: str) -> None:
+    from zeler_sheets.formulas.dispatcher import FormulaDataUnavailableError
+
+    async def handler(context: Any) -> FormulaExecutionResult:
+        return FormulaExecutionResult(
+            values=[["available", "DATA_UNAVAILABLE"]],
+            meta={},
+            recovery=FormulaDataUnavailableError(
+                context.contract.name,
+                read_model="item_formula_rows",
+                item_ids=("MLA2",),
+            ),
+            additional_recoveries=(
+                FormulaDataUnavailableError(
+                    context.contract.name,
+                    read_model="catalog_buybox_snapshots",
+                    item_ids=("MLA1",),
+                ),
+            ),
+        )
+
+    app, _db, token = await _app_with_token(
+        now=datetime(2026, 5, 13, 12, tzinfo=UTC), formula_dispatcher=handler
+    )
+    queued: list[Any] = []
+    cancelled: set[str] = set()
+
+    class Queue:
+        async def enqueue(self, request: Any) -> str:
+            queued.append(request)
+            primary = request.read_model == "item_formula_rows"
+            if outcome == "primary_capacity" and primary:
+                raise ValueError("capacity reached")
+            if outcome == "all_timeout" or (outcome == "primary_timeout" and primary):
+                try:
+                    await asyncio.Event().wait()
+                finally:
+                    cancelled.add(request.read_model)
+            return str(request.key)
+
+    app.state.formula_recovery_queue = Queue()
+    started = asyncio.get_running_loop().time()
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.post(
+            "/sheets/formulas:execute",
+            json={"formula": "ZELERDATA_CATALOGOBUYBOX", "cuenta": "HOPEMOB", "args": {}},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+    assert asyncio.get_running_loop().time() - started < 1.6
+    assert response.status_code == 200
+    assert response.json()["values"] == [["available", "DATA_UNAVAILABLE"]]
+    assert response.json()["meta"]["recovery_requested"] is (outcome != "all_timeout")
+    assert {request.read_model: request.item_ids for request in queued} == {
+        "item_formula_rows": ("MLA2",),
+        "catalog_buybox_snapshots": ("MLA1",),
+    }
+    assert all(request.seller_id == "123456789" for request in queued)
+    assert cancelled == (
+        {"item_formula_rows", "catalog_buybox_snapshots"}
+        if outcome == "all_timeout"
+        else {"item_formula_rows"}
+        if outcome == "primary_timeout"
+        else set()
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
     "outcome", ["success", "duplicates", "capacity", "mixed", "invalid", "timeout"]
 )
 async def test_catalog_product_recovery_http_keeps_values_and_bounds_admission(

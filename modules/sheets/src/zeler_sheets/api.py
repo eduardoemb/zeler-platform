@@ -658,10 +658,17 @@ async def _execute_formula_payload(
         )
 
     meta = dict(result.meta)
-    if result.recovery is not None:
-        meta["recovery_requested"] = await _request_formula_recovery(
-            request, context, result.recovery
+    recoveries = (
+        *((result.recovery,) if result.recovery is not None else ()),
+        *result.additional_recoveries,
+    )
+    if recoveries:
+        # Independent missing models share the existing one-second admission
+        # window; an unavailable inventory item must not starve known catalog IDs.
+        admitted = await asyncio.gather(
+            *(_request_formula_recovery(request, context, missing) for missing in recoveries)
         )
+        meta["recovery_requested"] = any(admitted)
     return {
         "ok": True,
         "values": _formula_json_safe(result.values),

@@ -226,9 +226,22 @@ class RemainingPhase4FormulaHandlers:
             )
         if recovery is None and catalog_rows:
             recovery = sales_recovery
+        additional_recoveries = []
+        if catalog_rows and sales_recovery is not None and recovery is not sales_recovery:
+            additional_recoveries.append(sales_recovery)
+        if inventory_gap and recoverable:
+            additional_recoveries.append(
+                FormulaDataUnavailableError(
+                    context.contract.name,
+                    "Known catalog items need competition recovery.",
+                    read_model=CATALOG_BUYBOX_SNAPSHOTS_READ_MODEL,
+                    item_ids=tuple(sorted(recoverable)),
+                )
+            )
         return FormulaExecutionResult(
             values=normalize_response_rows(values, header_rows=header_rows),
             recovery=recovery,
+            additional_recoveries=tuple(additional_recoveries),
             meta={
                 "rows_count": len(catalog_rows) + int(inventory_gap),
                 "columns": "legacy_catalog_matrix",

@@ -21,6 +21,50 @@ Keep unrelated `.codegraph/` files untouched in both repositories.
 Pilot: seller `82453304`; initial historical window 2026-08-08 through
 2026-09-06, plus current snapshots. Other products are out of scope.
 
+## Independent catalog recovery no longer waits for every inventory item
+
+During the live inventory sweep, the deployed Mongo-only dispatcher reported
+322 missing buybox snapshots but requested only 1,339 missing item projections;
+`CATALOGO` similarly requested inventory only despite 335 missing buybox items.
+The two read calls took 2.9483/3.4679 seconds. They ran at different instants while
+the worker advanced, so their counts are not one atomic coverage snapshot.
+Registry remained exactly 11 scopes/6 topics and global freshness markers were
+unchanged. Helper `/tmp/current-catalog-read.py` is operator-backend evidence,
+not authenticated HTTP or a Google Sheet test.
+
+The same dependency reproduced locally in `CATALOGO`, `CATALOGOBUYBOX`,
+`OBTENER_CATALOGO` and `CATALOGO_COMPLETO`: a missing unrelated item prevented
+recovery of known product/competition identities. Four handler regressions
+failed in 0.11 seconds before the fix. Four HTTP cases failed before support
+for independent recoveries (0.40 seconds). An additional sales-coverage
+regression failed separately: inventory/competition could also starve orders.
+
+`FormulaExecutionResult` now retains its primary recovery and carries independent
+additional recoveries internally. The API admits them concurrently through the
+existing validated, seller-scoped queue and one-second per-admission deadline,
+instead of serially adding deadlines. Available values, explicit unavailable
+cells and existing metadata remain intact. `recovery_requested` means at least
+one admission succeeded, not full coverage. Rejection/timeout of the primary
+does not discard another successful admission; timed-out admissions are cancelled.
+No Mercado Libre request runs in the formula path. Existing transactional seller
+capacity and durable bounded catalog-intent processing remain unchanged.
+
+Verification: focused HTTP/handler suites **148 passed in 4.09s**; full recovery
+plus those suites using local Mongo replica set **538 passed in 85.04s**;
+protected stock-time replica-set suite **8 passed in 2.85s**. Ruff check/format
+and mypy (507 files) pass. The local Mongo container was stopped after the
+environment restart; only `zeler-goal-mongo` was restarted, not the older container
+sharing its volume. No database volumes were removed.
+
+This correction is not deployed yet. Build a new `sheets-api` image from its
+CI-approved commit, verify provenance and capacity, then verify real handler/API
+admission and durable catalog cursor progress. Worker queue/schema behavior did
+not change and the deployed `3b27cf4` worker already supports these intents.
+Rollback scope: the additional-recovery result field, API admission fan-out and
+the catalog handler additions with their tests. No migration or deletion is
+required; already admitted jobs can finish on the current worker. Full seller
+coverage and the remaining goal acceptance gates are still open.
+
 ## Corrected catalog intent deployed; current inventory recovery started
 
 Both Sheets services now run exact source
