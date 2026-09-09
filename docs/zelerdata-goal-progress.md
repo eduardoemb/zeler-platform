@@ -21,6 +21,62 @@ Keep unrelated `.codegraph/` files untouched in both repositories.
 Pilot: seller `82453304`; initial historical window 2026-08-08 through
 2026-09-06, plus current snapshots. Other products are out of scope.
 
+## Independent recovery deployed; 152-ID live intent traversed despite partial source failures
+
+Sheets API now runs source `6cd66e94416b0ac5572aca70cadd0189c2010e52`, image
+`us-central1-docker.pkg.dev/zeler-platform-dev/zeler-platform/sheets-api@sha256:3c9d72f0248a39f954290a286c6a99ffbb683834431eaaeb097d3d4250c2d913`.
+Build `119a665c-0c00-4dcd-b70f-74faa758ed94` succeeded with verified provenance.
+Digest/build/source verification passed locally and on the VM. CI test
+`34307676476` and lint `34307676475` both completed successfully before activation.
+Worker remains healthy at `3b27cf4` / `7833b955...`; no worker build was needed.
+
+Removed only unused older worker image `0cb733...`, after checking every
+container, Compose, protected current/rollback/special images and Artifact
+Registry availability. Freed 543,502,336 bytes; the image is recoverable and no
+data/volumes were removed. Guarded API pull took 11.85s with Compose unchanged.
+Activation finished HTTP 200, healthy, zero restarts, 5,373,468,672 bytes free.
+Backup: `/opt/zeler-platform/docker-compose.yml.pre-sheets-api-activate-6cd66e9`.
+API rollback is `87a56f17...`; keep the compatible current worker and durable jobs.
+Artifacts/helpers: local `/tmp/zeler-independent-recovery.6thjHk/`, VM
+`/tmp/independent-api-{build,artifact}.json`, `pull-independent-api.py`,
+`activate-independent-api.py` and `independent-catalog-pilot.py`.
+
+At `03:44:48.836Z`, the real deployed Mongo-only buybox handler and normal API
+admission helper independently admitted inventory recovery and all 152 currently
+trusted buybox identities it returned. No IDs were manufactured and no global
+freshness markers changed. Admission took 0.0836s; read plus admission 2.1861s.
+This is operator-backend evidence, not authenticated HTTP or Google Sheets.
+The earlier local SSH launcher exited 139 without output; read-only VM inspection
+proved the exclusive pre-admission receipt absent before retrying the launch.
+The successful receipt is `/var/lib/zeler-platform/repairs/independent-catalog-6cd66e9.json`
+(0600). Do not repeat its `enqueue` mode; use `status`.
+
+Catalog job `42d4c4b06c409c27cb5eb895e55fd3057b8a79084c134cc30d75357c3c0239a6`
+reached offset 152/152 at `03:45:33.864Z`. Its eight chunks recorded terminal
+source rejections, but all 152 primary snapshots were persisted with prices;
+43 have offer counts. Final job state is correctly `failed/source_rejected`,
+not complete coverage. Failed chunks do not mean every identity failed.
+This proves bounded continuation with partial acquisition, not the >400-ID live
+acceptance case. The formula saw fewer trusted identities as older source cuts
+expired during CI/build/deploy; do not substitute this sample for the full seller.
+
+The same formula also reopened inventory job
+`5f2485d573679264481950cce24b1373d2eb93f11c1f79ea2aca606b92d20a8f` through normal
+admission. At `03:46:55.464Z`, it was pending retry at offset 400/1,900, attempt
+one, `source_temporarily_unavailable`, available at `03:47:12.419Z`. Observe that
+same job without restarting it. Once current inventory completes, measure and
+admit the formula's actual full catalog dependencies promptly; the >400-ID case,
+freshness across the complete sweep and remaining goal gates are still open.
+
+Follow-up read at `03:48:06.422Z` found the new inventory enumeration current
+but 1,200 item identities not yet backed by current trusted projections. It
+returned zero current buybox rows and 374 missing known buybox identities;
+persisting the earlier 152 snapshots did not establish ongoing visible coverage
+after their canonical source cuts aged out. Both handlers kept unavailable cells
+explicit (1.8308/2.359s), with registry 11/6 and markers unchanged. This is a
+remaining end-to-end freshness/throughput acceptance gap, not grounds to relax
+source validation or call the catalog complete.
+
 ## Independent catalog recovery no longer waits for every inventory item
 
 Post-sweep production evidence confirms the dependency, not just an intermediate
