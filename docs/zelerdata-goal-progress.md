@@ -21,6 +21,44 @@ Keep unrelated `.codegraph/` files untouched in both repositories.
 Pilot: seller `82453304`; initial historical window 2026-08-08 through
 2026-09-06, plus current snapshots. Other products are out of scope.
 
+## Production has no catalog-time history to join — 2026-09-08
+
+A narrowly scoped approved-runtime Mongo probe found 1,918 pilot `items`, but
+zero seller-scoped `item_history_projection`, `meli_item_events`,
+`sheets_catalog_time_metrics`, documents with `catalog_history`, or
+`event_type=catalog_change` records. No catalog-time freshness marker exists.
+The API image/health guard passed. This is actual absence in these queried
+platform sources, not proof that every possible Mercado Libre history API is
+unavailable. Do not fabricate a 30-day winning percentage or call it optional NA.
+
+Artifact: local `/tmp/zeler-catalog-history.Hoomtr/probe.py`; VM read-only command
+`sudo python3 /tmp/zeler-catalog-history-probe.py`. The result contains counts and
+booleans only; no business data was changed and no credentials/identifiers were
+printed. Prior executable regression remains 4,117 passing tests; no executable
+repository change or new test run belongs to this evidence-only unit.
+
+Code inspection explains the missing forward path: the gateway classifier maps
+`catalog_item_competition_status`, but Sheets' `manifest.yaml` and default
+consumer routing only subscribe to items/orders/shipments/questions. Its
+`SheetsEventPersistence.persist` also has no competition branch. The existing
+catalog metric writer consumes legacy history/imported change events and labels
+its result `legacy_imported`; it is not an active native acquisition pipeline.
+Its `_covered_segments` carries a prior state through the requested end, which
+cannot prove uninterrupted coverage for a new stream merely from one observation.
+
+Next implementation must wire real competition notifications to owned,
+idempotent, timestamped persistence and distinguish observed history from proven
+interval coverage. Keep the available formula columns usable; unknown historical
+percentage must be explained and must not cause repeated snapshot recovery that
+cannot recreate past transitions. Do not populate historical states from today's
+status, import an old database, or activate a queue without a persistence handler.
+
+No builds/deployments or business writes occurred. Runtime API still matches
+the recorded `1131554` image; worker was not rechecked. Pending executable work
+through `13296a8` still requires verified Sheets API/worker images and scoped
+production recovery/readback. This documentation unit needs no image rebuild;
+rollback is removal of this evidence entry, not deletion of any persisted data.
+
 ## Buybox resolves the winner publication to its seller — 2026-09-08
 
 The recovery worker now persists `winning_user_id`: an owned winning publication
