@@ -153,6 +153,8 @@ class HistoricalMeliBackfillSummary:
     catalog_product_ids: list[str]
     catalog_buybox_item_ids: list[str]
     catalog_participation_unavailable: int = 0
+    catalog_product_unavailable: int = 0
+    catalog_buybox_unavailable: int = 0
 
     def as_dict(self) -> dict[str, Any]:
         return sanitize_historical_meli_summary(asdict(self))
@@ -342,6 +344,8 @@ async def run_historical_meli_backfill(
     catalog_product_snapshots: list[dict[str, Any]] = []
     catalog_buybox_snapshots: list[dict[str, Any]] = []
     catalog_participation_unavailable = 0
+    catalog_product_unavailable = 0
+    catalog_buybox_unavailable = 0
     shipment_ids = _bounded_values(
         _unique_strings(
             shipment_id
@@ -384,15 +388,23 @@ async def run_historical_meli_backfill(
             for identity in (row.catalog_product_id, *row.variation_catalog_product_ids)
         )
         catalog_buybox_scope = [row for row in catalog_scope if row.catalog_listing is True]
-        catalog_product_snapshots = await _fetch_catalog_product_snapshots(
+        (
+            catalog_product_snapshots,
+            catalog_product_unavailable,
+        ) = await _fetch_catalog_product_snapshots(
             gateway=catalog_gateway,
             seller_id=seller_id,
             catalog_product_ids=catalog_product_scope,
+            allow_unavailable=allow_unavailable_catalog_participation,
         )
-        catalog_buybox_snapshots = await _fetch_catalog_buybox_snapshots(
+        (
+            catalog_buybox_snapshots,
+            catalog_buybox_unavailable,
+        ) = await _fetch_catalog_buybox_snapshots(
             gateway=catalog_gateway,
             seller_id=seller_id,
             source_rows=catalog_buybox_scope,
+            allow_unavailable=allow_unavailable_catalog_participation,
         )
     catalog_product_ids = _unique_strings(
         snapshot.get("catalog_product_id") for snapshot in catalog_product_snapshots
@@ -623,6 +635,8 @@ async def run_historical_meli_backfill(
         catalog_product_ids=catalog_product_ids,
         catalog_buybox_item_ids=catalog_buybox_item_ids,
         catalog_participation_unavailable=catalog_participation_unavailable,
+        catalog_product_unavailable=catalog_product_unavailable,
+        catalog_buybox_unavailable=catalog_buybox_unavailable,
     )
 
 
@@ -787,29 +801,56 @@ def _merge_catalog_snapshot_sources(
 
 
 async def _fetch_catalog_product_snapshots(
-    *, gateway: HistoricalMeliGateway, seller_id: str, catalog_product_ids: Sequence[str]
-) -> list[dict[str, Any]]:
+    *,
+    gateway: HistoricalMeliGateway,
+    seller_id: str,
+    catalog_product_ids: Sequence[str],
+    allow_unavailable: bool = False,
+) -> tuple[list[dict[str, Any]], int]:
     snapshots: list[dict[str, Any]] = []
+    unavailable = 0
     for catalog_product_id in catalog_product_ids:
-        resource = await gateway.fetch_resource(
-            seller_id=seller_id, path=f"/products/{catalog_product_id}"
-        )
+        try:
+            resource = await gateway.fetch_resource(
+                seller_id=seller_id, path=f"/products/{catalog_product_id}"
+            )
+        except Exception as exc:  # noqa: BLE001 - source-specific 404 is sanitized below.
+            if allow_unavailable and _is_not_found_exception(exc):
+                unavailable += 1
+                continue
+            raise
         snapshot = _catalog_product_snapshot(resource, seller_id=seller_id)
         if snapshot is None or snapshot["catalog_product_id"] != catalog_product_id:
             raise ValueError("catalog product response does not match requested identity")
         snapshots.append(snapshot)
-    return snapshots
+    return snapshots, unavailable
+
+
+def _is_not_found_exception(exc: Exception) -> bool:
+    response = getattr(exc, "response", None)
+    return getattr(response, "status_code", None) == 404
 
 
 async def _fetch_catalog_buybox_snapshots(
-    *, gateway: HistoricalMeliGateway, seller_id: str, source_rows: Sequence[CatalogSnapshotSource]
-) -> list[dict[str, Any]]:
+    *,
+    gateway: HistoricalMeliGateway,
+    seller_id: str,
+    source_rows: Sequence[CatalogSnapshotSource],
+    allow_unavailable: bool = False,
+) -> tuple[list[dict[str, Any]], int]:
     snapshots: list[dict[str, Any]] = []
+    unavailable = 0
     for row in source_rows:
-        resource = await gateway.fetch_resource(
-            seller_id=seller_id,
-            path=f"/items/{row.item_id}/price_to_win?version=v2",
-        )
+        try:
+            resource = await gateway.fetch_resource(
+                seller_id=seller_id,
+                path=f"/items/{row.item_id}/price_to_win?version=v2",
+            )
+        except Exception as exc:  # noqa: BLE001 - source-specific 404 is sanitized below.
+            if allow_unavailable and _is_not_found_exception(exc):
+                unavailable += 1
+                continue
+            raise
         snapshot = _catalog_buybox_snapshot(resource, seller_id=seller_id, source=row)
         if (
             snapshot is None
@@ -818,7 +859,7 @@ async def _fetch_catalog_buybox_snapshots(
         ):
             raise ValueError("catalog buybox response does not match requested identity")
         snapshots.append(snapshot)
-    return snapshots
+    return snapshots, unavailable
 
 
 def _catalog_product_snapshot(resource: Any, *, seller_id: str) -> dict[str, Any] | None:

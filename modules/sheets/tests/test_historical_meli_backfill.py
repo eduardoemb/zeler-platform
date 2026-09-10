@@ -1408,6 +1408,26 @@ async def test_catalog_backfill_can_skip_known_unavailable_participation() -> No
 
 
 @pytest.mark.asyncio
+async def test_catalog_product_404_can_be_reported_as_unavailable() -> None:
+    class NotFoundError(Exception):
+        response = type("Response", (), {"status_code": 404})()
+
+    class Gateway:
+        async def fetch_resource(self, *, seller_id: str, path: str) -> Any:
+            del seller_id, path
+            raise NotFoundError
+
+    snapshots = await historical_backfill_module._fetch_catalog_product_snapshots(
+        gateway=Gateway(),
+        seller_id="82453304",
+        catalog_product_ids=("CAT-REMOVED",),
+        allow_unavailable=True,
+    )
+
+    assert snapshots == ([], 1)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("parent_removed", [False, True])
 async def test_catalog_acquisition_includes_variations_and_prefers_fetched_associations(
     parent_removed: bool,
