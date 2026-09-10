@@ -856,9 +856,11 @@ class FormulaRecoveryWorker:
             params = {
                 "seller": seller_id,
                 "order.date_created.from": start.isoformat(timespec="milliseconds"),
-                "order.date_created.to": (end - timedelta(milliseconds=1)).isoformat(
-                    timespec="milliseconds"
-                ),
+                # Meli search has hour precision. Fractional end-of-hour values
+                # can include the next hour; exact row/detail checks stay below.
+                "order.date_created.to": (end - timedelta(milliseconds=1))
+                .replace(minute=0, second=0, microsecond=0)
+                .isoformat(timespec="milliseconds"),
                 "sort": "date_asc",
                 "offset": str(len(seen)),
                 "limit": "50",

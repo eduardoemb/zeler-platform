@@ -4973,6 +4973,7 @@ async def test_order_acquisition_joins_bounded_details_before_publication(
         "extra_404",
         "missing_quantity",
         "missing_unit_price",
+        "hour_boundary",
     ],
 )
 async def test_order_recovery_publishes_only_complete_owned_inventory(
@@ -5026,6 +5027,10 @@ async def test_order_recovery_publishes_only_complete_owned_inventory(
     before = await recovery_db.orders.find({}).to_list(None)
     calls: list[str] = []
 
+    if failure == "hour_boundary":
+        resources[-1]["date_created"] = (requested.date_to - timedelta(seconds=1)).isoformat()
+        resources[-1]["last_updated"] = resources[-1]["date_created"]
+
     class Gateway:
         async def fetch_resource(self, *, seller_id: str, path: str) -> dict[str, Any]:
             from urllib.parse import parse_qs, urlsplit
@@ -5033,6 +5038,13 @@ async def test_order_recovery_publishes_only_complete_owned_inventory(
             assert seller_id == "pilot"
             calls.append(path)
             offset = int(parse_qs(urlsplit(path).query)["offset"][0])
+            if failure == "hour_boundary":
+                upper = datetime.fromisoformat(
+                    parse_qs(urlsplit(path).query)["order.date_created.to"][0]
+                )
+                assert upper == (requested.date_to - timedelta(milliseconds=1)).replace(
+                    minute=0, second=0, microsecond=0
+                )
             if failure in {"empty", "extra_empty_search"}:
                 return {"paging": {"total": 0}, "results": []}
             return {
@@ -5100,6 +5112,7 @@ async def test_order_recovery_publishes_only_complete_owned_inventory(
         "extra_confirmed",
         "extra_partial",
         "extra_empty_search",
+        "hour_boundary",
     }:
         assert job["state"] == "failed"
         assert await recovery_db.orders.find({}).to_list(None) == before

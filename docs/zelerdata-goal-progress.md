@@ -93,7 +93,98 @@ local Motor/queue state and controlled detail calls; publication is mocked, so
 they do not establish live Mercado Libre throughput or actual publication.
 `uv run pytest modules/sheets/tests/test_formula_recovery.py -q` passes all 416
 cases, without skips. Root Ruff check/format and Mypy (509 source files) pass.
-No new image has been built or deployed.
+Commit `31c62dea82637dd89e90bab7689c80013e032e8b` is now on `origin/main`.
+Cloud Build `a0f57541-c833-43b2-b12a-79ccef1e64c6` completed successfully from
+that exact connected-repository revision, producing only Sheets worker digest
+`sha256:f5841723a09b01529b12d896fb9c5429ab51dd27faa1992256d103d9e4ea1ca7`.
+The first local submission crashed; a Cloud Build listing confirmed no new job
+before retry. A later status-query crash was handled by re-polling the same build,
+not rebuilding. CI lint `34419413656` and test `34419413515` both passed.
+
+Read-only VM preflight passed with 9.2 GiB free. Running API remains healthy at
+`a94b3a31d82322ae0019f1dffd0088db8f7d87dfe9844f6c5aaa757a962d3543`, worker
+healthy at `637a335e0b68955acff21c6d09f8246788080cdd57eb4f7b8c07f06e4adbc732`.
+Helper `/tmp/zeler-order-concurrency-activate.py` is now on the VM; local/remote
+SHA-256 agree (`552a9a95acb70744941919ca94f7428609f9b9c68f4265fa6e4618e246b83b73`).
+Unit `zeler-order-concurrency-activate-31c62de.service` completed successfully:
+journal contains both provenance confirmations, stable new-worker health,
+`activation_complete=true` and `Deactivated successfully`; subsequent transient
+unit state is not-found/inactive/dead. New worker digest is running/healthy;
+API digest remains unchanged/healthy. Initial SSH failure was followed by a
+`LoadState=not-found` check before starting this unit. Do not rerun activation.
+The helper verified offline registration fingerprints, capacity, no running
+recovery, exact Compose replacement and unchanged API container identity.
+Rollback worker is digest `637a335e0b68955acff21c6d09f8246788080cdd57eb4f7b8c07f06e4adbc732`
+from `aee2ef1`; backup is `docker-compose.yml.pre-order-concurrency-31c62de`.
+
+The real Sheet anchor `Goal_Pruebas_20260909!A42901` still displays
+`DATA_UNAVAILABLE: Actualización solicitada; vuelve a intentar.` with the four-space
+formula unchanged. A fresh read-only API-container handler probe subsequently
+found one expired shipment-cost observation (document, cost and observation all
+present), no missing orders/items, zero writes. This is not an authenticated
+HTTP smoke or successful Sheet recalculation. Preserve freshness checks.
+
+After deployment, the same authorized anchor was refreshed from four to five
+spaces in its token-reference expression; only `userEnteredValue` changed,
+with no validation/formatting or other-cell edits. Readback still reports
+update requested. VM inspection confirms May recovery running (attempt 1,
+started/updated `2026-09-10 00:12:39.767 UTC`), with August pilot pending.
+No direct queue edits occurred. Poll this specific job before another recalc;
+the new worker's 240-second recovery outcome is not yet known. Native visual
+fit remains unverified; no workbook export or credential-cell read occurred.
+
+Post-deploy May attempt ended at `00:15:15.228 UTC`: **155.461 seconds**, with
+`source_incomplete`, not timeout. August pilot completed at `00:15:30.887 UTC`.
+This does not prove successful May recovery or a p95. Read-only gateway log
+aggregation for the attempt shows 25 successful search pages, 1,198 HTTP 200
+details, two HTTP 206 details and four shipment-relationship 404 responses.
+The last request was search, after 1,200 details. Script:
+`/tmp/zeler-may-recovery-log-summary.py` (local and VM); no IDs/payloads printed.
+
+Replaying only the last two logged search URLs through the approved bootstrap
+gateway returned stable total 1,231: offset 1,150 has 50 rows; offset 1,200 has
+31. Neither page has invalid/duplicate IDs or cross-page overlap, but the final
+page contains **one date outside the requested interval**. Thus the existing
+search date validation is reproducibly rejecting the response; do not skip
+validation or publish the out-of-range row. Investigate exact boundary semantics
+and authoritative detail before choosing a correction. Read-only script:
+`/tmp/zeler-may-last-page-probe.py` (local and VM). No business/queue writes.
+The repeated probe identifies the boundary discrepancy without printing an
+order ID: requested inclusive upper timestamp `2026-05-30T06:59:59.999Z`, returned
+creation timestamp `2026-05-30T07:58:51Z`. This is nearly an hour, not millisecond
+rounding. Detail confirmation and API date-filter semantics remain pending.
+
+### Order search upper hour: source-confirmed correction (not deployed)
+
+The follow-up approved-runtime probe confirms HTTP 200 detail with matching
+identity, pilot seller and creation timestamp (`03:58:51-04:00`, identical to
+the search's `07:58:51Z`). Holding the query otherwise constant, an upper bound
+of `06:00:00.000Z` returns total 1,230 and 30 final-page rows, none outside the
+original interval; `06:59:59.999Z` reproduces total 1,231 and the outside row.
+This is source-read evidence, not a complete new recovery or full inventory
+comparison. No Mongo/queue writes or credential output occurred.
+
+Official [orders documentation](https://developers.mercadolibre.com.mx/gestiona-ventas)
+states date filters use hour precision and discard minutes, seconds and
+milliseconds. Search-index excerpts were available; direct page fetch returned
+403. The live probe independently confirms the behavior relevant to this fix.
+
+Recovery now sends the beginning of the last included hour for the upper search
+bound. It retains exact requested-range checks on search and detail rows,
+ownership, pagination totals, atomic publication and the existing 240-second
+budget. No out-of-range rows are silently accepted. The historical backfill
+query builder is not changed by this unit.
+
+TDD: the new `hour_boundary` integration case failed before the change; all 18
+`test_order_recovery_publishes_only_complete_owned_inventory` cases pass after
+it. The boundary case includes an order in the last valid second and verifies
+complete persistence/coverage, preventing the coarse request limit from becoming
+a coarse local cutoff. Root Ruff check/format and Mypy (509 files) pass.
+`uv run pytest modules/sheets/tests/test_formula_recovery.py -q` passes all 417
+cases without skips. Runtime still uses worker `31c62de` and
+API `c36dd40`; deploy a verified worker image containing this correction before
+claiming May recovery fixed. Rollback is only the upper search-bound expression
+and its boundary regression, not concurrency, stored orders or validation.
 
 Rollback boundary: `_order_details` and its two `_orders` call sites plus the
 new concurrency regression; retain the earlier detail validation and header fix.
