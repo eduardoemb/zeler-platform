@@ -65,8 +65,13 @@ más de 7 horas saludables en las imágenes de `4209304`.
 
 | Servicio | Digest activo y saludable | Commit de origen |
 | --- | --- | --- |
-| Sheets worker | `sha256:4585407aca40d78d3eaa5da41a1371f5d5d0704127acc779ff0a21c60b068656` | `4209304` |
-| Sheets API | `sha256:38b5b6ee19b8b1a19b9f05eca6547bdc1a4420b126f79a1fbd86d711281da7c5` | `4209304` |
+| Sheets worker | `sha256:8eb6eba098989c356205a25addc862045c17efcc4b85e15765ef762b10be5e2f` | `5a03f06` |
+| Sheets API | `sha256:82fce845db8e76fe689bb640650549e9047a9f7ebc2f956c9e445712ece7a6e0` | `5a03f06` |
+
+En esta sesión se construyeron y desplegaron dos pares de imágenes: primero
+`43e4a29` (conteo de catálogo por participación explícita) y después `5a03f06`
+(espera de Retry-After en adquisición de catálogo). Cada despliegue terminó con
+código 0, con respaldo Compose por servicio y verificación de digest y salud.
 
 El despliegue worker → API terminó con código 0, con respaldos Compose por
 servicio (`pre-<servicio>-4209304`) y más de 5 GiB libres. La corrección de
@@ -95,6 +100,46 @@ números no son evidencia de cobertura real.
 No se asigna porcentaje global: las 52 ejecuciones no equivalen a 52 fórmulas
 aceptadas y todavía faltan controles obligatorios. El estado verificable es
 implementación avanzada con aceptación funcional y operativa incompleta.
+
+## Resultado de la reconciliación productiva
+
+Con `43e4a29` desplegado, el dry-run completo del piloto 82453304 y rango
+2026-08-08 a 2026-09-06 terminó con código 0 y comprobación de fuente autoritativa
+de reclamos. Ya con los conteos corregidos, los faltantes reales fueron mucho
+menores que los 389 reportados antes: 1 snapshot de producto de catálogo, 5 filas
+de fórmula, 11 entradas de índice SKU y 351 snapshots observados de precio/stock.
+
+La primera escritura productiva se detuvo sin persistir por un HTTP 429 del
+gateway (`retry_after=22s`) durante la adquisición de catálogo. Eso motivó
+`5a03f06`: la adquisición de producto de catálogo y de buybox ahora espera el
+Retry-After real (hasta tres intentos) en lugar de abortar; el 404 y el header no
+numérico conservan el comportamiento previo.
+
+La segunda escritura productiva pasó esa adquisición y avanzó hasta el umbral de
+abortado configurado (`--error-threshold 50`), por lo que se detuvo antes de
+publicar marcadores de frescura. Sí alcanzó a persistir la fase histórica. La
+lectura posterior, independiente y de solo conteo, confirma:
+
+| Read model | Antes de escribir | Después de escribir |
+| --- | --- | --- |
+| catalog_product_snapshots | 886 de 887 (1 faltante) | 887 de 887 (0 faltantes) |
+| catalog_buybox_snapshots | 938 (alcance no certificable) | 938 (alcance no certificable) |
+| sheets_item_formula_rows | 2872 de 2877 (5 faltantes) | 2881 de 2895 (14 faltantes) |
+| sheets_item_sku_index | 2899 de 2910 (11 faltantes) | 2895 de 2888 |
+| price_history_snapshots | 1567 de 1918 (351 faltantes) | 1567 de 1918 (351 faltantes) |
+| stockout_snapshots | 1567 de 1918 (351 faltantes) | 1567 de 1918 (351 faltantes) |
+| orders / shipments / items / questions / claims | 100/100/57/3/3 con referencias 103 | igual, sin faltantes |
+
+Las expectativas de fórmula y SKU cambiaron entre ambas corridas (2877 → 2895 y
+2910 → 2888) porque el universo de publicaciones se sigue moviendo; por eso
+`missing_count` no es comparable como una simple resta entre corridas. Los 351
+snapshots observados de precio y stock siguen sin escribirse, y el alcance de
+buybox sigue sin poder certificarse porque hay participaciones desconocidas.
+
+Ninguna fórmula quedó certificada como correcta por esta escritura: los marcadores
+de frescura no se publicaron y el umbral de abortado impidió completar la fase.
+Los datos persistidos sí quedaron en Mongo para consultas futuras, que es el
+contrato pedido.
 
 ## Fuentes y continuación
 
