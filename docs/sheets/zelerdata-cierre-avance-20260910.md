@@ -1,7 +1,44 @@
 # Cierre de avance de ZelerData — 10 de septiembre de 2026
 
 Estado: entrega de avance solicitada por el usuario. La aceptación final del Goal
-sigue abierta. Corte de observación: 2026-09-10, tras finalizar el despliegue de `849b290`.
+sigue abierta. Corte de observación: 2026-09-10, con API y worker verificados en
+las imágenes del commit `4209304` y el conteo de catálogo corregido en `43e4a29`.
+
+## Resumen antes/ahora
+
+Línea base documentada el 2026-09-07 sobre `main` en
+`c5a2e097`: la API de fórmulas devolvía `DATA_UNAVAILABLE` sin programar
+recuperación; la ejecución productiva de la reconciliación no aparecía en
+`systemd` y la procedencia de las imágenes seguía sin resolver; las lecturas de
+artículos, SKU y órdenes truncaban silenciosamente en 500/500/1,000 filas; el
+estado del read model del piloto 82453304 era `degraded` (7 modelos faltantes, 9
+reconciliados, 1 vencido) y las 17 entradas de inventario fallaban la ventana
+productiva. Gateway, API/worker de Sheets y Mongo estaban saludables, pero la
+salud de los contenedores no probaba disponibilidad ni exactitud de datos.
+
+Estado actual: 219 commits después, la ruta de recuperación asíncrona existe y
+está conectada a la API y al worker; las lecturas ya no truncan en los casos
+cubiertos por sus pruebas; se corrigieron recuperación de órdenes, envíos,
+catálogo, precios, atributos de variación, preguntas y calidad de publicación; y
+las 52 fórmulas se ejecutaron en una pestaña real con 52 respuestas HTTP 200.
+Esa ejecución prueba que las fórmulas responden, no que todos sus valores sean
+correctos: el recibo declara `correctness_verified=false`.
+
+| Dimensión | Antes (2026-09-07) | Ahora (2026-09-10) |
+| --- | --- | --- |
+| Recuperación asíncrona | Ausente en la ruta de fórmulas | Conectada a API/worker, con continuidad de artículos y reintentos acotados |
+| Lecturas de datos | Truncadas en 500/500/1,000 filas | Corregidas en los casos cubiertos por pruebas; revisión global pendiente |
+| Reconciliación del piloto | No ejecutada con veredicto autoritativo | Dry-run diagnóstico autoritativo para reclamos; conteos de catálogo en revisión |
+| 52 fórmulas | Sin smoke productivo | 52 HTTP 200 en Google Sheet real; exactitud sin verificar |
+| Imágenes desplegadas | Procedencia sin resolver | API y worker saludables en las imágenes de `4209304` |
+| Seguridad y ciclo de datos | Gate abierto | Gate abierto; aislamiento de auditoría corregido, eliminación sin prueba |
+| Conteo de catálogo | Sin criterio de participación | Corrección `43e4a29` probada (197 casos); requiere imagen |
+| Simplificación | Sin inventario de consumidores | Pendiente de cierre explícito |
+
+El avance es material, pero no equivale a cierre: falta demostrar que los datos
+reconciliados son completos y correctos, que la recuperación automática produce
+lecturas posteriores confiables y que se cumplen los gates de seguridad, latencia,
+simplificación y aceptación en superficies reales.
 
 ## Avance demostrado
 
@@ -23,16 +60,22 @@ sigue abierta. Corte de observación: 2026-09-10, tras finalizar el despliegue d
 
 ## Estado actual del despliegue
 
-| Servicio | Digest anterior | Digest de `849b290` actualmente saludable |
-| --- | --- | --- |
-| Sheets worker | `13c01609314745a95cb6dead2a166622b0b518191f8fc886e308e1273a1cfe7d` | `4f06bc873f7fc206b488593023f8c14c9f1cbba7c8c876b72bc26224b5023aa3` |
-| Sheets API | `3268f014d476456305e9f18459500e77a6f1ab16a79a82913ad62842dfbe2190` | `6ca039bd8b02974064c21916fcf03972824c5708c3693843332deccc4a42246e` |
+Consulta de solo lectura a la VM el 2026-09-10: API y worker de Sheets llevan
+más de 7 horas saludables en las imágenes de `4209304`.
 
-El proceso remoto `bash /tmp/zeler-deploy-reconcile-sheets.sh` terminó con código
-0. Una consulta posterior e independiente a Docker Compose confirmó los dos
-digests finales activos y ambos servicios saludables. Ya no existe esta
-diferencia entre las imágenes previstas y ejecutadas; no se requiere otro build
-por este cambio. Falta comprobar el comportamiento funcional posterior.
+| Servicio | Digest activo y saludable | Commit de origen |
+| --- | --- | --- |
+| Sheets worker | `sha256:4585407aca40d78d3eaa5da41a1371f5d5d0704127acc779ff0a21c60b068656` | `4209304` |
+| Sheets API | `sha256:38b5b6ee19b8b1a19b9f05eca6547bdc1a4420b126f79a1fbd86d711281da7c5` | `4209304` |
+
+El despliegue worker → API terminó con código 0, con respaldos Compose por
+servicio (`pre-<servicio>-4209304`) y más de 5 GiB libres. La corrección de
+conteo de catálogo (`43e4a29`) todavía no tiene imagen: usa la ruta de
+recuperación de metadatos de catálogo del backfill y exige participación
+explícita más identidad de producto. Hasta construir y desplegar esa imagen, la
+reconciliación sobre el runtime actual sigue reportando los 389 snapshots
+buybox contra expectativas que incluyen 529 publicaciones no participantes; esos
+números no son evidencia de cobertura real.
 
 ## Pendientes para aceptación final
 
