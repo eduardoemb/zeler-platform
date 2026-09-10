@@ -73,6 +73,22 @@ en la última observación. No se ha desplegado esa corrección ni se ha demostr
 que explique por completo la excepción histórica. Observar estos builds;
 no repetirlos. El runtime observado sigue en `849b290`.
 
+Actualización posterior de despliegue: ambos builds finalizaron SUCCESS con la
+revisión exacta `42093046fac89de00869e85ca0c1c713d8fa3d9e`. El despliegue
+worker → API terminó con código 0 y verificó ambos contenedores saludables.
+Los digests activos verificados por el despliegue son:
+
+- Worker: `sha256:4585407aca40d78d3eaa5da41a1371f5d5d0704127acc779ff0a21c60b068656`.
+- API: `sha256:38b5b6ee19b8b1a19b9f05eca6547bdc1a4420b126f79a1fbd86d711281da7c5`.
+
+Ambos preflights superaron 5 GiB libres (22 GiB observados). Los respaldos Compose
+por servicio tienen sufijo `pre-<servicio>-4209304`. Los digests anteriores de
+`849b290` quedan en la tabla para referencia. El cambio posterior `9409ff0` es
+solo documentación y no requiere nueva imagen. Se inició un nuevo dry-run
+diagnóstico (sesión local 8497), limitado a clases de excepción, estado HTTP,
+funciones/líneas y conteos; todavía falta su resultado. No hubo escrituras de
+reconciliación ni se afirma aceptación funcional por la salud del despliegue.
+
 - [Recibo de las 52 ejecuciones](zelerdata-goal-smoke-20260910.json).
 - [Registro de avance y pruebas](../zelerdata-goal-progress.md), incluidas las
   secciones de identidad de auditoría, controles mínimos y últimos despliegues.
