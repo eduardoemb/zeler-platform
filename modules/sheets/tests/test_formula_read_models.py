@@ -58,6 +58,36 @@ class FakeDb:
 _UNSET = object()
 
 
+@pytest.mark.parametrize("state", ["reconciled", "stale"])
+@pytest.mark.parametrize("retained_expired", [False, True])
+def test_order_interval_proofs_expire_independently(state: str, retained_expired: bool) -> None:
+    now = datetime.now(UTC)
+    start = now - timedelta(days=90)
+    end = start + timedelta(days=30)
+    marker = {
+        "read_model": "orders",
+        "state": state,
+        "date_from": now - timedelta(days=10),
+        "reconciled_until": now,
+        "valid_until": now - timedelta(seconds=1),
+        "retained_intervals": [
+            {
+                "state": "reconciled",
+                "date_from": start,
+                "reconciled_until": end,
+                "valid_until": now + timedelta(minutes=-1 if retained_expired else 1),
+            }
+        ],
+    }
+    assert read_model_reconciliation_marker_covers(marker, date_from=start, date_to=end) is (
+        state == "reconciled" and not retained_expired
+    )
+    assert not read_model_reconciliation_marker_covers(marker, date_from=start, date_to=now)
+    assert not read_model_reconciliation_marker_covers(
+        marker, date_from=now - timedelta(days=1), date_to=now
+    )
+
+
 def test_expired_recovery_proof_does_not_authorize_formula_reads() -> None:
     now = datetime.now(UTC)
     marker = {

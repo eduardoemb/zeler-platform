@@ -20,6 +20,41 @@ Keep unrelated `.codegraph/` files untouched in both repositories.
 
 ## Real Google Sheet: all-52 first pass and user add-on update, 2026-09-09
 
+### Order recovery: independent interval proofs (local, not deployed)
+
+Recovery now acquires only the requested orders interval instead of expanding
+May to September because August was already reconciled. Successful publication
+retains other unexpired interval proofs with their original expiry. Gaps are
+never certified, and expired or undated legacy proofs are not retained. Each
+interval still requires complete authoritative acquisition and atomic publication
+of normalized rows, coverage and queue completion under the existing lease guard.
+Questions and other products keep their existing behavior.
+
+TDD first reproduced the expanded search bounds in a real local Mongo test.
+Enabling the committed strict validator then reproduced rejected publication
+until the schema was extended; a legacy null-expiry case also failed before its
+guard was added. Tests cover subsequent publications, repository reads, gaps,
+independent expiration and stale parent state. Root Ruff check/format and Mypy
+(509 files) pass. Recovery/read-model regression passed 442 tests in 92.65s
+without skips. After that run, an added invalidation scenario reproduced stale
+retained proofs being resurrected by a later publication. The final state guard
+fix passes all three interval lifecycle cases (1.10s); the root quality checks
+were repeated successfully. Repeat the complete regression on this final source
+before building images.
+
+Deployment remains pending: update only the freshness validator from the approved
+VM/container context, then deploy verified Sheets API and worker images. Older
+APIs can read the newest top-level interval but do not recognize retained ones.
+Rollback boundary: the orders interval selection/retention, reader support and
+optional schema field; leave existing documents and the additive validator intact
+when rolling back images. No data deletion is needed.
+
+This is not durable acquisition checkpointing: a single requested interval may
+still exceed the unchanged 240-second deadline. Production must prove that May
+and pilot recovery complete and remain readable on subsequent real Sheet calls;
+if not, bounded durable progress remains necessary. No acceptance gate is closed
+by this local correction.
+
 ### Order projection identity: SKU mismatch correction deployed
 
 A read-only VM/container probe of the pilot's 100 orders isolated the remaining
@@ -236,7 +271,7 @@ truthful freshness and whole-range coverage. Current queue retries are fixed
 The same gateway interval contains **106 structured local `rate_limit_exceeded`
 events for module Sheets**, proving internal throttling was active (not a claim
 that every observed 429 has been individually correlated). No quota was changed.
-A focused, not-yet-deployed correction retries the same order-detail request up
+A focused correction (deployed as `37dc9a6` below) retries the same order-detail request up
 to three times on `GatewayRateLimitError` with a numeric Retry-After, preserving
 already acquired pages in the active attempt. It uses the raw header rather than
 the shared client's 30-second cap; invalid/missing headers retain existing queue
@@ -251,6 +286,52 @@ recovery suite (`uv run pytest modules/sheets/tests/test_formula_recovery.py -q`
 passes all 421 cases without skips; live end-to-end proof remains pending. Rollback
 boundary is the order-detail request retry loop and its new regression only;
 retain the prior hour-boundary, concurrency and ownership protections.
+
+Quota-wait source is committed/pushed as
+`37dc9a6609b469e014995fa23997fee38b194102`. CI lint `34422807219` and
+test `34422807153` both passed for that exact source. Cloud Build
+`7e4d0be0-9c45-49b7-8413-96ecd2646fb0` was submitted once from that exact
+connected-repository revision, single worker, VERIFIED option. Terminal status is
+SUCCESS; image push ended at `2026-09-10T00:50:16.473Z`; digest
+`5ccfc9a004ee27037728242e75313cbeadd8478979d18da90e90669fa24eeb1f`.
+Build and CI succeeded; no rebuild is needed for this correction.
+
+Prepared helper `/tmp/zeler-order-quota-activate.py` exists locally and on VM,
+matching SHA-256 `d30a9cd907fb19c4ffb728158d1fccde1e443108211cf168db5013fae6af8b89`.
+It retains the verified single-service activation gates, with
+rollback worker `56739389c470b118800a1b94f63fa6fea1c62b2707d440cd6f7eb6b26c7e95b4`
+from `1c9ca38` / build `290272a2-6aa5-49f1-91b8-af732cb4633a`; intended backup
+`docker-compose.yml.pre-order-quota-37dc9a6`. Read-only preflight: 8.2 GiB free,
+worker on that rollback digest and API on `a94b3a31...`, both running/healthy.
+
+Activation completed at `2026-09-10T00:58:47Z` through
+`zeler-order-quota-activate-37dc9a6.service`. Journal confirms provenance for
+new and rollback sources, healthy/stable worker on exact digest `5ccfc9a0...`,
+explicit `activation_complete`, and terminal systemd success. The helper also
+verified unchanged API container identity and healthy state. One local gcloud
+exit 139 during polling was followed by a successful read of the same unit;
+activation was not repeated. Next: normal Sheets recalculation and complete
+May/pilot recovery readback; the 97 expired shipment costs remain unresolved.
+
+Live quota-wait verification (`2026-09-10T01:00Z`): only
+`Goal_Pruebas_20260909!A42901.userEnteredValue` was updated to seven trailing
+spaces in the token reference expression, preserving dates/filters and formats.
+Anchor readback remains the update-requested DATA_UNAVAILABLE message; native
+visual fit is not verified and no credential-bearing export was made.
+Pilot orders completed at `01:00:43.521Z`. May attempt 1 started
+`01:00:44.721Z`, then became pending at `01:04:44.744Z` (240.023 seconds),
+`source_temporarily_unavailable`, next eligible `01:05:14.744Z`.
+This matches the existing 240-second deadline; do not claim successful recovery.
+
+Sanitized search logs prove the actual acquisition was May 1 07:00Z through
+September 7 07:00Z (hour-precision request upper 06:00Z), not only May: fresh
+pilot coverage expanded the requested range via `_coverage`. During the attempt,
+gateway logs show 48 search 200s, 2,363 detail 200s, two detail 206s, 14 detail
+429s and 18 order-shipment 404s. Coverage stayed at August 8–September 7.
+The quota wait alone is insufficient. Next: preserve bounded acquisition
+progress and honest range coverage without repeated whole-union acquisition;
+do not raise timeouts or label partial data complete. Automatic retries remain
+owned by the existing queue; no direct queue edits or worker restarts occurred.
 
 Rollback boundary: `_order_details` and its two `_orders` call sites plus the
 new concurrency regression; retain the earlier detail validation and header fix.

@@ -5824,6 +5824,111 @@ async def test_question_recovery_persists_data_and_unlocks_next_query(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("prior_expired", [False, True, None])
+async def test_order_recovery_preserves_independent_intervals_without_acquiring_gap(
+    recovery_db: Any, prior_expired: bool | None
+) -> None:
+    import json
+    from pathlib import Path
+    from urllib.parse import parse_qs, urlsplit
+
+    from zeler_sheets.formulas.read_models import read_model_reconciliation_marker_covers
+    from zeler_sheets.formulas.recovery_worker import FormulaRecoveryWorker
+
+    now = datetime.now(UTC)
+    schema = json.loads(Path("infra/mongo/schemas/sheets_read_model_freshness.json").read_text())
+    await recovery_db.create_collection(
+        "sheets_read_model_freshness", validator={"$jsonSchema": schema["$jsonSchema"]}
+    )
+    prior: dict[str, Any] = {
+        "_id": "pilot:orders",
+        "seller_id": "pilot",
+        "read_model": "orders",
+        "state": "reconciled",
+        "date_from": datetime(2026, 8, 8, tzinfo=UTC),
+        "reconciled_until": datetime(2026, 9, 7, tzinfo=UTC),
+        "valid_until": (
+            None if prior_expired is None else now + timedelta(minutes=-1 if prior_expired else 10)
+        ),
+        "fresh_until": datetime(2026, 9, 7, tzinfo=UTC),
+        "updated_at": now,
+        "schema_version": 1,
+    }
+    await recovery_db.sheets_read_model_freshness.insert_one(prior)
+    requested = RecoveryRequest(
+        "pilot", "orders", datetime(2026, 5, 1, tzinfo=UTC), datetime(2026, 6, 1, tzinfo=UTC)
+    )
+    bounds: list[tuple[datetime, datetime]] = []
+
+    class Gateway:
+        async def fetch_resource(self, *, seller_id: str, path: str) -> dict[str, Any]:
+            assert seller_id == "pilot"
+            query = parse_qs(urlsplit(path).query)
+            bounds.append(
+                (
+                    datetime.fromisoformat(query["order.date_created.from"][0]),
+                    datetime.fromisoformat(query["order.date_created.to"][0]),
+                )
+            )
+            return {"paging": {"total": 0}, "results": []}
+
+    queue = FormulaRecoveryQueue(recovery_db, enabled_models=frozenset({"orders"}))
+    await queue.enqueue(requested)
+    assert await FormulaRecoveryWorker(db=recovery_db, queue=queue, gateway=Gateway()).process_one()
+    assert bounds == [(requested.date_from, requested.date_to - timedelta(hours=1))]
+    marker = await recovery_db.sheets_read_model_freshness.find_one({"_id": "pilot:orders"})
+    assert read_model_reconciliation_marker_covers(
+        marker, date_from=requested.date_from, date_to=requested.date_to
+    )
+    assert read_model_reconciliation_marker_covers(
+        marker, date_from=prior["date_from"], date_to=prior["reconciled_until"]
+    ) is (prior_expired is False)
+    assert not read_model_reconciliation_marker_covers(
+        marker, date_from=requested.date_from, date_to=prior["reconciled_until"]
+    )
+    if prior_expired is False:
+        assert marker["retained_intervals"][0]["valid_until"] == prior["valid_until"].replace(
+            tzinfo=None, microsecond=prior["valid_until"].microsecond // 1000 * 1000
+        )
+    # A later publication must retain both earlier independent proofs rather
+    # than just the immediately preceding top-level interval.
+    later = RecoveryRequest(
+        "pilot", "orders", datetime(2026, 7, 1, tzinfo=UTC), datetime(2026, 8, 1, tzinfo=UTC)
+    )
+    await queue.enqueue(later)
+    assert await FormulaRecoveryWorker(db=recovery_db, queue=queue, gateway=Gateway()).process_one()
+    from zeler_sheets.formulas.read_models import FormulaReadModelRepository
+
+    for interval in (requested, later):
+        await FormulaReadModelRepository(db=recovery_db).require_read_model_reconciled_range(
+            seller_id="pilot",
+            read_model="orders",
+            date_from=interval.date_from,
+            date_to=interval.date_to,
+            formula="ZELERDATA_ORDENES",
+        )
+    marker = await recovery_db.sheets_read_model_freshness.find_one({"_id": "pilot:orders"})
+    assert read_model_reconciliation_marker_covers(
+        marker, date_from=prior["date_from"], date_to=prior["reconciled_until"]
+    ) is (prior_expired is False)
+    assert not read_model_reconciliation_marker_covers(
+        marker, date_from=requested.date_from, date_to=later.date_to
+    )
+    await recovery_db.sheets_read_model_freshness.update_one(
+        {"_id": "pilot:orders"}, {"$set": {"state": "stale"}}
+    )
+    newest = RecoveryRequest(
+        "pilot", "orders", datetime(2026, 9, 8, tzinfo=UTC), datetime(2026, 9, 9, tzinfo=UTC)
+    )
+    await queue.enqueue(newest)
+    assert await FormulaRecoveryWorker(db=recovery_db, queue=queue, gateway=Gateway()).process_one()
+    marker = await recovery_db.sheets_read_model_freshness.find_one({"_id": "pilot:orders"})
+    assert not read_model_reconciliation_marker_covers(
+        marker, date_from=requested.date_from, date_to=requested.date_to
+    ), "new publication must not resurrect invalidated retained proofs"
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("prior_is_later", [False, True])
 async def test_question_recovery_rechecks_prior_coverage_and_the_gap(
     recovery_db: Any, prior_is_later: bool

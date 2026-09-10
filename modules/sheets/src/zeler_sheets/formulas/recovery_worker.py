@@ -828,7 +828,7 @@ class FormulaRecoveryWorker:
         )
         start = _utc(job["date_from"])
         end = _utc(job["date_to"])
-        if marker_before is not None:
+        if marker_before is not None and job["read_model"] != "orders":
             prior_start = marker_before.get("date_from")
             prior_end = marker_before.get("reconciled_until")
             if read_model_reconciliation_marker_covers(
@@ -1174,6 +1174,36 @@ class FormulaRecoveryWorker:
             "source": "zelerdata_read_model_reconcile",
             "schema_version": 1,
         }
+        if (
+            read_model == "orders"
+            and marker_before is not None
+            and marker_before.get("state") == "reconciled"
+        ):
+            # Keep independent proofs, never extend their expiry or certify a
+            # gap. The newest interval remains readable by older API images.
+            previous = {
+                key: value for key, value in marker_before.items() if key != "retained_intervals"
+            }
+            candidates = [previous, *marker_before.get("retained_intervals", [])]
+            marker["retained_intervals"] = [
+                {
+                    key: proof[key]
+                    for key in ("state", "date_from", "reconciled_until", "valid_until")
+                }
+                for proof in candidates
+                if isinstance(proof, dict)
+                and isinstance(proof.get("valid_until"), datetime)
+                and all(
+                    key in proof
+                    for key in ("state", "date_from", "reconciled_until", "valid_until")
+                )
+                and read_model_reconciliation_marker_covers(
+                    proof, date_from=proof.get("date_from"), date_to=proof.get("reconciled_until")
+                )
+                and not read_model_reconciliation_marker_covers(
+                    marker, date_from=proof.get("date_from"), date_to=proof.get("reconciled_until")
+                )
+            ]
         # Source acquisition happens outside Mongo transactions. Publish all
         # normalized rows, coverage and completion atomically for the live owner.
         async with (

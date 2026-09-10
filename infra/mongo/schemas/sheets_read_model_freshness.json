@@ -43,6 +43,35 @@
           "null"
         ]
       },
+      "retained_intervals": {
+        "bsonType": "array",
+        "items": {
+          "additionalProperties": false,
+          "bsonType": "object",
+          "properties": {
+            "date_from": {
+              "bsonType": "date"
+            },
+            "reconciled_until": {
+              "bsonType": "date"
+            },
+            "state": {
+              "enum": [
+                "reconciled"
+              ]
+            },
+            "valid_until": {
+              "bsonType": "date"
+            }
+          },
+          "required": [
+            "state",
+            "date_from",
+            "reconciled_until",
+            "valid_until"
+          ]
+        }
+      },
       "revision": {
         "bsonType": [
           "string",

@@ -287,8 +287,8 @@ class FormulaReadModelRepository:
             start = (as_of - timedelta(days=missing)).replace(
                 hour=0, minute=0, second=0, microsecond=0
             )
-            # The worker reacquires the union with prior verified coverage,
-            # including any gap. Admission itself remains bounded to 90 days.
+            # Recovery acquires this interval without expanding it to older
+            # coverage. Admission remains bounded to 90 days.
             recovery = FormulaDataUnavailableError(
                 formula,
                 "Catalog sales interval is not reconciled.",
@@ -1065,6 +1065,24 @@ def read_model_reconciliation_marker_covers(
 ) -> bool:
     if not isinstance(marker, dict):
         return False
+    if marker.get("read_model") == "orders" and "retained_intervals" in marker:
+        if str(marker.get("state") or "").strip().casefold() != RECONCILED_READ_MODEL_STATE:
+            return False
+        current = {key: value for key, value in marker.items() if key != "retained_intervals"}
+        retained = marker["retained_intervals"]
+        if not isinstance(retained, list):
+            return False
+        return any(
+            read_model_reconciliation_marker_covers(
+                proof,
+                date_from=date_from,
+                date_to=date_to,
+                coverage_basis=coverage_basis,
+                exact_interval=exact_interval,
+            )
+            for proof in [current, *retained]
+            if isinstance(proof, dict) and "retained_intervals" not in proof
+        )
     if marker.get("valid_until") is not None:
         valid_until = _safe_utc_datetime(marker["valid_until"])
         if valid_until is None or valid_until <= datetime.now(UTC):

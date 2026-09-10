@@ -575,6 +575,20 @@ ENTITY_SCHEMAS: dict[str, dict[str, Any]] = {
             "valid_until": NULLABLE_DATE,
             "revision": {"bsonType": ["string", "null"]},
             "proof_fingerprint": {"bsonType": ["string", "null"]},
+            "retained_intervals": {
+                "bsonType": "array",
+                "items": {
+                    "bsonType": "object",
+                    "additionalProperties": False,
+                    "required": ["state", "date_from", "reconciled_until", "valid_until"],
+                    "properties": {
+                        "state": {"enum": ["reconciled"]},
+                        "date_from": DATE,
+                        "reconciled_until": DATE,
+                        "valid_until": DATE,
+                    },
+                },
+            },
             **SCHEMA_VERSION,
         },
     },
