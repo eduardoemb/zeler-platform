@@ -55,6 +55,24 @@ implementación avanzada con aceptación funcional y operativa incompleta.
 
 ## Fuentes y continuación
 
+Actualización posterior (13:30 UTC): el dry-run sobre `849b290` terminó con
+código 1 y `mandatory_source_gate.authoritative=false`. Siguen sin fuente
+esperada válida los conteos históricos de órdenes, envíos, artículos, preguntas
+y reclamos; no se ejecutó escritura. Reportó 5 filas de fórmulas y 11 entradas
+SKU faltantes, y 389 snapshots buybox faltantes respecto de sus expectativas.
+Estos conteos no prueban por sí solos el origen ni la recuperabilidad de cada
+ausencia.
+
+Una consulta de solo conteo en Mongo desde el worker confirmó siete artículos
+del piloto con `catalog_listing=true` sin ID de producto. El commit `4209304`
+corrige ese caso reproducido por prueba, está en GitHub y tiene builds en curso:
+worker `9928ace9-e389-482b-aedb-9ce72b8658e7`, API
+`57f2cd9f-27cc-478e-9a37-edf68b918f84`. Ambos registros de Cloud Build señalan
+la revisión exacta `42093046fac89de00869e85ca0c1c713d8fa3d9e` y estado WORKING
+en la última observación. No se ha desplegado esa corrección ni se ha demostrado
+que explique por completo la excepción histórica. Observar estos builds;
+no repetirlos. El runtime observado sigue en `849b290`.
+
 - [Recibo de las 52 ejecuciones](zelerdata-goal-smoke-20260910.json).
 - [Registro de avance y pruebas](../zelerdata-goal-progress.md), incluidas las
   secciones de identidad de auditoría, controles mínimos y últimos despliegues.
