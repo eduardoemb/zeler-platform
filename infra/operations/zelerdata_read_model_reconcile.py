@@ -3724,23 +3724,22 @@ def _historical_meli_expected_counts(summary: Any) -> HistoricalMeliExpectedCoun
 
 
 async def _collect_catalog_expected_counts(*, db: Any, seller_id: str) -> ExpectedReadModelCounts:
+    from zeler_sheets.historical_meli_backfill import _catalog_snapshot_source_rows
+
     catalog_product_ids: dict[str, None] = {}
     catalog_item_ids: dict[str, None] = {}
+    unavailable_participation = 0
     try:
-        cursor = db["items"].find(
-            {
-                "seller_id": seller_id,
-                "catalog_product_id": {"$exists": True, "$ne": None},
-            },
-            {"_id": 1, "catalog_product_id": 1},
-        )
-        async for item in cursor:
-            item_id = str(item.get("_id") or item.get("id") or "").strip()
-            catalog_product_id = str(item.get("catalog_product_id") or "").strip()
-            if not item_id or not catalog_product_id:
-                continue
-            catalog_item_ids.setdefault(item_id, None)
-            catalog_product_ids.setdefault(catalog_product_id, None)
+        for row in await _catalog_snapshot_source_rows(db=db, seller_id=seller_id):
+            for product_id in (row.catalog_product_id, *row.variation_catalog_product_ids):
+                if product_id:
+                    catalog_product_ids.setdefault(product_id, None)
+            if row.catalog_listing is None or (
+                row.catalog_listing is True and row.catalog_product_id is None
+            ):
+                unavailable_participation += 1
+            elif row.catalog_listing is True:
+                catalog_item_ids.setdefault(row.item_id, None)
     except Exception:  # noqa: BLE001 - expected source anomalies are sanitized.
         return ExpectedReadModelCounts(
             counts={
@@ -3765,7 +3764,9 @@ async def _collect_catalog_expected_counts(*, db: Any, seller_id: str) -> Expect
     return ExpectedReadModelCounts(
         counts={
             "catalog_product_snapshots": len(catalog_product_ids),
-            "catalog_buybox_snapshots": len(catalog_item_ids),
+            "catalog_buybox_snapshots": (
+                None if unavailable_participation else len(catalog_item_ids)
+            ),
         },
         refs={
             "catalog_product_snapshots": frozenset(catalog_product_ids),
@@ -3773,8 +3774,20 @@ async def _collect_catalog_expected_counts(*, db: Any, seller_id: str) -> Expect
         },
         truth_mode={
             "catalog_product_snapshots": "expected",
-            "catalog_buybox_snapshots": "expected",
+            "catalog_buybox_snapshots": "unavailable" if unavailable_participation else "expected",
         },
+        issues=(
+            (
+                _issue(
+                    "catalog_buybox_snapshots",
+                    "catalog_participation_unavailable",
+                    "catalog participation or product identity unavailable",
+                    count=unavailable_participation,
+                ),
+            )
+            if unavailable_participation
+            else ()
+        ),
     )
 
 

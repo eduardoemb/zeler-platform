@@ -3832,10 +3832,21 @@ async def test_catalog_expected_counts_come_from_scoped_items_with_catalog_produ
     db = FakeAsyncDb(
         {
             "items": [
-                _seller_doc(_id="ITEM-PII-1", catalog_product_id="CATALOG-PII-1"),
-                _seller_doc(_id="ITEM-PII-2", catalog_product_id="CATALOG-PII-1"),
-                _seller_doc(_id="ITEM-PII-3", catalog_product_id="CATALOG-PII-2"),
-                _seller_doc(_id="ITEM-PII-NO-CATALOG", catalog_product_id=""),
+                _seller_doc(
+                    _id="ITEM-PII-1", catalog_product_id="CATALOG-PII-1", catalog_listing=True
+                ),
+                _seller_doc(
+                    _id="ITEM-PII-2", catalog_product_id="CATALOG-PII-1", catalog_listing=False
+                ),
+                _seller_doc(
+                    _id="ITEM-PII-3", catalog_product_id="CATALOG-PII-2", catalog_listing=True
+                ),
+                _seller_doc(
+                    _id="ITEM-PII-NO-CATALOG",
+                    catalog_product_id="",
+                    catalog_listing=False,
+                    variations=[{"catalog_product_id": "CAT-VARIATION"}],
+                ),
                 {"_id": "ITEM-OTHER", "seller_id": "other", "catalog_product_id": "CAT-OTHER"},
             ],
         }
@@ -3845,16 +3856,40 @@ async def test_catalog_expected_counts_come_from_scoped_items_with_catalog_produ
         db=db, request=_request(), historical_meli_source=fake_historical_source
     )
 
-    assert expected.counts["catalog_product_snapshots"] == 2
+    assert expected.counts["catalog_product_snapshots"] == 3
     assert expected.refs["catalog_product_snapshots"] == frozenset(
-        {"CATALOG-PII-1", "CATALOG-PII-2"}
+        {"CATALOG-PII-1", "CATALOG-PII-2", "CAT-VARIATION"}
     )
-    assert expected.counts["catalog_buybox_snapshots"] == 3
-    assert expected.refs["catalog_buybox_snapshots"] == frozenset(
-        {"ITEM-PII-1", "ITEM-PII-2", "ITEM-PII-3"}
-    )
+    assert expected.counts["catalog_buybox_snapshots"] == 2
+    assert expected.refs["catalog_buybox_snapshots"] == frozenset({"ITEM-PII-1", "ITEM-PII-3"})
     assert expected.truth_mode["catalog_product_snapshots"] == "expected"
     assert expected.truth_mode["catalog_buybox_snapshots"] == "expected"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("participation,product", [(None, "CAT"), (True, None)])
+async def test_catalog_unknown_metadata_does_not_certify_empty_buybox_scope(
+    participation: bool | None,
+    product: str | None,
+) -> None:
+    db = FakeAsyncDb(
+        {
+            "items": [
+                _seller_doc(
+                    _id="UNKNOWN",
+                    catalog_listing=participation,
+                    catalog_product_id=product,
+                )
+            ]
+        }
+    )
+    expected = await reconcile_operation_module._collect_catalog_expected_counts(
+        db=db,
+        seller_id="82453304",
+    )
+    assert expected.counts["catalog_buybox_snapshots"] is None
+    assert expected.truth_mode["catalog_buybox_snapshots"] == "unavailable"
+    assert any(issue.code == "catalog_participation_unavailable" for issue in expected.issues)
 
 
 @pytest.mark.asyncio
