@@ -11,6 +11,7 @@ from datetime import UTC, date, datetime, timedelta
 from typing import Any, Protocol, cast
 from urllib.parse import urlencode
 
+from zeler_platform_core.clients.meli_gateway_client import GatewayRateLimitError
 from zeler_platform_core.devoluciones_readiness import (
     DevolucionesLeaseLostError,
     DevolucionesOperationContext,
@@ -804,6 +805,26 @@ def _merge_catalog_snapshot_sources(
     return list(by_item_id.values())
 
 
+async def _fetch_catalog_resource_with_quota_wait(
+    *,
+    gateway: HistoricalMeliGateway,
+    seller_id: str,
+    path: str,
+) -> dict[str, Any]:
+    for attempt in range(3):
+        try:
+            resource = await gateway.fetch_resource(seller_id=seller_id, path=path)
+            return cast("dict[str, Any]", resource)
+        except GatewayRateLimitError as exc:
+            delay = exc.response.headers.get("Retry-After", "").strip()
+            if attempt == 2 or not delay.isascii() or not delay.isdecimal():
+                raise
+            # Use the source's actual Retry-After rather than the shared client's
+            # 30-second cap; enclosing operation deadlines and cancellation apply.
+            await asyncio.sleep(max(1, int(delay)))
+    raise AssertionError("unreachable")
+
+
 async def _fetch_catalog_product_snapshots(
     *,
     gateway: HistoricalMeliGateway,
@@ -815,8 +836,10 @@ async def _fetch_catalog_product_snapshots(
     unavailable = 0
     for catalog_product_id in catalog_product_ids:
         try:
-            resource = await gateway.fetch_resource(
-                seller_id=seller_id, path=f"/products/{catalog_product_id}"
+            resource = await _fetch_catalog_resource_with_quota_wait(
+                gateway=gateway,
+                seller_id=seller_id,
+                path=f"/products/{catalog_product_id}",
             )
         except Exception as exc:  # noqa: BLE001 - source-specific 404 is sanitized below.
             if allow_unavailable and _is_not_found_exception(exc):
@@ -846,7 +869,8 @@ async def _fetch_catalog_buybox_snapshots(
     unavailable = 0
     for row in source_rows:
         try:
-            resource = await gateway.fetch_resource(
+            resource = await _fetch_catalog_resource_with_quota_wait(
+                gateway=gateway,
                 seller_id=seller_id,
                 path=f"/items/{row.item_id}/price_to_win?version=v2",
             )

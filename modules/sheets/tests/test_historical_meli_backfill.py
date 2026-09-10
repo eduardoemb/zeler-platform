@@ -1412,6 +1412,112 @@ async def test_catalog_backfill_can_skip_known_unavailable_participation(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["product", "buybox"])
+async def test_catalog_acquisition_waits_for_gateway_quota_once(
+    monkeypatch: pytest.MonkeyPatch, kind: str
+) -> None:
+    import asyncio as asyncio_module
+
+    import httpx
+
+    from zeler_platform_core.clients.meli_gateway_client import GatewayRateLimitError
+
+    quota = GatewayRateLimitError(
+        retry_after_seconds=30,
+        response=httpx.Response(429, headers={"Retry-After": "7"}),
+    )
+    waits: list[float] = []
+    attempts: list[str] = []
+
+    async def sleep(seconds: float) -> None:
+        waits.append(seconds)
+
+    monkeypatch.setattr(asyncio_module, "sleep", sleep)
+
+    class Gateway:
+        async def fetch_resource(self, *, seller_id: str, path: str) -> Any:
+            del seller_id
+            attempts.append(path)
+            if len(attempts) == 1:
+                raise quota
+            if kind == "product":
+                return {**_catalog_product_detail(), "id": "CAT-QUOTA"}
+            return {"catalog_product_id": "CAT-QUOTA", "status": "active"}
+
+    if kind == "product":
+        snapshots, unavailable = await historical_backfill_module._fetch_catalog_product_snapshots(
+            gateway=Gateway(),
+            seller_id="82453304",
+            catalog_product_ids=("CAT-QUOTA",),
+        )
+    else:
+        snapshots, unavailable = await historical_backfill_module._fetch_catalog_buybox_snapshots(
+            gateway=Gateway(),
+            seller_id="82453304",
+            source_rows=(
+                historical_backfill_module.CatalogSnapshotSource(
+                    "MLA1", "CAT-QUOTA", (), True, None, None
+                ),
+            ),
+        )
+
+    assert unavailable == 0
+    assert len(snapshots) == 1
+    assert waits == [7.0]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["product", "buybox"])
+async def test_catalog_acquisition_does_not_retry_without_numeric_retry_after(
+    monkeypatch: pytest.MonkeyPatch, kind: str
+) -> None:
+    import asyncio as asyncio_module
+
+    import httpx
+
+    from zeler_platform_core.clients.meli_gateway_client import GatewayRateLimitError
+
+    quota = GatewayRateLimitError(
+        retry_after_seconds=5,
+        response=httpx.Response(429, headers={"Retry-After": "later"}),
+    )
+    waits: list[float] = []
+    attempts: list[str] = []
+
+    async def sleep(seconds: float) -> None:
+        waits.append(seconds)
+
+    monkeypatch.setattr(asyncio_module, "sleep", sleep)
+
+    class Gateway:
+        async def fetch_resource(self, *, seller_id: str, path: str) -> Any:
+            del seller_id
+            attempts.append(path)
+            raise quota
+
+    with pytest.raises(GatewayRateLimitError):
+        if kind == "product":
+            await historical_backfill_module._fetch_catalog_product_snapshots(
+                gateway=Gateway(),
+                seller_id="82453304",
+                catalog_product_ids=("CAT-QUOTA",),
+            )
+        else:
+            await historical_backfill_module._fetch_catalog_buybox_snapshots(
+                gateway=Gateway(),
+                seller_id="82453304",
+                source_rows=(
+                    historical_backfill_module.CatalogSnapshotSource(
+                        "MLA1", "CAT-QUOTA", (), True, None, None
+                    ),
+                ),
+            )
+
+    assert waits == []
+    assert len(attempts) == 1
+
+
+@pytest.mark.asyncio
 async def test_catalog_product_404_can_be_reported_as_unavailable() -> None:
     class NotFoundError(Exception):
         response = type("Response", (), {"status_code": 404})()
