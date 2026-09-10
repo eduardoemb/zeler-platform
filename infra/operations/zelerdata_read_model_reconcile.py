@@ -1871,6 +1871,7 @@ async def _collect_historical_meli_expected_counts(
         include_questions=True,
         include_claims=True,
         include_catalog_snapshots=True,
+        allow_unavailable_catalog_participation=True,
     )
 
 
@@ -1914,6 +1915,7 @@ async def execute_reconciliation_write(
         include_questions=True,
         include_claims=True,
         include_catalog_snapshots=True,
+        allow_unavailable_catalog_participation=True,
         operation=operation,
     )
     _enforce_write_count_safety_controls(

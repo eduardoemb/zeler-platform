@@ -1378,6 +1378,36 @@ async def test_catalog_buybox_requires_explicit_participation(participation: boo
 
 
 @pytest.mark.asyncio
+async def test_catalog_backfill_can_skip_known_unavailable_participation() -> None:
+    db = FakeDb()
+    db["items"].documents["MLA-REMOVED"] = {
+        "_id": "MLA-REMOVED",
+        "seller_id": "82453304",
+        "title": "Removed item",
+    }
+    kwargs: dict[str, Any] = dict(
+        db=db,
+        gateway=FakeGateway(),
+        order_detail_gateway=FakeOrderDetailGateway(),
+        catalog_gateway=FakeCatalogGateway(),
+        seller_id="82453304",
+        date_from="2026-05-01",
+        date_to="2026-05-01",
+        dry_run=True,
+        approved_runtime=True,
+        max_orders=1,
+        include_catalog_snapshots=True,
+        allow_unavailable_catalog_participation=True,
+    )
+
+    summary = await run_historical_meli_backfill(**kwargs)
+
+    assert summary.catalog_product_snapshots_found == 1
+    assert summary.catalog_buybox_snapshots_found == 1
+    assert summary.catalog_participation_unavailable == 1
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("parent_removed", [False, True])
 async def test_catalog_acquisition_includes_variations_and_prefers_fetched_associations(
     parent_removed: bool,

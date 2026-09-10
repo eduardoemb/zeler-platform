@@ -152,6 +152,7 @@ class HistoricalMeliBackfillSummary:
     claim_ids: list[str]
     catalog_product_ids: list[str]
     catalog_buybox_item_ids: list[str]
+    catalog_participation_unavailable: int = 0
 
     def as_dict(self) -> dict[str, Any]:
         return sanitize_historical_meli_summary(asdict(self))
@@ -230,6 +231,7 @@ async def run_historical_meli_backfill(
     include_questions: bool = False,
     include_claims: bool = False,
     include_catalog_snapshots: bool = False,
+    allow_unavailable_catalog_participation: bool = False,
     operation: DevolucionesOperationContext | None = None,
     devoluciones_source: DevolucionesSource | None = None,
 ) -> HistoricalMeliBackfillSummary:
@@ -339,6 +341,7 @@ async def run_historical_meli_backfill(
     catalog_buybox_scope: list[CatalogSnapshotSource] = []
     catalog_product_snapshots: list[dict[str, Any]] = []
     catalog_buybox_snapshots: list[dict[str, Any]] = []
+    catalog_participation_unavailable = 0
     shipment_ids = _bounded_values(
         _unique_strings(
             shipment_id
@@ -362,6 +365,14 @@ async def run_historical_meli_backfill(
             await _catalog_snapshot_source_rows(db=db, seller_id=seller_id),
             _catalog_snapshot_source_rows_from_resources(items),
         )
+        unavailable_rows = [row for row in catalog_scope if row.catalog_listing is None]
+        catalog_participation_unavailable = len(unavailable_rows)
+        if unavailable_rows and not allow_unavailable_catalog_participation:
+            raise ValueError(
+                "catalog participation unavailable; refresh item details before catalog backfill"
+            )
+        if unavailable_rows:
+            catalog_scope = [row for row in catalog_scope if row.catalog_listing is not None]
         catalog_product_scope = _unique_strings(
             identity
             for row in catalog_scope
@@ -614,6 +625,7 @@ async def run_historical_meli_backfill(
         claim_ids=claim_ids,
         catalog_product_ids=catalog_product_ids,
         catalog_buybox_item_ids=catalog_buybox_item_ids,
+        catalog_participation_unavailable=catalog_participation_unavailable,
     )
 
 
