@@ -190,7 +190,10 @@ class CatalogProductIdsRecoveryRequest:
 
 @dataclass(frozen=True)
 class CatalogRecoveryRequest:
-    """One durable intent, executed in bounded catalog chunks by the worker."""
+    """Explicit-ID continuation shared by catalog and item acquisition.
+
+    Retain the persisted catalog key/offset vocabulary for existing consumers.
+    """
 
     seller_id: str
     read_model: str
@@ -199,7 +202,8 @@ class CatalogRecoveryRequest:
     def __post_init__(self) -> None:
         if (
             re.fullmatch(r"[0-9]+", self.seller_id) is None
-            or self.read_model not in {"catalog_product_snapshots", "catalog_buybox_snapshots"}
+            or self.read_model
+            not in {"catalog_product_snapshots", "catalog_buybox_snapshots", "item_formula_rows"}
             or not 1 <= len(self.ids) <= 10000
             or any(re.fullmatch(r"ML[A-Z][0-9]+", value) is None for value in self.ids)
         ):
@@ -291,7 +295,7 @@ class FormulaRecoveryQueue:
         ):
             raise ValueError("buybox recovery requires explicit publication IDs")
         if request.read_model == "item_formula_rows" and not isinstance(
-            request, (ItemIdsRecoveryRequest, ItemInventoryRecoveryRequest)
+            request, (ItemIdsRecoveryRequest, ItemInventoryRecoveryRequest, CatalogRecoveryRequest)
         ):
             raise ValueError("item recovery requires explicit IDs or an inventory request")
         now = self.now()
@@ -308,7 +312,7 @@ class FormulaRecoveryQueue:
         if isinstance(request, CatalogRecoveryRequest):
             field = (
                 "item_ids"
-                if request.read_model == "catalog_buybox_snapshots"
+                if request.read_model != "catalog_product_snapshots"
                 else "catalog_product_ids"
             )
             initial.update({field: list(request.ids), "catalog_offset": 0})
@@ -597,7 +601,7 @@ class FormulaRecoveryQueue:
         if "catalog_offset" in job and not retry:
             field = (
                 "item_ids"
-                if job["read_model"] == "catalog_buybox_snapshots"
+                if job["read_model"] != "catalog_product_snapshots"
                 else "catalog_product_ids"
             )
             ids, offset = job[field], job["catalog_offset"]

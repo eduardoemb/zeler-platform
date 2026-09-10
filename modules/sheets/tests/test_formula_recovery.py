@@ -866,7 +866,9 @@ async def test_buybox_explicit_item_recovery_is_owned_fresh_and_source_bound(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("read_model", ["catalog_buybox_snapshots", "catalog_product_snapshots"])
+@pytest.mark.parametrize(
+    "read_model", ["catalog_buybox_snapshots", "catalog_product_snapshots", "item_formula_rows"]
+)
 async def test_catalog_recovery_retains_full_request_beyond_active_job_capacity(
     recovery_db: Any, read_model: str
 ) -> None:
@@ -881,7 +883,7 @@ async def test_catalog_recovery_retains_full_request_beyond_active_job_capacity(
         app=SimpleNamespace(state=SimpleNamespace(formula_recovery_queue=queue))
     )
     context: Any = SimpleNamespace(seller_id="82453304")
-    field = "item_ids" if read_model == "catalog_buybox_snapshots" else "catalog_product_ids"
+    field = "catalog_product_ids" if read_model == "catalog_product_snapshots" else "item_ids"
     identities = tuple(f"MLA{index}" for index in range(1, 402))
     missing = FormulaDataUnavailableError(
         "ZELERDATA_CATALOGOBUYBOX" if field == "item_ids" else "ZELERDATA_CATALOGO",
@@ -897,6 +899,16 @@ async def test_catalog_recovery_retains_full_request_beyond_active_job_capacity(
     assert persisted == set(identities), "Recovery must persist the tail, not require another call"
     assert admitted is True
     assert len(jobs) <= queue.max_active_jobs_per_seller
+    assert await _request_formula_recovery(
+        request,
+        context,
+        FormulaDataUnavailableError(
+            "ZELERDATA_PREGUNTAS",
+            read_model="questions",
+            date_from=datetime(2026, 8, 8, tzinfo=UTC),
+            date_to=datetime(2026, 9, 7, tzinfo=UTC),
+        ),
+    )
 
 
 @pytest.mark.asyncio
@@ -996,16 +1008,56 @@ async def test_catalog_intent_resumes_chunks_after_restart_and_bounded_failure(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("partial", [False, True])
+async def test_item_intent_worker_resumes_bounded_chunks(
+    recovery_db: Any, monkeypatch: pytest.MonkeyPatch, partial: bool
+) -> None:
+    from zeler_sheets.formulas.recovery import IMPLEMENTED_MODELS, CatalogRecoveryRequest
+    from zeler_sheets.formulas.recovery_worker import FormulaRecoveryWorker
+
+    now = datetime.now(UTC).replace(microsecond=0)
+    ids = tuple(f"MLA{i:03d}" for i in range(41))
+    intent = CatalogRecoveryRequest("82453304", "item_formula_rows", ids)
+    queue = FormulaRecoveryQueue(recovery_db, now=lambda: now, enabled_models=IMPLEMENTED_MODELS)
+    await queue.enqueue(intent)
+    calls: list[tuple[str, ...]] = []
+
+    async def acquire(self: Any, job: Any, requested: Any) -> bool:
+        assert requested.seller_id == intent.seller_id
+        assert len(requested.item_ids) <= 20
+        calls.append(requested.item_ids)
+        return partial and requested.item_ids == ids[:20]
+
+    monkeypatch.setattr(FormulaRecoveryWorker, "_acquire_item_batch", acquire)
+
+    def clock() -> datetime:
+        return now
+
+    for _ in range(5 if partial else 3):
+        # A fresh instance must reconstruct continuation from Mongo alone.
+        queue = FormulaRecoveryQueue(recovery_db, now=clock, enabled_models=IMPLEMENTED_MODELS)
+        worker = FormulaRecoveryWorker(db=recovery_db, gateway=None, queue=queue)
+        assert await worker.process_one()
+        now += timedelta(seconds=61)
+    job = await queue.collection.find_one({"_id": intent.key})
+    assert job["catalog_offset"] == 41
+    assert job["state"] == ("failed" if partial else "completed")
+    assert calls == [ids[:20]] * (3 if partial else 1) + [ids[20:40], ids[40:]]
+    assert await queue.collection.count_documents({}) == 1
+    assert await recovery_db.sheets_read_model_freshness.count_documents({}) == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("read_model", ["catalog_product_snapshots", "item_formula_rows"])
 async def test_catalog_intent_lease_exhaustion_advances_and_reopening_resets_progress(
     recovery_db: Any,
+    read_model: str,
 ) -> None:
     from zeler_sheets.formulas.recovery import IMPLEMENTED_MODELS, CatalogRecoveryRequest
 
     now = datetime.now(UTC).replace(microsecond=0)
     queue = FormulaRecoveryQueue(recovery_db, now=lambda: now, enabled_models=IMPLEMENTED_MODELS)
-    request = CatalogRecoveryRequest(
-        "82453304", "catalog_product_snapshots", tuple(f"MLA{i}" for i in range(41))
-    )
+    request = CatalogRecoveryRequest("82453304", read_model, tuple(f"MLA{i}" for i in range(41)))
     await queue.enqueue(request)
     first = await queue.claim()
     assert first is not None and await queue.finish(first, succeeded=True)

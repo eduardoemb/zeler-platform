@@ -562,7 +562,7 @@ class FormulaRecoveryWorker:
                 job["seller_id"], tuple(identities[offset : offset + 20])
             )
         else:
-            requested = ItemIdsRecoveryRequest(job["seller_id"], tuple(job["item_ids"]))
+            requested = ItemIdsRecoveryRequest(job["seller_id"], _catalog_chunk(job, "item_ids"))
         partial = await self._acquire_item_batch(job, requested)
         if not partial and job.get("inventory_scope") is True:
             await self.queue.checkpoint_inventory(

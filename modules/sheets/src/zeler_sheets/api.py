@@ -766,7 +766,10 @@ async def _request_formula_recovery(
             return False
         try:
             async with asyncio.timeout(1.0):
-                if missing.read_model == "catalog_buybox_snapshots" and len(missing.item_ids) > 20:
+                if (
+                    missing.read_model in {"catalog_buybox_snapshots", "item_formula_rows"}
+                    and len(missing.item_ids) > 20
+                ):
                     await queue.enqueue(
                         CatalogRecoveryRequest(
                             context.seller_id, missing.read_model, tuple(missing.item_ids)

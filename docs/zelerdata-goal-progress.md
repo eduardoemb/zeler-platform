@@ -20,6 +20,92 @@ Keep unrelated `.codegraph/` files untouched in both repositories.
 
 ## Real Google Sheet: all-52 first pass and user add-on update, 2026-09-09
 
+### All 52 formula HTTP responses observed through the real Sheet, 2026-09-10
+
+Local correction implemented (not committed or deployed): item requests larger
+than 20 IDs now reuse the existing explicit-ID continuation (`CatalogRecoveryRequest`
+and persisted `catalog_offset` vocabulary). One job retains the full request;
+the worker acquires only the next 20 IDs and uses existing lease/retry/failed-chunk
+handling. Small requests and inventory discovery keep their existing behavior.
+No capacity, freshness, concurrency or source scope was widened.
+
+TDD extended the real-Mongo 401-ID test: catalog passed, items failed with
+`MLA401` absent before the fix. Afterward all three sources retain their full
+request and can admit a questions job. Added worker tests reconstruct each
+continuation from Mongo after restart and prove remaining chunks execute after
+the first chunk exhausts retries. The lease-exhaustion/reopening test now also
+covers items. Seven focused cases passed; the combined API/recovery regression
+passed 487 tests in 99.41s. Ruff check passes and format checks 509 files.
+Mypy had internal-error/segfault runs during an environment interruption;
+`uv run mypy --no-incremental --show-traceback .` subsequently passed all 509
+files. A repeated focused run initially skipped because the dedicated local
+Mongo had stopped (exit 255); that skipped run is not acceptance evidence.
+
+Rollback boundary: revert only this explicit-item continuation extension in
+API/queue/worker and its tests; do not remove existing catalog continuation or
+the prior order interval correction. Before production, verify runtime job
+collection validator compatibility and deploy matching Sheets API/worker images
+from the tested commit; old workers cannot process these new large item jobs.
+
+Pre-deployment read-only VM/container check confirmed the jobs collection exists
+and has no validator (`validator_present=false`); no schema mutation is needed
+for this extension. This observation does not close the general Mongo hardening
+gate. Update the worker first, verify stable health, then update the API so no
+new-format item jobs reach an old worker. For rollback, restore the old API first
+and retain the new worker until all admitted large item continuations have drained;
+do not delete requests or hand pending large jobs to the old worker. Final focused
+rerun after restarting the stopped local test Mongo passed seven cases in 1.47s.
+
+Follow-up diagnosis at `2026-09-10T01:52:40Z`: a sanitized, read-only
+VM/container Mongo query found numerous exhausted `item_formula_rows` jobs,
+an active item recovery, pending buybox recovery, and an expired questions
+marker whose failed recovery had not been reopened by the preceding smoke.
+This suggests admission pressure but does not prove causality for each live call.
+
+The admission defect itself is reproducible against the dedicated local Mongo
+with the deployed source's actual `_request_formula_recovery` and
+`FormulaRecoveryQueue`: request 401 synthetic publication IDs, then a questions
+interval for the same synthetic seller context. Result: `item_admitted=false`,
+400 IDs persisted across 20 jobs, and `questions_admitted=false` with zero
+questions jobs. The remaining publication has no durable intent. The isolated
+test database was removed afterward; no production writes or Mercado Libre
+requests occurred. Reproducer: `/tmp/zeler-item-admission-repro.py`, executed
+with `uv run python`; this is a diagnostic, not a committed regression test.
+
+Next correction must retain the entire explicit item request in one bounded,
+durable continuation rather than fan out into 20 active queue entries and lose
+the tail. Catalog already has a continuation mechanism and a real-Mongo
+401-ID regression in `test_formula_recovery.py`; item recovery does not.
+Reuse/generalize that proven mechanism with strict schema and restart/failure
+coverage. Do not increase capacity, widen requested identities to all inventory,
+mark missing fields optional, or relax freshness to hide this defect.
+
+Recalculated all 52 existing anchors in `Goal_Pruebas_20260909`, in groups
+of at most eight, preserving arguments and changing only the existing cuenta
+reference's trailing whitespace. No token was read, copied, created or revoked.
+The production API log window beginning `2026-09-10T01:45:48Z` contains exactly
+52 parsed `formula_execution` events, one per expected formula, all HTTP 200
+and phase `serialization`. The logs deliberately omit account/request IDs;
+the match is by formula and intervention window, not exact request-ID correlation.
+
+Endpoint durations range from 11.366 to 9498.960 ms; pooled nearest-rank p95
+is 4841.175 ms. This is one sample per formula and excludes Apps Script/network/
+Sheets overhead: it does not close the whole-custom-function 30-second/p95 gate.
+Bounded readback of three rows by 40 columns per anchor found no cell errors or
+`SERVICE_UNAVAILABLE`. Exactly 26 samples contain `DATA_UNAVAILABLE`, including
+five tables with bare field markers (catalog variants and quality); the other
+26 require semantic and complete-output review. Orders again returned tabular
+data, but this pass sampled only its first two data rows. Optional NA, empty
+results and header-only results are not counted as correctness passes.
+
+Per-formula sanitized HTTP timings and sample classifications are recorded in
+`docs/sheets/zelerdata-goal-smoke-20260910.json`. Readback included effective
+formatting; native visual fit remains unverified. No production code, image or
+runtime configuration changed in this pass. Next: verify recovery/freshness for
+the unavailable families and explain field-level absence without mistaking HTTP
+200 or a narrow sample for complete, trustworthy data. All acceptance gates
+remain open.
+
 ### Order recovery: independent interval proofs (local, not deployed)
 
 Recovery now acquires only the requested orders interval instead of expanding
@@ -41,6 +127,99 @@ retained proofs being resurrected by a later publication. The final state guard
 fix passes all three interval lifecycle cases (1.10s); the root quality checks
 were repeated successfully. Repeat the complete regression on this final source
 before building images.
+
+Final commit `d3e457af1e330e3de06a9354b7c498765e1cf5a3` was pushed to
+`origin/main`. The final regression passed all 442 cases in 92.18s without skips;
+all 316 formula handler cases passed in 1.10s. Schema export/Sheets contract
+tests passed 39 cases in 0.24s using `--import-mode=importlib` (without it, mixed
+test directories caused a collection import collision; that failed invocation
+did not execute tests). CI lint `34424977074` succeeded; test `34424977054`
+was last observed running.
+
+Both single-service, VERIFIED-option Cloud Builds succeeded from that exact
+connected-repository commit; runtime provenance attestation and deployment remain
+pending:
+
+- API build `97bd3465-57c1-42e5-b70f-e67657b6f831`, digest
+  `be0a539fa0b2d35efdaab07da16d6dd9a3c524081c18c12b0fb20e4306376229`.
+- Worker build `8d051f94-13ec-4b35-9762-b8b218ae4a8e`, digest
+  `53a91d929e2c1551486a9de5eae9b282cce948736ca210de9a5cbaf8c64ed5df`.
+
+Read-only VM checks still show the old API/worker healthy and approximately
+8 GiB available on root. The May job reached terminal failure after three
+attempts at 01:15:07.900Z; the later August jobs completed, extending top-level
+coverage through September 11. No new formula request or data repair was issued
+in this verification pass.
+The targeted VM/container validator comparison confirmed exact equality to the
+previous committed schema, strict validation and rejection of invalid documents;
+the new schema is not applied (`writes: 0`). Staged desired schema SHA-256 is
+`6b5c4aba104b4302dcba001e526918aefe4250f78f935dcbaa290dbfaa33bac7`.
+Temporary checker `/tmp/zeler-order-interval-validator-check.py` is read-only;
+the desired schema is staged on the VM and in the old worker container at
+`/tmp/zeler-order-interval-freshness.json`. No validator or service was changed.
+
+Activation attempt `zeler-order-interval-activate-d3e457a.service` started
+01:25:01Z and terminated at 01:25:06Z before any mutation: the running-recovery
+guard (helper line 67) refused deployment. Follow-up VM/container evidence found
+an active `item_formula_rows` job, attempt 1, with heartbeat 01:26:07.989Z and
+lease through 01:36:07.989Z; both old Sheets images remained healthy and the
+deployment backup did not exist. This is a wait for active recovery, not a reason
+to rebuild or rerun an uncertain deployment. CI test `34424977054` still reports
+its pytest step in progress. Recheck these exact jobs before the next activation.
+Prepared helper `/tmp/zeler-order-interval-activate.py` (local and VM), SHA-256
+`97ef71ca6b883e12d8a5de5b7499758dac67a1a22e7c94dcca9073c3ca0251ec`,
+verifies both new/rollback images, applies only the additive freshness validator,
+then activates API and worker while checking gateway identity/health is unchanged.
+Its exact backup path is `/opt/zeler-platform/docker-compose.yml.pre-order-interval-d3e457a`.
+The next read-only check returned zero running recoveries. Retry unit
+`zeler-order-interval-activate-d3e457a-retry1.service` started at 01:28:06Z and
+was confirmed active/running, not yet terminal. CI test `34424977054` has now
+completed successfully. Poll that exact retry unit; do not launch another one
+because a local SSH observation times out or fails.
+Retry completed successfully at 01:32:19Z (`Result=success`, inactive/dead).
+It verified new API/worker provenance at 01:28:27/01:28:49Z and rollback
+provenance at 01:29:08/01:29:25Z, applied and verified the targeted additive
+validator at 01:29:30Z, then confirmed stable healthy API at 01:31:57Z and
+worker at 01:32:19Z on the exact new digests above. The terminal
+`activation_complete` confirms source `d3e457af1e330e3de06a9354b7c498765e1cf5a3`
+and the helper's unchanged healthy gateway check. Do not rerun this deployment.
+The API's former digest `a94b3a31d82322ae0019f1dffd0088db8f7d87dfe9844f6c5aaa757a962d3543`
+and worker's former digest `5ccfc9a004ee27037728242e75313cbeadd8478979d18da90e90669fa24eeb1f`
+remain the recorded rollback pair; no stored data was deleted. Real Sheet
+recalculation and completed recovery on these new images remain unverified.
+
+### Orders: first successful real Sheet read after interval deployment
+
+On the deployed `d3e457a` images, all three August orders jobs completed at
+01:34:11.535Z, 01:34:21.570Z and 01:34:31.608Z. The May job completed on its
+first attempt at 01:36:22.071Z. A bounded, sanitized gateway log inspection
+confirmed search bounds remained May 1 07:00Z–May 30 06:00Z (hour-precision
+upper bound), offsets 0 through 1200: 25 search HTTP 200, 1231 detail HTTP 200,
+2 detail HTTP 206, 8 detail HTTP 429 and 7 hosted-shipment HTTP 404. These are
+request counts, not a distinct-order census. Mongo readback retained all three
+August proofs with their original expiries after May became the top-level proof.
+
+The first recalc of `Goal_Pruebas_20260909!A42901` still returned update-requested
+DATA_UNAVAILABLE. A read-only API-container reader probe isolated 96 expired
+shipping costs, with zero missing cost values, documents, observations, order
+IDs or item IDs. The existing shipment recovery was actively running. After it
+finished, the same reader returned 101 rows, no recovery or additional recovery,
+and zero writes (this probe is explicitly not HTTP authentication evidence).
+
+The next real Google Sheet recalc succeeded. Connector readback of
+`A42901:AN43002` found 13 expected headers, 100 data rows, zero cell errors,
+zero DATA_UNAVAILABLE, 500 numeric cells and 11 NA cells exclusively in
+`ID Carrito`. No cost/commission column contained NA. Row 43002 was empty.
+The anchor now uses nine spaces appended to the token reference; dates remain
+August 8–September 6, state `todos`, headers `si`. Only that owned formula cell
+was changed, with the `userEnteredValue` mask; the credential cell was not read.
+
+This proves one representative formula can recover then return data through the
+real add-on. It does not prove all 52 authenticated HTTP smokes, semantic equality
+of every field, whole-function p95, or long-term freshness behavior. Native visual
+fit is not verified; no layout/formatting change or credential-workbook export
+was performed. Continue the remaining acceptance ledger instead of rebuilding
+these already deployed images.
 
 Deployment remains pending: update only the freshness validator from the approved
 VM/container context, then deploy verified Sheets API and worker images. Older
