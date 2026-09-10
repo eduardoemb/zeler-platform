@@ -46,6 +46,7 @@ from zeler_sheets.formulas.recovery import (
     OrderIdsRecoveryRequest,
     ShipmentIdsRecoveryRequest,
 )
+from zeler_sheets.formulas.refresh import reconciled_marker
 from zeler_sheets.historical_meli_backfill import (
     _catalog_buybox_snapshot,
     _catalog_product_snapshot,
@@ -1161,19 +1162,13 @@ class FormulaRecoveryWorker:
         read_model = job["read_model"]
         marker_id = f"{seller_id}:{read_model}"
         unavailable_fields = unavailable_fields or {}
-        marker = {
-            "_id": marker_id,
-            "seller_id": seller_id,
-            "read_model": read_model,
-            "state": "reconciled",
-            "date_from": start,
-            "reconciled_until": end,
-            "fresh_until": end,
-            "updated_at": self.queue.now(),
-            "valid_until": self.queue.now() + timedelta(minutes=15),
-            "source": "zelerdata_read_model_reconcile",
-            "schema_version": 1,
-        }
+        marker = reconciled_marker(
+            seller_id=seller_id,
+            read_model=read_model,
+            start=start,
+            end=end,
+            now=self.queue.now(),
+        )
         if (
             read_model == "orders"
             and marker_before is not None

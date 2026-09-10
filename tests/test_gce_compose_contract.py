@@ -436,6 +436,21 @@ class TestEnvTemplateContract:
 
         assert "SHEETS_SYNC_JOBS_POLLER_ENABLED=true" in template
 
+    def test_sheets_worker_template_ships_refresh_kill_switch_off(self) -> None:
+        """Refresh must arrive disabled with an explicit seller allowlist."""
+        values = dict(
+            line.split("=", 1)
+            for line in (ENV_TEMPLATES_DIR / "sheets-worker.env.template")
+            .read_text()
+            .splitlines()
+            if line and not line.startswith("#") and "=" in line
+        )
+
+        assert values["ZELERDATA_REFRESH_ENABLED"] == "false"
+        assert values["ZELERDATA_REFRESH_SELLERS"] == "82453304"
+        assert values["ZELERDATA_REFRESH_INTERVAL_SECONDS"] == "900"
+        assert values["ZELERDATA_RECOVERY_REQUESTS_PER_MINUTE"] == "180"
+
     def test_secrets_script_fetches_zeler_app_broker_secret_for_gateway_only(self) -> None:
         text = SECRETS_SCRIPT.read_text()
 

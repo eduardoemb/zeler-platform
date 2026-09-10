@@ -39,12 +39,26 @@ from zeler_sheets.catalog_observations import acquire_catalog_event
 from zeler_sheets.claim_projection import project_claim
 from zeler_sheets.devoluciones_reconciliation import GatewayDevolucionesSource
 from zeler_sheets.event_persistence import SheetsEventPersistence, StatusObservationContentionError
+from zeler_sheets.formulas.pacing import (
+    PacedMeliGateway,
+    RecoveryRequestPacer,
+    recovery_requests_per_minute,
+)
 from zeler_sheets.formulas.recovery import (
     IMPLEMENTED_MODELS,
     FormulaRecoveryQueue,
     recovery_sellers,
 )
 from zeler_sheets.formulas.recovery_worker import FormulaRecoveryWorker
+from zeler_sheets.formulas.refresh import (
+    DEFAULT_INTERVAL_SECONDS as REFRESH_DEFAULT_INTERVAL_SECONDS,
+)
+from zeler_sheets.formulas.refresh import (
+    MongoSellerExplorer,
+    ZelerDataRefreshPlanner,
+    ZelerDataRefreshSupervisor,
+    refresh_sellers,
+)
 from zeler_sheets.google_errors import (
     GoogleSheetsApiError,
     RetryableGoogleSheetsApiError,
@@ -1208,26 +1222,19 @@ async def run() -> None:
 
     recovery_pollers: tuple[SyncJobsPollerSupervisor, ...] = ()
     if _env_flag_enabled("ZELERDATA_FORMULA_RECOVERY_ENABLED"):
-        recovery_queue = FormulaRecoveryQueue(
-            db,
-            enabled_models=IMPLEMENTED_MODELS,
-            allowed_sellers=recovery_sellers(os.environ.get("ZELERDATA_FORMULA_RECOVERY_SELLERS")),
-        )
-        await recovery_queue.ensure_indexes()
-        recovery = SyncJobsPollerSupervisor(
-            FormulaRecoveryWorker(
-                db=db,
-                queue=recovery_queue,
-                gateway=make_meli_gateway_client(
-                    module_id="bootstrap",
-                    kms_client=kms_client,
-                    base_url=os.environ.get("GATEWAY_BASE_URL", DEFAULT_GATEWAY_BASE_URL),
-                ),
-                detail_gateway=handler._gateway_client,
-            )
+        recovery = await build_formula_recovery_poller(
+            db=db,
+            kms_client=kms_client,
+            detail_gateway=handler._gateway_client,
         )
         recovery_pollers = (recovery,)
         component_status["formula_recovery"] = lambda: recovery.health_status
+
+    refresh_supervisors: tuple[ZelerDataRefreshSupervisor, ...] = ()
+    if _env_flag_enabled("ZELERDATA_REFRESH_ENABLED"):
+        refresh = await build_zelerdata_refresh_supervisor(db=db)
+        refresh_supervisors = (refresh,)
+        component_status["zelerdata_refresh"] = lambda: refresh.health_status
 
     sidecar = WorkerHealthSidecar(
         runner,
@@ -1236,10 +1243,85 @@ async def run() -> None:
     )
     await sidecar.start()
     try:
-        await run_worker_lifecycles(runner, poller, shutdown_event, extra_pollers=recovery_pollers)
+        await run_worker_lifecycles(
+            runner,
+            poller,
+            shutdown_event,
+            extra_pollers=recovery_pollers + refresh_supervisors,
+        )
     finally:
         await sidecar.stop()
         mongo_client.close()
+
+
+async def build_formula_recovery_poller(
+    *,
+    db: Any,
+    kms_client: Any,
+    detail_gateway: Any,
+) -> SyncJobsPollerSupervisor:
+    """Build the formula recovery poller with a reserved acquisition budget.
+
+    Both the discovery and detail gateway clients are paced so background
+    acquisition cannot consume the whole per-seller gateway budget.
+    """
+    recovery_queue = FormulaRecoveryQueue(
+        db,
+        enabled_models=IMPLEMENTED_MODELS,
+        allowed_sellers=recovery_sellers(os.environ.get("ZELERDATA_FORMULA_RECOVERY_SELLERS")),
+    )
+    await recovery_queue.ensure_indexes()
+    pacer = RecoveryRequestPacer(
+        requests_per_minute=recovery_requests_per_minute(
+            os.environ.get("ZELERDATA_RECOVERY_REQUESTS_PER_MINUTE")
+        )
+    )
+    discovery = make_meli_gateway_client(
+        module_id="bootstrap",
+        kms_client=kms_client,
+        base_url=os.environ.get("GATEWAY_BASE_URL", DEFAULT_GATEWAY_BASE_URL),
+    )
+    return SyncJobsPollerSupervisor(
+        FormulaRecoveryWorker(
+            db=db,
+            queue=recovery_queue,
+            gateway=PacedMeliGateway(inner=discovery, pacer=pacer),
+            detail_gateway=PacedMeliGateway(inner=detail_gateway, pacer=pacer),
+        )
+    )
+
+
+async def build_zelerdata_refresh_supervisor(*, db: Any) -> ZelerDataRefreshSupervisor:
+    """Build the scheduled ZelerData refresh from explicit runtime configuration.
+
+    Refresh stays closed unless enabled for named sellers. It also requires the
+    recovery worker, because refresh only plans work and never acquires data.
+    """
+    if not _env_flag_enabled("ZELERDATA_REFRESH_ENABLED"):
+        raise RuntimeError("ZelerData refresh must be explicitly enabled")
+    allowed = refresh_sellers(os.environ.get("ZELERDATA_REFRESH_SELLERS"))
+    if not allowed:
+        raise RuntimeError("ZELERDATA_REFRESH_SELLERS is required when refresh is enabled")
+    if not _env_flag_enabled("ZELERDATA_FORMULA_RECOVERY_ENABLED"):
+        raise RuntimeError("ZelerData refresh requires formula recovery to be enabled")
+    raw_interval = os.environ.get("ZELERDATA_REFRESH_INTERVAL_SECONDS")
+    try:
+        interval = float(raw_interval) if raw_interval else REFRESH_DEFAULT_INTERVAL_SECONDS
+    except ValueError as exc:
+        raise RuntimeError("ZELERDATA_REFRESH_INTERVAL_SECONDS must be numeric") from exc
+    if interval <= 0:
+        raise RuntimeError("ZELERDATA_REFRESH_INTERVAL_SECONDS must be positive")
+    queue = FormulaRecoveryQueue(
+        db,
+        enabled_models=IMPLEMENTED_MODELS,
+        allowed_sellers=allowed,
+    )
+    await queue.ensure_indexes()
+    return ZelerDataRefreshSupervisor(
+        explorer=MongoSellerExplorer(db=db, allowed_sellers=allowed),
+        planner=ZelerDataRefreshPlanner(queue=queue, allowed_sellers=allowed),
+        interval_seconds=interval,
+    )
 
 
 def _account_status_source_from_db(db: Any) -> AccountStatusSource:
