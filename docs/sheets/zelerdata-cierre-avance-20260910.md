@@ -2,7 +2,8 @@
 
 Estado: entrega de avance solicitada por el usuario. La aceptación final del Goal
 sigue abierta. Corte de observación: 2026-09-10, con API y worker verificados en
-las imágenes del commit `4209304` y el conteo de catálogo corregido en `43e4a29`.
+las imágenes del commit `5a03f06`, que incluye el conteo de catálogo corregido de
+`43e4a29` y la espera de Retry-After durante la adquisición.
 
 ## Resumen antes/ahora
 
@@ -30,9 +31,9 @@ correctos: el recibo declara `correctness_verified=false`.
 | Lecturas de datos | Truncadas en 500/500/1,000 filas | Corregidas en los casos cubiertos por pruebas; revisión global pendiente |
 | Reconciliación del piloto | No ejecutada con veredicto autoritativo | Dry-run diagnóstico autoritativo para reclamos; conteos de catálogo en revisión |
 | 52 fórmulas | Sin smoke productivo | 52 HTTP 200 en Google Sheet real; exactitud sin verificar |
-| Imágenes desplegadas | Procedencia sin resolver | API y worker saludables en las imágenes de `4209304` |
+| Imágenes desplegadas | Procedencia sin resolver | API y worker saludables en las imágenes de `5a03f06` |
 | Seguridad y ciclo de datos | Gate abierto | Gate abierto; aislamiento de auditoría corregido, eliminación sin prueba |
-| Conteo de catálogo | Sin criterio de participación | Corrección `43e4a29` probada (197 casos); requiere imagen |
+| Conteo de catálogo | Sin criterio de participación | Corrección `43e4a29` probada (197 casos) y desplegada en `5a03f06` |
 | Simplificación | Sin inventario de consumidores | Pendiente de cierre explícito |
 
 El avance es material, pero no equivale a cierre: falta demostrar que los datos
@@ -61,7 +62,7 @@ simplificación y aceptación en superficies reales.
 ## Estado actual del despliegue
 
 Consulta de solo lectura a la VM el 2026-09-10: API y worker de Sheets llevan
-más de 7 horas saludables en las imágenes de `4209304`.
+más de 7 horas saludables, en las imágenes desplegadas de `5a03f06`.
 
 | Servicio | Digest activo y saludable | Commit de origen |
 | --- | --- | --- |
@@ -73,21 +74,21 @@ En esta sesión se construyeron y desplegaron dos pares de imágenes: primero
 (espera de Retry-After en adquisición de catálogo). Cada despliegue terminó con
 código 0, con respaldo Compose por servicio y verificación de digest y salud.
 
-El despliegue worker → API terminó con código 0, con respaldos Compose por
-servicio (`pre-<servicio>-4209304`) y más de 5 GiB libres. La corrección de
-conteo de catálogo (`43e4a29`) todavía no tiene imagen: usa la ruta de
-recuperación de metadatos de catálogo del backfill y exige participación
-explícita más identidad de producto. Hasta construir y desplegar esa imagen, la
-reconciliación sobre el runtime actual sigue reportando los 389 snapshots
-buybox contra expectativas que incluyen 529 publicaciones no participantes; esos
-números no son evidencia de cobertura real.
+El despliegue worker → API que llevó al runtime actual terminó con código 0, con
+respaldos Compose por servicio y más de 5 GiB libres. La corrección de conteo de
+catálogo (`43e4a29`) ya está incluida en las imágenes desplegadas de `5a03f06`:
+usa la ruta de recuperación de metadatos de catálogo del backfill y exige
+participación explícita más identidad de producto. Los 389 snapshots buybox
+reportados antes contra expectativas que incluían 529 publicaciones no
+participantes ya no son la referencia vigente; el alcance de buybox sigue sin
+certificarse porque hay participaciones desconocidas.
 
 ## Pendientes para aceptación final
 
 | Requisito | Evidencia que falta o acción siguiente |
 | --- | --- |
 | Última versión operativa | Activación y salud comprobadas; falta aceptación funcional posterior. |
-| Datos completos y confiables | Repetir reconciliación `--dry-run` para el piloto 82453304 y rango 2026-08-08 a 2026-09-06 con la versión corregida; resolver discrepancias antes de escribir y verificar después la persistencia/lectura. |
+| Datos completos y confiables | El dry-run autoritativo y la primera escritura ya se ejecutaron para el piloto 82453304 y rango 2026-08-08 a 2026-09-06. Falta resolver los 351 snapshots de precio/stock, certificar el alcance de buybox con participaciones desconocidas y repetir la escritura sin el aborto por `--error-threshold` para publicar marcadores de frescura y verificar la lectura posterior. |
 | Recuperación automática | Demostrar solicitud faltante → trabajo asíncrono → adquisición Mercado Libre → Mongo → consulta posterior, incluida la continuación de artículos mayores de 20 IDs. |
 | Ausencias honestas | Verificar razones persistidas y visibles de los recursos no recuperables. Seis artículos devolvieron 404 en la prueba previa; eso no demuestra que toda ausencia histórica sea irrecuperable. No convertir errores temporales en ausencia definitiva. |
 | 52 fórmulas y superficies actuales | Completar comparación de valores/contratos contra datos fuente, y aceptación representativa en la Sheet real y superficies existentes de zeler-app. HTTP 200 no basta para probar valores correctos. |
