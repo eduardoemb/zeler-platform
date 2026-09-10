@@ -8613,3 +8613,33 @@ backups were retained at the VM for service-scoped rollback.
 This proves image provenance, activation and basic runtime health only. The
 large item-request continuation still needs an authenticated formula/Sheet
 exercise and persisted-job readback; the full 52-formula goal remains open.
+
+## Catalog-unavailable fallback release (in progress)
+
+The pilot VM showed 11 item documents without `catalog_listing`. A bounded
+MercadoLibre enrichment returned all 11 details; five records were updated and
+six were confirmed as 404/unrecoverable. The write was limited to seller
+`82453304` and those 11 item identities; no fabricated participation value was
+introduced.
+
+Commits `2e7fdd5`, `bb0cb4d`, and `849b290` add the controlled fallback used by
+the reconciliation path: unknown or incomplete catalog participation, and
+individual 404 product/buybox snapshots, are counted as unavailable and do not
+block valid catalog snapshots. Direct backfill callers retain the previous
+strict behavior by default. Focused historical-backfill tests, reconciliation
+tests, Ruff, and mypy pass.
+
+Cloud Builds for `849b290` succeeded. The resulting immutable images are
+`sheets-worker@sha256:4f06bc873f7fc206b488593023f8c14c9f1cbba7c8c876b72bc26224b5023aa3`
+and `sheets-api@sha256:6ca039bd8b02974064c21916fcf03972824c5708c3693843332deccc4a42246e`.
+The VM boot disk was expanded from 30 GB to 50 GB after the documented 5 GiB
+preflight could no longer be maintained; the root filesystem now has 24 GiB
+free. Activation of these final images and the subsequent authoritative
+reconciliation/readback were initially pending while local GCP access recovered.
+
+Follow-up on 2026-09-10: the existing deployment session exited 0. An independent
+VM `docker compose ps sheets-worker sheets-api` confirmed both final `849b290`
+digests listed above active and healthy. Authoritative reconciliation and
+functional readback remain pending. See the consolidated
+[closure-of-progress report](sheets/zelerdata-cierre-avance-20260910.md) for the
+remaining acceptance gates and limits of the 52-formula HTTP evidence.
