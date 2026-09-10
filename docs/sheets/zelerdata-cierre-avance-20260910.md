@@ -89,6 +89,25 @@ diagnóstico (sesión local 8497), limitado a clases de excepción, estado HTTP,
 funciones/líneas y conteos; todavía falta su resultado. No hubo escrituras de
 reconciliación ni se afirma aceptación funcional por la salud del despliegue.
 
+Resultado posterior del diagnóstico 8497: finalizó con código 0 y comprobación
+de fuente de reclamos `authoritative=true`, sin códigos de incidencia. La fuente
+histórica ahora reporta 103 órdenes, 100 envíos, 57 artículos, 3 preguntas y 3
+reclamos; sus conteos de referencias faltantes son cero. El conteo de órdenes
+persistidas en el intervalo es 100, por lo que aún debe explicarse la diferencia
+de alcance temporal frente a las 103 referencias fuente antes de afirmar igualdad.
+
+Se encontró otro defecto en la evaluación de catálogo:
+`_collect_catalog_expected_counts` considera cada artículo con producto asociado
+como candidato buybox, sin consultar `catalog_listing`, y omite productos de
+variaciones. Una consulta de solo conteo desde Mongo en el worker devolvió
+938 asociaciones con participación true, 529 false y cero desconocidas; además
+hay siete participantes true sin producto. Los 1,467 candidatos del informe
+incluyen los 529 no participantes. Por tanto, los 389 supuestos faltantes no
+son evidencia suficiente para adquirir o marcar cobertura masivamente. Próximo
+trabajo: corregir las expectativas con participación explícita y fuentes de
+variaciones, conservar desconocido separado de false, probar ese contrato y
+volver a validar los conteos. No se ejecutó escritura de reconciliación.
+
 - [Recibo de las 52 ejecuciones](zelerdata-goal-smoke-20260910.json).
 - [Registro de avance y pruebas](../zelerdata-goal-progress.md), incluidas las
   secciones de identidad de auditoría, controles mínimos y últimos despliegues.
