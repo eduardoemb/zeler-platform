@@ -387,7 +387,11 @@ async def run_historical_meli_backfill(
             for row in catalog_scope
             for identity in (row.catalog_product_id, *row.variation_catalog_product_ids)
         )
-        catalog_buybox_scope = [row for row in catalog_scope if row.catalog_listing is True]
+        catalog_buybox_scope = [
+            row
+            for row in catalog_scope
+            if row.catalog_listing is True and row.catalog_product_id is not None
+        ]
         (
             catalog_product_snapshots,
             catalog_product_unavailable,

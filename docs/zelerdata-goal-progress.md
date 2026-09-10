@@ -8643,3 +8643,24 @@ digests listed above active and healthy. Authoritative reconciliation and
 functional readback remain pending. See the consolidated
 [closure-of-progress report](sheets/zelerdata-cierre-avance-20260910.md) for the
 remaining acceptance gates and limits of the 52-formula HTTP evidence.
+
+## Incomplete catalog metadata: remaining buybox-selection defect
+
+Post-deployment review on 2026-09-10 reproduced an uncovered case: a stored
+publication with `catalog_listing=true` but no `catalog_product_id` was counted
+as unavailable yet still sent to `/price_to_win`. Extending the existing
+unavailable-participation test produced one pass and one failure on that request.
+Buybox selection now requires both explicit participation and a product ID;
+valid product/variation acquisition is retained. No unknown value is changed
+to false and no stored data is deleted.
+
+Verification: 72 historical-backfill tests pass; focused Ruff check/format,
+mypy for the changed module and diff check pass. This correction is local
+pending a new worker/API image; the healthy runtime remains `849b290`.
+Before using the corrected path in production, build the new source and verify
+both images, then check reconciliation and persisted readback.
+
+The first post-deploy reconciliation SSH attempt exited 255 during connection
+setup. A subsequent VM process check found zero reconciliation processes, so
+the full pilot dry-run was started once again (local session 43293). It is still
+being observed; lack of output is not a terminal result and no write was run.

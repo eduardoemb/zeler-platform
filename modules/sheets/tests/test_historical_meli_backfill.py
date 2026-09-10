@@ -1378,12 +1378,16 @@ async def test_catalog_buybox_requires_explicit_participation(participation: boo
 
 
 @pytest.mark.asyncio
-async def test_catalog_backfill_can_skip_known_unavailable_participation() -> None:
+@pytest.mark.parametrize("participation", [None, True])
+async def test_catalog_backfill_can_skip_known_unavailable_participation(
+    participation: bool | None,
+) -> None:
     db = FakeDb()
     db["items"].documents["MLA-REMOVED"] = {
         "_id": "MLA-REMOVED",
         "seller_id": "82453304",
         "title": "Removed item",
+        "catalog_listing": participation,
     }
     kwargs: dict[str, Any] = dict(
         db=db,
