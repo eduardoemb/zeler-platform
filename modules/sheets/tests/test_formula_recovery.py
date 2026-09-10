@@ -4868,6 +4868,91 @@ async def test_known_order_detail_acquisition_is_bounded(recovery_db: Any, case:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("known", [False, True])
+@pytest.mark.parametrize("failure", [None, "transport", "cancel"])
+async def test_order_acquisition_joins_bounded_details_before_publication(
+    recovery_db: Any, monkeypatch: pytest.MonkeyPatch, known: bool, failure: str | None
+) -> None:
+    from unittest.mock import AsyncMock
+
+    import httpx
+
+    from zeler_sheets.formulas.recovery_worker import FormulaRecoveryWorker
+
+    identities = [str(i) for i in range(10, 19)]
+    rows = [{"id": i, "date_created": "2026-08-20T10:00:00Z"} for i in identities]
+    if known:
+        await recovery_db.orders.insert_many(
+            [
+                {"_id": i, "seller_id": "pilot", "date_created": datetime(2026, 8, 20)}
+                for i in identities
+            ]
+        )
+
+    class Gateway:
+        async def fetch_resource(self, **kwargs: Any) -> dict[str, Any]:
+            return {
+                "paging": {"total": 0 if known else len(rows)},
+                "results": [] if known else rows,
+            }
+
+    queue = FormulaRecoveryQueue(recovery_db, enabled_models=frozenset({"orders"}))
+    requested = RecoveryRequest("pilot", "orders", request().date_from, request().date_to)
+    await queue.enqueue(requested)
+    worker = FormulaRecoveryWorker(db=recovery_db, queue=queue, gateway=Gateway())
+    active = 0
+    peak = 0
+    started: list[str] = []
+    finished: list[str] = []
+    first_wave = asyncio.Event()
+
+    async def detail(seller: str, identity: str, *args: Any, **kwargs: Any) -> Any:
+        nonlocal active, peak
+        active += 1
+        peak = max(peak, active)
+        started.append(identity)
+        if active == 4:
+            first_wave.set()
+        try:
+            await asyncio.wait_for(first_wave.wait(), timeout=1)
+            if failure == "cancel":
+                await asyncio.Event().wait()
+            if failure == "transport" and identity == identities[0]:
+                raise httpx.ReadTimeout("synthetic transport failure")
+            await asyncio.sleep(0)
+            return {"id": identity}, frozenset()
+        finally:
+            active -= 1
+            finished.append(identity)
+
+    publish = AsyncMock()
+    monkeypatch.setattr(worker, "_order_detail", detail)
+    monkeypatch.setattr(worker, "_publish", publish)
+    task = asyncio.create_task(worker.process_one())
+    if failure == "cancel":
+        try:
+            await asyncio.wait_for(first_wave.wait(), timeout=2)
+        finally:
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+    else:
+        await task
+    assert peak == 4
+    assert active == 0
+    assert sorted(started) == sorted(finished)
+    if failure:
+        publish.assert_not_awaited()
+        assert started == identities[:4]
+        if failure == "transport":
+            job = await queue.collection.find_one({"_id": requested.key})
+            assert job["failure_reason"] == "source_temporarily_unavailable"
+    else:
+        publish.assert_awaited_once()
+        assert [row["id"] for row in publish.call_args.args[4]] == identities
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "failure",
     [

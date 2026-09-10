@@ -20,7 +20,7 @@ Keep unrelated `.codegraph/` files untouched in both repositories.
 
 ## Real Google Sheet: all-52 first pass and user add-on update, 2026-09-09
 
-### Order projection identity: SKU mismatch corrected locally
+### Order projection identity: SKU mismatch correction deployed
 
 A read-only VM/container probe of the pilot's 100 orders isolated the remaining
 fixed-fee NA: the canonical item exists, exactly one formula projection exists,
@@ -37,13 +37,70 @@ TDD reproduced four failures: two renamed-SKU cases and two wrong-variation
 matches. All 66 order/question handler cases pass after the correction;
 `uv run pytest modules/sheets/tests/test_formula_handlers*.py -q` passes all
 316 cases. Root Ruff check, format check and Mypy (509 files) passed.
-Runtime verification of the changed behavior is **pending**: the read-only probe
-proves the defect, not the deployed fix. Build/deploy the Sheets API from the
-verified commit, then repeat the real Sheet order read and check the fee cell.
+Runtime consumer verification of the changed behavior is **pending**: the
+read-only probe proves the defect, not the complete formula result.
+CI test `34417158529` and lint `34417158528` passed source
+`c36dd406d599141f6d26ef5b6db309c45c1051c8`. Cloud Build
+`1d06a669-b92c-4ebb-b1da-2f9193b81b5e` produced API digest
+`sha256:a94b3a31d82322ae0019f1dffd0088db8f7d87dfe9844f6c5aaa757a962d3543`.
+The initial activation failed at its 300-second pull timeout, before Compose
+mutation; the old API remained healthy. After confirming terminal failure and
+no backup/config mutation, a separate pull completed with the exact digest.
+The same activation unit `zeler-order-identity-activate-c36dd40` was restarted
+and finished inactive/dead, exit 0, with explicit `activation_complete`.
+It verified new/rollback provenance and the 13-scope/6-routing-key fingerprint,
+enforced the 5 GiB floor, confirmed stable API health and unchanged worker ID.
+Rollback API remains `d55f8bb4057e54919b0630cf05dc32a28a78901a16013ecaa80726f36ee71ea4`;
+Compose backup is `docker-compose.yml.pre-order-identity-c36dd40`.
+
+Post-deploy internal reader checks found 96 expired shipment-cost observations
+(all documents and costs exist), so no successful complete result was claimed.
+The live Sheet later also reported expired order coverage. The authorized
+`Goal_Pruebas_20260909!A42901` formula was recalculated with four spaces in its
+token-reference expression, preserving dates/filters and all other cells.
+VM readback at 23:50 UTC showed the August 8–September 6 request pending while
+the May request was running (attempt 3). No direct queue or Mongo edits occurred.
+Repeat the real Sheet order read after normal recovery and check the fee cell.
+A separate read-only probe inside the deployed API loaded the same 100 orders
+and invoked the corrected projection lookup plus fixed-fee reader for each line:
+zero fixed-fee NA findings, zero writes. This proves the SKU association defect
+is corrected in runtime independently of the still-pending coverage refresh.
 Rollback boundary: the order-only projection lookup and associated regression
 tests in `handlers_orders_questions.py` and its handler test file; no schema,
 worker, token, or production-data migration is involved. This does not resolve
 the wider missing/ambiguous projection availability contract or other goal gates.
+
+### Order recovery: bounded detail acquisition (local, not deployed)
+
+Current read-only VM/container job inspection confirms the pilot August range
+completed at 23:53:17 UTC on September 9; both August 11 variants completed
+afterwards, with coverage updated at 23:53:57. May remains failed after three
+attempts (`source_temporarily_unavailable`, 23:52:52). This supersedes the pending
+job observation above, but is not a fresh Google Sheet result or latency proof.
+No queue or production data was edited.
+
+Order acquisition now joins waves of at most four details for both search rows
+and known orders absent from search. Identity/date/ownership validation, complete
+publication, expanded coverage, 10,000-order budget and 240-second timeout remain
+unchanged. Original error types reach retry classification; cancellation joins
+in-flight requests. There is no formula HTTP or schema change.
+
+TDD: after restarting only the stopped dedicated local Mongo container, the new
+integration test failed on old code (`peak == 1`, expected four). All six new
+cases pass after implementation: normal completion, transport failure and
+cancellation, each for discovered and previously known orders. Tests use real
+local Motor/queue state and controlled detail calls; publication is mocked, so
+they do not establish live Mercado Libre throughput or actual publication.
+`uv run pytest modules/sheets/tests/test_formula_recovery.py -q` passes all 416
+cases, without skips. Root Ruff check/format and Mypy (509 source files) pass.
+No new image has been built or deployed.
+
+Rollback boundary: `_order_details` and its two `_orders` call sites plus the
+new concurrency regression; retain the earlier detail validation and header fix.
+Before claiming the timeout resolved, build a verified Sheets worker image from
+the intended committed source, deploy with the existing service-specific safety
+gates, and measure complete recovery and subsequent formula readback. Other
+acceptance gates remain open.
 
 ### Order recovery: bracketed missing-content header fix (worker deployed)
 

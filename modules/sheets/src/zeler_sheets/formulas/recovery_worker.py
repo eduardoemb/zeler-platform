@@ -876,6 +876,7 @@ class FormulaRecoveryWorker:
             rows = page.get("results")
             if not isinstance(rows, list):
                 raise ValueError("order search missing results")
+            details_to_fetch: list[tuple[str, dict[str, Any] | None]] = []
             for row in rows:
                 identity = str(row.get("id")) if isinstance(row, dict) else ""
                 if not identity.isdecimal() or identity in seen:
@@ -884,9 +885,10 @@ class FormulaRecoveryWorker:
                 created = _date(row.get("date_created"))
                 if not start <= created < end:
                     raise ValueError("order search outside requested range")
-                detail, missing = await self._order_detail(
-                    seller_id, identity, start, end, search_row=row
-                )
+                details_to_fetch.append((identity, row))
+            for identity, detail, missing in await self._order_details(
+                seller_id, details_to_fetch, start, end
+            ):
                 resources.append(detail)
                 unavailable_fields[identity] = missing
             if len(seen) == total:
@@ -907,10 +909,13 @@ class FormulaRecoveryWorker:
         known_ids = {str(row["_id"]) for row in known}
         if len(known_ids | seen) > 10000:
             raise ValueError("known order inventory is over recovery budget")
-        for identity in sorted(known_ids - seen):
+        absent_ids = sorted(known_ids - seen)
+        for identity in absent_ids:
             if not identity.isascii() or not identity.isdecimal():
                 raise ValueError("known order identity is invalid")
-            detail, missing = await self._order_detail(seller_id, identity, start, end)
+        for identity, detail, missing in await self._order_details(
+            seller_id, [(identity, None) for identity in absent_ids], start, end
+        ):
             resources.append(detail)
             unavailable_fields[identity] = missing
             seen.add(identity)
@@ -942,6 +947,40 @@ class FormulaRecoveryWorker:
                     await finish_devoluciones_operation(
                         db=self.db, operation=operation, succeeded=False
                     )
+
+    async def _order_details(
+        self,
+        seller_id: str,
+        identities: list[tuple[str, dict[str, Any] | None]],
+        start: datetime,
+        end: datetime,
+    ) -> list[tuple[str, dict[str, Any], frozenset[str]]]:
+        async def acquire(
+            identity: str, search_row: dict[str, Any] | None
+        ) -> tuple[str, dict[str, Any], frozenset[str]] | Exception:
+            try:
+                detail, missing = await self._order_detail(
+                    seller_id, identity, start, end, search_row=search_row
+                )
+                return identity, detail, missing
+            except Exception as exc:  # noqa: BLE001 - rethrow original type after joining the wave
+                return exc
+
+        results = []
+        for offset in range(0, len(identities), 4):
+            # Join every in-flight request on failure/cancellation. Preserve the
+            # original exception for process_one's retry classification.
+            async with asyncio.TaskGroup() as group:
+                tasks = [
+                    group.create_task(acquire(identity, row))
+                    for identity, row in identities[offset : offset + 4]
+                ]
+            for task in tasks:
+                result = task.result()
+                if isinstance(result, Exception):
+                    raise result
+                results.append(result)
+        return results
 
     async def _order_detail(
         self,
