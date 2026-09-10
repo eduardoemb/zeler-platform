@@ -56,6 +56,17 @@ and retain the new worker until all admitted large item continuations have drain
 do not delete requests or hand pending large jobs to the old worker. Final focused
 rerun after restarting the stopped local test Mongo passed seven cases in 1.47s.
 
+Committed and pushed as `208decf296f8f0b8d9f39925421a745aaf337510`.
+Two single-image builds with `requestedVerifyOption: VERIFIED` were submitted
+from that exact connected-repository revision and observed WORKING:
+
+- Worker: `85085827-1ab5-478f-8c30-46cd63cac355`.
+- API: `a452d4fc-63ea-45b7-a37d-36f3c1c41255`.
+
+No deployment has occurred for this commit. Poll these build IDs; do not submit
+duplicates because a local polling process disappears. Verify resulting digests
+and source provenance before the worker-first activation described above.
+
 Follow-up diagnosis at `2026-09-10T01:52:40Z`: a sanitized, read-only
 VM/container Mongo query found numerous exhausted `item_formula_rows` jobs,
 an active item recovery, pending buybox recovery, and an expired questions
@@ -8586,3 +8597,19 @@ No deployment occurred. Worker remains `a607932`, API `29c3832`; before using
 the corrected historical/reconcile catalog path, include these source-selection
 and reporting fixes in a verified Sheets image and check persisted catalog
 results. They do not justify another inventory sweep or changes to other products.
+
+## Item-recovery continuation release deployed
+
+Commit `208decf296f8f0b8d9f39925421a745aaf337510` was built from the connected
+GitHub repository and deployed in worker-first order on the pilot VM. The Sheets
+worker image is pinned to digest
+`sha256:f767ecfd4d38ae9960ceb0d539abaed63d0295d0fd3482e24868443469828c72` and
+the API image to `sha256:b7fa74a383f5b5206365818124682df1937e005266df8cee87ec7732afe2661a`.
+Both containers report `healthy`; the API's internal `/health` endpoint returned
+HTTP 200. Preflight reported 6.6 GiB free before worker pull and 6.1 GiB before
+API pull (both above the 5 GiB gate). Previous running digests and Compose
+backups were retained at the VM for service-scoped rollback.
+
+This proves image provenance, activation and basic runtime health only. The
+large item-request continuation still needs an authenticated formula/Sheet
+exercise and persisted-job readback; the full 52-formula goal remains open.
