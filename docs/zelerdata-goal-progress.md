@@ -181,10 +181,76 @@ it. The boundary case includes an order in the last valid second and verifies
 complete persistence/coverage, preventing the coarse request limit from becoming
 a coarse local cutoff. Root Ruff check/format and Mypy (509 files) pass.
 `uv run pytest modules/sheets/tests/test_formula_recovery.py -q` passes all 417
-cases without skips. Runtime still uses worker `31c62de` and
-API `c36dd40`; deploy a verified worker image containing this correction before
-claiming May recovery fixed. Rollback is only the upper search-bound expression
+cases without skips. Runtime now uses worker `1c9ca38` and
+API `c36dd40`; May recovery still needs post-deploy functional verification.
+Code rollback is only the upper search-bound expression
 and its boundary regression, not concurrency, stored orders or validation.
+
+Build/deploy preparation for committed source
+`1c9ca38367993632fcc669985d19de124bfe2e88` (also `origin/main`): Cloud Build
+`290272a2-6aa5-49f1-91b8-af732cb4633a` completed SUCCESS from that exact revision,
+single worker image, verified provenance requested. Resulting digest:
+`sha256:56739389c470b118800a1b94f63fa6fea1c62b2707d440cd6f7eb6b26c7e95b4`.
+CI lint `34421141720` and test `34421141680` passed for the exact source.
+Activation completed at `2026-09-10T00:36:47Z` in
+`zeler-order-hour-activate-1c9ca38-retry1.service`: new and rollback provenance
+verified, exact new worker digest healthy and stable, API identity/health
+unchanged, explicit `activation_complete`, terminal systemd success.
+The first unit failed before creating the Compose backup; the old worker stayed
+healthy. Its generic RuntimeError did not establish the exact cause. Read-only
+checks then confirmed 8.7 GiB free, zero running recovery jobs, one old Compose
+image match and valid provenance for both images. The helper gained sanitized
+failure line numbers before the successful retry; no acceptance checks changed.
+Runtime rollback remains worker
+`f5841723a09b01529b12d896fb9c5429ab51dd27faa1992256d103d9e4ea1ca7`
+from `31c62de`, build `a0f57541-c833-43b2-b12a-79ccef1e64c6`; backup:
+`docker-compose.yml.pre-order-hour-1c9ca38`.
+Next: trigger recovery through normal Sheets use, then verify May completion
+and truthful persisted readback. Deployment health alone does not close these gates.
+
+Post-deploy Sheets check (`2026-09-10`, about 00:38–00:42 UTC): changed only
+`Goal_Pruebas_20260909!A42901.userEnteredValue`, adding the sixth trailing space
+to the token reference expression; pilot dates/filters, formats and validation
+were preserved. No token value was read. Native anchor readback still says
+`DATA_UNAVAILABLE: Actualización solicitada; vuelve a intentar.` Visual fit has
+not been verified; no credential-bearing workbook export was made.
+
+Normal recalculation completed the pilot orders job at `00:38:13.518Z` and
+started May recovery at `00:38:14.439Z`. May ended failed after three attempts at
+`00:40:57.634Z`, reason `source_temporarily_unavailable`; two additional August
+windows also failed with that reason. Sanitized gateway logs for 00:38:13–00:41:00
+show 696 order-detail 200s, 20 search 200s, one order-shipment 404 and 30
+order-detail 429s. This is not successful May recovery and does not yet identify
+whether throttling originated locally or upstream. All three services remained
+running/healthy. Intermittent local gcloud exit 139 and SSH handshake failures
+were followed by successful read-only inspection, not service restarts.
+
+The internal pilot reader (not an authenticated HTTP test) now reports 97
+expired shipment costs, zero missing shipment documents/costs/observations,
+zero missing orders/items, and zero writes. Related shipment recoveries failed
+transiently. Next investigation: attribute the 429s and make recovery honor
+source backpressure without restarting useful acquisition unnecessarily; retain
+truthful freshness and whole-range coverage. Current queue retries are fixed
+30/60 seconds and `process_one` does not pass response Retry-After to `finish`.
+
+The same gateway interval contains **106 structured local `rate_limit_exceeded`
+events for module Sheets**, proving internal throttling was active (not a claim
+that every observed 429 has been individually correlated). No quota was changed.
+A focused, not-yet-deployed correction retries the same order-detail request up
+to three times on `GatewayRateLimitError` with a numeric Retry-After, preserving
+already acquired pages in the active attempt. It uses the raw header rather than
+the shared client's 30-second cap; invalid/missing headers retain existing queue
+failure handling. The existing 240-second job deadline and cancellation remain.
+This does not add durable checkpoints or change shipment/other-product clients.
+
+TDD: all four `test_order_detail_waits_for_quota_without_restarting_acquisition`
+cases failed before and pass after the change: success after waiting 59 seconds
+(simulated), bounded exhaustion, cancellation during waiting, and wrong-owner
+rejection after retry. Root Ruff check/format and Mypy (509 files) pass. Full
+recovery suite (`uv run pytest modules/sheets/tests/test_formula_recovery.py -q`)
+passes all 421 cases without skips; live end-to-end proof remains pending. Rollback
+boundary is the order-detail request retry loop and its new regression only;
+retain the prior hour-boundary, concurrency and ownership protections.
 
 Rollback boundary: `_order_details` and its two `_orders` call sites plus the
 new concurrency regression; retain the earlier detail validation and header fix.

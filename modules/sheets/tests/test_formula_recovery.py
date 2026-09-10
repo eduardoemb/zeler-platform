@@ -15,6 +15,68 @@ from zeler_sheets.formulas.recovery import FormulaRecoveryQueue, RecoveryRequest
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("outcome", ["success", "exhausted", "cancelled", "wrong_owner"])
+async def test_order_detail_waits_for_quota_without_restarting_acquisition(
+    monkeypatch: pytest.MonkeyPatch, outcome: str
+) -> None:
+    import httpx
+
+    from zeler_platform_core.clients.meli_gateway_client import GatewayRateLimitError
+    from zeler_sheets.formulas.recovery_worker import FormulaRecoveryWorker
+
+    calls: list[str] = []
+    waits: list[float] = []
+    quota = GatewayRateLimitError(
+        retry_after_seconds=30,
+        response=httpx.Response(429, headers={"Retry-After": "59"}),
+    )
+
+    async def sleep(seconds: float) -> None:
+        waits.append(seconds)
+        if outcome == "cancelled":
+            raise asyncio.CancelledError
+
+    monkeypatch.setattr(asyncio, "sleep", sleep)
+
+    class Gateway:
+        async def request(self, **kwargs: Any) -> httpx.Response:
+            calls.append(kwargs["path"])
+            if len(calls) == 1 or outcome == "exhausted":
+                raise quota
+            return httpx.Response(
+                200,
+                json={
+                    "id": 42,
+                    "seller": {"id": "other" if outcome == "wrong_owner" else "123"},
+                    "date_created": "2026-08-20T10:00:00Z",
+                    "order_items": [{"item": {"id": "MLM42"}, "quantity": 1}],
+                    "tags": ["no_shipping"],
+                },
+            )
+
+    queue = FormulaRecoveryQueue(
+        {"sheets_formula_recovery_jobs": None, "sheets_formula_recovery_admission": None}
+    )
+    worker = FormulaRecoveryWorker(db=None, gateway=Gateway(), queue=queue)
+    arguments = ("123", "42", datetime(2026, 8, 20, tzinfo=UTC), datetime(2026, 8, 21, tzinfo=UTC))
+    if outcome == "success":
+        detail, missing = await worker._order_detail(*arguments)
+        assert detail["id"] == 42 and not missing
+    else:
+        error = {
+            "exhausted": GatewayRateLimitError,
+            "cancelled": asyncio.CancelledError,
+            "wrong_owner": ValueError,
+        }[outcome]
+        with pytest.raises(error):
+            await worker._order_detail(*arguments)
+    assert waits == ([59, 59] if outcome == "exhausted" else [59])
+    assert calls == ["/orders/42"] * (
+        3 if outcome == "exhausted" else 1 if outcome == "cancelled" else 2
+    )
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("header", ["buyer", "[buyer]", "[ buyer, shipping ]", "[seller]"])
 async def test_order_partial_header_formats_preserve_missing_fields(header: str) -> None:
     import httpx

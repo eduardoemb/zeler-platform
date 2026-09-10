@@ -993,9 +993,20 @@ class FormulaRecoveryWorker:
         *,
         search_row: dict[str, Any] | None = None,
     ) -> tuple[dict[str, Any], frozenset[str]]:
-        response = await self.detail_gateway.request(
-            method="GET", seller_id=seller_id, path=f"/orders/{identity}"
-        )
+        for attempt in range(3):
+            try:
+                response = await self.detail_gateway.request(
+                    method="GET", seller_id=seller_id, path=f"/orders/{identity}"
+                )
+                break
+            except GatewayRateLimitError as exc:
+                delay = exc.response.headers.get("Retry-After", "").strip()
+                if attempt == 2 or not delay.isascii() or not delay.isdecimal():
+                    raise
+                # Keep acquired pages while the gateway window resets. Use the
+                # actual header, not the shared client's 30-second cap. The
+                # enclosing 240-second job deadline and cancellation still apply.
+                await asyncio.sleep(max(1, int(delay)))
         missing = _order_missing_fields(response)
         if response.status_code not in {200, 206} or (response.status_code == 206 and not missing):
             raise ValueError("order source partial fields are not supported")
