@@ -343,6 +343,24 @@ El margen frente al corte de 30 s de Google es amplio incluso para la fórmula m
 lenta. Las cinco más lentas (`MEDIDASGENERAL`, `CALCULADORA`, `OBTENER_CATALOGO`,
 `MEDIDAS`, `SUPERMERCADO`) quedan entre 3.4 s y 5.6 s.
 
+### Ciclo de refresco vivo y el defecto que queda en el runtime
+
+Consulta de solo lectura a producción el 2026-09-11 12:43Z:
+
+- `orders` y `questions` se renovaron **0.4 minutos antes** de la medición, con
+  `valid_until` a 30 minutos. El ciclo de refresco programado está vivo en
+  producción cada 15 minutos, como se acordó.
+- `devoluciones` volvió a `stale` en el mismo ciclo: el recovery de `orders` toma
+  el lease compartido y deja `devoluciones` sin renovar. Es exactamente el defecto
+  que corrige `renew_devoluciones_marker_if_proven` (presente en `main`, ausente en
+  la imagen desplegada). Con el código nuevo, la renovación probada hoy lo
+  restaura sin llamar a Mercado Libre.
+- Los cuatro marcadores observados (`item_status_states`,
+  `price_history_snapshots`, `shipments`, `stockout_snapshots`) caducan 30 minutos
+  después de la última publicación porque el publisher tampoco está en la imagen
+  desplegada; el refresco de 15 minutos que los mantendría vivos requiere el
+  despliegue.
+
 ### Verificación de calidad en `main`
 
 - `uv run pytest`: exit 0.
