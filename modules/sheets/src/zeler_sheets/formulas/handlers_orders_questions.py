@@ -21,6 +21,8 @@ from zeler_sheets.formulas.read_models import (
     normalize_sku,
 )
 
+NON_PRODUCTIVE_ORDER_STATUSES = frozenset({"cancelled", "canceled"})
+
 BATCH_B_IMPLEMENTED_FORMULAS = frozenset(
     {
         "ZELERDATA_ORDENES",
@@ -1199,8 +1201,19 @@ async def _item_formula_rows_for_pairs(
 def _require_shipment_identity(
     context: FormulaExecutionContext, orders: Sequence[Mapping[str, Any]]
 ) -> None:
+    """Request recovery for declared shipment gaps on productive orders only.
+
+    A cancelled or never-paid order never had a shipment relation, so
+    Mercado Libre returns no shipment for it and the gap is irrecoverable. The
+    caller serves NA addresses and NA costs for those rows instead of failing
+    the whole formula. A live order with a declared ``shipment_id`` gap is still
+    a recoverable missing shipment and keeps requesting recovery.
+    """
     unavailable = [
-        order for order in orders if "shipment_id" in (order.get("unavailable_fields") or [])
+        order
+        for order in orders
+        if "shipment_id" in (order.get("unavailable_fields") or [])
+        and str(order.get("status") or "").strip().casefold() not in NON_PRODUCTIVE_ORDER_STATUSES
     ]
     if not unavailable:
         return

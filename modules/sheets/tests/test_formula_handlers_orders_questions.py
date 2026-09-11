@@ -3353,6 +3353,106 @@ async def test_compradores_treats_todos_as_the_whole_seller_history() -> None:
     assert result.meta["orders_count"] == 2
 
 
+@pytest.mark.asyncio
+async def test_compradores_serves_orders_without_shipment_and_na_addresses() -> None:
+    # A cancelled or otherwise shipment-less order is real seller history. Its
+    # buyer address is genuinely absent, so the row must be served with NA
+    # addresses instead of failing the whole formula as DATA_UNAVAILABLE.
+    now = datetime(2026, 6, 1, 17, 0, tzinfo=UTC)
+    db = FakeDb()
+    db["orders"].documents = {
+        "with-shipment": _order_doc(
+            "with-shipment",
+            seller_id="seller-1",
+            status="paid",
+            date_created=datetime(2026, 5, 10, 10, 30, tzinfo=UTC),
+            total_amount=100,
+            shipment_id="shipment-1",
+            items=[{"sku": "sku-1", "item_id": "MLA1", "title": "item", "quantity": 1}],
+        ),
+        "no-shipment": {
+            **_order_doc(
+                "no-shipment",
+                seller_id="seller-1",
+                status="cancelled",
+                date_created=datetime(2026, 5, 11, 10, 30, tzinfo=UTC),
+                total_amount=50,
+                items=[{"sku": "sku-1", "item_id": "MLA1", "title": "item", "quantity": 1}],
+            ),
+            "unavailable_fields": ["shipment_id"],
+            "tags": ["not_delivered", "not_paid"],
+        },
+    }
+    db["shipments"].documents = {
+        "shipment-1": {
+            "_id": "shipment-1",
+            "seller_id": "seller-1",
+            "formula_observed_at": datetime.now(UTC),
+            "receiver_address": {
+                "name": "Buyer",
+                "street_name": "Street",
+                "street_number": "1",
+                "neighborhood": "Colonia",
+                "zip_code": "64000",
+                "city": "Monterrey",
+                "state": "NL",
+                "country": "Mexico",
+            },
+        }
+    }
+    dispatcher = _order_question_dispatcher(db, now_fn=lambda: now)
+    result = await dispatcher.execute(
+        _context("ZELERDATA_COMPRADORES", {"id_ordenes": "todos", "encabezados": "si"})
+    )
+    assert result.values[0] == BUYER_ADDRESS_LEGACY_HEADERS
+    assert result.values[1] == [
+        "Buyer",
+        "Street",
+        "1",
+        "Colonia",
+        "64000",
+        "Monterrey",
+        "NL",
+        "Mexico",
+    ]
+    assert result.values[2] == ["NA"] * len(BUYER_ADDRESS_LEGACY_HEADERS)
+    assert result.meta["orders_count"] == 2
+    assert result.meta["address_available"] == 1
+    assert result.meta["address_missing"] == 1
+
+
+@pytest.mark.asyncio
+async def test_compradores_still_requests_recovery_for_a_productive_order_without_shipment() -> (
+    None
+):
+    # A paid/pending order without a shipment relation is a recoverable gap: the
+    # formula must keep asking for recovery instead of quietly emitting NA.
+    from zeler_sheets.formulas.dispatcher import FormulaDataUnavailableError
+
+    now = datetime(2026, 6, 1, 17, 0, tzinfo=UTC)
+    db = FakeDb()
+    db["orders"].documents = {
+        "paid-missing-shipment": {
+            **_order_doc(
+                "paid-missing-shipment",
+                seller_id="seller-1",
+                status="paid",
+                date_created=datetime(2026, 5, 11, 10, 30, tzinfo=UTC),
+                total_amount=50,
+                items=[{"sku": "sku-1", "item_id": "MLA1", "title": "item", "quantity": 1}],
+            ),
+            "unavailable_fields": ["shipment_id"],
+        }
+    }
+    dispatcher = _order_question_dispatcher(db, now_fn=lambda: now)
+    with pytest.raises(FormulaDataUnavailableError) as missing:
+        await dispatcher.execute(
+            _context("ZELERDATA_COMPRADORES", {"id_ordenes": "todos", "encabezados": "si"})
+        )
+    assert missing.value.read_model == "orders"
+    assert missing.value.date_from is not None
+
+
 def _order_question_dispatcher(db: FakeDb, *, now_fn: Any | None = None) -> FormulaDispatcher:
     # Calculation fixtures represent a complete inventory; missing/expired
     # coverage is exercised against real Mongo in test_formula_recovery.py.
