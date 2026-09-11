@@ -333,7 +333,7 @@ async def test_productive_gate_reads_the_union_of_durable_proofs() -> None:
     # still be served from that retained proof inside its live window instead of
     # reporting DATA_UNAVAILABLE until the next fast cycle.
     now = datetime.now(UTC)
-    marker = {
+    marker: dict[str, Any] = {
         "read_model": "orders",
         "state": "reconciled",
         "date_from": now - timedelta(days=29),

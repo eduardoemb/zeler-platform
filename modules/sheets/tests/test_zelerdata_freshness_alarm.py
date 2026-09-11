@@ -40,7 +40,9 @@ class _Db:
         return _Collection(self.rows)
 
 
-def _marker(read_model: str, *, valid_until: datetime | None, state: str = "reconciled") -> dict:
+def _marker(
+    read_model: str, *, valid_until: datetime | None, state: str = "reconciled"
+) -> dict[str, Any]:
     return {
         "_id": f"82453304:{read_model}",
         "seller_id": "82453304",

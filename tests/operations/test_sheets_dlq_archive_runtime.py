@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -68,7 +69,7 @@ async def test_archive_writes_the_record_before_removing_the_message() -> None:
     delivery = _Delivery(_message())
     order: list[str] = []
 
-    async def store(record: dict[str, Any]) -> None:
+    async def store(record: Mapping[str, Any]) -> None:
         order.append("store")
 
     class _OrderedBroker(_Broker):
@@ -105,8 +106,8 @@ async def test_a_retained_message_is_requeued_and_never_stored() -> None:
     recent = _Delivery(_message(occurred_at=(NOW - timedelta(days=1)).isoformat()))
     stored: list[dict[str, Any]] = []
 
-    async def store(record: dict[str, Any]) -> None:
-        stored.append(record)
+    async def store(record: Mapping[str, Any]) -> None:
+        stored.append(dict(record))
 
     report = await run_archive(
         broker=_Broker([recent]),
@@ -129,7 +130,7 @@ async def test_a_failed_archive_write_requeues_and_stops_the_run() -> None:
     first = _Delivery(_message(event_id="evt-1"))
     second = _Delivery(_message(event_id="evt-2"))
 
-    async def store(record: dict[str, Any]) -> None:
+    async def store(record: Mapping[str, Any]) -> None:
         raise RuntimeError("mongo unavailable")
 
     report = await run_archive(
@@ -152,8 +153,8 @@ async def test_a_reconciled_window_archives_a_recent_message() -> None:
     recent = _Delivery(_message(occurred_at=(NOW - timedelta(hours=2)).isoformat()))
     stored: list[dict[str, Any]] = []
 
-    async def store(record: dict[str, Any]) -> None:
-        stored.append(record)
+    async def store(record: Mapping[str, Any]) -> None:
+        stored.append(dict(record))
 
     report = await run_archive(
         broker=_Broker([recent]),
@@ -171,7 +172,7 @@ async def test_a_reconciled_window_archives_a_recent_message() -> None:
 async def test_the_run_is_bounded_by_its_limit() -> None:
     deliveries = [_Delivery(_message(event_id=f"evt-{i}")) for i in range(5)]
 
-    async def store(record: dict[str, Any]) -> None:
+    async def store(record: Mapping[str, Any]) -> None:
         return None
 
     broker = _Broker(deliveries)
@@ -204,7 +205,7 @@ async def test_an_unreadable_body_is_retained_not_archived() -> None:
 
     delivery = _RawDelivery()
 
-    async def store(record: dict[str, Any]) -> None:
+    async def store(record: Mapping[str, Any]) -> None:
         raise AssertionError("nothing may be stored for an unreadable body")
 
     report = await run_archive(
@@ -464,8 +465,8 @@ async def test_retained_messages_do_not_starve_archivable_ones_in_a_bounded_run(
     broker = _HoldingBroker([retained_head, archivable])
     stored: list[dict[str, Any]] = []
 
-    async def store(record: dict[str, Any]) -> None:
-        stored.append(record)
+    async def store(record: Mapping[str, Any]) -> None:
+        stored.append(dict(record))
 
     report = await run_archive(
         broker=broker,
@@ -493,7 +494,7 @@ async def test_retained_messages_are_released_after_the_scan_in_their_original_o
     broker = _HoldingBroker([first, second])
     released: list[str] = []
 
-    async def store(record: dict[str, Any]) -> None:
+    async def store(record: Mapping[str, Any]) -> None:
         raise AssertionError("nothing is archivable in this run")
 
     original_first, original_second = first.nack_requeue, second.nack_requeue
@@ -532,7 +533,7 @@ async def test_a_failed_archive_write_still_releases_the_held_messages() -> None
     behind = _queue_message(event_id="behind", occurred_at="2026-06-02T00:00:00Z")
     broker = _HoldingBroker([retained, failing, behind])
 
-    async def store(record: dict[str, Any]) -> None:
+    async def store(record: Mapping[str, Any]) -> None:
         raise RuntimeError("mongo unavailable")
 
     report = await run_archive(
@@ -560,7 +561,7 @@ async def test_a_release_failure_still_closes_the_broker_and_is_reported() -> No
     retained = _FailingRequeue(_message(occurred_at=(NOW - timedelta(days=1)).isoformat()))
     broker = _HoldingBroker([retained])
 
-    async def store(record: dict[str, Any]) -> None:
+    async def store(record: Mapping[str, Any]) -> None:
         raise AssertionError("nothing is archivable in this run")
 
     report = await run_archive(

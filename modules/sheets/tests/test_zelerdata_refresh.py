@@ -62,7 +62,7 @@ class FakeQueue:
 
     async def enqueue(self, request: Any) -> str:
         self.enqueued.append(request)
-        return request.key
+        return str(request.key)
 
 
 class FakeDb:
@@ -109,7 +109,10 @@ class FakeIdentityCollection:
 
             def sort(self, spec: Any) -> Cursor:
                 for key, direction in reversed(list(spec)):
-                    self._items.sort(key=lambda row: row.get(key), reverse=direction < 0)
+                    self._items.sort(
+                        key=lambda row: str(row.get(key)),
+                        reverse=direction < 0,
+                    )
                 return self
 
             def limit(self, count: int) -> Cursor:
