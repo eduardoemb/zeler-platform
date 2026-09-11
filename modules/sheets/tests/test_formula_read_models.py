@@ -216,3 +216,161 @@ async def test_item_formula_rows_can_use_publication_order_without_500_row_trunc
         ("_id", 1),
     ]
     assert cursor.to_list_length is None
+
+
+class _ResolutionDb:
+    """Mongo surface for the marker-first item row resolver."""
+
+    def __init__(
+        self,
+        *,
+        marker: dict[str, Any] | None,
+        rows: list[dict[str, Any]],
+        recovery_job: dict[str, Any] | None = None,
+        items: list[dict[str, Any]] | None = None,
+    ) -> None:
+        self._collections: dict[str, Any] = {
+            "sheets_item_formula_rows": FakeCollection(rows),
+            "items": FakeCollection(items or []),
+        }
+        self._marker = marker
+        self._recovery_job = recovery_job
+
+    def __getitem__(self, name: str) -> Any:
+        if name == "sheets_read_model_freshness":
+
+            class MarkerCollection:
+                def __init__(self, marker: dict[str, Any] | None) -> None:
+                    self._marker = marker
+
+                async def find_one(self, filter_spec: dict[str, Any]) -> Any:
+                    return self._marker
+
+            return MarkerCollection(self._marker)
+        if name == "sheets_formula_recovery_jobs":
+
+            class JobCollection:
+                def __init__(self, job: dict[str, Any] | None) -> None:
+                    self._job = job
+
+                async def find_one(self, filter_spec: dict[str, Any]) -> Any:
+                    return self._job
+
+            return JobCollection(self._recovery_job)
+        return self._collections.setdefault(name, FakeCollection([]))
+
+
+def _inventory_item(item_id: str, *, observed: datetime) -> dict[str, Any]:
+    return {
+        "_id": item_id,
+        "seller_id": "seller-1",
+        "last_meli_sync_at": observed,
+        "title": f"Item {item_id}",
+    }
+
+
+def _inventory_row(item_id: str, *, item: dict[str, Any]) -> dict[str, Any]:
+    from zeler_sheets.item_projection import item_source_fingerprint
+
+    return {
+        "_id": f"seller-1:SKU-{item_id}:{item_id}",
+        "seller_id": "seller-1",
+        "item_id": item_id,
+        "sku": f"SKU-{item_id}",
+        "normalized_sku": f"SKU-{item_id}".upper(),
+        "source_snapshot": {
+            "fingerprint": item_source_fingerprint(item),
+            "observed_at": item["last_meli_sync_at"],
+            "rows_count": 1,
+        },
+    }
+
+
+@pytest.mark.asyncio
+async def test_resolver_prefers_the_reconciled_marker_over_any_enumeration() -> None:
+    now = datetime.now(UTC)
+    item = _inventory_item("MLA1", observed=now)
+    rows = [_inventory_row("MLA1", item=item)]
+    db = _ResolutionDb(
+        marker={
+            "seller_id": "seller-1",
+            "read_model": "item_formula_rows",
+            "state": "reconciled",
+            "fresh_until": now + timedelta(minutes=10),
+        },
+        rows=rows,
+        items=[item],
+    )
+
+    resolution = await FormulaReadModelRepository(db=db).resolve_item_formula_rows(
+        seller_id="seller-1", formula="ZELERDATA_MEDIDAS", now=now
+    )
+
+    assert resolution.inventory_scope is False
+    assert resolution.rows == rows
+    assert resolution.missing_items == ()
+    assert resolution.recovery is None
+
+
+@pytest.mark.asyncio
+async def test_resolver_falls_back_to_verified_inventory_when_marker_is_not_productive() -> None:
+    now = datetime.now(UTC)
+    observed = now - timedelta(minutes=5)
+    item = _inventory_item("MLA1", observed=observed)
+    # The whole-seller enumeration is only defined for a numeric seller.
+    numeric_seller = "82453304"
+    item["seller_id"] = numeric_seller
+    rows = [_inventory_row("MLA1", item=item)]
+    for row in rows:
+        row["seller_id"] = numeric_seller
+    db = _ResolutionDb(
+        marker=None,
+        rows=rows,
+        recovery_job={
+            "seller_id": numeric_seller,
+            "read_model": "item_formula_rows",
+            "inventory_scope": True,
+            "state": "pending",
+            "inventory_ids": ["MLA1", "MLA2"],
+            "inventory_offset": 2,
+            "inventory_observed_at": observed,
+        },
+        items=[item],
+    )
+
+    resolution = await FormulaReadModelRepository(db=db).resolve_item_formula_rows(
+        seller_id=numeric_seller, formula="ZELERDATA_MEDIDAS", now=now
+    )
+
+    assert resolution.inventory_scope is True
+    assert resolution.enumeration_current is True
+    assert [row["item_id"] for row in resolution.rows] == ["MLA1"]
+    # MLA2 was enumerated but not verified, so it must stay explicitly missing.
+    assert resolution.missing_items == ("MLA2",)
+    assert resolution.recovery is not None
+    assert resolution.recovery.read_model == "item_formula_rows"
+
+
+@pytest.mark.asyncio
+async def test_resolver_verifies_an_explicit_selection_without_enumeration() -> None:
+    now = datetime.now(UTC)
+    observed = now - timedelta(minutes=5)
+    item = _inventory_item("MLA1", observed=observed)
+    rows = [_inventory_row("MLA1", item=item)]
+    db = _ResolutionDb(
+        marker=None,
+        rows=rows,
+        items=[item],
+    )
+
+    resolution = await FormulaReadModelRepository(db=db).resolve_item_formula_rows(
+        seller_id="seller-1",
+        formula="ZELERDATA_MEDIDAS",
+        now=now,
+        item_ids=["MLA1"],
+    )
+
+    assert resolution.inventory_scope is True
+    assert [row["item_id"] for row in resolution.rows] == ["MLA1"]
+    assert resolution.missing_items == ()
+    assert resolution.recovery is None

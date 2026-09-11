@@ -15,7 +15,6 @@ from zeler_sheets.formulas.dispatcher import (
 )
 from zeler_sheets.formulas.output_normalization import NA_VALUE, normalize_response_rows
 from zeler_sheets.formulas.read_models import (
-    ITEM_FORMULA_ROWS_READ_MODEL,
     ITEM_STATUS_STATES_READ_MODEL,
     FormulaReadModelRepository,
     normalize_sku,
@@ -175,18 +174,14 @@ class ReturnsHistoriesWithdrawalsFormulaHandlers:
         self, context: FormulaExecutionContext
     ) -> FormulaExecutionResult:
         now = _as_utc_datetime(self._now_fn())
-        await self._repository.require_read_model_productive(
+        resolution = await self._repository.resolve_item_formula_rows(
             seller_id=context.seller_id,
-            read_model=ITEM_FORMULA_ROWS_READ_MODEL,
-            date_to=now,
             formula=context.contract.name,
+            now=now,
         )
-        rows = await self._repository.find_item_formula_rows(
-            seller_id=context.seller_id,
-            limit=None,
-            sort_by="publication",
-        )
-        neglected_rows = [row for row in rows if _is_neglected_full_publication(row, now=now)]
+        neglected_rows = [
+            row for row in resolution.rows if _is_neglected_full_publication(row, now=now)
+        ]
         values: list[list[Any]] = _header_row(
             context.args.get("encabezados"), PUBLICACIONES_DESCUIDADAS_HEADERS
         )
@@ -201,7 +196,9 @@ class ReturnsHistoriesWithdrawalsFormulaHandlers:
                 "rows_count": len(neglected_rows),
                 "threshold_days": NEGLECTED_PUBLICATION_THRESHOLD_DAYS,
                 "columns": "legacy_neglected_publications",
+                **resolution.meta(),
             },
+            recovery=resolution.recovery,
         )
 
     async def sheetseller_tiempo_activa(

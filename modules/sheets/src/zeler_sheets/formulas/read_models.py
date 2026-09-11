@@ -83,6 +83,36 @@ class DevolucionesReadSnapshot:
     proof_fingerprint: str
 
 
+@dataclass(frozen=True)
+class ItemRowResolution:
+    """Rows for an item-formula read, plus how trustworthy their scope is.
+
+    ``inventory_scope`` is true when the rows came from the caller-driven
+    verified inventory enumeration instead of the reconciled marker. Formula
+    readers must expose that difference: an enumeration proves current
+    membership for the publications it returns, never a reconciled whole-seller
+    interval, and it must never silently certify what it did not observe.
+    """
+
+    rows: list[dict[str, Any]]
+    missing_items: tuple[str, ...]
+    enumeration_current: bool
+    inventory_scope: bool
+    recovery: FormulaDataUnavailableError | None = None
+    item_ids: tuple[str, ...] = ()
+
+    def meta(self) -> dict[str, Any]:
+        """Expose coverage only when the rows came from a verified enumeration."""
+        if not self.inventory_scope:
+            return {}
+        return {
+            "inventory_scope": True,
+            "inventory_enumeration_current": self.enumeration_current,
+            "inventory_rows_complete": self.enumeration_current and not self.missing_items,
+            "inventory_partial_misses": len(self.missing_items),
+        }
+
+
 class FormulaReadModelRepository:
     def __init__(self, *, db: Any) -> None:
         self._db = db
@@ -143,6 +173,90 @@ class FormulaReadModelRepository:
         )
         cursor = self._item_formula_rows.find(filter_spec).sort(sort_spec)
         return cast("list[dict[str, Any]]", await cursor.to_list(length=limit))
+
+    async def resolve_item_formula_rows(
+        self,
+        *,
+        seller_id: str,
+        formula: str,
+        now: datetime,
+        skus: list[str] | tuple[str, ...] | None = None,
+        item_ids: list[str] | tuple[str, ...] | None = None,
+    ) -> ItemRowResolution:
+        """Resolve item rows from the marker, else from verified current inventory.
+
+        The reconciled marker is the stronger claim and is preferred. When the
+        marker is missing or expired, this falls back to the same caller-driven
+        verification that CALIDAD and CALCULADORA already use. An explicit
+        selection is verified per publication; a whole-seller read uses the
+        recent inventory enumeration. Either way only observed publications are
+        returned and unverified ones stay explicitly missing instead of being
+        presented as complete. No global marker is inferred from the sweep.
+        """
+        requested = tuple(dict.fromkeys(str(item_id).strip() for item_id in item_ids or ()))
+        requested_skus = tuple(
+            dict.fromkeys(normalized for sku in skus or () if (normalized := normalize_sku(sku)))
+        )
+        try:
+            await self.require_read_model_productive(
+                seller_id=seller_id,
+                read_model=ITEM_FORMULA_ROWS_READ_MODEL,
+                date_to=now,
+                formula=formula,
+            )
+        except FormulaDataUnavailableError as unavailable:
+            if requested:
+                try:
+                    rows, missing = await self.find_recent_item_formula_rows(
+                        seller_id=seller_id,
+                        item_ids=list(requested),
+                        formula=formula,
+                        now=now,
+                    )
+                except FormulaDataUnavailableError:
+                    # Nothing in the selection is verifiable: keep the original
+                    # reconciliation error rather than dropping evidence.
+                    raise unavailable from None
+                current = True
+            else:
+                try:
+                    rows, _, missing, current = await self.find_recent_item_inventory(
+                        seller_id=seller_id, formula=formula, now=now
+                    )
+                except FormulaDataUnavailableError:
+                    # No verified enumeration exists yet: keep the original
+                    # reconciliation error instead of presenting an empty table.
+                    raise unavailable from None
+            rows = _filter_rows_by_sku(rows, requested_skus)
+            return ItemRowResolution(
+                rows=rows,
+                missing_items=tuple(missing),
+                enumeration_current=current,
+                inventory_scope=True,
+                item_ids=requested,
+                recovery=FormulaDataUnavailableError(
+                    formula,
+                    "Inventory publications need recovery.",
+                    read_model=ITEM_FORMULA_ROWS_READ_MODEL,
+                    item_ids=() if not current and not requested else tuple(missing),
+                )
+                if missing or not current
+                else None,
+            )
+        rows = await self.find_item_formula_rows(
+            seller_id=seller_id,
+            skus=list(requested_skus) or None,
+            item_ids=list(requested) or None,
+            limit=None,
+            sort_by="publication",
+        )
+        return ItemRowResolution(
+            rows=rows,
+            missing_items=(),
+            enumeration_current=True,
+            inventory_scope=False,
+            item_ids=requested,
+        )
 
     async def find_recent_item_inventory(
         self, *, seller_id: str, formula: str, now: datetime
@@ -1233,6 +1347,18 @@ def _seller_item_filter(
     if inventory_ids:
         filter_spec["inventory_id"] = {"$in": [str(inventory_id) for inventory_id in inventory_ids]}
     return filter_spec
+
+
+def _filter_rows_by_sku(
+    rows: list[dict[str, Any]], requested_skus: tuple[str, ...]
+) -> list[dict[str, Any]]:
+    """Keep only rows whose normalized SKU was explicitly requested."""
+    if not requested_skus:
+        return rows
+    wanted = set(requested_skus)
+    return [
+        row for row in rows if normalize_sku(row.get("normalized_sku") or row.get("sku")) in wanted
+    ]
 
 
 def _seller_date_filter(*, seller_id: str, date_from: Any, date_to: Any) -> dict[str, Any]:

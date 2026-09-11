@@ -94,19 +94,14 @@ class ItemShippingCatalogFormulaHandlers:
     async def sheetseller_supermercado(
         self, context: FormulaExecutionContext
     ) -> FormulaExecutionResult:
-        await self._repository.require_read_model_productive(
-            seller_id=context.seller_id,
-            read_model=ITEM_FORMULA_ROWS_READ_MODEL,
-            date_to=_as_utc_datetime(self._now_fn()),
-            formula=context.contract.name,
-        )
         item_ids = _normalize_item_id_argument(context.args.get("id_publicaciones"))
-        rows = await self._repository.find_item_formula_rows(
+        resolution = await self._repository.resolve_item_formula_rows(
             seller_id=context.seller_id,
-            item_ids=item_ids,
-            limit=max(500, len(item_ids) * 4),
+            formula=context.contract.name,
+            now=_as_utc_datetime(self._now_fn()),
+            item_ids=item_ids or None,
         )
-        rows_by_item_id = _first_rows_by_item_id(rows)
+        rows_by_item_id = _first_rows_by_item_id(resolution.rows)
         values: list[list[Any]] = []
         misses = 0
         for item_id in item_ids:
@@ -116,26 +111,25 @@ class ItemShippingCatalogFormulaHandlers:
                 values.append(["N/A"])
                 continue
             values.append(["Supermercado" if _has_current_tag(row, SUPERMARKET_TAG) else "Normal"])
-        return FormulaExecutionResult(values=values, meta={"partial_misses": misses})
+        return FormulaExecutionResult(
+            values=values,
+            meta={"partial_misses": misses, **resolution.meta()},
+            recovery=resolution.recovery,
+        )
 
     async def sheetseller_medidas(self, context: FormulaExecutionContext) -> FormulaExecutionResult:
-        await self._repository.require_read_model_productive(
-            seller_id=context.seller_id,
-            read_model=ITEM_FORMULA_ROWS_READ_MODEL,
-            date_to=_as_utc_datetime(self._now_fn()),
-            formula=context.contract.name,
-        )
         pairs = _lookup_pairs(
             skus=context.args.get("skus", "todos"),
             item_ids=context.args.get("id_publicaciones", "todos"),
         )
-        rows = await self._repository.find_item_formula_rows(
+        resolution = await self._repository.resolve_item_formula_rows(
             seller_id=context.seller_id,
+            formula=context.contract.name,
+            now=_as_utc_datetime(self._now_fn()),
             skus=[pair.sku for pair in pairs] or None,
             item_ids=[pair.item_id for pair in pairs] or None,
-            limit=max(500, len(pairs) * 4),
         )
-        rows_by_pair = _rows_by_pair(rows)
+        rows_by_pair = _rows_by_pair(resolution.rows)
         values: list[list[Any]] = []
         misses = 0
         for pair in pairs:
@@ -143,30 +137,28 @@ class ItemShippingCatalogFormulaHandlers:
             if measurement == NA_VALUE:
                 misses += 1
             values.append([measurement])
-        return FormulaExecutionResult(values=values, meta={"partial_misses": misses})
+        return FormulaExecutionResult(
+            values=values,
+            meta={"partial_misses": misses, **resolution.meta()},
+            recovery=resolution.recovery,
+        )
 
     async def sheetseller_medidas_general(
         self, context: FormulaExecutionContext
     ) -> FormulaExecutionResult:
-        await self._repository.require_read_model_productive(
-            seller_id=context.seller_id,
-            read_model=ITEM_FORMULA_ROWS_READ_MODEL,
-            date_to=_as_utc_datetime(self._now_fn()),
-            formula=context.contract.name,
-        )
         requested_skus = _normalize_optional_sku_argument(context.args.get("skus", "todos"))
         requested_item_ids = _normalize_optional_item_ids(
             context.args.get("id_publicaciones", "todos")
         )
-        rows = await self._repository.find_item_formula_rows(
+        resolution = await self._repository.resolve_item_formula_rows(
             seller_id=context.seller_id,
+            formula=context.contract.name,
+            now=_as_utc_datetime(self._now_fn()),
             skus=requested_skus,
             item_ids=requested_item_ids,
-            limit=None,
-            sort_by="publication",
         )
         ordered_rows = _order_item_rows(
-            rows, requested_skus=requested_skus, item_ids=requested_item_ids
+            resolution.rows, requested_skus=requested_skus, item_ids=requested_item_ids
         )
         values: list[list[Any]] = _header_row(
             context.args.get("encabezados"), MEDIDAS_GENERAL_HEADERS
@@ -187,7 +179,12 @@ class ItemShippingCatalogFormulaHandlers:
             )
         return FormulaExecutionResult(
             values=normalize_response_rows(values, header_rows=header_rows),
-            meta={"rows_count": len(ordered_rows), "measurement_misses": measurement_misses},
+            meta={
+                "rows_count": len(ordered_rows),
+                "measurement_misses": measurement_misses,
+                **resolution.meta(),
+            },
+            recovery=resolution.recovery,
         )
 
     async def sheetseller_costo_envio_vendedor(
@@ -467,18 +464,12 @@ class ItemShippingCatalogFormulaHandlers:
     async def sheetseller_catalogos_sin_vincular(
         self, context: FormulaExecutionContext
     ) -> FormulaExecutionResult:
-        await self._repository.require_read_model_productive(
+        resolution = await self._repository.resolve_item_formula_rows(
             seller_id=context.seller_id,
-            read_model=ITEM_FORMULA_ROWS_READ_MODEL,
-            date_to=_as_utc_datetime(self._now_fn()),
             formula=context.contract.name,
+            now=_as_utc_datetime(self._now_fn()),
         )
-        rows = await self._repository.find_item_formula_rows(
-            seller_id=context.seller_id,
-            limit=None,
-            sort_by="publication",
-        )
-        suggested_rows = [row for row in rows if _is_catalog_link_suggestion(row)]
+        suggested_rows = [row for row in resolution.rows if _is_catalog_link_suggestion(row)]
         values: list[list[Any]] = _header_row(
             context.args.get("encabezados"), CATALOGOS_SIN_VINCULAR_HEADERS
         )
@@ -487,7 +478,12 @@ class ItemShippingCatalogFormulaHandlers:
         )
         return FormulaExecutionResult(
             values=values,
-            meta={"rows_count": len(suggested_rows), "columns": "catalog_link_suggestions"},
+            meta={
+                "rows_count": len(suggested_rows),
+                "columns": "catalog_link_suggestions",
+                **resolution.meta(),
+            },
+            recovery=resolution.recovery,
         )
 
 

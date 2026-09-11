@@ -560,6 +560,51 @@ async def test_publicaciones_descuidadas_requires_effective_observed_pause_basis
 
 
 @pytest.mark.asyncio
+async def test_publicaciones_descuidadas_falls_back_to_verified_inventory() -> None:
+    db = FakeDb()
+    _seed_verified_inventory(
+        db,
+        seller="82453304",
+        rows=[
+            _item_row(
+                item_id="MLA1",
+                sku="sku-1",
+                title="Neglected item",
+                status="paused",
+                available_quantity=0,
+                paused_since=NOW - timedelta(days=11),
+                logistic_type="fulfillment",
+                unavailable_quantity=4,
+                unavailable_reason="damaged",
+            ),
+            _item_row(
+                item_id="MLA2",
+                sku="sku-2",
+                title="Too recent",
+                status="paused",
+                available_quantity=0,
+                paused_since=NOW - timedelta(days=4),
+                logistic_type="fulfillment",
+            ),
+        ],
+    )
+
+    result = await _dispatcher(db).execute(
+        _context(
+            "ZELERDATA_PUBLICACIONESDESCUIDADAS",
+            {"encabezados": "si"},
+            seller_id="82453304",
+        )
+    )
+
+    assert [row[0] for row in result.values[1:]] == ["MLA1"]
+    assert result.meta["rows_count"] == 1
+    assert result.meta["inventory_scope"] is True
+    assert result.meta["inventory_rows_complete"] is True
+    assert result.recovery is None
+
+
+@pytest.mark.asyncio
 async def test_tiempoactiva_uses_item_status_state_history_not_current_row_guessing() -> None:
     db = FakeDb()
     _mark_read_model_fresh(db, ITEM_STATUS_STATES_READ_MODEL)
@@ -880,16 +925,57 @@ def _mark_devoluciones_reconciled(db: FakeDb, **changes: Any) -> None:
     db["sheets_read_model_freshness"].documents["seller-1:devoluciones"] = marker
 
 
-def _context(formula: str, args: dict[str, Any]) -> FormulaExecutionContext:
+def _context(
+    formula: str, args: dict[str, Any], *, seller_id: str = "seller-1"
+) -> FormulaExecutionContext:
     return FormulaExecutionContext(
         contract=FormulaRegistry.default().find_required(formula),
         cuenta="HOPEMOB",
-        seller_id="seller-1",
+        seller_id=seller_id,
         seller_nickname="HOPEMOB",
         token_id="token-1",
         args=args,
         request_id="req-1",
     )
+
+
+def _seed_verified_inventory(db: FakeDb, *, seller: str, rows: list[dict[str, Any]]) -> None:
+    """Seed items plus source-bound rows so the inventory fallback can verify them."""
+    from zeler_sheets.formulas.recovery import ItemInventoryRecoveryRequest
+    from zeler_sheets.item_projection import item_source_fingerprint
+
+    identities: list[str] = []
+    for index, row in enumerate(rows):
+        item_id = str(row["item_id"])
+        identities.append(item_id)
+        source = {
+            "_id": item_id,
+            "seller_id": seller,
+            "title": row["current"].get("title"),
+            "last_meli_sync_at": NOW,
+        }
+        db["items"].documents[f"item-{index}"] = source
+        row.update(
+            _id=f"{seller}:{row['normalized_sku']}:{item_id}",
+            seller_id=seller,
+            source_snapshot={
+                "fingerprint": item_source_fingerprint(source),
+                "observed_at": NOW,
+                "rows_count": 1,
+            },
+        )
+        db["sheets_item_formula_rows"].documents[row["_id"]] = row
+    key = ItemInventoryRecoveryRequest(seller).key
+    db["sheets_formula_recovery_jobs"].documents[key] = {
+        "_id": key,
+        "seller_id": seller,
+        "read_model": ITEM_FORMULA_ROWS_READ_MODEL,
+        "inventory_scope": True,
+        "state": "completed",
+        "inventory_ids": sorted(identities),
+        "inventory_observed_at": NOW,
+        "inventory_offset": len(identities),
+    }
 
 
 def _claim_doc(

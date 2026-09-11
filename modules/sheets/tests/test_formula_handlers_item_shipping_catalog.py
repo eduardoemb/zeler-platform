@@ -729,6 +729,89 @@ async def test_item_shipping_catalog_formulas_require_fresh_read_model_marker(
 
 
 @pytest.mark.asyncio
+async def test_item_formula_reads_fall_back_to_verified_inventory_without_marker() -> None:
+    db = FakeDb()
+    _seed_verified_inventory(
+        db,
+        seller="82453304",
+        item_rows={
+            "MLA1": {
+                "item_id": "MLA1",
+                "sku": "sku-1",
+                "normalized_sku": "SKU-1",
+                "current": {
+                    "title": "Super item",
+                    "status": "active",
+                    "tags": ["supermarket_eligible"],
+                    "dimensions": {"length": 30, "height": 20, "width": 10},
+                },
+            },
+            "MLA2": {
+                "item_id": "MLA2",
+                "sku": "sku-2",
+                "normalized_sku": "SKU-2",
+                "current": {
+                    "title": "Regular item",
+                    "status": "active",
+                    "tags": ["catalog_suggestion"],
+                    "dimensions": {"length": 11, "height": 22},
+                },
+            },
+        },
+    )
+    dispatcher = _dispatcher(db)
+
+    # No freshness marker exists for seller 82453304, so these reads must fall
+    # back to the verified inventory instead of failing closed.
+    supermercado = await dispatcher.execute(
+        _context(
+            "ZELERDATA_SUPERMERCADO",
+            {"id_publicaciones": ["MLA1", "MLA2", "MLA-X"]},
+            seller_id="82453304",
+        )
+    )
+    assert supermercado.values == [["Supermercado"], ["Normal"], ["N/A"]]
+    assert supermercado.meta["inventory_scope"] is True
+    assert supermercado.meta["inventory_rows_complete"] is False
+    assert supermercado.recovery is not None
+    assert supermercado.recovery.read_model == ITEM_FORMULA_ROWS_READ_MODEL
+    assert supermercado.recovery.item_ids == ("MLA-X",)
+
+    medidas = await dispatcher.execute(
+        _context(
+            "ZELERDATA_MEDIDAS",
+            {"skus": ["sku-1", "sku-2"], "id_publicaciones": ["MLA1", "MLA2"]},
+            seller_id="82453304",
+        )
+    )
+    assert medidas.values == [["30 * 20 * 10"], ["NA"]]
+    assert medidas.meta["inventory_scope"] is True
+    assert medidas.meta["inventory_rows_complete"] is True
+    assert medidas.recovery is None
+
+    medidas_general = await dispatcher.execute(
+        _context(
+            "ZELERDATA_MEDIDASGENERAL",
+            {"skus": "todos", "encabezados": "si"},
+            seller_id="82453304",
+        )
+    )
+    assert medidas_general.values == [
+        ["ID PUBLICACION", "SKU", "TITULO", "MEDIDAS (LARGO * ALTO * ANCHO)"],
+        ["MLA1", "sku-1", "Super item", "30 * 20 * 10"],
+        ["MLA2", "sku-2", "Regular item", "NA"],
+    ]
+    assert medidas_general.meta["inventory_scope"] is True
+    assert medidas_general.meta["inventory_rows_complete"] is True
+
+    sin_vincular = await dispatcher.execute(
+        _context("ZELERDATA_CATALOGOSINVINCULAR", {"encabezados": "si"}, seller_id="82453304")
+    )
+    assert sin_vincular.values == [["ID PUBLICACION", "TITULO"], ["MLA2", "Regular item"]]
+    assert sin_vincular.meta["inventory_scope"] is True
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("formula", "args", "read_model"),
     [
@@ -820,19 +903,68 @@ def _mark_read_model_fresh(
     }
 
 
-def _context(formula: str, args: dict[str, Any]) -> FormulaExecutionContext:
+def _context(
+    formula: str, args: dict[str, Any], *, seller_id: str | None = None
+) -> FormulaExecutionContext:
     return FormulaExecutionContext(
         contract=FormulaRegistry.default().find_required(formula),
         cuenta="HOPEMOB",
-        seller_id="82453304"
-        if formula
-        in {"ZELERDATA_OBTENER_CATALOGO", "ZELERDATA_CATALOGO_COMPLETO", "ZELERDATA_CATALOGOBUYBOX"}
-        else "seller-1",
+        seller_id=seller_id
+        or (
+            "82453304"
+            if formula
+            in {
+                "ZELERDATA_OBTENER_CATALOGO",
+                "ZELERDATA_CATALOGO_COMPLETO",
+                "ZELERDATA_CATALOGOBUYBOX",
+            }
+            else "seller-1"
+        ),
         seller_nickname="HOPEMOB",
         token_id="token-1",
         args=args,
         request_id="req-1",
     )
+
+
+def _seed_verified_inventory(
+    db: FakeDb, *, seller: str, item_rows: dict[str, dict[str, Any]]
+) -> None:
+    """Seed items plus source-bound formula rows for the whole-seller fallback."""
+    from zeler_sheets.formulas.recovery import ItemInventoryRecoveryRequest
+    from zeler_sheets.item_projection import item_source_fingerprint
+
+    ids: list[str] = []
+    for item_id, row in item_rows.items():
+        ids.append(item_id)
+        source = {
+            "_id": item_id,
+            "seller_id": seller,
+            "title": row["current"].get("title"),
+            "last_meli_sync_at": NOW,
+        }
+        db["items"].documents[item_id] = source
+        row.update(
+            _id=f"{seller}:{row['sku'].upper()}:{item_id}",
+            seller_id=seller,
+            source_snapshot={
+                "fingerprint": item_source_fingerprint(source),
+                "observed_at": NOW,
+                "rows_count": 1,
+            },
+        )
+        db["sheets_item_formula_rows"].documents[row["_id"]] = row
+    key = ItemInventoryRecoveryRequest(seller).key
+    db["sheets_formula_recovery_jobs"].documents[key] = {
+        "_id": key,
+        "seller_id": seller,
+        "read_model": ITEM_FORMULA_ROWS_READ_MODEL,
+        "inventory_scope": True,
+        "state": "completed",
+        "inventory_ids": sorted(ids),
+        "inventory_observed_at": NOW,
+        "inventory_offset": len(ids),
+    }
 
 
 def _seed_buybox_inventory(db: FakeDb) -> None:
