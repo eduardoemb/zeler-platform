@@ -1611,7 +1611,12 @@ def _quota_finalization_fingerprint(
 async def _next_devoluciones_run_window(
     *, db: Any, run: Mapping[str, Any]
 ) -> dict[str, Any] | None:
-    start, end = run["start"], run["end"]
+    # Mongo returns the run bounds as naive datetimes. Every source call and
+    # every stored window needs an explicit UTC zone, so normalize once here.
+    start = _coerce_utc_datetime(run.get("start"))
+    end = _coerce_utc_datetime(run.get("end"))
+    if start is None or end is None or start >= end:
+        raise ValueError("quota run bounds are invalid")
     for index in range(int(run["window_count"])):
         existing = await db["sheets_devoluciones_run_windows"].find_one(
             {"run_id": run["_id"], "index": index}

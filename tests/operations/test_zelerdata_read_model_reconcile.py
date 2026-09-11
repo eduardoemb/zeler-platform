@@ -961,6 +961,61 @@ async def test_quota_run_advancement_processes_only_one_window_with_contract_bud
 
 
 @pytest.mark.asyncio
+async def test_quota_run_window_bounds_survive_naive_mongo_datetimes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Mongo returns naive datetimes; the window path must normalize them.
+
+    The 2026-09-11 pilot run failed every real advancement with
+    ``claim inventory bounds must be timezone-aware``: the run document read
+    from Mongo carries naive datetimes, and the window bounds were handed to
+    the source unchanged.
+    """
+    naive_start = datetime(2026, 6, 1)
+    naive_end = datetime(2026, 6, 11)
+    run = {
+        "_id": "run-naive",
+        "seller_id": "82453304",
+        "scope": "devoluciones",
+        "authorization_id": "approved",
+        "state": "authorized",
+        "start": naive_start,
+        "end": naive_end,
+        "window_count": 1,
+        "next_window_index": 0,
+        "expires_at": _dt(30),
+    }
+    db = FakeAsyncDb({"sheets_devoluciones_runs": [run]})
+    seen: list[dict[str, Any]] = []
+
+    async def guarded_write(**kwargs: Any) -> None:
+        await kwargs["writer"](None)
+
+    monkeypatch.setattr(reconcile_operation_module, "guarded_devoluciones_write", guarded_write)
+
+    async def source(**kwargs: Any) -> dict[str, Any]:
+        seen.append(kwargs["window"])
+        return {
+            "source_fingerprint": "source-0",
+            "read_model_fingerprint": "read-0",
+            "expected_count": 1,
+            "persisted_count": 1,
+            "complete_count": 1,
+            "missing_count": 0,
+        }
+
+    result = await reconcile_operation_module.advance_devoluciones_quota_run(
+        db=db, run_id="run-naive", operation=_operation(), now=lambda: _dt(2), source=source
+    )
+
+    assert result == {"advanced": 1, "finalized": 0}
+    assert seen[0]["start"] == datetime(2026, 6, 1, tzinfo=UTC)
+    assert seen[0]["end"] == datetime(2026, 6, 11, tzinfo=UTC)
+    assert db["sheets_devoluciones_run_windows"].documents[0]["start"].tzinfo is not None
+    assert db["sheets_devoluciones_run_windows"].documents[0]["end"].tzinfo is not None
+
+
+@pytest.mark.asyncio
 async def test_quota_run_failure_is_markerless_and_terminal_429_is_not_retried() -> None:
     db = FakeAsyncDb(
         {
@@ -5557,15 +5612,23 @@ def test_focused_devoluciones_dry_run_sanitizes_gateway_returns_source_failures(
 
     assert result == 1
     returns_status = getattr(getattr(returns_failure, "response", None), "status_code", None)
-    if returns_status in (429, 500):
-        # Transient RETURNS families (SERVER and RATE_LIMIT) get exactly one
-        # paced retry that also fails closed (S3, retry contract 2026-09-11).
+    if returns_status == 500:
+        # A 5xx gets exactly one paced retry that also fails closed.
         assert output == {
             "stage": "dry_run",
             "status_class": "source_issue",
             "counters": {"P": 2, "R": 3, "O": 0, "T": 5},
         }
         assert client.paths.count("/post-purchase/v2/claims/519988002/returns") == 2
+    elif returns_status == 429:
+        # A throttle draws on its own larger allowance, then fails closed
+        # (retry contract 2026-09-11 after the pilot lost three windows).
+        assert output == {
+            "stage": "dry_run",
+            "status_class": "source_issue",
+            "counters": {"P": 2, "R": 4, "O": 0, "T": 6},
+        }
+        assert client.paths.count("/post-purchase/v2/claims/519988002/returns") == 3
     else:
         assert output == {
             "stage": "dry_run",
