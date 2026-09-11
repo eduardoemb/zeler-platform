@@ -11,6 +11,7 @@ from typing import Any
 from urllib.parse import urlencode
 
 import httpx
+import structlog
 from bson import BSON
 from pymongo.errors import DuplicateKeyError, PyMongoError
 
@@ -60,6 +61,8 @@ from zeler_sheets.sheetseller_backfill import (
     run_item_detail_enrichment,
     run_sheetseller_backfill,
 )
+
+logger = structlog.get_logger(__name__)
 
 
 def _catalog_offer_count(resource: Any, *, item_id: str, seller_id: str) -> tuple[int, bool]:
@@ -959,7 +962,24 @@ class FormulaRecoveryWorker:
             # unavailable read. Repair it here, in the publication that released
             # the lease, from the proof already persisted in Mongo. The repair
             # never calls Mercado Libre and refuses a changed fingerprint.
-            await renew_devoluciones_marker_if_proven(self.db, seller_id)
+            #
+            # The job is already committed as completed at this point, so a
+            # failure here must never be silent: it becomes a visible warning
+            # instead of leaving the formula unavailable with no trace.
+            try:
+                renewed = await renew_devoluciones_marker_if_proven(self.db, seller_id)
+            except Exception as exc:  # noqa: BLE001 - publication already committed
+                logger.warning(
+                    "zelerdata.devoluciones_marker_repair_failed",
+                    seller_id=seller_id,
+                    error=type(exc).__name__,
+                )
+            else:
+                logger.info(
+                    "zelerdata.devoluciones_marker_repair",
+                    seller_id=seller_id,
+                    renewed=renewed,
+                )
 
     async def _order_details(
         self,
