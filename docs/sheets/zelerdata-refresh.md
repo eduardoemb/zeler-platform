@@ -48,6 +48,36 @@ A reconciled marker stays valid for `MARKER_VALIDITY` (30 minutes), which is two
 refresh cycles. One missed or slow cycle therefore does not turn a healthy read
 model into a visible `DATA_UNAVAILABLE` result.
 
+### Observed-only read models
+
+Four models are *observed history*: `shipments`, `price_history_snapshots`,
+`stockout_snapshots` and `item_status_states`. Their truth is what the platform
+actually observed, so no source reconciliation can certify them: a range can be
+complete from the source and still carry no observation for an item the seller
+never changed.
+
+The same cycle therefore renews one heartbeat marker per model and seller from
+`zeler_sheets.observed_read_model_markers`. The marker records the newest and
+oldest observation the loop audited, is published with
+`coverage_basis=observed_only` and `source=zelerdata_observed_read_model`, and
+expires after two refresh cycles. Consequences:
+
+- A stopped refresh loop still fails the formulas closed, because the marker
+  expires.
+- A model with no observation, or whose newest observation is older than the
+  daily sweep horizon (7 days), is never certified.
+- An already-productive reconciled claim is never downgraded by the heartbeat.
+
+### Durable shipment fields
+
+A shipment receiver address and a settled seller cost are immutable history.
+Once observed, a non-empty value is served for every later read; the reader does
+not re-require a recent observation, because the reserved quota cannot refresh a
+multi-year shipment history every 15 minutes. When a field is absent the reader
+serves `NA` for that row and requests background recovery instead of failing the
+whole table. A field Mercado Libre itself declared unavailable is served as `NA`
+without a permanent recovery loop.
+
 ## Configuration
 
 All knobs are runtime environment variables on the Sheets worker. Refresh
