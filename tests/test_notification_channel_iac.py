@@ -74,8 +74,9 @@ def test_zelerdata_freshness_alert_notifies_both_operators() -> None:
     conditions = [condition["conditionThreshold"] for condition in alert["conditions"]]
     assert len(conditions) == 1
     condition = conditions[0]
-    assert 'metric.type="logging.googleapis.com/user/zelerdata_freshness_alarm"' in (
-        condition["filter"]
+    assert (
+        'metric.type="logging.googleapis.com/user/zelerdata_freshness_alarm"'
+        in (condition["filter"])
     )
     assert 'resource.type="gce_instance"' in condition["filter"]
     assert condition["comparison"] == "COMPARISON_GT"

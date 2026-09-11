@@ -1343,9 +1343,7 @@ async def build_zelerdata_refresh_supervisor(*, db: Any) -> ZelerDataRefreshSupe
     )
 
     async def report_freshness_alarms(seller_id: str) -> tuple[Any, ...]:
-        alarms = await evaluate_refresh_alarms(
-            db, seller_id, expected_models=expected_models
-        )
+        alarms = await evaluate_refresh_alarms(db, seller_id, expected_models=expected_models)
         return alert_reporter.emit(alarms)
 
     async def report_refresh_failure(attempts: int) -> None:
