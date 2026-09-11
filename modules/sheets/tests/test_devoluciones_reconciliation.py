@@ -1693,13 +1693,15 @@ async def test_returns_pacing_deadline_fails_before_charge_and_second_send(
 
 
 @pytest.mark.asyncio
-async def test_paced_returns_429_retries_once_then_fails_closed() -> None:
-    """A throttle is retried once and stays terminal after the second send.
+async def test_paced_returns_429_retries_within_its_allowance_then_fails_closed() -> None:
+    """A throttle draws on its own bounded allowance and then stays terminal.
 
     Before this contract, a single 429 aborted the whole DEVOLUCIONES run; the
     production dry-run on 2026-09-11 stopped at ``source_issue`` for exactly
-    that reason. One bounded retry keeps the run moving without letting a
-    throttled source extend the budget past ``MAX_RETURNS_SERVER_RETRIES``.
+    that reason, and a later pilot window lost three of six collections when two
+    consecutive throttles spent the single retry. The allowance is now
+    ``MAX_RETURNS_THROTTLE_RETRIES`` and is separate from the 5xx retry, so a
+    persistent throttle still fails closed inside the recorder budget.
     """
     clock = FakeMonotonicClock()
     source = ReturnsAccessFailureSource(RawReturnsAccessError(429))
@@ -1716,10 +1718,13 @@ async def test_paced_returns_429_retries_once_then_fails_closed() -> None:
             sleep=clock.sleep,
         )
 
-    # The paced physical attempt is charged once, retried once, and never a third time.
-    assert source.hydration_calls.count(("returns", "519988002")) == 2
+    # Every physical send is paced and charged, and the allowance is never exceeded.
+    assert (
+        source.hydration_calls.count(("returns", "519988002"))
+        == reconciliation_module.MAX_RETURNS_THROTTLE_RETRIES + 1
+    )
     assert source.hydration_calls.count(("returns", "519988001")) == 1
-    assert recorder.counts == {"P": 2, "R": 5, "O": 1, "T": 8}
+    assert recorder.counts == {"P": 2, "R": 6, "O": 1, "T": 9}
     assert reconciliation_module._private_focused_devoluciones_diagnostic(exc_info.value) == {
         "failure_class": "source_failure",
         "source_stage": "return_detail",
@@ -1743,6 +1748,14 @@ class FailOnceReturnsSource(HydratingSource):
             self.hydration_calls.append(("returns", claim_id))
             raise self.failure
         return await super().get_returns(seller_id=seller_id, claim_id=claim_id)
+
+
+class FailTwiceReturnsSource(FailOnceReturnsSource):
+    """Raise ``failure`` for the mediation returns twice, then succeed."""
+
+    def __init__(self, failure: Exception) -> None:
+        super().__init__(failure)
+        self.pending_failures = 2
 
 
 class TimedFailOnceReturnsSource(FailOnceReturnsSource):
@@ -1831,7 +1844,8 @@ async def test_rate_limit_retry_waits_for_the_gateway_retry_after_hint() -> None
 
 
 @pytest.mark.asyncio
-async def test_rate_limit_retry_fails_closed_after_second_429_without_third_send() -> None:
+async def test_rate_limit_retry_fails_closed_after_its_allowance() -> None:
+    """A persistent throttle fails closed once its own allowance is spent."""
     clock = FakeMonotonicClock(current=0.0)
     source = ReturnsAccessFailureSource(RetryAfterReturnsAccessError(429, retry_after="1"))
     recorder = SourceCallRecorder()
@@ -1847,13 +1861,43 @@ async def test_rate_limit_retry_fails_closed_after_second_429_without_third_send
             sleep=clock.sleep,
         )
 
-    assert source.hydration_calls.count(("returns", "519988002")) == 2
-    assert recorder.counts == {"P": 2, "R": 5, "O": 1, "T": 8}
+    assert (
+        source.hydration_calls.count(("returns", "519988002"))
+        == reconciliation_module.MAX_RETURNS_THROTTLE_RETRIES + 1
+    )
     assert reconciliation_module._private_focused_devoluciones_diagnostic(exc_info.value) == {
         "failure_class": "source_failure",
         "source_stage": "return_detail",
         "source_family": "rate_limit",
     }
+
+
+@pytest.mark.asyncio
+async def test_two_consecutive_throttles_on_one_claim_still_recover() -> None:
+    """Pilot reality: Mercado Libre throttled the same RETURNS send twice in a row.
+
+    The captured 2026-09-11 pilot window failed 3 of 6 collections with
+    ``rate_limit`` on ``return_detail``: the single code-owned retry was spent on
+    the first 429 and the second one aborted the whole window. A throttle is
+    transient and per send, so the retry allowance must not be exhausted by the
+    throttle itself.
+    """
+    clock = FakeMonotonicClock(current=0.0)
+    source = FailTwiceReturnsSource(RetryAfterReturnsAccessError(429, retry_after="1"))
+    recorder = SourceCallRecorder()
+
+    snapshot = await reconciliation_module.collect_devoluciones_snapshot(
+        source=source,
+        seller_id="82453304",
+        start=START,
+        end=END,
+        recorder=recorder,
+        monotonic=clock.monotonic,
+        sleep=clock.sleep,
+    )
+
+    assert source.hydration_calls.count(("returns", "519988002")) == 3
+    assert snapshot.expected_claim_ids == frozenset({"519988001", "519988002"})
 
 
 @pytest.mark.parametrize(

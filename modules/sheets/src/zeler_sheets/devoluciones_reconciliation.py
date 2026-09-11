@@ -88,9 +88,15 @@ MAX_SNAPSHOT_PHYSICAL_ATTEMPTS = 104
 MAX_DETAIL_ATTEMPTS_PER_HYDRATION_CANDIDATE = 3
 RETURNS_MIN_START_INTERVAL_SECONDS = 1.75
 MAX_RETURNS_SERVER_RETRIES = 1
-# A throttle is transient and per send, so one bounded retry is allowed. The
-# wait is never longer than Mercado Libre's own hint, which the gateway already
-# caps at 30 seconds; a throttled send that fails twice still fails closed.
+# A throttle is transient and belongs to a different failure family than a 5xx:
+# Mercado Libre throttled the same RETURNS send twice in a row on the 2026-09-11
+# pilot window, and spending the 5xx retry on the first 429 aborted the window.
+# The allowance stays small and code-owned so a throttled source cannot extend
+# the run budget; it only stops a transient throttle from ending the run.
+MAX_RETURNS_THROTTLE_RETRIES = 2
+# The throttle wait is never longer than Mercado Libre's own hint, which the
+# gateway already caps at 30 seconds; a throttled send that keeps failing past
+# its own allowance still fails closed.
 MAX_RETRY_AFTER_SECONDS = 30.0
 
 
@@ -246,6 +252,21 @@ def _rate_limit_retry_wait_seconds(exc: Exception) -> float | None:
     if hint is None or not 0 < float(hint) <= MAX_RETRY_AFTER_SECONDS:
         return RETURNS_MIN_START_INTERVAL_SECONDS
     return max(float(hint), RETURNS_MIN_START_INTERVAL_SECONDS)
+
+
+def _returns_source_issue(exc: Exception, failure: _FocusedDevolucionesFailure) -> Exception:
+    """Return the terminal, sanitized failure for one RETURNS send."""
+    error = ClaimInventoryError(
+        "v2 returns source_issue",
+        private_failure=failure,
+    )
+    _tag_private_focused_devoluciones_failure(
+        error,
+        failure,
+        source_stage=_FocusedSourceStage.RETURN_DETAIL,
+        source_exc=exc,
+    )
+    return error
 
 
 def _private_focused_devoluciones_failure(exc: Exception) -> _FocusedDevolucionesFailure:
@@ -889,7 +910,9 @@ async def collect_devoluciones_snapshot(
         returns: dict[str, Any] = {}
         excluded_by_authoritative_404 = False
         returns_retry_interval: float | None = None
-        for attempt in range(MAX_RETURNS_SERVER_RETRIES + 1):
+        throttle_retries = 0
+        server_retries = 0
+        while True:
             await _before_source_attempt(
                 "return_detail",
                 recorder=recorder,
@@ -931,33 +954,26 @@ async def collect_devoluciones_snapshot(
                 failure = _private_focused_devoluciones_failure(exc)
                 # A throttle is per send, so the run retries this one send with
                 # the gateway's own wait hint instead of discarding the whole
-                # snapshot. Every other non-server family stays terminal.
-                rate_limit_wait = (
-                    _rate_limit_retry_wait_seconds(exc)
-                    if attempt < MAX_RETURNS_SERVER_RETRIES
-                    else None
-                )
+                # snapshot. Throttles and 5xx draw on separate, small,
+                # code-owned allowances, so a transient throttle cannot spend
+                # the retry a genuine server error needs (and vice versa). Every
+                # other family stays terminal.
+                rate_limit_wait = _rate_limit_retry_wait_seconds(exc)
                 if rate_limit_wait is not None:
+                    if throttle_retries >= MAX_RETURNS_THROTTLE_RETRIES:
+                        raise _returns_source_issue(exc, failure) from None
+                    throttle_retries += 1
                     returns_retry_interval = rate_limit_wait
                     continue
                 retry_available = (
                     failure is _FocusedDevolucionesFailure.SOURCE
                     and _classify_source_family(exc) is _FocusedSourceFamily.SERVER
-                    and attempt < MAX_RETURNS_SERVER_RETRIES
+                    and server_retries < MAX_RETURNS_SERVER_RETRIES
                 )
                 if retry_available:
+                    server_retries += 1
                     continue
-                error = ClaimInventoryError(
-                    "v2 returns source_issue",
-                    private_failure=failure,
-                )
-                _tag_private_focused_devoluciones_failure(
-                    error,
-                    failure,
-                    source_stage=_FocusedSourceStage.RETURN_DETAIL,
-                    source_exc=exc,
-                )
-                raise error from None
+                raise _returns_source_issue(exc, failure) from None
             break
         if excluded_by_authoritative_404:
             continue

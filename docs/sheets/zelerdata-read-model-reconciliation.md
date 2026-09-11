@@ -230,6 +230,18 @@ strict mediation exclusion invariants: safe mediation excludes, unsafe fails clo
 `MAX_DETAIL_ATTEMPTS_PER_HYDRATION_CANDIDATE` stays 3; a successful candidate that retries once is
 bounded at runtime by the recorder cap (honest worst case 4 detail sends per candidate).
 
+A Meli 429 (`RATE_LIMIT`) on `return_detail` draws on a separate, equally small
+allowance (`MAX_RETURNS_THROTTLE_RETRIES = 2`, so at most three physical sends per
+logical `return_detail`). Throttles and 5xx used to share the single 5xx retry,
+and the 2026-09-11 pilot window lost three of six collections when Mercado Libre
+throttled the same RETURNS send twice: the first 429 spent the retry and the
+second aborted the window. Each throttle retry waits at least the 1.75s pacing
+interval and honors the gateway's `Retry-After` hint up to its own 30-second cap.
+A throttle that outlives its allowance fails closed with the same sanitized
+`source_failure` / `return_detail` / `rate_limit` classification, and every
+physical send still charges the recorder and the run ledger, so the `B ≤ 104`
+and `C ≤ 208` caps are unchanged.
+
 The focused run enforces a code-owned **1.75-second minimum start-to-start interval** for physical RETURNS attempts only.
 The first RETURNS send does not wait, and pacing occurs before each later
 send rather than after the previous or final send. Pre-detail cancellation exclusions never enter
