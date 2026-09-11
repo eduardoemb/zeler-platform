@@ -14,6 +14,13 @@ from infra.operations.sheets_dlq_archive_runtime import (
     load_reconciled_coverages,
     run_archive,
 )
+from zeler_platform_test_support.sheets_dlq_snapshot import (
+    FakeChannel,
+    FakeConnect,
+    FakeConnection,
+    FakeMsg,
+    FakeQueue,
+)
 
 NOW = datetime(2026, 9, 11, 12, 0, tzinfo=UTC)
 
@@ -332,3 +339,237 @@ def test_the_runtime_cli_requires_broker_and_mongo_configuration(
                 "--confirm-archive",
             ]
         )
+
+
+def _aio_pika_broker(conn: Any, url: str = "amqp://test") -> Any:
+    from infra.operations.sheets_dlq_archive_runtime import AioPikaArchiveBroker
+
+    return AioPikaArchiveBroker(url, connect=FakeConnect(connections=[conn]))
+
+
+@pytest.mark.asyncio
+async def test_get_one_falls_back_to_the_queue_when_the_channel_exposes_no_get() -> None:
+    message = FakeMsg(body=b'{"event_type":"items.updated"}', delivery_tag=4)
+    channel = FakeChannel(queue=FakeQueue(message=message), get_available=False)
+
+    delivery = await _aio_pika_broker(FakeConnection(channel=channel)).get_one(
+        "zeler.sheets.events.dlq"
+    )
+
+    assert delivery is not None
+    assert delivery.body == message.body
+    assert channel.calls == ["get_queue:zeler.sheets.events.dlq:None"]
+    assert channel.queue.no_acks == [False]
+
+
+@pytest.mark.asyncio
+async def test_the_broker_connects_without_robust_reconnect_so_delivery_tags_stay_valid(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import aio_pika
+    from infra.operations.sheets_dlq_archive_runtime import AioPikaArchiveBroker
+
+    message = FakeMsg(body=b'{"event_type":"items.updated"}', delivery_tag=1)
+    connection = FakeConnection(channel=FakeChannel(messages={"q": message}))
+    calls: list[dict[str, Any]] = []
+
+    def _robust(*_args: Any, **_kwargs: Any) -> Any:
+        raise AssertionError("a reconnect would invalidate the delivery tags of an open message")
+
+    async def _plain(url: str = "", **kwargs: Any) -> Any:
+        calls.append({"url": url, **kwargs})
+        return connection
+
+    monkeypatch.setattr(aio_pika, "connect_robust", _robust)
+    monkeypatch.setattr(aio_pika, "connect", _plain)
+
+    broker = AioPikaArchiveBroker("amqp://test")
+
+    assert await broker.get_one("q") is not None
+    assert calls and calls[0]["url"] == "amqp://test"
+
+
+@pytest.mark.asyncio
+async def test_the_aio_pika_broker_requeues_without_multiple_ack() -> None:
+    message = FakeMsg(body=b"{}", delivery_tag=9)
+    broker = _aio_pika_broker(FakeConnection(channel=FakeChannel(messages={"q": message})))
+
+    delivery = await broker.get_one("q")
+    assert delivery is not None
+    await delivery.nack_requeue()
+
+    assert message.nacks == [(True, False)]
+
+
+class _QueueDelivery:
+    """Delivery that a real front-requeue queue would hand back first."""
+
+    def __init__(self, body: dict[str, Any]) -> None:
+        self.body = json.dumps(body).encode()
+        self.acked = False
+        self.requeues = 0
+        self.released = False
+
+    async def ack(self) -> None:
+        self.acked = True
+
+    async def nack_requeue(self) -> None:
+        self.requeues += 1
+        self.released = True
+
+
+class _HoldingBroker:
+    """Broker that keeps unacked messages out of the ready set, like AMQP does."""
+
+    def __init__(self, deliveries: list[Any]) -> None:
+        self.ready = list(deliveries)
+        self.drawn: list[Any] = []
+        self.closed = False
+
+    async def get_one(self, queue_name: str) -> Any:
+        if not self.ready:
+            return None
+        message = self.ready.pop(0)
+        self.drawn.append(message)
+        return message
+
+    async def close_channel(self) -> None:
+        self.closed = True
+
+
+def _queue_message(**overrides: Any) -> _QueueDelivery:
+    return _QueueDelivery(_message(**overrides))
+
+
+@pytest.mark.asyncio
+async def test_retained_messages_do_not_starve_archivable_ones_in_a_bounded_run() -> None:
+    """Inspection advances past retained messages instead of cycling on them.
+
+    Production showed the failure directly: messages requeued during the scan
+    came back at the head, so a single retained message was redrawn on every
+    draw of an otherwise bounded run and the 30 archivable orders behind it were
+    never reached. Holding them unacked and releasing them after the scan keeps
+    the messages in the queue while still letting the head advance.
+    """
+    retained_head = _queue_message(
+        event_id="retained-head",
+        event_type="items.updated",
+        occurred_at=(NOW - timedelta(days=1)).isoformat(),
+    )
+    archivable = _queue_message(
+        event_id="archivable-behind",
+        event_type="orders.updated",
+        occurred_at="2026-06-01T00:00:00Z",
+    )
+    broker = _HoldingBroker([retained_head, archivable])
+    stored: list[dict[str, Any]] = []
+
+    async def store(record: dict[str, Any]) -> None:
+        stored.append(record)
+
+    report = await run_archive(
+        broker=broker,
+        store=store,
+        reconciled_models_until={"82453304": {"orders": NOW}},
+        limit=4,
+        now=lambda: NOW,
+    )
+
+    assert broker.drawn == [retained_head, archivable]
+    assert archivable.acked is True
+    assert retained_head.acked is False
+    assert retained_head.requeues == 1, "a retained message must go back to the queue exactly once"
+    assert report.archived == 1
+    assert report.retained == 1
+    assert [record["reason_code"] for record in stored] == ["window_reconciled"]
+
+
+@pytest.mark.asyncio
+async def test_retained_messages_are_released_after_the_scan_in_their_original_order() -> None:
+    first = _queue_message(event_id="retained-1", occurred_at=(NOW - timedelta(days=1)).isoformat())
+    second = _queue_message(
+        event_id="retained-2", occurred_at=(NOW - timedelta(days=2)).isoformat()
+    )
+    broker = _HoldingBroker([first, second])
+    released: list[str] = []
+
+    async def store(record: dict[str, Any]) -> None:
+        raise AssertionError("nothing is archivable in this run")
+
+    original_first, original_second = first.nack_requeue, second.nack_requeue
+
+    async def requeue_first() -> None:
+        released.append("first")
+        await original_first()
+
+    async def requeue_second() -> None:
+        released.append("second")
+        await original_second()
+
+    first.nack_requeue = requeue_first  # type: ignore[method-assign]
+    second.nack_requeue = requeue_second  # type: ignore[method-assign]
+
+    report = await run_archive(
+        broker=broker,
+        store=store,
+        reconciled_models_until={},
+        now=lambda: NOW,
+    )
+
+    assert report.retained == 2
+    assert released == ["second", "first"], (
+        "LIFO release restores the draw order on the ready queue"
+    )
+    assert broker.closed is True
+
+
+@pytest.mark.asyncio
+async def test_a_failed_archive_write_still_releases_the_held_messages() -> None:
+    retained = _queue_message(
+        event_id="retained", occurred_at=(NOW - timedelta(days=1)).isoformat()
+    )
+    failing = _queue_message(event_id="failing", occurred_at="2026-06-01T00:00:00Z")
+    behind = _queue_message(event_id="behind", occurred_at="2026-06-02T00:00:00Z")
+    broker = _HoldingBroker([retained, failing, behind])
+
+    async def store(record: dict[str, Any]) -> None:
+        raise RuntimeError("mongo unavailable")
+
+    report = await run_archive(
+        broker=broker,
+        store=store,
+        reconciled_models_until={},
+        now=lambda: NOW,
+    )
+
+    assert report.stopped_reason == "archive_write_failed"
+    assert retained.requeues == 1
+    assert failing.requeues == 1
+    assert behind.requeues == 0
+    assert behind.acked is False
+    assert broker.closed is True
+
+
+@pytest.mark.asyncio
+async def test_a_release_failure_still_closes_the_broker_and_is_reported() -> None:
+    class _FailingRequeue(_QueueDelivery):
+        async def nack_requeue(self) -> None:
+            self.requeues += 1
+            raise RuntimeError("channel closed")
+
+    retained = _FailingRequeue(_message(occurred_at=(NOW - timedelta(days=1)).isoformat()))
+    broker = _HoldingBroker([retained])
+
+    async def store(record: dict[str, Any]) -> None:
+        raise AssertionError("nothing is archivable in this run")
+
+    report = await run_archive(
+        broker=broker,
+        store=store,
+        reconciled_models_until={},
+        now=lambda: NOW,
+    )
+
+    assert broker.closed is True, "a release failure must not leave the connection open"
+    assert report.stopped_reason == "release_failed"
+    assert report.retained == 1

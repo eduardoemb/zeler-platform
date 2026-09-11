@@ -33,6 +33,16 @@ from infra.operations.sheets_dlq_archive import (
 
 DLQ_QUEUE_NAME = "zeler.sheets.events.dlq"
 DEFAULT_LIMIT = 500
+_CONNECT_TIMEOUT = 5.0
+_HEARTBEAT = 60
+
+
+async def _default_connect(url: str, timeout: float | None, heartbeat: int | None) -> Any:
+    import aio_pika
+
+    # Non-robust connect: an automatic reconnect invalidates the delivery tags
+    # held by messages this run still has to ack or requeue.
+    return await aio_pika.connect(url, timeout=timeout, heartbeat=heartbeat)
 
 
 class ArchiveableDelivery(Protocol):
@@ -86,12 +96,22 @@ async def run_archive(
     now: Callable[[], datetime] | None = None,
     queue_name: str = DLQ_QUEUE_NAME,
 ) -> ArchiveRunReport:
-    """Archive provably-superseded messages and requeue everything else."""
+    """Archive provably-superseded messages and requeue everything else.
+
+    A retained message is held unacked while the scan continues and released
+    once the scan ends. Requeueing on the spot would put it back at the head of
+    the ready queue, so a single retained message would be redrawn on every draw
+    and the archivable messages behind it would never be reached. Holding it
+    keeps it out of the ready set for the duration of the scan, which is what
+    lets the head advance, and still returns every retained message to the
+    queue untouched.
+    """
     current = (now or (lambda: datetime.now(UTC)))()
     archived = 0
     retained = 0
     by_reason: dict[str, int] = {}
     stopped_reason: str | None = None
+    held: list[ArchiveableDelivery] = []
     try:
         for _ in range(limit):
             delivery = await broker.get_one(queue_name)
@@ -106,22 +126,34 @@ async def run_archive(
             )
             by_reason[decision.reason_code] = by_reason.get(decision.reason_code, 0) + 1
             if not decision.archive:
-                await delivery.nack_requeue()
+                held.append(delivery)
                 retained += 1
                 continue
             record = build_archive_record(message, decision, now=current)
             try:
                 await store(record)
             except Exception:  # noqa: BLE001 - any write failure must stop the run
-                # Never remove a message whose reason was not recorded. Requeue
-                # it and stop, so a partial write cannot silently drop history.
-                await delivery.nack_requeue()
+                # Never remove a message whose reason was not recorded. Hold it
+                # for the release below and stop, so a partial write cannot
+                # silently drop history.
+                held.append(delivery)
                 retained += 1
                 stopped_reason = "archive_write_failed"
                 break
             await delivery.ack()
             archived += 1
     finally:
+        # Release in reverse draw order: a requeue returns the message to the
+        # head, so releasing LIFO restores the original order on the ready queue.
+        for held_delivery in reversed(held):
+            try:
+                await held_delivery.nack_requeue()
+            except Exception:  # noqa: BLE001 - a lost channel must still be closed
+                # The message stays unacked, so the broker redelivers it once the
+                # channel closes. That is recoverable; an unclosed connection is
+                # not, and the run must say so instead of failing silently.
+                if stopped_reason is None:
+                    stopped_reason = "release_failed"
         await broker.close_channel()
     return ArchiveRunReport(
         archived=archived,
@@ -169,25 +201,28 @@ class AioPikaArchiveBroker:
 
     def __init__(self, amqp_url: str, *, connect: Any = None, timeout: float = 15.0) -> None:
         self._amqp_url = amqp_url
-        self._connect = connect
+        self._connect = connect or _default_connect
         self._timeout = timeout
         self._connection: Any | None = None
         self._channel: Any | None = None
 
     async def _ensure_channel(self) -> Any:
         if self._channel is None:
-            import aio_pika
-
             if self._connection is None:
-                self._connection = await aio_pika.connect_robust(
-                    self._amqp_url, timeout=self._timeout
+                self._connection = await self._connect(
+                    self._amqp_url, timeout=_CONNECT_TIMEOUT, heartbeat=_HEARTBEAT
                 )
             self._channel = await self._connection.channel()
         return self._channel
 
     async def get_one(self, queue_name: str) -> ArchiveableDelivery | None:
         channel = await self._ensure_channel()
-        message = await channel.get(queue_name, no_ack=False, fail=False)
+        get = getattr(channel, "get", None)
+        if get is not None:
+            message = await get(queue_name, no_ack=False, fail=False)
+        else:
+            queue = await channel.get_queue(queue_name)
+            message = await queue.get(no_ack=False, fail=False)
         return None if message is None else cast(ArchiveableDelivery, _AioPikaDelivery(message))
 
     async def close_channel(self) -> None:
