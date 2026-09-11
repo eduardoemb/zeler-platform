@@ -408,7 +408,7 @@ async def test_marker_renewal_requires_an_exact_fingerprint() -> None:
 
 
 @pytest.mark.asyncio
-async def test_marker_renewal_defers_while_a_claims_acquisition_holds_the_lease() -> None:
+async def test_marker_renewal_defers_while_a_withdrawing_acquisition_holds_the_lease() -> None:
     """A live re-acquisition keeps its proof withdrawn.
 
     ``acquire_devoluciones_operation`` withdraws readiness so no reader consumes
@@ -431,7 +431,7 @@ async def test_marker_renewal_defers_while_a_claims_acquisition_holds_the_lease(
     )
 
     async def forbidden(**_: Any) -> str | None:
-        raise AssertionError("a live acquisition must not be renewed over")
+        raise AssertionError("a withdrawing acquisition must not be renewed over")
 
     renewed = await renew_devoluciones_marker_if_proven(
         db, SELLER, now=lambda: NOW, finalization_fingerprint=forbidden
@@ -439,3 +439,42 @@ async def test_marker_renewal_defers_while_a_claims_acquisition_holds_the_lease(
 
     assert renewed is False
     assert db.markers.updates == []
+
+
+@pytest.mark.asyncio
+async def test_marker_renewal_extends_a_reconciled_proof_under_a_live_sweep() -> None:
+    """An acquisition that does not withdraw readiness must not stall the heartbeat.
+
+    Only ``claims.*`` invalidates readiness when it acquires the shared
+    DEVOLUCIONES lease. The ``orders`` sweep takes the same lease without
+    withdrawing the proof, so a live acquisition is not by itself evidence that
+    the reconciled marker is unsafe to extend.
+    """
+    db = _MarkerDb(
+        _proven_marker(state="reconciled"),
+        runs=[_completed_run()],
+        operations=[
+            {
+                "_id": f"{SELLER}:devoluciones",
+                "seller_id": SELLER,
+                "scope": "devoluciones",
+                "state": "running",
+                "lease_until": NOW + timedelta(seconds=60),
+            }
+        ],
+    )
+    calls: list[str] = []
+
+    async def fingerprint(**_: Any) -> str | None:
+        calls.append("fingerprint")
+        return "proven-fingerprint"
+
+    renewed = await renew_devoluciones_marker_if_proven(
+        db, SELLER, now=lambda: NOW, finalization_fingerprint=fingerprint
+    )
+
+    assert renewed is True
+    assert calls == ["fingerprint"]
+    marker = db.markers.document
+    assert marker is not None
+    assert marker["valid_until"] == NOW + timedelta(minutes=30)

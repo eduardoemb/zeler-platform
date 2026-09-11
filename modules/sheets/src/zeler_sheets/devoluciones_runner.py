@@ -142,10 +142,16 @@ async def renew_devoluciones_marker_if_proven(
     )
     if not isinstance(marker, Mapping):
         return False
-    if await _claims_acquisition_holds_the_lease(db, seller_id, current=current):
-        # A live claims acquisition withdrew readiness on purpose so no reader
-        # consumes a proof while its rows are rewritten. Resurrecting the proof
-        # underneath it would defeat that guard; defer until it releases.
+    if str(marker.get("state") or "").strip().casefold() != "reconciled" and (
+        await _live_acquisition_holds_the_lease(db, seller_id, current=current)
+    ):
+        # The marker is withdrawn, which is what an acquisition that invalidates
+        # readiness does on purpose so no reader consumes a proof while its rows
+        # are rewritten. Repairing it underneath a live acquisition would defeat
+        # that guard, so defer until the acquisition releases. A marker that is
+        # still reconciled proves no such acquisition is live, and an
+        # acquisition that does not withdraw readiness (the orders sweep) must
+        # not stall the heartbeat.
         return False
     proof_fingerprint = str(marker.get("proof_fingerprint") or "").strip()
     if not proof_fingerprint:
@@ -200,9 +206,7 @@ async def renew_devoluciones_marker_if_proven(
     return getattr(updated, "matched_count", 0) == 1
 
 
-async def _claims_acquisition_holds_the_lease(
-    db: Any, seller_id: str, *, current: datetime
-) -> bool:
+async def _live_acquisition_holds_the_lease(db: Any, seller_id: str, *, current: datetime) -> bool:
     """Whether another holder is actively re-acquiring the DEVOLUCIONES scope."""
     operation = await db[DEVOLUCIONES_OPERATIONS_COLLECTION].find_one(
         {
@@ -214,20 +218,6 @@ async def _claims_acquisition_holds_the_lease(
         }
     )
     return isinstance(operation, Mapping)
-
-
-def _marker_is_open(marker: Mapping[str, Any], *, current: datetime) -> bool:
-    if str(marker.get("state") or "").strip().casefold() != "reconciled":
-        return False
-    # Mongo returns datetimes as naive UTC, so normalize before comparing.
-    valid_until = _as_utc(marker.get("valid_until"))
-    return valid_until is not None and valid_until > current
-
-
-def _as_utc(value: Any) -> datetime | None:
-    if not isinstance(value, datetime):
-        return None
-    return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
 
 
 async def _runtime_finalization_fingerprint(*, db: Any, run: Mapping[str, Any]) -> str | None:
