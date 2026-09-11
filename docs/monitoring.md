@@ -31,7 +31,14 @@ The Sheets worker emits the alarm when a read model the refresh loop owns stops
 refreshing past its own marker window, or when the refresh loop itself fails
 repeatedly (Q21-a). Emitting it is behind `ZELERDATA_FRESHNESS_ALERTS_ENABLED`
 on the Sheets worker; the policy above is what turns the event into an e-mail.
-Each `(seller, model, reason)` alerts at most once per hour, so a long outage
+
+Ownership is the set of markers the loop actually republishes: the reconciled
+`orders` and `questions` claims, the four observed-only heartbeats, and
+`devoluciones`. Models the loop only plans acquisition for (`shipments` through
+explicit IDs, `item_formula_rows`, and the two catalog snapshots) keep the claim
+their own reconciliation owner published. Alerting on a marker the loop never
+republishes would page an operator forever on a healthy platform. Each
+`(seller, model, reason)` alerts at most once per hour, so a long outage
 stays visible without becoming noise.
 
 Apply order, using the placeholders for the channel ids returned by Cloud

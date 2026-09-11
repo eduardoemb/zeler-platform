@@ -8,6 +8,7 @@ import pytest
 
 from zeler_sheets.formulas.refresh import (
     IMPLEMENTED_REFRESH_MODELS,
+    MARKER_RENEWED_REFRESH_MODELS,
     ZelerDataRefreshPlanner,
     ZelerDataRefreshSupervisor,
     refresh_sellers,
@@ -1096,9 +1097,15 @@ async def test_refresh_builder_alerts_for_every_model_the_loop_owns(
         devoluciones_enabled=True,
     )
 
-    assert set(IMPLEMENTED_REFRESH_MODELS) <= set(expected)
+    # Only models whose marker the loop actually renews belong to the alert
+    # contract. Planning acquisition is not certifying freshness: alerting on a
+    # marker the loop never republishes would page an operator forever.
+    assert set(MARKER_RENEWED_REFRESH_MODELS) <= set(expected)
     assert set(OBSERVED_READ_MODEL_SOURCES) <= set(expected)
     assert "devoluciones" in expected
+    assert set(expected) <= set(IMPLEMENTED_REFRESH_MODELS) | set(OBSERVED_READ_MODEL_SOURCES) | {
+        "devoluciones"
+    }
     # The loop must not claim ownership of models it never plans.
     assert "claims" not in expected
 

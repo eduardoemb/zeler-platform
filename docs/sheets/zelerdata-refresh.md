@@ -116,7 +116,11 @@ refused, so an unproven range can never be made productive.
 
 The renewal is **not** gated by `ZELERDATA_DEVOLUCIONES_ADVANCE_ENABLED`. That
 flag gates source work only; the renewal is a local read and runs every cycle
-for every refresh seller.
+for every refresh seller. The `orders` publication path also calls the same
+renewal immediately after it releases the lease, because the loop renewal alone
+loses the race: the fast `orders` job withdraws the proof every 15 minutes, so
+without the in-path repair `ZELERDATA_DEVOLUCIONES` would alternate between an
+available and an unavailable read.
 
 ## Precalculated heavy formulas
 

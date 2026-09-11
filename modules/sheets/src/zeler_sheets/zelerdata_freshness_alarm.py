@@ -119,13 +119,15 @@ def refresh_owned_read_models(
 ) -> tuple[str, ...]:
     """Everything one refresh cycle promises to keep fresh for a seller.
 
-    Built from the live wiring rather than a hand-written list, so a model that
-    is planned or heartbeat-published by the loop is never silently absent from
-    the alerting contract.
+    Built from the live wiring rather than a hand-written list, so a model whose
+    marker the loop renews is never silently absent from the alerting contract.
+    A model the loop merely plans acquisition for is excluded on purpose: its
+    marker keeps whatever claim the reconciliation owner published, and alerting
+    on a claim the loop never republishes would page an operator forever.
     """
-    from zeler_sheets.formulas.refresh import IMPLEMENTED_REFRESH_MODELS
+    from zeler_sheets.formulas.refresh import MARKER_RENEWED_REFRESH_MODELS
 
-    models = set(IMPLEMENTED_REFRESH_MODELS)
+    models = set(MARKER_RENEWED_REFRESH_MODELS)
     models.update(str(model) for model in observed_models)
     if devoluciones_enabled:
         models.add(DEVOLUCIONES_READ_MODEL)

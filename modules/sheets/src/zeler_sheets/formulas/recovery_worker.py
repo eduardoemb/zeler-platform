@@ -25,6 +25,7 @@ from zeler_platform_core.devoluciones_readiness import (
 )
 from zeler_platform_core.models.entities import ShipmentRealShippingCostProjection
 from zeler_sheets.catalog_observations import record_catalog_observation
+from zeler_sheets.devoluciones_runner import renew_devoluciones_marker_if_proven
 from zeler_sheets.event_persistence import (
     SheetsEventPersistence,
     _canonical_shipment_document,
@@ -950,6 +951,15 @@ class FormulaRecoveryWorker:
                     await finish_devoluciones_operation(
                         db=self.db, operation=operation, succeeded=False
                     )
+        if published:
+            # Acquiring this operation withdrew the settled DEVOLUCIONES proof
+            # before any source work. The loop's renewal alone cannot win: this
+            # job takes the same lease every 15 minutes and would withdraw the
+            # proof again, so the formula would flap between an available and an
+            # unavailable read. Repair it here, in the publication that released
+            # the lease, from the proof already persisted in Mongo. The repair
+            # never calls Mercado Libre and refuses a changed fingerprint.
+            await renew_devoluciones_marker_if_proven(self.db, seller_id)
 
     async def _order_details(
         self,

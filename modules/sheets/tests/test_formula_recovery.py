@@ -6495,3 +6495,69 @@ def test_unrecoverable_history_is_not_scheduled() -> None:
             date_from=datetime(2026, 8, 8, tzinfo=UTC),
             date_to=datetime(2026, 9, 7, tzinfo=UTC),
         )
+
+
+@pytest.mark.asyncio
+async def test_order_recovery_repairs_the_devoluciones_proof_it_invalidated(
+    recovery_db: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The acquisition that withdraws the settled proof must restore it.
+
+    ``acquire_devoluciones_operation`` marks the settled DEVOLUCIONES proof
+    ``stale`` so no reader consumes a run that is being re-acquired. The orders
+    job takes that same lease every cycle, so without a repair in the same
+    publication path the proof is withdrawn every 15 minutes and only the slower
+    loop renewal brings it back: ``ZELERDATA_DEVOLUCIONES`` flaps between
+    available and unavailable.
+    """
+    import httpx
+
+    import zeler_sheets.formulas.recovery_worker as worker_module
+    from zeler_sheets.formulas.read_models import read_model_reconciliation_marker_covers
+    from zeler_sheets.formulas.recovery_worker import FormulaRecoveryWorker
+
+    requested = RecoveryRequest(
+        seller_id="pilot",
+        read_model="orders",
+        date_from=request().date_from,
+        date_to=request().date_to,
+    )
+    queue = FormulaRecoveryQueue(recovery_db, enabled_models=frozenset({"orders"}))
+    await queue.enqueue(requested)
+    resource = {
+        "id": 42,
+        "seller": {"id": "pilot"},
+        "buyer": {"id": 123},
+        "status": "paid",
+        "date_created": "2026-08-20T10:00:00Z",
+        "last_updated": "2026-08-20T11:00:00Z",
+        "total_amount": 30,
+        "order_items": [{"item": {"id": "MLM42"}, "quantity": 1, "unit_price": 30}],
+    }
+
+    class Gateway:
+        async def fetch_resource(self, *, seller_id: str, path: str) -> dict[str, Any]:
+            return {"paging": {"total": 1}, "results": [resource]}
+
+        async def request(
+            self, *, method: str, seller_id: str, path: str, headers: Any = None
+        ) -> httpx.Response:
+            if path.endswith("/shipments?hosted=true"):
+                return httpx.Response(204)
+            return httpx.Response(200, json=resource)
+
+    repaired: list[str] = []
+
+    async def renew(db: Any, seller_id: str, **_: Any) -> bool:
+        repaired.append(seller_id)
+        return True
+
+    monkeypatch.setattr(worker_module, "renew_devoluciones_marker_if_proven", renew)
+
+    await FormulaRecoveryWorker(db=recovery_db, gateway=Gateway(), queue=queue).process_one()
+
+    assert repaired == ["pilot"]
+    marker = await recovery_db.sheets_read_model_freshness.find_one({"_id": "pilot:orders"})
+    assert read_model_reconciliation_marker_covers(
+        marker, date_from=requested.date_from, date_to=requested.date_to
+    )

@@ -45,6 +45,17 @@ IMPLEMENTED_REFRESH_MODELS: frozenset[str] = frozenset(
 if not IMPLEMENTED_REFRESH_MODELS <= RECOVERABLE_MODELS:  # pragma: no cover - import guard
     raise RuntimeError("refresh models must be recoverable read models")
 
+# Planning acquisition is not the same as publishing a freshness claim. Only
+# these models end a refresh cycle with a renewed marker the alert evaluator can
+# read: orders and questions through their reconciled range publication. The
+# observed-only heartbeats renew their own markers, and the catalog/item inline
+# projections keep the legacy reconciliation claim that the loop does not own.
+# Alerting on a claim the loop never republishes would page an operator forever.
+MARKER_RENEWED_REFRESH_MODELS: frozenset[str] = frozenset({"orders", "questions"})
+
+if not MARKER_RENEWED_REFRESH_MODELS <= IMPLEMENTED_REFRESH_MODELS:  # pragma: no cover
+    raise RuntimeError("marker-renewing models must be a subset of the refresh set")
+
 # These models cannot be addressed by a date range: acquisition needs explicit
 # publications, catalog products, or shipments. Planning them as range requests
 # is silently rejected by the recovery queue, which is how the first version of
