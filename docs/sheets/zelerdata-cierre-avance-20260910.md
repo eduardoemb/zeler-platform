@@ -208,3 +208,108 @@ volver a validar los conteos. No se ejecutó escritura de reconciliación.
 La siguiente acción técnica es el dry-run de reconciliación con la versión
 desplegada, seguido de validación funcional y lectura persistida. Este informe no
 autoriza ni recomienda borrar datos productivos como parte del cierre.
+
+## Actualización de cierre — 11 de septiembre de 2026
+
+Corte de observación: 2026-09-11 12:20Z. Esta sección reemplaza como referencia
+vigente a las cifras de despliegue anteriores. Todas las mediciones son de solo
+lectura o de overlay en contenedor, sin escrituras de reconciliación nuevas.
+
+### Antes y ahora
+
+| Dimensión | Antes (2026-09-07, `c5a2e097`) | Ahora (2026-09-11, `ac48e52`) |
+| --- | --- | --- |
+| Refresco programado | Inexistente; nadie renovaba marcas | En producción con `ZELERDATA_REFRESH_ENABLED=true`, seller `82453304`, intervalo 900 s y cuota 180 req/min |
+| Marcadores de frescura | Vencidos y sin dueño | `orders` y `questions` renovándose en producción cada ~15 min; `devoluciones` y los cuatro modelos observados renovados por código nuevo (aún no desplegado) |
+| Devoluciones | Timer systemd apagado desde el 2026-08-25 | Absorbidas al bucle de refresco; corrida autorizada `completed`, readback `5/5` y fórmula `OK rows=4` en producción |
+| Fórmulas pesadas | 5 de 71 ejecuciones en 503 por el corte de 20 s | Precalculado implementado y probado; corte interno en 25 s ya en la imagen desplegada |
+| Cola de descarte | 412 mensajes estancados del 2026-06-01 | Archivado real ejecutado: 282 archivados / 130 retenidos en `sheets_dlq_archives` |
+| Alertas de frescura | Solo un mensaje al log | Código de alerta y evaluador en `main`, probados; canal y política reales en GCP **pendientes** |
+| Imágenes desplegadas | `5a03f06` | Worker `548d73ed7e18` y API `4beec42b840d`, ambos saludables, **20 commits por detrás de `main`** |
+| Fórmulas ejecutables | 52 HTTP 200 sin exactitud verificada | 45/52 con dato real y 0 errores en el rango de sondeo previo (era 41), y 47/52 en el rango vigente, medido con overlay de `main` |
+
+### Fórmulas: medición de hoy
+
+Con el overlay de `main` (`ac48e52`) sobre la imagen desplegada y datos reales del
+piloto, el sondeo de las 52 fórmulas dio **0 ERROR** en todas las corridas.
+Medido con el mismo rango (2026-08-08 a 2026-09-06), el resultado pasó de **41 OK /
+11 UNAVAILABLE** a **45 OK / 7 UNAVAILABLE**. Ese delta viene de ejecutar el código
+nuevo de renovación de marcadores en el overlay, no de un despliegue: el runtime
+sigue en la imagen anterior. Con el rango vigente (2026-08-09 a 2026-09-10) el
+resultado es **47 OK / 5 UNAVAILABLE**.
+
+De las 7 UNAVAILABLE en el rango previo, cinco son las mismas del rango vigente y
+dos (`ZELERDATA_PREGUNTAS`, `ZELERDATA_PREGUNTASKPI`) dependen de la ventana
+conciliada de `questions`: al consultar un rango que empieza antes de esa ventana
+la fórmula falla a propósito. Ninguna de las restantes es fallo de ejecución; su
+causa es de origen de datos:
+
+- `ZELERDATA_TIEMPOSTOCKACTIVO` y `ZELERDATA_SEMANASCONSTOCK` dependen de
+  `stock_time_metrics`, y `ZELERDATA_CATALOGOTIEMPO` de `catalog_time_metrics`.
+  `ZELERDATA_RETIROS` depende de `full_withdrawals`. Las tres colecciones
+  (`sheets_stock_time_metrics`, `sheets_catalog_time_metrics`,
+  `sheets_full_withdrawals`) tienen **0 documentos** para el piloto.
+- La causa está medida: sus fuentes `item_history_projection`, `meli_item_events` y
+  `withdrawal_records` **no existen** en la base productiva, así que el importador
+  source-gated reporta `planned=0`, `source_inventory_counts=0` y
+  `coverage_complete=false` para los tres modelos. No es recuperable
+  sincrónicamente desde Mercado Libre con lo que hay hoy.
+- `ZELERDATA_DEVOLUCIONES` responde `OK rows=4` con el marcador renovado. Sigue
+  apareciendo como UNAVAILABLE en el sondeo porque su ventana conciliada es
+  2026-06-01..2026-06-11 y el sondeo pide rangos posteriores; no es un fallo de
+  ejecución sino un rango fuera de la cobertura certificada.
+
+Nota metodológica: un rango que empieza antes de la cobertura conciliada produce
+UNAVAILABLE aunque haya dato debajo. Al sondear 2026-06-01..2026-06-10 quedaron
+fuera, por esa razón, `ZELERDATA_PREGUNTAS`, `ZELERDATA_PREGUNTASKPI` y seis
+fórmulas de órdenes (`ORDENES`, `UNIDADESVENDIDAS`, `ORDENESPORSKU`,
+`TOPVENTASUNIDADES`, `TOPVENTASDINERO`, `VENTASTOTALES`); todas responden cuando el
+rango cae dentro de la ventana conciliada. El sondeo debe usar el rango del periodo
+que la fórmula va a consultar de verdad.
+
+### Devoluciones: verificación E2E de hoy
+
+- `advance_due_devoluciones_run(..., advance_enabled=False)` sobre producción
+  movió el marcador de `stale` (source `devoluciones_operation_acquire`, escrito
+  por el recovery de `orders`) a `reconciled` (source `zelerdata_devoluciones_quota_run`),
+  con `date_from=2026-06-01`, `reconciled_until=2026-06-11` y lease de 30 min.
+- Inmediatamente después, `ZELERDATA_DEVOLUCIONES` ejecutó en **0.02 s** y
+  devolvió **4 filas** de 5 reclamos (`claims_count=5`, `order_count=5`,
+  `rows_count=4`).
+- La renovación solo lee Mongo y republica un finalize ya probado;
+  nunca llama a Mercado Libre ni amplía cobertura.
+
+### Despliegue pendiente (bloqueo único)
+
+`main` (`ac48e52`) está **20 commits adelante** de lo desplegado. Faltan en la
+imagen activa: `formulas/precalculated.py`, `observed_read_model_markers.py`,
+`devoluciones_runner.py` y `zelerdata_freshness_alarm.py`. Consecuencias medidas:
+los cuatro marcadores observados caducan a los 30 min sin renovarse y
+`devoluciones` vuelve a `stale` cuando el recovery de `orders` toma el lease —
+exactamente lo que el código nuevo repara y la renovación probada hoy resuelve.
+
+El bloqueo es de autenticación, no de capacidad: `gcloud` local exige
+reautenticación (`invalid_rapt`) y el consentimiento requiere la contraseña del
+titular. La cuenta de servicio de la VM solo tiene `cloudbuild.builds.get` y
+`monitoring.metricDescriptors.create`; no puede construir ni publicar imágenes.
+Tras autenticar, la secuencia es Cloud Build con `--revision=origin/main` para
+`sheets-worker` (`modules/sheets/Dockerfile.worker`) y `sheets-api`
+(`modules/sheets/Dockerfile.api`), y luego el despliegue worker → API descrito en
+`docs/deploy.md`.
+
+### Alertas y archivado
+
+El archivado de la cola de descarte sí se ejecutó: `sheets_dlq_archives` tiene 282
+documentos del 2026-09-11. La alerta de frescura, en cambio, aún no existe como
+recurso de GCP: el IaC está listo en `infra/monitoring/`
+(`zelerdata_freshness_metric.yaml`, `zelerdata_freshness_alert.yaml`,
+`notification_channels.yaml` con `zeler-ops-email` y `zelerdata-ops-email`),
+pero crear el metric, el canal y la política requiere `gcloud` autenticado.
+
+### Verificación de calidad en `main`
+
+- `uv run pytest`: exit 0.
+- `uv run ruff check .`: All checks passed.
+- `uv run mypy .`: Success, 526 archivos.
+- `uv run ruff format --check .`: solo `tests/test_gce_compose_contract.py`, drift
+  preexistente y ajeno a este trabajo.
