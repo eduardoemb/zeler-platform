@@ -241,10 +241,17 @@ boundary burst.
 The monotonic 165-second deadline is checked before a required wait and again after wakeup. If the
 remaining margin cannot contain the wait, reconciliation fails before sleeping, charging, or
 sending; if the deadline is reached after wakeup, it fails before charge/send. Otherwise the
-existing recorder charges before exactly one physical send per attempt and does not retry. A 429 remains terminal:
-rate limits, client errors, connection, timeout, and other families never retry and keep exactly
-one charged send. Only a `SERVER` failure on `return_detail` receives exactly one paced retry (see
-above); retries never expand `B ≤ 104` or `C ≤ 208` and never alter public/private evidence.
+existing recorder charges before exactly one physical send per attempt.
+
+A `return_detail` send receives at most one retry for either of two transient families: `SERVER`
+(5xx) and `RATE_LIMIT` (429). The rate-limit retry waits for the gateway's own `Retry-After` hint,
+never longer than 30 seconds and never shorter than the 1.75-second pacing interval; a missing or
+malformed hint falls back to the pacing interval. The 2026-09-11 pilot dry-run stopped the entire
+run on a single throttled RETURNS send, which is why a throttle is no longer terminal.
+For every other family — client errors, connection, timeout, and other — the send does not retry
+and keeps exactly one charged send. After the second attempt of its own family, the send fails
+closed. Retries never expand
+`B ≤ 104` or `C ≤ 208` and never alter public/private evidence.
 
 For the complete 34-candidate inventory, pacing inserts at most 33 intervals per snapshot and 67
 per two-snapshot run: at most 57.75 seconds per snapshot and 117.25 seconds per run. The
@@ -252,9 +259,10 @@ per two-snapshot run: at most 57.75 seconds per snapshot and 117.25 seconds per 
 shell stop. Acceptance
 still requires private timing correlation proving every
 successive physical RETURNS start is at least 1.75 seconds apart, followed by fresh authoritative
-productive snapshot evidence. Any spacing, deadline, or non-SERVER source failure stops without retry and keeps the
-timer off; a `SERVER` failure on `return_detail` retries once through the paced path and, if it
-fails again, uses the existing failure-conditional rollback boundary.
+productive snapshot evidence. Any spacing, deadline, or non-transient source failure stops without
+retry and keeps the timer off; a `SERVER` or `RATE_LIMIT` failure on `return_detail` retries once
+through the paced path and, if it fails again, uses the existing failure-conditional rollback
+boundary.
 
 The previous campaign wrapper and campaign-state acceptance remain available as
 legacy evidence tooling only. They are not the active timer authority. The

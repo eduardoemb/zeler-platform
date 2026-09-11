@@ -5556,8 +5556,10 @@ def test_focused_devoluciones_dry_run_sanitizes_gateway_returns_source_failures(
     combined_output = json.dumps(output, sort_keys=True) + captured.err
 
     assert result == 1
-    if getattr(getattr(returns_failure, "response", None), "status_code", None) == 500:
-        # SERVER failures get exactly one paced retry that also fails closed (S3).
+    returns_status = getattr(getattr(returns_failure, "response", None), "status_code", None)
+    if returns_status in (429, 500):
+        # Transient RETURNS families (SERVER and RATE_LIMIT) get exactly one
+        # paced retry that also fails closed (S3, retry contract 2026-09-11).
         assert output == {
             "stage": "dry_run",
             "status_class": "source_issue",
@@ -5583,8 +5585,6 @@ def test_focused_devoluciones_dry_run_sanitizes_gateway_returns_source_failures(
         "payload",
     ):
         assert forbidden not in combined_output
-    if getattr(getattr(returns_failure, "response", None), "status_code", None) == 429:
-        assert client.paths.count("/post-purchase/v2/claims/519988002/returns") == 1
 
 
 def test_focused_devoluciones_dry_run_retries_server_once_then_succeeds(

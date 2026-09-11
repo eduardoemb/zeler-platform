@@ -1012,6 +1012,19 @@ class RawReturnsAccessError(Exception):
         )
 
 
+class RetryAfterReturnsAccessError(RawReturnsAccessError):
+    """A throttled send that advertises how long the caller should wait."""
+
+    def __init__(self, status_code: int, *, retry_after: str) -> None:
+        super().__init__(status_code)
+        self.response = type(
+            "Response",
+            (),
+            {"status_code": status_code, "headers": {"Retry-After": retry_after}},
+        )()
+        self.retry_after_seconds = int(retry_after)
+
+
 class DirectStatusError(Exception):
     def __init__(self, status_code: int) -> None:
         self.status_code = status_code
@@ -1680,7 +1693,14 @@ async def test_returns_pacing_deadline_fails_before_charge_and_second_send(
 
 
 @pytest.mark.asyncio
-async def test_paced_returns_429_charges_exactly_one_attempt_and_never_retries() -> None:
+async def test_paced_returns_429_retries_once_then_fails_closed() -> None:
+    """A throttle is retried once and stays terminal after the second send.
+
+    Before this contract, a single 429 aborted the whole DEVOLUCIONES run; the
+    production dry-run on 2026-09-11 stopped at ``source_issue`` for exactly
+    that reason. One bounded retry keeps the run moving without letting a
+    throttled source extend the budget past ``MAX_RETURNS_SERVER_RETRIES``.
+    """
     clock = FakeMonotonicClock()
     source = ReturnsAccessFailureSource(RawReturnsAccessError(429))
     recorder = SourceCallRecorder(max_total=16)
@@ -1696,10 +1716,10 @@ async def test_paced_returns_429_charges_exactly_one_attempt_and_never_retries()
             sleep=clock.sleep,
         )
 
-    # The paced physical attempt is charged exactly once and never retried.
-    assert source.hydration_calls.count(("returns", "519988002")) == 1
+    # The paced physical attempt is charged once, retried once, and never a third time.
+    assert source.hydration_calls.count(("returns", "519988002")) == 2
     assert source.hydration_calls.count(("returns", "519988001")) == 1
-    assert recorder.counts == {"P": 2, "R": 4, "O": 1, "T": 7}
+    assert recorder.counts == {"P": 2, "R": 5, "O": 1, "T": 8}
     assert reconciliation_module._private_focused_devoluciones_diagnostic(exc_info.value) == {
         "failure_class": "source_failure",
         "source_stage": "return_detail",
@@ -1758,16 +1778,93 @@ async def test_server_500_on_return_detail_retries_once_and_continues() -> None:
     assert recorder.counts == {"P": 2, "R": 5, "O": 2, "T": 9}
 
 
+@pytest.mark.asyncio
+async def test_rate_limit_on_return_detail_retries_once_and_continues() -> None:
+    """A throttled RETURNS send is transient, not terminal.
+
+    Mercado Libre answered a real pilot run with 429 on
+    ``post-purchase/v2/claims/*/returns`` and the whole dry-run stopped at
+    ``source_issue``. The throttle is per send, so the run retries the send
+    once through the paced path instead of discarding every already-acquired
+    claim.
+    """
+    clock = FakeMonotonicClock(current=0.0)
+    source = FailOnceReturnsSource(RetryAfterReturnsAccessError(429, retry_after="1"))
+    recorder = SourceCallRecorder()
+
+    snapshot = await reconciliation_module.collect_devoluciones_snapshot(
+        source=source,
+        seller_id="82453304",
+        start=START,
+        end=END,
+        recorder=recorder,
+        monotonic=clock.monotonic,
+        sleep=clock.sleep,
+    )
+
+    assert source.hydration_calls.count(("returns", "519988002")) == 2
+    assert snapshot.expected_claim_ids == frozenset({"519988001", "519988002"})
+    assert recorder.counts == {"P": 2, "R": 5, "O": 2, "T": 9}
+
+
+@pytest.mark.asyncio
+async def test_rate_limit_retry_waits_for_the_gateway_retry_after_hint() -> None:
+    """The retry wait honors ``Retry-After`` instead of the 1.75s pacing only."""
+    clock = FakeMonotonicClock(current=0.0)
+    source = TimedFailOnceReturnsSource(clock, RetryAfterReturnsAccessError(429, retry_after="12"))
+    recorder = SourceCallRecorder()
+
+    await reconciliation_module.collect_devoluciones_snapshot(
+        source=source,
+        seller_id="82453304",
+        start=START,
+        end=END,
+        recorder=recorder,
+        monotonic=clock.monotonic,
+        sleep=clock.sleep,
+    )
+
+    # Sends are: claim 519988001, claim 519988002 (throttled), then its retry.
+    assert len(source.return_starts) == 3
+    assert source.return_starts[1] - source.return_starts[0] == pytest.approx(1.75)
+    assert source.return_starts[2] - source.return_starts[1] == pytest.approx(12.0)
+
+
+@pytest.mark.asyncio
+async def test_rate_limit_retry_fails_closed_after_second_429_without_third_send() -> None:
+    clock = FakeMonotonicClock(current=0.0)
+    source = ReturnsAccessFailureSource(RetryAfterReturnsAccessError(429, retry_after="1"))
+    recorder = SourceCallRecorder()
+
+    with pytest.raises(ClaimInventoryError, match="source_issue") as exc_info:
+        await reconciliation_module.collect_devoluciones_snapshot(
+            source=source,
+            seller_id="82453304",
+            start=START,
+            end=END,
+            recorder=recorder,
+            monotonic=clock.monotonic,
+            sleep=clock.sleep,
+        )
+
+    assert source.hydration_calls.count(("returns", "519988002")) == 2
+    assert recorder.counts == {"P": 2, "R": 5, "O": 1, "T": 8}
+    assert reconciliation_module._private_focused_devoluciones_diagnostic(exc_info.value) == {
+        "failure_class": "source_failure",
+        "source_stage": "return_detail",
+        "source_family": "rate_limit",
+    }
+
+
 @pytest.mark.parametrize(
     ("failure", "expected_family"),
     [
-        (RawReturnsAccessError(429), "rate_limit"),
         (RawReturnsAccessError(401), "client_other"),
         (ConnectionError("connection details are private"), "connection"),
         (TimeoutError("timeout details are private"), "timeout"),
         (RuntimeError("unknown details are private"), "other"),
     ],
-    ids=("rate-limit", "client-other", "connection", "timeout", "other"),
+    ids=("client-other", "connection", "timeout", "other"),
 )
 @pytest.mark.asyncio
 async def test_non_server_return_detail_failures_never_retry(
@@ -2016,7 +2113,7 @@ async def test_5xx_then_authoritative_404_retry_fails_closed_when_mediation_is_u
 async def test_server_retry_evidence_keeps_shape_and_only_grows_r_and_t() -> None:
     clock = FakeMonotonicClock(current=0.0)
     retried = ReturnsAccessFailureSource(RawReturnsAccessError(500))
-    terminal = ReturnsAccessFailureSource(RawReturnsAccessError(429))
+    terminal = ReturnsAccessFailureSource(RawReturnsAccessError(401))
     retried_recorder = SourceCallRecorder()
     terminal_recorder = SourceCallRecorder()
 

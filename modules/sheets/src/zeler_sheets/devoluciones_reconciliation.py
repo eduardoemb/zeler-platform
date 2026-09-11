@@ -88,6 +88,10 @@ MAX_SNAPSHOT_PHYSICAL_ATTEMPTS = 104
 MAX_DETAIL_ATTEMPTS_PER_HYDRATION_CANDIDATE = 3
 RETURNS_MIN_START_INTERVAL_SECONDS = 1.75
 MAX_RETURNS_SERVER_RETRIES = 1
+# A throttle is transient and per send, so one bounded retry is allowed. The
+# wait is never longer than Mercado Libre's own hint, which the gateway already
+# caps at 30 seconds; a throttled send that fails twice still fails closed.
+MAX_RETRY_AFTER_SECONDS = 30.0
 
 
 class _FocusedDevolucionesFailure(StrEnum):
@@ -160,7 +164,10 @@ class ReturnsAttemptPacer:
     sleep: Callable[[float], Awaitable[None]] = asyncio.sleep
     _last_start: float | None = field(default=None, init=False, repr=False)
 
-    async def wait_until_allowed(self, *, absolute_deadline: float | None) -> None:
+    async def wait_until_allowed(
+        self, *, absolute_deadline: float | None, interval: float | None = None
+    ) -> None:
+        effective_interval = self.INTERVAL if interval is None else max(interval, self.INTERVAL)
         while True:
             current = self.monotonic()
             if absolute_deadline is not None and current >= absolute_deadline:
@@ -169,7 +176,7 @@ class ReturnsAttemptPacer:
                 )
             if self._last_start is None:
                 return
-            wait = self.INTERVAL - (current - self._last_start)
+            wait = effective_interval - (current - self._last_start)
             if wait <= 0:
                 return
             if absolute_deadline is not None and wait >= absolute_deadline - current:
@@ -215,6 +222,30 @@ def _classify_source_family(exc: Exception) -> _FocusedSourceFamily:
     if isinstance(exc, (TimeoutError, asyncio.TimeoutError)):
         return _FocusedSourceFamily.TIMEOUT
     return _FocusedSourceFamily.OTHER
+
+
+def _rate_limit_retry_wait_seconds(exc: Exception) -> float | None:
+    """Return how long a throttled send must wait, or ``None`` when it is not a throttle.
+
+    The gateway raises ``GatewayRateLimitError`` with the parsed ``Retry-After``
+    hint, while a raw transport error exposes the response headers instead.
+    A value outside the sane window is ignored in favor of the plain pacing
+    interval so a malformed hint cannot stall or bypass the run deadline.
+    """
+    if _classify_source_family(exc) is not _FocusedSourceFamily.RATE_LIMIT:
+        return None
+    hint = getattr(exc, "retry_after_seconds", None)
+    if isinstance(hint, bool) or not isinstance(hint, (int, float)):
+        response = getattr(exc, "response", None)
+        headers = getattr(response, "headers", None)
+        raw = headers.get("Retry-After") if isinstance(headers, Mapping) else None
+        try:
+            hint = float(raw) if raw is not None else None
+        except (TypeError, ValueError):
+            hint = None
+    if hint is None or not 0 < float(hint) <= MAX_RETRY_AFTER_SECONDS:
+        return RETURNS_MIN_START_INTERVAL_SECONDS
+    return max(float(hint), RETURNS_MIN_START_INTERVAL_SECONDS)
 
 
 def _private_focused_devoluciones_failure(exc: Exception) -> _FocusedDevolucionesFailure:
@@ -857,6 +888,7 @@ async def collect_devoluciones_snapshot(
             )
         returns: dict[str, Any] = {}
         excluded_by_authoritative_404 = False
+        returns_retry_interval: float | None = None
         for attempt in range(MAX_RETURNS_SERVER_RETRIES + 1):
             await _before_source_attempt(
                 "return_detail",
@@ -865,6 +897,7 @@ async def collect_devoluciones_snapshot(
                 monotonic=monotonic,
                 heartbeat=heartbeat,
                 returns_pacer=resolved_returns_pacer,
+                returns_interval=returns_retry_interval,
             )
             try:
                 returns = await _bounded_source_call(
@@ -896,6 +929,17 @@ async def collect_devoluciones_snapshot(
                 break
             except Exception as exc:  # noqa: BLE001 - source exception text is unsafe evidence.
                 failure = _private_focused_devoluciones_failure(exc)
+                # A throttle is per send, so the run retries this one send with
+                # the gateway's own wait hint instead of discarding the whole
+                # snapshot. Every other non-server family stays terminal.
+                rate_limit_wait = (
+                    _rate_limit_retry_wait_seconds(exc)
+                    if attempt < MAX_RETURNS_SERVER_RETRIES
+                    else None
+                )
+                if rate_limit_wait is not None:
+                    returns_retry_interval = rate_limit_wait
+                    continue
                 retry_available = (
                     failure is _FocusedDevolucionesFailure.SOURCE
                     and _classify_source_family(exc) is _FocusedSourceFamily.SERVER
@@ -1283,9 +1327,13 @@ async def _before_source_attempt(
     monotonic: Callable[[], float],
     heartbeat: Callable[[], Awaitable[None]] | None,
     returns_pacer: ReturnsAttemptPacer | None = None,
+    returns_interval: float | None = None,
 ) -> None:
     if call_kind == "return_detail" and returns_pacer is not None:
-        await returns_pacer.wait_until_allowed(absolute_deadline=absolute_deadline)
+        await returns_pacer.wait_until_allowed(
+            absolute_deadline=absolute_deadline,
+            interval=returns_interval,
+        )
     if heartbeat is not None:
         await heartbeat()
     if absolute_deadline is not None and monotonic() >= absolute_deadline:

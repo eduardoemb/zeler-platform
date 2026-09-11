@@ -1012,7 +1012,6 @@ def test_reconciliation_runbook_documents_quota_authority_and_safe_api_rollback(
         "1.75-second minimum start-to-start interval",
         "physical RETURNS attempts only",
         "one pacer spans both snapshots",
-        "429 remains terminal",
         "does not retry",
         "at most 57.75 seconds per snapshot and 117.25 seconds per run",
         "143.5-second projected run envelope",
