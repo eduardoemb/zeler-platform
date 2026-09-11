@@ -6,7 +6,7 @@ import os
 import signal
 import sys
 import time
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable, Mapping
 from contextlib import nullcontext, suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -45,6 +45,11 @@ from zeler_sheets.formulas.pacing import (
     RecoveryRequestPacer,
     recovery_requests_per_minute,
 )
+from zeler_sheets.formulas.precalculated import (
+    PrecalculatedFormulaStore,
+    PrecalculatedFormulaWarmer,
+)
+from zeler_sheets.formulas.read_models import FormulaReadModelRepository
 from zeler_sheets.formulas.recovery import (
     IMPLEMENTED_MODELS,
     FormulaRecoveryQueue,
@@ -1349,6 +1354,10 @@ async def build_zelerdata_refresh_supervisor(*, db: Any) -> ZelerDataRefreshSupe
     async def report_refresh_failure(attempts: int) -> None:
         alert_reporter.emit((), refresh_failure_attempts=attempts)
 
+    precalculated_warmer = None
+    if _env_flag_enabled("ZELERDATA_PRECALCULATED_FORMULAS_ENABLED"):
+        precalculated_warmer = _build_precalculated_warmer(db)
+
     return ZelerDataRefreshSupervisor(
         explorer=MongoSellerExplorer(db=db, allowed_sellers=allowed),
         planner=ZelerDataRefreshPlanner(
@@ -1371,6 +1380,7 @@ async def build_zelerdata_refresh_supervisor(*, db: Any) -> ZelerDataRefreshSupe
             if devoluciones_advance
             else None
         ),
+        precalculated_warmer=precalculated_warmer,
         freshness_alarm_reporter=(
             report_freshness_alarms
             if _env_flag_enabled("ZELERDATA_FRESHNESS_ALERTS_ENABLED")
@@ -1397,3 +1407,65 @@ def _account_status_source_from_db(db: Any) -> AccountStatusSource:
 
 def _env_flag_enabled(name: str) -> bool:
     return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _build_precalculated_warmer(db: Any) -> Callable[[str], Awaitable[int]]:
+    """Return the per-seller warmer for the heavy aggregate formulas.
+
+    The warmer reuses the same dispatcher the formula route uses, so a
+    precalculated result can never disagree with the on-demand one about how a
+    formula is interpreted. It only ever writes results the dispatcher produced
+    from productive data.
+    """
+    from zeler_sheets.formulas.dispatcher import FormulaDispatcher
+    from zeler_sheets.formulas.handlers_core import build_core_formula_handlers
+    from zeler_sheets.formulas.handlers_item_shipping_catalog import (
+        build_item_shipping_catalog_formula_handlers,
+    )
+    from zeler_sheets.formulas.handlers_orders_questions import (
+        build_order_question_formula_handlers,
+    )
+    from zeler_sheets.formulas.handlers_quality_calculator import (
+        build_quality_calculator_formula_handlers,
+    )
+    from zeler_sheets.formulas.handlers_remaining_phase4 import (
+        build_remaining_phase4_formula_handlers,
+    )
+    from zeler_sheets.formulas.handlers_returns_histories_withdrawals import (
+        build_returns_histories_withdrawals_formula_handlers,
+    )
+
+    store = PrecalculatedFormulaStore(db)
+
+    async def warm(seller_id: str) -> int:
+        account = await _seller_account(db, seller_id)
+        cuenta = str((account or {}).get("nickname") or "").strip()
+        if not cuenta:
+            return 0
+
+        def now_fn() -> datetime:
+            return datetime.now(UTC)
+
+        repository = FormulaReadModelRepository(db=db)
+        dispatcher = FormulaDispatcher(
+            build_core_formula_handlers(repository, now_fn=now_fn)
+            | build_item_shipping_catalog_formula_handlers(repository, now_fn=now_fn)
+            | build_order_question_formula_handlers(repository, now_fn=now_fn)
+            | build_quality_calculator_formula_handlers(repository, now_fn=now_fn)
+            | build_remaining_phase4_formula_handlers(repository, now_fn=now_fn)
+            | build_returns_histories_withdrawals_formula_handlers(repository, now_fn=now_fn)
+        )
+        warmer = PrecalculatedFormulaWarmer(dispatcher=dispatcher, store=store)
+        return await warmer.warm(seller_id=seller_id, cuenta=cuenta)
+
+    return warm
+
+
+async def _seller_account(db: Any, seller_id: str) -> Mapping[str, Any] | None:
+    account = await db["meli_accounts"].find_one({"seller_id": str(seller_id)})
+    if account is None:
+        try:
+            account = await db["meli_accounts"].find_one({"seller_id": int(seller_id)})
+        except ValueError:
+            account = None
+    return account if isinstance(account, Mapping) else None

@@ -49,6 +49,7 @@ from zeler_sheets.formulas.handlers_remaining_phase4 import (
 from zeler_sheets.formulas.handlers_returns_histories_withdrawals import (
     build_returns_histories_withdrawals_formula_handlers,
 )
+from zeler_sheets.formulas.precalculated import PrecalculatedFormulaStore
 from zeler_sheets.formulas.read_models import FormulaReadModelRepository
 from zeler_sheets.formulas.recovery import (
     RECOVERABLE_MODELS,
@@ -687,6 +688,29 @@ async def _execute_formula_payload(
         request_id=payload.request_id,
         seller_timezone=await _seller_timezone(request, validation.seller_id),
     )
+    precalculated = _precalculated_store(request, now=now)
+    if precalculated is not None:
+        try:
+            cached = await precalculated.read(
+                seller_id=validation.seller_id,
+                formula=payload.formula,
+                args=payload.args,
+            )
+        except Exception:  # noqa: BLE001 - the cache must never break the formula
+            structlog.get_logger(__name__).warning(
+                "zelerdata.precalculated_read_failed", formula=payload.formula
+            )
+            cached = None
+        if cached is not None:
+            # Q3/Q8/Q16: the heavy aggregate formulas are served from the
+            # refresh cycle's precalculated result, so the Sheets call stays a
+            # bounded document read instead of a 20+ second aggregation.
+            request.state.formula_phase = "serialization"
+            return {
+                "ok": True,
+                "values": _formula_json_safe(cached.values),
+                "meta": _formula_json_safe(dict(cached.meta)),
+            }, 200
     try:
         request.state.formula_phase = "dispatch"
         result = await _dispatch_formula(_runtime_dispatcher(request, dispatcher, now=now), context)
@@ -903,6 +927,21 @@ def _runtime_dispatcher(
         | build_returns_histories_withdrawals_formula_handlers(repository, now_fn=now)
         | build_explicit_unsupported_formula_handlers()
     )
+
+
+def _precalculated_store(
+    request: Request, *, now: Callable[[], datetime]
+) -> PrecalculatedFormulaStore | None:
+    """Return the precalculated store when one is configured for this app.
+
+    The store is code-held rather than imported from the app state, so tests and
+    embeddings that never wire it keep the previous on-demand behavior. Only the
+    heavy aggregate formulas are ever cached.
+    """
+    configured = getattr(request.app.state, "precalculated_formula_store", None)
+    if isinstance(configured, PrecalculatedFormulaStore):
+        return configured
+    return PrecalculatedFormulaStore(request.app.state.mongo_db, now=now)
 
 
 async def _seller_timezone(request: Request, seller_id: str) -> str:

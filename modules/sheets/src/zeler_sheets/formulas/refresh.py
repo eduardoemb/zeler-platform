@@ -453,6 +453,7 @@ class ZelerDataRefreshSupervisor:
         planner: RefreshPlanner,
         observed_marker_publisher: Callable[[str], Awaitable[tuple[str, ...]]] | None = None,
         devoluciones_runner: Callable[[str], Awaitable[bool]] | None = None,
+        precalculated_warmer: Callable[[str], Awaitable[int]] | None = None,
         freshness_alarm_reporter: Callable[[str], Awaitable[tuple[Any, ...]]] | None = None,
         refresh_failure_reporter: Callable[[int], Awaitable[None]] | None = None,
         interval_seconds: float = DEFAULT_INTERVAL_SECONDS,
@@ -470,6 +471,7 @@ class ZelerDataRefreshSupervisor:
         self._planner = planner
         self._observed_marker_publisher = observed_marker_publisher
         self._devoluciones_runner = devoluciones_runner
+        self._precalculated_warmer = precalculated_warmer
         self._freshness_alarm_reporter = freshness_alarm_reporter
         self._refresh_failure_reporter = refresh_failure_reporter
         self._interval = interval_seconds
@@ -576,6 +578,15 @@ class ZelerDataRefreshSupervisor:
                         admitted = True
                 except Exception:  # noqa: BLE001 - one model must not stop the loop
                     logger.warning("zelerdata.devoluciones_run_failed", seller_id=seller_id)
+            if self._precalculated_warmer is not None:
+                try:
+                    # Q3/Q8/Q16: the heavy aggregate formulas are computed here,
+                    # where the refresh already reads the same data, so the sheet
+                    # call is a bounded document read instead of a 20s aggregation.
+                    if await self._precalculated_warmer(seller_id):
+                        admitted = True
+                except Exception:  # noqa: BLE001 - one formula must not stop the loop
+                    logger.warning("zelerdata.precalculated_warm_failed", seller_id=seller_id)
             if self._freshness_alarm_reporter is not None:
                 try:
                     # Q21-a: a model that stopped refreshing past its own marker

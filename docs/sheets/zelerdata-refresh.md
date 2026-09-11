@@ -96,6 +96,28 @@ keeps the existing lease, 10-day window bound, and readback guarantees.
 The absorbed trigger is off by default (`ZELERDATA_DEVOLUCIONES_ADVANCE_ENABLED=false`).
 Turn it on only after an operator-authorized run exists for the pilot.
 
+## Precalculated heavy formulas
+
+A Sheets custom function cannot exceed the caller's 30 second budget, and the
+five formulas that walk the whole catalog legitimately reach 20-27 seconds on
+the pilot. Per Q3-b/Q8-a/Q16 the refresh cycle now precalculates those results in
+the worker and the sheet call becomes a bounded document read.
+
+The precalculated set is closed and explicit: `ZELERDATA_CATALOGO`,
+`ZELERDATA_CATALOGOBUYBOX`, `ZELERDATA_CATALOGO_COMPLETO`, `ZELERDATA_CALIDAD`
+and `ZELERDATA_DASHBOARD`. Detail formulas stay on demand because their cost is
+per row and their arguments are unbounded.
+
+Each entry is keyed by seller, formula and the *canonical* argument map, so two
+spellings of the same call share one entry and a different argument can never
+read another caller's result. A result is served only while its `valid_until`
+is in the future, the same window the freshness markers use. When the flag is
+off, when no entry exists, or when the entry expired, the call falls back to the
+existing on-demand path: the sheet degrades to today's behavior instead of
+serving a stale table as current. A formula whose productive data is unavailable
+is never cached, so no empty or partial table is ever published as the real
+answer.
+
 ## Configuration
 
 All knobs are runtime environment variables on the Sheets worker. Refresh
@@ -108,6 +130,7 @@ arrives disabled and must be enabled explicitly.
 | `ZELERDATA_REFRESH_INTERVAL_SECONDS` | `900` | Fast-cycle interval. |
 | `ZELERDATA_RECOVERY_REQUESTS_PER_MINUTE` | `180` | Reserved acquisition budget. |
 | `ZELERDATA_DEVOLUCIONES_ADVANCE_ENABLED` | `false` | Advance an already-authorized DEVOLUCIONES run from this loop. |
+| `ZELERDATA_PRECALCULATED_FORMULAS_ENABLED` | `false` | Precalculate the heavy aggregate formulas during the refresh cycle. |
 
 Refresh also requires `ZELERDATA_FORMULA_RECOVERY_ENABLED=true`, because it plans
 work for the recovery worker rather than acquiring data itself. Enabling refresh

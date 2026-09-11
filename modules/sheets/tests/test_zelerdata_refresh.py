@@ -1134,3 +1134,95 @@ async def test_the_loop_reports_alarms_for_models_it_promised_to_keep_fresh(
     reporter = supervisor._freshness_alarm_reporter
     assert reporter is not None
     assert await reporter("82453304") == ("orders",)
+
+
+@pytest.mark.asyncio
+async def test_supervisor_warms_precalculated_formulas_once_per_seller() -> None:
+    """Q3/Q8/Q16: the heavy aggregates are computed by the refresh cycle."""
+    warmed: list[str] = []
+
+    class Explorer:
+        async def discover_sellers(self) -> tuple[str, ...]:
+            return ("82453304", "999")
+
+    class Planner:
+        async def plan(self, *, seller_id: str, mode: str = "fast") -> bool:
+            return False
+
+    async def warmer(seller_id: str) -> int:
+        warmed.append(seller_id)
+        return 10 if seller_id == "82453304" else 0
+
+    supervisor = ZelerDataRefreshSupervisor(
+        explorer=Explorer(),
+        planner=Planner(),
+        precalculated_warmer=warmer,
+        interval_seconds=900,
+        now=lambda: datetime(2026, 9, 10, 12, 0, tzinfo=UTC),
+    )
+    await supervisor.run_cycle()
+
+    assert warmed == ["82453304", "999"]
+    assert supervisor.health_status == "ok"
+
+
+@pytest.mark.asyncio
+async def test_a_failing_precalculated_warmer_does_not_stop_the_refresh_cycle() -> None:
+    planned: list[str] = []
+
+    class Explorer:
+        async def discover_sellers(self) -> tuple[str, ...]:
+            return ("82453304",)
+
+    class Planner:
+        async def plan(self, *, seller_id: str, mode: str = "fast") -> bool:
+            planned.append(mode)
+            return True
+
+    async def warmer(seller_id: str) -> int:
+        raise RuntimeError("precalculated warm unavailable")
+
+    supervisor = ZelerDataRefreshSupervisor(
+        explorer=Explorer(),
+        planner=Planner(),
+        precalculated_warmer=warmer,
+        interval_seconds=900,
+        now=lambda: datetime(2026, 9, 10, 12, 0, tzinfo=UTC),
+    )
+    await supervisor.run_cycle()
+
+    assert planned == ["fast", "daily"]
+    assert supervisor.health_status == "ok"
+
+
+@pytest.mark.asyncio
+async def test_refresh_builder_wires_the_precalculated_warmer_when_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Q3/Q8/Q16: the heavy aggregates are warmed by the refresh cycle."""
+    from zeler_sheets.consumer import build_zelerdata_refresh_supervisor
+
+    monkeypatch.setenv("ZELERDATA_REFRESH_ENABLED", "true")
+    monkeypatch.setenv("ZELERDATA_REFRESH_SELLERS", "82453304")
+    monkeypatch.setenv("ZELERDATA_FORMULA_RECOVERY_ENABLED", "true")
+    monkeypatch.setenv("ZELERDATA_PRECALCULATED_FORMULAS_ENABLED", "true")
+
+    supervisor = await build_zelerdata_refresh_supervisor(db=_IndexedDb())
+
+    assert supervisor._precalculated_warmer is not None
+
+
+@pytest.mark.asyncio
+async def test_refresh_builder_leaves_the_precalculated_warmer_off_by_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from zeler_sheets.consumer import build_zelerdata_refresh_supervisor
+
+    monkeypatch.setenv("ZELERDATA_REFRESH_ENABLED", "true")
+    monkeypatch.setenv("ZELERDATA_REFRESH_SELLERS", "82453304")
+    monkeypatch.setenv("ZELERDATA_FORMULA_RECOVERY_ENABLED", "true")
+    monkeypatch.delenv("ZELERDATA_PRECALCULATED_FORMULAS_ENABLED", raising=False)
+
+    supervisor = await build_zelerdata_refresh_supervisor(db=_IndexedDb())
+
+    assert supervisor._precalculated_warmer is None
