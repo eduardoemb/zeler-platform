@@ -372,6 +372,29 @@ class OrderQuestionFormulaHandlers:
         requested_order_ids = _flatten_sheet_values(
             context.args.get("id_ordenes"), normalize=lambda order_id: str(order_id).strip()
         )
+        # The documented default is every order in the seller read model. A
+        # literal "todos" is a scope, not an order identity, so it must never be
+        # looked up as one and reported missing.
+        whole_history = not requested_order_ids or any(
+            order_id.casefold() == "todos" for order_id in requested_order_ids
+        )
+        if whole_history:
+            ordered_orders = await self._repository.find_orders(
+                seller_id=context.seller_id,
+                date_from=datetime(1970, 1, 1, tzinfo=UTC),
+                date_to=self._now_fn(),
+                limit=None,
+            )
+            receiver_addresses = await _receiver_addresses_for_orders(
+                context=context,
+                repository=self._repository,
+                seller_id=context.seller_id,
+                orders=ordered_orders,
+                enabled=True,
+            )
+            return self._compradores_result(
+                context=context, orders=ordered_orders, receiver_addresses=receiver_addresses
+            )
         orders = await self._repository.find_orders_by_ids(
             seller_id=context.seller_id,
             order_ids=requested_order_ids,
@@ -402,24 +425,35 @@ class OrderQuestionFormulaHandlers:
             orders=ordered_orders,
             enabled=True,
         )
+        return self._compradores_result(
+            context=context, orders=ordered_orders, receiver_addresses=receiver_addresses
+        )
+
+    @staticmethod
+    def _compradores_result(
+        *,
+        context: FormulaExecutionContext,
+        orders: Sequence[Mapping[str, Any]],
+        receiver_addresses: Mapping[str, Mapping[str, Any]],
+    ) -> FormulaExecutionResult:
         values: list[list[Any]] = _header_row(
             context.args.get("encabezados"), BUYER_ADDRESS_LEGACY_HEADERS
         )
         values.extend(
             _buyer_address_values(_receiver_address_for_order(order, receiver_addresses))
-            for order in ordered_orders
+            for order in orders
         )
         address_available = sum(
             1
-            for order in ordered_orders
+            for order in orders
             if _address_has_source_values(_receiver_address_for_order(order, receiver_addresses))
         )
         return FormulaExecutionResult(
             values=values,
             meta={
-                "orders_count": len(ordered_orders),
+                "orders_count": len(orders),
                 "address_available": address_available,
-                "address_missing": len(ordered_orders) - address_available,
+                "address_missing": len(orders) - address_available,
                 "columns": "buyer_address_snapshot",
             },
         )

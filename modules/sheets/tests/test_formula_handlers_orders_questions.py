@@ -3321,6 +3321,38 @@ async def test_formula_api_wires_batch_b_handlers_and_keeps_other_batch_b_data_u
     }
 
 
+@pytest.mark.asyncio
+async def test_compradores_treats_todos_as_the_whole_seller_history() -> None:
+    # "todos" is the documented default for an id list, not a literal order ID.
+    # Treating it as an ID made the formula report unavailable for every order
+    # in the seller read model.
+    now = datetime(2026, 5, 13, 17, 0, tzinfo=UTC)
+    db = FakeDb()
+    db["orders"].documents = {
+        "order-1": _order_doc(
+            "order-1",
+            seller_id="seller-1",
+            status="paid",
+            date_created=datetime(2026, 5, 10, 10, 30, tzinfo=UTC),
+            total_amount=100,
+            items=[{"sku": "sku-1", "item_id": "MLA1", "title": "API item", "quantity": 1}],
+        ),
+        "order-2": _order_doc(
+            "order-2",
+            seller_id="seller-1",
+            status="paid",
+            date_created=datetime(2026, 5, 11, 10, 30, tzinfo=UTC),
+            total_amount=50,
+            items=[{"sku": "sku-1", "item_id": "MLA1", "title": "API item", "quantity": 1}],
+        ),
+    }
+    dispatcher = _order_question_dispatcher(db, now_fn=lambda: now)
+    result = await dispatcher.execute(
+        _context("ZELERDATA_COMPRADORES", {"id_ordenes": "todos", "encabezados": "si"})
+    )
+    assert result.meta["orders_count"] == 2
+
+
 def _order_question_dispatcher(db: FakeDb, *, now_fn: Any | None = None) -> FormulaDispatcher:
     # Calculation fixtures represent a complete inventory; missing/expired
     # coverage is exercised against real Mongo in test_formula_recovery.py.
