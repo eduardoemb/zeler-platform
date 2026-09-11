@@ -68,10 +68,18 @@ from zeler_sheets.google_errors import (
     SellerTokenRevokedError,
 )
 from zeler_sheets.google_sheets_client import make_sheets_client
-from zeler_sheets.observed_read_model_markers import publish_observed_read_model_markers
+from zeler_sheets.observed_read_model_markers import (
+    OBSERVED_READ_MODEL_SOURCES,
+    publish_observed_read_model_markers,
+)
 from zeler_sheets.sheets_config import SheetsSettings
 from zeler_sheets.sheetseller_backfill import run_item_detail_enrichment, run_sheetseller_backfill
 from zeler_sheets.sync_jobs_processor import SyncJobsProcessor
+from zeler_sheets.zelerdata_freshness_alarm import (
+    FreshnessAlarmReporter,
+    evaluate_refresh_alarms,
+    refresh_owned_read_models,
+)
 
 MELI_EVENTS_EXCHANGE = "meli.events"
 SHEETS_REPLAY_EXCHANGE = "zeler.sheets.replay"
@@ -1324,6 +1332,25 @@ async def build_zelerdata_refresh_supervisor(*, db: Any) -> ZelerDataRefreshSupe
         allowed_sellers=allowed,
     )
     await queue.ensure_indexes()
+    # Q21-a: a model that stops refreshing, or a loop that keeps failing, must
+    # alarm an operator. The reporter holds dedup state for the worker's life;
+    # the evaluator only reads durable markers and never acquires from Meli.
+    devoluciones_advance = _env_flag_enabled("ZELERDATA_DEVOLUCIONES_ADVANCE_ENABLED")
+    alert_reporter = FreshnessAlarmReporter()
+    expected_models = refresh_owned_read_models(
+        observed_models=OBSERVED_READ_MODEL_SOURCES,
+        devoluciones_enabled=devoluciones_advance,
+    )
+
+    async def report_freshness_alarms(seller_id: str) -> tuple[Any, ...]:
+        alarms = await evaluate_refresh_alarms(
+            db, seller_id, expected_models=expected_models
+        )
+        return alert_reporter.emit(alarms)
+
+    async def report_refresh_failure(attempts: int) -> None:
+        alert_reporter.emit((), refresh_failure_attempts=attempts)
+
     return ZelerDataRefreshSupervisor(
         explorer=MongoSellerExplorer(db=db, allowed_sellers=allowed),
         planner=ZelerDataRefreshPlanner(
@@ -1343,7 +1370,17 @@ async def build_zelerdata_refresh_supervisor(*, db: Any) -> ZelerDataRefreshSupe
         # creates one, so the operator authorization boundary is unchanged.
         devoluciones_runner=(
             (lambda seller_id: advance_due_devoluciones_run(db, seller_id))
-            if _env_flag_enabled("ZELERDATA_DEVOLUCIONES_ADVANCE_ENABLED")
+            if devoluciones_advance
+            else None
+        ),
+        freshness_alarm_reporter=(
+            report_freshness_alarms
+            if _env_flag_enabled("ZELERDATA_FRESHNESS_ALERTS_ENABLED")
+            else None
+        ),
+        refresh_failure_reporter=(
+            report_refresh_failure
+            if _env_flag_enabled("ZELERDATA_FRESHNESS_ALERTS_ENABLED")
             else None
         ),
         interval_seconds=interval,

@@ -761,6 +761,29 @@ class _IndexedCollection:
         return Cursor()
 
 
+class _RowsCollection:
+    """Minimal read-only collection returning fixed rows for group-by queries."""
+
+    def __init__(self, rows: list[dict[str, Any]]) -> None:
+        self._rows = rows
+
+    def find(self, query: dict[str, Any], projection: Any = None) -> Any:
+        rows = [row for row in self._rows if row.get("seller_id") == query.get("seller_id")]
+
+        class Cursor:
+            async def to_list(self, length: int | None = None) -> list[dict[str, Any]]:
+                return rows
+
+            def __aiter__(self) -> Any:
+                async def gen() -> Any:
+                    for row in rows:
+                        yield row
+
+                return gen()
+
+        return Cursor()
+
+
 @pytest.mark.asyncio
 async def test_refresh_builder_requires_explicit_enable(monkeypatch: pytest.MonkeyPatch) -> None:
     from zeler_sheets.consumer import build_zelerdata_refresh_supervisor
@@ -917,3 +940,197 @@ def test_merge_interval_proofs_bounds_the_marker_document() -> None:
     assert len(merged) == MAX_RETAINED_INTERVALS
     # The newest proofs survive; older history fails closed when it is dropped.
     assert merged[-1]["reconciled_until"] > merged[0]["reconciled_until"]
+
+
+@pytest.mark.asyncio
+async def test_supervisor_reports_freshness_alarms_once_per_seller_and_cycle() -> None:
+    """Q21-a: the loop asks the alarm evaluator once per seller per cycle."""
+    checked: list[str] = []
+
+    class Explorer:
+        async def discover_sellers(self) -> tuple[str, ...]:
+            return ("82453304", "999")
+
+    class Planner:
+        async def plan(self, *, seller_id: str, mode: str = "fast") -> bool:
+            return False
+
+    async def reporter(seller_id: str) -> tuple[Any, ...]:
+        checked.append(seller_id)
+        return ()
+
+    supervisor = ZelerDataRefreshSupervisor(
+        explorer=Explorer(),
+        planner=Planner(),
+        freshness_alarm_reporter=reporter,
+        interval_seconds=900,
+        now=lambda: datetime(2026, 9, 10, 12, 0, tzinfo=UTC),
+    )
+    await supervisor.run_cycle()
+
+    assert checked == ["82453304", "999"]
+    assert supervisor.health_status == "ok"
+
+
+@pytest.mark.asyncio
+async def test_a_failing_alarm_reporter_does_not_stop_the_refresh_cycle() -> None:
+    planned: list[str] = []
+
+    class Explorer:
+        async def discover_sellers(self) -> tuple[str, ...]:
+            return ("82453304",)
+
+    class Planner:
+        async def plan(self, *, seller_id: str, mode: str = "fast") -> bool:
+            planned.append(mode)
+            return True
+
+    async def reporter(seller_id: str) -> tuple[Any, ...]:
+        raise RuntimeError("alert transport unavailable")
+
+    supervisor = ZelerDataRefreshSupervisor(
+        explorer=Explorer(),
+        planner=Planner(),
+        freshness_alarm_reporter=reporter,
+        interval_seconds=900,
+        now=lambda: datetime(2026, 9, 10, 12, 0, tzinfo=UTC),
+    )
+    await supervisor.run_cycle()
+
+    assert planned == ["fast", "daily"]
+    assert supervisor.health_status == "ok"
+
+
+@pytest.mark.asyncio
+async def test_repeated_cycle_failures_are_reported_to_the_alert_sink() -> None:
+    """Q21-a: a repeatedly failing refresh asks the sink to alert."""
+
+    class Explorer:
+        async def discover_sellers(self) -> tuple[str, ...]:
+            raise RuntimeError("mongo unavailable")
+
+    class Planner:
+        async def plan(self, *, seller_id: str, mode: str = "fast") -> bool:
+            raise AssertionError("planner must not run when discovery fails")
+
+    attempts: list[int] = []
+
+    async def failure_reporter(count: int) -> None:
+        attempts.append(count)
+
+    supervisor = ZelerDataRefreshSupervisor(
+        explorer=Explorer(),
+        planner=Planner(),
+        refresh_failure_reporter=failure_reporter,
+        interval_seconds=0.01,
+        now=lambda: datetime(2026, 9, 10, 12, 0, tzinfo=UTC),
+    )
+    with pytest.raises(RuntimeError, match="restart budget exhausted"):
+        await supervisor._run()
+
+    assert attempts == [1, 2, 3]
+    assert supervisor.health_status == "error"
+
+
+@pytest.mark.asyncio
+async def test_a_failing_refresh_alarm_sink_does_not_stop_recovery() -> None:
+    """Alerting is a side channel: it must never change loop control flow."""
+
+    class Explorer:
+        async def discover_sellers(self) -> tuple[str, ...]:
+            raise RuntimeError("mongo unavailable")
+
+    class Planner:
+        async def plan(self, *, seller_id: str, mode: str = "fast") -> bool:
+            return True
+
+    async def failure_reporter(count: int) -> None:
+        raise RuntimeError("alert transport down")
+
+    supervisor = ZelerDataRefreshSupervisor(
+        explorer=Explorer(),
+        planner=Planner(),
+        refresh_failure_reporter=failure_reporter,
+        interval_seconds=0.01,
+        now=lambda: datetime(2026, 9, 10, 12, 0, tzinfo=UTC),
+    )
+    with pytest.raises(RuntimeError, match="restart budget exhausted"):
+        await supervisor._run()
+
+
+@pytest.mark.asyncio
+async def test_refresh_builder_gates_alerts_behind_their_own_kill_switch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Q21-a alerting arrives off and is independent from refresh itself."""
+    from zeler_sheets.consumer import build_zelerdata_refresh_supervisor
+
+    monkeypatch.setenv("ZELERDATA_REFRESH_ENABLED", "true")
+    monkeypatch.setenv("ZELERDATA_REFRESH_SELLERS", "82453304")
+    monkeypatch.setenv("ZELERDATA_FORMULA_RECOVERY_ENABLED", "true")
+    monkeypatch.delenv("ZELERDATA_FRESHNESS_ALERTS_ENABLED", raising=False)
+
+    supervisor = await build_zelerdata_refresh_supervisor(db=_IndexedDb())
+    assert supervisor._freshness_alarm_reporter is None
+    assert supervisor._refresh_failure_reporter is None
+
+    monkeypatch.setenv("ZELERDATA_FRESHNESS_ALERTS_ENABLED", "true")
+    enabled = await build_zelerdata_refresh_supervisor(db=_IndexedDb())
+    assert enabled._freshness_alarm_reporter is not None
+    assert enabled._refresh_failure_reporter is not None
+
+
+@pytest.mark.asyncio
+async def test_refresh_builder_alerts_for_every_model_the_loop_owns(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The alert contract is derived from live wiring, never a hand list."""
+    from zeler_sheets.observed_read_model_markers import OBSERVED_READ_MODEL_SOURCES
+    from zeler_sheets.zelerdata_freshness_alarm import refresh_owned_read_models
+
+    expected = refresh_owned_read_models(
+        observed_models=OBSERVED_READ_MODEL_SOURCES,
+        devoluciones_enabled=True,
+    )
+
+    assert set(IMPLEMENTED_REFRESH_MODELS) <= set(expected)
+    assert set(OBSERVED_READ_MODEL_SOURCES) <= set(expected)
+    assert "devoluciones" in expected
+    # The loop must not claim ownership of models it never plans.
+    assert "claims" not in expected
+
+
+@pytest.mark.asyncio
+async def test_the_loop_reports_alarms_for_models_it_promised_to_keep_fresh(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A closed window on a loop-owned model reaches the alert sink."""
+    from zeler_sheets.consumer import build_zelerdata_refresh_supervisor
+
+    monkeypatch.setenv("ZELERDATA_REFRESH_ENABLED", "true")
+    monkeypatch.setenv("ZELERDATA_REFRESH_SELLERS", "82453304")
+    monkeypatch.setenv("ZELERDATA_FORMULA_RECOVERY_ENABLED", "true")
+    monkeypatch.setenv("ZELERDATA_FRESHNESS_ALERTS_ENABLED", "true")
+
+    stale = {
+        "_id": "82453304:orders",
+        "seller_id": "82453304",
+        "read_model": "orders",
+        "state": "reconciled",
+        "fresh_until": datetime.now(UTC) - timedelta(hours=2),
+        "valid_until": datetime.now(UTC) - timedelta(hours=1),
+    }
+
+    class _DbWithMarkers:
+        def __init__(self) -> None:
+            self.indexes: list[Any] = []
+
+        def __getitem__(self, name: str) -> Any:
+            if name == "sheets_read_model_freshness":
+                return _RowsCollection([stale])
+            return _IndexedCollection(self.indexes, name)
+
+    supervisor = await build_zelerdata_refresh_supervisor(db=_DbWithMarkers())
+    reporter = supervisor._freshness_alarm_reporter
+    assert reporter is not None
+    assert await reporter("82453304") == ("orders",)

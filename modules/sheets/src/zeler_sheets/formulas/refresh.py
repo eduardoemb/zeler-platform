@@ -453,6 +453,8 @@ class ZelerDataRefreshSupervisor:
         planner: RefreshPlanner,
         observed_marker_publisher: Callable[[str], Awaitable[tuple[str, ...]]] | None = None,
         devoluciones_runner: Callable[[str], Awaitable[bool]] | None = None,
+        freshness_alarm_reporter: Callable[[str], Awaitable[tuple[Any, ...]]] | None = None,
+        refresh_failure_reporter: Callable[[int], Awaitable[None]] | None = None,
         interval_seconds: float = DEFAULT_INTERVAL_SECONDS,
         now: Callable[[], datetime] | None = None,
         daily_hour_utc: int = DEFAULT_DAILY_HOUR_UTC,
@@ -468,6 +470,8 @@ class ZelerDataRefreshSupervisor:
         self._planner = planner
         self._observed_marker_publisher = observed_marker_publisher
         self._devoluciones_runner = devoluciones_runner
+        self._freshness_alarm_reporter = freshness_alarm_reporter
+        self._refresh_failure_reporter = refresh_failure_reporter
         self._interval = interval_seconds
         self._now = now or (lambda: datetime.now(UTC))
         self._daily_hour = daily_hour_utc
@@ -509,6 +513,13 @@ class ZelerDataRefreshSupervisor:
                 failures += 1
                 self.health_status = "error"
                 logger.warning("zelerdata.refresh_cycle_failed", failures=failures)
+                if self._refresh_failure_reporter is not None:
+                    try:
+                        # Q21-a also covers the loop failing repeatedly, which is
+                        # a different failure from one slow read model.
+                        await self._refresh_failure_reporter(failures)
+                    except Exception:  # noqa: BLE001 - alerting must not stop recovery
+                        logger.warning("zelerdata.freshness_alarm_failed", seller_id="")
                 if failures >= 3:
                     raise RuntimeError("zelerdata refresh restart budget exhausted") from exc
             else:
@@ -565,6 +576,14 @@ class ZelerDataRefreshSupervisor:
                         admitted = True
                 except Exception:  # noqa: BLE001 - one model must not stop the loop
                     logger.warning("zelerdata.devoluciones_run_failed", seller_id=seller_id)
+            if self._freshness_alarm_reporter is not None:
+                try:
+                    # Q21-a: a model that stopped refreshing past its own marker
+                    # window, or that an operator invalidated, becomes an explicit
+                    # operator-visible alert instead of a log line nobody reads.
+                    await self._freshness_alarm_reporter(seller_id)
+                except Exception:  # noqa: BLE001 - alerting must not stop the loop
+                    logger.warning("zelerdata.freshness_alarm_failed", seller_id=seller_id)
         if DAILY_MODE in modes:
             self._last_daily_date = now.date()
         if FULL_MODE in modes:

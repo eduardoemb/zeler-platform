@@ -14,6 +14,13 @@ Fulldock is decommissioned and has no active uptime check.
 
 - `dlq-events-spike` — fires when `dlq_events_total > 0` in a 60s rolling window.
 
+## ZelerData freshness alerts
+
+- `zelerdata-freshness-alarm` — fires when a ZelerData read model stops
+  refreshing past its marker window, or the refresh loop fails repeatedly.
+  Delivered to `zeler-ops-email` (ops@zeler.ai) and `zelerdata-ops-email`
+  (laloramirez@zeler.ai).
+
 ## Viewing
 
 Use Cloud Monitoring → Alerting for policies and Cloud Logging Metrics for

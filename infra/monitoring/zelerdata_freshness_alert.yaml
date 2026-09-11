@@ -1,0 +1,27 @@
+displayName: zelerdata-freshness-alarm
+combiner: OR
+enabled: true
+notificationChannels:
+  - projects/${GCP_PROJECT}/notificationChannels/${NOTIFICATION_CHANNEL_ID}
+  - projects/${GCP_PROJECT}/notificationChannels/${ZELERDATA_NOTIFICATION_CHANNEL_ID}
+conditions:
+  - displayName: ZelerData freshness alarm on the platform VM
+    conditionThreshold:
+      filter: 'metric.type="logging.googleapis.com/user/zelerdata_freshness_alarm" AND resource.type="gce_instance"'
+      aggregations:
+        - alignmentPeriod: 300s
+          perSeriesAligner: ALIGN_DELTA
+          crossSeriesReducer: REDUCE_SUM
+      comparison: COMPARISON_GT
+      thresholdValue: 0
+      duration: 60s
+alertStrategy:
+  autoClose: 3600s
+documentation:
+  content: >-
+    A ZelerData read model stopped refreshing past its marker window, or the
+    refresh loop kept failing. Apply infra/monitoring/notification_channels.yaml
+    and infra/monitoring/zelerdata_freshness_metric.yaml first. Check the Sheets
+    worker `zelerdata_refresh` component health and the seller's freshness
+    markers; laloramirez@zeler.ai and ops@zeler.ai both receive this channel.
+  mimeType: text/markdown

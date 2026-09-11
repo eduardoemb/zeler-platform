@@ -1,0 +1,17 @@
+name: zelerdata_freshness_alarm
+description: Counts ZelerData freshness alarms when a read model stops refreshing or the loop keeps failing.
+filter: 'jsonPayload.event="zelerdata.freshness_alarm" AND severity>=ERROR'
+metricDescriptor:
+  metricKind: DELTA
+  valueType: INT64
+  unit: "1"
+  labels:
+    - key: read_model
+      valueType: STRING
+      description: Read model whose freshness window closed, when applicable.
+    - key: reason
+      valueType: STRING
+      description: Bounded alarm reason code, e.g. marker_window_expired.
+labelExtractors:
+  read_model: EXTRACT(jsonPayload.read_model)
+  reason: EXTRACT(jsonPayload.reason)
