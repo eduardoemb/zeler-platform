@@ -361,6 +361,15 @@ Consulta de solo lectura a producción el 2026-09-11 12:43Z:
   desplegada; el refresco de 15 minutos que los mantendría vivos requiere el
   despliegue.
 
+### Cambio de configuración aplicado en la VM
+
+En `/opt/zeler-platform/env/sheets-worker.env` se añadió
+`ZELERDATA_DEVOLUCIONES_ADVANCE_ENABLED=true`, con respaldo previo en
+`sheets-worker.env.bak-pre-devoluciones-advance-20260911`. La imagen desplegada no
+lee esa variable, así que el efecto se materializa al desplegar la imagen nueva;
+el contenedor en curso sigue igual y saludable. La renovación de un marcador ya
+probado **no** depende de esta bandera: solo gobierna el trabajo de fuente.
+
 ### Verificación de calidad en `main`
 
 - `uv run pytest`: exit 0.
