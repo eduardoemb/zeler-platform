@@ -1,9 +1,14 @@
-# Cierre de avance de ZelerData — 10 de septiembre de 2026
+# Cierre de avance de ZelerData — 11 de septiembre de 2026
 
-Estado: entrega de avance solicitada por el usuario. La aceptación final del Goal
-sigue abierta. Corte de observación: 2026-09-10, con API y worker verificados en
-las imágenes del commit `5a03f06`, que incluye el conteo de catálogo corregido de
-`43e4a29` y la espera de Retry-After durante la adquisición.
+Estado: entrega de cierre solicitada por el usuario. Corte de observación:
+2026-09-11, con el worker verificado en la imagen
+`sheets-worker-39849ad-20260911T195000Z` (`sha256:23f0e55a…`) y el API en
+`sheets-api-648d449-20260911T140119Z` (`sha256:14bda442…`), ambos healthy.
+
+El documento conserva la línea base del 2026-09-07 y las secciones históricas;
+las secciones de despliegue, ciclo de refresco, alertas y precalculado reflejan
+el estado final verificado. El apartado «Pendiente al entregar» lista lo que
+queda fuera de esta entrega.
 
 ## Resumen antes/ahora
 
@@ -279,32 +284,75 @@ que la fórmula va a consultar de verdad.
 - La renovación solo lee Mongo y republica un finalize ya probado;
   nunca llama a Mercado Libre ni amplía cobertura.
 
-### Despliegue pendiente (bloqueo único)
+### Despliegue (resuelto el 2026-09-11)
 
-`main` (`ac48e52`) está **20 commits adelante** de lo desplegado. Faltan en la
-imagen activa: `formulas/precalculated.py`, `observed_read_model_markers.py`,
-`devoluciones_runner.py` y `zelerdata_freshness_alarm.py`. Consecuencias medidas:
-los cuatro marcadores observados caducan a los 30 min sin renovarse y
-`devoluciones` vuelve a `stale` cuando el recovery de `orders` toma el lease —
-exactamente lo que el código nuevo repara y la renovación probada hoy resuelve.
+El bloqueo de autenticación quedó resuelto y el despliegue se completó. Estado
+verificado:
 
-El bloqueo es de autenticación, no de capacidad: `gcloud` local exige
-reautenticación (`invalid_rapt`) y el consentimiento requiere la contraseña del
-titular. La cuenta de servicio de la VM solo tiene `cloudbuild.builds.get` y
-`monitoring.metricDescriptors.create`; no puede construir ni publicar imágenes.
-Tras autenticar, la secuencia es Cloud Build con `--revision=origin/main` para
-`sheets-worker` (`modules/sheets/Dockerfile.worker`) y `sheets-api`
-(`modules/sheets/Dockerfile.api`), y luego el despliegue worker → API descrito en
-`docs/deploy.md`.
+| Servicio | Imagen desplegada | Digest | Estado |
+| --- | --- | --- | --- |
+| `sheets-worker` | `sheets-worker-39849ad-20260911T195000Z` | `sha256:23f0e55a…` | healthy |
+| `sheets-api` | `sheets-api-648d449-20260911T140119Z` | `sha256:14bda442…` | healthy |
+
+La imagen del worker ya incluye `formulas/precalculated.py`,
+`observed_read_model_markers.py`, `devoluciones_runner.py` y
+`zelerdata_freshness_alarm.py`. Los cuatro marcadores observados se renuevan
+cada ciclo (medido: `item_status_states`, `price_history_snapshots`,
+`shipments`, `stockout_snapshots` con lease nuevo), las diez entradas de
+`sheets_formula_precalculated` se refrescan y las 52 fórmulas respondieron 200
+en una ejecución real de la hoja a las 18:41 UTC.
+
+El `sheets-api` no se reconstruyó porque el barrido de recuperación vive en el
+worker; la API solo encola (`FormulaRecoveryQueue`) y su imagen actual ya expone
+esa ruta.
+
+#### Defectos corregidos durante el despliegue
+
+1. El barrido de `orders` adquiría el lease compartido con
+   `invalidate_readiness=True` y retiraba el marcador probado de
+   `devoluciones` en cada ciclo. Ahora adquiere con `False`, igual que el
+   handler de eventos `orders.*`; solo `claims.*` invalida readiness.
+2. `renew_devoluciones_marker_if_proven` solo extendía el lease cuando ya había
+   expirado, dejando una ventana indisponible cada media hora. Ahora es un
+   latido por ciclo.
+3. La renovación exigía igualdad byte a byte del `proof_fingerprint`, que
+   incluye conteos vivos de `claims`. El primer reclamo legítimo dentro del
+   rango la congelaba para siempre (`reason=proof_changed` medido en
+   producción). Ahora certifica que el rango siga completo: mismos límites,
+   mismo esperado, sin faltantes y todas las filas persistidas y completas.
+4. Cada rechazo del latido registra su motivo
+   (`zelerdata.devoluciones_renewal_refused`) para que un latido detenido sea
+   diagnosticable.
+
+Verificación posterior al despliegue: `devoluciones` renovó por ciclo propio a
+las 20:33 UTC (lease hasta 21:03), `ZELERDATA_DEVOLUCIONES` respondió 4 filas en
+0.02 s y `evaluate_refresh_alarms` devolvió `()`.
+
+También se activó `ZELERDATA_FRESHNESS_ALERTS_ENABLED=true` en
+`/opt/zeler-platform/env/sheets-worker.env` (respaldo
+`.bak-pre-freshness-alerts-20260911`), con lo que un modelo detenido emite ahora
+la alarma `zelerdata.freshness_alarm` hacia la política
+`zelerdata-freshness-alarm` y el canal `zelerdata-ops-email`.
 
 ### Alertas y archivado
 
 El archivado de la cola de descarte sí se ejecutó: `sheets_dlq_archives` tiene 282
-documentos del 2026-09-11. La alerta de frescura, en cambio, aún no existe como
-recurso de GCP: el IaC está listo en `infra/monitoring/`
-(`zelerdata_freshness_metric.yaml`, `zelerdata_freshness_alert.yaml`,
-`notification_channels.yaml` con `zeler-ops-email` y `zelerdata-ops-email`),
-pero crear el metric, el canal y la política requiere `gcloud` autenticado.
+documentos del 2026-09-11.
+
+La alerta de frescura ya existe como recurso de GCP, creada el 2026-09-11:
+
+| Recurso | Identificador |
+| --- | --- |
+| Métrica log-based | `zelerdata_freshness_alarm` |
+| Canal de correo | `zelerdata-ops-email` → `laloramirez@zeler.ai` |
+| Canal existente | `zeler-ops-email` → `ops@zeler.ai` |
+| Política | `zelerdata-freshness-alarm` (umbral > 0 en 300 s) |
+
+El reportero corre en el worker con `ZELERDATA_FRESHNESS_ALERTS_ENABLED=true` y
+`evaluate_refresh_alarms` devolvió `()` con los siete modelos esperados, así que
+la política no está disparando por ruido. Pendiente del lado del usuario: aceptar
+la invitación de verificación que Google envió a `laloramirez@zeler.ai`; el canal
+existe y está `enabled`, pero sin confirmar el correo no entregará avisos.
 
 ### Fórmulas pesadas: precalculado verificado E2E
 
@@ -323,8 +371,8 @@ de encabezados) en 33.18 s de trabajo de fondo:
 Todas las lecturas devuelven `precalculated=true`, con `valid_until` de la misma
 ventana que las marcas de frescura. La llamada de fórmula pasa así de 2.4–5.6 s de
 cálculo en vivo a 2–31 ms de lectura acotada, que es el puente acordado (Q3, Q8,
-Q16) frente al corte de 30 s de Google. Sigue sin desplegarse: requiere la imagen
-nueva.
+Q16) frente al corte de 30 s de Google. Ya desplegado en el worker
+`sheets-worker-39849ad-20260911T195000Z`.
 
 ### Latencia de las fórmulas
 
@@ -343,37 +391,73 @@ El margen frente al corte de 30 s de Google es amplio incluso para la fórmula m
 lenta. Las cinco más lentas (`MEDIDASGENERAL`, `CALCULADORA`, `OBTENER_CATALOGO`,
 `MEDIDAS`, `SUPERMERCADO`) quedan entre 3.4 s y 5.6 s.
 
-### Ciclo de refresco vivo y el defecto que queda en el runtime
+### Ciclo de refresco vivo (estado final)
 
-Consulta de solo lectura a producción el 2026-09-11 12:43Z:
+El defecto quedó corregido y desplegado. Estado verificado tras el despliegue:
 
-- `orders` y `questions` se renovaron **0.4 minutos antes** de la medición, con
-  `valid_until` a 30 minutos. El ciclo de refresco programado está vivo en
-  producción cada 15 minutos, como se acordó.
-- `devoluciones` volvió a `stale` en el mismo ciclo: el recovery de `orders` toma
-  el lease compartido y deja `devoluciones` sin renovar. Es exactamente el defecto
-  que corrige `renew_devoluciones_marker_if_proven` (presente en `main`, ausente en
-  la imagen desplegada). Con el código nuevo, la renovación probada hoy lo
-  restaura sin llamar a Mercado Libre.
-- Los cuatro marcadores observados (`item_status_states`,
-  `price_history_snapshots`, `shipments`, `stockout_snapshots`) caducan 30 minutos
-  después de la última publicación porque el publisher tampoco está en la imagen
-  desplegada; el refresco de 15 minutos que los mantendría vivos requiere el
-  despliegue.
+| Marcador | Renovación observada | Estado |
+| --- | --- | --- |
+| `devoluciones` | ciclo propio a las 20:33Z, lease hasta 21:03Z | abierto, sin rechazos |
+| `orders` | ciclo a las 20:19Z, lease hasta 20:49Z | abierto |
+| `questions` | ciclo a las 20:18Z | abierto |
+| `item_status_states`, `price_history_snapshots`, `shipments`, `stockout_snapshots` | ciclo a las 20:36Z | abiertos |
+
+`ZELERDATA_DEVOLUCIONES` respondió 4 filas en 0.02 s
+(`claims_count=5`, `order_count=5`) y las 10 entradas de
+`sheets_formula_precalculated` se refrescan cada ciclo. Las 52 fórmulas
+respondieron 200 en una ejecución real de la hoja a las 18:41Z.
+
+El latido de `devoluciones` no produjo ningún
+`zelerdata.devoluciones_renewal_refused` después del despliegue.
 
 ### Cambio de configuración aplicado en la VM
 
-En `/opt/zeler-platform/env/sheets-worker.env` se añadió
-`ZELERDATA_DEVOLUCIONES_ADVANCE_ENABLED=true`, con respaldo previo en
-`sheets-worker.env.bak-pre-devoluciones-advance-20260911`. La imagen desplegada no
-lee esa variable, así que el efecto se materializa al desplegar la imagen nueva;
-el contenedor en curso sigue igual y saludable. La renovación de un marcador ya
-probado **no** depende de esta bandera: solo gobierna el trabajo de fuente.
+En `/opt/zeler-platform/env/sheets-worker.env` están activas, con respaldo
+previo por cada cambio:
+
+| Variable | Valor | Respaldo |
+| --- | --- | --- |
+| `ZELERDATA_DEVOLUCIONES_ADVANCE_ENABLED` | `true` | `.bak-pre-devoluciones-advance-20260911` |
+| `ZELERDATA_PRECALCULATED_FORMULAS_ENABLED` | `true` | `.bak-pre-precalc-20260911` |
+| `ZELERDATA_FRESHNESS_ALERTS_ENABLED` | `true` | `.bak-pre-freshness-alerts-20260911` |
+
+La renovación de un marcador ya probado **no** depende de la bandera de
+devoluciones: solo gobierna el trabajo de fuente.
 
 ### Verificación de calidad en `main`
 
 - `uv run pytest`: exit 0.
 - `uv run ruff check .`: All checks passed.
 - `uv run mypy .`: Success, 526 archivos.
-- `uv run ruff format --check .`: solo `tests/test_gce_compose_contract.py`, drift
-  preexistente y ajeno a este trabajo.
+- `uv run ruff format --check .`: 526 archivos ya formateados, sin drift.
+
+
+## Pendiente al entregar
+
+Estos puntos quedan **fuera** de lo entregado y no están bloqueados por un
+defecto del código:
+
+1. **Cuatro fórmulas sin fuente de datos.** `ZELERDATA_CATALOGOTIEMPO`,
+   `ZELERDATA_TIEMPOSTOCKACTIVO`, `ZELERDATA_SEMANASCONSTOCK` y
+   `ZELERDATA_RETIROS` dependen de `catalog_time_metrics`, `stock_time_metrics`
+   y `full_withdrawals`, que tienen 0 documentos para el piloto; sus fuentes
+   (`item_history_projection`, `meli_item_events`, `withdrawal_records`) no
+   existen en la base productiva. Requieren una decisión de producto sobre si
+   se pueblan o se retiran del contrato de 52 fórmulas.
+2. **Aceptación del canal de alertas.** El canal `zelerdata-ops-email`
+   (`laloramirez@zeler.ai`) existe y está `enabled`, pero Google exige que el
+   destinatario acepte la invitación de verificación antes de entregar correo.
+3. **Ventana de una semana sin errores.** El criterio de éxito acordado (cero
+   fórmulas en error durante una semana completa de uso real) empieza a contar
+   con esta entrega; no puede declararse cumplido todavía.
+4. **Drift de tres marcadores legacy.** `catalog_buybox_snapshots`,
+   `catalog_product_snapshots`, `claims` e `item_formula_rows` están
+   `reconciled` sin `valid_until` y con marcador de junio/julio. No los renueva
+   el ciclo (no forman parte de los modelos con dueño) y quedan como
+   reconciliaciones puntuales, no como latido.
+5. **Reintentos y limpieza de la cola de descarte.** El archivado de los 412
+   mensajes se ejecutó (282 documentos); el reintento automático con espera
+   creciente y el archivado automático continuo quedan pendientes de
+   verificación operativa.
+6. **Hojas de cálculo y Apps Script.** Por Q35 quedaron explícitamente fuera
+   hasta que ZelerData esté estable.
