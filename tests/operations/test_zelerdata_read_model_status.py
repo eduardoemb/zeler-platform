@@ -197,6 +197,34 @@ def test_expired_fresh_until_is_outside_window() -> None:
     assert row["in_productive_window"] is False
 
 
+def test_recently_covered_fresh_until_inside_tolerance_is_productive() -> None:
+    """The report must accept the same two-cycle tolerance the reader accepts.
+
+    A marker whose certified coverage ended inside the validity window is
+    still live for formulas; the status report cannot call it unproductive
+    without reporting an outage that the reader does not have.
+    """
+    row = _row_of(
+        _marker(
+            state="reconciled",
+            fresh_until=NOW - timedelta(minutes=10),
+            valid_until=NOW + timedelta(minutes=20),
+        )
+    )
+    assert row["in_productive_window"] is True
+
+
+def test_expired_valid_until_with_recent_coverage_is_outside_window() -> None:
+    row = _row_of(
+        _marker(
+            state="reconciled",
+            fresh_until=NOW - timedelta(minutes=10),
+            valid_until=NOW - timedelta(minutes=1),
+        )
+    )
+    assert row["in_productive_window"] is False
+
+
 def test_absent_fresh_until_is_outside_window() -> None:
     row = _row_of(_marker(state="reconciled", fresh_until=None))
     assert row["in_productive_window"] is False

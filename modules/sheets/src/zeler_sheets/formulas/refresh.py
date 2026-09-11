@@ -18,6 +18,7 @@ from typing import Any, Protocol
 
 import structlog
 
+from zeler_platform_core.read_model_freshness import READ_MODEL_MARKER_VALIDITY
 from zeler_sheets.formulas.recovery import (
     RECOVERABLE_MODELS,
     CatalogRecoveryRequest,
@@ -68,7 +69,9 @@ DEFAULT_FULL_WINDOW = timedelta(days=90)
 DEFAULT_INTERVAL_SECONDS = 900.0
 # A marker stays valid for two refresh cycles, so one missed or slow cycle does
 # not turn a healthy read model into a visible DATA_UNAVAILABLE result.
-MARKER_VALIDITY = timedelta(minutes=30)
+# Shared with the formula reader and the status report through core so the
+# tolerance cannot drift between the three consumers.
+MARKER_VALIDITY = READ_MODEL_MARKER_VALIDITY
 DEFAULT_DAILY_HOUR_UTC = 3
 DEFAULT_FULL_WEEKDAY = 0  # Monday
 

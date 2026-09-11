@@ -44,7 +44,10 @@ from zeler_platform_core.devoluciones_readiness import (
     DEVOLUCIONES_READ_MODEL,
     READ_MODEL_FRESHNESS_COLLECTION,
 )
-from zeler_platform_core.read_model_freshness import ALL_READ_MODELS
+from zeler_platform_core.read_model_freshness import (
+    ALL_READ_MODELS,
+    READ_MODEL_MARKER_VALIDITY,
+)
 
 __all__ = [
     "ACTION_AWAIT_LEASE",
@@ -320,19 +323,49 @@ def _in_productive_window(
     """Fail-closed productive-window gate (design contract).
 
     A row is productive only when the marker is ``fresh`` or ``reconciled``,
-    its source is allowlisted, its ``fresh_until`` covers ``now``, the
-    source-gated models carry a valid ``coverage_basis``, and
-    ``devoluciones`` has an unexpired ``valid_until``.
+    its source is allowlisted, the claim still covers ``now`` under the same
+    two-cycle tolerance the formula reader applies, the source-gated models
+    carry a valid ``coverage_basis``, and ``devoluciones`` has an unexpired
+    ``valid_until``.
     """
     if state not in ("fresh", "reconciled"):
         return False
     if source is None:
         return False
-    if not _covers_now(fresh_until, now):
+    if not _live_claim_covers_instant(
+        fresh_until=fresh_until,
+        valid_until=valid_until,
+        now=now,
+    ):
         return False
     if read_model in SOURCE_GATED_MODELS and coverage_basis is None:
         return False
     return read_model != DEVOLUCIONES_READ_MODEL or _covers_now(valid_until, now)
+
+
+def _live_claim_covers_instant(
+    *,
+    fresh_until: Any,
+    valid_until: Any,
+    now: datetime,
+) -> bool:
+    """Whether a still-valid claim may certify data at ``now``.
+
+    Mirrors ``zeler_sheets.formulas.read_models._live_claim_covers_instant``:
+    certified coverage may trail ``now`` by at most the marker validity window,
+    and the claim's own ``valid_until`` (when present) must still be open. A
+    marker without ``valid_until`` keeps the historical strict behavior and
+    must cover ``now`` directly.
+    """
+    coverage_until = _as_utc_datetime(fresh_until)
+    if coverage_until is None:
+        return False
+    if now <= coverage_until:
+        return True
+    validity = _as_utc_datetime(valid_until)
+    if validity is None or validity <= now:
+        return False
+    return now <= coverage_until + READ_MODEL_MARKER_VALIDITY
 
 
 def _covers_now(value: Any, now: datetime) -> bool:

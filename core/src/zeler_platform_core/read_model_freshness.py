@@ -16,6 +16,7 @@ authority.
 from __future__ import annotations
 
 import inspect
+from datetime import timedelta
 from typing import Any
 
 from pymongo.errors import DuplicateKeyError
@@ -33,10 +34,18 @@ __all__ = [
     "ALL_READ_MODELS",
     "DEVOLUCIONES_READ_MODEL",
     "READ_MODELS",
+    "READ_MODEL_MARKER_VALIDITY",
     "WRITER_SOURCE_ALLOWLIST",
     "WRITER_TARGET_STATES",
     "set_read_model_marker_state",
 ]
+
+# A freshness marker stays valid for two refresh cycles, so one missed or slow
+# cycle does not turn a healthy read model into a visible DATA_UNAVAILABLE
+# result. The reader (formula path), the scheduled refresh, and the status
+# report all share this single value; drifting copies of it produced a report
+# that called productive read models broken.
+READ_MODEL_MARKER_VALIDITY = timedelta(minutes=30)
 
 # The 16 reconciliation-owned read models, in the same order as
 # ``infra.operations.zelerdata_read_model_reconcile.READ_MODELS``; the
