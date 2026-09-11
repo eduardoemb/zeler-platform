@@ -452,6 +452,7 @@ class ZelerDataRefreshSupervisor:
         explorer: RefreshExplorer,
         planner: RefreshPlanner,
         observed_marker_publisher: Callable[[str], Awaitable[tuple[str, ...]]] | None = None,
+        devoluciones_runner: Callable[[str], Awaitable[bool]] | None = None,
         interval_seconds: float = DEFAULT_INTERVAL_SECONDS,
         now: Callable[[], datetime] | None = None,
         daily_hour_utc: int = DEFAULT_DAILY_HOUR_UTC,
@@ -466,6 +467,7 @@ class ZelerDataRefreshSupervisor:
         self._explorer = explorer
         self._planner = planner
         self._observed_marker_publisher = observed_marker_publisher
+        self._devoluciones_runner = devoluciones_runner
         self._interval = interval_seconds
         self._now = now or (lambda: datetime.now(UTC))
         self._daily_hour = daily_hour_utc
@@ -554,6 +556,15 @@ class ZelerDataRefreshSupervisor:
                     await self._observed_marker_publisher(seller_id)
                 except Exception:  # noqa: BLE001 - markers must not stop the loop
                     logger.warning("zelerdata.observed_marker_failed", seller_id=seller_id)
+            if self._devoluciones_runner is not None:
+                try:
+                    # DEVOLUCIONES is absorbed into this loop (Q2-b/Q7-a). The
+                    # runner only advances a run an operator already authorized;
+                    # it never creates or widens coverage.
+                    if await self._devoluciones_runner(seller_id):
+                        admitted = True
+                except Exception:  # noqa: BLE001 - one model must not stop the loop
+                    logger.warning("zelerdata.devoluciones_run_failed", seller_id=seller_id)
         if DAILY_MODE in modes:
             self._last_daily_date = now.date()
         if FULL_MODE in modes:

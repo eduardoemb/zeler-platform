@@ -1018,6 +1018,28 @@ lease while providing natural catch-up after downtime through `Persistent=true`.
 Every run re-verifies 2026-06-01 through the previous closed UTC day, so it
 must not shrink accepted coverage.
 
+#### Scheduled trigger moved into the refresh loop (Q2-b/Q7-a)
+
+The systemd timer above is **legacy and superseded**. The agreed scheduling
+owner is the ZelerData refresh loop inside the Sheets worker, because the timer
+was left `disabled`/`inactive` after the 2026-08-25 run failed with
+`quota_run_advancement_failed` and a separate timer duplicated the freshness
+ownership that the refresh loop already carries.
+
+The loop advances DEVOLUCIONES through
+`zeler_sheets.devoluciones_runner.advance_due_devoluciones_run`, once per seller
+per cycle, gated by `ZELERDATA_DEVOLUCIONES_ADVANCE_ENABLED`. The runner only
+advances a run an operator already authorized: it must exist for that seller,
+be in an advanceable state (`authorized`/`active`), be unexpired, and be past
+its `not_before`. It never creates, re-authorizes, or widens coverage; use
+`infra.operations.devoluciones_quota_authorize` for that, then set
+`ZELERDATA_DEVOLUCIONES_ADVANCE_ENABLED=true` on the Sheets worker.
+
+Keep the legacy artifacts installed for rollback compatibility, but do not
+enable `zelerdata-devoluciones-reconcile.timer`: enabling it would restore a
+second, uncoordinated owner of the same window. The failure-conditional
+rollback executor still disables it defensively.
+
 ### Monitoring
 
 Use sanitized systemd evidence; never print environment files or credentials:

@@ -769,6 +769,40 @@ def test_legacy_reconcile_wrapper_rejects_environment_seller_override() -> None:
     assert "SELLER_ID=$APPROVED_SELLER_ID" in wrapper
 
 
+def test_refresh_loop_absorbing_devoluciones_is_documented_and_gated() -> None:
+    """Q2-b/Q7-a: the refresh loop owns DEVOLUCIONES, gated by its own flag."""
+    refresh_doc = _read(ROOT / "docs" / "sheets" / "zelerdata-refresh.md")
+    consumer = _read(ROOT / "modules" / "sheets" / "src" / "zeler_sheets" / "consumer.py")
+    template = _read(ROOT / "infra" / "gce" / "env-templates" / "sheets-worker.env.template")
+
+    assert "ZELERDATA_DEVOLUCIONES_ADVANCE_ENABLED" in refresh_doc
+    assert "ZELERDATA_DEVOLUCIONES_ADVANCE_ENABLED" in consumer
+    assert "ZELERDATA_DEVOLUCIONES_ADVANCE_ENABLED=" in template
+    # The shipped default must keep the absorbed trigger off until the operator
+    # authorizes a run for the pilot.
+    default_line = next(
+        line
+        for line in template.splitlines()
+        if line.startswith("ZELERDATA_DEVOLUCIONES_ADVANCE_ENABLED=")
+    )
+    assert default_line.endswith("false")
+    # The loop only advances what an operator authorized; it never creates runs.
+    assert "already-authorized" in refresh_doc
+    assert "never creates" in refresh_doc
+
+
+def test_deploy_runbook_states_devoluciones_trigger_moved_to_refresh_loop() -> None:
+    deploy = _read(DEPLOY_DOC)
+    section = deploy.split(
+        "## 5d. ZELERDATA DEVOLUCIONES ordered rollout and scheduled reconciliation",
+        1,
+    )[1].split("---", 1)[0]
+
+    assert "ZELERDATA_DEVOLUCIONES_ADVANCE_ENABLED" in section
+    assert "zelerdata-devoluciones-reconcile.timer" in section
+    assert "superseded" in section.lower() or "legacy" in section.lower()
+
+
 def test_deploy_runbook_orders_topology_acceptance_and_timer_activation() -> None:
     deploy = _read(DEPLOY_DOC)
     section = deploy.split(

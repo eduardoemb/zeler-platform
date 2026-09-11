@@ -557,6 +557,65 @@ async def test_supervisor_renews_observed_markers_once_per_seller_and_cycle() ->
 
 
 @pytest.mark.asyncio
+async def test_supervisor_advances_authorized_devoluciones_run_once_per_seller() -> None:
+    """DEVOLUCIONES is absorbed into the refresh loop (Q2-b/Q7-a)."""
+    advanced: list[str] = []
+
+    class Explorer:
+        async def discover_sellers(self) -> tuple[str, ...]:
+            return ("82453304", "999")
+
+    class Planner:
+        async def plan(self, *, seller_id: str, mode: str = "fast") -> bool:
+            return False
+
+    async def devoluciones_runner(seller_id: str) -> bool:
+        advanced.append(seller_id)
+        return seller_id == "82453304"
+
+    supervisor = ZelerDataRefreshSupervisor(
+        explorer=Explorer(),
+        planner=Planner(),
+        devoluciones_runner=devoluciones_runner,
+        interval_seconds=900,
+        now=lambda: datetime(2026, 9, 10, 12, 0, tzinfo=UTC),
+    )
+    await supervisor.run_cycle()
+
+    assert advanced == ["82453304", "999"]
+    assert supervisor.health_status == "ok"
+
+
+@pytest.mark.asyncio
+async def test_a_failing_devoluciones_runner_does_not_stop_the_refresh_cycle() -> None:
+    planned: list[str] = []
+
+    class Explorer:
+        async def discover_sellers(self) -> tuple[str, ...]:
+            return ("82453304",)
+
+    class Planner:
+        async def plan(self, *, seller_id: str, mode: str = "fast") -> bool:
+            planned.append(mode)
+            return True
+
+    async def devoluciones_runner(seller_id: str) -> bool:
+        raise RuntimeError("devoluciones maintenance unavailable")
+
+    supervisor = ZelerDataRefreshSupervisor(
+        explorer=Explorer(),
+        planner=Planner(),
+        devoluciones_runner=devoluciones_runner,
+        interval_seconds=900,
+        now=lambda: datetime(2026, 9, 10, 12, 0, tzinfo=UTC),
+    )
+    await supervisor.run_cycle()
+
+    assert planned == ["fast", "daily"]
+    assert supervisor.health_status == "ok"
+
+
+@pytest.mark.asyncio
 async def test_a_failing_observed_marker_does_not_stop_the_refresh_cycle() -> None:
     planned: list[str] = []
 

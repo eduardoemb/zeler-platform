@@ -38,6 +38,7 @@ from zeler_platform_core.runtime.worker_health import WorkerHealthSidecar
 from zeler_sheets.catalog_observations import acquire_catalog_event
 from zeler_sheets.claim_projection import project_claim
 from zeler_sheets.devoluciones_reconciliation import GatewayDevolucionesSource
+from zeler_sheets.devoluciones_runner import advance_due_devoluciones_run
 from zeler_sheets.event_persistence import SheetsEventPersistence, StatusObservationContentionError
 from zeler_sheets.formulas.pacing import (
     PacedMeliGateway,
@@ -1336,6 +1337,14 @@ async def build_zelerdata_refresh_supervisor(*, db: Any) -> ZelerDataRefreshSupe
         # the same cycle renews their heartbeat from the data already observed.
         observed_marker_publisher=lambda seller_id: publish_observed_read_model_markers(
             db, seller_id
+        ),
+        # DEVOLUCIONES moved off its own systemd timer into this loop (Q2-b,
+        # Q7-a). The runner only advances an already-authorized run; it never
+        # creates one, so the operator authorization boundary is unchanged.
+        devoluciones_runner=(
+            (lambda seller_id: advance_due_devoluciones_run(db, seller_id))
+            if _env_flag_enabled("ZELERDATA_DEVOLUCIONES_ADVANCE_ENABLED")
+            else None
         ),
         interval_seconds=interval,
     )

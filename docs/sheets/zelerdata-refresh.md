@@ -78,6 +78,24 @@ serves `NA` for that row and requests background recovery instead of failing the
 whole table. A field Mercado Libre itself declared unavailable is served as `NA`
 without a permanent recovery loop.
 
+### DEVOLUCIONES inside the loop
+
+DEVOLUCIONES used to be driven by its own systemd timer
+(`zelerdata-devoluciones-reconcile.timer`), which was disabled after the 2026-08-25
+run failed with `quota_run_advancement_failed`. Per Q2-b/Q7-a that trigger moved
+into this loop, so one loop owns operational freshness.
+
+Each cycle calls `zeler_sheets.devoluciones_runner.advance_due_devoluciones_run`
+once per seller. The runner only *advances* an already-authorized run: the run
+must exist for that seller, be in an advanceable state (`authorized` or
+`active`), still be unexpired, and be past its own `not_before`. It never creates,
+re-authorizes, or widens a run; creating the run stays an explicit operator
+action (`infra.operations.devoluciones_quota_authorize`). The real advancement
+keeps the existing lease, 10-day window bound, and readback guarantees.
+
+The absorbed trigger is off by default (`ZELERDATA_DEVOLUCIONES_ADVANCE_ENABLED=false`).
+Turn it on only after an operator-authorized run exists for the pilot.
+
 ## Configuration
 
 All knobs are runtime environment variables on the Sheets worker. Refresh
@@ -89,6 +107,7 @@ arrives disabled and must be enabled explicitly.
 | `ZELERDATA_REFRESH_SELLERS` | — | Required numeric allowlist when enabled. |
 | `ZELERDATA_REFRESH_INTERVAL_SECONDS` | `900` | Fast-cycle interval. |
 | `ZELERDATA_RECOVERY_REQUESTS_PER_MINUTE` | `180` | Reserved acquisition budget. |
+| `ZELERDATA_DEVOLUCIONES_ADVANCE_ENABLED` | `false` | Advance an already-authorized DEVOLUCIONES run from this loop. |
 
 Refresh also requires `ZELERDATA_FORMULA_RECOVERY_ENABLED=true`, because it plans
 work for the recovery worker rather than acquiring data itself. Enabling refresh
@@ -109,6 +128,8 @@ queries, which is the split agreed after a production write aborted with
   stop the rest of the cycle.
 - Explicit stop: the loop is a co-resident poller in the worker, so it stops with
   the worker and can be disabled without a deploy by setting the flag.
+- DEVOLUCIONES stays inside the operator authorization boundary: the loop never
+  creates or expands coverage, and the legacy systemd timer is superseded.
 
 ## Verification
 
