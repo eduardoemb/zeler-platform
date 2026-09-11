@@ -112,7 +112,7 @@ async def renew_devoluciones_marker_if_proven(
     seller_id: str,
     *,
     now: Callable[[], datetime] | None = None,
-    finalization_fingerprint: Callable[..., Awaitable[str | None]] | None = None,
+    range_certification: Callable[..., Awaitable[str | None]] | None = None,
 ) -> bool:
     """Extend the DEVOLUCIONES marker from the proof already persisted in Mongo.
 
@@ -123,10 +123,16 @@ async def renew_devoluciones_marker_if_proven(
     same lease) would leave ``ZELERDATA_DEVOLUCIONES`` unavailable forever.
 
     Renewal never calls Mercado Libre and never widens coverage: it only
-    restores a marker whose ``proof_fingerprint`` still matches the finalize
-    proof recomputed from the settled run windows. A changed proof, a missing
-    run, or an absent fingerprint is refused, so an unproven marker can never
-    be made productive.
+    restores a marker whose settled run windows still certify the same range. A
+    missing run, an absent fingerprint, or a range that no longer proves itself
+    complete is refused, so an unproven marker can never be made productive.
+
+    Certification is deliberately not byte-for-byte fingerprint equality. The
+    finalize fingerprint folds in live ``claims`` counts, so any legitimate
+    change inside the settled range (a later-arriving claim, a rewritten row)
+    would change it and freeze the heartbeat forever. The gate instead requires
+    the range to still certify itself: same bounds, at least the expected
+    claims persisted and complete, and no missing rows.
 
     It is a heartbeat, not an expiry repair: a still-open proof is extended on
     every cycle, because waiting for the lease to lapse would leave a
@@ -175,11 +181,19 @@ async def renew_devoluciones_marker_if_proven(
     if not isinstance(run, Mapping):
         _report_refusal(seller_id, "settled_run_absent")
         return False
-    if finalization_fingerprint is None:
-        finalization_fingerprint = _runtime_finalization_fingerprint
-    recomputed = await finalization_fingerprint(db=db, run=run)
-    if not recomputed or recomputed != proof_fingerprint:
-        _report_refusal(seller_id, "proof_changed")
+    if range_certification is None:
+        range_certification = _runtime_range_certification
+    try:
+        refusal = await range_certification(db=db, run=run)
+    except Exception as exc:  # noqa: BLE001 - refusal must stay observable
+        _report_refusal(seller_id, "range_certification_failed", detail=type(exc).__name__)
+        return False
+    if refusal:
+        _report_refusal(
+            seller_id,
+            refusal,
+            detail=await _proof_drift_detail(db=db, run=run),
+        )
         return False
     reconciled_until = marker.get("reconciled_until")
     date_from = marker.get("date_from")
@@ -213,7 +227,7 @@ async def renew_devoluciones_marker_if_proven(
     return getattr(updated, "matched_count", 0) == 1
 
 
-def _report_refusal(seller_id: str, reason: str) -> None:
+def _report_refusal(seller_id: str, reason: str, *, detail: str | None = None) -> None:
     """Make a refused heartbeat observable instead of a silent ``False``.
 
     A renewal that quietly stops extending the proof looks exactly like a
@@ -226,6 +240,7 @@ def _report_refusal(seller_id: str, reason: str) -> None:
         "zelerdata.devoluciones_renewal_refused",
         seller_id=str(seller_id),
         reason=reason,
+        detail=detail,
     )
 
 
@@ -243,16 +258,60 @@ async def _live_acquisition_holds_the_lease(db: Any, seller_id: str, *, current:
     return isinstance(operation, Mapping)
 
 
-async def _runtime_finalization_fingerprint(*, db: Any, run: Mapping[str, Any]) -> str | None:
-    """Recompute the exact finalize fingerprint from the settled run windows."""
+async def _proof_drift_detail(*, db: Any, run: Mapping[str, Any]) -> str:
+    """Describe how the live readback differs from the settled run.
+
+    The fingerprint intentionally refuses when the live readback moves, but the
+    bare reason cannot tell an operator whether the pilot gained a legitimate
+    claim, lost a row, or only changed a completeness field. The counts make
+    that distinction visible from the worker log alone.
+    """
     from infra.operations.zelerdata_read_model_reconcile import (
         _contiguous_devoluciones_run_windows,
-        _quota_finalization_fingerprint,
+        readback_devoluciones_quota_run,
+    )
+
+    try:
+        windows = await _contiguous_devoluciones_run_windows(db=db, run=run)
+        if windows is None:
+            return "windows_incomplete"
+        proof = await readback_devoluciones_quota_run(db=db, run=run, windows=windows)
+    except Exception as exc:  # noqa: BLE001 - diagnostics must not mask the refusal
+        return f"probe_failed={type(exc).__name__}"
+    return (
+        f"expected={proof.get('expected_count')}"
+        f" persisted={proof.get('persisted_count')}"
+        f" complete={proof.get('complete_count')}"
+        f" missing={proof.get('missing_count')}"
+    )
+
+
+async def _runtime_range_certification(*, db: Any, run: Mapping[str, Any]) -> str | None:
+    """Return ``None`` when the settled range still proves itself complete.
+
+    The proof folds in live ``claims`` counts, so an exact-fingerprint gate
+    freezes the heartbeat as soon as the range legitimately changes. Requiring
+    the range bounds and the completeness counts instead keeps the proof strong
+    (a regressed range is refused) without coupling it to churn.
+    """
+    from infra.operations.zelerdata_read_model_reconcile import (
+        _contiguous_devoluciones_run_windows,
         readback_devoluciones_quota_run,
     )
 
     windows = await _contiguous_devoluciones_run_windows(db=db, run=run)
     if windows is None:
-        return None
+        return "settled_run_windows_incomplete"
     proof = await readback_devoluciones_quota_run(db=db, run=run, windows=windows)
-    return _quota_finalization_fingerprint(proof, windows=windows)
+    expected = sum(int(window["expected_count"]) for window in windows)
+    if proof.get("start") != run["start"] or proof.get("end") != run["end"]:
+        return "settled_range_moved"
+    if int(proof.get("expected_count") or 0) != expected:
+        return "settled_range_expectation_changed"
+    if int(proof.get("missing_count") or 0) != 0:
+        return "settled_range_has_missing_claims"
+    if int(proof.get("persisted_count") or 0) < expected:
+        return "settled_range_not_persisted"
+    if int(proof.get("complete_count") or 0) < expected:
+        return "settled_range_incomplete"
+    return None

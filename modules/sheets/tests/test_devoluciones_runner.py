@@ -316,16 +316,16 @@ async def test_marker_renewal_restores_a_proven_devoluciones_marker() -> None:
     db = _MarkerDb(_proven_marker(), runs=[_completed_run()])
     calls: list[str] = []
 
-    async def fingerprint(**_: Any) -> str | None:
-        calls.append("fingerprint")
-        return "proven-fingerprint"
+    async def certify(**_: Any) -> str | None:
+        calls.append("certify")
+        return None
 
     renewed = await renew_devoluciones_marker_if_proven(
-        db, SELLER, now=lambda: NOW, finalization_fingerprint=fingerprint
+        db, SELLER, now=lambda: NOW, range_certification=certify
     )
 
     assert renewed is True
-    assert calls == ["fingerprint"]
+    assert calls == ["certify"]
     marker = db.markers.document
     assert marker is not None
     assert marker["state"] == "reconciled"
@@ -342,14 +342,14 @@ async def test_marker_renewal_restores_a_proven_devoluciones_marker() -> None:
 
 
 @pytest.mark.asyncio
-async def test_marker_renewal_refuses_when_the_durable_proof_changed() -> None:
+async def test_marker_renewal_refuses_when_the_settled_range_stops_certifying() -> None:
     db = _MarkerDb(_proven_marker(), runs=[_completed_run()])
 
-    async def changed(**_: Any) -> str | None:
-        return "a-different-fingerprint"
+    async def regressed(**_: Any) -> str | None:
+        return "settled_range_has_missing_claims"
 
     renewed = await renew_devoluciones_marker_if_proven(
-        db, SELLER, now=lambda: NOW, finalization_fingerprint=changed
+        db, SELLER, now=lambda: NOW, range_certification=regressed
     )
 
     assert renewed is False
@@ -377,16 +377,16 @@ async def test_marker_renewal_extends_a_still_open_proof_before_it_lapses() -> N
     )
     calls: list[str] = []
 
-    async def fingerprint(**_: Any) -> str | None:
-        calls.append("fingerprint")
-        return "proven-fingerprint"
+    async def certify(**_: Any) -> str | None:
+        calls.append("certify")
+        return None
 
     renewed = await renew_devoluciones_marker_if_proven(
-        db, SELLER, now=lambda: NOW, finalization_fingerprint=fingerprint
+        db, SELLER, now=lambda: NOW, range_certification=certify
     )
 
     assert renewed is True
-    assert calls == ["fingerprint"]
+    assert calls == ["certify"]
     marker = db.markers.document
     assert marker is not None
     assert marker["state"] == "reconciled"
@@ -401,7 +401,7 @@ async def test_marker_renewal_requires_an_exact_fingerprint() -> None:
         raise AssertionError("a marker without proof must not be renewed")
 
     renewed = await renew_devoluciones_marker_if_proven(
-        db, SELLER, now=lambda: NOW, finalization_fingerprint=forbidden
+        db, SELLER, now=lambda: NOW, range_certification=forbidden
     )
 
     assert renewed is False
@@ -435,7 +435,7 @@ async def test_marker_renewal_defers_while_a_withdrawing_acquisition_holds_the_l
         raise AssertionError("a withdrawing acquisition must not be renewed over")
 
     renewed = await renew_devoluciones_marker_if_proven(
-        db, SELLER, now=lambda: NOW, finalization_fingerprint=forbidden
+        db, SELLER, now=lambda: NOW, range_certification=forbidden
     )
 
     assert renewed is False
@@ -466,16 +466,16 @@ async def test_marker_renewal_extends_a_reconciled_proof_under_a_live_sweep() ->
     )
     calls: list[str] = []
 
-    async def fingerprint(**_: Any) -> str | None:
-        calls.append("fingerprint")
-        return "proven-fingerprint"
+    async def certify(**_: Any) -> str | None:
+        calls.append("certify")
+        return None
 
     renewed = await renew_devoluciones_marker_if_proven(
-        db, SELLER, now=lambda: NOW, finalization_fingerprint=fingerprint
+        db, SELLER, now=lambda: NOW, range_certification=certify
     )
 
     assert renewed is True
-    assert calls == ["fingerprint"]
+    assert calls == ["certify"]
     marker = db.markers.document
     assert marker is not None
     assert marker["valid_until"] == NOW + timedelta(minutes=30)
@@ -497,7 +497,7 @@ async def test_marker_renewal_names_the_reason_it_refuses() -> None:
 
     with structlog.testing.capture_logs() as entries:
         renewed = await renew_devoluciones_marker_if_proven(
-            db, SELLER, now=lambda: NOW, finalization_fingerprint=forbidden
+            db, SELLER, now=lambda: NOW, range_certification=forbidden
         )
 
     assert renewed is False
@@ -533,3 +533,167 @@ async def test_marker_renewal_names_a_deferred_withdrawing_acquisition() -> None
         entry for entry in entries if entry.get("event") == "zelerdata.devoluciones_renewal_refused"
     ]
     assert [entry["reason"] for entry in refusals] == ["withdrawing_acquisition_holds_the_lease"]
+
+
+@pytest.mark.asyncio
+async def test_marker_renewal_accepts_a_range_that_grew_within_its_bounds() -> None:
+    """The gate certifies the settled range; it does not pin byte-for-byte.
+
+    The finalize fingerprint folds in live ``claims`` counts, so requiring
+    equality would freeze the heartbeat the first time the pilot recorded a new
+    claim inside the settled window and ``ZELERDATA_DEVOLUCIONES`` would expire
+    for good. Certification accepts a range that still proves itself complete.
+    """
+    db = _MarkerDb(_proven_marker(), runs=[_completed_run()])
+    calls: list[str] = []
+
+    async def certify(**_: Any) -> str | None:
+        calls.append("certify")
+        return None
+
+    renewed = await renew_devoluciones_marker_if_proven(
+        db, SELLER, now=lambda: NOW, range_certification=certify
+    )
+
+    assert renewed is True
+    assert calls == ["certify"]
+    marker = db.markers.document
+    # The renewal republishes the original fingerprint; it never rewrites the
+    # proof to match churn it did not observe.
+    assert marker is not None and marker["proof_fingerprint"] == "proven-fingerprint"
+
+
+@pytest.mark.asyncio
+async def test_marker_renewal_surfaces_a_certification_failure() -> None:
+    db = _MarkerDb(_proven_marker(), runs=[_completed_run()])
+
+    async def broken(**_: Any) -> str | None:
+        raise RuntimeError("mongo unavailable")
+
+    with structlog.testing.capture_logs() as entries:
+        renewed = await renew_devoluciones_marker_if_proven(
+            db, SELLER, now=lambda: NOW, range_certification=broken
+        )
+
+    assert renewed is False
+    refusals = [e for e in entries if e.get("event") == "zelerdata.devoluciones_renewal_refused"]
+    assert [entry["reason"] for entry in refusals] == ["range_certification_failed"]
+
+
+def _certification_run() -> dict[str, Any]:
+    return {
+        "_id": "a" * 64,
+        "seller_id": SELLER,
+        "scope": "devoluciones",
+        "state": "completed",
+        "start": datetime(2026, 6, 1, tzinfo=UTC),
+        "end": datetime(2026, 6, 11, tzinfo=UTC),
+    }
+
+
+def _certification_windows() -> list[dict[str, Any]]:
+    return [
+        {
+            "index": 0,
+            "start": datetime(2026, 6, 1, tzinfo=UTC),
+            "end": datetime(2026, 6, 11, tzinfo=UTC),
+            "expected_count": 5,
+        }
+    ]
+
+
+def _install_certification_probe(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    proof: dict[str, Any],
+    windows_incomplete: bool = False,
+) -> None:
+    from infra.operations import zelerdata_read_model_reconcile as reconcile
+
+    async def contiguous(**_: Any) -> list[dict[str, Any]] | None:
+        return None if windows_incomplete else _certification_windows()
+
+    async def readback(**_: Any) -> dict[str, Any]:
+        return proof
+
+    monkeypatch.setattr(reconcile, "_contiguous_devoluciones_run_windows", contiguous)
+    monkeypatch.setattr(reconcile, "readback_devoluciones_quota_run", readback)
+
+
+def _complete_proof(**overrides: Any) -> dict[str, Any]:
+    proof = {
+        "start": datetime(2026, 6, 1, tzinfo=UTC),
+        "end": datetime(2026, 6, 11, tzinfo=UTC),
+        "expected_count": 5,
+        "persisted_count": 5,
+        "complete_count": 5,
+        "missing_count": 0,
+    }
+    proof.update(overrides)
+    return proof
+
+
+@pytest.mark.asyncio
+async def test_range_certification_accepts_a_range_that_gained_claims(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A legitimate new claim inside the settled range must not freeze the proof.
+
+    The finalize fingerprint folds live ``claims`` counts in, so byte-for-byte
+    equality stops certifying as soon as the pilot records anything new inside
+    the settled window. The certification gate therefore asks whether the range
+    still proves itself complete, not whether nothing changed.
+    """
+    from zeler_sheets.devoluciones_runner import _runtime_range_certification
+
+    _install_certification_probe(
+        monkeypatch,
+        proof=_complete_proof(persisted_count=7, complete_count=7),
+    )
+
+    assert await _runtime_range_certification(db=object(), run=_certification_run()) is None
+
+
+@pytest.mark.asyncio
+async def test_range_certification_refuses_a_regressed_range(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from zeler_sheets.devoluciones_runner import _runtime_range_certification
+
+    _install_certification_probe(
+        monkeypatch,
+        proof=_complete_proof(persisted_count=4, complete_count=4, missing_count=1),
+    )
+
+    reason = await _runtime_range_certification(db=object(), run=_certification_run())
+
+    assert reason == "settled_range_has_missing_claims"
+
+
+@pytest.mark.asyncio
+async def test_range_certification_refuses_incomplete_windows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from zeler_sheets.devoluciones_runner import _runtime_range_certification
+
+    _install_certification_probe(monkeypatch, proof=_complete_proof(), windows_incomplete=True)
+
+    reason = await _runtime_range_certification(db=object(), run=_certification_run())
+
+    assert reason == "settled_run_windows_incomplete"
+
+
+@pytest.mark.asyncio
+async def test_range_certification_refuses_a_moved_range(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from zeler_sheets.devoluciones_runner import _runtime_range_certification
+
+    _install_certification_probe(
+        monkeypatch,
+        proof=_complete_proof(end=datetime(2026, 6, 12, tzinfo=UTC)),
+    )
+
+    reason = await _runtime_range_certification(db=object(), run=_certification_run())
+
+    assert reason == "settled_range_moved"

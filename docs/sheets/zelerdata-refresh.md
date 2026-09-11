@@ -111,11 +111,23 @@ certifies.
 
 `renew_devoluciones_marker_if_proven` closes that hole. It only reads Mongo: it
 requires the marker to carry a `proof_fingerprint`, finds the settled `completed`
-run named by `revision`, recomputes the finalize fingerprint from the run
-windows, and republishes the marker with a fresh 30-minute lease only when the
-recomputed proof matches the stored fingerprint. It never calls Mercado Libre
-and never widens coverage; a changed proof, a missing run, or an open marker is
-refused, so an unproven range can never be made productive.
+run named by `revision`, and re-certifies the settled range from the run
+windows. When the range still proves itself complete it republishes the marker
+with a fresh 30-minute lease. It never calls Mercado Libre and never widens
+coverage.
+
+Certification is deliberately **not** byte-for-byte fingerprint equality. The
+finalize fingerprint folds in live `claims` counts, so equality stops holding
+the moment the pilot records a legitimate claim inside the settled window and
+the heartbeat would freeze permanently: production measured exactly that on
+2026-09-11, with `reason=proof_changed` and a marker stuck at its old
+`valid_until`. The gate instead requires the same bounds, the same expected
+count, no missing rows, and fully persisted and complete claims. A regressed
+range (`settled_range_has_missing_claims`, `settled_range_incomplete`), a moved
+range, incomplete windows, or a missing run is refused, so an unproven range can
+never be made productive. Every refusal is logged with its reason
+(`zelerdata.devoluciones_renewal_refused`) so a stalled heartbeat is diagnosable
+instead of looking identical to a healthy one.
 
 The renewal is **not** gated by `ZELERDATA_DEVOLUCIONES_ADVANCE_ENABLED`. That
 flag gates source work only; the renewal is a local read and runs every cycle
