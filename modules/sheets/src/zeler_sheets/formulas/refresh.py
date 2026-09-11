@@ -465,6 +465,7 @@ class ZelerDataRefreshSupervisor:
         observed_marker_publisher: Callable[[str], Awaitable[tuple[str, ...]]] | None = None,
         devoluciones_runner: Callable[[str], Awaitable[bool]] | None = None,
         precalculated_warmer: Callable[[str], Awaitable[int]] | None = None,
+        dlq_archiver: Callable[[], Awaitable[Any]] | None = None,
         freshness_alarm_reporter: Callable[[str], Awaitable[tuple[Any, ...]]] | None = None,
         refresh_failure_reporter: Callable[[int], Awaitable[None]] | None = None,
         interval_seconds: float = DEFAULT_INTERVAL_SECONDS,
@@ -483,6 +484,7 @@ class ZelerDataRefreshSupervisor:
         self._observed_marker_publisher = observed_marker_publisher
         self._devoluciones_runner = devoluciones_runner
         self._precalculated_warmer = precalculated_warmer
+        self._dlq_archiver = dlq_archiver
         self._freshness_alarm_reporter = freshness_alarm_reporter
         self._refresh_failure_reporter = refresh_failure_reporter
         self._interval = interval_seconds
@@ -608,6 +610,17 @@ class ZelerDataRefreshSupervisor:
                     logger.warning("zelerdata.freshness_alarm_failed", seller_id=seller_id)
         if DAILY_MODE in modes:
             self._last_daily_date = now.date()
+            if self._dlq_archiver is not None:
+                try:
+                    # Q4-b/Q11-c: the queue must not accumulate invisibly again.
+                    # The archive rescans the whole DLQ and re-draws every
+                    # retained message, so it rides the daily sweep instead of
+                    # the 15-minute cycle: automatic, but not broker churn. Only
+                    # provably superseded messages are removed, each with a
+                    # recorded reason.
+                    await self._dlq_archiver()
+                except Exception:  # noqa: BLE001 - the loop must not stop for one queue
+                    logger.warning("zelerdata.dlq_auto_archive_failed")
         if FULL_MODE in modes:
             self._last_full_date = now.date()
         self.health_status = "ok"

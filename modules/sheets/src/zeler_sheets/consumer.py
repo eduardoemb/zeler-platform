@@ -39,6 +39,7 @@ from zeler_sheets.catalog_observations import acquire_catalog_event
 from zeler_sheets.claim_projection import project_claim
 from zeler_sheets.devoluciones_reconciliation import GatewayDevolucionesSource
 from zeler_sheets.devoluciones_runner import advance_due_devoluciones_run
+from zeler_sheets.dlq_auto_archive import build_dlq_auto_archiver
 from zeler_sheets.event_persistence import SheetsEventPersistence, StatusObservationContentionError
 from zeler_sheets.formulas.pacing import (
     PacedMeliGateway,
@@ -1358,6 +1359,10 @@ async def build_zelerdata_refresh_supervisor(*, db: Any) -> ZelerDataRefreshSupe
     if _env_flag_enabled("ZELERDATA_PRECALCULATED_FORMULAS_ENABLED"):
         precalculated_warmer = _build_precalculated_warmer(db)
 
+    dlq_archiver = None
+    if _env_flag_enabled("ZELERDATA_DLQ_ARCHIVE_ENABLED"):
+        dlq_archiver = build_dlq_auto_archiver(db, sellers=allowed)
+
     return ZelerDataRefreshSupervisor(
         explorer=MongoSellerExplorer(db=db, allowed_sellers=allowed),
         planner=ZelerDataRefreshPlanner(
@@ -1383,6 +1388,7 @@ async def build_zelerdata_refresh_supervisor(*, db: Any) -> ZelerDataRefreshSupe
             )
         ),
         precalculated_warmer=precalculated_warmer,
+        dlq_archiver=dlq_archiver,
         freshness_alarm_reporter=(
             report_freshness_alarms
             if _env_flag_enabled("ZELERDATA_FRESHNESS_ALERTS_ENABLED")

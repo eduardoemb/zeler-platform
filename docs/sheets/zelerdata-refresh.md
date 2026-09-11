@@ -169,6 +169,8 @@ arrives disabled and must be enabled explicitly.
 | `ZELERDATA_RECOVERY_REQUESTS_PER_MINUTE` | `180` | Reserved acquisition budget. |
 | `ZELERDATA_DEVOLUCIONES_ADVANCE_ENABLED` | `false` | Advance an already-authorized DEVOLUCIONES run from this loop. |
 | `ZELERDATA_PRECALCULATED_FORMULAS_ENABLED` | `false` | Precalculate the heavy aggregate formulas during the refresh cycle. |
+| `ZELERDATA_FRESHNESS_ALERTS_ENABLED` | `false` | Emit the operator freshness alarms from the `sheets_read_model_freshness` markers. |
+| `ZELERDATA_DLQ_ARCHIVE_ENABLED` | `false` | Run one bounded Sheets DLQ archive pass per refresh cycle. Requires `RABBITMQ_URL`. |
 
 Refresh also requires `ZELERDATA_FORMULA_RECOVERY_ENABLED=true`, because it plans
 work for the recovery worker rather than acquiring data itself. Enabling refresh
@@ -191,6 +193,11 @@ queries, which is the split agreed after a production write aborted with
   the worker and can be disabled without a deploy by setting the flag.
 - DEVOLUCIONES stays inside the operator authorization boundary: the loop never
   creates or expands coverage, and the legacy systemd timer is superseded.
+- The DLQ archive stays evidence-based: a message is only removed when a
+  reconciled marker already covers its window or it is past retention, the
+  sanitized record is written before the ack, and everything else is requeued
+  untouched. A misconfigured enable fails at build time instead of silently
+  skipping the pass.
 
 ## Verification
 

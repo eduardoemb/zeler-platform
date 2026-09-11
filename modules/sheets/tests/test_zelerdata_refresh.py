@@ -1269,3 +1269,126 @@ async def test_refresh_builder_renews_devoluciones_even_with_advancement_disable
     await supervisor.run_cycle()
 
     assert calls == [{"seller_id": "82453304", "advance_enabled": False}]
+
+
+@pytest.mark.asyncio
+async def test_supervisor_runs_the_dlq_auto_archive_once_per_daily_sweep() -> None:
+    """Q4-b/Q11-c: the archive must keep running, not only on a manual CLI run.
+
+    The archive rescans the whole queue and redraws every retained message, so
+    it rides the daily sweep instead of the 15-minute cycle.
+    """
+    runs: list[str] = []
+
+    class Explorer:
+        async def discover_sellers(self) -> tuple[str, ...]:
+            return ("82453304", "999")
+
+    class Planner:
+        async def plan(self, *, seller_id: str, mode: str = "fast") -> bool:
+            return False
+
+    async def archiver() -> Any:
+        runs.append("archive")
+        return None
+
+    supervisor = ZelerDataRefreshSupervisor(
+        explorer=Explorer(),
+        planner=Planner(),
+        dlq_archiver=archiver,
+        interval_seconds=900,
+        now=lambda: NOW,
+    )
+    await supervisor.run_cycle()
+
+    assert runs == ["archive"]
+
+
+@pytest.mark.asyncio
+async def test_the_dlq_auto_archive_does_not_run_on_a_fast_only_cycle() -> None:
+    """A 15-minute cycle must not redraw the whole queue just to stay automatic."""
+    runs: list[str] = []
+
+    class Explorer:
+        async def discover_sellers(self) -> tuple[str, ...]:
+            return ("82453304",)
+
+    class Planner:
+        async def plan(self, *, seller_id: str, mode: str = "fast") -> bool:
+            return True
+
+    async def archiver() -> Any:
+        runs.append("archive")
+        return None
+
+    supervisor = ZelerDataRefreshSupervisor(
+        explorer=Explorer(),
+        planner=Planner(),
+        dlq_archiver=archiver,
+        interval_seconds=900,
+        now=lambda: datetime(2026, 9, 10, 1, 0, tzinfo=UTC),
+    )
+    await supervisor.run_cycle()
+
+    assert runs == []
+
+
+@pytest.mark.asyncio
+async def test_a_failing_dlq_archiver_does_not_stop_the_refresh_cycle() -> None:
+    planned: list[str] = []
+
+    class Explorer:
+        async def discover_sellers(self) -> tuple[str, ...]:
+            return ("82453304",)
+
+    class Planner:
+        async def plan(self, *, seller_id: str, mode: str = "fast") -> bool:
+            planned.append(mode)
+            return True
+
+    async def archiver() -> Any:
+        raise RuntimeError("broker unavailable")
+
+    supervisor = ZelerDataRefreshSupervisor(
+        explorer=Explorer(),
+        planner=Planner(),
+        dlq_archiver=archiver,
+        interval_seconds=900,
+        now=lambda: NOW,
+    )
+
+    assert await supervisor.run_cycle() is True
+    assert "fast" in planned
+    assert supervisor.health_status == "ok"
+
+
+@pytest.mark.asyncio
+async def test_the_dlq_auto_archive_is_off_unless_explicitly_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from zeler_sheets.consumer import build_zelerdata_refresh_supervisor
+
+    monkeypatch.setenv("ZELERDATA_REFRESH_ENABLED", "true")
+    monkeypatch.setenv("ZELERDATA_REFRESH_SELLERS", "82453304")
+    monkeypatch.setenv("ZELERDATA_FORMULA_RECOVERY_ENABLED", "true")
+    monkeypatch.delenv("ZELERDATA_DLQ_ARCHIVE_ENABLED", raising=False)
+
+    supervisor = await build_zelerdata_refresh_supervisor(db=_IndexedDb())
+
+    assert supervisor._dlq_archiver is None
+
+
+@pytest.mark.asyncio
+async def test_the_dlq_auto_archive_needs_the_broker_when_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from zeler_sheets.consumer import build_zelerdata_refresh_supervisor
+
+    monkeypatch.setenv("ZELERDATA_REFRESH_ENABLED", "true")
+    monkeypatch.setenv("ZELERDATA_REFRESH_SELLERS", "82453304")
+    monkeypatch.setenv("ZELERDATA_FORMULA_RECOVERY_ENABLED", "true")
+    monkeypatch.setenv("ZELERDATA_DLQ_ARCHIVE_ENABLED", "true")
+    monkeypatch.delenv("RABBITMQ_URL", raising=False)
+
+    with pytest.raises(RuntimeError, match="RABBITMQ_URL"):
+        await build_zelerdata_refresh_supervisor(db=_IndexedDb())
