@@ -233,6 +233,47 @@ async def test_productive_gate_respects_proof_expiration(state: str, validity: s
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("staleness", ["within_window", "beyond_window"])
+async def test_productive_gate_tolerates_only_the_live_validity_window(
+    staleness: str,
+) -> None:
+    # The fast refresh certifies coverage a few minutes behind the read instant
+    # and stays valid for two cycles. Inside that window the read must be served;
+    # a claim whose coverage fell further behind must not be presented as current.
+    now = datetime.now(UTC)
+    fresh_until = now - (
+        timedelta(minutes=10) if staleness == "within_window" else timedelta(minutes=45)
+    )
+
+    class MarkerCollection(FakeCollection):
+        async def find_one(self, filter_spec: dict[str, Any]) -> dict[str, Any]:
+            return {
+                "state": "fresh",
+                "fresh_until": fresh_until,
+                "reconciled_until": fresh_until,
+                "valid_until": now + timedelta(minutes=5),
+            }
+
+    db = FakeDb([])
+    db._collections["sheets_read_model_freshness"] = MarkerCollection([])
+    repository = FormulaReadModelRepository(db=db)
+
+    async def check() -> None:
+        await repository.require_read_model_productive(
+            seller_id="seller-1",
+            read_model="stockout_snapshots",
+            date_to=now,
+            formula="ZELERDATA_TEST",
+        )
+
+    if staleness == "within_window":
+        await check()
+    else:
+        with pytest.raises(FormulaDataUnavailableError):
+            await check()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("method", "read_model", "has_start"),
     [

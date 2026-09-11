@@ -1299,9 +1299,10 @@ def devoluciones_reconciliation_marker_covers(
 def _read_model_freshness_marker_covers(marker: Any, *, date_to: Any) -> bool:
     if not isinstance(marker, dict):
         return False
+    now = datetime.now(UTC)
     if marker.get("valid_until") is not None:
         valid_until = _safe_utc_datetime(marker["valid_until"])
-        if valid_until is None or valid_until <= datetime.now(UTC):
+        if valid_until is None or valid_until <= now:
             return False
     state = str(marker.get("state") or "").strip().casefold()
     if state not in PRODUCTIVE_READ_MODEL_STATES:
@@ -1313,7 +1314,19 @@ def _read_model_freshness_marker_covers(marker: Any, *, date_to: Any) -> bool:
         marker.get("fresh_until"),
         marker.get("reconciled_until"),
     )
-    return fresh_until is not None and fresh_until >= requested_until
+    if fresh_until is None:
+        return False
+    if requested_until > now:
+        # A "now"-bounded read demands coverage of an instant that has not
+        # happened yet. Hours that have not occurred cannot be reconciled, so
+        # the requirement stops at the read instant.
+        requested_until = now
+    if fresh_until >= requested_until:
+        return True
+    # Otherwise only the live validity window may cover the small acquisition
+    # lag; a claim further behind must drive a new acquisition instead of
+    # presenting stale data as current.
+    return _live_claim_covers_instant(marker, coverage_until=fresh_until, read_instant=now)
 
 
 def _latest_utc_datetime(*values: Any) -> datetime | None:
