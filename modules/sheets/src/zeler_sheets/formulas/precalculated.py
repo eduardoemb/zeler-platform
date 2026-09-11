@@ -24,9 +24,11 @@ import json
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from decimal import Decimal
 from typing import Any
 
 import structlog
+from bson.decimal128 import Decimal128
 
 from zeler_platform_core.read_model_freshness import READ_MODEL_MARKER_VALIDITY
 from zeler_sheets.formulas.registry import FormulaRegistry
@@ -144,8 +146,10 @@ class PrecalculatedFormulaStore:
                 "seller_id": str(seller_id),
                 "formula": formula,
                 "args": canonical_arguments(formula, args),
-                "values": values,
-                "meta": dict(meta),
+                # The dispatcher returns live Decimals; the driver cannot encode
+                # a raw Decimal, so store the exact BSON decimal representation.
+                "values": _bson_safe(values),
+                "meta": _bson_safe(dict(meta)),
                 "computed_at": current,
                 "valid_until": current + self._validity,
                 "schema_version": 1,
@@ -251,17 +255,30 @@ class PrecalculatedFormulaWarmer:
 
 
 def _utc_or_none(value: Any) -> datetime | None:
-    if isinstance(value, datetime):
-        return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
     if isinstance(value, str):
         try:
             parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
         except ValueError:
             return None
         return parsed.replace(tzinfo=UTC) if parsed.tzinfo is None else parsed.astimezone(UTC)
+    if isinstance(value, datetime):
+        return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
     return None
 
 
 def _iso(value: Any) -> str | None:
     parsed = _utc_or_none(value)
     return None if parsed is None else parsed.isoformat()
+
+
+def _bson_safe(value: Any) -> Any:
+    """Convert live handler output into values the Mongo driver can encode."""
+    if isinstance(value, Decimal):
+        return Decimal128(value)
+    if isinstance(value, Mapping):
+        return {key: _bson_safe(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_bson_safe(item) for item in value]
+    if isinstance(value, tuple):
+        return [_bson_safe(item) for item in value]
+    return value

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from typing import Any
 
 import pytest
@@ -370,3 +371,57 @@ async def test_one_failing_formula_does_not_stop_the_rest() -> None:
         )
         is not None
     )
+
+
+@pytest.mark.asyncio
+async def test_stored_rows_and_meta_are_bson_encodable() -> None:
+    """A live formula returns Decimals; Mongo rejects a raw Decimal document."""
+    from bson.decimal128 import Decimal128
+
+    from zeler_sheets.formulas.precalculated import PrecalculatedFormulaWarmer
+
+    class _Collection:
+        def __init__(self) -> None:
+            self.saved: dict[str, Any] | None = None
+
+        async def replace_one(self, query: dict[str, Any], doc: dict[str, Any], **_: Any) -> Any:
+            # Mirror the driver's contract: only BSON encodable values may pass.
+            from bson import BSON
+
+            BSON.encode({**doc, "_id": str(doc["_id"])})
+            self.saved = doc
+            return type("R", (), {"acknowledged": True})()
+
+        async def find_one(self, query: dict[str, Any]) -> Any:
+            return None
+
+    class _Db:
+        def __init__(self) -> None:
+            self.collection = _Collection()
+
+        def __getitem__(self, name: str) -> _Collection:
+            return self.collection
+
+    db = _Db()
+    store = PrecalculatedFormulaStore(db, now=lambda: NOW)
+
+    class _Dispatcher:
+        async def execute(self, context: Any) -> Any:
+            return type(
+                "R",
+                (),
+                {
+                    "values": [["MLA1", Decimal("1234.56"), Decimal("0")]],
+                    "meta": {"rows_count": 1, "total": Decimal("99.5")},
+                },
+            )()
+
+    warmer = PrecalculatedFormulaWarmer(dispatcher=_Dispatcher(), store=store, now=lambda: NOW)
+    written = await warmer.warm(seller_id="seller-1", cuenta="HOPEMOB")
+
+    assert written > 0
+    saved = db.collection.saved
+    assert saved is not None
+    assert saved["values"][0][1] == Decimal128("1234.56")
+    assert saved["values"][0][2] == Decimal128("0")
+    assert saved["meta"]["total"] == Decimal128("99.5")
