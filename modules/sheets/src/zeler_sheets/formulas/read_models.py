@@ -1180,81 +1180,172 @@ def read_model_reconciliation_marker_covers(
     now: datetime | None = None,
     allow_live_claim: bool = True,
 ) -> bool:
+    """Whether a reconciled marker authorizes a read of ``date_from..date_to``.
+
+    A reconciled interval is a durable record of what was acquired from the
+    source and verified against it. Its ``valid_until`` window governs only the
+    live claim at the edge of coverage: an expired window stops certifying the
+    uncovered tail of a "recent" read, and never rewrites history that was
+    already acquired. Invalidating the marker (``stale``/``failed``) still
+    withdraws every interval at once.
+    """
     if not isinstance(marker, dict):
         return False
-    if marker.get("read_model") == "orders" and "retained_intervals" in marker:
-        if str(marker.get("state") or "").strip().casefold() != RECONCILED_READ_MODEL_STATE:
-            return False
-        current = {key: value for key, value in marker.items() if key != "retained_intervals"}
-        retained = marker["retained_intervals"]
-        if not isinstance(retained, list):
-            return False
-        return any(
-            read_model_reconciliation_marker_covers(
-                proof,
-                date_from=date_from,
-                date_to=date_to,
-                coverage_basis=coverage_basis,
-                exact_interval=exact_interval,
-                now=now,
-                # A retained interval is a historical proof: its validity
-                # window must never certify hours after the range it acquired.
-                allow_live_claim=False,
-            )
-            for proof in [current, *retained]
-            if isinstance(proof, dict) and "retained_intervals" not in proof
-        )
+    proofs = _marker_interval_proofs(marker)
+    if proofs is None:
+        return False
+    current, retained = proofs
     read_instant = _safe_utc_datetime(now) or datetime.now(UTC)
-    if marker.get("valid_until") is not None:
-        valid_until = _safe_utc_datetime(marker["valid_until"])
-        if valid_until is None or valid_until <= read_instant:
-            return False
-    if str(marker.get("state") or "").strip().casefold() != RECONCILED_READ_MODEL_STATE:
-        return False
-    if (
-        coverage_basis is not None
-        and str(marker.get("coverage_basis") or "").strip() != coverage_basis
-    ):
-        return False
     requested_from = _safe_utc_datetime(date_from)
     requested_until = _safe_utc_datetime(date_to)
-    if requested_from is not None and requested_from > read_instant:
-        # A range that has not started yet cannot be authorized by any claim.
-        return False
-    if requested_until is not None and requested_until > read_instant:
-        # A "last N days" read ends at the end of the current local day, which
-        # is still in the future. Hours that have not happened cannot be
-        # reconciled, so the requirement stops at the read instant; the marker
-        # must still reach it for the read to count as current.
-        requested_until = read_instant
-    coverage_start = _first_utc_datetime(
-        marker.get("date_from"),
-        marker.get("last_event_synced_at"),
-    )
-    reconciled_until = _safe_utc_datetime(marker.get("reconciled_until"))
-    if (
-        requested_from is None
-        or requested_until is None
-        or coverage_start is None
-        or reconciled_until is None
-        or reconciled_until < coverage_start
-    ):
+    # A range that has not started yet, or that cannot be compared as an
+    # instant, is never authorized by any claim.
+    if requested_from is None or requested_until is None or requested_from > read_instant:
         return False
     if exact_interval:
-        return coverage_start == requested_from and reconciled_until == requested_until
-    if coverage_start > requested_from:
+        return _exact_interval_is_proven(
+            current,
+            requested_from=requested_from,
+            requested_until=requested_until,
+            read_instant=read_instant,
+            coverage_basis=coverage_basis,
+        )
+    covered = [
+        proof
+        for proof in [current, *retained]
+        if _is_proven_interval(proof, coverage_basis=coverage_basis)
+    ]
+    if not covered:
         return False
-    if reconciled_until >= requested_until:
+    covered.sort(key=lambda proof: _safe_utc_datetime(proof.get("date_from")) or datetime.min)
+    return _union_covers_instant(
+        covered,
+        requested_from=requested_from,
+        requested_until=requested_until,
+        read_instant=read_instant,
+        reference=current,
+        allow_live_claim=allow_live_claim,
+    )
+
+
+def _marker_interval_proofs(marker: dict[str, Any]) -> tuple[dict[str, Any], list[Any]] | None:
+    """Split a marker into its current claim and independently retained proofs.
+
+    Returns ``None`` when the marker is not a reconciled claim at all, which is
+    how an invalidated marker withdraws every interval it used to hold.
+    """
+    if str(marker.get("state") or "").strip().casefold() != RECONCILED_READ_MODEL_STATE:
+        return None
+    if "retained_intervals" not in marker:
+        return marker, []
+    retained = marker["retained_intervals"]
+    if not isinstance(retained, list):
+        return None
+    current = {key: value for key, value in marker.items() if key != "retained_intervals"}
+    return current, [proof for proof in retained if isinstance(proof, dict)]
+
+
+def _exact_interval_is_proven(
+    proof: dict[str, Any],
+    *,
+    requested_from: datetime,
+    requested_until: datetime,
+    read_instant: datetime,
+    coverage_basis: str | None,
+) -> bool:
+    """Strict interval equality for models whose window is the whole proof."""
+    if not _claim_is_open(proof, read_instant=read_instant) or not _is_proven_interval(
+        proof, coverage_basis=coverage_basis
+    ):
+        return False
+    coverage_start = _first_utc_datetime(
+        proof.get("date_from"),
+        proof.get("last_event_synced_at"),
+    )
+    reconciled_until = _safe_utc_datetime(proof.get("reconciled_until"))
+    if coverage_start is None or reconciled_until is None:
+        return False
+    # The requested end may fall inside the current local day, which has not
+    # finished yet; what can be compared is the part that already happened.
+    bounded_until = min(requested_until, read_instant)
+    return coverage_start == requested_from and reconciled_until == bounded_until
+
+
+def _union_covers_instant(
+    proofs: list[dict[str, Any]],
+    *,
+    requested_from: datetime,
+    requested_until: datetime,
+    read_instant: datetime,
+    reference: dict[str, Any],
+    allow_live_claim: bool,
+) -> bool:
+    """Whether the union of durable proofs reaches the requested read instant.
+
+    Only the uncovered tail may lean on the live claim of ``reference``. A gap
+    between two independent proofs is never silently covered.
+    """
+    requested_instant = min(requested_until, read_instant)
+    intervals: list[tuple[datetime, datetime]] = []
+    for proof in proofs:
+        start = _safe_utc_datetime(proof.get("date_from")) or _safe_utc_datetime(
+            proof.get("last_event_synced_at")
+        )
+        end = _safe_utc_datetime(proof.get("reconciled_until"))
+        if start is None or end is None or end < start:
+            continue
+        # Gaps outside the requested range are irrelevant; only the span the
+        # caller actually reads must be covered without holes.
+        clipped_start = max(start, requested_from)
+        clipped_end = min(end, requested_instant)
+        if clipped_start <= clipped_end:
+            intervals.append((clipped_start, clipped_end))
+    if not intervals:
+        return False
+    intervals.sort()
+    if intervals[0][0] > requested_from:
+        return False
+    covered_until = intervals[0][1]
+    for start, end in intervals[1:]:
+        if start > covered_until:
+            return False
+        covered_until = max(covered_until, end)
+    if covered_until >= requested_instant:
         return True
-    # The fast refresh publishes coverage a few minutes behind the read instant
-    # and stays valid for two cycles. Inside that window the live claim
-    # authorizes the read; its own expiry is what forces a new acquisition
-    # instead of silently presenting stale data as current.
     return allow_live_claim and _live_claim_covers_instant(
-        marker,
-        coverage_until=reconciled_until,
+        reference,
+        coverage_until=covered_until,
         read_instant=read_instant,
     )
+
+
+def _is_proven_interval(proof: Any, *, coverage_basis: str | None) -> bool:
+    """Whether a claim still records a reconciled acquisition.
+
+    Unlike the live claim, a proven interval is not withdrawn when its validity
+    window closes; only an explicit invalidation does that.
+    """
+    if not isinstance(proof, dict):
+        return False
+    if str(proof.get("state") or "").strip().casefold() != RECONCILED_READ_MODEL_STATE:
+        return False
+    return not (
+        coverage_basis is not None
+        and str(proof.get("coverage_basis") or "").strip() != coverage_basis
+    )
+
+
+def _claim_is_open(proof: Any, *, read_instant: datetime) -> bool:
+    """Whether a claim may still certify the live edge of coverage."""
+    if not isinstance(proof, dict):
+        return False
+    if str(proof.get("state") or "").strip().casefold() != RECONCILED_READ_MODEL_STATE:
+        return False
+    valid_until = proof.get("valid_until")
+    if valid_until is None:
+        return True
+    parsed = _safe_utc_datetime(valid_until)
+    return parsed is not None and parsed > read_instant
 
 
 def devoluciones_reconciliation_marker_covers(

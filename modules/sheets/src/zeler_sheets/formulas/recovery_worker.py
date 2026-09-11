@@ -46,7 +46,7 @@ from zeler_sheets.formulas.recovery import (
     OrderIdsRecoveryRequest,
     ShipmentIdsRecoveryRequest,
 )
-from zeler_sheets.formulas.refresh import reconciled_marker
+from zeler_sheets.formulas.refresh import merge_interval_proofs, reconciled_marker
 from zeler_sheets.historical_meli_backfill import (
     _catalog_buybox_snapshot,
     _catalog_product_snapshot,
@@ -1174,31 +1174,23 @@ class FormulaRecoveryWorker:
             and marker_before is not None
             and marker_before.get("state") == "reconciled"
         ):
-            # Keep independent proofs, never extend their expiry or certify a
-            # gap. The newest interval remains readable by older API images.
+            # Retain every proven interval as durable history. Overlapping or
+            # contiguous acquisitions merge into one proof; a real gap between
+            # them is preserved so it is never presented as covered. Proofs the
+            # new marker already covers need no separate record.
             previous = {
                 key: value for key, value in marker_before.items() if key != "retained_intervals"
             }
-            candidates = [previous, *marker_before.get("retained_intervals", [])]
-            marker["retained_intervals"] = [
-                {
-                    key: proof[key]
-                    for key in ("state", "date_from", "reconciled_until", "valid_until")
-                }
-                for proof in candidates
-                if isinstance(proof, dict)
-                and isinstance(proof.get("valid_until"), datetime)
-                and all(
-                    key in proof
-                    for key in ("state", "date_from", "reconciled_until", "valid_until")
-                )
-                and read_model_reconciliation_marker_covers(
-                    proof, date_from=proof.get("date_from"), date_to=proof.get("reconciled_until")
-                )
-                and not read_model_reconciliation_marker_covers(
-                    marker, date_from=proof.get("date_from"), date_to=proof.get("reconciled_until")
+            candidates = [
+                proof
+                for proof in [previous, *marker_before.get("retained_intervals", [])]
+                if not read_model_reconciliation_marker_covers(
+                    marker,
+                    date_from=proof.get("date_from"),
+                    date_to=proof.get("reconciled_until"),
                 )
             ]
+            marker["retained_intervals"] = merge_interval_proofs(candidates)
         # Source acquisition happens outside Mongo transactions. Publish all
         # normalized rows, coverage and completion atomically for the live owner.
         async with (

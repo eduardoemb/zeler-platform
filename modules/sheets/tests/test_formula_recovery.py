@@ -5932,16 +5932,27 @@ async def test_order_recovery_preserves_independent_intervals_without_acquiring_
     assert read_model_reconciliation_marker_covers(
         marker, date_from=requested.date_from, date_to=requested.date_to
     )
+    # A proven interval is durable history: closing its live claim window must
+    # not make the already-acquired range unreadable. A prior marker without any
+    # validity boundary cannot be retained as-is and stays unreadable.
     assert read_model_reconciliation_marker_covers(
         marker, date_from=prior["date_from"], date_to=prior["reconciled_until"]
-    ) is (prior_expired is False)
+    ) is (prior_expired is not None)
     assert not read_model_reconciliation_marker_covers(
         marker, date_from=requested.date_from, date_to=prior["reconciled_until"]
     )
-    if prior_expired is False:
-        assert marker["retained_intervals"][0]["valid_until"] == prior["valid_until"].replace(
-            tzinfo=None, microsecond=prior["valid_until"].microsecond // 1000 * 1000
-        )
+    if prior_expired is not None:
+        retained = marker["retained_intervals"][0]
+
+        # Mongo returns naive millisecond datetimes, so compare on that basis.
+        def stored(value: datetime) -> datetime:
+            return value.astimezone(UTC).replace(
+                tzinfo=None, microsecond=value.microsecond // 1000 * 1000
+            )
+
+        assert retained["date_from"] == stored(prior["date_from"])
+        assert retained["reconciled_until"] == stored(prior["reconciled_until"])
+        assert retained["valid_until"] == stored(prior["valid_until"])
     # A later publication must retain both earlier independent proofs rather
     # than just the immediately preceding top-level interval.
     later = RecoveryRequest(
@@ -5960,9 +5971,12 @@ async def test_order_recovery_preserves_independent_intervals_without_acquiring_
             formula="ZELERDATA_ORDENES",
         )
     marker = await recovery_db.sheets_read_model_freshness.find_one({"_id": "pilot:orders"})
+    # The prior proof survives only when it carried a concrete validity
+    # boundary; a marker without one cannot be retained safely.
     assert read_model_reconciliation_marker_covers(
         marker, date_from=prior["date_from"], date_to=prior["reconciled_until"]
-    ) is (prior_expired is False)
+    ) is (prior_expired is not None)
+    # The gap between the requested and later intervals stays uncovered.
     assert not read_model_reconciliation_marker_covers(
         marker, date_from=requested.date_from, date_to=later.date_to
     )

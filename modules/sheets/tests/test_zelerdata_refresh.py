@@ -755,3 +755,49 @@ def test_reconciled_marker_covers_two_refresh_cycles() -> None:
     assert marker["fresh_until"] == marker["reconciled_until"] == NOW
     assert marker["state"] == "reconciled"
     assert marker["_id"] == "82453304:orders"
+
+
+def test_merge_interval_proofs_unions_contiguous_history() -> None:
+    """Overlapping or touching acquisitions merge; a real gap is preserved."""
+    from zeler_sheets.formulas.refresh import merge_interval_proofs
+
+    def proof(start_days: int, end_days: int, validity_days: int = 1) -> dict[str, object]:
+        return {
+            "state": "reconciled",
+            "date_from": NOW - timedelta(days=start_days),
+            "reconciled_until": NOW - timedelta(days=end_days),
+            "valid_until": NOW + timedelta(days=validity_days),
+        }
+
+    merged = merge_interval_proofs([proof(60, 40), proof(40, 20), proof(20, 10)])
+    assert len(merged) == 1
+    assert merged[0]["date_from"] == NOW - timedelta(days=60)
+    assert merged[0]["reconciled_until"] == NOW - timedelta(days=10)
+
+    gapped = merge_interval_proofs([proof(60, 40), proof(30, 10)])
+    assert len(gapped) == 2
+
+    # Malformed or non-reconciled proofs are dropped, never guessed into
+    # coverage; a usable proof alongside them is still retained.
+    dropped = merge_interval_proofs([proof(60, 40), {"state": "stale"}])
+    assert len(dropped) == 1 and dropped[0]["date_from"] == NOW - timedelta(days=60)
+    assert merge_interval_proofs([{"state": "reconciled", "date_from": NOW}]) == []
+
+
+def test_merge_interval_proofs_bounds_the_marker_document() -> None:
+    """Durable proofs are compacted instead of growing without bound."""
+    from zeler_sheets.formulas.refresh import MAX_RETAINED_INTERVALS, merge_interval_proofs
+
+    disjoint = [
+        {
+            "state": "reconciled",
+            "date_from": NOW - timedelta(days=3 * index + 3),
+            "reconciled_until": NOW - timedelta(days=3 * index + 2),
+            "valid_until": NOW + timedelta(minutes=30),
+        }
+        for index in range(MAX_RETAINED_INTERVALS + 10)
+    ]
+    merged = merge_interval_proofs(disjoint)
+    assert len(merged) == MAX_RETAINED_INTERVALS
+    # The newest proofs survive; older history fails closed when it is dropped.
+    assert merged[-1]["reconciled_until"] > merged[0]["reconciled_until"]

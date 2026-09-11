@@ -11,7 +11,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import re
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from contextlib import suppress
 from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol
@@ -109,6 +109,64 @@ def reconciled_marker(
         "source": "zelerdata_read_model_reconcile",
         "schema_version": 1,
     }
+
+
+# A proven interval is durable history, so retained proofs are compacted
+# instead of expiring. The cap bounds the marker document; formulas only read
+# the last 90 days, and dropping an old proof fails closed (DATA_UNAVAILABLE)
+# rather than presenting unproven data.
+MAX_RETAINED_INTERVALS = 32
+
+
+def merge_interval_proofs(
+    proofs: Iterable[Mapping[str, Any]],
+    *,
+    keep: int = MAX_RETAINED_INTERVALS,
+) -> list[dict[str, Any]]:
+    """Merge overlapping or contiguous reconciled intervals into durable proofs.
+
+    Two proofs that touch were each acquired and verified against the source, so
+    their union is equally proven; a real gap between them is preserved. Proofs
+    without a concrete validity boundary cannot be retained safely and are
+    dropped, because the marker validator requires one.
+    """
+    if keep < 1:
+        raise ValueError("retained proof cap must be positive")
+    normalized: list[dict[str, Any]] = []
+    for proof in proofs:
+        if not isinstance(proof, Mapping):
+            continue
+        start = proof.get("date_from")
+        end = proof.get("reconciled_until")
+        valid_until = proof.get("valid_until")
+        if (
+            proof.get("state") != "reconciled"
+            or not isinstance(start, datetime)
+            or not isinstance(end, datetime)
+            or not isinstance(valid_until, datetime)
+            or end < start
+        ):
+            continue
+        normalized.append(
+            {
+                "state": "reconciled",
+                "date_from": start,
+                "reconciled_until": end,
+                "valid_until": valid_until,
+            }
+        )
+    normalized.sort(key=lambda proof: (proof["date_from"], proof["reconciled_until"]))
+    merged: list[dict[str, Any]] = []
+    for proof in normalized:
+        if merged and proof["date_from"] <= merged[-1]["reconciled_until"]:
+            previous = merged[-1]
+            previous["reconciled_until"] = max(
+                previous["reconciled_until"], proof["reconciled_until"]
+            )
+            previous["valid_until"] = max(previous["valid_until"], proof["valid_until"])
+            continue
+        merged.append(dict(proof))
+    return merged[-keep:]
 
 
 class RefreshIdentitySource(Protocol):

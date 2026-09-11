@@ -59,8 +59,10 @@ _UNSET = object()
 
 
 @pytest.mark.parametrize("state", ["reconciled", "stale"])
-@pytest.mark.parametrize("retained_expired", [False, True])
-def test_order_interval_proofs_expire_independently(state: str, retained_expired: bool) -> None:
+def test_order_interval_proofs_survive_claim_expiry_but_not_invalidation(state: str) -> None:
+    # A proven interval is a record of what was acquired and reconciled. Its
+    # validity window only bounds the live claim, so closing that window must
+    # not erase history; flipping the marker to stale must.
     now = datetime.now(UTC)
     start = now - timedelta(days=90)
     end = start + timedelta(days=30)
@@ -75,31 +77,82 @@ def test_order_interval_proofs_expire_independently(state: str, retained_expired
                 "state": "reconciled",
                 "date_from": start,
                 "reconciled_until": end,
-                "valid_until": now + timedelta(minutes=-1 if retained_expired else 1),
+                "valid_until": now - timedelta(minutes=1),
             }
         ],
     }
-    assert read_model_reconciliation_marker_covers(marker, date_from=start, date_to=end) is (
-        state == "reconciled" and not retained_expired
+    durable = state == "reconciled"
+    assert (
+        read_model_reconciliation_marker_covers(marker, date_from=start, date_to=end, now=now)
+        is durable
     )
-    assert not read_model_reconciliation_marker_covers(marker, date_from=start, date_to=now)
+    assert (
+        read_model_reconciliation_marker_covers(
+            marker, date_from=now - timedelta(days=1), date_to=now, now=now
+        )
+        is durable
+    )
+    # A gap between two independent proofs is never covered.
     assert not read_model_reconciliation_marker_covers(
-        marker, date_from=now - timedelta(days=1), date_to=now
+        marker, date_from=start, date_to=now, now=now
     )
 
 
-def test_expired_recovery_proof_does_not_authorize_formula_reads() -> None:
-    now = datetime.now(UTC)
+def test_historical_read_inside_a_proven_interval_survives_claim_expiry() -> None:
+    now = datetime(2026, 9, 10, 14, 44, tzinfo=UTC)
     marker = {
+        "read_model": "orders",
         "state": "reconciled",
         "date_from": now - timedelta(days=30),
-        "reconciled_until": now,
-        "valid_until": now - timedelta(seconds=1),
+        "reconciled_until": now - timedelta(hours=2),
+        "fresh_until": now - timedelta(hours=2),
+        "valid_until": now - timedelta(minutes=30),
     }
+    # The whole request sits inside what was already acquired and reconciled,
+    # so closing the live claim window must not turn history into a failure.
+    assert read_model_reconciliation_marker_covers(
+        marker,
+        date_from=now - timedelta(days=20),
+        date_to=now - timedelta(hours=3),
+        now=now,
+    )
+    # Reaching past that coverage needs a live claim; an expired one fails
+    # instead of presenting a gap as current data.
     assert not read_model_reconciliation_marker_covers(
         marker,
-        date_from=now - timedelta(days=2),
+        date_from=now - timedelta(days=20),
         date_to=now,
+        now=now,
+    )
+
+
+def test_uncovered_tail_needs_a_live_claim() -> None:
+    now = datetime(2026, 9, 10, 14, 44, tzinfo=UTC)
+    marker = {
+        "read_model": "orders",
+        "state": "reconciled",
+        "date_from": now - timedelta(days=30),
+        "reconciled_until": now - timedelta(minutes=10),
+        "fresh_until": now - timedelta(minutes=10),
+        "valid_until": now + timedelta(minutes=20),
+    }
+    assert read_model_reconciliation_marker_covers(
+        marker, date_from=now - timedelta(days=20), date_to=now, now=now
+    )
+    # An expired claim never carries the tail.
+    assert not read_model_reconciliation_marker_covers(
+        {**marker, "valid_until": now - timedelta(seconds=1)},
+        date_from=now - timedelta(days=20),
+        date_to=now,
+        now=now,
+    )
+    # A live claim still cannot certify a tail further behind than the two
+    # refresh cycles it is allowed to tolerate.
+    assert not read_model_reconciliation_marker_covers(
+        {**marker, "reconciled_until": now - timedelta(hours=2)},
+        date_from=now - timedelta(days=20),
+        date_to=now,
+        now=now,
     )
 
 
