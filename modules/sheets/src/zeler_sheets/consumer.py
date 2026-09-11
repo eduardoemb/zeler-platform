@@ -153,6 +153,10 @@ class SyncJobsPollerSupervisor:
         failures = 0
         while not self._stop_event.is_set():
             try:
+                # A recovery cycle can legitimately run for minutes. Reporting
+                # "starting" for that whole time leaves a working worker
+                # unhealthy; the poller is only unhealthy when a cycle fails.
+                self.health_status = "ok"
                 result = await self._processor.process_once()
             except Exception as exc:  # noqa: BLE001 - supervisor owns bounded recovery.
                 self.health_status = "error"

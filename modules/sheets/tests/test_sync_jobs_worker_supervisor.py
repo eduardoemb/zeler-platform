@@ -113,6 +113,9 @@ async def test_poller_stop_waits_for_in_flight_work() -> None:
     await asyncio.sleep(0)
 
     assert stopping.done() is False
+    # Long recovery jobs are normal worker work, not a startup failure: the
+    # poller must be healthy while it is actively processing.
+    assert poller.health_status == "ok"
     release.set()
     await stopping
     assert poller.health_status == "stopped"
