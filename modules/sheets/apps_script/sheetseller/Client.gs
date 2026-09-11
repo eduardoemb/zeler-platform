@@ -55,7 +55,16 @@ function zelerdataEnvelopeToValues_(envelope) {
   }
   var code = (envelope && envelope.error && envelope.error.code) || "DATA_UNAVAILABLE";
   var message = (envelope && envelope.error && envelope.error.message) || "";
+  if (code === "PROCESSING") {
+    return [[zelerdataProcessingMessage_(envelope.error)]];
+  }
   return [[zelerdataPublicErrorMessage_(code, message)]];
+}
+
+function zelerdataProcessingMessage_(error) {
+  var seconds = Number(error && error.retry_after_seconds);
+  var wait = isFinite(seconds) && seconds > 0 ? Math.round(seconds) : 60;
+  return "PROCESANDO: vuelve a calcular en ~" + wait + "s";
 }
 
 function zelerdataPublicErrorMessage_(code, message) {
@@ -73,6 +82,9 @@ function zelerdataPublicErrorMessage_(code, message) {
   }
   if (code === "SERVICE_UNAVAILABLE" || code === "INTERNAL") {
     return "SERVICE_UNAVAILABLE: ZelerData could not complete this request. Try again or contact Zeler support.";
+  }
+  if (code === "PROCESSING") {
+    return zelerdataProcessingMessage_({});
   }
   if (code === "DATA_UNAVAILABLE") {
     return "DATA_UNAVAILABLE: this formula is not available for the requested data yet";

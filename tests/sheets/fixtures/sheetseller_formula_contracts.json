@@ -8,6 +8,7 @@
     "BAD_ARGUMENT",
     "DATA_UNAVAILABLE",
     "RATE_LIMITED",
+    "PROCESSING",
     "INTERNAL"
   ],
   "input_cases": ["scalar", "row_range", "column_range", "rectangular_range"],

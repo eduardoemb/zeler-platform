@@ -179,11 +179,23 @@ async def test_formula_execution_log_is_bounded_and_identifies_timeout_phase(
     log = logs[0]
     assert set(log) == {"event", "log_level", "formula", "phase", "status", "duration_ms"}
     assert log["formula"] == ("unknown" if scenario == "unknown" else formula)
-    assert (
-        log["status"]
-        == response.status_code
-        == (503 if scenario.endswith("timeout") else 500 if scenario.endswith("exception") else 200)
+    # Only a deadline reached before any formula work is an operational 5xx.
+    # A deadline during dispatch or recovery is reported as retryable progress.
+    expected_status = (
+        503
+        if scenario == "auth_timeout"
+        else 200
+        if scenario in {"dispatch_timeout", "recovery_timeout"}
+        else 500
+        if scenario.endswith("exception")
+        else 200
     )
+    assert log["status"] == response.status_code == expected_status
+    if scenario in {"dispatch_timeout", "recovery_timeout"}:
+        body = response.json()
+        assert body["error"]["code"] == "PROCESSING"
+        assert body["error"]["retry_after_seconds"] > 0
+        assert body["values"][0][0].startswith("PROCESANDO")
     assert log["phase"] == (
         "authentication"
         if scenario == "auth_timeout"
@@ -424,10 +436,26 @@ async def test_formula_deadline_cancels_work_before_sheets_limit(
             headers={"Authorization": f"Bearer {token}"},
             json=payload if endpoint == "execute" else {"requests": [payload]},
         )
-    assert response.status_code == 503
-    assert response.json()["error"]["code"] == "INTERNAL"
-    assert response.json()["error"]["retryable"] is True
+    # The caller must keep a usable sheet cell and know when to recalculate
+    # instead of receiving an opaque 5xx that Apps Script renders the same way.
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ok"] is False
+    assert body["error"]["code"] == "PROCESSING"
+    assert body["error"]["retryable"] is True
+    assert isinstance(body["error"]["retry_after_seconds"], int)
+    assert 0 < body["error"]["retry_after_seconds"] <= 60
+    assert body["values"][0][0].startswith("PROCESANDO")
     assert cancelled.is_set()
+
+
+def test_formula_deadline_keeps_headroom_below_the_sheets_limit() -> None:
+    """The internal cutoff must stay above heavy-formula latency and below 30s."""
+    from zeler_sheets import api
+
+    assert api.FORMULA_DEADLINE_SECONDS == 25.0
+    assert api.FORMULA_DEADLINE_SECONDS < 30.0
+    assert api.FORMULA_PROCESSING_RETRY_AFTER_SECONDS > 0
 
 
 @pytest.mark.asyncio
@@ -1518,6 +1546,7 @@ async def test_formula_inventory_route_exposes_all_registered_contracts() -> Non
         "BAD_ARGUMENT",
         "DATA_UNAVAILABLE",
         "RATE_LIMITED",
+        "PROCESSING",
         "INTERNAL",
     ]
 

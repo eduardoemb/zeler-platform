@@ -68,7 +68,16 @@ from zeler_sheets.formulas.runtime_states import (
 )
 from zeler_sheets.formulas.schemas import FormulaContract
 
-FORMULA_DEADLINE_SECONDS = 20.0
+# Google Sheets kills a custom function at 30 seconds. Keep the internal cutoff
+# comfortably below that, but above the previous 20s that turned five heavy
+# pilot formulas into opaque 503s. Measured pilot p95 is ~13s and the slowest
+# observed heavy formula is ~20.7s, so 25s keeps headroom without reaching the
+# Sheets limit.
+FORMULA_DEADLINE_SECONDS = 25.0
+# A caller that did not finish in time still needs a usable cell and a bounded
+# hint for when to recalculate. Recovery is admitted asynchronously, so the
+# estimate is a wait hint, not a promise that this formula will be ready.
+FORMULA_PROCESSING_RETRY_AFTER_SECONDS = 60
 
 
 class ExportConfigPayload(BaseModel):
@@ -518,8 +527,9 @@ def build_router(
                 status = response_status
                 return response
         except TimeoutError:
-            status = 503
-            return _formula_deadline_response()
+            response = _formula_deadline_response(request.state.formula_phase)
+            status = response.status_code
+            return response
         finally:
             # Only bounded server-owned labels: no cuenta, arguments, request ID,
             # response values, token or exception text may enter this event.
@@ -541,16 +551,35 @@ def build_router(
                     results.append({"status": status, "body": body})
                 return JSONResponse(jsonable_encoder({"ok": True, "results": results}))
         except TimeoutError:
-            return _formula_deadline_response()
+            return _formula_deadline_response(getattr(request.state, "formula_phase", "dispatch"))
 
     return router
 
 
-def _formula_deadline_response() -> JSONResponse:
-    body, status = _formula_error(
-        "INTERNAL", "formula execution deadline exceeded", status_code=503, retryable=True
+def _formula_deadline_response(phase: str) -> JSONResponse:
+    if phase in {"validation", "authentication", "seller_context"}:
+        # A caller blocked before any data work is an operational failure, not a
+        # slow formula. Keep the explicit retryable error instead of masking it
+        # as progress.
+        body, status = _formula_error(
+            "INTERNAL", "formula execution deadline exceeded", status_code=503, retryable=True
+        )
+        return JSONResponse(status_code=status, content=body)
+    # A 5xx is rendered by Apps Script as an opaque service error, which is how
+    # the five heavy pilot formulas appeared to fail. Return a normal 200
+    # envelope carrying a PROCESSING code, a recalculate hint, and a cell value
+    # the sheet can show until the user recalculates.
+    body, _ = _formula_error(
+        "PROCESSING",
+        "formula still processing; recalculate shortly",
+        status_code=200,
+        retryable=True,
     )
-    return JSONResponse(status_code=status, content=body)
+    body["error"]["retry_after_seconds"] = FORMULA_PROCESSING_RETRY_AFTER_SECONDS
+    body["values"] = [
+        [f"PROCESANDO: vuelve a calcular en ~{FORMULA_PROCESSING_RETRY_AFTER_SECONDS}s"]
+    ]
+    return JSONResponse(status_code=200, content=body)
 
 
 def _authorize(request: Request, seller_id: str | int | None = None) -> JSONResponse | None:

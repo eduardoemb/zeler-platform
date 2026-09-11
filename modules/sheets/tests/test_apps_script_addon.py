@@ -186,6 +186,16 @@ def test_formula_api_client_returns_review_safe_auth_network_and_api_errors() ->
     assert "returned invalid JSON" not in client_source
 
 
+def test_formula_client_surfaces_processing_with_a_recalculate_hint() -> None:
+    """A slow formula must tell the seller to recalculate, not look like a failure."""
+    client_source = _read_addon_file("Client.gs")
+
+    assert 'code === "PROCESSING"' in client_source
+    assert "PROCESANDO" in client_source
+    assert "retry_after_seconds" in client_source
+    assert "vuelve a calcular" in client_source
+
+
 def test_formula_api_envelopes_are_converted_to_sheets_safe_2d_values() -> None:
     client_source = _read_addon_file("Client.gs")
 
