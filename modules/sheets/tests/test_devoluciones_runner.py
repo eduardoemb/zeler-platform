@@ -258,14 +258,21 @@ class _UpdateResult:
 
 class _MarkerDb:
     def __init__(
-        self, document: dict[str, Any] | None, *, runs: list[dict[str, Any]] | None = None
+        self,
+        document: dict[str, Any] | None,
+        *,
+        runs: list[dict[str, Any]] | None = None,
+        operations: list[dict[str, Any]] | None = None,
     ) -> None:
         self.markers = _MarkerCollection(document)
         self.runs = _Collection(runs or [])
+        self.operations = _Collection(operations or [])
 
     def __getitem__(self, name: str) -> Any:
         if name == "sheets_read_model_freshness":
             return self.markers
+        if name == "sheets_devoluciones_operations":
+            return self.operations
         assert name == "sheets_devoluciones_runs"
         return self.runs
 
@@ -351,17 +358,46 @@ async def test_marker_renewal_refuses_when_the_durable_proof_changed() -> None:
 
 
 @pytest.mark.asyncio
-async def test_marker_renewal_is_a_noop_while_the_lease_is_still_open() -> None:
+async def test_marker_renewal_extends_a_still_open_proof_before_it_lapses() -> None:
+    """The renewal is a heartbeat, not an expiry repair.
+
+    The refresh cycle only reaches this model once every 15 minutes, so waiting
+    for the 30-minute lease to lapse leaves a multi-minute window where the
+    proven range is unreadable. Extending a still-open proof on every cycle is
+    what keeps ``ZELERDATA_DEVOLUCIONES`` continuously available.
+    """
     db = _MarkerDb(
         _proven_marker(
             state="reconciled",
             fresh_until=datetime(2026, 6, 11),
             valid_until=(NOW + timedelta(minutes=20)).replace(tzinfo=None),
-        )
+        ),
+        runs=[_completed_run()],
+    )
+    calls: list[str] = []
+
+    async def fingerprint(**_: Any) -> str | None:
+        calls.append("fingerprint")
+        return "proven-fingerprint"
+
+    renewed = await renew_devoluciones_marker_if_proven(
+        db, SELLER, now=lambda: NOW, finalization_fingerprint=fingerprint
     )
 
+    assert renewed is True
+    assert calls == ["fingerprint"]
+    marker = db.markers.document
+    assert marker is not None
+    assert marker["state"] == "reconciled"
+    assert marker["valid_until"] == NOW + timedelta(minutes=30)
+
+
+@pytest.mark.asyncio
+async def test_marker_renewal_requires_an_exact_fingerprint() -> None:
+    db = _MarkerDb(_proven_marker(proof_fingerprint=None), runs=[_completed_run()])
+
     async def forbidden(**_: Any) -> str | None:
-        raise AssertionError("an open marker must not recompute the proof")
+        raise AssertionError("a marker without proof must not be renewed")
 
     renewed = await renew_devoluciones_marker_if_proven(
         db, SELLER, now=lambda: NOW, finalization_fingerprint=forbidden
@@ -372,11 +408,30 @@ async def test_marker_renewal_is_a_noop_while_the_lease_is_still_open() -> None:
 
 
 @pytest.mark.asyncio
-async def test_marker_renewal_requires_an_exact_fingerprint() -> None:
-    db = _MarkerDb(_proven_marker(proof_fingerprint=None), runs=[_completed_run()])
+async def test_marker_renewal_defers_while_a_claims_acquisition_holds_the_lease() -> None:
+    """A live re-acquisition keeps its proof withdrawn.
+
+    ``acquire_devoluciones_operation`` withdraws readiness so no reader consumes
+    a proof while claims are being rewritten. A heartbeat that ignored the live
+    lease would resurrect exactly what that guard withdrew, so the renewal
+    defers until the acquisition releases.
+    """
+    db = _MarkerDb(
+        _proven_marker(state="stale"),
+        runs=[_completed_run()],
+        operations=[
+            {
+                "_id": f"{SELLER}:devoluciones",
+                "seller_id": SELLER,
+                "scope": "devoluciones",
+                "state": "running",
+                "lease_until": NOW + timedelta(seconds=60),
+            }
+        ],
+    )
 
     async def forbidden(**_: Any) -> str | None:
-        raise AssertionError("a marker without proof must not be renewed")
+        raise AssertionError("a live acquisition must not be renewed over")
 
     renewed = await renew_devoluciones_marker_if_proven(
         db, SELLER, now=lambda: NOW, finalization_fingerprint=forbidden

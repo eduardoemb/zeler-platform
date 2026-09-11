@@ -20,7 +20,10 @@ from typing import Any
 
 import structlog
 
-from zeler_platform_core.devoluciones_readiness import DEVOLUCIONES_READ_MODEL
+from zeler_platform_core.devoluciones_readiness import (
+    DEVOLUCIONES_OPERATIONS_COLLECTION,
+    DEVOLUCIONES_READ_MODEL,
+)
 from zeler_platform_core.devoluciones_runs import RUNS_COLLECTION
 
 logger = structlog.get_logger(__name__)
@@ -124,6 +127,12 @@ async def renew_devoluciones_marker_if_proven(
     proof recomputed from the settled run windows. A changed proof, a missing
     run, or an absent fingerprint is refused, so an unproven marker can never
     be made productive.
+
+    It is a heartbeat, not an expiry repair: a still-open proof is extended on
+    every cycle, because waiting for the lease to lapse would leave a
+    multi-minute window where the proven range is unreadable. A marker that an
+    acquisition set ``stale`` is repaired the same way, since its fingerprint
+    still proves the settled run.
     """
     clock = now or (lambda: datetime.now(UTC))
     current = clock().astimezone(UTC)
@@ -133,7 +142,10 @@ async def renew_devoluciones_marker_if_proven(
     )
     if not isinstance(marker, Mapping):
         return False
-    if _marker_is_open(marker, current=current):
+    if await _claims_acquisition_holds_the_lease(db, seller_id, current=current):
+        # A live claims acquisition withdrew readiness on purpose so no reader
+        # consumes a proof while its rows are rewritten. Resurrecting the proof
+        # underneath it would defeat that guard; defer until it releases.
         return False
     proof_fingerprint = str(marker.get("proof_fingerprint") or "").strip()
     if not proof_fingerprint:
@@ -186,6 +198,22 @@ async def renew_devoluciones_marker_if_proven(
         upsert=False,
     )
     return getattr(updated, "matched_count", 0) == 1
+
+
+async def _claims_acquisition_holds_the_lease(
+    db: Any, seller_id: str, *, current: datetime
+) -> bool:
+    """Whether another holder is actively re-acquiring the DEVOLUCIONES scope."""
+    operation = await db[DEVOLUCIONES_OPERATIONS_COLLECTION].find_one(
+        {
+            "_id": f"{seller_id}:{DEVOLUCIONES_READ_MODEL}",
+            "seller_id": str(seller_id),
+            "scope": DEVOLUCIONES_READ_MODEL,
+            "state": "running",
+            "lease_until": {"$gt": current},
+        }
+    )
+    return isinstance(operation, Mapping)
 
 
 def _marker_is_open(marker: Mapping[str, Any], *, current: datetime) -> bool:
