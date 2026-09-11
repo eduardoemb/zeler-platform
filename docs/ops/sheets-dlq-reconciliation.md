@@ -187,6 +187,45 @@ fingerprints, classifications, reason codes, and hashed evidence pointers only.
 It must never include payloads, documents, raw bodies, credentials, URIs, or
 OAuth data. Review it before requesting any approval.
 
+## Bounded archive with a recorded reason (Q4-b, Q11-c)
+
+`infra/operations/sheets_dlq_archive.py` decides the archive disposition and
+`infra/operations/sheets_dlq_archive_runtime.py` executes it. The decided path
+for the stuck queue is *archive with the reason recorded*, not replay.
+
+Two reasons authorise an archive, and nothing else does:
+
+| Reason | Evidence | Why it is safe |
+|---|---|---|
+| `window_reconciled` | The message's seller and read model have a **reconciled** marker whose `reconciled_until` is at or after the message's `occurred_at` | A source reconciliation already proved that interval is in the read model, so the message could only append older data |
+| `age_exceeded` | The message is older than the retention bound (default 30 days) | The queue is not a data store; the read models do not depend on it, and the message is past any useful append window |
+
+Anything else is retained and requeued. Two evidence rules matter:
+
+* An `observed_only` heartbeat is **not** coverage. It says the loop audited
+  what it observed, never that an event that produced no observation is
+  already applied, so it can never authorise an archive.
+* A message for a seller without a reconciled marker is retained. Absence of
+  evidence is not evidence.
+
+Ordering is the safety property: the sanitized record is written **before** the
+delivery is acked. If the write fails, the message is requeued and the run
+stops, so a partial write can never remove history silently. Records carry only
+`event_type`, hashed seller/resource/message references, `occurred_at`,
+`reason_code`, `archived_at` and `schema_version`; raw payloads, idempotency
+keys, seller ids and resource ids never leave the process.
+
+Execute only with both confirmations, from the approved runtime:
+
+```bash
+/app/.venv/bin/python -m infra.operations.sheets_dlq_archive_runtime \
+  --seller-id 82453304 --limit 500 \
+  --confirm-approved-runtime --confirm-archive
+```
+
+The CLI is dry-run first: without both flags it prints the plan and writes
+nothing, and it never contacts the broker.
+
 ## Approval workflow
 
 1. Operator produces the sanitized dry-run plan.
