@@ -191,8 +191,15 @@ async def renew_devoluciones_marker_if_proven(
 def _marker_is_open(marker: Mapping[str, Any], *, current: datetime) -> bool:
     if str(marker.get("state") or "").strip().casefold() != "reconciled":
         return False
-    valid_until = marker.get("valid_until")
-    return isinstance(valid_until, datetime) and valid_until > current
+    # Mongo returns datetimes as naive UTC, so normalize before comparing.
+    valid_until = _as_utc(marker.get("valid_until"))
+    return valid_until is not None and valid_until > current
+
+
+def _as_utc(value: Any) -> datetime | None:
+    if not isinstance(value, datetime):
+        return None
+    return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
 
 
 async def _runtime_finalization_fingerprint(*, db: Any, run: Mapping[str, Any]) -> str | None:

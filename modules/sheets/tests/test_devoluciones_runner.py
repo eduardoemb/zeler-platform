@@ -355,8 +355,8 @@ async def test_marker_renewal_is_a_noop_while_the_lease_is_still_open() -> None:
     db = _MarkerDb(
         _proven_marker(
             state="reconciled",
-            fresh_until=datetime(2026, 6, 11, tzinfo=UTC),
-            valid_until=NOW + timedelta(minutes=20),
+            fresh_until=datetime(2026, 6, 11),
+            valid_until=(NOW + timedelta(minutes=20)).replace(tzinfo=None),
         )
     )
 
