@@ -141,6 +141,7 @@ async def renew_devoluciones_marker_if_proven(
         {"_id": marker_id, "seller_id": str(seller_id), "read_model": DEVOLUCIONES_READ_MODEL}
     )
     if not isinstance(marker, Mapping):
+        _report_refusal(seller_id, "marker_absent")
         return False
     if str(marker.get("state") or "").strip().casefold() != "reconciled" and (
         await _live_acquisition_holds_the_lease(db, seller_id, current=current)
@@ -152,13 +153,16 @@ async def renew_devoluciones_marker_if_proven(
         # still reconciled proves no such acquisition is live, and an
         # acquisition that does not withdraw readiness (the orders sweep) must
         # not stall the heartbeat.
+        _report_refusal(seller_id, "withdrawing_acquisition_holds_the_lease")
         return False
     proof_fingerprint = str(marker.get("proof_fingerprint") or "").strip()
     if not proof_fingerprint:
+        _report_refusal(seller_id, "proof_fingerprint_absent")
         return False
     revision = str(marker.get("revision") or "").strip()
     run_id = revision
     if not run_id:
+        _report_refusal(seller_id, "revision_absent")
         return False
     run = await db[RUNS_COLLECTION].find_one(
         {
@@ -169,15 +173,18 @@ async def renew_devoluciones_marker_if_proven(
         }
     )
     if not isinstance(run, Mapping):
+        _report_refusal(seller_id, "settled_run_absent")
         return False
     if finalization_fingerprint is None:
         finalization_fingerprint = _runtime_finalization_fingerprint
     recomputed = await finalization_fingerprint(db=db, run=run)
     if not recomputed or recomputed != proof_fingerprint:
+        _report_refusal(seller_id, "proof_changed")
         return False
     reconciled_until = marker.get("reconciled_until")
     date_from = marker.get("date_from")
     if not isinstance(reconciled_until, datetime) or not isinstance(date_from, datetime):
+        _report_refusal(seller_id, "marker_window_incomplete")
         return False
     updated = await db[FRESHNESS_COLLECTION].update_one(
         {
@@ -204,6 +211,22 @@ async def renew_devoluciones_marker_if_proven(
         upsert=False,
     )
     return getattr(updated, "matched_count", 0) == 1
+
+
+def _report_refusal(seller_id: str, reason: str) -> None:
+    """Make a refused heartbeat observable instead of a silent ``False``.
+
+    A renewal that quietly stops extending the proof looks exactly like a
+    healthy cycle from the outside: the marker stays ``reconciled`` until its
+    lease lapses and ``ZELERDATA_DEVOLUCIONES`` starts answering
+    ``UNAVAILABLE`` between cycles. Naming the refusal reason is what lets an
+    operator tell ``proof_changed`` apart from a deferred acquisition.
+    """
+    logger.info(
+        "zelerdata.devoluciones_renewal_refused",
+        seller_id=str(seller_id),
+        reason=reason,
+    )
 
 
 async def _live_acquisition_holds_the_lease(db: Any, seller_id: str, *, current: datetime) -> bool:

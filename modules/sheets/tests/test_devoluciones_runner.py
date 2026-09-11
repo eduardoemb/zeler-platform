@@ -12,6 +12,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
+import structlog.testing
 
 from zeler_sheets.devoluciones_runner import (
     ADVANCEABLE_RUN_STATES,
@@ -478,3 +479,57 @@ async def test_marker_renewal_extends_a_reconciled_proof_under_a_live_sweep() ->
     marker = db.markers.document
     assert marker is not None
     assert marker["valid_until"] == NOW + timedelta(minutes=30)
+
+
+@pytest.mark.asyncio
+async def test_marker_renewal_names_the_reason_it_refuses() -> None:
+    """A refused heartbeat must be observable, not a silent ``False``.
+
+    The renewal protects ``ZELERDATA_DEVOLUCIONES`` from expiring between
+    cycles. When it refuses, the marker keeps looking healthy until the lease
+    lapses, so an operator cannot tell ``proof_changed`` from a deferred
+    acquisition by inspecting the store alone.
+    """
+    db = _MarkerDb(_proven_marker(proof_fingerprint=None), runs=[_completed_run()])
+
+    async def forbidden(**_: Any) -> str | None:
+        raise AssertionError("a marker without proof must not be renewed")
+
+    with structlog.testing.capture_logs() as entries:
+        renewed = await renew_devoluciones_marker_if_proven(
+            db, SELLER, now=lambda: NOW, finalization_fingerprint=forbidden
+        )
+
+    assert renewed is False
+    refusals = [
+        entry for entry in entries if entry.get("event") == "zelerdata.devoluciones_renewal_refused"
+    ]
+    assert len(refusals) == 1
+    assert refusals[0]["reason"] == "proof_fingerprint_absent"
+    assert refusals[0]["seller_id"] == SELLER
+
+
+@pytest.mark.asyncio
+async def test_marker_renewal_names_a_deferred_withdrawing_acquisition() -> None:
+    db = _MarkerDb(
+        _proven_marker(state="stale"),
+        runs=[_completed_run()],
+        operations=[
+            {
+                "_id": f"{SELLER}:devoluciones",
+                "seller_id": SELLER,
+                "scope": "devoluciones",
+                "state": "running",
+                "lease_until": NOW + timedelta(seconds=60),
+            }
+        ],
+    )
+
+    with structlog.testing.capture_logs() as entries:
+        renewed = await renew_devoluciones_marker_if_proven(db, SELLER, now=lambda: NOW)
+
+    assert renewed is False
+    refusals = [
+        entry for entry in entries if entry.get("event") == "zelerdata.devoluciones_renewal_refused"
+    ]
+    assert [entry["reason"] for entry in refusals] == ["withdrawing_acquisition_holds_the_lease"]
