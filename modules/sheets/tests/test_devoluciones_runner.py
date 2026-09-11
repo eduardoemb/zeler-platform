@@ -16,10 +16,12 @@ import pytest
 from zeler_sheets.devoluciones_runner import (
     ADVANCEABLE_RUN_STATES,
     advance_due_devoluciones_run,
+    renew_devoluciones_marker_if_proven,
 )
 
 SELLER = "82453304"
 NOW = datetime(2026, 9, 11, 12, 0, tzinfo=UTC)
+MARKER_ID = f"{SELLER}:devoluciones"
 
 
 class _Collection:
@@ -169,3 +171,216 @@ async def test_another_sellers_run_is_never_advanced() -> None:
 
 def test_only_authorized_and_active_states_are_advanceable() -> None:
     assert frozenset({"authorized", "active"}) == ADVANCEABLE_RUN_STATES
+
+
+@pytest.mark.asyncio
+async def test_the_cycle_renews_a_settled_marker_when_no_window_is_due(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A completed run must keep its proof productive between authorizations.
+
+    The finalize publishes the marker once. Without this renewal the 30-minute
+    lease expires while the proven rows are still in Mongo, and an acquisition
+    that invalidates readiness leaves the formula unavailable indefinitely.
+    """
+    from zeler_sheets import devoluciones_runner as runner_module
+
+    renewed: list[str] = []
+    db = _Db([_run(state="completed")])
+
+    async def renew(database: Any, seller_id: str, **_: Any) -> bool:
+        renewed.append(seller_id)
+        return True
+
+    monkeypatch.setattr(runner_module, "renew_devoluciones_marker_if_proven", renew)
+
+    moved = await advance_due_devoluciones_run(db, SELLER, now=lambda: NOW)
+
+    assert moved is False
+    assert renewed == [SELLER]
+
+
+@pytest.mark.asyncio
+async def test_the_cycle_does_not_renew_while_a_window_still_advances(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from zeler_sheets import devoluciones_runner as runner_module
+
+    advanced: list[str] = []
+    renewed: list[str] = []
+    db = _Db([_run()])
+
+    async def advance(*, db: Any, run_id: str, now: Any = None) -> dict[str, int]:
+        advanced.append(run_id)
+        return {"advanced": 1, "finalized": 0}
+
+    async def renew(database: Any, seller_id: str, **_: Any) -> bool:
+        renewed.append(seller_id)
+        return True
+
+    monkeypatch.setattr(runner_module, "renew_devoluciones_marker_if_proven", renew)
+
+    moved = await advance_due_devoluciones_run(db, SELLER, now=lambda: NOW, advance=advance)
+
+    assert moved is True
+    assert advanced == ["a" * 64]
+    assert renewed == []
+
+
+class _MarkerCollection:
+    """Minimal marker surface: a document plus the CAS updates it received."""
+
+    def __init__(self, document: dict[str, Any] | None) -> None:
+        self.document = document
+        self.updates: list[tuple[dict[str, Any], dict[str, Any]]] = []
+
+    async def find_one(self, filter_spec: dict[str, Any], *_: Any, **__: Any) -> Any:
+        assert filter_spec["_id"] == MARKER_ID
+        return None if self.document is None else dict(self.document)
+
+    async def update_one(
+        self, filter_spec: dict[str, Any], update: dict[str, Any], **_: Any
+    ) -> Any:
+        self.updates.append((filter_spec, update))
+        if self.document is None or self.document.get("proof_fingerprint") != filter_spec.get(
+            "proof_fingerprint"
+        ):
+            return _UpdateResult(matched_count=0)
+        self.document.update(update["$set"])
+        return _UpdateResult(matched_count=1)
+
+
+class _UpdateResult:
+    def __init__(self, *, matched_count: int) -> None:
+        self.matched_count = matched_count
+        self.modified_count = matched_count
+
+
+class _MarkerDb:
+    def __init__(
+        self, document: dict[str, Any] | None, *, runs: list[dict[str, Any]] | None = None
+    ) -> None:
+        self.markers = _MarkerCollection(document)
+        self.runs = _Collection(runs or [])
+
+    def __getitem__(self, name: str) -> Any:
+        if name == "sheets_read_model_freshness":
+            return self.markers
+        assert name == "sheets_devoluciones_runs"
+        return self.runs
+
+
+def _proven_marker(**overrides: Any) -> dict[str, Any]:
+    marker = {
+        "_id": MARKER_ID,
+        "seller_id": SELLER,
+        "read_model": "devoluciones",
+        "state": "stale",
+        "fresh_until": NOW - timedelta(minutes=1),
+        "valid_until": NOW - timedelta(minutes=1),
+        "date_from": datetime(2026, 6, 1, tzinfo=UTC),
+        "reconciled_until": datetime(2026, 6, 11, tzinfo=UTC),
+        "last_event_synced_at": datetime(2026, 6, 1, tzinfo=UTC),
+        "source": "devoluciones_operation_acquire",
+        "revision": "a" * 64,
+        "proof_fingerprint": "proven-fingerprint",
+        "updated_at": NOW - timedelta(minutes=2),
+        "schema_version": 1,
+    }
+    marker.update(overrides)
+    return marker
+
+
+def _completed_run(**overrides: Any) -> dict[str, Any]:
+    run = _run(state="completed", _id="a" * 64)
+    run.update(overrides)
+    return run
+
+
+@pytest.mark.asyncio
+async def test_marker_renewal_restores_a_proven_devoluciones_marker() -> None:
+    """The settled proof must stay productive across the 30-minute marker lease.
+
+    Nothing re-runs the quota finalize until the next authorized run, so without
+    a renewal every settled window would expire and ``ZELERDATA_DEVOLUCIONES``
+    would fail closed while the proven rows are still in Mongo.
+    """
+    db = _MarkerDb(_proven_marker(), runs=[_completed_run()])
+    calls: list[str] = []
+
+    async def fingerprint(**_: Any) -> str | None:
+        calls.append("fingerprint")
+        return "proven-fingerprint"
+
+    renewed = await renew_devoluciones_marker_if_proven(
+        db, SELLER, now=lambda: NOW, finalization_fingerprint=fingerprint
+    )
+
+    assert renewed is True
+    assert calls == ["fingerprint"]
+    marker = db.markers.document
+    assert marker is not None
+    assert marker["state"] == "reconciled"
+    assert marker["valid_until"] == NOW + timedelta(minutes=30)
+    assert marker["updated_at"] == NOW
+    assert marker["source"] == "zelerdata_devoluciones_quota_run"
+    assert marker["proof_fingerprint"] == "proven-fingerprint"
+    assert marker["revision"] == "a" * 64
+    # The formula gate requires fresh_until == reconciled_until; the invalidation
+    # had collapsed fresh_until to "now", so renewal must restore the pair.
+    assert marker["fresh_until"] == marker["reconciled_until"]
+    assert marker["date_from"] == datetime(2026, 6, 1, tzinfo=UTC)
+    assert marker["last_event_synced_at"] == marker["date_from"]
+
+
+@pytest.mark.asyncio
+async def test_marker_renewal_refuses_when_the_durable_proof_changed() -> None:
+    db = _MarkerDb(_proven_marker(), runs=[_completed_run()])
+
+    async def changed(**_: Any) -> str | None:
+        return "a-different-fingerprint"
+
+    renewed = await renew_devoluciones_marker_if_proven(
+        db, SELLER, now=lambda: NOW, finalization_fingerprint=changed
+    )
+
+    assert renewed is False
+    assert db.markers.updates == []
+    stored = db.markers.document
+    assert stored is not None and stored["state"] == "stale"
+
+
+@pytest.mark.asyncio
+async def test_marker_renewal_is_a_noop_while_the_lease_is_still_open() -> None:
+    db = _MarkerDb(
+        _proven_marker(
+            state="reconciled",
+            fresh_until=datetime(2026, 6, 11, tzinfo=UTC),
+            valid_until=NOW + timedelta(minutes=20),
+        )
+    )
+
+    async def forbidden(**_: Any) -> str | None:
+        raise AssertionError("an open marker must not recompute the proof")
+
+    renewed = await renew_devoluciones_marker_if_proven(
+        db, SELLER, now=lambda: NOW, finalization_fingerprint=forbidden
+    )
+
+    assert renewed is False
+    assert db.markers.updates == []
+
+
+@pytest.mark.asyncio
+async def test_marker_renewal_requires_an_exact_fingerprint() -> None:
+    db = _MarkerDb(_proven_marker(proof_fingerprint=None), runs=[_completed_run()])
+
+    async def forbidden(**_: Any) -> str | None:
+        raise AssertionError("a marker without proof must not be renewed")
+
+    renewed = await renew_devoluciones_marker_if_proven(
+        db, SELLER, now=lambda: NOW, finalization_fingerprint=forbidden
+    )
+
+    assert renewed is False
+    assert db.markers.updates == []

@@ -96,6 +96,28 @@ keeps the existing lease, 10-day window bound, and readback guarantees.
 The absorbed trigger is off by default (`ZELERDATA_DEVOLUCIONES_ADVANCE_ENABLED=false`).
 Turn it on only after an operator-authorized run exists for the pilot.
 
+#### Renewing a settled marker
+
+The quota finalize publishes the `devoluciones` marker once, when the last window
+settles. Nothing re-runs it until the next authorized run, but the marker only
+leases for 30 minutes and any acquisition that takes the DEVOLUCIONES lease
+invalidates the marker before it fetches. An `orders` recovery job does exactly
+that: it acquires the shared lease, leaves `devoluciones` `stale`, and publishes
+only its own marker. Without repair, a fully proven range would fail closed
+forever.
+
+`renew_devoluciones_marker_if_proven` closes that hole. It only reads Mongo: it
+requires the marker to carry a `proof_fingerprint`, finds the settled `completed`
+run named by `revision`, recomputes the finalize fingerprint from the run
+windows, and republishes the marker with a fresh 30-minute lease only when the
+recomputed proof matches the stored fingerprint. It never calls Mercado Libre
+and never widens coverage; a changed proof, a missing run, or an open marker is
+refused, so an unproven range can never be made productive.
+
+The renewal is **not** gated by `ZELERDATA_DEVOLUCIONES_ADVANCE_ENABLED`. That
+flag gates source work only; the renewal is a local read and runs every cycle
+for every refresh seller.
+
 ## Precalculated heavy formulas
 
 A Sheets custom function cannot exceed the caller's 30 second budget, and the

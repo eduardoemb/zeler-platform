@@ -1374,11 +1374,13 @@ async def build_zelerdata_refresh_supervisor(*, db: Any) -> ZelerDataRefreshSupe
         ),
         # DEVOLUCIONES moved off its own systemd timer into this loop (Q2-b,
         # Q7-a). The runner only advances an already-authorized run; it never
-        # creates one, so the operator authorization boundary is unchanged.
+        # creates one, so the operator authorization boundary is unchanged. The
+        # renewal inside it always runs, because a settled proof must stay
+        # productive between authorizations without any source work.
         devoluciones_runner=(
-            (lambda seller_id: advance_due_devoluciones_run(db, seller_id))
-            if devoluciones_advance
-            else None
+            lambda seller_id: advance_due_devoluciones_run(
+                db, seller_id, advance_enabled=devoluciones_advance
+            )
         ),
         precalculated_warmer=precalculated_warmer,
         freshness_alarm_reporter=(

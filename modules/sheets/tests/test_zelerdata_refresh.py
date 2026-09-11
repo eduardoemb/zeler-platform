@@ -1229,3 +1229,36 @@ async def test_refresh_builder_leaves_the_precalculated_warmer_off_by_default(
     supervisor = await build_zelerdata_refresh_supervisor(db=_IndexedDb())
 
     assert supervisor._precalculated_warmer is None
+
+
+@pytest.mark.asyncio
+async def test_refresh_builder_renews_devoluciones_even_with_advancement_disabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A settled proof must be renewed without any source work or authorization.
+
+    ``ZELERDATA_DEVOLUCIONES_ADVANCE_ENABLED`` gates source acquisition only.
+    The marker renewal never calls Mercado Libre, so it runs unconditionally and
+    keeps an already-proven range productive between authorizations.
+    """
+    from zeler_sheets import consumer as consumer_module
+    from zeler_sheets.consumer import build_zelerdata_refresh_supervisor
+
+    calls: list[dict[str, Any]] = []
+
+    async def runner(
+        db: Any, seller_id: str, *, advance_enabled: bool = True, now: Any = None
+    ) -> bool:
+        calls.append({"seller_id": seller_id, "advance_enabled": advance_enabled})
+        return False
+
+    monkeypatch.setattr(consumer_module, "advance_due_devoluciones_run", runner)
+    monkeypatch.setenv("ZELERDATA_REFRESH_ENABLED", "true")
+    monkeypatch.setenv("ZELERDATA_REFRESH_SELLERS", "82453304")
+    monkeypatch.setenv("ZELERDATA_FORMULA_RECOVERY_ENABLED", "true")
+    monkeypatch.delenv("ZELERDATA_DEVOLUCIONES_ADVANCE_ENABLED", raising=False)
+
+    supervisor = await build_zelerdata_refresh_supervisor(db=_IndexedDb())
+    await supervisor.run_cycle()
+
+    assert calls == [{"seller_id": "82453304", "advance_enabled": False}]

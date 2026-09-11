@@ -127,6 +127,12 @@ covering claims and the joined orders. It has a 30-minute marker lease.
 Formula readers fail closed when the marker expires or does not enclose the
 requested range; separate claims/orders markers cannot be combined.
 
+Two writers publish that marker and both are canonical: the joint reconcile
+(`zelerdata_devoluciones_joint_reconcile`) for historical windows and the quota
+run finalize (`zelerdata_devoluciones_quota_run`) for the settled windows of the
+refresh loop. The refresh cycle renews the settled marker from its durable
+proof when no window is due; see `docs/sheets/zelerdata-refresh.md`.
+
 The active scheduled path consumes one operator-authorized quota run. The
 operator fixes the seller, half-open UTC range, cohort, partition version, and
 release fingerprints before scheduling. The timer cannot create or discover a

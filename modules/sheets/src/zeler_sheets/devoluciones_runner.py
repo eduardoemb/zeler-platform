@@ -14,17 +14,30 @@ guarantees.
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
-from datetime import UTC, datetime
+from collections.abc import Awaitable, Callable, Mapping
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import structlog
 
+from zeler_platform_core.devoluciones_readiness import DEVOLUCIONES_READ_MODEL
 from zeler_platform_core.devoluciones_runs import RUNS_COLLECTION
 
 logger = structlog.get_logger(__name__)
 
-__all__ = ["ADVANCEABLE_RUN_STATES", "advance_due_devoluciones_run"]
+__all__ = [
+    "ADVANCEABLE_RUN_STATES",
+    "advance_due_devoluciones_run",
+    "renew_devoluciones_marker_if_proven",
+]
+
+FRESHNESS_COLLECTION = "sheets_read_model_freshness"
+# The provenance a settled quota run publishes; renewal restores exactly this
+# value so the formula gate keeps accepting one canonical source.
+QUOTA_RUN_SOURCE = "zelerdata_devoluciones_quota_run"
+# Mirrors ``DEVOLUCIONES_MARKER_VALIDITY``: the renewed lease covers two refresh
+# cycles, exactly like the marker the quota finalize publishes.
+DEVOLUCIONES_MARKER_VALIDITY = timedelta(minutes=30)
 
 # Mirrors ``devoluciones_run_allows_advancement``: every other lifecycle state
 # (``finalizing``, ``completed``, ``failed``, ``expired``) must never start
@@ -38,6 +51,7 @@ async def advance_due_devoluciones_run(
     *,
     now: Callable[[], datetime] | None = None,
     advance: Callable[..., Awaitable[dict[str, int]]] | None = None,
+    advance_enabled: bool = True,
 ) -> bool:
     """Advance at most one due DEVOLUCIONES window for ``seller_id``.
 
@@ -45,9 +59,16 @@ async def advance_due_devoluciones_run(
     the refresh cycle can report whether it did operational work. Missing,
     expired, foreign, or not-yet-due runs return ``False`` without touching the
     source or creating anything.
+
+    ``advance_enabled`` gates only source work. The marker renewal below is
+    always attempted: it never calls Mercado Libre and only restores a proof
+    whose fingerprint still matches the settled run.
     """
     clock = now or (lambda: datetime.now(UTC))
     current = clock().astimezone(UTC)
+    if not advance_enabled:
+        await renew_devoluciones_marker_if_proven(db, seller_id, now=clock)
+        return False
     run = await db[RUNS_COLLECTION].find_one(
         {
             "seller_id": str(seller_id),
@@ -59,6 +80,13 @@ async def advance_due_devoluciones_run(
         sort=[("created_at", -1)],
     )
     if not isinstance(run, dict) or not str(run.get("_id") or "").strip():
+        # No window is due. The settled run's marker still has to outlive the
+        # 30-minute lease, and the finalize only runs once, so the same cycle
+        # renews the marker from the proof already persisted in Mongo. This is
+        # also what repairs the marker after an acquisition that invalidated
+        # readiness without publishing a replacement (for example an ``orders``
+        # recovery job, which takes the same lease).
+        await renew_devoluciones_marker_if_proven(db, seller_id, now=clock)
         return False
 
     run_id = str(run["_id"])
@@ -74,3 +102,109 @@ async def _runtime_advance(*, db: Any, run_id: str, now: Any = None) -> dict[str
     from infra.operations.devoluciones_quota_advance import advance_authorized_quota_run
 
     return await advance_authorized_quota_run(db=db, run_id=run_id, now=now)
+
+
+async def renew_devoluciones_marker_if_proven(
+    db: Any,
+    seller_id: str,
+    *,
+    now: Callable[[], datetime] | None = None,
+    finalization_fingerprint: Callable[..., Awaitable[str | None]] | None = None,
+) -> bool:
+    """Extend the DEVOLUCIONES marker from the proof already persisted in Mongo.
+
+    The quota finalize publishes the marker once, when the last window settles.
+    Nothing re-runs it afterwards, so without a renewal the 30-minute marker
+    lease would expire a proof whose rows are still authoritative, and any
+    acquisition that invalidates readiness (an ``orders`` recovery job takes the
+    same lease) would leave ``ZELERDATA_DEVOLUCIONES`` unavailable forever.
+
+    Renewal never calls Mercado Libre and never widens coverage: it only
+    restores a marker whose ``proof_fingerprint`` still matches the finalize
+    proof recomputed from the settled run windows. A changed proof, a missing
+    run, or an absent fingerprint is refused, so an unproven marker can never
+    be made productive.
+    """
+    clock = now or (lambda: datetime.now(UTC))
+    current = clock().astimezone(UTC)
+    marker_id = f"{seller_id}:{DEVOLUCIONES_READ_MODEL}"
+    marker = await db[FRESHNESS_COLLECTION].find_one(
+        {"_id": marker_id, "seller_id": str(seller_id), "read_model": DEVOLUCIONES_READ_MODEL}
+    )
+    if not isinstance(marker, Mapping):
+        return False
+    if _marker_is_open(marker, current=current):
+        return False
+    proof_fingerprint = str(marker.get("proof_fingerprint") or "").strip()
+    if not proof_fingerprint:
+        return False
+    revision = str(marker.get("revision") or "").strip()
+    run_id = revision
+    if not run_id:
+        return False
+    run = await db[RUNS_COLLECTION].find_one(
+        {
+            "_id": run_id,
+            "seller_id": str(seller_id),
+            "scope": "devoluciones",
+            "state": "completed",
+        }
+    )
+    if not isinstance(run, Mapping):
+        return False
+    if finalization_fingerprint is None:
+        finalization_fingerprint = _runtime_finalization_fingerprint
+    recomputed = await finalization_fingerprint(db=db, run=run)
+    if not recomputed or recomputed != proof_fingerprint:
+        return False
+    reconciled_until = marker.get("reconciled_until")
+    date_from = marker.get("date_from")
+    if not isinstance(reconciled_until, datetime) or not isinstance(date_from, datetime):
+        return False
+    updated = await db[FRESHNESS_COLLECTION].update_one(
+        {
+            "_id": marker_id,
+            "seller_id": str(seller_id),
+            "read_model": DEVOLUCIONES_READ_MODEL,
+            "proof_fingerprint": proof_fingerprint,
+        },
+        {
+            "$set": {
+                "state": "reconciled",
+                "date_from": date_from,
+                "reconciled_until": reconciled_until,
+                "fresh_until": reconciled_until,
+                "last_event_synced_at": date_from,
+                "valid_until": current + DEVOLUCIONES_MARKER_VALIDITY,
+                "updated_at": current,
+                "source": QUOTA_RUN_SOURCE,
+                "revision": run_id,
+                "proof_fingerprint": proof_fingerprint,
+                "schema_version": 1,
+            }
+        },
+        upsert=False,
+    )
+    return getattr(updated, "matched_count", 0) == 1
+
+
+def _marker_is_open(marker: Mapping[str, Any], *, current: datetime) -> bool:
+    if str(marker.get("state") or "").strip().casefold() != "reconciled":
+        return False
+    valid_until = marker.get("valid_until")
+    return isinstance(valid_until, datetime) and valid_until > current
+
+
+async def _runtime_finalization_fingerprint(*, db: Any, run: Mapping[str, Any]) -> str | None:
+    """Recompute the exact finalize fingerprint from the settled run windows."""
+    from infra.operations.zelerdata_read_model_reconcile import (
+        _contiguous_devoluciones_run_windows,
+        _quota_finalization_fingerprint,
+        readback_devoluciones_quota_run,
+    )
+
+    windows = await _contiguous_devoluciones_run_windows(db=db, run=run)
+    if windows is None:
+        return None
+    proof = await readback_devoluciones_quota_run(db=db, run=run, windows=windows)
+    return _quota_finalization_fingerprint(proof, windows=windows)
