@@ -810,6 +810,22 @@ async def test_item_formula_reads_fall_back_to_verified_inventory_without_marker
     assert sin_vincular.values == [["ID PUBLICACION", "TITULO"], ["MLA2", "Regular item"]]
     assert sin_vincular.meta["inventory_scope"] is True
 
+    # "todos" is a scope keyword, never a literal publication or SKU.
+    supermercado_todos = await dispatcher.execute(
+        _context("ZELERDATA_SUPERMERCADO", {"id_publicaciones": "todos"}, seller_id="82453304")
+    )
+    assert supermercado_todos.values == [["Supermercado"], ["Normal"]]
+    assert supermercado_todos.meta["partial_misses"] == 0
+
+    medidas_todos = await dispatcher.execute(
+        _context(
+            "ZELERDATA_MEDIDAS",
+            {"skus": "todos", "id_publicaciones": "todos"},
+            seller_id="82453304",
+        )
+    )
+    assert sorted(row[0] for row in medidas_todos.values) == ["30 * 20 * 10", "NA"]
+
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(

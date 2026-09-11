@@ -94,7 +94,7 @@ class ItemShippingCatalogFormulaHandlers:
     async def sheetseller_supermercado(
         self, context: FormulaExecutionContext
     ) -> FormulaExecutionResult:
-        item_ids = _normalize_item_id_argument(context.args.get("id_publicaciones"))
+        item_ids = _normalize_optional_item_ids(context.args.get("id_publicaciones"))
         resolution = await self._repository.resolve_item_formula_rows(
             seller_id=context.seller_id,
             formula=context.contract.name,
@@ -104,7 +104,8 @@ class ItemShippingCatalogFormulaHandlers:
         rows_by_item_id = _first_rows_by_item_id(resolution.rows)
         values: list[list[Any]] = []
         misses = 0
-        for item_id in item_ids:
+        requested_ids = item_ids if item_ids is not None else list(rows_by_item_id)
+        for item_id in requested_ids:
             row = rows_by_item_id.get(item_id)
             if row is None:
                 misses += 1
@@ -118,21 +119,24 @@ class ItemShippingCatalogFormulaHandlers:
         )
 
     async def sheetseller_medidas(self, context: FormulaExecutionContext) -> FormulaExecutionResult:
-        pairs = _lookup_pairs(
-            skus=context.args.get("skus", "todos"),
-            item_ids=context.args.get("id_publicaciones", "todos"),
+        skus_argument = context.args.get("skus", "todos")
+        item_ids_argument = context.args.get("id_publicaciones", "todos")
+        whole_seller = _is_all_scope(skus_argument) and _is_all_scope(item_ids_argument)
+        pairs = (
+            [] if whole_seller else _lookup_pairs(skus=skus_argument, item_ids=item_ids_argument)
         )
         resolution = await self._repository.resolve_item_formula_rows(
             seller_id=context.seller_id,
             formula=context.contract.name,
             now=_as_utc_datetime(self._now_fn()),
-            skus=[pair.sku for pair in pairs] or None,
-            item_ids=[pair.item_id for pair in pairs] or None,
+            skus=None if whole_seller else [pair.sku for pair in pairs] or None,
+            item_ids=None if whole_seller else [pair.item_id for pair in pairs] or None,
         )
         rows_by_pair = _rows_by_pair(resolution.rows)
         values: list[list[Any]] = []
         misses = 0
-        for pair in pairs:
+        lookup_pairs = pairs or _pairs_from_rows(resolution.rows)
+        for pair in lookup_pairs:
             measurement = _measurement_value(rows_by_pair.get((pair.sku, pair.item_id)))
             if measurement == NA_VALUE:
                 misses += 1
@@ -640,6 +644,20 @@ def _normalize_optional_item_ids(value: Any) -> list[str] | None:
     if isinstance(value, str) and value.strip().casefold() == "todos":
         return None
     return _normalize_item_id_argument(value)
+
+
+def _is_all_scope(value: Any) -> bool:
+    return value is None or (isinstance(value, str) and value.strip().casefold() == "todos")
+
+
+def _pairs_from_rows(rows: Sequence[Mapping[str, Any]]) -> list[_LookupPair]:
+    pairs: list[_LookupPair] = []
+    for row in rows:
+        item_id = str(row.get("item_id") or "").strip()
+        sku = normalize_sku(row.get("normalized_sku") or row.get("sku"))
+        if item_id and sku:
+            pairs.append(_LookupPair(sku=sku, item_id=item_id))
+    return pairs
 
 
 def _normalize_item_id_argument(value: Any) -> list[str]:
