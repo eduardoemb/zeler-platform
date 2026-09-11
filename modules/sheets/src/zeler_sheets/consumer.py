@@ -54,6 +54,7 @@ from zeler_sheets.formulas.refresh import (
     DEFAULT_INTERVAL_SECONDS as REFRESH_DEFAULT_INTERVAL_SECONDS,
 )
 from zeler_sheets.formulas.refresh import (
+    MongoRefreshIdentitySource,
     MongoSellerExplorer,
     ZelerDataRefreshPlanner,
     ZelerDataRefreshSupervisor,
@@ -1319,7 +1320,13 @@ async def build_zelerdata_refresh_supervisor(*, db: Any) -> ZelerDataRefreshSupe
     await queue.ensure_indexes()
     return ZelerDataRefreshSupervisor(
         explorer=MongoSellerExplorer(db=db, allowed_sellers=allowed),
-        planner=ZelerDataRefreshPlanner(queue=queue, allowed_sellers=allowed),
+        planner=ZelerDataRefreshPlanner(
+            queue=queue,
+            allowed_sellers=allowed,
+            # Explicit-identity models read their identities from the already
+            # acquired local read models; planning never calls Mercado Libre.
+            identity_source=MongoRefreshIdentitySource(db=db),
+        ),
         interval_seconds=interval,
     )
 

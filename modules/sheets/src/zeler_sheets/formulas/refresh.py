@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import re
 from collections.abc import Callable, Iterable
 from contextlib import suppress
 from datetime import UTC, datetime, timedelta
@@ -19,7 +20,10 @@ import structlog
 
 from zeler_sheets.formulas.recovery import (
     RECOVERABLE_MODELS,
+    CatalogRecoveryRequest,
+    ItemInventoryRecoveryRequest,
     RecoveryRequest,
+    ShipmentIdsRecoveryRequest,
 )
 
 logger = structlog.get_logger(__name__)
@@ -39,6 +43,18 @@ IMPLEMENTED_REFRESH_MODELS: frozenset[str] = frozenset(
 
 if not IMPLEMENTED_REFRESH_MODELS <= RECOVERABLE_MODELS:  # pragma: no cover - import guard
     raise RuntimeError("refresh models must be recoverable read models")
+
+# These models cannot be addressed by a date range: acquisition needs explicit
+# publications, catalog products, or shipments. Planning them as range requests
+# is silently rejected by the recovery queue, which is how the first version of
+# this loop ended up refreshing only two of its six declared models.
+EXPLICIT_IDENTITY_MODELS: frozenset[str] = frozenset(
+    {
+        "catalog_product_snapshots",
+        "catalog_buybox_snapshots",
+        "shipments",
+    }
+)
 
 FAST_MODE = "fast"
 DAILY_MODE = "daily"
@@ -95,6 +111,22 @@ def reconciled_marker(
     }
 
 
+class RefreshIdentitySource(Protocol):
+    """Resolve the explicit identities a bounded refresh needs.
+
+    Three of the six refreshable models cannot be addressed by a date range:
+    item rows need a whole-seller inventory sweep, and both catalog models need
+    explicit publication or product identities. The source reads them from the
+    already-acquired local read models, so planning never calls Mercado Libre.
+    """
+
+    async def catalog_product_ids(self, seller_id: str) -> tuple[str, ...]: ...
+
+    async def buybox_item_ids(self, seller_id: str) -> tuple[str, ...]: ...
+
+    async def shipment_ids(self, seller_id: str) -> tuple[str, ...]: ...
+
+
 class RefreshExplorer(Protocol):
     async def discover_sellers(self) -> tuple[str, ...]: ...
 
@@ -112,6 +144,7 @@ class ZelerDataRefreshPlanner:
         queue: Any,
         enabled_models: Iterable[str] = IMPLEMENTED_REFRESH_MODELS,
         allowed_sellers: frozenset[str] | None = None,
+        identity_source: RefreshIdentitySource | None = None,
         now: Callable[[], datetime] | None = None,
         fast_window: timedelta = DEFAULT_FAST_WINDOW,
         daily_window: timedelta = DEFAULT_DAILY_WINDOW,
@@ -124,8 +157,15 @@ class ZelerDataRefreshPlanner:
         enabled = frozenset(enabled_models)
         if not enabled or not enabled <= RECOVERABLE_MODELS:
             raise ValueError("refresh models must be recoverable read models")
+        needs_identities = enabled & EXPLICIT_IDENTITY_MODELS
+        if needs_identities and identity_source is None:
+            raise ValueError(
+                "an identity source is required to refresh "
+                + ", ".join(sorted(needs_identities))
+            )
         self._queue = queue
         self._enabled_models = enabled
+        self._identity_source = identity_source
         self._allowed_sellers = allowed_sellers
         self._now = now or (lambda: datetime.now(UTC))
         self._fast_window = fast_window
@@ -148,24 +188,153 @@ class ZelerDataRefreshPlanner:
         date_from = now - window
         admitted = False
         for read_model in sorted(models):
-            request = RecoveryRequest(
+            requests = await self._requests_for(
                 seller_id=seller_id,
                 read_model=read_model,
                 date_from=date_from,
                 date_to=date_to,
             )
-            try:
-                async with asyncio.timeout(2):
-                    await self._queue.enqueue(request)
-            except (ValueError, TimeoutError):
-                # Capacity and dedup rejections are expected. One model must not
-                # stop the rest of the cycle.
-                continue
-            except Exception:  # noqa: BLE001 - storage errors must not stop the loop
-                logger.warning("zelerdata.refresh_enqueue_failed", read_model=read_model)
-                continue
-            admitted = True
+            for request in requests:
+                try:
+                    async with asyncio.timeout(2):
+                        await self._queue.enqueue(request)
+                except (ValueError, TimeoutError):
+                    # Capacity and dedup rejections are expected. One model must
+                    # not stop the rest of the cycle.
+                    continue
+                except Exception:  # noqa: BLE001 - storage errors must not stop the loop
+                    logger.warning("zelerdata.refresh_enqueue_failed", read_model=read_model)
+                    continue
+                admitted = True
         return admitted
+
+    async def _requests_for(
+        self,
+        *,
+        seller_id: str,
+        read_model: str,
+        date_from: datetime,
+        date_to: datetime,
+    ) -> tuple[Any, ...]:
+        """Build the admissible requests for one model.
+
+        The queue rejects a generic range request for four of the six
+        refreshable models because those sources need explicit identities.
+        Planning the wrong shape silently produced a refresh loop that only
+        ever served two models, so the shape is now chosen per model.
+        """
+        if read_model == "orders" or read_model == "questions":
+            return (
+                RecoveryRequest(
+                    seller_id=seller_id,
+                    read_model=read_model,
+                    date_from=date_from,
+                    date_to=date_to,
+                ),
+            )
+        if read_model == "item_formula_rows":
+            # A whole-seller inventory sweep is the only honest way to certify
+            # current item rows; a windowed range cannot prove membership.
+            return (ItemInventoryRecoveryRequest(seller_id),)
+        source = self._identity_source
+        if source is None:  # pragma: no cover - constructor guards this
+            return ()
+        if read_model == "catalog_product_snapshots":
+            identities = await source.catalog_product_ids(seller_id)
+            return (
+                CatalogRecoveryRequest(seller_id, read_model, tuple(identities)),
+            ) if identities else ()
+        if read_model == "catalog_buybox_snapshots":
+            identities = await source.buybox_item_ids(seller_id)
+            return (
+                CatalogRecoveryRequest(seller_id, read_model, tuple(identities)),
+            ) if identities else ()
+        if read_model == "shipments":
+            identities = await source.shipment_ids(seller_id)
+            return (
+                ShipmentIdsRecoveryRequest(seller_id, tuple(identities)),
+            ) if identities else ()
+        return ()  # pragma: no cover - enabled models are exhaustive
+
+
+# Bound one refresh cycle so a large catalog cannot monopolize admission.
+MAX_CATALOG_PRODUCT_IDS = 200
+MAX_BUYBOX_ITEM_IDS = 200
+MAX_SHIPMENT_IDS = 500
+# Shipments are refreshed for the same horizon the shipping formulas read.
+SHIPMENT_LOOKBACK = timedelta(days=30)
+_IDENTITY_PATTERN = re.compile(r"ML[A-Z][0-9]+")
+
+
+class MongoRefreshIdentitySource:
+    """Resolve explicit refresh identities from already-acquired read models.
+
+    This only reads local collections; the refresh never calls Mercado Libre
+    while planning. Missing or malformed identities are dropped rather than
+    guessed, and each cycle is bounded so a very large seller cannot starve the
+    interactive formula budget.
+    """
+
+    def __init__(
+        self,
+        *,
+        db: Any,
+        now: Callable[[], datetime] | None = None,
+        max_catalog_product_ids: int = MAX_CATALOG_PRODUCT_IDS,
+        max_buybox_item_ids: int = MAX_BUYBOX_ITEM_IDS,
+        max_shipment_ids: int = MAX_SHIPMENT_IDS,
+    ) -> None:
+        self._db = db
+        self._now = now or (lambda: datetime.now(UTC))
+        self._max_catalog_product_ids = max_catalog_product_ids
+        self._max_buybox_item_ids = max_buybox_item_ids
+        self._max_shipment_ids = max_shipment_ids
+
+    async def catalog_product_ids(self, seller_id: str) -> tuple[str, ...]:
+        rows = await self._db["items"].distinct(
+            "catalog_product_id", {"seller_id": seller_id}
+        )
+        identities = {
+            str(value)
+            for value in rows
+            if isinstance(value, str) and _IDENTITY_PATTERN.fullmatch(value)
+        }
+        return tuple(sorted(identities)[: self._max_catalog_product_ids])
+
+    async def buybox_item_ids(self, seller_id: str) -> tuple[str, ...]:
+        cursor = (
+            self._db["items"]
+            .find(
+                {"seller_id": seller_id, "catalog_listing": True},
+                {"_id": 1},
+            )
+            .sort([("_id", 1)])
+            .limit(self._max_buybox_item_ids)
+        )
+        identities: set[str] = set()
+        async for row in cursor:
+            identity = str(row.get("_id") or "").strip()
+            if _IDENTITY_PATTERN.fullmatch(identity):
+                identities.add(identity)
+        return tuple(sorted(identities))
+
+    async def shipment_ids(self, seller_id: str) -> tuple[str, ...]:
+        cutoff = self._now().astimezone(UTC) - SHIPMENT_LOOKBACK
+        cursor = (
+            self._db["shipments"]
+            .find(
+                {"seller_id": seller_id, "date_created": {"$gte": cutoff}},
+                {"_id": 1},
+            )
+            .sort([("date_created", -1)])
+            .limit(self._max_shipment_ids)
+        )
+        identities: set[str] = set()
+        async for row in cursor:
+            identity = str(row.get("_id") or "").strip()
+            if identity.isascii() and identity.isdecimal():
+                identities.add(identity)
+        return tuple(sorted(identities))
 
 
 class MongoSellerExplorer:

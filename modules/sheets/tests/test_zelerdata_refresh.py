@@ -204,6 +204,97 @@ async def test_planner_survives_one_model_failure() -> None:
     assert [r.read_model for r in queue.enqueued] == ["questions"]
 
 
+class FakeIdentitySource:
+    def __init__(
+        self,
+        *,
+        catalog_product_ids: tuple[str, ...] = (),
+        buybox_item_ids: tuple[str, ...] = (),
+    ) -> None:
+        self._catalog_product_ids = catalog_product_ids
+        self._buybox_item_ids = buybox_item_ids
+        self.calls: list[str] = []
+
+    async def catalog_product_ids(self, seller_id: str) -> tuple[str, ...]:
+        self.calls.append("catalog_product_ids")
+        return self._catalog_product_ids
+
+    async def buybox_item_ids(self, seller_id: str) -> tuple[str, ...]:
+        self.calls.append("buybox_item_ids")
+        return self._buybox_item_ids
+
+
+@pytest.mark.asyncio
+async def test_planner_emits_inventory_sweep_for_item_formula_rows() -> None:
+    """Item rows need the whole-seller inventory sweep, not a rejected range."""
+    from zeler_sheets.formulas.recovery import ItemInventoryRecoveryRequest
+
+    queue = FakeQueue()
+    planner = ZelerDataRefreshPlanner(
+        queue=queue,
+        enabled_models=frozenset({"item_formula_rows"}),
+        now=lambda: NOW,
+    )
+    assert await planner.plan(seller_id="82453304", mode="fast") is True
+
+    assert len(queue.enqueued) == 1
+    request = queue.enqueued[0]
+    assert isinstance(request, ItemInventoryRecoveryRequest)
+    assert request.seller_id == "82453304"
+    assert request.read_model == "item_formula_rows"
+
+
+@pytest.mark.asyncio
+async def test_planner_emits_catalog_intents_from_acquired_identities() -> None:
+    """Catalog models demand explicit IDs, so the planner must resolve them."""
+    from zeler_sheets.formulas.recovery import CatalogRecoveryRequest
+
+    identities = FakeIdentitySource(
+        catalog_product_ids=("MLM24127708", "MLM27325873"),
+        buybox_item_ids=("MLM2049378457",),
+    )
+    queue = FakeQueue()
+    planner = ZelerDataRefreshPlanner(
+        queue=queue,
+        enabled_models=frozenset({"catalog_product_snapshots", "catalog_buybox_snapshots"}),
+        identity_source=identities,
+        now=lambda: NOW,
+    )
+    assert await planner.plan(seller_id="82453304", mode="fast") is True
+
+    by_model = {request.read_model: request for request in queue.enqueued}
+    assert sorted(by_model) == ["catalog_buybox_snapshots", "catalog_product_snapshots"]
+    assert all(isinstance(request, CatalogRecoveryRequest) for request in queue.enqueued)
+    assert by_model["catalog_product_snapshots"].ids == ("MLM24127708", "MLM27325873")
+    assert by_model["catalog_buybox_snapshots"].ids == ("MLM2049378457",)
+    assert sorted(identities.calls) == ["buybox_item_ids", "catalog_product_ids"]
+
+
+@pytest.mark.asyncio
+async def test_planner_skips_catalog_models_without_known_identities() -> None:
+    """No acquired identity means no plan; an empty intent is not admissible."""
+    queue = FakeQueue()
+    planner = ZelerDataRefreshPlanner(
+        queue=queue,
+        enabled_models=frozenset({"catalog_product_snapshots"}),
+        identity_source=FakeIdentitySource(),
+        now=lambda: NOW,
+    )
+    assert await planner.plan(seller_id="82453304", mode="fast") is False
+    assert queue.enqueued == []
+
+
+@pytest.mark.asyncio
+async def test_planner_requires_identity_source_for_catalog_models() -> None:
+    """Catalog models must fail fast instead of silently planning nothing."""
+    with pytest.raises(ValueError, match="identity source"):
+        ZelerDataRefreshPlanner(
+            queue=FakeQueue(),
+            enabled_models=frozenset({"catalog_product_snapshots"}),
+            now=lambda: NOW,
+        )
+
+
 @pytest.mark.asyncio
 async def test_supervisor_starts_and_stops_cleanly() -> None:
     calls: list[str] = []
