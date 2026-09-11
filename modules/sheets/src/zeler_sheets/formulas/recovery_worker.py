@@ -11,7 +11,6 @@ from typing import Any
 from urllib.parse import urlencode
 
 import httpx
-import structlog
 from bson import BSON
 from pymongo.errors import DuplicateKeyError, PyMongoError
 
@@ -26,7 +25,6 @@ from zeler_platform_core.devoluciones_readiness import (
 )
 from zeler_platform_core.models.entities import ShipmentRealShippingCostProjection
 from zeler_sheets.catalog_observations import record_catalog_observation
-from zeler_sheets.devoluciones_runner import renew_devoluciones_marker_if_proven
 from zeler_sheets.event_persistence import (
     SheetsEventPersistence,
     _canonical_shipment_document,
@@ -61,8 +59,6 @@ from zeler_sheets.sheetseller_backfill import (
     run_item_detail_enrichment,
     run_sheetseller_backfill,
 )
-
-logger = structlog.get_logger(__name__)
 
 
 def _catalog_offer_count(resource: Any, *, item_id: str, seller_id: str) -> tuple[int, bool]:
@@ -935,6 +931,13 @@ class FormulaRecoveryWorker:
             scope="devoluciones",
             operation_id=job["_id"],
             attempt_token=job["attempt_token"],
+            # An orders re-acquisition rewrites order rows only. It must not
+            # withdraw the settled DEVOLUCIONES readiness proof, because that
+            # proof covers claims-derived returns the sweep never touches: doing
+            # so left ZELERDATA_DEVOLUCIONES unavailable for most of every cycle.
+            # Only a claims acquisition invalidates readiness, exactly as the
+            # event handler does.
+            invalidate_readiness=False,
         )
         published = False
         try:
@@ -954,32 +957,6 @@ class FormulaRecoveryWorker:
                     await finish_devoluciones_operation(
                         db=self.db, operation=operation, succeeded=False
                     )
-        if published:
-            # Acquiring this operation withdrew the settled DEVOLUCIONES proof
-            # before any source work. The loop's renewal alone cannot win: this
-            # job takes the same lease every 15 minutes and would withdraw the
-            # proof again, so the formula would flap between an available and an
-            # unavailable read. Repair it here, in the publication that released
-            # the lease, from the proof already persisted in Mongo. The repair
-            # never calls Mercado Libre and refuses a changed fingerprint.
-            #
-            # The job is already committed as completed at this point, so a
-            # failure here must never be silent: it becomes a visible warning
-            # instead of leaving the formula unavailable with no trace.
-            try:
-                renewed = await renew_devoluciones_marker_if_proven(self.db, seller_id)
-            except Exception as exc:  # noqa: BLE001 - publication already committed
-                logger.warning(
-                    "zelerdata.devoluciones_marker_repair_failed",
-                    seller_id=seller_id,
-                    error=type(exc).__name__,
-                )
-            else:
-                logger.info(
-                    "zelerdata.devoluciones_marker_repair",
-                    seller_id=seller_id,
-                    renewed=renewed,
-                )
 
     async def _order_details(
         self,

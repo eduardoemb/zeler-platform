@@ -6498,22 +6498,21 @@ def test_unrecoverable_history_is_not_scheduled() -> None:
 
 
 @pytest.mark.asyncio
-async def test_order_recovery_repairs_the_devoluciones_proof_it_invalidated(
+async def test_orders_recovery_does_not_withdraw_a_devoluciones_proof_it_cannot_rewrite(
     recovery_db: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The acquisition that withdraws the settled proof must restore it.
+    """An orders re-acquisition must not stale a proof its window never touches.
 
-    ``acquire_devoluciones_operation`` marks the settled DEVOLUCIONES proof
-    ``stale`` so no reader consumes a run that is being re-acquired. The orders
-    job takes that same lease every cycle, so without a repair in the same
-    publication path the proof is withdrawn every 15 minutes and only the slower
-    loop renewal brings it back: ``ZELERDATA_DEVOLUCIONES`` flaps between
-    available and unavailable.
+    The fast orders sweep re-acquires the last seven days and never rewrites the
+    settled DEVOLUCIONES range. Withdrawing readiness on acquire left the proven
+    range ``stale`` for most of every cycle, so ``ZELERDATA_DEVOLUCIONES`` flapped
+    between an available and an unavailable read even though the proof was still
+    authoritative. Only a claims acquisition withdraws readiness, exactly as the
+    event handler already does.
     """
     import httpx
 
     import zeler_sheets.formulas.recovery_worker as worker_module
-    from zeler_sheets.formulas.read_models import read_model_reconciliation_marker_covers
     from zeler_sheets.formulas.recovery_worker import FormulaRecoveryWorker
 
     requested = RecoveryRequest(
@@ -6546,18 +6545,18 @@ async def test_order_recovery_repairs_the_devoluciones_proof_it_invalidated(
                 return httpx.Response(204)
             return httpx.Response(200, json=resource)
 
-    repaired: list[str] = []
+    from zeler_platform_core.devoluciones_readiness import (
+        acquire_devoluciones_operation as original,
+    )
 
-    async def renew(db: Any, seller_id: str, **_: Any) -> bool:
-        repaired.append(seller_id)
-        return True
+    invalidate_options: list[bool] = []
 
-    monkeypatch.setattr(worker_module, "renew_devoluciones_marker_if_proven", renew)
+    async def acquire(**kwargs: Any) -> Any:
+        invalidate_options.append(bool(kwargs.get("invalidate_readiness", True)))
+        return await original(**kwargs)
+
+    monkeypatch.setattr(worker_module, "acquire_devoluciones_operation", acquire)
 
     await FormulaRecoveryWorker(db=recovery_db, gateway=Gateway(), queue=queue).process_one()
 
-    assert repaired == ["pilot"]
-    marker = await recovery_db.sheets_read_model_freshness.find_one({"_id": "pilot:orders"})
-    assert read_model_reconciliation_marker_covers(
-        marker, date_from=requested.date_from, date_to=requested.date_to
-    )
+    assert invalidate_options == [False]

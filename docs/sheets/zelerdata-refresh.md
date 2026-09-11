@@ -100,11 +100,14 @@ Turn it on only after an operator-authorized run exists for the pilot.
 
 The quota finalize publishes the `devoluciones` marker once, when the last window
 settles. Nothing re-runs it until the next authorized run, but the marker only
-leases for 30 minutes and any acquisition that takes the DEVOLUCIONES lease
-invalidates the marker before it fetches. An `orders` recovery job does exactly
-that: it acquires the shared lease, leaves `devoluciones` `stale`, and publishes
-only its own marker. Without repair, a fully proven range would fail closed
-forever.
+leases for 30 minutes, so a proven range still has to be renewed between
+authorizations.
+
+The fast `orders` sweep shares that lease but never rewrites the claims-derived
+returns the proof covers, so it acquires with `invalidate_readiness=false`,
+exactly like the `orders.*` event handler. Only a `claims.*` acquisition
+withdraws the proof, because only that acquisition can change what the proof
+certifies.
 
 `renew_devoluciones_marker_if_proven` closes that hole. It only reads Mongo: it
 requires the marker to carry a `proof_fingerprint`, finds the settled `completed`
@@ -116,11 +119,8 @@ refused, so an unproven range can never be made productive.
 
 The renewal is **not** gated by `ZELERDATA_DEVOLUCIONES_ADVANCE_ENABLED`. That
 flag gates source work only; the renewal is a local read and runs every cycle
-for every refresh seller. The `orders` publication path also calls the same
-renewal immediately after it releases the lease, because the loop renewal alone
-loses the race: the fast `orders` job withdraws the proof every 15 minutes, so
-without the in-path repair `ZELERDATA_DEVOLUCIONES` would alternate between an
-available and an unavailable read.
+for every refresh seller, which is what carries a settled proof across the
+30-minute lease.
 
 ## Precalculated heavy formulas
 
