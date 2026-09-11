@@ -160,8 +160,7 @@ class ZelerDataRefreshPlanner:
         needs_identities = enabled & EXPLICIT_IDENTITY_MODELS
         if needs_identities and identity_source is None:
             raise ValueError(
-                "an identity source is required to refresh "
-                + ", ".join(sorted(needs_identities))
+                "an identity source is required to refresh " + ", ".join(sorted(needs_identities))
             )
         self._queue = queue
         self._enabled_models = enabled
@@ -242,25 +241,39 @@ class ZelerDataRefreshPlanner:
         if read_model == "catalog_product_snapshots":
             identities = await source.catalog_product_ids(seller_id)
             return (
-                CatalogRecoveryRequest(seller_id, read_model, tuple(identities)),
-            ) if identities else ()
+                (CatalogRecoveryRequest(seller_id, read_model, tuple(identities)),)
+                if identities
+                else ()
+            )
         if read_model == "catalog_buybox_snapshots":
             identities = await source.buybox_item_ids(seller_id)
             return (
-                CatalogRecoveryRequest(seller_id, read_model, tuple(identities)),
-            ) if identities else ()
+                (CatalogRecoveryRequest(seller_id, read_model, tuple(identities)),)
+                if identities
+                else ()
+            )
         if read_model == "shipments":
             identities = await source.shipment_ids(seller_id)
-            return (
-                ShipmentIdsRecoveryRequest(seller_id, tuple(identities)),
-            ) if identities else ()
+            # One intent admits at most 100 explicit shipment IDs, so a seller
+            # with a longer recent history needs several intents to be covered.
+            return tuple(
+                ShipmentIdsRecoveryRequest(
+                    seller_id, tuple(identities[offset : offset + SHIPMENT_INTENT_SIZE])
+                )
+                for offset in range(0, len(identities), SHIPMENT_INTENT_SIZE)
+            )
         return ()  # pragma: no cover - enabled models are exhaustive
 
 
-# Bound one refresh cycle so a large catalog cannot monopolize admission.
-MAX_CATALOG_PRODUCT_IDS = 200
-MAX_BUYBOX_ITEM_IDS = 200
-MAX_SHIPMENT_IDS = 500
+# One explicit-intent request admits at most 10,000 identities. Every acquired
+# identity is planned: a fixed truncation would renew the same first N forever
+# and leave the rest of the seller permanently stale.
+MAX_EXPLICIT_IDENTITIES = 10000
+# One shipment intent admits at most 100 explicit IDs.
+SHIPMENT_INTENT_SIZE = 100
+# Buybox acquisition only accepts publications whose canonical item was synced
+# within this window, so planning anything older would fail every job.
+BUYBOX_FRESHNESS = timedelta(minutes=15)
 # Shipments are refreshed for the same horizon the shipping formulas read.
 SHIPMENT_LOOKBACK = timedelta(days=30)
 _IDENTITY_PATTERN = re.compile(r"ML[A-Z][0-9]+")
@@ -280,41 +293,51 @@ class MongoRefreshIdentitySource:
         *,
         db: Any,
         now: Callable[[], datetime] | None = None,
-        max_catalog_product_ids: int = MAX_CATALOG_PRODUCT_IDS,
-        max_buybox_item_ids: int = MAX_BUYBOX_ITEM_IDS,
-        max_shipment_ids: int = MAX_SHIPMENT_IDS,
+        max_identities: int = MAX_EXPLICIT_IDENTITIES,
     ) -> None:
+        if max_identities < 1:
+            raise ValueError("identity limit must be positive")
         self._db = db
         self._now = now or (lambda: datetime.now(UTC))
-        self._max_catalog_product_ids = max_catalog_product_ids
-        self._max_buybox_item_ids = max_buybox_item_ids
-        self._max_shipment_ids = max_shipment_ids
+        self._max_identities = max_identities
 
     async def catalog_product_ids(self, seller_id: str) -> tuple[str, ...]:
-        rows = await self._db["items"].distinct(
-            "catalog_product_id", {"seller_id": seller_id}
-        )
+        rows = await self._db["items"].distinct("catalog_product_id", {"seller_id": seller_id})
         identities = {
             str(value)
             for value in rows
             if isinstance(value, str) and _IDENTITY_PATTERN.fullmatch(value)
         }
-        return tuple(sorted(identities)[: self._max_catalog_product_ids])
+        return tuple(sorted(identities)[: self._max_identities])
 
     async def buybox_item_ids(self, seller_id: str) -> tuple[str, ...]:
         cursor = (
             self._db["items"]
             .find(
                 {"seller_id": seller_id, "catalog_listing": True},
-                {"_id": 1},
+                {
+                    "_id": 1,
+                    "catalog_product_id": 1,
+                    "last_meli_sync_at": 1,
+                },
             )
             .sort([("_id", 1)])
-            .limit(self._max_buybox_item_ids)
+            .limit(self._max_identities)
         )
+        now = self._now().astimezone(UTC)
         identities: set[str] = set()
         async for row in cursor:
             identity = str(row.get("_id") or "").strip()
-            if _IDENTITY_PATTERN.fullmatch(identity):
+            synced = row.get("last_meli_sync_at")
+            if synced is not None and synced.tzinfo is None:
+                synced = synced.replace(tzinfo=UTC)
+            if (
+                _IDENTITY_PATTERN.fullmatch(identity)
+                and isinstance(row.get("catalog_product_id"), str)
+                and _IDENTITY_PATTERN.fullmatch(str(row["catalog_product_id"]))
+                and isinstance(synced, datetime)
+                and now - BUYBOX_FRESHNESS < synced <= now
+            ):
                 identities.add(identity)
         return tuple(sorted(identities))
 
@@ -327,7 +350,7 @@ class MongoRefreshIdentitySource:
                 {"_id": 1},
             )
             .sort([("date_created", -1)])
-            .limit(self._max_shipment_ids)
+            .limit(self._max_identities)
         )
         identities: set[str] = set()
         async for row in cursor:
@@ -422,9 +445,7 @@ class ZelerDataRefreshSupervisor:
                 self.health_status = "error"
                 logger.warning("zelerdata.refresh_cycle_failed", failures=failures)
                 if failures >= 3:
-                    raise RuntimeError(
-                        "zelerdata refresh restart budget exhausted"
-                    ) from exc
+                    raise RuntimeError("zelerdata refresh restart budget exhausted") from exc
             else:
                 failures = 0
                 self.health_status = "ok"

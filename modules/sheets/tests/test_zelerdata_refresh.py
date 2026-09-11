@@ -73,6 +73,59 @@ class FakeDb:
         return self._collections.setdefault(name, FakeCollection())
 
 
+class FakeIdentityCollection:
+    """Minimal Mongo surface used by the identity source."""
+
+    def __init__(self, documents: list[dict[str, Any]] | None = None) -> None:
+        self.documents = documents or []
+
+    async def distinct(self, field: str, query: dict[str, Any]) -> list[Any]:
+        values = [
+            doc.get(field)
+            for doc in self.documents
+            if all(doc.get(key) == value for key, value in query.items())
+        ]
+        return [value for value in values if value is not None]
+
+    def find(self, query: dict[str, Any], projection: Any = None) -> Any:
+        rows = [
+            doc
+            for doc in self.documents
+            if all(
+                doc.get(key) == value for key, value in query.items() if not isinstance(value, dict)
+            )
+        ]
+        for key, value in query.items():
+            if isinstance(value, dict) and "$gte" in value:
+                rows = [
+                    row for row in rows if row.get(key) is not None and row[key] >= value["$gte"]
+                ]
+            elif isinstance(value, dict) and value.get("$type") == "string":
+                rows = [row for row in rows if isinstance(row.get(key), str)]
+
+        class Cursor:
+            def __init__(self, items: list[dict[str, Any]]) -> None:
+                self._items = list(items)
+
+            def sort(self, spec: Any) -> Cursor:
+                for key, direction in reversed(list(spec)):
+                    self._items.sort(key=lambda row: row.get(key), reverse=direction < 0)
+                return self
+
+            def limit(self, count: int) -> Cursor:
+                self._items = self._items[:count]
+                return self
+
+            def __aiter__(self) -> Any:
+                async def gen() -> Any:
+                    for row in self._items:
+                        yield row
+
+                return gen()
+
+        return Cursor(rows)
+
+
 def test_refresh_sellers_closed_by_default() -> None:
     assert refresh_sellers(None) == frozenset()
     assert refresh_sellers("") == frozenset()
@@ -210,9 +263,11 @@ class FakeIdentitySource:
         *,
         catalog_product_ids: tuple[str, ...] = (),
         buybox_item_ids: tuple[str, ...] = (),
+        shipment_ids: tuple[str, ...] = (),
     ) -> None:
         self._catalog_product_ids = catalog_product_ids
         self._buybox_item_ids = buybox_item_ids
+        self._shipment_ids = shipment_ids
         self.calls: list[str] = []
 
     async def catalog_product_ids(self, seller_id: str) -> tuple[str, ...]:
@@ -222,6 +277,10 @@ class FakeIdentitySource:
     async def buybox_item_ids(self, seller_id: str) -> tuple[str, ...]:
         self.calls.append("buybox_item_ids")
         return self._buybox_item_ids
+
+    async def shipment_ids(self, seller_id: str) -> tuple[str, ...]:
+        self.calls.append("shipment_ids")
+        return self._shipment_ids
 
 
 @pytest.mark.asyncio
@@ -293,6 +352,152 @@ async def test_planner_requires_identity_source_for_catalog_models() -> None:
             enabled_models=frozenset({"catalog_product_snapshots"}),
             now=lambda: NOW,
         )
+
+
+@pytest.mark.asyncio
+async def test_planner_chunks_shipment_intents_within_the_admitted_identity_cap() -> None:
+    """A seller with more shipments than one intent admits must still be covered."""
+    from zeler_sheets.formulas.recovery import ShipmentIdsRecoveryRequest
+
+    identities = FakeIdentitySource(shipment_ids=tuple(str(1000 + i) for i in range(250)))
+    queue = FakeQueue()
+    planner = ZelerDataRefreshPlanner(
+        queue=queue,
+        enabled_models=frozenset({"shipments"}),
+        identity_source=identities,
+        now=lambda: NOW,
+    )
+
+    assert await planner.plan(seller_id="82453304", mode="fast") is True
+
+    assert [type(request) for request in queue.enqueued] == [ShipmentIdsRecoveryRequest] * 3
+    covered = sorted(identity for request in queue.enqueued for identity in request.shipment_ids)
+    assert covered == [str(1000 + i) for i in range(250)]
+    assert all(len(request.shipment_ids) <= 100 for request in queue.enqueued)
+
+
+@pytest.mark.asyncio
+async def test_identity_source_reads_every_acquired_identity() -> None:
+    """Fixed truncation would refresh the same first N identities forever."""
+    from zeler_sheets.formulas.refresh import MongoRefreshIdentitySource
+
+    items = [
+        {
+            "_id": f"MLM{1000 + i}",
+            "seller_id": "82453304",
+            "catalog_product_id": f"MLM{2000 + i}",
+            "catalog_listing": True,
+            "last_meli_sync_at": NOW - timedelta(minutes=5),
+        }
+        for i in range(350)
+    ]
+    shipments = [
+        {
+            "_id": str(5000 + i),
+            "seller_id": "82453304",
+            "date_created": NOW - timedelta(days=1),
+        }
+        for i in range(450)
+    ]
+    source = MongoRefreshIdentitySource(
+        db={
+            "items": FakeIdentityCollection(items),
+            "shipments": FakeIdentityCollection(shipments),
+        },
+        now=lambda: NOW,
+    )
+
+    assert len(await source.catalog_product_ids("82453304")) == 350
+    assert len(await source.buybox_item_ids("82453304")) == 350
+    assert len(await source.shipment_ids("82453304")) == 450
+
+
+@pytest.mark.asyncio
+async def test_identity_source_drops_malformed_and_foreign_identities() -> None:
+    from zeler_sheets.formulas.refresh import MongoRefreshIdentitySource
+
+    source = MongoRefreshIdentitySource(
+        db={
+            "items": FakeIdentityCollection(
+                [
+                    {"_id": "MLM1", "seller_id": "82453304", "catalog_product_id": "not-a-product"},
+                    {"_id": "MLM2", "seller_id": "999", "catalog_product_id": "MLM200"},
+                    {
+                        "_id": "MLM3",
+                        "seller_id": "82453304",
+                        "catalog_product_id": "MLM300",
+                        "catalog_listing": True,
+                        "last_meli_sync_at": NOW - timedelta(minutes=5),
+                    },
+                    {"_id": "MLM5", "seller_id": "82453304", "catalog_listing": True},
+                    {"_id": "MLM4", "seller_id": "82453304", "catalog_listing": "yes"},
+                ]
+            ),
+            "shipments": FakeIdentityCollection(
+                [
+                    {
+                        "_id": "123",
+                        "seller_id": "82453304",
+                        "date_created": NOW - timedelta(days=1),
+                    },
+                    {
+                        "_id": "abc",
+                        "seller_id": "82453304",
+                        "date_created": NOW - timedelta(days=1),
+                    },
+                    {
+                        "_id": "456",
+                        "seller_id": "82453304",
+                        "date_created": NOW - timedelta(days=90),
+                    },
+                ]
+            ),
+        },
+        now=lambda: NOW,
+    )
+
+    assert await source.catalog_product_ids("82453304") == ("MLM300",)
+    assert await source.buybox_item_ids("82453304") == ("MLM3",)
+    assert await source.shipment_ids("82453304") == ("123",)
+
+
+@pytest.mark.asyncio
+async def test_identity_source_only_plans_buybox_items_the_worker_can_acquire() -> None:
+    """Buybox acquisition rejects publications without a fresh item sync."""
+    from zeler_sheets.formulas.refresh import MongoRefreshIdentitySource
+
+    source = MongoRefreshIdentitySource(
+        db={
+            "items": FakeIdentityCollection(
+                [
+                    {
+                        "_id": "MLM1",
+                        "seller_id": "82453304",
+                        "catalog_listing": True,
+                        "catalog_product_id": "MLM900",
+                        "last_meli_sync_at": NOW - timedelta(minutes=5),
+                    },
+                    {
+                        "_id": "MLM2",
+                        "seller_id": "82453304",
+                        "catalog_listing": True,
+                        "catalog_product_id": "MLM901",
+                        "last_meli_sync_at": NOW - timedelta(days=30),
+                    },
+                    {
+                        "_id": "MLM3",
+                        "seller_id": "82453304",
+                        "catalog_listing": True,
+                        "catalog_product_id": "MLM902",
+                    },
+                ]
+            ),
+            "shipments": FakeIdentityCollection(),
+        },
+        now=lambda: NOW,
+    )
+
+    assert await source.buybox_item_ids("82453304") == ("MLM1",)
 
 
 @pytest.mark.asyncio
