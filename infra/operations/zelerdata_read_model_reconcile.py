@@ -1421,6 +1421,7 @@ async def readback_devoluciones_quota_run(
     expected_count = sum(int(window["expected_count"]) for window in windows)
     filter_spec = {
         "seller_id": seller_id,
+        "type": "returns",
         "date_created": {"$gte": start, "$lt": end},
     }
     claims = db["claims"]
@@ -2850,7 +2851,13 @@ def _read_model_collection_name(read_model: str) -> str:
 def _with_present_fields(filter_spec: dict[str, Any], fields: Sequence[str]) -> dict[str, Any]:
     scoped = dict(filter_spec)
     for field_path in fields:
-        scoped[field_path] = {"$exists": True, "$ne": None}
+        # A presence guard must never widen an existing range on the same field:
+        # overwriting ``date_created`` dropped the reconciliation window bounds.
+        existing = scoped.get(field_path)
+        presence: dict[str, Any] = {"$exists": True, "$ne": None}
+        if isinstance(existing, dict):
+            presence.update(existing)
+        scoped[field_path] = presence
     return scoped
 
 

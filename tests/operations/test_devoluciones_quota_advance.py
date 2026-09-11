@@ -187,6 +187,7 @@ async def test_full_range_readback_counts_exact_complete_claims() -> None:
     assert proof["end"] == end
     assert filters[0] == {
         "seller_id": "82453304",
+        "type": "returns",
         "date_created": {"$gte": start, "$lt": end},
     }
     assert filters[1]["$or"] == [
@@ -196,3 +197,51 @@ async def test_full_range_readback_counts_exact_complete_claims() -> None:
             "return_quantity_basis": "v2_return_order",
         }
     ]
+
+
+@pytest.mark.asyncio
+async def test_full_range_readback_keeps_the_run_bounds_and_only_returns_rows() -> None:
+    """Regression: the complete filter must not relax the run range nor mix claim types.
+
+    Production counted 12 complete claims for a window that only ever persisted 5
+    returns because ``_with_present_fields`` overwrote ``date_created`` and the
+    complete filter did not constrain ``type``. Historical ``cancel_purchase``
+    rows dated inside the run range were therefore added to the proof.
+    """
+    start = datetime(2026, 6, 1, tzinfo=UTC)
+    end = datetime(2026, 6, 11, tzinfo=UTC)
+    filters: list[dict[str, Any]] = []
+
+    class Claims:
+        async def count_documents(self, filter_spec: dict[str, Any]) -> int:
+            filters.append(filter_spec)
+            return 5
+
+    class ClaimsDatabase:
+        def __getitem__(self, name: str) -> Claims:
+            assert name == "claims"
+            return Claims()
+
+    proof = await readback_devoluciones_quota_run(
+        db=ClaimsDatabase(),
+        run={"seller_id": "82453304", "start": start, "end": end},
+        windows=[
+            {
+                "expected_count": 5,
+                "source_fingerprint": "source-window",
+                "read_model_fingerprint": "read-window",
+            }
+        ],
+    )
+
+    assert proof["persisted_count"] == proof["complete_count"] == 5
+    assert filters[0] == {
+        "seller_id": "82453304",
+        "type": "returns",
+        "date_created": {"$gte": start, "$lt": end},
+    }
+    complete_filter = filters[1]
+    assert complete_filter["type"] == "returns"
+    assert complete_filter["date_created"]["$gte"] == start
+    assert complete_filter["date_created"]["$lt"] == end
+    assert "date_created" not in complete_filter["$or"][0]
