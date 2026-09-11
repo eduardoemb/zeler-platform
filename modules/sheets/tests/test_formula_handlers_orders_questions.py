@@ -2092,7 +2092,10 @@ async def test_ordenes_renders_seller_paid_real_shipping_cost_from_shipment_proj
 
 
 @pytest.mark.asyncio
-async def test_ordenes_fails_closed_without_seller_cost_and_ignores_estimates() -> None:
+async def test_ordenes_serves_na_without_seller_cost_and_requests_recovery() -> None:
+    # The seller cost is durable history: a known value is always served, an
+    # unknown one becomes NA plus a background recovery request, and an
+    # unrelated estimate must never be substituted for it.
     db = FakeDb()
     db["orders"].documents = {
         "receiver-only": _order_doc(
@@ -2129,14 +2132,16 @@ async def test_ordenes_fails_closed_without_seller_cost_and_ignores_estimates() 
     }
     dispatcher = _order_question_dispatcher(db)
 
-    with pytest.raises(FormulaDataUnavailableError) as missing:
-        await dispatcher.execute(
-            _context(
-                "ZELERDATA_ORDENES",
-                {"fecha_inicial": "2026-05-10", "fecha_final": "2026-05-10"},
-            )
+    result = await dispatcher.execute(
+        _context(
+            "ZELERDATA_ORDENES",
+            {"fecha_inicial": "2026-05-10", "fecha_final": "2026-05-10"},
         )
-    assert missing.value.shipment_ids == ("ship-receiver-only",)
+    )
+    assert [row[11] for row in result.values] == ["NA", "NA"]
+    assert result.recovery is not None
+    assert result.recovery.read_model == "shipments"
+    assert result.recovery.shipment_ids == ("ship-receiver-only",)
 
 
 @pytest.mark.asyncio
@@ -3451,6 +3456,64 @@ async def test_compradores_still_requests_recovery_for_a_productive_order_withou
         )
     assert missing.value.read_model == "orders"
     assert missing.value.date_from is not None
+
+
+@pytest.mark.asyncio
+async def test_compradores_serves_known_addresses_and_requests_the_missing_ones() -> None:
+    # A shipment whose address was never acquired is recoverable, while an
+    # address that does not exist is irrecoverable. Neither case may withhold
+    # the addresses that are already proven: the table serves what it has and
+    # asks for the recoverable remainder in the background.
+    now = datetime(2026, 6, 1, 17, 0, tzinfo=UTC)
+    db = FakeDb()
+    db["orders"].documents = {
+        "known": _order_doc(
+            "known",
+            seller_id="seller-1",
+            status="paid",
+            date_created=datetime(2026, 5, 10, 10, 30, tzinfo=UTC),
+            total_amount=100,
+            shipment_id="shipment-known",
+            items=[{"sku": "sku-1", "item_id": "MLA1", "title": "item", "quantity": 1}],
+        ),
+        "pending": _order_doc(
+            "pending",
+            seller_id="seller-1",
+            status="paid",
+            date_created=datetime(2026, 5, 11, 10, 30, tzinfo=UTC),
+            total_amount=50,
+            shipment_id="shipment-pending",
+            items=[{"sku": "sku-1", "item_id": "MLA1", "title": "item", "quantity": 1}],
+        ),
+    }
+    db["shipments"].documents = {
+        "shipment-known": {
+            "_id": "shipment-known",
+            "seller_id": "seller-1",
+            "formula_observed_at": now,
+            "receiver_address": {"name": "Known Buyer", "zip_code": "64000"},
+        },
+        "shipment-pending": {
+            "_id": "shipment-pending",
+            "seller_id": "seller-1",
+            "unavailable_fields": [],
+        },
+    }
+    dispatcher = _order_question_dispatcher(db, now_fn=lambda: now)
+    result = await dispatcher.execute(
+        _context("ZELERDATA_COMPRADORES", {"id_ordenes": "todos", "encabezados": "si"})
+    )
+    assert result.values[1][0] == "Known Buyer"
+    assert result.values[2] == ["NA"] * len(BUYER_ADDRESS_LEGACY_HEADERS)
+    assert result.meta["orders_count"] == 2
+    assert result.meta["address_available"] == 1
+    assert result.meta["address_missing"] == 1
+    # The whole shipment recovery is a single request: one model, one queue
+    # entry, so it travels as the primary recovery rather than as additional.
+    assert result.additional_recoveries == ()
+    assert result.recovery is not None
+    assert result.recovery.read_model == "shipments"
+    assert result.recovery.shipment_ids == ("shipment-pending",)
 
 
 def _order_question_dispatcher(db: FakeDb, *, now_fn: Any | None = None) -> FormulaDispatcher:

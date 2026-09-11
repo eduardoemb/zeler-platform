@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal, DecimalException
@@ -828,13 +829,38 @@ class FormulaReadModelRepository:
         shipment_ids: list[str] | tuple[str, ...],
         limit: int = 1000,
     ) -> dict[str, dict[str, Any]]:
+        snapshots, recoverable, declared = await self.find_shipment_receiver_addresses_partial(
+            seller_id=seller_id, shipment_ids=shipment_ids, limit=limit
+        )
+        if recoverable or declared:
+            raise FormulaDataUnavailableError(
+                "Shipment",
+                "Required receiver_address is unavailable or has not been refreshed.",
+                read_model="shipments",
+                shipment_ids=(*recoverable, *declared),
+            )
+        return snapshots
+
+    async def find_shipment_receiver_addresses_partial(
+        self,
+        *,
+        seller_id: str,
+        shipment_ids: list[str] | tuple[str, ...],
+        limit: int = 1000,
+    ) -> tuple[dict[str, dict[str, Any]], tuple[str, ...], tuple[str, ...]]:
+        """Serve every known address and classify the remainder.
+
+        Returns ``(addresses, recoverable, declared)``. ``recoverable`` may be
+        fetched again from the source; ``declared`` is an absence Mercado Libre
+        itself reported and must be served as NA.
+        """
         normalized_shipment_ids = list(
             dict.fromkeys(
                 str(shipment_id).strip() for shipment_id in shipment_ids if str(shipment_id).strip()
             )
         )
         if not normalized_shipment_ids:
-            return {}
+            return {}, (), ()
         cursor = _find_with_optional_projection(
             self._shipments,
             {"seller_id": seller_id, "_id": {"$in": normalized_shipment_ids}},
@@ -856,8 +882,10 @@ class FormulaReadModelRepository:
                 )
             ):
                 snapshots[shipment_id] = receiver_address
-        _require_shipment_field(rows, normalized_shipment_ids, "receiver_address", set(snapshots))
-        return snapshots
+        recoverable, declared = _missing_shipment_field_ids(
+            rows, normalized_shipment_ids, "receiver_address", set(snapshots)
+        )
+        return snapshots, recoverable, declared
 
     async def find_shipment_real_shipping_costs(
         self,
@@ -866,13 +894,33 @@ class FormulaReadModelRepository:
         shipment_ids: list[str] | tuple[str, ...],
         limit: int = 1000,
     ) -> dict[str, Decimal]:
+        costs, recoverable, declared = await self.find_shipment_real_shipping_costs_partial(
+            seller_id=seller_id, shipment_ids=shipment_ids, limit=limit
+        )
+        if recoverable or declared:
+            raise FormulaDataUnavailableError(
+                "Shipment",
+                "Required real_shipping_cost is unavailable or has not been refreshed.",
+                read_model="shipments",
+                shipment_ids=(*recoverable, *declared),
+            )
+        return costs
+
+    async def find_shipment_real_shipping_costs_partial(
+        self,
+        *,
+        seller_id: str,
+        shipment_ids: list[str] | tuple[str, ...],
+        limit: int = 1000,
+    ) -> tuple[dict[str, Decimal], tuple[str, ...], tuple[str, ...]]:
+        """Serve every known cost and classify the remainder."""
         normalized_shipment_ids = list(
             dict.fromkeys(
                 str(shipment_id).strip() for shipment_id in shipment_ids if str(shipment_id).strip()
             )
         )
         if not normalized_shipment_ids:
-            return {}
+            return {}, (), ()
         cursor = _find_with_optional_projection(
             self._shipments,
             {"seller_id": seller_id, "_id": {"$in": normalized_shipment_ids}},
@@ -891,8 +939,10 @@ class FormulaReadModelRepository:
             seller_cost = _finite_non_negative_decimal(projection.get("seller_cost"))
             if seller_cost is not None:
                 costs[shipment_id] = seller_cost
-        _require_shipment_field(rows, normalized_shipment_ids, "real_shipping_cost", set(costs))
-        return costs
+        recoverable, declared = _missing_shipment_field_ids(
+            rows, normalized_shipment_ids, "real_shipping_cost", set(costs)
+        )
+        return costs, recoverable, declared
 
     async def find_questions(
         self,
@@ -1118,12 +1168,23 @@ def read_model_freshness_id(seller_id: str, read_model: str) -> str:
     return f"{seller_id}:{read_model}"
 
 
-def _require_shipment_field(
-    rows: list[dict[str, Any]], shipment_ids: list[str], field: str, available_ids: set[str]
-) -> None:
+def _missing_shipment_field_ids(
+    rows: list[dict[str, Any]], shipment_ids: Sequence[str], field: str, available_ids: set[str]
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """Split absent shipment fields into recoverable and declared-missing IDs.
+
+    A shipment receiver address is immutable history: once the source delivered
+    it, every later read may serve it without re-acquiring it inside a short
+    freshness window. Requiring a recent observation for a multi-year history is
+    impossible under the reserved quota and made complete tables unavailable.
+    The seller-scoped document and a non-empty value remain the proof; a field
+    the source explicitly declared unavailable is irrecoverable and is reported
+    separately so callers can emit NA without a permanent recovery loop.
+    """
     by_id = {str(row.get("_id")): row for row in rows}
     now = datetime.now(UTC)
-    missing = []
+    recoverable: list[str] = []
+    declared: list[str] = []
     for identity in shipment_ids:
         row = by_id.get(identity, {})
         observed = _safe_utc_datetime(
@@ -1131,13 +1192,27 @@ def _require_shipment_field(
             if field == "receiver_address"
             else (row.get("real_shipping_cost") or {}).get("synced_at")
         )
+        # An observation from the future is not a valid proof of anything; ask
+        # the source again instead of trusting it.
+        future = observed is not None and observed > now
         if (
-            identity not in available_ids
-            or field in (row.get("unavailable_fields") or [])
-            or observed is None
-            or not now - timedelta(minutes=15) < observed <= now
+            identity in available_ids
+            and field not in (row.get("unavailable_fields") or [])
+            and not future
         ):
-            missing.append(identity)
+            continue
+        if field in (row.get("unavailable_fields") or []):
+            declared.append(identity)
+        else:
+            recoverable.append(identity)
+    return tuple(recoverable), tuple(declared)
+
+
+def _require_shipment_field(
+    rows: list[dict[str, Any]], shipment_ids: list[str], field: str, available_ids: set[str]
+) -> None:
+    recoverable, declared = _missing_shipment_field_ids(rows, shipment_ids, field, available_ids)
+    missing = (*recoverable, *declared)
     if missing:
         raise FormulaDataUnavailableError(
             "Shipment",

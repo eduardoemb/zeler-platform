@@ -187,14 +187,14 @@ class OrderQuestionFormulaHandlers:
             for order in filtered_orders
             for line in _order_lines(order, sku_resolver=sku_resolver)
         ]
-        receiver_addresses = await _receiver_addresses_for_orders(
+        receiver_addresses, address_recovery = await _receiver_addresses_for_orders(
             context=context,
             repository=self._repository,
             seller_id=context.seller_id,
             orders=filtered_orders,
             enabled=buyer_selection.include_buyer_columns,
         )
-        real_shipping_costs = await _real_shipping_costs_for_orders(
+        real_shipping_costs, cost_recovery = await _real_shipping_costs_for_orders(
             context=context,
             repository=self._repository,
             seller_id=context.seller_id,
@@ -215,8 +215,11 @@ class OrderQuestionFormulaHandlers:
             )
             for order, line in order_lines
         )
+        recovery, additional = _combine_shipment_recoveries(address_recovery, cost_recovery)
         return FormulaExecutionResult(
             values=normalize_response_rows(values, header_rows=header_rows),
+            recovery=recovery,
+            additional_recoveries=additional,
             meta={
                 "orders_count": len(filtered_orders),
                 "status_filter": status_filter or "todos",
@@ -326,14 +329,14 @@ class OrderQuestionFormulaHandlers:
             for line in _order_lines(order, sku_resolver=sku_resolver)
             if line.sku == requested_sku
         ]
-        receiver_addresses = await _receiver_addresses_for_orders(
+        receiver_addresses, address_recovery = await _receiver_addresses_for_orders(
             context=context,
             repository=self._repository,
             seller_id=context.seller_id,
             orders=[order for order, _line in filtered_lines],
             enabled=buyer_selection.include_buyer_columns,
         )
-        real_shipping_costs = await _real_shipping_costs_for_orders(
+        real_shipping_costs, cost_recovery = await _real_shipping_costs_for_orders(
             context=context,
             repository=self._repository,
             seller_id=context.seller_id,
@@ -355,8 +358,11 @@ class OrderQuestionFormulaHandlers:
                 )
             )
         rows_count = len(values) - (1 if _headers_requested(context.args.get("encabezados")) else 0)
+        recovery, additional = _combine_shipment_recoveries(address_recovery, cost_recovery)
         return FormulaExecutionResult(
             values=normalize_response_rows(values, header_rows=header_rows),
+            recovery=recovery,
+            additional_recoveries=additional,
             meta={
                 "orders_count": rows_count,
                 "status_filter": status_filter or "todos",
@@ -387,7 +393,7 @@ class OrderQuestionFormulaHandlers:
                 date_to=self._now_fn(),
                 limit=None,
             )
-            receiver_addresses = await _receiver_addresses_for_orders(
+            receiver_addresses, address_recovery = await _receiver_addresses_for_orders(
                 context=context,
                 repository=self._repository,
                 seller_id=context.seller_id,
@@ -395,7 +401,10 @@ class OrderQuestionFormulaHandlers:
                 enabled=True,
             )
             return self._compradores_result(
-                context=context, orders=ordered_orders, receiver_addresses=receiver_addresses
+                context=context,
+                orders=ordered_orders,
+                receiver_addresses=receiver_addresses,
+                recovery=address_recovery,
             )
         orders = await self._repository.find_orders_by_ids(
             seller_id=context.seller_id,
@@ -420,7 +429,7 @@ class OrderQuestionFormulaHandlers:
             for order_id in dict.fromkeys(requested_order_ids)
             if order_id in orders_by_id
         ]
-        receiver_addresses = await _receiver_addresses_for_orders(
+        receiver_addresses, address_recovery = await _receiver_addresses_for_orders(
             context=context,
             repository=self._repository,
             seller_id=context.seller_id,
@@ -428,7 +437,10 @@ class OrderQuestionFormulaHandlers:
             enabled=True,
         )
         return self._compradores_result(
-            context=context, orders=ordered_orders, receiver_addresses=receiver_addresses
+            context=context,
+            orders=ordered_orders,
+            receiver_addresses=receiver_addresses,
+            recovery=address_recovery,
         )
 
     @staticmethod
@@ -437,6 +449,7 @@ class OrderQuestionFormulaHandlers:
         context: FormulaExecutionContext,
         orders: Sequence[Mapping[str, Any]],
         receiver_addresses: Mapping[str, Mapping[str, Any]],
+        recovery: FormulaDataUnavailableError | None = None,
     ) -> FormulaExecutionResult:
         values: list[list[Any]] = _header_row(
             context.args.get("encabezados"), BUYER_ADDRESS_LEGACY_HEADERS
@@ -452,6 +465,7 @@ class OrderQuestionFormulaHandlers:
         )
         return FormulaExecutionResult(
             values=values,
+            recovery=recovery,
             meta={
                 "orders_count": len(orders),
                 "address_available": address_available,
@@ -1231,23 +1245,53 @@ def _require_shipment_identity(
     )
 
 
+def _combine_shipment_recoveries(
+    *recoveries: FormulaDataUnavailableError | None,
+) -> tuple[FormulaDataUnavailableError | None, tuple[FormulaDataUnavailableError, ...]]:
+    """Keep one shipment recovery request that covers every missing identity."""
+    present = [recovery for recovery in recoveries if recovery is not None]
+    if not present:
+        return None, ()
+    if len(present) == 1:
+        return present[0], ()
+    merged_ids = tuple(
+        dict.fromkeys(identity for recovery in present for identity in recovery.shipment_ids)
+    )
+    primary = FormulaDataUnavailableError(
+        present[0].formula,
+        "Shipment fields are missing or expired and must be recovered.",
+        read_model="shipments",
+        shipment_ids=merged_ids,
+    )
+    return primary, ()
+
+
 async def _real_shipping_costs_for_orders(
     *,
     context: FormulaExecutionContext,
     repository: FormulaReadModelRepository,
     seller_id: str,
     orders: Sequence[Mapping[str, Any]],
-) -> dict[str, Decimal]:
+) -> tuple[dict[str, Decimal], FormulaDataUnavailableError | None]:
+    """Read the known shipping costs and report the recoverable remainder."""
     _require_shipment_identity(context, orders)
     shipment_ids = list(
         dict.fromkeys(shipment_id for order in orders if (shipment_id := _shipment_id(order)))
     )
     if not shipment_ids:
-        return {}
-    return await repository.find_shipment_real_shipping_costs(
+        return {}, None
+    costs, recoverable, _declared = await repository.find_shipment_real_shipping_costs_partial(
         seller_id=seller_id,
         shipment_ids=shipment_ids,
         limit=max(1000, len(shipment_ids)),
+    )
+    if not recoverable:
+        return costs, None
+    return costs, FormulaDataUnavailableError(
+        context.contract.name,
+        "Shipping costs are missing and must be recovered.",
+        read_model="shipments",
+        shipment_ids=recoverable,
     )
 
 
@@ -1258,19 +1302,36 @@ async def _receiver_addresses_for_orders(
     seller_id: str,
     orders: Sequence[Mapping[str, Any]],
     enabled: bool,
-) -> dict[str, dict[str, Any]]:
+) -> tuple[dict[str, dict[str, Any]], FormulaDataUnavailableError | None]:
+    """Read the known receiver addresses and report the recoverable remainder.
+
+    The strict reader both withholds addresses and raises for any shipment whose
+    snapshot is absent, blank or older than its validity window. That is correct
+    for certification, but a formula must still serve every address it can
+    prove: an absent address is recoverable from the source, so the read
+    degrades to a partial table plus a background recovery request instead of
+    failing the whole sheet.
+    """
     if not enabled:
-        return {}
+        return {}, None
     _require_shipment_identity(context, orders)
     shipment_ids = list(
         dict.fromkeys(shipment_id for order in orders if (shipment_id := _shipment_id(order)))
     )
     if not shipment_ids:
-        return {}
-    return await repository.find_shipment_receiver_addresses(
+        return {}, None
+    addresses, recoverable, _declared = await repository.find_shipment_receiver_addresses_partial(
         seller_id=seller_id,
         shipment_ids=shipment_ids,
         limit=max(1000, len(shipment_ids)),
+    )
+    if not recoverable:
+        return addresses, None
+    return addresses, FormulaDataUnavailableError(
+        context.contract.name,
+        "Receiver addresses are missing and must be recovered.",
+        read_model="shipments",
+        shipment_ids=recoverable,
     )
 
 

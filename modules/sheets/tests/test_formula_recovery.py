@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from typing import Any
 from uuid import uuid4
 
@@ -4386,18 +4387,29 @@ async def test_shipment_event_retains_recovered_fields_without_refreshing_them(
         assert stored[field] == prior[field]
     assert "legacy_raw" not in stored
     repository = FormulaReadModelRepository(db=recovery_db)
-    for read in (
-        repository.find_shipment_receiver_addresses,
-        repository.find_shipment_real_shipping_costs,
-    ):
-        with pytest.raises(FormulaDataUnavailableError):
-            await read(seller_id="pilot", shipment_ids=["3001"])
+    # An event update must not refresh the observed shipment fields, but a value
+    # already observed stays durable: it keeps being served instead of expiring
+    # with the short acquisition window. A field the source declared missing
+    # stays unavailable and is reported for recovery.
+    assert await repository.find_shipment_receiver_addresses(
+        seller_id="pilot", shipment_ids=["3001"]
+    ) == {"3001": {"name": "Synthetic Receiver"}}
+    if flagged:
+        with pytest.raises(FormulaDataUnavailableError) as missing:
+            await repository.find_shipment_real_shipping_costs(
+                seller_id="pilot", shipment_ids=["3001"]
+            )
+        assert missing.value.shipment_ids == ("3001",)
+    else:
+        assert await repository.find_shipment_real_shipping_costs(
+            seller_id="pilot", shipment_ids=["3001"]
+        ) == {"3001": Decimal("12.5")}
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("field", ["receiver_address", "real_shipping_cost"])
 @pytest.mark.parametrize("state", ["ready", "missing", "expired", "flagged", "future", "malformed"])
-async def test_shipment_fields_require_available_current_seller_data(
+async def test_shipment_fields_require_available_seller_data(
     recovery_db: Any, field: str, state: str
 ) -> None:
     from zeler_sheets.formulas.dispatcher import FormulaDataUnavailableError
@@ -4429,7 +4441,11 @@ async def test_shipment_fields_require_available_current_seller_data(
         if field == "receiver_address"
         else repository.find_shipment_real_shipping_costs
     )
-    if state == "ready":
+    # A shipment address and a settled seller cost are durable history: an aged
+    # observation still proves the value, so every later read may serve it. The
+    # freshness window was a proxy for acquisition, and demanding it for a
+    # multi-year history made complete tables permanently unavailable.
+    if state in {"ready", "expired"}:
         assert "3001" in await method(seller_id="pilot", shipment_ids=["3001"])
         with pytest.raises(FormulaDataUnavailableError):
             await method(seller_id="other", shipment_ids=["3001"])
@@ -5607,8 +5623,16 @@ async def test_http_missing_data_recovers_in_background_and_next_http_succeeds(
     ) as client:
         headers = {"Authorization": f"Bearer {token.token_once}"}
         missing = await client.post("/sheets/formulas:execute", headers=headers, json=payload)
-        assert missing.json()["error"]["code"] == "DATA_UNAVAILABLE"
-        assert missing.json()["meta"]["recovery_requested"] is True
+        if read_model == "shipments":
+            # A shipment address is durable history, so the formula serves NA
+            # for the unknown shipment and asks for recovery instead of failing
+            # the whole table while the background job runs.
+            assert missing.json()["ok"] is True
+            assert missing.json()["values"] == [["NA"] * 8]
+            assert missing.json()["meta"]["recovery_requested"] is True
+        else:
+            assert missing.json()["error"]["code"] == "DATA_UNAVAILABLE"
+            assert missing.json()["meta"]["recovery_requested"] is True
         assert calls == []
         await worker.start()
         try:

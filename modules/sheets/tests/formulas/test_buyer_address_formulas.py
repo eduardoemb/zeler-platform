@@ -8,11 +8,7 @@ from typing import Any
 
 import pytest
 
-from zeler_sheets.formulas.dispatcher import (
-    FormulaDataUnavailableError,
-    FormulaDispatcher,
-    FormulaExecutionContext,
-)
+from zeler_sheets.formulas.dispatcher import FormulaDispatcher, FormulaExecutionContext
 from zeler_sheets.formulas.handlers_orders_questions import build_order_question_formula_handlers
 from zeler_sheets.formulas.read_models import FormulaReadModelRepository
 from zeler_sheets.formulas.registry import FormulaRegistry
@@ -197,7 +193,10 @@ async def test_order_formulas_use_projected_shipment_snapshot_for_exact_buyer_fi
 
 
 @pytest.mark.asyncio
-async def test_order_sku_formula_requires_missing_blank_or_unauthorized_snapshots() -> None:
+async def test_order_sku_formula_serves_na_for_missing_blank_or_unauthorized_snapshots() -> None:
+    # A missing, blank or foreign-seller address snapshot is recoverable, so the
+    # formula serves NA for those rows and requests recovery instead of failing
+    # the whole table. The foreign seller snapshot must never leak.
     db = FakeDb()
     db["orders"].documents = {
         "missing-snapshot": _order_doc(
@@ -229,26 +228,27 @@ async def test_order_sku_formula_requires_missing_blank_or_unauthorized_snapshot
     }
     dispatcher = _dispatcher(db)
 
-    with pytest.raises(FormulaDataUnavailableError) as missing:
-        await dispatcher.execute(
-            _context(
-                "ZELERDATA_ORDENESPORSKU",
-                {
-                    "skus": [["sku-a"], ["sku-b"], ["sku-c"]],
-                    "fecha_inicial": "2026-05-10",
-                    "fecha_final": "2026-05-10",
-                    "estado": "paid",
-                    "compradores": "si",
-                    "encabezados": "si",
-                },
-            )
+    result = await dispatcher.execute(
+        _context(
+            "ZELERDATA_ORDENESPORSKU",
+            {
+                "skus": [["sku-a"], ["sku-b"], ["sku-c"]],
+                "fecha_inicial": "2026-05-10",
+                "fecha_final": "2026-05-10",
+                "estado": "paid",
+                "compradores": "si",
+                "encabezados": "si",
+            },
         )
-    assert set(missing.value.shipment_ids) == {
+    )
+    assert result.recovery is not None
+    assert result.recovery.read_model == "shipments"
+    assert set(result.recovery.shipment_ids) == {
         "shipment-missing",
         "shipment-blank",
         "shipment-wrong-seller",
     }
-    assert "WRONG_SELLER_MUST_NOT_LEAK" not in str(missing.value)
+    assert "WRONG_SELLER_MUST_NOT_LEAK" not in str(result.values)
 
 
 @pytest.mark.asyncio
@@ -275,10 +275,17 @@ async def test_compradores_returns_only_eight_approved_fields_and_safe_metadata(
     }
     dispatcher = _dispatcher(db)
 
-    with pytest.raises(FormulaDataUnavailableError):
-        await dispatcher.execute(
-            _context("ZELERDATA_COMPRADORES", {"id_ordenes": [["pack-order"], ["missing-order"]]})
-        )
+    # A known address and a recoverable missing one share the table: the known
+    # row keeps its approved snapshot, the missing row is NA, and recovery is
+    # requested for the absent shipment instead of failing the whole formula.
+    partial = await dispatcher.execute(
+        _context("ZELERDATA_COMPRADORES", {"id_ordenes": [["pack-order"], ["missing-order"]]})
+    )
+    assert partial.values[0] == APPROVED_ADDRESS_VALUES
+    assert partial.values[1] == ["NA"] * len(BUYER_ADDRESS_HEADERS)
+    assert partial.recovery is not None
+    assert partial.recovery.read_model == "shipments"
+    assert partial.recovery.shipment_ids == ("shipment-missing",)
     result = await dispatcher.execute(
         _context("ZELERDATA_COMPRADORES", {"id_ordenes": ["pack-order"], "encabezados": "si"})
     )
