@@ -306,6 +306,23 @@ recurso de GCP: el IaC está listo en `infra/monitoring/`
 `notification_channels.yaml` con `zeler-ops-email` y `zelerdata-ops-email`),
 pero crear el metric, el canal y la política requiere `gcloud` autenticado.
 
+### Latencia de las fórmulas
+
+Medición de hoy con el overlay de `main` sobre producción, ejecutando las 52
+contratos en proceso contra Mongo real (no incluye la sobrecarga de Apps Script):
+
+| Métrica | Valor |
+| --- | --- |
+| Deadline interno | 25.0 s (`FORMULA_DEADLINE_SECONDS`, ya en la imagen desplegada) |
+| p50 | 0.093 s |
+| p95 | 4.297 s |
+| Máximo | 5.607 s (`ZELERDATA_MEDIDASGENERAL`) |
+| Fórmulas sobre el deadline | 0 |
+
+El margen frente al corte de 30 s de Google es amplio incluso para la fórmula más
+lenta. Las cinco más lentas (`MEDIDASGENERAL`, `CALCULADORA`, `OBTENER_CATALOGO`,
+`MEDIDAS`, `SUPERMERCADO`) quedan entre 3.4 s y 5.6 s.
+
 ### Verificación de calidad en `main`
 
 - `uv run pytest`: exit 0.
