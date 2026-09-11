@@ -1228,13 +1228,18 @@ def read_model_reconciliation_marker_covers(
     )
 
 
-def _marker_interval_proofs(marker: dict[str, Any]) -> tuple[dict[str, Any], list[Any]] | None:
+def _marker_interval_proofs(
+    marker: Any, *, states: frozenset[str] = frozenset({RECONCILED_READ_MODEL_STATE})
+) -> tuple[dict[str, Any], list[Any]] | None:
     """Split a marker into its current claim and independently retained proofs.
 
-    Returns ``None`` when the marker is not a reconciled claim at all, which is
-    how an invalidated marker withdraws every interval it used to hold.
+    Returns ``None`` when the marker is not in one of the accepted productive
+    states, which is how an invalidated marker withdraws every interval it used
+    to hold. Retained proofs are themselves checked against the same states.
     """
-    if str(marker.get("state") or "").strip().casefold() != RECONCILED_READ_MODEL_STATE:
+    if not isinstance(marker, dict):
+        return None
+    if str(marker.get("state") or "").strip().casefold() not in states:
         return None
     if "retained_intervals" not in marker:
         return marker, []
@@ -1388,36 +1393,60 @@ def devoluciones_reconciliation_marker_covers(
 
 
 def _read_model_freshness_marker_covers(marker: Any, *, date_to: Any) -> bool:
-    if not isinstance(marker, dict):
+    """Whether a marker certifies a read that reaches ``date_to``.
+
+    A historical-window publication legitimately narrows the top-level claim
+    while retaining the newer proof it did not re-acquire. The gate therefore
+    considers every durable proof: a "now" read is served from whichever claim
+    is still live, instead of reporting unavailable until the next fast cycle.
+    """
+    proofs = _marker_interval_proofs(marker, states=PRODUCTIVE_READ_MODEL_STATES)
+    if proofs is None:
         return False
+    current, retained = proofs
     now = datetime.now(UTC)
-    if marker.get("valid_until") is not None:
-        valid_until = _safe_utc_datetime(marker["valid_until"])
-        if valid_until is None or valid_until <= now:
-            return False
-    state = str(marker.get("state") or "").strip().casefold()
-    if state not in PRODUCTIVE_READ_MODEL_STATES:
-        return False
     requested_until = _safe_utc_datetime(date_to)
     if requested_until is None:
-        return False
-    fresh_until = _latest_utc_datetime(
-        marker.get("fresh_until"),
-        marker.get("reconciled_until"),
-    )
-    if fresh_until is None:
         return False
     if requested_until > now:
         # A "now"-bounded read demands coverage of an instant that has not
         # happened yet. Hours that have not occurred cannot be reconciled, so
         # the requirement stops at the read instant.
         requested_until = now
+    return any(
+        _productive_claim_covers_instant(proof, requested_until=requested_until, now=now)
+        for proof in [current, *retained]
+    )
+
+
+def _productive_claim_covers_instant(
+    proof: Any, *, requested_until: datetime, now: datetime
+) -> bool:
+    """Whether one claim certifies data up to ``requested_until``.
+
+    The claim must be productive and its own validity window must still be open;
+    a claim further behind than the two-cycle tolerance must drive a new
+    acquisition instead of presenting stale data as current.
+    """
+    if not isinstance(proof, dict):
+        return False
+    state = str(proof.get("state") or "").strip().casefold()
+    if state not in PRODUCTIVE_READ_MODEL_STATES:
+        return False
+    valid_until = proof.get("valid_until")
+    if valid_until is not None:
+        parsed_validity = _safe_utc_datetime(valid_until)
+        if parsed_validity is None or parsed_validity <= now:
+            return False
+    fresh_until = _latest_utc_datetime(
+        proof.get("fresh_until"),
+        proof.get("reconciled_until"),
+    )
+    if fresh_until is None:
+        return False
     if fresh_until >= requested_until:
         return True
-    # Otherwise only the live validity window may cover the small acquisition
-    # lag; a claim further behind must drive a new acquisition instead of
-    # presenting stale data as current.
-    return _live_claim_covers_instant(marker, coverage_until=fresh_until, read_instant=now)
+    return _live_claim_covers_instant(proof, coverage_until=fresh_until, read_instant=now)
 
 
 def _latest_utc_datetime(*values: Any) -> datetime | None:

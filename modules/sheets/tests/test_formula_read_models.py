@@ -327,6 +327,51 @@ async def test_productive_gate_tolerates_only_the_live_validity_window(
 
 
 @pytest.mark.asyncio
+async def test_productive_gate_reads_the_union_of_durable_proofs() -> None:
+    # A historical-window publication legitimately narrows the top-level claim
+    # while retaining the newer proof it did not re-acquire. A "now" read must
+    # still be served from that retained proof inside its live window instead of
+    # reporting DATA_UNAVAILABLE until the next fast cycle.
+    now = datetime.now(UTC)
+    marker = {
+        "read_model": "orders",
+        "state": "reconciled",
+        "date_from": now - timedelta(days=29),
+        "reconciled_until": now - timedelta(hours=5),
+        "fresh_until": now - timedelta(hours=5),
+        "valid_until": now + timedelta(minutes=20),
+        "retained_intervals": [
+            {
+                "state": "reconciled",
+                "date_from": now - timedelta(days=7),
+                "reconciled_until": now - timedelta(minutes=10),
+                "valid_until": now + timedelta(minutes=20),
+            }
+        ],
+    }
+
+    class MarkerCollection(FakeCollection):
+        async def find_one(self, filter_spec: dict[str, Any]) -> dict[str, Any]:
+            return marker
+
+    db = FakeDb([])
+    db._collections["sheets_read_model_freshness"] = MarkerCollection([])
+    repository = FormulaReadModelRepository(db=db)
+    await repository.require_read_model_productive(
+        seller_id="seller-1", read_model="orders", date_to=now, formula="ZELERDATA_TEST"
+    )
+
+    # Once that retained proof's own window closes the same read must fail
+    # instead of presenting a frozen cut as current data.
+    marker["retained_intervals"][0]["valid_until"] = now - timedelta(seconds=1)
+    marker["valid_until"] = now - timedelta(seconds=1)
+    with pytest.raises(FormulaDataUnavailableError):
+        await repository.require_read_model_productive(
+            seller_id="seller-1", read_model="orders", date_to=now, formula="ZELERDATA_TEST"
+        )
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("method", "read_model", "has_start"),
     [
