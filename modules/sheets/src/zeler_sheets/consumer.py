@@ -67,6 +67,7 @@ from zeler_sheets.google_errors import (
     SellerTokenRevokedError,
 )
 from zeler_sheets.google_sheets_client import make_sheets_client
+from zeler_sheets.observed_read_model_markers import publish_observed_read_model_markers
 from zeler_sheets.sheets_config import SheetsSettings
 from zeler_sheets.sheetseller_backfill import run_item_detail_enrichment, run_sheetseller_backfill
 from zeler_sheets.sync_jobs_processor import SyncJobsProcessor
@@ -1330,6 +1331,11 @@ async def build_zelerdata_refresh_supervisor(*, db: Any) -> ZelerDataRefreshSupe
             # Explicit-identity models read their identities from the already
             # acquired local read models; planning never calls Mercado Libre.
             identity_source=MongoRefreshIdentitySource(db=db),
+        ),
+        # Observed-only read models cannot be certified by a source range, so
+        # the same cycle renews their heartbeat from the data already observed.
+        observed_marker_publisher=lambda seller_id: publish_observed_read_model_markers(
+            db, seller_id
         ),
         interval_seconds=interval,
     )

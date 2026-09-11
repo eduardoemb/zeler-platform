@@ -84,6 +84,7 @@ STATUS_SOURCE_ALLOWLIST: frozenset[str] = frozenset(
         "devoluciones_event_relevance_unknown",
         "devoluciones_relevant_order_event",
         "devoluciones_topology_rollback",
+        "zelerdata_observed_read_model",
     }
 )
 VALID_COVERAGE_BASES: frozenset[str] = frozenset({"legacy_imported", "observed_only"})

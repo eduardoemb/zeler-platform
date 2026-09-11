@@ -11,7 +11,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import re
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Awaitable, Callable, Iterable, Mapping
 from contextlib import suppress
 from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol
@@ -448,6 +448,7 @@ class ZelerDataRefreshSupervisor:
         *,
         explorer: RefreshExplorer,
         planner: RefreshPlanner,
+        observed_marker_publisher: Callable[[str], Awaitable[tuple[str, ...]]] | None = None,
         interval_seconds: float = DEFAULT_INTERVAL_SECONDS,
         now: Callable[[], datetime] | None = None,
         daily_hour_utc: int = DEFAULT_DAILY_HOUR_UTC,
@@ -461,6 +462,7 @@ class ZelerDataRefreshSupervisor:
             raise ValueError("full review weekday must be a valid UTC weekday")
         self._explorer = explorer
         self._planner = planner
+        self._observed_marker_publisher = observed_marker_publisher
         self._interval = interval_seconds
         self._now = now or (lambda: datetime.now(UTC))
         self._daily_hour = daily_hour_utc
@@ -540,6 +542,15 @@ class ZelerDataRefreshSupervisor:
                 if inspect.isawaitable(result):  # pragma: no cover - defensive
                     result = await result
                 admitted = bool(result) or admitted
+            if self._observed_marker_publisher is not None:
+                try:
+                    # Observed-only models cannot be certified by a source
+                    # reconciliation. Their heartbeat is renewed once per cycle
+                    # and expires like any other claim, so a stopped refresh
+                    # loop still fails those formulas closed.
+                    await self._observed_marker_publisher(seller_id)
+                except Exception:  # noqa: BLE001 - markers must not stop the loop
+                    logger.warning("zelerdata.observed_marker_failed", seller_id=seller_id)
         if DAILY_MODE in modes:
             self._last_daily_date = now.date()
         if FULL_MODE in modes:

@@ -529,6 +529,63 @@ async def test_supervisor_starts_and_stops_cleanly() -> None:
 
 
 @pytest.mark.asyncio
+async def test_supervisor_renews_observed_markers_once_per_seller_and_cycle() -> None:
+    published: list[str] = []
+
+    class Explorer:
+        async def discover_sellers(self) -> tuple[str, ...]:
+            return ("82453304", "999")
+
+    class Planner:
+        async def plan(self, *, seller_id: str, mode: str = "fast") -> bool:
+            return True
+
+    async def publisher(seller_id: str) -> tuple[str, ...]:
+        published.append(seller_id)
+        return ("shipments",)
+
+    supervisor = ZelerDataRefreshSupervisor(
+        explorer=Explorer(),
+        planner=Planner(),
+        observed_marker_publisher=publisher,
+        interval_seconds=900,
+        now=lambda: datetime(2026, 9, 10, 12, 0, tzinfo=UTC),
+    )
+    await supervisor.run_cycle()
+
+    assert published == ["82453304", "999"]
+
+
+@pytest.mark.asyncio
+async def test_a_failing_observed_marker_does_not_stop_the_refresh_cycle() -> None:
+    planned: list[str] = []
+
+    class Explorer:
+        async def discover_sellers(self) -> tuple[str, ...]:
+            return ("82453304",)
+
+    class Planner:
+        async def plan(self, *, seller_id: str, mode: str = "fast") -> bool:
+            planned.append(mode)
+            return True
+
+    async def publisher(seller_id: str) -> tuple[str, ...]:
+        raise RuntimeError("marker storage unavailable")
+
+    supervisor = ZelerDataRefreshSupervisor(
+        explorer=Explorer(),
+        planner=Planner(),
+        observed_marker_publisher=publisher,
+        interval_seconds=900,
+        now=lambda: datetime(2026, 9, 10, 12, 0, tzinfo=UTC),
+    )
+    await supervisor.run_cycle()
+
+    assert planned == ["fast", "daily"]
+    assert supervisor.health_status == "ok"
+
+
+@pytest.mark.asyncio
 async def test_supervisor_runs_daily_sweep_once_per_day() -> None:
     seen: list[str] = []
 
