@@ -306,6 +306,26 @@ recurso de GCP: el IaC está listo en `infra/monitoring/`
 `notification_channels.yaml` con `zeler-ops-email` y `zelerdata-ops-email`),
 pero crear el metric, el canal y la política requiere `gcloud` autenticado.
 
+### Fórmulas pesadas: precalculado verificado E2E
+
+Entrega 2 verificada hoy contra producción con el overlay de `main`. El warmer
+del ciclo de refresco calculó y almacenó **10 entradas** (5 fórmulas × 2 variantes
+de encabezados) en 33.18 s de trabajo de fondo:
+
+| Fórmula | Filas por variante | Lectura desde el store |
+| --- | --- | --- |
+| `ZELERDATA_CALIDAD` | 1920 / 1919 | 0.0105 s / 0.0148 s |
+| `ZELERDATA_CATALOGO` | 163 / 181 | 0.0053 s / 0.0034 s |
+| `ZELERDATA_CATALOGOBUYBOX` | 165 / 164 | 0.0025 s / 0.0022 s |
+| `ZELERDATA_CATALOGO_COMPLETO` | 193 / 187 | 0.0026 s / 0.0028 s |
+| `ZELERDATA_DASHBOARD` | 2873 / 2872 | 0.0299 s / 0.0311 s |
+
+Todas las lecturas devuelven `precalculated=true`, con `valid_until` de la misma
+ventana que las marcas de frescura. La llamada de fórmula pasa así de 2.4–5.6 s de
+cálculo en vivo a 2–31 ms de lectura acotada, que es el puente acordado (Q3, Q8,
+Q16) frente al corte de 30 s de Google. Sigue sin desplegarse: requiere la imagen
+nueva.
+
 ### Latencia de las fórmulas
 
 Medición de hoy con el overlay de `main` sobre producción, ejecutando las 52
