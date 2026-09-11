@@ -103,6 +103,103 @@ def test_expired_recovery_proof_does_not_authorize_formula_reads() -> None:
     )
 
 
+def test_future_hours_are_never_required_as_reconciled_coverage() -> None:
+    # A "last N days" formula asks for the whole local day, which ends in the
+    # future. No acquisition can reconcile hours that have not happened, so the
+    # requirement must stop at the read instant instead of blocking forever.
+    now = datetime(2026, 9, 10, 14, 44, tzinfo=UTC)
+    marker = {
+        "state": "reconciled",
+        "date_from": datetime(2026, 8, 12, 7, tzinfo=UTC),
+        "reconciled_until": datetime(2026, 9, 11, 7, tzinfo=UTC),
+        "valid_until": now + timedelta(minutes=25),
+    }
+    assert read_model_reconciliation_marker_covers(
+        marker,
+        date_from=datetime(2026, 8, 13, tzinfo=UTC),
+        date_to=datetime(2026, 9, 10, 23, 59, 59, 999999, tzinfo=UTC),
+        now=now,
+    )
+    # The same window still fails when the marker has not reached the read
+    # instant, so old data is never presented as current.
+    stale = {**marker, "reconciled_until": datetime(2026, 9, 10, 7, tzinfo=UTC)}
+    assert not read_model_reconciliation_marker_covers(
+        stale,
+        date_from=datetime(2026, 8, 13, tzinfo=UTC),
+        date_to=datetime(2026, 9, 10, 23, 59, 59, 999999, tzinfo=UTC),
+        now=now,
+    )
+    # Exact interval proofs keep their strict equality semantics.
+    assert not read_model_reconciliation_marker_covers(
+        marker,
+        date_from=datetime(2026, 8, 12, 7, tzinfo=UTC),
+        date_to=datetime(2026, 9, 11, 7, tzinfo=UTC),
+        exact_interval=True,
+        now=now,
+    )
+
+
+def test_current_claim_stays_readable_until_its_validity_window_expires() -> None:
+    # The fast refresh publishes coverage a few minutes behind the read instant
+    # and stays valid for two cycles. While that claim is live the answer must
+    # be served; once it expires the same read must fail instead of silently
+    # presenting stale data as current.
+    now = datetime(2026, 9, 10, 14, 44, tzinfo=UTC)
+    requested_from = datetime(2026, 8, 13, 7, tzinfo=UTC)
+    marker = {
+        "read_model": "orders",
+        "state": "reconciled",
+        "date_from": datetime(2026, 8, 13, 7, tzinfo=UTC),
+        "reconciled_until": now - timedelta(minutes=10),
+        "fresh_until": now - timedelta(minutes=10),
+        "valid_until": now + timedelta(minutes=20),
+    }
+    assert read_model_reconciliation_marker_covers(
+        marker, date_from=requested_from, date_to=now, now=now
+    )
+
+    expired = {**marker, "valid_until": now - timedelta(seconds=1)}
+    assert not read_model_reconciliation_marker_covers(
+        expired, date_from=requested_from, date_to=now, now=now
+    )
+
+    # A range that lies entirely in the future is never authorized.
+    assert not read_model_reconciliation_marker_covers(
+        marker,
+        date_from=now + timedelta(days=1),
+        date_to=now + timedelta(days=2),
+        now=now,
+    )
+
+
+def test_retained_interval_validity_does_not_extend_its_coverage() -> None:
+    # Historical proofs expire independently, but their validity window must
+    # never certify hours after the range they actually acquired.
+    now = datetime(2026, 9, 10, 14, 44, tzinfo=UTC)
+    marker = {
+        "read_model": "orders",
+        "state": "reconciled",
+        "date_from": now - timedelta(minutes=10),
+        "reconciled_until": now,
+        "fresh_until": now,
+        "valid_until": now + timedelta(minutes=20),
+        "retained_intervals": [
+            {
+                "state": "reconciled",
+                "date_from": now - timedelta(days=60),
+                "reconciled_until": now - timedelta(days=30),
+                "valid_until": now + timedelta(minutes=20),
+            }
+        ],
+    }
+    assert not read_model_reconciliation_marker_covers(
+        marker,
+        date_from=now - timedelta(days=60),
+        date_to=now - timedelta(days=15),
+        now=now,
+    )
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("state", ["fresh", "reconciled"])
 @pytest.mark.parametrize("validity", ["expired", "invalid", "valid"])

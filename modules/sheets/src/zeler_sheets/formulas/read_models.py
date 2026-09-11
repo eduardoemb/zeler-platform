@@ -13,6 +13,7 @@ from zeler_sheets.devoluciones_reconciliation import (
 from zeler_sheets.formulas.dispatcher import FormulaDataUnavailableError
 from zeler_sheets.formulas.pricing import acquired_current_price
 from zeler_sheets.formulas.recovery import ItemInventoryRecoveryRequest
+from zeler_sheets.formulas.refresh import MARKER_VALIDITY
 from zeler_sheets.formulas.schemas import FormulaContract
 from zeler_sheets.item_projection import item_source_fingerprint
 from zeler_sheets.unit_costs import UnitCostLookup, resolve_unit_cost
@@ -1176,6 +1177,8 @@ def read_model_reconciliation_marker_covers(
     date_to: Any,
     coverage_basis: str | None = None,
     exact_interval: bool = False,
+    now: datetime | None = None,
+    allow_live_claim: bool = True,
 ) -> bool:
     if not isinstance(marker, dict):
         return False
@@ -1193,13 +1196,18 @@ def read_model_reconciliation_marker_covers(
                 date_to=date_to,
                 coverage_basis=coverage_basis,
                 exact_interval=exact_interval,
+                now=now,
+                # A retained interval is a historical proof: its validity
+                # window must never certify hours after the range it acquired.
+                allow_live_claim=False,
             )
             for proof in [current, *retained]
             if isinstance(proof, dict) and "retained_intervals" not in proof
         )
+    read_instant = _safe_utc_datetime(now) or datetime.now(UTC)
     if marker.get("valid_until") is not None:
         valid_until = _safe_utc_datetime(marker["valid_until"])
-        if valid_until is None or valid_until <= datetime.now(UTC):
+        if valid_until is None or valid_until <= read_instant:
             return False
     if str(marker.get("state") or "").strip().casefold() != RECONCILED_READ_MODEL_STATE:
         return False
@@ -1210,6 +1218,15 @@ def read_model_reconciliation_marker_covers(
         return False
     requested_from = _safe_utc_datetime(date_from)
     requested_until = _safe_utc_datetime(date_to)
+    if requested_from is not None and requested_from > read_instant:
+        # A range that has not started yet cannot be authorized by any claim.
+        return False
+    if requested_until is not None and requested_until > read_instant:
+        # A "last N days" read ends at the end of the current local day, which
+        # is still in the future. Hours that have not happened cannot be
+        # reconciled, so the requirement stops at the read instant; the marker
+        # must still reach it for the read to count as current.
+        requested_until = read_instant
     coverage_start = _first_utc_datetime(
         marker.get("date_from"),
         marker.get("last_event_synced_at"),
@@ -1225,7 +1242,19 @@ def read_model_reconciliation_marker_covers(
         return False
     if exact_interval:
         return coverage_start == requested_from and reconciled_until == requested_until
-    return coverage_start <= requested_from and reconciled_until >= requested_until
+    if coverage_start > requested_from:
+        return False
+    if reconciled_until >= requested_until:
+        return True
+    # The fast refresh publishes coverage a few minutes behind the read instant
+    # and stays valid for two cycles. Inside that window the live claim
+    # authorizes the read; its own expiry is what forces a new acquisition
+    # instead of silently presenting stale data as current.
+    return allow_live_claim and _live_claim_covers_instant(
+        marker,
+        coverage_until=reconciled_until,
+        read_instant=read_instant,
+    )
 
 
 def devoluciones_reconciliation_marker_covers(
@@ -1292,6 +1321,23 @@ def _latest_utc_datetime(*values: Any) -> datetime | None:
         date_value for value in values if (date_value := _safe_utc_datetime(value)) is not None
     ]
     return max(parsed) if parsed else None
+
+
+def _live_claim_covers_instant(
+    marker: Any, *, coverage_until: datetime | None, read_instant: datetime
+) -> bool:
+    """Whether a still-valid claim may certify current data.
+
+    The tolerance is exactly the marker validity window (two refresh cycles),
+    measured from the instant the acquisition actually certified. A claim that
+    has expired, or whose coverage is older than that window, never qualifies.
+    """
+    if not isinstance(marker, dict) or coverage_until is None:
+        return False
+    valid_until = _safe_utc_datetime(marker.get("valid_until"))
+    if valid_until is None or valid_until <= read_instant:
+        return False
+    return read_instant <= coverage_until + MARKER_VALIDITY
 
 
 def _first_utc_datetime(*values: Any) -> datetime | None:
