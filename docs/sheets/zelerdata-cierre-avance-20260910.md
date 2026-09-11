@@ -455,9 +455,16 @@ defecto del código:
    `reconciled` sin `valid_until` y con marcador de junio/julio. No los renueva
    el ciclo (no forman parte de los modelos con dueño) y quedan como
    reconciliaciones puntuales, no como latido.
-5. **Reintentos y limpieza de la cola de descarte.** El archivado de los 412
-   mensajes se ejecutó (282 documentos); el reintento automático con espera
-   creciente y el archivado automático continuo quedan pendientes de
-   verificación operativa.
+5. **Reintentos y limpieza de la cola de descarte.** Cerrado el 2026-09-11:
+   el reintento con espera creciente ya estaba implementado
+   (`MAX_ATTEMPTS=3`, backoff 30s·2^(n-1)); el archivado automático quedó
+   conectado al ciclo de refresco y desplegado en
+   `sheets-worker-87deeee-20260911T221519Z`. La primera corrida automática
+   registró `archived=0`, `retained=134`, `stopped_reason=None`; los 134
+   mensajes retenidos son `items.updated` (82), `shipments.updated` (50) e
+   `items.price_updated` (2) del 2026-08-13 al 2026-09-11. Ninguno cumple hoy
+   la evidencia de `window_reconciled` ni `age_exceeded`, así que no deben
+   eliminarse: quedan en cola con motivo, y la corrida automática diaria los
+   volverá a evaluar.
 6. **Hojas de cálculo y Apps Script.** Por Q35 quedaron explícitamente fuera
    hasta que ZelerData esté estable.
