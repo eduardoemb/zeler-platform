@@ -82,6 +82,7 @@ STATUS_SOURCE_ALLOWLIST: frozenset[str] = frozenset(
         "questions_event_persistence",
         "zelerdata_read_model_reconcile",
         "zelerdata_devoluciones_joint_reconcile",
+        "zelerdata_devoluciones_quota_run",
         "devoluciones_operation_acquire",
         "devoluciones_operation_invalidate",
         "devoluciones_event_relevance_unknown",

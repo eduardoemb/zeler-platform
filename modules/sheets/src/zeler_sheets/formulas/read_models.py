@@ -40,6 +40,14 @@ CATALOG_PRODUCT_SNAPSHOTS_READ_MODEL = "catalog_product_snapshots"
 CATALOG_TIME_METRICS_READ_MODEL = "catalog_time_metrics"
 CLAIMS_READ_MODEL = "claims"
 DEVOLUCIONES_READ_MODEL = "devoluciones"
+# Both writers are canonical: the joint reconcile publishes historical windows
+# and the quota run publishes the settled windows of the refresh loop.
+_DEVOLUCIONES_RECONCILED_SOURCES = frozenset(
+    {
+        "zelerdata_devoluciones_joint_reconcile",
+        "zelerdata_devoluciones_quota_run",
+    }
+)
 FULL_WITHDRAWALS_READ_MODEL = "full_withdrawals"
 ITEM_FORMULA_ROWS_READ_MODEL = "item_formula_rows"
 ITEM_STATUS_STATES_READ_MODEL = "item_status_states"
@@ -1457,7 +1465,7 @@ def devoluciones_reconciliation_marker_covers(
         and reconciled_until is not None
         and fresh_until == reconciled_until
         and last_event_synced_at == coverage_start
-        and marker.get("source") == "zelerdata_devoluciones_joint_reconcile"
+        and marker.get("source") in _DEVOLUCIONES_RECONCILED_SOURCES
         and coverage_start < reconciled_until
         and coverage_start <= requested_from
         and reconciled_until >= requested_until

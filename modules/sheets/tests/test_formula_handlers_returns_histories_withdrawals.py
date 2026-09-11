@@ -754,6 +754,46 @@ async def test_devoluciones_uses_only_enclosing_unexpired_joint_marker() -> None
     }
 
 
+@pytest.mark.asyncio
+async def test_devoluciones_accepts_the_quota_run_finalization_marker() -> None:
+    """The production path publishes the marker from the quota run, not the joint writer.
+
+    ``advance_devoluciones_quota_run`` is the only reconciliation that runs once
+    the scheduled trigger moved into the refresh loop. Its finalize publishes
+    ``source="zelerdata_devoluciones_quota_run"``, so the formula gate must
+    accept that provenance or every settled window stays DATA_UNAVAILABLE.
+    """
+    db = FakeDb()
+    _mark_devoluciones_reconciled(db, source="zelerdata_devoluciones_quota_run")
+    db["claims"].documents = {
+        "claim-1": _claim_doc(
+            "CLAIM-1",
+            order_id="ORDER-1",
+            days_ago=1,
+            item_id="MLA1",
+            returned_quantity=1,
+        )
+    }
+    db["orders"].documents = {
+        "ORDER-1": _order_doc(
+            "ORDER-1",
+            sku="sku-1",
+            item_id="MLA1",
+            title="Returned item",
+            quantity=1,
+        )
+    }
+
+    result = await _dispatcher(db).execute(
+        _context(
+            "ZELERDATA_DEVOLUCIONES",
+            {"fecha_inicio": "2026-06-01", "fecha_final": "2026-06-15"},
+        )
+    )
+
+    assert result.values == [["MLA1", "SKU-1", 1, "Returned item"]]
+
+
 @pytest.mark.parametrize(
     ("marker_changes", "reason"),
     [
