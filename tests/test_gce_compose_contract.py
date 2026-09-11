@@ -440,9 +440,7 @@ class TestEnvTemplateContract:
         """Refresh must arrive disabled with an explicit seller allowlist."""
         values = dict(
             line.split("=", 1)
-            for line in (ENV_TEMPLATES_DIR / "sheets-worker.env.template")
-            .read_text()
-            .splitlines()
+            for line in (ENV_TEMPLATES_DIR / "sheets-worker.env.template").read_text().splitlines()
             if line and not line.startswith("#") and "=" in line
         )
 
