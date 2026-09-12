@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import inspect
+import json
 import runpy
 import signal
 import subprocess
@@ -11,6 +12,7 @@ from unittest.mock import patch
 
 import httpx
 import pytest
+import structlog
 
 from zeler_sheets.consumer import (
     MISSING_MONGO_DB_MESSAGE,
@@ -179,6 +181,26 @@ async def test_sheets_run_happy_path_starts_runner_and_awaits_shutdown_event(
 
     assert state.runner_started is True
     assert state.event_waited is True
+
+
+@pytest.mark.asyncio
+async def test_sheets_run_configures_production_json_logging(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    await _exercise_run(monkeypatch)
+
+    assert structlog.get_config()["cache_logger_on_first_use"] is False
+
+    structlog.get_logger("zeler_sheets.test").info(
+        "worker.logging_contract", component="sheets-worker"
+    )
+
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out.strip().splitlines()[-1])
+    assert payload["event"] == "worker.logging_contract"
+    assert payload["component"] == "sheets-worker"
+    assert payload["level"] == "info"
+    assert isinstance(payload["timestamp"], str)
 
 
 @pytest.mark.asyncio

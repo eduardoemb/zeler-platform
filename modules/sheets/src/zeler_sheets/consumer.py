@@ -32,6 +32,7 @@ from zeler_platform_core.devoluciones_readiness import (
     stable_devoluciones_operation_id,
 )
 from zeler_platform_core.events.idempotency import IdempotencyStore as CoreIdempotencyStore
+from zeler_platform_core.observability.logging import configure_logging
 from zeler_platform_core.runtime.manifest import validate_manifest
 from zeler_platform_core.runtime.retry_delay import RETRY_ATTEMPT_HEADER, RetryDelayPublisher
 from zeler_platform_core.runtime.worker_health import WorkerHealthSidecar
@@ -1172,6 +1173,7 @@ def _first_string(resource: dict[str, Any], *keys: str) -> str:
 
 async def run() -> None:
     """Boot the sheets AMQP worker with the real Google Sheets client."""
+    configure_logging(environment="production")
     rabbitmq_url = os.environ.get("RABBITMQ_URL")
     mongo_uri = os.environ.get("MONGO_URI")
     mongo_db = os.environ.get("MONGO_DB")
