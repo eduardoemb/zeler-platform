@@ -145,7 +145,7 @@ verify_sheets_rollback_attestation() {
     --source-commit "$source_commit" \
     --proof-out "$ROLLBACK_PROOF_FILE"
 
-  echo "Sheets rollback attestation passed: exact 12 scopes/6 routing keys."
+  echo "Sheets rollback attestation passed: exact registration contract verified."
   echo "candidate/prior runtime digests: verified"
   echo "External Artifact Registry and Cloud Build provenance: verified"
   echo "Pulled digest image config and no-secret runtime contract probe: verified"

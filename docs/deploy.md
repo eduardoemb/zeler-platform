@@ -115,11 +115,17 @@ docker compose version
 
 ### ZelerData recovery pilot gate
 
-The quality acquisition rollout adds the exact read-only scope
-`GET /item/*/performance`: Sheets registration now has 12 scopes and six routing
-keys. The manifest, seed and rollback verifier must agree. Prepare a verified
-rollback API image with this registration contract before activating quality;
-an older image that restores 11 scopes is not a compatible rollback authority.
+The quality acquisition rollout uses the exact read-only scopes
+`GET /item/*/performance` and `GET /user-product/*/performance`: Sheets
+registration has 13 scopes and six routing keys. The manifest, seed and rollback
+verifier must agree. Prepare a verified rollback API image with this registration contract before activating quality;
+an older image that restores 11 or 12 scopes is not a compatible rollback authority.
+The complete registration fingerprint is authoritative, not the counts alone.
+The preflight reports successful contract verification without hard-coded counts;
+the verified proof records the actual scope and routing-key counts. Keep the VM
+`infra/deploy/sheets_rollback.py` verifier aligned with the deployed registration
+contract before attempting rollback attestation. Updating this verifier must not
+rewrite the live registry or grant new product permissions.
 The permission/attestation commit is a buildable compatibility baseline, not
 proof of quality acquisition or authorization to deploy the scope alone.
 

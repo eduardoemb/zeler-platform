@@ -68,6 +68,7 @@ repeat failures, and promote stable knowledge to its proper operational form.
 | L-009 | Delivery | Good-enough completion boundary | active |
 | L-010 | ZelerData | Discovery and detail client scopes | active |
 | L-011 | VM deploy | Worker signals and stop deadlines | active |
+| L-012 | Local tests | Isolated Mongo replica set and file-descriptor limit | active |
 
 ## Cloud Build and VM deployment
 
@@ -140,6 +141,23 @@ repeat failures, and promote stable knowledge to its proper operational form.
 - proven path: Use the Sheets detail client for `/products/*`; bootstrap is the discovery client. Test both as separate clients with their real permission boundary.
 - failed path: Share one permissive fake for both clients; catalog tests passed while production bootstrap requests received 403 despite Sheets having the required scope.
 - verification/source: `modules/sheets/tests/test_formula_recovery.py::test_catalog_product_worker_persists_available_resources_without_global_coverage`, `infra/mongo/seeds/module_registry.admin_clients.json`, and the read-only two-identity VM probe recorded in `docs/zelerdata-goal-progress.md`.
+- status: active
+
+## Local integration tests
+
+### L-012 — Give the isolated test Mongo enough file descriptors
+- area: Local Mongo integration tests
+- proven path: Use a dedicated loopback Mongo replica set on port 27028 with
+  `--ulimit nofile=65536:65536`; verify PRIMARY before tests. Use disposable data,
+  not existing development or production volumes. Point `MONGO_URI` at that
+  instance for the normal suite. For the protected stock-time rs0 tests, unset
+  `MONGO_URI` and set the loopback `ZELER_RS0_TEST_URI` instead.
+- failed path: Rely on Docker's default descriptor limit; WiredTiger can abort
+  with error 24 during the suite, making later integration tests skip. A prior
+  successful ping does not prove the database stayed available throughout tests.
+- verification/source: `docs/zelerdata-goal-progress.md` records the earlier
+  descriptor exhaustion and protected test workflow;
+  `tests/integration/test_stock_time_forward_*_rs0.py` enforces the isolated target.
 - status: active
 
 ## Python safety

@@ -1462,7 +1462,13 @@ def test_deploy_wrapper_validates_sanitized_immutable_rollback_evidence(
     proof = json.loads(Path(env["SHEETS_ROLLBACK_PROOF_FILE"]).read_text(encoding="utf-8"))
     assert proof["image_ref"].endswith("a" * 64)
     assert proof["image_id"] == "sha256:" + "f" * 64
-    assert "Sheets rollback attestation passed: exact 12 scopes/6 routing keys." in completed.stdout
+    assert (
+        "Sheets rollback attestation passed: exact registration contract verified."
+        in completed.stdout
+    )
+    assert proof["scope_count"] == 13
+    assert proof["routing_key_count"] == 6
+    assert "12 scopes" not in completed.stdout
     assert "Artifact Registry and Cloud Build provenance: verified" in completed.stdout
     assert "MONGO_URI" not in completed.stdout
     assert "SHEETS_ROLLBACK_ENTRYPOINT" not in completed.stdout
