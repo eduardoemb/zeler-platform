@@ -19,11 +19,10 @@ def test_agents_and_security_docs_capture_required_rules() -> None:
     agents = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
     security = (ROOT / "SECURITY.md").read_text(encoding="utf-8")
 
-    skill_registry = (
-        "/Users/eduardoramirez/Documents/repositorios/zeler-platform/.atl/skill-registry.md"
-    )
+    skill_registry = "`.atl/skill-registry.md`"
 
     assert skill_registry in agents
+    assert "/Users/" not in agents
     assert "TDD strict" in agents
     assert "Never commit without being asked" in agents
     assert "Python 3.11 + uv workspace + FastAPI + MongoDB + RabbitMQ/CloudAMQP + GCP" in agents

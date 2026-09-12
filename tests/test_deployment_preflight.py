@@ -1838,3 +1838,110 @@ def test_daily_pull_writes_image_to_commit_for_pinned_images_when_enabled(
     gcloud_calls = Path(env["GCLOUD_CALL_LOG"]).read_text(encoding="utf-8")
     assert "artifacts docker images describe" in gcloud_calls
     assert "builds describe" in gcloud_calls
+
+
+@pytest.mark.parametrize("installed", [False, True])
+@pytest.mark.parametrize("pinned", [False, True])
+def test_preflight_dry_run_checks_image_syntax_without_runtime_side_effects(
+    tmp_path: Path, installed: bool, pinned: bool
+) -> None:
+    image = "us-central1-docker.pkg.dev/zeler-platform-dev/zeler-platform/gateway"
+    image += "@sha256:" + "a" * 64 if pinned else ":moving"
+    env = _digest_binding_env(
+        tmp_path, {"services": {"gateway": {"image": image}}}, require_binding=True
+    )
+    env["SHEETS_ROLLBACK_PREFLIGHT"] = "1"
+    evidence = Path(env["IMAGE_TO_COMMIT_FILE"])
+    evidence.write_text("prior evidence")
+    script = DOCKER_DEPLOY_PREFLIGHT
+    if installed:
+        script = tmp_path / "installed.sh"
+        script.write_text(_startup_installed_preflight())
+    result = subprocess.run(  # noqa: S603 - real wrapper with isolated fake commands.
+        ["/bin/bash", str(script), "--dry-run"], env=env, capture_output=True, text=True
+    )
+    assert result.returncode == (0 if pinned else 1), result.stderr
+    assert evidence.read_text() == "prior evidence"
+    assert not Path(env["DOCKER_CALL_LOG"]).exists()
+    assert not Path(env["GCLOUD_CALL_LOG"]).exists()
+    if pinned:
+        assert "provenance not verified" in result.stdout
+
+
+@pytest.mark.parametrize("installed", [False, True])
+@pytest.mark.parametrize("cleanup_allowed", [False, True])
+def test_preflight_low_disk_blocks_attestation_and_requires_cleanup_authorization(
+    tmp_path: Path, installed: bool, cleanup_allowed: bool
+) -> None:
+    env = _rollback_preflight_env(tmp_path=tmp_path)
+    fake_df = tmp_path / "df"
+    fake_df.write_text(
+        '#!/bin/sh\nprintf "Filesystem 1024-blocks Used Available Capacity Mounted\\n'
+        'root 100 99 1 99%% /\\n"\n'
+    )
+    fake_df.chmod(0o755)
+    maintenance = tmp_path / "maintenance"
+    marker = tmp_path / "cleaned"
+    maintenance.write_text('#!/bin/sh\ntouch "' + str(marker) + '"\n')
+    maintenance.chmod(0o755)
+    env.update(
+        {
+            "PATH": str(tmp_path) + os.pathsep + env["PATH"],
+            "MIN_FREE_GIB": "5",
+            "MAINTENANCE_SCRIPT": str(maintenance),
+            "ALLOW_DOCKER_MAINTENANCE": "1" if cleanup_allowed else "0",
+        }
+    )
+    script = DOCKER_DEPLOY_PREFLIGHT
+    if installed:
+        script = tmp_path / "installed.sh"
+        script.write_text(_startup_installed_preflight())
+    result = subprocess.run(  # noqa: S603 - isolated disk and cloud commands.
+        ["/bin/bash", str(script)], env=env, capture_output=True, text=True
+    )
+    assert result.returncode != 0
+    assert marker.exists() == cleanup_allowed
+    assert not Path(env["GCLOUD_CALL_LOG"]).exists()
+    assert not Path(env["SHEETS_ROLLBACK_PROOF_FILE"]).exists()
+
+
+@pytest.mark.parametrize("installed", [False, True])
+def test_preflight_rechecks_capacity_after_attestation_download(
+    tmp_path: Path, installed: bool
+) -> None:
+    env = _rollback_preflight_env(tmp_path=tmp_path)
+    marker = tmp_path / "downloaded"
+    env["DOWNLOAD_MARKER"] = str(marker)
+    docker = Path(env["ZELER_DOCKER_BIN"])
+    docker.write_text(
+        docker.read_text().replace(
+            'if [[ "$1" == "pull" ]]; then',
+            'if [[ "$1" == "pull" ]]; then\n  touch "$DOWNLOAD_MARKER"',
+        )
+    )
+    fake_df = tmp_path / "df"
+    fake_df.write_text(
+        "#!/bin/sh\navailable=99999999\n"
+        '[ ! -f "$DOWNLOAD_MARKER" ] || available=1\n'
+        'printf "Filesystem 1024-blocks Used Available Capacity Mounted\\n"\n'
+        'printf "root 100000000 1 %s 1%% /\\n" "$available"\n'
+    )
+    fake_df.chmod(0o755)
+    env.update(
+        {
+            "PATH": str(tmp_path) + os.pathsep + env["PATH"],
+            "MIN_FREE_GIB": "5",
+            "ALLOW_DOCKER_MAINTENANCE": "0",
+        }
+    )
+    script = DOCKER_DEPLOY_PREFLIGHT
+    if installed:
+        script = tmp_path / "installed.sh"
+        script.write_text(_startup_installed_preflight())
+    result = subprocess.run(  # noqa: S603 - isolated simulated attestation download.
+        ["/bin/bash", str(script)], env=env, capture_output=True, text=True
+    )
+    assert marker.exists()
+    assert result.returncode != 0
+    assert "insufficient space" in result.stderr
+    assert "Preflight passed" not in result.stdout

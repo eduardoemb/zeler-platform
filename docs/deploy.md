@@ -170,6 +170,7 @@ resulting `repo@sha256:...` reference is the deployment authority.
 ### Build one affected service
 
 ```bash
+set -euo pipefail
 PROJECT=zeler-platform-dev
 BUILD_REGION=us-central1
 CONNECTION=zeler-platform-github
@@ -182,8 +183,9 @@ SERVICE=sheets-worker
 DOCKERFILE=modules/sheets/Dockerfile.worker
 
 git fetch origin main
-SOURCE_COMMIT=$(git rev-parse origin/main)
-test "${#SOURCE_COMMIT}" -eq 40
+SOURCE_COMMIT=REPLACE_WITH_AUTHORIZED_40_CHARACTER_COMMIT
+[[ "$SOURCE_COMMIT" =~ ^[0-9a-f]{40}$ ]] || exit 1
+git merge-base --is-ancestor "$SOURCE_COMMIT" origin/main
 
 TAG="${SERVICE}-${SOURCE_COMMIT:0:7}-$(date -u +%Y%m%dT%H%M%SZ)"
 TAGGED_IMAGE="${AR}/${SERVICE}:${TAG}"
@@ -199,6 +201,8 @@ steps:
 - name: gcr.io/cloud-builders/docker
   args: ['build', '-f', '${DOCKERFILE}', '-t', '${TAGGED_IMAGE}', '.']
 images: ['${TAGGED_IMAGE}']
+options:
+  requestedVerifyOption: VERIFIED
 EOF
 
 BUILD_ID=$(gcloud builds submit "$REPOSITORY_RESOURCE" \
@@ -453,10 +457,13 @@ Sheets API boots in pass-1 with placeholder OAuth credentials and returns HTTP 5
 
 ## 5a. platform-vm root disk guardrails
 
-`platform-vm` keeps the boot disk at **20GB** for now. Do not resize it yet: the active
-policy is deploy preflight, safe Docker cleanup, Docker log rotation, a daily maintenance
-timer, and alerts. Resize the boot disk to **50GB** only if cleanup cannot maintain at
-least **5GiB** free on `/` or repeated pulls keep exhausting the margin.
+`platform-vm` root capacity must be measured before deployment. A read-only
+inspection on 2026-09-12 showed about 49 GiB total and 22 GiB available on `/`;
+the historical 20GB-to-50GB resize advice is no longer a current action plan.
+Require at least **5GiB** free on `/` before any image download. If authorized
+cleanup cannot sustain that margin, propose a capacity change with evidence;
+never resize automatically. The floor is a minimum, not a guarantee that a
+particular image pull will fit.
 
 When applying this to an already-running VM, plan a maintenance window after the daemon
 config change: existing containers may need `docker compose up -d --force-recreate <service>`
@@ -467,9 +474,11 @@ Safety rules:
 - Mongo data lives on the separate persistent disk mounted at `/var/lib/zeler-mongo`.
 - Safe cleanup may remove stopped containers, unused images, and builder cache older than 72 hours.
 - **Never prune Docker volumes** and never prune volumes during root-disk maintenance.
-- The deploy preflight must run before every `docker compose pull` on the VM.
+- The deploy preflight must run before every image pull on the VM, including
+  rollback attestation downloads. Cleanup requires `ALLOW_DOCKER_MAINTENANCE=1`
+  explicitly covered by the operation approval; the default is no cleanup.
 - Docker daemon log rotation is installed through `/etc/docker/daemon.json` (`local`, `max-size=50m`, `max-file=5`).
-- `zeler-docker-maintenance.timer` runs the safe maintenance script daily; daily is intentional because failed pulls can fill the small boot disk quickly.
+- `zeler-docker-maintenance.timer` runs the safe maintenance script daily; daily maintenance limits accumulation, but does not replace a fresh capacity check.
 - Configure Cloud Monitoring root filesystem alerts at 80% warning and 90% critical.
 
 ### Opt-in immutable-digest provenance gate (`REQUIRE_DIGEST_BINDING`)
@@ -494,8 +503,12 @@ gcloud compute ssh platform-vm --tunnel-through-iap --zone=$ZONE --project=$PROJ
 
 Expected: fails closed while `infra/gce/docker-compose.yml` still uses moving
 tags (`gateway:rollout-v5`, `mongo:7.0`, ...); no pull, no Docker maintenance,
-no runtime mutation. `--dry-run` skips the Sheets rollback attestation pull and
-the maintenance script; the binding check itself is read-only.
+no runtime mutation. With `REQUIRE_DIGEST_BINDING=1`, `--dry-run` checks selected
+Compose image syntax and service
+selection, plus root free space. Without that flag it checks capacity only.
+It skips cloud provenance verification,
+evidence writes, Sheets rollback attestation and maintenance. A passing dry-run
+is not proof of provenance, rollback compatibility, or deployment readiness.
 
 Behavior when enabled:
 
@@ -531,12 +544,16 @@ provenance interpretation never drifts between the two gates.
 
 ## 5. Re-deploy a Single Service
 
-Deploy only after separate user authorization. Run the build steps locally,
-then connect to `platform-vm` and execute this section inside the VM. The
+Deploy only after explicit user authorization, separate from build authorization.
+The proposal must name commit, services, target digests, bounded cleanup if needed,
+verification and compatible rollback. One approval covers that explicit scope;
+request additional approval only for an expansion. Submit Cloud Build from the
+operator environment, then execute this section inside `platform-vm`. The
 previous **running** digest is the rollback authority; it may differ from the
 image currently written in Compose.
 
 ```bash
+set -euo pipefail
 COMPOSE_FILE=/opt/zeler-platform/docker-compose.yml
 SERVICE=sheets-worker
 SOURCE_COMMIT=REPLACE_WITH_EXACT_40_CHARACTER_MAIN_COMMIT
@@ -547,11 +564,14 @@ NEW_IMAGE=REPLACE_WITH_ARTIFACT_REGISTRY_REPOSITORY_AT_SHA256_DIGEST
 [[ "$NEW_IMAGE" =~ ^[a-z0-9.-]+/[a-z0-9._/-]+@sha256:[0-9a-f]{64}$ ]] \
   || { echo "NEW_IMAGE must be pinned by digest" >&2; exit 1; }
 
-sudo /opt/zeler-platform/docker-deploy-preflight.sh
+sudo /opt/zeler-platform/docker-deploy-preflight.sh --dry-run
 
 CONTAINER_ID=$(sudo docker compose --file "$COMPOSE_FILE" ps -q "$SERVICE")
 test -n "$CONTAINER_ID"
-PRIOR_IMAGE=$(sudo docker inspect "$CONTAINER_ID" --format '{{.Config.Image}}')
+PRIOR_IMAGE_ID=$(sudo docker inspect "$CONTAINER_ID" --format '{{.Image}}')
+PRIOR_IMAGE=$(sudo docker image inspect "$PRIOR_IMAGE_ID" --format '{{json .RepoDigests}}' \
+  | python3 -c 'import json,sys; refs=[r for r in json.load(sys.stdin) if r.startswith(sys.argv[1]+"@sha256:")]; assert len(refs)==1, "ambiguous rollback digest"; print(refs[0])' \
+    "us-central1-docker.pkg.dev/zeler-platform-dev/zeler-platform/$SERVICE")
 [[ "$PRIOR_IMAGE" =~ ^[a-z0-9.-]+/[a-z0-9._/-]+@sha256:[0-9a-f]{64}$ ]] \
   || { echo "Running rollback image is not pinned by digest" >&2; exit 1; }
 
@@ -580,13 +600,37 @@ RENDERED_IMAGE=$(sudo docker compose --file "$COMPOSE_FILE" config --format json
     "$SERVICE")
 test "$RENDERED_IMAGE" = "$NEW_IMAGE"
 
+# Set ALLOW_DOCKER_MAINTENANCE=1 here only if bounded cleanup was approved.
+# Confirm rollback compatibility and record the prior digest before any cleanup.
+sudo REQUIRE_DIGEST_BINDING=1 DIGEST_BINDING_SERVICES="$SERVICE" \
+  /opt/zeler-platform/docker-deploy-preflight.sh
+sudo python3 - "$NEW_IMAGE" "$SOURCE_COMMIT" <<'PYCODE'
+import json
+import sys
+from pathlib import Path
+
+entry = json.loads(Path("/var/lib/zeler-platform/image_to_commit.json").read_text())["images"][sys.argv[1]]
+if entry["source_commit"] != sys.argv[2]:
+    raise SystemExit("Refusing image whose source differs from the authorized commit")
+PYCODE
 sudo docker compose --file "$COMPOSE_FILE" pull "$SERVICE"
+# Confirm the pull left the root capacity floor intact before service recreation.
+sudo /opt/zeler-platform/docker-deploy-preflight.sh --dry-run
 sudo docker compose --file "$COMPOSE_FILE" up -d --no-deps "$SERVICE"
 ```
 
+If the initial dry-run fails, stop before editing Compose. Use the read-only
+identity commands above to record the compatible rollback, perform cleanup only
+if the proposal authorized it, and rerun the dry-run before restarting this sequence.
+Do not bypass the capacity gate to reach the later deployment commands.
+
 The preflight requires at least 5GiB free on `/`. If the margin is lower, it
-runs safe Docker maintenance and re-checks before pulling images. Do not declare
-success from `Started`; prove the running digest and health:
+stops unless cleanup was explicitly enabled; after authorized cleanup it checks
+again. Cleanup can remove unused rollback images: verify that the recorded
+compatible rollback is still local or retrievable with sufficient disk margin.
+If preflight fails after the Compose edit, restore only that service image entry
+to its recorded pre-edit value; do not recreate a service that was never changed.
+Do not declare success from `Started`; prove the running digest and health:
 
 ```bash
 CONTAINER_ID=$(sudo docker compose --file "$COMPOSE_FILE" ps -q "$SERVICE")
@@ -604,9 +648,12 @@ test "$RUNTIME_STATUS" = "healthy"
 sudo docker compose --file "$COMPOSE_FILE" ps "$SERVICE"
 ```
 
-Run the service-specific smoke from section 8. If deployment, health, or smoke
-fails, replace `NEW_IMAGE` with the recorded `PRIOR_IMAGE`, recreate only the
-same service, and verify the rollback digest and health:
+Run the service-specific smoke from section 8, including dependency readiness.
+Observe health, restart count and available capacity again after the service-specific
+settling window; allow worker shutdown to finish and set the outer command timeout
+longer than Docker's stop grace. If deployment, health, or smoke fails and the
+proposal authorized this compatible rollback, replace `NEW_IMAGE` with the
+recorded `PRIOR_IMAGE`, recreate only the same service, and verify the rollback digest and health:
 
 ```bash
 sudo python3 - "$COMPOSE_FILE" "$NEW_IMAGE" "$PRIOR_IMAGE" <<'PY'
@@ -622,14 +669,28 @@ if text.count(old) != 1:
 path.write_text(text.replace(old, new, 1))
 PY
 
+sudo REQUIRE_DIGEST_BINDING=1 DIGEST_BINDING_SERVICES="$SERVICE" \
+  /opt/zeler-platform/docker-deploy-preflight.sh
+sudo docker compose --file "$COMPOSE_FILE" pull "$SERVICE"
+# Confirm the pull left the root capacity floor intact before service recreation.
+sudo /opt/zeler-platform/docker-deploy-preflight.sh --dry-run
 sudo docker compose --file "$COMPOSE_FILE" up -d --no-deps "$SERVICE"
 sudo docker compose --file "$COMPOSE_FILE" ps "$SERVICE"
 ```
 
+Repeat running-image identity, health, readiness and smoke checks against
+`PRIOR_IMAGE`; `ps` alone does not prove rollback success. If rollback was not
+included in approval, report the failure and request that specific action.
+
 The Compose backup preserves the pre-deploy file for investigation, but it is
 not automatically the runtime rollback target. Use the recorded running digest.
 
-Manual safe cleanup, if an operator needs to run it outside the timer:
+Manual cleanup outside the timer requires explicit approval. Record and protect
+the compatible rollback path before pruning; unused images include old rollback
+candidates. The daily timer is a separate installed maintenance policy, not
+authorization for an agent to clean up during diagnosis.
+
+Manual cleanup command, only when approved:
 
 ```bash
 gcloud compute ssh platform-vm --tunnel-through-iap --zone=$ZONE --project=$PROJECT \
@@ -1201,16 +1262,42 @@ section 5 plus the relevant service smoke below. After a platform cutover or a
 shared-runtime change, run the full checklist. Never mark a deploy stable from
 container startup alone.
 
+### VM capacity and service baseline (read-only)
+
+From the approved VM, collect `df -h / /var/lib/zeler-mongo`,
+`df -i / /var/lib/zeler-mongo`, `findmnt -T /var/lib/zeler-mongo`, `free -m`,
+`docker system df`, and `docker stats --no-stream`. Confirm Mongo is on its
+intended persistent mount, not silently on the root filesystem. Record Docker
+and maintenance timer status, container state, restart count and OOMKilled using
+narrow `docker inspect --format` fields; never dump full inspect/config/env output.
+
+The 5GiB gate covers `/` only. Report Mongo free bytes/inodes and memory available
+separately; no project-specific numeric admission threshold is established for
+those resources. Assess the operation's headroom without inventing a passing
+threshold. Recheck after deployment or approved cleanup. Docker's "reclaimable"
+size is diagnostic information, not permission to prune. A health inspection
+never runs maintenance, pull, recreation, validator application or disk resize.
+
 ### HTTPS health checks (TLS cert must be valid, not self-signed)
 
 ```bash
 for s in gateway sheets repricer publicador autoreply; do
-  echo -n "=== $s: "
-  curl -fsSI "https://${s}.zeler.ai/health" | head -1 || echo "FAIL"
+  printf "%s health=" "$s"
+  curl --max-time 15 -fsS -o /dev/null -w "%{http_code}\n" "https://${s}.zeler.ai/health" || exit 1
 done
 ```
 
-Expected: `HTTP/2 200` for all 5 active subdomains.
+Also run:
+
+```bash
+curl --max-time 15 -fsS -o /dev/null -w '%{http_code}\n' https://gateway.zeler.ai/ready
+```
+
+Expected: HTTP 200 for all five active subdomains and gateway readiness.
+Use GET, not HEAD. Gateway
+`/health` is process liveness only; additionally require GET `/ready` to return
+200 for Mongo/RabbitMQ readiness. Check each module's actual health contract;
+a successful edge response does not establish worker or product correctness.
 
 ### Container state
 
@@ -1223,17 +1310,14 @@ Every deployed service must be `Up` and services with healthchecks must be
 `healthy`. For a narrow deploy, verify at least the affected service and its
 direct dependency boundary.
 
-### Worker consumer logs (confirm queues bound)
+### Worker readiness
 
-```bash
-gcloud compute ssh platform-vm --tunnel-through-iap --zone=$ZONE --project=$PROJECT << 'EOF'
-for w in repricer-worker sheets-worker autoreply-worker; do
-  echo "=== $w ==="
-  sudo docker compose --file /opt/zeler-platform/docker-compose.yml \
-    logs --tail 20 "$w" 2>&1 | grep -iE "consumer|started|bound" || echo "NO MATCH"
-done
-EOF
-```
+Use each worker's configured Docker healthcheck and internal `/health` response
+from its approved runtime context. Require consumer readiness and all reported
+components to be healthy. Old "started/bound" log lines do not prove a consumer
+is currently ready. For functional smoke, use the approved product scenario and
+verify completion, not just enqueue success. Do not print raw logs: extract only
+sanitized diagnostic fields if further investigation is needed.
 
 ### VM-only sanitized ZELERDATA flag check
 
@@ -1272,17 +1356,41 @@ gcloud compute ssh platform-vm --tunnel-through-iap --zone=$ZONE --project=$PROJ
 # Must return 1 (PRIMARY)
 ```
 
-### Mongo validator drift smoke
+### Mongo validator drift smoke (read-only)
+
+Run `infra.mongo.drift_check` from the approved VM/runtime context, using its
+existing environment and the intended schema directory. Do not pass credentials
+on the command line or expand local `MONGO_URI` into an SSH command. Use
+`build_report` to emit only `has_drift` and collection names/statuses; do not dump
+raw environment values or full validator documents. A drift result is a failed
+check to report, not authorization to repair it.
+
+Example from the approved VM checkout with its existing runtime environment
+already loaded (never load production credentials into the local workstation):
 
 ```bash
-gcloud compute ssh platform-vm --tunnel-through-iap --zone=$ZONE --project=$PROJECT \
-  --command="cd /opt/zeler-platform && \
-    python -m infra.mongo.apply_validators --mongo-uri=\"$MONGO_URI\" && \
-    python -m infra.mongo.drift_check --mongo-uri=\"$MONGO_URI\""
+python3 - <<'PYCODE'
+import json
+import os
+from infra.mongo.drift_check import DEFAULT_SCHEMAS_DIR, build_report
+
+uri = os.environ.get("MONGO_URI")
+if not uri:
+    raise SystemExit("Runtime Mongo configuration is missing; no query attempted")
+try:
+    report = build_report(mongo_uri=uri, schemas_dir=DEFAULT_SCHEMAS_DIR)
+except Exception:
+    raise SystemExit("Mongo drift check failed; raw diagnostic output withheld") from None
+print(json.dumps({
+    "has_drift": report["has_drift"],
+    "collections": {name: row["status"] for name, row in report["collections"].items()},
+}, sort_keys=True))
+raise SystemExit(1 if report["has_drift"] else 0)
+PYCODE
 ```
 
-Expected: validator apply is idempotent and drift check exits 0 with `applied` for committed
-schema-backed collections.
+`infra.mongo.apply_validators` is a mutation. Execute it only as an explicitly
+approved rollout step (section 3), then repeat the read-only drift check.
 
 ---
 

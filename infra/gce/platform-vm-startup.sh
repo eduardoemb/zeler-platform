@@ -273,6 +273,7 @@ cat > /opt/zeler-platform/docker-deploy-preflight.sh << 'SCRIPT'
 set -euo pipefail
 
 MIN_FREE_GIB=${MIN_FREE_GIB:-5}
+ALLOW_DOCKER_MAINTENANCE=${ALLOW_DOCKER_MAINTENANCE:-0}
 MAINTENANCE_SCRIPT=${MAINTENANCE_SCRIPT:-/opt/zeler-platform/docker-maintenance.sh}
 PLATFORM_ROOT=${ZELER_PLATFORM_ROOT:-/opt/zeler-platform}
 SHEETS_ROLLBACK_PREFLIGHT=${SHEETS_ROLLBACK_PREFLIGHT:-0}
@@ -474,9 +475,47 @@ print_usage() {
   df -h /
 }
 
+ensure_capacity() {
+  local free_kib
+  free_kib=$(free_root_kib)
+  print_usage
+  if require_free_space "$free_kib"; then
+    echo "Capacity passed: root filesystem has at least ${MIN_FREE_GIB}GiB free."
+    return
+  fi
+  if [[ "$DRY_RUN" == "1" ]]; then
+    echo "dry-run: root filesystem has less than ${MIN_FREE_GIB}GiB free."
+    echo "dry-run: Docker maintenance skipped."
+    exit 1
+  fi
+  if [[ "$ALLOW_DOCKER_MAINTENANCE" != "1" ]]; then
+    echo "ERROR: insufficient space; cleanup requires explicit ALLOW_DOCKER_MAINTENANCE=1 authorization." >&2
+    exit 1
+  fi
+  if [[ ! -x "$MAINTENANCE_SCRIPT" ]]; then
+    echo "ERROR: maintenance script is missing or not executable: $MAINTENANCE_SCRIPT" >&2
+    exit 1
+  fi
+  echo "Running authorized Docker maintenance before any image pull."
+  "$MAINTENANCE_SCRIPT"
+  free_kib=$(free_root_kib)
+  print_usage
+  if ! require_free_space "$free_kib"; then
+    echo "ERROR: root filesystem still has less than ${MIN_FREE_GIB}GiB free after cleanup." >&2
+    echo "Review disk capacity if cleanup cannot maintain the margin; do not assume a 50GB resize is still needed." >&2
+    exit 1
+  fi
+}
+
+# Capacity must precede attestation: that gate can download a rollback image.
+ensure_capacity
+
 if [[ "$REQUIRE_DIGEST_BINDING" == "1" ]]; then
   if [[ "$DRY_RUN" == "1" ]]; then
-    echo "dry-run: immutable digest binding gate skipped (it would write image_to_commit.json)."
+    PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$PLATFORM_ROOT" "$PYTHON_BIN" \
+      -m infra.deploy.provenance_check check-compose \
+      --compose-file "$COMPOSE_FILE" "${digest_binding_service_args[@]}"
+    echo "dry-run: selected image references checked; provenance not verified (no evidence written)."
   else
     verify_digest_binding
   fi
@@ -487,44 +526,12 @@ if [[ "$SHEETS_ROLLBACK_PREFLIGHT" == "1" ]]; then
     echo "dry-run: Sheets rollback attestation skipped (it would pull images)."
   else
     verify_sheets_rollback_attestation
+    # A successful download may consume the space needed by the deployment pull.
+    ensure_capacity
   fi
 fi
 
-free_kib=$(free_root_kib)
-print_usage
-
-if require_free_space "$free_kib"; then
-  echo "Preflight passed: root filesystem has at least ${MIN_FREE_GIB}GiB free."
-  exit 0
-fi
-
-if [[ "$DRY_RUN" == "1" ]]; then
-  echo "dry-run: root filesystem has less than ${MIN_FREE_GIB}GiB free."
-  echo "dry-run: safe Docker maintenance skipped; the real preflight would run it."
-  exit 1
-fi
-
-echo "Preflight warning: root filesystem has less than ${MIN_FREE_GIB}GiB free."
-echo "Running safe Docker maintenance before docker compose pull."
-
-if [[ ! -x "$MAINTENANCE_SCRIPT" ]]; then
-  echo "ERROR: maintenance script is missing or not executable: $MAINTENANCE_SCRIPT" >&2
-  exit 1
-fi
-
-"$MAINTENANCE_SCRIPT"
-
-free_kib=$(free_root_kib)
-print_usage
-
-if require_free_space "$free_kib"; then
-  echo "Preflight passed after cleanup: root filesystem has at least ${MIN_FREE_GIB}GiB free."
-  exit 0
-fi
-
-echo "ERROR: root filesystem still has less than ${MIN_FREE_GIB}GiB free after safe cleanup." >&2
-echo "Resize the platform-vm boot disk to 50GB only after cleanup cannot maintain the deploy margin." >&2
-exit 1
+echo "Preflight passed for the selected mode; dry-run is not deployment approval."
 SCRIPT
 
 chmod 0755 /opt/zeler-platform/docker-maintenance.sh /opt/zeler-platform/docker-deploy-preflight.sh
