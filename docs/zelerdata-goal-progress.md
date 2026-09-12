@@ -8664,3 +8664,25 @@ The first post-deploy reconciliation SSH attempt exited 255 during connection
 setup. A subsequent VM process check found zero reconciliation processes, so
 the full pilot dry-run was started once again (local session 43293). It is still
 being observed; lack of output is not a terminal result and no write was run.
+
+## Alerting JSON ingestion fixed and verified end to end
+
+The Sheets worker boot now calls `configure_logging(environment="production")`,
+so structlog emits JSON instead of the console format that Cloud Logging could
+not parse. The fix landed in `a51db91`, was verified by the suite of 15 run-entry
+tests, Ruff, and mypy, and was deployed through a verified Cloud Build image:
+`sheets-worker@sha256:169bea9f8f7534eedff6ea424246ce88ecc7fda5ac2e3a9acfcd51973ba3f569`.
+
+Two runtime blockers were fixed:
+
+1. The VM Docker daemon used the binary `local` log driver. It was changed to
+   `json-file` and the Sheets worker was recreated so the Ops Agent could read
+   structured container logs.
+2. The log-based metric now counts alarms from two paths: direct writes to the
+   `zelerdata-ops` log with `severity=ERROR`, and container logs where the JSON
+   line contains `zelerdata.freshness_alarm` (the Ops Agent keeps that line as
+   `jsonPayload.log`).
+
+The policy `zelerdata-freshness-alarm` fired during verification and sent email
+to `laloramirez@zeler.ai`, including the added `zelerdata-ops-email-v2` channel.
+All Compose services remain healthy on the new image.
