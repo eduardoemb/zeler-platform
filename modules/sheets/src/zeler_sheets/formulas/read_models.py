@@ -391,7 +391,8 @@ class FormulaReadModelRepository:
         marker = await self._read_model_freshness.find_one(
             {"_id": f"{seller_id}:orders", "seller_id": seller_id, "read_model": ORDERS_READ_MODEL}
         )
-        end = _safe_utc_datetime(marker.get("reconciled_until")) if marker else None
+        intervals = _proven_recovery_intervals(marker)
+        end = max((end for _, end in intervals if end <= now), default=None)
         # A recent acquired cut is useful without pretending it is live data.
         as_of = end if end is not None and now - timedelta(minutes=15) < end <= now else now
         covered = tuple(
@@ -403,6 +404,7 @@ class FormulaReadModelRepository:
                     hour=0, minute=0, second=0, microsecond=0
                 ),
                 date_to=as_of,
+                now=now,
             )
         )
         missing = next((days for days in windows if days not in covered), None)
@@ -411,14 +413,15 @@ class FormulaReadModelRepository:
             start = (as_of - timedelta(days=missing)).replace(
                 hour=0, minute=0, second=0, microsecond=0
             )
-            # Recovery acquires this interval without expanding it to older
-            # coverage. Admission remains bounded to 90 days.
+            # Advance over already acquired history instead of continually
+            # requesting the first 90 days of a long catalog window.
+            start, until = _first_recovery_gap(intervals, start=start, end=as_of)
             recovery = FormulaDataUnavailableError(
                 formula,
                 "Catalog sales interval is not reconciled.",
                 read_model=ORDERS_READ_MODEL,
                 date_from=start,
-                date_to=min(as_of, start + timedelta(days=90)),
+                date_to=min(until, start + timedelta(days=90)),
             )
         return as_of, covered, recovery
 
@@ -1253,6 +1256,36 @@ def _questions_freshness_marker_covers(marker: Any, *, date_from: Any, date_to: 
     )
 
 
+def _proven_recovery_intervals(marker: Any) -> list[tuple[datetime, datetime]]:
+    proofs = _marker_interval_proofs(marker)
+    if proofs is None:
+        return []
+    current, retained = proofs
+    intervals = []
+    for proof in [current, *retained]:
+        if not _is_proven_interval(proof, coverage_basis=None):
+            continue
+        start = _first_utc_datetime(proof.get("date_from"), proof.get("last_event_synced_at"))
+        end = _safe_utc_datetime(proof.get("reconciled_until"))
+        if start is not None and end is not None and start <= end:
+            intervals.append((start, end))
+    return sorted(intervals)
+
+
+def _first_recovery_gap(
+    intervals: list[tuple[datetime, datetime]], *, start: datetime, end: datetime
+) -> tuple[datetime, datetime]:
+    for covered_start, covered_end in intervals:
+        if covered_end <= start:
+            continue
+        if covered_start > start:
+            return start, min(end, covered_start)
+        start = max(start, covered_end)
+        if start >= end:
+            break
+    return start, end
+
+
 def read_model_reconciliation_marker_covers(
     marker: Any,
     *,
@@ -1300,7 +1333,11 @@ def read_model_reconciliation_marker_covers(
     ]
     if not covered:
         return False
-    covered.sort(key=lambda proof: _safe_utc_datetime(proof.get("date_from")) or datetime.min)
+    covered.sort(
+        key=lambda proof: (
+            _safe_utc_datetime(proof.get("date_from")) or datetime.min.replace(tzinfo=UTC)
+        )
+    )
     return _union_covers_instant(
         covered,
         requested_from=requested_from,
