@@ -42,6 +42,7 @@ Commands run from repository root. Each command is run RED before implementation
 
 - [x] 4.1 RED: extend unit-4 tests for source/state mismatches, stale→acquired→usable, incomplete membership, and no fabricated intervals.
 - [x] 4.2 GREEN: update `modules/sheets/src/zeler_sheets/formulas/read_models.py`, `modules/sheets/src/zeler_sheets/formulas/handlers_remaining_phase4.py`, and `modules/sheets/src/zeler_sheets/formulas/handlers_returns_histories_withdrawals.py`. Run unit 4.
+- [x] 4.3 Live RED/GREEN: connect real worker acquisition to existing guarded history writers before formula projection; exercise actual worker and readers against Mongo. See `apply-progress-unit4-live.md`.
 
 ## 5. Operational verification
 

@@ -81,6 +81,39 @@ check. Individual RED/GREEN receipts are stored with the selected change artifac
 
 ## Prepared deployment scope
 
+### First release and live retest
+
+Source `1df949fbd2653e2b63648e013b3c330eef92e61f` was pushed to main.
+Both builds used the connected repository and verified provenance:
+
+| Service | Cloud Build ID | Immutable digest |
+| --- | --- | --- |
+| sheets-api | `876925fd-31ca-44bc-ab8a-4c7da6fbf4d2` | `sha256:3b972a4bde3549f72a5c318c1f91c5cbb56d87e0d576d5ba56a3f8b5cd3eca6e` |
+| sheets-worker | `27a598aa-a583-4656-8828-65eec73aa71f` | `sha256:e707c5c7a33ff3f84db46887265a0f8f852fae65b925db878871cdd2fffa570f` |
+
+Worker then API were deployed narrowly after capacity, image provenance and API
+rollback-contract attestation. Worker consumer/recovery/poller readiness, API
+Mongo/RabbitMQ/registry/claims-DLQ checks and gateway dependency readiness passed.
+All 35 Sheet formulas were refreshed and independently read back after deployment.
+
+Confirmed in Sheets: CODIGOML ambiguity and mixed-vector ordering; absent sale NA;
+pending question answer/date NA; PRODUCTOSINVENTA has 2,818 rows, 1,062 observed
+dates, 19 absent SKUs rendered NA, zero NONE values, and zero date mismatches
+against canonical items. An initial comparator additionally keyed by stock found
+four nonmatching rows; removing that irrelevant key proved all dates independently.
+
+ENVIOSMERCADOENVIOS recovered from 85 pending rows to two open shipments with
+zero DATA_UNAVAILABLE cells. Source checks through the VM confirmed orders
+2000018411889322 and 2000018428288488 are paid, quantity one each, and their
+shipments 47992641793 and 48000531704 are `ready_to_ship` / `xd_drop_off`.
+The displayed package IDs match `meli_pack_id`; they are not shipment IDs.
+
+The actual acquisition chain exposed an additional worker omission: acquired
+items did not refresh their status/price/stock observations. A failing real-worker
+Mongo test reproduced it; the follow-up repair is documented in
+`apply-progress-unit4-live.md`. Histories are not certified live until that second
+worker image is deployed and tested.
+
 The affected services are **sheets-worker** (buybox acquisition) and
 **sheets-api** (formula rendering, coverage planning and scoped recovery).
 Build one verified image per service from the exact new commit on connected

@@ -198,6 +198,40 @@ class SheetsEventPersistence:
             observed_at=observed_at,
         )
 
+    async def project_acquired_item_history(self, *, seller_id: str, item_id: str) -> None:
+        """Project a stored acquisition using its observation time, not the job clock."""
+        item = await self._db["items"].find_one({"_id": item_id, "seller_id": seller_id})
+        if item is None or not item.get("status"):
+            return
+        observed_at = bson_ms_utc_datetime(item.get("last_meli_sync_at"))
+        if observed_at is None:
+            return
+        latest_state = await self._record_status_side_effects_for_accepted_item(
+            item, seller_id=seller_id, observed_at=observed_at
+        )
+        if latest_state is None:
+            return
+        await self._reconcile_item_status_fields(
+            item_id=item_id, seller_id=seller_id, item_snapshot=item
+        )
+        item = _item_with_status_history(item, latest_state)
+        await record_price_history_observation(
+            self._db,
+            item,
+            seller_id=seller_id,
+            observed_at=observed_at,
+            source="sheets_backfill",
+            observation_basis="current_observed",
+        )
+        await record_stockout_observation(
+            self._db,
+            item,
+            seller_id=seller_id,
+            observed_at=observed_at,
+            source="sheets_backfill",
+            observation_basis="current_observed",
+        )
+
     async def _legacy_status_history_blocks_item_replace(
         self,
         existing_item: dict[str, Any],

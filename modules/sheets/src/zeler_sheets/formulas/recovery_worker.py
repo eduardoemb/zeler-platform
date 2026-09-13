@@ -644,6 +644,16 @@ class FormulaRecoveryWorker:
         )
         stored_ids = tuple(sorted(str(item["_id"]) for item in stored))
         if stored_ids:
+            persistence = SheetsEventPersistence(db=self.db)
+            for item_id in stored_ids:
+                if (
+                    await self.queue.collection.find_one(self.queue._owned(job, self.queue.now()))
+                    is None
+                ):
+                    raise ValueError("item recovery lease lost before history projection")
+                await persistence.project_acquired_item_history(
+                    seller_id=requested.seller_id, item_id=item_id
+                )
             await run_sheetseller_backfill(
                 db=self.db,
                 seller_id=requested.seller_id,
