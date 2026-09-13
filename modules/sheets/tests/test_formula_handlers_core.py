@@ -2966,6 +2966,43 @@ def _core_dispatcher(db: FakeDb, *, now: datetime | None = None) -> FormulaDispa
     )
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("codes", [("INV-A", "INV-B"), ("INV-A", "INV-A")])
+async def test_codigoml_resolves_distinct_codes_without_losing_vector_cells(
+    codes: tuple[str, str],
+) -> None:
+    db = FakeDb()
+    db["sheets_item_formula_rows"].documents = {
+        str(index): {
+            "_id": str(index),
+            "seller_id": "seller-1",
+            "normalized_sku": "SKU-1",
+            "item_id": "MLA1",
+            "variation_id": str(index),
+            "inventory_id": code,
+        }
+        for index, code in enumerate(codes)
+    }
+    db["sheets_item_formula_rows"].documents["unique"] = {
+        "_id": "unique",
+        "seller_id": "seller-1",
+        "normalized_sku": "SKU-2",
+        "item_id": "MLA2",
+        "current": {"inventory_id": "INV-U"},
+    }
+    result = await _core_dispatcher(db).execute(
+        _context(
+            "ZELERDATA_CODIGOML",
+            {
+                "skus": ["SKU-1", "SKU-2", "SKU-1", "MISSING"],
+                "id_publicaciones": ["MLA1", "MLA2", "MLA1", "MLAX"],
+            },
+        )
+    )
+    expected = "AMBIGUOUS_VARIATION" if len(set(codes)) > 1 else "INV-A"
+    assert result.values == [[expected], ["INV-U"], [expected], ["NA"]]
+
+
 def _context(formula: str, args: dict[str, Any]) -> FormulaExecutionContext:
     return FormulaExecutionContext(
         contract=FormulaRegistry.default().find_required(formula),

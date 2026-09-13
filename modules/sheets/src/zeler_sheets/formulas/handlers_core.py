@@ -258,12 +258,35 @@ class CoreFormulaHandlers:
     async def sheetseller_codigoml(
         self, context: FormulaExecutionContext
     ) -> FormulaExecutionResult:
-        return await self._lookup_current_field(
-            context,
-            field="inventory_id",
-            row_field_fallback="inventory_id",
-            missing_value=NA_VALUE,
+        pairs = _lookup_pairs(
+            skus=context.args.get("skus"),
+            item_ids=context.args.get("id_publicaciones"),
         )
+        rows = await self._repository.find_item_formula_rows(
+            seller_id=context.seller_id,
+            skus=[pair.sku for pair in pairs],
+            item_ids=[pair.item_id for pair in pairs],
+        )
+        codes_by_pair: dict[tuple[str, str], set[str]] = {}
+        for row in rows:
+            key = (normalize_sku(row.get("normalized_sku")), str(row.get("item_id") or ""))
+            current = row.get("current")
+            code = current.get("inventory_id") if isinstance(current, Mapping) else None
+            code = str(code or row.get("inventory_id") or "").strip()
+            if code:
+                codes_by_pair.setdefault(key, set()).add(code)
+        values: list[list[Any]] = []
+        misses = 0
+        for pair in pairs:
+            codes = codes_by_pair.get((pair.sku, pair.item_id), set())
+            if len(codes) > 1:
+                values.append(["AMBIGUOUS_VARIATION"])
+            elif codes:
+                values.append([next(iter(codes))])
+            else:
+                values.append([NA_VALUE])
+                misses += 1
+        return FormulaExecutionResult(values=values, meta={"partial_misses": misses})
 
     async def sheetseller_codigoml2skuid(
         self, context: FormulaExecutionContext

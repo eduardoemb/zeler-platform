@@ -505,7 +505,7 @@ class OrderQuestionFormulaHandlers:
             latest = latest_by_pair.get((pair.sku, pair.item_id))
             if latest is None:
                 misses += 1
-                values.append([""])
+                values.append([NA_VALUE])
             else:
                 values.append([max((today - latest.astimezone(timezone).date()).days, 0)])
         return FormulaExecutionResult(
@@ -536,32 +536,56 @@ class OrderQuestionFormulaHandlers:
             date_from=date_range.start,
             date_to=date_range.end,
         )
+        productive_orders = [
+            order
+            for order in orders
+            if str(order.get("status") or "").strip().casefold()
+            not in NON_PRODUCTIVE_ORDER_STATUSES
+        ]
         sku_resolver = await _sku_resolver_for_orders(
             repository=self._repository,
             seller_id=context.seller_id,
-            orders=orders,
+            orders=productive_orders,
         )
-        recent_totals, enriched_count = _unit_totals_by_pair(orders, sku_resolver=sku_resolver)
+        recent_totals, enriched_count = _unit_totals_by_pair(
+            productive_orders, sku_resolver=sku_resolver
+        )
+        sold_item_ids = {
+            _item_id(item)
+            for order in productive_orders
+            for item in _order_items(order)
+            if _item_quantity(item) > 0
+        }
         values: list[list[Any]] = _header_row(
             context.args.get("encabezados"),
             PRODUCTOS_SIN_VENTA_LEGACY_HEADERS,
         )
         header_rows = len(values)
+        observed_dates = 0
         for row in ordered_rows:
             sku = normalize_sku(row.get("normalized_sku") or row.get("sku"))
             item_id = str(row.get("item_id") or "").strip()
-            if not sku or not item_id:
+            if not item_id:
                 continue
-            if recent_totals.get((sku, item_id), Decimal("0")) > 0:
+            if (sku and recent_totals.get((sku, item_id), Decimal("0")) > 0) or (
+                not sku and item_id in sold_item_ids
+            ):
                 continue
+            # This is an observed status change/baseline, not reconstructed history.
+            change_date = _current_value(row, "last_status_change_at")
+            if _optional_datetime(change_date) is None:
+                change_date = NA_VALUE
+            else:
+                change_date = _sheet_datetime(change_date, timezone=timezone)
+                observed_dates += 1
             values.append(
                 [
                     _current_value(row, "title"),
                     _inventory_code(row),
                     item_id,
-                    row.get("sku") or sku,
+                    row.get("sku") or sku or NA_VALUE,
                     _current_value(row, "available_quantity"),
-                    NA_VALUE,
+                    change_date,
                     _current_value(row, "status"),
                     _current_value(row, "shipping_payer"),
                 ]
@@ -575,6 +599,7 @@ class OrderQuestionFormulaHandlers:
                 "rango_dias": range_days,
                 "columns": "legacy_products_without_sales",
                 "sku_enriched_items": enriched_count,
+                **({"change_date_basis": "observed_status_change"} if observed_dates else {}),
             },
         )
 
@@ -822,9 +847,10 @@ class OrderQuestionFormulaHandlers:
         values: list[list[Any]] = _header_row(
             context.args.get("encabezados"), PREGUNTAS_MVP_HEADERS
         )
+        header_rows = len(values)
         values.extend(_question_row(question, timezone=timezone) for question in filtered_questions)
         return FormulaExecutionResult(
-            values=values,
+            values=normalize_response_rows(values, header_rows=header_rows),
             meta={"questions_count": len(filtered_questions), "columns": "questions_mvp"},
         )
 
@@ -1357,11 +1383,13 @@ def _latest_sale_dates_by_pair(
     latest: dict[tuple[str, str], datetime] = {}
     enriched_count = 0
     for order in orders:
+        if str(order.get("status") or "").strip().casefold() in NON_PRODUCTIVE_ORDER_STATUSES:
+            continue
         sold_at = _optional_datetime(order.get("date_created"))
         if sold_at is None:
             continue
         for line in _order_lines(order, sku_resolver=sku_resolver):
-            if not line.sku or not line.item_id:
+            if not line.sku or not line.item_id or line.quantity <= 0:
                 continue
             key = (line.sku, line.item_id)
             if key not in latest or sold_at > latest[key]:

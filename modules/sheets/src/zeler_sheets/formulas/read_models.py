@@ -1242,7 +1242,7 @@ def _find_with_optional_projection(
 
 
 def normalize_sku(sku: Any) -> str:
-    return str(sku).strip().upper()
+    return "" if sku is None else str(sku).strip().upper()
 
 
 def _questions_freshness_marker_covers(marker: Any, *, date_from: Any, date_to: Any) -> bool:

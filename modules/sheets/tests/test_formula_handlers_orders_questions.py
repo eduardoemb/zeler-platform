@@ -2812,7 +2812,7 @@ async def test_dias_desde_ultima_venta_uses_last_seller_scoped_order_date() -> N
         )
     )
 
-    assert result.values == [[2], [""]]
+    assert result.values == [[2], ["NA"]]
     assert result.meta == {
         "partial_misses": 1,
         "orders_count": 2,
@@ -3092,7 +3092,8 @@ async def test_preguntas_returns_question_table_with_date_and_hour_filters() -> 
             "Respuesta",
             "Fecha respuesta",
         ],
-        ["q1", "2026-05-10T09:30:00Z", "MLA1", "buyer-1", "UNANSWERED", "Still available?", "", ""],
+        ["q1", "2026-05-10T09:30:00Z", "MLA1", "buyer-1", "UNANSWERED",
+         "Still available?", "NA", "NA"],
         [
             "q2",
             "2026-05-10T17:45:00Z",
@@ -3514,6 +3515,94 @@ async def test_compradores_serves_known_addresses_and_requests_the_missing_ones(
     assert result.recovery is not None
     assert result.recovery.read_model == "shipments"
     assert result.recovery.shipment_ids == ("shipment-pending",)
+
+
+@pytest.mark.asyncio
+async def test_productos_sin_venta_keeps_skuless_unsold_items_and_observed_dates() -> None:
+    db = FakeDb()
+    docs = db["sheets_item_formula_rows"].documents
+    for item_id in ("MLA1", "MLA2", "MLA3", "MLA4", "MLA5", "MLA6"):
+        row = _item_formula_row("seller-1", "", item_id, stock=0, title=item_id)
+        row.update(sku=None, normalized_sku=None)
+        docs[item_id] = row
+    docs["MLA2"]["current"]["last_status_change_at"] = "2026-05-11T10:00:00Z"
+    docs["MLA3"]["current"].update(
+        status="paused", last_status_change_at="2026-05-12T10:00:00Z",
+        status_started_at="2026-05-12T10:00:00Z",
+    )
+    docs["MLA4"]["current"]["status_started_at"] = "2026-05-13T10:00:00Z"
+    docs["MLA5"]["current"]["last_status_change_at"] = "invalid"
+    docs["MLA6"].update(sku="SKU-6", normalized_sku="SKU-6")
+    db["orders"].documents = {"sale": _order_doc(
+        "sale", seller_id="seller-1", status="paid", date_created="2026-05-12T10:00:00Z",
+        total_amount=1, items=[{"item_id": "MLA1", "qty": 1, "unit_price": 1}],
+    )}
+    db["orders"].documents["cancelled"] = _order_doc(
+        "cancelled", seller_id="seller-1", status="cancelled",
+        date_created="2026-05-12T10:00:00Z", total_amount=2,
+        items=[{"item_id": "MLA5", "qty": 1},
+               {"item_id": "MLA6", "sku": "SKU-6", "qty": 1}],
+    )
+    db["orders"].documents["zero"] = _order_doc(
+        "zero", seller_id="seller-1", status="paid",
+        date_created="2026-05-12T10:00:00Z", total_amount=0,
+        items=[{"item_id": "MLA4", "qty": 0}],
+    )
+    dispatcher = _order_question_dispatcher(db, now_fn=lambda: datetime(2026, 5, 14, tzinfo=UTC))
+    result = await dispatcher.execute(
+        _context("ZELERDATA_PRODUCTOSINVENTA", {"rango_dias": 7, "encabezados": "no"})
+    )
+    assert [row[2] for row in result.values] == ["MLA2", "MLA3", "MLA4", "MLA5", "MLA6"]
+    assert [row[3] for row in result.values] == ["NA", "NA", "NA", "NA", "SKU-6"]
+    assert [row[5] for row in result.values] == [
+        "2026-05-11T10:00:00Z", "2026-05-12T10:00:00Z", "NA", "NA", "NA",
+    ]
+    assert result.meta["change_date_basis"] == "observed_status_change"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status, quantity", [("cancelled", 1), ("canceled", 1), ("paid", 0)])
+async def test_dias_desde_ultima_venta_preserves_same_day_zero_and_duplicate_misses(
+    status: str, quantity: int,
+) -> None:
+    db = FakeDb()
+    db["orders"].documents = {"sale": _order_doc(
+        "sale", seller_id="seller-1", status="paid", date_created="2026-05-14T10:00:00Z",
+        total_amount=1, items=[{"item_id": "MLA1", "sku": "SKU-1", "qty": 1}],
+    )}
+    db["orders"].documents["not-sale"] = _order_doc(
+        "not-sale", seller_id="seller-1", status=status,
+        date_created="2026-05-14T10:00:00Z", total_amount=0,
+        items=[{"item_id": "MLAX", "sku": "MISSING", "qty": quantity}],
+    )
+    dispatcher = _order_question_dispatcher(
+        db, now_fn=lambda: datetime(2026, 5, 14, 12, tzinfo=UTC),
+    )
+    result = await dispatcher.execute(
+        _context("ZELERDATA_DIASDESDEULTIMAVENTA", {
+            "skus": ["MISSING", "SKU-1", "MISSING"], "id_publicaciones": ["MLAX", "MLA1", "MLAX"],
+        })
+    )
+    assert result.values == [["NA"], [0], ["NA"]]
+
+
+@pytest.mark.asyncio
+async def test_preguntas_without_headers_normalizes_only_missing_fields() -> None:
+    db = FakeDb()
+    _mark_questions_fresh(
+        db, fresh_until=datetime(2026, 5, 10, 23, 59, 59, 999999, tzinfo=UTC),
+        last_event_synced_at=datetime(2026, 5, 10, tzinfo=UTC), state="reconciled",
+    )
+    db["questions"].documents = {"q": _question_doc(
+        "q", seller_id="seller-1", status="ANSWERED", date_created="2026-05-10T09:00:00Z",
+        answer={"text": "0", "answered_at": "2026-05-10T10:00:00Z"},
+    )}
+    result = await _order_question_dispatcher(db).execute(_context("ZELERDATA_PREGUNTAS", {
+        "fecha_inicial": "2026-05-10", "fecha_final": "2026-05-10",
+        "horario_inicial": "00:00", "horario_final": "23:59", "encabezados": "no",
+    }))
+    assert len(result.values) == 1
+    assert result.values[0][-2:] == ["0", "2026-05-10T10:00:00Z"]
 
 
 def _order_question_dispatcher(db: FakeDb, *, now_fn: Any | None = None) -> FormulaDispatcher:
