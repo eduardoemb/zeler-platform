@@ -283,14 +283,6 @@ class FormulaRecoveryWorker:
         by_id = {item["_id"]: item for item in items}
         if set(by_id) != set(requested.item_ids):
             raise ValueError("buybox publications must belong to the requested seller")
-        now = self.queue.now()
-        for item in items:
-            synced = item.get("last_meli_sync_at")
-            if not isinstance(synced, datetime):
-                raise ValueError("buybox requires acquired publication data")
-            synced = synced.replace(tzinfo=UTC) if synced.tzinfo is None else synced.astimezone(UTC)
-            if item.get("catalog_listing") is not True or not now - COOLDOWN < synced <= now:
-                raise ValueError("buybox requires fresh explicit catalog participation")
 
         async def acquire(
             identity: str,
@@ -299,6 +291,37 @@ class FormulaRecoveryWorker:
             dependency_failure: Exception | None = None,
         ) -> Exception | None:
             item = by_id[identity]
+            synced = item.get("last_meli_sync_at")
+            if isinstance(synced, datetime):
+                synced = (
+                    synced.replace(tzinfo=UTC) if synced.tzinfo is None else synced.astimezone(UTC)
+                )
+            now = self.queue.now()
+            if not isinstance(synced, datetime) or not now - COOLDOWN < synced <= now:
+                if enriched:
+                    raise RetryableItemAcquisitionError("buybox publication remains unacquired")
+                # Resolve stale participation under this lease without preventing
+                # independent, already verified siblings from being persisted.
+                partial = await self._acquire_item_batch(
+                    job, ItemIdsRecoveryRequest(requested.seller_id, (identity,))
+                )
+                refreshed = await self.db.items.find_one(
+                    {"_id": identity, "seller_id": requested.seller_id}
+                )
+                if refreshed is None:
+                    raise ValueError("buybox publication ownership changed during acquisition")
+                by_id[identity] = refreshed
+                return await acquire(
+                    identity,
+                    enriched=True,
+                    dependency_failure=RetryableItemAcquisitionError(
+                        "buybox publication dependency incomplete"
+                    )
+                    if partial
+                    else None,
+                )
+            if item.get("catalog_listing") is not True:
+                raise ValueError("buybox requires fresh explicit catalog participation")
             source = _catalog_snapshot_source_rows_from_resources([item])[0]
             if (
                 not source.catalog_product_id

@@ -767,7 +767,7 @@ async def test_buybox_explicit_item_recovery_is_owned_fresh_and_source_bound(
             assert seller_id == "82453304"
             calls.append(path)
             if path == "/items?ids=MLA1&include_attributes=all":
-                assert price_dependency_missing
+                assert price_dependency_missing or state == "expired"
                 raise httpx.HTTPStatusError(
                     "Unavailable",
                     request=httpx.Request("GET", "https://test/items"),
@@ -821,10 +821,12 @@ async def test_buybox_explicit_item_recovery_is_owned_fresh_and_source_bound(
     if state in {"foreign", "not_catalog", "expired", "changed", "wrong_response", "wrong_product"}:
         assert observations == []
         assert snapshot is None
-        assert job["state"] == "failed"
+        assert job["state"] == ("pending" if state == "expired" else "failed")
         assert calls == (
-            []
-            if state in {"foreign", "not_catalog", "expired"}
+            ["/items?ids=MLA1&include_attributes=all"]
+            if state == "expired"
+            else []
+            if state in {"foreign", "not_catalog"}
             else ["/items/MLA1/price_to_win?version=v2", "/products/MLA2/items"]
             if state == "changed"
             else ["/items/MLA1/price_to_win?version=v2"]
