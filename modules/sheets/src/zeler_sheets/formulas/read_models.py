@@ -268,6 +268,51 @@ class FormulaReadModelRepository:
             item_ids=requested,
         )
 
+    async def resolve_item_history_sources(
+        self,
+        *,
+        seller_id: str,
+        formula: str,
+        now: datetime,
+        item_ids: list[str] | None = None,
+    ) -> tuple[dict[str, dict[str, Any]], tuple[str, ...], bool]:
+        """Bind a historical fallback to current owned sources, never a job status."""
+        resolution = await self.resolve_item_formula_rows(
+            seller_id=seller_id,
+            formula=formula,
+            now=now,
+            item_ids=item_ids,
+        )
+        grouped: dict[str, list[dict[str, Any]]] = {}
+        for row in resolution.rows:
+            grouped.setdefault(str(row["item_id"]), []).append(row)
+        sources = (
+            await self._db["items"]
+            .find({"seller_id": seller_id, "_id": {"$in": list(grouped)}})
+            .to_list(length=10001)
+        )
+        valid = {}
+        missing = set(resolution.missing_items) | set(item_ids or ()) | set(grouped)
+        for source in sources:
+            identity = str(source["_id"])
+            observed = _safe_utc_datetime(source.get("last_meli_sync_at"))
+            rows = grouped[identity]
+            if observed is None or not now - timedelta(minutes=15) < observed <= now:
+                continue
+            fingerprint = item_source_fingerprint(source)
+            if any(
+                not isinstance(snapshot := row.get("source_snapshot"), dict)
+                or snapshot.get("fingerprint") != fingerprint
+                or _safe_utc_datetime(snapshot.get("observed_at")) != observed
+                or type(snapshot.get("rows_count")) is not int
+                or snapshot["rows_count"] != len(rows)
+                for row in rows
+            ):
+                continue
+            valid[identity] = source
+            missing.discard(identity)
+        return valid, tuple(sorted(missing)), resolution.enumeration_current
+
     async def find_recent_item_inventory(
         self, *, seller_id: str, formula: str, now: datetime
     ) -> tuple[list[dict[str, Any]], list[str], tuple[str, ...], bool]:

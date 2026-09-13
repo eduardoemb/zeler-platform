@@ -662,7 +662,9 @@ async def test_returns_histories_formulas_require_fresh_read_model_marker(
         await dispatcher.execute(_context(formula, args))
 
     assert read_model in str(error.value)
-    assert "freshness/reconciliation" in str(error.value)
+    assert (
+        "need recovery" if formula == "ZELERDATA_TIEMPOACTIVA" else "freshness/reconciliation"
+    ) in str(error.value)
 
 
 @pytest.mark.asyncio
@@ -692,7 +694,9 @@ async def test_returns_histories_formulas_reject_stale_read_model_marker(
         await dispatcher.execute(_context(formula, args))
 
     assert read_model in str(error.value)
-    assert "freshness/reconciliation" in str(error.value)
+    assert (
+        "need recovery" if formula == "ZELERDATA_TIEMPOACTIVA" else "freshness/reconciliation"
+    ) in str(error.value)
 
 
 @pytest.mark.asyncio

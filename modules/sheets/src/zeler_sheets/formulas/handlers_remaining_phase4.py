@@ -278,16 +278,64 @@ class RemainingPhase4FormulaHandlers:
         self, context: FormulaExecutionContext
     ) -> FormulaExecutionResult:
         now = _as_utc_datetime(self._now_fn())
-        await self._repository.require_read_model_productive(
-            seller_id=context.seller_id,
-            read_model=STOCKOUT_SNAPSHOTS_READ_MODEL,
-            date_to=now,
-            formula=context.contract.name,
-        )
-        snapshots = await self._repository.find_stockout_snapshots(
-            seller_id=context.seller_id,
-            limit=None,
-        )
+        recovery = None
+        gap = False
+        try:
+            await self._repository.require_read_model_productive(
+                seller_id=context.seller_id,
+                read_model=STOCKOUT_SNAPSHOTS_READ_MODEL,
+                date_to=now,
+                formula=context.contract.name,
+            )
+        except FormulaDataUnavailableError:
+            try:
+                sources, missing, current = await self._repository.resolve_item_history_sources(
+                    seller_id=context.seller_id,
+                    formula=context.contract.name,
+                    now=now,
+                )
+            except FormulaDataUnavailableError as unavailable:
+                raise FormulaDataUnavailableError(
+                    context.contract.name,
+                    "Inventory observations need recovery.",
+                    read_model=ITEM_FORMULA_ROWS_READ_MODEL,
+                ) from unavailable
+            if not sources and (missing or not current):
+                raise FormulaDataUnavailableError(
+                    context.contract.name,
+                    "Inventory observations need recovery.",
+                    read_model=ITEM_FORMULA_ROWS_READ_MODEL,
+                    item_ids=missing if current else (),
+                ) from None
+            snapshots = await self._repository.find_stockout_snapshots(
+                seller_id=context.seller_id,
+                limit=None,
+            )
+            verified = [
+                snapshot
+                for snapshot in snapshots
+                if _stockout_matches_source(snapshot, sources.get(_document_item_id(snapshot)))
+            ]
+            missing = tuple(
+                sorted(
+                    set(missing)
+                    | (set(sources) - {_document_item_id(snapshot) for snapshot in verified})
+                )
+            )
+            snapshots = verified
+            gap = bool(missing) or not current
+            if gap:
+                recovery = FormulaDataUnavailableError(
+                    context.contract.name,
+                    "Stock observations or inventory coverage are incomplete.",
+                    read_model=ITEM_FORMULA_ROWS_READ_MODEL,
+                    item_ids=missing if current else (),
+                )
+        else:
+            snapshots = await self._repository.find_stockout_snapshots(
+                seller_id=context.seller_id,
+                limit=None,
+            )
         out_of_stock = [snapshot for snapshot in snapshots if _is_currently_out_of_stock(snapshot)]
         values: list[list[Any]] = _header_row(
             context.args.get("encabezados"), TIEMPOS_SIN_STOCK_HEADERS
@@ -297,8 +345,11 @@ class RemainingPhase4FormulaHandlers:
             _stockout_row(snapshot, now=now, tipo_precio=context.args.get("tipo_precio", "base"))
             for snapshot in out_of_stock
         )
+        if gap:
+            values.append(["DATA_UNAVAILABLE"] * len(TIEMPOS_SIN_STOCK_HEADERS))
         return FormulaExecutionResult(
             values=normalize_response_rows(values, header_rows=header_rows),
+            recovery=recovery,
             meta={"rows_count": len(out_of_stock), "columns": "stockout_duration"},
         )
 
@@ -367,18 +418,59 @@ class RemainingPhase4FormulaHandlers:
     async def sheetseller_precio_historico(
         self, context: FormulaExecutionContext
     ) -> FormulaExecutionResult:
-        await self._repository.require_read_model_productive(
-            seller_id=context.seller_id,
-            read_model=PRICE_HISTORY_SNAPSHOTS_READ_MODEL,
-            date_to=_as_utc_datetime(self._now_fn()),
-            formula=context.contract.name,
-        )
+        now = _as_utc_datetime(self._now_fn())
         item_ids = _normalize_optional_item_ids(context.args.get("id_publicaciones", "todos"))
-        rows = await self._repository.find_price_history_snapshots(
-            seller_id=context.seller_id,
-            item_ids=item_ids,
-            limit=None,
-        )
+        recovery = None
+        missing: tuple[str, ...] = ()
+        try:
+            await self._repository.require_read_model_productive(
+                seller_id=context.seller_id,
+                read_model=PRICE_HISTORY_SNAPSHOTS_READ_MODEL,
+                date_to=now,
+                formula=context.contract.name,
+            )
+        except FormulaDataUnavailableError:
+            # An unselected history still needs the established global authority.
+            if not item_ids:
+                raise
+            try:
+                sources, missing, _ = await self._repository.resolve_item_history_sources(
+                    seller_id=context.seller_id,
+                    formula=context.contract.name,
+                    now=now,
+                    item_ids=item_ids,
+                )
+            except FormulaDataUnavailableError as unavailable:
+                raise FormulaDataUnavailableError(
+                    context.contract.name,
+                    "Selected price observations need recovery.",
+                    read_model=ITEM_FORMULA_ROWS_READ_MODEL,
+                    item_ids=tuple(item_ids),
+                ) from unavailable
+            rows = await self._repository.find_price_history_snapshots(
+                seller_id=context.seller_id,
+                item_ids=item_ids,
+                limit=None,
+            )
+            rows = [
+                row
+                for row in rows
+                if _price_history_matches_source(row, sources.get(_document_item_id(row)))
+            ]
+            missing = tuple(sorted(set(item_ids) - {_document_item_id(row) for row in rows}))
+            if missing:
+                recovery = FormulaDataUnavailableError(
+                    context.contract.name,
+                    "Selected price observations need recovery.",
+                    read_model=ITEM_FORMULA_ROWS_READ_MODEL,
+                    item_ids=missing,
+                )
+        else:
+            rows = await self._repository.find_price_history_snapshots(
+                seller_id=context.seller_id,
+                item_ids=item_ids,
+                limit=None,
+            )
         values: list[list[Any]] = _header_row(
             context.args.get("encabezados"), PRECIO_HISTORICO_HEADERS
         )
@@ -387,8 +479,10 @@ class RemainingPhase4FormulaHandlers:
             _price_history_row(row, tipo_precio=context.args.get("tipo_precio", "base"))
             for row in rows
         )
+        values.extend([[identity, *(["DATA_UNAVAILABLE"] * 7)] for identity in missing])
         return FormulaExecutionResult(
             values=normalize_response_rows(values, header_rows=header_rows),
+            recovery=recovery,
             meta={"rows_count": len(rows), "columns": "price_history"},
         )
 
@@ -490,6 +584,45 @@ def _catalogo_row(
         if buybox is not None and isinstance(buybox.get("only_competitor"), bool)
         else "DATA_UNAVAILABLE",
     ]
+
+
+def _stockout_matches_source(snapshot: Mapping[str, Any], source: Mapping[str, Any] | None) -> bool:
+    if source is None:
+        return False
+    quantity = _optional_non_negative_decimal(source.get("available_quantity"))
+    observed = _optional_datetime(source.get("last_meli_sync_at"))
+    started = _optional_datetime(snapshot.get("out_of_stock_since"))
+    return (
+        observed is not None
+        and (started is None or started <= observed)
+        and quantity is not None
+        and _optional_non_negative_decimal(snapshot.get("current_stock")) == quantity
+        and snapshot.get("stock_state") == ("out_of_stock" if quantity == 0 else "in_stock")
+        and snapshot.get("status") == source.get("status")
+        and _optional_datetime(snapshot.get("observed_at"))
+        == _optional_datetime(source.get("last_meli_sync_at"))
+    )
+
+
+def _price_history_matches_source(row: Mapping[str, Any], source: Mapping[str, Any] | None) -> bool:
+    if source is None:
+        return False
+    entries = _history_entries(row, preferred_key="prices", fallback_key="prices")
+    if not entries:
+        return False
+    latest = entries[0]
+    price = _optional_non_negative_decimal(source.get("price"))
+    observed = _optional_datetime(latest.get("observed_at"))
+    acquired = _optional_datetime(source.get("last_meli_sync_at"))
+    # Unchanged acquisition intentionally retains the prior historical timestamp.
+    return (
+        price is not None
+        and _optional_non_negative_decimal(latest.get("price")) == price
+        and latest.get("status") == source.get("status")
+        and observed is not None
+        and acquired is not None
+        and observed <= acquired
+    )
 
 
 def _stockout_row(snapshot: Mapping[str, Any], *, now: datetime, tipo_precio: Any) -> list[Any]:

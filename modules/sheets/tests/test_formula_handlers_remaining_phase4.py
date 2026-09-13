@@ -912,9 +912,15 @@ async def test_remaining_phase4_formulas_require_fresh_read_model_marker(
     with pytest.raises(FormulaDataUnavailableError, match=formula) as error:
         await dispatcher.execute(_context(formula, args))
 
-    assert error.value.read_model == read_model
+    assert error.value.read_model == (
+        ITEM_FORMULA_ROWS_READ_MODEL if read_model == STOCKOUT_SNAPSHOTS_READ_MODEL else read_model
+    )
     assert (
-        "inventory enumeration" if formula == "ZELERDATA_CATALOGO" else "freshness/reconciliation"
+        "inventory enumeration"
+        if formula == "ZELERDATA_CATALOGO"
+        else "need recovery"
+        if formula == "ZELERDATA_TIEMPOSINSTOCK"
+        else "freshness/reconciliation"
     ) in str(error.value)
 
 
@@ -968,7 +974,11 @@ async def test_source_gated_formulas_require_interval_marker_coverage_from_range
 
     assert read_model in str(error.value)
     assert (
-        "inventory enumeration" if formula == "ZELERDATA_CATALOGO" else "freshness/reconciliation"
+        "inventory enumeration"
+        if formula == "ZELERDATA_CATALOGO"
+        else "need recovery"
+        if formula == "ZELERDATA_TIEMPOSINSTOCK"
+        else "freshness/reconciliation"
     ) in str(error.value)
 
 
@@ -1050,9 +1060,15 @@ async def test_remaining_phase4_formulas_reject_stale_read_model_marker(
     with pytest.raises(FormulaDataUnavailableError, match=formula) as error:
         await dispatcher.execute(_context(formula, args))
 
-    assert error.value.read_model == read_model
+    assert error.value.read_model == (
+        ITEM_FORMULA_ROWS_READ_MODEL if read_model == STOCKOUT_SNAPSHOTS_READ_MODEL else read_model
+    )
     assert (
-        "inventory enumeration" if formula == "ZELERDATA_CATALOGO" else "freshness/reconciliation"
+        "inventory enumeration"
+        if formula == "ZELERDATA_CATALOGO"
+        else "need recovery"
+        if formula == "ZELERDATA_TIEMPOSINSTOCK"
+        else "freshness/reconciliation"
     ) in str(error.value)
 
 

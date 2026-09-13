@@ -15,6 +15,7 @@ from zeler_sheets.formulas.dispatcher import (
 )
 from zeler_sheets.formulas.output_normalization import NA_VALUE, normalize_response_rows
 from zeler_sheets.formulas.read_models import (
+    ITEM_FORMULA_ROWS_READ_MODEL,
     ITEM_STATUS_STATES_READ_MODEL,
     FormulaReadModelRepository,
     normalize_sku,
@@ -206,21 +207,64 @@ class ReturnsHistoriesWithdrawalsFormulaHandlers:
     ) -> FormulaExecutionResult:
         item_ids = _normalize_item_id_argument(context.args.get("id_publicaciones"))
         now = _as_utc_datetime(self._now_fn())
-        await self._repository.require_read_model_productive(
-            seller_id=context.seller_id,
-            read_model=ITEM_STATUS_STATES_READ_MODEL,
-            date_to=now,
-            formula=context.contract.name,
-        )
-        states = await self._repository.find_item_status_states(
-            seller_id=context.seller_id,
-            item_ids=item_ids,
-            limit=max(500, len(item_ids)),
-        )
+        recovery = None
+        unavailable_ids: set[str] = set()
+        try:
+            await self._repository.require_read_model_productive(
+                seller_id=context.seller_id,
+                read_model=ITEM_STATUS_STATES_READ_MODEL,
+                date_to=now,
+                formula=context.contract.name,
+            )
+        except FormulaDataUnavailableError:
+            try:
+                sources, missing, _ = await self._repository.resolve_item_history_sources(
+                    seller_id=context.seller_id,
+                    formula=context.contract.name,
+                    now=now,
+                    item_ids=item_ids,
+                )
+            except FormulaDataUnavailableError as unavailable:
+                raise FormulaDataUnavailableError(
+                    context.contract.name,
+                    "Selected item_status_states observations need recovery.",
+                    read_model=ITEM_FORMULA_ROWS_READ_MODEL,
+                    item_ids=tuple(item_ids),
+                ) from unavailable
+            states = await self._repository.find_item_status_states(
+                seller_id=context.seller_id,
+                item_ids=item_ids,
+                limit=max(500, len(item_ids)),
+            )
+            states = [
+                state
+                for state in states
+                if _status_matches_source(state, sources.get(str(state.get("item_id") or "")))
+            ]
+            unavailable_ids = set(missing) | (
+                set(item_ids) - {str(state["item_id"]) for state in states}
+            )
+            if unavailable_ids:
+                recovery = FormulaDataUnavailableError(
+                    context.contract.name,
+                    "Selected item_status_states observations need recovery.",
+                    read_model=ITEM_FORMULA_ROWS_READ_MODEL,
+                    item_ids=tuple(sorted(unavailable_ids)),
+                )
+        else:
+            states = await self._repository.find_item_status_states(
+                seller_id=context.seller_id,
+                item_ids=item_ids,
+                limit=max(500, len(item_ids)),
+            )
         states_by_item_id = {str(state.get("item_id") or "").strip(): state for state in states}
         values: list[list[Any]] = []
         misses = 0
         for item_id in item_ids:
+            if item_id in unavailable_ids:
+                values.append(["DATA_UNAVAILABLE"])
+                misses += 1
+                continue
             active_days = _active_days(states_by_item_id.get(item_id), now=now)
             if active_days is None:
                 misses += 1
@@ -229,6 +273,7 @@ class ReturnsHistoriesWithdrawalsFormulaHandlers:
                 values.append([active_days])
         return FormulaExecutionResult(
             values=values,
+            recovery=recovery,
             meta={"partial_misses": misses, "columns": "active_status_days"},
         )
 
@@ -355,6 +400,21 @@ def _neglected_publication_row(row: Mapping[str, Any], *, tipo_precio: Any) -> l
         _current_value(row, "status"),
         _current_value(row, "inventory_id") or row.get("inventory_id") or NA_VALUE,
     ]
+
+
+def _status_matches_source(state: Mapping[str, Any], source: Mapping[str, Any] | None) -> bool:
+    if source is None:
+        return False
+    observed = _optional_datetime(source.get("last_meli_sync_at"))
+    started = _first_datetime(state.get("status_started_at"), state.get("first_observed_at"))
+    return (
+        observed is not None
+        and (started is None or started <= observed)
+        and bool(source.get("status"))
+        and state.get("current_status") == source.get("status")
+        and _optional_datetime(state.get("last_observed_at"))
+        == _optional_datetime(source.get("last_meli_sync_at"))
+    )
 
 
 def _active_days(state: Mapping[str, Any] | None, *, now: datetime) -> int | None:
