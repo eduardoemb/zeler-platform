@@ -58,7 +58,7 @@ ENVIOS_MERCADOENVIOS_HEADERS = [
     "PAQUETERIA",
 ]
 NON_PRODUCTIVE_ORDER_STATUSES = frozenset({"cancelled", "canceled"})
-CLOSED_SHIPMENT_STATUSES = frozenset({"delivered", "shipped"})
+CLOSED_SHIPMENT_STATUSES = frozenset({"delivered", "shipped", "cancelled", "canceled"})
 SUPERMARKET_TAG = "supermarket_eligible"
 
 
@@ -253,39 +253,69 @@ class ItemShippingCatalogFormulaHandlers:
         self, context: FormulaExecutionContext
     ) -> FormulaExecutionResult:
         now = _as_utc_datetime(self._now_fn())
-        await self._repository.require_read_model_productive(
+        start = datetime.combine((now - timedelta(days=29)).date(), time.min, tzinfo=UTC)
+        await self._repository.require_read_model_reconciled_range(
             seller_id=context.seller_id,
             read_model=ORDERS_READ_MODEL,
-            date_to=now,
-            formula=context.contract.name,
-        )
-        await self._repository.require_read_model_productive(
-            seller_id=context.seller_id,
-            read_model=SHIPMENTS_READ_MODEL,
+            date_from=start,
             date_to=now,
             formula=context.contract.name,
         )
         orders = await self._repository.find_orders(
             seller_id=context.seller_id,
-            date_from=datetime.combine((now - timedelta(days=29)).date(), time.min, tzinfo=UTC),
-            date_to=_day_end(now),
+            date_from=start,
+            date_to=now,
             limit=None,
         )
-        shipments = await _shipments_for_orders(
+        orders = [
+            order
+            for order in orders
+            if _order_is_non_cancelled(order)
+            and str(order.get("status") or "").casefold()
+            not in {"confirmed", "payment_required", "payment_in_process"}
+            and "no_shipping" not in (order.get("tags") or [])
+        ]
+        unknown_orders = tuple(_document_id(order) for order in orders if not _shipment_id(order))
+        shipments, missing = await _shipments_for_orders(
             repository=self._repository,
             seller_id=context.seller_id,
             orders=orders,
+            formula=context.contract.name,
+            now=now,
         )
         status_filter = _status_filter(context.args.get("estado_etiqueta", "todos"))
-        rows = [
-            _mercadoenvios_row(order, line, shipment=shipments.get(_shipment_id(order)))
-            for order in orders
-            if _order_is_non_cancelled(order)
-            and (shipment := shipments.get(_shipment_id(order))) is not None
-            and _shipment_is_open(shipment)
-            and _shipment_matches_status(shipment, status_filter)
-            for line in _order_lines(order)
-        ]
+        rows = []
+        for order in orders:
+            shipment = shipments.get(_shipment_id(order))
+            if shipment is not None and (
+                not _shipment_is_open(shipment)
+                or not _shipment_matches_status(shipment, status_filter)
+            ):
+                continue
+            for line in _order_lines(order):
+                row = _mercadoenvios_row(order, line, shipment=shipment)
+                if shipment is None:
+                    row[5:] = ["DATA_UNAVAILABLE"] * 4
+                rows.append(row)
+        recoveries = []
+        if unknown_orders:
+            recoveries.append(
+                FormulaDataUnavailableError(
+                    context.contract.name,
+                    "Productive order shipment identities are unavailable.",
+                    read_model=ORDERS_READ_MODEL,
+                    order_ids=unknown_orders,
+                )
+            )
+        if missing:
+            recoveries.append(
+                FormulaDataUnavailableError(
+                    context.contract.name,
+                    "Shipment status has not passed scoped freshness/reconciliation.",
+                    read_model=SHIPMENTS_READ_MODEL,
+                    shipment_ids=missing,
+                )
+            )
         values: list[list[Any]] = _header_row(
             context.args.get("encabezados"), ENVIOS_MERCADOENVIOS_HEADERS
         )
@@ -298,6 +328,8 @@ class ItemShippingCatalogFormulaHandlers:
                 "status_filter": status_filter or "todos",
                 "columns": "legacy_mercadoenvios",
             },
+            recovery=recoveries[0] if recoveries else None,
+            additional_recoveries=tuple(recoveries[1:]),
         )
 
     async def sheetseller_obtener_catalogo(
@@ -533,16 +565,43 @@ async def _shipments_for_orders(
     repository: FormulaReadModelRepository,
     seller_id: str,
     orders: Sequence[Mapping[str, Any]],
-) -> dict[str, Mapping[str, Any]]:
+    formula: str,
+    now: datetime,
+) -> tuple[dict[str, Mapping[str, Any]], tuple[str, ...]]:
     shipment_ids = list(
         dict.fromkeys(shipment_id for order in orders if (shipment_id := _shipment_id(order)))
     )
+    if not shipment_ids:
+        return {}, ()
+    globally_current = True
+    try:
+        await repository.require_read_model_productive(
+            seller_id=seller_id, read_model=SHIPMENTS_READ_MODEL, date_to=now, formula=formula
+        )
+    except FormulaDataUnavailableError:
+        globally_current = False
     rows = await repository.find_shipments_by_ids(
         seller_id=seller_id,
         shipment_ids=shipment_ids,
         limit=max(1000, len(shipment_ids)),
     )
-    return {str(row.get("_id") or "").strip(): row for row in rows if row.get("_id")}
+    available: dict[str, Mapping[str, Any]] = {}
+    for row in rows:
+        observed = _optional_datetime(row.get("formula_observed_at"))
+        if (
+            row.get("seller_id") == seller_id
+            and _shipment_status(row)
+            and (
+                globally_current
+                or (
+                    observed is not None
+                    and now - timedelta(minutes=15) < observed <= now
+                    and row.get("order_id")
+                )
+            )
+        ):
+            available[str(row["_id"])] = row
+    return available, tuple(identity for identity in shipment_ids if identity not in available)
 
 
 def _latest_shipping_order_lines_by_pair(

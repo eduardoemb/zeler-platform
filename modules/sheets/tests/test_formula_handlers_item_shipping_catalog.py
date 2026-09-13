@@ -5,8 +5,12 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
+from uuid import uuid4
 
+import httpx
 import pytest
+from motor.motor_asyncio import AsyncIOMotorClient
+from pymongo.errors import ServerSelectionTimeoutError
 
 from zeler_sheets.formulas.dispatcher import (
     FormulaDataUnavailableError,
@@ -24,6 +28,8 @@ from zeler_sheets.formulas.read_models import (
     SHIPMENTS_READ_MODEL,
     FormulaReadModelRepository,
 )
+from zeler_sheets.formulas.recovery import FormulaRecoveryQueue, ShipmentIdsRecoveryRequest
+from zeler_sheets.formulas.recovery_worker import FormulaRecoveryWorker
 from zeler_sheets.formulas.registry import FormulaRegistry
 
 
@@ -571,6 +577,218 @@ async def test_costo_envio_vendedor_uses_latest_realized_shipment_cost_per_unit(
 
 
 @pytest.mark.asyncio
+async def test_envios_rejects_live_orders_marker_without_full_30_day_interval() -> None:
+    db = FakeDb()
+    _mark_read_model_fresh(db, ORDERS_READ_MODEL)
+    _mark_read_model_fresh(db, SHIPMENTS_READ_MODEL)
+    db["sheets_read_model_freshness"].documents["seller-1:orders"]["date_from"] = NOW - timedelta(
+        days=7
+    )
+    with pytest.raises(FormulaDataUnavailableError) as error:
+        await _dispatcher(db).execute(_context("ZELERDATA_ENVIOSMERCADOENVIOS", {}))
+    assert error.value.read_model == ORDERS_READ_MODEL
+    assert error.value.date_from == (NOW - timedelta(days=29)).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    )
+    assert error.value.date_to == NOW
+
+
+@pytest.mark.asyncio
+async def test_envios_worker_recovers_owned_label_without_global_shipment_marker() -> None:
+    client: AsyncIOMotorClient[dict[str, Any]] = AsyncIOMotorClient(
+        "mongodb://127.0.0.1:27028/?directConnection=true", serverSelectionTimeoutMS=1000
+    )
+    db = client[f"zeler_envios_test_{uuid4().hex}"]
+    connected = False
+    try:
+        try:
+            hello = await client.admin.command("hello")
+            connected = True
+        except ServerSelectionTimeoutError:
+            pytest.skip("dedicated local Mongo on port 27028 is unavailable")
+        assert hello["isWritablePrimary"]
+        await db.sheets_read_model_freshness.insert_one(
+            {
+                "_id": "82453304:orders",
+                "seller_id": "82453304",
+                "read_model": "orders",
+                "state": "reconciled",
+                "date_from": NOW - timedelta(days=30),
+                "reconciled_until": NOW,
+                "valid_until": NOW + timedelta(minutes=30),
+            }
+        )
+        await db.orders.insert_one(
+            {
+                **_order_doc(
+                    "101",
+                    date_created=NOW - timedelta(days=1),
+                    shipment_id="201",
+                    sku="SKU",
+                    item_id="MLA1",
+                    quantity=2,
+                ),
+                "seller_id": "82453304",
+            }
+        )
+        context = _context(
+            "ZELERDATA_ENVIOSMERCADOENVIOS", {"encabezados": False}, seller_id="82453304"
+        )
+        dispatcher = _dispatcher(db)
+        initial = await dispatcher.execute(context)
+        assert initial.values[0][5:] == ["DATA_UNAVAILABLE"] * 4
+        assert initial.recovery is not None and initial.recovery.shipment_ids == ("201",)
+
+        class Gateway:
+            async def request(self, *, path: str, seller_id: str, **kwargs: Any) -> httpx.Response:
+                assert seller_id == "82453304"
+                if path == "/shipments/201/orders":
+                    return httpx.Response(200, json=[{"order_id": 101, "seller_id": 82453304}])
+                if path == "/shipments/201/costs":
+                    return httpx.Response(404)
+                assert path == "/shipments/201"
+                return httpx.Response(
+                    200,
+                    json={
+                        "id": 201,
+                        "order_id": 101,
+                        "seller_id": 82453304,
+                        "status": "ready_to_ship",
+                        "logistic_type": "fulfillment",
+                        "date_created": NOW.isoformat(),
+                        "last_updated": NOW.isoformat(),
+                    },
+                )
+
+        queue = FormulaRecoveryQueue(db, now=lambda: NOW, enabled_models=frozenset({"shipments"}))
+        await queue.enqueue(ShipmentIdsRecoveryRequest("82453304", ("201",)))
+        assert await FormulaRecoveryWorker(db=db, queue=queue, gateway=Gateway()).process_one()
+        result = await dispatcher.execute(context)
+        assert result.values[0][0] == "101"
+        assert result.values[0][4:6] == [2, "ready_to_ship"]
+        assert result.recovery is None
+        assert await db.sheets_read_model_freshness.find_one({"read_model": "shipments"}) is None
+    finally:
+        if connected:
+            await client.drop_database(db.name)
+        client.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "problem", ["missing", "expired", "future", "other_seller", "no_status", "no_order"]
+)
+async def test_envios_preserves_owned_recent_rows_and_exposes_unresolved_labels(
+    problem: str,
+) -> None:
+    db = FakeDb()
+    _mark_read_model_fresh(db, ORDERS_READ_MODEL)
+    for identity in ("101", "102"):
+        db["orders"].documents[identity] = _order_doc(
+            identity,
+            date_created=NOW - timedelta(days=1),
+            shipment_id=identity,
+            sku="SKU",
+            item_id="MLA1",
+            quantity=1,
+        )
+        db["shipments"].documents[identity] = {
+            **_shipment_doc(identity),
+            "order_id": identity,
+            "formula_observed_at": NOW,
+        }
+    bad = db["shipments"].documents["102"]
+    if problem == "missing":
+        del db["shipments"].documents["102"]
+    elif problem == "expired":
+        bad["formula_observed_at"] = NOW - timedelta(minutes=15)
+    elif problem == "future":
+        bad["formula_observed_at"] = NOW + timedelta(seconds=1)
+    elif problem == "other_seller":
+        bad["seller_id"] = "different"
+    elif problem == "no_status":
+        bad["status"] = ""
+    else:
+        del bad["order_id"]
+    result = await _dispatcher(db).execute(
+        _context("ZELERDATA_ENVIOSMERCADOENVIOS", {"encabezados": False})
+    )
+    assert result.values[0][0] == "101"
+    assert result.values[0][5] == "ready_to_ship"
+    assert result.values[1][0] == "102"
+    assert result.values[1][5:] == ["DATA_UNAVAILABLE"] * 4
+    assert result.recovery is not None
+    assert result.recovery.shipment_ids == ("102",)
+
+
+@pytest.mark.asyncio
+async def test_envios_unknown_order_linkage_is_not_hidden_or_confused_with_no_shipping() -> None:
+    db = FakeDb()
+    _mark_read_model_fresh(db, ORDERS_READ_MODEL)
+    for index, status in enumerate(("paid", "cancelled", "confirmed", "payment_required", "paid")):
+        identity = str(101 + index)
+        db["orders"].documents[identity] = {
+            **_order_doc(
+                identity,
+                date_created=NOW,
+                shipment_id="",
+                sku="SKU",
+                item_id="MLA1",
+                quantity=1,
+                status=status,
+            ),
+            "unavailable_fields": ["shipment_id"],
+            "tags": ["no_shipping"] if index == 4 else [],
+        }
+    result = await _dispatcher(db).execute(
+        _context("ZELERDATA_ENVIOSMERCADOENVIOS", {"encabezados": False})
+    )
+    assert len(result.values) == 1
+    assert result.values[0][0] == "101"
+    assert result.values[0][5:] == ["DATA_UNAVAILABLE"] * 4
+    assert result.recovery is not None
+    assert result.recovery.order_ids == ("101",)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "status_filter,expected", [("todos", ["101", "102"]), ("handling", ["102"])]
+)
+async def test_envios_resource_recovery_respects_label_status_filters(
+    status_filter: str, expected: list[str]
+) -> None:
+    db = FakeDb()
+    _mark_read_model_fresh(db, ORDERS_READ_MODEL)
+    for identity, status in (
+        ("101", "ready_to_ship"),
+        ("102", "handling"),
+        ("103", "delivered"),
+        ("104", "cancelled"),
+    ):
+        db["orders"].documents[identity] = _order_doc(
+            identity,
+            date_created=NOW,
+            shipment_id=identity,
+            sku="SKU",
+            item_id="MLA1",
+            quantity=1,
+        )
+        db["shipments"].documents[identity] = {
+            **_shipment_doc(identity, status=status),
+            "order_id": identity,
+            "formula_observed_at": NOW,
+        }
+    result = await _dispatcher(db).execute(
+        _context(
+            "ZELERDATA_ENVIOSMERCADOENVIOS",
+            {"encabezados": False, "estado_etiqueta": status_filter},
+        )
+    )
+    assert [row[0] for row in result.values] == expected
+    assert result.recovery is None
+
+
+@pytest.mark.asyncio
 async def test_envios_mercadoenvios_uses_recent_open_labels_and_official_pack_id() -> None:
     db = FakeDb()
     _mark_read_model_fresh(db, ORDERS_READ_MODEL)
@@ -867,7 +1085,7 @@ async def test_item_shipping_catalog_formulas_reject_stale_read_model_marker(
         ("ZELERDATA_ENVIOSMERCADOENVIOS", {}),
     ],
 )
-async def test_shipping_formulas_require_fresh_shipments_after_orders_are_fresh(
+async def test_shipping_formulas_require_only_relevant_shipments_after_orders_are_proven(
     formula: str, args: dict[str, Any]
 ) -> None:
     db = FakeDb()
@@ -883,18 +1101,20 @@ async def test_shipping_formulas_require_fresh_shipments_after_orders_are_fresh(
         )
     dispatcher = _dispatcher(db)
 
+    if formula == "ZELERDATA_ENVIOSMERCADOENVIOS":
+        # A fully proven empty order window needs no unrelated shipment marker.
+        result = await dispatcher.execute(_context(formula, args))
+        assert result.values == []
+        assert result.recovery is None
+        return
     with pytest.raises(FormulaDataUnavailableError) as error:
         await dispatcher.execute(_context(formula, args))
 
     assert error.value.read_model == SHIPMENTS_READ_MODEL
-    if formula == "ZELERDATA_COSTOENVIOVENDEDOR":
-        assert error.value.shipment_ids == ("LATEST",)
-    else:
-        assert formula in str(error.value)
-        assert "freshness/reconciliation" in str(error.value)
+    assert error.value.shipment_ids == ("LATEST",)
 
 
-def _dispatcher(db: FakeDb) -> FormulaDispatcher:
+def _dispatcher(db: Any) -> FormulaDispatcher:
     repository = FormulaReadModelRepository(db=db)
     return FormulaDispatcher(
         build_item_shipping_catalog_formula_handlers(repository, now_fn=lambda: NOW)
@@ -917,6 +1137,10 @@ def _mark_read_model_fresh(
         "updated_at": NOW,
         "schema_version": 1,
     }
+    if read_model == ORDERS_READ_MODEL:
+        db["sheets_read_model_freshness"].documents[f"seller-1:{read_model}"].update(
+            state="reconciled", date_from=NOW - timedelta(days=30)
+        )
 
 
 def _context(
