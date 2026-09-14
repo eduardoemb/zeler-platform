@@ -43,9 +43,9 @@ from zeler_platform_core.models import (
 from zeler_platform_core.models.base import current_schema_version
 from zeler_sheets.enrichment import (
     EnrichmentFailure,
-    basis_hash,
-    bounded_basis,
+    canonical_basis_tags,
     classify_fetch_exception,
+    enrichment_basis_matches,
     enrichment_state,
     increment_reason_count,
     listing_fee_basis_matches,
@@ -3724,13 +3724,7 @@ def _existing_enrichment_basis_matches(
     state = _existing_enrichment_state(item).get(field)
     if state is None:
         return False
-    expected_hash = basis_hash(basis)
-    if expected_hash is not None and state.get("basis_hash") == expected_hash:
-        return True
-    existing_basis = state.get("basis")
-    if not isinstance(existing_basis, dict):
-        return False
-    return bounded_basis(existing_basis) == bounded_basis(basis)
+    return enrichment_basis_matches(state, basis)
 
 
 def _item_shipping_basis(detail: dict[str, Any]) -> dict[str, Any]:
@@ -3806,11 +3800,11 @@ def _listing_price_fixed_fee_params(
     )
     if billable_weight is not None:
         params["billable_weight"] = billable_weight
-    tags = detail.get("tags")
-    if isinstance(tags, list):
-        clean_tags = [tag for raw in tags if (tag := str(raw).strip())]
-        if clean_tags:
-            params["tags"] = clean_tags
+    tags = canonical_basis_tags(detail.get("tags"))
+    if tags is None:
+        return None
+    if tags:
+        params["tags"] = list(tags)
     return params
 
 
@@ -3839,7 +3833,8 @@ def _listing_fixed_fee_basis_matches(existing_projection: Any, params: dict[str,
     for key in ("price", "billable_weight"):
         if _safe_decimal(existing_params.get(key)) != _safe_decimal(params.get(key)):
             return False
-    return _clean_string_list(existing_params.get("tags")) == _clean_string_list(params.get("tags"))
+    tags = canonical_basis_tags(existing_params.get("tags"))
+    return tags is not None and tags == canonical_basis_tags(params.get("tags"))
 
 
 def _site_from_item_id(item_id: str) -> str | None:
@@ -4118,9 +4113,11 @@ def build_listing_fee_projection_context(
     shipping_modes = _clean_string_list(detail.get("shipping_modes"))
     if shipping_modes:
         context["shipping_modes"] = shipping_modes
-    tags = _clean_string_list(detail.get("tags"))
+    tags = canonical_basis_tags(detail.get("tags"))
+    if tags is None:
+        return None
     if tags:
-        context["tags"] = tags
+        context["tags"] = list(tags)
     return context
 
 

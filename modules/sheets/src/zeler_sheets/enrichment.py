@@ -112,15 +112,15 @@ def bounded_basis(raw_basis: dict[str, Any]) -> dict[str, Any]:
         decimal_value = _decimal_or_none(raw_basis.get(key))
         if decimal_value is not None:
             basis[key] = decimal_value
-    tags = raw_basis.get("tags")
-    if isinstance(tags, list):
-        clean_tags = [tag for raw in tags if (tag := _optional_string(raw)) is not None]
-        if clean_tags:
-            basis["tags"] = clean_tags
+    tags = canonical_basis_tags(raw_basis.get("tags"))
+    if tags:
+        basis["tags"] = list(tags)
     return basis
 
 
 def basis_hash(raw_basis: dict[str, Any] | None) -> str | None:
+    if canonical_basis_tags((raw_basis or {}).get("tags")) is None:
+        return None
     basis = bounded_basis(raw_basis or {})
     if not basis:
         return None
@@ -159,7 +159,8 @@ def _optional_basis_matches(existing_projection: dict[str, Any], context: dict[s
         existing_projection.get("billable_weight"), context.get("billable_weight")
     ):
         return False
-    return _string_list(existing_projection.get("tags")) == _string_list(context.get("tags"))
+    tags = canonical_basis_tags(existing_projection.get("tags"))
+    return tags is not None and tags == canonical_basis_tags(context.get("tags"))
 
 
 def _optional_decimal_basis_matches(existing_value: Any, context_value: Any) -> bool:
@@ -170,10 +171,31 @@ def _optional_decimal_basis_matches(existing_value: Any, context_value: Any) -> 
     return existing_decimal is not None and existing_decimal == context_decimal
 
 
-def _string_list(value: Any) -> list[str]:
-    if not isinstance(value, list):
-        return []
-    return [item for raw in value if (item := _optional_string(raw)) is not None]
+def canonical_basis_tags(value: Any) -> tuple[str, ...] | None:
+    """Economic basis tags are membership flags, not an ordered sequence.
+
+    Preserve invalid input as unknown, never equate it to an empty tag set.
+    Other list-valued source fields keep their own ordering semantics.
+    """
+    if value is None:
+        return ()
+    if not isinstance(value, list) or any(not isinstance(tag, str) for tag in value):
+        return None
+    return tuple(sorted({tag.strip() for tag in value if tag.strip()}))
+
+
+def enrichment_basis_matches(state: dict[str, Any], basis: dict[str, Any]) -> bool:
+    if canonical_basis_tags(basis.get("tags")) is None:
+        return False
+    stored = state.get("basis")
+    if isinstance(stored, dict):
+        if canonical_basis_tags(stored.get("tags")) is None:
+            return False
+        # Older stored hashes include tag order. Compare the retained source
+        # basis semantically without rewriting its hash or observation date.
+        return bounded_basis(stored) == bounded_basis(basis)
+    expected_hash = basis_hash(basis)
+    return expected_hash is not None and state.get("basis_hash") == expected_hash
 
 
 def schema_safe_enrichment_state(value: Any) -> dict[str, Any] | None:

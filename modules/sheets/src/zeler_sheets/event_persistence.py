@@ -24,8 +24,7 @@ from zeler_platform_core.models import (
 )
 from zeler_platform_core.models.base import current_schema_version
 from zeler_sheets.enrichment import (
-    basis_hash,
-    bounded_basis,
+    enrichment_basis_matches,
     enrichment_state,
     schema_safe_enrichment_state,
 )
@@ -1145,11 +1144,7 @@ def _seller_shipping_basis_matches(
     state = existing_state.get("seller_shipping_cost")
     if not isinstance(state, dict) or state.get("status") != "trusted":
         return False
-    expected_hash = basis_hash(basis)
-    if expected_hash is not None and state.get("basis_hash") == expected_hash:
-        return True
-    state_basis = state.get("basis")
-    return isinstance(state_basis, dict) and bounded_basis(state_basis) == bounded_basis(basis)
+    return enrichment_basis_matches(state, basis)
 
 
 def _item_shipping_basis(item: dict[str, Any]) -> dict[str, Any]:
