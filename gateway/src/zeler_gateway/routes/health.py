@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any, Literal
+from contextlib import suppress
+from typing import Any, Literal, cast
 
 import aio_pika
 from fastapi import APIRouter, Request, status
@@ -10,6 +11,7 @@ from pydantic import BaseModel
 from pymongo.errors import PyMongoError
 
 from zeler_gateway.config import Settings
+from zeler_platform_core.runtime.checks import OwnedAmqpTransport
 
 GATEWAY_REQUIRED_REGISTRY_IDS = ("repricer", "sheets", "publicador", "autoreply", "zeler-app")
 REPRICER_SWEEP_JOB_ID = "repricer-sweep-publisher"
@@ -103,20 +105,88 @@ async def _check_registry(app_state: Any, timeout_s: float) -> CheckStatus:
     return "ok"
 
 
+def _rabbit_lock(app_state: Any) -> asyncio.Lock:
+    lock = getattr(app_state, "rabbit_lock", None)
+    if lock is None:
+        lock = asyncio.Lock()
+        app_state.rabbit_lock = lock
+    return lock
+
+
+async def _close_rabbit_connection(rabbit: Any) -> None:
+    # Fit failed-attempt cleanup inside the aggregate readiness grace (0.2s).
+    try:
+        await asyncio.wait_for(rabbit.close(), timeout=0.1)
+    finally:
+        transport = getattr(rabbit, "_readiness_transport_owner", None)
+        if transport is not None:
+            transport.abort()
+
+
+async def _connect_owned_rabbit(rabbitmq_url: str, timeout_s: float) -> Any:
+    candidate: Any = None
+
+    def create(*args: Any, **kwargs: Any) -> Any:
+        nonlocal candidate
+        candidate = aio_pika.RobustConnection(*args, **kwargs)
+        transport = OwnedAmqpTransport(candidate.url)
+        candidate.kwargs["transport_factory"] = transport
+        candidate._readiness_transport_owner = transport
+        return candidate
+
+    try:
+        candidate = await aio_pika.connect_robust(
+            rabbitmq_url,
+            heartbeat=60,
+            timeout=timeout_s,
+            connection_class=cast(type[aio_pika.abc.AbstractRobustConnection], create),
+        )
+        await candidate.connected.wait()
+        if candidate.is_closed:
+            raise RuntimeError("Rabbit connection closed during initialization")
+        return candidate
+    except BaseException:
+        # connect_robust does not close the object it created when connect fails
+        # or is cancelled. Retain that object before its first asynchronous work.
+        if candidate is not None:
+            with suppress(Exception):
+                await _close_rabbit_connection(candidate)
+        raise
+
+
 async def _check_rabbit(app_state: Any, timeout_s: float, rabbitmq_url: str) -> CheckStatus:
     try:
-        rabbit = getattr(app_state, "rabbit", None)
-        if rabbit is not None and bool(getattr(rabbit, "is_open", False)):
-            return "ok"
-        if not rabbitmq_url:
-            return "fail"
-        refreshed = await asyncio.wait_for(
-            aio_pika.connect_robust(rabbitmq_url, heartbeat=60), timeout=timeout_s
-        )
-        app_state.rabbit = refreshed
-    except (AttributeError, TimeoutError, RuntimeError, aio_pika.exceptions.AMQPException):
+        async with asyncio.timeout(timeout_s):
+            async with _rabbit_lock(app_state):
+                if getattr(app_state, "rabbit_shutdown", False):
+                    return "fail"
+                rabbit = getattr(app_state, "rabbit", None)
+                if rabbit is None or rabbit.is_closed:
+                    if rabbit is not None:
+                        transport = getattr(rabbit, "_readiness_transport_owner", None)
+                        if transport is not None:
+                            transport.abort()
+                    if not rabbitmq_url:
+                        return "fail"
+                    rabbit = await _connect_owned_rabbit(rabbitmq_url, timeout_s)
+                    app_state.rabbit = rabbit
+                # A robust connection owns its reconnect task. A readiness probe
+                # waits for that connection, rather than replacing it on a gap.
+                await rabbit.connected.wait()
+                if rabbit.is_closed or getattr(app_state, "rabbit_shutdown", False):
+                    return "fail"
+    except (AttributeError, TimeoutError, *aio_pika.exceptions.CONNECTION_EXCEPTIONS):
         return "fail"
     return "ok"
+
+
+async def close_owned_rabbit(app_state: Any) -> None:
+    app_state.rabbit_shutdown = True
+    async with _rabbit_lock(app_state):
+        rabbit = getattr(app_state, "rabbit", None)
+        app_state.rabbit = None
+        if rabbit is not None:
+            await _close_rabbit_connection(rabbit)
 
 
 async def _check_repricer_sweep_scheduler(app_state: Any) -> CheckStatus:

@@ -29,11 +29,15 @@ class FakeMotorClient:
 
 class FakeRabbitConnection:
     def __init__(self) -> None:
-        self.is_open = True
+        self.is_closed = False
+        self.connected = asyncio.Event()
+        self.connected.set()
         self.closed = False
 
     async def close(self) -> None:
         self.closed = True
+        self.is_closed = True
+        self.connected.clear()
 
 
 class FakeScheduler:
@@ -160,7 +164,11 @@ def test_lifespan_stores_rabbit_marks_ready_and_closes_it(monkeypatch: Any) -> N
     monkeypatch.setattr(aio_pika, "connect_robust", fake_connect_robust)
 
     with TestClient(app_module.app):
-        assert calls == [{"url": "amqp://guest:guest@localhost:5672/", "heartbeat": 60}]
+        assert len(calls) == 1
+        assert calls[0]["url"] == "amqp://guest:guest@localhost:5672/"
+        assert calls[0]["heartbeat"] == 60
+        assert callable(calls[0]["connection_class"])
+        assert calls[0]["timeout"] > 0
         assert app_module.app.state.rabbit is rabbit
         assert app_module.app.state.ready is True
 
@@ -312,3 +320,29 @@ def test_successful_oauth_callback_publishes_through_lifespan_adapter(monkeypatc
         assert database.bootstrap_jobs.documents["bootstrap-123-oauth"]["state"] == "pending"
 
     assert rabbit.closed is True
+
+
+def test_lifespan_allows_broker_recovery_after_initial_failure(monkeypatch: Any) -> None:
+    from zeler_gateway.routes.health import _check_rabbit
+
+    rabbit = FakeRabbitConnection()
+    attempts = 0
+
+    async def connect(url: str, **kwargs: Any) -> FakeRabbitConnection:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise RuntimeError("Broker temporarily unavailable")
+        return rabbit
+
+    monkeypatch.setenv("MONGO_URI", "mongodb://localhost:27017/zeler_platform_test")
+    monkeypatch.setenv("MONGO_DB", "zeler_platform_test")
+    monkeypatch.setenv("RABBITMQ_URL", "amqp://localhost")
+    monkeypatch.setattr(app_module, "AsyncIOMotorClient", FakeMotorClient)
+    monkeypatch.setattr(aio_pika, "connect_robust", connect)
+    with TestClient(app_module.app):
+        assert app_module.app.state.ready is True
+        assert app_module.app.state.rabbit is None
+        assert asyncio.run(_check_rabbit(app_module.app.state, 0.2, "amqp://localhost")) == "ok"
+        assert app_module.app.state.rabbit is rabbit
+    assert rabbit.closed and attempts == 2

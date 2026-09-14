@@ -48,8 +48,15 @@ class FakeMongoDb:
 
 
 class FakeRabbitConnection:
-    def __init__(self, *, is_open: bool = True) -> None:
-        self.is_open = is_open
+    def __init__(self, *, is_closed: bool = False) -> None:
+        self.is_closed = is_closed
+        self.connected = asyncio.Event()
+        if not is_closed:
+            self.connected.set()
+
+    async def close(self) -> None:
+        self.is_closed = True
+        self.connected.clear()
 
 
 class FakeScheduler:
@@ -95,9 +102,11 @@ def _reset_readiness_state(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("READY_RABBITMQ_TIMEOUT_S", "0.2")
     monkeypatch.setenv("RABBITMQ_URL", "amqp://guest:guest@rabbitmq:5672/")
     app_module.app.state.ready = True
+    app_module.app.state.rabbit_shutdown = False
+    app_module.app.state.rabbit_lock = asyncio.Lock()
     app_module.app.state.mongo_client = FakeMongoClient(_ok_command)
     app_module.app.state.mongo_db = FakeMongoDb(_registry_documents())
-    app_module.app.state.rabbit = FakeRabbitConnection(is_open=True)
+    app_module.app.state.rabbit = FakeRabbitConnection(is_closed=False)
     app_module.app.state.scheduler = FakeScheduler(running=True, has_sweep_job=True)
 
 
@@ -111,7 +120,7 @@ async def test_health_is_alive_and_does_not_probe_dependencies(
     async def fake_connect_robust(*_args: Any, **_kwargs: Any) -> FakeRabbitConnection:
         nonlocal connect_calls
         connect_calls += 1
-        return FakeRabbitConnection(is_open=True)
+        return FakeRabbitConnection(is_closed=False)
 
     monkeypatch.setattr(aio_pika, "connect_robust", fake_connect_robust)
 
@@ -159,7 +168,7 @@ async def test_ready_returns_503_when_rabbit_reconnect_fails(
     async def failing_connect_robust(*_args: Any, **_kwargs: Any) -> FakeRabbitConnection:
         raise RuntimeError("amqp://guest:guest@secret-rabbit:5672 leaked")
 
-    app_module.app.state.rabbit = FakeRabbitConnection(is_open=False)
+    app_module.app.state.rabbit = FakeRabbitConnection(is_closed=True)
     monkeypatch.setattr(aio_pika, "connect_robust", failing_connect_robust)
 
     async with await _readiness_client() as client:
@@ -181,7 +190,7 @@ async def test_ready_returns_503_when_both_dependencies_fail(
         raise RuntimeError("rabbit failed")
 
     app_module.app.state.mongo_client = FakeMongoClient(_failing_command)
-    app_module.app.state.rabbit = FakeRabbitConnection(is_open=False)
+    app_module.app.state.rabbit = FakeRabbitConnection(is_closed=True)
     monkeypatch.setattr(aio_pika, "connect_robust", failing_connect_robust)
 
     async with await _readiness_client() as client:
@@ -310,7 +319,7 @@ async def test_ready_failure_body_is_sanitized(monkeypatch: pytest.MonkeyPatch) 
         raise RuntimeError("amqp://guest:guest@secret-rabbit:5672 stack trace")
 
     app_module.app.state.mongo_client = FakeMongoClient(_failing_command)
-    app_module.app.state.rabbit = FakeRabbitConnection(is_open=False)
+    app_module.app.state.rabbit = FakeRabbitConnection(is_closed=True)
     monkeypatch.setattr(aio_pika, "connect_robust", failing_connect_robust)
 
     async with await _readiness_client() as client:
@@ -337,7 +346,7 @@ async def test_ready_failure_body_is_sanitized(monkeypatch: pytest.MonkeyPatch) 
 async def test_ready_refreshes_closed_rabbit_connection(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    new_rabbit = FakeRabbitConnection(is_open=True)
+    new_rabbit = FakeRabbitConnection(is_closed=False)
     calls = 0
 
     async def fake_connect_robust(*_args: Any, **_kwargs: Any) -> FakeRabbitConnection:
@@ -345,7 +354,7 @@ async def test_ready_refreshes_closed_rabbit_connection(
         calls += 1
         return new_rabbit
 
-    app_module.app.state.rabbit = FakeRabbitConnection(is_open=False)
+    app_module.app.state.rabbit = FakeRabbitConnection(is_closed=True)
     monkeypatch.setattr(aio_pika, "connect_robust", fake_connect_robust)
 
     async with await _readiness_client() as client:

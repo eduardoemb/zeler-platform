@@ -1,12 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from typing import Any
 
-import aio_pika
 import structlog
 from apscheduler.schedulers.asyncio import AsyncIOScheduler  # type: ignore[import-untyped]
 from fastapi import FastAPI
@@ -27,6 +27,7 @@ from zeler_gateway.observability.request_context import (
 )
 from zeler_gateway.observability.tracing import configure_tracing
 from zeler_gateway.proxy.router import router as proxy_router
+from zeler_gateway.routes.health import _check_rabbit, close_owned_rabbit
 from zeler_gateway.routes.health import router as health_router
 from zeler_gateway.tokens.refresh_worker import refresh_once
 from zeler_gateway.webhooks.classifier import MELI_EVENTS_EXCHANGE
@@ -173,58 +174,68 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     )
     app.state.mongo_db = app.state.mongo_client[settings.mongo_db]
     app.state.rabbit = None
+    app.state.rabbit_lock = asyncio.Lock()
+    app.state.rabbit_shutdown = False
     transport_publisher = None
     app.state.amqp_publisher = None
     app.state.ready = False
-    if settings.rabbitmq_url:
-        transport_publisher = AioPikaWebhookPublisher(
-            rabbitmq_url=settings.rabbitmq_url,
-            exchange_name=settings.rabbitmq_events_exchange,
-        )
-        app.state.amqp_publisher = AccountLifecyclePublisherAdapter(transport_publisher)
-        try:
-            app.state.rabbit = await aio_pika.connect_robust(settings.rabbitmq_url, heartbeat=60)
-            app.state.ready = True
-        except (TimeoutError, RuntimeError, aio_pika.exceptions.AMQPException):
-            logger.warning("rabbitmq connection unavailable during startup")
-    else:
-        logger.warning("rabbitmq connection unavailable during startup")
-    app.state.scheduler = AsyncIOScheduler()
-
-    async def _scheduled_refresh() -> None:
-        try:
-            await refresh_once(
-                app.state.mongo_db,
-                lifecycle_publisher=app.state.amqp_publisher,
-            )
-        except Exception:
-            logger.exception("refresh worker pass failed")
-
-    app.state.scheduler.add_job(
-        _scheduled_refresh,
-        "interval",
-        minutes=5,
-        id="meli-token-refresh",
-        replace_existing=True,
-        max_instances=1,
-        coalesce=True,
-    )
-    if transport_publisher is not None:
-        configure_repricer_sweep_scheduler(
-            scheduler=app.state.scheduler,
-            db=app.state.mongo_db,
-            publisher=transport_publisher,
-            interval_minutes=DEFAULT_REPRICER_SWEEP_INTERVAL_MINUTES,
-        )
-    app.state.scheduler.start()
-
+    scheduler_started = False
     try:
+        if settings.rabbitmq_url:
+            transport_publisher = AioPikaWebhookPublisher(
+                rabbitmq_url=settings.rabbitmq_url,
+                exchange_name=settings.rabbitmq_events_exchange,
+            )
+            app.state.amqp_publisher = AccountLifecyclePublisherAdapter(transport_publisher)
+            if (
+                await _check_rabbit(
+                    app.state, settings.ready_rabbitmq_timeout_s, settings.rabbitmq_url
+                )
+                != "ok"
+            ):
+                logger.warning("rabbitmq connection unavailable during startup")
+        else:
+            logger.warning("rabbitmq connection unavailable during startup")
+        app.state.scheduler = AsyncIOScheduler()
+
+        async def _scheduled_refresh() -> None:
+            try:
+                await refresh_once(
+                    app.state.mongo_db,
+                    lifecycle_publisher=app.state.amqp_publisher,
+                )
+            except Exception:
+                logger.exception("refresh worker pass failed")
+
+        app.state.scheduler.add_job(
+            _scheduled_refresh,
+            "interval",
+            minutes=5,
+            id="meli-token-refresh",
+            replace_existing=True,
+            max_instances=1,
+            coalesce=True,
+        )
+        if transport_publisher is not None:
+            configure_repricer_sweep_scheduler(
+                scheduler=app.state.scheduler,
+                db=app.state.mongo_db,
+                publisher=transport_publisher,
+                interval_minutes=DEFAULT_REPRICER_SWEEP_INTERVAL_MINUTES,
+            )
+        app.state.scheduler.start()
+
+        scheduler_started = True
+        app.state.ready = True
         yield
     finally:
-        if app.state.rabbit is not None:
-            await app.state.rabbit.close()
-        app.state.scheduler.shutdown(wait=False)
-        app.state.mongo_client.close()
+        app.state.ready = False
+        try:
+            await close_owned_rabbit(app.state)
+        finally:
+            if scheduler_started:
+                app.state.scheduler.shutdown(wait=False)
+            app.state.mongo_client.close()
 
 
 app = FastAPI(title="zeler-meli-gateway", lifespan=lifespan)
