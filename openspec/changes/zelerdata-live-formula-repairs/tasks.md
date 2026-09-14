@@ -79,7 +79,7 @@ the skill's generic chained-PR requirement. Split gateway lifecycle, formula
 corrections and evidence into independently reviewable behavior units; keep
 regressions with each implementation. Do not compress code to meet a line limit.
 
-- [ ] 7.1 RED/GREEN gateway readiness connection reuse, concurrent creation, reconnect/cancellation/shutdown and recovery after initial failure. Inspect Sheets probe cleanup; fix only reproduced defects.
+- [x] 7.1 RED/GREEN gateway readiness connection reuse, concurrent creation, reconnect/cancellation/shutdown and recovery after initial failure. Inspect Sheets probe cleanup; fix only reproduced defects.
 - [ ] 7.2 Independent gateway verification, root gates, exact-source gateway build/deploy, broker readiness and connection-count stability; establish exact AMQP rejection cause with sanitized evidence.
 - [ ] 7.3 Full-size 35-way formula reproduction/profile; bounded fixes and regression evidence for persistent processing and inventory expiry.
 - [ ] 7.4 Returns/historical completion through existing guarded operations, including positive/negative combined evidence and no invented coverage; close applicable 5.1/5.2 obligations.
