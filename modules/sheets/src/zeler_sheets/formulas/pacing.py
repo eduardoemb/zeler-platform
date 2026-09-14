@@ -8,7 +8,11 @@ budget and starve interactive formula queries.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable, Callable
+from collections import deque
+from collections.abc import Awaitable, Callable, Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -17,6 +21,38 @@ from typing import Any
 GATEWAY_REQUESTS_PER_MINUTE = 600
 DEFAULT_RECOVERY_REQUESTS_PER_MINUTE = 180
 WINDOW = timedelta(minutes=1)
+LANE_ROTATION = ("inventory", "ids", "ids", "ranges")
+_quota_deadline: ContextVar[float | None] = ContextVar("recovery_quota_deadline", default=None)
+
+
+class LocalQuotaTimeoutError(Exception):
+    """The local acquisition budget exhausted this job's available time."""
+
+
+@dataclass
+class RecoveryQuotaScope:
+    """Per-job quota evidence shared by its nested scopes and child tasks."""
+
+    expired: bool = False
+
+
+_quota_scope: ContextVar[RecoveryQuotaScope | None] = ContextVar(
+    "recovery_quota_scope", default=None
+)
+
+
+@contextmanager
+def recovery_quota_deadline(deadline: float) -> Iterator[RecoveryQuotaScope]:
+    """Apply a loop-clock deadline only to quota waits within this job."""
+    parent = _quota_deadline.get()
+    scope = _quota_scope.get() or RecoveryQuotaScope()
+    scope_token = _quota_scope.set(scope)
+    token = _quota_deadline.set(min(parent, deadline) if parent is not None else deadline)
+    try:
+        yield scope
+    finally:
+        _quota_deadline.reset(token)
+        _quota_scope.reset(scope_token)
 
 
 def recovery_requests_per_minute(value: str | None) -> int:
@@ -49,23 +85,74 @@ class RecoveryRequestPacer:
         self._sleep = sleep or asyncio.sleep
         self._window_start: datetime | None = None
         self._used = 0
-        self._lock = asyncio.Lock()
+        self._pending: dict[str, deque[asyncio.Future[bool]]] = {
+            lane: deque() for lane in LANE_ROTATION
+        }
+        self._cursor = 0
+        self._driver: asyncio.Task[None] | None = None
 
-    async def acquire(self) -> bool:
-        """Consume one slot; wait once when the current window is exhausted.
+    async def acquire(self, lane: str | None = None) -> bool:
+        """Reserve a slot fairly among waiting lanes, borrowing unused shares.
 
-        Returns ``True`` only when the caller actually had to wait, so a window
-        that already rolled over on its own is not reported as backpressure.
+        Legacy callers share the explicit-ID lane. Only an actual quota-window
+        wait is reported as backpressure. The timer exists only while needed
+        and the last cancelled waiter joins it before returning.
         """
-        async with self._lock:
-            if self._window_start is None:
-                self._window_start = self._now().astimezone(UTC)
-                self._used = 0
-            waited = False
-            if self._used >= self._budget:
-                waited = await self._roll_window()
-            self._used += 1
-            return waited
+        lane = lane or "ids"
+        if lane not in self._pending:
+            raise ValueError("unknown recovery pacing lane")
+        future: asyncio.Future[bool] = asyncio.get_running_loop().create_future()
+        self._pending[lane].append(future)
+        if self._driver is None or self._driver.done():
+            self._driver = asyncio.create_task(self._serve())
+        try:
+            async with asyncio.timeout_at(_quota_deadline.get()):
+                return await future
+        except TimeoutError as exc:
+            scope = _quota_scope.get()
+            if scope is not None:
+                scope.expired = True
+            raise LocalQuotaTimeoutError from exc
+        finally:
+            if future in self._pending[lane]:
+                self._pending[lane].remove(future)
+            if not any(self._pending.values()) and self._driver is not None:
+                driver = self._driver
+                self._driver = None
+                if not driver.done():
+                    driver.cancel()
+                await asyncio.gather(driver, return_exceptions=True)
+
+    async def _serve(self) -> None:
+        try:
+            while any(self._pending.values()):
+                # Let simultaneously ready lanes register before selecting a
+                # slot; producers can enqueue their next request after a grant.
+                await asyncio.sleep(0)
+                now = self._now().astimezone(UTC)
+                if self._window_start is None or now - self._window_start >= WINDOW:
+                    self._window_start = now
+                    self._used = 0
+                waited = False
+                if self._used >= self._budget:
+                    waited = await self._roll_window()
+                for _ in LANE_ROTATION:
+                    lane = LANE_ROTATION[self._cursor]
+                    self._cursor = (self._cursor + 1) % len(LANE_ROTATION)
+                    queue = self._pending[lane]
+                    while queue and queue[0].cancelled():
+                        queue.popleft()
+                    if queue:
+                        future = queue.popleft()
+                        self._used += 1
+                        future.set_result(waited)
+                        break
+        except Exception as exc:  # noqa: BLE001 - propagate timer failure to every waiter
+            for queue in self._pending.values():
+                while queue:
+                    future = queue.popleft()
+                    if not future.done():
+                        future.set_exception(exc)
 
     async def _roll_window(self) -> bool:
         now = self._now().astimezone(UTC)
@@ -82,17 +169,43 @@ class RecoveryRequestPacer:
 class PacedMeliGateway:
     """Wrap a gateway client so every acquisition call respects the budget."""
 
-    def __init__(self, *, inner: Any, pacer: RecoveryRequestPacer) -> None:
+    def __init__(self, *, inner: Any, pacer: RecoveryRequestPacer, lane: str | None = None) -> None:
         self._inner = inner
         self._pacer = pacer
+        self._lane = lane
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._inner, name)
 
+    async def _call(self, method: str, kwargs: dict[str, Any]) -> Any:
+        timeout = kwargs.pop("request_timeout", 10 if self._lane is not None else None)
+        await self._pacer.acquire(lane=self._lane)
+        async with asyncio.timeout(timeout):
+            return await getattr(self._inner, method)(**kwargs)
+
     async def request(self, **kwargs: Any) -> Any:
-        await self._pacer.acquire()
-        return await self._inner.request(**kwargs)
+        return await self._call("request", kwargs)
 
     async def fetch_resource(self, **kwargs: Any) -> Any:
-        await self._pacer.acquire()
-        return await self._inner.fetch_resource(**kwargs)
+        return await self._call("fetch_resource", kwargs)
+
+    async def fetch_resource_once(self, **kwargs: Any) -> Any:
+        return await self._call("fetch_resource_once", kwargs)
+
+
+async def recovery_fetch_resource(
+    gateway: Any, *, request_timeout: float = 5, **kwargs: Any
+) -> Any:
+    """Bound provider time while excluding a paced client's local quota wait."""
+    if isinstance(gateway, PacedMeliGateway):
+        return await gateway.fetch_resource(request_timeout=request_timeout, **kwargs)
+    async with asyncio.timeout(request_timeout):
+        return await gateway.fetch_resource(**kwargs)
+
+
+async def recovery_request(gateway: Any, *, request_timeout: float = 5, **kwargs: Any) -> Any:
+    """Bound an HTTP response request after any shared quota reservation."""
+    if isinstance(gateway, PacedMeliGateway):
+        return await gateway.request(request_timeout=request_timeout, **kwargs)
+    async with asyncio.timeout(request_timeout):
+        return await gateway.request(**kwargs)
