@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import re
+import time
 from collections.abc import Awaitable, Callable, Iterable, Mapping
 from contextlib import suppress
 from datetime import UTC, datetime, timedelta
@@ -78,6 +79,7 @@ DEFAULT_DAILY_WINDOW = timedelta(days=7)
 # RecoveryRequest caps a single range at 90 days.
 DEFAULT_FULL_WINDOW = timedelta(days=90)
 DEFAULT_INTERVAL_SECONDS = 900.0
+DEFAULT_INVENTORY_INTERVAL_SECONDS = 30.0
 # A marker stays valid for two refresh cycles, so one missed or slow cycle does
 # not turn a healthy read model into a visible DATA_UNAVAILABLE result.
 # Shared with the formula reader and the status report through core so the
@@ -242,6 +244,19 @@ class ZelerDataRefreshPlanner:
         self._fast_window = fast_window
         self._daily_window = daily_window
         self._full_window = full_window
+
+    async def plan_inventory(self, seller_id: str) -> bool:
+        """Keep current inventory cycling without creating moving range intents."""
+        if "item_formula_rows" not in self._enabled_models:
+            return False
+        if self._allowed_sellers is not None and seller_id not in self._allowed_sellers:
+            return False
+        try:
+            async with asyncio.timeout(2):
+                await self._queue.enqueue(ItemInventoryRecoveryRequest(seller_id))
+        except (ValueError, TimeoutError):
+            return False
+        return True
 
     async def plan(self, *, seller_id: str, mode: str = FAST_MODE) -> bool:
         if mode not in REFRESH_MODES:
@@ -468,13 +483,18 @@ class ZelerDataRefreshSupervisor:
         dlq_archiver: Callable[[], Awaitable[Any]] | None = None,
         freshness_alarm_reporter: Callable[[str], Awaitable[tuple[Any, ...]]] | None = None,
         refresh_failure_reporter: Callable[[int], Awaitable[None]] | None = None,
+        inventory_refresher: Callable[[str], Awaitable[bool]] | None = None,
         interval_seconds: float = DEFAULT_INTERVAL_SECONDS,
+        inventory_interval_seconds: float = DEFAULT_INVENTORY_INTERVAL_SECONDS,
+        monotonic: Callable[[], float] = time.monotonic,
         now: Callable[[], datetime] | None = None,
         daily_hour_utc: int = DEFAULT_DAILY_HOUR_UTC,
         full_weekday: int = DEFAULT_FULL_WEEKDAY,
     ) -> None:
         if interval_seconds <= 0:
             raise ValueError("refresh interval must be positive")
+        if inventory_interval_seconds <= 0:
+            raise ValueError("inventory refresh interval must be positive")
         if not 0 <= daily_hour_utc <= 23:
             raise ValueError("daily hour must be a valid UTC hour")
         if not 0 <= full_weekday <= 6:
@@ -488,6 +508,9 @@ class ZelerDataRefreshSupervisor:
         self._freshness_alarm_reporter = freshness_alarm_reporter
         self._refresh_failure_reporter = refresh_failure_reporter
         self._interval = interval_seconds
+        self._inventory_refresher = inventory_refresher
+        self._inventory_interval = inventory_interval_seconds
+        self._monotonic = monotonic
         self._now = now or (lambda: datetime.now(UTC))
         self._daily_hour = daily_hour_utc
         self._full_weekday = full_weekday
@@ -521,9 +544,15 @@ class ZelerDataRefreshSupervisor:
 
     async def _run(self) -> None:
         failures = 0
+        next_cycle = self._monotonic()
+        next_inventory = next_cycle + self._inventory_interval
         while not self._stop_event.is_set():
+            broad_cycle = self._monotonic() >= next_cycle
             try:
-                await self.run_cycle()
+                if broad_cycle:
+                    await self.run_cycle()
+                else:
+                    await self._run_inventory_cycle()
             except Exception as exc:  # noqa: BLE001 - the loop owns its own recovery
                 failures += 1
                 self.health_status = "error"
@@ -540,7 +569,29 @@ class ZelerDataRefreshSupervisor:
             else:
                 failures = 0
                 self.health_status = "ok"
-            await self._wait_or_stop(self._interval)
+            finished = self._monotonic()
+            if broad_cycle:
+                # Preserve the full planner's delay after completion. The
+                # inventory tick must never accelerate moving range requests.
+                next_cycle = finished + self._interval
+            next_inventory = finished + self._inventory_interval
+            next_wakeup = (
+                min(next_cycle, next_inventory)
+                if self._inventory_refresher is not None
+                else next_cycle
+            )
+            await self._wait_or_stop(max(0.0, next_wakeup - self._monotonic()))
+
+    async def _run_inventory_cycle(self) -> None:
+        if self._inventory_refresher is None:
+            return
+        for seller_id in await self._explorer.discover_sellers():
+            if self._stop_event.is_set():
+                break
+            try:
+                await self._inventory_refresher(seller_id)
+            except Exception:  # noqa: BLE001 - isolate each seller's admission
+                logger.warning("zelerdata.inventory_refresh_failed", seller_id=seller_id)
 
     async def _wait_or_stop(self, delay: float) -> None:
         with suppress(TimeoutError):

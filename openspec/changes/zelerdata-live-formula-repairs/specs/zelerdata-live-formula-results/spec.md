@@ -143,6 +143,14 @@ source evidence, including returns and historical metrics. Recoverable gaps MUST
 not be certified as legitimate absence. Controlled positives with verified live
 absence/coverage MUST be distinguished from real positive production evidence.
 
+#### Scenario: Inventory stays scheduled between Sheet rounds
+- GIVEN the existing refresh supervisor is enabled for an allowed seller
+- WHEN an inventory sweep completes and no Sheet request arrives
+- THEN its existing inventory key is admitted again on a 30-second inventory-only
+  cadence, active work coalesces, and broad six-model planning retains its
+  900-second cadence. Admission failures remain isolated and shutdown drains
+  owned work without a second scheduler or source acquisition in the planner.
+
 #### Scenario: Ninety-minute certification
 - GIVEN dependencies and initial source recovery are ready on exact deployed images
 - WHEN all 35 formulas recalculate together at minutes 0, 30 and 60 of a 90-minute window

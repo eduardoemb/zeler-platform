@@ -1392,3 +1392,22 @@ async def test_the_dlq_auto_archive_needs_the_broker_when_enabled(
 
     with pytest.raises(RuntimeError, match="RABBITMQ_URL"):
         await build_zelerdata_refresh_supervisor(db=_IndexedDb())
+
+
+@pytest.mark.asyncio
+async def test_refresh_factory_wires_inventory_only_to_scoped_existing_planner(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from zeler_sheets.consumer import build_zelerdata_refresh_supervisor
+
+    monkeypatch.setenv("ZELERDATA_REFRESH_ENABLED", "true")
+    monkeypatch.setenv("ZELERDATA_REFRESH_SELLERS", "82453304")
+    monkeypatch.setenv("ZELERDATA_FORMULA_RECOVERY_ENABLED", "true")
+    monkeypatch.delenv("ZELERDATA_REFRESH_INTERVAL_SECONDS", raising=False)
+    supervisor = await build_zelerdata_refresh_supervisor(db=_IndexedDb())
+    assert isinstance(supervisor._planner, ZelerDataRefreshPlanner)
+    assert supervisor._inventory_refresher is not None
+    assert supervisor._inventory_refresher == supervisor._planner.plan_inventory
+    assert supervisor._inventory_interval == 30
+    assert supervisor._interval == 900
+    assert await supervisor._inventory_refresher("999") is False

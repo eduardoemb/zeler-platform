@@ -138,3 +138,14 @@ Recalculate all 35 at 0/30/60 minutes, read complete matrices, sample lightweigh
 health/freshness/queue/connection metrics every minute, and restart the window
 after any corrected failure. Keep all 24 diagnosis rows synchronized with the
 35 expected/actual/source cases. Independent SDD verification gates closure.
+
+Runtime inspection found refresh disabled. Enabling the broad refresh every
+30/60 seconds would churn distinct moving orders/questions ranges, so preserve
+its existing 900-second cadence. Add an inventory-only 30-second admission tick
+inside the same owned supervisor loop, reusing the existing seller allowlist,
+inventory request key and active-job coalescing. No separate scheduler/task or
+persisted field is introduced. Broad refresh retains returns proof renewal,
+markers and its individually gated optional operations. Enable this existing
+supervisor for the pilot seller during scoped worker delivery; keep optional
+DLQ archival and unrelated actions disabled. Prove deadline/cancellation,
+failure isolation and non-inventory cadence before enabling it.

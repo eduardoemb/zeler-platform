@@ -1422,15 +1422,17 @@ async def build_zelerdata_refresh_supervisor(*, db: Any) -> ZelerDataRefreshSupe
     if _env_flag_enabled("ZELERDATA_DLQ_ARCHIVE_ENABLED"):
         dlq_archiver = build_dlq_auto_archiver(db, sellers=allowed)
 
+    planner = ZelerDataRefreshPlanner(
+        queue=queue,
+        allowed_sellers=allowed,
+        # Explicit-identity models read their identities from the already
+        # acquired local read models; planning never calls Mercado Libre.
+        identity_source=MongoRefreshIdentitySource(db=db),
+    )
     return ZelerDataRefreshSupervisor(
         explorer=MongoSellerExplorer(db=db, allowed_sellers=allowed),
-        planner=ZelerDataRefreshPlanner(
-            queue=queue,
-            allowed_sellers=allowed,
-            # Explicit-identity models read their identities from the already
-            # acquired local read models; planning never calls Mercado Libre.
-            identity_source=MongoRefreshIdentitySource(db=db),
-        ),
+        planner=planner,
+        inventory_refresher=planner.plan_inventory,
         # Observed-only read models cannot be certified by a source range, so
         # the same cycle renews their heartbeat from the data already observed.
         observed_marker_publisher=lambda seller_id: publish_observed_read_model_markers(
