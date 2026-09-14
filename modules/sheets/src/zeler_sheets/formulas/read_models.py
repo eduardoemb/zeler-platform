@@ -93,6 +93,18 @@ class DevolucionesReadSnapshot:
     proof_fingerprint: str
 
 
+ItemInventory = tuple[list[dict[str, Any]], list[str], tuple[str, ...], bool]
+CatalogBuyboxInventory = tuple[list[dict[str, Any]], tuple[str, ...], tuple[str, ...], bool]
+
+
+@dataclass(frozen=True)
+class _ItemInventorySnapshot:
+    # Invocation-local evidence: association readers consume the exact source
+    # documents whose full fingerprints validated these rows, never a later cut.
+    inventory: ItemInventory
+    sources: list[dict[str, Any]]
+
+
 @dataclass(frozen=True)
 class ItemRowResolution:
     """Rows for an item-formula read, plus how trustworthy their scope is.
@@ -315,7 +327,15 @@ class FormulaReadModelRepository:
 
     async def find_recent_item_inventory(
         self, *, seller_id: str, formula: str, now: datetime
-    ) -> tuple[list[dict[str, Any]], list[str], tuple[str, ...], bool]:
+    ) -> ItemInventory:
+        snapshot = await self._find_recent_item_inventory_snapshot(
+            seller_id=seller_id, formula=formula, now=now
+        )
+        return snapshot.inventory
+
+    async def _find_recent_item_inventory_snapshot(
+        self, *, seller_id: str, formula: str, now: datetime
+    ) -> _ItemInventorySnapshot:
         try:
             request = ItemInventoryRecoveryRequest(seller_id)
         except ValueError as exc:
@@ -367,23 +387,33 @@ class FormulaReadModelRepository:
                     "Empty inventory enumeration expired.",
                     read_model=ITEM_FORMULA_ROWS_READ_MODEL,
                 )
-            return [], [], (), True
+            return _ItemInventorySnapshot(([], [], (), True), [])
         try:
-            rows, missing = await self.find_recent_item_formula_rows(
+            rows, missing, sources = await self._find_recent_item_rows_with_sources(
                 seller_id=seller_id, item_ids=identities, formula=formula, now=now
             )
         except FormulaDataUnavailableError:
             # Membership is known, but no safe matrix of source-bound rows was
             # obtained. Preserve explicit unavailable IDs, never partial rows.
-            return [], identities, tuple(identities), enumeration_current
+            return _ItemInventorySnapshot(
+                ([], identities, tuple(identities), enumeration_current), []
+            )
         # Known membership remains useful, but only individually current,
         # source-verified rows may survive an expired enumeration. The caller
         # must expose unknown inventory coverage and request rediscovery.
-        return rows, identities, missing, enumeration_current
+        return _ItemInventorySnapshot((rows, identities, missing, enumeration_current), sources)
 
     async def find_recent_item_formula_rows(
         self, *, seller_id: str, item_ids: list[str], formula: str, now: datetime
     ) -> tuple[list[dict[str, Any]], tuple[str, ...]]:
+        rows, missing, _ = await self._find_recent_item_rows_with_sources(
+            seller_id=seller_id, item_ids=item_ids, formula=formula, now=now
+        )
+        return rows, missing
+
+    async def _find_recent_item_rows_with_sources(
+        self, *, seller_id: str, item_ids: list[str], formula: str, now: datetime
+    ) -> tuple[list[dict[str, Any]], tuple[str, ...], list[dict[str, Any]]]:
         requested = set(item_ids)
         rows = await self.find_item_formula_rows(
             seller_id=seller_id, item_ids=item_ids, limit=10001, sort_by="publication"
@@ -404,6 +434,7 @@ class FormulaReadModelRepository:
             observed = _safe_utc_datetime(source.get("last_meli_sync_at")) if source else None
             if (
                 not source
+                or source.get("seller_id") != seller_id
                 or not group
                 or observed is None
                 or not now - timedelta(minutes=15) < observed <= now
@@ -428,7 +459,11 @@ class FormulaReadModelRepository:
                 item_ids=tuple(sorted(requested)),
             )
         unavailable = set(missing)
-        return [row for row in rows if str(row["item_id"]) not in unavailable], tuple(missing)
+        return (
+            [row for row in rows if str(row["item_id"]) not in unavailable],
+            tuple(missing),
+            [source for identity, source in by_id.items() if identity not in unavailable],
+        )
 
     async def catalog_sales_coverage(
         self, *, seller_id: str, formula: str, now: datetime, windows: tuple[int, ...]
@@ -478,6 +513,7 @@ class FormulaReadModelRepository:
         date_to: Any,
         status: str | None = None,
         limit: int | None = None,
+        projection: dict[str, int] | None = None,
     ) -> list[dict[str, Any]]:
         filter_spec: dict[str, Any] = _seller_date_filter(
             seller_id=seller_id,
@@ -486,7 +522,11 @@ class FormulaReadModelRepository:
         )
         if status is not None:
             filter_spec["status"] = status
-        cursor = self._orders.find(filter_spec).sort([("date_created", 1), ("_id", 1)])
+        cursor = (
+            self._orders.find(filter_spec, projection)
+            if projection is not None
+            else self._orders.find(filter_spec)
+        ).sort([("date_created", 1), ("_id", 1)])
         return cast("list[dict[str, Any]]", await cursor.to_list(length=limit))
 
     async def find_orders_by_ids(
@@ -614,29 +654,14 @@ class FormulaReadModelRepository:
     async def find_recent_catalog_product_inventory(
         self, *, seller_id: str, formula: str, now: datetime
     ) -> tuple[list[dict[str, Any]], tuple[str, ...], tuple[str, ...], bool, tuple[str, ...]]:
-        rows, _, missing_items, current = await self.find_recent_item_inventory(
+        inventory_snapshot = await self._find_recent_item_inventory_snapshot(
             seller_id=seller_id, formula=formula, now=now
         )
+        _, _, missing_items, current = inventory_snapshot.inventory
         product_ids: set[str] = set()
         invalid_items = set(missing_items)
-        trusted = {str(row["item_id"]): row["source_snapshot"] for row in rows}
-        sources = (
-            await self._db["items"]
-            .find({"seller_id": seller_id, "_id": {"$in": sorted(trusted)}})
-            .to_list(length=10001)
-            if trusted
-            else []
-        )
-        invalid_items.update(set(trusted) - {str(source["_id"]) for source in sources})
-        for source in sources:
+        for source in inventory_snapshot.sources:
             item_id = str(source["_id"])
-            if item_source_fingerprint(source) != trusted[item_id][
-                "fingerprint"
-            ] or _safe_utc_datetime(source.get("last_meli_sync_at")) != _safe_utc_datetime(
-                trusted[item_id]["observed_at"]
-            ):
-                invalid_items.add(item_id)
-                continue
             # SKU-less parents may have only variant formula rows. Associations
             # belong to the verified canonical item, not the set of SKU rows.
             for resource in [source, *(source.get("variations") or [])]:
@@ -705,9 +730,10 @@ class FormulaReadModelRepository:
         inventory: tuple[list[dict[str, Any]], list[str], tuple[str, ...], bool] | None = None,
     ) -> tuple[list[dict[str, Any]], tuple[str, ...], tuple[str, ...], bool]:
         if inventory is None:
-            inventory = await self.find_recent_item_inventory(
+            _, result = await self.find_recent_catalog_inventory(
                 seller_id=seller_id, formula=formula, now=now
             )
+            return result
         rows, _, missing_items, current = inventory
         trusted = {str(row["item_id"]): row["source_snapshot"] for row in rows}
         sources = (
@@ -718,7 +744,7 @@ class FormulaReadModelRepository:
             else []
         )
         invalid = set(missing_items) | (set(trusted) - {str(row["_id"]) for row in sources})
-        participating = {}
+        valid_sources = []
         for source in sources:
             identity = str(source["_id"])
             if item_source_fingerprint(source) != trusted[identity][
@@ -727,23 +753,50 @@ class FormulaReadModelRepository:
                 trusted[identity]["observed_at"]
             ):
                 invalid.add(identity)
+            else:
+                valid_sources.append(source)
+        return await self._catalog_buybox_from_snapshot(
+            _ItemInventorySnapshot(
+                (rows, inventory[1], tuple(sorted(invalid)), current), valid_sources
+            ),
+            seller_id=seller_id,
+            now=now,
+        )
+
+    async def find_recent_catalog_inventory(
+        self, *, seller_id: str, formula: str, now: datetime
+    ) -> tuple[ItemInventory, CatalogBuyboxInventory]:
+        snapshot = await self._find_recent_item_inventory_snapshot(
+            seller_id=seller_id, formula=formula, now=now
+        )
+        return snapshot.inventory, await self._catalog_buybox_from_snapshot(
+            snapshot, seller_id=seller_id, now=now
+        )
+
+    async def _catalog_buybox_from_snapshot(
+        self, inventory_snapshot: _ItemInventorySnapshot, *, seller_id: str, now: datetime
+    ) -> CatalogBuyboxInventory:
+        _, _, missing_items, current = inventory_snapshot.inventory
+        invalid = set(missing_items)
+        participating = {}
+        for candidate in inventory_snapshot.sources:
+            identity = str(candidate["_id"])
+            if candidate.get("catalog_listing") is False:
                 continue
-            if source.get("catalog_listing") is False:
-                continue
-            product = source.get("catalog_product_id")
+            product = candidate.get("catalog_product_id")
             if (
-                source.get("catalog_listing") is not True
+                candidate.get("catalog_listing") is not True
                 or not isinstance(product, str)
                 or re.fullmatch(r"ML[A-Z][0-9]+", product) is None
-                or not isinstance(source.get("title"), str)
-                or not source["title"].strip()
-                or not isinstance(source.get("available_quantity"), int)
-                or isinstance(source.get("available_quantity"), bool)
-                or source["available_quantity"] < 0
+                or not isinstance(candidate.get("title"), str)
+                or not candidate["title"].strip()
+                or not isinstance(candidate.get("available_quantity"), int)
+                or isinstance(candidate.get("available_quantity"), bool)
+                or candidate["available_quantity"] < 0
             ):
                 invalid.add(identity)
                 continue
-            participating[identity] = source
+            participating[identity] = candidate
         snapshots = (
             await self._catalog_buybox_snapshots.find(
                 {"seller_id": seller_id, "item_id": {"$in": sorted(participating)}}

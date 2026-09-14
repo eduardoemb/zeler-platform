@@ -149,18 +149,11 @@ class RemainingPhase4FormulaHandlers:
         self, context: FormulaExecutionContext
     ) -> FormulaExecutionResult:
         now = _as_utc_datetime(self._now_fn())
-        inventory = await self._repository.find_recent_item_inventory(
+        inventory, buybox = await self._repository.find_recent_catalog_inventory(
             seller_id=context.seller_id, formula=context.contract.name, now=now
         )
         rows, _, missing_rows, rows_current = inventory
-        (
-            buybox_rows,
-            missing_buybox,
-            missing_items,
-            current,
-        ) = await self._repository.find_recent_catalog_buybox_inventory(
-            seller_id=context.seller_id, formula=context.contract.name, now=now, inventory=inventory
-        )
+        buybox_rows, missing_buybox, missing_items, current = buybox
         (
             sales_as_of,
             covered_windows,
@@ -176,13 +169,27 @@ class RemainingPhase4FormulaHandlers:
         }
         participating = set(buybox_by_item_id) | set(missing_buybox)
         catalog_rows = [row for row in rows if row.get("item_id") in participating]
-        orders = await self._repository.find_orders(
-            seller_id=context.seller_id,
-            date_from=(sales_as_of - timedelta(days=max(CATALOGO_SALES_WINDOWS))).replace(
-                hour=0, minute=0, second=0, microsecond=0
-            ),
-            date_to=sales_as_of,
-            limit=None,
+        orders = (
+            await self._repository.find_orders(
+                seller_id=context.seller_id,
+                date_from=(sales_as_of - timedelta(days=max(covered_windows))).replace(
+                    hour=0, minute=0, second=0, microsecond=0
+                ),
+                date_to=sales_as_of,
+                limit=None,
+                projection={
+                    "_id": 0,
+                    "status": 1,
+                    "date_created": 1,
+                    "items.item_id": 1,
+                    "items.item.id": 1,
+                    "items.item.item_id": 1,
+                    "items.quantity": 1,
+                    "items.qty": 1,
+                },
+            )
+            if catalog_rows and covered_windows
+            else []
         )
         sales_by_item = _sales_windows_by_item(orders, now=sales_as_of)
         values: list[list[Any]] = _header_row(context.args.get("encabezados"), CATALOGO_HEADERS)

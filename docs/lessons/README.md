@@ -202,10 +202,15 @@ repeat failures, and promote stable knowledge to its proper operational form.
   quota evidence across nested deadlines and joined siblings. Reacquiring an
   unchanged owned item renews its base observation through the guarded writer,
   while enrichment keeps its own acquisition cut and dependency basis.
+  Test competitors that remain active across persistence gaps for the entire
+  inventory sweep; spread lane admissions over the shared budget window so
+  returning batches can compete before other lanes consume the whole minute.
 - failed path: Include quota waiting in a short HTTP deadline, lose its cause at
   the outer TaskGroup deadline, or skip an unchanged base write because only its
   acquisition timestamp changed. These paths produce false source failures or
   perpetually stale inventory despite successful acquisition.
+  A finite competitor workload can also hide fixed-window bursts that starve
+  an inventory producer while it writes its preceding batch.
 - verification/source: `modules/sheets/tests/test_formula_recovery_http_deadlines.py`,
   `modules/sheets/tests/test_formula_layered_pacing.py`,
   `modules/sheets/tests/test_layered_basic_acquisition.py`, and

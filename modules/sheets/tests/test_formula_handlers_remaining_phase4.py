@@ -221,6 +221,10 @@ async def test_catalogo_uses_verified_inventory_and_requests_missing_competition
         (),
         state != "expired",
     )
+    repository.find_recent_catalog_inventory.return_value = (
+        repository.find_recent_item_inventory.return_value,
+        repository.find_recent_catalog_buybox_inventory.return_value,
+    )
     repository.find_orders.return_value = []
     repository.catalog_sales_coverage.return_value = (NOW, (7, 15, 30, 60, 90, 365), None)
     result = await RemainingPhase4FormulaHandlers(
@@ -292,6 +296,10 @@ async def test_catalog_recovery_does_not_starve_known_items_behind_inventory_gap
         ("MLA2",),
         True,
         (),
+    )
+    repository.find_recent_catalog_inventory.return_value = (
+        repository.find_recent_item_inventory.return_value,
+        repository.find_recent_catalog_buybox_inventory.return_value,
     )
     repository.find_orders.return_value = []
     repository.catalog_sales_coverage.return_value = (NOW, (7, 15, 30, 60, 90, 365), None)

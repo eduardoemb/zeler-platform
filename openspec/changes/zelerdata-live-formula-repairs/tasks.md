@@ -69,3 +69,4 @@ or worktree operation is needed. Preserve unrelated untracked user work.
 - [x] 6.4 RED/GREEN: admission/reserved slot and independent formula recovery intents.
 - [x] 6.5 Accelerated 1900-item workload, all isolated-Mongo gates, independent local implementation verification. Final suite:4606 passed/9 skipped; protected Mongo:8 passed; Ruff/mypy541 passed. Full runtime/change verification remains in6.6.
 - [ ] 6.6 Exact-source worker/API delivery, two live inventory cycles and 35-case retest.
+- [ ] 6.7 Live full-inventory read correction: preserve source-bound snapshot checks while avoiding repeated full-source transfers/fingerprints within catalog resolution; omit unusable historical-sales reads and bound covered windows. Strict RED/GREEN, independent scoped review, all repository gates and affected image/UI verification.

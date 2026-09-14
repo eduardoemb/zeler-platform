@@ -89,6 +89,57 @@ Final repository gates for this correction: **4609 passed, 9 skipped in
 seconds. Ruff check/format and mypy over 541 files passed. The remaining skip
 is the inapplicable Caddy required-keys case.
 
+Worker correction release proposal, covered by the existing scoped authorization:
+
+- Connected-main source: `14d0311aa0512aa42505582238f43d63327de8b3`.
+- Successful verified Cloud Build: `be36a95e-ba80-4555-82d9-cf26461f13e0`.
+- Target: `us-central1-docker.pkg.dev/zeler-platform-dev/zeler-platform/sheets-worker@sha256:8b048b8890974878a54b9fe8c2ba7e423f3a31ab0e32132bd19ab2a3ce8bbafc`.
+- Compatible running-worker rollback: `us-central1-docker.pkg.dev/zeler-platform-dev/zeler-platform/sheets-worker@sha256:0450c9bf6f5af7ac2778f864a768d2de969c90b0f7c07a71a540c25f655e8f91` from `ef0c4bb6d6d50d4264ed1560fd101268748fbecd`.
+- Keep API `sha256:6d9ad5434315ceef9b7b283e0babbc7d865377f9eced1fcc7963c43904e24226` and gateway unchanged. Reattest the current API contract with the candidate worker, preserve schemas/registry/topology, and perform no cleanup.
+- Recheck capacity before pulls; deploy only worker with 300-second stop grace and a larger outer timeout. Verify immutable identity, three worker readiness components, settling health/capacity, two newly enumerated inventory cycles and Sheet results.
+
+The corrected worker deployment completed by 17:28:41 UTC. Running digest
+matched the verified target; health, RabbitMQ, sync-job poller and formula
+recovery checks passed, with zero restarts/OOM. Root remained above 27 GiB free.
+It resumed offset 1220, reached 1580 by 17:29:06, and finished the inherited
+1900-item job at 17:29:47. That job's enumeration was already old and is excluded
+from successful-cycle evidence. A normal CALIDAD recalculation requested a new
+inventory acquisition after completion; no queue reset or source patch was used.
+
+First newly enumerated cycle: 17:30:35.567–17:40:52.981 UTC, **617.414 seconds
+(10 minutes 17 seconds)**. At 17:41:36, the approved runtime reader confirmed
+1900/1900 recent owned sources, 2859 projected rows for 1900 members, zero
+missing base projections, current enumeration and zero unavailable identities.
+The oldest source was 636.345 seconds old, below the unchanged 900-second limit.
+ID and range jobs remained active. All 35 original Sheet anchors were then
+recalculated again; subsequent Sheet verification is recorded below.
+
+The 35-way recalculation returned PROCESSING for eight inventory-wide formulas.
+CALIDAD returned its matrix on an individual retry; while the second inventory
+cycle was writing, that snapshot represented 1900 IDs with 1880 available base
+rows and 20 explicitly pending projections. Catalog and buybox still exceeded
+the 25-second API limit individually, so this is not attributed solely to the
+simultaneous recalculation.
+
+A read-only phase probe inside the production API measured 3.191 seconds to
+read 2859 projections, 5.679 seconds to read 1900 complete sources and 2.819
+seconds to fingerprint them. Catalog repeated the full source read/fingerprint
+before further work. CATALOGO also loaded a full year of orders even when no
+sales window was proved and every sales output would be unavailable. The next
+bounded correction reuses invocation-local validated sources and narrows sales
+reads, preserving full fingerprint/ownership/freshness/row-count checks. It
+does not cache across requests or increase the API deadline.
+
+Second consecutive newly enumerated cycle: 17:42:04.085–17:55:51.368 UTC,
+**827.283 seconds (13 minutes 47 seconds)**. At 17:55:53, the runtime reader
+again confirmed 1900/1900 recent sources, 2859 rows for 1900 members, zero
+missing base projections, current enumeration and zero unavailable identities.
+The oldest source was 801.025 seconds old. Both cycles used worker `14d0311`;
+the subsequent read-only formula optimization does not alter acquisition,
+pacing, leases or persisted source/projection contracts. The two-cycle base
+criterion is satisfied; catalog execution-time and final visible-result checks
+remain a distinct delivery requirement.
+
 Read-only production preflight found 30321201152 bytes free on root,
 48610152448 bytes on mounted /dev/sdb Mongo volume, 6123212/3276318 free inodes,
 1107 MiB available memory. All inspected services healthy, Sheets and gateway
