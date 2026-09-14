@@ -15,6 +15,7 @@ from zeler_sheets.api import build_router
 from zeler_sheets.consumer import claims_queue_state
 from zeler_sheets.extension_token_encryption import build_extension_token_cipher
 from zeler_sheets.formulas.audit import FormulaAuditService
+from zeler_sheets.formulas.read_models import ItemReadAcquisitions
 from zeler_sheets.formulas.recovery import (
     IMPLEMENTED_MODELS,
     FormulaRecoveryQueue,
@@ -67,6 +68,9 @@ def build_app(
 ) -> FastAPI:
     app = FastAPI(title="zeler-sheets")
     app.state.mongo_db = mongo_db
+    item_acquisitions = ItemReadAcquisitions(db=mongo_db)
+    app.state.item_read_acquisitions = item_acquisitions
+    app.router.on_shutdown.append(item_acquisitions.aclose)
     if formula_recovery_enabled:
         app.state.formula_recovery_queue = FormulaRecoveryQueue(
             mongo_db,

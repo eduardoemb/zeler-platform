@@ -951,7 +951,10 @@ def _runtime_dispatcher(
 ) -> FormulaDispatcher | FormulaDispatchCallable:
     if dispatcher is not None:
         return dispatcher
-    repository = FormulaReadModelRepository(db=request.app.state.mongo_db)
+    repository = FormulaReadModelRepository(
+        db=request.app.state.mongo_db,
+        item_acquisitions=getattr(request.app.state, "item_read_acquisitions", None),
+    )
     return FormulaDispatcher(
         build_core_formula_handlers(repository, now_fn=now)
         | build_item_shipping_catalog_formula_handlers(repository, now_fn=now)

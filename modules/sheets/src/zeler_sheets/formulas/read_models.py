@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 import re
 from collections.abc import Sequence
+from copy import deepcopy
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal, DecimalException
@@ -135,8 +137,123 @@ class ItemRowResolution:
         }
 
 
-class FormulaReadModelRepository:
+@dataclass(frozen=True)
+class _ItemReadCut:
+    rows: list[dict[str, Any]]
+    sources: list[dict[str, Any]]
+    fingerprints: dict[str, str]
+
+
+def _item_association_evidence(source: dict[str, Any]) -> dict[str, Any]:
+    # Only the private catalog association readers consume these source views.
+    # Fingerprints are computed from the FULL canonical document before this cut.
+    evidence = {
+        field: source[field]
+        for field in (
+            "_id",
+            "seller_id",
+            "last_meli_sync_at",
+            "catalog_listing",
+            "catalog_product_id",
+            "title",
+            "available_quantity",
+            "price",
+            "currency_id",
+            "current_promotion",
+        )
+        if field in source
+    }
+    variations = source.get("variations")
+    if isinstance(variations, list):
+        evidence["variations"] = [
+            {"catalog_product_id": variation.get("catalog_product_id")}
+            if isinstance(variation, dict)
+            else variation
+            for variation in variations
+        ]
+    elif "variations" in source:
+        evidence["variations"] = variations
+    enrichment = source.get("enrichment_state")
+    if isinstance(enrichment, dict):
+        evidence["enrichment_state"] = {"current_promotion": enrichment.get("current_promotion")}
+    return evidence
+
+
+@dataclass
+class _ItemReadFlight:
+    task: asyncio.Task[_ItemReadCut]
+    waiters: int = 0
+
+
+class ItemReadAcquisitions:
+    """Application-owned, in-flight-only item reads; never a freshness cache."""
+
     def __init__(self, *, db: Any) -> None:
+        self.db = db
+        self._flights: dict[tuple[str, tuple[str, ...]], _ItemReadFlight] = {}
+        self._closed = False
+
+    async def _read(self, seller_id: str, identities: tuple[str, ...]) -> _ItemReadCut:
+        rows = (
+            await self.db[ITEM_FORMULA_ROWS_COLLECTION]
+            .find({"seller_id": seller_id, "item_id": {"$in": list(identities)}})
+            .sort([("item_id", 1), ("variation_id", 1), ("normalized_sku", 1), ("_id", 1)])
+            .to_list(length=10001)
+        )
+        sources = (
+            await self.db["items"]
+            .find({"seller_id": seller_id, "_id": {"$in": list(identities)}})
+            .to_list(length=10001)
+        )
+        fingerprints = {str(source["_id"]): item_source_fingerprint(source) for source in sources}
+        return _ItemReadCut(
+            rows, [_item_association_evidence(source) for source in sources], fingerprints
+        )
+
+    async def acquire(self, *, seller_id: str, item_ids: list[str]) -> _ItemReadCut:
+        if self._closed:
+            raise RuntimeError("Item read acquisitions are closed")
+        key = (seller_id, tuple(sorted(set(item_ids))))
+        flight = self._flights.get(key)
+        # A completed task is never reusable, even before its done callback runs.
+        if flight is None or flight.task.done():
+            flight = _ItemReadFlight(asyncio.create_task(self._read(*key)))
+            self._flights[key] = flight
+
+            def completed(task: asyncio.Task[_ItemReadCut]) -> None:
+                if self._flights.get(key) is flight:
+                    self._flights.pop(key)
+                if not task.cancelled():
+                    task.exception()  # Retrieve failures even if every waiter was cancelled.
+
+            flight.task.add_done_callback(completed)
+        flight.waiters += 1
+        try:
+            cut = await asyncio.shield(flight.task)
+            # Handler consumers must never mutate another request's source evidence.
+            return deepcopy(cut)
+        finally:
+            flight.waiters -= 1
+            if flight.waiters == 0 and not flight.task.done():
+                if self._flights.get(key) is flight:
+                    self._flights.pop(key)
+                flight.task.cancel()
+                await asyncio.gather(flight.task, return_exceptions=True)
+
+    async def aclose(self) -> None:
+        self._closed = True
+        tasks = [flight.task for flight in self._flights.values()]
+        self._flights.clear()
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+
+class FormulaReadModelRepository:
+    def __init__(self, *, db: Any, item_acquisitions: ItemReadAcquisitions | None = None) -> None:
+        if item_acquisitions is not None and item_acquisitions.db is not db:
+            raise ValueError("Item acquisition database owner must match repository database")
+        self._item_acquisitions = item_acquisitions or ItemReadAcquisitions(db=db)
         self._db = db
         self._item_formula_rows = db[ITEM_FORMULA_ROWS_COLLECTION]
         self._item_sku_index = db[ITEM_SKU_INDEX_COLLECTION]
@@ -415,14 +532,8 @@ class FormulaReadModelRepository:
         self, *, seller_id: str, item_ids: list[str], formula: str, now: datetime
     ) -> tuple[list[dict[str, Any]], tuple[str, ...], list[dict[str, Any]]]:
         requested = set(item_ids)
-        rows = await self.find_item_formula_rows(
-            seller_id=seller_id, item_ids=item_ids, limit=10001, sort_by="publication"
-        )
-        sources = (
-            await self._db["items"]
-            .find({"seller_id": seller_id, "_id": {"$in": item_ids}})
-            .to_list(length=10001)
-        )
+        cut = await self._item_acquisitions.acquire(seller_id=seller_id, item_ids=item_ids)
+        rows, sources = cut.rows, cut.sources
         by_id = {str(source["_id"]): source for source in sources}
         grouped: dict[str, list[dict[str, Any]]] = {}
         for row in rows:
@@ -441,7 +552,7 @@ class FormulaReadModelRepository:
             ):
                 missing.append(identity)
                 continue
-            fingerprint = item_source_fingerprint(source)
+            fingerprint = cut.fingerprints[identity]
             if any(
                 not isinstance(snapshot := row.get("source_snapshot"), dict)
                 or snapshot.get("fingerprint") != fingerprint
