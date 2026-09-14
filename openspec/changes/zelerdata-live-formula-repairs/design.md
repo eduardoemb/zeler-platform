@@ -149,3 +149,96 @@ markers and its individually gated optional operations. Enable this existing
 supervisor for the pilot seller during scoped worker delivery; keep optional
 DLQ archival and unrelated actions disabled. Prove deadline/cancellation,
 failure isolation and non-inventory cadence before enabling it.
+
+## September 14: canonical UTC membership of return candidates
+
+The May 14 read-only reproduction found four valid productive claims already
+persisted, while the UTC readback counted three. Search and hydrated claim detail
+agree that one productive candidate predates the requested start; the provider
+search therefore supplies candidates outside the exact local interval. This is
+not missing persistence or a monotonic-write conflict. Keep the paired inclusive
+search parameters, complete two-pass inventory, physical-call limits and original
+claim timestamps unchanged.
+
+Membership is determined by the authoritative hydrated claim's aware
+`date_created`, normalized to UTC, in `[start, end)`. An outside candidate may be
+classified only after detail acquisition proves the same claim identity, seller
+respondent, and the same aware creation instant recorded by the inventory.
+Missing/invalid/naive or contradictory timestamp evidence fails closed; it never
+silently excludes a candidate. Exact start belongs to the interval, exact end
+does not. The existing terminal-cancellation pre-detail rule is unchanged.
+
+Retain outside identities and dates in the full inventory fingerprint, retain a
+bounded `outside_requested_range` exclusion reason in the exclusion fingerprint,
+and report `excluded_outside_requested_range`. Only the canonically in-range
+claims enter projected writes, expected claim IDs and joined read-model proof.
+This classifies requested-window membership, not return disposition: it creates
+no negative claim, rewrites no timestamp, hides no inventory identity and bypasses
+no seller-wide historical guard. Final revalidation reacquires the same complete
+inventory and details; membership, date, identity or exclusion drift prevents
+publication. Public evidence remains a bounded category/counter mapping.
+
+## September 14: identical item acquisitions in flight
+
+Production profiling measured 18.67 MB per 1900-item canonical source read,
+4.929 seconds of database transfer and 1.831 seconds of synchronous fingerprint
+work. Concurrent inventory formulas exhausted the existing 25-second dispatch
+budget despite isolated reads completing. Share only identical acquisitions
+currently in flight, including projection rows, full source documents and their
+full fingerprints. Bind the coordinator to one application database owner and
+key by seller plus the exact normalized identity set. Remove completed work
+immediately; retain no TTL cache or source snapshot after completion.
+
+After full canonical fingerprinting, retain only a private association source
+view (owner/observation, parent and variant catalog membership, title, quantity,
+and acquired promotional-price inputs). Full item-history reads are unchanged.
+Each waiter receives its own mutable rows/source-view copies and validates all
+receipts, ownership, completeness and observation timestamps against its own
+request time. Cancelling one waiter leaves others running; cancelling the last
+waiter or application shutdown cancels and drains owned work. Failed reads are
+not reused. Different applications/databases/sellers/identity sets do not share.
+Prove realistic 19 MB concurrent reads against isolated Mongo, independent
+freshness boundaries, mutation isolation, failure/cancellation cleanup and
+application wiring before runtime recertification. This optimization neither
+extends freshness nor changes source acquisition quotas or public contracts.
+
+### Truthful multi-window return readback
+
+A large read-only request may retain its existing bounded source slices, but
+source acquisition is not local persistence. Aggregate the actual per-slice
+persisted/complete/missing counts and preserve unknown/query-failed counts.
+A duplicated expected claim across disjoint UTC slices is inconsistent source
+membership and must suppress certification instead of collapsing the IDs and
+inventing matching counts. Per-snapshot physical counters are each recorder's
+actual attempts, not cumulative run totals. Outside-membership counters remain
+bounded diagnostic counts across acquired slices. No writer or marker contract
+changes are introduced by this dry-run evidence correction. Source and read-model
+fingerprints aggregate their respective per-slice proofs separately, each bound
+to the seller and ordered half-open UTC scopes; hashes are never sorted away
+from their interval identity or relabeled as another proof type.
+
+### Economic enrichment basis: tag membership compatibility
+
+Economic item tags are membership flags: their order and repeated occurrences do
+not change shipping or listing fee inputs. Canonical economic bases and fee request
+contexts therefore use sorted unique tags; other lists retain their existing
+semantics. Backfill and item events share the same basis matcher. For persisted
+pre-correction hashes, a retained complete basis can establish semantic equality
+without rewriting its hash or observation timestamp. A hash-only legacy state
+that cannot establish equality remains untrusted. Malformed tags and actual
+membership, price, currency, category or shipping changes still invalidate the
+corresponding enrichment. Existing owner/source guards and freshness windows stay
+in force; this correction performs no migration or retrospective retimestamping.
+
+### Failed acquisition siblings retain valid projections
+
+After all item-acquisition sub-batches join, an ordinary acquisition exception
+must not prevent already persisted seller-owned item sources from receiving their
+normal history and formula projections. Existing lease checks remain mandatory.
+The worker retains the first acquisition exception, projects persisted sources,
+then rethrows it before readiness/cursor success handling. If projection itself
+fails, the original acquisition exception remains primary and chains that failure
+as its cause. External cancellation does not start a projection cleanup phase,
+renew a source timestamp or extend the job deadline. This closes a reproducible
+partial-write gap; it does not establish that historical live discrepancies had
+this cause.

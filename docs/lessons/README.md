@@ -70,6 +70,7 @@ repeat failures, and promote stable knowledge to its proper operational form.
 | L-011 | VM deploy | Worker signals and stop deadlines | active |
 | L-012 | Local tests | Isolated Mongo replica set and file-descriptor limit | active |
 | L-013 | ZelerData | Quota waits and unchanged source freshness | active |
+| L-014 | Broker health | Connection ownership before AMQP handshake | promoted/reference |
 
 ## Cloud Build and VM deployment
 
@@ -216,3 +217,21 @@ repeat failures, and promote stable knowledge to its proper operational form.
   `modules/sheets/tests/test_layered_basic_acquisition.py`, and
   `docs/sheets/zelerdata-layered-recovery-20260914.md`.
 - status: active
+
+### L-014 — Test broker probe ownership at the transport boundary
+- area: Broker health, gateway readiness, aio_pika/aiormq
+- proven path: Check the installed connection interface (`is_closed` and
+  `connected`), retain an owned connection during reconnect, and retain its
+  transport before handshake completion. Bound both probe work and cleanup;
+  start cached-result TTL after completion. Verify timeout and cancellation with
+  a real loopback TCP peer that accepts but never completes the AMQP handshake.
+- failed path: Test doubles with `is_open` hid gateway reconnection on every
+  readiness probe. Creating a robust connection per ephemeral probe could orphan
+  reconnect work; closing only the outer connection did not close a socket that
+  aiormq had opened but not yet attached during handshake.
+- verification/source: `tests/test_broker_probe_ownership.py`,
+  `gateway/tests/test_rabbit_readiness_ownership.py`, and
+  `gateway/tests/test_rabbit_readiness_transport.py`; implementation and TDD
+  evidence in `openspec/changes/zelerdata-live-formula-repairs/`
+  `apply-progress-broker-probes.md` and `apply-progress-gateway-ownership.md`.
+- status: promoted/reference

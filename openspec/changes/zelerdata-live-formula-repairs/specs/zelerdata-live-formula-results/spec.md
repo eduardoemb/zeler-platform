@@ -167,3 +167,91 @@ absence/coverage MUST be distinguished from real positive production evidence.
 - WHEN the formula is verified
 - THEN controlled tests prove the positive behavior and production proves the
   absence/uncovered interval explicitly, without fabricating events or coverage.
+
+### Requirement: Canonical UTC membership of return candidates
+
+Focused return reconciliation MUST retain the complete authoritative two-pass
+search inventory and determine requested membership from the hydrated claim's
+aware canonical `date_created` in the existing half-open UTC interval. It MAY
+classify an outside candidate only after same-claim identity, seller respondent
+and inventory/detail creation-time agreement are proven. Outside candidates MUST
+remain in inventory/exclusion fingerprints and a bounded exclusion counter;
+they MUST NOT enter in-range expected IDs or writes. Source coverage, inclusive
+search, budgets, final source revalidation and historical guards remain intact.
+
+#### Scenario: Search includes a claim before the requested start
+- GIVEN four productive source candidates and three persisted in-range claims,
+  with the fourth already persisted and both source timestamps before UTC start
+- WHEN focused reconciliation classifies the complete acquired inventory
+- THEN all four inventory identities remain evidenced, three in-range identities
+  form the exact read-model proof, and one outside-window exclusion is reported.
+
+#### Scenario: Exact UTC interval boundaries
+- GIVEN aware source timestamps at the start and at the exclusive end, including
+  equivalent non-UTC offset representations
+- WHEN membership is evaluated
+- THEN the start claim is included and the end claim is explicitly excluded.
+
+#### Scenario: Missing or contradictory outside-membership evidence
+- GIVEN a missing, invalid, naive or changed hydrated timestamp, a contradictory
+  inventory timestamp, or wrong claim/seller identity
+- WHEN an outside-window classification would otherwise occur
+- THEN reconciliation fails closed without excluding that unproven candidate or
+  publishing a marker.
+
+#### Scenario: Membership proof changes during final revalidation
+- GIVEN a previously acquired outside candidate remains in full fingerprints
+- WHEN its identity/date changes or it enters the requested window on revalidation
+- THEN source/exclusion/counter drift prevents marker publication; no timestamp,
+  count or membership is rewritten merely to make the proof pass.
+
+### Requirement: Owned sharing of identical reads in flight
+
+Concurrent formula requests MAY share identical item acquisition and fingerprint
+work only while it remains in flight within the same application/database owner,
+seller and exact identity set. Completed or failed work MUST NOT be cached.
+Each request MUST independently enforce existing freshness, ownership and full
+source-receipt checks, and MUST receive independently mutable returned documents.
+
+#### Scenario: Concurrent full inventory reads
+- GIVEN seven concurrent reads of the same realistic 1900-item source set
+- WHEN acquisition overlaps
+- THEN only one source acquisition/fingerprint pass occurs, each request gets
+  its own rows, and different request times may produce different availability.
+
+#### Scenario: Cancellation and isolation
+- GIVEN shared work with multiple waiters
+- WHEN one waiter cancels, the final waiter cancels, or the application shuts down
+- THEN one cancellation preserves other waiters, while the final cancellation
+  and shutdown drain owned work without orphan tasks or cached failures.
+- AND different database owners, sellers and identity sets remain isolated, and
+  the first request after completion reads the source again.
+
+### Requirement: Truthful multi-window return evidence
+
+Chunked read-only reconciliation MUST report measured local readback counts,
+not substitute expected source cardinality for persisted/complete counts.
+Unknown or failed local queries MUST remain uncertified. Expected identities
+MUST not overlap disjoint canonical UTC slices; such overlap invalidates source
+certification. Physical snapshot counters MUST represent each snapshot's own
+charged attempts and sum to the run total.
+
+#### Scenario: Available source with missing persisted claims
+- GIVEN four source claims and only three complete local claims across a large
+  requested range
+- WHEN chunked dry-run evidence is emitted
+- THEN it reports expected4/persisted3/complete3/missing1, preserving source
+  availability without claiming completed persistence.
+
+#### Scenario: Unknown readback or overlapping expected identities
+- GIVEN a failed slice query or the same expected claim in disjoint UTC slices
+- WHEN evidence is aggregated
+- THEN missing knowledge is not replaced with zero or matching source counts,
+  and inconsistent source membership is explicitly uncertified.
+
+
+#### Scenario: Independent scoped fingerprints
+- GIVEN unchanged source proofs and a changed read-model proof, or the converse
+- WHEN multi-window evidence is aggregated
+- THEN only the matching aggregate proof changes; both proofs remain bound to
+  the seller and ordered UTC window identities, so a changed scope changes them.

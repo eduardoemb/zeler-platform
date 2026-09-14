@@ -80,9 +80,46 @@ corrections and evidence into independently reviewable behavior units; keep
 regressions with each implementation. Do not compress code to meet a line limit.
 
 - [x] 7.1 RED/GREEN gateway readiness connection reuse, concurrent creation, reconnect/cancellation/shutdown and recovery after initial failure. Inspect Sheets probe cleanup; fix only reproduced defects.
-- [ ] 7.2 Independent gateway verification, root gates, exact-source gateway build/deploy, broker readiness and connection-count stability; establish exact AMQP rejection cause with sanitized evidence.
+- [x] 7.2 Independent gateway verification, root gates, exact-source gateway build/deploy, broker readiness and connection-count stability; establish exact AMQP rejection cause with sanitized evidence.
 - [ ] 7.3 Full-size 35-way formula reproduction/profile; bounded fixes and regression evidence for persistent processing and inventory expiry.
 - [ ] 7.4 Returns/historical completion through existing guarded operations, including positive/negative combined evidence and no invented coverage; close applicable 5.1/5.2 obligations.
 - [ ] 7.5 Final repository gates, independent local verification, exact-source affected image delivery and warm-up.
 - [ ] 7.6 Three simultaneous 35-case rounds and 90 continuous production minutes satisfying the closure specification; update/read back all 24 diagnoses and complete evidence matrix.
 - [ ] 7.7 Independent final SDD verification, reconciled task evidence, archive only after accepted verification, and runtime/main image comparison.
+
+### 7.4a May 14 UTC membership correction
+
+- [x] RED: reproduce complete search inventory 4 / in-range readback 3, exact UTC
+  start/end, invalid/missing/contradictory hydrated timestamps, retained inventory
+  identity/fingerprint and final source-membership drift.
+- [x] GREEN: classify only proven hydrated outside-window candidates, retain full
+  source and exclusion evidence, report the bounded counter, and preserve all
+  existing acquisition, write, historical-guard and publication contracts.
+- [x] Verify focused source/reconcile regressions and real isolated Mongo
+  readback; parent runs full gates and reviews exact affected release separately.
+
+## 9. Concurrent item read acquisition correction
+
+- [x] 9.1 Prove realistic concurrent 1900-item/19 MB reads repeat acquisition;
+  implement application-owned sharing only while identical reads are in flight.
+- [x] 9.2 Verify per-request freshness/full receipts, seller/database/key isolation,
+  mutable result isolation, cancellation/failure/shutdown cleanup and fresh reads
+  after completion; run focused checks and independent review.
+- [ ] 9.3 Run full gates and authorized runtime recertification under whole-sheet
+  load; retain all existing freshness, deadline and 90-minute acceptance criteria.
+
+### 7.4b Truthful chunked return readback
+
+- [x] RED/GREEN: prove real missing/complete/unknown per-window Mongo readbacks,
+  reject expected-identity overlap, and preserve exact physical-attempt counters
+  and bounded outside-membership evidence in large dry-run ranges.
+
+## 10. Economic enrichment tag-order correction
+
+- [x] 10.1 Reproduce old persisted hash invalidation on tag reorder; share canonical tag-set matching across base backfill, incoming events and listing fee bases. Preserve old observations; reject real basis changes and malformed tags. Focused local regressions pass.
+- [ ] 10.2 Independently review the localized correction and run final repository gates; runtime verification requires the separately authorized affected worker/API images. Do not claim existing expired observations have become fresh.
+
+## 12. Preserve projections after partial acquisition failure
+
+- [x] 12.1 Strict RED/GREEN: two joined sub-batches persist valid sources; one raises an ordinary exception. Project persisted sources under existing lease checks before propagating the failure, without cursor success. Cover lost lease, cancellation and projection-error chaining.
+- [ ] 12.2 Independent review and final repository gates; verify affected worker behavior after separately authorized delivery. No live causality claim from the local reproduction.
