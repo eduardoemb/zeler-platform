@@ -133,5 +133,70 @@ the settling window, and the original 35 spreadsheet cases with source compariso
 Do not overwrite the baseline diagnosis with a passing status before live results
 exist. DEVOLUCIONES historical remediation and upstream catalog gaps remain open.
 
-No new images have been built or deployed for this change. Passing local tests
-must not be presented as post-deployment Google Sheets acceptance.
+The first release above was built, deployed and exercised in Sheets. The
+follow-up history release is recorded below; its internal runtime checks must
+not be presented as post-deployment Google Sheets acceptance.
+
+## Interrupted-session recovery — September 13, 04:53 UTC
+
+Read-only inspection confirmed that the history follow-up had already deployed
+before the session interruption. No repeated build or deployment was needed.
+Remote `main` and local HEAD both resolve to
+`145ba4ffae0cb94d1c9ef8f4d87937e7393fcf2d`.
+
+- Worker build: `b8f1fc42-ade0-4093-a074-a3be3fed5504`, `SUCCESS`.
+- Running worker:
+  `us-central1-docker.pkg.dev/zeler-platform-dev/zeler-platform/sheets-worker@sha256:25c2b64a80e70c518689f219740ca50434b62d3f1384264129568da266fb4674`.
+- Connected repository, full source commit, build and subject digest passed
+  `infra.deploy.provenance_check verify-image` again on resumption.
+- API remains the first-release digest `sha256:3b972a4bde3549f72a5c318c1f91c5cbb56d87e0d576d5ba56a3f8b5cd3eca6e`.
+  The follow-up corrects worker acquisition; no API rebuild is needed for this
+  worker-only behavior.
+
+Both containers were healthy with zero restarts and no OOM, with the worker
+running for more than 25 minutes. Two component checks, at 04:52 and 04:53 UTC,
+confirmed RabbitMQ consumer, sync poller and formula recovery readiness. API
+Mongo, RabbitMQ, registry fingerprint and claims DLQ checks passed; DLQ ready
+and unacked counts were zero.
+
+Root available bytes were 25,995,071,488 with 6,055,297 free inodes. Mongo's
+separate `/dev/sdb` ext4 mount had 48,636,604,416 available bytes and 3,276,318
+free inodes. Available memory was 1,389 MiB. Docker reported 17.37 GB of images,
+10 active containers and no build cache. Dry-run capacity preflight passed.
+These are observations, not cleanup authorization.
+
+A read-only internal dispatcher probe inside the worker returned one row each
+for TIEMPOACTIVA and PRECIOHISTORICO on all three original history examples
+(`MLM1939453749`, `MLM1318561388`, `MLM1968668367`): six reads, zero
+DATA_UNAVAILABLE cells, no recovery requests. TIEMPOACTIVA returned 6, NA and 6,
+respectively. For the previously failing `MLM1939453749`, source age was 218.5
+seconds and status/stock observation timestamps and values matched the acquired
+item. An unchanged price retains its original history timestamp by design;
+absence of a duplicate price observation at the latest acquisition is not a
+failed recovery. PRECIOHISTORICO accepted the retained history and current source.
+
+The probe used no HTTP authentication, queue admission or business writes. It
+does not establish authenticated API or Apps Script acceptance. Its sanitized
+script is `/tmp/zeler-formula-resume-inspect.py` on the VM and local host.
+
+The browser reopened the original spreadsheet with the selected `zeler.ai`
+Profile 19, but Google requested sign-in. The user was asked to restore that
+session; no spreadsheet cells or diagnosis statuses were changed on resumption.
+The 35-case Sheet retest, historical DEVOLUCIONES remediation, catalog source
+gaps and independent final SDD verification remain open. Aggregate recovery
+records still include failed source acquisitions; those lifetime counts do not
+establish a new regression or authorize replaying completed jobs.
+
+## September 14 live retest
+
+The original 35 Sheet cases were recalculated and read back. Selected history
+controls now returned the expected results in Sheets; the expiry probe correctly
+rejected an old observation and requested recovery. Large inventory and catalog
+results remain incomplete. Shipment and selected-item jobs subsequently completed,
+but the session resumed after their freshness windows had elapsed. A subsequent
+selected-item recovery completed and the Sheet returned the expected history
+controls again, proving that bounded expiry/recovery cycle. The next shipment
+recovery also completed and returned five open shipments without unavailable
+cells. Whole-inventory acceptance remains pending. See the
+[live retest report](sheets/zelerdata-live-retest-20260914.md) for source comparisons,
+coverage counts, the assisted shipment admission and remaining acceptance gates.

@@ -71,6 +71,7 @@ def build_app(
         app.state.formula_recovery_queue = FormulaRecoveryQueue(
             mongo_db,
             enabled_models=IMPLEMENTED_MODELS,
+            reserved_inventory_slots=1,
             allowed_sellers=formula_recovery_sellers,
         )
     if kms_client is not None:

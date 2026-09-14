@@ -75,6 +75,7 @@ from zeler_sheets.formulas.schemas import FormulaContract
 # observed heavy formula is ~20.7s, so 25s keeps headroom without reaching the
 # Sheets limit.
 FORMULA_DEADLINE_SECONDS = 25.0
+RECOVERY_ADMISSION_SECONDS = 3.0
 # A caller that did not finish in time still needs a usable cell and a bounded
 # hint for when to recalculate. Recovery is admitted asynchronously, so the
 # estimate is a wait hint, not a promise that this formula will be ready.
@@ -739,12 +740,12 @@ async def _execute_formula_payload(
         *result.additional_recoveries,
     )
     refresh_inventory = meta.get("inventory_enumeration_current") is True and not any(
-        missing.read_model == "item_formula_rows" for missing in recoveries
+        missing.read_model == "item_formula_rows" and not missing.item_ids for missing in recoveries
     )
     if recoveries or refresh_inventory:
         request.state.formula_phase = "recovery"
-        # Independent missing models share the existing one-second admission
-        # window; an unavailable inventory item must not starve known catalog IDs.
+        # Every recovery intent shares one deadline; missing enrichment must
+        # not suppress a demanded inventory refresh or usable sibling values.
         admitted = await asyncio.gather(
             *(_request_formula_recovery(request, context, missing) for missing in recoveries),
             *([_request_inventory_refresh(request, context)] if refresh_inventory else []),
@@ -761,18 +762,49 @@ async def _execute_formula_payload(
     }, 200
 
 
+def _recovery_admission_deadline(request: Request) -> float:
+    deadline = getattr(request.state, "recovery_admission_deadline", None)
+    if deadline is None:
+        deadline = asyncio.get_running_loop().time() + RECOVERY_ADMISSION_SECONDS
+        request.state.recovery_admission_deadline = deadline
+    if asyncio.get_running_loop().time() >= deadline:
+        raise TimeoutError("recovery admission deadline exhausted")
+    return float(deadline)
+
+
+def _recovery_admission_outcome(
+    read_model: str | None, *, outcome: str = "admitted", error: Exception | None = None
+) -> bool:
+    if isinstance(error, TimeoutError):
+        outcome = "deadline"
+    elif isinstance(error, PyMongoError):
+        outcome = "storage_unavailable"
+    elif isinstance(error, ValueError):
+        outcome = {
+            "recovery seller capacity reached": "capacity",
+            "recovery seller is not enabled": "disabled",
+            "recovery source is not enabled": "disabled",
+        }.get(str(error), "invalid_request")
+    structlog.get_logger(__name__).info(
+        "formula_recovery_admission",
+        read_model=read_model if read_model in RECOVERABLE_MODELS else "unsupported",
+        outcome=outcome,
+    )
+    return outcome == "admitted"
+
+
 async def _request_inventory_refresh(request: Request, context: FormulaExecutionContext) -> bool:
     queue = getattr(request.app.state, "formula_recovery_queue", None)
     if queue is None:
-        return False
+        return _recovery_admission_outcome("item_formula_rows", outcome="disabled")
     try:
         # A real read requests the next sweep; queue cooldown/deduplication
         # decides when it runs. Keep the current values and freshness intact.
-        async with asyncio.timeout(1):
+        async with asyncio.timeout_at(_recovery_admission_deadline(request)):
             await queue.enqueue(ItemInventoryRecoveryRequest(context.seller_id))
-    except (ValueError, PyMongoError, TimeoutError):
-        return False
-    return True
+    except (ValueError, PyMongoError, TimeoutError) as exc:
+        return _recovery_admission_outcome("item_formula_rows", error=exc)
+    return _recovery_admission_outcome("item_formula_rows")
 
 
 async def _request_formula_recovery(
@@ -781,8 +813,10 @@ async def _request_formula_recovery(
     missing: FormulaDataUnavailableError,
 ) -> bool:
     queue = getattr(request.app.state, "formula_recovery_queue", None)
-    if queue is None or missing.read_model not in RECOVERABLE_MODELS:
-        return False
+    if queue is None:
+        return _recovery_admission_outcome(missing.read_model, outcome="disabled")
+    if missing.read_model not in RECOVERABLE_MODELS:
+        return _recovery_admission_outcome(missing.read_model, outcome="unsupported")
     if missing.catalog_product_ids:
         if (
             missing.item_ids
@@ -791,16 +825,16 @@ async def _request_formula_recovery(
             or missing.date_from is not None
             or missing.date_to is not None
         ):
-            return False
+            return _recovery_admission_outcome(missing.read_model, outcome="invalid_request")
         try:
-            async with asyncio.timeout(1.0):
+            async with asyncio.timeout_at(_recovery_admission_deadline(request)):
                 # Validate the entire request before admitting any batch.
                 identities = tuple(sorted(set(missing.catalog_product_ids)))
                 if len(identities) > 20:
                     await queue.enqueue(
                         CatalogRecoveryRequest(context.seller_id, missing.read_model, identities)
                     )
-                    return True
+                    return _recovery_admission_outcome(missing.read_model)
                 batches = [
                     CatalogProductIdsRecoveryRequest(
                         context.seller_id,
@@ -811,14 +845,14 @@ async def _request_formula_recovery(
                 ]
                 for batch in batches:
                     await queue.enqueue(batch)
-        except (ValueError, PyMongoError, TimeoutError):
-            return False
-        return True
+        except (ValueError, PyMongoError, TimeoutError) as exc:
+            return _recovery_admission_outcome(missing.read_model, error=exc)
+        return _recovery_admission_outcome(missing.read_model)
     if missing.item_ids:
         if missing.order_ids or missing.shipment_ids:
-            return False
+            return _recovery_admission_outcome(missing.read_model, outcome="invalid_request")
         try:
-            async with asyncio.timeout(1.0):
+            async with asyncio.timeout_at(_recovery_admission_deadline(request)):
                 if (
                     missing.read_model in {"catalog_buybox_snapshots", "item_formula_rows"}
                     and len(missing.item_ids) > 20
@@ -828,7 +862,7 @@ async def _request_formula_recovery(
                             context.seller_id, missing.read_model, tuple(missing.item_ids)
                         )
                     )
-                    return True
+                    return _recovery_admission_outcome(missing.read_model)
                 for offset in range(0, len(missing.item_ids), 20):
                     await queue.enqueue(
                         ItemIdsRecoveryRequest(
@@ -837,21 +871,21 @@ async def _request_formula_recovery(
                             read_model=missing.read_model,
                         )
                     )
-        except (ValueError, PyMongoError, TimeoutError):
-            return False
-        return True
+        except (ValueError, PyMongoError, TimeoutError) as exc:
+            return _recovery_admission_outcome(missing.read_model, error=exc)
+        return _recovery_admission_outcome(missing.read_model)
     if missing.read_model == "item_formula_rows":
         if missing.order_ids or missing.shipment_ids:
-            return False
+            return _recovery_admission_outcome(missing.read_model, outcome="invalid_request")
         return await _request_inventory_refresh(request, context)
     if missing.order_ids or missing.shipment_ids:
         if missing.order_ids and missing.shipment_ids:
-            return False
+            return _recovery_admission_outcome(missing.read_model, outcome="invalid_request")
         identities = missing.order_ids or missing.shipment_ids
         request_type = OrderIdsRecoveryRequest if missing.order_ids else ShipmentIdsRecoveryRequest
         try:
             # Bound insertion time for the whole set, not separately per batch.
-            async with asyncio.timeout(1.0):
+            async with asyncio.timeout_at(_recovery_admission_deadline(request)):
                 for offset in range(0, len(identities), 100):
                     await queue.enqueue(
                         request_type(
@@ -860,11 +894,11 @@ async def _request_formula_recovery(
                             read_model=missing.read_model,
                         )
                     )
-        except (ValueError, PyMongoError, TimeoutError):
-            return False
-        return True
+        except (ValueError, PyMongoError, TimeoutError) as exc:
+            return _recovery_admission_outcome(missing.read_model, error=exc)
+        return _recovery_admission_outcome(missing.read_model)
     if missing.date_to is None:
-        return False
+        return _recovery_admission_outcome(missing.read_model, outcome="invalid_request")
     date_to = missing.date_to
     date_from = missing.date_from
     if date_from is None:
@@ -880,11 +914,11 @@ async def _request_formula_recovery(
             date_to=date_to,
         )
         # Mongo queue insertion is bounded; the formula never waits for recovery.
-        async with asyncio.timeout(1.0):
+        async with asyncio.timeout_at(_recovery_admission_deadline(request)):
             await queue.enqueue(recovery)
-    except (ValueError, PyMongoError, TimeoutError):
-        return False
-    return True
+    except (ValueError, PyMongoError, TimeoutError) as exc:
+        return _recovery_admission_outcome(missing.read_model, error=exc)
+    return _recovery_admission_outcome(missing.read_model)
 
 
 async def _dispatch_formula(

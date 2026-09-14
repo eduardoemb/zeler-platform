@@ -32,6 +32,12 @@ from zeler_sheets.event_persistence import (
     _shipment_id,
 )
 from zeler_sheets.formulas.dispatcher import FormulaDataUnavailableError
+from zeler_sheets.formulas.pacing import (
+    LocalQuotaTimeoutError,
+    recovery_fetch_resource,
+    recovery_quota_deadline,
+    recovery_request,
+)
 from zeler_sheets.formulas.pricing import acquired_current_price
 from zeler_sheets.formulas.read_models import (
     FormulaReadModelRepository,
@@ -136,7 +142,9 @@ class FormulaRecoveryWorker:
         gateway: Any,
         queue: FormulaRecoveryQueue,
         detail_gateway: Any | None = None,
+        lane: str | None = None,
     ) -> None:
+        self.lane = lane
         self.db = db
         self.gateway = gateway
         self.detail_gateway = detail_gateway if detail_gateway is not None else gateway
@@ -146,27 +154,30 @@ class FormulaRecoveryWorker:
         return "processed" if await self.process_one() else "idle"
 
     async def process_one(self) -> bool:
-        job = await self.queue.claim()
+        job = await self.queue.claim(lane=self.lane) if self.lane else await self.queue.claim()
         if job is None:
             return False
         try:
-            async with asyncio.timeout(240):
-                if job["read_model"] == "questions":
-                    await self._questions(job)
-                elif job["read_model"] == "orders":
-                    if "order_ids" in job:
-                        job = await self._locate_orders(job)
-                    await self._orders(job)
-                elif job["read_model"] == "shipments":
-                    await self._shipments(job)
-                elif job["read_model"] == "item_formula_rows":
-                    await self._items(job)
-                elif job["read_model"] == "catalog_product_snapshots":
-                    await self._catalog_products(job)
-                elif job["read_model"] == "catalog_buybox_snapshots":
-                    await self._catalog_buybox(job)
-                else:
-                    raise ValueError("recovery source not implemented")
+            with recovery_quota_deadline(asyncio.get_running_loop().time() + 239) as quota:
+                async with asyncio.timeout(240):
+                    if job["read_model"] == "questions":
+                        await self._questions(job)
+                    elif job["read_model"] == "orders":
+                        if "order_ids" in job:
+                            job = await self._locate_orders(job)
+                        await self._orders(job)
+                    elif job["read_model"] == "shipments":
+                        await self._shipments(job)
+                    elif job["read_model"] == "item_formula_rows":
+                        await self._items(job)
+                    elif job["read_model"] == "catalog_product_snapshots":
+                        await self._catalog_products(job)
+                    elif job["read_model"] == "catalog_buybox_snapshots":
+                        await self._catalog_buybox(job)
+                    else:
+                        raise ValueError("recovery source not implemented")
+        except LocalQuotaTimeoutError:
+            await self.queue.defer_quota(job)
         except httpx.HTTPStatusError as exc:
             transient = exc.response.status_code == 429 or exc.response.status_code >= 500
             await self.queue.finish(
@@ -180,13 +191,18 @@ class FormulaRecoveryWorker:
             TimeoutError,
             GatewayRateLimitError,
             RetryableItemAcquisitionError,
-        ):
-            await self.queue.finish(
-                job,
-                succeeded=False,
-                retryable=True,
-                failure_reason="source_temporarily_unavailable",
-            )
+        ) as exc:
+            # A quota-expired child can still be joining a sibling when the
+            # outer deadline cancels the wave. Preserve the known local cause.
+            if isinstance(exc, TimeoutError) and quota.expired:
+                await self.queue.defer_quota(job)
+            else:
+                await self.queue.finish(
+                    job,
+                    succeeded=False,
+                    retryable=True,
+                    failure_reason="source_temporarily_unavailable",
+                )
         except (PyMongoError, DevolucionesLeaseConflictError, DevolucionesLeaseLostError):
             await self.queue.finish(
                 job,
@@ -233,10 +249,12 @@ class FormulaRecoveryWorker:
             if await self.queue.collection.find_one(self.queue._owned(job, observed)) is None:
                 raise ValueError("catalog recovery lease lost")
             try:
-                async with asyncio.timeout(10):
-                    resource = await self.detail_gateway.fetch_resource(
-                        seller_id=requested.seller_id, path=f"/products/{identity}"
-                    )
+                resource = await recovery_fetch_resource(
+                    self.detail_gateway,
+                    request_timeout=10,
+                    seller_id=requested.seller_id,
+                    path=f"/products/{identity}",
+                )
                 snapshot = _catalog_product_snapshot(resource, seller_id=requested.seller_id)
                 if (
                     snapshot is None
@@ -332,10 +350,12 @@ class FormulaRecoveryWorker:
             observed = self.queue.now()
             if await self.queue.collection.find_one(self.queue._owned(job, observed)) is None:
                 raise ValueError("buybox recovery lease lost")
-            async with asyncio.timeout(10):
-                resource = await self.detail_gateway.fetch_resource(
-                    seller_id=requested.seller_id, path=f"/items/{identity}/price_to_win?version=v2"
-                )
+            resource = await recovery_fetch_resource(
+                self.detail_gateway,
+                request_timeout=10,
+                seller_id=requested.seller_id,
+                path=f"/items/{identity}/price_to_win?version=v2",
+            )
             if (
                 not isinstance(resource, dict)
                 or resource.get("item_id") != identity
@@ -394,11 +414,12 @@ class FormulaRecoveryWorker:
             snapshot.update(competitor_count=None, only_competitor=None, offers_snapshot_at=None)
             offers: dict[str, Any] = {"results": []}
             try:
-                async with asyncio.timeout(10):
-                    offers = await self.detail_gateway.fetch_resource(
-                        seller_id=requested.seller_id,
-                        path=f"/products/{source.catalog_product_id}/items",
-                    )
+                offers = await recovery_fetch_resource(
+                    self.detail_gateway,
+                    request_timeout=10,
+                    seller_id=requested.seller_id,
+                    path=f"/products/{source.catalog_product_id}/items",
+                )
                 count, only = _catalog_offer_count(
                     offers, item_id=identity, seller_id=requested.seller_id
                 )
@@ -435,10 +456,12 @@ class FormulaRecoveryWorker:
                             if len(matches) == 1:
                                 winner_seller = matches[0].get("seller_id")
                             else:
-                                async with asyncio.timeout(10):
-                                    detail = await self.detail_gateway.fetch_resource(
-                                        seller_id=requested.seller_id, path=f"/items/{winner_id}"
-                                    )
+                                detail = await recovery_fetch_resource(
+                                    self.detail_gateway,
+                                    request_timeout=10,
+                                    seller_id=requested.seller_id,
+                                    path=f"/items/{winner_id}",
+                                )
                                 if (
                                     not isinstance(detail, dict)
                                     or detail.get("id") != winner_id
@@ -615,16 +638,18 @@ class FormulaRecoveryWorker:
                     sale_price_enabled=True,
                     listing_fixed_fee_enabled=True,
                     quality_enabled=True,
+                    base_only=job.get("inventory_scope") is True,
                 )
             except Exception as exc:  # noqa: BLE001 - preserve classification after joining siblings.
                 return exc
 
         # At most four independent sub-batches. Join every write before
         # projecting/finishing, including when the outer lease task is cancelled.
+        batch_size = 20 if job.get("inventory_scope") is True else 5
         async with asyncio.TaskGroup() as group:
             tasks = [
-                group.create_task(acquire(requested.item_ids[offset : offset + 5]))
-                for offset in range(0, len(requested.item_ids), 5)
+                group.create_task(acquire(requested.item_ids[offset : offset + batch_size]))
+                for offset in range(0, len(requested.item_ids), batch_size)
             ]
         acquired = []
         for task in tasks:
@@ -1087,13 +1112,14 @@ class FormulaRecoveryWorker:
             return detail, missing
         unavailable = missing | {"shipping"}
         try:
-            async with asyncio.timeout(5):
-                response = await self.detail_gateway.request(
-                    method="GET",
-                    seller_id=seller_id,
-                    path=f"/orders/{identity}/shipments?hosted=true",
-                    headers={"X-New-Domain": "true"},
-                )
+            response = await recovery_request(
+                self.detail_gateway,
+                request_timeout=5,
+                method="GET",
+                seller_id=seller_id,
+                path=f"/orders/{identity}/shipments?hosted=true",
+                headers={"X-New-Domain": "true"},
+            )
             # 204 also represents delayed propagation, not proven absence.
             if response.status_code != 200:
                 return detail, unavailable

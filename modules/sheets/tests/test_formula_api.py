@@ -70,7 +70,7 @@ async def test_current_inventory_requests_refresh_without_losing_usable_values(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
         response = await _execute(client, token, formula="ZELERDATA_CATALOGO", args={})
-    assert asyncio.get_running_loop().time() - started < 1.6
+    assert asyncio.get_running_loop().time() - started < 3.6
     assert response.status_code == 200
     assert response.json() == {
         "ok": True,
@@ -265,12 +265,18 @@ async def test_independent_recoveries_keep_values_and_share_latency_budget(outco
             json={"formula": "ZELERDATA_CATALOGOBUYBOX", "cuenta": "HOPEMOB", "args": {}},
             headers={"Authorization": f"Bearer {token}"},
         )
-    assert asyncio.get_running_loop().time() - started < 1.6
+    assert asyncio.get_running_loop().time() - started < 3.6
     assert response.status_code == 200
     assert response.json()["values"] == [["available", "DATA_UNAVAILABLE"]]
     assert response.json()["meta"]["recovery_requested"] is (outcome != "all_timeout")
-    assert "inventory_refresh_requested" not in response.json()["meta"]
-    assert {request.read_model: request.item_ids for request in queued} == {
+    assert response.json()["meta"]["inventory_refresh_requested"] is (outcome == "success")
+    assert len(queued) == 3
+    from zeler_sheets.formulas.recovery import ItemInventoryRecoveryRequest
+
+    assert sum(isinstance(request, ItemInventoryRecoveryRequest) for request in queued) == 1
+    assert {
+        request.read_model: request.item_ids for request in queued if hasattr(request, "item_ids")
+    } == {
         "item_formula_rows": ("MLA2",),
         "catalog_buybox_snapshots": ("MLA1",),
     }

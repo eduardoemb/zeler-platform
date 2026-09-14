@@ -883,7 +883,8 @@ async def test_catalog_recovery_retains_full_request_beyond_active_job_capacity(
 
     queue = FormulaRecoveryQueue(recovery_db, enabled_models=IMPLEMENTED_MODELS)
     request: Any = SimpleNamespace(
-        app=SimpleNamespace(state=SimpleNamespace(formula_recovery_queue=queue))
+        app=SimpleNamespace(state=SimpleNamespace(formula_recovery_queue=queue)),
+        state=SimpleNamespace(),
     )
     context: Any = SimpleNamespace(seller_id="82453304")
     field = "catalog_product_ids" if read_model == "catalog_product_snapshots" else "item_ids"
@@ -948,7 +949,8 @@ async def test_catalog_intent_resumes_chunks_after_restart_and_bounded_failure(
     field = "item_ids" if read_model == "catalog_buybox_snapshots" else "catalog_product_ids"
     queue = FormulaRecoveryQueue(recovery_db, now=lambda: now, enabled_models=IMPLEMENTED_MODELS)
     http_request: Any = SimpleNamespace(
-        app=SimpleNamespace(state=SimpleNamespace(formula_recovery_queue=queue))
+        app=SimpleNamespace(state=SimpleNamespace(formula_recovery_queue=queue)),
+        state=SimpleNamespace(),
     )
     context: Any = SimpleNamespace(seller_id="82453304")
     missing = FormulaDataUnavailableError(
@@ -1094,7 +1096,8 @@ async def test_catalog_intent_rejects_invalid_tail_before_any_admission(recovery
 
     queue = FormulaRecoveryQueue(recovery_db)
     request: Any = SimpleNamespace(
-        app=SimpleNamespace(state=SimpleNamespace(formula_recovery_queue=queue))
+        app=SimpleNamespace(state=SimpleNamespace(formula_recovery_queue=queue)),
+        state=SimpleNamespace(),
     )
     context: Any = SimpleNamespace(seller_id="82453304")
     for ids in (
@@ -2014,7 +2017,8 @@ async def test_calculator_recovers_through_real_worker_and_source_bound_projecti
     with pytest.raises(FormulaDataUnavailableError) as unavailable:
         await dispatcher.execute(context)
     request: Any = SimpleNamespace(
-        app=SimpleNamespace(state=SimpleNamespace(formula_recovery_queue=queue))
+        app=SimpleNamespace(state=SimpleNamespace(formula_recovery_queue=queue)),
+        state=SimpleNamespace(),
     )
     assert await _request_formula_recovery(request, context, unavailable.value)
     assert gateway.calls == []
@@ -2439,6 +2443,7 @@ async def test_inventory_recovery_resumes_bounded_batches_without_global_readine
     failure_mode = failure_mode.removesuffix("_embedded")
     identities = [f"MLA{i:03d}" for i in range(21)]
     batches: list[list[str]] = []
+    enrichment_calls: list[str] = []
     scans = 0
     failed = False
 
@@ -2487,6 +2492,7 @@ async def test_inventory_recovery_resumes_bounded_batches_without_global_readine
                     }
                     for identity in batch
                 ]
+            enrichment_calls.append(path)
             if path.startswith("/item/") and path.endswith("/performance"):
                 return {
                     "entity_type": "ITEM",
@@ -2507,7 +2513,8 @@ async def test_inventory_recovery_resumes_bounded_batches_without_global_readine
     )
     request = ItemInventoryRecoveryRequest("82453304")
     http_request: Any = SimpleNamespace(
-        app=SimpleNamespace(state=SimpleNamespace(formula_recovery_queue=queue))
+        app=SimpleNamespace(state=SimpleNamespace(formula_recovery_queue=queue)),
+        state=SimpleNamespace(),
     )
     context: Any = SimpleNamespace(seller_id="82453304")
     assert await _request_formula_recovery(
@@ -2567,7 +2574,15 @@ async def test_inventory_recovery_resumes_bounded_batches_without_global_readine
                 assert result.recovery.item_ids == tuple(identities)
                 assert result.meta["unavailable_field_items"] == identities
             else:
-                assert result.recovery is None
+                assert result.recovery is not None
+                assert result.recovery.item_ids == tuple(identities)
+                assert result.meta["quality_unavailable_items"] == identities
+            available_ids = tuple(
+                sorted(row[0] for row in publication_rows if row[1] != "DATA_UNAVAILABLE")
+            )
+            if available_ids and (missing or expired):
+                assert len(result.additional_recoveries) == 1
+                assert result.additional_recoveries[0].item_ids == available_ids
         assert (scans, len(batches)) == before
 
     assert await worker.process_one()
@@ -2607,10 +2622,11 @@ async def test_inventory_recovery_resumes_bounded_batches_without_global_readine
     assert job.get("inventory_unavailable_ids", []) == (
         identities[:20] if failure_mode == "exhaust_first" else []
     )
-    expected_batches = [identities[offset : offset + 5] for offset in range(0, 20, 5)] * (
-        3 if failure_mode == "exhaust_first" else 1
-    ) + [identities[20:]] * (2 if failure_mode == "retry_last" else 1)
+    expected_batches = [identities[:20]] * (3 if failure_mode == "exhaust_first" else 1) + [
+        identities[20:]
+    ] * (2 if failure_mode == "retry_last" else 1)
     assert sorted(batches) == sorted(expected_batches)
+    assert enrichment_calls == []
     assert scans == 1
     assert await recovery_db.sheets_item_formula_rows.count_documents(
         {"source_snapshot": {"$exists": True}}
@@ -3003,7 +3019,8 @@ async def test_explicit_item_recovery_uses_bounded_acquisition_without_global_ma
     queue = FormulaRecoveryQueue(recovery_db, enabled_models=IMPLEMENTED_MODELS)
     request = ItemIdsRecoveryRequest("82453304", ("MLA2", "MLA1", "MLA1"))
     http_request: Any = SimpleNamespace(
-        app=SimpleNamespace(state=SimpleNamespace(formula_recovery_queue=queue))
+        app=SimpleNamespace(state=SimpleNamespace(formula_recovery_queue=queue)),
+        state=SimpleNamespace(),
     )
     context: Any = SimpleNamespace(seller_id="82453304")
     missing = FormulaDataUnavailableError(

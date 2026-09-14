@@ -194,6 +194,59 @@ class SyncJobsPollerSupervisor:
             await asyncio.wait_for(self._stop_event.wait(), timeout=delay)
 
 
+class FormulaRecoverySupervisor:
+    """Supervise independent recovery lanes so a slow range cannot block inventory."""
+
+    def __init__(self, lanes: tuple[SyncJobsPollerSupervisor, ...]) -> None:
+        self.lanes = lanes
+
+    @property
+    def health_status(self) -> str:
+        states = {lane.health_status for lane in self.lanes}
+        if "error" in states:
+            return "error"
+        if states == {"ok"}:
+            return "ok"
+        if states == {"stopped"}:
+            return "stopped"
+        return "starting"
+
+    async def start(self) -> None:
+        started = []
+        try:
+            for lane in self.lanes:
+                await lane.start()
+                started.append(lane)
+        except BaseException:
+            await asyncio.gather(*(lane.stop() for lane in started), return_exceptions=True)
+            raise
+
+    async def wait(self) -> None:
+        async def watch(lane: SyncJobsPollerSupervisor) -> None:
+            if lane._task is None:
+                raise RuntimeError("recovery lane is not started")
+            await asyncio.shield(lane._task)
+
+        waits = [asyncio.create_task(watch(lane)) for lane in self.lanes]
+        try:
+            done, _ = await asyncio.wait(waits, return_when=asyncio.FIRST_COMPLETED)
+            for completed in done:
+                await completed
+        finally:
+            # Observe watcher tasks without cancelling other lanes' owned writes.
+            for task in waits:
+                task.cancel()
+            await asyncio.gather(*waits, return_exceptions=True)
+
+    async def stop(self) -> None:
+        results = await asyncio.gather(
+            *(lane.stop() for lane in self.lanes), return_exceptions=True
+        )
+        for result in results:
+            if isinstance(result, BaseException):
+                raise result
+
+
 async def run_worker_lifecycles(
     runner: Any,
     poller: Any | None,
@@ -1243,7 +1296,7 @@ async def run() -> None:
         poller = active_poller
         component_status["sync_jobs_poller"] = lambda: active_poller.health_status
 
-    recovery_pollers: tuple[SyncJobsPollerSupervisor, ...] = ()
+    recovery_pollers: tuple[FormulaRecoverySupervisor, ...] = ()
     if _env_flag_enabled("ZELERDATA_FORMULA_RECOVERY_ENABLED"):
         recovery = await build_formula_recovery_poller(
             db=db,
@@ -1282,7 +1335,7 @@ async def build_formula_recovery_poller(
     db: Any,
     kms_client: Any,
     detail_gateway: Any,
-) -> SyncJobsPollerSupervisor:
+) -> FormulaRecoverySupervisor:
     """Build the formula recovery poller with a reserved acquisition budget.
 
     Both the discovery and detail gateway clients are paced so background
@@ -1291,6 +1344,7 @@ async def build_formula_recovery_poller(
     recovery_queue = FormulaRecoveryQueue(
         db,
         enabled_models=IMPLEMENTED_MODELS,
+        reserved_inventory_slots=1,
         allowed_sellers=recovery_sellers(os.environ.get("ZELERDATA_FORMULA_RECOVERY_SELLERS")),
     )
     await recovery_queue.ensure_indexes()
@@ -1304,12 +1358,18 @@ async def build_formula_recovery_poller(
         kms_client=kms_client,
         base_url=os.environ.get("GATEWAY_BASE_URL", DEFAULT_GATEWAY_BASE_URL),
     )
-    return SyncJobsPollerSupervisor(
-        FormulaRecoveryWorker(
-            db=db,
-            queue=recovery_queue,
-            gateway=PacedMeliGateway(inner=discovery, pacer=pacer),
-            detail_gateway=PacedMeliGateway(inner=detail_gateway, pacer=pacer),
+    return FormulaRecoverySupervisor(
+        tuple(
+            SyncJobsPollerSupervisor(
+                FormulaRecoveryWorker(
+                    db=db,
+                    queue=recovery_queue,
+                    lane=lane,
+                    gateway=PacedMeliGateway(inner=discovery, pacer=pacer, lane=lane),
+                    detail_gateway=PacedMeliGateway(inner=detail_gateway, pacer=pacer, lane=lane),
+                )
+            )
+            for lane in ("inventory", "ids", "ranges")
         )
     )
 
@@ -1337,6 +1397,7 @@ async def build_zelerdata_refresh_supervisor(*, db: Any) -> ZelerDataRefreshSupe
     queue = FormulaRecoveryQueue(
         db,
         enabled_models=IMPLEMENTED_MODELS,
+        reserved_inventory_slots=1,
         allowed_sellers=allowed,
     )
     await queue.ensure_indexes()

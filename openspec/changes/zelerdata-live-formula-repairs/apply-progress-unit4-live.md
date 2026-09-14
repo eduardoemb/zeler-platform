@@ -23,3 +23,23 @@ separately, leaving only the existing Caddy skip. Ruff check/format and mypy pas
 across 533 files. The initial retry omitted a default database; after correcting
 the URI and restarting the local container stopped during session interruption,
 the complete suite was rerun successfully. No production database was used.
+
+On session resumption at 04:53 UTC, September 13, the verified worker build
+`b8f1fc42-ade0-4093-a074-a3be3fed5504` from `145ba4f` was already active at
+digest `sha256:25c2b64a80e70c518689f219740ca50434b62d3f1384264129568da266fb4674`.
+Consumer/component readiness passed twice. Six internal read-only history
+formula executions on three original examples returned without unavailable
+cells or recovery requests. The original failing item's status and stock
+observations matched its acquired source. See
+`docs/zelerdata-live-formula-repairs.md` for the full deployment identity and
+measurement limits. Google Sheets requested a fresh sign-in in Profile 19;
+authenticated Sheet retest and final acceptance remain pending.
+
+September 14 live follow-up: the original selected history cases executed in
+Sheets and matched canonical state/price. An active observation aged beyond
+15 minutes returned DATA_UNAVAILABLE and requested recovery. After the later
+selected-item job completed at 15:48:07 UTC, the Sheet again returned active=7,
+paused=NA and price history 255.65/paused with absent older prices NA. This
+verifies the selected history expiry/recovery cycle. Whole-inventory stockout
+coverage remains partial. Full measurements and limitations are recorded in
+`docs/sheets/zelerdata-live-retest-20260914.md`.

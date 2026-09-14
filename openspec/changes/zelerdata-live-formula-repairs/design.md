@@ -80,3 +80,31 @@ No migration required. Identify affected images after implementation; exact auth
 ## Open Questions
 
 None blocking. Measure source availability and acquisition throughput live.
+
+
+## September 14: layered recovery
+
+User-approved scope: recovery first; returns remains separate. Basic inventory
+acquisition fetches owned item batches of 20 plus necessary variation identities,
+then existing histories/projections. Full enrichment remains the default for
+explicit IDs. Preserve enrichment timestamps, invalidate changed bases using
+existing states, retain CAS, and scope projection identity/status reads to IDs.
+
+Three disjoint claim lanes use existing fields: inventory, explicit IDs, ranges.
+Run one job per lane, including matching expired-lease cleanup. Share 180 requests
+per minute with work-conserving 1:2:1 weights. HTTP deadlines start after quota
+admission. Local quota exhaustion defers work without source-attempt consumption.
+
+Reuse validated active admissions; reserve one of 20 slots for inventory. Use a
+shared three-second admission deadline inside the existing 25-second formula
+budget. Drain old occupancy naturally. Quality/calculator request missing base
+and enrichment independently. No new public signatures, queue fields, migration,
+or TTL expansion. Retain seller isolation and distinct discovery/detail clients.
+
+Process integration requires lane lifecycle cancellation/failure tests; shell,
+VCS and routing threat cases are N/A. Acceptance includes an accelerated 1900-item
+mixed workload (including necessary variation calls and projection time), all
+four quality gates with isolated Mongo, independent SDD verification, two live
+base inventory cycles inside 15-minute freshness, and the 35-case Sheet retest.
+Deploy worker then API only with exact-main provenance, capacity and compatible
+rollback under applicable authorization. Quality/catalog failures remain explicit.

@@ -245,9 +245,15 @@ class FormulaRecoveryQueue:
         enabled_models: frozenset[str] = RECOVERABLE_MODELS,
         allowed_sellers: frozenset[str] | None = None,
         max_active_jobs_per_seller: int = 20,
+        reserved_inventory_slots: int = 0,
     ) -> None:
         if type(max_active_jobs_per_seller) is not int or max_active_jobs_per_seller < 1:
             raise ValueError("recovery capacity must be a positive integer")
+        if type(reserved_inventory_slots) is not int or not 0 <= reserved_inventory_slots <= min(
+            1, max_active_jobs_per_seller
+        ):
+            raise ValueError("inventory reservation must be zero or one within capacity")
+        self.reserved_inventory_slots = reserved_inventory_slots
         self.collection = db["sheets_formula_recovery_jobs"]
         self.admission = db["sheets_formula_recovery_admission"]
         self.max_active_jobs_per_seller = max_active_jobs_per_seller
@@ -298,6 +304,18 @@ class FormulaRecoveryQueue:
             request, (ItemIdsRecoveryRequest, ItemInventoryRecoveryRequest, CatalogRecoveryRequest)
         ):
             raise ValueError("item recovery requires explicit IDs or an inventory request")
+        # Repeated cells need no admission write. Validate scope above even on this path.
+        active_job = await self.collection.find_one(
+            {
+                "_id": request.key,
+                "seller_id": request.seller_id,
+                "read_model": request.read_model,
+                "state": {"$in": ["pending", "running"]},
+            },
+            {"_id": 1},
+        )
+        if active_job is not None:
+            return request.key
         now = self.now()
         initial = {
             "_id": request.key,
@@ -349,6 +367,20 @@ class FormulaRecoveryQueue:
                 limit=self.max_active_jobs_per_seller,
                 session=session,
             )
+            if self.reserved_inventory_slots and not isinstance(
+                request, ItemInventoryRecoveryRequest
+            ):
+                non_inventory = await self.collection.count_documents(
+                    {
+                        "seller_id": request.seller_id,
+                        "state": {"$in": ["pending", "running"]},
+                        "inventory_scope": {"$ne": True},
+                    },
+                    limit=self.max_active_jobs_per_seller,
+                    session=session,
+                )
+                if non_inventory >= self.max_active_jobs_per_seller - self.reserved_inventory_slots:
+                    raise ValueError("recovery seller capacity reached")
             if active >= self.max_active_jobs_per_seller:
                 raise ValueError("recovery seller capacity reached")
             if existing is None:
@@ -471,7 +503,8 @@ class FormulaRecoveryQueue:
         )
         return bool(result.matched_count)
 
-    async def claim(self) -> dict[str, Any] | None:
+    async def claim(self, *, lane: str | None = None) -> dict[str, Any] | None:
+        lane_filter = recovery_lane_filter(lane)
         now = self.now()
         seller_filter = (
             {"seller_id": {"$in": sorted(self.allowed_sellers)}}
@@ -483,6 +516,7 @@ class FormulaRecoveryQueue:
         exhausted_catalog = await self.collection.find_one_and_update(
             {
                 **seller_filter,
+                **lane_filter,
                 "state": "running",
                 "catalog_offset": {"$exists": True},
                 "read_model": {"$in": sorted(self.enabled_models)},
@@ -497,6 +531,7 @@ class FormulaRecoveryQueue:
         await self.collection.update_many(
             {
                 **seller_filter,
+                **lane_filter,
                 "catalog_offset": {"$exists": False},
                 "state": "running",
                 "lease_until": {"$lte": now},
@@ -515,6 +550,7 @@ class FormulaRecoveryQueue:
         claimed = await self.collection.find_one_and_update(
             {
                 **seller_filter,
+                **lane_filter,
                 "attempts": {"$lt": MAX_ATTEMPTS},
                 "read_model": {"$in": sorted(self.enabled_models)},
                 "available_at": {"$lte": now},
@@ -536,6 +572,23 @@ class FormulaRecoveryQueue:
             return_document=ReturnDocument.AFTER,
         )
         return dict(claimed) if claimed is not None else None
+
+    async def defer_quota(self, job: dict[str, Any]) -> bool:
+        """Release an owned attempt after local backpressure, preserving checkpoints."""
+        now = self.now()
+        result = await self.collection.update_one(
+            self._owned(job, now),
+            {
+                "$set": {
+                    "state": "pending",
+                    "updated_at": now,
+                    "available_at": now + timedelta(seconds=1),
+                },
+                "$inc": {"attempts": -1},
+                "$unset": {"attempt_token": "", "lease_until": ""},
+            },
+        )
+        return bool(result.matched_count)
 
     async def renew(self, job: dict[str, Any]) -> bool:
         now = self.now()
@@ -643,3 +696,23 @@ class FormulaRecoveryQueue:
             "attempt_token": job["attempt_token"],
             "lease_until": {"$gt": now},
         }
+
+
+def recovery_lane_filter(lane: str | None) -> dict[str, Any]:
+    """Classify existing documents without introducing a persisted queue protocol."""
+    if lane is None:
+        return {}
+    if lane == "inventory":
+        return {"inventory_scope": True}
+    identities = ["item_ids", "catalog_product_ids", "order_ids", "shipment_ids"]
+    if lane == "ids":
+        return {
+            "inventory_scope": {"$ne": True},
+            "$and": [{"$or": [{field: {"$exists": True}} for field in identities]}],
+        }
+    if lane == "ranges":
+        return {
+            "inventory_scope": {"$ne": True},
+            **{field: {"$exists": False} for field in identities},
+        }
+    raise ValueError("unknown recovery lane")

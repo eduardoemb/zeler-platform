@@ -52,3 +52,19 @@ Commands run from repository root. Each command is run RED before implementation
 - [x] 5.3 Run all four repository gates against verified isolated Mongo; report pre-existing failures separately. Refactor only with affected checks rerun. Evidence: 4539 passed/9 skipped, protected Mongo 8 passed separately, Ruff check/format and mypy 532 files pass.
 - [ ] 5.4 Prepare exact-main image provenance, rollback and scoped deployment; obtain missing commit authorization only after concrete changes/checks.
 - [ ] 5.5 Repeat 24 primary/11 supplemental Sheet cases with profile 19; update 15 diagnoses with initial/recovered/expired results, sources, deployed identity, and unresolved positive-fixture gaps. Run independent SDD verification.
+- [x] 5.5a September 14: execute/read all 35 original Sheet cases, update/read back 24 diagnosis rows, compare source values, and prove the selected history expiry/recovery cycle. Evidence: `docs/sheets/zelerdata-live-retest-20260914.md`. Partial inventory/catalog coverage and unavailable positive fixtures remain explicit; this does not close 5.5 or independent final verification.
+
+
+## 6. Layered recovery (approved September 14)
+
+Delivery: bounded implementation units in the selected checkout. Prior user
+authorization for commits/push to selected main, builds and scoped deployment is
+recorded in docs/zelerdata-live-formula-repairs.md and remains valid. No branch
+or worktree operation is needed. Preserve unrelated untracked user work.
+
+- [x] 6.1 RED/GREEN: basic acquisition, enrichment integrity, scoped projection reads.
+- [x] 6.2 RED/GREEN: fair shared pacing and HTTP deadlines excluding quota waits.
+- [x] 6.3 RED/GREEN: claim lanes, leases, quota deferral and supervised lifecycle.
+- [x] 6.4 RED/GREEN: admission/reserved slot and independent formula recovery intents.
+- [x] 6.5 Accelerated 1900-item workload, all isolated-Mongo gates, independent local implementation verification. Final suite:4606 passed/9 skipped; protected Mongo:8 passed; Ruff/mypy541 passed. Full runtime/change verification remains in6.6.
+- [ ] 6.6 Exact-source worker/API delivery, two live inventory cycles and 35-case retest.

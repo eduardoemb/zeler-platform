@@ -135,9 +135,24 @@ class QualityCalculatorFormulaHandlers:
                     context.contract.name,
                     "Inventory publications need recovery.",
                     read_model=ITEM_FORMULA_ROWS_READ_MODEL,
+                    item_ids=()
+                    if unavailable_items or not enumeration_current
+                    else tuple(sorted(quality_unavailable)),
                 )
                 if unavailable_items or quality_unavailable or not enumeration_current
                 else None
+            ),
+            additional_recoveries=(
+                (
+                    FormulaDataUnavailableError(
+                        context.contract.name,
+                        "Publication quality needs recovery.",
+                        read_model=ITEM_FORMULA_ROWS_READ_MODEL,
+                        item_ids=tuple(sorted(quality_unavailable)),
+                    ),
+                )
+                if quality_unavailable and (unavailable_items or not enumeration_current)
+                else ()
             ),
         )
 
@@ -268,6 +283,20 @@ class QualityCalculatorFormulaHandlers:
                 if recovery_items or not enumeration_current
                 else None
             ),
+            additional_recoveries=(
+                (
+                    FormulaDataUnavailableError(
+                        context.contract.name,
+                        "Publication price/cost fields need recovery.",
+                        read_model=ITEM_FORMULA_ROWS_READ_MODEL,
+                        item_ids=tuple(sorted(unavailable_field_items)),
+                    ),
+                )
+                if unavailable_field_items
+                and inventory_scope
+                and (unavailable_items or not enumeration_current)
+                else ()
+            ),
         )
 
 
@@ -293,6 +322,10 @@ def _quality_row(row: Mapping[str, Any], *, now: datetime) -> list[Any]:
         _current_value(current, "listing_type_id"),
     ]
     raw = current.get("quality_projection")
+    states = _optional_mapping(current.get("enrichment_state")) or {}
+    state = _optional_mapping(states.get("quality_projection"))
+    if state is not None and state.get("status") == "basis_mismatch":
+        return [*base, *["DATA_UNAVAILABLE"] * 12]
     if not isinstance(raw, Mapping):
         return [*base, *["DATA_UNAVAILABLE"] * 12]
     projection = dict(raw)
