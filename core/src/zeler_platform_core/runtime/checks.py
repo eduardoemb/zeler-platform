@@ -3,10 +3,13 @@ from __future__ import annotations
 import asyncio
 import inspect
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
+from contextlib import asynccontextmanager
 from typing import Any
 
 import aio_pika
+from aiormq.connection import TCPTransportFactory, TLSTransportFactory, TransportFactory
+from yarl import URL
 
 HealthCheckResult = tuple[bool, str]
 HealthCheckCoroutine = Callable[[], Awaitable[HealthCheckResult]]
@@ -62,6 +65,92 @@ async def _close_amqp_connection(connection: Any) -> None:
         await result
 
 
+class OwnedAmqpTransport(TransportFactory):
+    """Retain sockets during handshake, before aio-pika attaches its transport.
+
+    Each owner belongs to one connection; it never changes global library state.
+    The normal TLS factory still owns certificate and SSL-context handling.
+    """
+
+    def __init__(self, url: URL) -> None:
+        self._factory = TLSTransportFactory() if url.scheme == "amqps" else TCPTransportFactory()
+        self._writers: list[asyncio.StreamWriter] = []
+
+    async def create(
+        self, url: URL, **kwargs: Any
+    ) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
+        reader, writer = await self._factory.create(url, **kwargs)
+        self._writers = [owned for owned in self._writers if not owned.is_closing()]
+        self._writers.append(writer)
+        return reader, writer
+
+    def abort(self) -> None:
+        """Release any socket left by a failed handshake or bounded close."""
+        for writer in self._writers:
+            writer.close()
+            writer.transport.abort()
+        self._writers.clear()
+
+
+async def _finish_probe_close(
+    connection: Any, closer: Callable[[Any], Awaitable[None]], timeout_seconds: float
+) -> None:
+    # Shield only the bounded cleanup task, and join it even if the caller is
+    # cancelled again. No detached cleanup/reconnect tasks survive this scope.
+    task = asyncio.create_task(asyncio.wait_for(closer(connection), timeout=timeout_seconds))
+    cancelled = False
+    while not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            cancelled = True
+        except Exception:  # noqa: BLE001 - re-raised by task.result below.
+            break
+    if cancelled:
+        # Retrieve a cleanup error before propagating the caller's cancellation.
+        if not task.cancelled():
+            task.exception()
+        raise asyncio.CancelledError
+    task.result()
+
+
+@asynccontextmanager
+async def amqp_probe_connection(
+    url: str,
+    *,
+    timeout_seconds: float,
+    connect: Callable[..., Awaitable[Any]] | None = None,
+    close: Callable[[Any], Awaitable[None]] | None = None,
+) -> AsyncIterator[Any]:
+    """Own one probe through connect/use and a separate bounded cleanup.
+
+    The operation gets ``timeout_seconds``; cleanup adds at most
+    ``min(timeout_seconds, 5)``. Injected connectors retain their legacy API
+    and must own resources until they return a connection.
+    """
+    connection: Any = None
+    transport: OwnedAmqpTransport | None = None
+    try:
+        async with asyncio.timeout(timeout_seconds):
+            if connect is None:
+                connection = aio_pika.Connection(URL(url).update_query(heartbeat=60))
+                transport = OwnedAmqpTransport(connection.url)
+                connection.kwargs["transport_factory"] = transport
+                await connection.connect(timeout=timeout_seconds)
+            else:
+                connection = await connect(url, heartbeat=60)
+            yield connection
+    finally:
+        try:
+            if connection is not None:
+                await _finish_probe_close(
+                    connection, close or _close_amqp_connection, min(timeout_seconds, 5.0)
+                )
+        finally:
+            if transport is not None:
+                transport.abort()
+
+
 def rabbitmq_check_factory(
     url_source: Callable[[], str | None],
     *,
@@ -75,7 +164,7 @@ def rabbitmq_check_factory(
 
     ``url_source`` returns the configured broker URL (``None`` means
     unconfigured and fails closed). ``connect`` is injectable so tests use a
-    fake transport; the default is ``aio_pika.connect_robust``. Results are
+    fake transport; the default is an owned one-shot ``aio_pika.Connection``. Results are
     cached for ``ttl_seconds`` so probes do not hammer the broker. Failure
     details are fixed strings: AMQP exception text may embed the connection
     URL and credentials and must never reach a health response body.
@@ -84,8 +173,6 @@ def rabbitmq_check_factory(
     last_at: float | None = None
     last_result: HealthCheckResult | None = None
     lock = asyncio.Lock()
-    broker_connect = connect or aio_pika.connect_robust
-    broker_close = close or _close_amqp_connection
 
     async def rabbitmq_check() -> HealthCheckResult:
         url = url_source()
@@ -100,18 +187,20 @@ def rabbitmq_check_factory(
             if last_at is not None and last_result is not None and current - last_at < ttl_seconds:
                 return last_result
             try:
-                connection = await asyncio.wait_for(
-                    broker_connect(url, heartbeat=60), timeout=timeout_seconds
-                )
-            except Exception:  # noqa: BLE001 - health probes must never raise or leak.
-                result: HealthCheckResult = (False, "rabbitmq_unreachable")
-            else:
-                try:
-                    is_open = bool(getattr(connection, "is_open", True))
-                    result = (True, "rabbitmq_ok") if is_open else (False, "rabbitmq_unreachable")
-                finally:
-                    await broker_close(connection)
-            last_at = current
+                async with amqp_probe_connection(
+                    url, timeout_seconds=timeout_seconds, connect=connect, close=close
+                ) as connection:
+                    if hasattr(connection, "is_closed"):
+                        is_open = not connection.is_closed and connection.connected.is_set()
+                    else:
+                        # Compatibility for existing injected test transports.
+                        is_open = bool(getattr(connection, "is_open", False))
+                    result: HealthCheckResult = (
+                        (True, "rabbitmq_ok") if is_open else (False, "rabbitmq_unreachable")
+                    )
+            except Exception:  # noqa: BLE001 - never expose broker URLs or cleanup errors.
+                result = (False, "rabbitmq_unreachable")
+            last_at = now()
             last_result = result
             return result
 

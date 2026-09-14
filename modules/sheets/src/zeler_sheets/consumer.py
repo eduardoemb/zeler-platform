@@ -33,6 +33,7 @@ from zeler_platform_core.devoluciones_readiness import (
 )
 from zeler_platform_core.events.idempotency import IdempotencyStore as CoreIdempotencyStore
 from zeler_platform_core.observability.logging import configure_logging
+from zeler_platform_core.runtime.checks import amqp_probe_connection
 from zeler_platform_core.runtime.manifest import validate_manifest
 from zeler_platform_core.runtime.retry_delay import RETRY_ATTEMPT_HEADER, RetryDelayPublisher
 from zeler_platform_core.runtime.worker_health import WorkerHealthSidecar
@@ -753,22 +754,17 @@ async def claims_queue_state(
     cannot be determined (fail closed).
     """
     try:
-        connection = await asyncio.wait_for(
-            aio_pika.connect_robust(rabbitmq_url), timeout=timeout_seconds
-        )
-    except Exception:  # noqa: BLE001 - health must fail closed on any broker failure.
+        async with amqp_probe_connection(
+            rabbitmq_url, timeout_seconds=timeout_seconds
+        ) as connection:
+            channel = await connection.channel()
+            queue = await channel.declare_queue(queue_name, passive=True)
+            depth = queue.declaration_result.message_count
+            if depth is None:
+                return None
+            return (int(depth), 0)
+    except Exception:  # noqa: BLE001 - health must fail closed on broker or cleanup failure.
         return None
-    try:
-        channel = await connection.channel()
-        queue = await channel.declare_queue(queue_name, passive=True)
-        depth = queue.declaration_result.message_count
-        if depth is None:
-            return None
-        return (int(depth), 0)
-    except Exception:  # noqa: BLE001 - health must fail closed on any broker failure.
-        return None
-    finally:
-        await connection.close()
 
 
 def _log_message_dlq(
