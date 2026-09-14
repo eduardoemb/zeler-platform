@@ -831,6 +831,7 @@ def _bounded_focused_counters(counters: Mapping[str, Any]) -> dict[str, int]:
         "snapshot_1_T",
         "snapshot_2_T",
         "excluded_low_cost_no_authoritative_item_identity",
+        "excluded_outside_requested_range",
     }
     return {
         key: value
@@ -843,15 +844,32 @@ def _aggregate_chunked_devoluciones_counters(
     source_calls: Mapping[str, int], chunk_counters: Sequence[Mapping[str, int]]
 ) -> dict[str, int]:
     aggregated = dict(source_calls)
-    counter_name = "excluded_low_cost_no_authoritative_item_identity"
-    aggregated[counter_name] = sum(
-        counters.get(counter_name, 0)
-        for counters in chunk_counters
-        if isinstance(counters.get(counter_name, 0), int)
-        and not isinstance(counters.get(counter_name, 0), bool)
-        and counters.get(counter_name, 0) >= 0
-    )
-    return {key: value for key, value in aggregated.items() if value or key != counter_name}
+    for counter_name in (
+        "excluded_low_cost_no_authoritative_item_identity",
+        "excluded_outside_requested_range",
+    ):
+        count = sum(
+            counters.get(counter_name, 0)
+            for counters in chunk_counters
+            if isinstance(counters.get(counter_name, 0), int)
+            and not isinstance(counters.get(counter_name, 0), bool)
+            and counters.get(counter_name, 0) >= 0
+        )
+        if count:
+            aggregated[counter_name] = count
+        else:
+            aggregated.pop(counter_name, None)
+    return aggregated
+
+
+def _source_calls_with_interval_exclusions(
+    source_calls: Mapping[str, int], snapshot_counters: Mapping[str, int]
+) -> dict[str, int]:
+    counters = dict(source_calls)
+    outside_count = snapshot_counters.get("excluded_outside_requested_range", 0)
+    if outside_count:
+        counters["excluded_outside_requested_range"] = outside_count
+    return counters
 
 
 def _private_fingerprint_hash(value: str) -> str:
@@ -3054,7 +3072,7 @@ async def run_focused_devoluciones_reconciliation(
             mandatory_source_gate=_claims_authoritative_source_gate(expected),
             runtime_evidence=FocusedRuntimeEvidence(
                 monotonic() - started,
-                run_ledger.counts,
+                _source_calls_with_interval_exclusions(run_ledger.counts, snapshot.counters),
                 source_fingerprint=snapshot.source_fingerprint,
                 read_model_fingerprint=snapshot.read_model_fingerprint,
                 campaign_id=resolved_campaign_id,
@@ -3157,7 +3175,7 @@ async def run_focused_devoluciones_reconciliation(
         mandatory_source_gate=_claims_authoritative_source_gate(expected),
         runtime_evidence=FocusedRuntimeEvidence(
             monotonic() - started,
-            run_ledger.counts,
+            _source_calls_with_interval_exclusions(run_ledger.counts, snapshot.counters),
             succeeded=True,
             source_fingerprint=snapshot.source_fingerprint,
             read_model_fingerprint=snapshot.read_model_fingerprint,
@@ -3220,8 +3238,8 @@ async def _run_chunked_focused_devoluciones_dry_run(
         source = GatewayDevolucionesSource(gateways.order_detail_gateway, single_attempt=True)
 
     per_chunk_ledgers: list[dict[str, int]] = []
-    fingerprints: list[str] = []
     chunk_snapshots: list[Any] = []
+    chunk_aggregates: list[ReadModelAggregate] = []
     for idx, chunk_range in enumerate(chunk_ranges):
         if idx > 0:
             # Spread shared-quota bursts: deterministic cooldown between slices.
@@ -3277,10 +3295,9 @@ async def _run_chunked_focused_devoluciones_dry_run(
                 monotonic=monotonic,
             )
         # Snapshot already charged to run_ledger via chunk_recorder; persist per-chunk counts.
-        per_chunk_ledgers.append(dict(run_ledger.counts))
-        fingerprints.append(chunk_snapshot.source_fingerprint)
+        per_chunk_ledgers.append(dict(chunk_recorder.counts))
         chunk_snapshots.append(chunk_snapshot)
-        await collect_reconciliation_counts(
+        chunk_summary = await collect_reconciliation_counts(
             db=db,
             request=ReconciliationRequest(
                 seller_id=request.seller_id,
@@ -3295,24 +3312,65 @@ async def _run_chunked_focused_devoluciones_dry_run(
             expected=_focused_expected_counts(chunk_snapshot),
             read_models=("claims",),
         )
+        chunk_aggregates.append(
+            next(
+                aggregate
+                for aggregate in chunk_summary.aggregates
+                if aggregate.read_model == "claims"
+            )
+        )
 
-    # Aggregate: union fingerprint of all slices (deterministic hash of slice fingerprints).
-    aggregated_source_fp = hashlib.sha256(
-        json.dumps(
-            sorted(fingerprints), sort_keys=True, separators=(",", ":"), ensure_ascii=True
-        ).encode("utf-8")
-    ).hexdigest()
-    aggregated_read_fp = hashlib.sha256(
-        json.dumps(
-            sorted(fingerprints), sort_keys=True, separators=(",", ":"), ensure_ascii=True
-        ).encode("utf-8")
-    ).hexdigest()
-    # Produce one focused evidence row with aggregated ledger counts.
-    # The focused evidence path expects the aggregated expected_claim_ids cardinality
-    # to bridge to collect_reconciliation_counts; use the sum of per-slice cardinalities.
+    def scoped_fingerprint(field_name: str) -> str:
+        # Bind each distinct proof to its seller and ordered half-open UTC scope.
+        payload = {
+            "seller_id": request.seller_id,
+            "chunks": [
+                {
+                    "start": date_range.start.isoformat(),
+                    "end_exclusive": date_range.end_exclusive.isoformat(),
+                    "fingerprint": getattr(snapshot, field_name),
+                }
+                for date_range, snapshot in zip(chunk_ranges, chunk_snapshots, strict=True)
+            ],
+        }
+        return hashlib.sha256(
+            json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode(
+                "utf-8"
+            )
+        ).hexdigest()
+
+    aggregated_source_fp = scoped_fingerprint("source_fingerprint")
+    aggregated_read_fp = scoped_fingerprint("read_model_fingerprint")
     aggregated_expected_ids = frozenset().union(
         *(snap.expected_claim_ids for snap in chunk_snapshots)
     )
+    overlapping_ids = len(aggregated_expected_ids) != sum(
+        len(snapshot.expected_claim_ids) for snapshot in chunk_snapshots
+    )
+    issues = tuple(issue for aggregate in chunk_aggregates for issue in aggregate.issues)
+    if overlapping_ids:
+        issues += (
+            ReadModelIssue(
+                read_model="claims",
+                code="claims_chunk_identity_overlap",
+                message="expected claim membership overlaps disjoint UTC windows",
+            ),
+        )
+
+    def measured_count(field_name: str) -> int | None:
+        values: list[int] = []
+        for aggregate in chunk_aggregates:
+            value = getattr(aggregate, field_name)
+            if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+                return None
+            values.append(value)
+        return sum(values)
+
+    persisted = measured_count("persisted_count")
+    complete = measured_count("complete_count")
+    missing = None if overlapping_ids else measured_count("missing_count")
+    errors = sum(aggregate.error_count for aggregate in chunk_aggregates)
+    unavailable = bool(issues or errors or None in (persisted, complete, missing))
     return ReconciliationSummary(
         seller_id=request.seller_id,
         date_from=request.date_range.date_from,
@@ -3323,15 +3381,21 @@ async def _run_chunked_focused_devoluciones_dry_run(
         aggregates=(
             ReadModelAggregate(
                 read_model="claims",
-                expected_count=len(aggregated_expected_ids),
-                persisted_count=len(aggregated_expected_ids),
-                missing_count=0,
-                complete_count=len(aggregated_expected_ids),
-                truth_mode="expected" if aggregated_expected_ids else "expected",
+                expected_count=None if overlapping_ids else len(aggregated_expected_ids),
+                persisted_count=persisted,
+                missing_count=missing,
+                complete_count=complete,
+                error_count=errors,
+                truth_mode="unavailable" if overlapping_ids else "expected",
+                issues=issues,
             ),
         ),
         controls=request.controls,
-        mandatory_source_gate=MandatorySourceGate(read_model="claims", authoritative=True),
+        mandatory_source_gate=MandatorySourceGate(
+            read_model="claims",
+            authoritative=not overlapping_ids,
+            issue_codes=("claims_chunk_identity_overlap",) if overlapping_ids else (),
+        ),
         runtime_evidence=FocusedRuntimeEvidence(
             monotonic() - started,
             _aggregate_chunked_devoluciones_counters(
@@ -3341,7 +3405,7 @@ async def _run_chunked_focused_devoluciones_dry_run(
             source_fingerprint=aggregated_source_fp,
             read_model_fingerprint=aggregated_read_fp,
             campaign_id=resolved_campaign_id,
-            status_class="success",
+            status_class="query_anomaly" if unavailable else "success",
             snapshot_calls=tuple(per_chunk_ledgers),
         ),
     )

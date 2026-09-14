@@ -133,6 +133,7 @@ class InventoryExclusionReason(StrEnum):
     TERMINAL_CANCELLATION = "terminal_cancellation"
     AUTHORITATIVE_NO_RETURN_MEDIATION = "authoritative_no_return_mediation"
     LOW_COST_NO_AUTHORITATIVE_ITEM_IDENTITY = "low_cost_no_authoritative_item_identity"
+    OUTSIDE_REQUESTED_RANGE = "outside_requested_range"
 
 
 class ClaimInventoryError(RuntimeError):
@@ -907,6 +908,21 @@ async def collect_devoluciones_snapshot(
             raise ClaimInventoryError(
                 "hydrated claim candidate is unresolved and cannot be excluded"
             )
+        if _claim_is_proven_outside_range(
+            entry=entry,
+            claim=claim,
+            seller_id=seller_id,
+            start=normalized_start,
+            end=normalized_end,
+        ):
+            exclusions.append(
+                InventoryExclusionEvidence(
+                    claim_id=entry.claim_id,
+                    last_updated=entry.last_updated,
+                    reason=InventoryExclusionReason.OUTSIDE_REQUESTED_RANGE,
+                )
+            )
+            continue
         returns: dict[str, Any] = {}
         excluded_by_authoritative_404 = False
         returns_retry_interval: float | None = None
@@ -1054,6 +1070,10 @@ async def collect_devoluciones_snapshot(
         exclusion.reason is InventoryExclusionReason.LOW_COST_NO_AUTHORITATIVE_ITEM_IDENTITY
         for exclusion in exclusions
     )
+    outside_range_exclusions = sum(
+        exclusion.reason is InventoryExclusionReason.OUTSIDE_REQUESTED_RANGE
+        for exclusion in exclusions
+    )
     return CollectedDevolucionesSnapshot(
         seller_id=str(seller_id),
         start=normalized_start,
@@ -1079,6 +1099,11 @@ async def collect_devoluciones_snapshot(
                 "inventory_candidates": len(inventory.entries),
                 "hydrated_candidates": len(hydration_entries),
                 "excluded_terminal_cancellations": terminal_cancellation_exclusions,
+                **(
+                    {"excluded_outside_requested_range": outside_range_exclusions}
+                    if outside_range_exclusions
+                    else {}
+                ),
                 **(
                     {
                         "excluded_low_cost_no_authoritative_item_identity": (
@@ -1152,6 +1177,8 @@ async def revalidate_devoluciones_snapshot(
         or current.expected_claim_ids != snapshot.expected_claim_ids
         or current.counters.get("excluded_low_cost_no_authoritative_item_identity", 0)
         != snapshot.counters.get("excluded_low_cost_no_authoritative_item_identity", 0)
+        or current.counters.get("excluded_outside_requested_range", 0)
+        != snapshot.counters.get("excluded_outside_requested_range", 0)
     ):
         raise DevolucionesReadModelVerificationError(
             "DEVOLUCIONES source, read-model fingerprint, or counter changed "
@@ -1711,6 +1738,40 @@ def _is_return_candidate(claim: Mapping[str, Any]) -> bool:
     if claim_type in {"return", "returns"}:
         return True
     return claim_type == "mediations"
+
+
+def _claim_is_proven_outside_range(
+    *,
+    entry: ClaimInventoryEntry,
+    claim: Mapping[str, Any],
+    seller_id: str,
+    start: datetime,
+    end: datetime,
+) -> bool:
+    """Keep search overreach evidenced without changing canonical UTC membership."""
+    from zeler_sheets.claim_projection import _validate_claim_respondent
+
+    created = _aware_claim_creation_time(claim.get("date_created"))
+    if start <= created < end:
+        return False
+    if (
+        str(claim.get("id") or claim.get("_id") or "").strip() != entry.claim_id
+        or _aware_claim_creation_time(entry.date_created) != created
+    ):
+        raise ClaimInventoryError("outside-range claim identity or creation evidence changed")
+    _validate_claim_respondent(claim, seller_id=seller_id)
+    return True
+
+
+def _aware_claim_creation_time(value: Any) -> datetime:
+    if isinstance(value, str):
+        try:
+            value = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise ClaimInventoryError("claim creation time is invalid") from exc
+    if not isinstance(value, datetime) or value.tzinfo is None:
+        raise ClaimInventoryError("aware claim creation time is required")
+    return value.astimezone(UTC)
 
 
 def _is_authoritative_upstream_not_found(exc: Exception) -> bool:

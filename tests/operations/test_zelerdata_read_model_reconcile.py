@@ -5679,13 +5679,17 @@ def test_focused_devoluciones_dry_run_retries_server_once_then_succeeds(
     assert output["status_class"] == "success"
     # The single fail-once-then-success retry grows only R and T by one (S2).
     assert output["counters"]["P"] == 8
-    assert output["counters"]["R"] == 9
-    assert output["counters"]["O"] == 4
-    assert output["counters"]["T"] == 21
+    assert output["counters"]["R"] == 6
+    assert output["counters"]["O"] == 1
+    assert output["counters"]["T"] == 15
+    assert output["counters"]["excluded_outside_requested_range"] == 3
     assert output["counters"]["expected"] == 1
-    assert output["counters"]["persisted"] == 1
-    # One retry over the four 10-day slices: 4 sends + 1 retry.
-    assert client.paths.count("/post-purchase/v2/claims/519988002/returns") == 5
+    # This fixture has an empty local DB: source success cannot invent persistence.
+    assert output["counters"]["persisted"] == 0
+    assert output["counters"]["complete"] == 0
+    assert output["counters"]["missing"] == 1
+    # The canonical claim belongs to one slice: one returns send plus one retry.
+    assert client.paths.count("/post-purchase/v2/claims/519988002/returns") == 2
 
 
 def test_focused_devoluciones_dry_run_success_path_unaffected_by_retry_path(
@@ -5717,12 +5721,16 @@ def test_focused_devoluciones_dry_run_success_path_unaffected_by_retry_path(
     assert output["stage"] == "dry_run"
     assert output["status_class"] == "success"
     assert output["counters"]["P"] == 8
-    assert output["counters"]["R"] == 8
-    assert output["counters"]["O"] == 4
-    assert output["counters"]["T"] == 20
+    assert output["counters"]["R"] == 5
+    assert output["counters"]["O"] == 1
+    assert output["counters"]["T"] == 14
+    assert output["counters"]["excluded_outside_requested_range"] == 3
     assert output["counters"]["expected"] == 1
-    assert output["counters"]["persisted"] == 1
-    assert client.paths.count("/post-purchase/v2/claims/519988002/returns") == 4
+    # This fixture has an empty local DB: source success cannot invent persistence.
+    assert output["counters"]["persisted"] == 0
+    assert output["counters"]["complete"] == 0
+    assert output["counters"]["missing"] == 1
+    assert client.paths.count("/post-purchase/v2/claims/519988002/returns") == 1
 
 
 def test_focused_devoluciones_dry_run_accepts_authoritative_absent_return_as_exclusion(
