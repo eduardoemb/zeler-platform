@@ -652,11 +652,13 @@ class FormulaRecoveryWorker:
                 for offset in range(0, len(requested.item_ids), batch_size)
             ]
         acquired = []
+        acquisition_error: Exception | None = None
         for task in tasks:
             result = task.result()
             if isinstance(result, Exception):
-                raise result
-            acquired.append(result)
+                acquisition_error = acquisition_error or result
+            else:
+                acquired.append(result)
         if await self.queue.collection.find_one(self.queue._owned(job, self.queue.now())) is None:
             raise ValueError("item recovery lease lost before projection")
         stored = (
@@ -668,23 +670,32 @@ class FormulaRecoveryWorker:
             .to_list(length=21)
         )
         stored_ids = tuple(sorted(str(item["_id"]) for item in stored))
-        if stored_ids:
-            persistence = SheetsEventPersistence(db=self.db)
-            for item_id in stored_ids:
-                if (
-                    await self.queue.collection.find_one(self.queue._owned(job, self.queue.now()))
-                    is None
-                ):
-                    raise ValueError("item recovery lease lost before history projection")
-                await persistence.project_acquired_item_history(
-                    seller_id=requested.seller_id, item_id=item_id
+        try:
+            if stored_ids:
+                persistence = SheetsEventPersistence(db=self.db)
+                for item_id in stored_ids:
+                    if (
+                        await self.queue.collection.find_one(
+                            self.queue._owned(job, self.queue.now())
+                        )
+                        is None
+                    ):
+                        raise ValueError("item recovery lease lost before history projection")
+                    await persistence.project_acquired_item_history(
+                        seller_id=requested.seller_id, item_id=item_id
+                    )
+                await run_sheetseller_backfill(
+                    db=self.db,
+                    seller_id=requested.seller_id,
+                    item_ids=stored_ids,
+                    dry_run=False,
                 )
-            await run_sheetseller_backfill(
-                db=self.db,
-                seller_id=requested.seller_id,
-                item_ids=stored_ids,
-                dry_run=False,
-            )
+        except Exception as projection_error:
+            if acquisition_error is not None:
+                raise acquisition_error from projection_error
+            raise
+        if acquisition_error is not None:
+            raise acquisition_error
         # A selected batch is not an inventory reconciliation. Preserve field
         # availability states and never publish a whole-seller freshness marker.
         partial = (

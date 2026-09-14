@@ -1878,7 +1878,7 @@ async def test_item_recovery_bounds_concurrency_and_joins_all_acquisition_tasks(
 
     async def project(**kwargs: Any) -> Any:
         assert active == 0
-        assert outcome == "success"
+        assert outcome in {"success", "rate_limit"}
         return await run_sheetseller_backfill(**kwargs)
 
     monkeypatch.setattr(workers, "run_item_detail_enrichment", acquire)
@@ -1905,7 +1905,12 @@ async def test_item_recovery_bounds_concurrency_and_joins_all_acquisition_tasks(
         elif outcome == "rate_limit":
             assert job["state"] == "pending"
             assert job["failure_reason"] == "source_temporarily_unavailable"
-            assert await recovery_db.sheets_item_formula_rows.count_documents({}) == 0
+            rows = await recovery_db.sheets_item_formula_rows.find(
+                {}, {"_id": 0, "item_id": 1, "source_snapshot": 1}
+            ).to_list(length=21)
+            assert len(rows) == 15
+            assert {row["item_id"] for row in rows} == set(ids[5:])
+            assert all(row.get("source_snapshot", {}).get("fingerprint") for row in rows)
         else:
             assert job["state"] == "running"
             assert await recovery_db.items.count_documents({}) == 0
