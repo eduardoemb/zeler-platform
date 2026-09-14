@@ -52,6 +52,7 @@ from zeler_sheets.enrichment import (
     schema_safe_enrichment_state,
     trusted_state,
 )
+from zeler_sheets.formulas.pacing import recovery_fetch_resource, recovery_quota_deadline
 from zeler_sheets.formulas.read_models import normalize_sku
 from zeler_sheets.item_projection import stamp_item_projection
 from zeler_sheets.quality import QUALITY_SOURCE, USER_PRODUCT_QUALITY_SOURCE, project_item_quality
@@ -410,8 +411,11 @@ async def run_sheetseller_backfill(
     order_line_identities_by_item = await load_order_line_sku_identities_by_item(
         sku_index_collection,
         seller_id=seller_id,
+        item_ids=item_ids,
     )
-    status_states_by_item = await load_item_status_states_by_item(db=db, seller_id=seller_id)
+    status_states_by_item = await load_item_status_states_by_item(
+        db=db, seller_id=seller_id, item_ids=item_ids
+    )
 
     for item in items:
         source_item = item
@@ -736,39 +740,40 @@ async def _discover_current_item_ids(gateway: MeliItemGatewayClient, *, seller_i
     scroll: str | None = None
     # The source cursor expires; never let discovery wait indefinitely or grow
     # without bound. Short pages and a reused scroll token are both supported.
-    async with asyncio.timeout(180):
-        for _ in range(201):
-            params = {"search_type": "scan", "limit": "100"}
-            if scroll is not None:
-                params["scroll_id"] = scroll
-            page = await gateway.fetch_resource(
-                seller_id=seller_id, path=f"/users/{seller_id}/items/search?{urlencode(params)}"
-            )
-            if not isinstance(page, dict) or not isinstance(page.get("paging"), dict):
-                raise ValueError("item discovery response is incomplete")
-            total = page["paging"].get("total")
-            if type(total) is not int or not 0 <= total <= 10000:
-                raise ValueError("item discovery total is invalid or exceeds budget")
-            if expected is None:
-                expected = total
-            rows = page.get("results")
-            if (
-                total != expected
-                or not isinstance(rows, list)
-                or any(
-                    not isinstance(row, str) or not re.fullmatch(r"ML[A-Z][0-9]+", row)
-                    for row in rows
+    with recovery_quota_deadline(asyncio.get_running_loop().time() + 179):
+        async with asyncio.timeout(180):
+            for _ in range(201):
+                params = {"search_type": "scan", "limit": "100"}
+                if scroll is not None:
+                    params["scroll_id"] = scroll
+                page = await gateway.fetch_resource(
+                    seller_id=seller_id, path=f"/users/{seller_id}/items/search?{urlencode(params)}"
                 )
-                or len(rows) != len(set(rows))
-                or seen.intersection(rows)
-            ):
-                raise ValueError("item discovery inventory changed or is malformed")
-            seen.update(rows)
-            if len(seen) == expected:
-                return seen
-            scroll = page.get("scroll_id")
-            if len(seen) > expected or not rows or not isinstance(scroll, str) or not scroll:
-                raise ValueError("item discovery inventory is incomplete")
+                if not isinstance(page, dict) or not isinstance(page.get("paging"), dict):
+                    raise ValueError("item discovery response is incomplete")
+                total = page["paging"].get("total")
+                if type(total) is not int or not 0 <= total <= 10000:
+                    raise ValueError("item discovery total is invalid or exceeds budget")
+                if expected is None:
+                    expected = total
+                rows = page.get("results")
+                if (
+                    total != expected
+                    or not isinstance(rows, list)
+                    or any(
+                        not isinstance(row, str) or not re.fullmatch(r"ML[A-Z][0-9]+", row)
+                        for row in rows
+                    )
+                    or len(rows) != len(set(rows))
+                    or seen.intersection(rows)
+                ):
+                    raise ValueError("item discovery inventory changed or is malformed")
+                seen.update(rows)
+                if len(seen) == expected:
+                    return seen
+                scroll = page.get("scroll_id")
+                if len(seen) > expected or not rows or not isinstance(scroll, str) or not scroll:
+                    raise ValueError("item discovery inventory is incomplete")
     raise ValueError("item discovery page budget exceeded")
 
 
@@ -815,6 +820,7 @@ async def run_item_detail_enrichment(
     discover_current_items: bool = False,
     inventory_gateway: MeliItemGatewayClient | None = None,
     acquire_item_ids: Sequence[str] | None = None,
+    base_only: bool = False,
 ) -> ItemDetailEnrichmentSummary:
     _validate_item_acquisition_scope(
         seller_id=seller_id,
@@ -914,11 +920,13 @@ async def run_item_detail_enrichment(
             clear_listing_fixed_fee = False
             clear_listing_fee_projection = False
             is_free_shipping = _is_seller_paid_free_shipping(detail)
-            if is_free_shipping:
+            if is_free_shipping and not base_only:
                 shipping_options_requested += 1
             seller_shipping_cost: Any = None
             seller_shipping_state: dict[str, Any] | None = None
-            if _is_non_free_shipping(detail):
+            if base_only:
+                seller_shipping_cost = existing_item.get("seller_shipping_cost")
+            elif _is_non_free_shipping(detail):
                 seller_shipping_cost = 0
                 seller_shipping_costs_enriched += 1
                 seller_shipping_state = trusted_state(
@@ -1022,7 +1030,7 @@ async def run_item_detail_enrichment(
             detail["seller_shipping_cost"] = seller_shipping_cost
             if seller_shipping_state is not None:
                 item_enrichment_state["seller_shipping_cost"] = seller_shipping_state
-            if sale_price_enabled:
+            if sale_price_enabled and not base_only:
                 sale_price_requested += 1
                 current_promotion, sale_price_failure = await _resolve_sale_price_projection(
                     gateway=gateway,
@@ -1078,7 +1086,7 @@ async def run_item_detail_enrichment(
                 detail["current_promotion"] = existing_by_id[item_id]["current_promotion"]
             listing_fee_response: dict[str, Any] | None = None
             listing_fee_context = None
-            if site_id is not None:
+            if not base_only and site_id is not None:
                 listing_fee_context = build_listing_fee_projection_context(
                     site_id=site_id, detail=detail
                 )
@@ -1200,7 +1208,7 @@ async def run_item_detail_enrichment(
                                 synced_at=synced_at,
                                 basis=listing_fee_context,
                             )
-            elif "listing_fee_projection" in existing_by_id[item_id]:
+            elif not base_only and "listing_fee_projection" in existing_by_id[item_id]:
                 detail["listing_fee_projection"] = None
                 clear_listing_fee_projection = True
                 item_enrichment_state["listing_fee_projection"] = enrichment_state(
@@ -1209,7 +1217,7 @@ async def run_item_detail_enrichment(
                     reason="missing_site",
                     synced_at=synced_at,
                 )
-            if listing_fixed_fee_enabled:
+            if listing_fixed_fee_enabled and not base_only:
                 listing_params = _listing_price_fixed_fee_params(item_id=item_id, detail=detail)
                 if listing_params is None:
                     listing_fixed_fee_missing_params += 1
@@ -1290,7 +1298,7 @@ async def run_item_detail_enrichment(
                             synced_at=synced_at,
                             basis=listing_params,
                         )
-            if quality_enabled:
+            if quality_enabled and not base_only:
                 quality_source = QUALITY_SOURCE
                 user_product_id = detail.get("user_product_id")
                 valid_user_product = (
@@ -1308,28 +1316,29 @@ async def run_item_detail_enrichment(
                 ):
                     quality_source = USER_PRODUCT_QUALITY_SOURCE
                 try:
-                    async with asyncio.timeout(5):
-                        try:
-                            performance = await gateway.fetch_resource(
-                                seller_id=seller_id,
-                                path=(
-                                    f"/user-product/{user_product_id}/performance"
-                                    if quality_source == USER_PRODUCT_QUALITY_SOURCE
-                                    else f"/item/{item_id}/performance"
-                                ),
-                            )
-                        except httpx.HTTPStatusError as exc:
-                            if (
-                                exc.response.status_code != 400
-                                or quality_source != QUALITY_SOURCE
-                                or not valid_user_product
-                            ):
-                                raise
-                            quality_source = USER_PRODUCT_QUALITY_SOURCE
-                            performance = await gateway.fetch_resource(
-                                seller_id=seller_id,
-                                path=f"/user-product/{user_product_id}/performance",
-                            )
+                    try:
+                        performance = await recovery_fetch_resource(
+                            gateway,
+                            seller_id=seller_id,
+                            path=(
+                                f"/user-product/{user_product_id}/performance"
+                                if quality_source == USER_PRODUCT_QUALITY_SOURCE
+                                else f"/item/{item_id}/performance"
+                            ),
+                        )
+                    except httpx.HTTPStatusError as exc:
+                        if (
+                            exc.response.status_code != 400
+                            or quality_source != QUALITY_SOURCE
+                            or not valid_user_product
+                        ):
+                            raise
+                        quality_source = USER_PRODUCT_QUALITY_SOURCE
+                        performance = await recovery_fetch_resource(
+                            gateway,
+                            seller_id=seller_id,
+                            path=f"/user-product/{user_product_id}/performance",
+                        )
                     detail["quality_projection"] = project_item_quality(
                         performance,
                         item_id=item_id,
@@ -1364,6 +1373,10 @@ async def run_item_detail_enrichment(
                         reason=reason,
                         synced_at=synced_at,
                     )
+            if base_only:
+                item_enrichment_state = _base_acquisition_enrichment_state(
+                    existing_item, detail=detail, site_id=site_id
+                )
             if item_enrichment_state:
                 detail["enrichment_state"] = item_enrichment_state
             document = _canonical_item_detail_document(
@@ -1385,8 +1398,11 @@ async def run_item_detail_enrichment(
                     "item source is older or lacks a comparable update timestamp"
                 )
             items_validated += 1
+            # An unchanged base fetched again still has a new observation cut.
+            # The comparison intentionally ignores that cut for full enrichment.
             if (
-                not clear_current_promotion
+                not base_only
+                and not clear_current_promotion
                 and not clear_listing_fixed_fee
                 and not clear_listing_fee_projection
                 and _canonical_item_values_equal(existing_by_id[item_id], document)
@@ -2189,12 +2205,13 @@ def build_variation_formula_row_docs(
 
 
 async def load_order_line_sku_identities_by_item(
-    sku_index_collection: Any, *, seller_id: str
+    sku_index_collection: Any, *, seller_id: str, item_ids: Sequence[str] | None = None
 ) -> dict[str, list[dict[str, Any]]]:
     identities = await sku_index_collection.find(
         {
             "seller_id": seller_id,
             "source": "order_line",
+            **({"item_id": {"$in": list(item_ids)}} if item_ids is not None else {}),
         }
     ).to_list(length=None)
     by_item: dict[str, list[dict[str, Any]]] = {}
@@ -2206,10 +2223,13 @@ async def load_order_line_sku_identities_by_item(
     return by_item
 
 
-async def load_item_status_states_by_item(*, db: Any, seller_id: str) -> dict[str, dict[str, Any]]:
-    states = (
-        await db[ITEM_STATUS_STATES_COLLECTION].find({"seller_id": seller_id}).to_list(length=None)
-    )
+async def load_item_status_states_by_item(
+    *, db: Any, seller_id: str, item_ids: Sequence[str] | None = None
+) -> dict[str, dict[str, Any]]:
+    query: dict[str, Any] = {"seller_id": seller_id}
+    if item_ids is not None:
+        query["item_id"] = {"$in": list(item_ids)}
+    states = await db[ITEM_STATUS_STATES_COLLECTION].find(query).to_list(length=None)
     return {
         item_id: normalize_status_history_datetimes(state)
         for state in states
@@ -3640,6 +3660,62 @@ def _existing_enrichment_state(item: dict[str, Any]) -> dict[str, dict[str, Any]
     if not isinstance(state, dict):
         return {}
     return {str(key): dict(value) for key, value in state.items() if isinstance(value, dict)}
+
+
+def _base_acquisition_enrichment_state(
+    existing: dict[str, Any], *, detail: dict[str, Any], site_id: str | None
+) -> dict[str, dict[str, Any]]:
+    """Invalidate dependent values without claiming a new enrichment observation."""
+    states = _existing_enrichment_state(existing)
+    fee_context = (
+        build_listing_fee_projection_context(site_id=site_id, detail=detail)
+        if site_id is not None
+        else None
+    )
+    fixed_context = _listing_price_fixed_fee_params(item_id=_item_id(existing), detail=detail)
+    matching = {
+        "seller_shipping_cost": _existing_enrichment_basis_matches(
+            existing, field="seller_shipping_cost", basis=_item_shipping_basis(detail)
+        )
+        and _is_seller_paid_free_shipping(existing) == _is_seller_paid_free_shipping(detail),
+        "listing_fee_projection": fee_context is not None
+        and listing_fee_basis_matches(existing.get("listing_fee_projection"), fee_context),
+        "listing_price_fixed_fee": fixed_context is not None
+        and _listing_fixed_fee_basis_matches(
+            existing.get("listing_price_fixed_fee"), fixed_context
+        ),
+        "current_promotion": all(
+            _safe_decimal(existing.get(field)) == _safe_decimal(detail.get(field))
+            for field in ("price", "base_price", "original_price")
+        )
+        and existing.get("status") == detail.get("status")
+        and existing.get("currency_id") == detail.get("currency_id"),
+        "quality_projection": all(
+            _formula_row_values_equal(existing.get(field), detail.get(field))
+            for field in (
+                "title",
+                "pictures",
+                "attributes",
+                "shipping",
+                "user_product_id",
+                "category_id",
+            )
+        ),
+    }
+    for field, matches in matching.items():
+        state = states.get(field)
+        projection = existing.get(field)
+        if state is None and isinstance(projection, dict) and not matches:
+            observed = bson_ms_utc_datetime(
+                projection.get("observed_at") or projection.get("synced_at")
+            )
+            if observed is not None and isinstance(projection.get("source"), str):
+                state = enrichment_state(
+                    source=projection["source"], status="basis_mismatch", synced_at=observed
+                )
+        if state is not None and not matches:
+            states[field] = {**state, "status": "basis_mismatch", "reason": "base_changed"}
+    return states
 
 
 def _existing_enrichment_basis_matches(
