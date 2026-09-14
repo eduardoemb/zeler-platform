@@ -14,6 +14,7 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from math import ceil
 from typing import Any
 
 # The gateway allows 600 requests/minute per module and seller. Background
@@ -69,7 +70,7 @@ def recovery_requests_per_minute(value: str | None) -> int:
 
 
 class RecoveryRequestPacer:
-    """Fixed-window client-side limiter for background acquisition."""
+    """Shared budget with spaced lane admission and fair pending selection."""
 
     def __init__(
         self,
@@ -85,6 +86,8 @@ class RecoveryRequestPacer:
         self._sleep = sleep or asyncio.sleep
         self._window_start: datetime | None = None
         self._used = 0
+        self._spread_requests = False
+        self._next_grant_at: datetime | None = None
         self._pending: dict[str, deque[asyncio.Future[bool]]] = {
             lane: deque() for lane in LANE_ROTATION
         }
@@ -94,13 +97,17 @@ class RecoveryRequestPacer:
     async def acquire(self, lane: str | None = None) -> bool:
         """Reserve a slot fairly among waiting lanes, borrowing unused shares.
 
-        Legacy callers share the explicit-ID lane. Only an actual quota-window
-        wait is reported as backpressure. The timer exists only while needed
-        and the last cancelled waiter joins it before returning.
+        Lane-aware callers spread the budget over time so a producer returning
+        from persistence cannot find the whole minute spent in an earlier burst.
+        Legacy-only instances retain fixed-window admission. Mixed callers share
+        the spaced budget once a lane-aware caller arrives. Only actual waiting
+        is reported as backpressure; cancellation joins the last pending timer.
         """
+        explicit_lane = lane is not None
         lane = lane or "ids"
         if lane not in self._pending:
             raise ValueError("unknown recovery pacing lane")
+        self._spread_requests = self._spread_requests or explicit_lane
         future: asyncio.Future[bool] = asyncio.get_running_loop().create_future()
         self._pending[lane].append(future)
         if self._driver is None or self._driver.done():
@@ -129,13 +136,7 @@ class RecoveryRequestPacer:
                 # Let simultaneously ready lanes register before selecting a
                 # slot; producers can enqueue their next request after a grant.
                 await asyncio.sleep(0)
-                now = self._now().astimezone(UTC)
-                if self._window_start is None or now - self._window_start >= WINDOW:
-                    self._window_start = now
-                    self._used = 0
-                waited = False
-                if self._used >= self._budget:
-                    waited = await self._roll_window()
+                waited = await self._wait_for_slot()
                 for _ in LANE_ROTATION:
                     lane = LANE_ROTATION[self._cursor]
                     self._cursor = (self._cursor + 1) % len(LANE_ROTATION)
@@ -145,6 +146,12 @@ class RecoveryRequestPacer:
                     if queue:
                         future = queue.popleft()
                         self._used += 1
+                        # Round upward: datetime microsecond resolution must
+                        # not make 180 spaced intervals shorter than a minute.
+                        interval = timedelta(
+                            microseconds=ceil(WINDOW.total_seconds() * 1_000_000 / self._budget)
+                        )
+                        self._next_grant_at = self._now().astimezone(UTC) + interval
                         future.set_result(waited)
                         break
         except Exception as exc:  # noqa: BLE001 - propagate timer failure to every waiter
@@ -154,15 +161,23 @@ class RecoveryRequestPacer:
                     if not future.done():
                         future.set_exception(exc)
 
-    async def _roll_window(self) -> bool:
+    async def _wait_for_slot(self) -> bool:
         now = self._now().astimezone(UTC)
-        start = self._window_start or now
-        elapsed = (now - start).total_seconds()
-        remaining = max(0.0, WINDOW.total_seconds() - elapsed)
+        if self._window_start is None or now - self._window_start >= WINDOW:
+            self._window_start = now
+            self._used = 0
+        exhausted = self._used >= self._budget
+        remaining = (
+            max(0.0, (self._window_start + WINDOW - now).total_seconds()) if exhausted else 0.0
+        )
+        if self._spread_requests and self._next_grant_at is not None:
+            remaining = max(remaining, (self._next_grant_at - now).total_seconds())
         if remaining > 0:
             await self._sleep(remaining)
-        self._window_start = self._now().astimezone(UTC)
-        self._used = 0
+        now = self._now().astimezone(UTC)
+        if exhausted or now - self._window_start >= WINDOW:
+            self._window_start = now
+            self._used = 0
         return remaining > 0
 
 

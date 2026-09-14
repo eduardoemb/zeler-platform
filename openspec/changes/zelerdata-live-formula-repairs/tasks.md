@@ -9,7 +9,7 @@ Chained PRs recommended: Yes
 Chain strategy: pending
 400-line budget risk: High
 
-Repository/user instructions authorize implementation in the selected checkout without unnecessary VCS decisions. Execute bounded units; no chain strategy or size exception is attributed to the user. PR/commit/branch operations remain unrequested. Subdivide any oversized unit before implementation.
+Repository/user instructions authorize implementation in the selected checkout without unnecessary VCS decisions. Execute bounded units; no chain strategy or size exception is attributed to the user. Subsequent user authorization covers commits and push to selected main, builds and scoped deployments as recorded in `docs/zelerdata-live-formula-repairs.md`. PR and branch operations remain unrequested. Subdivide any oversized unit before implementation.
 
 ### Work Units
 
@@ -64,6 +64,7 @@ or worktree operation is needed. Preserve unrelated untracked user work.
 
 - [x] 6.1 RED/GREEN: basic acquisition, enrichment integrity, scoped projection reads.
 - [x] 6.2 RED/GREEN: fair shared pacing and HTTP deadlines excluding quota waits.
+- [x] 6.2a Live correction: sustain competing lanes across every inventory batch and prevent fixed-window bursts while preserving 180 requests/minute. Isolated final suite: 4609 passed/9 skipped, protected Mongo: 8 passed; Ruff check/format and mypy 541 files passed. Independent pacing/caller/lifecycle: 41 passed. Worker runtime verification remains in 6.6.
 - [x] 6.3 RED/GREEN: claim lanes, leases, quota deferral and supervised lifecycle.
 - [x] 6.4 RED/GREEN: admission/reserved slot and independent formula recovery intents.
 - [x] 6.5 Accelerated 1900-item workload, all isolated-Mongo gates, independent local implementation verification. Final suite:4606 passed/9 skipped; protected Mongo:8 passed; Ruff/mypy541 passed. Full runtime/change verification remains in6.6.

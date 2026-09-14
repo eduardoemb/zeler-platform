@@ -32,10 +32,10 @@ async def test_shared_budget_fairness_and_work_conserving_idle_lanes() -> None:
     assert len(grants) == 16
     for start in range(0, 16, 4):
         assert Counter(grants[start : start + 4]) == {"inventory": 1, "ids": 2, "ranges": 1}
-    assert waits == [60.0] * 3
+    assert waits == [15.0] * 15
     await consume("inventory", 4)
     assert grants[-4:] == ["inventory"] * 4
-    assert waits == [60.0] * 4
+    assert waits == [15.0] * 19
 
 
 @pytest.mark.asyncio
@@ -189,9 +189,9 @@ async def test_idle_window_rollover_does_not_allow_extra_requests_in_new_window(
     assert await pacer.acquire(lane="inventory") is False
     clock[0] += timedelta(seconds=61)
     assert await pacer.acquire(lane="ids") is False
-    assert await pacer.acquire(lane="ranges") is False
+    assert await pacer.acquire(lane="ranges") is True
     assert await pacer.acquire(lane="inventory") is True
-    assert waits == [60.0]
+    assert waits == [30.0, 30.0]
 
 
 @pytest.mark.asyncio
@@ -224,3 +224,73 @@ async def test_nested_quota_context_never_extends_parent_deadline(
         async with asyncio.timeout(0.1):
             await pacer.acquire(lane="inventory")
     assert waiting.is_set()
+
+
+@pytest.mark.asyncio
+async def test_1900_items_finish_with_continuous_competitors_and_projection_gaps(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Scale 60 seconds to 0.6 seconds. Real coroutine sleeps preserve the gap
+    # between batches; competitors stay active for the entire inventory sweep.
+    monkeypatch.setattr(pacing, "WINDOW", timedelta(seconds=0.6))
+    pacer = pacing.RecoveryRequestPacer(requests_per_minute=180)
+    grants: Counter[str] = Counter()
+    baseline = asyncio.all_tasks()
+    started = asyncio.get_running_loop().time()
+
+    async def competitor(lane: str) -> None:
+        while True:
+            await pacer.acquire(lane=lane)
+            grants[lane] += 1
+
+    competitors = [asyncio.create_task(competitor(lane)) for lane in ("ids", "ranges")]
+    try:
+        async with asyncio.timeout(9):  # 900 simulated seconds
+            for _ in range(95):
+                await pacer.acquire(lane="inventory")
+                grants["inventory"] += 1
+                await asyncio.sleep(0.03)  # Three seconds of per-batch projection.
+        elapsed = (asyncio.get_running_loop().time() - started) * 100
+        assert elapsed < 900
+        assert grants["inventory"] * 20 == 1900
+        assert grants["ids"] > 95 and grants["ranges"] > 95
+    finally:
+        for task in competitors:
+            task.cancel()
+        await asyncio.gather(*competitors, return_exceptions=True)
+    assert asyncio.all_tasks() == baseline
+
+
+@pytest.mark.asyncio
+async def test_lane_admissions_are_spread_across_the_shared_minute() -> None:
+    clock = [datetime(2026, 9, 14, tzinfo=UTC)]
+    granted: list[datetime] = []
+
+    async def sleep(seconds: float) -> None:
+        clock[0] += timedelta(seconds=seconds)
+
+    pacer = pacing.RecoveryRequestPacer(requests_per_minute=180, now=lambda: clock[0], sleep=sleep)
+    for _ in range(181):
+        await pacer.acquire(lane="inventory")
+        granted.append(clock[0])
+    assert all(
+        (right - left).total_seconds() >= 1 / 3
+        for left, right in zip(granted, granted[1:], strict=False)
+    )
+    assert (granted[-1] - granted[0]).total_seconds() >= 60
+
+
+@pytest.mark.asyncio
+async def test_legacy_calls_cannot_bypass_spacing_after_sharing_a_lane_pacer() -> None:
+    clock = [datetime(2026, 9, 14, tzinfo=UTC)]
+    waits: list[float] = []
+
+    async def sleep(seconds: float) -> None:
+        waits.append(seconds)
+        clock[0] += timedelta(seconds=seconds)
+
+    pacer = pacing.RecoveryRequestPacer(requests_per_minute=4, now=lambda: clock[0], sleep=sleep)
+    assert await pacer.acquire(lane="inventory") is False
+    assert await pacer.acquire() is True
+    assert await pacer.acquire(lane="ranges") is True
+    assert waits == [15.0, 15.0]

@@ -40,6 +40,55 @@ exact final commit on connected main, verify provenance and immutable identities
 then deploy worker followed by API. Preserve current running digests as rollback;
 no registry, schema, volume, cleanup or other service change is included.
 
+## First live delivery and residual pacing defect
+
+Worker and API from `ef0c4bb6d6d50d4264ed1560fd101268748fbecd` were deployed
+narrowly. At 17:12 UTC worker RabbitMQ, poller and recovery readiness passed;
+API Mongo, RabbitMQ, registry and claims-DLQ checks passed. Both containers and
+the unchanged gateway were healthy with zero restarts/OOM. Root had
+29,244,047,360 free bytes, Mongo had 48,613,130,240, and available memory was
+1358 MiB. These measurements describe this checkpoint only.
+
+The inherited partial inventory advanced from 1000 at 17:00:54 to 1760 at
+17:09:32, then completed and reopened naturally. Fresh enumeration began at
+17:10:44. By 17:13:24 only 120 of 1900 had been acquired in this cycle. The
+five-minute gateway audit recorded 900 requests, with only four variation
+lookups. A sustained-competition pacing reproduction exposed a gap in the
+finite-load test: while inventory projects a batch, other lanes can consume
+the whole fixed window. This first deployment does not establish the SLA.
+
+All 35 original Sheet anchors were recalculated through the native connector
+and their results independently read back. Both selected calculator controls,
+the selected active/paused histories, price history and dimension controls
+returned their expected result shapes again. Catalog/quality remained partial;
+returns and the four unsupported historical metric families remained explicitly
+unavailable. The scalar code ambiguity, no-sale NA and 11-day sold control
+persisted. This bounded retest is not full inventory or enrichment acceptance.
+
+### Sustained pacing correction
+
+The live gap has a RED regression with continuous ID/range competitors and
+three simulated seconds of persistence between all 95 inventory batches.
+The original pacer exceeds 900 simulated seconds; spaced admission passes.
+Lane-aware calls now share a minimum 333334-microsecond interval at 180/minute,
+retaining the fixed-window cap, pending 1:2:1 rotation, idle-share borrowing,
+legacy-only compatibility and joined cancellation. Mixed callers cannot bypass
+spacing. No TTL or budget was changed.
+
+The integration/caller set passed 41 tests in 75.58 seconds, including the
+real-Mongo 1900-item workload; a later mixed-mode test passed separately.
+Independent review of the final diff passed 41 pacing/caller/lifecycle tests
+in 10.91 seconds and found no additional defect. The timing regression is a
+scheduler model, not live acceptance. Detailed TDD evidence is in
+`openspec/changes/zelerdata-live-formula-repairs/apply-progress-spaced-pacing.md`.
+Only sheets-worker constructs these pacers; the current API image remains
+applicable to this localized worker correction.
+
+Final repository gates for this correction: **4609 passed, 9 skipped in
+280.21 seconds**; the eight protected Mongo cases passed separately in 2.33
+seconds. Ruff check/format and mypy over 541 files passed. The remaining skip
+is the inapplicable Caddy required-keys case.
+
 Read-only production preflight found 30321201152 bytes free on root,
 48610152448 bytes on mounted /dev/sdb Mongo volume, 6123212/3276318 free inodes,
 1107 MiB available memory. All inspected services healthy, Sheets and gateway
@@ -201,3 +250,15 @@ Final independent local confirmation: both pacing findings were corrected and
 passed 37 cases plus three independent concurrency/factory/cancellation probes.
 Full runtime acceptance remains pending; these local results authorize no claim
 that production has changed yet.
+
+
+## Verified release proposal
+
+Source commit: `ef0c4bb6d6d50d4264ed1560fd101268748fbecd` on connected main.
+Both Cloud Builds succeeded and passed immutable digest/build/source verification.
+Deploy worker then API on platform-vm, us-central1-a, zeler-platform-dev.
+
+- sheets-worker: build `f450f504-335b-4812-80a1-da155c539485`, image `us-central1-docker.pkg.dev/zeler-platform-dev/zeler-platform/sheets-worker@sha256:0450c9bf6f5af7ac2778f864a768d2de969c90b0f7c07a71a540c25f655e8f91`.
+- sheets-api: build `1aebc489-0238-47fc-8290-fba4e4b180d5`, image `us-central1-docker.pkg.dev/zeler-platform-dev/zeler-platform/sheets-api@sha256:6d9ad5434315ceef9b7b283e0babbc7d865377f9eced1fcc7963c43904e24226`.
+
+Rollback: previous running worker `sha256:25c2b64a80e70c518689f219740ca50434b62d3f1384264129568da266fb4674` and API `sha256:3b972a4bde3549f72a5c318c1f91c5cbb56d87e0d576d5ba56a3f8b5cd3eca6e`; registration attestation uses API source `1df949fbd2653e2b63648e013b3c330eef92e61f`. No schema/registry changes, cleanup or other-service restart. Capacity is rechecked before attestation/pulls and after deployment. Verify running digests, consumer/dependency readiness, settling health and two live inventory cycles.

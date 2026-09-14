@@ -69,6 +69,7 @@ repeat failures, and promote stable knowledge to its proper operational form.
 | L-010 | ZelerData | Discovery and detail client scopes | active |
 | L-011 | VM deploy | Worker signals and stop deadlines | active |
 | L-012 | Local tests | Isolated Mongo replica set and file-descriptor limit | active |
+| L-013 | ZelerData | Quota waits and unchanged source freshness | active |
 
 ## Cloud Build and VM deployment
 
@@ -129,9 +130,9 @@ repeat failures, and promote stable knowledge to its proper operational form.
 - verification/source: `tests/test_module_dockerfiles.py::test_worker_dockerfile_cmd_matches_contract[sheets]`, worker lifecycle tests, and the runtime evidence in `docs/zelerdata-goal-progress.md`: Python PID 1, clean stop in 1.777 seconds with exit 0, then stable healthy restart.
 - status: active
 
-### L-007 — Enrich before writing items
+### L-007 — Preserve acquisition prerequisites for full reconciliation
 - area: ZelerData
-- proven path: Complete reconciliation with `items-enrich --enable-sale-price --enable-listing-fixed-fee`, then run `items --write`.
+- proven path: For full enrichment reconciliation, complete `items-enrich --enable-sale-price --enable-listing-fixed-fee`, then run `items --write`. Layered base recovery instead acquires current item details and projects them with field-specific enrichment availability preserved; see L-013.
 - failed path: Write items before enrichment; formula projections can remain stale.
 - verification/source: validated reconciliation sequence and Sheets item enrichment paths.
 - status: active
@@ -193,3 +194,20 @@ repeat failures, and promote stable knowledge to its proper operational form.
 - Review active entries periodically and after relevant incidents or migrations.
 - Retire or refute obsolete lessons explicitly; preserve the reason and source.
 - Keep this document below 400 lines.
+
+
+### L-013 — Separate quota waits and renew genuinely reacquired base observations
+- area: ZelerData acquisition/recovery
+- proven path: Start provider timeouts after quota admission; keep explicit local
+  quota evidence across nested deadlines and joined siblings. Reacquiring an
+  unchanged owned item renews its base observation through the guarded writer,
+  while enrichment keeps its own acquisition cut and dependency basis.
+- failed path: Include quota waiting in a short HTTP deadline, lose its cause at
+  the outer TaskGroup deadline, or skip an unchanged base write because only its
+  acquisition timestamp changed. These paths produce false source failures or
+  perpetually stale inventory despite successful acquisition.
+- verification/source: `modules/sheets/tests/test_formula_recovery_http_deadlines.py`,
+  `modules/sheets/tests/test_formula_layered_pacing.py`,
+  `modules/sheets/tests/test_layered_basic_acquisition.py`, and
+  `docs/sheets/zelerdata-layered-recovery-20260914.md`.
+- status: active
