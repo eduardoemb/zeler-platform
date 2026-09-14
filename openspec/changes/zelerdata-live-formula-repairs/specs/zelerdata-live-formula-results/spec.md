@@ -87,7 +87,7 @@ Each reproduced defect MUST have regression evidence and a post-repair spreadshe
 
 ## Added requirement: layered recovery
 
-User-approved scope: recovery first; returns remains separate. Basic inventory
+Original recovery-first scope (expanded by the closure requirements below). Basic inventory
 acquisition fetches owned item batches of 20 plus necessary variation identities,
 then existing histories/projections. Full enrichment remains the default for
 explicit IDs. Preserve enrichment timestamps, invalidate changed bases using
@@ -111,3 +111,51 @@ four quality gates with isolated Mongo, independent SDD verification, two live
 base inventory cycles inside 15-minute freshness, and the 35-case Sheet retest.
 Deploy worker then API only with exact-main provenance, capacity and compatible
 rollback under applicable authorization. Quality/catalog failures remain explicit.
+
+## Closure requirements approved September 14
+
+### Requirement: Bounded broker connection ownership
+
+Gateway readiness MUST use the installed aio_pika connection interface, reuse
+its connected owned connection, and never accumulate connections from probes.
+Concurrent probes MUST serialize creation; reconnecting robust connections MUST
+not be replaced by probe-created connections. Failed/cancelled attempts and
+shutdown MUST release owned resources. A failed initial broker connection MUST
+allow later readiness recovery without a process restart. Responses remain
+sanitized and keep existing HTTP/schema/deadline contracts.
+
+#### Scenario: Repeated and concurrent readiness
+- GIVEN the real connection interface has is_closed and connected but no is_open
+- WHEN repeated or concurrent readiness probes run
+- THEN connected probes create no new connections and a missing connection has
+  at most one active creation attempt, with no leaked superseded resources.
+
+#### Scenario: Disconnect, cancellation and recovery
+- GIVEN a disconnect, initial failure, timeout or cancelled probe
+- WHEN the broker becomes reachable or the process shuts down
+- THEN readiness recovers through bounded owned work or remains truthfully 503,
+  and shutdown/cancellation leaves no orphan connection attempts.
+
+### Requirement: Thirty-five-case closure under whole-sheet load
+
+All 35 original cases MUST be certified against complete output matrices and
+source evidence, including returns and historical metrics. Recoverable gaps MUST
+not be certified as legitimate absence. Controlled positives with verified live
+absence/coverage MUST be distinguished from real positive production evidence.
+
+#### Scenario: Ninety-minute certification
+- GIVEN dependencies and initial source recovery are ready on exact deployed images
+- WHEN all 35 formulas recalculate together at minutes 0, 30 and 60 of a 90-minute window
+- THEN each round converges within three minutes with at most two additional
+  recalculations 60 seconds apart, without persistent PROCESSING/service errors;
+  API calls preserve their 25-second budget; dependencies/consumers stay ready;
+  base sweeps finish within 15 minutes and minute samples show no expired base
+  sources or projection discrepancies surviving the next sample; connections
+  do not grow because of probes, and no unexpected restart/OOM or sustained
+  queue growth occurs. A failure requires correction and a new complete window.
+
+#### Scenario: Historical positive fixture absent
+- GIVEN no authoritative positive event or full historical interval exists in production
+- WHEN the formula is verified
+- THEN controlled tests prove the positive behavior and production proves the
+  absence/uncovered interval explicitly, without fabricating events or coverage.

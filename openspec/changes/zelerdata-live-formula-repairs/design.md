@@ -84,7 +84,7 @@ None blocking. Measure source availability and acquisition throughput live.
 
 ## September 14: layered recovery
 
-User-approved scope: recovery first; returns remains separate. Basic inventory
+Original recovery-first scope (expanded by the closure below). Basic inventory
 acquisition fetches owned item batches of 20 plus necessary variation identities,
 then existing histories/projections. Full enrichment remains the default for
 explicit IDs. Preserve enrichment timestamps, invalidate changed bases using
@@ -108,3 +108,33 @@ four quality gates with isolated Mongo, independent SDD verification, two live
 base inventory cycles inside 15-minute freshness, and the 35-case Sheet retest.
 Deploy worker then API only with exact-main provenance, capacity and compatible
 rollback under applicable authorization. Quality/catalog failures remain explicit.
+
+## September 14: full closure and broker ownership
+
+Fix gateway ownership before formula certification. Installed RobustConnection
+has is_closed/connected, not is_open; ten local probes currently create ten new
+connections and do not close the original. Production has 20 connections, 17
+without channels; DNS/TCP/management work while new AMQP is rejected. This is
+evidence of the code defect, not yet proof of the broker's exact rejection cause.
+
+Reuse a connected owned connection; await an existing robust reconnect within
+the current budget. Serialize creation only for absent/closed connections,
+recheck state under the lock, and close failed/unpublished resources. Close
+owned state on shutdown. Initial startup completion must not permanently lock
+readiness to an initial broker failure. Preserve the initializing state while
+the lifecycle is still starting. Tests must use the real connection interface.
+
+Preserve Sheet signatures, source-bound snapshots, seller isolation, 180/minute
+shared acquisition, 15-minute base freshness and the 25-second API budget.
+Profile full-size concurrent formula reads before any additional optimization.
+Use existing focused returns reconciliation and source-gated historical writers
+only with demonstrated source authority; no schema migration or legacy import
+is planned. Missing positives use the user-approved combined evidence rule.
+
+Deliver gateway first, then changed worker/API images with exact-main provenance
+and compatible rollback. The 90-minute production window starts only after
+warm-up and dependencies pass; no deployments/config changes occur inside it.
+Recalculate all 35 at 0/30/60 minutes, read complete matrices, sample lightweight
+health/freshness/queue/connection metrics every minute, and restart the window
+after any corrected failure. Keep all 24 diagnosis rows synchronized with the
+35 expected/actual/source cases. Independent SDD verification gates closure.

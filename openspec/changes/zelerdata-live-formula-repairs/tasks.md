@@ -70,3 +70,19 @@ or worktree operation is needed. Preserve unrelated untracked user work.
 - [x] 6.5 Accelerated 1900-item workload, all isolated-Mongo gates, independent local implementation verification. Final suite:4606 passed/9 skipped; protected Mongo:8 passed; Ruff/mypy541 passed. Full runtime/change verification remains in6.6.
 - [ ] 6.6 Exact-source worker/API delivery, two live inventory cycles and 35-case retest.
 - [ ] 6.7 Live full-inventory read correction: preserve source-bound snapshot checks while avoiding repeated full-source transfers/fingerprints within catalog resolution; omit unusable historical-sales reads and bound covered windows. Strict RED/GREEN, independent scoped review, all repository gates and affected image/UI verification.
+
+## 7. Full closure approved September 14
+
+Delivery decision: existing selected-main work-unit commits, no PR/branch/worktree
+administration. This explicit user/repository workflow takes precedence over
+the skill's generic chained-PR requirement. Split gateway lifecycle, formula
+corrections and evidence into independently reviewable behavior units; keep
+regressions with each implementation. Do not compress code to meet a line limit.
+
+- [ ] 7.1 RED/GREEN gateway readiness connection reuse, concurrent creation, reconnect/cancellation/shutdown and recovery after initial failure. Inspect Sheets probe cleanup; fix only reproduced defects.
+- [ ] 7.2 Independent gateway verification, root gates, exact-source gateway build/deploy, broker readiness and connection-count stability; establish exact AMQP rejection cause with sanitized evidence.
+- [ ] 7.3 Full-size 35-way formula reproduction/profile; bounded fixes and regression evidence for persistent processing and inventory expiry.
+- [ ] 7.4 Returns/historical completion through existing guarded operations, including positive/negative combined evidence and no invented coverage; close applicable 5.1/5.2 obligations.
+- [ ] 7.5 Final repository gates, independent local verification, exact-source affected image delivery and warm-up.
+- [ ] 7.6 Three simultaneous 35-case rounds and 90 continuous production minutes satisfying the closure specification; update/read back all 24 diagnoses and complete evidence matrix.
+- [ ] 7.7 Independent final SDD verification, reconciled task evidence, archive only after accepted verification, and runtime/main image comparison.

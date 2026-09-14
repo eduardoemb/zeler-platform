@@ -17,11 +17,21 @@ Repair 15 formula problems from the September 12 spreadsheet audit through legit
 
 ### Out of Scope
 
-- Fabricated historical intervals, blanket freshness bypasses, stock withdrawals, or unrelated products.
-- Certifying cases without source data.
+- Fabricated historical intervals, blanket freshness bypasses, physical stock withdrawals, or unrelated products.
+- Claiming a controlled positive fixture as a production-positive observation.
 - Commits or branch/worktree administration without user authorization.
 
 ## Capabilities
+
+September 14 closure authority: the user approved all 35 original cases,
+including DEVOLUCIONES and source-gated historical metrics, simultaneous whole-
+sheet recalculation, and 90 continuous production minutes after warm-up.
+Where a real positive fixture is absent, controlled positive tests plus verified
+production absence/coverage and explicit limitations are accepted. Existing
+commit/push/build/deploy authority now includes the scoped gateway connection
+repair in the approved plan. Broker mutations, capacity/cost changes and unrelated
+service restarts remain outside this authority. This supersedes the earlier
+recovery-first exclusion of returns for this closure, not historical integrity.
 
 ### New Capabilities
 
