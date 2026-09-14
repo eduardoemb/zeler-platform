@@ -140,6 +140,76 @@ pacing, leases or persisted source/projection contracts. The two-cycle base
 criterion is satisfied; catalog execution-time and final visible-result checks
 remain a distinct delivery requirement.
 
+## Verified read-optimization release
+
+Existing scoped authorization covers worker then API from connected-main source
+`bead0c48bd35449ae5553eb0d695b893fcb653b0`. Both builds succeeded with VERIFIED
+provenance and matching immutable digest/source records:
+
+| Service | Build | Target image |
+| --- | --- | --- |
+| sheets-worker | `fa111430-5ced-427e-a4c2-eab6ed8a4a5d` | `us-central1-docker.pkg.dev/zeler-platform-dev/zeler-platform/sheets-worker@sha256:887781cf8d9264a9d49912af03049979a618dd30292a716e3d734a6e75001b98` |
+| sheets-api | `deb68102-7bfb-4e91-b0aa-d57282c6e536` | `us-central1-docker.pkg.dev/zeler-platform-dev/zeler-platform/sheets-api@sha256:07499cf3ce2de2e99d41f31db8be557110131c4e941e7068d788b3e2e747f7b7` |
+
+Compatible rollback remains worker `sha256:8b048b8890974878a54b9fe8c2ba7e423f3a31ab0e32132bd19ab2a3ce8bbafc`
+from `14d0311` and API `sha256:6d9ad5434315ceef9b7b283e0babbc7d865377f9eced1fcc7963c43904e24226`
+from `ef0c4bb`. Gateway, schemas, registry, topology and volumes remain unchanged.
+No cleanup is included. Reattest API rollback compatibility, recheck capacity
+before each download, replace only the selected service with 300-second stop
+grace and a larger outer timeout, then verify identity, readiness, settling
+health/capacity and visible formula results.
+
+Operational limit: the two passing cycles are not a continuous-availability
+guarantee. During the subsequent release/inspection period, at 18:07:15 an
+in-progress third sweep had 1720/1900 fresh sources and an oldest age of
+949.635 seconds. The readers correctly exposed expired/pending rows. No TTL or
+source timestamp was changed to hide this observation. Final reporting retains
+this gap separately from the two completed-cycle acceptance measurements.
+
+The third sweep completed at 18:16:18.921 after enumeration at 17:56:06.615,
+20 minutes 12 seconds including the worker replacement period. The 18:16:43
+runtime sample found 1420/1900 fresh sources, 480 missing base projections and
+expired enumeration. This is an observed freshness failure at that checkpoint;
+the two earlier successful cycles must not be generalized to every sweep.
+
+The final worker replacement completed healthy, zero restarts and OOM false,
+with the exact `887781cf` digest above. Post-pull/deployment root capacity passed
+at 27 GiB free. The optional API-child graceful-stop probe failed its module
+identity assertion without sending a signal; API delivery therefore retains
+the original bounded 300-second Compose stop strategy. API delivery and final
+visible verification remain pending at this checkpoint.
+
+### 18:40 UTC report checkpoint: shared broker readiness failure
+
+Both final `bead0c4` images were narrowly deployed and initially became Docker
+healthy with zero restarts/OOM. API post-delivery root capacity passed at 26 GiB.
+The subsequent API health request timed out at 20 seconds; at 18:35 the API was
+Docker unhealthy. Two later bounded probes returned HTTP 503: Mongo and registry
+passed, RabbitMQ and claims-DLQ availability failed. Gateway `/ready` independently
+returned HTTP 503 with RabbitMQ failing while Mongo, registry and the repricer
+sweep scheduler passed. The broker failure is shared; its cause is not established.
+No broker mutation, cleanup or other-service restart was performed. The final
+images remain running, with the compatible rollback recorded above still available;
+stable runtime acceptance is explicitly open.
+
+The final Sheet retest recalculated 23 original anchors in five staggered groups
+before further requests were stopped on the readiness failure. All 35 anchors
+were read back, but the remaining 12 retain prior executions. Recalculated
+calculator/control headers, supermarket negatives, selected active/paused history,
+dimensions and sold/no-sale controls returned. CALIDAD, CATALOGO, BUYBOX and
+CATALOGOCOMPLETO remained PROCESSING; OBTENERCATALOGO returned DATA_UNAVAILABLE.
+Headers alone do not verify complete matrices. Task 6.6/6.7 and full-change SDD
+acceptance remain open. Evidence files: `/tmp/zeler-read-release/` deployment
+logs, `health-detail*.log`, `gateway-detail-final.log`, `dependency-capacity.log`
+and `sheet-report-cut.json`.
+
+Capacity during the failure: root 26,916,232 KiB free, Mongo 47,455,252 KiB free
+on `/dev/sdb` ext4, free inodes 6,080,423 / 3,276,318 and 1,483 MiB available RAM.
+Docker reported 30 images / 15.75 GB, 10 active containers, eight local volumes
+(three active), zero build cache; no cleanup was performed. Intended runtime
+source and both running image bindings remain `bead0c4`; subsequent local edits
+are documentation only, so another image build is not indicated by source drift.
+
 Read-only production preflight found 30321201152 bytes free on root,
 48610152448 bytes on mounted /dev/sdb Mongo volume, 6123212/3276318 free inodes,
 1107 MiB available memory. All inspected services healthy, Sheets and gateway
