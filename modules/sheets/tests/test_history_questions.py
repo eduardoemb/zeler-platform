@@ -24,9 +24,11 @@ from zeler_sheets.formulas.recovery import (
 from zeler_sheets.history_acquisition import HistoryAcquisitionStore
 from zeler_sheets.history_continuation import HistoryContinuation
 from zeler_sheets.history_questions import (
+    QuestionDetailObservation,
     QuestionScanPage,
     QuestionScanStaging,
     initialize_question_scan,
+    question_subscriptions,
 )
 
 NOW = datetime(2026, 9, 15, 12, tzinfo=UTC)
@@ -348,3 +350,122 @@ async def test_lost_lease_does_not_consume_drift_budget(queue: FormulaRecoveryQu
     with pytest.raises(ValueError, match="lease"):
         await runner.page(job, head, QuestionScanPage([], 0, None, True, NOW))
     assert (await runner.store.heads.find_one({"_id": head.id}))["drift_restarts"] == 0
+
+
+async def verified_questions(
+    queue: FormulaRecoveryQueue, rows: list[dict[str, Any]]
+) -> tuple[QuestionScanStaging, SheetsHistoryAcquisition]:
+    runner, job, head = await scan_state(queue)
+    head = await runner.page(job, head, QuestionScanPage(rows, len(rows), None, True, NOW))
+    head = await runner.begin_verification(await claim(queue), head)
+    head = await runner.page(
+        await claim(queue), head, QuestionScanPage(rows, len(rows), None, True, NOW)
+    )
+    return runner, head
+
+
+@pytest.mark.asyncio
+async def test_twelve_subscriptions_share_one_verified_manifest(
+    queue: FormulaRecoveryQueue,
+) -> None:
+    rows = [
+        question(
+            index,
+            date_created=datetime(
+                2025 + (index > 4), (index + 7) % 12 + 1, 16, tzinfo=UTC
+            ).isoformat(),
+        )
+        for index in range(1, 13)
+    ]
+    runner, head = await verified_questions(queue, rows)
+    subscriptions = question_subscriptions(head)
+    assert len(subscriptions) == 12 and len({sub.chunk_id for sub in subscriptions}) == 12
+    assert subscriptions[0].date_from == START and subscriptions[-1].date_to == NOW
+    assert all(sub.acquisition_id == head.id and sub.pass_number == 2 for sub in subscriptions)
+    for left, right in zip(subscriptions, subscriptions[1:], strict=False):
+        assert left.date_to == right.date_from
+    for row in rows:
+        created = datetime.fromisoformat(row["date_created"])
+        assert sum(sub.date_from <= created < sub.date_to for sub in subscriptions) == 1
+    first = QuestionDetailObservation(rows[0], NOW - timedelta(seconds=5))
+    head = await runner.hydrate(await claim(queue), head, [first])
+    restarted = QuestionScanStaging(HistoryContinuation(runner.store))
+    remaining = [QuestionDetailObservation(row, NOW) for row in rows[1:]]
+    head = await restarted.hydrate(await claim(queue), head, remaining)
+    assert question_subscriptions(head) == subscriptions
+    assert head.fetched_count == 12 and head.phase == "verify" and head.published_count == 0
+    detail = await runner.store.receipts.find_one({"kind": "detail", "resource_id": "1"})
+    assert detail["observed_at"] == first.observed_at
+    assert await runner.store.db.questions.count_documents({}) == 0
+    assert await runner.store.db.sheets_read_model_freshness.count_documents({}) == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "damage", ["seller", "created", "status", "identity", "outside", "upper", "answered"]
+)
+async def test_invalid_details_cannot_advance_verified_manifest(
+    queue: FormulaRecoveryQueue, damage: str
+) -> None:
+    row = question(1, date_created=(NOW - timedelta(days=1)).isoformat())
+    if damage == "outside":
+        row = question(1)
+    if damage == "upper":
+        row["date_created"] = NOW.isoformat()
+    if damage == "answered":
+        row["status"] = "ANSWERED"
+    runner, head = await verified_questions(queue, [row])
+    detail = dict(row)
+    if damage == "seller":
+        detail["seller_id"] = 42
+    elif damage == "created":
+        detail["date_created"] = (NOW - timedelta(days=2)).isoformat()
+    elif damage == "status":
+        detail["status"] = "CLOSED_UNANSWERED"
+    elif damage == "identity":
+        detail["id"] = 2
+    with pytest.raises(ValueError):
+        await runner.hydrate(await claim(queue), head, [QuestionDetailObservation(detail, NOW)])
+    assert await runner.store.receipts.count_documents({"kind": "detail"}) == 0
+    assert (await runner.store.heads.find_one({"_id": head.id}))["fetched_count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_hydration_interruption_and_duplicate_preserve_checkpoint(
+    queue: FormulaRecoveryQueue, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    row = question(1, date_created=(NOW - timedelta(days=1)).isoformat(), text="")
+    runner, head = await verified_questions(queue, [row])
+    job = await claim(queue)
+    original = runner.store.checkpoint
+
+    async def interrupted(*args: Any, **kwargs: Any) -> SheetsHistoryAcquisition:
+        await original(*args, **kwargs)
+        raise RuntimeError("interrupted")
+
+    monkeypatch.setattr(runner.store, "checkpoint", interrupted)
+    with pytest.raises(RuntimeError, match="interrupted"):
+        await runner.hydrate(job, head, [QuestionDetailObservation(row, NOW)])
+    assert await runner.store.receipts.count_documents({"kind": "detail"}) == 0
+    monkeypatch.setattr(runner.store, "checkpoint", original)
+    head = await runner.hydrate(job, head, [QuestionDetailObservation(row, NOW)])
+    with pytest.raises(ValueError, match="already"):
+        await runner.hydrate(await claim(queue), head, [QuestionDetailObservation(row, NOW)])
+    assert await runner.store.receipts.count_documents({"kind": "detail"}) == 1
+
+
+@pytest.mark.asyncio
+async def test_unverified_head_and_oversized_hydration_are_rejected(
+    queue: FormulaRecoveryQueue,
+) -> None:
+    runner, job, head = await scan_state(queue)
+    with pytest.raises(ValueError):
+        question_subscriptions(head)
+    with pytest.raises(ValueError):
+        await runner.hydrate(job, head, [])
+    row = question(1, date_created=(NOW - timedelta(days=1)).isoformat())
+    head = await runner.page(job, head, QuestionScanPage([row], 1, None, True, NOW))
+    head = await runner.begin_verification(await claim(queue), head)
+    head = await runner.page(await claim(queue), head, QuestionScanPage([row], 1, None, True, NOW))
+    with pytest.raises(ValueError):
+        await runner.hydrate(await claim(queue), head, [QuestionDetailObservation(row, NOW)] * 21)

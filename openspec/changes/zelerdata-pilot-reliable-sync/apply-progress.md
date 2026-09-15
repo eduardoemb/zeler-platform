@@ -1142,3 +1142,32 @@ Task3.2j remains open: actual HTTP normalization/provider semantics, partitioned
 detail hydration and monthly proof subscriptions are not implemented. No activation,
 coverage authority, commit/build/deploy or production mutation. Rollback preserves
 pass-indexed receipts and leaves history-only jobs for a compatible staging worker.
+
+### Bounded question hydration and monthly bindings (3.2j partial)
+
+Strict TDD: baseline28 passed, missing detail/subscription import RED preceded
+source changes. The neutral staging adapter now accepts at most20 observed
+details, requiring current verified-pass membership, matching seller/creation
+instant/status/item identity and an answered-question answer object. Detail
+receipts retain raw payload/hash and actual supplied observation. Empty text
+alone is accepted. Out-of-plan discoveries remain memberships, not hydration.
+
+Twelve deterministic half-open monthly bindings derive from the durable fixed
+head/plan and share acquisition/generation/pass identity. They require a finished
+verification traversal and survive reconstructed consumers. They are acquisition
+descriptors, not persisted independent interval proofs or publication authority.
+Tests distribute twelve questions across all twelve months, resume in batches,
+reject the exclusive upper cutoff, wrong membership/seller/date/status, duplicate
+details and oversize batches, and roll back an interruption after staging writes.
+Detail/source drift is a typed rejection; no HTTP or rescan policy is invented.
+
+Actual disposable loopback rs0 PRIMARY with validators/indexes and nofile65536:
+questions38 + continuation14 + store50 + planner17 =119 passed, zero skipped.
+Ruff, format, mypy2files and diff-check passed. Regression evidence
+`/tmp/question-hydration-regression.log`, SHA256
+`3967a3470f7eac359388222b353644d0c76efe416477cf10067638da7e665570`.
+
+Task3.2j remains open for actual HTTP normalization and authoritative published
+interval proofs/finalization. No canonical question writes, coverage markers,
+worker activation, commit/build/deploy or production mutation. Rollback preserves
+detail receipts and history-only jobs for a checkpoint-compatible consumer.

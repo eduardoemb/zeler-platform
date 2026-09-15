@@ -11,6 +11,7 @@ from zeler_sheets.formulas.recovery import QuestionScanRecoveryRequest
 from zeler_sheets.history_acquisition import HistoryAcquisitionStore, HistoryConflictError, _head
 from zeler_sheets.history_continuation import HistoryContinuation
 from zeler_sheets.item_projection import item_source_fingerprint
+from zeler_sheets.pilot_history import HistoryPlanner
 
 
 async def initialize_question_scan(
@@ -47,6 +48,47 @@ class QuestionScanPage:
     observed_at: datetime
 
 
+@dataclass(frozen=True)
+class QuestionDetailObservation:
+    payload: dict[str, Any]
+    observed_at: datetime
+
+
+@dataclass(frozen=True)
+class QuestionMonthSubscription:
+    """A deterministic acquisition binding, never a publication/coverage proof."""
+
+    acquisition_id: str
+    generation: int
+    pass_number: int
+    chunk_id: str
+    date_from: datetime
+    date_to: datetime
+
+
+def question_subscriptions(head: SheetsHistoryAcquisition) -> tuple[QuestionMonthSubscription, ...]:
+    head = _head(head)
+    if (
+        head.read_model != "questions"
+        or head.phase != "verify"
+        or head.pass_number < 2
+        or head.next_cursor is not None
+        or head.page_sequence == 0
+        or head.source_total != head.discovered_count
+        or head.observed_until is None
+    ):
+        raise ValueError("subscriptions require the finished verification traversal")
+    plan = HistoryPlanner(cutoff=head.date_to, months=12).plan_for("questions")
+    if plan.chunks[0].start != head.date_from:
+        raise ValueError("subscriptions do not match the fixed twelve-month plan")
+    return tuple(
+        QuestionMonthSubscription(
+            head.id, head.generation, head.pass_number, chunk.id, chunk.start, chunk.end
+        )
+        for chunk in plan.chunks
+    )
+
+
 class QuestionManifestDriftError(HistoryConflictError):
     """A traversal changed its membership or observed source payloads."""
 
@@ -55,6 +97,117 @@ class QuestionScanStaging:
     def __init__(self, continuation: HistoryContinuation) -> None:
         self.continuation = continuation
         self.store = continuation.store
+
+    async def hydrate(
+        self,
+        job: dict[str, Any],
+        expected: SheetsHistoryAcquisition,
+        observations: list[QuestionDetailObservation],
+    ) -> SheetsHistoryAcquisition:
+        head = _head(expected)
+        subscriptions = question_subscriptions(head)
+        if not 1 <= len(observations) <= 20:
+            raise ValueError("question hydration requires one to twenty details")
+
+        async def transaction(session: Any) -> SheetsHistoryAcquisition:
+            await self.continuation._current(job, head, session)
+            scope = {
+                "acquisition_id": head.id,
+                "generation": head.generation,
+                "pass_number": head.pass_number,
+            }
+            receipts = []
+            seen: set[str] = set()
+            for observation in observations:
+                payload = observation.payload
+                identity = str(payload.get("id", ""))
+                created = datetime.fromisoformat(
+                    str(payload.get("date_created", "")).replace("Z", "+00:00")
+                )
+                if (
+                    not identity.isascii()
+                    or not identity.isdecimal()
+                    or identity in seen
+                    or str(payload.get("seller_id")) != head.seller_id
+                    or created.tzinfo is None
+                    or observation.observed_at.tzinfo is None
+                    or not any(sub.date_from <= created < sub.date_to for sub in subscriptions)
+                    or (
+                        payload.get("status") == "ANSWERED"
+                        and not isinstance(payload.get("answer"), dict)
+                    )
+                ):
+                    raise ValueError(
+                        "question detail identity, interval or required answer is invalid"
+                    )
+                seen.add(identity)
+                member = await self.store.receipts.find_one(
+                    {**scope, "kind": "membership", "resource_id": identity},
+                    session=session,
+                )
+                if member is None:
+                    raise HistoryConflictError("question detail has no verified membership")
+                receipt = SheetsHistoryReceipt.model_validate(member)
+                source = receipt.source_payload or {}
+                source_created = datetime.fromisoformat(
+                    str(source.get("date_created", "")).replace("Z", "+00:00")
+                )
+                if (
+                    item_source_fingerprint(source) != receipt.source_hash
+                    or str(source.get("id")) != identity
+                    or str(source.get("seller_id")) != head.seller_id
+                    or source_created != created
+                    or any(
+                        key in source and source[key] != payload.get(key)
+                        for key in ("status", "item_id")
+                    )
+                ):
+                    raise QuestionManifestDriftError(
+                        "question detail contradicts verified membership"
+                    )
+                if await self.store.receipts.find_one(
+                    {**scope, "kind": "detail", "resource_id": identity},
+                    session=session,
+                ):
+                    raise HistoryConflictError("question detail already staged")
+                fingerprint = item_source_fingerprint(payload)
+                receipts.append(
+                    SheetsHistoryReceipt(
+                        _id=f"{head.id}:{head.generation}:{head.pass_number}:detail:{identity}",
+                        acquisition_id=head.id,
+                        seller_id=head.seller_id,
+                        read_model="questions",
+                        generation=head.generation,
+                        pass_number=head.pass_number,
+                        page_sequence=head.page_sequence + 1,
+                        kind="detail",
+                        resource_id=identity,
+                        observed_at=observation.observed_at,
+                        source_payload=payload,
+                        source_hash=fingerprint,
+                        payload=payload,
+                        payload_hash=fingerprint,
+                    )
+                )
+            proposed = _head(
+                SheetsHistoryAcquisition.model_validate(
+                    {
+                        **head.model_dump(by_alias=True),
+                        "fetched_count": head.fetched_count + len(receipts),
+                        "page_sequence": head.page_sequence + 1,
+                        "checkpoint_revision": head.checkpoint_revision + 1,
+                        "updated_at": self.store.queue.now(),
+                    }
+                )
+            )
+            saved = await self.store.checkpoint(job, head, proposed, receipts, session=session)
+            await self.continuation._pending(job, saved, 0, timedelta(0), session)
+            return saved
+
+        async with await self.store.db.client.start_session() as session:
+            return SheetsHistoryAcquisition.model_validate(
+                await session.with_transaction(transaction)
+            )
 
     async def cursor_expired(
         self, job: dict[str, Any], head: SheetsHistoryAcquisition
