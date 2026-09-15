@@ -1059,3 +1059,55 @@ known-ID extra-recovery guard, which can still block very large known inventorie
 No coverage certification, publisher or worker-loop activation, production
 mutation, commit, build or deploy occurred. Rollback preserves range/receipt
 checkpoints and requires a compatible consumer or disabled/drained recovery.
+
+### Bounded guarded publication primitive (3.2i partial)
+
+Strict TDD: baseline read-model tests passed26; disconnected-proof RED failed
+both proof-order cases before the read-gate correction. Publisher import RED
+preceded its implementation; a later exact-boundary live-edge RED exposed and
+fixed another withdrawn-tail authorization. Tests seed a persisted publish head;
+they do not demonstrate a producer handoff, source completeness or finalization.
+
+The primitive projects at most20 receipt-backed orders with original observation
+times through real guarded persistence. Queue/head fences, proof subtraction,
+batch checkpoint and operation release share the transaction. Newer intervening
+events win; operation expiry and interrupted later batches roll back without
+certifying totals. Remaining interval proofs stay usable independently. Limits
+bound receipt inputs (1MiB each/4MiB batch), not total write-amplified BSON.
+
+Verified loopback rs0 PRIMARY and nofile65536; fixtures apply actual validators
+and indexes to unique disposable databases, then drop them. Final publisher12,
+adjacent145 (including nine publisher cases), and coverage/recovery439 passed;
+587 distinct cases across these runs. Scoped Ruff, format, mypy and diff-check
+passed. Logs: `/tmp/publication-final.log`, `/tmp/publication-regression.log`,
+`/tmp/publication-coverage.log`; final publisher SHA256
+`eb27a136c18598aedc0e4f11e6893b614a04335a9faf3ec03433325d777e2663`.
+
+Task3.2i stays open for trusted publish-state handoff and bounded final inventory
+reconciliation/coverage certification. No worker activation, commit, build,
+deployment or production mutation. Rollback removes this unactivated primitive;
+preserve any future partial checkpoints and keep their affected proofs withdrawn.
+
+### Shared question-scan admission identity (3.2j partial)
+
+The authorized first slice adds a dedicated request for exact twelve-calendar-month
+UTC/BSON bounds. Seller/plan identity coalesces repeated consumers; changing its
+fixed bounds fails. Admission is history-only from insertion, preserves terminal
+states and retains seller/capacity controls. Existing seller_scan head/schema/index
+are reused; no additional collection or validator is needed for this slice.
+
+Strict TDD: missing request import RED preceded source changes. Thirteen tests
+passed against unique disposable loopback rs0 PRIMARY databases with actual
+head/receipt validators and indexes. They prove twelve concurrent consumers share
+one admission, durable cursor/checkpoint reuse, and explicit cursor_expired or
+source_drift release rotates the manifest pass while preserving old receipts,
+fixed bounds and the three-restart budget. Signals are supplied by the harness:
+these tests do not prove provider expiry detection or manifest comparison.
+
+Scoped Ruff, format and mypy passed. Focused evidence `/tmp/questions-green.log`,
+SHA256 `cfc14fd2dc11c362cccf5421245ca5ab0e9d286b54a604a80bd2dd5522f6feb9`.
+Task3.2j remains open for provider continuation semantics, bounded enumeration,
+automatic drift detection, partitioned hydration and interval subscriptions.
+No worker activation, certification, production mutation, commit/build/deploy.
+Rollback must preserve protocol-stamped jobs/heads and leave them unclaimed by
+legacy workers; the unchanged legacy range request still rejects over90days.

@@ -1552,7 +1552,6 @@ def read_model_reconciliation_marker_covers(
         requested_from=requested_from,
         requested_until=requested_until,
         read_instant=read_instant,
-        reference=current,
         allow_live_claim=allow_live_claim,
     )
 
@@ -1611,12 +1610,11 @@ def _union_covers_instant(
     requested_from: datetime,
     requested_until: datetime,
     read_instant: datetime,
-    reference: dict[str, Any],
     allow_live_claim: bool,
 ) -> bool:
     """Whether the union of durable proofs reaches the requested read instant.
 
-    Only the uncovered tail may lean on the live claim of ``reference``. A gap
+    Only the uncovered tail may lean on its own edge proof's live claim. A gap
     between two independent proofs is never silently covered.
     """
     requested_instant = min(requested_until, read_instant)
@@ -1646,10 +1644,12 @@ def _union_covers_instant(
         covered_until = max(covered_until, end)
     if covered_until >= requested_instant:
         return True
-    return allow_live_claim and _live_claim_covers_instant(
-        reference,
-        coverage_until=covered_until,
-        read_instant=read_instant,
+    return allow_live_claim and any(
+        _safe_utc_datetime(proof.get("reconciled_until")) == covered_until
+        and _live_claim_covers_instant(
+            proof, coverage_until=covered_until, read_instant=read_instant
+        )
+        for proof in proofs
     )
 
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import calendar
 import hashlib
 import re
 from collections.abc import Callable
@@ -88,6 +89,58 @@ class RecoveryRequest:
             self.date_to.astimezone(UTC).isoformat(),
         )
         return hashlib.sha256("\0".join(parts).encode()).hexdigest()
+
+
+@dataclass(frozen=True)
+class QuestionScanRecoveryRequest:
+    """One fixed twelve-calendar-month acquisition identity, not twelve searches."""
+
+    seller_id: str
+    plan_id: str
+    date_from: datetime
+    date_to: datetime
+    read_model: str = "questions"
+
+    def __post_init__(self) -> None:
+        if (
+            not self.seller_id.isascii()
+            or not self.seller_id.isdecimal()
+            or not self.plan_id.strip()
+            or self.read_model != "questions"
+            or self.date_from.tzinfo is None
+            or self.date_to.tzinfo is None
+        ):
+            raise ValueError("question scan requires seller, plan and aware bounds")
+        start, end = self.date_from.astimezone(UTC), self.date_to.astimezone(UTC)
+        if end.year <= 1:
+            raise ValueError("question scan plan requires twelve calendar months")
+        expected = end.replace(
+            year=end.year - 1,
+            day=min(end.day, calendar.monthrange(end.year - 1, end.month)[1]),
+        )
+        if start != expected or start.microsecond % 1000 or end.microsecond % 1000:
+            raise ValueError("question scan plan requires exact twelve-month BSON bounds")
+        object.__setattr__(self, "date_from", start)
+        object.__setattr__(self, "date_to", end)
+
+    @property
+    def key(self) -> str:
+        return hashlib.sha256(
+            "\0".join((self.seller_id, self.read_model, "seller_scan", self.plan_id)).encode()
+        ).hexdigest()
+
+    def validate_existing(self, job: dict[str, Any] | None) -> None:
+        if job is not None and any(
+            job.get(key) != value
+            for key, value in {
+                "seller_id": self.seller_id,
+                "read_model": self.read_model,
+                "history_plan_id": self.plan_id,
+                "date_from": self.date_from,
+                "date_to": self.date_to,
+            }.items()
+        ):
+            raise ValueError("question scan plan identity or fixed bounds changed")
 
 
 @dataclass(frozen=True)
@@ -281,6 +334,7 @@ class FormulaRecoveryQueue:
     async def enqueue(
         self,
         request: RecoveryRequest
+        | QuestionScanRecoveryRequest
         | OrderIdsRecoveryRequest
         | ShipmentIdsRecoveryRequest
         | ItemIdsRecoveryRequest
@@ -318,8 +372,10 @@ class FormulaRecoveryQueue:
                 "read_model": request.read_model,
                 "state": {"$in": ["pending", "running"]},
             },
-            {"_id": 1},
+            None if isinstance(request, QuestionScanRecoveryRequest) else {"_id": 1},
         )
+        if isinstance(request, QuestionScanRecoveryRequest):
+            request.validate_existing(active_job)
         if active_job is not None:
             return request.key
         now = self.now()
@@ -333,7 +389,18 @@ class FormulaRecoveryQueue:
             "updated_at": now,
             "available_at": now,
         }
-        if isinstance(request, CatalogRecoveryRequest):
+        if isinstance(request, QuestionScanRecoveryRequest):
+            initial.update(
+                date_from=request.date_from,
+                date_to=request.date_to,
+                history_protocol_version=1,
+                history_plan_id=request.plan_id,
+                history_acquisition_id=request.key,
+                history_generation=1,
+                history_pass_number=1,
+                history_checkpoint_revision=0,
+            )
+        elif isinstance(request, CatalogRecoveryRequest):
             field = (
                 "item_ids"
                 if request.read_model != "catalog_product_snapshots"
@@ -366,8 +433,12 @@ class FormulaRecoveryQueue:
                 {"_id": request.seller_id}, {"$inc": {"revision": 1}}, session=session
             )
             existing = await self.collection.find_one({"_id": request.key}, session=session)
+            if isinstance(request, QuestionScanRecoveryRequest):
+                request.validate_existing(existing)
             if existing is not None and (
-                not reopen_terminal or existing["state"] in {"pending", "running"}
+                isinstance(request, QuestionScanRecoveryRequest)
+                or not reopen_terminal
+                or existing["state"] in {"pending", "running"}
             ):
                 return
             active = await self.collection.count_documents(

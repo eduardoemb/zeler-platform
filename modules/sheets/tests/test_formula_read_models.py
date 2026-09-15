@@ -12,6 +12,37 @@ from zeler_sheets.formulas.read_models import (
 )
 
 
+@pytest.mark.parametrize("current_is_right", [True, False])
+def test_live_tail_cannot_borrow_validity_from_disconnected_proof(current_is_right: bool) -> None:
+    now = datetime(2026, 9, 15, 12, tzinfo=UTC)
+    left = {
+        "state": "reconciled",
+        "date_from": now - timedelta(minutes=10),
+        "reconciled_until": now - timedelta(minutes=1),
+        "valid_until": now - timedelta(minutes=1),
+    }
+    right = {
+        "state": "reconciled",
+        "date_from": now - timedelta(seconds=30),
+        "reconciled_until": now,
+        "valid_until": now + timedelta(minutes=5),
+    }
+    current, retained = (right, left) if current_is_right else (left, right)
+    marker = {**current, "retained_intervals": [retained]}
+    assert not read_model_reconciliation_marker_covers(
+        marker,
+        date_from=now - timedelta(minutes=2),
+        date_to=now - timedelta(seconds=45),
+        now=now,
+    )
+    assert read_model_reconciliation_marker_covers(
+        marker,
+        date_from=now - timedelta(seconds=20),
+        date_to=now + timedelta(seconds=10),
+        now=now + timedelta(seconds=10),
+    )
+
+
 class FakeCursor:
     def __init__(self, docs: list[dict[str, Any]]) -> None:
         self._docs = docs
