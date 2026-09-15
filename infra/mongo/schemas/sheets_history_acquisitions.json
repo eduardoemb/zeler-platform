@@ -1,0 +1,317 @@
+{
+  "$jsonSchema": {
+    "additionalProperties": false,
+    "bsonType": "object",
+    "oneOf": [
+      {
+        "oneOf": [
+          {
+            "properties": {
+              "phase": {
+                "enum": [
+                  "discover",
+                  "hydrate",
+                  "verify",
+                  "publish"
+                ]
+              }
+            }
+          },
+          {
+            "properties": {
+              "next_cursor": {
+                "bsonType": "null"
+              },
+              "observed_from": {
+                "bsonType": "date"
+              },
+              "observed_until": {
+                "bsonType": "date"
+              },
+              "phase": {
+                "enum": [
+                  "completed"
+                ]
+              },
+              "source_total": {
+                "bsonType": [
+                  "int",
+                  "long"
+                ],
+                "minimum": 0
+              }
+            }
+          }
+        ],
+        "properties": {
+          "next_cursor": {
+            "bsonType": [
+              "int",
+              "long",
+              "null"
+            ],
+            "minimum": 0
+          },
+          "read_model": {
+            "enum": [
+              "orders"
+            ]
+          },
+          "scope_id": {
+            "pattern": "^orders:[0-9]{8}:[0-9]{8}$"
+          }
+        }
+      },
+      {
+        "oneOf": [
+          {
+            "properties": {
+              "phase": {
+                "enum": [
+                  "discover",
+                  "hydrate",
+                  "verify",
+                  "publish"
+                ]
+              }
+            }
+          },
+          {
+            "properties": {
+              "next_cursor": {
+                "bsonType": "null"
+              },
+              "observed_from": {
+                "bsonType": "date"
+              },
+              "observed_until": {
+                "bsonType": "date"
+              },
+              "phase": {
+                "enum": [
+                  "completed"
+                ]
+              },
+              "source_total": {
+                "bsonType": [
+                  "int",
+                  "long"
+                ],
+                "minimum": 0
+              }
+            }
+          }
+        ],
+        "properties": {
+          "next_cursor": {
+            "bsonType": [
+              "string",
+              "null"
+            ],
+            "minLength": 1,
+            "pattern": "\\S"
+          },
+          "read_model": {
+            "enum": [
+              "questions"
+            ]
+          },
+          "scope_id": {
+            "enum": [
+              "seller_scan"
+            ]
+          }
+        }
+      }
+    ],
+    "properties": {
+      "_id": {
+        "bsonType": "string",
+        "minLength": 1,
+        "pattern": "\\S"
+      },
+      "active_range_id": {
+        "bsonType": [
+          "string",
+          "null"
+        ],
+        "minLength": 1,
+        "pattern": "\\S"
+      },
+      "checkpoint_revision": {
+        "bsonType": [
+          "int",
+          "long"
+        ],
+        "minimum": 0
+      },
+      "created_at": {
+        "bsonType": "date"
+      },
+      "date_from": {
+        "bsonType": "date"
+      },
+      "date_to": {
+        "bsonType": "date"
+      },
+      "discovered_count": {
+        "bsonType": [
+          "int",
+          "long"
+        ],
+        "minimum": 0
+      },
+      "drift_restarts": {
+        "bsonType": [
+          "int",
+          "long"
+        ],
+        "maximum": 3,
+        "minimum": 0
+      },
+      "fetched_count": {
+        "bsonType": [
+          "int",
+          "long"
+        ],
+        "minimum": 0
+      },
+      "generation": {
+        "bsonType": [
+          "int",
+          "long"
+        ],
+        "minimum": 1
+      },
+      "job_id": {
+        "bsonType": "string",
+        "minLength": 1,
+        "pattern": "\\S"
+      },
+      "next_cursor": {
+        "bsonType": [
+          "int",
+          "long",
+          "string",
+          "null"
+        ]
+      },
+      "observed_from": {
+        "bsonType": [
+          "date",
+          "null"
+        ]
+      },
+      "observed_until": {
+        "bsonType": [
+          "date",
+          "null"
+        ]
+      },
+      "page_sequence": {
+        "bsonType": [
+          "int",
+          "long"
+        ],
+        "minimum": 0
+      },
+      "pass_number": {
+        "bsonType": [
+          "int",
+          "long"
+        ],
+        "minimum": 1
+      },
+      "phase": {
+        "enum": [
+          "discover",
+          "hydrate",
+          "verify",
+          "publish",
+          "completed"
+        ]
+      },
+      "plan_id": {
+        "bsonType": "string",
+        "minLength": 1,
+        "pattern": "\\S"
+      },
+      "publish_after": {
+        "bsonType": [
+          "string",
+          "null"
+        ],
+        "minLength": 1,
+        "pattern": "\\S"
+      },
+      "published_count": {
+        "bsonType": [
+          "int",
+          "long"
+        ],
+        "minimum": 0
+      },
+      "read_model": {
+        "enum": [
+          "orders",
+          "questions"
+        ]
+      },
+      "schema_version": {
+        "bsonType": "int",
+        "enum": [
+          1
+        ]
+      },
+      "scope_id": {
+        "bsonType": "string",
+        "minLength": 1,
+        "pattern": "\\S"
+      },
+      "seller_id": {
+        "bsonType": "string",
+        "pattern": "^[0-9]+$"
+      },
+      "source_total": {
+        "bsonType": [
+          "int",
+          "long",
+          "null"
+        ],
+        "minimum": 0
+      },
+      "updated_at": {
+        "bsonType": "date"
+      }
+    },
+    "required": [
+      "_id",
+      "seller_id",
+      "plan_id",
+      "scope_id",
+      "job_id",
+      "schema_version",
+      "read_model",
+      "date_from",
+      "date_to",
+      "generation",
+      "pass_number",
+      "checkpoint_revision",
+      "page_sequence",
+      "phase",
+      "next_cursor",
+      "source_total",
+      "discovered_count",
+      "fetched_count",
+      "published_count",
+      "drift_restarts",
+      "publish_after",
+      "observed_from",
+      "observed_until",
+      "created_at",
+      "updated_at"
+    ]
+  },
+  "validationAction": "error",
+  "validationLevel": "strict"
+}

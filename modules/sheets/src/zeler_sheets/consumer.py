@@ -43,6 +43,7 @@ from zeler_sheets.devoluciones_reconciliation import GatewayDevolucionesSource
 from zeler_sheets.devoluciones_runner import advance_due_devoluciones_run
 from zeler_sheets.dlq_auto_archive import build_dlq_auto_archiver
 from zeler_sheets.event_persistence import SheetsEventPersistence, StatusObservationContentionError
+from zeler_sheets.event_stage_telemetry import EventStageTelemetry
 from zeler_sheets.formulas.pacing import (
     PacedMeliGateway,
     RecoveryRequestPacer,
@@ -80,6 +81,7 @@ from zeler_sheets.observed_read_model_markers import (
     OBSERVED_READ_MODEL_SOURCES,
     publish_observed_read_model_markers,
 )
+from zeler_sheets.pilot_history_backfill import build_pilot_history_backfill
 from zeler_sheets.sheets_config import SheetsSettings
 from zeler_sheets.sheetseller_backfill import run_item_detail_enrichment, run_sheetseller_backfill
 from zeler_sheets.sync_jobs_processor import SyncJobsProcessor
@@ -976,12 +978,14 @@ class SheetsEventHandler:
         zelerdata_enrichment_enabled: bool = False,
         sale_price_enabled: bool = False,
         listing_fixed_fee_enabled: bool = False,
+        stage_telemetry: EventStageTelemetry | None = None,
     ) -> None:
         self._db = db
         self._gateway_client = gateway_client
         self._sheets_client = sheets_client
         self._idempotency_store = idempotency_store
         self._event_persistence = event_persistence or SheetsEventPersistence(db=db)
+        self._stage_telemetry = stage_telemetry
         self._zelerdata_enrichment_enabled = zelerdata_enrichment_enabled
         self._sale_price_enabled = sale_price_enabled
         self._listing_fixed_fee_enabled = listing_fixed_fee_enabled
@@ -1011,6 +1015,12 @@ class SheetsEventHandler:
             await self._idempotency_store.mark_processed(processing_key)
             return "observed"
 
+        if self._stage_telemetry is not None:
+            await self._stage_telemetry.record(
+                event_key=event.idempotency_key,
+                stage="received",
+                timestamp=datetime.now(UTC),
+            )
         fetch_path = _fetch_resource_path_for_event(event)
         owns_operation = operation is None and event.event_type.startswith(("orders.", "claims."))
         if owns_operation:
@@ -1057,6 +1067,12 @@ class SheetsEventHandler:
                     seller_id=event.seller_id,
                     path=fetch_path,
                 )
+                if self._stage_telemetry is not None:
+                    await self._stage_telemetry.record(
+                        event_key=event.idempotency_key,
+                        stage="fetched",
+                        timestamp=datetime.now(UTC),
+                    )
                 if event.event_type.startswith("claims."):
                     if operation is None:
                         raise ValueError("operation is required for claim event projection")
@@ -1090,6 +1106,12 @@ class SheetsEventHandler:
                         resource=resource,
                         operation=operation,
                     )
+                    if self._stage_telemetry is not None:
+                        await self._stage_telemetry.record(
+                            event_key=event.idempotency_key,
+                            stage="persisted",
+                            timestamp=datetime.now(UTC),
+                        )
             except Exception:
                 if owns_operation and operation is not None:
                     await finish_devoluciones_operation(
@@ -1263,6 +1285,7 @@ async def run() -> None:
         zelerdata_enrichment_enabled=_env_flag_enabled("ZELERDATA_ENRICHMENT_ENABLED"),
         sale_price_enabled=_env_flag_enabled("ZELERDATA_SALE_PRICE_ENABLED"),
         listing_fixed_fee_enabled=_env_flag_enabled("ZELERDATA_LISTING_FIXED_FEE_ENABLED"),
+        stage_telemetry=EventStageTelemetry(db=db),
     )
     runner = SheetsAmqpConsumerRunner(
         rabbitmq_url=rabbitmq_url,
@@ -1433,6 +1456,7 @@ async def build_zelerdata_refresh_supervisor(*, db: Any) -> ZelerDataRefreshSupe
         explorer=MongoSellerExplorer(db=db, allowed_sellers=allowed),
         planner=planner,
         inventory_refresher=planner.plan_inventory,
+        history_backfill=build_pilot_history_backfill(db=db, recovery_queue=queue),
         # Observed-only read models cannot be certified by a source range, so
         # the same cycle renews their heartbeat from the data already observed.
         observed_marker_publisher=lambda seller_id: publish_observed_read_model_markers(

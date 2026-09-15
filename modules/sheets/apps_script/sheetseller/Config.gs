@@ -11,6 +11,7 @@ function onOpen(e) {
   SpreadsheetApp.getUi()
     .createMenu("ZelerData")
     .addItem("Settings", "showZelerDataSettings")
+    .addItem("Refresh results", "refreshZelerDataResults")
     .addSeparator()
     .addItem("Clear extension token", "clearZelerDataExtensionToken")
     .addToUi();

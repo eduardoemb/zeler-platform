@@ -107,3 +107,30 @@ function zelerdataCoerce2d_(value) {
   }
   return [[value]];
 }
+
+/**
+ * Discovers existing =ZELERDATA_* formula cells and re-sets them in place
+ * (same formula text) to force Apps Script to recalculate. Only cells whose
+ * formula matches the exact prefix are touched; user formulas (=SUM, etc.)
+ * are never modified. This is a manual, user-invoked action, not a
+ * background timer, to respect Apps Script quotas and user intent.
+ */
+function refreshZelerDataResults() {
+  var sheet = SpreadsheetApp.getActiveSheet();
+  var dataRange = sheet.getDataRange();
+  var formulas = dataRange.getFormulas();
+  var refreshed = 0;
+  var pattern = /^=ZELERDATA_[A-Z0-9_]+\(/i;
+  for (var row = 0; row < formulas.length; row++) {
+    for (var col = 0; col < formulas[row].length; col++) {
+      var formula = formulas[row][col];
+      if (formula && pattern.test(formula)) {
+        var cell = sheet.getRange(row + 1, col + 1);
+        cell.setFormula(formula);
+        refreshed++;
+      }
+    }
+  }
+  SpreadsheetApp.getActive().toast(refreshed + " ZelerData formulas refreshed", "ZelerData", 5);
+  return { refreshed: refreshed };
+}

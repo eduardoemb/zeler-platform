@@ -6,6 +6,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 SCHEMAS_DIR = ROOT / "infra" / "mongo" / "schemas"
 EXPECTED_FILES = {
+    "sheets_history_order_ranges.json",
     # Source-of-truth canon (gateway-owned, from spec section 4)
     "users.json",
     "meli_accounts.json",
@@ -36,6 +37,8 @@ EXPECTED_FILES = {
     "repricer_reports.json",
     "repricer_monitoring_snapshots.json",
     # Sheets module-owned
+    "sheets_history_receipts.json",
+    "sheets_history_acquisitions.json",
     "sheets_exports.json",
     "sheets_sync_jobs.json",
     "sheets_extension_tokens.json",
@@ -86,6 +89,9 @@ EXPECTED_FILES = {
     "competition_snapshots.json",
 }
 ACTIVE_NON_PLACEHOLDER_SCHEMAS = {
+    "sheets_history_order_ranges.json",
+    "sheets_history_receipts.json",
+    "sheets_history_acquisitions.json",
     "audit_log.json",
     "bootstrap_jobs.json",
     "bootstrap_dispatcher_locks.json",

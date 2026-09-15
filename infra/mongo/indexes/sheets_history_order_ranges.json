@@ -1,0 +1,10 @@
+[
+  {
+    "keys": {"acquisition_id": 1, "generation": 1, "pass_number": 1, "node_id": 1},
+    "options": {"name": "uniq_sheets_history_order_range", "unique": true}
+  },
+  {
+    "keys": {"acquisition_id": 1, "generation": 1, "pass_number": 1, "state": 1, "date_from": 1, "node_id": 1},
+    "options": {"name": "idx_sheets_history_order_range_pending"}
+  }
+]

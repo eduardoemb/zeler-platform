@@ -1,0 +1,23 @@
+[
+  {
+    "keys": {
+      "acquisition_id": 1,
+      "generation": 1,
+      "pass_number": 1,
+      "kind": 1,
+      "resource_id": 1
+    },
+    "options": {"name": "uniq_history_receipt_identity", "unique": true}
+  },
+  {
+    "keys": {
+      "acquisition_id": 1,
+      "generation": 1,
+      "pass_number": 1,
+      "kind": 1,
+      "page_sequence": 1,
+      "resource_id": 1
+    },
+    "options": {"name": "history_receipt_pages"}
+  }
+]

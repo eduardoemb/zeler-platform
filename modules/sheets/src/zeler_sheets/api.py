@@ -152,6 +152,32 @@ def build_router(
     dispatcher = formula_dispatcher
     router = APIRouter(prefix="/sheets", tags=["sheets"])
 
+    @router.get("/backfill/progress")
+    async def backfill_progress(request: Request, seller_id: str) -> JSONResponse:
+        auth = _authorize(request, seller_id=seller_id)
+        if auth is not None:
+            return auth
+
+        doc = await request.app.state.mongo_db["sheets_history_backfill_plans"].find_one(
+            {"seller_id": seller_id}
+        )
+        if doc is None:
+            return JSONResponse(
+                jsonable_encoder(
+                    {"seller_id": seller_id, "progress": None, "cutoff": None, "updated_at": None}
+                )
+            )
+        return JSONResponse(
+            jsonable_encoder(
+                {
+                    "seller_id": seller_id,
+                    "cutoff": doc.get("cutoff"),
+                    "progress": doc.get("progress"),
+                    "updated_at": doc.get("updated_at"),
+                }
+            )
+        )
+
     @router.get("/exports")
     async def list_exports(request: Request, seller_id: str) -> JSONResponse:
         auth = _authorize(request, seller_id=seller_id)

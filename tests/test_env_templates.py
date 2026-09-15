@@ -3,6 +3,8 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[1]
 ENV_DIR = ROOT / "infra" / "gce" / "env-templates"
 API_TEMPLATES = (
@@ -73,3 +75,21 @@ def test_sheets_worker_declares_zelerdata_freshness_flags_and_sanitized_vm_check
 
 def _read(name: str) -> str:
     return (ENV_DIR / name).read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("service", ["sheets-api", "sheets-worker"])
+def test_pilot_flags_have_unique_assignments_and_restricted_defaults(service: str) -> None:
+    assignments = [
+        line.strip().split("=", 1)
+        for line in _read(f"{service}.env.template").splitlines()
+        if line.strip().startswith("ZELERDATA_") and "=" in line
+    ]
+    keys = [key for key, _value in assignments]
+    assert len(keys) == len(set(keys)), "duplicate pilot assignments can override the kill switch"
+
+    values = dict(assignments)
+    assert values["ZELERDATA_FORMULA_RECOVERY_ENABLED"] == "true"
+    assert values["ZELERDATA_FORMULA_RECOVERY_SELLERS"] == "82453304"
+    if service == "sheets-worker":
+        assert values["ZELERDATA_REFRESH_ENABLED"] == "false"
+        assert values["ZELERDATA_REFRESH_SELLERS"] == "82453304"

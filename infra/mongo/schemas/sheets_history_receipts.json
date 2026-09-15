@@ -1,0 +1,272 @@
+{
+  "$jsonSchema": {
+    "additionalProperties": false,
+    "bsonType": "object",
+    "oneOf": [
+      {
+        "oneOf": [
+          {
+            "properties": {
+              "source_payload": {
+                "bsonType": "null"
+              }
+            }
+          },
+          {
+            "properties": {
+              "source_hash": {
+                "bsonType": "string"
+              },
+              "source_payload": {
+                "bsonType": "object"
+              }
+            },
+            "required": [
+              "source_payload"
+            ]
+          }
+        ],
+        "properties": {
+          "exclusion_reason": {
+            "bsonType": "null"
+          },
+          "kind": {
+            "enum": [
+              "membership"
+            ]
+          },
+          "payload": {
+            "bsonType": "null"
+          },
+          "payload_hash": {
+            "bsonType": "null"
+          },
+          "unavailable_fields": {
+            "maxItems": 0
+          }
+        }
+      },
+      {
+        "oneOf": [
+          {
+            "properties": {
+              "source_payload": {
+                "bsonType": "null"
+              }
+            }
+          },
+          {
+            "properties": {
+              "source_hash": {
+                "bsonType": "string"
+              },
+              "source_payload": {
+                "bsonType": "object"
+              }
+            },
+            "required": [
+              "source_payload"
+            ]
+          }
+        ],
+        "properties": {
+          "exclusion_reason": {
+            "bsonType": "null"
+          },
+          "kind": {
+            "enum": [
+              "detail"
+            ]
+          },
+          "payload": {
+            "bsonType": "object",
+            "minProperties": 1
+          },
+          "payload_hash": {
+            "bsonType": "string"
+          }
+        }
+      },
+      {
+        "oneOf": [
+          {
+            "properties": {
+              "source_payload": {
+                "bsonType": "null"
+              }
+            }
+          },
+          {
+            "properties": {
+              "source_hash": {
+                "bsonType": "string"
+              },
+              "source_payload": {
+                "bsonType": "object"
+              }
+            },
+            "required": [
+              "source_payload"
+            ]
+          }
+        ],
+        "properties": {
+          "exclusion_reason": {
+            "bsonType": "string"
+          },
+          "kind": {
+            "enum": [
+              "exclusion"
+            ]
+          },
+          "payload": {
+            "bsonType": "null"
+          },
+          "payload_hash": {
+            "bsonType": "null"
+          },
+          "unavailable_fields": {
+            "maxItems": 0
+          }
+        }
+      }
+    ],
+    "properties": {
+      "_id": {
+        "bsonType": "string",
+        "minLength": 1,
+        "pattern": "\\S"
+      },
+      "acquisition_id": {
+        "bsonType": "string",
+        "minLength": 1,
+        "pattern": "\\S"
+      },
+      "exclusion_reason": {
+        "bsonType": [
+          "string",
+          "null"
+        ],
+        "minLength": 1,
+        "pattern": "\\S"
+      },
+      "generation": {
+        "bsonType": [
+          "int",
+          "long"
+        ],
+        "minimum": 1
+      },
+      "kind": {
+        "enum": [
+          "membership",
+          "detail",
+          "exclusion"
+        ]
+      },
+      "observed_at": {
+        "bsonType": "date"
+      },
+      "page_sequence": {
+        "bsonType": [
+          "int",
+          "long"
+        ],
+        "minimum": 0
+      },
+      "pass_number": {
+        "bsonType": [
+          "int",
+          "long"
+        ],
+        "minimum": 1
+      },
+      "payload": {
+        "bsonType": [
+          "object",
+          "null"
+        ]
+      },
+      "payload_hash": {
+        "bsonType": [
+          "string",
+          "null"
+        ],
+        "pattern": "^[0-9a-f]{64}$"
+      },
+      "read_model": {
+        "enum": [
+          "orders",
+          "questions"
+        ]
+      },
+      "resource_id": {
+        "bsonType": "string",
+        "minLength": 1,
+        "pattern": "\\S"
+      },
+      "schema_version": {
+        "bsonType": "int",
+        "enum": [
+          1
+        ]
+      },
+      "seller_id": {
+        "bsonType": "string",
+        "pattern": "^[0-9]+$"
+      },
+      "source_hash": {
+        "bsonType": [
+          "string",
+          "null"
+        ],
+        "pattern": "^[0-9a-f]{64}$"
+      },
+      "source_payload": {
+        "bsonType": [
+          "object",
+          "null"
+        ],
+        "minProperties": 1
+      },
+      "source_version": {
+        "bsonType": [
+          "string",
+          "null"
+        ],
+        "minLength": 1,
+        "pattern": "\\S"
+      },
+      "unavailable_fields": {
+        "bsonType": "array",
+        "items": {
+          "bsonType": "string",
+          "minLength": 1,
+          "pattern": "\\S"
+        },
+        "uniqueItems": true
+      }
+    },
+    "required": [
+      "_id",
+      "acquisition_id",
+      "seller_id",
+      "read_model",
+      "generation",
+      "pass_number",
+      "page_sequence",
+      "schema_version",
+      "kind",
+      "resource_id",
+      "observed_at",
+      "source_version",
+      "source_hash",
+      "payload_hash",
+      "payload",
+      "unavailable_fields",
+      "exclusion_reason"
+    ]
+  },
+  "validationAction": "error",
+  "validationLevel": "strict"
+}

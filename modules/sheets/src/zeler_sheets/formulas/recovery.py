@@ -42,6 +42,10 @@ IMPLEMENTED_MODELS = frozenset(
 )
 
 
+class RecoveryCapacityError(ValueError):
+    """The seller's bounded recovery admission slots are occupied."""
+
+
 def recovery_sellers(value: str | None) -> frozenset[str]:
     """Runtime recovery is closed unless sellers are explicitly configured."""
     if not value or not value.strip():
@@ -283,6 +287,8 @@ class FormulaRecoveryQueue:
         | CatalogProductIdsRecoveryRequest
         | CatalogRecoveryRequest
         | ItemInventoryRecoveryRequest,
+        *,
+        reopen_terminal: bool = True,
     ) -> str:
         if self.allowed_sellers is not None and request.seller_id not in self.allowed_sellers:
             raise ValueError("recovery seller is not enabled")
@@ -360,7 +366,9 @@ class FormulaRecoveryQueue:
                 {"_id": request.seller_id}, {"$inc": {"revision": 1}}, session=session
             )
             existing = await self.collection.find_one({"_id": request.key}, session=session)
-            if existing is not None and existing["state"] in {"pending", "running"}:
+            if existing is not None and (
+                not reopen_terminal or existing["state"] in {"pending", "running"}
+            ):
                 return
             active = await self.collection.count_documents(
                 {"seller_id": request.seller_id, "state": {"$in": ["pending", "running"]}},
@@ -380,9 +388,9 @@ class FormulaRecoveryQueue:
                     session=session,
                 )
                 if non_inventory >= self.max_active_jobs_per_seller - self.reserved_inventory_slots:
-                    raise ValueError("recovery seller capacity reached")
+                    raise RecoveryCapacityError("recovery seller capacity reached")
             if active >= self.max_active_jobs_per_seller:
-                raise ValueError("recovery seller capacity reached")
+                raise RecoveryCapacityError("recovery seller capacity reached")
             if existing is None:
                 await self.collection.insert_one(initial, session=session)
             else:
@@ -503,8 +511,13 @@ class FormulaRecoveryQueue:
         )
         return bool(result.matched_count)
 
-    async def claim(self, *, lane: str | None = None) -> dict[str, Any] | None:
-        lane_filter = recovery_lane_filter(lane)
+    async def claim(
+        self, *, lane: str | None = None, history: bool = False
+    ) -> dict[str, Any] | None:
+        lane_filter = {
+            **recovery_lane_filter(lane),
+            "history_protocol_version": 1 if history else {"$exists": False},
+        }
         now = self.now()
         seller_filter = (
             {"seller_id": {"$in": sorted(self.allowed_sellers)}}

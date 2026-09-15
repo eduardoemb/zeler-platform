@@ -152,7 +152,9 @@ repeat failures, and promote stable knowledge to its proper operational form.
 - proven path: Use a dedicated loopback Mongo replica set on port 27028 with
   `--ulimit nofile=65536:65536`; verify PRIMARY before tests. Use disposable data,
   not existing development or production volumes. Point `MONGO_URI` at that
-  instance for the normal suite. For the protected stock-time rs0 tests, unset
+  instance with an explicitly named disposable database for the normal suite;
+  fixtures using `get_default_database()` cannot use a URI without a database.
+  For the protected stock-time rs0 tests, unset
   `MONGO_URI` and set the loopback `ZELER_RS0_TEST_URI` instead.
 - failed path: Rely on Docker's default descriptor limit; WiredTiger can abort
   with error 24 during the suite, making later integration tests skip. A prior
@@ -160,6 +162,9 @@ repeat failures, and promote stable knowledge to its proper operational form.
 - verification/source: `docs/zelerdata-goal-progress.md` records the earlier
   descriptor exhaustion and protected test workflow;
   `tests/integration/test_stock_time_forward_*_rs0.py` enforces the isolated target.
+  `tests/test_phase3_validator_contract.py` requires a default database;
+  `openspec/changes/zelerdata-pilot-reliable-sync/apply-progress.md` records the
+  full-suite rerun with a named disposable database.
 - status: active
 
 ## Python safety

@@ -6,6 +6,8 @@ import asyncio
 import re
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
+from copy import deepcopy
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from urllib.parse import urlencode
@@ -132,6 +134,14 @@ def _order_missing_fields(response: httpx.Response) -> frozenset[str]:
     if missing - {"buyer", "shipping", "seller", "feedback", "mediations"}:
         raise ValueError("order source partial fields are not supported")
     return missing
+
+
+@dataclass(frozen=True)
+class OrderDetailObservation:
+    resource: dict[str, Any]
+    unavailable_fields: frozenset[str]
+    source_payload: dict[str, Any]
+    observed_at: datetime
 
 
 class FormulaRecoveryWorker:
@@ -1070,6 +1080,20 @@ class FormulaRecoveryWorker:
         *,
         search_row: dict[str, Any] | None = None,
     ) -> tuple[dict[str, Any], frozenset[str]]:
+        observation = await self._order_detail_with_source(
+            seller_id, identity, start, end, search_row=search_row
+        )
+        return observation.resource, observation.unavailable_fields
+
+    async def _order_detail_with_source(
+        self,
+        seller_id: str,
+        identity: str,
+        start: datetime,
+        end: datetime,
+        *,
+        search_row: dict[str, Any] | None = None,
+    ) -> OrderDetailObservation:
         for attempt in range(3):
             try:
                 response = await self.detail_gateway.request(
@@ -1084,6 +1108,7 @@ class FormulaRecoveryWorker:
                 # actual header, not the shared client's 30-second cap. The
                 # enclosing 240-second job deadline and cancellation still apply.
                 await asyncio.sleep(max(1, int(delay)))
+        observed_at = self.queue.now()
         missing = _order_missing_fields(response)
         if response.status_code not in {200, 206} or (response.status_code == 206 and not missing):
             raise ValueError("order source partial fields are not supported")
@@ -1114,7 +1139,11 @@ class FormulaRecoveryWorker:
             or not detail["order_items"]
         ):
             raise ValueError("order detail scope or required data mismatch")
-        return await self._recover_order_shipment(seller_id, identity, detail, missing)
+        source = deepcopy(detail)
+        resource, unavailable = await self._recover_order_shipment(
+            seller_id, identity, detail, missing
+        )
+        return OrderDetailObservation(resource, unavailable, source, observed_at)
 
     async def _recover_order_shipment(
         self, seller_id: str, identity: str, detail: dict[str, Any], missing: frozenset[str]

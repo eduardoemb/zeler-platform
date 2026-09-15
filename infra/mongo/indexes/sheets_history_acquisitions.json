@@ -1,0 +1,6 @@
+[
+  {
+    "keys": {"seller_id": 1, "read_model": 1, "plan_id": 1, "scope_id": 1},
+    "options": {"name": "uniq_sheets_history_acquisition_scope", "unique": true}
+  }
+]

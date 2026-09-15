@@ -279,7 +279,180 @@ STOCK_WEEK_BUCKET = {
     },
 }
 
+HISTORY_COUNT = {"bsonType": ["int", "long"], "minimum": 0}
+HISTORY_TEXT = {"bsonType": "string", "minLength": 1, "pattern": r"\S"}
+HISTORY_PHASES = [
+    {"properties": {"phase": {"enum": ["discover", "hydrate", "verify", "publish"]}}},
+    {
+        "properties": {
+            "phase": {"enum": ["completed"]},
+            "observed_from": DATE,
+            "observed_until": DATE,
+            "source_total": HISTORY_COUNT,
+            "next_cursor": {"bsonType": "null"},
+        }
+    },
+]
+HISTORY_HEAD_PROPERTIES = {
+    "_id": HISTORY_TEXT,
+    "seller_id": {"bsonType": "string", "pattern": r"^[0-9]+$"},
+    "plan_id": HISTORY_TEXT,
+    "scope_id": HISTORY_TEXT,
+    "job_id": HISTORY_TEXT,
+    "schema_version": {"bsonType": "int", "enum": [1]},
+    "read_model": {"enum": ["orders", "questions"]},
+    "date_from": DATE,
+    "date_to": DATE,
+    "generation": {"bsonType": ["int", "long"], "minimum": 1},
+    "pass_number": {"bsonType": ["int", "long"], "minimum": 1},
+    "checkpoint_revision": HISTORY_COUNT,
+    "page_sequence": HISTORY_COUNT,
+    "phase": {"enum": ["discover", "hydrate", "verify", "publish", "completed"]},
+    "next_cursor": {"bsonType": ["int", "long", "string", "null"]},
+    "active_range_id": {"bsonType": ["string", "null"], "minLength": 1, "pattern": r"\S"},
+    "source_total": {"bsonType": ["int", "long", "null"], "minimum": 0},
+    "discovered_count": HISTORY_COUNT,
+    "fetched_count": HISTORY_COUNT,
+    "published_count": HISTORY_COUNT,
+    "drift_restarts": {"bsonType": ["int", "long"], "minimum": 0, "maximum": 3},
+    "publish_after": {"bsonType": ["string", "null"], "minLength": 1, "pattern": r"\S"},
+    "observed_from": NULLABLE_DATE,
+    "observed_until": NULLABLE_DATE,
+    "created_at": DATE,
+    "updated_at": DATE,
+}
+
+HISTORY_NULLABLE_TEXT = {"bsonType": ["string", "null"], "minLength": 1, "pattern": r"\S"}
+HISTORY_HASH = {"bsonType": ["string", "null"], "pattern": r"^[0-9a-f]{64}$"}
+HISTORY_SOURCE_CASES = [
+    {"properties": {"source_payload": {"bsonType": "null"}}},
+    {
+        "required": ["source_payload"],
+        "properties": {
+            "source_payload": {"bsonType": "object"},
+            "source_hash": {"bsonType": "string"},
+        },
+    },
+]
+HISTORY_RECEIPT_PROPERTIES = {
+    "_id": HISTORY_TEXT,
+    "acquisition_id": HISTORY_TEXT,
+    "seller_id": {"bsonType": "string", "pattern": r"^[0-9]+$"},
+    "read_model": {"enum": ["orders", "questions"]},
+    "generation": {"bsonType": ["int", "long"], "minimum": 1},
+    "pass_number": {"bsonType": ["int", "long"], "minimum": 1},
+    "page_sequence": HISTORY_COUNT,
+    "schema_version": {"bsonType": "int", "enum": [1]},
+    "kind": {"enum": ["membership", "detail", "exclusion"]},
+    "resource_id": HISTORY_TEXT,
+    "observed_at": DATE,
+    "source_version": HISTORY_NULLABLE_TEXT,
+    "source_hash": HISTORY_HASH,
+    "source_payload": {"bsonType": ["object", "null"], "minProperties": 1},
+    "payload_hash": HISTORY_HASH,
+    "payload": {"bsonType": ["object", "null"]},
+    "unavailable_fields": {"bsonType": "array", "items": HISTORY_TEXT, "uniqueItems": True},
+    "exclusion_reason": HISTORY_NULLABLE_TEXT,
+}
+
+HISTORY_RANGE_PROPERTIES = {
+    "_id": HISTORY_TEXT,
+    "acquisition_id": HISTORY_TEXT,
+    "seller_id": HISTORY_HEAD_PROPERTIES["seller_id"],
+    "schema_version": HISTORY_HEAD_PROPERTIES["schema_version"],
+    "generation": HISTORY_HEAD_PROPERTIES["generation"],
+    "pass_number": HISTORY_HEAD_PROPERTIES["pass_number"],
+    "node_id": HISTORY_TEXT,
+    "root_id": HISTORY_TEXT,
+    "parent_id": HISTORY_NULLABLE_TEXT,
+    "date_from": DATE,
+    "date_to": DATE,
+    "depth": {"bsonType": ["int", "long"], "minimum": 0, "maximum": 12},
+    "state": {"enum": ["pending", "split", "enumerated"]},
+    "source_total": HISTORY_HEAD_PROPERTIES["source_total"],
+    "next_offset": HISTORY_COUNT,
+}
+
 ENTITY_SCHEMAS: dict[str, dict[str, Any]] = {
+    "sheets_history_order_ranges": {
+        "additionalProperties": False,
+        "required": list(HISTORY_RANGE_PROPERTIES),
+        "properties": HISTORY_RANGE_PROPERTIES,
+        "oneOf": [
+            {"properties": {"state": {"enum": ["pending"]}}},
+            {
+                "properties": {
+                    "state": {"enum": ["split"]},
+                    "source_total": {"bsonType": ["int", "long"], "minimum": 1},
+                    "next_offset": {"enum": [0]},
+                }
+            },
+            {"properties": {"state": {"enum": ["enumerated"]}, "source_total": HISTORY_COUNT}},
+        ],
+    },
+    "sheets_history_receipts": {
+        "additionalProperties": False,
+        "required": [field for field in HISTORY_RECEIPT_PROPERTIES if field != "source_payload"],
+        "properties": HISTORY_RECEIPT_PROPERTIES,
+        "oneOf": [
+            {
+                "properties": {
+                    "kind": {"enum": ["membership"]},
+                    "payload": {"bsonType": "null"},
+                    "payload_hash": {"bsonType": "null"},
+                    "unavailable_fields": {"maxItems": 0},
+                    "exclusion_reason": {"bsonType": "null"},
+                },
+                "oneOf": HISTORY_SOURCE_CASES,
+            },
+            {
+                "properties": {
+                    "kind": {"enum": ["detail"]},
+                    "payload": {"bsonType": "object", "minProperties": 1},
+                    "payload_hash": {"bsonType": "string"},
+                    "exclusion_reason": {"bsonType": "null"},
+                },
+                "oneOf": HISTORY_SOURCE_CASES,
+            },
+            {
+                "properties": {
+                    "kind": {"enum": ["exclusion"]},
+                    "payload": {"bsonType": "null"},
+                    "payload_hash": {"bsonType": "null"},
+                    "unavailable_fields": {"maxItems": 0},
+                    "exclusion_reason": {"bsonType": "string"},
+                },
+                "oneOf": HISTORY_SOURCE_CASES,
+            },
+        ],
+    },
+    "sheets_history_acquisitions": {
+        "additionalProperties": False,
+        "required": [field for field in HISTORY_HEAD_PROPERTIES if field != "active_range_id"],
+        "properties": HISTORY_HEAD_PROPERTIES,
+        "oneOf": [
+            {
+                "properties": {
+                    "read_model": {"enum": ["orders"]},
+                    "scope_id": {"pattern": r"^orders:[0-9]{8}:[0-9]{8}$"},
+                    "next_cursor": {"bsonType": ["int", "long", "null"], "minimum": 0},
+                },
+                "oneOf": HISTORY_PHASES,
+            },
+            {
+                "properties": {
+                    "read_model": {"enum": ["questions"]},
+                    "scope_id": {"enum": ["seller_scan"]},
+                    "next_cursor": {
+                        "bsonType": ["string", "null"],
+                        "minLength": 1,
+                        "pattern": r"\S",
+                    },
+                },
+                "oneOf": HISTORY_PHASES,
+            },
+        ],
+    },
     "meli_accounts": {
         "required": [
             "_id",

@@ -484,6 +484,7 @@ class ZelerDataRefreshSupervisor:
         freshness_alarm_reporter: Callable[[str], Awaitable[tuple[Any, ...]]] | None = None,
         refresh_failure_reporter: Callable[[int], Awaitable[None]] | None = None,
         inventory_refresher: Callable[[str], Awaitable[bool]] | None = None,
+        history_backfill: Callable[[str], Awaitable[bool]] | None = None,
         interval_seconds: float = DEFAULT_INTERVAL_SECONDS,
         inventory_interval_seconds: float = DEFAULT_INVENTORY_INTERVAL_SECONDS,
         monotonic: Callable[[], float] = time.monotonic,
@@ -509,6 +510,7 @@ class ZelerDataRefreshSupervisor:
         self._refresh_failure_reporter = refresh_failure_reporter
         self._interval = interval_seconds
         self._inventory_refresher = inventory_refresher
+        self._history_backfill = history_backfill
         self._inventory_interval = inventory_interval_seconds
         self._monotonic = monotonic
         self._now = now or (lambda: datetime.now(UTC))
@@ -642,6 +644,15 @@ class ZelerDataRefreshSupervisor:
                         admitted = True
                 except Exception:  # noqa: BLE001 - one model must not stop the loop
                     logger.warning("zelerdata.devoluciones_run_failed", seller_id=seller_id)
+            if self._history_backfill is not None:
+                try:
+                    # Pilot history backfill only enqueues incomplete chunks
+                    # through the existing durable recovery queue; it never
+                    # calls Mercado Libre or bypasses any lease/capacity guard.
+                    if await self._history_backfill(seller_id):
+                        admitted = True
+                except Exception:  # noqa: BLE001 - one step must not stop the loop
+                    logger.warning("zelerdata.history_backfill_failed", seller_id=seller_id)
             if self._precalculated_warmer is not None:
                 try:
                     # Q3/Q8/Q16: the heavy aggregate formulas are computed here,
