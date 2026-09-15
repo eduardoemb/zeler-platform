@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+from datetime import datetime, timedelta
 from typing import Any
 
-from zeler_platform_core.models import SheetsHistoryAcquisition
+from zeler_platform_core.models import SheetsHistoryAcquisition, SheetsHistoryReceipt
 from zeler_sheets.formulas.recovery import QuestionScanRecoveryRequest
-from zeler_sheets.history_acquisition import HistoryAcquisitionStore, HistoryConflictError
+from zeler_sheets.history_acquisition import HistoryAcquisitionStore, HistoryConflictError, _head
+from zeler_sheets.history_continuation import HistoryContinuation
+from zeler_sheets.item_projection import item_source_fingerprint
 
 
 async def initialize_question_scan(
@@ -30,3 +34,208 @@ async def initialize_question_scan(
         updated_at=job["created_at"],
     )
     return await store.initialize(job, initial)
+
+
+@dataclass(frozen=True)
+class QuestionScanPage:
+    """Normalized provider observation; cursor replacement/expiry is adapter authority."""
+
+    rows: list[dict[str, Any]]
+    total: int
+    next_cursor: str | None
+    terminal: bool
+    observed_at: datetime
+
+
+class QuestionManifestDriftError(HistoryConflictError):
+    """A traversal changed its membership or observed source payloads."""
+
+
+class QuestionScanStaging:
+    def __init__(self, continuation: HistoryContinuation) -> None:
+        self.continuation = continuation
+        self.store = continuation.store
+
+    async def cursor_expired(
+        self, job: dict[str, Any], head: SheetsHistoryAcquisition
+    ) -> SheetsHistoryAcquisition:
+        if head.read_model != "questions" or head.next_cursor is None:
+            raise ValueError("expiry requires an active question cursor")
+        return await self.continuation.release(job, head, reason="cursor_expired")
+
+    async def begin_verification(
+        self, job: dict[str, Any], expected: SheetsHistoryAcquisition
+    ) -> SheetsHistoryAcquisition:
+        head = _head(expected)
+        if (
+            head.read_model != "questions"
+            or head.phase != "hydrate"
+            or head.next_cursor is not None
+            or head.fetched_count
+        ):
+            raise ValueError("verification requires a completed membership traversal")
+
+        async def transaction(session: Any) -> SheetsHistoryAcquisition:
+            await self.continuation._current(job, head, session)
+            count = await self.store.receipts.count_documents(
+                {
+                    "acquisition_id": head.id,
+                    "generation": head.generation,
+                    "pass_number": head.pass_number,
+                    "kind": "membership",
+                },
+                session=session,
+            )
+            if (
+                count != head.discovered_count
+                or count != head.source_total
+                or head.observed_until is None
+            ):
+                raise HistoryConflictError("verification baseline is incomplete")
+            saved = _head(
+                SheetsHistoryAcquisition.model_validate(
+                    {
+                        **head.model_dump(by_alias=True),
+                        "phase": "verify",
+                        "pass_number": head.pass_number + 1,
+                        "page_sequence": 0,
+                        "checkpoint_revision": head.checkpoint_revision + 1,
+                        "discovered_count": 0,
+                        "observed_from": None,
+                        "observed_until": None,
+                        "updated_at": self.store.queue.now(),
+                    }
+                )
+            )
+            replaced = await self.store.heads.replace_one(
+                {
+                    "_id": head.id,
+                    "generation": head.generation,
+                    "checkpoint_revision": head.checkpoint_revision,
+                },
+                saved.model_dump(by_alias=True),
+                session=session,
+            )
+            if replaced.matched_count != 1:
+                raise HistoryConflictError("question verification lost its checkpoint")
+            await self.continuation._pending(job, saved, 0, timedelta(0), session)
+            return saved
+
+        async with await self.store.db.client.start_session() as session:
+            return SheetsHistoryAcquisition.model_validate(
+                await session.with_transaction(transaction)
+            )
+
+    async def page(
+        self, job: dict[str, Any], expected: SheetsHistoryAcquisition, page: QuestionScanPage
+    ) -> SheetsHistoryAcquisition:
+        head = _head(expected)
+        if (
+            head.read_model != "questions"
+            or head.phase not in {"discover", "verify"}
+            or (head.phase == "verify" and head.page_sequence and head.next_cursor is None)
+        ):
+            raise ValueError("question traversal is finished or not active")
+        if (
+            type(page.total) is not int
+            or not 0 <= page.total <= 10000
+            or type(page.terminal) is not bool
+            or not isinstance(page.rows, list)
+            or len(page.rows) > 50
+            or page.observed_at.tzinfo is None
+            or (page.terminal and page.next_cursor is not None)
+            or (
+                not page.terminal
+                and (not isinstance(page.next_cursor, str) or not page.next_cursor or not page.rows)
+            )
+        ):
+            raise ValueError("invalid normalized question page or local scan budget")
+        receipts = []
+        for row in page.rows:
+            identity = str(row.get("id", ""))
+            created = datetime.fromisoformat(
+                str(row.get("date_created", "")).replace("Z", "+00:00")
+            )
+            if (
+                not identity.isascii()
+                or not identity.isdecimal()
+                or str(row.get("seller_id")) != head.seller_id
+                or created.tzinfo is None
+            ):
+                raise ValueError("question membership scope is invalid")
+            receipts.append(
+                SheetsHistoryReceipt(
+                    _id=f"{head.id}:{head.generation}:{head.pass_number}:membership:{identity}",
+                    acquisition_id=head.id,
+                    seller_id=head.seller_id,
+                    read_model="questions",
+                    generation=head.generation,
+                    pass_number=head.pass_number,
+                    page_sequence=head.page_sequence + 1,
+                    kind="membership",
+                    resource_id=identity,
+                    observed_at=page.observed_at,
+                    source_payload=row,
+                    source_hash=item_source_fingerprint(row),
+                )
+            )
+
+        async def transaction(session: Any) -> SheetsHistoryAcquisition:
+            await self.continuation._current(job, head, session)
+            if head.source_total is not None and head.source_total != page.total:
+                raise QuestionManifestDriftError("question source total changed")
+            identities = [receipt.resource_id for receipt in receipts]
+            scope = {"acquisition_id": head.id, "generation": head.generation, "kind": "membership"}
+            if len(set(identities)) != len(identities) or await self.store.receipts.find_one(
+                {
+                    **scope,
+                    "pass_number": head.pass_number,
+                    "resource_id": {"$in": identities},
+                },
+                session=session,
+            ):
+                raise QuestionManifestDriftError("question traversal repeated membership")
+            if head.phase == "verify":
+                for receipt in receipts:
+                    previous = await self.store.receipts.find_one(
+                        {
+                            **scope,
+                            "pass_number": head.pass_number - 1,
+                            "resource_id": receipt.resource_id,
+                        },
+                        session=session,
+                    )
+                    if previous is None or previous.get("source_hash") != receipt.source_hash:
+                        raise QuestionManifestDriftError("question manifests diverged")
+            count = head.discovered_count + len(receipts)
+            if count > page.total or (page.terminal and count != page.total):
+                raise QuestionManifestDriftError("question terminal manifest is incomplete")
+            proposed = _head(
+                SheetsHistoryAcquisition.model_validate(
+                    {
+                        **head.model_dump(by_alias=True),
+                        "source_total": page.total,
+                        "discovered_count": count,
+                        "page_sequence": head.page_sequence + 1,
+                        "checkpoint_revision": head.checkpoint_revision + 1,
+                        "next_cursor": page.next_cursor,
+                        "phase": "hydrate"
+                        if page.terminal and head.phase == "discover"
+                        else head.phase,
+                        "observed_from": head.observed_from or page.observed_at,
+                        "observed_until": page.observed_at,
+                        "updated_at": self.store.queue.now(),
+                    }
+                )
+            )
+            saved = await self.store.checkpoint(job, head, proposed, receipts, session=session)
+            await self.continuation._pending(job, saved, 0, timedelta(0), session)
+            return saved
+
+        try:
+            async with await self.store.db.client.start_session() as session:
+                return SheetsHistoryAcquisition.model_validate(
+                    await session.with_transaction(transaction)
+                )
+        except QuestionManifestDriftError:
+            return await self.continuation.release(job, head, reason="source_drift")

@@ -23,7 +23,11 @@ from zeler_sheets.formulas.recovery import (
 )
 from zeler_sheets.history_acquisition import HistoryAcquisitionStore
 from zeler_sheets.history_continuation import HistoryContinuation
-from zeler_sheets.history_questions import initialize_question_scan
+from zeler_sheets.history_questions import (
+    QuestionScanPage,
+    QuestionScanStaging,
+    initialize_question_scan,
+)
 
 NOW = datetime(2026, 9, 15, 12, tzinfo=UTC)
 START = NOW.replace(year=2025)
@@ -190,3 +194,157 @@ async def test_restart_preserves_receipts_and_rotates_manifest(
     final = await queue.collection.find_one({"_id": scan.key})
     assert final is not None and final["state"] == "failed"
     assert restarted.drift_restarts == 3
+
+
+def question(identity: int, **changes: Any) -> dict[str, Any]:
+    return {
+        "id": identity,
+        "seller_id": 82453304,
+        "status": "UNANSWERED",
+        "date_created": (START - timedelta(days=400)).isoformat(),
+        **changes,
+    }
+
+
+async def scan_state(
+    queue: FormulaRecoveryQueue,
+) -> tuple[QuestionScanStaging, dict[str, Any], SheetsHistoryAcquisition]:
+    scan = request()
+    await queue.enqueue(scan)
+    job = await queue.claim(history=True)
+    assert job is not None
+    store = HistoryAcquisitionStore(queue.collection.database, queue)
+    return (
+        QuestionScanStaging(HistoryContinuation(store)),
+        job,
+        await initialize_question_scan(store, job, scan),
+    )
+
+
+async def claim(queue: FormulaRecoveryQueue) -> dict[str, Any]:
+    job = await queue.claim(history=True)
+    assert job is not None
+    return job
+
+
+@pytest.mark.asyncio
+async def test_normalized_scan_resumes_and_verifies_without_certification(
+    queue: FormulaRecoveryQueue,
+) -> None:
+    runner, job, head = await scan_state(queue)
+    head = await runner.page(job, head, QuestionScanPage([question(1)], 2, "opaque", False, NOW))
+    assert head.next_cursor == "opaque"
+    runner = QuestionScanStaging(HistoryContinuation(runner.store))
+    head = await runner.page(
+        await claim(queue), head, QuestionScanPage([question(2)], 2, None, True, NOW)
+    )
+    head = await runner.begin_verification(await claim(queue), head)
+    assert head.pass_number == 2
+    head = await runner.page(
+        await claim(queue), head, QuestionScanPage([question(2), question(1)], 2, None, True, NOW)
+    )
+    assert head.phase == "verify" and head.next_cursor is None and head.page_sequence == 1
+    assert head.fetched_count == 0 and await runner.store.receipts.count_documents({}) == 4
+    assert await runner.store.db.sheets_read_model_freshness.count_documents({}) == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "rows,total",
+    [
+        ([question(1), question(3)], 2),
+        ([question(1), question(2, status="ANSWERED")], 2),
+        ([question(1)], 1),
+        ([question(1)], 2),
+    ],
+)
+async def test_verification_detects_manifest_drift(
+    queue: FormulaRecoveryQueue, rows: list[dict[str, Any]], total: int
+) -> None:
+    runner, job, head = await scan_state(queue)
+    head = await runner.page(
+        job, head, QuestionScanPage([question(1), question(2)], 2, None, True, NOW)
+    )
+    head = await runner.begin_verification(await claim(queue), head)
+    head = await runner.page(
+        await claim(queue), head, QuestionScanPage(rows, total, None, True, NOW)
+    )
+    assert head.phase == "discover" and head.drift_restarts == 1 and head.pass_number == 3
+    assert await runner.store.receipts.count_documents({}) == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("expired", [True, False])
+async def test_expiry_or_duplicate_restarts_without_discarding_receipts(
+    queue: FormulaRecoveryQueue, expired: bool
+) -> None:
+    runner, job, head = await scan_state(queue)
+    head = await runner.page(job, head, QuestionScanPage([question(1)], 2, "same", False, NOW))
+    job = await claim(queue)
+    if expired:
+        head = await runner.cursor_expired(job, head)
+    else:
+        head = await runner.page(job, head, QuestionScanPage([question(1)], 2, None, True, NOW))
+    assert head.next_cursor is None and head.pass_number == 2 and head.drift_restarts == 1
+    assert await runner.store.receipts.count_documents({}) == 1
+
+
+@pytest.mark.asyncio
+async def test_empty_terminal_needs_second_observation_and_stays_nonterminal(
+    queue: FormulaRecoveryQueue,
+) -> None:
+    runner, job, head = await scan_state(queue)
+    head = await runner.page(job, head, QuestionScanPage([], 0, None, True, NOW))
+    head = await runner.begin_verification(await claim(queue), head)
+    head = await runner.page(await claim(queue), head, QuestionScanPage([], 0, None, True, NOW))
+    assert head.phase == "verify" and head.page_sequence == 1 and head.observed_until == NOW
+    with pytest.raises(ValueError, match="finished"):
+        await runner.page(await claim(queue), head, QuestionScanPage([], 0, None, True, NOW))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "page",
+    [
+        QuestionScanPage([], 0, "cursor", True, NOW),
+        QuestionScanPage([], 1, None, False, NOW),
+        QuestionScanPage([question(1, seller_id=42)], 1, None, True, NOW),
+        QuestionScanPage([question(1)], True, None, True, NOW),
+        QuestionScanPage([question(1)], 1, None, True, NOW.replace(tzinfo=None)),
+    ],
+)
+async def test_invalid_normalized_page_cannot_advance(
+    queue: FormulaRecoveryQueue, page: QuestionScanPage
+) -> None:
+    runner, job, head = await scan_state(queue)
+    with pytest.raises(ValueError):
+        await runner.page(job, head, page)
+    assert await runner.store.receipts.count_documents({}) == 0
+    assert (await runner.store.heads.find_one({"_id": head.id}))["checkpoint_revision"] == 0
+
+
+@pytest.mark.asyncio
+async def test_page_interruption_rolls_back_receipts_and_cursor(
+    queue: FormulaRecoveryQueue, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner, job, head = await scan_state(queue)
+    original = runner.store.checkpoint
+
+    async def interrupted(*args: Any, **kwargs: Any) -> SheetsHistoryAcquisition:
+        await original(*args, **kwargs)
+        raise RuntimeError("interrupted after staging")
+
+    monkeypatch.setattr(runner.store, "checkpoint", interrupted)
+    with pytest.raises(RuntimeError, match="interrupted"):
+        await runner.page(job, head, QuestionScanPage([question(1)], 2, "cursor", False, NOW))
+    assert await runner.store.receipts.count_documents({}) == 0
+    assert (await runner.store.heads.find_one({"_id": head.id}))["next_cursor"] is None
+
+
+@pytest.mark.asyncio
+async def test_lost_lease_does_not_consume_drift_budget(queue: FormulaRecoveryQueue) -> None:
+    runner, job, head = await scan_state(queue)
+    await queue.collection.update_one({"_id": job["_id"]}, {"$set": {"attempt_token": "other"}})
+    with pytest.raises(ValueError, match="lease"):
+        await runner.page(job, head, QuestionScanPage([], 0, None, True, NOW))
+    assert (await runner.store.heads.find_one({"_id": head.id}))["drift_restarts"] == 0

@@ -48,7 +48,7 @@ additions only; no activation.
 - [x] 3.2g Record primary-source cursor/expiry/subdivision/modification/retention evidence in `openspec/changes/zelerdata-pilot-reliable-sync/provider-evidence.md`; validate references. Runtime N/A: research.
 - [ ] 3.2h Orders producer; durable subdivision/verification wiring and explicit empty-page observations verified; large known-ID budget reconciliation and publisher handoff remain pending (`test_history_orders.py`, `test_history_order_subdivision.py`, `test_history_acquisition_store.py`).
 - [ ] 3.2i Bounded publisher; `modules/sheets/tests/test_history_publication.py`: guarded batch primitive verified with real Mongo newer events, operation loss, partial totals and unaffected interval reads. Producer publish-state handoff and final reconciliation/coverage certification remain pending; seeded prerequisites are not end-to-end evidence.
-- [ ] 3.2j Shared question scan; dedicated twelve-month request/history-only admission and durable seller/plan identity verified in `modules/sheets/tests/test_history_questions.py`, including explicit expiry/drift restart signals. Provider cursor adapter, automatic divergent-manifest detection and twelve interval-proof subscriptions remain pending.
+- [ ] 3.2j Shared question scan; dedicated admission and provider-neutral page staging verified in `modules/sheets/tests/test_history_questions.py`: durable cursor, explicit terminal/expiry, second-pass identity/hash comparison and bounded drift restart. HTTP cursor normalization, partitioned hydration and twelve interval-proof subscriptions remain pending.
 
 - [ ] 3.3 Prove actual-worker resume/deduplication and retained history.
 - [ ] 3.4 Wire modification reconciliation with overlap.

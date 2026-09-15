@@ -1114,3 +1114,31 @@ automatic drift detection, partitioned hydration and interval subscriptions.
 No worker activation, certification, production mutation, commit/build/deploy.
 Rollback must preserve protocol-stamped jobs/heads and leave them unclaimed by
 legacy workers; the unchanged legacy range request still rejects over90days.
+
+### Provider-neutral question traversal (3.2j partial)
+
+Strict TDD import RED preceded the normalized page/staging implementation.
+The caller supplies opaque continuation, explicit terminal and actual observation;
+expiry is an explicit signal, not a guessed timeout or HTTP response mapping.
+Each page persists at most50 seller-wide membership receipts plus the cursor
+under existing queue/head fences. Out-of-plan identities remain discovery evidence,
+not hydrated detail. Local total budget10000 is not a provider retention claim.
+
+A separate durable verification pass compares every identity/raw-payload hash;
+distinct membership plus terminal cardinality detects missing IDs, including
+equal-count replacements. Drift restarts under the existing three-restart budget
+without deleting receipts. Empty terminal pages still require another observation;
+verified traversal stays phase verify, never published/completed or certified.
+Rollback after staged writes and lease-loss tests prove no partial checkpoint.
+
+Real disposable loopback rs0 PRIMARY with installed validators/indexes and
+nofile65536: questions28 + continuation14 + store50 =92 passed, zero skipped.
+Ruff, format, mypy2files and diff-check passed. Evidence:
+`/tmp/question-adapter-regression.log`, SHA256
+`c42bc1dcf3d10acea1a8ec00930fb77dd0ec47a79a450a1ffd72e07025d063c8`;
+RED `/tmp/question-adapter-red.log`, quality `/tmp/question-adapter-quality.log`.
+
+Task3.2j remains open: actual HTTP normalization/provider semantics, partitioned
+detail hydration and monthly proof subscriptions are not implemented. No activation,
+coverage authority, commit/build/deploy or production mutation. Rollback preserves
+pass-indexed receipts and leaves history-only jobs for a compatible staging worker.
