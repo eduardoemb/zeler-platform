@@ -1106,6 +1106,9 @@ these tests do not prove provider expiry detection or manifest comparison.
 
 Scoped Ruff, format and mypy passed. Focused evidence `/tmp/questions-green.log`,
 SHA256 `cfc14fd2dc11c362cccf5421245ca5ab0e9d286b54a604a80bd2dd5522f6feb9`.
+Adjacent queue/terminal/continuation regression passed463, zero skipped:
+`/tmp/questions-regression.log`, SHA256
+`00a05365de52ebb008740fa88d7651f25ca04b7c85ffff600d63c8ac4a3987bf`.
 Task3.2j remains open for provider continuation semantics, bounded enumeration,
 automatic drift detection, partitioned hydration and interval subscriptions.
 No worker activation, certification, production mutation, commit/build/deploy.
