@@ -1,11 +1,8 @@
-"""Controlled overlap for reconciling recent changes to old data.
+"""Legacy creation-tail rereads, not modification-time reconciliation.
 
-The 12-month history chunks are non-overlapping. A modification to an old
-operation lands inside a chunk that has already completed, so it would
-never be re-fetched. This module produces a bounded overlap request that
-re-reads the most recent tail of a completed chunk through the existing
-recovery queue, using a distinct request key so it never collides with or
-resets the base chunk.
+These helpers cannot discover old orders modified outside the creation tail.
+Modification-page admission belongs to ``modification_recovery``; neither
+helper establishes that a provider modification traversal is complete.
 
 The overlap window is 24 hours by default, clamped to the chunk start for
 short chunks. It is caller's responsibility to only invoke it for chunks

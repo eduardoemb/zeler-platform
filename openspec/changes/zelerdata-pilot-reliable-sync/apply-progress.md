@@ -1201,3 +1201,31 @@ Task3.3 stays open for runtime admission wiring, publication/finalization and fu
 cross-resource/twelve-month coverage. No commit/build/deploy/production mutation.
 Rollback keeps protocol jobs unclaimed by legacy workers and retains durable heads,
 receipts and prior canonical data; a compatible consumer is required to resume.
+
+### Modification-time admission with exact overlap (3.4 partial)
+
+Strict TDD missing-module RED preceded implementation. Normalized pages now use
+the exact UTC half-open interval [watermark−24h,cutoff), independent of order
+creation time. The old creation-tail helper is documented honestly; it does not
+detect recent changes to old orders. No HTTP filter/continuation is invented.
+
+Requests enter the existing order-ID lane with durable ID/modification-version/raw
+hash identity. Repeated observations preserve terminal jobs; changed timestamps or
+payloads obtain distinct jobs even when an older version is active. Accepted keys
+include existing and failed jobs, never proof of processing or newly inserted work.
+Seller allowlists/capacity remain enforced; invalid inputs, storage errors and
+capacity defer only their seller page. Partial admission safely replays. Inputs are
+bounded to50 records and1MiB each. No watermark or coverage marker is written.
+
+Real disposable loopback rs0 PRIMARY: regression538 passed, then final admission9
+passed (eight overlap):539 distinct cases, zero skipped. A behavioral RED for
+malformed checkpoint input proved and fixed cross-seller failure propagation.
+Ruff, format, mypy4files and diff-check passed. Combined evidence
+`/tmp/modification-evidence.log`, SHA256
+`c8f6e73b03c5823016db7315bc44384a233277609e2b95f85c53e58d1a0e786f`.
+
+Task3.4 remains open for actual source enumeration, durable cursor/successful
+watermark finalization and runtime wiring. Failed retained jobs need explicit
+recovery; admitted does not authorize advancing a watermark. No deployment,
+commit/build, canonical writes or production mutation. Rollback preserves ID jobs;
+existing compatible ID workers can consume them without a new queue protocol.

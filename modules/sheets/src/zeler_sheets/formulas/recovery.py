@@ -217,6 +217,40 @@ class OrderIdsRecoveryRequest:
 
 
 @dataclass(frozen=True)
+class ModifiedOrderIdsRecoveryRequest(OrderIdsRecoveryRequest):
+    """One observed modification identity; fetching remains the existing ID lane."""
+
+    modified_version: str = ""
+    source_hash: str = ""
+
+    def __post_init__(self) -> None:
+        OrderIdsRecoveryRequest.__post_init__(self)
+        observed = datetime.fromisoformat(self.modified_version.replace("Z", "+00:00"))
+        if (
+            len(self.order_ids) != 1
+            or observed.tzinfo is None
+            or re.fullmatch(r"[0-9a-f]{64}", self.source_hash) is None
+        ):
+            raise ValueError("modification recovery requires one ID, aware version and source hash")
+        object.__setattr__(self, "modified_version", observed.astimezone(UTC).isoformat())
+
+    @property
+    def key(self) -> str:
+        return hashlib.sha256(
+            "\0".join(
+                (
+                    self.seller_id,
+                    "orders",
+                    "modified",
+                    self.order_ids[0],
+                    self.modified_version,
+                    self.source_hash,
+                )
+            ).encode()
+        ).hexdigest()
+
+
+@dataclass(frozen=True)
 class ShipmentIdsRecoveryRequest:
     seller_id: str
     shipment_ids: tuple[str, ...]
@@ -460,6 +494,12 @@ class FormulaRecoveryQueue:
             initial.update({field: list(request.ids), "catalog_offset": 0})
         elif isinstance(request, OrderIdsRecoveryRequest):
             initial["order_ids"] = list(request.order_ids)
+            if isinstance(request, ModifiedOrderIdsRecoveryRequest):
+                initial.update(
+                    modification_at=datetime.fromisoformat(request.modified_version),
+                    modification_version=request.modified_version,
+                    modification_hash=request.source_hash,
+                )
         elif isinstance(request, ShipmentIdsRecoveryRequest):
             initial["shipment_ids"] = list(request.shipment_ids)
         elif isinstance(request, ItemIdsRecoveryRequest):
@@ -487,7 +527,14 @@ class FormulaRecoveryQueue:
             if isinstance(request, (QuestionScanRecoveryRequest, OrderHistoryRecoveryRequest)):
                 request.validate_existing(existing)
             if existing is not None and (
-                isinstance(request, (QuestionScanRecoveryRequest, OrderHistoryRecoveryRequest))
+                isinstance(
+                    request,
+                    (
+                        QuestionScanRecoveryRequest,
+                        OrderHistoryRecoveryRequest,
+                        ModifiedOrderIdsRecoveryRequest,
+                    ),
+                )
                 or not reopen_terminal
                 or existing["state"] in {"pending", "running"}
             ):
