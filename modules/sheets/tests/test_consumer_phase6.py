@@ -255,6 +255,32 @@ class FakeSheetsClient:
         self.rows.append((seller_id, spreadsheet_id, worksheet_name, row, idempotency_key))
 
 
+class FlakySheetsClient(FakeSheetsClient):
+    def __init__(self) -> None:
+        super().__init__()
+        self.failures = 1
+
+    async def append_row(
+        self,
+        *,
+        seller_id: str,
+        spreadsheet_id: str,
+        worksheet_name: str,
+        row: list[str],
+        idempotency_key: str,
+    ) -> None:
+        if self.failures:
+            self.failures -= 1
+            raise RuntimeError("sheets temporarily unavailable")
+        await super().append_row(
+            seller_id=seller_id,
+            spreadsheet_id=spreadsheet_id,
+            worksheet_name=worksheet_name,
+            row=row,
+            idempotency_key=idempotency_key,
+        )
+
+
 class FakeIdempotency:
     def __init__(self, duplicate: bool = False) -> None:
         self.duplicate = duplicate
@@ -265,6 +291,11 @@ class FakeIdempotency:
 
     async def mark_processed(self, key: str) -> None:
         self.marked.append(key)
+
+
+class StatefulIdempotency(FakeIdempotency):
+    async def is_duplicate(self, key: str) -> bool:
+        return key in self.marked
 
 
 @pytest.mark.asyncio
@@ -498,3 +529,32 @@ async def test_duplicate_event_skipped() -> None:
     assert result == "duplicate"
     assert gateway.calls == []
     assert sheets.rows == []
+
+
+@pytest.mark.asyncio
+async def test_interrupted_export_is_replayed_before_idempotency_is_marked() -> None:
+    gateway = FakeGatewayClient()
+    sheets = FlakySheetsClient()
+    idempotency = StatefulIdempotency()
+    handler = SheetsEventHandler(
+        db=FakeDb(),
+        gateway_client=gateway,
+        sheets_client=sheets,
+        idempotency_store=idempotency,
+    )
+    event = SheetsEvent(
+        event_id="event-replay-1",
+        event_type="items.updated",
+        seller_id=123456789,
+        resource="/items/MLA123",
+        idempotency_key="items:/items/MLA123:event-replay-1",
+    )
+
+    with pytest.raises(RuntimeError, match="temporarily unavailable"):
+        await handler.handle(event)
+    assert idempotency.marked == []
+
+    assert await handler.handle(event) == "appended"
+    assert await handler.handle(event) == "duplicate"
+    assert len(sheets.rows) == 1
+    assert idempotency.marked == [event.idempotency_key]

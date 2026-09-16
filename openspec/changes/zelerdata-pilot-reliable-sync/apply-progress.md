@@ -1472,6 +1472,16 @@ cross-seller requests return `403`, while a missing job owned by the seller
 returns `404`. This establishes the backend status-read contract; zeler-app
 polling/UI and live Sheets recalculation evidence remain pending.
 
+### Consumer interruption replay evidence
+
+`test_interrupted_export_is_replayed_before_idempotency_is_marked` exercises the
+actual `SheetsEventHandler` with a transient Sheets append failure. The first
+delivery persists the source but does not mark the idempotency key; the retry
+appends exactly once and a subsequent redelivery is skipped. The focused phase-6
+and gateway integration tests pass (11 total). This closes the local unfinished
+export replay case; broker-level reorder and production consumer recovery remain
+pending.
+
 ### Disposable Sheets probe — negative observation
 
 Using the authorized spreadsheet `Pruebas ZelerData actual`, tab
