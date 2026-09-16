@@ -8,6 +8,7 @@ import pytest
 from bson import encode as bson_encode
 from bson.decimal128 import Decimal128
 from fastapi import FastAPI
+from pymongo.errors import DuplicateKeyError
 
 
 class FakeCursor:
@@ -210,6 +211,31 @@ async def test_manual_sync_retry_reuses_active_job(monkeypatch: pytest.MonkeyPat
     assert second.status_code == 200
     assert second.json()["_id"] == first.json()["_id"]
     assert len(db.sheets_sync_jobs.docs) == 2
+
+
+@pytest.mark.asyncio
+async def test_manual_sync_handles_cross_process_active_job_collision(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app, db = _app(monkeypatch)
+
+    async def raced_insert(doc: dict[str, Any]) -> None:
+        db.sheets_sync_jobs.docs.append({**doc, "_id": "raced-active-job"})
+        raise DuplicateKeyError("active seller spreadsheet already exists")
+
+    db.sheets_sync_jobs.insert_one = raced_insert  # type: ignore[method-assign]
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.post(
+            "/sheets/sync-jobs",
+            headers={"Authorization": "Bearer valid"},
+            json={"seller_id": "123456789"},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["_id"] == "raced-active-job"
 
 
 @pytest.mark.asyncio

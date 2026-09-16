@@ -280,9 +280,9 @@ def test_sheets_indexes_match_phase6_contract() -> None:
         {
             "keys": {"seller_id": 1, "spreadsheet_id": 1},
             "options": {
-                "name": "uniq_sheets_sync_jobs_running_seller_sheet",
+                "name": "uniq_sheets_sync_jobs_active_seller_sheet",
                 "unique": True,
-                "partialFilterExpression": {"state": "running"},
+                "partialFilterExpression": {"state": {"$in": ["pending", "running"]}},
             },
         },
     ]

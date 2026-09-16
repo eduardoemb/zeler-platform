@@ -16,7 +16,7 @@ from fastapi import APIRouter, Request, Response
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
-from pymongo.errors import PyMongoError
+from pymongo.errors import DuplicateKeyError, PyMongoError
 
 from zeler_platform_core.auth.jwt import verify_module_jwt
 from zeler_platform_core.auth.module_admin import authorize_module_admin
@@ -270,7 +270,21 @@ def build_router(
             "error_message": None,
             "schema_version": 2,
         }
-        await request.app.state.mongo_db["sheets_sync_jobs"].insert_one(job)
+        try:
+            await request.app.state.mongo_db["sheets_sync_jobs"].insert_one(job)
+        except DuplicateKeyError:
+            raced = await (
+                request.app.state.mongo_db["sheets_sync_jobs"]
+                .find({"seller_id": payload.seller_id})
+                .to_list(length=20)
+            )
+            active = next(
+                (item for item in raced if item.get("state") in {"pending", "running"}),
+                None,
+            )
+            if active is None:
+                raise
+            return JSONResponse(status_code=200, content=jsonable_encoder(active))
         return JSONResponse(status_code=201, content=jsonable_encoder(job))
 
     @router.get("/sync-jobs")
