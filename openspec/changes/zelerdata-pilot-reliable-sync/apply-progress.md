@@ -1229,3 +1229,31 @@ watermark finalization and runtime wiring. Failed retained jobs need explicit
 recovery; admitted does not authorize advancing a watermark. No deployment,
 commit/build, canonical writes or production mutation. Rollback preserves ID jobs;
 existing compatible ID workers can consume them without a new queue protocol.
+
+### Authorized returns repair boundary (3.5 partial)
+
+Real Mongo RED exposed a local authorization-order defect: expired, not-yet-due
+or unauthenticated existing runs acquired a new operation and invalidated readiness
+before the downstream authorization check refused source work. Preflight now
+rejects these known-invalid runs before lease acquisition; the existing downstream
+check remains, so this does not claim atomic immunity to intervening authorization
+changes. Existing tests now supply actual authorization/expiry fields rather than
+permissive incomplete fake runs.
+
+A bounded helper attempts at most seven supplied existing run IDs, coalesces
+duplicates and isolates failures. It preserves the pilot-only CLI boundary;
+foreign-seller runs are rejected without mutating their operations. It never
+creates, extends or reauthorizes a run.
+
+Tests use isolated loopback rs0 PRIMARY with installed run/window/operation/claim/
+order/freshness validators. An empty-source fixture traverses the real source,
+guarded quota window, readback and finalization path. Lease/source failures never
+finalize. This is software evidence for an empty interval, not evidence that the
+seven production intervals or positive return rows were repaired.
+
+Focused13 and adjacent236 passed, zero skipped; Ruff, format, mypy3files and
+diff-check passed. Evidence `/tmp/returns-regression.log`; RED `/tmp/returns-red.log`.
+Task3.5 remains open for authorized runtime evidence. No production access,
+API-limit claim, commit/build/deploy or new runtime activation. Rollback leaves
+existing run/window/claim records unchanged; retain the authorization preflight
+or disable advancement rather than deliberately reintroducing readiness loss.

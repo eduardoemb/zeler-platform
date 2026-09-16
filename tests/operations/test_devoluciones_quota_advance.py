@@ -19,6 +19,8 @@ def _run(state: str = "authorized") -> dict[str, Any]:
         "seller_id": "82453304",
         "scope": "devoluciones",
         "state": state,
+        "authorization_id": "test-authorization",
+        "expires_at": datetime.max.replace(tzinfo=UTC),
     }
 
 

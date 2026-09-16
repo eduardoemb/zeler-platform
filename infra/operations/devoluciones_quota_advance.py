@@ -14,6 +14,7 @@ from infra.operations.zelerdata_read_model_reconcile import (
     execute_devoluciones_quota_window,
     readback_devoluciones_quota_run,
 )
+from pymongo.errors import PyMongoError
 
 from zeler_platform_core.devoluciones_readiness import (
     DevolucionesOperationContext,
@@ -45,6 +46,26 @@ async def advance_authorized_quota_run(
     _validate_run(run)
     if run["state"] == "completed":
         return {"advanced": 0, "finalized": 0}
+    clock = now or (lambda: datetime.now(UTC))
+    current = clock()
+    expires = run.get("expires_at")
+    not_before = run.get("not_before")
+    if (
+        not run.get("authorization_id")
+        or current.tzinfo is None
+        or not isinstance(expires, datetime)
+        or expires.tzinfo is None
+        or current >= expires
+        or (
+            not_before is not None
+            and (
+                not isinstance(not_before, datetime)
+                or not_before.tzinfo is None
+                or current < not_before
+            )
+        )
+    ):
+        return {"advanced": 0, "finalized": 0}
 
     operation = await acquire_devoluciones_operation(
         db=db,
@@ -54,7 +75,6 @@ async def advance_authorized_quota_run(
         attempt_token=new_devoluciones_attempt_token(),
         source_fingerprint=run_id,
     )
-    clock = now or (lambda: datetime.now(UTC))
     try:
         outcome = await advance_devoluciones_quota_run(
             db=db,
@@ -82,6 +102,31 @@ async def advance_authorized_quota_run(
         raise
     await finish_devoluciones_operation(db=db, operation=operation, succeeded=True)
     return outcome
+
+
+async def advance_authorized_quota_runs(
+    *,
+    db: Any,
+    run_ids: Sequence[str],
+    now: Callable[[], datetime] | None = None,
+) -> tuple[dict[str, Any], ...]:
+    """Attempt at most seven existing runs, retaining the pilot-only authorization boundary."""
+    if not 1 <= len(run_ids) <= 7:
+        raise ValueError("bounded advancement requires one to seven run IDs")
+    outcomes = []
+    for run_id in dict.fromkeys(run_ids):
+        try:
+            result = await advance_authorized_quota_run(db=db, run_id=run_id, now=now)
+            outcomes.append(
+                {
+                    "run_id": run_id,
+                    "status": "processed" if any(result.values()) else "unchanged",
+                    **result,
+                }
+            )
+        except (ValueError, RuntimeError, PyMongoError):
+            outcomes.append({"run_id": run_id, "status": "failed", "advanced": 0, "finalized": 0})
+    return tuple(outcomes)
 
 
 async def _execute_window(
