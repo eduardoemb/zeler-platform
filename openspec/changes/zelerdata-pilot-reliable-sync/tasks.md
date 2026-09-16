@@ -56,7 +56,7 @@ additions only; no activation.
 
 ## Phase 4: Formulas
 
-- [ ] 4.1 Execute 52 positive/absent/filter/range cases.
+- [ ] 4.1 Execute 52 positive/absent/filter/range cases. Local dispatcher execution recorded for all 52 in `formula-local-execution.md`; variant acceptance and actual Sheets evidence remain pending.
 - [x] 4.2 Repair readers/projections preserving independent valid fields.
 - [ ] 4.3 Run 52 simultaneously plus 35 regressions; distinguish local/Sheets evidence.
 

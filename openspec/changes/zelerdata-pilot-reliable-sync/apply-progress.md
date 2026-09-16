@@ -1257,3 +1257,33 @@ Task3.5 remains open for authorized runtime evidence. No production access,
 API-limit claim, commit/build/deploy or new runtime activation. Rollback leaves
 existing run/window/claim records unchanged; retain the authorization preflight
 or disable advancement rather than deliberately reintroducing readiness loss.
+
+### Task 4.1 partial — executable local formula evidence
+
+Added an opt-in pytest dispatcher recorder and two RED/GREEN harness tests.
+The new test first failed importing the absent recorder; the recorder then
+passed focused checks. It admits only observations from passing tests, excludes
+failed/skipped tests, detects unknown catalog names, and records no cell values
+or arguments. Local scope and false Sheets/correctness flags are explicit.
+
+Executed 800 tests, zero failed/skipped, covering actual dispatcher calls to
+all 52 registered formulas; no missing or unknown formulas. The matrix in
+`formula-local-execution.md` lists per-formula counts and example test IDs.
+Fixtures include doubles: this does not establish Mongo filtering correctness,
+all four required variants per formula, deployed images, or Sheets visibility.
+Task 4.1 and the deployed matrix Observed/Evidence columns remain pending.
+
+Evidence: `/tmp/formula-local-run.log` SHA256
+`13d29bde6a9b7e18d20d30ab248d14a322fd4688c6d41596e988a42f1509902e`;
+full sanitized observation matrix `/tmp/formula-local-matrix.json` SHA256
+`0be0808da610d55e50dae5f8c15987ccbe706e3be29070139dd2501dd768ad42`.
+RED `/tmp/formula-evidence-red.log`; focused GREEN `/tmp/formula-evidence-green.log`.
+Ruff, format, mypy two files and diff-check passed. A replica-discovery health
+probe followed an advertised 27017 and failed; explicit direct connection to
+loopback 27028 then verified rs0 PRIMARY. Selected formula fixtures use doubles;
+this probe is not database-integration evidence. No runtime changes or activation.
+
+Rollback: remove the optional test plugin, its tests and local evidence document;
+production behavior and persisted data are unaffected. Durable learning: formula
+name references are weaker than executed dispatcher observations, and even an
+executed passing test is not blanket correctness or Google Sheets acceptance.
