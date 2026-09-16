@@ -24,7 +24,7 @@ Unrelated untracked `.codegraph/` was neither read as evidence nor modified.
 | Check | Result | Evidence |
 | --- | --- | --- |
 | Focused diagnostic, newly executed | 125 passed, zero skips/failures/errors, exit 0 | `/tmp/pilot-verify-diagnostic.xml` |
-| Full repository suite, reused | 5328 cases: 5319 passed, nine skipped, zero failures/errors, exit 0 | `/tmp/final-suite.xml` |
+| Full repository suite, current rerun | 5332 cases: 5323 passed, nine skipped, zero failures/errors, exit 0 | `/tmp/zeler-current-suite.xml` |
 | Root quality bundle, reused | Ruff passes; format checks 598 files; mypy passes 598 source files; direct-Meli and schema export checks pass; exit 0 | `/tmp/final-quality.log` |
 | Documentation whitespace | `git diff --check` passes | Current report patch |
 | Production, real provider, Google Sheets, 90-minute observation | Not executed | No acceptance evidence supplied |
@@ -36,6 +36,8 @@ SHA256 evidence identifiers:
 - Full XML: `48cebba33772d9e565642bdf0e56695dae6a1301a58f997f7b90bf99da6de415`.
 - Full log `/tmp/final-suite.log`: `5af7c14dcc7ed734ae46603da67f225bec32d9e514e8e9f0278c815b7848571e`.
 - Quality bundle: `b1bccc2f0dbe8fa49142395ef67654233bf7e0331cd5caabbd0453ff530aa482`.
+- Current rerun XML `/tmp/zeler-current-suite.xml`: `f2a30d0838b3552ef6d2931d074b0b9bb6dfe6fe72cad3e05020ae67a6fd3e1c`.
+- Current quality `/tmp/zeler-current-quality.log`: `4b7de804035961101eb767bc34413b0a28f3efd9cab8730982fcfb7761668ab5`.
 
 Focused command: `uv run pytest -q` selecting these files under
 `modules/sheets/tests/`, with `--junitxml=/tmp/pilot-verify-diagnostic.xml`:
