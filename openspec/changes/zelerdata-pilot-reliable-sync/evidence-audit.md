@@ -123,10 +123,12 @@ from order detail are not shipment-detail or cost acquisition evidence.
 
 ## Delivery remains gated separately
 
-Finish the local corrections and exact repository checks before proposing
-commit/publication and two source-bound Cloud Builds. Build authorization does
-not authorize deployment. The eventual deployment proposal must name exact
-source and image digests, pilot-only activation, fresh capacity/preflight,
-compatible rollback, validator/topology compatibility, and product verification.
-Add-on publication and any integrity repair mutation require their own explicit
-scope. No commit, push, build, deployment, or add-on publication occurred here.
+Local corrections and repository checks are complete through source commit
+`d9f822c` on `main`. The remaining delivery proposal is limited to
+`sheets-api` and `sheets-worker`; it requires connected-repository source
+verification, two source-bound Cloud Builds, immutable image digests,
+pilot-only activation, fresh capacity/preflight, compatible rollback,
+validator/topology compatibility, and product verification. Build authorization
+does not authorize deployment. Add-on publication and any integrity repair
+mutation require their own explicit scope. No push, build, deployment, or
+add-on publication has occurred.
