@@ -1428,7 +1428,7 @@ Validated completed artifacts from the parent-run full suite against the
 explicit disposable loopback Mongo target on port 27028 with direct connection;
 inherited ZELER_RS0_TEST_URI was unset. Command: `uv run pytest -q
 --junitxml=/tmp/final-suite.xml` (one command). Recorded process exit is zero.
-The XML reports **5328 cases: 5319 passed, nine skipped, zero failures/errors**.
+The XML reports **5332 cases: 5323 passed, nine skipped, zero failures/errors**.
 This corrects the preliminary description of eight skips: eight protected
 stock-time rs0 cases reject ambient MONGO_URI before connecting, and one Caddy
 environment-template case has no required keys. Skips are not acceptance;
@@ -1439,6 +1439,15 @@ this invocation does not revalidate those eight protected workflows.
 | Full pytest | `/tmp/final-suite.log`, SHA256 `5af7c14dcc7ed734ae46603da67f225bec32d9e514e8e9f0278c815b7848571e` |
 | Per-test results and skip reasons | `/tmp/final-suite.xml`, SHA256 `48cebba33772d9e565642bdf0e56695dae6a1301a58f997f7b90bf99da6de415` |
 | Root quality bundle | `/tmp/final-quality.log`, SHA256 `b1bccc2f0dbe8fa49142395ef67654233bf7e0331cd5caabbd0453ff530aa482` |
+
+After the interrupted-export replay test, the current rerun produced
+`/tmp/zeler-current-suite.xml` (5332 cases: 5323 passed, nine skipped, zero
+failures/errors; SHA256
+`f2a30d0838b3552ef6d2931d074b0b9bb6dfe6fe72cad3e05020ae67a6fd3e1c`) and
+`/tmp/zeler-current-quality.log` (all five root gates passed; SHA256
+`4b7de804035961101eb767bc34413b0a28f3efd9cab8730982fcfb7761668ab5`). The
+current artifacts supersede the earlier hashes for local evidence;
+the same protected runtime and Sheets gaps remain.
 
 The parent-run quality bundle completed `uv run ruff check .`,
 `uv run ruff format --check .`, `uv run mypy .`,
