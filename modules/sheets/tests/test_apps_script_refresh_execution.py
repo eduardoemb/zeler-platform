@@ -24,6 +24,8 @@ import pytest
         "empty",
         "property-failure",
         "corrupt-cursor",
+        "processing",
+        "manual-retry",
     ],
 )
 def test_actual_apps_script_refresh_in_local_service_harness(scenario: str) -> None:

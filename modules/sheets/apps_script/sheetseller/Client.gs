@@ -47,6 +47,9 @@ function zelerdataParseResponse_(response) {
 }
 
 function zelerdataEnvelopeToValues_(envelope) {
+  if (envelope && envelope.ok === false && envelope.error && envelope.error.code === "PROCESSING") {
+    return [[zelerdataProcessingMessage_(envelope.error)]];
+  }
   if (envelope && Array.isArray(envelope.values)) {
     if (envelope.values.length === 0) {
       return [[""]];

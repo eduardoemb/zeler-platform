@@ -81,7 +81,36 @@ vm.createContext(context);
 vm.runInContext(source, context);
 const run = () => context.refreshZelerDataResults();
 
-if (scenario === 'tabs') {
+if (scenario === 'processing') {
+  for (const values of [[], [[0]], [['cached stale result']]]) {
+    const result = context.zelerdataEnvelopeToValues_({
+      ok: false, error: { code: 'PROCESSING', retry_after_seconds: 15 }, values,
+    });
+    assert.equal(result[0][0], 'PROCESANDO: vuelve a calcular en ~15s');
+  }
+  assert.equal(context.zelerdataEnvelopeToValues_({ ok: true, values: [[0]] })[0][0], 0);
+} else if (scenario === 'manual-retry') {
+  let requests = 0;
+  context.getZelerDataExtensionToken_ = () => 'local-only';
+  context.getZelerDataApiBaseUrl_ = () => 'https://local.invalid';
+  context.Utilities = { getUuid: () => String(requests) };
+  context.UrlFetchApp = {
+    fetch: () => {
+      requests++;
+      return {
+        getResponseCode: () => 200,
+        getContentText: () => JSON.stringify({
+          ok: false, error: { code: 'PROCESSING', retry_after_seconds: 15 },
+        }),
+      };
+    },
+  };
+  assert.match(context.zelerdataExecute_('ZELERDATA_SKU', 'local', {})[0][0], /^PROCESANDO:/);
+  assert.equal(requests, 1);
+  assert.match(context.zelerdataExecute_('ZELERDATA_SKU', 'local', {})[0][0], /^PROCESANDO:/);
+  assert.equal(requests, 2);
+  assert.equal(writes.length, 0);
+} else if (scenario === 'tabs') {
   sheets = [sheet(1, [Array(25).fill(formula)]), sheet(2, [[formula, '=SUM(1,2)', 'text']])];
   const first = run();
   assert.equal(first.refreshed, 20);

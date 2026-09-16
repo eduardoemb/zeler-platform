@@ -1370,3 +1370,35 @@ Rollback restores the prior Client.gs implementation; the unused cursor property
 is inert. Production activation requires the separate add-on publication path,
 not merely rebuilding backend images. Prefer keeping bounded manual behavior
 rather than restoring an unbounded scan.
+
+### Task 5.2 partial — authorized progress, pending rendering and retry coalescence
+
+Baseline 19 passed. Executable Apps Script RED showed a PROCESSING envelope
+with empty/zero/stale values hid its pending message. The renderer now prioritizes
+explicit unsuccessful PROCESSING over values; successful zero values remain
+unchanged. Local fetch-double tests also prove one HTTP call per invocation,
+with no automatic retry loop, trigger or cell mutation. PROCESSING is a retry
+hint, not proof that a background job exists or will complete.
+
+Extended existing ASGI progress tests against a verified disposable loopback
+rs0 PRIMARY. Real callback/queue snapshot contains all 48 descriptors: 24 blocked,
+19 pending, four queued and one failed. Repeated callbacks preserve terminal
+attempts; five authorized GET polls do not change or duplicate jobs. Existing
+six authorization rejection cases still prove rejection before any DB access;
+their JWT signature boundary is explicitly stubbed, not cryptographic evidence.
+
+Formula HTTP retry test uses a real extension token service and Mongo queue,
+with only the missing-source dispatcher injected. Ten calls with distinct
+request IDs coalesce to one job across pending/running states and preserve
+its running attempt. This is not a claim about terminal legacy-job reopening,
+which retains its existing semantics. Admission acknowledgment is not completion.
+
+Regression: 132 passed, zero skipped/errors/failures; scoped Ruff, format,
+mypy two files and diff-check passed. RED `/tmp/progress-retry-red.log`;
+regression `/tmp/progress-retry-regression.log`; detailed test IDs/counts in
+`/tmp/progress-retry-regression.xml`. No new endpoint or response-shape changes.
+JUnit SHA256 `c44edcb0960d96d97bab38aa36f5414f1d35d6319fa32c00a3b889dffcd985fc`.
+Task 5.2 remains open: zeler-app exists but is outside this unit's edit roots,
+and neither its UI nor live Google Sheets was executed. No Google/production
+mutation, deployment, build or commit. Rollback affects the small pending
+renderer priority change and tests only; persisted queue contracts are unchanged.
