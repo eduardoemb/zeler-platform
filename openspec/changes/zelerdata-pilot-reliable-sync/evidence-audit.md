@@ -124,7 +124,8 @@ from order detail are not shipment-detail or cost acquisition evidence.
 ## Delivery remains gated separately
 
 Local corrections and repository checks are complete through source commit
-`d9f822c` on `main`. The remaining delivery proposal is limited to
+`d9f822c` on `main` (the subsequent commits are documentation-only). The
+remaining delivery proposal is limited to
 `sheets-api` and `sheets-worker`; it requires connected-repository source
 verification, two source-bound Cloud Builds, immutable image digests,
 pilot-only activation, fresh capacity/preflight, compatible rollback,
