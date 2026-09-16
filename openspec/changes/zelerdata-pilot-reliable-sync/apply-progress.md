@@ -1329,3 +1329,44 @@ RED `/tmp/formula-concurrent-red.log`; scoped Ruff, format and mypy three files
 passed. No source/runtime changes, commits, builds or deploys. Rollback removes
 only the new tests/helper; persisted production state is unaffected. Local
 coroutine concurrency is not Apps Script execution or visible-cell acceptance.
+
+### Task 5.1 partial — bounded manual Apps Script refresh
+
+Replaced the unbounded active-tab scan with a manual document-locked traversal.
+Per invocation: at most 20 writes, 2,000 scanned cells, 50 cells per read, and
+a cooperative 20-second budget checked between service calls. A blocked Google
+RPC can exceed wall-clock budget; no hard platform deadline is claimed.
+The local plan accepts at most 500 tabs and persists original sheet IDs plus
+position in document properties. Reordering preserves that plan, deleted tabs
+are skipped; newly added tabs enter the next full manual traversal.
+
+Candidates require the existing exact prefix. Immediately before setFormula,
+getFormula must still equal discovered text; changed cells are skipped. Cells
+are never cleared. The document lock coordinates this action across scripts,
+not concurrent human edits: Apps Script does not provide a CAS here and a user
+edit between reread and write remains a limitation. No automatic trigger added.
+`pending` means scan work remains, not a known count of cells awaiting results;
+`recalculationVerified` is always false. Toasts report requests, never visible
+success. Failed writes retain the current cursor and release the lock; property
+write failure propagates after lock release and may require bounded replay.
+
+Baseline 32 passed. Nine executable Node scenarios failed against old Client.gs
+before its modification. Eleven scenarios now execute the actual Client.gs in
+a local service-double VM: limits, cross-tab resume/reorder, changed formula,
+busy/missing lock, write retry, deadline, deleted tab, empty sheet, corrupt
+cursor and property failure. Adjacent regression totals 43 passed, zero skips.
+This does not execute Google APIs, custom-function recalculation or cell visibility.
+Task 5.1 stays open pending actual authorized Sheets evidence.
+
+RED `/tmp/apps-refresh-red.log`; regression `/tmp/apps-refresh-regression.log`;
+JUnit `/tmp/apps-refresh-regression.xml` SHA256
+`30052770955847a26055fec1a5c3a3b0e8488240594ca85e1762302499f41fa8`.
+Scoped Ruff, format, mypy two files and diff-check passed. Reproduce with
+`uv run pytest -q modules/sheets/tests/test_apps_script_refresh_execution.py
+modules/sheets/tests/test_pilot_sheets_refresh_cells.py
+modules/sheets/tests/test_apps_script_addon.py` (one command).
+No Google/production mutation, trigger, commit, build or deployment occurred.
+Rollback restores the prior Client.gs implementation; the unused cursor property
+is inert. Production activation requires the separate add-on publication path,
+not merely rebuilding backend images. Prefer keeping bounded manual behavior
+rather than restoring an unbounded scan.

@@ -110,27 +110,93 @@ function zelerdataCoerce2d_(value) {
 
 /**
  * Discovers existing =ZELERDATA_* formula cells and re-sets them in place
- * (same formula text) to force Apps Script to recalculate. Only cells whose
+ * (same formula text) to request recalculation. Only cells whose
  * formula matches the exact prefix are touched; user formulas (=SUM, etc.)
  * are never modified. This is a manual, user-invoked action, not a
- * background timer, to respect Apps Script quotas and user intent.
+ * background timer, to respect Apps Script quotas and user intent. Completion
+ * refers to scanning, not visible results. A document lock coordinates scripts,
+ * not human editors; the immediate reread is not an atomic compare-and-set.
  */
 function refreshZelerDataResults() {
-  var sheet = SpreadsheetApp.getActiveSheet();
-  var dataRange = sheet.getDataRange();
-  var formulas = dataRange.getFormulas();
-  var refreshed = 0;
+  var result = { refreshed: 0, scanned: 0, skippedChanged: 0, pending: true,
+    recalculationVerified: false, status: "busy" };
+  var lock = LockService.getDocumentLock();
+  if (!lock || !lock.tryLock(1000)) return result;
+  var properties;
+  var cursor;
+  var key = "zelerdata.manualRefresh.v1";
+  var started = Date.now();
   var pattern = /^=ZELERDATA_[A-Z0-9_]+\(/i;
-  for (var row = 0; row < formulas.length; row++) {
-    for (var col = 0; col < formulas[row].length; col++) {
-      var formula = formulas[row][col];
-      if (formula && pattern.test(formula)) {
-        var cell = sheet.getRange(row + 1, col + 1);
-        cell.setFormula(formula);
-        refreshed++;
+  try {
+    var spreadsheet = SpreadsheetApp.getActive();
+    properties = PropertiesService.getDocumentProperties();
+    if (!properties) throw new Error("Document properties unavailable");
+    var sheets = spreadsheet.getSheets();
+    if (sheets.length > 500) throw new Error("Local tab budget exceeded");
+    var saved = properties.getProperty(key);
+    try { cursor = saved ? JSON.parse(saved) : null; } catch (invalidCursor) { cursor = null; }
+    if (!cursor || !Array.isArray(cursor.sheets) || cursor.sheets.length > 500 ||
+        !cursor.sheets.every(function (id) { return Number.isInteger(id) && id >= 0; }) ||
+        !Number.isInteger(cursor.index) || cursor.index < 0 || cursor.index > cursor.sheets.length ||
+        !Number.isInteger(cursor.row) || cursor.row < 0 ||
+        !Number.isInteger(cursor.col) || cursor.col < 0) {
+      cursor = { sheets: sheets.map(function (sheet) { return sheet.getSheetId(); }),
+        index: 0, row: 0, col: 0 };
+    }
+    result.status = "scheduled";
+    while (cursor.index < cursor.sheets.length && result.scanned < 2000 &&
+           result.refreshed < 20 && Date.now() - started < 20000) {
+      var sheet = sheets.filter(function (candidate) {
+        return candidate.getSheetId() === cursor.sheets[cursor.index];
+      })[0];
+      if (!sheet || cursor.row >= sheet.getLastRow() || sheet.getLastColumn() === 0) {
+        cursor.index++;
+        cursor.row = 0;
+        cursor.col = 0;
+        continue;
+      }
+      var columns = sheet.getLastColumn();
+      if (cursor.col >= columns) {
+        cursor.row++;
+        cursor.col = 0;
+        continue;
+      }
+      var width = Math.min(50, columns - cursor.col, 2000 - result.scanned);
+      var formulas = sheet.getRange(cursor.row + 1, cursor.col + 1, 1, width).getFormulas()[0];
+      for (var offset = 0; offset < formulas.length; offset++) {
+        if (result.refreshed >= 20 || Date.now() - started >= 20000) break;
+        var formula = formulas[offset];
+        var row = cursor.row;
+        var col = cursor.col;
+        if (formula && pattern.test(formula)) {
+          var cell = sheet.getRange(row + 1, col + 1);
+          if (cell.getFormula() === formula) {
+            cell.setFormula(formula);
+            result.refreshed++;
+          } else {
+            result.skippedChanged++;
+          }
+        }
+        result.scanned++;
+        cursor.col++;
       }
     }
+    result.pending = cursor.index < cursor.sheets.length;
+  } catch (refreshError) {
+    result.status = "failed";
+    result.pending = true;
+  } finally {
+    try {
+      if (properties && cursor) {
+        if (result.pending) properties.setProperty(key, JSON.stringify(cursor));
+        else properties.deleteProperty(key);
+      }
+    } finally {
+      lock.releaseLock();
+    }
   }
-  SpreadsheetApp.getActive().toast(refreshed + " ZelerData formulas refreshed", "ZelerData", 5);
-  return { refreshed: refreshed };
+  SpreadsheetApp.getActive().toast(result.refreshed + " recalculation requests; " +
+    (result.pending ? "scan pending: run Refresh results again" : "scan finished") +
+    "; cell results not verified", "ZelerData", 5);
+  return result;
 }

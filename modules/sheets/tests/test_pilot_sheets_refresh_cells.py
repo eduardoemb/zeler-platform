@@ -9,15 +9,15 @@ Script must:
 2. Trigger recalculation of only those cells without changing their
    formula text.
 
-Apps Script does not expose a "force recalculate single cell" API. The
-compatible approach is: read the formula text, clear and re-set the same
-formula in the same cell, which forces Apps Script to re-evaluate it.
-This must only target cells whose formula starts with `=ZELERDATA_`
+The manual action re-sets unchanged formula text without clearing cells.
+This requests recalculation but does not certify visible results.
+It must only target cells whose formula starts with `=ZELERDATA_`
 (case-insensitive) to avoid touching any other content.
 
 The production implementation lives in the add-on (JavaScript), so these
 tests verify the contract that the JS code must satisfy using source
-inspection, matching the existing add-on test patterns.
+inspection. Executable service-double coverage lives in
+test_apps_script_refresh_execution.py; neither suite proves Sheets visibility.
 """
 
 from __future__ import annotations
@@ -120,13 +120,13 @@ def test_refresh_impl_respects_quotas_and_avoids_infinite_recursion() -> None:
 
 def test_refresh_uses_safe_get_range_row_col_indexing() -> None:
     """The implementation must use row+1, col+1 (Apps Script 1-based)
-    when re-setting the formula, and must read the formula from the
-    already-fetched 2D array, not from a second cell read. This pins the
-    correct index conversion to avoid off-by-one or stale reads."""
+    when re-setting the formula and compare a fresh cell read against the
+    discovery snapshot before writing."""
     client_source = _read_addon("Client.gs")
     assert "sheet.getRange(row + 1, col + 1)" in client_source
     assert "cell.setFormula(formula)" in client_source
     assert "getFormulas" in client_source
+    assert "cell.getFormula() === formula" in client_source
 
 
 def test_refresh_function_is_in_client_not_config() -> None:
