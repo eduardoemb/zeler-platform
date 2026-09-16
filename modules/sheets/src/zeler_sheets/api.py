@@ -299,6 +299,18 @@ def build_router(
         )
         return JSONResponse(jsonable_encoder(docs))
 
+    @router.get("/sync-jobs/{job_id}")
+    async def get_sync_job(request: Request, job_id: str, seller_id: str) -> JSONResponse:
+        auth = _authorize(request, seller_id=seller_id)
+        if auth is not None:
+            return auth
+        doc = await request.app.state.mongo_db["sheets_sync_jobs"].find_one(
+            {"_id": job_id, "seller_id": seller_id}
+        )
+        if doc is None:
+            return JSONResponse(status_code=404, content={"error": "sheets_sync_job_not_found"})
+        return JSONResponse(jsonable_encoder(doc))
+
     @router.get("/unit-costs")
     async def list_unit_costs(request: Request, seller_id: str) -> JSONResponse:
         auth = _authorize(request, seller_id=seller_id)

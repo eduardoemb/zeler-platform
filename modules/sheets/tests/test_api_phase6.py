@@ -239,6 +239,28 @@ async def test_manual_sync_handles_cross_process_active_job_collision(
 
 
 @pytest.mark.asyncio
+async def test_sync_job_status_is_seller_scoped(monkeypatch: pytest.MonkeyPatch) -> None:
+    app, _db = _app(monkeypatch)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        found = await client.get(
+            "/sheets/sync-jobs/sync-1?seller_id=123456789",
+            headers={"Authorization": "Bearer valid"},
+        )
+        missing = await client.get(
+            "/sheets/sync-jobs/sync-1?seller_id=other-seller",
+            headers={"Authorization": "Bearer valid"},
+        )
+
+    assert found.status_code == 200
+    assert found.json()["_id"] == "sync-1"
+    assert found.json()["state"] == "succeeded"
+    assert missing.status_code == 403
+
+
+@pytest.mark.asyncio
 async def test_unit_cost_config_endpoints_are_seller_scoped(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

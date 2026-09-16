@@ -1466,6 +1466,12 @@ passing for the touched files. This is local behavior evidence; cross-process
 atomicity now has a unique partial index and duplicate-key recovery path; deployed
 UI behavior and live Sheets execution remain unproven.
 
+The platform also exposes `GET /sheets/sync-jobs/{job_id}?seller_id=...` for
+seller-scoped status correlation. Authorization runs before the database lookup;
+cross-seller requests return `403`, while a missing job owned by the seller
+returns `404`. This establishes the backend status-read contract; zeler-app
+polling/UI and live Sheets recalculation evidence remain pending.
+
 ### Disposable Sheets probe — negative observation
 
 Using the authorized spreadsheet `Pruebas ZelerData actual`, tab
