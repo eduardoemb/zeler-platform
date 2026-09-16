@@ -144,6 +144,54 @@ class QuestionScanRecoveryRequest:
 
 
 @dataclass(frozen=True)
+class OrderHistoryRecoveryRequest:
+    """A plan-bound creation interval exclusively for the durable history worker."""
+
+    seller_id: str
+    plan_id: str
+    date_from: datetime
+    date_to: datetime
+    read_model: str = "orders"
+
+    def __post_init__(self) -> None:
+        normalized = RecoveryRequest(self.seller_id, self.read_model, self.date_from, self.date_to)
+        if (
+            self.read_model != "orders"
+            or not self.plan_id.strip()
+            or not self.seller_id.isascii()
+            or not self.seller_id.isdecimal()
+            or normalized.date_from != self.date_from
+            or normalized.date_to != self.date_to
+        ):
+            raise ValueError("order history requires a fixed plan and BSON-aligned order interval")
+        object.__setattr__(self, "date_from", normalized.date_from)
+        object.__setattr__(self, "date_to", normalized.date_to)
+
+    @property
+    def scope_id(self) -> str:
+        return f"orders:{self.date_from:%Y%m%d}:{self.date_to:%Y%m%d}"
+
+    @property
+    def key(self) -> str:
+        return hashlib.sha256(
+            "\0".join((self.seller_id, self.plan_id, self.scope_id)).encode()
+        ).hexdigest()
+
+    def validate_existing(self, job: dict[str, Any] | None) -> None:
+        if job is not None and any(
+            job.get(key) != value
+            for key, value in {
+                "seller_id": self.seller_id,
+                "read_model": self.read_model,
+                "history_plan_id": self.plan_id,
+                "date_from": self.date_from,
+                "date_to": self.date_to,
+            }.items()
+        ):
+            raise ValueError("order history plan identity or fixed bounds changed")
+
+
+@dataclass(frozen=True)
 class OrderIdsRecoveryRequest:
     seller_id: str
     order_ids: tuple[str, ...]
@@ -335,6 +383,7 @@ class FormulaRecoveryQueue:
         self,
         request: RecoveryRequest
         | QuestionScanRecoveryRequest
+        | OrderHistoryRecoveryRequest
         | OrderIdsRecoveryRequest
         | ShipmentIdsRecoveryRequest
         | ItemIdsRecoveryRequest
@@ -372,9 +421,11 @@ class FormulaRecoveryQueue:
                 "read_model": request.read_model,
                 "state": {"$in": ["pending", "running"]},
             },
-            None if isinstance(request, QuestionScanRecoveryRequest) else {"_id": 1},
+            None
+            if isinstance(request, (QuestionScanRecoveryRequest, OrderHistoryRecoveryRequest))
+            else {"_id": 1},
         )
-        if isinstance(request, QuestionScanRecoveryRequest):
+        if isinstance(request, (QuestionScanRecoveryRequest, OrderHistoryRecoveryRequest)):
             request.validate_existing(active_job)
         if active_job is not None:
             return request.key
@@ -389,7 +440,7 @@ class FormulaRecoveryQueue:
             "updated_at": now,
             "available_at": now,
         }
-        if isinstance(request, QuestionScanRecoveryRequest):
+        if isinstance(request, (QuestionScanRecoveryRequest, OrderHistoryRecoveryRequest)):
             initial.update(
                 date_from=request.date_from,
                 date_to=request.date_to,
@@ -433,10 +484,10 @@ class FormulaRecoveryQueue:
                 {"_id": request.seller_id}, {"$inc": {"revision": 1}}, session=session
             )
             existing = await self.collection.find_one({"_id": request.key}, session=session)
-            if isinstance(request, QuestionScanRecoveryRequest):
+            if isinstance(request, (QuestionScanRecoveryRequest, OrderHistoryRecoveryRequest)):
                 request.validate_existing(existing)
             if existing is not None and (
-                isinstance(request, QuestionScanRecoveryRequest)
+                isinstance(request, (QuestionScanRecoveryRequest, OrderHistoryRecoveryRequest))
                 or not reopen_terminal
                 or existing["state"] in {"pending", "running"}
             ):

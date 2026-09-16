@@ -50,7 +50,7 @@ additions only; no activation.
 - [ ] 3.2i Bounded publisher; `modules/sheets/tests/test_history_publication.py`: guarded batch primitive verified with real Mongo newer events, operation loss, partial totals and unaffected interval reads. Producer publish-state handoff and final reconciliation/coverage certification remain pending; seeded prerequisites are not end-to-end evidence.
 - [ ] 3.2j Shared question scan; admission, neutral cursor/manifests and bounded detail staging verified in `modules/sheets/tests/test_history_questions.py`. Twelve deterministic monthly subscription bindings share the verified pass; these are not coverage proofs. Actual HTTP normalization, publication/finalization and authoritative interval-proof subscriptions remain pending.
 
-- [ ] 3.3 Prove actual-worker resume/deduplication and retained history.
+- [ ] 3.3 Orders staging worker resume/deduplication/interruption and retained prior data/proofs verified with actual Mongo and gateway doubles. Full cross-resource worker activation, publisher handoff and twelve-month coverage remain pending.
 - [ ] 3.4 Wire modification reconciliation with overlap.
 - [ ] 3.5 Resolve production returns through guarded repair or evidenced API limitation.
 

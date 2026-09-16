@@ -17,11 +17,18 @@ from motor.motor_asyncio import AsyncIOMotorClient
 
 from zeler_platform_core.models import SheetsHistoryAcquisition
 from zeler_sheets.formulas.pacing import LocalQuotaTimeoutError
-from zeler_sheets.formulas.recovery import FormulaRecoveryQueue, RecoveryRequest
+from zeler_sheets.formulas.recovery import (
+    FormulaRecoveryQueue,
+    OrderHistoryRecoveryRequest,
+    QuestionScanRecoveryRequest,
+    RecoveryCapacityError,
+    RecoveryRequest,
+)
 from zeler_sheets.formulas.recovery_worker import FormulaRecoveryWorker
 from zeler_sheets.history_acquisition import HistoryAcquisitionStore, HistoryLimitError
 from zeler_sheets.history_continuation import HistoryContinuation
 from zeler_sheets.history_orders import HistoryOrdersProducer
+from zeler_sheets.history_worker import HistoryOrdersWorker
 from zeler_sheets.item_projection import item_source_fingerprint
 
 NOW = datetime(2026, 9, 15, 12, 30, tzinfo=UTC)
@@ -144,6 +151,130 @@ async def advance(harness: Harness) -> None:
     claimed = await harness.producer.worker.queue.claim(history=True)
     assert claimed is not None
     harness.job = claimed
+
+
+def history_worker(harness: Harness) -> HistoryOrdersWorker:
+    queue = FormulaRecoveryQueue(
+        harness.producer.worker.db,
+        now=lambda: harness.clock[0],
+        enabled_models=frozenset({"orders"}),
+        allowed_sellers=frozenset({"82453304"}),
+    )
+    return HistoryOrdersWorker(
+        FormulaRecoveryWorker(
+            db=harness.producer.worker.db,
+            gateway=harness.gateway,
+            queue=queue,
+        )
+    )
+
+
+def history_request(plan: str = "durable-plan") -> OrderHistoryRecoveryRequest:
+    return OrderHistoryRecoveryRequest("82453304", plan, NOW - timedelta(days=31), NOW)
+
+
+@pytest.mark.asyncio
+async def test_real_history_worker_resumes_dedupes_and_preserves_history(harness: Harness) -> None:
+    worker = history_worker(harness)
+    request = history_request()
+    keys = await asyncio.gather(*(worker.queue.enqueue(request) for _ in range(12)))
+    assert set(keys) == {request.key}
+    assert await worker.queue.claim() is None
+    old = {"_id": "retained", "seller_id": "82453304", "date_created": NOW - timedelta(days=500)}
+    await worker.store.db.orders.insert_one(old)
+    marker = {
+        "_id": "82453304:orders",
+        "state": "reconciled",
+        "date_from": NOW - timedelta(days=600),
+        "reconciled_until": NOW,
+    }
+    await worker.store.db.sheets_read_model_freshness.insert_one(marker)
+    rows = [order(1), order(2)]
+    harness.gateway.pages = {0: {"paging": {"total": 2}, "results": rows}}
+    harness.gateway.details = {f"/orders/{row['id']}": row for row in rows}
+    assert await worker.process_one()
+    for _ in range(5):
+        worker = history_worker(harness)
+        assert await worker.process_one()
+    job = await worker.queue.collection.find_one({"_id": request.key})
+    assert job["state"] == "failed" and job["history_blocker"] == "publication_handoff_pending"
+    head = await worker.store.heads.find_one({"_id": request.key})
+    assert head["phase"] == "verify" and head["published_count"] == 0
+    assert await worker.store.receipts.count_documents({"acquisition_id": request.key}) == 6
+    assert await worker.store.db.orders.find_one({"_id": "retained"}) == old
+    assert await worker.store.db.sheets_read_model_freshness.find_one({}) == marker
+    await worker.queue.enqueue(request)
+    assert not await worker.process_one()
+
+
+@pytest.mark.asyncio
+async def test_real_worker_interruption_resumes_after_lease_expiry(harness: Harness) -> None:
+    worker = history_worker(harness)
+    request = history_request()
+    await worker.queue.enqueue(request)
+    harness.gateway.pages = {0: {"paging": {"total": 1}, "results": [order(1)]}}
+    harness.gateway.details = {"/orders/1": order(1)}
+    await worker.process_one()
+
+    def interrupt(path: str) -> None:
+        raise asyncio.CancelledError
+
+    harness.gateway.on_request = interrupt
+    with pytest.raises(asyncio.CancelledError):
+        await worker.process_one()
+    assert await worker.store.receipts.count_documents({"acquisition_id": request.key}) == 1
+    harness.gateway.on_request = None
+    harness.clock[0] += timedelta(minutes=11)
+    worker = history_worker(harness)
+    assert await worker.process_one()
+    head = await worker.store.heads.find_one({"_id": request.key})
+    assert head["fetched_count"] == 1
+    assert await worker.store.receipts.count_documents({"acquisition_id": request.key}) == 2
+    assert sum("search" in path for path in harness.gateway.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_history_worker_does_not_claim_questions_or_legacy_jobs(harness: Harness) -> None:
+    questions = QuestionScanRecoveryRequest("82453304", "questions", NOW.replace(year=2025), NOW)
+    await harness.producer.worker.queue.enqueue(questions)
+    await harness.producer.worker.queue.enqueue(
+        RecoveryRequest("82453304", "orders", NOW - timedelta(days=1), NOW)
+    )
+    worker = history_worker(harness)
+    assert not await worker.process_one()
+    assert not harness.gateway.calls
+    with pytest.raises(ValueError):
+        HistoryOrdersWorker(harness.producer.worker)
+
+
+@pytest.mark.asyncio
+async def test_history_order_admission_keeps_fixed_scope_and_capacity(harness: Harness) -> None:
+    worker = history_worker(harness)
+    worker.queue.max_active_jobs_per_seller = 2
+    request = history_request()
+    await worker.queue.enqueue(request)
+    with pytest.raises(RecoveryCapacityError):
+        await worker.queue.enqueue(history_request("another-plan"))
+    shifted = OrderHistoryRecoveryRequest(
+        "82453304", request.plan_id, request.date_from + timedelta(hours=1), request.date_to
+    )
+    assert shifted.key == request.key
+    with pytest.raises(ValueError, match="plan"):
+        await worker.queue.enqueue(shifted)
+
+
+@pytest.mark.asyncio
+async def test_worker_resumes_preexisting_protocol_head_without_reinitializing(
+    harness: Harness,
+) -> None:
+    harness.gateway.pages = {0: {"paging": {"total": 1}, "results": [order(1)]}}
+    harness.gateway.details = {"/orders/1": order(1)}
+    saved = await harness.producer.step(harness.job, harness.head)
+    worker = history_worker(harness)
+    assert await worker.process_one()
+    current = await worker.store.heads.find_one({"_id": saved.id})
+    assert current["fetched_count"] == 1 and current["plan_id"] == saved.plan_id
+    assert await worker.store.heads.count_documents({}) == 1
 
 
 async def begin_verification(harness: Harness, rows: list[dict[str, Any]]) -> None:

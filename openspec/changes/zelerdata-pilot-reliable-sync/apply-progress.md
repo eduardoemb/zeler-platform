@@ -1171,3 +1171,33 @@ Task3.2j remains open for actual HTTP normalization and authoritative published
 interval proofs/finalization. No canonical question writes, coverage markers,
 worker activation, commit/build/deploy or production mutation. Rollback preserves
 detail receipts and history-only jobs for a checkpoint-compatible consumer.
+
+### Actual orders staging worker (3.3 partial)
+
+Strict TDD admission import RED preceded implementation; a second behavioral RED
+proved preexisting protocol heads must resume without requiring new admission
+metadata. The worker now loads the durable head and lets existing ownership/pass
+fences authorize every producer step. New plan-bound order admission preserves
+fixed BSON bounds, seller/capacity guards, terminal jobs and legacy-worker exclusion.
+
+Real process_one invokes HistoryOrdersProducer, reconstructs between steps and
+resumes after cancellation/lease expiry without requerying committed discovery.
+Twelve concurrent admissions coalesce; receipts, existing canonical history and
+prior interval markers remain intact. The unfinished publication boundary is a
+typed local blocker recorded atomically with terminal queue release, never source
+absence or successful coverage. Questions and legacy jobs are excluded by the
+explicit orders-only queue; no supervisor/runtime activation was added.
+
+Disposable loopback rs0 PRIMARY with actual staging validators/indexes: adjacent
+regression586 passed, then final worker5 passed (four overlap):587 distinct cases,
+zero skipped. The final five include preexisting-head correction. Ruff, format,
+mypy4files, direct-Meli and diff-check passed. Evidence logs:
+`/tmp/history-worker-regression.log` SHA256
+`018239a898a70b319ccd30289e31d7f552ca8ff64a165304848ad652e8d15f52`;
+`/tmp/history-worker-final.log` SHA256
+`4d2df7a96ce4a667da3ccf295f2d16c728a65ed0e861a3baa919f7bb469b02b5`.
+
+Task3.3 stays open for runtime admission wiring, publication/finalization and full
+cross-resource/twelve-month coverage. No commit/build/deploy/production mutation.
+Rollback keeps protocol jobs unclaimed by legacy workers and retains durable heads,
+receipts and prior canonical data; a compatible consumer is required to resume.

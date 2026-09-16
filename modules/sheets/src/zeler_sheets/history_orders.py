@@ -30,6 +30,10 @@ class OrderEnumerationDriftError(ValueError):
     """A page contradicts already staged enumeration evidence."""
 
 
+class HistoryHandoffPendingError(HistoryConflictError):
+    """Acquisition reached a local publication boundary, not a provider failure."""
+
+
 def _version(resource: dict[str, Any]) -> str | None:
     value = resource.get("date_last_updated")
     return None if value is None else _date(value).isoformat(timespec="milliseconds")
@@ -339,7 +343,7 @@ class HistoryOrdersProducer:
             ]
         ).to_list(length=1)
         if not pending:
-            raise HistoryConflictError("known identities exhausted; reconciliation remains")
+            raise HistoryHandoffPendingError("known identities exhausted; reconciliation remains")
         if head.discovered_count >= 10000:
             raise HistoryLimitError("known order inventory exceeds local acquisition budget")
         identity = str(pending[0]["_id"])
