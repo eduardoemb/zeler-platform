@@ -66,7 +66,7 @@ historical separate protected-suite passes do not establish current execution.
 | Recoverable 12-Month History | Fixed monthly plan, strict models/validators, fenced receipts, continuation, staging and subdivision | Runtime durable-worker routing, cross-resource acquisition, publisher handoff and final reconciled coverage remain incomplete |
 | Honest Freshness and Partial Data | Field-preserving readers and bounded publisher tests retain unaffected interval evidence | Seeded publish prerequisites and cold outputs do not establish complete economic totals across the pilot |
 | Durable Recovery and No Starvation | Queue capacity/leases/deduplication and bounded continuation are locally exercised | Sustained fairness across event/inventory/query/history lanes remains unmeasured |
-| Visible Sheets Synchronization | Manual bounded refresh and truthful pending rendering run in a local JavaScript harness; progress API is seller-scoped | Real recalculation, automatic reopen, web configuration UI and administrative retry semantics remain incomplete/unverified |
+| Visible Sheets Synchronization | Manual bounded refresh and truthful pending rendering run in a local JavaScript harness; progress and seller-scoped sync-job status APIs are covered | Real recalculation, automatic reopen, web configuration UI and deployed behavior remain incomplete/unverified |
 | Finite Acceptance | Local full repository gates pass subject to disclosed skips | Reconciled history, returns runtime evidence and 90-minute rounds 0/30/60 are missing |
 
 ## Actionable findings
@@ -86,13 +86,12 @@ historical separate protected-suite passes do not establish current execution.
    authoritative monthly publication proofs. Shipments/items remain explicit
    unresolved acquisition paths; do not reduce the twelve-month resource scope.
 
-3. **High — administrative retry differs from formula recovery deduplication.**
-   Static inspection of `api.py:241–261` shows `/sheets/sync-jobs` builds an ID
-   from integer seconds and unconditionally inserts. Same-second submissions
-   can collide; later submissions can enqueue additional work without checking
-   an active job. This path was not reproduced in this diagnostic. The ten-call
-   formula retry test targets another queue and cannot close this gap. Next
-   correction should start with concurrent real-Mongo endpoint tests.
+3. **Resolved locally — administrative retry correlation and deduplication.**
+   `/sheets/sync-jobs` now reuses active seller jobs, handles concurrent unique
+   index collisions, and exposes a seller-scoped status read at
+   `/sheets/sync-jobs/{job_id}`. Focused API and schema-contract tests cover the
+   sequential and cross-process races. This remains local evidence until the
+   affected service image is deployed and observed.
 
 4. **High — visible and automatic Sheets refresh is unproven.**
    `Config.gs:10` adds a manual menu; it does not execute the refresh on reopen.
@@ -131,8 +130,8 @@ performed; no coverage percentage or all-tests-real-behavior claim is made.
 
 ## Recommended next work
 
-Return to bounded apply units: correct administrative retry; finish durable
-producer-to-publisher handoff and final proof reconciliation; complete shared
+Return to bounded apply units: finish durable producer-to-publisher handoff and
+final proof reconciliation; complete shared
 question/provider and shipment/item/claims acquisition; then wire workers and
 measure sustained lane fairness. Keep all current pending acceptance tasks open.
 Obtain a different-author review for independent acceptance. Runtime validation
