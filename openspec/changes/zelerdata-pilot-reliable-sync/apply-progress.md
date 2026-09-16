@@ -1402,3 +1402,22 @@ Task 5.2 remains open: zeler-app exists but is outside this unit's edit roots,
 and neither its UI nor live Google Sheets was executed. No Google/production
 mutation, deployment, build or commit. Rollback affects the small pending
 renderer priority change and tests only; persisted queue contracts are unchanged.
+
+## Task 5.3: automatic-refresh research and disposable probe
+
+The [probe proposal](apps-script-refresh-probe.md) records official Google
+constraints, a no-write control versus same-text versus disposable
+clear/flush/restore experiment, and separate automatic-open/reopen acceptance.
+Simple LIMITED document access is distinguished from sidebar restrictions;
+installable FULL handlers are a candidate to test, not asserted unsupported or
+guaranteed. Additional trigger scope remains a separate explicit decision.
+
+| Evidence | Result |
+| --- | --- |
+| Executable changes / TDD | None; documentation-only, no executable behavior changed. |
+| Local validation | Relative spec/runbook references exist; `git diff --check` passes; task 5.3 remains unchecked. |
+| Runtime harness | Not executed: requires approved disposable spreadsheet and operator actions. |
+| Rollback | Remove probe document and its task/progress references only. |
+
+No scopes, triggers, Google resources, production runtime, builds or deployments
+were changed. Task 5.3 remains pending real automatic open/reopen evidence.
