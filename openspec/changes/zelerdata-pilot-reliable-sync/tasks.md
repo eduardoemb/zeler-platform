@@ -63,7 +63,7 @@ additions only; no activation.
 ## Phase 5: Sheets
 
 - [ ] 5.1 Execute bounded Apps Script recalculation without text changes. Manual bounded multi-tab refresh and executable local harness pass; real Google Sheets recalculation/visibility remains pending.
-- [ ] 5.2 Verify authorized progress API/UI and nonduplicative retry. Local authorized progress snapshots, real queue retry coalescence and Apps Script pending rendering verified; zeler-app UI and live Sheets evidence remain pending.
+- [ ] 5.2 Verify authorized progress API/UI and nonduplicative retry. Local authorized progress snapshots, real queue retry coalescence, Apps Script pending rendering, and active `/sheets/sync-jobs` retry reuse are verified; zeler-app UI and live Sheets evidence remain pending.
 - [ ] 5.3 Prove automatic open/reopen refresh.
   Research and the separately authorized disposable-sheet experiment are in
   [apps-script-refresh-probe.md](apps-script-refresh-probe.md); no runtime

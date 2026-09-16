@@ -1455,3 +1455,12 @@ executable changes. No new runtime operations, production queries, build,
 deployment or commit were performed by this documentation unit. TDD is not
 applicable to this evidence-only update; validation is artifact/hash/count
 comparison, consistency with pending tasks, and `git diff --check`.
+
+### Administrative sync-job retry deduplication
+
+The active-job retry gap identified in verification is corrected locally. The
+manual `/sheets/sync-jobs` endpoint now returns the existing pending or running
+job instead of creating another request for the same seller. The RED regression
+and adjacent API tests pass (`test_api_phase6.py`), with Ruff, format and mypy
+passing for the touched files. This is local behavior evidence; cross-process
+atomicity, deployed UI behavior and live Sheets execution remain unproven.

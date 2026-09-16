@@ -189,6 +189,30 @@ async def test_manual_sync_creates_pending_job_from_config(monkeypatch: pytest.M
 
 
 @pytest.mark.asyncio
+async def test_manual_sync_retry_reuses_active_job(monkeypatch: pytest.MonkeyPatch) -> None:
+    app, db = _app(monkeypatch)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        first = await client.post(
+            "/sheets/sync-jobs",
+            headers={"Authorization": "Bearer valid"},
+            json={"seller_id": "123456789"},
+        )
+        second = await client.post(
+            "/sheets/sync-jobs",
+            headers={"Authorization": "Bearer valid"},
+            json={"seller_id": "123456789"},
+        )
+
+    assert first.status_code == 201
+    assert second.status_code == 200
+    assert second.json()["_id"] == first.json()["_id"]
+    assert len(db.sheets_sync_jobs.docs) == 2
+
+
+@pytest.mark.asyncio
 async def test_unit_cost_config_endpoints_are_seller_scoped(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

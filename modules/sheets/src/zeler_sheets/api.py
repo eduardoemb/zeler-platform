@@ -238,6 +238,18 @@ def build_router(
         if export is None:
             return JSONResponse(status_code=404, content={"error": "sheets_export_not_found"})
 
+        jobs = await (
+            request.app.state.mongo_db["sheets_sync_jobs"]
+            .find({"seller_id": payload.seller_id})
+            .to_list(length=20)
+        )
+        active = next(
+            (job for job in jobs if job.get("state") in {"pending", "running"}),
+            None,
+        )
+        if active is not None:
+            return JSONResponse(status_code=200, content=jsonable_encoder(active))
+
         created_at = now()
         job = {
             "_id": f"sheets-sync-{payload.seller_id}-{int(created_at.timestamp())}",
