@@ -71,7 +71,7 @@ additions only; no activation.
 
 ## Phase 6: Acceptance
 
-- [ ] 6.1 Rerun final gates after remaining corrections; intermediate 5036 passed/9 skipped, eight protected passes, Ruff/format/mypy 577 and Meli/schema pass.
+- [ ] 6.1 Rerun final gates after remaining corrections; latest local full suite: 5319 passed/9 skipped, zero failures/errors; Ruff/format/mypy 598 and Meli/schema pass. Runtime/Sheets acceptance and the eight protected cases skipped by this invocation remain unproven by this run; historical separate passes do not replace current evidence.
 - [ ] 6.2 Prove actual-worker recovery/duplicates/interruption.
 - [ ] 6.3 Complete deployment/add-on proposals and separate authorizations.
 - [ ] 6.4 Warm-up, 90-minute observation, rounds 0/30/60.

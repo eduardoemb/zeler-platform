@@ -1421,3 +1421,37 @@ guaranteed. Additional trigger scope remains a separate explicit decision.
 
 No scopes, triggers, Google resources, production runtime, builds or deployments
 were changed. Task 5.3 remains pending real automatic open/reopen evidence.
+
+## Task 6.1 partial: final local repository gates, 2026-09-15
+
+Validated completed artifacts from the parent-run full suite against the
+explicit disposable loopback Mongo target on port 27028 with direct connection;
+inherited ZELER_RS0_TEST_URI was unset. Command: `uv run pytest -q
+--junitxml=/tmp/final-suite.xml` (one command). Recorded process exit is zero.
+The XML reports **5328 cases: 5319 passed, nine skipped, zero failures/errors**.
+This corrects the preliminary description of eight skips: eight protected
+stock-time rs0 cases reject ambient MONGO_URI before connecting, and one Caddy
+environment-template case has no required keys. Skips are not acceptance;
+this invocation does not revalidate those eight protected workflows.
+
+| Gate | Completed local evidence |
+| --- | --- |
+| Full pytest | `/tmp/final-suite.log`, SHA256 `5af7c14dcc7ed734ae46603da67f225bec32d9e514e8e9f0278c815b7848571e` |
+| Per-test results and skip reasons | `/tmp/final-suite.xml`, SHA256 `48cebba33772d9e565642bdf0e56695dae6a1301a58f997f7b90bf99da6de415` |
+| Root quality bundle | `/tmp/final-quality.log`, SHA256 `b1bccc2f0dbe8fa49142395ef67654233bf7e0331cd5caabbd0453ff530aa482` |
+
+The parent-run quality bundle completed `uv run ruff check .`,
+`uv run ruff format --check .`, `uv run mypy .`,
+`uv run python -m infra.lint.check_direct_meli .`, and
+`uv run python -m zeler_platform_core.cli.export_schemas infra/mongo/schemas --check`.
+Recorded output: Ruff passes, 598 files formatted, mypy passes 598 source files,
+and overall exit zero; Meli/schema checks are silent on success.
+
+These are current local software gates, not deployed-image, provider, Google
+Sheets, automatic reopen, twelve-month completed acquisition, or 90-minute
+runtime observation evidence. Task 6.1 stays unchecked while remaining
+corrections/runtime acceptance are open. Rerun affected gates after further
+executable changes. No new runtime operations, production queries, build,
+deployment or commit were performed by this documentation unit. TDD is not
+applicable to this evidence-only update; validation is artifact/hash/count
+comparison, consistency with pending tasks, and `git diff --check`.
