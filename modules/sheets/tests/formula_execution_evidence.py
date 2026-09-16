@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import Iterator
 from pathlib import Path
@@ -19,6 +20,35 @@ from zeler_sheets.formulas.registry import FormulaRegistry
 
 CALLS: dict[str, list[tuple[str, str]]] = {}
 OUTCOMES: dict[str, str] = {}
+
+
+async def execute_concurrently(
+    dispatcher: FormulaDispatcher,
+    contexts: list[FormulaExecutionContext],
+    *,
+    timeout: float = 30,
+) -> dict[str, FormulaExecutionResult | FormulaDataUnavailableError]:
+    catalog = {contract.name for contract in FormulaRegistry.default().list_contracts()}
+    if len(contexts) != 52 or {context.contract.name for context in contexts} != catalog:
+        raise ValueError("52 distinct registered formulas required")
+
+    async def execute(
+        context: FormulaExecutionContext,
+    ) -> FormulaExecutionResult | FormulaDataUnavailableError:
+        try:
+            return await dispatcher.execute(context)
+        except FormulaDataUnavailableError as error:
+            return error
+
+    tasks = [asyncio.create_task(execute(context)) for context in contexts]
+    try:
+        results = await asyncio.wait_for(asyncio.gather(*tasks), timeout=timeout)
+        return dict(zip((context.contract.name for context in contexts), results, strict=True))
+    finally:
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
 
 
 def summarize(

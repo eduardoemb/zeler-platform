@@ -1287,3 +1287,45 @@ Rollback: remove the optional test plugin, its tests and local evidence document
 production behavior and persisted data are unaffected. Durable learning: formula
 name references are weaker than executed dispatcher observations, and even an
 executed passing test is not blanket correctness or Google Sheets acceptance.
+
+### Task 4.3 partial — concurrent local cold-source execution
+
+Extended the opt-in harness with an exact-catalog concurrent runner. Baseline
+two tests passed; RED failed because the runner was absent. A 52-party barrier
+then proved concurrent task entry before any completion. Additional harness
+tests cover incomplete/duplicate catalogs, per-formula unavailability isolation,
+timeout and unexpected-error cancellation with all started tasks drained.
+
+The integration test uses the real dispatcher, all production handler builders,
+real read repository and a unique disposable local Mongo database. Verified
+loopback 27028 rs0 PRIMARY and nofile 65536 before execution. Database is empty
+and read-only for the batch, then dropped in finally. Concurrent results match
+sequential results: 19 returned and 33 unavailable. Returned means an output,
+not positive populated data; this is deliberately a cold-source scenario.
+No validator, projection, recovery queue or runtime activation is claimed.
+
+Regression: 43 passed, zero skips/failures = seven harness tests, one concurrent
+integration test and exactly 35 existing tests in
+`test_formula_handlers_returns_histories_withdrawals.py`. These 35 cover returns,
+history/status and joint readiness regressions; they are not a claimed canonical
+production acceptance catalog. Full Sheets concurrency and representative
+populated seller behavior remain pending; task 4.3 stays open.
+
+Reproduce with `uv run pytest -q` selecting
+`modules/sheets/tests/test_formula_execution_evidence.py`,
+`modules/sheets/tests/test_formula_concurrent_execution.py` and
+`modules/sheets/tests/test_formula_handlers_returns_histories_withdrawals.py`,
+adding `-p modules.sheets.tests.formula_execution_evidence` and
+`--formula-evidence=/tmp/formula-concurrent-matrix.json`.
+Use an explicit verified disposable local MONGO_URI, unset ZELER_RS0_TEST_URI.
+The JSON includes synthetic harness tests; distinguish the named real-handler
+integration test when interpreting observations. No payloads are recorded.
+
+Evidence `/tmp/formula-concurrent-regression.log` SHA256
+`986dbc9a5d6b6525242d1315dd44f9f5e97162596004680091f1927df955e4ea`;
+JUnit `/tmp/formula-concurrent-regression.xml` SHA256
+`b88f402129b6e3e4cb66df9919332712ee24c1fa4d766434afe889c2fda6a879`.
+RED `/tmp/formula-concurrent-red.log`; scoped Ruff, format and mypy three files
+passed. No source/runtime changes, commits, builds or deploys. Rollback removes
+only the new tests/helper; persisted production state is unaffected. Local
+coroutine concurrency is not Apps Script execution or visible-cell acceptance.
