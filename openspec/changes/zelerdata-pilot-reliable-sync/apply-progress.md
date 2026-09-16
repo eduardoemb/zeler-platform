@@ -1464,3 +1464,13 @@ job instead of creating another request for the same seller. The RED regression
 and adjacent API tests pass (`test_api_phase6.py`), with Ruff, format and mypy
 passing for the touched files. This is local behavior evidence; cross-process
 atomicity, deployed UI behavior and live Sheets execution remain unproven.
+
+### Disposable Sheets probe — negative observation
+
+Using the authorized spreadsheet `Pruebas ZelerData actual`, tab
+`pruebasnuevas`, the native Sheets read confirmed the pilot formula remains in
+`A3` after the same-formula write. The returned `dataSourceFormula` state is
+`NOT_STARTED` and no effective/formatted result is exposed. This is direct
+evidence that the connector pass did not establish visible recalculation; it
+does not prove a provider failure or authorize changes outside the disposable
+cell.
