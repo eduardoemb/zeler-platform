@@ -1500,3 +1500,130 @@ Using the authorized spreadsheet `Pruebas ZelerData actual`, tab
 evidence that the connector pass did not establish visible recalculation; it
 does not prove a provider failure or authorize changes outside the disposable
 cell.
+
+### Broker-level consumer delivery evidence (task 2.1)
+
+`modules/sheets/tests/test_consumer_broker_delivery.py` adds the missing
+transport-level layer. It runs the real `SheetsAmqpConsumerRunner` against a
+disposable loopback RabbitMQ broker (`127.0.0.1:5673`) with the real
+`modules/sheets/manifest.yaml` routing keys and the real `zeler.sheets.claims`
+passive consumer, and the real `SheetsEventHandler` against a disposable
+loopback Mongo replica set (`127.0.0.1:27028`, L-012) with the production
+`processed_events` idempotency store adapter and the real
+`SheetsEventPersistence` freshness guards. Only the Meli gateway client and the
+Google Sheets client stay doubled. The broker URL must resolve to a loopback
+host or the run aborts, and both harnesses skip explicitly when absent, so the
+evidence can never target a shared broker by accident. Production retry parking
+is 30 s (`infra/rabbitmq/delay_queues.json`); the disposable broker shortens the
+parking window to 2.5 s while exercising the same publisher, exchange and
+dead-letter routing.
+
+| Case | Command | Result |
+| --- | --- | --- |
+| Duplicate delivery (sequential) | `uv run pytest modules/sheets/tests/test_consumer_broker_delivery.py -o addopts=''` | Passed. First delivery returns `appended`, the redelivery returns `duplicate`; one append, one gateway fetch, one `processed_events` marker, empty live and delay queues, empty DLQ. |
+| Out-of-order delivery | same command | Passed. Newer observation is delivered first and the older one second; the persisted `items` document keeps the newer `199.99` / `2026-04-25T12:30:00Z` state, both events settle, no DLQ. |
+| Unfinished event recovery | same command | Passed. A `RetryableGoogleSheetsApiError` on the first attempt parks the message in the retry delay queue (observed depth ≥ 1, main queue depth 0, no DLQ), the broker returns it after the delay, and it completes exactly once (one failure, one append, one marker). |
+| Concurrent duplicate deliveries | same command | **Failed — measured defect.** With production prefetch (10), two copies of one event in flight both pass `is_duplicate` before either marks the key. Observed: two appends, one `processed_events` marker, both messages acked on their first attempt. |
+
+The `is_duplicate`/`mark_processed` pair is a check-then-act sequence:
+`SheetsEventHandler.handle` checks the key, then persists, appends to Sheets and
+only then marks the key. The spec scenario "Duplicate and late events converge"
+requires idempotent results for repeated notifications. The sequential and
+unfinished-recovery cases satisfy it; the concurrent case does not, and the same
+ordering exists in the Repricer and Autoreply consumers
+(`modules/repricer/src/zeler_repricer/consumer.py`,
+`modules/autoreply/src/zeler_autoreply/consumer.py`). Two probe defects of this
+new test were corrected before the defect was confirmed: robust-channel
+declaration caching produced stale queue depths (now read through a plain
+channel), and the first "sequential" gate waited for the append, which happens
+before the marker is written (now waits for the marker).
+
+Production exposure requires two copies of one idempotency key in flight inside
+the handler interval: a near-simultaneous duplicate publication, or worker
+overlap during a rolling replacement. The local reproducer widens the window
+with a 0.25 s gateway delay to make the race deterministic.
+
+Task 2.1 remains open until the concurrency outcome is decided: fix the
+suppression primitive, or accept and document at-least-once append behaviour
+explicitly. Fixing it atomically needs a claim/lease state machine (in-progress
+vs completed, lease expiry, and a consumer outcome that requeues a live claim
+instead of acking it) because a plain mark-before-side-effects would lose events
+that fail after the marker. That is a cross-cutting change to the shared
+`processed_events` contract, not a local patch.
+
+Focused gates for the new file: `uv run ruff check` and
+`uv run ruff format --check` pass, and `uv run mypy
+modules/sheets/tests/test_consumer_broker_delivery.py` reports
+`Success: no issues found in 1 source file`.
+
+### Broker evidence closes: concurrent duplicate defect fixed
+
+The broker-level file now passes all four cases (4 passed, stable in 10
+consecutive runs), and task 2.1 is checked. The concurrent duplicate case that
+previously failed (two appends, one `processed_events` marker, both deliveries
+acked) motivated a separate ODD feature,
+`odd/tasks/atomic-event-claim-lease.md`, which the user explicitly routed around
+SDD:
+
+- **S1** adds an additive, inert `EventClaimStore` in
+  `core/src/zeler_platform_core/events/claims.py` with `ClaimOutcome`
+  (`claimed`/`completed`/`timed_out`), atomic `find_one_and_update` acquisition
+  against a separate short-lived `processed_event_claims` collection, owner-token
+  fencing, and marker-before-lease-release ordering in `complete`. `processed_events`
+  keeps meaning completed, so the DLQ reconciler's `already_applied` semantics,
+  the runbooks and the 48 h retention are untouched. Schema, TTL index and the
+  schema-inventory entry are included (`core/tests/test_event_claims.py`: 17 passed).
+- **S2** adopts the primitive in `SheetsEventHandler` through a
+  `_ClaimHandle`/`_EventGate` pair, so the handler body is not duplicated and the
+  legacy check-then-act remains only as the gate used when no claim store is
+  injected (unit doubles). `run()` wires the real store, and
+  `test_sheets_run_entry.py` asserts that wiring so it cannot silently regress.
+  A new retryable `EventClaimTimeoutError` uses the existing retry-delay path.
+- Two independent verifications ran during the work. The first found that
+  `complete` released the lease before writing the marker, which reopened the
+  duplicate window; the order is now marker-before-delete. The second found four
+  smaller limits, all fixed with RED->GREEN tests: best-effort marker cleanup,
+  a warning instead of a silent ack when the lease was lost, a release failure
+  that can no longer mask the original exception, and `transient_timeout`
+  classification for the new exception.
+
+Honest limits: exactly-once against a non-transactional Google Sheets append is
+not achievable, so the at-least-once boundary (a crash between append and marker)
+is unchanged and declared. A lease that expires while its owner is still running
+(120 s lease, observed handler duration far below it) can still let a second owner
+run the side effects. A contended duplicate blocks its delivery slot for up to the
+30 s wait, which is a throughput consideration, not a health one.
+`infra/mongo/indexes/processed_event_claims.json` must be applied before the new
+code is deployed, otherwise expired leases linger on disk.
+
+Final candidate evidence for the fix: `core/tests/test_event_claims.py` 17 passed;
+`modules/sheets/tests/test_consumer_broker_delivery.py` 4 passed; focused Sheets
+suites 77 passed; `modules/sheets/tests` with `MONGO_URI` on the disposable
+loopback replica set 2817 passed; `uv run ruff check` and `uv run mypy` clean on
+the touched paths. Repricer and Autoreply still use check-then-act and are tracked
+as slices S3/S4 of the ODD feature; no deployed-runtime evidence exists yet.
+
+Follow-up completion of the same feature: the generic gate now lives in
+`core/src/zeler_platform_core/events/claim_gate.py` and the Sheets consumer
+imports it under its previous private aliases, so no behaviour changed there.
+Repricer and Autoreply adopted the same flow (claim before any read, terminal
+outcomes complete exactly once with a lost-lease warning, Repricer's
+`item_missing`/`rule_missing` release so a redelivery can re-run, exceptions
+release without masking, `EventClaimTimeoutError` retried through each module's
+retry-delay path before the `RuntimeError` branch, and `run()` wired with a
+wiring test). The DLQ reconciler stays governed by `processed_events` only:
+`tests/operations/test_sheets_dlq_reconcile.py` now proves that a live claim lease
+is never classified `already_applied` and that `processed_event_claims` is not in
+`EVIDENCE_ORDER`, and `docs/ops/sheets-dlq-reconciliation.md` states the operator
+rule. Pre-deploy requirement: apply
+`infra/mongo/{schemas,indexes}/processed_event_claims.json` in the same separately
+authorized rollout step as any other schema/index change.
+
+Final candidate gates for the claim/lease work, run against the final tree with
+`MONGO_URI` on the disposable loopback replica set: the full repository suite
+reports 5383 passed, 9 skipped, 0 failed and 0 errors; `uv run mypy .` reports
+`Success: no issues found in 604 source files` (the root gate, not just the
+touched files); `uv run ruff check .` and `uv run ruff format --check .` are
+clean; and `uv run python -m zeler_platform_core.cli.export_schemas
+infra/mongo/schemas --check` exits 0. The 9 skips are the documented protective
+`ZELER_RS0_TEST_URI` refusals plus one GCE compose-contract skip.
