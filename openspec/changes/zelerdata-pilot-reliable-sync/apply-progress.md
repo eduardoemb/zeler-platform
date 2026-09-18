@@ -1,5 +1,95 @@
 # Apply Progress: ZelerData Pilot Reliable Sync
 
+## Scoped continuation: task 2.2 broker-level measured-stage evidence (2026-09-18)
+
+Strict TDD through a delegated implementation worker; no commit, build, deploy,
+Docker administration, or production access. The disposable loopback harness
+(Mongo replica set on 127.0.0.1:27028, RabbitMQ on 127.0.0.1:5673) was already
+running.
+
+The task-2.1 broker harness (loopback guard, disposable Mongo/RabbitMQ, real
+`SheetsAmqpConsumerRunner` over the real `modules/sheets/manifest.yaml`, real
+handler over real Mongo) was extracted unchanged into the non-test module
+`modules/sheets/tests/_broker_harness.py` (same pattern as `_amqp_fakes.py`), and
+`test_consumer_broker_delivery.py` now imports it with its four tests and every
+assertion unchanged (4 passed).
+
+New file `modules/sheets/tests/test_consumer_stage_telemetry_broker.py` uses the
+shared harness with the real `EventStageTelemetry(db=db)` wired into the real
+handler. RED was observed first: with telemetry not wired, all four tests failed
+because no `sheets_event_stages` document existed (4 failed in 41.57s). After
+wiring telemetry: 4 passed.
+
+What is now measured, through the actual consumer:
+
+- Ordered real stages: `received_at <= fetched_at <= persisted_at`, all
+  timezone-aware UTC, read back from the stored `sheets_event_stages` document.
+- Measured received->persisted latency observed across runs: 87.0 ms, 100.0 ms,
+  73.0 ms, 88.0 ms, 82.0 ms (fetch ~9-16 ms, persistence ~60-85 ms on the
+  disposable loopback stack). The test prints the measured value of its own run.
+- Durability: after stopping the first runner and starting a fresh runner on the
+  same queue and database, the duplicate re-delivery is suppressed and the
+  timestamps recorded by the first worker are unchanged, proving the measurement
+  is durable in Mongo, not process memory.
+- First receipt: a retried event keeps the first attempt's `received_at` via the
+  min-update, not the retry's.
+
+Explicit scope statement: an export append does NOT prove that the value is
+visible in the spreadsheet cell. Every new test asserts the append happened
+while `visible_at` is absent from the stage document. The `received -> visible`
+leg requires Sheets-side evidence still pending in tasks 5.1/5.3.
+
+Honest assertion deviations (reported, not hidden):
+
+- The task text expected `persisted_at` to exist only after the successful
+  retry attempt, but the real handler persists the source document and records
+  `persisted` BEFORE the export append (`consumer.py` ~L1161-1200), so the
+  failed first attempt already records `persisted_at`. The test asserts the
+  honest sequence (first-attempt `persisted_at` present, final `received_at`
+  equal to the first receipt, final `persisted_at` not regressed) and documents
+  the reason in its docstring.
+- The restart test initially asserted exactly one `duplicate` result on the
+  fresh runner. The final-verification run exposed a real race: the phase-1
+  append can be observed before its broker ack lands, so closing the first
+  runner in that window makes RabbitMQ requeue the already-applied message and
+  the fresh runner sees it once more. The test now asserts that every delivery
+  after the restart is suppressed as a duplicate (no failures, no appends),
+  which is the invariant that matters, and documents the requeue window. Eight
+  consecutive full runs passed after the fix. No production code was touched.
+
+Validation (all with the disposable loopback stack, `ZELER_RS0_TEST_URI` unset):
+
+- `uv run pytest modules/sheets/tests/test_consumer_stage_telemetry_broker.py
+  modules/sheets/tests/test_consumer_broker_delivery.py -o addopts='' -q`:
+  8 passed in 8.06s, stable across 8 consecutive runs after fixing the restart
+  delivery-count race described above.
+- `MONGO_URI='mongodb://127.0.0.1:27028/zeler_task22?directConnection=true'
+  uv run pytest modules/sheets/tests/test_event_stage_telemetry.py
+  modules/sheets/tests/test_consumer_phase6.py modules/sheets/tests/test_sheets_run_entry.py
+  -o addopts='' -q`: 38 passed in 1.87s.
+- `uv run ruff check` and `uv run ruff format --check` on all three touched test
+  modules: clean. `uv run mypy` on `event_stage_telemetry.py`,
+  `_broker_harness.py`, and the new test file: no issues in 3 source files.
+- Independent verification (2026-09-18) re-ran the broker pair with `-rs`: 8
+  passed, zero skips; it reproduced the stage ordering, the absent `visible_at`
+  and the restart durability read back from the stored documents, and confirmed
+  the task-2.1 assertions are identical after the harness extraction. A separate
+  orchestrator run with `-s` printed `measured received->fetched->persisted
+  latency: 104.0 ms (received_at=2026-09-18T16:42:50.105000+00:00,
+  fetched_at=...120, persisted_at=...209)`, corroborating the magnitude above.
+- Authored line counts: `_broker_harness.py` 448 (about 98 newly authored; the
+  rest is the task-2.1 harness moved verbatim), `test_consumer_stage_telemetry_broker.py`
+  214, `test_consumer_broker_delivery.py` 161. Authored content for this slice is
+  about 286 code lines plus this evidence, so the review unit stays under the
+  400-line budget only when the moved harness block is read as moved code; the
+  commit must be reviewed as extraction plus one new test file.
+
+Residual uncertainty: the latency numbers come from the disposable local broker
+and Mongo replica set, not the production runtime; they bound the worker-side
+stages only. `received -> visible` remains unproven until tasks 5.1/5.3. The
+restart test tolerates the broker requeue window between append and ack; that
+window is the already-declared at-least-once boundary, not a new defect.
+
 ## Current evidence status (2026-09-15 continuation)
 
 Implementation is not ready for build/deployment. The task audit reopened 2.2,
