@@ -7,6 +7,7 @@ import signal
 import sys
 import time
 from collections.abc import Callable
+from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -20,6 +21,15 @@ from motor.motor_asyncio import AsyncIOMotorClient
 
 from zeler_platform_core.auth.meli_gateway_auth import MeliGatewayAuth
 from zeler_platform_core.clients.meli_gateway_client import GatewayRateLimitError, MeliGatewayClient
+from zeler_platform_core.events.claim_gate import (
+    ClaimHandle,
+    EventClaimGate,
+    EventClaimStoreLike,
+    EventClaimTimeoutError,
+    EventGate,
+    LegacyEventGate,
+)
+from zeler_platform_core.events.claims import EventClaimStore
 from zeler_platform_core.events.idempotency import IdempotencyStore as CoreIdempotencyStore
 from zeler_platform_core.models import (
     Item,
@@ -41,6 +51,7 @@ MISSING_RABBITMQ_URL_MESSAGE = "error: RABBITMQ_URL is required"
 MISSING_MONGO_URI_MESSAGE = "error: MONGO_URI is required"
 MISSING_MONGO_DB_MESSAGE = "error: MONGO_DB is required"
 DEFAULT_GATEWAY_BASE_URL = "http://gateway:8080/proxy/meli"
+DEFAULT_EVENT_CLAIM_RETRY_DELAY_MS = 1000
 PERMANENT_HTTP_STATUS_CODES = {401, 403, 404, 422}
 RETRIABLE_HTTP_STATUS_CODES = {408, 429}
 
@@ -188,74 +199,110 @@ class RepricerEventHandler:
         gateway_client: GatewayPriceClient,
         idempotency_store: IdempotencyStoreLike,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
+        event_claim_store: EventClaimStoreLike | None = None,
     ) -> None:
         self._db = db
         self._gateway = gateway_client
         self._idempotency = idempotency_store
         self._clock = clock
+        self._event_claim_store = event_claim_store
+        if event_claim_store is None:
+            # Legacy constructor path: the non-concurrent check-then-act
+            # fallback used by unit doubles. Duplicates are suppressed only by
+            # the completed marker, which is not atomic under concurrent
+            # deliveries. Real workers must pass an EventClaimStore.
+            self._event_gate: EventGate = LegacyEventGate(idempotency_store)
+        else:
+            self._event_gate = EventClaimGate(
+                event_claim_store,
+                module_id="repricer",
+                consumer_id=REPRICER_ITEMS_QUEUE,
+            )
 
     async def handle(self, event: RepricerEvent) -> str:
-        if await self._idempotency.is_duplicate(event.idempotency_key):
+        claim = await self._event_gate.claim(event.idempotency_key)
+        if claim is None:
             return "duplicate"
-
-        item_id = _item_id_from_resource(event.resource)
-        item_doc = await self._db["items"].find_one(
-            {"_id": item_id, "seller_id": str(event.seller_id)}
-        )
-        if item_doc is None:
-            return "item_missing"
-        item = Item.model_validate(item_doc)
-        catalog_rule, allow_legacy_rule_fallback = await self._find_catalog_rule(
-            seller_id=event.seller_id,
-            item_id=item.id,
-        )
-        if catalog_rule is not None:
-            return await self._handle_catalog_rule(
-                event=event,
-                item=item,
-                rule=catalog_rule,
+        try:
+            item_id = _item_id_from_resource(event.resource)
+            item_doc = await self._db["items"].find_one(
+                {"_id": item_id, "seller_id": str(event.seller_id)}
             )
-
-        if not allow_legacy_rule_fallback:
-            return "rule_missing"
-
-        rule_doc = await self._db["repricer_rules"].find_one(
-            {"seller_id": str(event.seller_id), "item_id": item.id, "active": True}
-        )
-        if rule_doc is None:
-            return "rule_missing"
-        rule = RepricerRule.model_validate(rule_doc)
-        decision = evaluate_rule(rule, current_price=item.price, buybox_price=event.buybox_price)
-
-        if isinstance(decision, SetPrice):
-            gateway_status, latency_ms = await self._gateway.update_price(
+            if item_doc is None:
+                # Non-terminal: release so the broker redelivery can re-run.
+                await claim.release()
+                return "item_missing"
+            item = Item.model_validate(item_doc)
+            catalog_rule, allow_legacy_rule_fallback = await self._find_catalog_rule(
                 seller_id=event.seller_id,
                 item_id=item.id,
-                new_price=decision.new_price,
-                idempotency_key=event.idempotency_key,
             )
+            if catalog_rule is not None:
+                return await self._handle_catalog_rule(
+                    event=event,
+                    item=item,
+                    rule=catalog_rule,
+                    claim=claim,
+                )
+
+            if not allow_legacy_rule_fallback:
+                # Non-terminal: release so the broker redelivery can re-run.
+                await claim.release()
+                return "rule_missing"
+
+            rule_doc = await self._db["repricer_rules"].find_one(
+                {"seller_id": str(event.seller_id), "item_id": item.id, "active": True}
+            )
+            if rule_doc is None:
+                # Non-terminal: release so the broker redelivery can re-run.
+                await claim.release()
+                return "rule_missing"
+            rule = RepricerRule.model_validate(rule_doc)
+            decision = evaluate_rule(
+                rule,
+                current_price=item.price,
+                buybox_price=event.buybox_price,
+            )
+
+            if isinstance(decision, SetPrice):
+                gateway_status, latency_ms = await self._gateway.update_price(
+                    seller_id=event.seller_id,
+                    item_id=item.id,
+                    new_price=decision.new_price,
+                    idempotency_key=event.idempotency_key,
+                )
+                await self._write_history(
+                    event=event,
+                    item=item,
+                    new_price=decision.new_price,
+                    reason=decision.reason,
+                    gateway_status=gateway_status,
+                    latency_ms=latency_ms,
+                )
+                await self._complete_claim(claim, event.idempotency_key)
+                return "set_price"
+
+            reason = decision.reason
             await self._write_history(
                 event=event,
                 item=item,
-                new_price=decision.new_price,
-                reason=decision.reason,
-                gateway_status=gateway_status,
-                latency_ms=latency_ms,
+                new_price=item.price,
+                reason=reason,
+                gateway_status=None,
+                latency_ms=None,
             )
-            await self._idempotency.mark_processed(event.idempotency_key)
-            return "set_price"
-
-        reason = decision.reason
-        await self._write_history(
-            event=event,
-            item=item,
-            new_price=item.price,
-            reason=reason,
-            gateway_status=None,
-            latency_ms=None,
-        )
-        await self._idempotency.mark_processed(event.idempotency_key)
-        return "no_action"
+            await self._complete_claim(claim, event.idempotency_key)
+            return "no_action"
+        except BaseException:
+            # A failed delivery must free the lease immediately so the broker
+            # retry can re-acquire instead of waiting for lease expiry. The
+            # release is cleanup: a failure inside it must not replace the
+            # original exception, so only Exception-subclass errors are
+            # swallowed here. A cancellation still attempts the release and
+            # propagates as cancellation.
+            with suppress(Exception):
+                await claim.release()
+            raise
 
     async def _find_catalog_rule(
         self,
@@ -275,12 +322,29 @@ class RepricerEventHandler:
             return None, False
         return RepricerCatalogRule.model_validate(rule_doc), False
 
+    async def _complete_claim(self, handle: ClaimHandle, idempotency_key: str) -> None:
+        """Complete the claim and surface a lost lease without failing.
+
+        A ``False`` return means no completed marker was written because the
+        lease was taken over (or the owner was fenced out). The delivery must
+        still be acked — re-running the external side effects would be worse —
+        but the lost marker is logged so a later redelivery can be traced.
+        """
+        completed = await handle.complete()
+        if not completed:
+            logger.warning(
+                "worker.event_claim.lost_lease",
+                idempotency_key=idempotency_key,
+                module="repricer",
+            )
+
     async def _handle_catalog_rule(
         self,
         *,
         event: RepricerEvent,
         item: Item,
         rule: RepricerCatalogRule,
+        claim: ClaimHandle,
     ) -> str:
         decision = evaluate_catalog_rule(
             rule,
@@ -313,7 +377,7 @@ class RepricerEventHandler:
                 applied_price=decision.new_price,
                 competitor_account_id=event.competitor_account_id,
             )
-            await self._idempotency.mark_processed(event.idempotency_key)
+            await self._complete_claim(claim, event.idempotency_key)
             return "set_price"
 
         await self._write_history(
@@ -331,7 +395,7 @@ class RepricerEventHandler:
             applied_price=None,
             competitor_account_id=event.competitor_account_id,
         )
-        await self._idempotency.mark_processed(event.idempotency_key)
+        await self._complete_claim(claim, event.idempotency_key)
         return "no_action"
 
     async def _update_catalog_execution_state(
@@ -555,6 +619,21 @@ class RepricerAmqpConsumerRunner:
             _log_message_requeued(event, death_count + 1, exc)
             await message.nack(requeue=True)
             return
+        except EventClaimTimeoutError as exc:
+            # A busy lease is retryable, never a DLQ outcome: the delivery is
+            # requeued through the retry-delay path so a redelivery can
+            # re-acquire the lease once the current owner finishes or expires.
+            _log_message_requeued(event, death_count + 1, exc)
+            if self._retry_delay_publisher is None:
+                await message.nack(requeue=True)
+                return
+            await self._retry_delay_publisher.publish_delay(
+                message.body,
+                self.config.queue_name,
+                delay_ms=DEFAULT_EVENT_CLAIM_RETRY_DELAY_MS,
+            )
+            await message.ack()
+            return
         except RuntimeError as exc:
             _log_message_dlq(event, death_count + 1, exc, exc_info=True)
             await message.nack(requeue=False)
@@ -765,6 +844,10 @@ async def run() -> None:
         db=db,
         gateway_client=gateway_client,
         idempotency_store=idempotency_store,
+        event_claim_store=EventClaimStore(
+            cast(Any, db["processed_event_claims"]),
+            CoreIdempotencyStore(cast(Any, db["processed_events"])),
+        ),
     )
     runner = RepricerAmqpConsumerRunner(
         rabbitmq_url=rabbitmq_url,
