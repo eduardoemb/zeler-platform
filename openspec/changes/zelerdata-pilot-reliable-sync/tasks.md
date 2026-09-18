@@ -20,7 +20,16 @@ authorization or size exception. PR topology pending. Historical evidence:
 ## Phase 2: Events
 
 - [x] 2.1 Prove actual-consumer duplicate/reorder and unfinished-event recovery. Broker-level evidence in `modules/sheets/tests/test_consumer_broker_delivery.py` (real RabbitMQ + real Mongo, 4 passed, stable in 10 runs): sequential duplicate, out-of-order arrival, retry-delay recovery, and concurrent duplicate delivery. The concurrent case first measured a real defect (2 appends, 1 marker under production prefetch); it is fixed by the atomic claim/lease in `odd/tasks/atomic-event-claim-lease.md` (S1+S2). Deployed-runtime evidence on the production image is still pending, as for 2.3.
-- [ ] 2.2 Measure real stages; export append never proves cell visibility.
+- [x] 2.2 Measure real stages; export append never proves cell visibility.
+  Broker-level stage evidence in `modules/sheets/tests/test_consumer_stage_telemetry_broker.py`
+  over the shared disposable harness `modules/sheets/tests/_broker_harness.py` with the real
+  `EventStageTelemetry` wired into the real handler (8 passed with 2.1): ordered
+  `received_at <= fetched_at <= persisted_at`, all timezone-aware UTC; measured
+  received->persisted latency 73-100 ms across observed runs; the measurement survives a worker
+  restart (durable in Mongo, not process memory) and the retried event keeps its first receipt via
+  the min-update. `visible_at` is asserted absent in every case: the export append is present while
+  cell visibility is not claimed. `received -> visible` remains pending on the Sheets side
+  (tasks 5.1/5.3).
 - [x] 2.3 Prove old-order/stale/duplicate/isolation through consumer, guarded Mongo, dispatcher; Sheets pending.
 - [ ] 2.4 Prove sustained event/inventory/query/history admission and pacing fairness.
 
