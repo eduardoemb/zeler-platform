@@ -8,6 +8,7 @@ import signal
 import sys
 import time
 from collections.abc import Callable
+from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -20,6 +21,15 @@ from motor.motor_asyncio import AsyncIOMotorClient
 
 from zeler_platform_core.auth.meli_gateway_auth import MeliGatewayAuth
 from zeler_platform_core.clients.meli_gateway_client import GatewayRateLimitError, MeliGatewayClient
+from zeler_platform_core.events.claim_gate import (
+    ClaimHandle,
+    EventClaimGate,
+    EventClaimStoreLike,
+    EventClaimTimeoutError,
+    EventGate,
+    LegacyEventGate,
+)
+from zeler_platform_core.events.claims import EventClaimStore
 from zeler_platform_core.events.idempotency import IdempotencyStore as CoreIdempotencyStore
 from zeler_platform_core.runtime.manifest import validate_manifest
 from zeler_platform_core.runtime.worker_health import WorkerHealthSidecar
@@ -36,6 +46,7 @@ MISSING_RABBITMQ_URL_MESSAGE = "error: RABBITMQ_URL is required"
 MISSING_MONGO_URI_MESSAGE = "error: MONGO_URI is required"
 MISSING_MONGO_DB_MESSAGE = "error: MONGO_DB is required"
 DEFAULT_GATEWAY_BASE_URL = "http://gateway:8080/proxy/meli"
+DEFAULT_EVENT_CLAIM_RETRY_DELAY_MS = 1000
 PERMANENT_HTTP_STATUS_CODES = {401, 403, 404, 422}
 RETRIABLE_HTTP_STATUS_CODES = {408, 429}
 
@@ -297,6 +308,21 @@ class AutoreplyAmqpConsumerRunner:
             _log_message_requeued(event, death_count + 1, exc)
             await message.nack(requeue=True)
             return
+        except EventClaimTimeoutError as exc:
+            # A busy lease is retryable, never a DLQ outcome: the delivery is
+            # requeued through the retry-delay path so a redelivery can
+            # re-acquire the lease once the current owner finishes or expires.
+            _log_message_requeued(event, death_count + 1, exc)
+            if self._retry_delay_publisher is None:
+                await message.nack(requeue=True)
+                return
+            await self._retry_delay_publisher.publish_delay(
+                message.body,
+                self.config.queue_name,
+                delay_ms=DEFAULT_EVENT_CLAIM_RETRY_DELAY_MS,
+            )
+            await message.ack()
+            return
         except RuntimeError as exc:
             if str(exc) == "gateway_backpressure":
                 _log_message_requeued(event, death_count + 1, exc)
@@ -505,62 +531,103 @@ class AutoreplyEventHandler:
         gateway_client: GatewayClient,
         idempotency_store: IdempotencyStore,
         clock: Callable[[], datetime] | None = None,
+        event_claim_store: EventClaimStoreLike | None = None,
     ) -> None:
         self._db = db
         self._gateway_client = gateway_client
         self._idempotency_store = idempotency_store
         self._clock = clock or (lambda: datetime.now(UTC))
+        if event_claim_store is None:
+            # Legacy constructor path: the non-concurrent check-then-act
+            # fallback used by unit doubles. Duplicates are suppressed only by
+            # the completed marker, which is not atomic under concurrent
+            # deliveries. Real workers must pass an EventClaimStore.
+            self._event_gate: EventGate = LegacyEventGate(idempotency_store)
+        else:
+            self._event_gate = EventClaimGate(
+                event_claim_store,
+                module_id="autoreply",
+                consumer_id=AUTOREPLY_EVENTS_QUEUE,
+            )
+        self._event_claim_store = event_claim_store
 
     async def handle(self, event: AutoreplyEvent) -> str:
-        if await self._idempotency_store.is_duplicate(event.idempotency_key):
+        claim = await self._event_gate.claim(event.idempotency_key)
+        if claim is None:
             return "duplicate"
+        try:
+            seller_id = str(event.seller_id)
+            resource = await self._gateway_client.request(
+                "GET", event.resource, seller_id=seller_id, json=None
+            )
+            templates = (
+                await self._db["autoreply_templates"]
+                .find({"seller_id": seller_id, "enabled": True})
+                .to_list(length=100)
+            )
+            matched = select_matching_template(str(resource.get("text", "")), templates)
+            resource_type = resource_type_from_event(event.event_type)
+            resource_id = resource_id_from_resource(resource)
 
-        seller_id = str(event.seller_id)
-        resource = await self._gateway_client.request(
-            "GET", event.resource, seller_id=seller_id, json=None
-        )
-        templates = (
-            await self._db["autoreply_templates"]
-            .find({"seller_id": seller_id, "enabled": True})
-            .to_list(length=100)
-        )
-        matched = select_matching_template(str(resource.get("text", "")), templates)
-        resource_type = resource_type_from_event(event.event_type)
-        resource_id = resource_id_from_resource(resource)
+            if matched is None:
+                await self._record_history(
+                    event=event,
+                    resource_type=resource_type,
+                    resource_id=resource_id,
+                    outcome="no_match",
+                    template_id=None,
+                    answer_payload={},
+                )
+                await self._complete_claim(claim, event.idempotency_key)
+                return "no_match"
 
-        if matched is None:
+            answer_payload = build_answer_payload(
+                resource_type=resource_type,
+                resource_id=resource_id,
+                answer_text=str(matched["answer_text"]),
+            )
+            await self._gateway_client.request(
+                "POST",
+                "/answers",
+                seller_id=seller_id,
+                json=answer_payload,
+            )
             await self._record_history(
                 event=event,
                 resource_type=resource_type,
                 resource_id=resource_id,
-                outcome="no_match",
-                template_id=None,
-                answer_payload={},
+                outcome="answered",
+                template_id=str(matched["_id"]),
+                answer_payload=answer_payload,
             )
-            await self._idempotency_store.mark_processed(event.idempotency_key)
-            return "no_match"
+            await self._complete_claim(claim, event.idempotency_key)
+            return "answered"
+        except BaseException:
+            # A failed delivery must free the lease immediately so the broker
+            # retry can re-acquire instead of waiting for lease expiry. The
+            # release is cleanup: a failure inside it must not replace the
+            # original exception, so only Exception-subclass errors are
+            # swallowed here. A cancellation still attempts the release and
+            # propagates as cancellation.
+            with suppress(Exception):
+                await claim.release()
+            raise
 
-        answer_payload = build_answer_payload(
-            resource_type=resource_type,
-            resource_id=resource_id,
-            answer_text=str(matched["answer_text"]),
-        )
-        await self._gateway_client.request(
-            "POST",
-            "/answers",
-            seller_id=seller_id,
-            json=answer_payload,
-        )
-        await self._record_history(
-            event=event,
-            resource_type=resource_type,
-            resource_id=resource_id,
-            outcome="answered",
-            template_id=str(matched["_id"]),
-            answer_payload=answer_payload,
-        )
-        await self._idempotency_store.mark_processed(event.idempotency_key)
-        return "answered"
+    async def _complete_claim(self, handle: ClaimHandle, idempotency_key: str) -> None:
+        """Complete the claim and surface a lost lease without failing.
+
+        A ``False`` return means no completed marker was written because the
+        lease was taken over (or the owner was fenced out). The delivery must
+        still be acked — re-running the external side effects would be worse —
+        but the lost marker is logged so a later redelivery can be traced.
+        """
+        completed = await handle.complete()
+        if not completed:
+            logger.warning(
+                "worker.event_claim.lost_lease",
+                idempotency_key=idempotency_key,
+                module="autoreply",
+            )
 
     async def _record_history(
         self,
@@ -657,6 +724,10 @@ async def run() -> None:
         ),
         idempotency_store=_AutoreplyIdempotencyAdapter(
             CoreIdempotencyStore(cast(Any, db["processed_events"]))
+        ),
+        event_claim_store=EventClaimStore(
+            cast(Any, db["processed_event_claims"]),
+            CoreIdempotencyStore(cast(Any, db["processed_events"])),
         ),
     )
     runner = AutoreplyAmqpConsumerRunner(

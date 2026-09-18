@@ -8,11 +8,13 @@ import pytest
 from aio_pika import ExchangeType
 
 from zeler_autoreply.consumer import (
+    AUTOREPLY_EVENTS_QUEUE,
     AutoreplyAmqpConsumerRunner,
     AutoreplyEvent,
     _autoreply_event_from_message,
     _autoreply_idempotency_key,
 )
+from zeler_platform_core.events.claim_gate import EventClaimTimeoutError
 
 _FAKES_SPEC = importlib.util.spec_from_file_location(
     "autoreply_amqp_fakes", Path(__file__).with_name("_amqp_fakes.py")
@@ -180,6 +182,46 @@ async def test_autoreply_runner_close_is_idempotent_when_called_twice(
 
     assert connection.closed is True
     assert close_calls == 1
+
+
+class FakeRetryDelayPublisher:
+    def __init__(self) -> None:
+        self.calls: list[tuple[bytes, str, int]] = []
+
+    async def publish_delay(self, body: bytes, queue_name: str, *, delay_ms: int) -> None:
+        self.calls.append((body, queue_name, delay_ms))
+
+
+@pytest.mark.asyncio
+async def test_event_claim_timeout_requeues_through_retry_delay_publisher() -> None:
+    """A busy lease is retryable, never a DLQ or RuntimeError outcome."""
+    publisher = FakeRetryDelayPublisher()
+    runner = AutoreplyAmqpConsumerRunner(
+        rabbitmq_url="amqp://unit-test",
+        handler=FakeHandler(error=EventClaimTimeoutError("claim busy")),
+        retry_delay_publisher=publisher,
+    )
+    message = FakeMessage(_valid_payload(), headers={"idempotency_key": "idem-1"})
+
+    await runner.handle_message(message)
+
+    assert message.acked is True
+    assert message.nacks == []
+    assert publisher.calls == [(message.body, AUTOREPLY_EVENTS_QUEUE, 1000)]
+
+
+@pytest.mark.asyncio
+async def test_event_claim_timeout_without_publisher_nacks_with_requeue() -> None:
+    runner = AutoreplyAmqpConsumerRunner(
+        rabbitmq_url="amqp://unit-test",
+        handler=FakeHandler(error=EventClaimTimeoutError("claim busy")),
+    )
+    message = FakeMessage(_valid_payload(), headers={"idempotency_key": "idem-1"})
+
+    await runner.handle_message(message)
+
+    assert message.acked is False
+    assert message.nacks == [True]
 
 
 def _valid_payload() -> dict[str, Any]:
