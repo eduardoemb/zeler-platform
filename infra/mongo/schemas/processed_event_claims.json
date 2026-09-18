@@ -1,0 +1,15 @@
+{
+  "$jsonSchema": {
+    "bsonType": "object",
+    "required": ["_id", "module_id", "owner_token", "claimed_at", "expires_at"],
+    "properties": {
+      "_id": { "bsonType": "string" },
+      "module_id": { "bsonType": "string" },
+      "owner_token": { "bsonType": "string" },
+      "claimed_at": { "bsonType": "date" },
+      "expires_at": { "bsonType": "date" },
+      "consumer_id": { "bsonType": "string" }
+    },
+    "additionalProperties": true
+  }
+}

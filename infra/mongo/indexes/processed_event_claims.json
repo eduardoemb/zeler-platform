@@ -1,0 +1,6 @@
+[
+  {
+    "keys": { "expires_at": 1 },
+    "options": { "expireAfterSeconds": 0, "name": "ttl_expires_at" }
+  }
+]
