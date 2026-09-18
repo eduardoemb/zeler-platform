@@ -20,6 +20,7 @@ EXPECTED_FILES = {
     # Webhook ingestion + audit
     "webhook_events.json",
     "processed_events.json",
+    "processed_event_claims.json",
     "audit_log.json",
     "rate_limit_counters.json",
     # Bootstrap + module runtime
@@ -144,6 +145,7 @@ ACTIVE_NON_PLACEHOLDER_SCHEMAS = {
     "users.json",
     "webhook_events.json",
     "processed_events.json",
+    "processed_event_claims.json",
     "publicador_drafts.json",
     "publicador_assets.json",
     "publicador_batches.json",
