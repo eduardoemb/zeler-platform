@@ -6,6 +6,7 @@ from typing import Any
 
 import pytest
 
+from zeler_platform_core.events.claims import ClaimOutcome
 from zeler_repricer.consumer import GatewayPriceClient, RepricerEvent, RepricerEventHandler
 
 NOW = datetime(2026, 5, 13, 20, 15, tzinfo=UTC)
@@ -378,3 +379,92 @@ def _assign_dotted(document: dict[str, Any], key: str, value: Any) -> None:
     for part in parts[:-1]:
         target = target.setdefault(part, {})
     target[parts[-1]] = value
+
+
+# --- S3a: terminal completion inside the catalog-rule path ------------------
+
+
+class FakeClaimStore:
+    """``EventClaimStore`` double recording owner tokens per call."""
+
+    def __init__(self, outcome: ClaimOutcome = ClaimOutcome.CLAIMED) -> None:
+        self.outcome = outcome
+        self.claimed: list[str] = []
+        self.completed: list[tuple[str, str]] = []
+        self.released: list[tuple[str, str]] = []
+        self._tokens: dict[str, str] = {}
+
+    async def claim(
+        self,
+        idempotency_key: str,
+        *,
+        module_id: str,
+        consumer_id: str | None = None,
+        owner_token: str,
+        **kwargs: Any,
+    ) -> ClaimOutcome:
+        self.claimed.append(idempotency_key)
+        self._tokens[idempotency_key] = owner_token
+        return self.outcome
+
+    async def complete(
+        self,
+        idempotency_key: str,
+        *,
+        module_id: str,
+        consumer_id: str | None = None,
+        owner_token: str,
+    ) -> bool:
+        self.completed.append((idempotency_key, owner_token))
+        return True
+
+    async def release(
+        self,
+        idempotency_key: str,
+        *,
+        module_id: str,
+        consumer_id: str | None = None,
+        owner_token: str,
+    ) -> bool:
+        self.released.append((idempotency_key, owner_token))
+        return True
+
+
+@pytest.mark.asyncio
+async def test_catalog_rule_live_apply_completes_claim_once() -> None:
+    db = FakeDb([_catalog_rule_doc(rule_id="catalog-1", seller_id="123456789")])
+    gateway = FakeGatewayClient()
+    store = FakeClaimStore()
+    handler = RepricerEventHandler(
+        db=db,
+        gateway_client=gateway,
+        idempotency_store=FakeIdempotency(),
+        clock=lambda: NOW,
+        event_claim_store=store,
+    )
+
+    result = await handler.handle(_event(seller_id=123456789, buybox_price=Decimal("118")))
+
+    assert result == "set_price"
+    assert store.completed == [("idem-1", store._tokens["idem-1"])]
+    assert store.released == []
+
+
+@pytest.mark.asyncio
+async def test_catalog_rule_missing_releases_claim_for_redelivery() -> None:
+    db = FakeDb([])
+    gateway = FakeGatewayClient()
+    store = FakeClaimStore()
+    handler = RepricerEventHandler(
+        db=db,
+        gateway_client=gateway,
+        idempotency_store=FakeIdempotency(),
+        clock=lambda: NOW,
+        event_claim_store=store,
+    )
+
+    result = await handler.handle(_event(seller_id=123456789, buybox_price=Decimal("118")))
+
+    assert result == "rule_missing"
+    assert store.released == [("idem-1", store._tokens["idem-1"])]
+    assert store.completed == []
