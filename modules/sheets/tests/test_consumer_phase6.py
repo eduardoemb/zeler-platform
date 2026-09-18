@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import asyncio
 import inspect
 from datetime import UTC, datetime
 from typing import Any
 
 import pytest
 
+from zeler_platform_core.events.claims import ClaimOutcome
+from zeler_sheets import consumer
 from zeler_sheets.consumer import SheetsEvent, SheetsEventHandler
 
 
@@ -558,3 +561,174 @@ async def test_interrupted_export_is_replayed_before_idempotency_is_marked() -> 
     assert await handler.handle(event) == "duplicate"
     assert len(sheets.rows) == 1
     assert idempotency.marked == [event.idempotency_key]
+
+
+class _LogSpy:
+    """Same structured-logging spy pattern as test_consumer_error_handling."""
+
+    def __init__(self) -> None:
+        self.warning_calls: list[tuple[str, dict[str, Any]]] = []
+
+    def warning(self, event: str, **fields: Any) -> None:
+        self.warning_calls.append((event, fields))
+
+    def info(self, event: str, **fields: Any) -> None:
+        pass
+
+    def error(self, event: str, **fields: Any) -> None:
+        pass
+
+
+class LostLeaseClaimStore:
+    """Claim-store double whose ``complete`` always reports a lost lease.
+
+    It satisfies the ``_EventClaimGate`` contract: ``claim`` returns
+    ``CLAIMED`` and the returned handle's ``complete`` reports ``False``, the
+    signal a real ``EventClaimStore`` gives when the lease was taken over.
+    """
+
+    def __init__(self) -> None:
+        self.complete_calls = 0
+
+    async def claim(self, key: str, **_: Any) -> Any:
+        return ClaimOutcome.CLAIMED
+
+    async def complete(self, key: str, **_: Any) -> bool:
+        self.complete_calls += 1
+        return False
+
+    async def release(self, key: str, **_: Any) -> bool:
+        return True
+
+
+class ReleaseFailingClaimStore(LostLeaseClaimStore):
+    """Claim-store double whose ``release`` cleanup always fails."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.release_attempts = 0
+
+    async def release(self, key: str, **_: Any) -> bool:
+        self.release_attempts += 1
+        raise RuntimeError("lease release failed")
+
+
+@pytest.mark.asyncio
+async def test_lost_lease_completion_warns_and_still_returns_result(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    log_spy = _LogSpy()
+    monkeypatch.setattr(consumer, "logger", log_spy, raising=False)
+    claim_store = LostLeaseClaimStore()
+    handler = SheetsEventHandler(
+        db=FakeDb(),
+        gateway_client=FakeGatewayClient(),
+        sheets_client=FakeSheetsClient(),
+        idempotency_store=FakeIdempotency(),
+        event_claim_store=claim_store,  # type: ignore[arg-type]
+    )
+
+    result = await handler.handle(
+        SheetsEvent(
+            event_id="event-lost-1",
+            event_type="items.updated",
+            seller_id=123456789,
+            resource="/items/MLA123",
+            idempotency_key="items:/items/MLA123:event-lost-1",
+        )
+    )
+
+    assert claim_store.complete_calls == 1
+    assert result == "appended"
+    assert log_spy.warning_calls == [
+        (
+            "worker.event_claim.lost_lease",
+            {
+                "idempotency_key": "items:/items/MLA123:event-lost-1",
+                "module": "sheets",
+            },
+        )
+    ]
+
+
+@pytest.mark.asyncio
+async def test_normal_completion_does_not_warn_about_lost_lease(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    log_spy = _LogSpy()
+    monkeypatch.setattr(consumer, "logger", log_spy, raising=False)
+    handler = SheetsEventHandler(
+        db=FakeDb(),
+        gateway_client=FakeGatewayClient(),
+        sheets_client=FakeSheetsClient(),
+        idempotency_store=FakeIdempotency(),
+    )
+
+    result = await handler.handle(
+        SheetsEvent(
+            event_id="event-ok-1",
+            event_type="items.updated",
+            seller_id=123456789,
+            resource="/items/MLA123",
+            idempotency_key="items:/items/MLA123:event-ok-1",
+        )
+    )
+
+    assert result == "appended"
+    assert log_spy.warning_calls == []
+
+
+@pytest.mark.asyncio
+async def test_release_failure_does_not_mask_the_original_error() -> None:
+    gateway = FakeGatewayClient()
+    sheets = FlakySheetsClient()
+    claim_store = ReleaseFailingClaimStore()
+    handler = SheetsEventHandler(
+        db=FakeDb(),
+        gateway_client=gateway,
+        sheets_client=sheets,
+        idempotency_store=FakeIdempotency(),
+        event_claim_store=claim_store,  # type: ignore[arg-type]
+    )
+
+    with pytest.raises(RuntimeError, match="temporarily unavailable"):
+        await handler.handle(
+            SheetsEvent(
+                event_id="event-release-1",
+                event_type="items.updated",
+                seller_id=123456789,
+                resource="/items/MLA123",
+                idempotency_key="items:/items/MLA123:event-release-1",
+            )
+        )
+
+    assert claim_store.release_attempts == 1
+
+
+@pytest.mark.asyncio
+async def test_cancelled_delivery_still_attempts_the_release() -> None:
+    class CancelledSheetsClient(FakeSheetsClient):
+        async def append_row(self, **_: Any) -> None:
+            raise asyncio.CancelledError
+
+    claim_store = ReleaseFailingClaimStore()
+    handler = SheetsEventHandler(
+        db=FakeDb(),
+        gateway_client=FakeGatewayClient(),
+        sheets_client=CancelledSheetsClient(),
+        idempotency_store=FakeIdempotency(),
+        event_claim_store=claim_store,  # type: ignore[arg-type]
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        await handler.handle(
+            SheetsEvent(
+                event_id="event-cancel-1",
+                event_type="items.updated",
+                seller_id=123456789,
+                resource="/items/MLA123",
+                idempotency_key="items:/items/MLA123:event-cancel-1",
+            )
+        )
+
+    assert claim_store.release_attempts == 1

@@ -31,6 +31,23 @@ from zeler_platform_core.devoluciones_readiness import (
     new_devoluciones_attempt_token,
     stable_devoluciones_operation_id,
 )
+from zeler_platform_core.events.claim_gate import (
+    ClaimHandle as _ClaimHandle,
+)
+from zeler_platform_core.events.claim_gate import (
+    EventClaimGate as _EventClaimGate,
+)
+from zeler_platform_core.events.claim_gate import (
+    EventClaimStoreLike,
+    EventClaimTimeoutError,
+)
+from zeler_platform_core.events.claim_gate import (
+    EventGate as _EventGate,
+)
+from zeler_platform_core.events.claim_gate import (
+    LegacyEventGate as _LegacyEventGate,
+)
+from zeler_platform_core.events.claims import EventClaimStore
 from zeler_platform_core.events.idempotency import IdempotencyStore as CoreIdempotencyStore
 from zeler_platform_core.observability.logging import configure_logging
 from zeler_platform_core.runtime.checks import amqp_probe_connection
@@ -113,6 +130,7 @@ PERMANENT_HTTP_STATUS_CODES = {401, 403, 404, 422}
 RETRIABLE_HTTP_STATUS_CODES = {408, 429}
 DEFAULT_GATEWAY_BASE_URL = "http://gateway:8080/proxy/meli"
 DEFAULT_STATUS_CONTENTION_RETRY_DELAY_MS = 1000
+DEFAULT_EVENT_CLAIM_RETRY_DELAY_MS = 1000
 SYNC_JOBS_MIGRATION_ID = "sheets_sync_jobs_v2_activation_cutoff"
 CLAIMS_RETRY_DELAYS = (
     (1_000, "1s"),
@@ -565,6 +583,26 @@ class SheetsAmqpConsumerRunner:
             )
             await message.ack()
             return
+        except EventClaimTimeoutError as exc:
+            _log_message_requeued(event, death_count + 1, exc)
+            if await self._retry_claims_transient(
+                message,
+                queue_name=queue_name,
+                death_count=death_count,
+                delay_ms=DEFAULT_EVENT_CLAIM_RETRY_DELAY_MS,
+            ):
+                return
+            if self._retry_delay_publisher is None:
+                await message.nack(requeue=True)
+                return
+            await self._publish_retry_delay(
+                message.body,
+                queue_name=queue_name,
+                delay_ms=DEFAULT_EVENT_CLAIM_RETRY_DELAY_MS,
+                headers=_retry_headers(message, attempt=death_count + 1),
+            )
+            await message.ack()
+            return
         except (DevolucionesLeaseConflictError, DevolucionesLeaseLostError) as exc:
             _log_message_requeued(event, death_count + 1, exc)
             if await self._retry_claims_transient(
@@ -730,6 +768,7 @@ def _dlq_class(
             httpx.TimeoutException,
             RetryLimitExceededError,
             StatusObservationContentionError,
+            EventClaimTimeoutError,
             DevolucionesLeaseConflictError,
             DevolucionesLeaseLostError,
         ),
@@ -979,11 +1018,25 @@ class SheetsEventHandler:
         sale_price_enabled: bool = False,
         listing_fixed_fee_enabled: bool = False,
         stage_telemetry: EventStageTelemetry | None = None,
+        event_claim_store: EventClaimStoreLike | None = None,
     ) -> None:
         self._db = db
         self._gateway_client = gateway_client
         self._sheets_client = sheets_client
         self._idempotency_store = idempotency_store
+        if event_claim_store is None:
+            # Legacy constructor path: the non-concurrent check-then-act
+            # fallback used by unit doubles. It wraps the idempotency store it
+            # received (in production wiring that is the sheets adapter, which
+            # owns the completed marker). Real workers must pass a claim store.
+            self._event_gate: _EventGate = _LegacyEventGate(idempotency_store)
+        else:
+            self._event_gate = _EventClaimGate(
+                event_claim_store,
+                module_id="sheets",
+                consumer_id=SHEETS_EVENTS_QUEUE,
+            )
+        self._event_claim_store = event_claim_store
         self._event_persistence = event_persistence or SheetsEventPersistence(db=db)
         self._stage_telemetry = stage_telemetry
         self._zelerdata_enrichment_enabled = zelerdata_enrichment_enabled
@@ -1001,150 +1054,183 @@ class SheetsEventHandler:
             if event.event_type == "catalog_item_competition_status.updated"
             else event.idempotency_key
         )
-        if await self._idempotency_store.is_duplicate(processing_key):
+        handle = await self._event_gate.claim(processing_key)
+        if handle is None:
             return "duplicate"
-
-        if event.event_type == "catalog_item_competition_status.updated":
-            await acquire_catalog_event(
-                db=self._db,
-                gateway=self._gateway_client,
-                seller_id=str(event.seller_id),
-                resource=event.resource,
-                event_key=event.idempotency_key,
-            )
-            await self._idempotency_store.mark_processed(processing_key)
-            return "observed"
-
-        if self._stage_telemetry is not None:
-            await self._stage_telemetry.record(
-                event_key=event.idempotency_key,
-                stage="received",
-                timestamp=datetime.now(UTC),
-            )
-        fetch_path = _fetch_resource_path_for_event(event)
-        owns_operation = operation is None and event.event_type.startswith(("orders.", "claims."))
-        if owns_operation:
-            invalidate_on_acquire = event.event_type.startswith("claims.")
-            operation = await acquire_devoluciones_operation(
-                db=self._db,
-                seller_id=str(event.seller_id),
-                scope="devoluciones",
-                operation_id=stable_devoluciones_operation_id("event", event.idempotency_key),
-                attempt_token=new_devoluciones_attempt_token(),
-                source_fingerprint=event.idempotency_key,
-                invalidate_readiness=invalidate_on_acquire,
-            )
-        heartbeat_scope = (
-            maintain_devoluciones_heartbeat(db=self._db, operation=operation)
-            if owns_operation and operation is not None
-            else nullcontext()
-        )
-        async with heartbeat_scope:
-            try:
-                if owns_operation and event.event_type.startswith("orders."):
-                    if operation is None:
-                        raise ValueError("operation is required for order event projection")
-                    try:
-                        relevant_order = await _order_event_references_devoluciones(
-                            db=self._db,
-                            seller_id=str(event.seller_id),
-                            resource_path=fetch_path,
-                        )
-                    except Exception:
-                        await invalidate_devoluciones_readiness(
-                            db=self._db,
-                            operation=operation,
-                            source="devoluciones_event_relevance_unknown",
-                        )
-                        raise
-                    if relevant_order:
-                        await invalidate_devoluciones_readiness(
-                            db=self._db,
-                            operation=operation,
-                            source="devoluciones_relevant_order_event",
-                        )
-                resource = await self._gateway_client.fetch_resource(
-                    seller_id=event.seller_id,
-                    path=fetch_path,
+        try:
+            if event.event_type == "catalog_item_competition_status.updated":
+                await acquire_catalog_event(
+                    db=self._db,
+                    gateway=self._gateway_client,
+                    seller_id=str(event.seller_id),
+                    resource=event.resource,
+                    event_key=event.idempotency_key,
                 )
-                if self._stage_telemetry is not None:
-                    await self._stage_telemetry.record(
-                        event_key=event.idempotency_key,
-                        stage="fetched",
-                        timestamp=datetime.now(UTC),
-                    )
-                if event.event_type.startswith("claims."):
-                    if operation is None:
-                        raise ValueError("operation is required for claim event projection")
-                    source = GatewayDevolucionesSource(self._gateway_client)
-                    claim_id = str(resource.get("id") or resource.get("_id") or "").strip()
-                    returns = await source.get_returns(
-                        seller_id=str(event.seller_id), claim_id=claim_id
-                    )
-                    order_id = str(resource.get("order_id") or resource.get("resource_id") or "")
-                    order = await source.get_order(
-                        seller_id=str(event.seller_id), order_id=order_id
-                    )
-                    await self._event_persistence.persist(
-                        event_type="orders.updated",
+                await self._complete_claim(handle, processing_key)
+                return "observed"
+
+            if self._stage_telemetry is not None:
+                await self._stage_telemetry.record(
+                    event_key=event.idempotency_key,
+                    stage="received",
+                    timestamp=datetime.now(UTC),
+                )
+            fetch_path = _fetch_resource_path_for_event(event)
+            owns_operation = operation is None and event.event_type.startswith(
+                ("orders.", "claims.")
+            )
+            if owns_operation:
+                invalidate_on_acquire = event.event_type.startswith("claims.")
+                operation = await acquire_devoluciones_operation(
+                    db=self._db,
+                    seller_id=str(event.seller_id),
+                    scope="devoluciones",
+                    operation_id=stable_devoluciones_operation_id("event", event.idempotency_key),
+                    attempt_token=new_devoluciones_attempt_token(),
+                    source_fingerprint=event.idempotency_key,
+                    invalidate_readiness=invalidate_on_acquire,
+                )
+            heartbeat_scope = (
+                maintain_devoluciones_heartbeat(db=self._db, operation=operation)
+                if owns_operation and operation is not None
+                else nullcontext()
+            )
+            async with heartbeat_scope:
+                try:
+                    if owns_operation and event.event_type.startswith("orders."):
+                        if operation is None:
+                            raise ValueError("operation is required for order event projection")
+                        try:
+                            relevant_order = await _order_event_references_devoluciones(
+                                db=self._db,
+                                seller_id=str(event.seller_id),
+                                resource_path=fetch_path,
+                            )
+                        except Exception:
+                            await invalidate_devoluciones_readiness(
+                                db=self._db,
+                                operation=operation,
+                                source="devoluciones_event_relevance_unknown",
+                            )
+                            raise
+                        if relevant_order:
+                            await invalidate_devoluciones_readiness(
+                                db=self._db,
+                                operation=operation,
+                                source="devoluciones_relevant_order_event",
+                            )
+                    resource = await self._gateway_client.fetch_resource(
                         seller_id=event.seller_id,
-                        resource=order,
-                        operation=operation,
-                    )
-                    resource = await project_claim(
-                        db=self._db,
-                        seller_id=str(event.seller_id),
-                        claim=resource,
-                        returns=returns,
-                        order=order,
-                        operation=operation,
-                    )
-                else:
-                    await self._event_persistence.persist(
-                        event_type=event.event_type,
-                        seller_id=event.seller_id,
-                        resource=resource,
-                        operation=operation,
+                        path=fetch_path,
                     )
                     if self._stage_telemetry is not None:
                         await self._stage_telemetry.record(
                             event_key=event.idempotency_key,
-                            stage="persisted",
+                            stage="fetched",
                             timestamp=datetime.now(UTC),
                         )
-            except Exception:
+                    if event.event_type.startswith("claims."):
+                        if operation is None:
+                            raise ValueError("operation is required for claim event projection")
+                        source = GatewayDevolucionesSource(self._gateway_client)
+                        claim_id = str(resource.get("id") or resource.get("_id") or "").strip()
+                        returns = await source.get_returns(
+                            seller_id=str(event.seller_id), claim_id=claim_id
+                        )
+                        order_id = str(
+                            resource.get("order_id") or resource.get("resource_id") or ""
+                        )
+                        order = await source.get_order(
+                            seller_id=str(event.seller_id), order_id=order_id
+                        )
+                        await self._event_persistence.persist(
+                            event_type="orders.updated",
+                            seller_id=event.seller_id,
+                            resource=order,
+                            operation=operation,
+                        )
+                        resource = await project_claim(
+                            db=self._db,
+                            seller_id=str(event.seller_id),
+                            claim=resource,
+                            returns=returns,
+                            order=order,
+                            operation=operation,
+                        )
+                    else:
+                        await self._event_persistence.persist(
+                            event_type=event.event_type,
+                            seller_id=event.seller_id,
+                            resource=resource,
+                            operation=operation,
+                        )
+                        if self._stage_telemetry is not None:
+                            await self._stage_telemetry.record(
+                                event_key=event.idempotency_key,
+                                stage="persisted",
+                                timestamp=datetime.now(UTC),
+                            )
+                except Exception:
+                    if owns_operation and operation is not None:
+                        await finish_devoluciones_operation(
+                            db=self._db,
+                            operation=operation,
+                            succeeded=False,
+                            error_code="event_projection_failed",
+                        )
+                    raise
                 if owns_operation and operation is not None:
                     await finish_devoluciones_operation(
                         db=self._db,
                         operation=operation,
-                        succeeded=False,
-                        error_code="event_projection_failed",
+                        succeeded=True,
                     )
-                raise
-            if owns_operation and operation is not None:
-                await finish_devoluciones_operation(
-                    db=self._db,
-                    operation=operation,
-                    succeeded=True,
-                )
-        await self._refresh_zelerdata_enrichment_if_enabled(_event_with_resource(event, fetch_path))
-        export_config = await self._db["sheets_exports"].find_one(
-            {"seller_id": str(event.seller_id), "enabled": True}
-        )
-        if export_config is None:
-            await self._idempotency_store.mark_processed(event.idempotency_key)
-            return "no_export"
+            await self._refresh_zelerdata_enrichment_if_enabled(
+                _event_with_resource(event, fetch_path)
+            )
+            export_config = await self._db["sheets_exports"].find_one(
+                {"seller_id": str(event.seller_id), "enabled": True}
+            )
+            if export_config is None:
+                await self._complete_claim(handle, processing_key)
+                return "no_export"
 
-        row = format_resource_row(event.event_type, resource)
-        await self._sheets_client.append_row(
-            seller_id=str(event.seller_id),
-            spreadsheet_id=str(export_config["spreadsheet_id"]),
-            worksheet_name=str(export_config.get("worksheet_name", "Events")),
-            row=row,
-            idempotency_key=event.idempotency_key,
-        )
-        await self._idempotency_store.mark_processed(event.idempotency_key)
-        return "appended"
+            row = format_resource_row(event.event_type, resource)
+            await self._sheets_client.append_row(
+                seller_id=str(event.seller_id),
+                spreadsheet_id=str(export_config["spreadsheet_id"]),
+                worksheet_name=str(export_config.get("worksheet_name", "Events")),
+                row=row,
+                idempotency_key=event.idempotency_key,
+            )
+            await self._complete_claim(handle, processing_key)
+            return "appended"
+        except BaseException:
+            # A failed delivery must free the lease immediately so the broker
+            # retry can re-acquire instead of waiting for lease expiry. The
+            # release is cleanup: a failure inside it must not replace the
+            # original exception, so only Exception-subclass errors are
+            # swallowed here. A cancellation still attempts the release and
+            # propagates as cancellation.
+            with suppress(Exception):
+                await handle.release()
+            raise
+
+    async def _complete_claim(self, handle: _ClaimHandle, processing_key: str) -> None:
+        """Complete the claim and surface a lost lease without failing.
+
+        A ``False`` return means no completed marker was written because the
+        lease was taken over (or the owner was fenced out). The delivery must
+        still be acked — re-running the external side effects would be worse —
+        but the lost marker is logged so a later redelivery can be traced.
+        """
+        completed = await handle.complete()
+        if not completed:
+            logger.warning(
+                "worker.event_claim.lost_lease",
+                idempotency_key=processing_key,
+                module="sheets",
+            )
 
     async def _refresh_zelerdata_enrichment_if_enabled(self, event: SheetsEvent) -> None:
         if not self._zelerdata_enrichment_enabled or not event.event_type.startswith("items."):
@@ -1281,6 +1367,10 @@ async def run() -> None:
         sheets_client=make_sheets_client(db, kms_client, sheets_settings),
         idempotency_store=_SheetsIdempotencyAdapter(
             CoreIdempotencyStore(cast(Any, db["processed_events"]))
+        ),
+        event_claim_store=EventClaimStore(
+            cast(Any, db["processed_event_claims"]),
+            CoreIdempotencyStore(cast(Any, db["processed_events"])),
         ),
         zelerdata_enrichment_enabled=_env_flag_enabled("ZELERDATA_ENRICHMENT_ENABLED"),
         sale_price_enabled=_env_flag_enabled("ZELERDATA_SALE_PRICE_ENABLED"),
