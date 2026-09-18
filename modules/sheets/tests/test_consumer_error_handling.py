@@ -7,6 +7,7 @@ import pytest
 
 from zeler_platform_core.clients.meli_gateway_client import GatewayRateLimitError
 from zeler_platform_core.devoluciones_readiness import DevolucionesLeaseConflictError
+from zeler_platform_core.events.claim_gate import EventClaimTimeoutError
 from zeler_platform_core.runtime.retry_delay import RETRY_ATTEMPT_HEADER
 from zeler_sheets import consumer
 from zeler_sheets.consumer import SheetsAmqpConsumerRunner, SheetsEvent
@@ -620,6 +621,10 @@ def test_dlq_classifier_covers_remaining_taxonomy_branches() -> None:
         == "claims_unbound"
     )
     assert consumer._dlq_class(event=event, error=ValueError("bad field")) == "deserialization"
+    assert (
+        consumer._dlq_class(event=event, error=EventClaimTimeoutError("claim busy"))
+        == "transient_timeout"
+    )
     assert consumer._dlq_class(event=event, error=server_error) == "http_5xx"
     assert consumer._dlq_class(event=event, error=RuntimeError("unexpected")) == "http_5xx"
 

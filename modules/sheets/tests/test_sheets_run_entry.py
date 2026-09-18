@@ -7,17 +7,20 @@ import signal
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from unittest.mock import patch
 
 import httpx
 import pytest
 import structlog
 
+from zeler_platform_core.events.claim_gate import EventClaimGate
+from zeler_platform_core.events.claims import EventClaimStore
 from zeler_sheets.consumer import (
     MISSING_MONGO_DB_MESSAGE,
     MISSING_MONGO_URI_MESSAGE,
     MISSING_RABBITMQ_URL_MESSAGE,
+    SheetsEventHandler,
     SheetsGatewayClient,
     _NotImplementedSheetsClient,
     _SheetsIdempotencyAdapter,
@@ -126,6 +129,28 @@ def test_not_implemented_sheets_client_satisfies_google_sheets_client_protocol()
     client = _NotImplementedSheetsClient()
 
     assert callable(client.append_row)
+
+
+@pytest.mark.asyncio
+async def test_sheets_run_wires_real_event_claim_store_into_handler(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Production wiring must compose the atomic claim gate, not the legacy fallback.
+
+    A missing claim-store wiring would silently restore the non-concurrent
+    check-then-act duplicate suppression, so this pins the exact gate and the
+    exact collections the store is built over.
+    """
+    state = await _exercise_run(monkeypatch)
+
+    handler = state.handler
+    assert isinstance(handler, SheetsEventHandler)
+    assert type(handler._event_gate) is EventClaimGate
+    assert isinstance(handler._event_claim_store, EventClaimStore)
+    claims_collection = cast(Any, handler._event_claim_store)._claims
+    completed_collection = cast(Any, handler._event_claim_store)._completed._collection
+    assert claims_collection == {"collection": "processed_event_claims"}
+    assert completed_collection == {"collection": "processed_events"}
 
 
 @pytest.mark.asyncio
@@ -252,6 +277,7 @@ class _RunState:
         self.mongo_closed = False
         self.event_waited = False
         self.event_set = False
+        self.handler: Any = None
         self.signal_handlers: dict[signal.Signals, Any] = {}
 
 
@@ -302,6 +328,7 @@ async def _exercise_run(monkeypatch: pytest.MonkeyPatch) -> _RunState:
             assert kwargs["rabbitmq_url"] == "amqp://unit-test"
             assert Path(kwargs["manifest_path"]).name == "manifest.yaml"
             assert kwargs["handler"]._sheets_client.__class__.__name__ == "GoogleSheetsClient"
+            state.handler = kwargs["handler"]
 
         async def start(self) -> None:
             state.runner_started = True
