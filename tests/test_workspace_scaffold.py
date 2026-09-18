@@ -13,6 +13,7 @@ def test_workspace_root_contains_required_files() -> None:
         "CONTRIBUTING.md",
         "AGENTS.md",
         "SECURITY.md",
+        "LICENSE",
         ".pre-commit-config.yaml",
         ".github/workflows/lint.yml",
         ".github/workflows/test.yml",
@@ -24,6 +25,17 @@ def test_workspace_root_contains_required_files() -> None:
     missing = [file_name for file_name in required_files if not (ROOT / file_name).exists()]
 
     assert missing == []
+
+
+def test_license_is_business_source_with_complete_parameters() -> None:
+    license_text = (ROOT / "LICENSE").read_text(encoding="utf-8")
+
+    assert license_text.startswith("Business Source License 1.1")
+    assert "Licensed Work:" in license_text
+    assert "Additional Use Grant:" in license_text
+    assert "Change License:" in license_text
+    assert "Change Date:" in license_text
+    assert "Licensor:" in license_text
 
 
 def test_workspace_root_declares_uv_members_and_python_version() -> None:

@@ -31,6 +31,15 @@ def test_agents_and_security_docs_capture_required_rules() -> None:
     assert "No credentials in source code, ever" in security
 
 
+def test_readme_publishes_license_terms() -> None:
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+
+    assert "## License" in readme
+    assert "Business Source License 1.1 (BUSL-1.1)" in readme
+    assert "`LICENSE`" in readme
+    assert "Apache License 2.0" in readme
+
+
 def test_webhook_backlog_replay_documents_stock_location_readiness_gates() -> None:
     runbook = (ROOT / "docs" / "ops" / "webhook-backlog-replay.md").read_text(encoding="utf-8")
 

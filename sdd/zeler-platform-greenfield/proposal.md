@@ -9,7 +9,7 @@ Build a single greenfield platform — `zeler-platform` — that owns all Meli i
 - **4 duplicated webhook pipelines** — SheetSeller, Repricer, Autoreplyia, FullDock each ship their own producer/consumer/RabbitMQ stack.
 - **Token refresh races** — three independent 5h30m refresh workers against the same Meli client_id; only Repricer is canonical.
 - **Per-nickname collections** (`{nick}_listados`, `{nick}_questions`, `{nick}_messages`) in Autoreplyia/FullDock — unscalable, unindexable, unmigratable.
-- **Plaintext credentials in source** (`renovar_tokens.py`: `Genesis1:1`).
+- **Plaintext credentials in source** (`renovar_tokens.py`: redacted legacy email password).
 - **"SheetSeller" name leaks product branding into platform responsibility** — canonical Meli data lives behind a Google-Sheets-flavored brand.
 - **No single writer to Meli** — PublicadorMeli is the only writer, orphaned; no shared write-governance.
 - **zeler-core shadow-sync** is a transitional bridge pattern, not a target architecture.

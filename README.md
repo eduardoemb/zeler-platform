@@ -35,6 +35,16 @@ uv run ruff check .
 uv run mypy .
 ```
 
+## License
+
+This repository is licensed under the Business Source License 1.1 (BUSL-1.1).
+See `LICENSE` for the full terms and parameters.
+
+Non-production use (learning, research, personal projects, and self-hosted
+non-commercial evaluation) is permitted. Running this code to serve a
+commercial product requires a commercial license from the Licensor. Each
+version converts to Apache License 2.0 on its Change Date.
+
 ## SDD artifacts
 
 The authoritative SDD artifacts currently live in this repository:

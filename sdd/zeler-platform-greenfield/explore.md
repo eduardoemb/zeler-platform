@@ -304,7 +304,7 @@ Actually: since Meli assigns tokens per `client_id` (per app), if ALL products u
 
 ### SECURITY RISK (CRITICAL 🔴)
 
-- `alertasDocker@outlook.es` / password `"Genesis1:1"` hardcoded in SheetSeller's `renovar_tokens.py` (plaintext credentials in source code)
+- `alertasDocker@outlook.es` / password `<redacted-legacy-email-password>` hardcoded in SheetSeller's `renovar_tokens.py` (plaintext credentials in source code). The account is decommissioned; the credential value is not reproduced here.
 - Token material flows through 5 different services and is stored in potentially 10+ locations simultaneously (5 legacy + 5 per-app core records)
 - SheetSeller has MercadoPago API key hardcoded as `API_KEY_MP` — if rotated, all services using this must be updated
 
@@ -471,7 +471,7 @@ The gateway is the ONLY service with Meli OAuth tokens. Products get tokens via 
 4. **CouchDB for `map_code_ml`**: Single VM, no replication, no managed service. Dead-end.
 5. **Dual-write to legacy + core**: The `write_token_to_core` + legacy write pattern exists because the migration was incremental. Greenfield starts canonical.
 6. **`sheetseller_app` as a separate MongoDB database**: The product-specific state should live in the module's own schema within the platform DB, not a separate cluster endpoint.
-7. **Plaintext email credentials in source code** (`Genesis1:1`): Eliminate entirely.
+7. **Plaintext email credentials in source code** (redacted legacy password): Eliminate entirely.
 8. **Feature flags `READ_TOKENS_FROM_CORE`**: The greenfield always reads from core. No flags.
 9. **`sync_status.*` complexity**: The dual-write sync_status was a migration artifact. Greenfield has a single source of truth; no need for sync status tracking.
 
@@ -571,7 +571,7 @@ The gateway is the ONLY service with Meli OAuth tokens. Products get tokens via 
 | Risk | Severity | Description |
 |------|----------|-------------|
 | Token refresh races | 🔴 CRITICAL | If products share Meli client_id, concurrent refreshes create 401 cascades. Verify client_id sharing before any deployment. |
-| Plaintext credentials in SheetSeller source | 🔴 CRITICAL | `Genesis1:1` email password in `renovar_tokens.py`. Rotate immediately in any migration. |
+| Plaintext credentials in SheetSeller source | 🔴 CRITICAL | Email password in `renovar_tokens.py` (value redacted; owning account decommissioned). Rotate immediately in any migration. |
 | Autoreplyia data model regression | 🟠 HIGH | Per-nickname collections are unmigratable at scale without backfill. Must re-ingest from Meli API. |
 | PublicadorMeli OAuth inline | 🟠 HIGH | No standalone vinculacion service; token management tangled with API logic. Separation required. |
 | FullDock refresh not writing to core | 🟡 MEDIUM | FullDock's refrescar_tokens only writes to legacy. Post-greenfield, this would leave core stale. Already irrelevant if greenfield replaces it. |
