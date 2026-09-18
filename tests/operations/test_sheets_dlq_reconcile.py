@@ -13,6 +13,7 @@ from infra.operations.sheets_dlq_reconcile import (
     ALL_ACTIONS,
     CLASS_REPLAY_CANDIDATE,
     DLQ_CLASSES,
+    EVIDENCE_ORDER,
     MONGO_BATCH_CAP,
     MONGO_BATCH_INTERVAL_SECONDS,
     REPLAY_CONCURRENCY,
@@ -114,6 +115,30 @@ def test_classify_terminal_404_when_identity_matched() -> None:
     )
     assert result.classification == "terminal_upstream_404"
     assert result.reason_code == "terminal_upstream_404"
+
+
+def test_transient_claim_lease_is_never_already_applied() -> None:
+    """A live ``processed_event_claims`` lease is not application evidence.
+
+    ``processed_events`` stays the only authority that can close a message as
+    already applied. A live lease means another delivery may still be running,
+    so feeding claim data into the evidence must not make the message look
+    finished.
+    """
+    result = classify_message(
+        _message(),
+        _evidence(
+            processed_event_claims_active=True,
+            processed_event_claim_owner="sha256:owner",
+        ),
+    )
+    assert result.classification != "already_applied"
+    assert result.classification == "unknown_append_outcome"
+
+
+def test_claims_collection_is_not_an_evidence_authority() -> None:
+    assert "processed_event_claims" not in EVIDENCE_ORDER
+    assert EVIDENCE_ORDER[0] == "processed_events"
 
 
 def test_classify_unknown_when_no_conclusive_evidence() -> None:

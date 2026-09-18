@@ -31,6 +31,12 @@ operation before the append.
 | `unknown_append_outcome` | No conclusive success/failure | `quarantine_manual_review` only | replay, close/archive, purge, delete |
 | `replay_candidate` | Valid source, enabled export, stable key, negative append proof | `approved_dry_run` then individually approved `replay` | batch/global replay, quarantine, purge, delete |
 
+An active key in `processed_event_claims` is **not** application evidence. That
+collection holds short-lived delivery leases, so a live lease means another
+delivery may still be running; only `processed_events` can classify a message as
+`already_applied`. Never close, archive or replay a message because a lease
+exists, and never derive `processed_events_active` from it.
+
 ## Bounded snapshot adapter runbook
 
 The bounded snapshot adapter
