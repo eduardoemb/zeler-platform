@@ -19,7 +19,7 @@ authorization or size exception. PR topology pending. Historical evidence:
 
 ## Phase 2: Events
 
-- [ ] 2.1 Prove actual-consumer duplicate/reorder and unfinished-event recovery.
+- [x] 2.1 Prove actual-consumer duplicate/reorder and unfinished-event recovery. Broker-level evidence in `modules/sheets/tests/test_consumer_broker_delivery.py` (real RabbitMQ + real Mongo, 4 passed, stable in 10 runs): sequential duplicate, out-of-order arrival, retry-delay recovery, and concurrent duplicate delivery. The concurrent case first measured a real defect (2 appends, 1 marker under production prefetch); it is fixed by the atomic claim/lease in `odd/tasks/atomic-event-claim-lease.md` (S1+S2). Deployed-runtime evidence on the production image is still pending, as for 2.3.
 - [ ] 2.2 Measure real stages; export append never proves cell visibility.
 - [x] 2.3 Prove old-order/stale/duplicate/isolation through consumer, guarded Mongo, dispatcher; Sheets pending.
 - [ ] 2.4 Prove sustained event/inventory/query/history admission and pacing fairness.
