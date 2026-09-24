@@ -8726,6 +8726,10 @@ attempt. The runtime `sheets` and `bootstrap` registry entries were both enabled
 seller-scoped, and contained the claim-detail route. This is a claim-specific
 upstream denial, not evidence that the whole claims API is unavailable. No
 claim ID, response body, token or credential was retained in the report.
+The search row for the denied claim was a closed mediation with an order
+resource; the return-detail endpoint for that same claim also returned 403.
+Search metadata alone cannot prove that it had no return, so there is no safe
+exclusion or projection fallback from this observation.
 
 Do not authorize an enclosing production write on the assumption that the 403
 will disappear: the current source contract must fail closed on that claim.
