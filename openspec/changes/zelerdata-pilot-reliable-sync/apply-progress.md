@@ -146,6 +146,22 @@ takes longer than the 15-minute reader window. The worker was processing other
 IDs-lane jobs rather than being idle. Keep this distinct from source-absent
 historical formulas while deciding a cache/freshness policy or throughput fix.
 
+A later read-only histogram at 08:33 UTC found 893 snapshots: 176 younger than
+15 minutes, 581 younger than 90 minutes, and 840 younger than 120 minutes.
+Thus a 90-minute cache window would still leave a substantial gap; no window
+has been changed without the pending product decision. Separate scoped Mongo
+`distinct` reads found 26 catalog product IDs present only on item variations.
+The refresh identity source previously planned parent product IDs only, while
+the formula reader includes variations. A failing test preceded the source fix:
+the worker planner now includes seller-scoped variation IDs and rejects malformed
+ones. All 26 already had at least one persisted snapshot in the pilot, but they
+were not part of periodic full refresh planning. This fix is local source code
+until a verified new worker image is built and deployed.
+The focused refresh identity tests passed; the final root pytest run exited 0
+with nine documented skips, and the eight protected rs0 tests passed separately
+against a disposable loopback Mongo database. Root Ruff check, Ruff format
+check, mypy over 609 files, direct-Meli lint and diff check passed.
+
 ## Scoped continuation: pilot history admission headroom (2026-09-23)
 
 At the production queue capacity, both history callback paths formerly admitted

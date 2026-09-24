@@ -389,10 +389,13 @@ class MongoRefreshIdentitySource:
         self._max_identities = max_identities
 
     async def catalog_product_ids(self, seller_id: str) -> tuple[str, ...]:
-        rows = await self._db["items"].distinct("catalog_product_id", {"seller_id": seller_id})
+        roots, variants = await asyncio.gather(
+            self._db["items"].distinct("catalog_product_id", {"seller_id": seller_id}),
+            self._db["items"].distinct("variations.catalog_product_id", {"seller_id": seller_id}),
+        )
         identities = {
             str(value)
-            for value in rows
+            for value in (*roots, *variants)
             if isinstance(value, str) and _IDENTITY_PATTERN.fullmatch(value)
         }
         return tuple(sorted(identities)[: self._max_identities])

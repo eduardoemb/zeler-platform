@@ -81,11 +81,21 @@ class FakeIdentityCollection:
         self.documents = documents or []
 
     async def distinct(self, field: str, query: dict[str, Any]) -> list[Any]:
-        values = [
-            doc.get(field)
+        selected = [
+            doc
             for doc in self.documents
             if all(doc.get(key) == value for key, value in query.items())
         ]
+        values = (
+            [
+                variation.get("catalog_product_id")
+                for doc in selected
+                for variation in (doc.get("variations") or [])
+                if isinstance(variation, dict)
+            ]
+            if field == "variations.catalog_product_id"
+            else [doc.get(field) for doc in selected]
+        )
         return [value for value in values if value is not None]
 
     def find(self, query: dict[str, Any], projection: Any = None) -> Any:
@@ -463,6 +473,38 @@ async def test_identity_source_drops_malformed_and_foreign_identities() -> None:
     assert await source.catalog_product_ids("82453304") == ("MLM300",)
     assert await source.buybox_item_ids("82453304") == ("MLM3",)
     assert await source.shipment_ids("82453304") == ("123",)
+
+
+@pytest.mark.asyncio
+async def test_catalog_refresh_includes_variation_only_product_identities() -> None:
+    from zeler_sheets.formulas.refresh import MongoRefreshIdentitySource
+
+    source = MongoRefreshIdentitySource(
+        db={
+            "items": FakeIdentityCollection(
+                [
+                    {
+                        "_id": "MLM1",
+                        "seller_id": "82453304",
+                        "catalog_product_id": "MLM300",
+                        "variations": [
+                            {"catalog_product_id": "MLM301"},
+                            {"catalog_product_id": "MLM302"},
+                            {"catalog_product_id": "bad-product"},
+                        ],
+                    },
+                    {
+                        "_id": "MLM2",
+                        "seller_id": "999",
+                        "variations": [{"catalog_product_id": "MLM999"}],
+                    },
+                ]
+            )
+        },
+        now=lambda: NOW,
+    )
+
+    assert await source.catalog_product_ids("82453304") == ("MLM300", "MLM301", "MLM302")
 
 
 @pytest.mark.asyncio
