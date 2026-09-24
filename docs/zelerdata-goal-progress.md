@@ -8737,3 +8737,15 @@ Investigate the provider access/disposition for this claim through the approved
 seller context, or obtain an authoritative exclusion basis, before claiming
 complete DEVOLUCIONES coverage across July 31–August 10. The bounded diagnostic
 and all sample commands made no production database writes.
+
+## Historical formula acceptance boundary (2026-09-24)
+
+Product accepts `DATA_UNAVAILABLE` when a formula lacks its required historical
+source. For the pilot, this applies to `ZELERDATA_CATALOGOTIEMPO`,
+`ZELERDATA_TIEMPOSTOCKACTIVO`, `ZELERDATA_SEMANASCONSTOCK` and
+`ZELERDATA_RETIROS`, whose required historical collections have no pilot rows.
+The existing formula handlers already require reconciled interval coverage and
+return `DATA_UNAVAILABLE` when it is absent; no executable change is needed for
+this decision. It does not waive recoverable source gaps in
+`ZELERDATA_DEVOLUCIONES`, the current-data obligation for catalog formulas, or
+authenticated Sheet acceptance. No runtime mutation was made for this note.

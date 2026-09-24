@@ -432,30 +432,35 @@ devoluciones: solo gobierna el trabajo de fuente.
 - `uv run ruff format --check .`: 526 archivos ya formateados, sin drift.
 
 
+## Aceptación de fórmulas sin histórico
+
+Decisión de producto del 2026-09-24: `DATA_UNAVAILABLE` es un resultado
+aceptable cuando falta el histórico requerido para `ZELERDATA_CATALOGOTIEMPO`,
+`ZELERDATA_TIEMPOSTOCKACTIVO`, `ZELERDATA_SEMANASCONSTOCK` y
+`ZELERDATA_RETIROS`. Dependen de `catalog_time_metrics`, `stock_time_metrics`
+y `full_withdrawals`, que tienen 0 documentos para el piloto; sus fuentes
+(`item_history_projection`, `meli_item_events`, `withdrawal_records`) no
+existen en la base productiva. Las cuatro fórmulas permanecen en el contrato
+de 52; esta decisión no certifica cobertura histórica ni autoriza presentar
+datos actuales como si fueran históricos.
+
 ## Pendiente al entregar
 
 Estos puntos quedan **fuera** de lo entregado y no están bloqueados por un
 defecto del código:
 
-1. **Cuatro fórmulas sin fuente de datos.** `ZELERDATA_CATALOGOTIEMPO`,
-   `ZELERDATA_TIEMPOSTOCKACTIVO`, `ZELERDATA_SEMANASCONSTOCK` y
-   `ZELERDATA_RETIROS` dependen de `catalog_time_metrics`, `stock_time_metrics`
-   y `full_withdrawals`, que tienen 0 documentos para el piloto; sus fuentes
-   (`item_history_projection`, `meli_item_events`, `withdrawal_records`) no
-   existen en la base productiva. Requieren una decisión de producto sobre si
-   se pueblan o se retiran del contrato de 52 fórmulas.
-2. **Aceptación del canal de alertas.** El canal `zelerdata-ops-email`
+1. **Aceptación del canal de alertas.** El canal `zelerdata-ops-email`
    (`laloramirez@zeler.ai`) existe y está `enabled`, pero Google exige que el
    destinatario acepte la invitación de verificación antes de entregar correo.
-3. **Ventana de una semana sin errores.** El criterio de éxito acordado (cero
+2. **Ventana de una semana sin errores.** El criterio de éxito acordado (cero
    fórmulas en error durante una semana completa de uso real) empieza a contar
    con esta entrega; no puede declararse cumplido todavía.
-4. **Drift de tres marcadores legacy.** `catalog_buybox_snapshots`,
+3. **Drift de tres marcadores legacy.** `catalog_buybox_snapshots`,
    `catalog_product_snapshots`, `claims` e `item_formula_rows` están
    `reconciled` sin `valid_until` y con marcador de junio/julio. No los renueva
    el ciclo (no forman parte de los modelos con dueño) y quedan como
    reconciliaciones puntuales, no como latido.
-5. **Reintentos y limpieza de la cola de descarte.** Cerrado el 2026-09-11:
+4. **Reintentos y limpieza de la cola de descarte.** Cerrado el 2026-09-11:
    el reintento con espera creciente ya estaba implementado
    (`MAX_ATTEMPTS=3`, backoff 30s·2^(n-1)); el archivado automático quedó
    conectado al ciclo de refresco y desplegado en
@@ -466,5 +471,5 @@ defecto del código:
    la evidencia de `window_reconciled` ni `age_exceeded`, así que no deben
    eliminarse: quedan en cola con motivo, y la corrida automática diaria los
    volverá a evaluar.
-6. **Hojas de cálculo y Apps Script.** Por Q35 quedaron explícitamente fuera
+5. **Hojas de cálculo y Apps Script.** Por Q35 quedaron explícitamente fuera
    hasta que ZelerData esté estable.
