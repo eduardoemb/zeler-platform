@@ -208,6 +208,65 @@ async def test_newer_event_wins_between_released_batches(publisher: Any) -> None
 
 
 @pytest.mark.asyncio
+async def test_verified_batches_finalize_coverage_and_queue_together(publisher: Any) -> None:
+    writer, job, head = publisher
+    saved = await writer.batch(job, head, limit=2)
+    claimed = await writer.store.queue.claim(history=True)
+    assert claimed is not None
+
+    completed = await writer.finalize(claimed, saved)
+
+    assert completed.phase == "completed" and completed.published_count == 2
+    queued = await writer.store.queue.collection.find_one({"_id": job["_id"]})
+    assert queued is not None and queued["state"] == "completed"
+    marker = await writer.store.db.sheets_read_model_freshness.find_one({"_id": "82453304:orders"})
+    assert read_model_reconciliation_marker_covers(
+        marker, date_from=head.date_from, date_to=head.date_to, now=NOW
+    )
+
+
+@pytest.mark.asyncio
+async def test_missing_projected_order_cannot_certify_coverage(publisher: Any) -> None:
+    writer, job, head = publisher
+    saved = await writer.batch(job, head, limit=2)
+    claimed = await writer.store.queue.claim(history=True)
+    assert claimed is not None
+    await writer.store.db.orders.delete_one({"_id": "2"})
+    marker_before = await writer.store.db.sheets_read_model_freshness.find_one({})
+
+    with pytest.raises(HistoryConflictError, match="inventory"):
+        await writer.finalize(claimed, saved)
+
+    assert await writer.store.db.sheets_read_model_freshness.find_one({}) == marker_before
+    stored = await writer.store.heads.find_one({"_id": head.id})
+    assert stored is not None and stored["phase"] == "publish"
+
+
+@pytest.mark.asyncio
+async def test_finalization_does_not_revive_failed_retained_proof(publisher: Any) -> None:
+    writer, job, head = publisher
+    saved = await writer.batch(job, head, limit=2)
+    claimed = await writer.store.queue.claim(history=True)
+    assert claimed is not None
+    await writer.store.db.sheets_read_model_freshness.update_one(
+        {"_id": "82453304:orders"}, {"$set": {"state": "failed"}}
+    )
+
+    await writer.finalize(claimed, saved)
+
+    marker = await writer.store.db.sheets_read_model_freshness.find_one({"_id": "82453304:orders"})
+    assert read_model_reconciliation_marker_covers(
+        marker, date_from=head.date_from, date_to=head.date_to, now=NOW
+    )
+    assert not read_model_reconciliation_marker_covers(
+        marker,
+        date_from=NOW - timedelta(minutes=5),
+        date_to=NOW - timedelta(minutes=2),
+        now=NOW,
+    )
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("damage", ["lease", "head", "receipt", "missing"])
 async def test_invalid_prerequisite_has_no_projection(publisher: Any, damage: str) -> None:
     writer, job, head = publisher

@@ -1,4 +1,4 @@
-"""Bounded guarded projection; producer handoff and coverage finalization are separate."""
+"""Bounded guarded order projection and receipt-backed coverage finalization."""
 
 from __future__ import annotations
 
@@ -18,6 +18,7 @@ from zeler_platform_core.devoluciones_readiness import (
 )
 from zeler_platform_core.models import SheetsHistoryAcquisition, SheetsHistoryReceipt
 from zeler_sheets.event_persistence import SheetsEventPersistence
+from zeler_sheets.formulas.refresh import merge_interval_proofs, reconciled_marker
 from zeler_sheets.history_acquisition import (
     HistoryConflictError,
     HistoryLimitError,
@@ -81,6 +82,150 @@ class HistoryOrderPublisher:
     def __init__(self, continuation: HistoryContinuation) -> None:
         self.continuation = continuation
         self.store = continuation.store
+
+    async def finalize(
+        self, job: dict[str, Any], expected: SheetsHistoryAcquisition
+    ) -> SheetsHistoryAcquisition:
+        head = _head(expected)
+        observed_until = head.observed_until
+        if (
+            head.read_model != "orders"
+            or head.phase != "publish"
+            or head.next_cursor is not None
+            or head.source_total is None
+            or observed_until is None
+            or head.published_count != head.fetched_count
+        ):
+            raise HistoryConflictError("publication finalization requires every verified order")
+
+        async def transaction(session: Any) -> SheetsHistoryAcquisition:
+            await self.store._fence(job, head, session)
+            current = await self.store.heads.find_one({"_id": head.id}, session=session)
+            claimed = await self.store.queue.collection.find_one(
+                {"_id": job["_id"]}, session=session
+            )
+            if (
+                current is None
+                or SheetsHistoryAcquisition.model_validate(current) != head
+                or claimed is None
+                or any(claimed.get(key) != value for key, value in _binding(head).items())
+            ):
+                raise HistoryConflictError("publication finalization checkpoint changed")
+            scope = {
+                "seller_id": head.seller_id,
+                "date_created": {"$gte": head.date_from, "$lt": head.date_to},
+            }
+            orders = self.store.db.orders
+            if await orders.count_documents(scope, session=session) != head.fetched_count:
+                raise HistoryConflictError("published order inventory differs from verified source")
+            extra = await orders.aggregate(
+                [
+                    {"$match": scope},
+                    {
+                        "$lookup": {
+                            "from": "sheets_history_receipts",
+                            "let": {"identity": {"$toString": "$_id"}},
+                            "pipeline": [
+                                {
+                                    "$match": {
+                                        "acquisition_id": head.id,
+                                        "generation": head.generation,
+                                        "pass_number": head.pass_number,
+                                        "kind": "membership",
+                                        "$expr": {"$eq": ["$resource_id", "$$identity"]},
+                                    }
+                                },
+                                {"$limit": 1},
+                            ],
+                            "as": "observations",
+                        }
+                    },
+                    {"$match": {"observations": {"$size": 0}}},
+                    {"$limit": 1},
+                ],
+                session=session,
+            ).to_list(length=1)
+            if extra:
+                raise HistoryConflictError("published order inventory differs from verified source")
+            async for row in orders.find(
+                scope,
+                {"buyer_id": 1, "items": 1, "shipment_id": 1, "tags": 1, "unavailable_fields": 1},
+                session=session,
+            ):
+                unavailable = set(row.get("unavailable_fields") or [])
+                if (
+                    (not row.get("buyer_id") and "buyer_id" not in unavailable)
+                    or not row.get("items")
+                    or (
+                        "shipping" in unavailable
+                        and not row.get("shipment_id")
+                        and "no_shipping" not in (row.get("tags") or [])
+                        and "shipment_id" not in unavailable
+                    )
+                ):
+                    raise HistoryConflictError("published order required data unavailable")
+            now = self.store.queue.now()
+            proof = reconciled_marker(
+                seller_id=head.seller_id,
+                read_model="orders",
+                start=head.date_from,
+                end=head.date_to,
+                now=observed_until,
+            )
+            markers = self.store.db["sheets_read_model_freshness"]
+            current_marker = await markers.find_one(
+                {"_id": proof["_id"], "seller_id": head.seller_id}, session=session
+            )
+            candidates = [proof]
+            if current_marker is not None and current_marker.get("state") == "reconciled":
+                candidates.append(current_marker)
+                candidates.extend(current_marker.get("retained_intervals", []))
+            merged = merge_interval_proofs(candidates)
+            latest = merged.pop()
+            marker = {
+                **proof,
+                **latest,
+                "fresh_until": latest["reconciled_until"],
+                "updated_at": now,
+                "retained_intervals": merged,
+            }
+            if len(BSON.encode(marker)) > 1024 * 1024:
+                raise HistoryLimitError("publication proof document exceeds local budget")
+            await markers.replace_one(
+                {"_id": proof["_id"], "seller_id": head.seller_id},
+                marker,
+                upsert=True,
+                session=session,
+            )
+            completed = _head(
+                SheetsHistoryAcquisition.model_validate(
+                    {
+                        **head.model_dump(by_alias=True),
+                        "phase": "completed",
+                        "checkpoint_revision": head.checkpoint_revision + 1,
+                        "updated_at": now,
+                    }
+                )
+            )
+            result = await self.store.heads.replace_one(
+                {
+                    "_id": head.id,
+                    "generation": head.generation,
+                    "checkpoint_revision": head.checkpoint_revision,
+                },
+                completed.model_dump(by_alias=True),
+                session=session,
+            )
+            if result.matched_count != 1 or not await self.store.queue.finish(
+                job, succeeded=True, session=session
+            ):
+                raise HistoryConflictError("publication finalization lost its owner")
+            return completed
+
+        async with await self.store.db.client.start_session() as session:
+            return SheetsHistoryAcquisition.model_validate(
+                await session.with_transaction(transaction)
+            )
 
     async def batch(
         self, job: dict[str, Any], expected: SheetsHistoryAcquisition, *, limit: int = 20
