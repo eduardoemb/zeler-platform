@@ -59,7 +59,7 @@ additions only; no activation.
 - [x] 3.2i Bounded orders publisher; real Mongo tests cover guarded batches, newer events, operation loss, incomplete projections, invalidated prior proofs and atomic coverage/queue completion. The opt-in order worker now runs producer through finalization; runtime activation remains 3.3/6.3.
 - [ ] 3.2j Shared question scan; admission, neutral cursor/manifests and bounded detail staging verified in `modules/sheets/tests/test_history_questions.py`. Twelve deterministic monthly subscription bindings share the verified pass; these are not coverage proofs. Actual HTTP normalization, publication/finalization and authoritative interval-proof subscriptions remain pending.
 
-- [ ] 3.3 Orders worker resume/deduplication/interruption, producer-to-publisher handoff and final coverage verified with actual Mongo and gateway doubles. A worker-side flag now joins monthly order admission to an orders-only poller with the shared pacer; actual production activation, other resources and twelve-month coverage remain pending.
+- [ ] 3.3 Orders worker resume/deduplication/interruption, producer-to-publisher handoff and final coverage verified with actual Mongo and gateway doubles. The pilot worker now has the orders-only protocol enabled behind its flag, with two live acquisitions and persisted receipts; completed production interval proof, other resources and twelve-month coverage remain pending.
 - [ ] 3.4 Modification-page admission verified with exact [watermark−24h,cutoff) bounds, durable ID/version/hash deduplication and seller failure isolation. Actual modification HTTP traversal, durable cursor/watermark finalization and runtime wiring remain pending; creation-tail rereads are not this proof.
 - [ ] 3.5 Local authorized-run advancement guard and bounded failure isolation verified with real Mongo/source-readback fixtures. Production's seven intervals still require authorized runtime repair/evidence; no API limitation is established by these tests.
 
@@ -80,8 +80,8 @@ additions only; no activation.
 
 ## Phase 6: Acceptance
 
-- [ ] 6.1 Rerun final gates after remaining corrections; latest local full suite: 5323 passed/9 skipped, zero failures/errors; Ruff/format/mypy 598 and Meli/schema pass. Runtime/Sheets acceptance and the eight protected cases skipped by this invocation remain unproven by this run; historical separate passes do not replace current evidence.
+- [ ] 6.1 Rerun final gates after remaining corrections; latest local full pytest suite exited successfully with nine skips, Ruff/format/mypy passed across 606 source files, and Meli/schema checks passed. Eight protected-rs0 cases passed in their isolated harness before the final fairness adjustment; the full-suite invocation itself skipped them. Runtime/Sheets acceptance remains open.
 - [ ] 6.2 Prove actual-worker recovery/duplicates/interruption.
-- [ ] 6.3 Complete deployment/add-on proposals and separate authorizations.
+- [ ] 6.3 Backend Sheets worker/API images from `c51e88e` and the pilot orders flag are deployed with verified digests and healthy dependency/component checks. Complete add-on proposal/publication and final acceptance authorization/evidence separately.
 - [ ] 6.4 Warm-up, 90-minute observation, rounds 0/30/60.
 - [ ] 6.5 Independent SDD verification/report; stop tests, retain normal sync.

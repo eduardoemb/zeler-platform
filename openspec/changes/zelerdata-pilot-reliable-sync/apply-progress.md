@@ -1,5 +1,47 @@
 # Apply Progress: ZelerData Pilot Reliable Sync
 
+## Pilot rollout and first live observations (2026-09-23)
+
+The connected-repository Cloud Builds for exact `main` commit
+`c51e88ebf0eda0fa17044e30d7e76ee4c3a111d8` succeeded with one VERIFIED
+image each. Sheets worker build `faeced9c-d881-4b2f-9178-b3f6ef8e4590`
+produced `sheets-worker@sha256:4707f4fdccbac1e53c20bc76a7787290f4354752fdcca53828fd1070d9c9d3d0`;
+Sheets API build `3d11659e-65e4-4056-8d7c-147007fe275f` produced
+`sheets-api@sha256:49641ed22c598744299d80327325912b49aa15f98c5797328243fbfb55bc90b5`.
+Local and VM provenance gates bound both digests to that commit. The prior
+running worker/API digests were `sha256:081ef4b92474452b228309c9b8a28cc8f0633fb9952c395144728ba8b8f361a9`
+and `sha256:9b34a2869c65c545d4a2b6cd744fb265432a78cdcc6bdb0b5ef23996347a086d`;
+their running RepoDigests and separate Compose backups were recorded for rollback.
+
+After the four-collection validator rollout below, the worker alone was
+updated. The existing sync-jobs migration record was present and no active
+seller/spreadsheet duplicates existed. Only `sheets_sync_jobs.json` indexes
+were then applied from the staged source; readback confirmed the new unique
+partial pending/running index. The API alone was updated last. No cleanup was
+performed. Root capacity passed before each pull and after each download;
+the last read showed ~34.7 GiB free on `/`, Mongo on its separate mount and
+~1 GiB available memory. At first and settling checks both containers had the
+expected digest, healthy state, zero restarts/OOM; API Mongo/RabbitMQ/registry/
+claims-DLQ checks and worker RabbitMQ/sync-jobs/formula-recovery/refresh checks
+all reported ready.
+
+`ZELERDATA_ORDER_HISTORY_PROTOCOL_ENABLED=true` was then added only to the
+root-owned Sheets worker env file with a timestamped backup, and only that
+worker was recreated. It retained the verified digest and all readiness checks.
+The pilot plan now exists. The first protocol observation found two active
+order acquisitions, 290 membership receipts and three detail receipts; a later
+read found 1,035 memberships and 37 details, with both heads hydrating and no
+protocol job failed. An overlapping active legacy month was reported as
+`legacy_order_job_active`. No completed interval or 12-month proof is claimed;
+continue observation before calling history functional end to end.
+
+Read-only Google Sheets connector inspection identified the private
+`Pruebas ZelerData actual` workbook, tab `Goal_Pruebas_20260909`, with all 52
+existing formula anchors intact. Five anchor values still displayed
+`DATA_UNAVAILABLE` (DEVOLUCIONES, CATALOGOTIEMPO, TIEMPOSTOCKACTIVO, RETIROS,
+SEMANASCONSTOCK) and five displayed `NA`. The workbook predates this rollout;
+no recalc or authenticated formula HTTP smoke was performed by this inspection.
+
 ## Scoped continuation: pilot history admission headroom (2026-09-23)
 
 At the production queue capacity, both history callback paths formerly admitted
