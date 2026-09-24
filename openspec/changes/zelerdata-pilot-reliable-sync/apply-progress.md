@@ -72,6 +72,25 @@ historical metrics as unavailable in the pilot; it does not certify their
 Sheet executions or broaden the exception to transient failures or available
 source data. The 52-formula matrix now records this acceptance boundary.
 
+At 2026-09-24 06:46 UTC the older
+`[2025-10-24T05:36:28Z, 2025-11-24T05:36:28Z)` interval completed after a
+second membership traversal and bounded publication. Independent approved-
+container readback found 945 for each of source total, discovered, fetched,
+published, verification-pass membership receipts, detail receipts and
+persisted orders; the queue job was `completed`. Before publication the same
+interval had zero persisted orders. The resulting orders marker retained this
+exact reconciled interval and was valid at readback, so this adds real
+historical coverage. The recent 90-order interval also remained completed and
+reconciled. No protocol job had failed; one more orders month was queued, and
+the full twelve-month plan was still incomplete.
+
+At the ~60-minute post-flag checkpoint (06:47 UTC), worker and API remained
+healthy on the selected immutable digests with zero restarts/OOM. Free space
+was 37,304,344,576 bytes on `/` and 48,264,331,264 bytes on the separate Mongo
+mount; free inodes were 6,226,841 and 3,276,299; available memory was
+687,697,920 bytes. The orders marker remained valid. This is the second
+runtime checkpoint, not a native Google Sheets 35-case round.
+
 Read-only Google Sheets connector inspection identified the private
 `Pruebas ZelerData actual` workbook, tab `Goal_Pruebas_20260909`, with all 52
 existing formula anchors intact. Five anchor values still displayed
