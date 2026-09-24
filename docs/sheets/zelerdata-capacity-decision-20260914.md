@@ -84,3 +84,21 @@ Evidence is retained in `/tmp/zeler-closure-release/second-field-census.jsonl`,
 `census-field-demand.py` and `full35-minimum-demand.md`. This document records
 read-only evidence and a decision boundary, not runtime acceptance or permission
 to change capacity.
+
+## Pilot catalog freshness readback, 2026-09-24
+
+A fresh, read-only count inside the approved Sheets-worker container found 879
+distinct catalog products required by the pilot's current items and variations.
+Of these, 877 had a structurally valid stored snapshot; 33 were observed within
+15 minutes, 876 within four hours, one was older than four hours and two had no
+valid stored snapshot. The count did not renew a timestamp or query MercadoLibre.
+
+This strengthens the proposed decision boundary: under the existing 15-minute
+rule, most product rows must remain unavailable even though recently acquired
+source payloads are stored. A four-hour cache rule would make up to 876 rows
+eligible at this instant, with the other three requiring refresh or a separate
+source-disposition check. It would not establish current upstream completeness
+or fix a missing source.
+Any such cache policy must preserve acquisition times and visible cached-state
+metadata. The change still needs explicit product-policy authorization and
+runtime formula acceptance before it can be called complete.
