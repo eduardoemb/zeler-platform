@@ -96,6 +96,8 @@ from zeler_sheets.google_errors import (
 from zeler_sheets.google_sheets_client import make_sheets_client
 from zeler_sheets.history_question_worker import HistoryQuestionsWorker
 from zeler_sheets.history_worker import HistoryOrdersWorker
+from zeler_sheets.modification_scan_store import ModificationScanStore
+from zeler_sheets.modification_scan_worker import ModificationScanWorker
 from zeler_sheets.observed_read_model_markers import (
     OBSERVED_READ_MODEL_SOURCES,
     publish_observed_read_model_markers,
@@ -1518,6 +1520,13 @@ async def build_formula_recovery_poller(
             )
         )
         lanes += (SyncJobsPollerSupervisor(questions),)
+    if _env_flag_enabled("ZELERDATA_ORDER_MODIFICATION_SCAN_ENABLED"):
+        scan = ModificationScanWorker(
+            ModificationScanStore(db, recovery_queue, now=lambda: datetime.now(UTC)),
+            PacedMeliGateway(inner=discovery, pacer=pacer, lane="ranges"),
+            sellers=allowed_sellers,
+        )
+        lanes += (SyncJobsPollerSupervisor(scan, poll_interval=30),)
     return FormulaRecoverySupervisor(lanes)
 
 

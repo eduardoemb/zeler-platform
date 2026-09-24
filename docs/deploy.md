@@ -197,6 +197,24 @@ failed scan is not historical coverage; retain a compatible worker rollback
 that understands protocol-versioned jobs and receipts. This flag does not
 activate shipments or items history.
 
+Old-order modification reconciliation is a separate Sheets-worker flag:
+`ZELERDATA_ORDER_MODIFICATION_SCAN_ENABLED=true`. It requires formula recovery,
+an explicit `ZELERDATA_FORMULA_RECOVERY_SELLERS` allowlist, an existing fixed
+pilot history plan, and the `sheets_history_receipts` validator/unique index.
+The scan reads `order.date_last_updated` through the shared paced gateway,
+overlaps the prior watermark by 24 hours, and runs at most once per 15 minutes
+after completion. It checkpoints two matching source passes and only advances
+the modification watermark after every admitted order-ID recovery job completes.
+A source drift restarts the same window with a bounded retry count; a failed
+job or exhausted retry count leaves the watermark unchanged. Check the worker's
+health/logs, scan phase, receipts, ID-job states, and an old-order projection
+before claiming live reconciliation. Disable this flag to stop new scans;
+preserve stored scans/receipts and the prior compatible worker image for rollback.
+This scan does not establish twelve-month creation-history coverage.
+The provider's seller search can omit cancelled orders, so use event/detail
+evidence for cancellation changes; a clean modification scan alone does not
+certify those operations.
+
 **Important**: Always use Cloud Build. Never `docker build` locally on Mac.
 
 Build from the connected repository at one exact commit already present in

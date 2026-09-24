@@ -196,6 +196,42 @@ async def test_recovery_supervisor_gates_shared_question_history_worker(
 
 
 @pytest.mark.asyncio
+async def test_recovery_supervisor_gates_paced_modification_scan(
+    cutoff_db: AsyncIOMotorDatabase[dict[str, Any]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from zeler_sheets.modification_scan_worker import ModificationScanWorker
+
+    monkeypatch.setenv("ZELERDATA_FORMULA_RECOVERY_SELLERS", SELLER)
+    monkeypatch.setenv("ZELERDATA_ORDER_HISTORY_PROTOCOL_ENABLED", "false")
+    monkeypatch.setenv("ZELERDATA_QUESTION_HISTORY_PROTOCOL_ENABLED", "false")
+    monkeypatch.setenv("ZELERDATA_ORDER_MODIFICATION_SCAN_ENABLED", "true")
+    monkeypatch.setattr("zeler_sheets.consumer.make_meli_gateway_client", lambda **kwargs: object())
+
+    supervisor = await build_formula_recovery_poller(
+        db=cutoff_db, kms_client=object(), detail_gateway=object()
+    )
+    assert len(supervisor.lanes) == 4
+    scan = supervisor.lanes[-1]._processor
+    assert isinstance(scan, ModificationScanWorker)
+    assert scan.sellers == (SELLER,)
+    legacy = supervisor.lanes[0]._processor
+    assert scan.gateway._pacer is legacy.gateway._pacer
+
+
+@pytest.mark.asyncio
+async def test_modification_scan_requires_explicit_seller_scope(
+    cutoff_db: AsyncIOMotorDatabase[dict[str, Any]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("ZELERDATA_FORMULA_RECOVERY_SELLERS", raising=False)
+    monkeypatch.setenv("ZELERDATA_ORDER_MODIFICATION_SCAN_ENABLED", "true")
+    monkeypatch.setattr("zeler_sheets.consumer.make_meli_gateway_client", lambda **kwargs: object())
+    with pytest.raises(ValueError, match="explicit numeric sellers"):
+        await build_formula_recovery_poller(
+            db=cutoff_db, kms_client=object(), detail_gateway=object()
+        )
+
+
+@pytest.mark.asyncio
 async def test_shared_question_plan_admits_one_job_for_twelve_months(
     cutoff_db: AsyncIOMotorDatabase[dict[str, Any]],
 ) -> None:

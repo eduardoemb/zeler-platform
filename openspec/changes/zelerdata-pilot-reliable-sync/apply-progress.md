@@ -2096,3 +2096,40 @@ touched files); `uv run ruff check .` and `uv run ruff format --check .` are
 clean; and `uv run python -m zeler_platform_core.cli.export_schemas
 infra/mongo/schemas --check` exits 0. The 9 skips are the documented protective
 `ZELER_RS0_TEST_URI` refusals plus one GCE compose-contract skip.
+
+### Task 3.4 partial — durable old-order modification traversal (2026-09-24)
+
+The existing gateway page adapter now has a durable caller. Each configured
+seller has a fixed scan window, two source passes and generation-scoped receipts
+in the existing history receipt collection. The first pass admits version/hash
+bound order-ID recovery jobs before saving its page; the second pass compares
+the full manifest and waits for those jobs to complete before moving the
+modification watermark. A restart replays a page safely. Source drift restarts
+the same window at most three times; a fourth drift records a failed scan and
+keeps the previous watermark. A completed scan waits 15 minutes before the next
+window, which overlaps the prior watermark by 24 hours. The worker is disabled
+by default and has its own `ZELERDATA_ORDER_MODIFICATION_SCAN_ENABLED` flag,
+an explicit seller allowlist and the shared gateway acquisition pacer.
+
+Read-only pilot gateway probes observed 110 modifications in a 31-day query,
+with the first two 50-row pages retaining stable totals and unique identities;
+20 of the first 50 rows were orders created before the queried modification
+window. These observations establish source shape and old-order examples, not
+deployed worker behavior. Local tests against the disposable loopback Mongo
+replica set and the existing receipt validator/index cover crash replay,
+multi-page cursors, partial queue capacity, repeated IDs, changed manifests,
+failed ID jobs, seller isolation and watermark completion (36 passed across
+the new store tests and adjacent lifecycle tests). Ruff check/format, full mypy
+(613 source files) and direct-Meli lint passed. The full repository test suite
+completed with exit 0 against the verified loopback replica set; its nine skips
+were the protective stock-time target refusals and one GCE Compose fixture.
+
+Activation requires a new verified `sheets-worker` image from an authorized
+main commit, the existing receipt validator/index, a fixed pilot plan and a
+narrow worker rollout. Live acceptance must show two stable passes, completed
+ID jobs, the running image digest and an updated old-order projection/formula.
+Rollback disables the flag and restores a compatible prior worker image while
+preserving scan receipts and queued jobs. Until live acceptance, task 3.4 stays
+open; this scan does not supply missing creation-history months.
+The provider's seller search may omit cancelled orders; their changes require
+separate event/detail evidence before claiming complete reconciliation.
