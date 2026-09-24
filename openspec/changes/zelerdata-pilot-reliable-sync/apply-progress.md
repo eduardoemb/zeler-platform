@@ -47,6 +47,25 @@ remained healthy at the readback, with the intended immutable digests, zero
 restarts and zero OOM flags. This proves one bounded production interval, not
 the full twelve-month plan or continued marker freshness.
 
+At the ~30-minute post-flag checkpoint (2026-09-24 06:17 UTC), the older
+`[2025-10-24T05:36:28Z, 2025-11-24T05:36:28Z)` acquisition had hydrated
+446 of 945 discovered orders; its queue job was still running and neither
+protocol job had failed.
+The orders marker was renewed and valid at the checkpoint. Both Sheets
+containers retained their expected digests and healthy state with zero
+restarts/OOM. Free space was 37,277,286,400 bytes on `/` and 48,269,123,584
+bytes on the separate Mongo mount; free inodes were 6,226,841 and 3,276,299;
+available memory was 689,127,424 bytes. This is a runtime observation, not a
+native 35-case Sheets certification round.
+
+A separate approved-container read at 06:18 UTC confirmed that
+`item_history_projection`, `meli_item_events`, `withdrawal_records`,
+`catalog_time_metrics`, `stock_time_metrics`, and `full_withdrawals` were all
+absent. The pilot devoluciones ledger still had seven failed runs and one
+completed run, with no authorized/active run. These facts explain the four
+historical formula gaps and prevent automatic advancement of the failed quota
+runs; they do not authorize a production data repair.
+
 Read-only Google Sheets connector inspection identified the private
 `Pruebas ZelerData actual` workbook, tab `Goal_Pruebas_20260909`, with all 52
 existing formula anchors intact. Five anchor values still displayed
