@@ -1,4 +1,4 @@
-"""Opt-in durable order staging worker; not wired into the runtime supervisor."""
+"""Opt-in durable order recovery worker; not wired into the runtime supervisor."""
 
 from __future__ import annotations
 
@@ -13,7 +13,8 @@ from zeler_sheets.history_acquisition import (
     HistoryLimitError,
 )
 from zeler_sheets.history_continuation import HistoryContinuation
-from zeler_sheets.history_orders import HistoryHandoffPendingError, HistoryOrdersProducer
+from zeler_sheets.history_orders import HistoryOrdersProducer
+from zeler_sheets.history_publication import HistoryOrderPublisher
 
 
 class HistoryOrdersWorker:
@@ -22,7 +23,9 @@ class HistoryOrdersWorker:
             raise ValueError("history orders worker requires an explicitly orders-only queue")
         self.queue = worker.queue
         self.store = HistoryAcquisitionStore(worker.db, self.queue)
-        self.producer = HistoryOrdersProducer(worker, HistoryContinuation(self.store))
+        continuation = HistoryContinuation(self.store)
+        self.producer = HistoryOrdersProducer(worker, continuation)
+        self.publisher = HistoryOrderPublisher(continuation)
 
     async def process_once(self) -> str:
         return "processed" if await self.process_one() else "idle"
@@ -58,20 +61,21 @@ class HistoryOrdersWorker:
                     updated_at=job["created_at"],
                 )
                 head = await self.store.initialize(job, initial)
-            await self.producer.step(job, head)
-        except (HistoryHandoffPendingError, HistoryLimitError) as error:
-            blocker = (
-                "publication_handoff_pending"
-                if isinstance(error, HistoryHandoffPendingError)
-                else "local_acquisition_budget"
-            )
+            if head.phase == "publish":
+                if head.published_count < head.fetched_count:
+                    await self.publisher.batch(job, head)
+                else:
+                    await self.publisher.finalize(job, head)
+            else:
+                await self.producer.step(job, head)
+        except HistoryLimitError:
             async with (
                 await self.store.db.client.start_session() as session,
                 session.start_transaction(),
             ):
                 result = await self.queue.collection.update_one(
                     self.queue._owned(job, self.queue.now()),
-                    {"$set": {"history_blocker": blocker}},
+                    {"$set": {"history_blocker": "local_acquisition_budget"}},
                     session=session,
                 )
                 if result.matched_count:

@@ -17,6 +17,7 @@ from motor.motor_asyncio import AsyncIOMotorClient
 
 from zeler_platform_core.models import SheetsHistoryAcquisition
 from zeler_sheets.formulas.pacing import LocalQuotaTimeoutError
+from zeler_sheets.formulas.read_models import read_model_reconciliation_marker_covers
 from zeler_sheets.formulas.recovery import (
     FormulaRecoveryQueue,
     OrderHistoryRecoveryRequest,
@@ -25,7 +26,12 @@ from zeler_sheets.formulas.recovery import (
     RecoveryRequest,
 )
 from zeler_sheets.formulas.recovery_worker import FormulaRecoveryWorker
-from zeler_sheets.history_acquisition import HistoryAcquisitionStore, HistoryLimitError
+from zeler_sheets.formulas.refresh import reconciled_marker
+from zeler_sheets.history_acquisition import (
+    HistoryAcquisitionStore,
+    HistoryConflictError,
+    HistoryLimitError,
+)
 from zeler_sheets.history_continuation import HistoryContinuation
 from zeler_sheets.history_orders import HistoryOrdersProducer
 from zeler_sheets.history_worker import HistoryOrdersWorker
@@ -182,29 +188,71 @@ async def test_real_history_worker_resumes_dedupes_and_preserves_history(harness
     assert await worker.queue.claim() is None
     old = {"_id": "retained", "seller_id": "82453304", "date_created": NOW - timedelta(days=500)}
     await worker.store.db.orders.insert_one(old)
-    marker = {
-        "_id": "82453304:orders",
-        "state": "reconciled",
-        "date_from": NOW - timedelta(days=600),
-        "reconciled_until": NOW,
-    }
+    marker = reconciled_marker(
+        seller_id="82453304",
+        read_model="orders",
+        start=NOW - timedelta(days=600),
+        end=NOW,
+        now=NOW,
+    )
     await worker.store.db.sheets_read_model_freshness.insert_one(marker)
-    rows = [order(1), order(2)]
+    rows = [
+        order(
+            identity,
+            buyer={"id": 123},
+            status="paid",
+            total_amount="100",
+            order_items=[
+                {
+                    "item": {"id": f"MLA{identity}"},
+                    "quantity": 1,
+                    "unit_price": "100",
+                    "sale_fee": "5",
+                }
+            ],
+        )
+        for identity in (1, 2)
+    ]
     harness.gateway.pages = {0: {"paging": {"total": 2}, "results": rows}}
     harness.gateway.details = {f"/orders/{row['id']}": row for row in rows}
     assert await worker.process_one()
-    for _ in range(5):
+    for _ in range(7):
         worker = history_worker(harness)
         assert await worker.process_one()
     job = await worker.queue.collection.find_one({"_id": request.key})
-    assert job["state"] == "failed" and job["history_blocker"] == "publication_handoff_pending"
+    assert job is not None and job["state"] == "completed"
     head = await worker.store.heads.find_one({"_id": request.key})
-    assert head["phase"] == "verify" and head["published_count"] == 0
+    assert head is not None and head["phase"] == "completed" and head["published_count"] == 2
     assert await worker.store.receipts.count_documents({"acquisition_id": request.key}) == 6
     assert await worker.store.db.orders.find_one({"_id": "retained"}) == old
-    assert await worker.store.db.sheets_read_model_freshness.find_one({}) == marker
+    current_marker = await worker.store.db.sheets_read_model_freshness.find_one({})
+    assert read_model_reconciliation_marker_covers(
+        current_marker, date_from=request.date_from, date_to=request.date_to, now=NOW
+    )
     await worker.queue.enqueue(request)
     assert not await worker.process_one()
+
+
+@pytest.mark.asyncio
+async def test_real_history_worker_can_certify_verified_empty_interval(harness: Harness) -> None:
+    worker = history_worker(harness)
+    request = history_request("empty-plan")
+    await worker.queue.enqueue(request)
+    harness.gateway.pages = {0: {"paging": {"total": 0}, "results": []}}
+
+    for _ in range(5):
+        worker = history_worker(harness)
+        assert await worker.process_one()
+
+    head = await worker.store.heads.find_one({"_id": request.key})
+    job = await worker.queue.collection.find_one({"_id": request.key})
+    assert head is not None and head["phase"] == "completed"
+    assert head["discovered_count"] == head["published_count"] == 0
+    assert job is not None and job["state"] == "completed"
+    marker = await worker.store.db.sheets_read_model_freshness.find_one({"_id": "82453304:orders"})
+    assert read_model_reconciliation_marker_covers(
+        marker, date_from=request.date_from, date_to=request.date_to, now=NOW
+    )
 
 
 @pytest.mark.asyncio
@@ -287,6 +335,42 @@ async def begin_verification(harness: Harness, rows: list[dict[str, Any]]) -> No
     assert harness.head.phase == "verify"
     assert harness.head.pass_number == 2 and harness.head.next_cursor == 0
     assert harness.head.drift_restarts == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("rows", [[], [order(1), order(2)]])
+async def test_verified_order_manifest_hands_off_to_publication(
+    harness: Harness, rows: list[dict[str, Any]]
+) -> None:
+    await begin_verification(harness, rows)
+    await advance(harness)
+    phase_before = harness.head.phase
+    assert phase_before == "verify" and harness.head.next_cursor is None
+
+    await advance(harness)
+    assert harness.head.phase == "publish"
+    assert harness.head.discovered_count == len(rows)
+    assert harness.head.fetched_count == len(rows)
+    assert harness.head.published_count == 0
+    stored = await harness.producer.continuation.store.heads.find_one({"_id": harness.head.id})
+    assert stored == harness.head.model_dump(by_alias=True)
+    queued = await harness.producer.worker.queue.collection.find_one({"_id": harness.job["_id"]})
+    assert queued is not None and queued["state"] == "running"
+
+
+@pytest.mark.asyncio
+async def test_missing_staged_detail_prevents_order_publication_handoff(harness: Harness) -> None:
+    await begin_verification(harness, [order(1)])
+    await advance(harness)
+    receipt = harness.producer.continuation.store.receipts
+    await receipt.delete_one({"pass_number": 1, "kind": "detail", "resource_id": "1"})
+    before = harness.head
+
+    with pytest.raises(HistoryConflictError, match="detail"):
+        await harness.producer.step(harness.job, before)
+    assert await harness.producer.continuation.store.heads.find_one(
+        {"_id": before.id}
+    ) == before.model_dump(by_alias=True)
 
 
 @pytest.mark.asyncio
@@ -481,8 +565,8 @@ async def test_known_cancelled_is_staged_once_without_excluding_history(harness:
     assert all(record["source_payload"] == raw for record in records)
     exclusion = next(record for record in records if record["kind"] == "exclusion")
     assert exclusion["exclusion_reason"] == "seller_search_omits_source_confirmed_cancelled_order"
-    with pytest.raises(ValueError, match="reconciliation remains"):
-        await harness.producer.step(harness.job, harness.head)
+    handoff = await harness.producer.step(harness.job, harness.head)
+    assert handoff.phase == "publish" and handoff.fetched_count == 2
     assert harness.gateway.calls.count("/orders/9") == 1
     assert await harness.producer.worker.db.orders.count_documents({"_id": "9"}) == 1
     assert await harness.producer.worker.db.sheets_read_model_freshness.count_documents({}) == 0
@@ -532,8 +616,8 @@ async def test_known_scope_and_normalized_duplicate_ids_do_not_repeat_detail(
     await known_order(harness, "7", date_created=NOW - timedelta(days=100))
     harness.gateway.details["/orders/9"] = order(9, status="cancelled")
     await advance(harness)
-    with pytest.raises(ValueError, match="reconciliation remains"):
-        await harness.producer.step(harness.job, harness.head)
+    handoff = await harness.producer.step(harness.job, harness.head)
+    assert handoff.phase == "publish" and handoff.fetched_count == 1
     assert [
         path for path in harness.gateway.calls if path.startswith("/orders/") and "?" not in path
     ] == ["/orders/9"]
@@ -864,14 +948,14 @@ async def test_partial_detail_keeps_explicit_unavailable_fields(harness: Harness
 
 
 @pytest.mark.asyncio
-async def test_empty_source_is_staged_but_not_certified_as_coverage(harness: Harness) -> None:
+async def test_empty_source_hands_off_without_early_coverage(harness: Harness) -> None:
     harness.gateway.pages[0] = {"paging": {"total": 0}, "results": []}
     await advance(harness)
     await advance(harness)
     assert harness.head.phase == "verify" and harness.head.fetched_count == 0
     await advance(harness)
-    with pytest.raises(ValueError, match="reconciliation remains"):
-        await harness.producer.step(harness.job, harness.head)
+    handoff = await harness.producer.step(harness.job, harness.head)
+    assert handoff.phase == "publish" and handoff.fetched_count == 0
     assert await harness.producer.worker.db.sheets_read_model_freshness.count_documents({}) == 0
 
 

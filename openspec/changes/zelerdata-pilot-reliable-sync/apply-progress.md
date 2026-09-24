@@ -1,5 +1,31 @@
 # Apply Progress: ZelerData Pilot Reliable Sync
 
+## Scoped continuation: order publication handoff and final proof (2026-09-23)
+
+The opt-in `HistoryOrdersWorker` now carries a verified order acquisition through
+bounded publication and atomic coverage/queue completion. `begin_publication`
+checks the current-pass manifest counts and detail receipts under the existing
+queue lease before advancing the head. Publication still writes at most 20 orders
+per transaction, then finalization compares the persisted inventory with the
+verified membership, checks required fields, merges only previously reconciled
+proofs, and commits marker, completed head and completed queue job together.
+The marker's validity starts from the last source observation, not finalization.
+An empty verified interval can also complete without fabricating order rows.
+
+Strict TDD: three new real-Mongo handoff cases failed at the old
+`HistoryHandoffPendingError` boundary before the transition; three publication
+cases failed without `finalize`; a separate failed-marker case reproduced
+resurrection of an invalidated retained proof before its guard was added.
+All new cases pass. Four adjacent history files passed **132 tests** on the
+isolated loopback Mongo replica set (port 27028); focused Ruff and mypy pass
+for all six changed code/test files. Root gates and runtime evidence are separate.
+The tests use gateway doubles, so no Mercado Libre or production coverage is
+claimed. The normal runtime supervisor still does not launch this opt-in worker.
+
+Rollback boundary: remove the new publisher finalization and its tests, then
+the continuation handoff/worker routing and matching order tests/task evidence.
+Do not delete receipts, projected orders, or existing coverage markers.
+
 ## Scoped continuation: task 2.2 broker-level measured-stage evidence (2026-09-18)
 
 Strict TDD through a delegated implementation worker; no commit, build, deploy,
