@@ -2184,3 +2184,14 @@ readback after bounded retries reached 42 values, five `NA`, five
 anchors. Four unavailable historical sources are accepted by the user. The
 remaining `DEVOLUCIONES` source denial, burst concurrency, full variants and
 stability are open; see `docs/zelerdata-goal-progress.md` for exact evidence.
+
+The user then explicitly accepted ZelerData as sufficiently ready with
+`DEVOLUCIONES` documented as a provider-access exception. This is a pilot
+readiness decision, not proof of complete returns history or completion of the
+remaining SDD acceptance tasks. A later read-only Sheet pass still found
+42 values, five `NA`, five `DATA_UNAVAILABLE` and no service/processing/sheet
+errors. API and worker digests remained healthy with zero restarts; the orders
+marker was about eight minutes behind the inspection time. One API `/health`
+attempt exceeded a five-second client timeout, while the bounded retry returned
+all dependency checks ready. The exact observation and open follow-ups are in
+`docs/zelerdata-goal-progress.md`.

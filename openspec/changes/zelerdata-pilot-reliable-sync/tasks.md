@@ -92,3 +92,9 @@ additions only; no activation.
 - [ ] 6.3 Backend Sheets API image from `e8294d1` and worker image from `ac3e8ec` are deployed with verified digests and healthy dependency/component checks; the orders history flag is on, and the modification scan is off. Complete add-on proposal/publication and final acceptance authorization/evidence separately.
 - [ ] 6.4 Warm-up, 90-minute observation, rounds 0/30/60. The backend runtime passed post-flag ~30, ~60 and ~90-minute health/capacity observations. These are not the required native 35-case Google Sheets rounds or the full formula certification.
 - [ ] 6.5 Independent SDD verification/report; stop tests, retain normal sync.
+
+Pilot delivery decision (2026-09-24): the user considers ZelerData sufficiently
+ready with `DEVOLUCIONES` explicitly documented as a claim-specific upstream
+403 exception. Its `DATA_UNAVAILABLE` remains honest but is not evidence of
+absent historical source. The unchecked items above retain their full SDD
+acceptance meaning and remain follow-up work.

@@ -8884,3 +8884,27 @@ application/gateway permission failure. The search row's closed mediation type
 still cannot establish whether a return is absent, so the existing fail-closed
 `DEVOLUCIONES` disposition remains correct pending provider-side access or an
 authoritative exclusion basis.
+
+## Pilot sufficiently-ready decision (2026-09-24)
+
+The user explicitly considers ZelerData sufficiently ready with
+`ZELERDATA_DEVOLUCIONES` left as a documented provider-access exception. Its
+current `DATA_UNAVAILABLE` result remains truthful, but the claim-specific 403
+and partial local history are **not** reclassified as absent historical source
+or resolved coverage. This closes the agreed pilot product-readiness decision;
+the separately specified twelve-month history, variant/concurrency, automatic
+reopen, UI, and 90-minute native acceptance tasks remain open follow-ups.
+
+At 18:13 UTC, over two hours after the earlier native pass, a read-only Sheet
+check still found 42 value anchors, five `NA`, and five `DATA_UNAVAILABLE`
+(the four approved absent histories plus `DEVOLUCIONES`), with no processing,
+service or sheet errors. The deployed API and worker retained their intended
+immutable digests, `healthy`, zero restarts and no OOM. Worker readiness and
+all its components were `ok`. The orders marker ended at 18:05:44 UTC, about
+8.2 minutes before inspection. The API `/health` call first exceeded a
+five-second client timeout under load, then returned `ready=true` with Mongo,
+RabbitMQ, registry and claims-DLQ checks all true on a bounded retry. Root had
+35,550,289,920 free bytes, the separate Mongo mount 48,230,940,672, and the
+VM reported 500,724 kB available memory. These observations support the
+sufficiently-ready decision; they do not establish continuous stability or
+remove the API latency follow-up.
