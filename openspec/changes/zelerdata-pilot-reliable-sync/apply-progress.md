@@ -66,6 +66,12 @@ completed run, with no authorized/active run. These facts explain the four
 historical formula gaps and prevent automatic advancement of the failed quota
 runs; they do not authorize a production data repair.
 
+The user clarified on 2026-09-24 that formulas without historical source may
+honestly return `DATA_UNAVAILABLE`. This accepts the four source-absent
+historical metrics as unavailable in the pilot; it does not certify their
+Sheet executions or broaden the exception to transient failures or available
+source data. The 52-formula matrix now records this acceptance boundary.
+
 Read-only Google Sheets connector inspection identified the private
 `Pruebas ZelerData actual` workbook, tab `Goal_Pruebas_20260909`, with all 52
 existing formula anchors intact. Five anchor values still displayed

@@ -8,6 +8,13 @@ executed against the deployed pilot images with representative seller inputs.
 `PENDING` is never converted into acceptance. History is never reconstructed
 from current values. The catalog has 52 entries, matching the repository contract.
 
+Pilot acceptance clarification (2026-09-24): the user accepts an honest
+`DATA_UNAVAILABLE` result for a formula whose required historical source does
+not exist. The four confirmed examples are `ZELERDATA_CATALOGOTIEMPO`,
+`ZELERDATA_TIEMPOSTOCKACTIVO`, `ZELERDATA_SEMANASCONSTOCK`, and
+`ZELERDATA_RETIROS`. This does not accept a temporary source error as absent
+history, nor does it excuse verification of formulas with available sources.
+
 | Formula | Signature | Purpose | Required resources/fields | Freshness policy | Cases | Historical coverage | Expected | Observed | Evidence | Defects / limitations |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | `ZELERDATA_PUBLICACIONES` | `(cuenta, skus="todos", tipo_almacenamiento="todos", tipo_precio="base", imagen="", encabezados="")` | Stock/history status | items and stock observations | current/basic + observed history | representative pilot inputs + absence/filter case | current/basic + observed history; API retention where historical | Current publication table with sales-window metrics; pause columns from Zeler-observed basis. | PENDING | PENDING | PENDING |
