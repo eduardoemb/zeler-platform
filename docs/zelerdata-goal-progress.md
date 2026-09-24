@@ -8813,3 +8813,17 @@ orders refresh waited. This is a current freshness/capacity gap, not missing
 historical source. `ZELERDATA_DEVOLUCIONES` remains separately blocked by the
 upstream claim-detail 403 described above. The modification scan flag remains
 off until queue headroom and a bounded activation check are available.
+
+### Recent-orders range scheduling correction (local, awaiting release)
+
+The range worker originally claimed the oldest ready job. A recent one-hour
+orders sweep could wait behind a month-long legacy job even while the native
+formulas required a current orders observation. A new actual-Mongo regression
+test demonstrated this queue order before the fix. The focused change selects
+a ready orders tail in the last two hours (with a start in the last three)
+before the existing oldest-ready path; it does not change marker validity,
+source verification, admission capacity, or stored rows. A second test confirms
+that a not-ready recent job does not block older ready work. All eight focused
+queue tests passed, as did the full local pytest suite with nine expected skips,
+Ruff check/format, and full mypy. This is local evidence only; the worker image,
+live tail publication and native formula result still need verification.

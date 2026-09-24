@@ -2157,3 +2157,14 @@ running digests, rollback bindings, capacity, ready/healthy states, native
 `docs/zelerdata-goal-progress.md`. This closes the image activation part of
 4.2a, while 4.1/5.1 and the longer stability acceptance remain open. The
 modification scan is present in the image but not activated.
+
+The live queue then exposed a separate range-lane scheduling gap: an eligible
+one-hour orders tail waited behind older monthly orders/questions jobs, leaving
+five native formulas without current source proof. A focused actual-Mongo test
+first failed with the old claim order. The localized claim change gives a ready,
+recent orders tail first turn, then falls through to the existing oldest-ready
+claim; a second test keeps not-ready tails pending. It changes neither source
+freshness nor publication semantics. Focused queue tests and the full local
+pytest suite passed with nine expected skips; Ruff check/format and full mypy
+passed. Runtime acceptance still requires the new worker image and an observed
+orders-tail publication with native formula readback.

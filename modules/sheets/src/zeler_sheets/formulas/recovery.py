@@ -729,30 +729,50 @@ class FormulaRecoveryQueue:
                 "$unset": {"lease_until": "", "attempt_token": ""},
             },
         )
-        claimed = await self.collection.find_one_and_update(
-            {
-                **seller_filter,
-                **lane_filter,
-                "attempts": {"$lt": MAX_ATTEMPTS},
-                "read_model": {"$in": sorted(self.enabled_models)},
-                "available_at": {"$lte": now},
-                "$or": [
-                    {"state": "pending"},
-                    {"state": "running", "lease_until": {"$lte": now}},
-                ],
+        claim_filter = {
+            **seller_filter,
+            **lane_filter,
+            "attempts": {"$lt": MAX_ATTEMPTS},
+            "read_model": {"$in": sorted(self.enabled_models)},
+            "available_at": {"$lte": now},
+            "$or": [
+                {"state": "pending"},
+                {"state": "running", "lease_until": {"$lte": now}},
+            ],
+        }
+        claim_update = {
+            "$set": {
+                "state": "running",
+                "attempt_token": uuid4().hex,
+                "lease_until": now + LEASE,
+                "updated_at": now,
             },
-            {
-                "$set": {
-                    "state": "running",
-                    "attempt_token": uuid4().hex,
-                    "lease_until": now + LEASE,
-                    "updated_at": now,
+            "$inc": {"attempts": 1},
+        }
+        claimed = None
+        if lane == "ranges" and not history and "orders" in self.enabled_models:
+            # A full historical range can occupy the only range worker for the
+            # entire job deadline. Give a ready, one-hour creation-tail sweep a
+            # turn before older work so live formulas can regain source proof.
+            # The ordinary claim below still drains all other eligible work.
+            claimed = await self.collection.find_one_and_update(
+                {
+                    **claim_filter,
+                    "read_model": "orders",
+                    "date_from": {"$gte": now - timedelta(hours=3)},
+                    "date_to": {"$gte": now - timedelta(hours=2)},
                 },
-                "$inc": {"attempts": 1},
-            },
-            sort=[("available_at", 1), ("_id", 1)],
-            return_document=ReturnDocument.AFTER,
-        )
+                claim_update,
+                sort=[("date_to", -1), ("available_at", 1), ("_id", 1)],
+                return_document=ReturnDocument.AFTER,
+            )
+        if claimed is None:
+            claimed = await self.collection.find_one_and_update(
+                claim_filter,
+                claim_update,
+                sort=[("available_at", 1), ("_id", 1)],
+                return_document=ReturnDocument.AFTER,
+            )
         return dict(claimed) if claimed is not None else None
 
     async def defer_quota(self, job: dict[str, Any]) -> bool:

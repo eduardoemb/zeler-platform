@@ -74,6 +74,48 @@ async def test_claim_lanes_are_disjoint_and_cleanup_is_scoped(recovery_db: Any) 
 
 
 @pytest.mark.asyncio
+async def test_range_claim_gives_recent_orders_one_turn_before_old_ranges(
+    recovery_db: Any,
+) -> None:
+    queue = FormulaRecoveryQueue(recovery_db, now=lambda: NOW)
+    old_order = RecoveryRequest("123", "orders", NOW - timedelta(days=31), NOW - timedelta(days=30))
+    old_question = RecoveryRequest(
+        "123", "questions", NOW - timedelta(days=7), NOW - timedelta(days=6)
+    )
+    recent_order = RecoveryRequest("123", "orders", NOW - timedelta(hours=1), NOW)
+    for request in (old_order, old_question, recent_order):
+        await queue.enqueue(request)
+    for request in (old_order, old_question):
+        await recovery_db.sheets_formula_recovery_jobs.update_one(
+            {"_id": request.key}, {"$set": {"available_at": NOW - timedelta(minutes=1)}}
+        )
+
+    first = await queue.claim(lane="ranges")
+    assert first is not None and first["_id"] == recent_order.key
+    second = await queue.claim(lane="ranges")
+    assert second is not None and second["_id"] in {old_order.key, old_question.key}
+
+
+@pytest.mark.asyncio
+async def test_range_claim_leaves_not_ready_recent_orders_in_queue(recovery_db: Any) -> None:
+    queue = FormulaRecoveryQueue(recovery_db, now=lambda: NOW)
+    old_order = RecoveryRequest("123", "orders", NOW - timedelta(days=31), NOW - timedelta(days=30))
+    recent_order = RecoveryRequest("123", "orders", NOW - timedelta(hours=1), NOW)
+    await queue.enqueue(old_order)
+    await queue.enqueue(recent_order)
+    await recovery_db.sheets_formula_recovery_jobs.update_one(
+        {"_id": recent_order.key},
+        {"$set": {"available_at": NOW + timedelta(minutes=1)}},
+    )
+
+    claimed = await queue.claim(lane="ranges")
+    assert claimed is not None and claimed["_id"] == old_order.key
+    assert (await recovery_db.sheets_formula_recovery_jobs.find_one({"_id": recent_order.key}))[
+        "state"
+    ] == "pending"
+
+
+@pytest.mark.asyncio
 async def test_quota_deferral_retains_progress_and_does_not_consume_attempt(
     recovery_db: Any,
 ) -> None:
