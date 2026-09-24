@@ -15,14 +15,17 @@ from infra.mongo.apply_validators import apply_validators
 from motor.motor_asyncio import AsyncIOMotorClient
 
 from zeler_platform_core.models import SheetsHistoryAcquisition, SheetsHistoryReceipt
+from zeler_sheets.event_persistence import SheetsEventPersistence
 from zeler_sheets.formulas.recovery import (
     FormulaRecoveryQueue,
     QuestionScanRecoveryRequest,
     RecoveryCapacityError,
     RecoveryRequest,
 )
+from zeler_sheets.formulas.refresh import reconciled_marker
 from zeler_sheets.history_acquisition import HistoryAcquisitionStore
 from zeler_sheets.history_continuation import HistoryContinuation
+from zeler_sheets.history_question_publication import HistoryQuestionPublisher
 from zeler_sheets.history_questions import (
     QuestionDetailObservation,
     QuestionScanPage,
@@ -499,6 +502,168 @@ async def test_twelve_subscriptions_share_one_verified_manifest(
     assert detail["observed_at"] == first.observed_at
     assert await runner.store.db.questions.count_documents({}) == 0
     assert await runner.store.db.sheets_read_model_freshness.count_documents({}) == 0
+
+
+@pytest.mark.asyncio
+async def test_question_publication_handoff_requires_every_verified_detail(
+    queue: FormulaRecoveryQueue,
+) -> None:
+    rows = [
+        question(identity, date_created=(NOW - timedelta(days=identity)).isoformat())
+        for identity in (1, 2)
+    ]
+    runner, head = await verified_questions(queue, rows)
+    job = await claim(queue)
+    with pytest.raises(ValueError, match="detail"):
+        await runner.begin_publication(job, head)
+    assert (await runner.store.heads.find_one({"_id": head.id}))["phase"] == "verify"
+
+    head = await runner.hydrate(job, head, [QuestionDetailObservation(row, NOW) for row in rows])
+    published = await runner.begin_publication(await claim(queue), head)
+    assert published.phase == "publish" and published.fetched_count == 2
+    assert published.published_count == 0
+    assert (await queue.collection.find_one({"_id": head.id}))["state"] == "pending"
+    assert await runner.store.db.questions.count_documents({}) == 0
+    assert await runner.store.db.sheets_read_model_freshness.count_documents({}) == 0
+
+
+@pytest.mark.asyncio
+async def test_question_batches_publish_before_any_interval_proof(
+    queue: FormulaRecoveryQueue,
+) -> None:
+    rows = [
+        question(
+            identity,
+            date_created=(NOW - timedelta(days=identity)).isoformat(),
+            item_id=f"MLA{identity}",
+            from_user_id=str(100 + identity),
+            text=f"Question {identity}",
+        )
+        for identity in (1, 2)
+    ]
+    runner, head = await verified_questions(queue, rows)
+    head = await runner.hydrate(
+        await claim(queue), head, [QuestionDetailObservation(row, NOW) for row in rows]
+    )
+    head = await runner.begin_publication(await claim(queue), head)
+    publisher = HistoryQuestionPublisher(HistoryContinuation(runner.store))
+    head = await publisher.batch(await claim(queue), head, limit=1)
+    assert head.published_count == 1
+    assert await runner.store.db.questions.count_documents({}) == 1
+    assert (
+        await runner.store.db.sheets_read_model_freshness.count_documents({"state": "reconciled"})
+        == 0
+    )
+    head = await publisher.batch(await claim(queue), head, limit=1)
+    assert head.published_count == 2
+    completed = await publisher.finalize(await claim(queue), head)
+    assert completed.phase == "completed"
+    assert (await queue.collection.find_one({"_id": head.id}))["state"] == "completed"
+    marker = await runner.store.db.sheets_read_model_freshness.find_one(
+        {"_id": "82453304:questions"}
+    )
+    assert marker["state"] == "reconciled"
+    assert marker["date_from"] == START and marker["reconciled_until"] == NOW
+
+
+@pytest.mark.asyncio
+async def test_partial_question_publication_withdraws_old_proof(
+    queue: FormulaRecoveryQueue,
+) -> None:
+    row = question(
+        1,
+        date_created=(NOW - timedelta(days=1)).isoformat(),
+        item_id="MLA1",
+        from_user_id="101",
+        text="Question 1",
+    )
+    runner, head = await verified_questions(queue, [row])
+    head = await runner.hydrate(await claim(queue), head, [QuestionDetailObservation(row, NOW)])
+    head = await runner.begin_publication(await claim(queue), head)
+    await runner.store.db.sheets_read_model_freshness.insert_one(
+        reconciled_marker(
+            seller_id=head.seller_id,
+            read_model="questions",
+            start=START,
+            end=NOW,
+            now=NOW,
+        )
+    )
+    publisher = HistoryQuestionPublisher(HistoryContinuation(runner.store))
+    await publisher.batch(await claim(queue), head)
+    marker = await runner.store.db.sheets_read_model_freshness.find_one(
+        {"_id": "82453304:questions"}
+    )
+    assert marker["state"] == "stale"
+
+
+@pytest.mark.asyncio
+async def test_extra_question_prevents_scan_coverage_finalization(
+    queue: FormulaRecoveryQueue,
+) -> None:
+    row = question(
+        1,
+        date_created=(NOW - timedelta(days=1)).isoformat(),
+        item_id="MLA1",
+        from_user_id="101",
+        text="Question 1",
+    )
+    runner, head = await verified_questions(queue, [row])
+    head = await runner.hydrate(await claim(queue), head, [QuestionDetailObservation(row, NOW)])
+    head = await runner.begin_publication(await claim(queue), head)
+    publisher = HistoryQuestionPublisher(HistoryContinuation(runner.store))
+    head = await publisher.batch(await claim(queue), head)
+    await runner.store.db.questions.insert_one(
+        {
+            "_id": "extra",
+            "seller_id": head.seller_id,
+            "date_created": NOW - timedelta(days=2),
+        }
+    )
+    with pytest.raises(ValueError, match="inventory"):
+        await publisher.finalize(await claim(queue), head)
+    assert (await runner.store.heads.find_one({"_id": head.id}))["phase"] == "publish"
+    assert (
+        await runner.store.db.sheets_read_model_freshness.count_documents({"state": "reconciled"})
+        == 0
+    )
+
+
+@pytest.mark.asyncio
+async def test_newer_question_event_survives_late_history_batch(
+    queue: FormulaRecoveryQueue,
+) -> None:
+    row = question(
+        1,
+        date_created=(NOW - timedelta(days=1)).isoformat(),
+        item_id="MLA1",
+        from_user_id="101",
+        text="Original question",
+    )
+    runner, head = await verified_questions(queue, [row])
+    head = await runner.hydrate(await claim(queue), head, [QuestionDetailObservation(row, NOW)])
+    head = await runner.begin_publication(await claim(queue), head)
+    await SheetsEventPersistence(db=runner.store.db, clock=lambda: NOW).persist(
+        event_type="questions.updated",
+        seller_id=head.seller_id,
+        resource={
+            **row,
+            "status": "ANSWERED",
+            "date_updated": NOW.isoformat(),
+            "answer": {
+                "text": "Later answer",
+                "date_created": NOW.isoformat(),
+                "status": "ACTIVE",
+            },
+        },
+    )
+    publisher = HistoryQuestionPublisher(HistoryContinuation(runner.store))
+    head = await publisher.batch(await claim(queue), head)
+    current = await runner.store.db.questions.find_one({"_id": "1"})
+    assert current["status"] == "ANSWERED"
+    assert current["answer"]["text"] == "Later answer"
+    completed = await publisher.finalize(await claim(queue), head)
+    assert completed.phase == "completed"
 
 
 @pytest.mark.asyncio

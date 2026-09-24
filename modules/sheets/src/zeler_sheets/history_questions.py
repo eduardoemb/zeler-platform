@@ -354,6 +354,86 @@ class QuestionScanStaging:
                 await session.with_transaction(transaction)
             )
 
+    async def begin_publication(
+        self, job: dict[str, Any], expected: SheetsHistoryAcquisition
+    ) -> SheetsHistoryAcquisition:
+        """Hand off only a fully hydrated verified scan; this publishes no proof."""
+        head = _head(expected)
+        question_subscriptions(head)
+        if head.fetched_count != head.discovered_count or head.published_count:
+            raise HistoryConflictError("question publication requires every verified detail")
+
+        async def transaction(session: Any) -> SheetsHistoryAcquisition:
+            await self.continuation._current(job, head, session)
+            scope = {
+                "acquisition_id": head.id,
+                "generation": head.generation,
+                "pass_number": head.pass_number,
+            }
+            members = await self.store.receipts.count_documents(
+                {**scope, "kind": "membership"}, session=session
+            )
+            details = await self.store.receipts.count_documents(
+                {**scope, "kind": "detail"}, session=session
+            )
+            if members != head.source_total or details != head.fetched_count:
+                raise HistoryConflictError("question publication receipt count changed")
+            missing = await self.store.receipts.aggregate(
+                [
+                    {"$match": {**scope, "kind": "membership"}},
+                    {
+                        "$lookup": {
+                            "from": "sheets_history_receipts",
+                            "let": {"identity": "$resource_id"},
+                            "pipeline": [
+                                {
+                                    "$match": {
+                                        **scope,
+                                        "kind": "detail",
+                                        "$expr": {"$eq": ["$resource_id", "$$identity"]},
+                                    }
+                                },
+                                {"$limit": 1},
+                            ],
+                            "as": "details",
+                        }
+                    },
+                    {"$match": {"details": {"$size": 0}}},
+                    {"$limit": 1},
+                ],
+                session=session,
+            ).to_list(length=1)
+            if missing:
+                raise HistoryConflictError("verified question detail is missing")
+            saved = _head(
+                SheetsHistoryAcquisition.model_validate(
+                    {
+                        **head.model_dump(by_alias=True),
+                        "phase": "publish",
+                        "checkpoint_revision": head.checkpoint_revision + 1,
+                        "updated_at": self.store.queue.now(),
+                    }
+                )
+            )
+            result = await self.store.heads.replace_one(
+                {
+                    "_id": head.id,
+                    "generation": head.generation,
+                    "checkpoint_revision": head.checkpoint_revision,
+                },
+                saved.model_dump(by_alias=True),
+                session=session,
+            )
+            if result.matched_count != 1:
+                raise HistoryConflictError("question publication handoff lost its checkpoint")
+            await self.continuation._pending(job, saved, 0, timedelta(0), session)
+            return saved
+
+        async with await self.store.db.client.start_session() as session:
+            return SheetsHistoryAcquisition.model_validate(
+                await session.with_transaction(transaction)
+            )
+
     async def cursor_expired(
         self, job: dict[str, Any], head: SheetsHistoryAcquisition
     ) -> SheetsHistoryAcquisition:
