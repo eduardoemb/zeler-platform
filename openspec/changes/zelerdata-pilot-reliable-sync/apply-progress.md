@@ -1526,6 +1526,38 @@ has been published. No service image or production data was changed in this
 unit. The next question worker release must include a verified worker image
 from its connected source commit and prove detail/coverage behavior separately.
 
+### Bounded verified-question detail acquisition (3.2j partial, 2026-09-24)
+
+The next RED case failed because the verified-member detail fetch method did
+not exist. The adapter now checks the current fenced job/head, selects only
+verified members without detail receipts, fetches at most 20 v4 details through
+the configured Sheets gateway, and stages them through the existing guarded
+transaction. A real-Mongo test resumed a 21-member manifest in 20-then-one
+batches without refetching committed details; a separate two-member test
+confirmed exact detail paths and a no-work replay.
+
+A bounded read-only pilot comparison of three actual search/detail pairs found
+matching IDs, sellers, items and statuses, but the detail creation timestamp
+was 0.038–0.624 ms earlier than search after UTC normalization. The prior exact
+instant comparison rejected that provider precision difference. A failing
+regression preceded the correction: detail creation is now compared at the
+common BSON millisecond, while separate raw search/detail payloads and hashes
+remain preserved. A negative test still rejects a different millisecond.
+No pilot question detail or production collection was written by this probe.
+
+The focused question/continuation suite passed 65 cases; eight protected rs0
+cases passed separately, root Ruff check and format check passed on 607 files,
+full mypy passed on 607 files, and direct-Meli lint passed. The final full
+root pytest passed with exit 0 and nine skips (the eight protected cases run
+separately and the existing Caddy key fixture). It ran against an explicitly
+named disposable loopback Mongo database after the precision and formatting
+corrections; tests used no production Mongo target.
+
+Task 3.2j remains open: this adapter is not yet consumed by a production
+question-history worker, and neither canonical question writes nor monthly
+coverage proof/publication are implemented. A verified new Sheets worker image
+will be needed before activating that future runtime path.
+
 ### Actual orders staging worker (3.3 partial)
 
 Strict TDD admission import RED preceded implementation; a second behavioral RED

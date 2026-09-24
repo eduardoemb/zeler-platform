@@ -77,6 +77,12 @@ def normalize_question_scan_page(
     return QuestionScanPage(rows, total, None if terminal else cursor, terminal, observed_at)
 
 
+def _question_created_millisecond(value: datetime) -> datetime:
+    """Search exposes microseconds; the v4 detail endpoint truncates to milliseconds."""
+    utc = value.astimezone(UTC)
+    return utc.replace(microsecond=utc.microsecond // 1000 * 1000)
+
+
 async def fetch_question_scan_page(
     gateway: Any,
     *,
@@ -181,6 +187,61 @@ class QuestionScanStaging:
         )
         return await self.page(job, head, page)
 
+    async def fetch_and_hydrate(
+        self,
+        job: dict[str, Any],
+        expected: SheetsHistoryAcquisition,
+        detail_gateway: Any,
+    ) -> SheetsHistoryAcquisition:
+        """Acquire one bounded set of verified members, then fence their receipts."""
+        head = _head(expected)
+        question_subscriptions(head)
+        scope = {
+            "acquisition_id": head.id,
+            "generation": head.generation,
+            "pass_number": head.pass_number,
+        }
+        async with (
+            await self.store.db.client.start_session() as session,
+            session.start_transaction(),
+        ):
+            await self.continuation._current(job, head, session)
+            members = await self.store.receipts.find(
+                {**scope, "kind": "membership"},
+                {"resource_id": 1},
+                session=session,
+            ).to_list(length=10001)
+            details = await self.store.receipts.find(
+                {**scope, "kind": "detail"},
+                {"resource_id": 1},
+                session=session,
+            ).to_list(length=10001)
+        member_ids = {row["resource_id"] for row in members}
+        detail_ids = {row["resource_id"] for row in details}
+        if (
+            len(member_ids) != len(members)
+            or len(member_ids) != head.discovered_count
+            or len(detail_ids) != len(details)
+            or len(detail_ids) != head.fetched_count
+            or not detail_ids <= member_ids
+        ):
+            raise HistoryConflictError("question detail membership is incomplete")
+        missing = sorted(member_ids - detail_ids)[:20]
+        if not missing:
+            return head
+        observations = []
+        for identity in missing:
+            resource = await recovery_fetch_resource(
+                detail_gateway,
+                request_timeout=10,
+                seller_id=head.seller_id,
+                path=f"/questions/{identity}?api_version=4",
+            )
+            if not isinstance(resource, dict):
+                raise ValueError("question detail response must be an object")
+            observations.append(QuestionDetailObservation(resource, self.store.queue.now()))
+        return await self.hydrate(job, head, observations)
+
     async def hydrate(
         self,
         job: dict[str, Any],
@@ -239,7 +300,8 @@ class QuestionScanStaging:
                     item_source_fingerprint(source) != receipt.source_hash
                     or str(source.get("id")) != identity
                     or str(source.get("seller_id")) != head.seller_id
-                    or source_created != created
+                    or _question_created_millisecond(source_created)
+                    != _question_created_millisecond(created)
                     or any(
                         key in source and source[key] != payload.get(key)
                         for key in ("status", "item_id")

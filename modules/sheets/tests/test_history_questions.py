@@ -291,6 +291,67 @@ async def test_live_shaped_gateway_pages_stage_both_passes_with_rotating_cursors
 
 
 @pytest.mark.asyncio
+async def test_verified_membership_fetches_only_missing_question_details(
+    queue: FormulaRecoveryQueue,
+) -> None:
+    created = (START + timedelta(days=1)).isoformat()
+    rows = [question(1, date_created=created), question(2, date_created=created)]
+    runner, job, head = await scan_state(queue)
+    head = await runner.page(job, head, QuestionScanPage(rows, 2, None, True, NOW))
+    head = await runner.begin_verification(await claim(queue), head)
+    head = await runner.page(
+        await claim(queue), head, QuestionScanPage(list(reversed(rows)), 2, None, True, NOW)
+    )
+
+    class DetailGateway:
+        def __init__(self) -> None:
+            self.paths: list[str] = []
+
+        async def fetch_resource(self, *, seller_id: str, path: str) -> dict[str, Any]:
+            assert seller_id == "82453304"
+            self.paths.append(path)
+            identity = int(path.split("/")[-1].split("?")[0])
+            return rows[identity - 1]
+
+    gateway = DetailGateway()
+    head = await runner.fetch_and_hydrate(await claim(queue), head, gateway)
+    assert head.fetched_count == 2
+    assert await runner.store.receipts.count_documents({"kind": "detail"}) == 2
+    assert gateway.paths == ["/questions/1?api_version=4", "/questions/2?api_version=4"]
+    again = await runner.fetch_and_hydrate(await claim(queue), head, gateway)
+    assert again == head and len(gateway.paths) == 2
+
+
+@pytest.mark.asyncio
+async def test_question_detail_acquisition_resumes_after_twenty_receipts(
+    queue: FormulaRecoveryQueue,
+) -> None:
+    created = (START + timedelta(days=1)).isoformat()
+    rows = [question(identity, date_created=created) for identity in range(1, 22)]
+    runner, job, head = await scan_state(queue)
+    head = await runner.page(job, head, QuestionScanPage(rows, 21, None, True, NOW))
+    head = await runner.begin_verification(await claim(queue), head)
+    head = await runner.page(await claim(queue), head, QuestionScanPage(rows, 21, None, True, NOW))
+
+    class DetailGateway:
+        def __init__(self) -> None:
+            self.paths: list[str] = []
+
+        async def fetch_resource(self, *, seller_id: str, path: str) -> dict[str, Any]:
+            assert seller_id == "82453304"
+            self.paths.append(path)
+            identity = int(path.split("/")[-1].split("?")[0])
+            return rows[identity - 1]
+
+    gateway = DetailGateway()
+    head = await runner.fetch_and_hydrate(await claim(queue), head, gateway)
+    assert head.fetched_count == 20 and len(gateway.paths) == 20
+    head = await runner.fetch_and_hydrate(await claim(queue), head, gateway)
+    assert head.fetched_count == 21 and len(gateway.paths) == 21
+    assert await runner.store.receipts.count_documents({"kind": "detail"}) == 21
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "rows,total",
     [
@@ -438,6 +499,32 @@ async def test_twelve_subscriptions_share_one_verified_manifest(
     assert detail["observed_at"] == first.observed_at
     assert await runner.store.db.questions.count_documents({}) == 0
     assert await runner.store.db.sheets_read_model_freshness.count_documents({}) == 0
+
+
+@pytest.mark.asyncio
+async def test_question_detail_accepts_provider_millisecond_timestamp_precision(
+    queue: FormulaRecoveryQueue,
+) -> None:
+    created = (NOW - timedelta(days=1)).replace(microsecond=263624)
+    row = question(1, date_created=created.isoformat())
+    runner, head = await verified_questions(queue, [row])
+    detail = {**row, "date_created": created.replace(microsecond=263000).isoformat()}
+    head = await runner.hydrate(await claim(queue), head, [QuestionDetailObservation(detail, NOW)])
+    assert head.fetched_count == 1
+    assert await runner.store.receipts.count_documents({"kind": "detail"}) == 1
+
+
+@pytest.mark.asyncio
+async def test_question_detail_still_rejects_a_different_creation_millisecond(
+    queue: FormulaRecoveryQueue,
+) -> None:
+    created = (NOW - timedelta(days=1)).replace(microsecond=263624)
+    row = question(1, date_created=created.isoformat())
+    runner, head = await verified_questions(queue, [row])
+    detail = {**row, "date_created": created.replace(microsecond=264000).isoformat()}
+    with pytest.raises(ValueError, match="contradicts verified membership"):
+        await runner.hydrate(await claim(queue), head, [QuestionDetailObservation(detail, NOW)])
+    assert await runner.store.receipts.count_documents({"kind": "detail"}) == 0
 
 
 @pytest.mark.asyncio

@@ -83,6 +83,16 @@ text, buyer data or token was printed, and no collection or runtime setting was
 mutated. This is discovery evidence only: it does not prove twelve-month
 retention, detail completeness or a reconciled questions interval.
 
+Three further bounded read-only samples fetched a search row with the bootstrap
+identity and its v4 detail with the Sheets identity. ID, seller, item and status
+matched in all three. The detail `date_created` was 0.038, 0.624 and 0.055 ms
+earlier than the search value after UTC normalization: the detail kept
+millisecond precision while search kept finer fractions. Raw timestamp strings
+also differed. The detail staging comparison now uses the common millisecond
+instant while still rejecting a different millisecond; the original search
+payload/hash and actual detail payload/hash remain separate receipts. This
+sample does not prove every question detail or answer is available.
+
 ## Required Adapter Evidence
 
 - Exact orders boundary inclusivity, hourly subdivision and saturated-hour handling.
