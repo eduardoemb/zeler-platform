@@ -94,6 +94,7 @@ from zeler_sheets.google_errors import (
     SellerTokenRevokedError,
 )
 from zeler_sheets.google_sheets_client import make_sheets_client
+from zeler_sheets.history_worker import HistoryOrdersWorker
 from zeler_sheets.observed_read_model_markers import (
     OBSERVED_READ_MODEL_SOURCES,
     publish_observed_read_model_markers,
@@ -1450,11 +1451,12 @@ async def build_formula_recovery_poller(
     Both the discovery and detail gateway clients are paced so background
     acquisition cannot consume the whole per-seller gateway budget.
     """
+    allowed_sellers = recovery_sellers(os.environ.get("ZELERDATA_FORMULA_RECOVERY_SELLERS"))
     recovery_queue = FormulaRecoveryQueue(
         db,
         enabled_models=IMPLEMENTED_MODELS,
         reserved_inventory_slots=1,
-        allowed_sellers=recovery_sellers(os.environ.get("ZELERDATA_FORMULA_RECOVERY_SELLERS")),
+        allowed_sellers=allowed_sellers,
     )
     await recovery_queue.ensure_indexes()
     pacer = RecoveryRequestPacer(
@@ -1467,20 +1469,37 @@ async def build_formula_recovery_poller(
         kms_client=kms_client,
         base_url=os.environ.get("GATEWAY_BASE_URL", DEFAULT_GATEWAY_BASE_URL),
     )
-    return FormulaRecoverySupervisor(
-        tuple(
-            SyncJobsPollerSupervisor(
-                FormulaRecoveryWorker(
-                    db=db,
-                    queue=recovery_queue,
-                    lane=lane,
-                    gateway=PacedMeliGateway(inner=discovery, pacer=pacer, lane=lane),
-                    detail_gateway=PacedMeliGateway(inner=detail_gateway, pacer=pacer, lane=lane),
-                )
+    lanes = tuple(
+        SyncJobsPollerSupervisor(
+            FormulaRecoveryWorker(
+                db=db,
+                queue=recovery_queue,
+                lane=lane,
+                gateway=PacedMeliGateway(inner=discovery, pacer=pacer, lane=lane),
+                detail_gateway=PacedMeliGateway(inner=detail_gateway, pacer=pacer, lane=lane),
             )
-            for lane in ("inventory", "ids", "ranges")
         )
+        for lane in ("inventory", "ids", "ranges")
     )
+    if _env_flag_enabled("ZELERDATA_ORDER_HISTORY_PROTOCOL_ENABLED"):
+        history_queue = FormulaRecoveryQueue(
+            db,
+            enabled_models=frozenset({"orders"}),
+            reserved_inventory_slots=1,
+            allowed_sellers=allowed_sellers,
+        )
+        await history_queue.ensure_indexes()
+        history = HistoryOrdersWorker(
+            FormulaRecoveryWorker(
+                db=db,
+                queue=history_queue,
+                lane="ranges",
+                gateway=PacedMeliGateway(inner=discovery, pacer=pacer, lane="ranges"),
+                detail_gateway=PacedMeliGateway(inner=detail_gateway, pacer=pacer, lane="ranges"),
+            )
+        )
+        lanes += (SyncJobsPollerSupervisor(history),)
+    return FormulaRecoverySupervisor(lanes)
 
 
 async def build_zelerdata_refresh_supervisor(*, db: Any) -> ZelerDataRefreshSupervisor:
@@ -1546,7 +1565,11 @@ async def build_zelerdata_refresh_supervisor(*, db: Any) -> ZelerDataRefreshSupe
         explorer=MongoSellerExplorer(db=db, allowed_sellers=allowed),
         planner=planner,
         inventory_refresher=planner.plan_inventory,
-        history_backfill=build_pilot_history_backfill(db=db, recovery_queue=queue),
+        history_backfill=build_pilot_history_backfill(
+            db=db,
+            recovery_queue=queue,
+            order_history=_env_flag_enabled("ZELERDATA_ORDER_HISTORY_PROTOCOL_ENABLED"),
+        ),
         # Observed-only read models cannot be certified by a source range, so
         # the same cycle renews their heartbeat from the data already observed.
         observed_marker_publisher=lambda seller_id: publish_observed_read_model_markers(

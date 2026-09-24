@@ -166,6 +166,21 @@ index. Include that guard in authorized seller deletion; never delete it while
 admission is active. The cap does not establish global fairness, API-call quotas
 or completed-job retention, and does not by itself authorize wider rollout.
 
+Durable monthly **orders** history is a separate worker-side activation:
+`ZELERDATA_ORDER_HISTORY_PROTOCOL_ENABLED=true` makes the refresh callback admit
+plan-bound jobs and starts an orders-only history poller. Leave it unset until
+the strict `sheets_history_acquisitions`, `sheets_history_receipts`, and
+`sheets_history_order_ranges` validators and indexes have been applied and
+verified from the approved VM context. Compare the running Sheets worker image
+with the authorized source, then verify a bounded pilot month from admission
+through receipts, projected orders, completed queue job and reconciled interval.
+The new poller shares the existing acquisition pacer (180/min by default) and
+seller allowlist.
+An active legacy job for the same monthly interval defers new-protocol admission.
+Older workers ignore protocol-versioned jobs; preserve those jobs and receipts
+on rollback and do not claim completed history from an image change alone.
+This switch does not activate unfinished questions, shipments or items history.
+
 **Important**: Always use Cloud Build. Never `docker build` locally on Mac.
 
 Build from the connected repository at one exact commit already present in

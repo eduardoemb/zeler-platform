@@ -10,7 +10,14 @@ import pytest
 import pytest_asyncio
 from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorDatabase
 
-from zeler_sheets.formulas.recovery import FormulaRecoveryQueue
+from zeler_sheets.consumer import (
+    build_formula_recovery_poller,
+    build_zelerdata_refresh_supervisor,
+)
+from zeler_sheets.formulas.read_models import read_model_reconciliation_marker_covers
+from zeler_sheets.formulas.recovery import FormulaRecoveryQueue, OrderHistoryRecoveryRequest
+from zeler_sheets.formulas.recovery_worker import FormulaRecoveryWorker
+from zeler_sheets.history_worker import HistoryOrdersWorker
 from zeler_sheets.pilot_history import HistoryPlanner
 from zeler_sheets.pilot_history_backfill import PLAN_COLLECTION, build_pilot_history_backfill
 from zeler_sheets.pilot_history_recovery_bridge import chunk_to_recovery_request
@@ -65,6 +72,154 @@ async def test_repeated_callback_keeps_bson_cutoff_and_job_identity(
             assert job == expected_job
         expected_plan, expected_job = plan, job
         assert await queue.collection.count_documents({"seller_id": SELLER}) == 1
+
+
+@pytest.mark.asyncio
+async def test_opted_in_callback_admits_plan_bound_order_protocol(
+    cutoff_db: AsyncIOMotorDatabase[dict[str, Any]],
+) -> None:
+    queue = FormulaRecoveryQueue(
+        cutoff_db, allowed_sellers=frozenset({SELLER}), max_active_jobs_per_seller=1
+    )
+    await queue.ensure_indexes()
+    callback = build_pilot_history_backfill(db=cutoff_db, recovery_queue=queue, order_history=True)
+    assert await callback(SELLER)
+    plan = await cutoff_db[PLAN_COLLECTION].find_one({"_id": SELLER})
+    assert plan is not None
+    cutoff = plan["cutoff"].astimezone(UTC)
+    recent = HistoryPlanner(cutoff=cutoff, months=12).plan_for("orders").chunks[-1]
+    request = OrderHistoryRecoveryRequest(
+        SELLER, f"pilot-12m:{cutoff.isoformat(timespec='milliseconds')}", recent.start, recent.end
+    )
+    job = await queue.collection.find_one({"seller_id": SELLER})
+    assert job is not None and job["_id"] == request.key
+    assert job["history_plan_id"] == request.plan_id
+    assert job["history_protocol_version"] == 1
+    assert job["history_acquisition_id"] == request.key
+    assert await queue.claim() is None
+    assert await callback(SELLER) is False
+    assert await queue.collection.count_documents({"seller_id": SELLER}) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("enabled,expected_lanes", [(False, 3), (True, 4)])
+async def test_recovery_supervisor_gates_order_history_worker(
+    cutoff_db: AsyncIOMotorDatabase[dict[str, Any]],
+    monkeypatch: pytest.MonkeyPatch,
+    enabled: bool,
+    expected_lanes: int,
+) -> None:
+    monkeypatch.setenv("ZELERDATA_FORMULA_RECOVERY_SELLERS", SELLER)
+    monkeypatch.setenv("ZELERDATA_ORDER_HISTORY_PROTOCOL_ENABLED", "true" if enabled else "false")
+    monkeypatch.setattr("zeler_sheets.consumer.make_meli_gateway_client", lambda **kwargs: object())
+
+    supervisor = await build_formula_recovery_poller(
+        db=cutoff_db, kms_client=object(), detail_gateway=object()
+    )
+
+    assert len(supervisor.lanes) == expected_lanes
+    if enabled:
+        history = supervisor.lanes[-1]._processor
+        assert isinstance(history, HistoryOrdersWorker)
+        assert history.queue.allowed_sellers == frozenset({SELLER})
+        legacy = supervisor.lanes[0]._processor
+        assert history.producer.worker.gateway._pacer is legacy.gateway._pacer
+
+
+@pytest.mark.asyncio
+async def test_refresh_supervisor_admits_order_protocol_when_enabled(
+    cutoff_db: AsyncIOMotorDatabase[dict[str, Any]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    for name in (
+        "ZELERDATA_DEVOLUCIONES_ADVANCE_ENABLED",
+        "ZELERDATA_PRECALCULATED_FORMULAS_ENABLED",
+        "ZELERDATA_DLQ_ARCHIVE_ENABLED",
+        "ZELERDATA_FRESHNESS_ALERTS_ENABLED",
+    ):
+        monkeypatch.setenv(name, "false")
+    monkeypatch.setenv("ZELERDATA_REFRESH_ENABLED", "true")
+    monkeypatch.setenv("ZELERDATA_FORMULA_RECOVERY_ENABLED", "true")
+    monkeypatch.setenv("ZELERDATA_REFRESH_SELLERS", SELLER)
+    monkeypatch.setenv("ZELERDATA_ORDER_HISTORY_PROTOCOL_ENABLED", "true")
+
+    supervisor = await build_zelerdata_refresh_supervisor(db=cutoff_db)
+    callback = supervisor._history_backfill
+    assert callback is not None and await callback(SELLER)
+    job = await cutoff_db.sheets_formula_recovery_jobs.find_one({"history_protocol_version": 1})
+    assert job is not None and job["read_model"] == "orders"
+
+
+@pytest.mark.asyncio
+async def test_order_protocol_waits_for_active_legacy_interval(
+    cutoff_db: AsyncIOMotorDatabase[dict[str, Any]],
+) -> None:
+    cutoff = datetime(2026, 9, 15, 12, 34, 56, tzinfo=UTC)
+    await cutoff_db[PLAN_COLLECTION].insert_one(
+        {"_id": SELLER, "seller_id": SELLER, "cutoff": cutoff, "schema_version": 1}
+    )
+    recent = HistoryPlanner(cutoff=cutoff, months=12).plan_for("orders").chunks[-1]
+    legacy_request = chunk_to_recovery_request(recent, seller_id=SELLER)
+    queue = FormulaRecoveryQueue(cutoff_db, max_active_jobs_per_seller=2)
+    await queue.enqueue(legacy_request)
+    callback = build_pilot_history_backfill(db=cutoff_db, recovery_queue=queue, order_history=True)
+
+    assert await callback(SELLER)
+    assert await queue.collection.count_documents({"history_protocol_version": 1}) == 0
+    plan = await cutoff_db[PLAN_COLLECTION].find_one({"_id": SELLER})
+    assert plan is not None
+    recent_progress = next(
+        entry for entry in plan["progress"]["orders"]["chunks"] if entry["chunk_id"] == recent.id
+    )
+    assert recent_progress["state"] == "blocked"
+    assert recent_progress["reason"] == "legacy_order_job_active"
+
+    claimed = await queue.claim()
+    assert claimed is not None and claimed["_id"] == legacy_request.key
+    assert await queue.finish(claimed, succeeded=True)
+    assert await callback(SELLER)
+    protocol = await queue.collection.find_one({"history_protocol_version": 1})
+    assert protocol is not None and protocol["date_from"] == recent.start
+
+
+@pytest.mark.asyncio
+async def test_pilot_callback_to_history_worker_completes_verified_empty_month(
+    cutoff_db: AsyncIOMotorDatabase[dict[str, Any]],
+) -> None:
+    queue = FormulaRecoveryQueue(
+        cutoff_db, allowed_sellers=frozenset({SELLER}), max_active_jobs_per_seller=1
+    )
+    await queue.ensure_indexes()
+    callback = build_pilot_history_backfill(db=cutoff_db, recovery_queue=queue, order_history=True)
+    assert await callback(SELLER)
+    job = await queue.collection.find_one({"history_protocol_version": 1})
+    assert job is not None
+
+    class EmptyOrdersGateway:
+        async def fetch_resource(self, *, seller_id: str, path: str) -> dict[str, Any]:
+            assert seller_id == SELLER and path.startswith("/orders/search?")
+            return {"paging": {"total": 0}, "results": []}
+
+    worker = HistoryOrdersWorker(
+        FormulaRecoveryWorker(
+            db=cutoff_db,
+            queue=FormulaRecoveryQueue(
+                cutoff_db,
+                enabled_models=frozenset({"orders"}),
+                allowed_sellers=frozenset({SELLER}),
+            ),
+            gateway=EmptyOrdersGateway(),
+            detail_gateway=EmptyOrdersGateway(),
+        )
+    )
+    for _ in range(5):
+        assert await worker.process_one()
+
+    completed = await queue.collection.find_one({"_id": job["_id"]})
+    assert completed is not None and completed["state"] == "completed"
+    marker = await cutoff_db.sheets_read_model_freshness.find_one({"_id": f"{SELLER}:orders"})
+    assert read_model_reconciliation_marker_covers(
+        marker, date_from=job["date_from"], date_to=job["date_to"], now=job["date_to"]
+    )
 
 
 class ConcurrentPlanReads:

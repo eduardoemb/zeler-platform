@@ -1,5 +1,41 @@
 # Apply Progress: ZelerData Pilot Reliable Sync
 
+## Scoped continuation: opt-in order history admission and runtime composition (2026-09-23)
+
+`ZELERDATA_ORDER_HISTORY_PROTOCOL_ENABLED` now selects a plan-bound order
+request in the existing refresh callback and adds an orders-only history poller
+to the worker's recovery supervisor. The poller shares the exact same pacer,
+range lane and seller allowlist as existing recovery. The flag defaults off.
+Active legacy order jobs for the same monthly interval defer new-protocol
+admission and are reported as `legacy_order_job_active`; terminal legacy jobs
+can be followed by the new protocol without rewriting old jobs.
+
+Strict TDD: opt-in callback admission and worker composition first failed
+(missing callback argument and three versus four lanes). A separate real-Mongo
+case then reproduced simultaneous legacy/new monthly admission before the
+defer guard. A real-Mongo callback-to-history-worker test completes an empty
+month with an actual queue, acquisition head and reconciled marker; gateway
+responses are controlled doubles. The final affected regression passed 125 tests.
+The root suite passed 5,402 tests with nine skips (eight protected-rs0 cases
+passed separately and one Caddy case lacks keys). Root Ruff check, Ruff format
+check and mypy passed; the direct-Meli lint passed as well.
+No production validator, flag, image or service has been changed. Only orders
+use this new protocol; questions, shipments and items remain open.
+Read-only VM/container inspection found the running worker pinned to digest
+`sha256:081ef4b92474452b228309c9b8a28cc8f0633fb9952c395144728ba8b8f361a9`
+(provenance source `8fdf20c63c38d456a80fff8613b5bdb5c213d6d4`), both Sheets
+containers healthy with zero restarts/OOM, root ~36 GiB available, Mongo on
+its separate mount and ~419 MiB available memory at the observation. All three
+history collections/validators/indexes and the pilot plan are absent; active
+legacy/protocol orders jobs count zero. These are dated rollout leads, not proof
+of ongoing health. The targeted digest dry-run capacity check passed but did
+not attest provenance or authorize a pull. The local broker and protected-rs0
+checks passed eight cases each in their isolated harnesses.
+
+Rollback boundary: remove the flag-gated history poller and callback selection
+and the matching tests/docs. Keep persisted receipts, projected orders and
+protocol jobs; older workers intentionally do not claim protocol jobs.
+
 ## Scoped continuation: order publication handoff and final proof (2026-09-23)
 
 The opt-in `HistoryOrdersWorker` now carries a verified order acquisition through
