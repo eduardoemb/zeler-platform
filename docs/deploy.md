@@ -183,7 +183,19 @@ This callback bound does not prove fairness across multiple concurrent callers.
 An active legacy job for the same monthly interval defers new-protocol admission.
 Older workers ignore protocol-versioned jobs; preserve those jobs and receipts
 on rollback and do not claim completed history from an image change alone.
-This switch does not activate unfinished questions, shipments or items history.
+This switch does not activate questions, shipments or items history.
+
+Shared **questions** history has its own worker-side flag,
+`ZELERDATA_QUESTION_HISTORY_PROTOCOL_ENABLED=true`. With the same verified
+history acquisition/receipt validators and indexes, it admits one fixed-cutoff
+seller scan for all twelve monthly question intervals. Wait for active legacy
+monthly question jobs to finish before admission. The questions-only poller
+shares the paced gateway clients and seller allowlist. Verify two scan passes,
+bounded detail receipts, canonical questions, a completed queue job and a
+reconciled interval marker before treating its coverage as live. An empty or
+failed scan is not historical coverage; retain a compatible worker rollback
+that understands protocol-versioned jobs and receipts. This flag does not
+activate shipments or items history.
 
 **Important**: Always use Cloud Build. Never `docker build` locally on Mac.
 

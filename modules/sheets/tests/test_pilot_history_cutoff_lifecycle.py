@@ -19,9 +19,11 @@ from zeler_sheets.formulas.recovery import (
     FormulaRecoveryQueue,
     ItemInventoryRecoveryRequest,
     OrderHistoryRecoveryRequest,
+    QuestionScanRecoveryRequest,
     RecoveryRequest,
 )
 from zeler_sheets.formulas.recovery_worker import FormulaRecoveryWorker
+from zeler_sheets.history_question_worker import HistoryQuestionsWorker
 from zeler_sheets.history_worker import HistoryOrdersWorker
 from zeler_sheets.pilot_history import HistoryPlanner
 from zeler_sheets.pilot_history_backfill import PLAN_COLLECTION, build_pilot_history_backfill
@@ -172,6 +174,90 @@ async def test_recovery_supervisor_gates_order_history_worker(
         assert history.queue.allowed_sellers == frozenset({SELLER})
         legacy = supervisor.lanes[0]._processor
         assert history.producer.worker.gateway._pacer is legacy.gateway._pacer
+
+
+@pytest.mark.asyncio
+async def test_recovery_supervisor_gates_shared_question_history_worker(
+    cutoff_db: AsyncIOMotorDatabase[dict[str, Any]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("ZELERDATA_FORMULA_RECOVERY_SELLERS", SELLER)
+    monkeypatch.setenv("ZELERDATA_ORDER_HISTORY_PROTOCOL_ENABLED", "false")
+    monkeypatch.setenv("ZELERDATA_QUESTION_HISTORY_PROTOCOL_ENABLED", "true")
+    monkeypatch.setattr("zeler_sheets.consumer.make_meli_gateway_client", lambda **kwargs: object())
+    supervisor = await build_formula_recovery_poller(
+        db=cutoff_db, kms_client=object(), detail_gateway=object()
+    )
+    assert len(supervisor.lanes) == 4
+    history = supervisor.lanes[-1]._processor
+    assert isinstance(history, HistoryQuestionsWorker)
+    assert history.queue.allowed_sellers == frozenset({SELLER})
+    legacy = supervisor.lanes[0]._processor
+    assert history.worker.gateway._pacer is legacy.gateway._pacer
+
+
+@pytest.mark.asyncio
+async def test_shared_question_plan_admits_one_job_for_twelve_months(
+    cutoff_db: AsyncIOMotorDatabase[dict[str, Any]],
+) -> None:
+    queue = FormulaRecoveryQueue(
+        cutoff_db, allowed_sellers=frozenset({SELLER}), max_active_jobs_per_seller=20
+    )
+    await queue.ensure_indexes()
+    callback = build_pilot_history_backfill(
+        db=cutoff_db, recovery_queue=queue, question_history=True
+    )
+    assert await callback(SELLER)
+    plan = await cutoff_db[PLAN_COLLECTION].find_one({"_id": SELLER})
+    assert plan is not None
+    cutoff = plan["cutoff"].astimezone(UTC)
+    first_month = HistoryPlanner(cutoff=cutoff, months=12).plan_for("questions").chunks[0]
+    expected = QuestionScanRecoveryRequest(
+        SELLER,
+        f"pilot-12m:{cutoff.isoformat(timespec='milliseconds')}",
+        first_month.start,
+        cutoff,
+    )
+    jobs = await queue.collection.find({"read_model": "questions"}).to_list(length=20)
+    assert len(jobs) == 1 and jobs[0]["_id"] == expected.key
+    assert jobs[0]["history_protocol_version"] == 1
+    entries = plan["progress"]["questions"]["chunks"]
+    assert len(entries) == 12
+    assert {entry["request_key"] for entry in entries} == {expected.key}
+
+
+@pytest.mark.asyncio
+async def test_shared_question_scan_waits_for_active_legacy_monthly_job(
+    cutoff_db: AsyncIOMotorDatabase[dict[str, Any]],
+) -> None:
+    cutoff = datetime(2026, 9, 15, 12, tzinfo=UTC)
+    await cutoff_db[PLAN_COLLECTION].insert_one(
+        {"_id": SELLER, "seller_id": SELLER, "cutoff": cutoff, "schema_version": 1}
+    )
+    queue = FormulaRecoveryQueue(
+        cutoff_db, allowed_sellers=frozenset({SELLER}), max_active_jobs_per_seller=20
+    )
+    await queue.ensure_indexes()
+    recent = HistoryPlanner(cutoff=cutoff, months=12).plan_for("questions").chunks[-1]
+    legacy = chunk_to_recovery_request(recent, seller_id=SELLER)
+    await queue.enqueue(legacy)
+    callback = build_pilot_history_backfill(
+        db=cutoff_db, recovery_queue=queue, question_history=True
+    )
+    await callback(SELLER)
+    assert (
+        await queue.collection.count_documents(
+            {"read_model": "questions", "history_protocol_version": 1}
+        )
+        == 0
+    )
+    await queue.collection.update_one({"_id": legacy.key}, {"$set": {"state": "completed"}})
+    await callback(SELLER)
+    assert (
+        await queue.collection.count_documents(
+            {"read_model": "questions", "history_protocol_version": 1}
+        )
+        == 1
+    )
 
 
 @pytest.mark.asyncio

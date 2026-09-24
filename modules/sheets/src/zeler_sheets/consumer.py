@@ -94,6 +94,7 @@ from zeler_sheets.google_errors import (
     SellerTokenRevokedError,
 )
 from zeler_sheets.google_sheets_client import make_sheets_client
+from zeler_sheets.history_question_worker import HistoryQuestionsWorker
 from zeler_sheets.history_worker import HistoryOrdersWorker
 from zeler_sheets.observed_read_model_markers import (
     OBSERVED_READ_MODEL_SOURCES,
@@ -1499,6 +1500,24 @@ async def build_formula_recovery_poller(
             )
         )
         lanes += (SyncJobsPollerSupervisor(history),)
+    if _env_flag_enabled("ZELERDATA_QUESTION_HISTORY_PROTOCOL_ENABLED"):
+        question_queue = FormulaRecoveryQueue(
+            db,
+            enabled_models=frozenset({"questions"}),
+            reserved_inventory_slots=1,
+            allowed_sellers=allowed_sellers,
+        )
+        await question_queue.ensure_indexes()
+        questions = HistoryQuestionsWorker(
+            FormulaRecoveryWorker(
+                db=db,
+                queue=question_queue,
+                lane="ranges",
+                gateway=PacedMeliGateway(inner=discovery, pacer=pacer, lane="ranges"),
+                detail_gateway=PacedMeliGateway(inner=detail_gateway, pacer=pacer, lane="ranges"),
+            )
+        )
+        lanes += (SyncJobsPollerSupervisor(questions),)
     return FormulaRecoverySupervisor(lanes)
 
 
@@ -1569,6 +1588,7 @@ async def build_zelerdata_refresh_supervisor(*, db: Any) -> ZelerDataRefreshSupe
             db=db,
             recovery_queue=queue,
             order_history=_env_flag_enabled("ZELERDATA_ORDER_HISTORY_PROTOCOL_ENABLED"),
+            question_history=_env_flag_enabled("ZELERDATA_QUESTION_HISTORY_PROTOCOL_ENABLED"),
         ),
         # Observed-only read models cannot be certified by a source range, so
         # the same cycle renews their heartbeat from the data already observed.

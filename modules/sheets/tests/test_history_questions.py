@@ -22,10 +22,12 @@ from zeler_sheets.formulas.recovery import (
     RecoveryCapacityError,
     RecoveryRequest,
 )
+from zeler_sheets.formulas.recovery_worker import FormulaRecoveryWorker
 from zeler_sheets.formulas.refresh import reconciled_marker
 from zeler_sheets.history_acquisition import HistoryAcquisitionStore
 from zeler_sheets.history_continuation import HistoryContinuation
 from zeler_sheets.history_question_publication import HistoryQuestionPublisher
+from zeler_sheets.history_question_worker import HistoryQuestionsWorker
 from zeler_sheets.history_questions import (
     QuestionDetailObservation,
     QuestionScanPage,
@@ -664,6 +666,52 @@ async def test_newer_question_event_survives_late_history_batch(
     assert current["answer"]["text"] == "Later answer"
     completed = await publisher.finalize(await claim(queue), head)
     assert completed.phase == "completed"
+
+
+@pytest.mark.asyncio
+async def test_question_history_worker_completes_shared_scan_and_publication(
+    queue: FormulaRecoveryQueue,
+) -> None:
+    history_queue = FormulaRecoveryQueue(
+        queue.collection.database,
+        now=lambda: NOW,
+        enabled_models=frozenset({"questions"}),
+    )
+    row = question(
+        1,
+        date_created=(NOW - timedelta(days=1)).isoformat(),
+        item_id="MLA1",
+        from_user_id="101",
+        text="Question 1",
+    )
+
+    class Gateway:
+        def __init__(self) -> None:
+            self.searches = 0
+            self.details = 0
+
+        async def fetch_resource(self, *, seller_id: str, path: str) -> dict[str, Any]:
+            assert seller_id == "82453304"
+            if path.startswith("/questions/search?"):
+                self.searches += 1
+                return {"total": 1, "questions": [row], "scroll_id": "unused"}
+            assert path == "/questions/1?api_version=4"
+            self.details += 1
+            return row
+
+    gateway = Gateway()
+    await history_queue.enqueue(request())
+    worker = HistoryQuestionsWorker(
+        FormulaRecoveryWorker(
+            db=history_queue.collection.database, queue=history_queue, gateway=gateway
+        )
+    )
+    for _ in range(7):
+        assert await worker.process_one()
+    assert not await worker.process_one()
+    assert gateway.searches == 2 and gateway.details == 1
+    assert (await history_queue.collection.find_one({"_id": request().key}))["state"] == "completed"
+    assert await history_queue.collection.database.questions.count_documents({}) == 1
 
 
 @pytest.mark.asyncio

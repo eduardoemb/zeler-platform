@@ -18,7 +18,11 @@ from typing import Any
 import structlog
 from pymongo import ReturnDocument
 
-from zeler_sheets.formulas.recovery import OrderHistoryRecoveryRequest, RecoveryCapacityError
+from zeler_sheets.formulas.recovery import (
+    OrderHistoryRecoveryRequest,
+    QuestionScanRecoveryRequest,
+    RecoveryCapacityError,
+)
 from zeler_sheets.pilot_history import ChunkPriority, HistoryPlanner
 from zeler_sheets.pilot_history_recovery_bridge import chunk_to_recovery_request
 
@@ -31,7 +35,11 @@ PILOT_HISTORY_ACTIVE_JOBS = 4
 
 
 def build_pilot_history_backfill(
-    *, db: Any, recovery_queue: Any, order_history: bool = False
+    *,
+    db: Any,
+    recovery_queue: Any,
+    order_history: bool = False,
+    question_history: bool = False,
 ) -> Any:
     """Return an async callable(seller_id) -> bool for the refresh supervisor."""
 
@@ -62,6 +70,10 @@ def build_pilot_history_backfill(
         cutoff = stored_cutoff.astimezone(UTC)
         planner = HistoryPlanner(cutoff=cutoff, months=12)
         order_plan_id = f"pilot-12m:{cutoff.isoformat(timespec='milliseconds')}"
+        question_plan = planner.plan_for("questions")
+        question_scan = QuestionScanRecoveryRequest(
+            seller_id, order_plan_id, question_plan.chunks[0].start, cutoff
+        )
 
         resources = ("orders", "questions", "shipments", "items")
         priorities = {
@@ -77,12 +89,14 @@ def build_pilot_history_backfill(
             chunk.id: (
                 OrderHistoryRecoveryRequest(seller_id, order_plan_id, chunk.start, chunk.end)
                 if order_history and chunk.resource == "orders"
+                else question_scan
+                if question_history and chunk.resource == "questions"
                 else chunk_to_recovery_request(chunk, seller_id=seller_id)
             )
             for chunk in chunks
             if chunk.resource in {"orders", "questions"}
         }
-        history_budget = len(requests)
+        history_budget = len({request.key for request in requests.values()})
         active_history = 0
         if type(recovery_queue.max_active_jobs_per_seller) is int and (
             recovery_queue.max_active_jobs_per_seller > PILOT_HISTORY_ACTIVE_JOBS
@@ -95,6 +109,12 @@ def build_pilot_history_backfill(
                     chunk_to_recovery_request(chunk, seller_id=seller_id).key
                     for chunk in chunks
                     if chunk.resource == "orders"
+                )
+            if question_history:
+                history_keys.update(
+                    chunk_to_recovery_request(chunk, seller_id=seller_id).key
+                    for chunk in chunks
+                    if chunk.resource == "questions"
                 )
             active_history = await recovery_queue.collection.count_documents(
                 {
@@ -115,6 +135,20 @@ def build_pilot_history_backfill(
         capacity_reached = active_history >= history_budget
         accepted = False
         legacy_active: set[str] = set()
+        if question_history:
+            legacy_question_keys = [
+                chunk_to_recovery_request(chunk, seller_id=seller_id).key
+                for chunk in question_plan.chunks
+            ]
+            if await recovery_queue.collection.count_documents(
+                {
+                    "_id": {"$in": legacy_question_keys},
+                    "seller_id": seller_id,
+                    "state": {"$in": ["pending", "running"]},
+                },
+                limit=1,
+            ):
+                legacy_active.update(chunk.id for chunk in question_plan.chunks)
         for chunk in chunks:
             request = requests.get(chunk.id)
             if request is None or capacity_reached:
@@ -123,6 +157,8 @@ def build_pilot_history_backfill(
                 {"_id": request.key, "seller_id": seller_id}, {"state": 1}
             )
             if job is not None:
+                continue
+            if chunk.id in legacy_active:
                 continue
             if order_history and chunk.resource == "orders":
                 legacy_key = chunk_to_recovery_request(chunk, seller_id=seller_id).key

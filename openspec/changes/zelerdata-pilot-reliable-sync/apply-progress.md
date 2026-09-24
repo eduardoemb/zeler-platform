@@ -116,6 +116,14 @@ with the preceding completed October–November interval. The recent 90-order
 interval remained completed. There was no active protocol order job at that
 instant; the remaining plan intervals and twelve-month proof remain open.
 
+At 2026-09-24 08:20 UTC, another approved-container readback found the fourth
+interval `[2025-12-24T05:36:28Z, 2026-01-24T05:36:28Z)` completed with source
+total, discovered, fetched, published and persisted orders all at 657. Its
+final-pass membership receipts, detail receipts and queue completion matched.
+The reconciled marker retained the three adjacent older completed months and
+the recent 90-order month as separate intervals, valid at that readback. Four
+months completed is still not twelve-month coverage.
+
 Read-only Google Sheets connector inspection identified the private
 `Pruebas ZelerData actual` workbook, tab `Goal_Pruebas_20260909`, with all 52
 existing formula anchors intact. A later bounded reread found six anchor
@@ -1557,6 +1565,48 @@ Task 3.2j remains open: this adapter is not yet consumed by a production
 question-history worker, and neither canonical question writes nor monthly
 coverage proof/publication are implemented. A verified new Sheets worker image
 will be needed before activating that future runtime path.
+
+### Local question publication and flag-gated worker (3.2j partial, 2026-09-24)
+
+Strict RED tests first failed on missing publication handoff, publisher and
+worker interfaces. The handoff now requires every verified member to have a
+matching detail receipt and advances the fenced queue/head together. Bounded
+publication writes canonical questions through the existing monotonic event
+writer, withdraws only the affected prior proof when work starts, and preserves
+a newer answer. Finalization checks exact canonical inventory against the
+verified membership and atomically writes a reconciled interval marker with
+queue completion. A real-Mongo test rejects an extra question rather than
+certifying an incomplete manifest.
+
+`HistoryQuestionsWorker` claims only history-protocol question jobs. It resumes
+the shared scan across discovery, second-pass verification, detail acquisition,
+publication and finalization; transient quota, HTTP and storage failures retain
+the queue's bounded retry behavior. The refresh backfill maps all twelve
+monthly question entries to one fixed-cutoff `QuestionScanRecoveryRequest`,
+waits for active legacy monthly question jobs, and a separate
+`ZELERDATA_QUESTION_HISTORY_PROTOCOL_ENABLED` flag wires the worker to the
+shared paced gateway budget. The flag is off unless explicitly enabled.
+
+Focused real-Mongo tests covered end-to-end worker completion with two scans
+and one detail, single admission for twelve months, the legacy-job gate,
+partial proof withdrawal, newer-event survival and extra-inventory rejection.
+The pilot production questions have not yet been ingested by this protocol;
+there is no observed production question proof or native Sheets acceptance.
+The current staging rejects a seller scan that includes members outside the
+fixed twelve-month window, so the pilot observation that all 231 visible
+questions fall inside the window does not establish a general retention rule.
+The next rollout requires a verified Sheets worker image from an exact `main`
+commit, flag activation, and runtime receipt/projection/marker readback.
+Final local gates for this unit: the full root pytest run exited 0 against an
+explicitly named disposable loopback Mongo database with nine documented skips;
+the eight protected rs0 tests passed separately. Root Ruff check and format
+check passed, root mypy reported no issues in 609 files, direct-Meli lint
+exited 0, and `git diff --check` was clean. No schema/model export changed.
+A read-only approved-container preflight at 08:22 UTC found two active legacy
+monthly question jobs, so the shared scan would currently defer admission.
+It found 230 canonical questions inside the fixed plan interval; the earlier
+bounded provider scan observed 231 inside the same twelve-month period. These
+counts are discovery leads, not a proof that the new worker has ingested them.
 
 ### Actual orders staging worker (3.3 partial)
 
