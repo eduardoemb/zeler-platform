@@ -8749,3 +8749,67 @@ return `DATA_UNAVAILABLE` when it is absent; no executable change is needed for
 this decision. It does not waive recoverable source gaps in
 `ZELERDATA_DEVOLUCIONES`, the current-data obligation for catalog formulas, or
 authenticated Sheet acceptance. No runtime mutation was made for this note.
+
+## Four-hour catalog cache release and native formula pass (2026-09-24)
+
+The user explicitly authorized the four-hour catalog-product cache policy and
+the required Cloud Builds. Commit `e8294d10f0028b650fdb060fc6bb321921c9f8be`
+passed the full local pytest suite against the verified loopback test Mongo
+(nine expected skips), Ruff check/format and full mypy. One VERIFIED connected-
+repository Cloud Build per image produced Sheets worker build
+`fb7e87a8-6e3e-482b-9eac-1c7efc6f1a4b` at
+`sheets-worker@sha256:8ca3f4308f0c690059a770170250058104ba5b0668faec611541a43dc0cfd487`
+and Sheets API build `cda9de71-adef-451d-bd1a-5302a7abb6ec` at
+`sheets-api@sha256:99e20506138c059c43722857105a448ce4143379b2d340ac0c4518be8e7ac364`.
+Both image subjects, builds, connected repository and source commit passed the
+local provenance verifier.
+
+On `platform-vm`, the worker was replaced first, then the API; no Docker cleanup,
+schema change or feature-flag activation occurred. Preflight passed before and
+after each pull. The previous running immutable digests were
+`sheets-worker@sha256:4707f4fdccbac1e53c20bc76a7787290f4354752fdcca53828fd1070d9c9d3d0`
+and `sheets-api@sha256:49641ed22c598744299d80327325912b49aa15f98c5797328243fbfb55bc90b5`.
+The exact Compose backups are
+`/opt/zeler-platform/docker-compose.yml.pre-sheets-worker-e8294d1-20260924T145403Z`
+and `/opt/zeler-platform/docker-compose.yml.pre-sheets-api-e8294d1-20260924T145553Z`.
+Rollback remains service-scoped to these recorded running digests, with the
+modification-scan flag kept off and stored data preserved. After the settling
+checks, both containers had their intended digests, `healthy`, zero restarts and
+no OOM. Worker component and API dependency health endpoints returned HTTP 200
+and ready. A later capacity read found ~34 GiB free on `/`, ~45 GiB on the
+separate Mongo mount and ~690 MB available memory; root preflight still passed.
+
+A read-only dispatcher-equivalent call inside the approved API container showed
+the new catalog reader using verified cached product snapshots: 850/852
+available products across two successive formula invocations, of which 670/672
+were labeled cached with acquisition timestamps; 25 product rows remained
+unavailable in each observation. These successive cuts differ because acquisition
+continues concurrently. They do not establish whole-inventory completeness.
+
+The previously authorized private `Goal_Pruebas_20260909` tab was recalculated
+in bounded groups. All 52 original anchors retained their formula names and
+arguments; only inert trailing account whitespace changed to trigger native
+re-evaluation. A final anchor read found **38 values, four `NA`, ten
+`DATA_UNAVAILABLE`, zero `SERVICE_UNAVAILABLE`, and zero cell errors**. The
+four source-absent historical formulas account for four of the unavailable
+anchors. The other six are `ZELERDATA_DEVOLUCIONES`,
+`ZELERDATA_PRODUCTOSINVENTA`, `ZELERDATA_VENTAPORDIAS`,
+`ZELERDATA_VENTASYSTOCK`, `ZELERDATA_COSTOENVIOVENDEDOR`, and
+`ZELERDATA_ENVIOSMERCADOENVIOS`. The four catalog formulas returned tables in
+the real Sheet; `ZELERDATA_CATALOGO` and `ZELERDATA_CATALOGOBUYBOX` each spilled
+939 rows, with explicit partial `DATA_UNAVAILABLE` cells and no service error.
+The production formula-audit collection recorded an allowed call without an
+error code for each of the 52 distinct formulas during this pass. Audit
+authorization plus anchor readback is stronger than an HTTP 200 alone, but this
+still does not certify every row's business correctness or the required longer
+stability window.
+
+The five non-returns unavailable anchors report orders freshness/reconciliation.
+At a read-only runtime inspection the orders marker retained a completed
+2026-06-13 through 2026-09-24 interval, but its newest live-edge observation
+ended over 30 minutes before the formula pass. The recovery queue occupied all
+20 pilot slots: a month-long legacy orders job was running, while a recent
+orders refresh waited. This is a current freshness/capacity gap, not missing
+historical source. `ZELERDATA_DEVOLUCIONES` remains separately blocked by the
+upstream claim-detail 403 described above. The modification scan flag remains
+off until queue headroom and a bounded activation check are available.

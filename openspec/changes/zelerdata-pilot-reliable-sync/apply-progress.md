@@ -2149,3 +2149,11 @@ The focused handler suite and HTTP catalog-recovery cases then passed. Full
 `uv run pytest` against the verified loopback test Mongo exited 0 with nine
 expected skips; Ruff check/format and full mypy passed. This is local evidence,
 not deployed formula or native Google Sheets acceptance.
+
+The two final `e8294d10f0028b650fdb060fc6bb321921c9f8be` Sheets images were
+built with VERIFIED provenance and deployed worker-first on 2026-09-24; the
+running digests, rollback bindings, capacity, ready/healthy states, native
+52-anchor counts, and remaining source/capacity gaps are recorded in
+`docs/zelerdata-goal-progress.md`. This closes the image activation part of
+4.2a, while 4.1/5.1 and the longer stability acceptance remain open. The
+modification scan is present in the image but not activated.
