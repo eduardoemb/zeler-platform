@@ -61,23 +61,24 @@ additions only; no activation.
 
 - [ ] 3.3 Orders worker resume/deduplication/interruption, producer-to-publisher handoff and final coverage verified with actual Mongo and gateway doubles. The pilot orders-only protocol has completed a recent 90-order interval and two older intervals of 945 and 1,092 orders with matching receipts, projections, queue states and valid reconciled marker intervals. The first older interval had zero persisted orders before publication, so it adds new history. Other intervals, other resources and twelve-month coverage remain pending.
 - [ ] 3.4 Modification-page admission verified with exact [watermark−24h,cutoff) bounds, durable ID/version/hash deduplication and seller failure isolation. The bounded HTTP page adapter uses the documented modification filters and validates pagination, seller and timestamp scope; live read-only probes observed 110 changes over 31 days, including old orders and two stable pages. Local real-Mongo tests now cover durable two-pass traversal, crash/replay, page drift, job-completion-gated watermark and seller isolation; an opt-in worker is wired with the shared pacer. Production activation and an old-order projection/formula acceptance remain pending; creation-tail rereads are not this proof.
-- [ ] 3.5 Local authorized-run advancement guard and bounded failure isolation verified with real Mongo/source-readback fixtures. On 2026-09-24 the pilot had one completed June 1–11 run, seven failed/expired runs and no eligible run; a read-only June 11–21 dry-run found 9 expected source records, 5 persisted and 4 missing. Later bounded windows found additional missing claims, while July 31–August 10 reproducibly hit an upstream claim-detail 403 despite valid module scopes. Resolve that claim's access/disposition before an enclosing authorized write and formula acceptance; this is not absent-source `DATA_UNAVAILABLE`.
+- [ ] 3.5 Local authorized-run advancement guard and bounded failure isolation verified with real Mongo/source-readback fixtures. On 2026-09-24 the pilot had one completed June 1–11 run, seven failed/expired runs and no eligible run; a read-only June 11–21 dry-run found 9 expected source records, 5 persisted and 4 missing. Later bounded windows found additional missing claims. In July 31–August 10, five of six claim details succeeded through the same runtime gateway identity while one reproducibly returned upstream 403, so the denial is claim-specific. Resolve that claim's access/disposition before an enclosing authorized write and formula acceptance; this is not absent-source `DATA_UNAVAILABLE`.
 
 ## Phase 4: Formulas
 
-- [ ] 4.1 Execute 52 positive/absent/filter/range cases. Local dispatcher execution recorded for all 52 in `formula-local-execution.md`; variant acceptance and actual Sheets evidence remain pending. Per the 2026-09-24 pilot decision, an honest `DATA_UNAVAILABLE` is acceptable only where required historical source is genuinely absent; four formulas currently meet that condition.
+- [ ] 4.1 Execute 52 positive/absent/filter/range cases. Local dispatcher execution is recorded for all 52 in `formula-local-execution.md`. A real pilot Sheet recalculation reached 42 value, five `NA` and five `DATA_UNAVAILABLE` anchors with no service/processing/sheet errors; four unavailable historical sources are accepted, while `DEVOLUCIONES` remains blocked by a claim-detail 403. Positive/absent/filter/range variants and sustained behavior remain pending.
 - [x] 4.2 Repair readers/projections preserving independent valid fields.
 - [x] 4.2a Apply the authorized four-hour catalog-product cache boundary to
   `ZELERDATA_OBTENER_CATALOGO` and `ZELERDATA_CATALOGO_COMPLETO`, retaining
   acquisition timestamps, explicit cached metadata, the existing 15-minute
   404-disposition check, and recovery beyond four hours. Focused reader and
-  HTTP recovery tests cover both sides of the boundary; live Sheet acceptance
-  remains under 4.1/5.1.
-- [ ] 4.3 Run 52 simultaneously plus 35 regressions; distinguish local/Sheets evidence. Local cold-source batch of all 52 real handlers and 35 returns/history regressions passed; populated pilot/Sheets concurrency remains pending.
+  HTTP recovery tests cover both sides of the boundary; both formulas produced
+  native tables on the pilot Sheet. Partial rows and longer stability remain
+  under 4.1/5.1.
+- [ ] 4.3 Run 52 simultaneously plus 35 regressions; distinguish local/Sheets evidence. Local cold-source batch of all 52 real handlers and 35 returns/history regressions passed. A native recalc burst caused transient deadline results and required bounded individual retries; populated pilot/Sheets concurrency remains pending.
 
 ## Phase 5: Sheets
 
-- [ ] 5.1 Execute bounded Apps Script recalculation without text changes. Manual bounded multi-tab refresh and executable local harness pass; real Google Sheets recalculation/visibility remains pending.
+- [ ] 5.1 Execute bounded Apps Script recalculation without text changes. Manual bounded multi-tab refresh and executable local harness pass. Real Google Sheets recalculation/visibility was verified for all 52 anchors by changing only inert account whitespace; unchanged-text automatic recalculation and broader acceptance remain pending.
 - [ ] 5.2 Verify authorized progress API/UI and nonduplicative retry. Local authorized progress snapshots, queue retry coalescence, Apps Script pending rendering, active `/sheets/sync-jobs` retry reuse—including unique-index collision handling—and the seller-scoped sync-job status read are verified; zeler-app UI and live Sheets evidence remain pending.
 - [ ] 5.3 Prove automatic open/reopen refresh.
   Research and the separately authorized disposable-sheet experiment are in
@@ -86,8 +87,8 @@ additions only; no activation.
 
 ## Phase 6: Acceptance
 
-- [ ] 6.1 Rerun final gates after remaining corrections; latest local full pytest suite exited successfully with nine skips, Ruff/format/mypy passed across 607 source files, and direct-Meli lint passed. Eight protected-rs0 cases passed separately in their isolated harness; the full-suite invocation itself skipped them. Prior schema export check remains valid because this adapter changes no model/schema. Runtime/Sheets acceptance remains open.
+- [ ] 6.1 Rerun final gates after remaining corrections; the latest local full pytest suite exited successfully with nine skips, Ruff/format/mypy passed across 613 source files. Prior direct-Meli lint, eight protected-rs0 cases in their isolated harness and schema export check remain valid for this queue-only change. Final runtime/Sheets acceptance remains open.
 - [ ] 6.2 Prove actual-worker recovery/duplicates/interruption.
-- [ ] 6.3 Backend Sheets worker/API images from `c51e88e` and the pilot orders flag are deployed with verified digests and healthy dependency/component checks. Complete add-on proposal/publication and final acceptance authorization/evidence separately.
+- [ ] 6.3 Backend Sheets API image from `e8294d1` and worker image from `ac3e8ec` are deployed with verified digests and healthy dependency/component checks; the orders history flag is on, and the modification scan is off. Complete add-on proposal/publication and final acceptance authorization/evidence separately.
 - [ ] 6.4 Warm-up, 90-minute observation, rounds 0/30/60. The backend runtime passed post-flag ~30, ~60 and ~90-minute health/capacity observations. These are not the required native 35-case Google Sheets rounds or the full formula certification.
 - [ ] 6.5 Independent SDD verification/report; stop tests, retain normal sync.

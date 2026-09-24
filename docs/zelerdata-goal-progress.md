@@ -8827,3 +8827,60 @@ that a not-ready recent job does not block older ready work. All eight focused
 queue tests passed, as did the full local pytest suite with nine expected skips,
 Ruff check/format, and full mypy. This is local evidence only; the worker image,
 live tail publication and native formula result still need verification.
+
+### Range scheduling release and native order formula recovery
+
+Commit `ac3e8ec6e518695807601a65872e1bfcce9e0246` was built from the
+connected `main` repository as one VERIFIED Sheets worker image: Cloud Build
+`0eb126eb-7c41-4512-89c4-2361335e76a9`, immutable digest
+`sheets-worker@sha256:28149428e4486f3133c54bd953cdb5753e8e799b709790dc82c89a9e5bb36826`.
+The build record, source revision, image subject and local provenance verifier
+agreed. The API image was unchanged. VM preflight had ~34 GiB root free and
+passed before and after the pull; Mongo had ~45 GiB free on its separate mount.
+The previous running worker digest
+`sheets-worker@sha256:8ca3f4308f0c690059a770170250058104ba5b0668faec611541a43dc0cfd487`
+remains the compatible rollback. The exact Compose backup is
+`/opt/zeler-platform/docker-compose.yml.pre-sheets-worker-ac3e8ec-20260924T153334Z`.
+Only `sheets-worker` was recreated, without Docker cleanup. After settling it
+ran the target digest, `healthy`, zero restarts and no OOM; `/health` reported
+ready with RabbitMQ, sync jobs, formula recovery and refresh all `ok`. The
+modification scan flag remained off. No schema, registry or topology changed.
+
+A verified orders acquisition ended at 15:35:37 UTC, with its completed queue
+job and marker publication read back from production. This acquisition occurred
+during the deployment window, so it proves current source coverage but does
+not alone prove the new queue preference selected it. A second one-hour sweep
+`[2026-09-24 14:50:39, 15:50:39)` was admitted while a September 2025 monthly
+range ran. After that older attempt released the range lane, the new worker
+completed the recent sweep at 15:53:13 and published its exact 15:50:39 end;
+only then did it claim the older May range. This is direct production evidence
+that the recent claim takes precedence and older work remains eligible. It is
+one observed scheduling cycle, not proof of sustained 90-minute stability.
+
+After this source proof, bounded native Sheet recalculation recovered all five
+previously unavailable orders-dependent formulas: `PRODUCTOSINVENTA`,
+`VENTAPORDIAS`, `VENTASYSTOCK`, `COSTOENVIOVENDEDOR` and
+`ENVIOSMERCADOENVIOS`. A simultaneous recalc burst briefly left two cells with
+`SERVICE_UNAVAILABLE` and several with `PROCESANDO`; safe server-side formula
+execution events showed the two service errors exhausted the 25-second deadline
+in authentication, while another reached its dispatch deadline. Recalculating
+the affected anchors individually after the burst returned results. The final
+read of all 52 native anchors found **42 values, five `NA`, five
+`DATA_UNAVAILABLE`, zero `PROCESSING`, zero `SERVICE_UNAVAILABLE`, and zero
+sheet errors**. Four unavailable formulas are the approved genuinely absent
+historical sources. `ZELERDATA_DEVOLUCIONES` is the fifth and remains an
+unresolved upstream claim-detail 403 with partial local history; its unavailable
+result must not be treated as accepted absent-source behavior. The burst also
+shows that concurrent native recalculation needs a separate load/stability
+acceptance before claiming sustained all-formula service quality.
+
+A bounded read-only provider comparison from the approved worker context
+queried six search-row claim details in the disputed July 31–August 10 window.
+Five details succeeded through the same gateway client and one returned HTTP
+403 with a numeric error code `403`; no claim IDs, bodies or credentials were
+printed or retained. A detail in the June 11–21 comparison window also
+succeeded. This confirms the denial is claim-specific rather than a blanket
+application/gateway permission failure. The search row's closed mediation type
+still cannot establish whether a return is absent, so the existing fail-closed
+`DEVOLUCIONES` disposition remains correct pending provider-side access or an
+authoritative exclusion basis.

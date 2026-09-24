@@ -2168,3 +2168,19 @@ freshness nor publication semantics. Focused queue tests and the full local
 pytest suite passed with nine expected skips; Ruff check/format and full mypy
 passed. Runtime acceptance still requires the new worker image and an observed
 orders-tail publication with native formula readback.
+
+Worker-only image `sheets-worker@sha256:28149428e4486f3133c54bd953cdb5753e8e799b709790dc82c89a9e5bb36826`
+from exact commit `ac3e8ec6e518695807601a65872e1bfcce9e0246` passed
+VERIFIED provenance and was deployed with a compatible prior digest recorded.
+After settling, worker health and all component readiness checks were good,
+with zero restarts and no OOM. A recent orders range completed during the
+deployment window. A subsequent 15:50 UTC one-hour sweep was admitted behind
+an active September 2025 range; once that attempt released the lane, the new
+worker completed the recent sweep and published its marker at 15:53:13 before
+claiming a May range. This verifies one live priority cycle; longer fairness
+remains unproved. Native formula
+readback after bounded retries reached 42 values, five `NA`, five
+`DATA_UNAVAILABLE`, and no service/processing/sheet errors across all 52
+anchors. Four unavailable historical sources are accepted by the user. The
+remaining `DEVOLUCIONES` source denial, burst concurrency, full variants and
+stability are open; see `docs/zelerdata-goal-progress.md` for exact evidence.
