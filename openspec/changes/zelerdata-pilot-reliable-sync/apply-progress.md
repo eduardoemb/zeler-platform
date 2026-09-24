@@ -93,10 +93,25 @@ runtime checkpoint, not a native Google Sheets 35-case round.
 
 Read-only Google Sheets connector inspection identified the private
 `Pruebas ZelerData actual` workbook, tab `Goal_Pruebas_20260909`, with all 52
-existing formula anchors intact. Five anchor values still displayed
-`DATA_UNAVAILABLE` (DEVOLUCIONES, CATALOGOTIEMPO, TIEMPOSTOCKACTIVO, RETIROS,
-SEMANASCONSTOCK) and five displayed `NA`. The workbook predates this rollout;
-no recalc or authenticated formula HTTP smoke was performed by this inspection.
+existing formula anchors intact. A later bounded reread found six anchor
+values displaying `DATA_UNAVAILABLE` (DEVOLUCIONES, CATALOGOTIEMPO,
+TIEMPOSTOCKACTIVO, RETIROS, SEMANASCONSTOCK, OBTENER_CATALOGO) and five
+displaying `NA`. OBTENER_CATALOGO is a current-catalog gap, not one of the
+accepted absent-history cases: the existing spill contains both valid rows and
+unavailable rows. The workbook predates this rollout; no recalc or authenticated
+formula HTTP smoke was performed by this inspection.
+
+At 2026-09-24 06:58 UTC, a read-only pilot probe found 893 persisted catalog
+product snapshots, of which 152 were within the reader's 15-minute freshness
+window. Two large catalog recovery jobs, each with over 830 product IDs, had
+completed after about 59 minutes. Another 657-ID job had reached offset 60 and
+was pending behind other work in the shared IDs lane; a prior 853-ID job was
+also pending on cooldown. The reader had found 232 ready products and 645
+missing recent snapshots at a nearby observation. Thus the current pilot
+cannot claim complete catalog freshness: a full acquisition pass currently
+takes longer than the 15-minute reader window. The worker was processing other
+IDs-lane jobs rather than being idle. Keep this distinct from source-absent
+historical formulas while deciding a cache/freshness policy or throughput fix.
 
 ## Scoped continuation: pilot history admission headroom (2026-09-23)
 
