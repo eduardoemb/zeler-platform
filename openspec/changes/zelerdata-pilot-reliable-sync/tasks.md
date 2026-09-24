@@ -67,6 +67,12 @@ additions only; no activation.
 
 - [ ] 4.1 Execute 52 positive/absent/filter/range cases. Local dispatcher execution recorded for all 52 in `formula-local-execution.md`; variant acceptance and actual Sheets evidence remain pending. Per the 2026-09-24 pilot decision, an honest `DATA_UNAVAILABLE` is acceptable only where required historical source is genuinely absent; four formulas currently meet that condition.
 - [x] 4.2 Repair readers/projections preserving independent valid fields.
+- [x] 4.2a Apply the authorized four-hour catalog-product cache boundary to
+  `ZELERDATA_OBTENER_CATALOGO` and `ZELERDATA_CATALOGO_COMPLETO`, retaining
+  acquisition timestamps, explicit cached metadata, the existing 15-minute
+  404-disposition check, and recovery beyond four hours. Focused reader and
+  HTTP recovery tests cover both sides of the boundary; live Sheet acceptance
+  remains under 4.1/5.1.
 - [ ] 4.3 Run 52 simultaneously plus 35 regressions; distinguish local/Sheets evidence. Local cold-source batch of all 52 real handlers and 35 returns/history regressions passed; populated pilot/Sheets concurrency remains pending.
 
 ## Phase 5: Sheets

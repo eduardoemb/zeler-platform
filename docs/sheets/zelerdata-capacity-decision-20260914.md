@@ -102,3 +102,13 @@ or fix a missing source.
 Any such cache policy must preserve acquisition times and visible cached-state
 metadata. The change still needs explicit product-policy authorization and
 runtime formula acceptance before it can be called complete.
+
+Decision on 2026-09-24: the user explicitly authorized the proposed four-hour
+catalog-product cache boundary. The local reader now accepts verified product
+snapshots younger than four hours and exposes cached acquisition timestamps in
+formula response metadata. It retains the 15-minute source-404 disposition
+check, requests recovery at the four-hour boundary, and does not treat cached
+rows as current completeness. This decision affects product snapshots used by
+`ZELERDATA_OBTENER_CATALOGO` and `ZELERDATA_CATALOGO_COMPLETO`; it does not
+relax item inventory, buybox, quality or order freshness. Deployment and live
+formula acceptance remain separate evidence.

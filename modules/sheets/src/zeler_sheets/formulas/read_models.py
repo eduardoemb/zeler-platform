@@ -39,6 +39,8 @@ STOCK_TIME_METRICS_COLLECTION = "sheets_stock_time_metrics"
 STOCKOUT_SNAPSHOTS_COLLECTION = "sheets_stockout_snapshots"
 CATALOG_BUYBOX_SNAPSHOTS_READ_MODEL = "catalog_buybox_snapshots"
 CATALOG_PRODUCT_SNAPSHOTS_READ_MODEL = "catalog_product_snapshots"
+CATALOG_PRODUCT_CURRENT_AGE = timedelta(minutes=15)
+CATALOG_PRODUCT_CACHE_MAX_AGE = timedelta(hours=4)
 CATALOG_TIME_METRICS_READ_MODEL = "catalog_time_metrics"
 CLAIMS_READ_MODEL = "claims"
 DEVOLUCIONES_READ_MODEL = "devoluciones"
@@ -815,19 +817,20 @@ class FormulaReadModelRepository:
                 isinstance(unavailable, dict)
                 and unavailable.get("reason") == "catalog_product_not_found"
                 and checked is not None
-                and now - timedelta(minutes=15) < checked <= now
+                and now - CATALOG_PRODUCT_CURRENT_AGE < checked <= now
                 and checked >= observed
             )
             if known_missing:
                 source_missing.add(snapshot["catalog_product_id"])
             if (
-                (now - timedelta(minutes=15) < observed or known_missing)
+                now - CATALOG_PRODUCT_CACHE_MAX_AGE < observed
+                and (unavailable is None or known_missing)
                 and isinstance(title, str)
                 and bool(title.strip())
                 and {"description", "image_url", "attributes"} <= snapshot.keys()
             ):
-                # A fresh 404 can use the last known payload, but the caller
-                # must label it cached and must not claim current completeness.
+                # A recent cached payload may be served, but a recorded 404
+                # needs a fresh disposition and never claims current completeness.
                 ready.append(snapshot)
         missing = tuple(sorted(product_ids - {row["catalog_product_id"] for row in ready}))
         return ready, missing, tuple(sorted(invalid_items)), current, tuple(sorted(source_missing))

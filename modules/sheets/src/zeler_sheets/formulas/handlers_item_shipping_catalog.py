@@ -22,6 +22,7 @@ from zeler_sheets.formulas.matrix_contracts import (
 from zeler_sheets.formulas.output_normalization import NA_VALUE, normalize_response_rows
 from zeler_sheets.formulas.read_models import (
     CATALOG_BUYBOX_SNAPSHOTS_READ_MODEL,
+    CATALOG_PRODUCT_CURRENT_AGE,
     CATALOG_PRODUCT_SNAPSHOTS_READ_MODEL,
     ITEM_FORMULA_ROWS_READ_MODEL,
     ORDERS_READ_MODEL,
@@ -345,6 +346,7 @@ class ItemShippingCatalogFormulaHandlers:
     async def _catalog_products(
         self, context: FormulaExecutionContext, *, complete: bool
     ) -> FormulaExecutionResult:
+        now = _as_utc_datetime(self._now_fn())
         (
             snapshots,
             missing,
@@ -354,14 +356,18 @@ class ItemShippingCatalogFormulaHandlers:
         ) = await self._repository.find_recent_catalog_product_inventory(
             seller_id=context.seller_id,
             formula=context.contract.name,
-            now=_as_utc_datetime(self._now_fn()),
+            now=now,
         )
         headers = list(
             CATALOGO_COMPLETO_VISIBLE_HEADERS if complete else OBTENER_CATALOGO_VISIBLE_HEADERS
         )
         values = _header_row(context.args.get("encabezados"), headers)
         by_id = {snapshot["catalog_product_id"]: snapshot for snapshot in snapshots}
-        cached_ids = set(by_id) & set(source_missing)
+        cached_ids = (set(by_id) & set(source_missing)) | {
+            identity
+            for identity, snapshot in by_id.items()
+            if _as_utc_datetime(snapshot["snapshot_at"]) <= now - CATALOG_PRODUCT_CURRENT_AGE
+        }
         recoverable = tuple(identity for identity in missing if identity not in source_missing)
         for identity in sorted(set(by_id) | set(missing)):
             values.append(
@@ -411,9 +417,7 @@ class ItemShippingCatalogFormulaHandlers:
                 "unavailable_products": len(missing),
                 "unavailable_items": len(missing_items),
                 "inventory_enumeration_current": inventory_current,
-                "catalog_products_complete": not inventory_gap
-                and not missing
-                and not source_missing,
+                "catalog_products_complete": not inventory_gap and not missing and not cached_ids,
                 **(
                     {
                         "unavailable_reason": "inventory_incomplete"

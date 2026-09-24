@@ -2133,3 +2133,19 @@ preserving scan receipts and queued jobs. Until live acceptance, task 3.4 stays
 open; this scan does not supply missing creation-history months.
 The provider's seller search may omit cancelled orders; their changes require
 separate event/detail evidence before claiming complete reconciliation.
+# Four-hour catalog-product cache decision and local implementation (2026-09-24)
+
+The user explicitly authorized a four-hour cached-state boundary for catalog
+product snapshots. `ZELERDATA_OBTENER_CATALOGO` and
+`ZELERDATA_CATALOGO_COMPLETO` now accept identity-verified product payloads
+younger than four hours. Their response metadata records the original
+`snapshot_at` for each cached product, and cached rows do not claim current
+catalog completeness. A 404 still needs a disposition checked within 15
+minutes; snapshots at or beyond four hours remain unavailable. The change
+does not relax item inventory, buybox, quality, or history freshness.
+
+TDD: the two-formula boundary test failed in four cases before implementation.
+The focused handler suite and HTTP catalog-recovery cases then passed. Full
+`uv run pytest` against the verified loopback test Mongo exited 0 with nine
+expected skips; Ruff check/format and full mypy passed. This is local evidence,
+not deployed formula or native Google Sheets acceptance.

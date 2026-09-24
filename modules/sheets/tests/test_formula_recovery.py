@@ -1303,11 +1303,7 @@ async def test_catalog_product_http_admission_reaches_worker_and_persists(
             assert ready.status_code == 200
             recovered = ["Recovered product", "Recovered description", *(["NA"] * (width - 2))]
             expected_first = (
-                recovered
-                if product_state == "available"
-                else ["Cached product", *(["NA"] * (width - 1))]
-                if product_state == "cached"
-                else ["DATA_UNAVAILABLE"] * width
+                recovered if product_state == "available" else ["DATA_UNAVAILABLE"] * width
             )
             assert ready.json()["values"] == [expected_first, recovered]
             meta = ready.json()["meta"]
@@ -1315,13 +1311,9 @@ async def test_catalog_product_http_admission_reaches_worker_and_persists(
             assert "recovery_requested" not in meta
             if product_state != "available":
                 assert meta["unavailable_product_reasons"] == {"MLA1": "catalog_product_not_found"}
-                assert meta["cached_products"] == int(product_state == "cached")
+                assert meta["cached_products"] == 0
                 assert meta["source_unavailable_products"] == 1
-                if product_state == "cached":
-                    assert (
-                        datetime.fromisoformat(meta["cached_product_observed_at"]["MLA1"])
-                        == cached["snapshot_at"]
-                    )
+                assert meta["cached_product_observed_at"] == {}
         stored = await recovery_db.sheets_catalog_product_snapshots.find_one(
             {"_id": f"{seller}:MLA1"}
         )

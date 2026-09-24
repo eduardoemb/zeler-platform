@@ -18,7 +18,7 @@ ZelerData formulas are Google Sheets custom functions backed by the zeler-platfo
 | `ZELERDATA_CALIDAD` | `=ZELERDATA_CALIDAD("cuenta", "si")` | Modern quality projection from local item rows: identity/status/publication fields, quality score/level, component statuses/scores, and pending actions. Legacy `PRECIO SUGERIDO` is intentionally not exposed. |
 | `ZELERDATA_CATALOGO` | `=ZELERDATA_CATALOGO("cuenta", "base", "si")` | Legacy 24-column catalog matrix from current item rows, catalog buybox snapshots, and local order sales windows. |
 | `ZELERDATA_CATALOGOBUYBOX` | `=ZELERDATA_CATALOGOBUYBOX("cuenta", "base", "si")` | Current catalog buybox rows from `sheets_catalog_buybox_snapshots`; values follow visible header order. |
-| `ZELERDATA_CATALOGO_COMPLETO` | `=ZELERDATA_CATALOGO_COMPLETO("cuenta", "si")` | Enriched current catalog product rows from local catalog snapshots. |
+| `ZELERDATA_CATALOGO_COMPLETO` | `=ZELERDATA_CATALOGO_COMPLETO("cuenta", "si")` | Enriched catalog product rows from local snapshots; verified snapshots younger than four hours may be shown as cached with their acquisition time in response metadata. |
 | `ZELERDATA_CATALOGOSINVINCULAR` | `=ZELERDATA_CATALOGOSINVINCULAR("cuenta", "si")` | Current publications locally marked as catalog-link suggestions. |
 | `ZELERDATA_CATALOGOTIEMPO` | `=ZELERDATA_CATALOGOTIEMPO("cuenta", "2026-01-01", "2026-01-31", "todos", "si")` | Catalog winning-time metrics from local catalog time summaries; no formula-time historical MercadoLibre calls. |
 | `ZELERDATA_CATEGORIAS` | `=ZELERDATA_CATEGORIAS("cuenta", "MLA1")` | Category by item ID. |
@@ -38,7 +38,7 @@ ZelerData formulas are Google Sheets custom functions backed by the zeler-platfo
 | `ZELERDATA_IMAGENES` | `=ZELERDATA_IMAGENES("cuenta", "todos", "todos")` | Image URLs from the current item read model. |
 | `ZELERDATA_MEDIDAS` | `=ZELERDATA_MEDIDAS("cuenta", "MLA1", "SKU-1")` | Combined `LARGO * ALTO * ANCHO` measurement cell from local item rows. |
 | `ZELERDATA_MEDIDASGENERAL` | `=ZELERDATA_MEDIDASGENERAL("cuenta", "todos", "todos", "si")` | Item/SKU/title table with one combined measurement cell. |
-| `ZELERDATA_OBTENER_CATALOGO` | `=ZELERDATA_OBTENER_CATALOGO("cuenta")` | Legacy-simple catalog rows: TITULO, DESCRIPCION, IMAGEN as `=IMAGE("url")`. |
+| `ZELERDATA_OBTENER_CATALOGO` | `=ZELERDATA_OBTENER_CATALOGO("cuenta")` | Legacy-simple catalog rows: TITULO, DESCRIPCION, IMAGEN as `=IMAGE("url")`; verified snapshots younger than four hours may be shown as cached with their acquisition time in response metadata. |
 | `ZELERDATA_ORDENES` | `=ZELERDATA_ORDENES("cuenta", "2026-01-01", "2026-01-31", "todos", "", "si")` | Orders table for a date range; `ID Carrito` comes only from MercadoLibre `orders.pack_id`. |
 | `ZELERDATA_ORDENESPORSKU` | `=ZELERDATA_ORDENESPORSKU("cuenta", "SKU-1", "2026-01-01", "2026-01-31", "todos", "", "si")` | Orders filtered by SKU and date range; `ID Carrito` comes only from MercadoLibre `orders.pack_id`. |
 | `ZELERDATA_PAUSADAS` | `=ZELERDATA_PAUSADAS("cuenta", "MLA1")` | Paused days for the current paused period. If Mercado Libre does not inform when the listing became paused, Zeler counts from the first accepted synchronization where it observed the listing paused; missing current basis returns `NA`. |

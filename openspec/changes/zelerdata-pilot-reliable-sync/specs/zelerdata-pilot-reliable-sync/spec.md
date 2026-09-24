@@ -70,6 +70,16 @@ present incomplete economic totals as definitive.
 - WHEN the formula runs
 - THEN independent valid fields remain usable with an explicit limitation.
 
+#### Scenario: Catalog product snapshot is cached
+
+- GIVEN a verified catalog product snapshot acquired less than four hours ago
+- WHEN `ZELERDATA_OBTENER_CATALOGO` or `ZELERDATA_CATALOGO_COMPLETO` runs
+- THEN it may return that product, labels it cached with its acquisition time,
+  and does not claim current catalog completeness.
+- AND a snapshot at or beyond four hours, or one with an expired source 404
+  disposition, yields `DATA_UNAVAILABLE`; recovery is requested when its
+  source is eligible for recheck.
+
 ### Requirement: Durable Recovery and No Starvation
 
 The system SHALL preserve existing guarded recovery, retries, leases, quotas,

@@ -148,7 +148,7 @@ async def test_catalog_current_inventory_preserves_only_verified_products(
     job = next(iter(db["sheets_formula_recovery_jobs"].documents.values()))
     if state in {"stale", "future"}:
         products.documents["second"]["snapshot_at"] = NOW + (
-            timedelta(minutes=-15) if state == "stale" else timedelta(seconds=1)
+            timedelta(hours=-4) if state == "stale" else timedelta(seconds=1)
         )
     elif state == "missing":
         del products.documents["second"]
@@ -177,6 +177,74 @@ async def test_catalog_current_inventory_preserves_only_verified_products(
         assert result.recovery.item_ids == (() if state == "inventory_expired" else ("MLA1",))
     else:
         assert result.recovery.catalog_product_ids == ("MLM1",)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "formula,width", [("ZELERDATA_OBTENER_CATALOGO", 3), ("ZELERDATA_CATALOGO_COMPLETO", 6)]
+)
+@pytest.mark.parametrize(
+    ("age", "available"),
+    [
+        (timedelta(minutes=15), True),
+        (timedelta(hours=3, minutes=59), True),
+        (timedelta(hours=4), False),
+    ],
+)
+async def test_catalog_product_cache_has_four_hour_cutoff_and_visible_acquisition_time(
+    formula: str, width: int, age: timedelta, available: bool
+) -> None:
+    db = FakeDb()
+    db["sheets_catalog_product_snapshots"].documents = {
+        "first": {"title": "Available"},
+        "second": {"title": "Cached product"},
+    }
+    _seed_catalog_inventory(db)
+    second = db["sheets_catalog_product_snapshots"].documents["second"]
+    second["snapshot_at"] = NOW - age
+    result = await _dispatcher(db).execute(_context(formula, {"encabezados": False}))
+
+    assert result.values[0] == ["Available", *(["NA"] * (width - 1))]
+    assert result.values[1] == (
+        ["Cached product", *(["NA"] * (width - 1))] if available else ["DATA_UNAVAILABLE"] * width
+    )
+    assert result.meta["catalog_products_complete"] is False
+    assert result.meta["cached_products"] == int(available)
+    assert result.meta["cached_product_observed_at"] == ({"MLM1": NOW - age} if available else {})
+    if available:
+        assert result.recovery is None
+    else:
+        assert result.recovery is not None
+        assert result.recovery.catalog_product_ids == ("MLM1",)
+
+
+@pytest.mark.asyncio
+async def test_catalog_product_cached_after_404_requires_recent_disposition() -> None:
+    db = FakeDb()
+    db["sheets_catalog_product_snapshots"].documents = {"product": {"title": "Prior title"}}
+    _seed_catalog_inventory(db)
+    snapshot = db["sheets_catalog_product_snapshots"].documents["product"]
+    snapshot["snapshot_at"] = NOW - timedelta(hours=3)
+    snapshot["source_unavailable"] = {
+        "reason": "catalog_product_not_found",
+        "observed_at": NOW - timedelta(minutes=1),
+    }
+
+    current = await _dispatcher(db).execute(
+        _context("ZELERDATA_OBTENER_CATALOGO", {"encabezados": False})
+    )
+    assert current.values == [["Prior title", "NA", "NA"]]
+    assert current.meta["cached_product_observed_at"] == {"MLM0": NOW - timedelta(hours=3)}
+    assert current.meta["catalog_products_complete"] is False
+    assert current.recovery is None
+
+    snapshot["source_unavailable"]["observed_at"] = NOW - timedelta(minutes=16)
+    expired = await _dispatcher(db).execute(
+        _context("ZELERDATA_OBTENER_CATALOGO", {"encabezados": False})
+    )
+    assert expired.values == [["DATA_UNAVAILABLE"] * 3]
+    assert expired.meta["cached_products"] == 0
+    assert expired.recovery is not None
 
 
 @pytest.mark.asyncio
