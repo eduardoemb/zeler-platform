@@ -91,6 +91,20 @@ mount; free inodes were 6,226,841 and 3,276,299; available memory was
 687,697,920 bytes. The orders marker remained valid. This is the second
 runtime checkpoint, not a native Google Sheets 35-case round.
 
+At the ~90-minute post-flag checkpoint (2026-09-24 07:17 UTC), the same worker
+and API immutable digests were healthy with zero restarts/OOM. The worker's
+internal health response reported RabbitMQ, sync-job poller, formula recovery
+and ZelerData refresh all `ok`; the Sheets API reported Mongo, RabbitMQ,
+registry and claims DLQ checks ready. Public Sheets `/health` and gateway
+`/ready` returned HTTP 200. Free bytes were 37,290,835,968 on `/` and
+48,260,767,744 on the separate Mongo mount; free inodes were 6,226,842 and
+3,276,299, and available memory was 554,582,016 bytes. The two completed order
+intervals retained their reconciled marker, valid at readback. A third interval
+was still hydrating with 625 of 1,092 membership identities fetched and no
+protocol job failed. This completes a bounded 90-minute backend runtime
+observation; it does not certify native Sheets recalculation, all formulas,
+the full twelve-month history or subsequent uptime.
+
 Read-only Google Sheets connector inspection identified the private
 `Pruebas ZelerData actual` workbook, tab `Goal_Pruebas_20260909`, with all 52
 existing formula anchors intact. A later bounded reread found six anchor

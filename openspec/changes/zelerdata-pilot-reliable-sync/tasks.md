@@ -83,5 +83,5 @@ additions only; no activation.
 - [ ] 6.1 Rerun final gates after remaining corrections; latest local full pytest suite exited successfully with nine skips, Ruff/format/mypy passed across 606 source files, and Meli/schema checks passed. Eight protected-rs0 cases passed in their isolated harness before the final fairness adjustment; the full-suite invocation itself skipped them. Runtime/Sheets acceptance remains open.
 - [ ] 6.2 Prove actual-worker recovery/duplicates/interruption.
 - [ ] 6.3 Backend Sheets worker/API images from `c51e88e` and the pilot orders flag are deployed with verified digests and healthy dependency/component checks. Complete add-on proposal/publication and final acceptance authorization/evidence separately.
-- [ ] 6.4 Warm-up, 90-minute observation, rounds 0/30/60. The backend runtime passed post-flag ~30 and ~60-minute health/capacity observations; these are not the required native 35-case Google Sheets rounds or the full 90-minute certification.
+- [ ] 6.4 Warm-up, 90-minute observation, rounds 0/30/60. The backend runtime passed post-flag ~30, ~60 and ~90-minute health/capacity observations. These are not the required native 35-case Google Sheets rounds or the full formula certification.
 - [ ] 6.5 Independent SDD verification/report; stop tests, retain normal sync.
