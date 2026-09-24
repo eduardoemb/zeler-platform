@@ -105,6 +105,17 @@ protocol job failed. This completes a bounded 90-minute backend runtime
 observation; it does not certify native Sheets recalculation, all formulas,
 the full twelve-month history or subsequent uptime.
 
+At 2026-09-24 07:41 UTC the third pilot order interval,
+`[2025-11-24T05:36:28Z, 2025-12-24T05:36:28Z)`, also completed. Independent
+approved-container readback at 07:43 found source total 1,095; 1,092
+discovered, fetched, published and persisted orders; 1,092 final-pass
+membership receipts, 1,092 detail receipts across the two passes, and three
+final-pass boundary exclusions. Its queue job and acquisition head were both
+`completed`. The reconciled marker was valid at readback and merged this month
+with the preceding completed October–November interval. The recent 90-order
+interval remained completed. There was no active protocol order job at that
+instant; the remaining plan intervals and twelve-month proof remain open.
+
 Read-only Google Sheets connector inspection identified the private
 `Pruebas ZelerData actual` workbook, tab `Goal_Pruebas_20260909`, with all 52
 existing formula anchors intact. A later bounded reread found six anchor
@@ -1447,8 +1458,9 @@ Ruff, format, mypy2files and diff-check passed. Evidence:
 `c42bc1dcf3d10acea1a8ec00930fb77dd0ec47a79a450a1ffd72e07025d063c8`;
 RED `/tmp/question-adapter-red.log`, quality `/tmp/question-adapter-quality.log`.
 
-Task3.2j remains open: actual HTTP normalization/provider semantics, partitioned
-detail hydration and monthly proof subscriptions are not implemented. No activation,
+At that checkpoint Task3.2j remained open: actual HTTP normalization/provider
+semantics, partitioned detail hydration and monthly proof subscriptions were not
+implemented. No activation,
 coverage authority, commit/build/deploy or production mutation. Rollback preserves
 pass-indexed receipts and leaves history-only jobs for a compatible staging worker.
 
@@ -1476,10 +1488,43 @@ Ruff, format, mypy2files and diff-check passed. Regression evidence
 `/tmp/question-hydration-regression.log`, SHA256
 `3967a3470f7eac359388222b353644d0c76efe416477cf10067638da7e665570`.
 
-Task3.2j remains open for actual HTTP normalization and authoritative published
-interval proofs/finalization. No canonical question writes, coverage markers,
-worker activation, commit/build/deploy or production mutation. Rollback preserves
+At that checkpoint Task3.2j remained open for actual HTTP normalization and
+authoritative published interval proofs/finalization. No canonical question
+writes, coverage markers, worker activation, commit/build/deploy or production
+mutation. Rollback preserves
 detail receipts and history-only jobs for a checkpoint-compatible consumer.
+
+### Pilot-observed question cursor adapter (3.2j partial, 2026-09-24)
+
+A read-only pilot gateway probe resolved the seller-scan continuation behavior
+recorded in `provider-evidence.md`: the reported total was 231, continuation
+cursors rotated, an initial limit of 50 produced two disjoint 50-row pages,
+and a separate three-page pass reached 231 unique IDs while the last page
+still carried a cursor. No question text, buyer data, ID, cursor or token was
+printed. This is provider discovery evidence, not historical coverage.
+
+Strict TDD: importing the absent page adapter failed collection; a second
+Mongo case failed because `fetch_and_stage` was absent. The adapter now sends
+seller-scoped `api_version=4` scans through the configured gateway, uses limit
+50 only on the initial request, retains the returned cursor until the verified
+count reaches the reported total, then clears it for the durable staging
+transition. Invalid page counts, shapes, timestamps and missing nonterminal
+cursors are rejected. A real-Mongo test stages both passes with rotating
+cursors and produces twelve deterministic subscription bindings without
+publishing a marker.
+
+Focused question/continuation suite: 61 passed. Root pytest completed with
+exit 0 and nine skips; the eight protected rs0 cases passed separately on the
+verified disposable loopback replica set, and the remaining skip was the
+existing Caddy key fixture. Root Ruff check, Ruff format check, full mypy
+(607 files) and direct-Meli lint passed. The full pytest run was repeated after
+a type-guard correction; no production Mongo target was used.
+
+Task 3.2j remains open: no history question worker consumes this adapter, no
+details have been acquired through it, and no authoritative monthly interval
+has been published. No service image or production data was changed in this
+unit. The next question worker release must include a verified worker image
+from its connected source commit and prove detail/coverage behavior separately.
 
 ### Actual orders staging worker (3.3 partial)
 

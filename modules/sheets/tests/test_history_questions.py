@@ -251,6 +251,46 @@ async def test_normalized_scan_resumes_and_verifies_without_certification(
 
 
 @pytest.mark.asyncio
+async def test_live_shaped_gateway_pages_stage_both_passes_with_rotating_cursors(
+    queue: FormulaRecoveryQueue,
+) -> None:
+    class Gateway:
+        def __init__(self) -> None:
+            self.paths: list[str] = []
+
+        async def fetch_resource(self, *, seller_id: str, path: str) -> dict[str, Any]:
+            assert seller_id == "82453304"
+            self.paths.append(path)
+            identities = (1, 2, 2, 1)
+            position = len(self.paths) - 1
+            return {
+                "total": 2,
+                "questions": [
+                    question(
+                        identities[position],
+                        date_created=(START + timedelta(days=1)).isoformat(),
+                    )
+                ],
+                # The live provider still supplies a cursor after the last ID.
+                "scroll_id": f"opaque-{position}",
+            }
+
+    runner, job, head = await scan_state(queue)
+    gateway = Gateway()
+    head = await runner.fetch_and_stage(job, head, gateway, observed_at=NOW)
+    assert head.next_cursor == "opaque-0" and head.phase == "discover"
+    head = await runner.fetch_and_stage(await claim(queue), head, gateway, observed_at=NOW)
+    assert head.next_cursor is None and head.phase == "hydrate"
+    head = await runner.begin_verification(await claim(queue), head)
+    head = await runner.fetch_and_stage(await claim(queue), head, gateway, observed_at=NOW)
+    assert head.next_cursor == "opaque-2" and head.phase == "verify"
+    head = await runner.fetch_and_stage(await claim(queue), head, gateway, observed_at=NOW)
+    assert head.next_cursor is None and head.phase == "verify"
+    assert len(question_subscriptions(head)) == 12
+    assert await runner.store.receipts.count_documents({"kind": "membership"}) == 4
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "rows,total",
     [

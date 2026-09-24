@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any
+from urllib.parse import urlencode
 
 from zeler_platform_core.models import SheetsHistoryAcquisition, SheetsHistoryReceipt
+from zeler_sheets.formulas.pacing import recovery_fetch_resource
 from zeler_sheets.formulas.recovery import QuestionScanRecoveryRequest
 from zeler_sheets.history_acquisition import HistoryAcquisitionStore, HistoryConflictError, _head
 from zeler_sheets.history_continuation import HistoryContinuation
@@ -46,6 +48,62 @@ class QuestionScanPage:
     next_cursor: str | None
     terminal: bool
     observed_at: datetime
+
+
+def normalize_question_scan_page(
+    raw: dict[str, Any], *, discovered_count: int, observed_at: datetime
+) -> QuestionScanPage:
+    """Stop at the verified total even when the provider returns another cursor."""
+    if not isinstance(raw, dict):
+        raise ValueError("question scan response must be an object")
+    total, rows, cursor = raw.get("total"), raw.get("questions"), raw.get("scroll_id")
+    if (
+        type(total) is not int
+        or not 0 <= total <= 10000
+        or type(discovered_count) is not int
+        or not 0 <= discovered_count <= total
+        or not isinstance(rows, list)
+        or len(rows) > 50
+        or any(not isinstance(row, dict) for row in rows)
+        or observed_at.tzinfo is None
+    ):
+        raise ValueError("invalid question scan response or local budget")
+    count = discovered_count + len(rows)
+    if count > total:
+        raise ValueError("question scan exceeded the reported total")
+    terminal = count == total
+    if not terminal and (not rows or not isinstance(cursor, str) or not cursor):
+        raise ValueError("question scan has no usable continuation")
+    return QuestionScanPage(rows, total, None if terminal else cursor, terminal, observed_at)
+
+
+async def fetch_question_scan_page(
+    gateway: Any,
+    *,
+    seller_id: str,
+    cursor: str | None,
+    discovered_count: int,
+    observed_at: datetime | None = None,
+) -> QuestionScanPage:
+    """Fetch one bounded seller scan page through the configured gateway."""
+    if not seller_id.isascii() or not seller_id.isdecimal():
+        raise ValueError("question scan requires a numeric seller")
+    if cursor is not None and (not isinstance(cursor, str) or not cursor):
+        raise ValueError("question scan cursor is invalid")
+    params = {"seller_id": seller_id, "api_version": "4", "search_type": "scan"}
+    if cursor is None:
+        params["limit"] = "50"
+    else:
+        params["scroll_id"] = cursor
+    raw = await recovery_fetch_resource(
+        gateway,
+        request_timeout=10,
+        seller_id=seller_id,
+        path="/questions/search?" + urlencode(params),
+    )
+    return normalize_question_scan_page(
+        raw, discovered_count=discovered_count, observed_at=observed_at or datetime.now(UTC)
+    )
 
 
 @dataclass(frozen=True)
@@ -97,6 +155,31 @@ class QuestionScanStaging:
     def __init__(self, continuation: HistoryContinuation) -> None:
         self.continuation = continuation
         self.store = continuation.store
+
+    async def fetch_and_stage(
+        self,
+        job: dict[str, Any],
+        expected: SheetsHistoryAcquisition,
+        gateway: Any,
+        *,
+        observed_at: datetime | None = None,
+    ) -> SheetsHistoryAcquisition:
+        head = _head(expected)
+        if head.phase not in {"discover", "verify"} or (
+            head.phase == "verify" and head.page_sequence and head.next_cursor is None
+        ):
+            raise ValueError("question traversal is finished or not active")
+        cursor = head.next_cursor
+        if cursor is not None and not isinstance(cursor, str):
+            raise ValueError("question scan cursor is invalid")
+        page = await fetch_question_scan_page(
+            gateway,
+            seller_id=head.seller_id,
+            cursor=cursor,
+            discovered_count=head.discovered_count,
+            observed_at=observed_at,
+        )
+        return await self.page(job, head, page)
 
     async def hydrate(
         self,

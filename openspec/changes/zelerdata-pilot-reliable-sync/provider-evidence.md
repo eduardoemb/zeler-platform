@@ -1,10 +1,9 @@
 # Provider Evidence: Historical Recovery
 
-Research date: 2026-09-15. This is documentation evidence, not a live API probe
-or production coverage claim. Direct page opens returned 403/503; the search
-tool returned indexed text from the official developer pages. These sources
-establish documented semantics only, not live pilot behavior; reverify ambiguous
-adapter semantics before activation.
+Source research date: 2026-09-15. The cited developer pages establish documented
+semantics only; the separate bounded pilot probe below establishes only its
+observed runtime behavior, not production coverage. The initial direct page
+opens returned 403/503 and the search tool supplied indexed official text.
 
 ## Orders
 
@@ -36,9 +35,8 @@ Implementation implications, not additional provider guarantees:
 The official scan guide explicitly includes `/questions/search`, requires scan
 instead of offset for more than 1,000 results, and describes a five-minute
 `scroll_id` lifetime. It describes terminal `null`, a default page size of 50,
-and a maximum limit of 100. Its instruction to update the parameter while using
-the same scroll ID is ambiguous; confirm the response/token contract before
-coding cursor replacement rules.
+and a maximum limit of 100. Its cursor wording is ambiguous; the bounded live
+probe below resolves replacement and stopping behavior for this pilot traversal.
 [Source: scan guide](https://developers.mercadolibre.com.mx/es_ar/como-empezar/items-y-busquedas).
 
 The newer rate-limit FAQ warns against mixing pagination mechanisms and says
@@ -59,20 +57,50 @@ hydration from durable identities after expiry; a fresh verification scan still
 needs its own valid cursor and membership evidence. Do not manufacture monthly
 server-side filters, question retention guarantees, or snapshot consistency.
 
+### Bounded pilot cursor observation (2026-09-24)
+
+Inside the approved Sheets worker, the normal bootstrap gateway identity made
+read-only seller-scoped `/questions/search` requests with `api_version=4` and
+`search_type=scan`. One two-page probe used an initial limit of 1; the second
+request omitted `limit`, supplied the returned `scroll_id`, and received one
+different question with a different cursor. A fresh bounded pass used an
+initial limit of 100 and then passed each returned cursor without `limit`:
+pages contained 100, 100 and 31 unique IDs, matching the unchanged reported
+total of 231. The cursor changed on both continuations and remained present
+on the final page even after all 231 IDs had been seen. Therefore this observed
+seller scan must stop at verified membership count, not wait for a null cursor.
+The implemented adapter's exact initial limit of 50 was also probed: its first
+two pages each contained 50 disjoint IDs, the reported total stayed 231, and
+the cursor rotated when continuation omitted `limit`.
+A second complete three-page scan found 231 unique IDs with valid UTC creation
+dates: one in October 2025, 13 in February 2026, 74 in March, 54 in April,
+35 in May, 27 in June, 15 in July, seven in August and five in September.
+This describes the visible pilot sample only; months with zero results and
+provider retention outside this sample are not independently certified.
+A separate overrun eventually received HTTP 404; its precise terminal sequence
+and cursor-expiry/restart behavior remain unproved. No cursor value, question
+text, buyer data or token was printed, and no collection or runtime setting was
+mutated. This is discovery evidence only: it does not prove twelve-month
+retention, detail completeness or a reconciled questions interval.
+
 ## Required Adapter Evidence
 
 - Exact orders boundary inclusivity, hourly subdivision and saturated-hour handling.
-- Question continuation parameters, terminal response and expiry/restart behavior.
+- Question cursor expiry/restart behavior and terminal response beyond the
+  verified total; continuation and count-stopping behavior were observed above.
 - Retention and visibility exclusions per resource for this pilot's authority.
 - Shifted pages, equal-count membership changes, duplicate IDs and late mutations.
 - Sanitize evidence: no authorization values, cursor contents or raw buyer payloads.
 
-No API call, token access, scope change, quota increase or deployment was performed.
+The 2026-09-15 source research made no API call. The bounded pilot probe above
+used the worker's configured gateway identity for read-only requests; it made
+no scope change, quota increase, deployment or data write.
 
 ## Research disposition
 
 Task 3.2g is complete as a documentation lane: the cited pages are primary
 Mercado Libre developer documentation and claims are bounded to what they
-document. Live cursor expiry, exact continuation-token behavior, per-resource
-retention, and saturated-hour behavior remain runtime evidence for later adapter
-tasks; these unknowns are not promoted to guarantees.
+document. The pilot probe resolves only observed question cursor replacement
+and count-stopping behavior. Cursor expiry, per-resource retention and
+saturated-hour behavior remain evidence for later adapter tasks; these unknowns
+are not promoted to guarantees.
