@@ -8710,3 +8710,26 @@ are fixed. A failed/expired run cannot be reused, and a new marker must retain
 the already accepted June 1 start rather than publish only the missing slice.
 Follow the [DEVOLUCIONES runbook](sheets/zelerdata-read-model-reconciliation.md)
 and verify source readback, marker coverage and formula output after any write.
+
+Follow-up read-only probes on the same date sampled aligned 10-day windows.
+`[2026-06-21, 2026-07-01)` was complete locally (2 expected/2 persisted),
+while `[2026-07-01, 2026-07-11)`, `[2026-07-11, 2026-07-21)` and
+`[2026-07-21, 2026-07-31)` had 3, 1 and 1 missing claims respectively.
+`[2026-08-15, 2026-08-25)` was complete locally (1/1); the recent
+`[2026-09-14, 2026-09-24)` sample had zero expected claims. These samples do
+not certify the unsampled windows or extend the current marker.
+
+The aligned `[2026-07-31, 2026-08-10)` dry-run failed repeatedly after four
+source calls. Bounded diagnostics identified `claim_detail` / `client_other`;
+an instrumented read-only call observed HTTP 403 with one recorded upstream
+attempt. The runtime `sheets` and `bootstrap` registry entries were both enabled,
+seller-scoped, and contained the claim-detail route. This is a claim-specific
+upstream denial, not evidence that the whole claims API is unavailable. No
+claim ID, response body, token or credential was retained in the report.
+
+Do not authorize an enclosing production write on the assumption that the 403
+will disappear: the current source contract must fail closed on that claim.
+Investigate the provider access/disposition for this claim through the approved
+seller context, or obtain an authoritative exclusion basis, before claiming
+complete DEVOLUCIONES coverage across July 31–August 10. The bounded diagnostic
+and all sample commands made no production database writes.
