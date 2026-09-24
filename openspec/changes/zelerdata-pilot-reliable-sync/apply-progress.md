@@ -35,6 +35,18 @@ protocol job failed. An overlapping active legacy month was reported as
 `legacy_order_job_active`. No completed interval or 12-month proof is claimed;
 continue observation before calling history functional end to end.
 
+At 2026-09-24 06:04 UTC, an approved-container readback found the first
+protocol interval completed: its queue job and acquisition head were both
+`completed`; source total, discovered, fetched, published, membership receipts,
+detail receipts across the discovery and verification passes, and persisted
+orders were all 90. The exact interval was
+`[2026-08-24T05:36:28Z, 2026-09-24T05:36:28Z)`. A reconciled orders marker
+covered it and was valid at observation. A separate 945-order acquisition was
+still hydrating, with 164 details fetched at 06:02 UTC. The worker and API
+remained healthy at the readback, with the intended immutable digests, zero
+restarts and zero OOM flags. This proves one bounded production interval, not
+the full twelve-month plan or continued marker freshness.
+
 Read-only Google Sheets connector inspection identified the private
 `Pruebas ZelerData actual` workbook, tab `Goal_Pruebas_20260909`, with all 52
 existing formula anchors intact. Five anchor values still displayed
