@@ -8686,3 +8686,27 @@ Two runtime blockers were fixed:
 The policy `zelerdata-freshness-alarm` fired during verification and sent email
 to `laloramirez@zeler.ai`, including the added `zelerdata-ops-email-v2` channel.
 All Compose services remain healthy on the new image.
+
+## DEVOLUCIONES pilot read-only status (2026-09-24)
+
+The approved `platform-vm` Sheets worker was queried from inside its runtime
+container for seller `82453304`; no production database was queried locally.
+There are eight recorded quota runs: one completed and seven failed/expired.
+None is currently eligible for advancement. The valid reconciled marker covers
+only `[2026-06-01, 2026-06-11)`. The worker's
+`ZELERDATA_DEVOLUCIONES_ADVANCE_ENABLED` flag is off.
+
+Two frozen-runtime dry-runs used `--confirm-approved-runtime` without a write
+flag. For `[2026-06-11, 2026-06-21)`, the source reported 9 expected records,
+5 persisted and 4 missing. For the enclosing `[2026-06-01, 2026-06-21)`, it
+reported 14 expected, 10 persisted and 4 missing. Both commands exited 0 and
+reported a successful dry-run status; neither published new coverage. This is
+positive source evidence, so `ZELERDATA_DEVOLUCIONES` must not be grouped with
+formulas whose required historical source is genuinely unavailable.
+
+The next production step requires a separately authorized new quota run or
+approved focused write after the affected worker image and release fingerprints
+are fixed. A failed/expired run cannot be reused, and a new marker must retain
+the already accepted June 1 start rather than publish only the missing slice.
+Follow the [DEVOLUCIONES runbook](sheets/zelerdata-read-model-reconciliation.md)
+and verify source readback, marker coverage and formula output after any write.
