@@ -30,6 +30,19 @@ Implementation implications, not additional provider guarantees:
 - A saturated single hour needs an explicitly supported enumeration strategy,
   not infinitely repeated sub-hour filters which the provider ignores.
 
+### Bounded pilot modification-filter observation (2026-09-24)
+
+The approved Sheets worker used the bootstrap gateway identity for read-only
+seller-scoped `/orders/search` requests with
+`order.date_last_updated.from/to`, hour-aligned bounds, `offset=0` and
+`limit=50`. A two-hour window returned zero rows; a separate 26-hour window
+returned 11 rows and `paging.total=11`. All 11 had parseable aware modification
+times inside the queried hour superset. The response reported the requested
+offset and limit. No IDs, buyer fields, raw payloads, credentials or tokens
+were printed. This confirms the filter and first-page shape for this pilot,
+not shifted-page stability, old-order modification coverage, or a completed
+traversal.
+
 ## Questions
 
 The official scan guide explicitly includes `/questions/search`, requires scan

@@ -1682,6 +1682,23 @@ recovery; admitted does not authorize advancing a watermark. No deployment,
 commit/build, canonical writes or production mutation. Rollback preserves ID jobs;
 existing compatible ID workers can consume them without a new queue protocol.
 
+Follow-up page adapter: a RED import test preceded `fetch_modification_page`.
+The adapter queries the documented modification filters through the gateway,
+rounds only the provider query to whole-hour coverage, retains the exact
+half-open interval for local admission, and rejects contradictory totals,
+offsets, limits, duplicate IDs, foreign sellers, and out-of-superset dates.
+Focused source and admission tests passed 20/20. A bounded read-only pilot
+gateway probe observed 11 rows in a 26-hour window with matching first-page
+offset/limit and valid modification dates; see `provider-evidence.md`. This
+unit does not persist a cursor, claim completed traversal, advance a watermark,
+or run in the worker. Rollback removes this adapter and its focused tests while
+leaving the existing neutral admission path intact.
+Final local gates for this unit: root `uv run pytest -q` exited 0 against the
+verified disposable loopback rs0, with nine documented skips; root Ruff check
+and format check passed, full mypy passed 610 source files, direct-Meli lint and
+`git diff --check` passed. The eight protected rs0 tests were skipped by this
+ambient-Mongo suite and are not claimed as executed by this run.
+
 ### Authorized returns repair boundary (3.5 partial)
 
 Real Mongo RED exposed a local authorization-order defect: expired, not-yet-due
