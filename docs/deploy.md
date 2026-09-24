@@ -176,6 +176,10 @@ with the authorized source, then verify a bounded pilot month from admission
 through receipts, projected orders, completed queue job and reconciled interval.
 The new poller shares the existing acquisition pacer (180/min by default) and
 seller allowlist.
+With the production queue capacity of 20, the pilot callback admits at most
+four active monthly history jobs per seller on either protocol path, leaving
+queue room for formula queries and inventory.
+This callback bound does not prove fairness across multiple concurrent callers.
 An active legacy job for the same monthly interval defers new-protocol admission.
 Older workers ignore protocol-versioned jobs; preserve those jobs and receipts
 on rollback and do not claim completed history from an image change alone.

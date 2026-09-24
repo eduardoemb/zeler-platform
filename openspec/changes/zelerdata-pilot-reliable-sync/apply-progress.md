@@ -1,5 +1,35 @@
 # Apply Progress: ZelerData Pilot Reliable Sync
 
+## Scoped continuation: pilot history admission headroom (2026-09-23)
+
+At the production queue capacity, both history callback paths formerly admitted
+19 of the 20 seller slots before hitting the inventory reservation. Real-Mongo
+RED cases measured that saturation. The callback now counts active plan jobs,
+including legacy monthly orders, and admits at most four active history jobs
+per seller when queue capacity exceeds four. The cases verify two orders and
+two questions admitted, a separate query and inventory accepted, and the next
+history chunk admitted when one historical job becomes terminal. Small test
+queues retain their existing priority/capacity behavior. This is one-callback
+headroom, not an atomic
+cross-process history quota or a complete sustained fairness proof for task 2.4.
+The 38 focused lifecycle/backfill/pacing cases passed. The full root pytest
+suite exited successfully with nine expected skips; root Ruff check, Ruff
+format check and mypy passed across 606 source files. Schema export and
+direct-Meli lint also passed.
+Read-only pilot Mongo count inside the approved worker container found 2,432
+known orders created during the preceding 365 days. That is below the local
+10,000 known-order budget at this observation; it does not measure provider
+search volume or prove future headroom.
+
+Scoped VM schema rollout used the reviewed files already in `main` at
+`2e798f2`: `processed_event_claims` and the three history collections only.
+The staged archive checksum matched on the VM. A container-context dry run
+reported all four as `would_create`; the apply then reported four created
+collections and their indexes applied. Readback reported all four validators
+unchanged against the staged source and index counts 2, 2, 3 and 3 respectively
+(including each `_id` index). The sync-job index remains a separate API rollout.
+No history flag or service image was changed by this schema step.
+
 ## Scoped continuation: opt-in order history admission and runtime composition (2026-09-23)
 
 `ZELERDATA_ORDER_HISTORY_PROTOCOL_ENABLED` now selects a plan-bound order

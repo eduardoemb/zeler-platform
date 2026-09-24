@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import uuid4
 
@@ -15,7 +15,12 @@ from zeler_sheets.consumer import (
     build_zelerdata_refresh_supervisor,
 )
 from zeler_sheets.formulas.read_models import read_model_reconciliation_marker_covers
-from zeler_sheets.formulas.recovery import FormulaRecoveryQueue, OrderHistoryRecoveryRequest
+from zeler_sheets.formulas.recovery import (
+    FormulaRecoveryQueue,
+    ItemInventoryRecoveryRequest,
+    OrderHistoryRecoveryRequest,
+    RecoveryRequest,
+)
 from zeler_sheets.formulas.recovery_worker import FormulaRecoveryWorker
 from zeler_sheets.history_worker import HistoryOrdersWorker
 from zeler_sheets.pilot_history import HistoryPlanner
@@ -99,6 +104,49 @@ async def test_opted_in_callback_admits_plan_bound_order_protocol(
     assert await queue.claim() is None
     assert await callback(SELLER) is False
     assert await queue.collection.count_documents({"seller_id": SELLER}) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("order_history", [False, True])
+async def test_pilot_history_keeps_admission_for_query_and_inventory(
+    cutoff_db: AsyncIOMotorDatabase[dict[str, Any]],
+    order_history: bool,
+) -> None:
+    queue = FormulaRecoveryQueue(
+        cutoff_db,
+        allowed_sellers=frozenset({SELLER}),
+        max_active_jobs_per_seller=20,
+        reserved_inventory_slots=1,
+    )
+    await queue.ensure_indexes()
+    callback = build_pilot_history_backfill(
+        db=cutoff_db, recovery_queue=queue, order_history=order_history
+    )
+
+    assert await callback(SELLER)
+    plan = await cutoff_db[PLAN_COLLECTION].find_one({"_id": SELLER})
+    assert plan is not None
+    assert await queue.collection.count_documents({"state": "pending"}) == 4
+    assert await queue.collection.count_documents({"read_model": "orders", "state": "pending"}) == 2
+    assert (
+        await queue.collection.count_documents({"read_model": "questions", "state": "pending"}) == 2
+    )
+    query = RecoveryRequest(
+        SELLER, "orders", plan["cutoff"] - timedelta(days=2), plan["cutoff"] - timedelta(days=1)
+    )
+    inventory = ItemInventoryRecoveryRequest(SELLER)
+    assert await queue.enqueue(query) == query.key
+    assert await queue.enqueue(inventory) == inventory.key
+    assert await callback(SELLER) is False
+    assert await queue.collection.count_documents({"state": "pending"}) == 6
+
+    history_job = await queue.collection.find_one(
+        {"read_model": "orders", "state": "pending", "_id": {"$ne": query.key}}
+    )
+    assert history_job is not None
+    await queue.collection.update_one({"_id": history_job["_id"]}, {"$set": {"state": "completed"}})
+    assert await callback(SELLER)
+    assert await queue.collection.count_documents({"state": "pending"}) == 6
 
 
 @pytest.mark.asyncio

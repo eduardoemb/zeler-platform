@@ -31,7 +31,7 @@ authorization or size exception. PR topology pending. Historical evidence:
   cell visibility is not claimed. `received -> visible` remains pending on the Sheets side
   (tasks 5.1/5.3).
 - [x] 2.3 Prove old-order/stale/duplicate/isolation through consumer, guarded Mongo, dispatcher; Sheets pending.
-- [ ] 2.4 Prove sustained event/inventory/query/history admission and pacing fairness.
+- [ ] 2.4 Prove sustained event/inventory/query/history admission and pacing fairness. At production queue capacity, the pilot callback now limits active history jobs to four on both protocol paths; real-Mongo tests confirm query/inventory admission and history resumption after capacity frees. Concurrent-caller and sustained event/pacer evidence remains pending.
 
 ## Phase 3: History
 

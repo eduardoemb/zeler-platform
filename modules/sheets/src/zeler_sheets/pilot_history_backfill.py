@@ -27,6 +27,7 @@ logger = structlog.get_logger(__name__)
 __all__ = ["build_pilot_history_backfill"]
 
 PLAN_COLLECTION = "sheets_history_backfill_plans"
+PILOT_HISTORY_ACTIVE_JOBS = 4
 
 
 def build_pilot_history_backfill(
@@ -81,6 +82,27 @@ def build_pilot_history_backfill(
             for chunk in chunks
             if chunk.resource in {"orders", "questions"}
         }
+        history_budget = len(requests)
+        active_history = 0
+        if type(recovery_queue.max_active_jobs_per_seller) is int and (
+            recovery_queue.max_active_jobs_per_seller > PILOT_HISTORY_ACTIVE_JOBS
+        ):
+            history_budget = PILOT_HISTORY_ACTIVE_JOBS
+            history_keys = {request.key for request in requests.values()}
+            if order_history:
+                # Count both new orders and legacy monthly jobs after the switch.
+                history_keys.update(
+                    chunk_to_recovery_request(chunk, seller_id=seller_id).key
+                    for chunk in chunks
+                    if chunk.resource == "orders"
+                )
+            active_history = await recovery_queue.collection.count_documents(
+                {
+                    "_id": {"$in": list(history_keys)},
+                    "seller_id": seller_id,
+                    "state": {"$in": ["pending", "running"]},
+                }
+            )
         states = ("queued", "running", "completed", "failed", "pending", "blocked")
         progress: dict[str, dict[str, Any]] = {
             resource: {
@@ -90,7 +112,7 @@ def build_pilot_history_backfill(
             }
             for resource in resources
         }
-        capacity_reached = False
+        capacity_reached = active_history >= history_budget
         accepted = False
         legacy_active: set[str] = set()
         for chunk in chunks:
@@ -117,6 +139,8 @@ def build_pilot_history_backfill(
             else:
                 progress[chunk.resource]["accepted_or_coalesced_this_cycle"] += 1
                 accepted = True
+                active_history += 1
+                capacity_reached = active_history >= history_budget
         for chunk in chunks:
             entry: dict[str, Any] = {
                 "chunk_id": chunk.id,
