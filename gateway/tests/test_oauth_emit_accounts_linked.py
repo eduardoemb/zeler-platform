@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -53,11 +55,17 @@ async def test_emit_upserts_bootstrap_job_and_publishes_amqp() -> None:
         "_id": "bootstrap-S5-oauth",
         "state": "pending",
         "seller_id": "S5",
+        "dag": {},
+        "checkpoints": {},
         "triggered_by": "oauth_callback",
         "dispatch_attempts": 0,
         "created_at": NOW,
         "updated_at": NOW,
+        "schema_version": 1,
     }
+    schema_path = Path(__file__).parents[2] / "infra/mongo/schemas/bootstrap_jobs.json"
+    required_fields = set(json.loads(schema_path.read_text())["$jsonSchema"]["required"])
+    assert required_fields <= db.bootstrap_jobs.docs["bootstrap-S5-oauth"].keys()
     assert publisher.messages == [
         {
             "exchange": "meli.events",

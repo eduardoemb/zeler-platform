@@ -5,6 +5,8 @@ from typing import Any, Protocol
 
 import structlog
 
+from zeler_platform_core.models.base import current_schema_version
+
 logger = structlog.get_logger(__name__)
 
 
@@ -37,14 +39,17 @@ async def emit_accounts_linked(
         return
 
     job_id = f"bootstrap-{seller_id}-oauth"
-    job = {
+    job: dict[str, Any] = {
         "_id": job_id,
         "state": "pending",
         "seller_id": seller_id,
+        "dag": {},
+        "checkpoints": {},
         "triggered_by": "oauth_callback_force" if force else "oauth_callback",
         "dispatch_attempts": 0,
         "created_at": existing.get("created_at", now) if existing else now,
         "updated_at": now,
+        "schema_version": current_schema_version("bootstrap_jobs"),
     }
     await mongo_db["bootstrap_jobs"].replace_one({"_id": job_id}, job, upsert=True)
     idempotency_suffix = "force" if force else "oauth"
