@@ -8,6 +8,7 @@ EXCHANGE = "meli.events"
 SHEETS_REPLAY_EXCHANGE = "zeler.sheets.replay"
 
 QUEUE_BINDINGS = {
+    "zeler.bootstrap.accounts": ["accounts.linked"],
     "zeler.repricer.items": ["items.*"],
     "zeler.repricer.items_prices": ["items.price_updated"],
     "zeler.repricer.price_suggestion": ["price_suggestion.*"],
@@ -36,6 +37,7 @@ SHEETS_REPLAY_QUEUE_BINDINGS = {
 }
 
 ACTIVE_QUEUE_DEAD_LETTER_ROUTING_KEYS = {
+    "zeler.bootstrap.accounts": "zeler.bootstrap.accounts.dlq",
     "zeler.sheets.events": "zeler.sheets.events.dlq",
     "zeler.autoreply.events": "zeler.autoreply.events.dlq",
 }
@@ -83,17 +85,18 @@ def build_topology_definitions() -> dict[str, Any]:
                 "routing_key": dead_letter_routing_key or queue_name,
             }
         )
-        for delay_name, ttl_ms in RETRY_DELAYS_MS.items():
-            retry_queue = f"{queue_name}.retry.{delay_name}"
-            queues.append(
-                _queue(
-                    retry_queue,
-                    {
-                        "x-message-ttl": ttl_ms,
-                        "x-dead-letter-exchange": EXCHANGE,
-                    },
+        if queue_name != "zeler.bootstrap.accounts":
+            for delay_name, ttl_ms in RETRY_DELAYS_MS.items():
+                retry_queue = f"{queue_name}.retry.{delay_name}"
+                queues.append(
+                    _queue(
+                        retry_queue,
+                        {
+                            "x-message-ttl": ttl_ms,
+                            "x-dead-letter-exchange": EXCHANGE,
+                        },
+                    )
                 )
-            )
         for routing_key in routing_keys:
             bindings.append(
                 {"source": EXCHANGE, "destination": queue_name, "routing_key": routing_key}

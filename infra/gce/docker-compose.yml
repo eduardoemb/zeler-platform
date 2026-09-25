@@ -133,6 +133,30 @@ services:
   # --------------------------------------------------------------------------
   # Workers
   # --------------------------------------------------------------------------
+  bootstrap-dispatcher:
+    <<: *restart
+    image: us-central1-docker.pkg.dev/zeler-platform-dev/zeler-platform/bootstrap-dispatcher:pending-build
+    entrypoint:
+      - /app/.venv/bin/python
+      - -m
+      - zeler_bootstrap.dispatcher_worker
+    networks:
+      - platform_default
+    env_file: /opt/zeler-platform/env/bootstrap-dispatcher.env
+    depends_on:
+      mongo:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - /app/.venv/bin/python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=2)"
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_period: 20s
+
   repricer-worker:
     <<: *restart
     image: us-central1-docker.pkg.dev/zeler-platform-dev/zeler-platform/repricer-worker:health-d908574

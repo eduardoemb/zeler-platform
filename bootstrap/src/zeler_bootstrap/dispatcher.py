@@ -54,22 +54,30 @@ class BootstrapDispatcher:
             return "backpressure"
 
         job_id = str(pending_job["_id"])
+        now = datetime.now(UTC)
         try:
-            await jobs.update_one(
+            claim = await jobs.update_one(
                 {"_id": pending_job["_id"], "state": "pending"},
                 {
-                    "$set": {"state": "running", "updated_at": datetime.now(UTC)},
-                    "$inc": {"dispatch_attempts": 1},
+                    "$set": {
+                        "state": "running",
+                        "updated_at": now,
+                        "started_at": pending_job.get("started_at") or now,
+                    },
+                    "$inc": {"dispatch_attempts": 1, "attempt_count": 1},
                 },
             )
+            if claim.matched_count != 1:
+                return "skipped"
             await self._cloud_run_jobs_client.run_job(seller_id=seller_id, job_id=job_id)
         except Exception:
             await jobs.update_one(
-                {"_id": pending_job["_id"]},
+                {"_id": pending_job["_id"], "state": "running"},
                 {"$set": {"state": "pending", "updated_at": datetime.now(UTC)}},
             )
-            await self._release_lock()
             raise
+        finally:
+            await self._release_lock()
         return "running"
 
     async def _acquire_lock(self) -> bool:

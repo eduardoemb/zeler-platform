@@ -6,12 +6,12 @@
 #   and writes per-service env files under /opt/zeler-platform/env/<service>.env
 #   with mode 0600, owner root.
 #
-# Services covered (12 env files):
+# Services covered (11 env files):
 #   mongo, caddy, gateway,
 #   repricer-api, repricer-worker,
 #   sheets-api, sheets-worker,
 #   publicador-api,
-#   autoreply-api, autoreply-worker,
+#   autoreply-api, autoreply-worker, bootstrap-dispatcher.
 
 set -euo pipefail
 
@@ -23,6 +23,21 @@ mkdir -p "$ENV_DIR"
 
 # Helper: fetch secret from Secret Manager
 s() { gcloud secrets versions access latest --secret="$1"; }
+
+if [[ "${1:-}" == "--only-bootstrap-dispatcher" ]]; then
+  ZELER_DISPATCH_MONGO_URI=$(s mongo-uri-prod)
+  ZELER_DISPATCH_RABBITMQ_URL=$(s cloudamqp-url)
+  printf 'MONGO_URI=%s\nMONGO_DB=zeler_platform_prod\nRABBITMQ_URL=%s\nGCP_PROJECT_ID=zeler-platform-dev\nBOOTSTRAP_DISPATCH_REGION=us-central1\nBOOTSTRAP_CLOUD_RUN_JOB=zeler-bootstrap\nWORKER_HEALTH_PORT=8080\n' \
+    "$ZELER_DISPATCH_MONGO_URI" "$ZELER_DISPATCH_RABBITMQ_URL" \
+    > "$ENV_DIR/bootstrap-dispatcher.env"
+  chmod 600 "$ENV_DIR/bootstrap-dispatcher.env"
+  echo "Written: $ENV_DIR/bootstrap-dispatcher.env"
+  exit 0
+fi
+if [[ $# -ne 0 ]]; then
+  echo "Unsupported zeler-platform-secrets.sh argument" >&2
+  exit 2
+fi
 
 # ---------------------------------------------------------------------------
 # Fetch all secrets upfront so any failure aborts before any file is written
@@ -153,5 +168,17 @@ for svc in repricer-worker autoreply-worker; do
     "${BASE[@]}" \
     "GATEWAY_BASE_URL=$GATEWAY_PROXY_BASE_URL"
 done
+
+# ---------------------------------------------------------------------------
+# bootstrap-dispatcher — Mongo, RabbitMQ, and job-level Cloud Run execution
+# ---------------------------------------------------------------------------
+write bootstrap-dispatcher \
+  "MONGO_URI=$MONGO_URI" \
+  "MONGO_DB=$MONGO_DB" \
+  "RABBITMQ_URL=$RABBITMQ_URL" \
+  "GCP_PROJECT_ID=$GOOGLE_CLOUD_PROJECT" \
+  "BOOTSTRAP_DISPATCH_REGION=us-central1" \
+  "BOOTSTRAP_CLOUD_RUN_JOB=zeler-bootstrap" \
+  "WORKER_HEALTH_PORT=8080"
 
 echo "All env files written to $ENV_DIR"

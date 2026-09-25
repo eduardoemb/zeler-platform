@@ -284,6 +284,7 @@ Choose the Dockerfile from this map:
 | Service | Dockerfile |
 | --- | --- |
 | `gateway` | `gateway/Dockerfile` |
+| `bootstrap-dispatcher` | `bootstrap/Dockerfile` (Compose overrides the Job entrypoint) |
 | `repricer-api` | `modules/repricer/Dockerfile.api` |
 | `repricer-worker` | `modules/repricer/Dockerfile.worker` |
 | `sheets-api` | `modules/sheets/Dockerfile.api` |
@@ -820,6 +821,53 @@ Rollout checklist:
 Rollback: redeploy the previous bootstrap job image/config. If only bindings changed, restore the
 previous `CLOUD_RUN_SECRET_BINDINGS_EXPORT`/substitution values and redeploy the job without
 running live bootstrap execution.
+
+## 5b.1. Account-link bootstrap dispatcher rollout
+
+The `bootstrap-dispatcher` is a separate VM Compose service built from
+`bootstrap/Dockerfile`. Its entrypoint consumes `zeler.bootstrap.accounts`; the
+existing `zeler-bootstrap` Cloud Run Job still runs the DAG. Build and deploy
+authorization are separate. Do not use the earlier gateway image as proof that
+this complete flow is ready until the dispatcher is healthy and its queue is
+bound.
+
+1. Confirm the authorized `main` commit, the verified immutable dispatcher and
+   gateway image digests, VM capacity, Mongo mount, memory, current gateway
+   running digest, and compatible rollback. No cleanup is expected for this
+   rollout. The worker is new, so its rollback is to stop/remove only that
+   service while preserving the durable queue and dead letters.
+2. Grant `platform-vm-sa@zeler-platform-dev.iam.gserviceaccount.com`
+   `roles/run.jobsExecutorWithOverrides` **on `zeler-bootstrap` only**. The
+   role is needed because dispatch supplies `--seller-id` and `--job-id` as
+   container argument overrides; `roles/run.invoker` is insufficient.
+3. Install the authorized `zeler-platform-secrets.sh` on the VM, then run only
+   `sudo /opt/zeler-platform/zeler-platform-secrets.sh --only-bootstrap-dispatcher`.
+   This reads the two needed secrets and writes only the new 0600 env file.
+   Do not run the full secrets writer during this narrow rollout; it rewrites
+   every existing service env file.
+4. Add only the new Compose service using a verified `bootstrap-dispatcher@sha256`
+   reference. Run the capacity/digest preflight for that service, pull it, recheck
+   free space, and start only `bootstrap-dispatcher`. The worker declares its
+   durable queue, DLQ, and `accounts.linked` binding idempotently at startup.
+   Update only `_id="bootstrap"` in `module_registry` to include
+   `accounts.linked` in `routing_keys`; verify its existing GET proxy scopes
+   and other fields are preserved.
+   Confirm worker `/health` reports RabbitMQ and Mongo ready, CloudAMQP has the
+   exact binding, and restart/OOM counters remain stable after settling.
+5. Replace only the gateway image with its verified digest using section 5.
+   Verify running digest, `/health`, `/ready`, dependencies, and stable health
+   after settling. Do not repeat OAuth with a spent authorization code.
+6. For the already-linked test seller, from the approved VM/runtime context,
+   verify the active account and absent bootstrap job, then invoke the fixed
+   account-link emitter once using its stored platform user identity. Confirm
+   the job is valid, the message is routed, one Cloud Run execution starts with
+   the correct arguments, and the job reaches a terminal state. Never print
+   tokens, the AMQP URL, or raw account documents.
+
+If the worker, gateway, or controlled seller smoke fails, stop the new worker
+and restore only the previous gateway running digest. Keep the new queue and its
+messages for investigation; never purge it or prune volumes. Revert the
+job-level IAM binding after the worker is stopped if dispatch is abandoned.
 
 ---
 

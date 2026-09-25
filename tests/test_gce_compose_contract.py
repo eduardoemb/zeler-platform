@@ -2,7 +2,7 @@
 Contract tests for GCE infra artifacts: docker-compose.yml, Caddyfile, env-templates.
 
 Task 1.7: Compose contract
-  (10 active services, no :latest, network, private Mongo port, caddy ports).
+  (11 active services, no :latest, network, private Mongo port, caddy ports).
 Task 1.8: Caddyfile contract (5 active site blocks + retired Fulldock parking under zeler.ai only).
 Task 1.9: Env-template contract (required keys per service per design §7).
 """
@@ -37,6 +37,7 @@ EXPECTED_SERVICES = {
     "mongo",
     "caddy",
     "gateway",
+    "bootstrap-dispatcher",
     "repricer-api",
     "repricer-worker",
     "sheets-api",
@@ -123,6 +124,15 @@ SERVICE_REQUIRED_KEYS: dict[str, set[str]] = {
     },
     "repricer-worker": BASE_KEYS | {"GATEWAY_BASE_URL"},
     "autoreply-worker": BASE_KEYS | {"GATEWAY_BASE_URL"},
+    "bootstrap-dispatcher": {
+        "MONGO_URI",
+        "MONGO_DB",
+        "RABBITMQ_URL",
+        "GCP_PROJECT_ID",
+        "BOOTSTRAP_DISPATCH_REGION",
+        "BOOTSTRAP_CLOUD_RUN_JOB",
+        "WORKER_HEALTH_PORT",
+    },
 }
 
 
@@ -228,6 +238,17 @@ class TestComposeServices:
         assert healthcheck["interval"] == "10s"
         assert healthcheck["timeout"] == "3s"
         assert healthcheck["retries"] == 6
+
+    def test_bootstrap_dispatcher_runs_its_consumer_with_local_readiness(self) -> None:
+        worker = load_compose()["services"]["bootstrap-dispatcher"]
+        assert worker["entrypoint"] == [
+            "/app/.venv/bin/python",
+            "-m",
+            "zeler_bootstrap.dispatcher_worker",
+        ]
+        assert worker["env_file"] == "/opt/zeler-platform/env/bootstrap-dispatcher.env"
+        assert worker["restart"] == "unless-stopped"
+        assert "127.0.0.1:8080/health" in str(worker["healthcheck"])
 
     def test_sheets_dlq_snapshot_mount_and_startup_install_are_root_only(self) -> None:
         snapshot_path = "/var/lib/zeler-platform/sheets-dlq-snapshot"
@@ -430,6 +451,42 @@ class TestEnvTemplateContract:
         assert values["SHEETS_SYNC_JOBS_POLLER_ENABLED"] == "true"
         assert values["RABBITMQ_MANAGEMENT_URL"] != values["RABBITMQ_URL"]
         assert values["GATEWAY_URL"] != values["GATEWAY_BASE_URL"]
+
+    def test_bootstrap_dispatcher_env_can_be_written_without_touching_other_services(
+        self, tmp_path: Path
+    ) -> None:
+        env_dir = tmp_path / "env"
+        fake_gcloud = tmp_path / "gcloud"
+        secret_calls = tmp_path / "secret-calls"
+        fake_gcloud.write_text(
+            "#!/usr/bin/env bash\n"
+            'printf "%s\\n" "$*" >> "$SECRET_CALLS_FILE"\n'
+            "printf '%s' 'test-only-value'\n"
+        )
+        fake_gcloud.chmod(0o755)
+        sandboxed_script = tmp_path / SECRETS_SCRIPT.name
+        sandboxed_script.write_text(
+            SECRETS_SCRIPT.read_text().replace(
+                "ENV_DIR=/opt/zeler-platform/env", f"ENV_DIR={env_dir}"
+            )
+        )
+
+        completed = subprocess.run(  # noqa: S603 - sandboxed checked-in script.
+            ["/bin/bash", str(sandboxed_script), "--only-bootstrap-dispatcher"],
+            capture_output=True,
+            check=False,
+            env={
+                "PATH": f"{tmp_path}{os.pathsep}{os.environ['PATH']}",
+                "SECRET_CALLS_FILE": str(secret_calls),
+            },
+            text=True,
+        )
+
+        assert completed.returncode == 0, completed.stderr
+        assert {path.name for path in env_dir.iterdir()} == {"bootstrap-dispatcher.env"}
+        assert (env_dir / "bootstrap-dispatcher.env").stat().st_mode & 0o777 == 0o600
+        assert len(secret_calls.read_text().splitlines()) == 2
+        assert "test-only-value" not in completed.stdout
 
     def test_sheets_worker_template_enables_sync_jobs_poller(self) -> None:
         template = (ENV_TEMPLATES_DIR / "sheets-worker.env.template").read_text()

@@ -71,6 +71,7 @@ repeat failures, and promote stable knowledge to its proper operational form.
 | L-012 | Local tests | Isolated Mongo replica set and file-descriptor limit | active |
 | L-013 | ZelerData | Quota waits and unchanged source freshness | active |
 | L-014 | Broker health | Connection ownership before AMQP handshake | promoted/reference |
+| L-015 | Bootstrap | Route account-link events before gateway rollout | active |
 
 ## Cloud Build and VM deployment
 
@@ -121,6 +122,17 @@ repeat failures, and promote stable knowledge to its proper operational form.
 - failed path: Operate on the VM from an unverified local checkout or ref.
 - verification/source: `docs/deploy.md`, exact-commit Cloud Build path and deployment gates.
 - status: promoted/reference
+
+### L-015 — Route account-link events before gateway rollout
+- area: OAuth and bootstrap runtime
+- proven path: Start a healthy consumer with a durable `accounts.linked` binding
+  before deploying the gateway publisher; pass `--seller-id` and `--job-id` as
+  Cloud Run Job argument overrides with job-level override permission.
+- failed path: A gateway-only fix leaves mandatory event publication unroutable;
+  environment overrides do not satisfy the bootstrap Job's CLI arguments.
+- verification/source: `docs/deploy.md` section 5b.1, bootstrap dispatcher
+  contract tests, and the local RabbitMQ/Mongo OAuth flow smoke.
+- status: active
 
 ## ZelerData
 

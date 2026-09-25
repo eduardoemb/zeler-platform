@@ -144,3 +144,26 @@ def test_generated_definitions_json_matches_topology_builder() -> None:
     definitions = json.loads((ROOT / "infra/rabbitmq/definitions.json").read_text())
 
     assert definitions == build_topology_definitions()
+
+
+def test_accounts_linked_has_durable_bootstrap_destination() -> None:
+    definitions = build_topology_definitions()
+    assert {
+        "source": "meli.events",
+        "destination": "zeler.bootstrap.accounts",
+        "routing_key": "accounts.linked",
+    } in definitions["bindings"]
+    assert any(
+        queue["name"] == "zeler.bootstrap.accounts" and queue["durable"] is True
+        for queue in definitions["queues"]
+    )
+    assert not any(
+        queue["name"].startswith("zeler.bootstrap.accounts.retry.")
+        for queue in definitions["queues"]
+    )
+
+
+def test_bootstrap_registry_declares_account_link_subscription() -> None:
+    seed = json.loads((ROOT / "infra/mongo/seeds/module_registry.admin_clients.json").read_text())
+    bootstrap = next(document for document in seed["documents"] if document["_id"] == "bootstrap")
+    assert "accounts.linked" in bootstrap["routing_keys"]

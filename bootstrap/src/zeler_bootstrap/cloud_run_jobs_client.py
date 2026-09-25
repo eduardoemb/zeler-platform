@@ -45,10 +45,7 @@ class CloudRunJobsClient:
                 "overrides": {
                     "containerOverrides": [
                         {
-                            "env": [
-                                {"name": "SELLER_ID", "value": seller_id},
-                                {"name": "BOOTSTRAP_JOB_ID", "value": job_id},
-                            ]
+                            "args": [f"--seller-id={seller_id}", f"--job-id={job_id}"],
                         }
                     ]
                 }

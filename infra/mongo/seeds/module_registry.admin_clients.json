@@ -72,7 +72,9 @@
         "GET /post-purchase/v1/claims/*",
         "GET /post-purchase/v2/claims/*/returns"
       ],
-      "routing_keys": [],
+      "routing_keys": [
+        "accounts.linked"
+      ],
       "owned_collections": [],
       "health_endpoint": "/health",
       "status": "enabled",

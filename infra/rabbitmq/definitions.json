@@ -11,6 +11,11 @@
       "durable": true
     },
     {
+      "name": "zeler.bootstrap.accounts.dlx",
+      "type": "direct",
+      "durable": true
+    },
+    {
       "name": "zeler.repricer.items.dlx",
       "type": "direct",
       "durable": true
@@ -57,6 +62,19 @@
     }
   ],
   "queues": [
+    {
+      "name": "zeler.bootstrap.accounts.dlq",
+      "durable": true,
+      "arguments": {}
+    },
+    {
+      "name": "zeler.bootstrap.accounts",
+      "durable": true,
+      "arguments": {
+        "x-dead-letter-exchange": "zeler.bootstrap.accounts.dlx",
+        "x-dead-letter-routing-key": "zeler.bootstrap.accounts.dlq"
+      }
+    },
     {
       "name": "zeler.repricer.items.dlq",
       "durable": true,
@@ -534,6 +552,16 @@
     }
   ],
   "bindings": [
+    {
+      "source": "zeler.bootstrap.accounts.dlx",
+      "destination": "zeler.bootstrap.accounts.dlq",
+      "routing_key": "zeler.bootstrap.accounts.dlq"
+    },
+    {
+      "source": "meli.events",
+      "destination": "zeler.bootstrap.accounts",
+      "routing_key": "accounts.linked"
+    },
     {
       "source": "zeler.repricer.items.dlx",
       "destination": "zeler.repricer.items.dlq",

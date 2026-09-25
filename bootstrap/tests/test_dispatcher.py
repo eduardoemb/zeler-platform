@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
@@ -46,10 +47,13 @@ class FakeCollection:
         _apply_update(stored, update)
         return dict(stored)
 
-    async def update_one(self, query: dict[str, object], update: dict[str, object]) -> None:
+    async def update_one(
+        self, query: dict[str, object], update: dict[str, object]
+    ) -> SimpleNamespace:
         doc = await self.find_one(query)
         if doc is not None:
             _apply_update(self.docs[str(doc["_id"])], update)
+        return SimpleNamespace(matched_count=1 if doc is not None else 0)
 
 
 class FakeDb(dict[str, FakeCollection]):
@@ -76,6 +80,9 @@ async def test_dispatch_calls_cloud_run_jobs_and_marks_running() -> None:
     assert cloud_run.calls == [{"seller_id": "123", "job_id": "job-1"}]
     assert db["bootstrap_jobs"].docs["job-1"]["state"] == "running"
     assert db["bootstrap_jobs"].docs["job-1"]["dispatch_attempts"] == 1
+    assert db["bootstrap_jobs"].docs["job-1"]["attempt_count"] == 1
+    assert db["bootstrap_jobs"].docs["job-1"]["started_at"] is not None
+    assert db["bootstrap_dispatcher_locks"].docs["counter"]["count"] == 0
 
 
 @pytest.mark.asyncio
@@ -107,6 +114,34 @@ async def test_reverts_state_on_dispatch_failure() -> None:
         )
 
     assert db["bootstrap_jobs"].docs["job-1"]["state"] == "pending"
+    assert db["bootstrap_dispatcher_locks"].docs["counter"]["count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_lost_pending_claim_does_not_launch_duplicate_execution() -> None:
+    class RacingJobs(FakeCollection):
+        async def update_one(
+            self, query: dict[str, object], update: dict[str, object]
+        ) -> SimpleNamespace:
+            if query.get("state") == "pending":
+                self.docs["job-1"]["state"] = "running"
+                return SimpleNamespace(matched_count=0)
+            return await super().update_one(query, update)
+
+    db = FakeDb()
+    db["bootstrap_jobs"] = RacingJobs()
+    db["bootstrap_jobs"].docs["job-1"] = {
+        "_id": "job-1",
+        "seller_id": "123",
+        "state": "pending",
+        "dispatch_attempts": 0,
+    }
+    cloud_run = FakeCloudRunJobsClient()
+
+    result = await BootstrapDispatcher(db, cloud_run).handle_accounts_linked({"seller_id": "123"})
+
+    assert result == "skipped"
+    assert cloud_run.calls == []
     assert db["bootstrap_dispatcher_locks"].docs["counter"]["count"] == 0
 
 
