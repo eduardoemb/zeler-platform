@@ -176,6 +176,32 @@ class FakeCollection:
         return FakeCursor(documents)
 
 
+class StrictLinkedAccountCollection(FakeCollection):
+    def __init__(self, seller_id: int | str | None) -> None:
+        super().__init__()
+        self.account = (
+            {
+                "seller_id": seller_id,
+                "app_id": "zeler-platform",
+                "preserved_field": "existing",
+                "timezone": "UTC",
+            }
+            if seller_id is not None
+            else None
+        )
+
+    async def update_one(
+        self, filter_spec: dict[str, Any], update: Any, *, upsert: bool = False, **_: Any
+    ) -> Any:
+        self.upserts.append((filter_spec, update, upsert))
+        if self.account is None or not _matches_filter(self.account, filter_spec):
+            if upsert:
+                raise ValueError("incomplete account insert rejected by validator")
+            return SimpleNamespace(matched_count=0)
+        self.account.update(update.get("$set", {}))
+        return SimpleNamespace(matched_count=1)
+
+
 class FakeCursor:
     def __init__(self, documents: list[dict[str, Any]]) -> None:
         self._documents = documents
@@ -562,16 +588,19 @@ async def test_accounts_stage_persists_site_id_and_resolved_timezone() -> None:
     collection = FakeBootstrapJobs()
     collection.document["state"] = "running"
     database = FakeDatabase()
+    database["meli_accounts"] = StrictLinkedAccountCollection(123)
     gateway = FakeGateway()
     machine = BootstrapStateMachine(collection, "job-1", now_fn=lambda: NOW)
 
     await AccountsStage(gateway, database).run(collection.document, machine)
 
     filter_spec, update, upsert = database["meli_accounts"].upserts[0]
-    assert filter_spec == {"seller_id": "123"}
-    assert upsert is True
+    assert filter_spec == {
+        "seller_id": {"$in": [123, "123"]},
+        "app_id": "zeler-platform",
+    }
+    assert upsert is False
     assert update["$set"] == {
-        "seller_id": "123",
         "nickname": "TEST_SELLER",
         "site_id": "MLM",
         "timezone": "America/Mexico_City",
@@ -580,10 +609,12 @@ async def test_accounts_stage_persists_site_id_and_resolved_timezone() -> None:
 
 
 @pytest.mark.asyncio
-async def test_accounts_stage_uses_insert_only_utc_fallback_without_null_overwrite() -> None:
+async def test_accounts_stage_preserves_existing_timezone_without_site_id() -> None:
     collection = FakeBootstrapJobs()
     collection.document["state"] = "running"
     database = FakeDatabase()
+    accounts = StrictLinkedAccountCollection(123)
+    database["meli_accounts"] = accounts
     gateway = FakeGateway()
 
     async def get(path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -599,11 +630,51 @@ async def test_accounts_stage_uses_insert_only_utc_fallback_without_null_overwri
 
     _, update, _ = database["meli_accounts"].upserts[0]
     assert update["$set"] == {
-        "seller_id": "123",
         "nickname": "TEST_SELLER",
         "schema_version": 1,
     }
-    assert update["$setOnInsert"] == {"timezone": "UTC"}
+    assert "$setOnInsert" not in update
+    assert accounts.account is not None
+    assert accounts.account["timezone"] == "UTC"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stored_seller_id", [123, "123"])
+async def test_accounts_stage_updates_linked_account_without_changing_identity(
+    stored_seller_id: int | str,
+) -> None:
+    collection = FakeBootstrapJobs()
+    collection.document["state"] = "running"
+    database = FakeDatabase()
+    accounts = StrictLinkedAccountCollection(stored_seller_id)
+    database["meli_accounts"] = accounts
+    machine = BootstrapStateMachine(collection, "job-1", now_fn=lambda: NOW)
+
+    await AccountsStage(FakeGateway(), database).run(collection.document, machine)
+
+    assert accounts.account is not None
+    assert accounts.account["seller_id"] == stored_seller_id
+    assert accounts.account["preserved_field"] == "existing"
+    assert accounts.account["timezone"] == "America/Mexico_City"
+    assert accounts.upserts[0][2] is False
+    assert collection.document["checkpoints"]["accounts"] == {"seller_id": "123"}
+
+
+@pytest.mark.asyncio
+async def test_accounts_stage_rejects_missing_linked_account_without_inserting() -> None:
+    collection = FakeBootstrapJobs()
+    collection.document["state"] = "running"
+    database = FakeDatabase()
+    accounts = StrictLinkedAccountCollection(None)
+    database["meli_accounts"] = accounts
+    machine = BootstrapStateMachine(collection, "job-1", now_fn=lambda: NOW)
+
+    with pytest.raises(RuntimeError, match="linked seller account missing"):
+        await AccountsStage(FakeGateway(), database).run(collection.document, machine)
+
+    assert accounts.account is None
+    assert accounts.upserts[0][2] is False
+    assert collection.document["stage_progress"] == {}
 
 
 def test_order_item_preserves_source_identity_fields_without_synthesizing_absent_values() -> None:

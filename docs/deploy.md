@@ -284,6 +284,7 @@ Choose the Dockerfile from this map:
 | Service | Dockerfile |
 | --- | --- |
 | `gateway` | `gateway/Dockerfile` |
+| `zeler-bootstrap` Job | `bootstrap/Dockerfile` |
 | `bootstrap-dispatcher` | `bootstrap/Dockerfile` (Compose overrides the Job entrypoint) |
 | `repricer-api` | `modules/repricer/Dockerfile.api` |
 | `repricer-worker` | `modules/repricer/Dockerfile.worker` |
@@ -771,8 +772,12 @@ gcloud compute ssh platform-vm --tunnel-through-iap --zone=$ZONE --project=$PROJ
 
 ## 5b. Bootstrap Cloud Run Job rollout
 
-`zeler-bootstrap` is deployed by Cloud Build from `infra/cloudbuild/bootstrap-job.yaml`. Before
-submitting the build, export a sanitized binding contract for preflight:
+Build the `zeler-bootstrap` Job image with the single-image verified Cloud Build
+procedure above, then update the Job to the resulting immutable digest under
+separate deployment authorization. The older
+`infra/cloudbuild/bootstrap-job.yaml` combines build and deployment, so do not
+use it when authorization covers only the build. Before deployment, export a
+sanitized binding contract for preflight:
 
 ```bash
 export CLOUD_RUN_SECRET_BINDINGS_EXPORT='{
@@ -815,7 +820,8 @@ Rollout checklist:
    in `/opt/zeler-platform/.env`) and firewall allows TCP 27017 only from the Serverless VPC
    Access connector range.
 5. Confirm `module_registry` contains enabled module `bootstrap` with GET proxy scopes.
-6. Run preflight above, then deploy with Cloud Build.
+6. Run preflight above, then update only `zeler-bootstrap` to the verified image
+   digest under the authorized deployment scope.
 7. Execute one dry-run and one controlled seller job before broad use.
 
 Rollback: redeploy the previous bootstrap job image/config. If only bindings changed, restore the
@@ -833,9 +839,12 @@ bound.
 
 1. Confirm the authorized `main` commit, the verified immutable dispatcher and
    gateway image digests, VM capacity, Mongo mount, memory, current gateway
-   running digest, and compatible rollback. No cleanup is expected for this
-   rollout. The worker is new, so its rollback is to stop/remove only that
-   service while preserving the durable queue and dead letters.
+   running digest, and compatible rollback. Confirm the `zeler-bootstrap` Job
+   image includes the account-stage fix that updates the existing linked
+   account without upsert; an older Job image fails against the account
+   validator after dispatch. No cleanup is expected for this rollout. The
+   worker is new, so its rollback is to stop/remove only that service while
+   preserving the durable queue and dead letters.
 2. Grant `platform-vm-sa@zeler-platform-dev.iam.gserviceaccount.com`
    `roles/run.jobsExecutorWithOverrides` **on `zeler-bootstrap` only**. The
    role is needed because dispatch supplies `--seller-id` and `--job-id` as
@@ -858,8 +867,10 @@ bound.
    Verify running digest, `/health`, `/ready`, dependencies, and stable health
    after settling. Do not repeat OAuth with a spent authorization code.
 6. For the already-linked test seller, from the approved VM/runtime context,
-   verify the active account and absent bootstrap job, then invoke the fixed
-   account-link emitter once using its stored platform user identity. Confirm
+   verify the active account and inspect the bootstrap job plus any prior
+   execution. If the prior job failed, confirm its execution is terminal before
+   one controlled retry; otherwise require an absent job. Invoke the fixed
+   account-link emitter once using the stored platform user identity. Confirm
    the job is valid, the message is routed, one Cloud Run execution starts with
    the correct arguments, and the job reaches a terminal state. Never print
    tokens, the AMQP URL, or raw account documents.

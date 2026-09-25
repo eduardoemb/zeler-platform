@@ -48,10 +48,14 @@ class BootstrapGatewayClient(Protocol):
     async def get(self, path: str, params: dict[str, Any] | None = None) -> Any: ...
 
 
+class BootstrapUpdateResult(Protocol):
+    matched_count: int
+
+
 class BootstrapCollection(Protocol):
     async def update_one(
         self, filter_spec: dict[str, Any], update: dict[str, Any], *, upsert: bool
-    ) -> None: ...
+    ) -> BootstrapUpdateResult: ...
 
 
 class BootstrapDatabase(Protocol):
@@ -217,32 +221,31 @@ class AccountsStage:
     async def run(self, job: dict[str, Any], state_machine: BootstrapStateMachine) -> None:
         seller_id = str(job["seller_id"])
         metadata = await self.gateway.get(f"/users/{seller_id}")
-        update = _account_metadata_update(seller_id=seller_id, metadata=metadata)
-        await self.database["meli_accounts"].update_one(
-            {"seller_id": seller_id},
+        update = _account_metadata_update(metadata=metadata)
+        result = await self.database["meli_accounts"].update_one(
+            {"seller_id": {"$in": [int(seller_id), seller_id]}, "app_id": "zeler-platform"},
             update,
-            upsert=True,
+            upsert=False,
         )
+        if result.matched_count != 1:
+            msg = "linked seller account missing"
+            raise RuntimeError(msg)
         await state_machine.update_cursor(self.name, {"seller_id": seller_id})
 
 
-def _account_metadata_update(*, seller_id: str, metadata: dict[str, Any]) -> dict[str, Any]:
+def _account_metadata_update(*, metadata: dict[str, Any]) -> dict[str, Any]:
     site_id = _metadata_site_id(metadata)
     timezone_resolution = resolve_meli_timezone(site_id)
     set_fields = _without_none_values(
         {
-            "seller_id": seller_id,
             "nickname": metadata.get("nickname"),
             "schema_version": 1,
             "site_id": timezone_resolution.site_id,
         }
     )
-    update: dict[str, Any] = {"$set": set_fields}
-    if timezone_resolution.site_id is None:
-        update["$setOnInsert"] = {"timezone": timezone_resolution.timezone}
-    else:
+    if timezone_resolution.site_id is not None:
         set_fields["timezone"] = timezone_resolution.timezone
-    return update
+    return {"$set": set_fields}
 
 
 def _metadata_site_id(metadata: dict[str, Any]) -> str | None:

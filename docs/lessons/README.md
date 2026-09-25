@@ -72,6 +72,7 @@ repeat failures, and promote stable knowledge to its proper operational form.
 | L-013 | ZelerData | Quota waits and unchanged source freshness | active |
 | L-014 | Broker health | Connection ownership before AMQP handshake | promoted/reference |
 | L-015 | Bootstrap | Route account-link events before gateway rollout | active |
+| L-016 | Bootstrap | Update the linked account without inserting a second record | active |
 
 ## Cloud Build and VM deployment
 
@@ -132,6 +133,20 @@ repeat failures, and promote stable knowledge to its proper operational form.
   environment overrides do not satisfy the bootstrap Job's CLI arguments.
 - verification/source: `docs/deploy.md` section 5b.1, bootstrap dispatcher
   contract tests, and the local RabbitMQ/Mongo OAuth flow smoke.
+- status: active
+
+### L-016 — Update the linked account without inserting a second record
+- area: OAuth and bootstrap accounts stage
+- proven path: Match the OAuth account by numeric or legacy string seller ID
+  and platform app ID; update metadata only, without upsert or changing the
+  stored identity and credentials. Fail the stage if no linked account matches.
+- failed path: Search only the string seller ID and upsert a metadata-only
+  document. OAuth stores a numeric ID, so the insert fails the production
+  `meli_accounts` validator before bootstrap can continue.
+- verification/source: `bootstrap/tests/test_bootstrap_phase3.py` accounts-stage
+  regression tests and a disposable local Mongo smoke with the checked-in
+  validator; first production rollout record in
+  `openspec/changes/bootstrap-accounts-linked-dispatch/verify-report.md`.
 - status: active
 
 ## ZelerData

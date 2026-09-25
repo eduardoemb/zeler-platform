@@ -11,5 +11,11 @@
       Docker build.
 - [x] Run focused tests, the four root quality gates, topology checks, and
       independent SDD verification.
-- [ ] Prepare separate Cloud Build and deployment proposals with exact commit,
+- [x] Prepare separate Cloud Build and deployment proposals with exact commit,
       image digests, IAM scope, rollback, and one-seller recovery evidence.
+- [x] Investigate the failed first seller execution, restore the prior runtime,
+      and fix the account-stage mismatch with a failing regression test and
+      validated local Mongo smoke.
+- [ ] Build and deploy the corrected bootstrap Job image with separate
+      authorizations, restore the dispatcher flow, and verify one terminal
+      successful test-seller execution.
