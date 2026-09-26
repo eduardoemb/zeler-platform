@@ -312,6 +312,7 @@ async def test_catalog_observations_preserve_cuts_and_reject_conflicting_retries
         "unavailable",
         "retained",
         "retained_404",
+        "unavailable_404",
         "winner_offers_unavailable",
         "winner_other",
         "winner_fallback",
@@ -392,9 +393,15 @@ async def test_buybox_acquires_offer_count_without_inventing_sole_competitor(
                     "catalog_product_id": "MLA8" if case == "winner_mismatch" else "MLA9",
                 }
             assert path == "/products/MLA9/items"
-            if case in {"unavailable", "retained", "retained_404", "winner_offers_unavailable"}:
+            if case in {
+                "unavailable",
+                "retained",
+                "retained_404",
+                "unavailable_404",
+                "winner_offers_unavailable",
+            }:
                 httpx.Response(
-                    404 if case == "retained_404" else 503,
+                    404 if case in {"retained_404", "unavailable_404"} else 503,
                     request=httpx.Request("GET", "https://gateway.test"),
                 ).raise_for_status()
             rows = [{"item_id": "MLA1", "seller_id": 82453304}]
@@ -438,10 +445,21 @@ async def test_buybox_acquires_offer_count_without_inventing_sole_competitor(
         assert stored["only_competitor"] is True
         assert stored["competitor_count"] == 1
         assert stored["winning_user_id"] == "82453304"
-    elif case in {"malformed", "short_page", "wrong_owner", "duplicate", "unavailable"}:
+    elif case in {
+        "malformed",
+        "short_page",
+        "wrong_owner",
+        "duplicate",
+        "unavailable",
+        "unavailable_404",
+    }:
         assert stored["price"] == 120
         assert stored["only_competitor"] is None
         assert stored["competitor_count"] is None
+        if case == "unavailable_404":
+            from zeler_sheets.formulas.handlers_item_shipping_catalog import _catalogo_buybox_row
+
+            assert _catalogo_buybox_row(stored)[8] == "DATA_UNAVAILABLE"
     elif case.startswith("winner_"):
         if case == "winner_mismatch":
             assert "winning_user_id" not in stored
@@ -467,7 +485,6 @@ async def test_buybox_acquires_offer_count_without_inventing_sole_competitor(
             "wrong_owner",
             "duplicate",
             "winner_mismatch",
-            "retained_404",
         }
         else "completed"
     )
@@ -1053,17 +1070,17 @@ async def test_item_intent_worker_resumes_bounded_chunks(
 
 
 @pytest.mark.asyncio
-async def test_overlapping_item_catalog_intents_admit_only_uncovered_publications(
+@pytest.mark.parametrize("read_model", ["item_formula_rows", "catalog_buybox_snapshots"])
+async def test_overlapping_catalog_intents_admit_only_uncovered_publications(
     recovery_db: Any,
+    read_model: str,
 ) -> None:
     from zeler_sheets.formulas.recovery import IMPLEMENTED_MODELS, CatalogRecoveryRequest
 
     queue = FormulaRecoveryQueue(recovery_db, enabled_models=IMPLEMENTED_MODELS)
-    first = CatalogRecoveryRequest(
-        "82453304", "item_formula_rows", tuple(f"MLA{i:03d}" for i in range(40))
-    )
+    first = CatalogRecoveryRequest("82453304", read_model, tuple(f"MLA{i:03d}" for i in range(40)))
     next_request = CatalogRecoveryRequest(
-        "82453304", "item_formula_rows", tuple(f"MLA{i:03d}" for i in range(10, 45))
+        "82453304", read_model, tuple(f"MLA{i:03d}" for i in range(10, 45))
     )
     assert await queue.enqueue(first) == first.key
     second_key = await queue.enqueue(next_request)
@@ -1075,21 +1092,23 @@ async def test_overlapping_item_catalog_intents_admit_only_uncovered_publication
     assert len(jobs) == 2
     assert {item for job in jobs for item in job["item_ids"]} == {f"MLA{i:03d}" for i in range(45)}
     assert not set(jobs[0]["item_ids"]) & set(jobs[1]["item_ids"])
-    other = CatalogRecoveryRequest("999", "item_formula_rows", first.ids)
+    other = CatalogRecoveryRequest("999", read_model, first.ids)
     assert await queue.enqueue(other) == other.key
     assert await queue.collection.count_documents({"seller_id": "999", "state": "pending"}) == 1
 
 
 @pytest.mark.asyncio
-async def test_concurrent_item_catalog_admission_keeps_unique_active_coverage(
+@pytest.mark.parametrize("read_model", ["item_formula_rows", "catalog_buybox_snapshots"])
+async def test_concurrent_catalog_admission_keeps_unique_active_coverage(
     recovery_db: Any,
+    read_model: str,
 ) -> None:
     from zeler_sheets.formulas.recovery import IMPLEMENTED_MODELS, CatalogRecoveryRequest
 
     queue = FormulaRecoveryQueue(recovery_db, enabled_models=IMPLEMENTED_MODELS)
     requests = [
         CatalogRecoveryRequest(
-            "82453304", "item_formula_rows", tuple(f"MLA{i:03d}" for i in range(start, start + 40))
+            "82453304", read_model, tuple(f"MLA{i:03d}" for i in range(start, start + 40))
         )
         for start in (0, 10, 20, 30)
     ]
@@ -1102,8 +1121,10 @@ async def test_concurrent_item_catalog_admission_keeps_unique_active_coverage(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("read_model", ["item_formula_rows", "catalog_buybox_snapshots"])
 async def test_small_item_intent_does_not_duplicate_active_catalog_coverage(
     recovery_db: Any,
+    read_model: str,
 ) -> None:
     from zeler_sheets.formulas.recovery import (
         IMPLEMENTED_MODELS,
@@ -1112,11 +1133,9 @@ async def test_small_item_intent_does_not_duplicate_active_catalog_coverage(
     )
 
     queue = FormulaRecoveryQueue(recovery_db, enabled_models=IMPLEMENTED_MODELS)
-    catalog = CatalogRecoveryRequest(
-        "82453304", "item_formula_rows", tuple(f"MLA{i}" for i in range(21))
-    )
+    catalog = CatalogRecoveryRequest("82453304", read_model, tuple(f"MLA{i}" for i in range(21)))
     await queue.enqueue(catalog)
-    small = ItemIdsRecoveryRequest("82453304", ("MLA20", "MLA21"))
+    small = ItemIdsRecoveryRequest("82453304", ("MLA20", "MLA21"), read_model=read_model)
     result = await queue.enqueue(small)
     assert result != small.key
     jobs = await queue.collection.find(
@@ -1128,10 +1147,21 @@ async def test_small_item_intent_does_not_duplicate_active_catalog_coverage(
 
 
 @pytest.mark.asyncio
-async def test_legacy_item_catalog_reconciliation_preserves_unfinished_ids(
+@pytest.mark.parametrize("read_model", ["item_formula_rows", "catalog_buybox_snapshots"])
+async def test_legacy_catalog_reconciliation_preserves_unfinished_ids(
     recovery_db: Any,
+    read_model: str,
 ) -> None:
-    from zeler_sheets.formulas.recovery_reconcile import reconcile_item_catalog_jobs
+    from zeler_sheets.formulas.recovery_reconcile import (
+        reconcile_buybox_catalog_jobs,
+        reconcile_item_catalog_jobs,
+    )
+
+    reconcile = (
+        reconcile_item_catalog_jobs
+        if read_model == "item_formula_rows"
+        else reconcile_buybox_catalog_jobs
+    )
 
     now = datetime.now(UTC).replace(microsecond=0)
     seller = "82453304"
@@ -1140,7 +1170,7 @@ async def test_legacy_item_catalog_reconciliation_preserves_unfinished_ids(
             {
                 "_id": "old-a",
                 "seller_id": seller,
-                "read_model": "item_formula_rows",
+                "read_model": read_model,
                 "state": "pending",
                 "item_ids": [f"MLA{i:03d}" for i in range(40)],
                 "catalog_offset": 20,
@@ -1150,7 +1180,7 @@ async def test_legacy_item_catalog_reconciliation_preserves_unfinished_ids(
             {
                 "_id": "old-b",
                 "seller_id": seller,
-                "read_model": "item_formula_rows",
+                "read_model": read_model,
                 "state": "pending",
                 "item_ids": [f"MLA{i:03d}" for i in range(10, 50)],
                 "catalog_offset": 20,
@@ -1159,39 +1189,52 @@ async def test_legacy_item_catalog_reconciliation_preserves_unfinished_ids(
             },
         ]
     )
-    plan = await reconcile_item_catalog_jobs(recovery_db, seller_id=seller)
+    plan = await reconcile(recovery_db, seller_id=seller)
     assert plan.active_jobs == 2
     assert plan.outstanding_ids == 30
     assert plan.superseded_jobs == 2
     assert await recovery_db.sheets_formula_recovery_jobs.count_documents({"state": "pending"}) == 2
     with pytest.raises(ValueError, match="fingerprint"):
-        await reconcile_item_catalog_jobs(
-            recovery_db, seller_id=seller, execute=True, expected_fingerprint="stale"
-        )
-    applied = await reconcile_item_catalog_jobs(
+        await reconcile(recovery_db, seller_id=seller, execute=True, expected_fingerprint="stale")
+    applied = await reconcile(
         recovery_db, seller_id=seller, execute=True, expected_fingerprint=plan.fingerprint
     )
     assert applied.fingerprint == plan.fingerprint
     jobs = await recovery_db.sheets_formula_recovery_jobs.find({}).to_list(length=10)
     new_jobs = [job for job in jobs if job["state"] == "pending"]
     assert len(new_jobs) == 1
+    assert new_jobs[0]["read_model"] == read_model
     assert new_jobs[0]["item_ids"] == [f"MLA{i:03d}" for i in range(20, 50)]
     assert {job["failure_reason"] for job in jobs if job["_id"].startswith("old-")} == {
-        "superseded_by_item_reconciliation"
+        (
+            "superseded_by_item_reconciliation"
+            if read_model == "item_formula_rows"
+            else "superseded_by_buybox_reconciliation"
+        )
     }
-    assert (await reconcile_item_catalog_jobs(recovery_db, seller_id=seller)).active_jobs == 1
+    assert (await reconcile(recovery_db, seller_id=seller)).active_jobs == 1
 
 
 @pytest.mark.asyncio
-async def test_item_catalog_reconciliation_refuses_live_lease(recovery_db: Any) -> None:
-    from zeler_sheets.formulas.recovery_reconcile import reconcile_item_catalog_jobs
+@pytest.mark.parametrize("read_model", ["item_formula_rows", "catalog_buybox_snapshots"])
+async def test_catalog_reconciliation_refuses_live_lease(recovery_db: Any, read_model: str) -> None:
+    from zeler_sheets.formulas.recovery_reconcile import (
+        reconcile_buybox_catalog_jobs,
+        reconcile_item_catalog_jobs,
+    )
+
+    reconcile = (
+        reconcile_item_catalog_jobs
+        if read_model == "item_formula_rows"
+        else reconcile_buybox_catalog_jobs
+    )
 
     now = datetime.now(UTC).replace(microsecond=0)
     await recovery_db.sheets_formula_recovery_jobs.insert_one(
         {
             "_id": "running",
             "seller_id": "82453304",
-            "read_model": "item_formula_rows",
+            "read_model": read_model,
             "state": "running",
             "item_ids": ["MLA1"],
             "catalog_offset": 0,
@@ -1200,7 +1243,64 @@ async def test_item_catalog_reconciliation_refuses_live_lease(recovery_db: Any) 
         }
     )
     with pytest.raises(ValueError, match="lease"):
-        await reconcile_item_catalog_jobs(recovery_db, seller_id="82453304")
+        await reconcile(recovery_db, seller_id="82453304")
+
+
+@pytest.mark.asyncio
+async def test_buybox_reconciliation_refuses_changed_snapshot_and_preserves_item_job(
+    recovery_db: Any,
+) -> None:
+    from zeler_sheets.formulas.recovery_reconcile import reconcile_buybox_catalog_jobs
+
+    now = datetime.now(UTC).replace(microsecond=0)
+    collection = recovery_db.sheets_formula_recovery_jobs
+    await collection.insert_many(
+        [
+            {
+                "_id": name,
+                "seller_id": "82453304",
+                "read_model": "catalog_buybox_snapshots",
+                "state": "pending",
+                "item_ids": [f"MLA{i:03d}" for i in range(start, start + 40)],
+                "catalog_offset": 0,
+                "updated_at": now,
+            }
+            for name, start in (("buybox-a", 0), ("buybox-b", 10))
+        ]
+    )
+    await collection.insert_one(
+        {
+            "_id": "item-active",
+            "seller_id": "82453304",
+            "read_model": "item_formula_rows",
+            "state": "pending",
+            "item_ids": ["MLA999"],
+            "catalog_offset": 0,
+            "updated_at": now,
+        }
+    )
+    preview = await reconcile_buybox_catalog_jobs(recovery_db, seller_id="82453304")
+    assert preview.active_jobs == 2
+    await collection.update_one(
+        {"_id": "buybox-b"}, {"$set": {"updated_at": now + timedelta(seconds=1)}}
+    )
+    with pytest.raises(ValueError, match="fingerprint"):
+        await reconcile_buybox_catalog_jobs(
+            recovery_db,
+            seller_id="82453304",
+            execute=True,
+            expected_fingerprint=preview.fingerprint,
+        )
+    assert await collection.count_documents({"state": "pending"}) == 3
+    current = await reconcile_buybox_catalog_jobs(recovery_db, seller_id="82453304")
+    await reconcile_buybox_catalog_jobs(
+        recovery_db,
+        seller_id="82453304",
+        execute=True,
+        expected_fingerprint=current.fingerprint,
+    )
+    item = await collection.find_one({"_id": "item-active"})
+    assert item is not None and item["state"] == "pending"
 
 
 @pytest.mark.asyncio

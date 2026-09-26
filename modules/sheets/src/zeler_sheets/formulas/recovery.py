@@ -527,9 +527,10 @@ class FormulaRecoveryQueue:
                 {"_id": request.seller_id}, {"$inc": {"revision": 1}}, session=session
             )
             candidate_initial = initial
-            if request.read_model == "item_formula_rows" and isinstance(
-                request, (CatalogRecoveryRequest, ItemIdsRecoveryRequest)
-            ):
+            if request.read_model in {
+                "item_formula_rows",
+                "catalog_buybox_snapshots",
+            } and isinstance(request, (CatalogRecoveryRequest, ItemIdsRecoveryRequest)):
                 active_items = await self.collection.find(
                     {
                         "seller_id": request.seller_id,
@@ -556,7 +557,9 @@ class FormulaRecoveryQueue:
                     narrowed = (
                         CatalogRecoveryRequest(request.seller_id, request.read_model, remaining)
                         if isinstance(request, CatalogRecoveryRequest)
-                        else ItemIdsRecoveryRequest(request.seller_id, remaining)
+                        else ItemIdsRecoveryRequest(
+                            request.seller_id, remaining, read_model=request.read_model
+                        )
                     )
                     admitted_key = narrowed.key
                     candidate_initial = {

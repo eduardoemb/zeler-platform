@@ -437,7 +437,8 @@ class FormulaRecoveryWorker:
                     competitor_count=count, only_competitor=only, offers_snapshot_at=observed
                 )
             except (httpx.HTTPError, TimeoutError, GatewayRateLimitError, ValueError) as exc:
-                offer_failure = offer_failure or exc
+                if not (isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code == 404):
+                    offer_failure = offer_failure or exc
                 offers = {"results": []}
                 prior = await self.db.sheets_catalog_buybox_snapshots.find_one(
                     {"_id": snapshot["_id"], "seller_id": requested.seller_id}

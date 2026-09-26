@@ -76,6 +76,7 @@ repeat failures, and promote stable knowledge to its proper operational form.
 | L-017 | VM recovery | Inspect metrics before the telemetry cutoff | active |
 | L-018 | Observability | Validate Docker log parsing with the installed agent | active |
 | L-019 | ZelerData | Bound retries for optional quality 404 and overlapping item jobs | active |
+| L-020 | ZelerData | Keep optional buybox offers 404 and overlapping catalog jobs from multiplying work | active |
 
 ## Cloud Build and VM deployment
 
@@ -195,6 +196,21 @@ repeat failures, and promote stable knowledge to its proper operational form.
 - verification/source: `openspec/changes/zelerdata-quality-load-control/`,
   `modules/sheets/tests/test_formula_recovery.py`, and
   `docs/ops/zelerdata-quality-load-control.md`.
+- status: active
+
+### L-020 — Keep optional buybox offers 404 and overlapping catalog jobs from multiplying work
+- area: ZelerData buybox acquisition and recovery
+- proven path: Preserve the verified price-to-win observation when the offers
+  listing returns 404, leave unknown competition fields unavailable, and
+  complete the chunk. Subtract IDs already covered by active buybox jobs and
+  reconcile legacy overlaps from a drained worker using a fingerprinted preview.
+- failed path: Treat each optional offers 404 as a failed catalog chunk while
+  admitting changing, overlapping ID lists. On 26 September, nine active
+  buybox jobs contained 8,368 IDs but only 937 distinct IDs, with hundreds of
+  failed chunks and sustained offers 404 traffic.
+- verification/source: `openspec/changes/zelerdata-buybox-load-control/`,
+  `modules/sheets/tests/test_formula_recovery.py`, and
+  `docs/ops/zelerdata-buybox-load-control.md`. Production rollout remains pending.
 - status: active
 
 ## ZelerData
