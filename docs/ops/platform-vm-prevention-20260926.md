@@ -2,12 +2,13 @@
 
 **Alertas de capacidad y disponibilidad activadas; los 196 mensajes de error
 fueron inspeccionados y conservados.** Se corrigió el procesamiento de registros
-del agente. La corrección de renovación de credenciales al arrancar está probada
-en código, pero todavía requiere publicación y despliegue del gateway.
+del agente. La corrección de renovación de credenciales al arrancar quedó
+publicada, construida y desplegada, con comprobaciones funcionales y de estabilidad.
 
-Ventana: 26 de septiembre de 2026, 04:30–04:53 UTC; 25 de septiembre,
+Ventana inicial: 26 de septiembre de 2026, 04:30–04:53 UTC; 25 de septiembre,
 22:30–22:53 en Monterrey. Proyecto `zeler-platform-dev`, VM `platform-vm`, zona
-`us-central1-a`, instancia `7989018496556289195`.
+`us-central1-a`, instancia `7989018496556289195`. Cierre del despliegue:
+26 de septiembre, 05:02 UTC; 25 de septiembre, 23:02 en Monterrey.
 
 ## Capacidad: decisión pendiente
 
@@ -156,7 +157,7 @@ acepte una credencial.
 
 Verificación local:
 
-- Pruebas enfocadas del ciclo de vida: 4 correctas.
+- `uv run pytest gateway/tests/test_lifespan_rabbit.py`: 4 correctas.
 - Suite completa contra Mongo local aislado: 5.483 correctas, 9 omitidas y un
   fallo por `MONGO_DB` heredado en una prueba que presupone que no está definido.
   Las cuatro pruebas de ese archivo pasaron al repetirlas sin esa variable.
@@ -165,7 +166,7 @@ Verificación local:
 - Ruff, formato, mypy de todo el repositorio y lint de acceso directo a Meli:
   correctos.
 
-## Estado final y siguiente paso
+## Estado después de reparar las alertas
 
 A las 04:51 UTC los 11 contenedores seguían ejecutándose, sin reinicios ni OOM
 registrados; los diez con healthcheck estaban healthy. Gateway `/ready` y Sheets
@@ -173,12 +174,51 @@ registrados; los diez con healthcheck estaban healthy. Gateway `/ready` y Sheets
 fórmulas y refresh. El dispatcher confirmó RabbitMQ y Mongo. Ambos componentes
 del Ops Agent seguían activos después del tiempo de estabilización.
 
-La imagen del gateway sigue siendo
-`us-central1-docker.pkg.dev/zeler-platform-dev/zeler-platform/gateway@sha256:a7534d634f455eb19a8ebbda7860c3145f1dff988125609478bc8cf90c2f9735`.
-La corrección de arranque aún no está publicada: se recomienda commit/push
-acotados y una imagen Cloud Build verificada de **gateway**, previa autorización.
-El despliegue requiere otra autorización con digest exacto, rollback compatible,
-preflight, readiness y verificación de la renovación inicial.
+## Despliegue del gateway y cierre
+
+El usuario autorizó commit/push y Cloud Build, y posteriormente autorizó el
+despliegue por separado. Se publicó el cambio en `main`, se construyó una sola
+imagen desde el repositorio conectado y se verificó su procedencia.
+
+| Identidad | Valor |
+| --- | --- |
+| Commit de la imagen | `26958853a4291ed0db053f2f014245402ecc1a9a` |
+| Cloud Build | `97168067-0fdb-4bad-a756-6d4a2eebe078`, `SUCCESS`, `VERIFIED` |
+| Imagen ejecutada | `us-central1-docker.pkg.dev/zeler-platform-dev/zeler-platform/gateway@sha256:dad631e75edf098c59e8d573347bfb7b38384d713c32b35ebde7d7192a7462d1` |
+| Rollback compatible y conservado | `us-central1-docker.pkg.dev/zeler-platform-dev/zeler-platform/gateway@sha256:a7534d634f455eb19a8ebbda7860c3145f1dff988125609478bc8cf90c2f9735` |
+| Respaldo de Compose en VM | `/opt/zeler-platform/docker-compose.yml.pre-gateway-2695885` |
+
+Se sustituyó exactamente una referencia de imagen y se recreó solo `gateway`
+con `--no-deps`. El preflight verificó capacidad antes y después de descargar,
+y procedencia del digest/build/commit antes de la recreación. Los otros diez
+contenedores conservaron su identidad; no hubo limpieza Docker, ampliación de
+VM, cambios de esquemas ni reprocesamiento de mensajes.
+
+El nuevo contenedor arrancó a las 05:00:01 UTC. A las 05:00:07 ejecutó
+`refresh.run` **antes de completar el arranque HTTP**: cero errores y cero
+credenciales elegibles para renovar, pues seguían vigentes. Una lectura del
+recurso que había dado 401, mediante la identidad Sheets y el gateway, respondió
+HTTP 200. No se alteró la vigencia de las credenciales para fabricar una prueba.
+
+La observación repetida a las 05:02:20 UTC confirmó:
+
+- Gateway healthy, digest esperado, cero reinicios y `OOMKilled=false`.
+- `/ready` 200: Mongo, registro, RabbitMQ y scheduler correctos. Sheets API,
+  worker y bootstrap dispatcher también listos.
+- 2.111 MiB de memoria disponible; raíz con 35.860.541.440 bytes libres; Mongo
+  con 48.181.489.664 bytes libres y su montaje conservado. Inodos usados: 4 % y 1 %.
+- Colas principales de Sheets y bootstrap: cero mensajes listos y un consumidor
+  cada una. La DLQ seguía con 196 mensajes listos y cero consumidores; solo se
+  consultó pasivamente, sin otra inspección de contenidos.
+- Cloud Logging recibió eventos estructurados `http.request` y `proxy.call` de
+  esta ventana, sin eventos estructurados ERROR en la consulta; las métricas del
+  agente continuaron llegando.
+
+No se necesitó rollback. El código del gateway desplegado coincide con el cambio
+publicado; la actualización posterior de este informe solo documenta la entrega
+y no requiere otra imagen.
+
+## Seguimiento
 
 La nueva vinculación OAuth sigue siendo una prueba pendiente. La inspección
 actual no establece la integridad de todas las ventas ni resuelve la causa
