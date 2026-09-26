@@ -1,6 +1,6 @@
 # Verification: ZelerData Buybox Load Control
 
-Status: local implementation verified; commit, build, production reconciliation and deployment pending separate authorization.
+Status: local implementation and pilot rollout verified through a 90-minute observation on 26 September 2026. The consolidated catalog jobs remain in progress.
 
 ## Production evidence before this change
 
@@ -20,8 +20,16 @@ Residual buybox work remained substantial. At its peak, nine active buybox jobs 
 - `uv run pytest -q --tb=short` with the verified loopback Mongo test target on port 27028: passed; nine environment skips, no failures.
 - `uv run ruff check .`, `uv run ruff format --check .`, `uv run mypy .`, and `uv run python -m infra.lint.check_direct_meli .`: passed.
 - Operator CLI dry-run and execute smoke against a disposable isolated Mongo database: passed; two old jobs preserved, one replacement with three distinct unfinished IDs; only aggregate values printed.
-- No production buybox job or service was mutated for this change.
+- Production mutation followed a separately authorized rollout and is recorded below.
 
-## Runtime gate and rollback
+## Production rollout and 90-minute observation
 
-After an authorized commit and two VERIFIED Cloud Builds, record exact image digests and the current running rollback digests. Stop only Sheets worker; preview and reconcile the buybox jobs with a matching fingerprint and no active lease; deploy only Sheets API and worker. Verify formula `DATA_UNAVAILABLE` for unknown competition, job progress, offers 404 rate, DLQ, readiness, memory and disks at 0/30/60/90 minutes. Restore the prior compatible images if those checks regress, preserving job evidence.
+- Commit `5587acb66f73d9a5e2e03610da2414eb7839b8ba` was pushed to `main`. Two separate VERIFIED Cloud Builds from the connected repository passed provenance verification: API build `88baf4ef-e7c5-4092-8ecf-7b54d1434070` produced `sheets-api@sha256:2d011315caad2ff05fb84fd07b7115a955daa905958dd5c21961f616c5b3ff64`; worker build `27fd9de7-45aa-46ac-b94a-cf9aeb0bd3ff` produced `sheets-worker@sha256:ebffdd44ce2e662ba547eb2794ac51e954e8f1c642753935305cae9f47f6e162`.
+- Root disk preflight passed before both pulls and after them, with 32 GiB free after download. The previous running images were recorded and remain the compatible rollback targets: API `sha256:77e8fe83cdb52423f662cf4fe24acbbd83d1bdedc35896b86dec77e52b6de86d`; worker `sha256:dd7df6afcbbf7b7f0c4c10b7985220c486a093914a933b8c50dccf8c5a5243f3`. No Docker cleanup or VM resize was performed.
+- Only `sheets-worker` was stopped. A backup of Compose was saved under `/opt/zeler-platform/rollout-5587acb-buybox/`; only the two Sheets image references changed. The VM provenance preflight bound both digests to the authorized commit. A drained preview for seller `82453304` found eight buybox jobs and 937 distinct unfinished publication IDs; execution accepted the exact preview fingerprint `3dd9997bebbe5f93f6454b37e4953dd53e452fab7fccf60b169777de0cc1821b`, preserved all eight old jobs as superseded evidence, and created one replacement. The independent item job was untouched.
+- At 0 minutes the API and worker ran the selected digests, were healthy with zero restarts/OOM, and the worker reported RabbitMQ, sync jobs, formula recovery and ZelerData refresh `ok`. A newly acquired snapshot with verified price and unknown competition rendered `DATA_UNAVAILABLE` in the deployed formula handler. The buybox replacement started at 0/937 with zero failed chunks.
+- At 30 minutes, buybox was 260/937 and the item job 480/1,900, both with zero failed chunks; the event queue was empty, DLQ 197 and available memory 1,215 MiB. A shifted five-minute gateway window had 64 offers 404 calls across 63 distinct routes; one route appeared twice. No upstream 429 was observed.
+- At 60 minutes, buybox was 520/937 with one `source_incomplete` chunk and the item job 740/1,900 with none. All four inspected containers were healthy with zero restarts/OOM, worker components were `ok`, DLQ remained 197 and memory available was 1,152 MiB. The last five minutes had 35 offers 404 on 35 distinct routes and no upstream 429.
+- At 90 minutes, buybox was 760/937 with three `source_incomplete` chunks and the item job 940/1,900 with none. All four inspected containers were healthy with zero restarts/OOM; API `/health` and gateway `/ready` returned 200, worker components were `ok`, the event queue was empty and DLQ remained 197. Available memory was 1,169 MiB, root space about 31 GiB and the separate Mongo disk about 45 GiB, with ample inodes. The final five minutes had 39 offers 404 on 38 distinct routes, one route repeated twice, and no upstream 429.
+
+The three incomplete buybox chunks were offsets 380, 620 and 660. All 60 publications in those chunks had persisted backfill snapshots with price and buybox status; 29 had unknown competition. This is a residual completeness signal to investigate, not evidence of repeated catalog coverage. The replacement job was still running at the observation cutoff. Total gateway proxy traffic remained around 870 calls per five minutes while the one-time backlog was processing, so the 90-minute window proves removal of duplicate active coverage and repeated 404 routes, not a settled post-backlog call rate. No capacity increase is justified by this window; recheck after the jobs reach terminal state or if memory pressure becomes sustained.

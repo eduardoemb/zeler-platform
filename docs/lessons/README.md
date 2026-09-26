@@ -210,7 +210,11 @@ repeat failures, and promote stable knowledge to its proper operational form.
   failed chunks and sustained offers 404 traffic.
 - verification/source: `openspec/changes/zelerdata-buybox-load-control/`,
   `modules/sheets/tests/test_formula_recovery.py`, and
-  `docs/ops/zelerdata-buybox-load-control.md`. Production rollout remains pending.
+  `docs/ops/zelerdata-buybox-load-control.md`. The 26 September pilot rollout
+  consolidated eight active jobs into one; at 90 minutes it had reached 760/937
+  IDs with three incomplete chunks, stable service health and memory, and 39
+  offers 404 calls across 38 routes in the last five minutes. Review the
+  incomplete chunks and the settled call rate after the backlog finishes.
 - status: active
 
 ## ZelerData
