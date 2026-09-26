@@ -207,6 +207,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             except Exception:
                 logger.exception("refresh worker pass failed")
 
+        # Recover tokens that expired during downtime before serving proxy requests.
+        await _scheduled_refresh()
         app.state.scheduler.add_job(
             _scheduled_refresh,
             "interval",

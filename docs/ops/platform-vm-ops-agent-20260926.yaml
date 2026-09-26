@@ -1,0 +1,50 @@
+logging:
+  receivers:
+    docker_container_logs:
+      type: files
+      include_paths:
+        - /var/lib/docker/containers/*/*-json.log
+    syslog:
+      type: files
+      include_paths:
+        - /var/log/messages
+        - /var/log/syslog
+  processors:
+    docker_parse_json:
+      type: parse_json
+    unwrap_docker_log:
+      type: modify_fields
+      fields:
+        jsonPayload.message:
+          move_from: jsonPayload.log
+    application_parse_json:
+      type: parse_json
+    application_severity:
+      type: modify_fields
+      fields:
+        severity:
+          move_from: jsonPayload.level
+          map_values:
+            debug: DEBUG
+            info: INFO
+            warning: WARNING
+            warn: WARNING
+            error: ERROR
+            critical: CRITICAL
+          map_values_exclusive: true
+    caddy_redact:
+      type: modify_fields
+      fields:
+        jsonPayload.request.headers:
+          omit_if: 'jsonPayload.stream = "stdout" OR jsonPayload.stream = "stderr"'
+        jsonPayload.request.uri:
+          omit_if: 'jsonPayload.stream = "stdout" OR jsonPayload.stream = "stderr"'
+        jsonPayload.resp_headers:
+          omit_if: 'jsonPayload.stream = "stdout" OR jsonPayload.stream = "stderr"'
+  service:
+    pipelines:
+      docker_logs:
+        receivers: [docker_container_logs]
+        processors: [docker_parse_json, unwrap_docker_log, application_parse_json, application_severity, caddy_redact]
+      default_pipeline:
+        receivers: [syslog]

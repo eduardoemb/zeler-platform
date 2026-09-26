@@ -182,6 +182,7 @@ def test_lifespan_reuses_one_transport_and_injects_lifecycle_adapter(monkeypatch
     transport_calls: list[dict[str, str]] = []
     repricer_publishers: list[Any] = []
     refresh_publishers: list[Any] = []
+    refresh_readiness: list[bool] = []
 
     async def fake_connect_robust(url: str, **kwargs: Any) -> FakeRabbitConnection:
         return rabbit
@@ -195,6 +196,7 @@ def test_lifespan_reuses_one_transport_and_injects_lifecycle_adapter(monkeypatch
 
     async def fake_refresh_once(db: Any, *, lifecycle_publisher: Any) -> None:
         refresh_publishers.append(lifecycle_publisher)
+        refresh_readiness.append(app_module.app.state.ready)
 
     monkeypatch.setenv("MONGO_URI", "mongodb://localhost:27017/zeler_platform_test")
     monkeypatch.setenv("MONGO_DB", "zeler_platform_test")
@@ -222,8 +224,11 @@ def test_lifespan_reuses_one_transport_and_injects_lifecycle_adapter(monkeypatch
             }
         ]
         assert repricer_publishers == [transport]
-        asyncio.run(scheduler.jobs["meli-token-refresh"]())
         assert refresh_publishers == [lifecycle_publisher]
+        assert refresh_readiness == [False]
+        asyncio.run(scheduler.jobs["meli-token-refresh"]())
+        assert refresh_publishers == [lifecycle_publisher, lifecycle_publisher]
+        assert refresh_readiness == [False, True]
 
     assert scheduler.started is True
     assert scheduler.stopped is True

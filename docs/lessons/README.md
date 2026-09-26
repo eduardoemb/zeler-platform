@@ -73,6 +73,8 @@ repeat failures, and promote stable knowledge to its proper operational form.
 | L-014 | Broker health | Connection ownership before AMQP handshake | promoted/reference |
 | L-015 | Bootstrap | Route account-link events before gateway rollout | active |
 | L-016 | Bootstrap | Update the linked account without inserting a second record | active |
+| L-017 | VM recovery | Inspect metrics before the telemetry cutoff | active |
+| L-018 | Observability | Validate Docker log parsing with the installed agent | active |
 
 ## Cloud Build and VM deployment
 
@@ -147,6 +149,36 @@ repeat failures, and promote stable knowledge to its proper operational form.
   regression tests and a disposable local Mongo smoke with the checked-in
   validator; first production rollout record in
   `openspec/changes/bootstrap-accounts-linked-dispatch/verify-report.md`.
+- status: active
+
+### L-017 — Inspect metrics before the telemetry cutoff
+- area: VM recovery and resource diagnosis
+- proven path: When an unresponsive guest stops reporting, query agent memory and
+  process metrics before the last successful sample; combine them with hypervisor
+  disk/CPU metrics and the previous boot journal after recovery. Preserve disks
+  and the exact startup metadata before an authorized stop/start.
+- failed path: Query only the blocked interval and infer that agent metrics were
+  never configured. Missing telemetry after the cutoff cannot establish resource
+  usage, the initiating process, or absence of an OOM event.
+- verification/source: `docs/ops/platform-vm-recovery-20260925.md`; historical
+  memory/process samples were available until 23:38 UTC even though the guest
+  later stopped responding. Post-recovery worker readiness and capacity were
+  checked again after settling.
+- status: active
+
+### L-018 — Validate Docker log parsing with the installed agent
+- area: Ops Agent and log-based alerts
+- proven path: Test the complete Docker envelope and application JSON through the
+  installed agent engine and Fluent Bit, with synthetic input and stdout-only
+  output. Assert the event field, severity, and absence of sensitive fixture
+  markers; after rollout, verify actual Cloud Logging fields and continuing
+  metrics. Preserve the receiver/pipeline names and keep a configuration backup.
+- failed path: A simulation of `modify_fields` passed while the real agent kept
+  sensitive fields. Parsing only the outer Docker record left application events
+  as text and prevented existing event/severity metric filters from matching.
+- verification/source: `docs/ops/platform-vm-prevention-20260926.md` and its tested
+  runtime configuration. The original failed and the candidate passed the same
+  real-engine fixtures; production subsequently emitted structured events.
 - status: active
 
 ## ZelerData
