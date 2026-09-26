@@ -714,7 +714,9 @@ class FormulaRecoveryWorker:
             or (
                 job.get("inventory_scope") is not True
                 and any(
-                    count > 0 and ":transient:" in reason
+                    count > 0
+                    and ":transient:" in reason
+                    and reason != "quality_projection:transient:performance_not_generated"
                     for result in acquired
                     for reason, count in result.diagnostic_reason_counts.items()
                 )

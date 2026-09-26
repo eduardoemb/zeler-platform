@@ -56,6 +56,7 @@ from zeler_sheets.formulas.pacing import recovery_fetch_resource, recovery_quota
 from zeler_sheets.formulas.read_models import normalize_sku
 from zeler_sheets.item_projection import stamp_item_projection
 from zeler_sheets.quality import QUALITY_SOURCE, USER_PRODUCT_QUALITY_SOURCE, project_item_quality
+from zeler_sheets.quality_probe import quality_probe_due, quality_probe_record
 from zeler_sheets.status_history import (
     bson_ms_utc_datetime,
     normalize_mongo_loaded_datetimes,
@@ -1299,80 +1300,108 @@ async def run_item_detail_enrichment(
                             basis=listing_params,
                         )
             if quality_enabled and not base_only:
-                quality_source = QUALITY_SOURCE
-                user_product_id = detail.get("user_product_id")
-                valid_user_product = (
-                    isinstance(user_product_id, str)
-                    and re.fullmatch(re.escape(item_id[:3]) + r"U[0-9]+", user_product_id)
-                    is not None
+                item_version = bson_ms_utc_datetime(
+                    _coerce_datetime_value(detail.get("last_updated"))
                 )
-                # Reuse only the route, never the observation. Fresh owned detail
-                # must reconfirm the same relationship learned by prior acquisition.
-                if (
-                    valid_user_product
-                    and existing_item.get("user_product_id") == user_product_id
-                    and item_enrichment_state.get("quality_projection", {}).get("source")
-                    == USER_PRODUCT_QUALITY_SOURCE
+                if not quality_probe_due(
+                    existing_item.get("quality_probe"), item_version, now=synced_at
                 ):
-                    quality_source = USER_PRODUCT_QUALITY_SOURCE
-                try:
-                    try:
-                        performance = await recovery_fetch_resource(
-                            gateway,
-                            seller_id=seller_id,
-                            path=(
-                                f"/user-product/{user_product_id}/performance"
-                                if quality_source == USER_PRODUCT_QUALITY_SOURCE
-                                else f"/item/{item_id}/performance"
-                            ),
-                        )
-                    except httpx.HTTPStatusError as exc:
-                        if (
-                            exc.response.status_code != 400
-                            or quality_source != QUALITY_SOURCE
-                            or not valid_user_product
-                        ):
-                            raise
-                        quality_source = USER_PRODUCT_QUALITY_SOURCE
-                        performance = await recovery_fetch_resource(
-                            gateway,
-                            seller_id=seller_id,
-                            path=f"/user-product/{user_product_id}/performance",
-                        )
-                    detail["quality_projection"] = project_item_quality(
-                        performance,
-                        item_id=item_id,
-                        observed_at=datetime.now(UTC),
-                        user_product_id=detail.get("user_product_id"),
-                        source=quality_source,
-                    )
-                    item_enrichment_state["quality_projection"] = trusted_state(
-                        source=quality_source, synced_at=synced_at
-                    )
-                except (httpx.HTTPError, GatewayRateLimitError, TimeoutError, ValueError) as exc:
-                    # Preserve the prior acquisition cut, never refresh old quality
-                    # merely because the publication itself was fetched successfully.
+                    # Reacquiring the item does not claim a fresh quality observation.
                     detail["quality_projection"] = existing_item.get("quality_projection")
-                    failure = classify_fetch_exception(exc)
-                    status, reason = failure.status, failure.reason
-                    if isinstance(exc, TimeoutError):
-                        status, reason = "transient", "request_timeout"
-                    elif isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code == 404:
-                        # Performance can be generated later; this is not evidence
-                        # that optional quality fields are authoritatively absent.
-                        status, reason = "transient", "performance_not_generated"
-                    increment_reason_count(
-                        diagnostic_reason_counts,
-                        field="quality_projection",
-                        status=status,
-                        reason=reason,
+                else:
+                    quality_source = QUALITY_SOURCE
+                    user_product_id = detail.get("user_product_id")
+                    valid_user_product = (
+                        isinstance(user_product_id, str)
+                        and re.fullmatch(re.escape(item_id[:3]) + r"U[0-9]+", user_product_id)
+                        is not None
                     )
-                    item_enrichment_state["quality_projection"] = enrichment_state(
-                        source=quality_source,
-                        status=status,
-                        reason=reason,
-                        synced_at=synced_at,
-                    )
+                    # Reuse only the route, never the observation. Fresh owned detail
+                    # must reconfirm the same relationship learned by prior acquisition.
+                    if (
+                        valid_user_product
+                        and existing_item.get("user_product_id") == user_product_id
+                        and item_enrichment_state.get("quality_projection", {}).get("source")
+                        == USER_PRODUCT_QUALITY_SOURCE
+                    ):
+                        quality_source = USER_PRODUCT_QUALITY_SOURCE
+                    try:
+                        try:
+                            performance = await recovery_fetch_resource(
+                                gateway,
+                                seller_id=seller_id,
+                                path=(
+                                    f"/user-product/{user_product_id}/performance"
+                                    if quality_source == USER_PRODUCT_QUALITY_SOURCE
+                                    else f"/item/{item_id}/performance"
+                                ),
+                            )
+                        except httpx.HTTPStatusError as exc:
+                            if (
+                                exc.response.status_code != 400
+                                or quality_source != QUALITY_SOURCE
+                                or not valid_user_product
+                            ):
+                                raise
+                            quality_source = USER_PRODUCT_QUALITY_SOURCE
+                            performance = await recovery_fetch_resource(
+                                gateway,
+                                seller_id=seller_id,
+                                path=f"/user-product/{user_product_id}/performance",
+                            )
+                        detail["quality_projection"] = project_item_quality(
+                            performance,
+                            item_id=item_id,
+                            observed_at=datetime.now(UTC),
+                            user_product_id=detail.get("user_product_id"),
+                            source=quality_source,
+                        )
+                        item_enrichment_state["quality_projection"] = trusted_state(
+                            source=quality_source, synced_at=synced_at
+                        )
+                        if item_version is not None:
+                            detail["quality_probe"] = quality_probe_record(
+                                status="available",
+                                checked_at=synced_at,
+                                item_updated_at=item_version,
+                            )
+                    except (
+                        httpx.HTTPError,
+                        GatewayRateLimitError,
+                        TimeoutError,
+                        ValueError,
+                    ) as exc:
+                        # Preserve the prior acquisition cut, never refresh old quality
+                        # merely because the publication itself was fetched successfully.
+                        detail["quality_projection"] = existing_item.get("quality_projection")
+                        failure = classify_fetch_exception(exc)
+                        status, reason = failure.status, failure.reason
+                        if isinstance(exc, TimeoutError):
+                            status, reason = "transient", "request_timeout"
+                        elif (
+                            isinstance(exc, httpx.HTTPStatusError)
+                            and exc.response.status_code == 404
+                        ):
+                            # The source may generate quality later; retain an honest gap.
+                            status, reason = "transient", "performance_not_generated"
+                            if item_version is not None:
+                                detail["quality_probe"] = quality_probe_record(
+                                    status="not_generated",
+                                    checked_at=synced_at,
+                                    item_updated_at=item_version,
+                                )
+                        increment_reason_count(
+                            diagnostic_reason_counts,
+                            field="quality_projection",
+                            status=status,
+                            reason=reason,
+                        )
+                        item_enrichment_state["quality_projection"] = enrichment_state(
+                            source=quality_source,
+                            status=status,
+                            reason=reason,
+                            synced_at=synced_at,
+                        )
             if base_only:
                 item_enrichment_state = _base_acquisition_enrichment_state(
                     existing_item, detail=detail, site_id=site_id
@@ -3340,6 +3369,8 @@ def _canonical_item_detail_document(
         document.pop("status_observed_at", None)
     if document.get("quality_projection") is None:
         document.pop("quality_projection", None)
+    if document.get("quality_probe") is None:
+        document.pop("quality_probe", None)
     for money_field in ("price", "base_price", "seller_shipping_cost"):
         document[money_field] = _schema_safe_numeric(document.get(money_field))
     fixed_fee = _schema_safe_listing_fixed_fee(document.get("listing_price_fixed_fee"))

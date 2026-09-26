@@ -181,6 +181,17 @@ ITEM_QUALITY_PROJECTION = {
         },
     },
 }
+ITEM_QUALITY_PROBE = {
+    "bsonType": "object",
+    "additionalProperties": False,
+    "required": ["status", "checked_at", "next_probe_at", "item_updated_at"],
+    "properties": {
+        "status": {"enum": ["not_generated", "available"]},
+        "checked_at": DATE,
+        "next_probe_at": DATE,
+        "item_updated_at": DATE,
+    },
+}
 ITEM_ENRICHMENT_STATE = {
     "additionalProperties": False,
     "bsonType": ["object", "null"],
@@ -570,6 +581,7 @@ ENTITY_SCHEMAS: dict[str, dict[str, Any]] = {
             "listing_fee_projection": LISTING_FEE_PROJECTION,
             "enrichment_state": ITEM_ENRICHMENT_STATE,
             "quality_projection": ITEM_QUALITY_PROJECTION,
+            "quality_probe": ITEM_QUALITY_PROBE,
             "user_product_id": {"bsonType": ["string", "null"], "pattern": "^ML[A-Z]U[0-9]+$"},
             "catalog_product_id": {"bsonType": ["string", "null"]},
             "catalog_listing": {"bsonType": ["bool", "null"]},

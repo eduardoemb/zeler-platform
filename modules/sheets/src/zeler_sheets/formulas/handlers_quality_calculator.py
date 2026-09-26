@@ -324,7 +324,13 @@ def _quality_row(row: Mapping[str, Any], *, now: datetime) -> list[Any]:
     raw = current.get("quality_projection")
     states = _optional_mapping(current.get("enrichment_state")) or {}
     state = _optional_mapping(states.get("quality_projection"))
-    if state is not None and state.get("status") == "basis_mismatch":
+    if state is not None and (
+        state.get("status") == "basis_mismatch"
+        or (
+            state.get("status") == "transient"
+            and state.get("reason") == "performance_not_generated"
+        )
+    ):
         return [*base, *["DATA_UNAVAILABLE"] * 12]
     if not isinstance(raw, Mapping):
         return [*base, *["DATA_UNAVAILABLE"] * 12]

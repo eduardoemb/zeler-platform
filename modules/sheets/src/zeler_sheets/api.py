@@ -68,6 +68,7 @@ from zeler_sheets.formulas.runtime_states import (
     get_formula_runtime_states,
 )
 from zeler_sheets.formulas.schemas import FormulaContract
+from zeler_sheets.quality_probe import quality_probe_due
 
 # Google Sheets kills a custom function at 30 seconds. Keep the internal cutoff
 # comfortably below that, but above the previous 20s that turned five heavy
@@ -917,21 +918,48 @@ async def _request_formula_recovery(
             return _recovery_admission_outcome(missing.read_model, outcome="invalid_request")
         try:
             async with asyncio.timeout_at(_recovery_admission_deadline(request)):
+                identities = tuple(missing.item_ids)
+                if (
+                    missing.read_model == "item_formula_rows"
+                    and getattr(getattr(context, "contract", None), "name", None)
+                    == "ZELERDATA_CALIDAD"
+                ):
+                    db = getattr(request.app.state, "mongo_db", None)
+                    if db is not None:
+                        current = datetime.now(UTC)
+                        items = (
+                            await db["items"]
+                            .find(
+                                {"seller_id": context.seller_id, "_id": {"$in": list(identities)}},
+                                {"_id": 1, "last_updated": 1, "quality_probe": 1},
+                            )
+                            .to_list(length=len(identities))
+                        )
+                        deferred = {
+                            str(item["_id"])
+                            for item in items
+                            if not quality_probe_due(
+                                item.get("quality_probe"), item.get("last_updated"), now=current
+                            )
+                        }
+                        identities = tuple(
+                            identity for identity in identities if identity not in deferred
+                        )
+                if not identities:
+                    return _recovery_admission_outcome(missing.read_model, outcome="deferred")
                 if (
                     missing.read_model in {"catalog_buybox_snapshots", "item_formula_rows"}
-                    and len(missing.item_ids) > 20
+                    and len(identities) > 20
                 ):
                     await queue.enqueue(
-                        CatalogRecoveryRequest(
-                            context.seller_id, missing.read_model, tuple(missing.item_ids)
-                        )
+                        CatalogRecoveryRequest(context.seller_id, missing.read_model, identities)
                     )
                     return _recovery_admission_outcome(missing.read_model)
-                for offset in range(0, len(missing.item_ids), 20):
+                for offset in range(0, len(identities), 20):
                     await queue.enqueue(
                         ItemIdsRecoveryRequest(
                             context.seller_id,
-                            missing.item_ids[offset : offset + 20],
+                            identities[offset : offset + 20],
                             read_model=missing.read_model,
                         )
                     )

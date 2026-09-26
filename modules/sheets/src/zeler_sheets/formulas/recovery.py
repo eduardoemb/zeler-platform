@@ -517,13 +517,54 @@ class FormulaRecoveryQueue:
                 {"_id": request.seller_id}, {"$setOnInsert": {"revision": 0}}, upsert=True
             )
 
+        admitted_key = request.key
+
         async def admit(session: Any) -> None:
+            nonlocal admitted_key
             # A count followed by insertion without this write can oversubscribe
             # under snapshot isolation. Transaction retries refresh the snapshot.
             await self.admission.update_one(
                 {"_id": request.seller_id}, {"$inc": {"revision": 1}}, session=session
             )
-            existing = await self.collection.find_one({"_id": request.key}, session=session)
+            candidate_initial = initial
+            if request.read_model == "item_formula_rows" and isinstance(
+                request, (CatalogRecoveryRequest, ItemIdsRecoveryRequest)
+            ):
+                active_items = await self.collection.find(
+                    {
+                        "seller_id": request.seller_id,
+                        "read_model": request.read_model,
+                        "state": {"$in": ["pending", "running"]},
+                        "item_ids": {"$exists": True},
+                    },
+                    {"_id": 1, "item_ids": 1},
+                    session=session,
+                ).to_list(length=self.max_active_jobs_per_seller)
+                covered = {
+                    identity
+                    for active_item in active_items
+                    for identity in active_item.get("item_ids", [])
+                }
+                requested = (
+                    request.ids if isinstance(request, CatalogRecoveryRequest) else request.item_ids
+                )
+                remaining = tuple(identity for identity in requested if identity not in covered)
+                if not remaining:
+                    admitted_key = str(active_items[0]["_id"])
+                    return
+                if remaining != requested:
+                    narrowed = (
+                        CatalogRecoveryRequest(request.seller_id, request.read_model, remaining)
+                        if isinstance(request, CatalogRecoveryRequest)
+                        else ItemIdsRecoveryRequest(request.seller_id, remaining)
+                    )
+                    admitted_key = narrowed.key
+                    candidate_initial = {
+                        **initial,
+                        "_id": admitted_key,
+                        "item_ids": list(remaining),
+                    }
+            existing = await self.collection.find_one({"_id": admitted_key}, session=session)
             if isinstance(request, (QuestionScanRecoveryRequest, OrderHistoryRecoveryRequest)):
                 request.validate_existing(existing)
             if existing is not None and (
@@ -561,12 +602,12 @@ class FormulaRecoveryQueue:
             if active >= self.max_active_jobs_per_seller:
                 raise RecoveryCapacityError("recovery seller capacity reached")
             if existing is None:
-                await self.collection.insert_one(initial, session=session)
+                await self.collection.insert_one(candidate_initial, session=session)
             else:
                 # Cooldown is not advanced by a new request. Reopening consumes
                 # capacity, but completing a job frees it without a second counter.
                 await self.collection.update_one(
-                    {"_id": request.key},
+                    {"_id": admitted_key},
                     {
                         "$set": {
                             "state": "pending",
@@ -603,7 +644,7 @@ class FormulaRecoveryQueue:
             await session.with_transaction(
                 admit, read_concern=ReadConcern("snapshot"), write_concern=WriteConcern("majority")
             )
-        return request.key
+        return admitted_key
 
     async def checkpoint_inventory(
         self,

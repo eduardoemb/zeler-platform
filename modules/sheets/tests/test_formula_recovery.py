@@ -1053,6 +1053,157 @@ async def test_item_intent_worker_resumes_bounded_chunks(
 
 
 @pytest.mark.asyncio
+async def test_overlapping_item_catalog_intents_admit_only_uncovered_publications(
+    recovery_db: Any,
+) -> None:
+    from zeler_sheets.formulas.recovery import IMPLEMENTED_MODELS, CatalogRecoveryRequest
+
+    queue = FormulaRecoveryQueue(recovery_db, enabled_models=IMPLEMENTED_MODELS)
+    first = CatalogRecoveryRequest(
+        "82453304", "item_formula_rows", tuple(f"MLA{i:03d}" for i in range(40))
+    )
+    next_request = CatalogRecoveryRequest(
+        "82453304", "item_formula_rows", tuple(f"MLA{i:03d}" for i in range(10, 45))
+    )
+    assert await queue.enqueue(first) == first.key
+    second_key = await queue.enqueue(next_request)
+    assert second_key != next_request.key
+    assert await queue.enqueue(next_request) in {first.key, second_key}
+    jobs = await queue.collection.find(
+        {"seller_id": "82453304", "state": "pending"}, {"_id": 1, "item_ids": 1}
+    ).to_list(length=10)
+    assert len(jobs) == 2
+    assert {item for job in jobs for item in job["item_ids"]} == {f"MLA{i:03d}" for i in range(45)}
+    assert not set(jobs[0]["item_ids"]) & set(jobs[1]["item_ids"])
+    other = CatalogRecoveryRequest("999", "item_formula_rows", first.ids)
+    assert await queue.enqueue(other) == other.key
+    assert await queue.collection.count_documents({"seller_id": "999", "state": "pending"}) == 1
+
+
+@pytest.mark.asyncio
+async def test_concurrent_item_catalog_admission_keeps_unique_active_coverage(
+    recovery_db: Any,
+) -> None:
+    from zeler_sheets.formulas.recovery import IMPLEMENTED_MODELS, CatalogRecoveryRequest
+
+    queue = FormulaRecoveryQueue(recovery_db, enabled_models=IMPLEMENTED_MODELS)
+    requests = [
+        CatalogRecoveryRequest(
+            "82453304", "item_formula_rows", tuple(f"MLA{i:03d}" for i in range(start, start + 40))
+        )
+        for start in (0, 10, 20, 30)
+    ]
+    await asyncio.gather(*(queue.enqueue(request) for request in requests))
+    jobs = await queue.collection.find(
+        {"seller_id": "82453304", "state": "pending"}, {"item_ids": 1}
+    ).to_list(length=10)
+    ids = [item for job in jobs for item in job["item_ids"]]
+    assert len(ids) == len(set(ids)) == 70
+
+
+@pytest.mark.asyncio
+async def test_small_item_intent_does_not_duplicate_active_catalog_coverage(
+    recovery_db: Any,
+) -> None:
+    from zeler_sheets.formulas.recovery import (
+        IMPLEMENTED_MODELS,
+        CatalogRecoveryRequest,
+        ItemIdsRecoveryRequest,
+    )
+
+    queue = FormulaRecoveryQueue(recovery_db, enabled_models=IMPLEMENTED_MODELS)
+    catalog = CatalogRecoveryRequest(
+        "82453304", "item_formula_rows", tuple(f"MLA{i}" for i in range(21))
+    )
+    await queue.enqueue(catalog)
+    small = ItemIdsRecoveryRequest("82453304", ("MLA20", "MLA21"))
+    result = await queue.enqueue(small)
+    assert result != small.key
+    jobs = await queue.collection.find(
+        {"seller_id": "82453304", "state": "pending"}, {"item_ids": 1}
+    ).to_list(length=10)
+    assert len(jobs) == 2
+    assert {item for job in jobs for item in job["item_ids"]} == {f"MLA{i}" for i in range(22)}
+    assert not set(jobs[0]["item_ids"]) & set(jobs[1]["item_ids"])
+
+
+@pytest.mark.asyncio
+async def test_legacy_item_catalog_reconciliation_preserves_unfinished_ids(
+    recovery_db: Any,
+) -> None:
+    from zeler_sheets.formulas.recovery_reconcile import reconcile_item_catalog_jobs
+
+    now = datetime.now(UTC).replace(microsecond=0)
+    seller = "82453304"
+    await recovery_db.sheets_formula_recovery_jobs.insert_many(
+        [
+            {
+                "_id": "old-a",
+                "seller_id": seller,
+                "read_model": "item_formula_rows",
+                "state": "pending",
+                "item_ids": [f"MLA{i:03d}" for i in range(40)],
+                "catalog_offset": 20,
+                "catalog_failed_offsets": [],
+                "updated_at": now,
+            },
+            {
+                "_id": "old-b",
+                "seller_id": seller,
+                "read_model": "item_formula_rows",
+                "state": "pending",
+                "item_ids": [f"MLA{i:03d}" for i in range(10, 50)],
+                "catalog_offset": 20,
+                "catalog_failed_offsets": [0],
+                "updated_at": now,
+            },
+        ]
+    )
+    plan = await reconcile_item_catalog_jobs(recovery_db, seller_id=seller)
+    assert plan.active_jobs == 2
+    assert plan.outstanding_ids == 30
+    assert plan.superseded_jobs == 2
+    assert await recovery_db.sheets_formula_recovery_jobs.count_documents({"state": "pending"}) == 2
+    with pytest.raises(ValueError, match="fingerprint"):
+        await reconcile_item_catalog_jobs(
+            recovery_db, seller_id=seller, execute=True, expected_fingerprint="stale"
+        )
+    applied = await reconcile_item_catalog_jobs(
+        recovery_db, seller_id=seller, execute=True, expected_fingerprint=plan.fingerprint
+    )
+    assert applied.fingerprint == plan.fingerprint
+    jobs = await recovery_db.sheets_formula_recovery_jobs.find({}).to_list(length=10)
+    new_jobs = [job for job in jobs if job["state"] == "pending"]
+    assert len(new_jobs) == 1
+    assert new_jobs[0]["item_ids"] == [f"MLA{i:03d}" for i in range(20, 50)]
+    assert {job["failure_reason"] for job in jobs if job["_id"].startswith("old-")} == {
+        "superseded_by_item_reconciliation"
+    }
+    assert (await reconcile_item_catalog_jobs(recovery_db, seller_id=seller)).active_jobs == 1
+
+
+@pytest.mark.asyncio
+async def test_item_catalog_reconciliation_refuses_live_lease(recovery_db: Any) -> None:
+    from zeler_sheets.formulas.recovery_reconcile import reconcile_item_catalog_jobs
+
+    now = datetime.now(UTC).replace(microsecond=0)
+    await recovery_db.sheets_formula_recovery_jobs.insert_one(
+        {
+            "_id": "running",
+            "seller_id": "82453304",
+            "read_model": "item_formula_rows",
+            "state": "running",
+            "item_ids": ["MLA1"],
+            "catalog_offset": 0,
+            "lease_until": now + timedelta(minutes=10),
+            "updated_at": now,
+        }
+    )
+    with pytest.raises(ValueError, match="lease"):
+        await reconcile_item_catalog_jobs(recovery_db, seller_id="82453304")
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("read_model", ["catalog_product_snapshots", "item_formula_rows"])
 async def test_catalog_intent_lease_exhaustion_advances_and_reopening_resets_progress(
     recovery_db: Any,
@@ -2997,13 +3148,20 @@ async def test_selected_calculator_reads_complete_recent_projection_without_inve
 @pytest.mark.asyncio
 @pytest.mark.parametrize("partial", [False, True])
 @pytest.mark.parametrize("lose_lease", [False, True])
-@pytest.mark.parametrize("transient_enrichment", [False, True])
+@pytest.mark.parametrize(
+    "transient_reason",
+    [
+        None,
+        "listing_price_fixed_fee:transient:rate_limited",
+        "quality_projection:transient:performance_not_generated",
+    ],
+)
 async def test_explicit_item_recovery_uses_bounded_acquisition_without_global_marker(
     recovery_db: Any,
     monkeypatch: pytest.MonkeyPatch,
     partial: bool,
     lose_lease: bool,
-    transient_enrichment: bool,
+    transient_reason: str | None,
 ) -> None:
     from types import SimpleNamespace
 
@@ -3058,8 +3216,8 @@ async def test_explicit_item_recovery_uses_bounded_acquisition_without_global_ma
             )
         return SimpleNamespace(
             item_details_stale_unavailable=int(partial),
-            diagnostic_reason_counts={"listing_price_fixed_fee:transient:rate_limited": 1}
-            if transient_enrichment and calls.count("acquire") == 1
+            diagnostic_reason_counts={transient_reason: 1}
+            if transient_reason is not None and calls.count("acquire") == 1
             else {},
         )
 
@@ -3076,10 +3234,11 @@ async def test_explicit_item_recovery_uses_bounded_acquisition_without_global_ma
     )
     assert await worker.process_one()
     assert calls == (["acquire"] if lose_lease else ["acquire", "project"])
+    blocks_item = transient_reason == "listing_price_fixed_fee:transient:rate_limited"
     assert (await queue.collection.find_one({"_id": key}))["state"] == (
-        "running" if lose_lease else "pending" if partial or transient_enrichment else "completed"
+        "running" if lose_lease else "pending" if partial or blocks_item else "completed"
     )
-    if transient_enrichment and not partial and not lose_lease:
+    if blocks_item and not partial and not lose_lease:
         pending = await queue.collection.find_one({"_id": key})
         assert pending["available_at"] > pending["updated_at"]
         retry_at = pending["available_at"].replace(tzinfo=UTC)
@@ -3101,6 +3260,107 @@ async def test_explicit_item_recovery_uses_bounded_acquisition_without_global_ma
                 datetime(2026, 9, 2, tzinfo=UTC),
             )
         )
+
+
+@pytest.mark.asyncio
+async def test_quality_formula_admits_only_items_due_for_source_recheck(recovery_db: Any) -> None:
+    from types import SimpleNamespace
+
+    from zeler_sheets.api import _request_formula_recovery
+    from zeler_sheets.formulas.dispatcher import FormulaDataUnavailableError
+    from zeler_sheets.formulas.recovery import IMPLEMENTED_MODELS
+
+    now = datetime.now(UTC).replace(microsecond=0)
+    seller = "82453304"
+    await recovery_db.items.insert_many(
+        [
+            {
+                "_id": "MLA1",
+                "seller_id": seller,
+                "last_updated": now,
+                "quality_probe": {
+                    "status": "not_generated",
+                    "checked_at": now,
+                    "next_probe_at": now + timedelta(hours=1),
+                    "item_updated_at": now,
+                },
+            },
+            {"_id": "MLA2", "seller_id": seller, "last_updated": now},
+            {
+                "_id": "MLA3",
+                "seller_id": seller,
+                "last_updated": now + timedelta(seconds=1),
+                "quality_probe": {
+                    "status": "not_generated",
+                    "checked_at": now,
+                    "next_probe_at": now + timedelta(hours=1),
+                    "item_updated_at": now,
+                },
+            },
+        ]
+    )
+    queue = FormulaRecoveryQueue(recovery_db, enabled_models=IMPLEMENTED_MODELS)
+    request: Any = SimpleNamespace(
+        app=SimpleNamespace(
+            state=SimpleNamespace(formula_recovery_queue=queue, mongo_db=recovery_db)
+        ),
+        state=SimpleNamespace(),
+    )
+    context: Any = SimpleNamespace(
+        seller_id=seller, contract=SimpleNamespace(name="ZELERDATA_CALIDAD")
+    )
+    missing = FormulaDataUnavailableError(
+        "ZELERDATA_CALIDAD", read_model="item_formula_rows", item_ids=("MLA1", "MLA2", "MLA3")
+    )
+
+    assert await _request_formula_recovery(request, context, missing)
+    jobs = await queue.collection.find({}, {"_id": 0, "item_ids": 1}).to_list(length=10)
+    assert jobs == [{"item_ids": ["MLA2", "MLA3"]}]
+
+
+@pytest.mark.asyncio
+async def test_quality_formula_defers_unchanged_404_until_probe_expires(recovery_db: Any) -> None:
+    from types import SimpleNamespace
+
+    from zeler_sheets.api import _request_formula_recovery
+    from zeler_sheets.formulas.dispatcher import FormulaDataUnavailableError
+    from zeler_sheets.formulas.recovery import IMPLEMENTED_MODELS
+
+    now = datetime.now(UTC).replace(microsecond=0)
+    seller = "82453304"
+    await recovery_db.items.insert_one(
+        {
+            "_id": "MLA1",
+            "seller_id": seller,
+            "last_updated": now,
+            "quality_probe": {
+                "status": "not_generated",
+                "checked_at": now,
+                "next_probe_at": now + timedelta(hours=1),
+                "item_updated_at": now,
+            },
+        }
+    )
+    queue = FormulaRecoveryQueue(recovery_db, enabled_models=IMPLEMENTED_MODELS)
+    request: Any = SimpleNamespace(
+        app=SimpleNamespace(
+            state=SimpleNamespace(formula_recovery_queue=queue, mongo_db=recovery_db)
+        ),
+        state=SimpleNamespace(),
+    )
+    context: Any = SimpleNamespace(
+        seller_id=seller, contract=SimpleNamespace(name="ZELERDATA_CALIDAD")
+    )
+    missing = FormulaDataUnavailableError(
+        "ZELERDATA_CALIDAD", read_model="item_formula_rows", item_ids=("MLA1",)
+    )
+    assert not await _request_formula_recovery(request, context, missing)
+    assert await queue.collection.count_documents({}) == 0
+    await recovery_db.items.update_one(
+        {"_id": "MLA1"}, {"$set": {"quality_probe.next_probe_at": now - timedelta(seconds=1)}}
+    )
+    assert await _request_formula_recovery(request, context, missing)
+    assert await queue.collection.count_documents({}) == 1
 
 
 @pytest.mark.asyncio
@@ -6237,6 +6497,46 @@ async def test_quality_projection_roundtrips_with_real_mongo_validators(
         ):
             with pytest.raises(WriteError):
                 await collection.update_one({}, {"$set": {f"{path}.{field}": value}})
+
+
+@pytest.mark.asyncio
+async def test_quality_probe_roundtrips_with_real_items_validator(recovery_db: Any) -> None:
+    import json
+    from pathlib import Path
+
+    from pymongo.errors import WriteError
+
+    now = datetime(2026, 9, 26, tzinfo=UTC)
+    schema = json.loads(Path("infra/mongo/schemas/items.json").read_text())
+    await recovery_db.create_collection("items", validator={"$jsonSchema": schema["$jsonSchema"]})
+    await recovery_db.items.insert_one(
+        {
+            "_id": "MLA1",
+            "seller_id": "82453304",
+            "title": "Quality publication",
+            "price": 100,
+            "base_price": 100,
+            "available_quantity": 2,
+            "status": "active",
+            "category_id": "MLA123",
+            "date_created": now,
+            "last_updated": now,
+            "last_meli_sync_at": now,
+            "schema_version": 2,
+            "quality_probe": {
+                "status": "not_generated",
+                "checked_at": now,
+                "next_probe_at": now + timedelta(hours=1),
+                "item_updated_at": now,
+            },
+        }
+    )
+    stored = await recovery_db.items.find_one({"_id": "MLA1"})
+    assert stored["quality_probe"]["status"] == "not_generated"
+    with pytest.raises(WriteError):
+        await recovery_db.items.update_one(
+            {"_id": "MLA1"}, {"$set": {"quality_probe.status": "invalid"}}
+        )
 
 
 @pytest.mark.asyncio

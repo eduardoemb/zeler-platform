@@ -540,7 +540,10 @@ class FakeCollection:
                 return dict(doc)
         return None
 
-    def find(self, filter_spec: dict[str, Any]) -> FakeCursor:
+    def find(
+        self, filter_spec: dict[str, Any], projection: dict[str, int] | None = None
+    ) -> FakeCursor:
+        del projection
         return FakeCursor(
             [dict(doc) for doc in self.documents.values() if _matches(doc, filter_spec)]
         )

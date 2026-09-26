@@ -75,6 +75,7 @@ repeat failures, and promote stable knowledge to its proper operational form.
 | L-016 | Bootstrap | Update the linked account without inserting a second record | active |
 | L-017 | VM recovery | Inspect metrics before the telemetry cutoff | active |
 | L-018 | Observability | Validate Docker log parsing with the installed agent | active |
+| L-019 | ZelerData | Bound retries for optional quality 404 and overlapping item jobs | active |
 
 ## Cloud Build and VM deployment
 
@@ -179,6 +180,21 @@ repeat failures, and promote stable knowledge to its proper operational form.
 - verification/source: `docs/ops/platform-vm-prevention-20260926.md` and its tested
   runtime configuration. The original failed and the candidate passed the same
   real-engine fixtures; production subsequently emitted structured events.
+- status: active
+
+### L-019 — Bound optional quality retries and overlapping item jobs
+- area: ZelerData acquisition and recovery
+- proven path: Persist a quality-only retry time bound to the item's source
+  version, keep absent quality visibly unavailable, and complete the item chunk.
+  Before admitting more work, subtract IDs already covered by active jobs for
+  the same seller. Reconcile legacy overlaps from a drained worker with a
+  fingerprinted dry run and preserved job records.
+- failed path: Retry a full item chunk for every optional performance 404, or
+  key large recovery sweeps only by the exact changing ID list. Both multiply
+  source calls and queue work without adding source evidence.
+- verification/source: `openspec/changes/zelerdata-quality-load-control/`,
+  `modules/sheets/tests/test_formula_recovery.py`, and
+  `docs/ops/zelerdata-quality-load-control.md`.
 - status: active
 
 ## ZelerData

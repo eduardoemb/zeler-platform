@@ -464,6 +464,21 @@ class ItemEnrichmentState(UtcDatetimeMixin):
     quality_projection: ItemEnrichmentFieldState | None = None
 
 
+class ItemQualityProbe(UtcDatetimeMixin):
+    model_config = ConfigDict(extra="forbid")
+
+    status: Literal["not_generated", "available"]
+    checked_at: datetime
+    next_probe_at: datetime
+    item_updated_at: datetime
+
+    @field_validator("checked_at", "next_probe_at", "item_updated_at")
+    @classmethod
+    def _aware_datetime(cls, value: datetime) -> datetime:
+        UtcDatetimeMixin._datetime_must_be_aware(value)
+        return value
+
+
 class Item(UtcDatetimeMixin, PriceMixin, SellerScopedDocument):
     user_product_id: str | None = Field(default=None, pattern=r"^ML[A-Z]U[0-9]+$")
     title: str
@@ -488,6 +503,7 @@ class Item(UtcDatetimeMixin, PriceMixin, SellerScopedDocument):
     shipping: dict[str, Any] | None = None
     health: float | None = None
     quality_projection: ItemQualityProjection | None = None
+    quality_probe: ItemQualityProbe | None = None
     current_promotion: PromoPriceProjection | None = None
     listing_price_fixed_fee: ListingPriceFixedFeeProjection | None = None
     listing_fee_projection: ListingFeeProjection | None = None

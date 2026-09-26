@@ -949,6 +949,33 @@
           "long"
         ]
       },
+      "quality_probe": {
+        "additionalProperties": false,
+        "bsonType": "object",
+        "properties": {
+          "checked_at": {
+            "bsonType": "date"
+          },
+          "item_updated_at": {
+            "bsonType": "date"
+          },
+          "next_probe_at": {
+            "bsonType": "date"
+          },
+          "status": {
+            "enum": [
+              "not_generated",
+              "available"
+            ]
+          }
+        },
+        "required": [
+          "status",
+          "checked_at",
+          "next_probe_at",
+          "item_updated_at"
+        ]
+      },
       "quality_projection": {
         "additionalProperties": false,
         "bsonType": [

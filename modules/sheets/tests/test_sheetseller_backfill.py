@@ -3,7 +3,7 @@ from __future__ import annotations
 import inspect
 from contextlib import asynccontextmanager
 from copy import deepcopy
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 from uuid import uuid4
@@ -2244,6 +2244,83 @@ async def test_quality_failure_preserves_prior_acquisition_cut(
     assert state["status"] == status
     assert state["reason"] == reason
     assert persisted["last_meli_sync_at"] > prior["observed_at"]
+
+
+@pytest.mark.asyncio
+async def test_quality_not_generated_rechecks_after_item_change_without_repeating_same_source() -> (
+    None
+):
+    item = _item_doc("MLA1")
+    detail = _item_detail("MLA1")
+    response = httpx.Response(
+        404, request=httpx.Request("GET", "https://gateway.test/item/MLA1/performance")
+    )
+    gateway = FakeItemGateway(
+        {
+            "/items?ids=MLA1&include_attributes=all": [{"code": 200, "body": detail}],
+            "/item/MLA1/performance": httpx.HTTPStatusError(
+                "quality pending", request=response.request, response=response
+            ),
+        }
+    )
+    db = FakeDb([item])
+
+    await run_item_detail_enrichment(
+        db=db,
+        gateway=gateway,
+        seller_id="82453304",
+        acquire_item_ids=("MLA1",),
+        quality_enabled=True,
+        dry_run=False,
+    )
+    first = db["items"].documents["MLA1"]
+    assert first["quality_probe"]["status"] == "not_generated"
+    assert first["quality_probe"]["next_probe_at"] > first["quality_probe"]["checked_at"]
+
+    await run_item_detail_enrichment(
+        db=db,
+        gateway=gateway,
+        seller_id="82453304",
+        acquire_item_ids=("MLA1",),
+        quality_enabled=True,
+        base_only=True,
+        dry_run=False,
+    )
+    assert db["items"].documents["MLA1"]["quality_probe"] == first["quality_probe"]
+
+    await run_item_detail_enrichment(
+        db=db,
+        gateway=gateway,
+        seller_id="82453304",
+        acquire_item_ids=("MLA1",),
+        quality_enabled=True,
+        dry_run=False,
+    )
+    assert gateway.calls.count(("82453304", "/item/MLA1/performance")) == 1
+
+    detail["last_updated"] = (NOW + timedelta(days=1)).isoformat()
+    await run_item_detail_enrichment(
+        db=db,
+        gateway=gateway,
+        seller_id="82453304",
+        acquire_item_ids=("MLA1",),
+        quality_enabled=True,
+        dry_run=False,
+    )
+    assert gateway.calls.count(("82453304", "/item/MLA1/performance")) == 2
+
+    db["items"].documents["MLA1"]["quality_probe"]["next_probe_at"] = datetime.now(UTC) - timedelta(
+        seconds=1
+    )
+    await run_item_detail_enrichment(
+        db=db,
+        gateway=gateway,
+        seller_id="82453304",
+        acquire_item_ids=("MLA1",),
+        quality_enabled=True,
+        dry_run=False,
+    )
+    assert gateway.calls.count(("82453304", "/item/MLA1/performance")) == 3
 
 
 @pytest.mark.asyncio

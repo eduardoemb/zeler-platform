@@ -166,6 +166,35 @@ async def test_calculator_missing_freshness_carries_explicit_recovery_scope() ->
     assert caught.value.item_ids == ("MLA1", "MLA2")
 
 
+def test_quality_404_does_not_display_previous_projection() -> None:
+    from zeler_sheets.formulas.handlers_quality_calculator import _quality_row
+
+    row = _item_row(
+        item_id="MLA1",
+        sku="sku-1",
+        title="Quality item",
+        status="active",
+        quality_projection={
+            "source": "/item/{id}/performance",
+            "entity_id": "MLA1",
+            "observed_at": NOW,
+            "score": 88.0,
+            "level": "good",
+            "calculated_at": QUALITY_CALCULATED_AT,
+            "components": {},
+            "pending_actions": [],
+        },
+    )
+    row["current"]["enrichment_state"] = {
+        "quality_projection": {
+            "status": "transient",
+            "reason": "performance_not_generated",
+            "synced_at": NOW,
+        }
+    }
+    assert _quality_row(row, now=NOW)[7:] == ["DATA_UNAVAILABLE"] * 12
+
+
 @pytest.mark.asyncio
 async def test_calidad_uses_modern_local_quality_projection_without_suggested_price() -> None:
     db = FakeDb()
