@@ -7,6 +7,7 @@
 - [x] Build a verified Sheets worker image from the exact committed `main` source and deploy only that worker with compatible rollback.
 - [x] Observe existing bulk jobs through terminal state and classify the three original incomplete buybox chunks.
 - [x] RED/GREEN: prove and prevent legacy order backfill from reacquiring an exact, completed, marker-covered history interval.
-- [ ] Roll out the order proof guard, reconcile already admitted redundant order jobs, then record a fixed five-minute gateway rate with the worker healthy.
+- [x] Roll out the order proof guard and reconcile already admitted redundant order jobs with the worker drained.
 - [x] RED/GREEN: reproduce a repeated question refresh when one stored identity is absent from a complete source scan; revalidate missing identities by detail and publish confirmed 404 removal atomically.
-- [ ] Roll out the question reconciliation correction, observe a successful question job, and measure an active-worker gateway rate across a normal refresh cycle.
+- [x] Roll out the question reconciliation correction and observe a successful question job and inventory completion.
+- [x] Measure fixed five-minute idle and normal-cycle gateway rates after backlog; verify the next scheduled orders/questions jobs, queue, health and capacity.
