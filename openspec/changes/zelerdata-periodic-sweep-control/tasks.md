@@ -4,5 +4,7 @@
 - [x] RED: prove the runtime factory schedules bulk sweeps by default despite no explicit bulk opt-in.
 - [x] GREEN: select only bounded range refresh by default, with an explicit flag restoring all bulk sweeps; document the operator flag.
 - [x] Run focused and full repository quality gates on an isolated test target.
-- [ ] Build a verified Sheets worker image from the exact committed `main` source, deploy only that worker with compatible rollback, and observe existing jobs through terminal state.
-- [ ] Record a post-backlog gateway request rate and the remaining incomplete-chunk classification; close only on measured evidence.
+- [x] Build a verified Sheets worker image from the exact committed `main` source and deploy only that worker with compatible rollback.
+- [x] Observe existing bulk jobs through terminal state and classify the three original incomplete buybox chunks.
+- [x] RED/GREEN: prove and prevent legacy order backfill from reacquiring an exact, completed, marker-covered history interval.
+- [ ] Roll out the order proof guard, reconcile already admitted redundant order jobs, then record a fixed five-minute gateway rate with the worker healthy.

@@ -96,6 +96,18 @@ class FakeCollection:
             return None
         return {"_id": query["_id"], "state": state}
 
+    def find(self, query: dict[str, Any], projection: dict[str, Any]) -> Any:
+        class EmptyCursor:
+            async def to_list(self, *, length: int) -> list[dict[str, Any]]:
+                return []
+
+        return EmptyCursor()
+
+
+class FakeMarkerCollection:
+    async def find_one(self, query: dict[str, Any]) -> None:
+        return None
+
 
 @pytest.fixture
 def recovery_queue() -> AsyncMock:
@@ -115,11 +127,15 @@ def recovery_queue() -> AsyncMock:
 async def test_backfill_persists_plan_and_counts_enqueued(
     recovery_queue: AsyncMock,
 ) -> None:
-    db = {"sheets_history_backfill_plans": FakePlanCollection()}
+    plans = FakePlanCollection()
+    db = {
+        "sheets_history_backfill_plans": plans,
+        "sheets_read_model_freshness": FakeMarkerCollection(),
+    }
     backfill = build_pilot_history_backfill(db=db, recovery_queue=recovery_queue)
     result = await backfill(SELLER)
     assert result is True
-    plan_doc = db["sheets_history_backfill_plans"].docs[SELLER]
+    plan_doc = plans.docs[SELLER]
     assert plan_doc["seller_id"] == SELLER
     assert plan_doc["schema_version"] == 1
     assert "cutoff" in plan_doc
@@ -129,11 +145,15 @@ async def test_backfill_persists_plan_and_counts_enqueued(
 async def test_backfill_persists_progress_after_enqueue(
     recovery_queue: AsyncMock,
 ) -> None:
-    db = {"sheets_history_backfill_plans": FakePlanCollection()}
+    plans = FakePlanCollection()
+    db = {
+        "sheets_history_backfill_plans": plans,
+        "sheets_read_model_freshness": FakeMarkerCollection(),
+    }
     backfill = build_pilot_history_backfill(db=db, recovery_queue=recovery_queue)
     await backfill(SELLER)
     # After enqueue, the plan document must record the chunk as admitted.
-    plan_doc = db["sheets_history_backfill_plans"].docs[SELLER]
+    plan_doc = plans.docs[SELLER]
     assert "progress" in plan_doc
 
 
@@ -145,7 +165,10 @@ async def test_progress_persists_completed_and_errors_per_resource(
     from zeler_sheets.pilot_history_recovery_bridge import chunk_to_recovery_request
 
     plan_collection = FakePlanCollection()
-    db = {"sheets_history_backfill_plans": plan_collection}
+    db = {
+        "sheets_history_backfill_plans": plan_collection,
+        "sheets_read_model_freshness": FakeMarkerCollection(),
+    }
     backfill = build_pilot_history_backfill(db=db, recovery_queue=recovery_queue)
 
     # First run: creates plan and enqueues chunks; no failures yet.

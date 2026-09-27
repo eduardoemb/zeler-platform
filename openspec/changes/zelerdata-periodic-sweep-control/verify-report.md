@@ -1,6 +1,6 @@
 # Verification: ZelerData Periodic Sweep Control
 
-Status: local behavior correction verified; production rollout remains in progress. Do not treat this report as proof of a settled live call rate until the post-backlog measurement is recorded.
+Status: scheduled bulk control and original buybox backlog verified; legacy order re-admission correction is in verification. A settled live gateway rate remains to be measured after the corrected worker resumes.
 
 ## Production evidence before rollout
 
@@ -18,6 +18,20 @@ The failed offsets covered 60 buybox publications. All 60 had persisted price an
 - `uv run ruff check .`, `uv run ruff format --check .`, `uv run mypy .`, and the direct-Meli lint passed.
 - `git diff --check` passed; unrelated pilot task edits and `.codegraph/` remain outside this change.
 
-## Rollout and post-backlog observation
+## Worker rollout
 
-Pending exact commit, VERIFIED worker image digest, running rollback digest, health and post-backlog call-rate evidence.
+- Commit `57faf318c5db8203e6b31276a7cea8c795a42230` was pushed to `main`. Single-image Cloud Build `25fdd247-94a6-4674-870b-092869da86f7` succeeded with VERIFIED provenance and the connected repository at that exact revision. The resulting image is `us-central1-docker.pkg.dev/zeler-platform-dev/zeler-platform/sheets-worker@sha256:5c1d7ce02c08a53a2d39c32b057fd721e7d452032e9041c82b3716652ce90f67`.
+- The previous running worker digest was `sheets-worker@sha256:ebffdd44ce2e662ba547eb2794ac51e954e8f1c642753935305cae9f47f6e162`; it remains the compatible rollback. Compose backup: `/opt/zeler-platform/docker-compose.yml.pre-sheets-worker-57faf31`. The only Compose image replacement was `sheets-worker`. The VM's selected-service provenance preflight bound the new digest to the commit before pull.
+- The first SSH-bound pull was interrupted by a connection lease failure before installing the image; the old worker remained running. The repeated capacity preflight passed. A VM transient unit completed the same single-image pull with exit 0, after which Docker image inspect found the exact digest. A second transient unit recreated only `sheets-worker` with exit 0.
+- After rollout, the running digest matched the verified image, Docker health was `healthy`, restart count and OOM flag remained zero, and the worker sidecar reported RabbitMQ, sync jobs, formula recovery and ZelerData refresh as `ok`. Sheets API `/health` and gateway `/ready` both returned 200. The Sheets event queue had 0 messages and DLQ held 197. Available memory was 1,255 MiB; `/` had 33,469,992,960 free bytes and the Mongo mount 48,151,957,504 free bytes, with ample inodes. No Docker cleanup or database mutation was done.
+- A read-only gateway probe through the deployed Sheets module checked the eight publications without new observations in two historical failed chunks. All eight currently returned valid price-to-win identity, price/status fields and no winner; all eight optional offers listings returned 404. Four had already gained a new competition observation in the later buybox pass. This supports a transient prior failure but does not identify its historical exception.
+- Two complete 15-minute refresh cycles after the worker restart admitted new `orders` and `questions` range jobs at 00:38 and 00:53 UTC, with no newly created bulk-model job. The inventory job reached `completed` at 1,896/1,896 with no unavailable IDs, and the separate 1,900-ID item job reached `completed` with no failed chunks; neither reopened. The still-active catalog jobs advanced without resetting their offsets.
+- The later buybox pass advanced through all three historical failed offsets, 380, 620 and 660, without marking any of those offsets failed again. It did mark a different offset 240 as `source_incomplete`. This confirms the original three blocks were recoverable on a later pass, while the source-specific historical exception remains unknown.
+
+## Post-backlog observation
+
+The bulk backlog reached terminal states: inventory 1,896/1,896 `completed`, separate item acquisition 1,900/1,900 `completed`, catalog products 875/875 `completed`, and the later buybox pass 934/934 terminal `failed` with only offset 240 marked `source_incomplete`. Its offsets 380, 620 and 660 did not fail again. All 20 publications at offset 240 had price/status snapshots; 15 still had unknown competition. No bulk job remained active and two scheduled cycles admitted no new bulk work.
+
+A fixed 01:11:30–01:16:30 UTC gateway window after those bulk jobs ended still had 877 Sheets calls, all HTTP 200: 648 order-detail and 229 question-detail calls. This was not a settled rate. The pilot history callback had admitted legacy monthly order jobs under keys different from already completed protocol jobs. Each of the 12 fixed order intervals had an exact completed `history_protocol_version=1` job and reconciled marker coverage. One legacy 1,447-order interval made 700 distinct order-detail requests during an approximately four-minute attempt, then returned to pending after its worker deadline. Three redundant jobs were marked terminal `failed` with `superseded_by_completed_history_proof` in a drained-worker, fingerprinted transaction; the history jobs, marker and orders were preserved. On the subsequent worker start, four more legacy monthly jobs were admitted despite the same completed proof, confirming the admission defect.
+
+The new guard checks both the exact plan-bound completed history job and marker coverage before admitting a legacy order month. A focused RED test reproduced the duplicate admission, then the corrected callback passed the focused suite. Existing pending duplicates require a separate, guarded reconciliation while the worker is drained. The fixed five-minute post-correction rate will be recorded after the worker resumes and reaches a clean window.

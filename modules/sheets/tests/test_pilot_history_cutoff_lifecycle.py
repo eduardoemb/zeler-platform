@@ -23,6 +23,7 @@ from zeler_sheets.formulas.recovery import (
     RecoveryRequest,
 )
 from zeler_sheets.formulas.recovery_worker import FormulaRecoveryWorker
+from zeler_sheets.formulas.refresh import reconciled_marker
 from zeler_sheets.history_question_worker import HistoryQuestionsWorker
 from zeler_sheets.history_worker import HistoryOrdersWorker
 from zeler_sheets.pilot_history import HistoryPlanner
@@ -106,6 +107,51 @@ async def test_opted_in_callback_admits_plan_bound_order_protocol(
     assert await queue.claim() is None
     assert await callback(SELLER) is False
     assert await queue.collection.count_documents({"seller_id": SELLER}) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("marker_present", [False, True])
+async def test_legacy_backfill_does_not_reacquire_completed_order_history(
+    cutoff_db: AsyncIOMotorDatabase[dict[str, Any]], marker_present: bool
+) -> None:
+    cutoff = datetime(2026, 9, 15, 12, 34, 56, tzinfo=UTC)
+    await cutoff_db[PLAN_COLLECTION].insert_one(
+        {"_id": SELLER, "seller_id": SELLER, "cutoff": cutoff, "schema_version": 1}
+    )
+    queue = FormulaRecoveryQueue(cutoff_db, max_active_jobs_per_seller=20)
+    await queue.ensure_indexes()
+    chunks = HistoryPlanner(cutoff=cutoff, months=12).plan_for("orders").chunks
+    plan_id = f"pilot-12m:{cutoff.isoformat(timespec='milliseconds')}"
+    for chunk in chunks:
+        request = OrderHistoryRecoveryRequest(SELLER, plan_id, chunk.start, chunk.end)
+        await queue.enqueue(request)
+        await queue.collection.update_one({"_id": request.key}, {"$set": {"state": "completed"}})
+    if marker_present:
+        await cutoff_db.sheets_read_model_freshness.insert_one(
+            reconciled_marker(
+                seller_id=SELLER,
+                read_model="orders",
+                start=chunks[0].start,
+                end=chunks[-1].end,
+                now=datetime.now(UTC),
+            )
+        )
+
+    callback = build_pilot_history_backfill(db=cutoff_db, recovery_queue=queue)
+    assert await callback(SELLER)
+    pending_legacy_orders = await queue.collection.count_documents(
+        {
+            "seller_id": SELLER,
+            "read_model": "orders",
+            "history_protocol_version": {"$exists": False},
+            "state": "pending",
+        }
+    )
+    assert (pending_legacy_orders == 0) is marker_present
+    if marker_present:
+        plan = await cutoff_db[PLAN_COLLECTION].find_one({"_id": SELLER})
+        assert plan is not None
+        assert plan["progress"]["orders"]["completed"] == len(chunks)
 
 
 @pytest.mark.asyncio

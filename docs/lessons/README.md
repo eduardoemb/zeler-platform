@@ -77,6 +77,8 @@ repeat failures, and promote stable knowledge to its proper operational form.
 | L-018 | Observability | Validate Docker log parsing with the installed agent | active |
 | L-019 | ZelerData | Bound retries for optional quality 404 and overlapping item jobs | active |
 | L-020 | ZelerData | Keep optional buybox offers 404 and overlapping catalog jobs from multiplying work | active |
+| L-021 | ZelerData | Do not repeatedly schedule full-seller sweeps faster than they finish | active |
+| L-022 | ZelerData | Suppress legacy order history only with completed interval proof | active |
 
 ## Cloud Build and VM deployment
 
@@ -215,6 +217,34 @@ repeat failures, and promote stable knowledge to its proper operational form.
   IDs with three incomplete chunks, stable service health and memory, and 39
   offers 404 calls across 38 routes in the last five minutes. Review the
   incomplete chunks and the settled call rate after the backlog finishes.
+- status: active
+
+### L-021 — Do not repeatedly schedule full-seller sweeps faster than they finish
+- area: ZelerData scheduled refresh and recovery
+- proven path: Keep bounded order/question ranges on the scheduled loop and
+  require explicit opt-in for periodic whole-seller inventory, catalog and
+  shipment sweeps. Formula-triggered recovery continues through the queue.
+- failed path: Coalesce only active IDs while a 15-minute planner reopens
+  terminal jobs whose full-seller passes take much longer. A superseded 934-ID
+  buybox job reopened after the consolidated 937-ID job finished, and the
+  inventory sweep restarted after its cooldown, sustaining source traffic.
+- verification/source: `openspec/changes/zelerdata-periodic-sweep-control/`,
+  the refresh factory tests, and the 27 September pilot worker rollout. The
+  settled post-backlog call rate remains to be measured.
+- status: active
+
+### L-022 — Suppress legacy order history only with completed interval proof
+- area: ZelerData pilot history backfill
+- proven path: Before admitting a legacy monthly order request, require the
+  exact completed plan-bound history job and a reconciled marker covering that
+  interval. Drain the worker and reconcile already admitted duplicates against
+  the same proof; keep their terminal records.
+- failed path: Queue dedup compares request keys, so it cannot recognize a
+  completed protocol job under a different legacy key. After a worker restart,
+  four already-proven order months were admitted again and sustained hundreds
+  of order-detail gateway calls.
+- verification/source: `modules/sheets/tests/test_pilot_history_cutoff_lifecycle.py`
+  and `openspec/changes/zelerdata-periodic-sweep-control/verify-report.md`.
 - status: active
 
 ## ZelerData

@@ -18,6 +18,7 @@ from typing import Any
 import structlog
 from pymongo import ReturnDocument
 
+from zeler_sheets.formulas.read_models import read_model_reconciliation_marker_covers
 from zeler_sheets.formulas.recovery import (
     OrderHistoryRecoveryRequest,
     QuestionScanRecoveryRequest,
@@ -96,6 +97,49 @@ def build_pilot_history_backfill(
             for chunk in chunks
             if chunk.resource in {"orders", "questions"}
         }
+        completed_order_proofs: dict[str, str] = {}
+        if not order_history:
+            # A legacy planner may still run after the plan-bound order protocol
+            # has completed. Its old request keys differ, so queue dedup alone
+            # would reacquire the same twelve months on every worker restart.
+            order_chunks = [chunk for chunk in chunks if chunk.resource == "orders"]
+            proof_requests = {
+                chunk.id: OrderHistoryRecoveryRequest(
+                    seller_id, order_plan_id, chunk.start, chunk.end
+                )
+                for chunk in order_chunks
+            }
+            proof_jobs = {
+                job["_id"]: job
+                for job in await recovery_queue.collection.find(
+                    {
+                        "_id": {
+                            "$in": [proof_request.key for proof_request in proof_requests.values()]
+                        },
+                        "seller_id": seller_id,
+                        "read_model": "orders",
+                        "history_protocol_version": 1,
+                        "history_plan_id": order_plan_id,
+                        "state": "completed",
+                    },
+                    {"date_from": 1, "date_to": 1},
+                ).to_list(length=len(order_chunks))
+            }
+            marker = await db["sheets_read_model_freshness"].find_one(
+                {"_id": f"{seller_id}:orders", "seller_id": seller_id, "read_model": "orders"}
+            )
+            for chunk in order_chunks:
+                proof_request = proof_requests[chunk.id]
+                job = proof_jobs.get(proof_request.key)
+                if (
+                    job is not None
+                    and _same_utc_instant(job.get("date_from"), chunk.start)
+                    and _same_utc_instant(job.get("date_to"), chunk.end)
+                    and read_model_reconciliation_marker_covers(
+                        marker, date_from=chunk.start, date_to=chunk.end
+                    )
+                ):
+                    completed_order_proofs[chunk.id] = proof_request.key
         history_budget = len({request.key for request in requests.values()})
         active_history = 0
         if type(recovery_queue.max_active_jobs_per_seller) is int and (
@@ -151,7 +195,7 @@ def build_pilot_history_backfill(
                 legacy_active.update(chunk.id for chunk in question_plan.chunks)
         for chunk in chunks:
             request = requests.get(chunk.id)
-            if request is None or capacity_reached:
+            if request is None or capacity_reached or chunk.id in completed_order_proofs:
                 continue
             job = await recovery_queue.collection.find_one(
                 {"_id": request.key, "seller_id": seller_id}, {"state": 1}
@@ -186,7 +230,14 @@ def build_pilot_history_backfill(
                 "reason": "acquisition_path_unresolved",
             }
             request = requests.get(chunk.id)
-            if request is not None:
+            if chunk.id in completed_order_proofs:
+                entry.update(
+                    request_key=completed_order_proofs[chunk.id],
+                    state="completed",
+                    reason="completed_history_proof",
+                    attempts=0,
+                )
+            elif request is not None:
                 job = await recovery_queue.collection.find_one(
                     {"_id": request.key, "seller_id": seller_id}, {"state": 1, "attempts": 1}
                 )
@@ -212,3 +263,9 @@ def build_pilot_history_backfill(
         return accepted
 
     return history_backfill
+
+
+def _same_utc_instant(left: Any, right: datetime) -> bool:
+    if not isinstance(left, datetime):
+        return False
+    return (left.replace(tzinfo=UTC) if left.tzinfo is None else left.astimezone(UTC)) == right
