@@ -1437,7 +1437,7 @@ async def test_the_dlq_auto_archive_needs_the_broker_when_enabled(
 
 
 @pytest.mark.asyncio
-async def test_refresh_factory_wires_inventory_only_to_scoped_existing_planner(
+async def test_refresh_factory_keeps_full_seller_sweeps_on_demand_by_default(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from zeler_sheets.consumer import build_zelerdata_refresh_supervisor
@@ -1445,9 +1445,28 @@ async def test_refresh_factory_wires_inventory_only_to_scoped_existing_planner(
     monkeypatch.setenv("ZELERDATA_REFRESH_ENABLED", "true")
     monkeypatch.setenv("ZELERDATA_REFRESH_SELLERS", "82453304")
     monkeypatch.setenv("ZELERDATA_FORMULA_RECOVERY_ENABLED", "true")
+    monkeypatch.delenv("ZELERDATA_SCHEDULED_BULK_REFRESH_ENABLED", raising=False)
     monkeypatch.delenv("ZELERDATA_REFRESH_INTERVAL_SECONDS", raising=False)
     supervisor = await build_zelerdata_refresh_supervisor(db=_IndexedDb())
     assert isinstance(supervisor._planner, ZelerDataRefreshPlanner)
+    assert supervisor._planner._enabled_models == frozenset({"orders", "questions"})
+    assert supervisor._inventory_refresher is None
+    assert supervisor._interval == 900
+
+
+@pytest.mark.asyncio
+async def test_refresh_factory_can_explicitly_enable_full_seller_sweeps(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from zeler_sheets.consumer import build_zelerdata_refresh_supervisor
+
+    monkeypatch.setenv("ZELERDATA_REFRESH_ENABLED", "true")
+    monkeypatch.setenv("ZELERDATA_REFRESH_SELLERS", "82453304")
+    monkeypatch.setenv("ZELERDATA_FORMULA_RECOVERY_ENABLED", "true")
+    monkeypatch.setenv("ZELERDATA_SCHEDULED_BULK_REFRESH_ENABLED", "true")
+    supervisor = await build_zelerdata_refresh_supervisor(db=_IndexedDb())
+    assert isinstance(supervisor._planner, ZelerDataRefreshPlanner)
+    assert supervisor._planner._enabled_models == IMPLEMENTED_REFRESH_MODELS
     assert supervisor._inventory_refresher is not None
     assert supervisor._inventory_refresher == supervisor._planner.plan_inventory
     assert supervisor._inventory_interval == 30

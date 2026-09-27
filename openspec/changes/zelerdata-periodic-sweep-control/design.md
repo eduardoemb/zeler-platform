@@ -1,0 +1,7 @@
+# Design: ZelerData Periodic Sweep Control
+
+The refresh supervisor currently invokes the planner every 15 minutes and a separate inventory tick every 30 seconds. The queue coalesces active IDs, but terminal jobs can reopen after their cooldown. For pilot-sized full-seller sweeps, that means continuous acquisition. The bounded range models, `orders` and `questions`, remain scheduled. The explicit-identity models and whole-seller inventory stay supported by the same planner and recovery queue, but the runtime factory passes only range models and omits the inventory tick unless `ZELERDATA_SCHEDULED_BULK_REFRESH_ENABLED=true`.
+
+The flag is intentionally off by default. A formula read still admits missing/stale identities through the existing Sheets API. Existing queue jobs continue to terminal state after rollout; the factory change only stops new periodic bulk admission. The opt-in mode restores the previous scheduler behavior for an environment with measured capacity. No validator, index, snapshot, formula or gateway contract changes.
+
+The three historical `source_incomplete` buybox chunks cannot be assigned a precise exception from the persisted job: only the public failure category is retained. Diagnose them from sanitized per-chunk observation and gateway call counts, and keep malformed offers, ownership and source-version checks strict. Do not convert an unverified dependency into a successful competition field merely to make a job terminal.

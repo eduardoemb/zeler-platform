@@ -81,6 +81,8 @@ from zeler_sheets.formulas.refresh import (
     DEFAULT_INTERVAL_SECONDS as REFRESH_DEFAULT_INTERVAL_SECONDS,
 )
 from zeler_sheets.formulas.refresh import (
+    IMPLEMENTED_REFRESH_MODELS,
+    SCHEDULED_RANGE_REFRESH_MODELS,
     MongoRefreshIdentitySource,
     MongoSellerExplorer,
     ZelerDataRefreshPlanner,
@@ -1582,8 +1584,12 @@ async def build_zelerdata_refresh_supervisor(*, db: Any) -> ZelerDataRefreshSupe
     if _env_flag_enabled("ZELERDATA_DLQ_ARCHIVE_ENABLED"):
         dlq_archiver = build_dlq_auto_archiver(db, sellers=allowed)
 
+    scheduled_bulk = _env_flag_enabled("ZELERDATA_SCHEDULED_BULK_REFRESH_ENABLED")
     planner = ZelerDataRefreshPlanner(
         queue=queue,
+        enabled_models=(
+            IMPLEMENTED_REFRESH_MODELS if scheduled_bulk else SCHEDULED_RANGE_REFRESH_MODELS
+        ),
         allowed_sellers=allowed,
         # Explicit-identity models read their identities from the already
         # acquired local read models; planning never calls Mercado Libre.
@@ -1592,7 +1598,7 @@ async def build_zelerdata_refresh_supervisor(*, db: Any) -> ZelerDataRefreshSupe
     return ZelerDataRefreshSupervisor(
         explorer=MongoSellerExplorer(db=db, allowed_sellers=allowed),
         planner=planner,
-        inventory_refresher=planner.plan_inventory,
+        inventory_refresher=planner.plan_inventory if scheduled_bulk else None,
         history_backfill=build_pilot_history_backfill(
             db=db,
             recovery_queue=queue,

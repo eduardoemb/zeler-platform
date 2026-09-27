@@ -43,6 +43,12 @@ IMPLEMENTED_REFRESH_MODELS: frozenset[str] = frozenset(
     }
 )
 
+# Range refreshes have a bounded source window. Full-seller identity sweeps
+# may take longer than the 15-minute cycle, so the runtime schedules them only
+# when an operator explicitly enables that capacity-intensive mode. Formula
+# reads can still enqueue the same recoveries on demand.
+SCHEDULED_RANGE_REFRESH_MODELS: frozenset[str] = frozenset({"orders", "questions"})
+
 if not IMPLEMENTED_REFRESH_MODELS <= RECOVERABLE_MODELS:  # pragma: no cover - import guard
     raise RuntimeError("refresh models must be recoverable read models")
 
