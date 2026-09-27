@@ -79,6 +79,7 @@ repeat failures, and promote stable knowledge to its proper operational form.
 | L-020 | ZelerData | Keep optional buybox offers 404 and overlapping catalog jobs from multiplying work | active |
 | L-021 | ZelerData | Do not repeatedly schedule full-seller sweeps faster than they finish | active |
 | L-022 | ZelerData | Suppress legacy order history only with completed interval proof | active |
+| L-023 | ZelerData | Revalidate locally stored questions omitted by a complete scan | active |
 
 ## Cloud Build and VM deployment
 
@@ -245,6 +246,20 @@ repeat failures, and promote stable knowledge to its proper operational form.
   of order-detail gateway calls.
 - verification/source: `modules/sheets/tests/test_pilot_history_cutoff_lifecycle.py`
   and `openspec/changes/zelerdata-periodic-sweep-control/verify-report.md`.
+- status: active
+
+### L-023 — Revalidate locally stored questions omitted by a complete scan
+- area: ZelerData question read-model recovery
+- proven path: After a complete question scan, fetch any locally stored
+  identity absent from it by detail. Keep a valid 200 response; remove only a
+  scoped 404 in the same transaction as refreshed rows, coverage and job
+  completion. Other responses leave the previous row and proof intact.
+- failed path: Compare the new scan with persisted rows without resolving an
+  absent old identity. One stored question no longer appeared in the pilot's
+  complete scan and returned 404 by detail; two one-hour jobs each fetched
+  the same 229 visible question details, then failed `source_incomplete`.
+- verification/source: `modules/sheets/tests/test_formula_recovery.py` and
+  `openspec/changes/zelerdata-periodic-sweep-control/verify-report.md`.
 - status: active
 
 ## ZelerData

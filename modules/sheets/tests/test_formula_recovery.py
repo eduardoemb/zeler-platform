@@ -6276,6 +6276,82 @@ async def test_question_recovery_persists_data_and_unlocks_next_query(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("missing_detail", ["gone", "available", "transient"])
+async def test_question_recovery_revalidates_stored_identity_absent_from_complete_scan(
+    recovery_db: Any, missing_detail: str
+) -> None:
+    import httpx
+
+    from zeler_sheets.formulas.recovery_worker import FormulaRecoveryWorker
+
+    queue = FormulaRecoveryQueue(recovery_db)
+    await queue.enqueue(request())
+    resource = {
+        "id": 42,
+        "seller_id": "pilot",
+        "item_id": "MLM42",
+        "text": "Available?",
+        "status": "UNANSWERED",
+        "from": {"id": 123},
+        "date_created": "2026-08-20T10:00:00Z",
+    }
+    await recovery_db.questions.insert_one(
+        {
+            "_id": "43",
+            "seller_id": "pilot",
+            "date_created": datetime(2026, 8, 20, 10, tzinfo=UTC),
+            "status": "UNANSWERED",
+        }
+    )
+    detail_calls: list[str] = []
+
+    class Gateway:
+        async def fetch_resource(self, *, seller_id: str, path: str) -> dict[str, Any]:
+            assert seller_id == "pilot" and path.startswith("/questions/search?")
+            return {"total": 1, "questions": [resource]}
+
+    class Details:
+        async def fetch_resource(self, *, seller_id: str, path: str) -> dict[str, Any]:
+            assert seller_id == "pilot"
+            detail_calls.append(path)
+            if path.endswith("/42"):
+                return resource
+            assert path.endswith("/43")
+            if missing_detail == "available":
+                return {**resource, "id": 43}
+            status = 404 if missing_detail == "gone" else 503
+            request_message = httpx.Request("GET", "https://gateway.test/questions/43")
+            response = httpx.Response(status, request=request_message)
+            raise httpx.HTTPStatusError(
+                "question detail unavailable", request=request_message, response=response
+            )
+
+    worker = FormulaRecoveryWorker(
+        db=recovery_db, gateway=Gateway(), detail_gateway=Details(), queue=queue
+    )
+    assert await worker.process_one()
+    job = await queue.collection.find_one({"_id": request().key})
+    assert detail_calls == ["/questions/42", "/questions/43"]
+    assert job is not None
+    if missing_detail == "transient":
+        assert job["state"] == "pending"
+        assert job["failure_reason"] == "source_temporarily_unavailable"
+        assert await recovery_db.questions.count_documents({"seller_id": "pilot"}) == 1
+        assert await recovery_db.sheets_read_model_freshness.count_documents({}) == 0
+        return
+    assert job["state"] == "completed"
+    assert await recovery_db.questions.count_documents({"seller_id": "pilot"}) == (
+        1 if missing_detail == "gone" else 2
+    )
+    assert (
+        await recovery_db.sheets_read_model_freshness.count_documents(
+            {"_id": "pilot:questions", "state": "reconciled"}
+        )
+        == 1
+    )
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("prior_expired", [False, True, None])
 async def test_order_recovery_preserves_independent_intervals_without_acquiring_gap(
     recovery_db: Any, prior_expired: bool | None

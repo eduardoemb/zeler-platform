@@ -8,3 +8,5 @@
 - [x] Observe existing bulk jobs through terminal state and classify the three original incomplete buybox chunks.
 - [x] RED/GREEN: prove and prevent legacy order backfill from reacquiring an exact, completed, marker-covered history interval.
 - [ ] Roll out the order proof guard, reconcile already admitted redundant order jobs, then record a fixed five-minute gateway rate with the worker healthy.
+- [x] RED/GREEN: reproduce a repeated question refresh when one stored identity is absent from a complete source scan; revalidate missing identities by detail and publish confirmed 404 removal atomically.
+- [ ] Roll out the question reconciliation correction, observe a successful question job, and measure an active-worker gateway rate across a normal refresh cycle.

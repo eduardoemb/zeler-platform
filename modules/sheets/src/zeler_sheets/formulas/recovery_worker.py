@@ -1199,6 +1199,7 @@ class FormulaRecoveryWorker:
         seen: set[str] = set()
         total: int | None = None
         scroll: str | None = None
+        removed_question_ids: list[str] = []
         while True:
             params = {
                 "seller_id": seller_id,
@@ -1254,7 +1255,56 @@ class FormulaRecoveryWorker:
             if not isinstance(scroll, str) or not scroll:
                 raise ValueError("question continuation unavailable")
 
-        await self._publish(job, marker_before, start, end, resources)
+        # A complete scan can omit an older question already in our proven
+        # interval. Recheck each missing identity by detail before replacing
+        # coverage. A scoped 200 remains part of the source inventory; only a
+        # direct 404 confirms removal from this seller's read model.
+        known = (
+            await self.db["questions"]
+            .find(
+                {"seller_id": seller_id, "date_created": {"$gte": start, "$lt": end}},
+                {"_id": 1, "date_created": 1},
+            )
+            .limit(10001)
+            .to_list(length=None)
+        )
+        if len(known) > 10000:
+            raise ValueError("known question inventory is over recovery budget")
+        for row in known:
+            identity = str(row["_id"])
+            if identity in seen:
+                continue
+            if not identity.isascii() or not identity.isdecimal():
+                raise ValueError("known question identity is invalid")
+            try:
+                detail = await self.detail_gateway.fetch_resource(
+                    seller_id=seller_id, path=f"/questions/{identity}"
+                )
+            except httpx.HTTPStatusError as exc:
+                if exc.response.status_code != 404:
+                    raise
+                removed_question_ids.append(identity)
+                continue
+            if (
+                not isinstance(detail, dict)
+                or str(detail.get("id")) != identity
+                or str(detail.get("seller_id")) != seller_id
+                or not isinstance(row.get("date_created"), datetime)
+                or _date(detail.get("date_created")) != _utc(row["date_created"])
+                or detail.get("status") == "ANSWERED"
+                and not isinstance(detail.get("answer"), dict)
+            ):
+                raise ValueError("known question detail scope mismatch")
+            resources.append(detail)
+
+        await self._publish(
+            job,
+            marker_before,
+            start,
+            end,
+            resources,
+            removed_question_ids=tuple(removed_question_ids),
+        )
 
     async def _publish(
         self,
@@ -1266,11 +1316,14 @@ class FormulaRecoveryWorker:
         *,
         operation: DevolucionesOperationContext | None = None,
         unavailable_fields: dict[str, frozenset[str]] | None = None,
+        removed_question_ids: tuple[str, ...] = (),
     ) -> None:
         seller_id = job["seller_id"]
         read_model = job["read_model"]
         marker_id = f"{seller_id}:{read_model}"
         unavailable_fields = unavailable_fields or {}
+        if removed_question_ids and read_model != "questions":
+            raise ValueError("question removal requires question recovery")
         marker = reconciled_marker(
             seller_id=seller_id,
             read_model=read_model,
@@ -1337,6 +1390,17 @@ class FormulaRecoveryWorker:
                     operation=operation,
                     unavailable_fields=unavailable_fields.get(str(resource["id"]), frozenset()),
                 )
+            if removed_question_ids:
+                removed = await self.db["questions"].delete_many(
+                    {
+                        "_id": {"$in": list(removed_question_ids)},
+                        "seller_id": seller_id,
+                        "date_created": {"$gte": start, "$lt": end},
+                    },
+                    session=session,
+                )
+                if removed.deleted_count != len(removed_question_ids):
+                    raise ValueError("question removal changed before publication")
             persisted = (
                 await self.db[read_model]
                 .find(
