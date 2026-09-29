@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
-from typing import Any
+from typing import Any, cast
 
 import httpx
 import pytest
+from infra.rabbitmq.sheets_devoluciones_topology import CLAIMS_DLQ
 from pydantic import SecretStr
 
+import zeler_sheets.app as app_module
 from zeler_sheets.app import build_app
 from zeler_sheets.sheets_config import SheetsSettings
 
@@ -80,6 +82,34 @@ def _state_source(ready: int, unacked: int) -> Callable[[], Awaitable[tuple[int,
         return (ready, unacked)
 
     return source
+
+
+@pytest.mark.asyncio
+async def test_production_health_wiring_probes_the_claims_dead_letter_queue(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from google.cloud import kms
+    from motor import motor_asyncio
+
+    selected: list[str] = []
+
+    async def queue_state(*, rabbitmq_url: str, queue_name: str) -> tuple[int, int]:
+        selected.append(queue_name)
+        return (0, 0)
+
+    monkeypatch.setenv("MONGO_URI", "mongodb://127.0.0.1:27028")
+    monkeypatch.setenv("MONGO_DB", "unit_test")
+    monkeypatch.setenv("RABBITMQ_URL", TEST_RABBITMQ_URL)
+    monkeypatch.setattr(motor_asyncio, "AsyncIOMotorClient", lambda uri: {"unit_test": FakeDb()})
+    monkeypatch.setattr(kms, "KeyManagementServiceClient", lambda: object())
+    monkeypatch.setattr(app_module, "get_settings", lambda: _settings())
+    monkeypatch.setattr(app_module, "claims_queue_state", queue_state)
+    monkeypatch.setattr(app_module, "build_app", lambda **kwargs: kwargs)
+
+    wiring = cast(dict[str, Any], app_module.make_app())
+    await wiring["claims_dlq_state"]()
+
+    assert selected == [CLAIMS_DLQ]
 
 
 async def _unavailable_source() -> None:

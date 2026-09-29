@@ -1463,12 +1463,36 @@ def _inventory_fingerprint(entries: Sequence[ClaimInventoryEntry]) -> str:
 
 
 def classify_inventory_relevance(entry: ClaimInventoryEntry) -> InventoryRelevance:
-    if (
-        entry.trusted_type in {"cancel_purchase", "cancel_sale"}
-        and entry.trusted_status == "closed"
-    ):
+    if _is_closed_cancellation(entry.trusted_type, entry.trusted_status):
         return InventoryRelevance.EXCLUDED_TERMINAL_CANCELLATION
     return InventoryRelevance.HYDRATE_CANDIDATE
+
+
+def is_terminal_cancellation_claim(claim: Mapping[str, Any]) -> bool:
+    """Exclude a closed cancellation only when detail contains no return evidence."""
+    if not _is_closed_cancellation(claim.get("type"), claim.get("status")):
+        return False
+    if any(
+        claim.get(field_name) not in (None, "", [], {})
+        for field_name in ("return_id", "return_quantity", "returned_quantity", "return", "returns")
+    ):
+        return False
+    related = claim.get("related_entities")
+    return related is None or (
+        isinstance(related, list)
+        and all(isinstance(entity, Mapping) for entity in related)
+        and not any(
+            _normalized_relevance_value(entity.get("type")) in {"return", "returns"}
+            for entity in related
+        )
+    )
+
+
+def _is_closed_cancellation(claim_type: Any, status: Any) -> bool:
+    return (
+        _normalized_relevance_value(claim_type) in {"cancel_purchase", "cancel_sale"}
+        and _normalized_relevance_value(status) == "closed"
+    )
 
 
 def _normalized_relevance_value(value: Any) -> str:

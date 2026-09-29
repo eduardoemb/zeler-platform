@@ -12,7 +12,7 @@ from zeler_platform_core.runtime.health import HealthCheck, build_health_router
 from zeler_platform_core.runtime.manifest import validate_manifest
 from zeler_platform_core.runtime.registration import register_module, registration_matches_manifest
 from zeler_sheets.api import build_router
-from zeler_sheets.consumer import claims_queue_state
+from zeler_sheets.consumer import SHEETS_CLAIMS_DLQ, claims_queue_state
 from zeler_sheets.extension_token_encryption import build_extension_token_cipher
 from zeler_sheets.formulas.audit import FormulaAuditService
 from zeler_sheets.formulas.read_models import ItemReadAcquisitions
@@ -153,7 +153,7 @@ def make_app() -> FastAPI:
     async def claims_state() -> tuple[int, int] | None:
         if not rabbitmq_url:
             return None
-        return await claims_queue_state(rabbitmq_url=rabbitmq_url)
+        return await claims_queue_state(rabbitmq_url=rabbitmq_url, queue_name=SHEETS_CLAIMS_DLQ)
 
     return build_app(
         mongo_db=mongo_db,

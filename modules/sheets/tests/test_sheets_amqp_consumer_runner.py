@@ -7,6 +7,7 @@ from typing import Any
 import aio_pika
 import httpx
 import pytest
+from infra.rabbitmq.sheets_devoluciones_topology import CLAIMS_DLQ, CLAIMS_DLX
 
 from zeler_platform_core.clients.meli_gateway_client import GatewayRateLimitError
 from zeler_platform_core.devoluciones_readiness import (
@@ -102,6 +103,7 @@ async def test_sheets_runner_declares_queue_with_dlx_and_binds_manifest_routing_
         ("meli.events", runner.exchange_type_topic, True),
         (SHEETS_REPLAY_EXCHANGE, runner.exchange_type_topic, True),
         (SHEETS_EVENTS_DLX, aio_pika.ExchangeType.DIRECT, True),
+        (CLAIMS_DLX, aio_pika.ExchangeType.DIRECT, True),
     ]
     assert channel.declared_queues == [
         (
@@ -117,11 +119,13 @@ async def test_sheets_runner_declares_queue_with_dlx_and_binds_manifest_routing_
                 "x-dead-letter-routing-key": SHEETS_EVENTS_DLQ,
             },
         ),
+        (CLAIMS_DLQ, True, {}),
     ]
     assert "x-delivery-limit" not in channel.declared_queues[1][2]
     assert channel.queues[SHEETS_EVENTS_DLQ].bindings == [
         (channel.exchanges[SHEETS_EVENTS_DLX], SHEETS_EVENTS_DLQ)
     ]
+    assert channel.queues[CLAIMS_DLQ].bindings == [(channel.exchanges[CLAIMS_DLX], CLAIMS_DLQ)]
     assert channel.queues[SHEETS_EVENTS_QUEUE].bindings == [
         (channel.exchanges["meli.events"], "items.*"),
         (channel.exchanges[SHEETS_REPLAY_EXCHANGE], "items.*"),
@@ -143,6 +147,40 @@ async def test_sheets_runner_declares_queue_with_dlx_and_binds_manifest_routing_
         channel.queues[SHEETS_CLAIMS_QUEUE].consumer.__func__
         is runner.handle_claims_message.__func__
     )
+
+
+@pytest.mark.asyncio
+async def test_claims_dlq_binding_failure_prevents_both_sheets_consumers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    connection = FakeConnection()
+    channel = connection.channel_obj
+    original_declare_queue = channel.declare_queue
+
+    async def declare_queue(name: str, **kwargs: Any) -> Any:
+        queue = await original_declare_queue(name, **kwargs)
+        if name == CLAIMS_DLQ:
+
+            async def reject_binding(_exchange: Any, *, routing_key: str) -> None:
+                del routing_key
+                raise RuntimeError("claims DLQ binding unavailable")
+
+            queue.bind = reject_binding
+        return queue
+
+    async def fake_connect(_url: str) -> Any:
+        return connection
+
+    monkeypatch.setattr(channel, "declare_queue", declare_queue)
+    monkeypatch.setattr("zeler_sheets.consumer.aio_pika.connect_robust", fake_connect)
+    runner = SheetsAmqpConsumerRunner(rabbitmq_url="amqp://unit-test", handler=FakeHandler())
+
+    with pytest.raises(RuntimeError, match="claims DLQ binding unavailable"):
+        await runner.start()
+
+    assert runner.is_ready is False
+    assert channel.queues[SHEETS_EVENTS_QUEUE].consumer is None
+    assert SHEETS_CLAIMS_QUEUE not in channel.queues
 
 
 def test_sheets_manifest_registers_claims_as_externally_bound_passive_consumer() -> None:

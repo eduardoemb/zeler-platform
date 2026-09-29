@@ -56,7 +56,10 @@ from zeler_platform_core.runtime.retry_delay import RETRY_ATTEMPT_HEADER, RetryD
 from zeler_platform_core.runtime.worker_health import WorkerHealthSidecar
 from zeler_sheets.catalog_observations import acquire_catalog_event
 from zeler_sheets.claim_projection import project_claim
-from zeler_sheets.devoluciones_reconciliation import GatewayDevolucionesSource
+from zeler_sheets.devoluciones_reconciliation import (
+    GatewayDevolucionesSource,
+    is_terminal_cancellation_claim,
+)
 from zeler_sheets.devoluciones_runner import advance_due_devoluciones_run
 from zeler_sheets.dlq_auto_archive import build_dlq_auto_archiver
 from zeler_sheets.event_persistence import SheetsEventPersistence, StatusObservationContentionError
@@ -120,6 +123,8 @@ SHEETS_EVENTS_QUEUE = "zeler.sheets.events"
 SHEETS_EVENTS_DLX = "zeler.sheets.events.dlx"
 SHEETS_EVENTS_DLQ = f"{SHEETS_EVENTS_QUEUE}.dlq"
 SHEETS_CLAIMS_QUEUE = "zeler.sheets.claims"
+SHEETS_CLAIMS_DLX = f"{SHEETS_CLAIMS_QUEUE}.dlx"
+SHEETS_CLAIMS_DLQ = f"{SHEETS_CLAIMS_QUEUE}.dlq"
 SHEETS_DELIVERY_LIMIT = 5
 DEFAULT_PREFETCH_COUNT = 10
 SHEETS_DEFAULT_ROUTING_KEYS = (
@@ -462,6 +467,11 @@ class SheetsAmqpConsumerRunner:
             aio_pika.ExchangeType.DIRECT,
             durable=True,
         )
+        claims_dead_letter_exchange = await channel.declare_exchange(
+            SHEETS_CLAIMS_DLX,
+            aio_pika.ExchangeType.DIRECT,
+            durable=True,
+        )
         dead_letter_queue_name = f"{self.config.queue_name}.dlq"
         dead_letter_queue = await channel.declare_queue(
             dead_letter_queue_name,
@@ -477,14 +487,26 @@ class SheetsAmqpConsumerRunner:
                 "x-dead-letter-routing-key": dead_letter_queue_name,
             },
         )
+        claims_dead_letter_queue = await channel.declare_queue(
+            SHEETS_CLAIMS_DLQ,
+            durable=True,
+            arguments={},
+        )
+        await claims_dead_letter_queue.bind(
+            claims_dead_letter_exchange,
+            routing_key=SHEETS_CLAIMS_DLQ,
+        )
         for routing_key in self.config.routing_keys:
             await queue.bind(exchange, routing_key=routing_key)
             await queue.bind(replay_exchange, routing_key=routing_key)
+        passive_queues = [
+            await channel.declare_queue(queue_name, passive=True)
+            for queue_name in self.config.passive_queue_names
+        ]
         if self._retry_delay_publisher is None:
             self._retry_delay_publisher = RetryDelayPublisher(channel)
         await queue.consume(self.handle_message)
-        for passive_queue_name in self.config.passive_queue_names:
-            passive_queue = await channel.declare_queue(passive_queue_name, passive=True)
+        for passive_queue in passive_queues:
             await passive_queue.consume(self.handle_claims_message)
         self.is_ready = True
 
@@ -1138,31 +1160,35 @@ class SheetsEventHandler:
                     if event.event_type.startswith("claims."):
                         if operation is None:
                             raise ValueError("operation is required for claim event projection")
-                        source = GatewayDevolucionesSource(self._gateway_client)
                         claim_id = str(resource.get("id") or resource.get("_id") or "").strip()
-                        returns = await source.get_returns(
-                            seller_id=str(event.seller_id), claim_id=claim_id
-                        )
-                        order_id = str(
-                            resource.get("order_id") or resource.get("resource_id") or ""
-                        )
-                        order = await source.get_order(
-                            seller_id=str(event.seller_id), order_id=order_id
-                        )
-                        await self._event_persistence.persist(
-                            event_type="orders.updated",
-                            seller_id=event.seller_id,
-                            resource=order,
-                            operation=operation,
-                        )
-                        resource = await project_claim(
-                            db=self._db,
-                            seller_id=str(event.seller_id),
-                            claim=resource,
-                            returns=returns,
-                            order=order,
-                            operation=operation,
-                        )
+                        if is_terminal_cancellation_claim(resource):
+                            if claim_id != fetch_path.rsplit("/", 1)[-1]:
+                                raise ValueError("terminal cancellation claim identity mismatch")
+                        else:
+                            source = GatewayDevolucionesSource(self._gateway_client)
+                            returns = await source.get_returns(
+                                seller_id=str(event.seller_id), claim_id=claim_id
+                            )
+                            order_id = str(
+                                resource.get("order_id") or resource.get("resource_id") or ""
+                            )
+                            order = await source.get_order(
+                                seller_id=str(event.seller_id), order_id=order_id
+                            )
+                            await self._event_persistence.persist(
+                                event_type="orders.updated",
+                                seller_id=event.seller_id,
+                                resource=order,
+                                operation=operation,
+                            )
+                            resource = await project_claim(
+                                db=self._db,
+                                seller_id=str(event.seller_id),
+                                claim=resource,
+                                returns=returns,
+                                order=order,
+                                operation=operation,
+                            )
                     else:
                         await self._event_persistence.persist(
                             event_type=event.event_type,

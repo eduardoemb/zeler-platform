@@ -1512,6 +1512,24 @@ async def test_cancel_and_non_return_hydrated_claims_do_not_become_productive_fr
     assert ("order", "1999") not in source.hydration_calls
 
 
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"status": "opened"},
+        {"type": "returns"},
+        {"return_id": "return-1"},
+        {"related_entities": [{"type": "return"}]},
+        {"related_entities": ["invalid"]},
+    ],
+)
+def test_terminal_cancellation_detail_requires_no_return_evidence(
+    change: dict[str, Any],
+) -> None:
+    claim = {"id": 519988001, "type": "cancel_purchase", "status": "closed"}
+    assert reconciliation_module.is_terminal_cancellation_claim(claim)
+    assert not reconciliation_module.is_terminal_cancellation_claim(claim | change)
+
+
 class FocusedSourceSpy(HydratingSource):
     async def search_orders(self, **_: Any) -> Any:
         raise AssertionError("broad order-date search is forbidden")

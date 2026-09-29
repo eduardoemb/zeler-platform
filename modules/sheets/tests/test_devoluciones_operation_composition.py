@@ -92,6 +92,78 @@ class Gateway:
         return {"id": 2001}
 
 
+@pytest.mark.asyncio
+async def test_closed_cancellation_event_skips_returns_without_losing_export(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+    operation = _operation()
+
+    async def acquire(**kwargs: Any) -> DevolucionesOperationContext:
+        calls.append("acquire")
+        return operation
+
+    async def finish(**kwargs: Any) -> None:
+        calls.append(f"finish:{kwargs['succeeded']}")
+
+    @asynccontextmanager
+    async def heartbeat(**kwargs: Any) -> Any:
+        yield
+
+    class CancellationGateway:
+        async def fetch_resource(self, *, seller_id: str, path: str) -> dict[str, Any]:
+            calls.append("claim_detail")
+            return {"id": 519988001, "type": "cancel_purchase", "status": "closed"}
+
+    class ReturnsSource:
+        async def get_returns(self, *, seller_id: str, claim_id: str) -> dict[str, Any]:
+            calls.append("returns_detail")
+            raise AssertionError("a closed cancellation has no return to fetch")
+
+    class ExportCollection(Collection):
+        async def find_one(self, filter_spec: dict[str, Any]) -> dict[str, Any]:
+            assert filter_spec == {"seller_id": "82453304", "enabled": True}
+            return {"spreadsheet_id": "pilot-sheet", "worksheet_name": "Events"}
+
+    class ExportDb(EventDb):
+        def __getitem__(self, name: str) -> Collection:
+            return ExportCollection() if name == "sheets_exports" else super().__getitem__(name)
+
+    class CaptureSheets(SheetsClient):
+        async def append_row(self, **kwargs: Any) -> None:
+            calls.append("append")
+            assert kwargs["row"] == ["claims.updated", "519988001", "", "closed", "", ""]
+
+    monkeypatch.setattr(consumer_module, "acquire_devoluciones_operation", acquire)
+    monkeypatch.setattr(consumer_module, "finish_devoluciones_operation", finish)
+    monkeypatch.setattr(consumer_module, "maintain_devoluciones_heartbeat", heartbeat)
+    monkeypatch.setattr(
+        consumer_module, "GatewayDevolucionesSource", lambda client: ReturnsSource()
+    )
+    persistence = OrderedPersistence(calls)
+    handler = SheetsEventHandler(
+        db=ExportDb(calls, referenced=False),
+        gateway_client=CancellationGateway(),
+        sheets_client=CaptureSheets(),
+        idempotency_store=Idempotency(),
+        event_persistence=persistence,
+    )
+
+    result = await handler.handle(
+        SheetsEvent(
+            event_id="claim-event",
+            event_type="claims.updated",
+            seller_id=82453304,
+            resource="/post-purchase/v1/claims/519988001",
+            idempotency_key="claims.updated:claim-event",
+        )
+    )
+
+    assert result == "appended"
+    assert calls == ["acquire", "claim_detail", "finish:True", "append"]
+    assert persistence.operation is None
+
+
 class OrderedGateway:
     def __init__(self, calls: list[str], *, error: Exception | None = None) -> None:
         self.calls = calls
