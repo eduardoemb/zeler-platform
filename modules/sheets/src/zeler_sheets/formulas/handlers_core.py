@@ -8,6 +8,7 @@ from typing import Any
 
 from bson.decimal128 import Decimal128
 
+from zeler_sheets.enrichment import canonical_basis_tags
 from zeler_sheets.formulas.dispatcher import (
     FormulaDataUnavailableError,
     FormulaExecutionContext,
@@ -1093,29 +1094,9 @@ def _fixed_fee_optional_decimal_basis_matches(current_value: Any, param_value: A
 
 
 def _fixed_fee_optional_tags_basis_matches(current_value: Any, param_value: Any) -> bool:
-    current_tags = _fixed_fee_tags(current_value)
-    param_tags = _fixed_fee_tags(param_value)
-    if _fixed_fee_tags_are_absent(current_value, current_tags) and _fixed_fee_tags_are_absent(
-        param_value, param_tags
-    ):
-        return True
-    return _fixed_fee_tags_basis_matches(current_value, param_value)
-
-
-def _fixed_fee_tags_basis_matches(current_value: Any, param_value: Any) -> bool:
-    current_tags = _fixed_fee_tags(current_value)
-    param_tags = _fixed_fee_tags(param_value)
+    current_tags = canonical_basis_tags(current_value)
+    param_tags = canonical_basis_tags(param_value)
     return current_tags is not None and param_tags is not None and current_tags == param_tags
-
-
-def _fixed_fee_tags_are_absent(value: Any, normalized_tags: list[str] | None) -> bool:
-    return value is None or normalized_tags == []
-
-
-def _fixed_fee_tags(value: Any) -> list[str] | None:
-    if not isinstance(value, list):
-        return None
-    return [tag for raw in value if (tag := str(raw).strip())]
 
 
 def _has_fixed_fee_basis(value: Any) -> bool:

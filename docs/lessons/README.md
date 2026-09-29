@@ -80,6 +80,8 @@ repeat failures, and promote stable knowledge to its proper operational form.
 | L-021 | ZelerData | Do not repeatedly schedule full-seller sweeps faster than they finish | active |
 | L-022 | ZelerData | Suppress legacy order history only with completed interval proof | active |
 | L-023 | ZelerData | Revalidate locally stored questions omitted by a complete scan | active |
+| L-024 | ZelerData | Verify the claims DLQ and binding, not just the source queue | active |
+| L-025 | ZelerData | Compare economic tags as membership in formula readers | active |
 
 ## Cloud Build and VM deployment
 
@@ -260,6 +262,36 @@ repeat failures, and promote stable knowledge to its proper operational form.
   the same 229 visible question details, then failed `source_incomplete`.
 - verification/source: `modules/sheets/tests/test_formula_recovery.py` and
   `openspec/changes/zelerdata-periodic-sweep-control/verify-report.md`.
+- status: active
+
+### L-024 — Verify the claims DLQ and binding, not just the source queue
+- area: ZelerData claim notifications and broker health
+- proven path: Declare the durable `zeler.sheets.claims.dlq` queue and its
+  `zeler.sheets.claims.dlx` binding before either worker consumer starts. A
+  failed binding must stop startup; API health probes the DLQ itself. Restore a
+  missing queue and binding before rolling out the corrected health check.
+- failed path: Treat one healthy consumer and an empty source queue as proof of
+  safe dead-lettering. The pilot's source queue pointed to an existing direct
+  exchange with no bindings and no destination queue, so rejected claims were
+  unroutable while the old API health check reported zero DLQ messages.
+- verification/source: Sanitized broker topology inspection and bounded repair
+  on 28 September 2026; `modules/sheets/tests/test_health_router.py`,
+  `modules/sheets/tests/test_sheets_amqp_consumer_runner.py`, and
+  `infra/rabbitmq/sheets_devoluciones_topology.py`.
+- status: active
+
+### L-025 — Compare economic tags as membership in formula readers
+- area: ZelerData listing fixed-fee projections
+- proven path: Use the same `canonical_basis_tags` comparison in acquisition
+  and formula readers. Keep malformed tags and genuine price, logistics or tag
+  changes unavailable.
+- failed path: Compare the order of the `tags` lists in a stored projection and
+  current item row. A read-only pilot sample of 100 recent order lines had the
+  same tag membership in each pair, but the old order-sensitive reader returned
+  `NA` for every fixed fee.
+- verification/source: `modules/sheets/tests/test_formula_handlers_core.py`,
+  `modules/sheets/tests/test_formula_handlers_orders_questions.py`, and the
+  canonical helper in `modules/sheets/src/zeler_sheets/enrichment.py`.
 - status: active
 
 ## ZelerData

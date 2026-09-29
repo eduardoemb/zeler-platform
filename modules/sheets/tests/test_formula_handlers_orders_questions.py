@@ -1764,6 +1764,7 @@ async def test_order_tables_validate_fixed_fee_price_and_shipping_request_basis(
                 {"sku": "sku-7", "item_id": "MLA7", "qty": 1},
                 {"sku": "sku-8", "item_id": "MLA8", "qty": 1},
                 {"sku": "sku-9", "item_id": "MLA9", "qty": 1},
+                {"sku": "sku-10", "item_id": "MLA10", "qty": 1},
             ],
         )
     }
@@ -1845,6 +1846,17 @@ async def test_order_tables_validate_fixed_fee_price_and_shipping_request_basis(
             **{key: value for key, value in matching_basis.items() if key != "logistic_type"},
             listing_price_fixed_fee=projection,
         ),
+        "same-tags-different-order": _order_formula_row(
+            "sku-10",
+            "SKU-10",
+            "MLA10",
+            **(matching_basis | {"tags": ["mandatory_free_shipping", "catalog_listing"]}),
+            listing_price_fixed_fee=projection | {
+                "params": projection["params"] | {
+                    "tags": ["catalog_listing", "mandatory_free_shipping"]
+                }
+            },
+        ),
     }
     dispatcher = _order_question_dispatcher(db)
 
@@ -1855,7 +1867,7 @@ async def test_order_tables_validate_fixed_fee_price_and_shipping_request_basis(
         )
     )
 
-    assert [row[10] for row in result.values] == [1350.25, *(["NA"] * 8)]
+    assert [row[10] for row in result.values] == [1350.25, *(["NA"] * 8), 1350.25]
 
 
 @pytest.mark.asyncio

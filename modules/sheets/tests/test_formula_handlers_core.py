@@ -1631,6 +1631,17 @@ async def test_dashboard_validates_fixed_fee_price_and_shipping_request_basis() 
             **{key: value for key, value in matching_basis.items() if key != "logistic_type"},
             listing_price_fixed_fee=projection,
         ),
+        "same-tags-different-order": _dashboard_item(
+            "sku-z",
+            "SKU-Z",
+            "MLA10",
+            **(matching_basis | {"tags": ["mandatory_free_shipping", "catalog_listing"]}),
+            listing_price_fixed_fee=projection
+            | {
+                "params": projection["params"]
+                | {"tags": ["catalog_listing", "mandatory_free_shipping"]}
+            },
+        ),
     }
     dispatcher = _core_dispatcher(db)
 
@@ -1638,17 +1649,10 @@ async def test_dashboard_validates_fixed_fee_price_and_shipping_request_basis() 
         _context("ZELERDATA_DASHBOARD", {"skus": "todos", "encabezados": "si"})
     )
 
-    assert [row[20] for row in dashboard.values[1:]] == [
-        1350.25,
-        "NA",
-        "NA",
-        "NA",
-        "NA",
-        "NA",
-        "NA",
-        "NA",
-        "NA",
-    ]
+    fees_by_sku = {row[2]: row[20] for row in dashboard.values[1:]}
+    assert fees_by_sku["sku-1"] == 1350.25
+    assert fees_by_sku["sku-z"] == 1350.25
+    assert [fees_by_sku[f"sku-{index}"] for index in range(2, 10)] == ["NA"] * 8
 
 
 @pytest.mark.asyncio

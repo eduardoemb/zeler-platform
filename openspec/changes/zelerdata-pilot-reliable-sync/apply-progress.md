@@ -2195,3 +2195,82 @@ marker was about eight minutes behind the inspection time. One API `/health`
 attempt exceeded a five-second client timeout, while the bounded retry returned
 all dependency checks ready. The exact observation and open follow-ups are in
 `docs/zelerdata-goal-progress.md`.
+
+# Pilot stability follow-up (2026-09-28)
+
+A read-only pilot audit found active source events and formula reads, but new
+Sheets failures: item acquisition contention and a shipment insert race reached
+the main DLQ, while closed cancellation notifications failed on an upstream
+returns 404. TDD fixes now retry item contention with a bounded delay, recheck
+the same seller after an insert race before applying the freshness guard, and
+skip returns hydration only for a closed cancellation with no return evidence.
+Production broker inspection also found the dedicated claims source queue
+pointing at an existing dead-letter exchange with zero bindings and no claims
+DLQ. A narrow production repair created the canonical durable DLQ and binding;
+the postcheck found both active source queues empty with one consumer each, the
+new claims DLQ empty, and the main events DLQ at 205 messages at that checkpoint. Because the
+claims exchange had no route before repair, rejected claim deliveries were not
+retained there. The API health wiring is corrected locally to inspect the
+claims DLQ rather than the source queue. The worker also declares that DLQ and
+its binding before either consumer starts; a binding failure now prevents
+consumption. These code changes are not deployed yet.
+
+The pilot's 1,855-item recovery job completed. A final ten-minute gateway
+window showed only upstream 200 responses, but that window is not a sustained
+stability claim. The full repository pytest suite passed against a disposable
+local Mongo replica set; eight protected replica-set tests and eight broker
+integration tests passed separately. Ruff check, format check and full mypy
+passed. At that checkpoint, no commit, image build, deployment, main-DLQ replay
+or native Sheet edit had been performed. Runtime acceptance still requires authorized exact-commit
+worker/API builds, narrow deployment, settling-window health and message
+observation, and the user's own Google Sheet formula readback. The historical
+main DLQ and claim-specific upstream 403 remain separate follow-ups.
+
+A later read-only sample of the pilot's 100 most recent order lines found a
+second, systemic fixed-fee reader defect: all 100 stored item rows and
+listing-price projections agreed on economic tag membership, but disagreed on
+tag order. The deployed order reader returned `NA` for each. Both the order
+and dashboard readers now use the acquisition path's canonical tag comparison,
+while still rejecting genuinely changed tags, price and logistics. Two
+formula-level regressions failed before the change and passed afterwards;
+focused handler suites, the full repository pytest suite, eight protected local
+replica-set tests, Ruff check/format and full mypy passed. This is local code
+only. A native Sheet readback after authorized API deployment is still required
+to close the cost exception.
+
+The review units have separate rollback boundaries:
+
+- Claim delivery: `consumer.py` startup and closed-cancellation branch,
+  `devoluciones_reconciliation.py`, and `app.py`, with their focused tests.
+  The disposable RabbitMQ/Mongo consumer suite passed. A code/image rollback
+  can restore the prior handler and health behavior; the repaired durable
+  claims DLQ and binding should remain to prevent message loss.
+- Item and shipment races: the bounded retry branch in `consumer.py` and the
+  same-seller insert-race guard in `event_persistence.py`, with their focused
+  tests. Runtime acceptance awaits a worker rollout and observed event flow;
+  rollback removes only these two branches.
+- Fixed fee: the canonical tag comparisons in the two formula handler files,
+  with both formula-level regression tests. The read-only pilot sample proves
+  the mismatch; native formula verification awaits API rollout. Rollback
+  restores only the two reader functions and requires no data migration.
+
+Focused test commands for those boundaries all exited 0:
+
+- `uv run pytest -q modules/sheets/tests/test_consumer_error_handling.py modules/sheets/tests/test_event_persistence.py`
+- `uv run pytest -q modules/sheets/tests/test_formula_handlers_core.py modules/sheets/tests/test_formula_handlers_orders_questions.py`
+- `uv run pytest -q modules/sheets/tests/test_runtime_retry_delay_imports.py modules/sheets/tests/test_sheets_amqp_consumer_runner.py modules/sheets/tests/test_health_router.py modules/sheets/tests/test_devoluciones_operation_composition.py modules/sheets/tests/test_devoluciones_reconciliation.py`
+
+The actual disposable broker/Mongo integration tests passed in the full suite;
+a local AMQP publish to the claims DLX raised the claims DLQ depth from 0 to 1,
+and acknowledgement restored it to 0. The final full repository pytest suite,
+eight separately protected replica-set tests, Ruff check, Ruff format check and
+full mypy all exited 0. These checks do not prove the undeployed code in
+production or native Sheet output.
+
+On 29 September, two further item-acquisition conflicts brought the main
+events DLQ to 207 while the old worker remained deployed. A read-only gateway
+fetch of a recent pilot claim confirmed a closed `cancel_purchase` detail with
+matching identity, an empty `related_entities` list, and no return fields;
+that is the specific shape handled by the cancellation guard. The three
+review units were committed on `main` as separate conventional commits. They
+have not been built, deployed, or verified through a native Sheet readback.
