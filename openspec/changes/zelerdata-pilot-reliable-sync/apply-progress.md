@@ -2322,3 +2322,33 @@ consumers stayed ready and no new dead letters appeared. The provider's
 claim-specific 403 and the historical 207-message DLQ remain open. This is a
 bounded 8/10 pilot stability assessment, pending the user's Sheet formula
 readback and a later natural-notification observation.
+
+## Main Sheets DLQ bounded disposition (2026-09-29 02:47 UTC)
+
+The pilot follow-up confirmed `zeler.sheets.events.dlq` held 207 messages with
+zero consumers; the active events queue held zero with one consumer. The
+deployed worker had `ZELERDATA_DLQ_ARCHIVE_ENABLED` disabled or unset, so no
+automatic daily archive was running. The worker was healthy with zero restarts
+and no OOM, and the existing archive runtime was installed. A single bounded
+archive pass used seller `82453304` and limit 500. It wrote 18 sanitized Mongo
+archive records with reason `age_exceeded` before acknowledging those
+deliveries, retained and requeued 189, and reported no stop/error. Readback
+confirmed 301 archive records in total, including exactly 18 age-exceeded
+records dated today, and a remaining DLQ depth of 189. The active events
+queue still had zero messages and one consumer. A separate canonical 24-item
+snapshot requested requeue for all 24 and completed without unknown outcomes;
+it did not classify them against production evidence or remove them.
+
+The 189 retained messages do not meet the archive runtime's current proof
+rules: either their timestamp/coverage cannot establish a reconciled window,
+or they are within the 30-day retention bound. The available Cloud Logging
+window showed 29 `worker.message.dlq` records since 26 September: 17 HTTP
+4xx, nine item-acquisition contention errors, two duplicate-key errors and
+one operation failure. Those aggregate logs do not establish a one-to-one
+disposition for the remaining queue. No such log appeared after the new
+worker's 02:01:46 UTC restart. No DLQ message was replayed, purged or
+force-archived. Further reduction needs a bounded per-message evidence path
+that can distinguish already-applied, terminal and safe replay candidates;
+the installed snapshot only reports aggregate capture counts and the current
+replay tooling cannot safely publish arbitrary DLQ deliveries. Do not infer
+that the 189 are consumed, or that archiving the 18 populated missing data.
