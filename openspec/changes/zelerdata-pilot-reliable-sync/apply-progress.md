@@ -2272,5 +2272,53 @@ events DLQ to 207 while the old worker remained deployed. A read-only gateway
 fetch of a recent pilot claim confirmed a closed `cancel_purchase` detail with
 matching identity, an empty `related_entities` list, and no return fields;
 that is the specific shape handled by the cancellation guard. The three
-review units were committed on `main` as separate conventional commits. They
-have not been built, deployed, or verified through a native Sheet readback.
+review units were committed on `main` as separate conventional commits. At
+that checkpoint they had not been built, deployed, or verified through a
+native Sheet readback.
+
+## Pilot reliability rollout (2026-09-29)
+
+Commit `5ceb3c0ab7828c675d200ee41e172abba3bcfd89` reached `main` as three
+review units. Two one-image Cloud Builds from the connected repository passed
+`VERIFIED` provenance against that exact commit: worker build
+`c04d448d-3b40-4e06-a8bb-fb017ed3972e` produced
+`sheets-worker@sha256:ad22631933a09dfd8bfc0ddd5119af64fad55ed9a30aabeb5aafbaa71fea876f`;
+API build `b88e9406-1d27-401a-8286-76133ded64b5` produced
+`sheets-api@sha256:210cbbf35dd4643351d243d4b97e5d7d49d9d81c88430fb001fda70de5423f64`.
+The separate CI workflow commit `2515bda55a58b9439c64dfeda4f530bc2c801e23`
+provisioned disposable Mongo and RabbitMQ so GitHub pytest could run; its
+pytest, schema export, and lint jobs passed. That commit changed no image code.
+
+The approved VM rollout replaced only `sheets-worker`, then `sheets-api`, with
+the pinned digests above. Per-service preflight proved source binding and the
+5 GiB capacity floor before pull; the floor passed again after each pull.
+No Docker cleanup, schema/registry mutation, or DLQ replay occurred. The
+previous running digests remain available for compatible per-service rollback:
+`sheets-worker@sha256:38d4c276db1b17c926f1c6e2b80161eea6135ee242361326df15604a802b41e2`
+and `sheets-api@sha256:2d011315caad2ff05fb84fd07b7115a955daa905958dd5c21961f616c5b3ff64`.
+Exact Compose backups were saved under `/opt/zeler-platform/` with the
+`pre-sheets-worker-5ceb3c0` and `pre-sheets-api-5ceb3c0` suffixes.
+
+After over 15 minutes, both containers still ran their intended digests,
+reported `healthy`, and had zero restarts and no OOM. Worker RabbitMQ,
+sync-jobs, formula-recovery, and refresh components were `ok`. API Mongo,
+RabbitMQ, registry, and claims-DLQ checks were true; public Sheets `/health`
+and gateway `/ready` returned 200. Mongo was a writable `rs0` PRIMARY on its
+separate mount. The final capacity check showed 31.94 GiB free on `/`, 44.84
+GiB on `/var/lib/zeler-mongo`, and 1,221 MiB available memory. Both active
+Sheets queues were empty with one consumer each; claims DLQ was empty and the
+historical main events DLQ remained at 207. The new worker completed refresh
+publications for pilot orders and shipments at 02:01:56 and 02:16:55 UTC.
+
+The deployed API's internal, read-only pilot readers returned 1,455 SKU rows
+and a numeric fixed fee for all 100 sampled recent order lines; the same
+sample had returned `NA` under the prior order-sensitive tag comparison. The
+dashboard reader returned 2,906 rows but also reported incomplete catalog
+participation for some publications. These are runtime reader checks, not a
+native Google Sheet or authenticated formula-HTTP readback. No natural pilot
+webhook arrived after the worker restart during this observation window, so
+new-image notification consumption remains unobserved, although both
+consumers stayed ready and no new dead letters appeared. The provider's
+claim-specific 403 and the historical 207-message DLQ remain open. This is a
+bounded 8/10 pilot stability assessment, pending the user's Sheet formula
+readback and a later natural-notification observation.

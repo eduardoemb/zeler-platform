@@ -8908,3 +8908,27 @@ RabbitMQ, registry and claims-DLQ checks all true on a bounded retry. Root had
 VM reported 500,724 kB available memory. These observations support the
 sufficiently-ready decision; they do not establish continuous stability or
 remove the API latency follow-up.
+
+## Pilot reliability rollout (2026-09-29)
+
+Three focused reliability fixes were built from
+`5ceb3c0ab7828c675d200ee41e172abba3bcfd89` and deployed as verified,
+digest-pinned `sheets-worker` and `sheets-api` images. The worker now retains
+claim failures in a dedicated DLQ, handles closed cancellations without an
+inapplicable returns lookup, retries item acquisition contention, and guards
+same-seller shipment insert races. The API checks the claims DLQ and compares
+economic tag membership when reading fixed fees. A separate CI fix supplied
+disposable Mongo and RabbitMQ; GitHub pytest, schema export, and lint passed.
+
+After more than 15 minutes, both images were healthy with zero restarts and
+no OOM; Mongo was a writable PRIMARY, both Sheets consumers were active,
+and the worker renewed orders and shipments markers twice. The main events
+DLQ stayed at 207 historical messages and the claims DLQ stayed empty. The
+deployed internal reader returned numeric fixed fees for all 100 sampled
+recent order lines and 1,455 SKU rows. The dashboard reader returned 2,906
+rows with a partial catalog-participation warning. No new pilot webhook
+arrived after the worker restart in this window, and a native Sheet formula
+readback is still pending. The claim-specific upstream 403 and historical
+DLQ remain exceptions. The bounded pilot assessment is **8/10**; detailed
+build, digest, rollback, and capacity evidence is in
+`openspec/changes/zelerdata-pilot-reliable-sync/apply-progress.md`.
