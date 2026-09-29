@@ -109,7 +109,11 @@ from zeler_sheets.observed_read_model_markers import (
 )
 from zeler_sheets.pilot_history_backfill import build_pilot_history_backfill
 from zeler_sheets.sheets_config import SheetsSettings
-from zeler_sheets.sheetseller_backfill import run_item_detail_enrichment, run_sheetseller_backfill
+from zeler_sheets.sheetseller_backfill import (
+    RetryableItemAcquisitionError,
+    run_item_detail_enrichment,
+    run_sheetseller_backfill,
+)
 from zeler_sheets.sync_jobs_processor import SyncJobsProcessor
 from zeler_sheets.zelerdata_freshness_alarm import (
     FreshnessAlarmReporter,
@@ -591,13 +595,18 @@ class SheetsAmqpConsumerRunner:
             )
             await message.ack()
             return
-        except StatusObservationContentionError as exc:
+        except (StatusObservationContentionError, RetryableItemAcquisitionError) as exc:
             _log_message_requeued(event, death_count + 1, exc)
+            delay_ms = (
+                _claims_retry_delay_ms(death_count + 1)
+                if isinstance(exc, RetryableItemAcquisitionError)
+                else DEFAULT_STATUS_CONTENTION_RETRY_DELAY_MS
+            )
             if await self._retry_claims_transient(
                 message,
                 queue_name=queue_name,
                 death_count=death_count,
-                delay_ms=DEFAULT_STATUS_CONTENTION_RETRY_DELAY_MS,
+                delay_ms=delay_ms,
             ):
                 return
             if self._retry_delay_publisher is None:
@@ -606,7 +615,7 @@ class SheetsAmqpConsumerRunner:
             await self._publish_retry_delay(
                 message.body,
                 queue_name=queue_name,
-                delay_ms=DEFAULT_STATUS_CONTENTION_RETRY_DELAY_MS,
+                delay_ms=delay_ms,
                 headers=_retry_headers(message, attempt=death_count + 1),
             )
             await message.ack()

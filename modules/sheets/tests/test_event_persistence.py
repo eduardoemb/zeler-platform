@@ -3399,6 +3399,54 @@ async def test_persists_shipment_for_live_shipping_notifications() -> None:
 
 
 @pytest.mark.asyncio
+async def test_shipment_insert_race_keeps_newer_event_and_does_not_dlq() -> None:
+    db = FakeDb()
+    collection = db["shipments"]
+    update_one = collection.update_one
+
+    async def concurrent_insert(
+        filter_spec: dict[str, Any], update: Any, *, upsert: bool = False
+    ) -> FakeReplaceResult:
+        if upsert:
+            collection.documents["3001"] = {
+                "_id": "3001",
+                "seller_id": "82453304",
+                "status": "ready_to_ship",
+                "last_updated": datetime(2026, 5, 30, 10, 0, tzinfo=UTC),
+            }
+            raise DuplicateKeyError("E11000 duplicate key error index: _id_")
+        return await update_one(filter_spec, update, upsert=upsert)
+
+    collection.update_one = concurrent_insert  # type: ignore[method-assign]
+    await SheetsEventPersistence(db=db, clock=lambda: NOW).persist(
+        event_type="shipments.updated",
+        seller_id=82453304,
+        resource=_shipment_resource_at(
+            status="shipped", substatus="in_transit", last_updated="2026-05-31T11:00:00+00:00"
+        ),
+    )
+
+    assert collection.documents["3001"]["status"] == "shipped"
+    assert collection.documents["3001"]["last_updated"] == datetime(2026, 5, 31, 11, 0, tzinfo=UTC)
+
+
+@pytest.mark.asyncio
+async def test_insert_race_does_not_accept_another_sellers_document() -> None:
+    collection = FakeCollection([{"_id": "3001", "seller_id": "different"}])
+
+    async def duplicate_key(
+        filter_spec: dict[str, Any], update: Any, *, upsert: bool = False
+    ) -> FakeReplaceResult:
+        raise DuplicateKeyError("E11000 duplicate key error index: _id_")
+
+    collection.update_one = duplicate_key  # type: ignore[method-assign]
+    with pytest.raises(DuplicateKeyError):
+        await event_persistence_module._insert_resource_if_absent(
+            collection, {"_id": "3001", "seller_id": "82453304"}, seller_id="82453304"
+        )
+
+
+@pytest.mark.asyncio
 async def test_persists_shipment_real_shipping_cost_projection_only() -> None:
     db = FakeDb()
     persistence = SheetsEventPersistence(db=db, clock=lambda: NOW)

@@ -12,6 +12,7 @@ from zeler_platform_core.runtime.retry_delay import RETRY_ATTEMPT_HEADER
 from zeler_sheets import consumer
 from zeler_sheets.consumer import SheetsAmqpConsumerRunner, SheetsEvent
 from zeler_sheets.google_errors import GoogleSheetsApiError, RetryableGoogleSheetsApiError
+from zeler_sheets.sheetseller_backfill import RetryableItemAcquisitionError
 
 
 class FakeHandler:
@@ -88,6 +89,55 @@ class FakeRetryDelayPublisher:
                 "headers": headers,
             }
         )
+
+
+@pytest.mark.asyncio
+async def test_concurrent_item_enrichment_conflict_uses_bounded_delayed_retry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    log_spy = LogSpy()
+    monkeypatch.setattr(consumer, "logger", log_spy, raising=False)
+    publisher = FakeRetryDelayPublisher()
+    handler = FakeHandler(error=RetryableItemAcquisitionError("item changed during enrichment"))
+    runner = SheetsAmqpConsumerRunner(
+        rabbitmq_url="amqp://unit-test",
+        handler=handler,
+        retry_delay_publisher=publisher,
+    )
+    message = FakeMessage(_valid_payload(resource="/items/MLA-CONFLICT"))
+
+    await runner.handle_message(message)
+
+    assert message.acked is True
+    assert message.nacks == []
+    assert publisher.calls == [
+        {
+            "body": message.body,
+            "queue_name": "zeler.sheets.events",
+            "delay_ms": consumer.DEFAULT_STATUS_CONTENTION_RETRY_DELAY_MS,
+            "headers": {RETRY_ATTEMPT_HEADER: 1},
+        }
+    ]
+    assert log_spy.warning_calls[0][0] == "worker.message.requeued"
+    assert log_spy.warning_calls[0][1]["error_type"] == "RetryableItemAcquisitionError"
+    assert log_spy.error_calls == []
+
+    repeated = FakeMessage(
+        _valid_payload(resource="/items/MLA-CONFLICT"),
+        headers={RETRY_ATTEMPT_HEADER: 1},
+    )
+    await runner.handle_message(repeated)
+    assert repeated.acked is True
+    assert publisher.calls[1]["delay_ms"] == 5_000
+
+    exhausted = FakeMessage(
+        _valid_payload(resource="/items/MLA-CONFLICT"),
+        headers={RETRY_ATTEMPT_HEADER: runner.config.delivery_limit},
+    )
+    await runner.handle_message(exhausted)
+    assert exhausted.nacks == [False]
+    assert len(publisher.calls) == 2
+    assert len(handler.events) == 2
 
 
 @pytest.mark.asyncio

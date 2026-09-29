@@ -9,6 +9,7 @@ from typing import Any, cast
 
 from bson.decimal128 import Decimal128
 from pydantic import TypeAdapter, ValidationError
+from pymongo.errors import DuplicateKeyError
 
 from zeler_platform_core.devoluciones_readiness import (
     DevolucionesOperationContext,
@@ -1385,12 +1386,20 @@ async def _replace_resource_if_fresh(
 async def _insert_resource_if_absent(
     collection: Any, document: dict[str, Any], *, seller_id: str, session: Any = None
 ) -> bool:
-    insert_result = await collection.update_one(
-        {"_id": document["_id"], "seller_id": seller_id},
-        {"$setOnInsert": document},
-        upsert=True,
-        **_session_kwargs(session),
-    )
+    scope = {"_id": document["_id"], "seller_id": seller_id}
+    try:
+        insert_result = await collection.update_one(
+            scope,
+            {"$setOnInsert": document},
+            upsert=True,
+            **_session_kwargs(session),
+        )
+    except DuplicateKeyError:
+        # A competing scoped insert can win after our upsert matched no row.
+        # Continue through the caller's freshness guard only for that same seller.
+        if await collection.find_one(scope, **_session_kwargs(session)) is None:
+            raise
+        return False
     return insert_result.upserted_id is not None
 
 
