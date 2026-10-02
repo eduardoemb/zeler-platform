@@ -17,6 +17,11 @@ from zeler_gateway.tokens.encryption import EncryptedToken, decrypt_token, encry
 
 logger = structlog.get_logger(__name__)
 DEFAULT_MELI_TOKEN_URL = "https://api.mercadolibre.com/oauth/token"  # noqa: S105
+# Exact historical diagnostics only: never reopen arbitrary errors or revocations.
+RETRYABLE_HTTP_STATUSES = (429, *range(500, 600))
+LEGACY_TRANSIENT_ERRORS = tuple(
+    f"Meli refresh failed with status {status}" for status in RETRYABLE_HTTP_STATUSES
+)
 
 
 @dataclass(frozen=True)
@@ -78,7 +83,9 @@ class InvalidGrantError(Exception):
 
 
 class RefreshHTTPError(Exception):
-    pass
+    def __init__(self, status_code: int) -> None:
+        self.retryable = status_code in RETRYABLE_HTTP_STATUSES
+        super().__init__(f"Meli refresh failed with status {status_code}")
 
 
 async def refresh_once(
@@ -107,7 +114,10 @@ async def refresh_once(
     resolved_http_client_factory = http_client_factory or (lambda: httpx.AsyncClient(timeout=10.0))
 
     query = {
-        "status": {"$in": ["active", "refresh_pending"]},
+        "$or": [
+            {"status": {"$in": ["active", "refresh_pending"]}},
+            {"status": "error", "last_error": {"$in": LEGACY_TRANSIENT_ERRORS}},
+        ],
         "expires_at": {"$lt": refresh_window},
     }
 
@@ -115,9 +125,14 @@ async def refresh_once(
         locked = await db.meli_accounts.find_one_and_update(
             {
                 "_id": candidate["_id"],
-                "$or": [
-                    {"lock_held_until": None},
-                    {"lock_held_until": {"$lt": now}},
+                "$and": [
+                    query,
+                    {
+                        "$or": [
+                            {"lock_held_until": None},
+                            {"lock_held_until": {"$lt": now}},
+                        ]
+                    },
                 ],
             },
             {"$set": {"lock_held_until": lock_deadline, "status": "refresh_pending"}},
@@ -164,11 +179,16 @@ async def refresh_once(
             TypeError,
             ValueError,
         ) as exc:
+            retryable = isinstance(exc, httpx.TransportError) or (
+                isinstance(exc, RefreshHTTPError) and exc.retryable
+            )
             await db.meli_accounts.update_one(
                 {"_id": locked["_id"]},
                 {
                     "$set": {
-                        "status": "error",
+                        # Keep transient failures eligible for the normal five-minute
+                        # pass without making expired credentials active in the proxy.
+                        "status": "refresh_pending" if retryable else "error",
                         "last_error": str(exc)[:500],
                         "lock_held_until": None,
                         "updated_at": now,
@@ -249,7 +269,7 @@ async def _call_meli_refresh(
         payload = _safe_json(response)
         if 400 <= response.status_code < 500 and payload.get("error") == "invalid_grant":
             raise InvalidGrantError
-        raise RefreshHTTPError(f"Meli refresh failed with status {response.status_code}")
+        raise RefreshHTTPError(response.status_code)
 
     return cast(dict[str, Any], response.json())
 

@@ -82,6 +82,7 @@ repeat failures, and promote stable knowledge to its proper operational form.
 | L-023 | ZelerData | Revalidate locally stored questions omitted by a complete scan | active |
 | L-024 | ZelerData | Verify the claims DLQ and binding, not just the source queue | active |
 | L-025 | ZelerData | Compare economic tags as membership in formula readers | active |
+| L-026 | Gateway OAuth | Keep transient refresh failures eligible for retry | active |
 
 ## Cloud Build and VM deployment
 
@@ -295,6 +296,20 @@ repeat failures, and promote stable knowledge to its proper operational form.
 - status: active
 
 ## ZelerData
+
+### L-026 — Keep transient refresh failures eligible for retry
+- area: Gateway OAuth and ZelerData recovery
+- proven path: Keep HTTP 429/5xx and transport refresh failures eligible for the
+  next normal refresh pass. Retry historical errors only with exact recognized
+  transient diagnostics; recheck eligibility when acquiring the lock. Preserve
+  paused/revoked accounts and non-transient failures.
+- failed path: Set every refresh failure to `error` while selecting only
+  `active`/`refresh_pending` accounts. A 429 then permanently excludes the
+  account and produces proxy 412 despite green service health.
+- verification/source: `gateway/tests/test_refresh_worker.py` — 37 passing tests,
+  including isolated Mongo validators; local fix, not deployed. Incident and
+  runtime acceptance: `docs/ops/platform-vm-recovery-20261002.md`.
+- status: active
 
 ### L-011 — Deliver stop signals to the worker and await Docker completion
 - area: VM deployment and worker lifecycle

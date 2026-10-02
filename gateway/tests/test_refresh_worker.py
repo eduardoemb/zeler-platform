@@ -56,11 +56,33 @@ class FakeMeliAccounts:
 
     def find(self, query: dict[str, Any], projection: dict[str, Any]) -> FakeAccountCursor:
         self.find_queries.append(query)
-        statuses = query["status"]["$in"]
-        candidates = [{"_id": self.account["_id"]}] if self.account["status"] in statuses else []
+        candidates = [{"_id": self.account["_id"]}] if self._matches(query) else []
         return FakeAccountCursor(candidates)
 
-    async def find_one_and_update(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
+    def _matches(self, query: dict[str, Any]) -> bool:
+        for field, condition in query.items():
+            if field == "$and":
+                if not all(self._matches(branch) for branch in condition):
+                    return False
+            elif field == "$or":
+                if not any(self._matches(branch) for branch in condition):
+                    return False
+            elif isinstance(condition, dict):
+                value = self.account.get(field)
+                if "$in" in condition and value not in condition["$in"]:
+                    return False
+                if "$lt" in condition and (value is None or value >= condition["$lt"]):
+                    return False
+            elif self.account.get(field) != condition:
+                return False
+        return True
+
+    async def find_one_and_update(
+        self, query: dict[str, Any], update: dict[str, Any], **kwargs: Any
+    ) -> dict[str, Any] | None:
+        if not self._matches(query):
+            return None
+        self.account.update(update["$set"])
         return self.account
 
     async def update_one(self, query: dict[str, Any], update: dict[str, Any]) -> None:
@@ -372,12 +394,10 @@ async def test_already_revoked_account_does_not_publish(
 
     assert stats.attempted == 0
     assert stats.revoked == 0
-    assert db.meli_accounts.find_queries == [
-        {
-            "status": {"$in": ["active", "refresh_pending"]},
-            "expires_at": {"$lt": fixed_now + timedelta(minutes=15)},
-        }
-    ]
+    assert len(db.meli_accounts.find_queries) == 1
+    assert db.meli_accounts.find_queries[0]["expires_at"] == {
+        "$lt": fixed_now + timedelta(minutes=15)
+    }
     assert publisher.events == []
 
 
@@ -416,4 +436,197 @@ async def test_stale_lock_is_reacquired(meli_accounts_db: Any) -> None:
     assert (
         await decrypt_token(_token_from_doc(stored, prefix="access"), account_id="123456789")
         == "new-access-after-stale-lock"
+    )
+
+
+def _unit_refresh_account(now: datetime) -> dict[str, Any]:
+    reset_dek_cache()
+    set_kms_client(FakeKmsClient())
+    access = encrypt_token("old-access", account_id="123456789")
+    refresh = encrypt_token("old-refresh", account_id="123456789")
+    return {
+        "_id": ObjectId(),
+        "seller_id": Int64(123456789),
+        "platform_user_id": "platform-user-test",
+        "status": "active",
+        "expires_at": now - timedelta(minutes=5),
+        "lock_held_until": None,
+        "access_token_ciphertext": access.ciphertext,
+        "access_token_dek_wrapped": access.dek_wrapped,
+        "token_nonce": access.nonce,
+        "refresh_token_ciphertext": refresh.ciphertext,
+        "refresh_token_dek_wrapped": refresh.dek_wrapped,
+        "refresh_token_nonce": refresh.nonce,
+        "kms_key_version": access.kms_key_version,
+    }
+
+
+_REFRESH_SUCCESS = {
+    "access_token": "new-access",
+    "refresh_token": "new-refresh",
+    "expires_in": 21600,
+}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", [429, 500, 503, 599, "connect", "timeout"])
+async def test_transient_refresh_remains_eligible_for_next_pass(failure: int | str) -> None:
+    now = datetime(2026, 10, 2, 5, 0, tzinfo=UTC)
+    account = _unit_refresh_account(now)
+    original = dict(account)
+    db = FakeRefreshDb(account)
+    with respx.mock(assert_all_called=True) as mock:
+        route = mock.post("https://api.mercadolibre.com/oauth/token")
+        if isinstance(failure, int):
+            route.mock(return_value=httpx.Response(failure, json={}))
+        else:
+            error = httpx.ConnectError if failure == "connect" else httpx.ReadTimeout
+            route.mock(side_effect=error("synthetic transient failure"))
+        first = await refresh_once(db, now_fn=lambda: now)
+        assert first.failed == 1
+        assert account["status"] == "refresh_pending"
+        assert account["lock_held_until"] is None
+        assert account["expires_at"] == original["expires_at"]
+        for field in original:
+            if "token" in field or field == "kms_key_version":
+                assert account[field] == original[field]
+        route.mock(return_value=httpx.Response(200, json=_REFRESH_SUCCESS))
+        second = await refresh_once(db, now_fn=lambda: now + timedelta(minutes=5))
+    assert route.call_count == 2
+    assert second.succeeded == 1
+    assert account["status"] == "active"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("status", "last_error", "eligible"),
+    [
+        ("error", "Meli refresh failed with status 429", True),
+        ("error", "Meli refresh failed with status 500", True),
+        ("error", "Meli refresh failed with status 599", True),
+        ("error", "Meli refresh failed with status 401", False),
+        ("error", "Meli refresh failed with status 600", False),
+        ("error", "Meli refresh failed with status 429 trailing", False),
+        ("error", "Meli refresh failed with status 429\n", False),
+        ("error", "unrecognized transport failure", False),
+        ("revoked", "Meli refresh failed with status 429", False),
+        ("paused", "Meli refresh failed with status 500", False),
+    ],
+)
+async def test_legacy_refresh_errors_retry_only_exact_transient_evidence(
+    status: str, last_error: str, eligible: bool
+) -> None:
+    now = datetime(2026, 10, 2, 5, 0, tzinfo=UTC)
+    account = _unit_refresh_account(now)
+    account.update(status=status, last_error=last_error)
+    db = FakeRefreshDb(account)
+    with respx.mock(assert_all_called=False) as mock:
+        route = mock.post("https://api.mercadolibre.com/oauth/token").mock(
+            return_value=httpx.Response(200, json=_REFRESH_SUCCESS)
+        )
+        stats = await refresh_once(db, now_fn=lambda: now)
+    assert route.call_count == int(eligible)
+    assert stats.succeeded == int(eligible)
+    assert account["status"] == ("active" if eligible else status)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("new_status", ["paused", "revoked", "error"])
+async def test_refresh_lock_rechecks_account_eligibility(
+    new_status: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    now = datetime(2026, 10, 2, 5, 0, tzinfo=UTC)
+    account = _unit_refresh_account(now)
+    db = FakeRefreshDb(account)
+    original_find = db.meli_accounts.find
+
+    def race(query: dict[str, Any], projection: dict[str, Any]) -> FakeAccountCursor:
+        cursor = original_find(query, projection)
+        account.update(status=new_status, last_error="non-transient failure")
+        return cursor
+
+    monkeypatch.setattr(db.meli_accounts, "find", race)
+    with respx.mock(assert_all_called=False) as mock:
+        route = mock.post("https://api.mercadolibre.com/oauth/token").mock(
+            return_value=httpx.Response(200, json=_REFRESH_SUCCESS)
+        )
+        stats = await refresh_once(db, now_fn=lambda: now)
+    assert route.call_count == 0
+    assert stats.skipped == 1
+    assert account["status"] == new_status
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", [400, 401, 403, 404])
+async def test_nontransient_refresh_remains_terminal(status: int) -> None:
+    now = datetime(2026, 10, 2, 5, 0, tzinfo=UTC)
+    account = _unit_refresh_account(now)
+    db = FakeRefreshDb(account)
+    with respx.mock(assert_all_called=True) as mock:
+        route = mock.post("https://api.mercadolibre.com/oauth/token").mock(
+            return_value=httpx.Response(status, json={})
+        )
+        first = await refresh_once(db, now_fn=lambda: now)
+        second = await refresh_once(db, now_fn=lambda: now + timedelta(minutes=5))
+    assert first.failed == 1
+    assert second.attempted == 0
+    assert route.call_count == 1
+    assert account["status"] == "error"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", [429, 503])
+async def test_transient_refresh_retry_with_mongo_validator(
+    meli_accounts_db: Any, status: int
+) -> None:
+    async_db, database = meli_accounts_db
+    now = datetime(2026, 10, 2, 5, 0, tzinfo=UTC)
+    original = _seed_refreshable_account(database, fixed_now=now)
+    with respx.mock(assert_all_called=True) as mock:
+        route = mock.post("https://api.mercadolibre.com/oauth/token").mock(
+            return_value=httpx.Response(status, json={})
+        )
+        first = await refresh_once(async_db, now_fn=lambda: now)
+        stored = database.meli_accounts.find_one({"_id": original["_id"]})
+        assert first.failed == 1
+        assert stored["status"] == "refresh_pending"
+        assert stored["lock_held_until"] is None
+        assert stored["refresh_token_ciphertext"] == original["refresh_token_ciphertext"]
+        route.mock(return_value=httpx.Response(200, json=_REFRESH_SUCCESS))
+        second = await refresh_once(async_db, now_fn=lambda: now + timedelta(minutes=5))
+    assert route.call_count == 2
+    assert second.succeeded == 1
+    assert database.meli_accounts.find_one({"_id": original["_id"]})["status"] == "active"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("status", "last_error", "expected"),
+    [
+        ("error", "Meli refresh failed with status 429", 1),
+        ("error", "Meli refresh failed with status 503", 1),
+        ("error", "Meli refresh failed with status 401", 0),
+        ("error", "Meli refresh failed with status 429\n", 0),
+        ("revoked", "Meli refresh failed with status 429", 0),
+        ("paused", "Meli refresh failed with status 429", 0),
+    ],
+)
+async def test_legacy_retry_selection_with_mongo_validator(
+    meli_accounts_db: Any, status: str, last_error: str, expected: int
+) -> None:
+    async_db, database = meli_accounts_db
+    now = datetime(2026, 10, 2, 5, 0, tzinfo=UTC)
+    original = _seed_refreshable_account(database, fixed_now=now)
+    database.meli_accounts.update_one(
+        {"_id": original["_id"]}, {"$set": {"status": status, "last_error": last_error}}
+    )
+    with respx.mock(assert_all_called=False) as mock:
+        route = mock.post("https://api.mercadolibre.com/oauth/token").mock(
+            return_value=httpx.Response(200, json=_REFRESH_SUCCESS)
+        )
+        stats = await refresh_once(async_db, now_fn=lambda: now)
+    assert route.call_count == expected
+    assert stats.succeeded == expected
+    assert database.meli_accounts.find_one({"_id": original["_id"]})["status"] == (
+        "active" if expected else status
     )
