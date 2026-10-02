@@ -1200,6 +1200,7 @@ class FormulaRecoveryWorker:
         total: int | None = None
         scroll: str | None = None
         removed_question_ids: list[str] = []
+        listed_but_gone: set[str] = set()
         while True:
             params = {
                 "seller_id": seller_id,
@@ -1232,9 +1233,18 @@ class FormulaRecoveryWorker:
                 seen.add(question_id)
                 created = _date(row.get("date_created"))
                 if start <= created < end:
-                    detail = await self.detail_gateway.fetch_resource(
-                        seller_id=seller_id, path=f"/questions/{question_id}"
-                    )
+                    try:
+                        detail = await self.detail_gateway.fetch_resource(
+                            seller_id=seller_id, path=f"/questions/{question_id}"
+                        )
+                    except httpx.HTTPStatusError as exc:
+                        if exc.response.status_code != 404:
+                            raise
+                        # Search can still list a question removed before its
+                        # detail read. Count its identity toward the complete
+                        # scan, but never invent a row from search-only data.
+                        listed_but_gone.add(question_id)
+                        continue
                     if (
                         not isinstance(detail, dict)
                         or str(detail.get("id")) != question_id
@@ -1272,6 +1282,11 @@ class FormulaRecoveryWorker:
             raise ValueError("known question inventory is over recovery budget")
         for row in known:
             identity = str(row["_id"])
+            if identity in listed_but_gone:
+                # Only existing rows in this seller/interval need deletion.
+                # Publication removes them atomically with proof and completion.
+                removed_question_ids.append(identity)
+                continue
             if identity in seen:
                 continue
             if not identity.isascii() or not identity.isdecimal():

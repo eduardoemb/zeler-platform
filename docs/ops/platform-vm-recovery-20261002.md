@@ -1,15 +1,15 @@
-# Host recuperado; sincronización ZelerData todavía pendiente
+# Host y OAuth recuperados; aceptación íntegra de ZelerData pendiente
 
-**La recuperación autorizada restableció la VM, MongoDB y los servicios HTTP.
-No restableció todavía la adquisición de órdenes y preguntas del piloto.** Se
-identificó un bloqueo anterior a la caída: un HTTP 429 al renovar OAuth dejó la
-cuenta permanentemente fuera del proceso de renovación. La corrección está
-probada localmente; publicación y Cloud Build fueron autorizados condicionados a
-los gates. El despliegue aún requiere autorización separada. No se afirma integridad completa
-ni ausencia de pérdida de eventos durante la interrupción.
+**La VM y OAuth están recuperados; las órdenes ya cubren el intervalo solicitado.
+Persisten un bloqueo AMQP, cobertura pendiente de preguntas y limitaciones de
+fuentes.** La corrección OAuth fue desplegada y verificada; la corrección del
+consumidor está probada localmente, todavía sin publicar ni desplegar. No se
+afirma integridad completa ni ausencia de pérdida de eventos durante la interrupción.
 
 Todas las horas son UTC. Proyecto `zeler-platform-dev`, VM `platform-vm`, zona
-`us-central1-a`. Corte de comprobación posterior: **2 de octubre de 2026, 05:34**.
+`us-central1-a`. Las secciones separan la recuperación del host a las **05:34**
+de las verificaciones funcionales posteriores al despliegue de las **15:16**,
+el 2 de octubre de 2026.
 
 ## Interrupción e hipótesis
 
@@ -43,7 +43,8 @@ durante toda la interrupción; tampoco identifican una fuga o proceso iniciador.
    Se conservaron la misma instancia, IP, tipo `e2-medium` y discos:
    `platform-vm` (`persistent-disk-0`) y `zeler-mongo-data` (`mongo-data`).
 
-No hubo imágenes nuevas, Cloud Build, despliegue de código, limpieza Docker,
+Durante esta recuperación del host no hubo imágenes nuevas, Cloud Build,
+despliegue de código, limpieza Docker,
 ampliación de recursos, cambios de esquema ni manipulación de credenciales.
 Se preservó la configuración corregida del Ops Agent, SHA-256
 `0adbcdbec15ee069c8fda852c9256e2bea9c2430ac8942e03db30f7b3c76059a`.
@@ -81,7 +82,7 @@ rechaza una cuenta no activa antes de llamar a Mercado Libre. Los markers de
 órdenes/preguntas seguían en el **30 de septiembre, 06:47**; los heartbeats de otros
 modelos no prueban que se haya adquirido fuente nueva.
 
-## Corrección local y aceptación pendiente
+## Corrección OAuth desplegada
 
 El cambio acotado en
 [`refresh_worker.py`](../../gateway/src/zeler_gateway/tokens/refresh_worker.py):
@@ -113,19 +114,117 @@ La ejecución previa en macOS produjo 5.533 passed, 12 failed y 17 skipped:
 los doce fallos estaban en scripts operativos sin modificar, por Bash 3.2 y
 BSD `stat` incompatibles con opciones GNU. El primer runner Linux carecía de
 Node; se repitió la suite completa con esa dependencia, sin excluir pruebas.
-Estos resultados no certifican todavía la corrección en producción.
+Estos gates corresponden a la corrección OAuth, no al cambio posterior del consumidor.
 
-Siguiente secuencia:
+El gateway autorizado se desplegó a las **15:16:44** y quedó `healthy` a las
+**15:16:53**, desde el commit
+`b835791193506f0d32b3350e7606c8d644019114`, con digest inmutable verificado.
+Digest: `sha256:8b6551451509040aed607c086f8b94ad9ce586ffee8b5ba5c9a420844337ba50`.
+La renovación normal dejó la cuenta piloto `active`, renovada a las **15:16:44**
+y con expiración a las **21:16**. No se copiaron tokens ni se parcheó el estado.
 
-1. Publicar el cambio autorizado, con los gates raíz completados.
-2. Construir una nueva imagen **solo de gateway** desde el commit autorizado de
-   `main`, con procedencia verificada. Pedir autorización separada para desplegar.
-3. Tras el despliegue, verificar renovación OAuth normal exitosa y cuenta activa;
-   no parchear estado, copiar tokens ni evitar OAuth.
-4. Verificar jobs de órdenes/preguntas completados y cobertura reconciliada del
-   intervalo interrumpido. Observar nuevos ciclos, consumers, DLQs y capacidad.
-5. Confirmar resultados en la aplicación y una hoja nativa antes de declarar
-   funcionamiento íntegro. Mantener explícitas las excepciones de datos/fuentes.
+A las **15:45:12**, los 11 contenedores seguían en ejecución, los 10 con
+healthcheck estaban sanos y todos tenían cero reinicios y `OOMKilled=false`.
+Espacio libre: raíz **36.898.500.608 bytes**, Mongo **48.129.765.376 bytes**;
+memoria disponible **1.458 MiB**. El preflight de capacidad volvió a pasar.
+CI de ese commit gateway también terminó correctamente (`test` y `lint`).
+
+## Verificación funcional posterior
+
+| Superficie | Evidencia y límite |
+|---|---|
+| Órdenes | Cobertura durable comprobada para **30 de septiembre, 07:00 → 2 de octubre, 15:17**; no solo heartbeat nuevo. |
+| Preguntas | El ciclo de las **15:29** todavía terminó `source_rejected`; el intervalo solicitado sigue sin cobertura comprobada. |
+| Hoja nativa | Se preservaron las **52 fórmulas**: 42 devolvieron valores/tablas, 5 `NA` y 5 `DATA_UNAVAILABLE`. Algunas tablas contienen columnas parcialmente no disponibles; 42 resultados no equivalen a integridad completa. |
+| Claims actual | Dos GET acotados por el gateway normal: búsqueda **200** y un detalle **200**. El 403 histórico no demuestra un rechazo actual. La muestra no establece reconciliación completa ni disponibilidad de todos los detalles. |
+
+Una comprobación posterior con los parámetros del worker recibió **200** en
+cinco páginas de búsqueda de preguntas, con límite 50 y total reportado 226.
+El primer detalle dentro de la cobertura devolvió **404** en la sexta petición:
+la búsqueda enumera una pregunta cuyo detalle ya no está disponible. La auditoría
+real de la VM entre **15:29:40 y 15:29:55** confirma una búsqueda de preguntas
+desde `bootstrap` con **200** y un detalle desde `sheets` con **404**, sin exponer
+identificadores. La corrección de recuperación de preguntas está probada
+localmente: **7 RED** antes del cambio, **11 pruebas nuevas GREEN** y **462 GREEN**
+en el archivo completo de recuperación; Ruff/formato/mypy focales correctos.
+Todavía no está publicada ni desplegada y no amplía la cobertura comprobada.
+
+Los cinco `NA` corresponden a `PAUSADAS`, `TIEMPOACTIVA`, `MEDIDAS`,
+`DIASDESDEULTIMAVENTA` y `COSTOENVIOVENDEDOR`; son resultados contractuales cuya
+causa depende de los datos, no prueba automática de fallo o ausencia global.
+Los cinco `DATA_UNAVAILABLE` son `DEVOLUCIONES`, `CATALOGOTIEMPO`,
+`TIEMPOSTOCKACTIVO`, `RETIROS` y `SEMANASCONSTOCK` (todos con prefijo `ZELERDATA_`).
+
+`DEVOLUCIONES` solicita 8 de agosto–6 de septiembre, inclusivos, y no tiene prueba
+conjunta fresca de reconciliación para ese rango. La propuesta de reconciliación
+con presupuesto durable de cuota fue autorizada por separado:
+máximo **832 llamadas**, tres ventanas entre **8 de agosto y 7 de septiembre
+exclusivo**, con duración estimada de **65–80 minutos**. Su ejecución y aceptación
+deben registrarse por separado; la autorización no establece que se haya recuperado.
+Las otras cuatro fórmulas dependen de historia importada y carecen de markers
+válidos; la aceptación histórica de fuentes ausentes no sustituye comprobar su
+inventario actual ni autoriza fabricar datos.
+
+## Bloqueo del consumidor y corrección local
+
+Después del despliegue del gateway, la cola de eventos mantenía **81 mensajes
+listos y 10 sin ACK**, con un consumidor; no había nuevos `processed_events` de
+Sheets desde las **15:16:44**. Los logs del arranque mostraron **10 excepciones
+de callback y 10 de tarea por HTTP 412**. La DLQ de eventos seguía en 189; la
+DLQ de claims estaba vacía y su binding comprobado.
+
+En `consumer.py`, el 412 escapaba desde el bloque `except HTTPStatusError`, sin
+ACK ni NACK: las diez entregas ocupaban todo el prefetch aunque OAuth se
+recuperara después. La conexión y suscripción podían seguir `ready`; el ciclo
+de recuperación de 900 segundos no libera esas entregas.
+
+La corrección local usa el mecanismo existente de reintento demorado para 412,
+incrementa el contador, conserva el presupuesto de cinco intentos y confirma la
+publicación antes del ACK. Si publicar falla, conserva el original mediante
+requeue. Los HTTP no clasificados terminan explícitamente en DLQ en vez de
+escapar; se preserva la clasificación existente de los demás códigos.
+
+TDD observado: **10 RED** antes del cambio, **32 GREEN** en el archivo enfocado
+y **56 GREEN** con regresiones de consumidores. Ruff/formato/mypy focales y
+`git diff --check` pasaron. Los gates raíz Linux finales, con ambas correcciones
+del worker y Mongo/RabbitMQ aislados, terminaron con **5.574 passed, 9 skipped**
+en 254,67 s. Ocho skips protegidos de rs0 se ejecutaron después con su variable
+específica: **8 passed** en 1,95 s; solo queda el caso Caddy no aplicable.
+Ruff, formato, mypy completo de 620 archivos y lint de acceso directo a Meli
+pasaron. Una ejecución previa sin broker disponible se repitió completa; sus
+ocho skips de AMQP no se tomaron como aceptación. El worker corregido todavía
+no está publicado ni desplegado.
+
+**Prerequisito de topología todavía ausente:** producción respondió 404 para
+`zeler.sheets.events.delay` y no tenía su binding desde `meli.events`.
+Antes de un futuro despliegue se requiere autorización para declarar solamente
+esa cola y binding según
+[`delay_queues.json`](../../infra/rabbitmq/delay_queues.json): durable,
+TTL 30.000 ms, DLX por defecto `""` y retorno a `zeler.sheets.events`.
+No incluye topología de otros módulos. El TTL de cola limita a **30 segundos**
+los TTL solicitados de 2 y 10 minutos; no se promete esa espera completa.
+
+El reinicio acotado de **solo `sheets-worker`** fue autorizado y ejecutado:
+arranque a las **15:52:45**, `healthy` a las **15:53:01**, mismo contenedor e imagen
+`sha256:ad22631933a09dfd8bfc0ddd5119af64fad55ed9a30aabeb5aafbaa71fea876f`,
+sin recreación, pull, OOM ni cambios manuales de datos/colas. Falta observar
+progreso sostenido de entregas. No se han consumido ni reprocesado las DLQ.
+También se autorizó commit/push y Cloud Build del worker, condicionados a todos
+los gates correctos: **no incluye despliegue ni topología**.
+El candidato comprende seis archivos: dos implementaciones, sus dos archivos de
+pruebas y los dos documentos. La imagen del worker se conserva durante la
+reconciliación autorizada; el build no autoriza sustituirla.
+
+## Pendientes para aceptación
+
+1. Verificar progreso después del reinicio autorizado; declarar topología solo
+   con autorización separada. Comprobar backlog y completados, no solo health.
+2. Con gates completados, publicar, construir y desplegar el worker conforme a
+   sus autorizaciones; todavía no se declara listo para desplegar.
+3. Demostrar cobertura durable de preguntas y resolver la reconciliación de
+   devoluciones dentro del presupuesto autorizado; verificar las fuentes históricas.
+4. Repetir la observación tras el settling de 900 segundos y comprobar las
+   superficies afectadas, consumidores, DLQ y capacidad sin declarar pérdida cero.
 
 El mecanismo de recuperación del host sigue el
 [runbook de despliegue y runtime](../deploy.md). La corrección de OAuth no resuelve

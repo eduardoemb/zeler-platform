@@ -215,6 +215,129 @@ async def test_permanent_http_4xx_statuses_are_nacked_without_requeue(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("claims_queue", [False, True])
+async def test_http_412_uses_bounded_delayed_retry_before_ack(
+    monkeypatch: pytest.MonkeyPatch, claims_queue: bool
+) -> None:
+    log_spy = LogSpy()
+    monkeypatch.setattr(consumer, "logger", log_spy)
+    handler = FakeHandler(error=_http_status_error(412))
+    publisher = FakeRetryDelayPublisher()
+    runner = SheetsAmqpConsumerRunner(
+        rabbitmq_url="amqp://unit-test", handler=handler, retry_delay_publisher=publisher
+    )
+    queue_name = consumer.SHEETS_CLAIMS_QUEUE if claims_queue else consumer.SHEETS_EVENTS_QUEUE
+    handle = runner.handle_claims_message if claims_queue else runner.handle_message
+    outgoing: list[dict[str, object]] = []
+    message = FakeMessage(_valid_payload())
+
+    async def publish(body: bytes, **kwargs: Any) -> None:
+        assert message.acked is False
+        assert message.nacks == []
+        assert body == message.body
+        outgoing.append(kwargs)
+
+    monkeypatch.setattr(runner, "_publish_retry_delay", publish)
+    for attempt, delay_ms in enumerate((1000, 5000, 30000, 120000, 600000), start=1):
+        message = FakeMessage(
+            _valid_payload(),
+            headers={RETRY_ATTEMPT_HEADER: attempt - 1, "preserve": "value"},
+        )
+        await handle(message)
+        assert message.acked is True
+        assert message.nacks == []
+        assert outgoing[-1] == {
+            "queue_name": queue_name,
+            "delay_ms": delay_ms,
+            "headers": {RETRY_ATTEMPT_HEADER: attempt, "preserve": "value"},
+        }
+        assert log_spy.warning_calls[-1][1]["status_code"] == 412
+        assert log_spy.warning_calls[-1][1]["attempt"] == attempt
+
+    message = FakeMessage(_valid_payload(), headers={RETRY_ATTEMPT_HEADER: 5})
+    await handle(message)
+    assert message.acked is False
+    assert message.nacks == [False]
+    assert len(outgoing) == 5
+    assert len(handler.events) == 5
+    assert log_spy.error_calls[-1][1]["error_type"] == "RetryLimitExceededError"
+
+
+@pytest.mark.asyncio
+async def test_http_412_events_uses_existing_delay_publisher() -> None:
+    publisher = FakeRetryDelayPublisher()
+    runner = SheetsAmqpConsumerRunner(
+        rabbitmq_url="amqp://unit-test",
+        handler=FakeHandler(error=_http_status_error(412)),
+        retry_delay_publisher=publisher,
+    )
+    message = FakeMessage(
+        _valid_payload(),
+        headers={"x-death": [{"count": 2, "queue": consumer.SHEETS_EVENTS_QUEUE}]},
+    )
+
+    await runner.handle_message(message)
+
+    assert message.acked is True
+    assert message.nacks == []
+    assert publisher.calls == [
+        {
+            "body": message.body,
+            "queue_name": consumer.SHEETS_EVENTS_QUEUE,
+            "delay_ms": 30000,
+            "headers": {RETRY_ATTEMPT_HEADER: 3},
+        }
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("claims_queue", [False, True])
+@pytest.mark.parametrize("publisher_missing", [False, True])
+async def test_http_412_preserves_original_when_retry_cannot_be_published(
+    monkeypatch: pytest.MonkeyPatch, claims_queue: bool, publisher_missing: bool
+) -> None:
+    runner = SheetsAmqpConsumerRunner(
+        rabbitmq_url="amqp://unit-test",
+        handler=FakeHandler(error=_http_status_error(412)),
+        retry_delay_publisher=None if publisher_missing else FakeRetryDelayPublisher(),
+    )
+    message = FakeMessage(_valid_payload())
+
+    async def fail_publish(*args: Any, **kwargs: Any) -> None:
+        raise RuntimeError("retry publish was not confirmed")
+
+    if not publisher_missing:
+        monkeypatch.setattr(runner, "_publish_retry_delay", fail_publish)
+    handle = runner.handle_claims_message if claims_queue else runner.handle_message
+
+    await handle(message)
+
+    assert message.acked is False
+    assert message.nacks == [True]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status_code", [400, 409, 418])
+async def test_unclassified_http_4xx_is_settled_to_dlq_instead_of_escaping(
+    monkeypatch: pytest.MonkeyPatch, status_code: int
+) -> None:
+    log_spy = LogSpy()
+    monkeypatch.setattr(consumer, "logger", log_spy)
+    runner = SheetsAmqpConsumerRunner(
+        rabbitmq_url="amqp://unit-test", handler=FakeHandler(error=_http_status_error(status_code))
+    )
+    message = FakeMessage(_valid_payload())
+
+    await runner.handle_message(message)
+
+    assert message.acked is False
+    assert message.nacks == [False]
+    assert log_spy.warning_calls == []
+    assert log_spy.error_calls[0][0] == "worker.message.dlq"
+    assert log_spy.error_calls[0][1]["status_code"] == status_code
+
+
+@pytest.mark.asyncio
 async def test_http_500_is_nacked_with_requeue_and_logs_next_attempt(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

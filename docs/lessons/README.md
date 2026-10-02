@@ -83,6 +83,7 @@ repeat failures, and promote stable knowledge to its proper operational form.
 | L-024 | ZelerData | Verify the claims DLQ and binding, not just the source queue | active |
 | L-025 | ZelerData | Compare economic tags as membership in formula readers | active |
 | L-026 | Gateway OAuth | Keep transient refresh failures eligible for retry | active |
+| L-027 | ZelerData | Verify delivery progress, not just consumer readiness | active |
 
 ## Cloud Build and VM deployment
 
@@ -307,8 +308,23 @@ repeat failures, and promote stable knowledge to its proper operational form.
   `active`/`refresh_pending` accounts. A 429 then permanently excludes the
   account and produces proxy 412 despite green service health.
 - verification/source: `gateway/tests/test_refresh_worker.py` — 37 passing tests,
-  including isolated Mongo validators; local fix, not deployed. Incident and
-  runtime acceptance: `docs/ops/platform-vm-recovery-20261002.md`.
+  including isolated Mongo validators. Gateway deployed 2 October 2026, 15:16 UTC;
+  normal refresh restored the pilot to active. Remaining runtime acceptance:
+  `docs/ops/platform-vm-recovery-20261002.md`.
+- status: active
+
+### L-027 — Verify delivery progress, not just consumer readiness
+- area: ZelerData AMQP exception handling and recovery
+- proven path: Require ACK/NACK or confirmed bounded retry for every HTTP error;
+  preserve the original if retry publication fails. Verify the delay queue,
+  binding and effective TTL before rollout, then measure backlog and completions.
+- failed path: Re-raise HTTP 412 inside its `except` block: sibling safety-net
+  handlers do not catch it. Ten unacked deliveries filled prefetch while the
+  connection stayed ready, even after OAuth recovered.
+- verification/source: `modules/sheets/tests/test_consumer_error_handling.py` —
+  10 RED then 32 GREEN; 56 GREEN with adjacent consumer tests. Local fix only;
+  production delay topology and rollout remain pending. Runtime evidence:
+  `docs/ops/platform-vm-recovery-20261002.md`.
 - status: active
 
 ### L-011 — Deliver stop signals to the worker and await Docker completion

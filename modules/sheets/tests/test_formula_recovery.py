@@ -6352,6 +6352,172 @@ async def test_question_recovery_revalidates_stored_identity_absent_from_complet
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("stored_gone", ["in_scope", "absent", "other_seller", "outside_interval"])
+async def test_question_recovery_reconciles_listed_but_gone_detail_after_complete_scan(
+    recovery_db: Any, stored_gone: str
+) -> None:
+    import httpx
+
+    from zeler_sheets.formulas.recovery_worker import FormulaRecoveryWorker
+
+    queue = FormulaRecoveryQueue(recovery_db)
+    await queue.enqueue(request())
+    resource = {
+        "id": 42,
+        "seller_id": "pilot",
+        "item_id": "MLM42",
+        "text": "Available?",
+        "status": "UNANSWERED",
+        "from": {"id": 123},
+        "date_created": "2026-08-20T10:00:00Z",
+    }
+    stored = {
+        "_id": "43",
+        "seller_id": "other" if stored_gone == "other_seller" else "pilot",
+        "date_created": (
+            request().date_from - timedelta(days=1)
+            if stored_gone == "outside_interval"
+            else datetime(2026, 8, 20, 10, tzinfo=UTC)
+        ).replace(tzinfo=None),
+        "status": "UNANSWERED",
+    }
+    if stored_gone != "absent":
+        await recovery_db.questions.insert_one(stored)
+    calls: list[str] = []
+
+    class Gateway:
+        async def fetch_resource(self, *, seller_id: str, path: str) -> dict[str, Any]:
+            assert seller_id == "pilot"
+            calls.append("search")
+            if calls.count("search") == 1:
+                return {"total": 2, "questions": [{**resource, "id": 43}], "scroll_id": "next"}
+            assert "scroll_id=next" in path
+            return {"total": 2, "questions": [resource]}
+
+    class Details:
+        async def fetch_resource(self, *, seller_id: str, path: str) -> dict[str, Any]:
+            assert seller_id == "pilot"
+            calls.append(path)
+            if path.endswith("/43"):
+                httpx.Response(
+                    404, request=httpx.Request("GET", "https://gateway.test/questions/43")
+                ).raise_for_status()
+            assert path.endswith("/42")
+            return resource
+
+    assert await FormulaRecoveryWorker(
+        db=recovery_db, gateway=Gateway(), detail_gateway=Details(), queue=queue
+    ).process_one()
+    job = await queue.collection.find_one({"_id": request().key})
+    assert job["state"] == "completed"
+    assert calls == ["search", "/questions/43", "search", "/questions/42"]
+    gone = await recovery_db.questions.find_one({"_id": "43"})
+    assert gone == (stored if stored_gone in {"other_seller", "outside_interval"} else None)
+    assert await recovery_db.questions.count_documents({"_id": "42", "seller_id": "pilot"}) == 1
+    marker = await recovery_db.sheets_read_model_freshness.find_one({"_id": "pilot:questions"})
+    assert marker["state"] == "reconciled"
+    assert marker["date_from"] == request().date_from.replace(tzinfo=None)
+    assert marker["reconciled_until"] == request().date_to.replace(tzinfo=None)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "failure",
+    [
+        "forbidden",
+        "transient",
+        "later_forbidden",
+        "incomplete_scan",
+        "expired_lease",
+        "newer_marker",
+        "invalid_detail",
+    ],
+)
+async def test_listed_question_unavailability_cannot_publish_partial_or_unowned_recovery(
+    recovery_db: Any, failure: str
+) -> None:
+    import httpx
+
+    from zeler_sheets.formulas.recovery_worker import FormulaRecoveryWorker
+
+    clock = [datetime.now(UTC)]
+    queue = FormulaRecoveryQueue(recovery_db, now=lambda: clock[0])
+    await queue.enqueue(request())
+    prior = {
+        "_id": "pilot:questions",
+        "seller_id": "pilot",
+        "state": "reconciled",
+        "proof": "prior",
+    }
+    await recovery_db.sheets_read_model_freshness.insert_one(prior)
+    stored = {
+        "_id": "43",
+        "seller_id": "pilot",
+        "date_created": datetime(2026, 8, 20, 10),
+        "status": "UNANSWERED",
+    }
+    await recovery_db.questions.insert_one(stored)
+    resource = {
+        "id": 42,
+        "seller_id": "pilot",
+        "item_id": "MLM42",
+        "text": "Available?",
+        "status": "UNANSWERED",
+        "from": {"id": 123},
+        "date_created": "2026-08-20T10:00:00Z",
+    }
+
+    class Gateway:
+        async def fetch_resource(self, *, seller_id: str, path: str) -> dict[str, Any]:
+            return {
+                "total": 3 if failure == "incomplete_scan" else 2,
+                "questions": [{**resource, "id": 43}, resource],
+            }
+
+    class Details:
+        async def fetch_resource(self, *, seller_id: str, path: str) -> dict[str, Any]:
+            if path.endswith("/43") or failure == "later_forbidden":
+                status = (
+                    403
+                    if failure in {"forbidden", "later_forbidden"}
+                    and (failure != "later_forbidden" or path.endswith("/42"))
+                    else 503
+                    if failure == "transient"
+                    else 404
+                )
+                httpx.Response(
+                    status, request=httpx.Request("GET", "https://gateway.test" + path)
+                ).raise_for_status()
+            if failure == "expired_lease":
+                clock[0] += timedelta(minutes=11)
+            if failure == "newer_marker":
+                await recovery_db.sheets_read_model_freshness.update_one(
+                    {"_id": "pilot:questions"}, {"$set": {"proof": "newer"}}
+                )
+            return {**resource, "status": "INVALID"} if failure == "invalid_detail" else resource
+
+    assert await FormulaRecoveryWorker(
+        db=recovery_db, gateway=Gateway(), detail_gateway=Details(), queue=queue
+    ).process_one()
+    job = await queue.collection.find_one({"_id": request().key})
+    assert job["state"] != "completed"
+    if failure != "expired_lease":
+        assert job["failure_reason"] == (
+            "source_temporarily_unavailable"
+            if failure == "transient"
+            else "source_rejected"
+            if failure in {"forbidden", "later_forbidden"}
+            else "source_incomplete"
+        )
+    assert await recovery_db.questions.find_one({"_id": "43"}) == stored
+    assert await recovery_db.questions.count_documents({}) == 1
+    assert await recovery_db.sheets_read_model_freshness.find_one({"_id": "pilot:questions"}) == {
+        **prior,
+        "proof": "newer" if failure == "newer_marker" else "prior",
+    }
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("prior_expired", [False, True, None])
 async def test_order_recovery_preserves_independent_intervals_without_acquiring_gap(
     recovery_db: Any, prior_expired: bool | None

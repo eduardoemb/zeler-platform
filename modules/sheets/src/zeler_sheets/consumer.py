@@ -652,6 +652,30 @@ class SheetsAmqpConsumerRunner:
             return
         except httpx.HTTPStatusError as exc:
             status_code = exc.response.status_code
+            if status_code == 412:
+                # Account readiness can recover independently of this delivery.
+                # Never leave the message unacked or retry in an unbounded loop.
+                _log_message_requeued(event, death_count + 1, exc, status_code=status_code)
+                delay_ms = _claims_retry_delay_ms(death_count + 1)
+                if await self._retry_claims_transient(
+                    message,
+                    queue_name=queue_name,
+                    death_count=death_count,
+                    delay_ms=delay_ms,
+                ):
+                    return
+                try:
+                    await self._publish_retry_delay(
+                        message.body,
+                        queue_name=queue_name,
+                        delay_ms=delay_ms,
+                        headers=_retry_headers(message, attempt=death_count + 1),
+                    )
+                except Exception:  # noqa: BLE001 - preserve the original on failed retry publish.
+                    await message.nack(requeue=True)
+                    return
+                await message.ack()
+                return
             if status_code in PERMANENT_HTTP_STATUS_CODES:
                 _log_message_dlq(event, death_count + 1, exc, status_code=status_code)
                 await message.nack(requeue=False)
@@ -671,7 +695,11 @@ class SheetsAmqpConsumerRunner:
                     return
                 await message.nack(requeue=True)
                 return
-            raise
+            # Raising inside this except bypasses the generic safety net below
+            # and strands deliveries until all prefetch slots are occupied.
+            _log_message_dlq(event, death_count + 1, exc, status_code=status_code)
+            await message.nack(requeue=False)
+            return
         except (httpx.ConnectError, httpx.TimeoutException) as exc:
             _log_message_requeued(event, death_count + 1, exc)
             if await self._retry_claims_transient(
