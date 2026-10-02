@@ -13,6 +13,8 @@ from enum import StrEnum
 from typing import Any, Protocol, cast
 from urllib.parse import urlencode
 
+from zeler_platform_core.devoluciones_readiness import DevolucionesOperationContext
+
 
 class MeliGatewayResourceClient(Protocol):
     async def fetch_resource(self, *, seller_id: str, path: str) -> dict[str, Any]: ...
@@ -1898,3 +1900,254 @@ def _format_meli_datetime(value: datetime) -> str:
     utc_value = value.astimezone(UTC)
     milliseconds = utc_value.microsecond // 1000
     return f"{utc_value:%Y-%m-%dT%H:%M:%S}.{milliseconds:03d}+0000"
+
+
+async def current_certificate_facts(
+    db: Any,
+    seller_id: str,
+    start: datetime,
+    end: datetime,
+    *,
+    session: Any = None,
+) -> dict[str, Any]:
+    """Validate joint facts, without claiming acquisition completeness by itself."""
+    from zeler_platform_core.devoluciones_certificates import membership_hash
+
+    claims = await read_devoluciones_claims_keyset(
+        db=db, seller_id=seller_id, date_from=start, date_to=end, session=session
+    )
+    identities = frozenset(str(claim["_id"]) for claim in claims)
+    await verify_devoluciones_read_model(
+        db=db,
+        seller_id=seller_id,
+        date_from=start,
+        date_to=end,
+        expected_claim_ids=identities,
+        session=session,
+    )
+    orders = await read_devoluciones_orders_by_id_keyset(
+        db=db,
+        seller_id=seller_id,
+        order_ids=frozenset(str(claim["order_id"]) for claim in claims),
+        session=session,
+    )
+    return {
+        "current_membership_hash": membership_hash(identities),
+        "current_read_model_fingerprint": devoluciones_read_model_fingerprint(
+            seller_id=seller_id, claims=claims, orders=orders
+        ),
+        "certified_count": len(identities),
+    }
+
+
+async def publish_quota_certificate(
+    db: Any,
+    operation: DevolucionesOperationContext,
+    run: Mapping[str, Any],
+    windows: Sequence[Mapping[str, Any]],
+    *,
+    now: datetime,
+    session: Any,
+) -> None:
+    from zeler_platform_core.devoluciones_certificates import (
+        CoverageUnavailableError,
+        make_certificate,
+        publish_certificate,
+        quota_provenance,
+        utc,
+    )
+
+    evidence = quota_provenance(run, windows)
+    for window in windows:
+        facts = await current_certificate_facts(
+            db, operation.seller_id, utc(window["start"]), utc(window["end"]), session=session
+        )
+        if (
+            facts["certified_count"] != window["expected_count"]
+            or facts["current_read_model_fingerprint"] != window["read_model_fingerprint"]
+        ):
+            raise CoverageUnavailableError("quota window joint facts differ from acquired evidence")
+    facts = await current_certificate_facts(
+        db, operation.seller_id, utc(run["start"]), utc(run["end"]), session=session
+    )
+    document = make_certificate(
+        seller_id=operation.seller_id,
+        kind="quota_run",
+        source_identity=str(run["_id"]),
+        date_from=utc(run["start"]),
+        date_to=utc(run["end"]),
+        acquired_at=now,
+        coverage_epoch=operation.coverage_epoch,
+        now=now,
+        current_membership_hash=facts["current_membership_hash"],
+        current_read_model_fingerprint=facts["current_read_model_fingerprint"],
+        **evidence,
+    )
+    await publish_certificate(db, operation, document, session=session)
+
+
+async def publish_joint_certificate(
+    db: Any,
+    operation: DevolucionesOperationContext,
+    start: datetime,
+    end: datetime,
+    *,
+    expected_fingerprint: str,
+    expected_ids: frozenset[str],
+    now: datetime,
+    session: Any,
+) -> None:
+    from zeler_platform_core.devoluciones_certificates import make_certificate, publish_certificate
+
+    await verify_devoluciones_read_model(
+        db=db,
+        seller_id=operation.seller_id,
+        date_from=start,
+        date_to=end,
+        expected_claim_ids=expected_ids,
+        expected_read_model_fingerprint=expected_fingerprint,
+        session=session,
+    )
+    facts = await current_certificate_facts(db, operation.seller_id, start, end, session=session)
+    document = make_certificate(
+        seller_id=operation.seller_id,
+        kind="joint_snapshot",
+        source_identity=operation.attempt_token,
+        source_fingerprint=operation.source_fingerprint,
+        acquisition_fingerprint=expected_fingerprint,
+        date_from=start,
+        date_to=end,
+        acquired_at=now,
+        expected_count=len(expected_ids),
+        current_membership_hash=facts["current_membership_hash"],
+        current_read_model_fingerprint=expected_fingerprint,
+        coverage_epoch=operation.coverage_epoch,
+        now=now,
+    )
+    await publish_certificate(db, operation, document, session=session)
+
+
+async def prepare_certificate_transition(
+    db: Any,
+    operation: DevolucionesOperationContext,
+    claims: Sequence[Mapping[str, Any] | None],
+    *,
+    session: Any,
+    replacement: Mapping[str, Any] | None = None,
+) -> list[tuple[dict[str, Any], frozenset[str]]]:
+    """Prove pre-state and exact membership delta; unknown evidence stays invalidated."""
+    import asyncio
+
+    from zeler_platform_core.devoluciones_certificates import CERTIFICATES, utc, validate_provenance
+
+    if operation.coverage_mode != "active" or not operation.source_fingerprint:
+        return []
+    dates = [
+        utc(claim["date_created"])
+        for claim in claims
+        if claim
+        and claim.get("type") == "returns"
+        and isinstance(claim.get("date_created"), datetime)
+    ]
+    if not dates:
+        return []
+    prepared = []
+    try:
+        async with asyncio.timeout(5):
+            candidates = (
+                db[CERTIFICATES]
+                .find(
+                    {
+                        "seller_id": operation.seller_id,
+                        "state": "reconciled",
+                        "needs_reacquisition": False,
+                        "coverage_epoch": operation.coverage_epoch,
+                        "$or": [
+                            {"date_from": {"$lte": date}, "date_to": {"$gt": date}}
+                            for date in dates
+                        ],
+                    },
+                    session=session,
+                )
+                .max_time_ms(5000)
+            )
+            async for certificate in candidates:
+                await validate_provenance(db, certificate, session=session)
+                start, end = utc(certificate["date_from"]), utc(certificate["date_to"])
+                facts = await current_certificate_facts(
+                    db, operation.seller_id, start, end, session=session
+                )
+                if any(certificate[key] != value for key, value in facts.items()):
+                    continue
+                rows = await read_devoluciones_claims_keyset(
+                    db=db,
+                    seller_id=operation.seller_id,
+                    date_from=start,
+                    date_to=end,
+                    session=session,
+                )
+                expected = {str(row["_id"]) for row in rows}
+                if replacement is not None:
+                    expected.discard(str(replacement["_id"]))
+                    if (
+                        replacement.get("type") == "returns"
+                        and isinstance(replacement.get("date_created"), datetime)
+                        and start <= utc(replacement["date_created"]) < end
+                    ):
+                        expected.add(str(replacement["_id"]))
+                prepared.append((certificate, frozenset(expected)))
+    except (TimeoutError, DevolucionesReadModelVerificationError, ValueError):
+        return []
+    return prepared
+
+
+async def complete_certificate_transition(
+    db: Any,
+    operation: DevolucionesOperationContext,
+    prepared: Sequence[tuple[dict[str, Any], frozenset[str]]],
+    *,
+    session: Any,
+) -> None:
+    import asyncio
+
+    from zeler_platform_core.devoluciones_certificates import CERTIFICATES, VALIDITY, utc
+
+    try:
+        async with asyncio.timeout(5):
+            for certificate, expected in prepared:
+                start, end = utc(certificate["date_from"]), utc(certificate["date_to"])
+                try:
+                    await verify_devoluciones_read_model(
+                        db=db,
+                        seller_id=operation.seller_id,
+                        date_from=start,
+                        date_to=end,
+                        expected_claim_ids=expected,
+                        session=session,
+                    )
+                    facts = await current_certificate_facts(
+                        db, operation.seller_id, start, end, session=session
+                    )
+                except DevolucionesReadModelVerificationError:
+                    continue
+                now = datetime.now(UTC)
+                await db[CERTIFICATES].update_one(
+                    {
+                        "_id": certificate["_id"],
+                        "coverage_epoch": operation.coverage_epoch,
+                        "revision": certificate["revision"] + 1,
+                    },
+                    {
+                        "$set": dict(facts)
+                        | {
+                            "state": "reconciled",
+                            "needs_reacquisition": False,
+                            "invalidation_reason": None,
+                            "validated_at": now,
+                            "valid_until": now + VALIDITY,
+                        }
+                    },
+                    session=session,
+                )
+    except TimeoutError:
+        return

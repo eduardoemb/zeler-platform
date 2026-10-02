@@ -15,6 +15,64 @@
           "null"
         ]
       },
+      "coverage_ack_fence": {
+        "bsonType": [
+          "int",
+          "long"
+        ],
+        "minimum": 1
+      },
+      "coverage_epoch": {
+        "bsonType": [
+          "int",
+          "long"
+        ],
+        "minimum": 0
+      },
+      "coverage_mode": {
+        "enum": [
+          "legacy",
+          "active"
+        ]
+      },
+      "coverage_renewal": {
+        "additionalProperties": false,
+        "bsonType": "object",
+        "properties": {
+          "attempted": {
+            "bsonType": [
+              "int",
+              "long"
+            ],
+            "minimum": 0
+          },
+          "observed_at": {
+            "bsonType": "date"
+          },
+          "observed_interval_seconds": {
+            "bsonType": [
+              "double",
+              "int",
+              "long",
+              "null"
+            ]
+          },
+          "slowest_seconds": {
+            "bsonType": [
+              "double",
+              "int",
+              "long"
+            ],
+            "minimum": 0
+          }
+        },
+        "required": [
+          "observed_at",
+          "attempted",
+          "slowest_seconds",
+          "observed_interval_seconds"
+        ]
+      },
       "error_code": {
         "bsonType": [
           "string",

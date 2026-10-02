@@ -26,6 +26,16 @@ class _Collection:
     def __init__(self, rows: list[dict[str, Any]]) -> None:
         self.rows = rows
 
+    async def find_one(self, query: dict[str, Any]) -> dict[str, Any] | None:
+        return next(
+            (
+                row
+                for row in self.rows
+                if all(row.get(key) == value for key, value in query.items())
+            ),
+            None,
+        )
+
     def find(self, query: dict[str, Any], projection: Any = None) -> _Cursor:
         rows = [row for row in self.rows if row.get("seller_id") == query.get("seller_id")]
         return _Cursor(rows)
@@ -36,8 +46,8 @@ class _Db:
         self.rows = rows
 
     def __getitem__(self, name: str) -> _Collection:
-        assert name == "sheets_read_model_freshness"
-        return _Collection(self.rows)
+        assert name in {"sheets_read_model_freshness", "sheets_devoluciones_operations"}
+        return _Collection(self.rows if name == "sheets_read_model_freshness" else [])
 
 
 def _marker(

@@ -256,6 +256,17 @@ async def persist_claim_projection(
     async def write(session: Any) -> None:
         collection = db["claims"]
         session_kwargs = {"session": session} if session is not None else {}
+        prior = None
+        prepared = []
+        if operation.coverage_mode == "active":
+            prior = await collection.find_one(
+                {"_id": claim_id, "seller_id": seller_id}, **session_kwargs
+            )
+            from zeler_sheets.devoluciones_reconciliation import prepare_certificate_transition
+
+            prepared = await prepare_certificate_transition(
+                db, operation, [prior, document], session=session, replacement=document
+            )
         insert_result = await collection.update_one(
             {"_id": claim_id, "seller_id": seller_id},
             {"$setOnInsert": dict(document)},
@@ -263,8 +274,15 @@ async def persist_claim_projection(
             **session_kwargs,
         )
         if getattr(insert_result, "upserted_id", None) is not None:
+            if operation.coverage_mode == "active":
+                from zeler_platform_core.devoluciones_certificates import invalidate_claim_impact
+
+                await invalidate_claim_impact(db, seller_id, [document], session=session)
+                from zeler_sheets.devoluciones_reconciliation import complete_certificate_transition
+
+                await complete_certificate_transition(db, operation, prepared, session=session)
             return
-        await collection.replace_one(
+        replaced = await collection.replace_one(
             _monotonic_claim_write_filter(
                 claim_id=claim_id,
                 seller_id=seller_id,
@@ -276,6 +294,13 @@ async def persist_claim_projection(
             upsert=False,
             **session_kwargs,
         )
+        if operation.coverage_mode == "active" and bool(getattr(replaced, "modified_count", False)):
+            from zeler_platform_core.devoluciones_certificates import invalidate_claim_impact
+
+            await invalidate_claim_impact(db, seller_id, [prior, document], session=session)
+            from zeler_sheets.devoluciones_reconciliation import complete_certificate_transition
+
+            await complete_certificate_transition(db, operation, prepared, session=session)
 
     await guarded_devoluciones_write(
         db=db,
@@ -287,6 +312,7 @@ async def persist_claim_projection(
             "last_updated": document.get("last_updated"),
         },
         writer=write,
+        certificate_impact_handled=True,
     )
 
 

@@ -106,7 +106,10 @@ def _desired_validator(schema: dict[str, Any]) -> dict[str, Any]:
         return {}
 
     if "$jsonSchema" in schema:
-        return {"$jsonSchema": schema["$jsonSchema"]}
+        return {
+            "$jsonSchema": schema["$jsonSchema"],
+            **({"$expr": schema["$expr"]} if "$expr" in schema else {}),
+        }
 
     return {"$jsonSchema": schema}
 

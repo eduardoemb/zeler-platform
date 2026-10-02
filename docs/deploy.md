@@ -1559,3 +1559,29 @@ Verify:
 curl -sI "https://gateway.zeler.ai/oauth/authorize?seller_id=test"
 # Must return 302 with Location containing gateway.zeler.ai%2Foauth%2Fcallback
 ```
+
+## DEVOLUCIONES cumulative certificate rollout
+
+Cumulative coverage is **opt-in per seller**, not automatically enabled by deploying
+new code. Keep genuine June coverage while independently acquiring earlier/later
+periods; never expand one marker across an unacquired gap.
+
+Follow the [multiperiod rollout and rollback runbook](../openspec/changes/zelerdata-devoluciones-multiperiod-coverage/rollout.md).
+It provides exact approved-runtime inspection/migration/activation/status commands,
+writer compatibility ordering, separate schema/build/deploy authorization, and
+native June/August/gap acceptance beyond the 30-minute proof lifetime. Until those
+steps are authorized and verified, local tests are not evidence of production
+activation or sustained coverage.
+
+The affected runtime owners are Sheets API, Sheets worker and bootstrap/jobs that
+write canonical claims/orders. Deploy their compatible shared-core code before
+activation, apply additive validators/indexes under separate approval, and verify
+all running writers. Before an incompatible rollback, use the guarded migration
+CLI's `--write --rollback` mode to withdraw certificate authority; preserve facts,
+receipts and certificates. Legacy read availability may be narrower and must be
+reported rather than hidden by a synthetic union.
+
+Rollback preserves the existing genuine singleton as-is; it does not synthesize
+a replacement projection from an independent certificate. If that marker is
+stale or expired, legacy DEVOLUCIONES remains unavailable until its ordinary
+proof workflow succeeds. This is a reported safe downgrade, not data deletion.

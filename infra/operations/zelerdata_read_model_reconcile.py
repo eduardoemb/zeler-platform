@@ -1528,6 +1528,17 @@ async def _finalize_devoluciones_quota_run(
         )
         if getattr(completed, "matched_count", 0) != 1:
             raise RuntimeError("quota run completion CAS failed")
+        if operation.coverage_mode == "active":
+            from zeler_sheets.devoluciones_reconciliation import publish_quota_certificate
+
+            await publish_quota_certificate(
+                db,
+                operation,
+                dict(run) | {"state": "completed"},
+                windows,
+                now=current,
+                session=session,
+            )
         outcome["finalized"] = 1
 
     await guarded_devoluciones_write(
@@ -2267,9 +2278,12 @@ async def write_complete_read_model_freshness_markers(
         )
         if claims_aggregate is None:
             return
-        if not _request_encloses_required_devoluciones_coverage(
-            request=request,
-            operation=operation,
+        if (
+            operation.coverage_mode != "active"
+            and not _request_encloses_required_devoluciones_coverage(
+                request=request,
+                operation=operation,
+            )
         ):
             return
         expected_claim_ids, expected_read_model_fingerprint = _validated_devoluciones_marker_inputs(
@@ -2277,11 +2291,12 @@ async def write_complete_read_model_freshness_markers(
             aggregate=claims_aggregate,
             operation=operation,
         )
-        await _reject_historical_non_productive_devoluciones_rows(
-            db=db,
-            seller_id=request.seller_id,
-            session=session,
-        )
+        if operation.coverage_mode != "active":
+            await _reject_historical_non_productive_devoluciones_rows(
+                db=db,
+                seller_id=request.seller_id,
+                session=session,
+            )
         from zeler_sheets.devoluciones_reconciliation import verify_devoluciones_read_model
 
         if publication_guard is not None:
@@ -2297,6 +2312,19 @@ async def write_complete_read_model_freshness_markers(
         )
         if publication_guard is not None:
             publication_guard()
+        if operation.coverage_mode == "active":
+            from zeler_sheets.devoluciones_reconciliation import publish_joint_certificate
+
+            await publish_joint_certificate(
+                db,
+                operation,
+                request.date_range.start,
+                request.date_range.end_exclusive,
+                expected_fingerprint=expected_read_model_fingerprint,
+                expected_ids=frozenset(expected_claim_ids),
+                now=datetime.now(UTC),
+                session=session,
+            )
         marker_id = f"{request.seller_id}:devoluciones"
         if publication_guard is not None:
             publication_guard()
@@ -2358,6 +2386,10 @@ async def write_complete_read_model_freshness_markers(
                 )
                 raise
         devoluciones_written = 1
+        if operation.coverage_mode == "active" and publication_guard is not None:
+            # Active certificate publication must abort atomically on the last
+            # age check, not report failure after a productive proof committed.
+            publication_guard()
 
     try:
         await guarded_devoluciones_write(
@@ -2371,7 +2403,7 @@ async def write_complete_read_model_freshness_markers(
             },
             writer=write,
         )
-        if publication_guard is not None:
+        if publication_guard is not None and operation.coverage_mode != "active":
             publication_guard()
     except Exception:
         if publication_guard is not None:

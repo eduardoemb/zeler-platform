@@ -1,0 +1,193 @@
+{
+  "$expr": {
+    "$and": [
+      {
+        "$lt": [
+          "$date_from",
+          "$date_to"
+        ]
+      },
+      {
+        "$lte": [
+          "$date_to",
+          "$acquired_at"
+        ]
+      },
+      {
+        "$lte": [
+          "$acquired_at",
+          "$validated_at"
+        ]
+      }
+    ]
+  },
+  "$jsonSchema": {
+    "additionalProperties": false,
+    "bsonType": "object",
+    "oneOf": [
+      {
+        "properties": {
+          "kind": {
+            "enum": [
+              "quota_run",
+              "joint_snapshot"
+            ]
+          },
+          "source_fingerprint": {
+            "bsonType": "string",
+            "minLength": 1
+          }
+        }
+      },
+      {
+        "properties": {
+          "kind": {
+            "enum": [
+              "legacy_joint_snapshot"
+            ]
+          },
+          "source_fingerprint": {
+            "bsonType": "null"
+          }
+        }
+      }
+    ],
+    "properties": {
+      "_id": {
+        "bsonType": "string",
+        "minLength": 1
+      },
+      "acquired_at": {
+        "bsonType": "date"
+      },
+      "acquisition_fingerprint": {
+        "bsonType": "string",
+        "minLength": 1
+      },
+      "certified_count": {
+        "bsonType": [
+          "int",
+          "long"
+        ],
+        "minimum": 0
+      },
+      "coverage_epoch": {
+        "bsonType": [
+          "int",
+          "long"
+        ],
+        "minimum": 0
+      },
+      "current_membership_hash": {
+        "bsonType": "string",
+        "minLength": 1
+      },
+      "current_read_model_fingerprint": {
+        "bsonType": "string",
+        "minLength": 1
+      },
+      "date_from": {
+        "bsonType": "date"
+      },
+      "date_to": {
+        "bsonType": "date"
+      },
+      "expected_count": {
+        "bsonType": [
+          "int",
+          "long"
+        ],
+        "minimum": 0
+      },
+      "invalidation_reason": {
+        "enum": [
+          null,
+          "incompatible_writer",
+          "claim_mutation",
+          "order_mutation",
+          "unknown_impact",
+          "proof_drift",
+          "explicit_invalidation"
+        ]
+      },
+      "kind": {
+        "enum": [
+          "quota_run",
+          "joint_snapshot",
+          "legacy_joint_snapshot"
+        ]
+      },
+      "needs_reacquisition": {
+        "bsonType": "bool"
+      },
+      "next_check_at": {
+        "bsonType": "date"
+      },
+      "revision": {
+        "bsonType": [
+          "int",
+          "long"
+        ],
+        "minimum": 1
+      },
+      "schema_version": {
+        "enum": [
+          1
+        ]
+      },
+      "seller_id": {
+        "bsonType": "string",
+        "minLength": 1
+      },
+      "source_fingerprint": {
+        "bsonType": [
+          "string",
+          "null"
+        ]
+      },
+      "source_identity": {
+        "bsonType": "string",
+        "minLength": 1
+      },
+      "state": {
+        "enum": [
+          "reconciled",
+          "stale",
+          "failed"
+        ]
+      },
+      "valid_until": {
+        "bsonType": "date"
+      },
+      "validated_at": {
+        "bsonType": "date"
+      }
+    },
+    "required": [
+      "_id",
+      "seller_id",
+      "source_identity",
+      "acquisition_fingerprint",
+      "current_membership_hash",
+      "current_read_model_fingerprint",
+      "date_from",
+      "date_to",
+      "acquired_at",
+      "validated_at",
+      "valid_until",
+      "next_check_at",
+      "expected_count",
+      "certified_count",
+      "coverage_epoch",
+      "kind",
+      "source_fingerprint",
+      "state",
+      "revision",
+      "invalidation_reason",
+      "needs_reacquisition",
+      "schema_version"
+    ]
+  },
+  "validationAction": "error",
+  "validationLevel": "strict"
+}

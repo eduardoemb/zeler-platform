@@ -163,6 +163,12 @@ async def _set_devoluciones_failed(
     operation = _require_matching_live_lease(seller_id=seller_id, operation=operation)
 
     async def write_failed_marker(session: Any) -> None:
+        if operation.coverage_mode == "active":
+            from zeler_platform_core.devoluciones_certificates import invalidate_all_certificates
+
+            await invalidate_all_certificates(
+                db, seller_id, session=session, reason="explicit_invalidation"
+            )
         await db[READ_MODEL_FRESHNESS_COLLECTION].update_one(
             {"_id": f"{seller_id}:{DEVOLUCIONES_READ_MODEL}"},
             _devoluciones_failed_pipeline(seller_id=seller_id, source=source),

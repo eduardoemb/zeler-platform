@@ -88,10 +88,14 @@ class ReturnsHistoriesWithdrawalsFormulaHandlers:
         requested_item_ids = _normalize_optional_item_ids(
             context.args.get("id_publicaciones", "todos")
         )
-        claims = await self._repository.find_devoluciones_claims(
-            seller_id=context.seller_id,
-            date_from=date_from,
-            date_to=date_to,
+        claims = (
+            read_snapshot.claims
+            if read_snapshot.claims is not None
+            else await self._repository.find_devoluciones_claims(
+                seller_id=context.seller_id,
+                date_from=date_from,
+                date_to=date_to,
+            )
         )
         productive_claims = [
             claim
@@ -101,9 +105,13 @@ class ReturnsHistoriesWithdrawalsFormulaHandlers:
         order_ids = list(
             dict.fromkeys(order_id for claim in productive_claims if (order_id := _order_id(claim)))
         )
-        orders = await self._repository.find_devoluciones_orders(
-            seller_id=context.seller_id,
-            order_ids=order_ids,
+        orders = (
+            read_snapshot.orders
+            if read_snapshot.orders is not None
+            else await self._repository.find_devoluciones_orders(
+                seller_id=context.seller_id,
+                order_ids=order_ids,
+            )
         )
         await self._repository.validate_devoluciones_read_snapshot(
             seller_id=context.seller_id,

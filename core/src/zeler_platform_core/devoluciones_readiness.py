@@ -38,6 +38,8 @@ class DevolucionesOperationContext:
     required_coverage_end: datetime | None = None
     checkpoint: dict[str, Any] = field(default_factory=dict)
     lease_lost: bool = False
+    coverage_mode: str = "legacy"
+    coverage_epoch: int = 0
 
 
 def stable_devoluciones_operation_id(writer_kind: str, stable_source_id: str) -> str:
@@ -109,6 +111,7 @@ async def acquire_devoluciones_operation(
     attempt_token: str,
     source_fingerprint: str | None = None,
     invalidate_readiness: bool = True,
+    require_coverage_compatible: bool = False,
 ) -> DevolucionesOperationContext:
     seller_id = _required_identity(seller_id, "seller_id")
     scope = _required_identity(scope, "scope")
@@ -142,6 +145,36 @@ async def acquire_devoluciones_operation(
             )
         existing = await operations.find_one(operation_key, session=session)
         fence = int(existing.get("fence", 0)) + 1 if isinstance(existing, Mapping) else 1
+        coverage_mode = existing.get("coverage_mode", "legacy") if existing else "legacy"
+        coverage_epoch = int(existing.get("coverage_epoch", 0)) if existing else 0
+        if require_coverage_compatible and (
+            coverage_mode != "active"
+            or not existing
+            or existing.get("coverage_ack_fence") != existing.get("fence")
+        ):
+            raise DevolucionesLeaseConflictError(
+                "renewal requires an acknowledged compatible fence"
+            )
+        if (
+            existing
+            and coverage_mode == "active"
+            and existing.get("coverage_ack_fence") != existing.get("fence")
+        ):
+            from zeler_platform_core.devoluciones_certificates import CERTIFICATES
+
+            await db[CERTIFICATES].update_many(
+                {"seller_id": seller_id},
+                {
+                    "$set": {
+                        "state": "stale",
+                        "needs_reacquisition": True,
+                        "invalidation_reason": "incompatible_writer",
+                    },
+                    "$inc": {"revision": 1},
+                },
+                session=session,
+            )
+            coverage_epoch += 1
         checkpoint = takeover_checkpoint(
             cast("Mapping[str, Any] | None", existing),
             source_fingerprint=source_fingerprint,
@@ -159,6 +192,9 @@ async def acquire_devoluciones_operation(
             "operation_id": operation_id,
             "attempt_token": attempt_token,
             "fence": fence,
+            "coverage_mode": coverage_mode,
+            "coverage_epoch": coverage_epoch,
+            "coverage_ack_fence": fence,
             "state": "running",
             "lease_until": _server_time_plus(DEVOLUCIONES_LEASE_DURATION),
             "heartbeat_at": "$$NOW",
@@ -193,6 +229,8 @@ async def acquire_devoluciones_operation(
         required_coverage_start=required_coverage_start,
         required_coverage_end=required_coverage_end,
         checkpoint=checkpoint or {},
+        coverage_mode=coverage_mode,
+        coverage_epoch=coverage_epoch,
     )
 
 
@@ -203,6 +241,12 @@ async def invalidate_devoluciones_readiness(
     source: str = "devoluciones_operation_invalidate",
 ) -> None:
     async def write(session: Any) -> None:
+        if operation.coverage_mode == "active" and source != "devoluciones_relevant_order_event":
+            from zeler_platform_core.devoluciones_certificates import invalidate_all_certificates
+
+            await invalidate_all_certificates(
+                db, operation.seller_id, session=session, reason="explicit_invalidation"
+            )
         await db[READ_MODEL_FRESHNESS_COLLECTION].update_one(
             {"_id": f"{operation.seller_id}:{DEVOLUCIONES_READ_MODEL}"},
             _stale_readiness_update(seller_id=operation.seller_id, source=source),
@@ -306,6 +350,7 @@ async def guarded_devoluciones_write(
     checkpoint: Mapping[str, Any],
     writer: Callable[[Any], Awaitable[Any] | Any],
     session: Any = None,
+    certificate_impact_handled: bool = False,
 ) -> Any:
     _ensure_live_owner(operation)
     if _required_identity(seller_id, "seller_id") != operation.seller_id:
@@ -323,9 +368,63 @@ async def guarded_devoluciones_write(
         if getattr(result, "matched_count", 0) != 1:
             operation.lease_lost = True
             raise DevolucionesLeaseLostError("devoluciones operation lease guard failed")
+        resource_kind = None
+        identity = None
+        prior = None
+        if operation.coverage_mode == "active" and not certificate_impact_handled:
+            resource_kind = (
+                "orders"
+                if checkpoint.get("order_id")
+                else "claims"
+                if checkpoint.get("claim_id")
+                else None
+            )
+            identity = checkpoint.get("order_id") or checkpoint.get("claim_id")
+            if resource_kind:
+                prior = await db[resource_kind].find_one(
+                    {"_id": str(identity), "seller_id": seller_id}, session=transaction_session
+                )
         write_result = writer(transaction_session)
         if inspect.isawaitable(write_result):
-            return await write_result
+            write_result = await write_result
+        if resource_kind:
+            from zeler_platform_core.devoluciones_certificates import invalidate_claim_impact
+
+            current = await db[resource_kind].find_one(
+                {"_id": str(identity), "seller_id": seller_id}, session=transaction_session
+            )
+            if prior != current:
+                if resource_kind == "orders":
+                    dependencies = [
+                        claim
+                        async for claim in db["claims"].find(
+                            {"seller_id": seller_id, "order_id": str(identity)},
+                            session=transaction_session,
+                        )
+                    ]
+                else:
+                    dependencies = [prior, current]
+                await invalidate_claim_impact(
+                    db,
+                    seller_id,
+                    dependencies,
+                    session=transaction_session,
+                    reason="order_mutation" if resource_kind == "orders" else "claim_mutation",
+                )
+        if (
+            operation.coverage_mode == "active"
+            or checkpoint.get("phase") == "certificate_migration"
+        ):
+            final_guard = await db[DEVOLUCIONES_OPERATIONS_COLLECTION].update_one(
+                operation_lease_guard(operation),
+                {"$currentDate": {"updated_at": True}},
+                session=transaction_session,
+            )
+            if getattr(final_guard, "matched_count", 0) != 1:
+                operation.lease_lost = True
+                raise DevolucionesLeaseLostError(
+                    "certificate transaction lost its lease before commit"
+                )
         return write_result
 
     if session is not None:

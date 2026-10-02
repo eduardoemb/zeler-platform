@@ -807,3 +807,43 @@ def test_run_with_motor_async_db_exits_nonzero_when_degraded() -> None:
         db=_AsyncStatusDb(markers),
     )
     assert exit_code != 0
+
+
+@pytest.mark.parametrize("capacity,invalid", [("unknown", 0), ("sufficient", 1), ("sufficient", 0)])
+def test_certificate_status_cli_uses_explicit_interval_report(
+    monkeypatch: pytest.MonkeyPatch,
+    capacity: str,
+    invalid: int,
+) -> None:
+    from infra.operations import zelerdata_read_model_status as status_module
+
+    from zeler_platform_core import devoluciones_certificates
+
+    async def certificate_status(db: Any, seller_id: str, now: datetime) -> dict[str, Any]:
+        return {
+            "mode": "active",
+            "compatible": True,
+            "intervals": [{"readable": True}],
+            "capacity": {"status": capacity},
+            "invalid": invalid,
+            "unacquired_gaps": [],
+            "due": 1,
+        }
+
+    monkeypatch.setattr(devoluciones_certificates, "certificate_status", certificate_status)
+    report = json.loads(
+        status_module.main(
+            [
+                "--seller-id",
+                "seller",
+                "--confirm-approved-runtime",
+                "--devoluciones-coverage",
+                "--readiness",
+            ],
+            object(),
+        )
+    )
+    assert report["devoluciones_coverage"]["due"] == 1
+    ready = capacity == "sufficient" and invalid == 0
+    assert report["status"] == ("ready" if ready else "degraded")
+    assert report["blocking"] == ([] if ready else ["devoluciones"])

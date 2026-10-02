@@ -177,6 +177,35 @@ async def evaluate_refresh_alarms(
     )
     alarms: list[FreshnessAlarm] = []
     seen: set[str] = set()
+    if DEVOLUCIONES_READ_MODEL in expected:
+        from zeler_platform_core.devoluciones_certificates import (
+            certificate_status,
+            coverage_control,
+        )
+
+        if (await coverage_control(db, seller)).get("coverage_mode") == "active":
+            seen.add(DEVOLUCIONES_READ_MODEL)
+            coverage = await certificate_status(db, seller, current)
+            if (
+                not coverage["compatible"]
+                or coverage["invalid"]
+                or not coverage["intervals"]
+                or any(not row["readable"] for row in coverage["intervals"])
+            ):
+                alarms.append(
+                    FreshnessAlarm(
+                        seller, DEVOLUCIONES_READ_MODEL, "certificate_coverage_degraded", 0
+                    )
+                )
+            if coverage["capacity"]["status"] != "sufficient":
+                alarms.append(
+                    FreshnessAlarm(
+                        seller,
+                        DEVOLUCIONES_READ_MODEL,
+                        "certificate_capacity_" + coverage["capacity"]["status"],
+                        0,
+                    )
+                )
     for row in rows:
         if not isinstance(row, Mapping):
             continue

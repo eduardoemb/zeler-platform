@@ -95,6 +95,9 @@ SHIPMENT_REAL_SHIPPING_COST_PROJECTION = {
 class DevolucionesReadSnapshot:
     revision: str
     proof_fingerprint: str
+    vector: Any = None
+    claims: list[dict[str, Any]] | None = None
+    orders: list[dict[str, Any]] | None = None
 
 
 ItemInventory = tuple[list[dict[str, Any]], list[str], tuple[str, ...], bool]
@@ -1284,6 +1287,13 @@ class FormulaReadModelRepository:
         now: datetime,
         formula: str,
     ) -> DevolucionesReadSnapshot:
+        from zeler_platform_core.devoluciones_certificates import coverage_control
+
+        control = await coverage_control(self._db, seller_id)
+        if control.get("coverage_mode") == "active":
+            return await self._certified_devoluciones_snapshot(
+                seller_id=seller_id, date_from=date_from, date_to=date_to, now=now, formula=formula
+            )
         marker = await self._read_model_freshness.find_one(
             {
                 "_id": read_model_freshness_id(seller_id, DEVOLUCIONES_READ_MODEL),
@@ -1319,6 +1329,18 @@ class FormulaReadModelRepository:
         formula: str,
         snapshot: DevolucionesReadSnapshot,
     ) -> None:
+        if snapshot.vector is not None:
+            from zeler_platform_core.devoluciones_certificates import validate_proof_vector
+
+            try:
+                await validate_proof_vector(self._db, snapshot.vector, now)
+            except Exception:  # noqa: BLE001 - no database failure can return productive facts
+                _raise_devoluciones_snapshot_unavailable(formula)
+            return
+        from zeler_platform_core.devoluciones_certificates import coverage_control
+
+        if (await coverage_control(self._db, seller_id)).get("coverage_mode") == "active":
+            _raise_devoluciones_snapshot_unavailable(formula)
         marker = await self._read_model_freshness.find_one(
             {
                 "_id": read_model_freshness_id(seller_id, DEVOLUCIONES_READ_MODEL),
@@ -1337,6 +1359,60 @@ class FormulaReadModelRepository:
             now=now,
         ):
             _raise_devoluciones_snapshot_unavailable(formula)
+
+    async def _certified_devoluciones_snapshot(
+        self,
+        *,
+        seller_id: str,
+        date_from: datetime,
+        date_to: datetime,
+        now: datetime,
+        formula: str,
+    ) -> DevolucionesReadSnapshot:
+        import asyncio
+
+        from pymongo.read_concern import ReadConcern
+
+        from zeler_platform_core.devoluciones_certificates import (
+            CoverageUnavailableError,
+            select_covering_proofs,
+            utc,
+        )
+        from zeler_sheets.devoluciones_reconciliation import current_certificate_facts
+
+        try:
+            async with asyncio.timeout(5), await self._db.client.start_session() as session:  # noqa: SIM117
+                async with session.start_transaction(read_concern=ReadConcern("snapshot")):
+                    vector = await select_covering_proofs(
+                        self._db, seller_id, date_from, date_to, now, session=session
+                    )
+                    for certificate in vector.proofs:
+                        facts = await current_certificate_facts(
+                            self._db,
+                            seller_id,
+                            utc(certificate["date_from"]),
+                            utc(certificate["date_to"]),
+                            session=session,
+                        )
+                        if any(certificate[key] != value for key, value in facts.items()):
+                            raise CoverageUnavailableError("certified joint facts changed")
+                    claims = await read_devoluciones_claims_keyset(
+                        db=self._db,
+                        seller_id=seller_id,
+                        date_from=date_from,
+                        date_to=date_to,
+                        session=session,
+                    )
+                    orders = await read_devoluciones_orders_by_id_keyset(
+                        db=self._db,
+                        seller_id=seller_id,
+                        order_ids=frozenset(str(claim["order_id"]) for claim in claims),
+                        session=session,
+                    )
+            return DevolucionesReadSnapshot("", "", vector, claims, orders)
+        except Exception:  # noqa: BLE001 - safe public unavailable boundary
+            _raise_devoluciones_snapshot_unavailable(formula)
+        raise AssertionError("unreachable")
 
     async def find_unit_costs(
         self,

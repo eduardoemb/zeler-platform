@@ -92,12 +92,35 @@ async def advance_due_devoluciones_run(
         await renew_devoluciones_marker_if_proven(db, seller_id, now=clock)
         return False
 
+    # Existing independent proofs must get an opportunity even while a new
+    # run has work on every refresh tick, or when that source attempt fails.
+    # Renew before source work so a slow/failing upstream cannot starve history.
+    await _renew_active_before_advance(db, seller_id, clock)
     run_id = str(run["_id"])
     if advance is None:
         advance = _runtime_advance
     await advance(db=db, run_id=run_id, now=clock)
     logger.info("zelerdata.devoluciones_run_advanced", run_id=run_id)
     return True
+
+
+async def _renew_active_before_advance(
+    db: Any, seller_id: str, clock: Callable[[], datetime]
+) -> None:
+    import asyncio
+
+    from zeler_platform_core.devoluciones_certificates import coverage_control
+
+    try:
+        # Includes the compatibility read, not just the inner renewal batch.
+        async with asyncio.timeout(30):
+            control = await coverage_control(db, str(seller_id))
+            if control.get("coverage_mode") == "active":
+                await renew_due_certificates(db, str(seller_id), now=clock)
+    except Exception as exc:  # noqa: BLE001 - local proof failure cannot suppress source work
+        _report_refusal(
+            seller_id, "certificate_renewal_before_advance_failed", detail=type(exc).__name__
+        )
 
 
 async def _runtime_advance(*, db: Any, run_id: str, now: Any = None) -> dict[str, int]:
@@ -140,6 +163,11 @@ async def renew_devoluciones_marker_if_proven(
     acquisition set ``stale`` is repaired the same way, since its fingerprint
     still proves the settled run.
     """
+    from zeler_platform_core.devoluciones_certificates import coverage_control
+
+    if (await coverage_control(db, str(seller_id))).get("coverage_mode") == "active":
+        summary = await renew_due_certificates(db, str(seller_id), now=now)
+        return bool(summary["renewed"])
     clock = now or (lambda: datetime.now(UTC))
     current = clock().astimezone(UTC)
     marker_id = f"{seller_id}:{DEVOLUCIONES_READ_MODEL}"
@@ -315,3 +343,210 @@ async def _runtime_range_certification(*, db: Any, run: Mapping[str, Any]) -> st
     if int(proof.get("complete_count") or 0) < expected:
         return "settled_range_incomplete"
     return None
+
+
+async def renew_due_certificates(
+    db: Any,
+    seller_id: str,
+    *,
+    now: Callable[[], datetime] | None = None,
+    max_count: int = 20,
+    seconds: float = 30,
+) -> dict[str, Any]:
+    import asyncio
+    import time
+
+    if not 1 <= max_count <= 20 or not 0 < seconds <= 30:
+        raise ValueError("certificate renewal budget exceeds contract")
+    deadline = time.monotonic() + seconds
+    try:
+        async with asyncio.timeout(seconds):
+            return await _renew_due_certificates(
+                db, seller_id, now=now, max_count=max_count, seconds=seconds, deadline=deadline
+            )
+    except TimeoutError:
+        # Earlier certificates may have committed. Do not fabricate aggregate
+        # zero counts; status/readback remains the durable authority.
+        return {"attempted": None, "renewed": None, "failed": None, "reason": "budget_exhausted"}
+
+
+async def _renew_due_certificates(
+    db: Any,
+    seller_id: str,
+    *,
+    now: Callable[[], datetime] | None = None,
+    max_count: int = 20,
+    seconds: float = 30,
+    deadline: float,
+) -> dict[str, Any]:
+    """One indexed, bounded, source-free batch; failures cannot starve older due work."""
+    import asyncio
+    import time
+
+    from zeler_platform_core.devoluciones_certificates import (
+        CERTIFICATES,
+        VALIDITY,
+        CoverageUnavailableError,
+        coverage_control,
+        require_compatible,
+        utc,
+        validate_certificate,
+        validate_provenance,
+    )
+    from zeler_platform_core.devoluciones_readiness import (
+        DevolucionesLeaseConflictError,
+        acquire_devoluciones_operation,
+        finish_devoluciones_operation,
+        guarded_devoluciones_write,
+        maintain_devoluciones_heartbeat,
+        new_devoluciones_attempt_token,
+    )
+    from zeler_sheets.devoluciones_reconciliation import current_certificate_facts
+
+    if not 1 <= max_count <= 20 or not 0 < seconds <= 30:
+        raise ValueError("certificate renewal budget exceeds contract")
+    clock = now or (lambda: datetime.now(UTC))
+    summary: dict[str, Any] = {"attempted": 0, "renewed": 0, "failed": 0, "reason": None}
+    try:
+        previous_control = await coverage_control(db, seller_id)
+        require_compatible(previous_control)
+    except CoverageUnavailableError:
+        return summary | {"reason": "incompatible_writer"}
+    started = time.monotonic()
+    slowest = 0.0
+    due = [
+        row
+        async for row in db[CERTIFICATES]
+        .find({"seller_id": seller_id, "next_check_at": {"$lte": clock()}})
+        .sort([("next_check_at", 1), ("_id", 1)])
+        .limit(max_count)
+        .max_time_ms(5000)
+    ]
+    if not due:
+        return summary
+    try:
+        operation = await acquire_devoluciones_operation(
+            db=db,
+            seller_id=seller_id,
+            scope="devoluciones",
+            operation_id="certificate_renewal",
+            attempt_token=new_devoluciones_attempt_token(),
+            invalidate_readiness=False,
+            require_coverage_compatible=True,
+        )
+    except DevolucionesLeaseConflictError:
+        return summary | {"reason": "lease_busy"}
+    try:
+        async with maintain_devoluciones_heartbeat(db=db, operation=operation):
+            for candidate in due:
+                if time.monotonic() - started + 5 > seconds:
+                    break
+                summary["attempted"] += 1
+                attempt_started = time.monotonic()
+
+                async def renew(session: Any, candidate: dict[str, Any] = candidate) -> None:
+                    document = await db[CERTIFICATES].find_one(
+                        {"_id": candidate["_id"], "seller_id": seller_id}, session=session
+                    )
+                    if not document or document["coverage_epoch"] != operation.coverage_epoch:
+                        raise CoverageUnavailableError("certificate epoch is not current")
+                    validate_certificate(document, now=clock())
+                    await validate_provenance(db, document, session=session)
+                    facts = await current_certificate_facts(
+                        db,
+                        seller_id,
+                        utc(document["date_from"]),
+                        utc(document["date_to"]),
+                        session=session,
+                    )
+                    if any(document[key] != value for key, value in facts.items()):
+                        raise CoverageUnavailableError("certificate joint proof drift")
+                    current = clock()
+                    await db[CERTIFICATES].update_one(
+                        {"_id": document["_id"], "revision": document["revision"]},
+                        {
+                            "$set": {
+                                "validated_at": current,
+                                "valid_until": current + VALIDITY,
+                                "next_check_at": current + timedelta(minutes=12),
+                                "state": "reconciled",
+                                "needs_reacquisition": False,
+                                "invalidation_reason": None,
+                            }
+                        },
+                        session=session,
+                    )
+
+                try:
+                    async with asyncio.timeout(5):
+                        await guarded_devoluciones_write(
+                            db=db,
+                            operation=operation,
+                            seller_id=seller_id,
+                            checkpoint={
+                                "phase": "certificate_renewal",
+                                "certificate_id": candidate["_id"],
+                            },
+                            writer=renew,
+                        )
+                    summary["renewed"] += 1
+                except Exception:  # noqa: BLE001 - every certification failure withdraws readiness
+                    summary["failed"] += 1
+
+                    async def withdraw(session: Any, candidate: dict[str, Any] = candidate) -> None:
+                        await db[CERTIFICATES].update_one(
+                            {"_id": candidate["_id"], "revision": candidate["revision"]},
+                            {
+                                "$set": {
+                                    "state": "stale",
+                                    "needs_reacquisition": True,
+                                    "invalidation_reason": "proof_drift",
+                                    "next_check_at": clock() + timedelta(minutes=12),
+                                },
+                                "$inc": {"revision": 1},
+                            },
+                            session=session,
+                        )
+
+                    await guarded_devoluciones_write(
+                        db=db,
+                        operation=operation,
+                        seller_id=seller_id,
+                        checkpoint={"phase": "certificate_renewal_failed"},
+                        writer=withdraw,
+                    )
+                slowest = max(slowest, time.monotonic() - attempt_started)
+        previous = previous_control.get("coverage_renewal") or {}
+        observed = previous.get("observed_at")
+        measurement = {
+            "observed_at": clock(),
+            "attempted": summary["attempted"],
+            "slowest_seconds": max(slowest, float(previous.get("slowest_seconds", 0))),
+            "observed_interval_seconds": (clock() - utc(observed)).total_seconds()
+            if isinstance(observed, datetime)
+            else None,
+        }
+
+        async def record_measurement(session: Any) -> None:
+            await db[DEVOLUCIONES_OPERATIONS_COLLECTION].update_one(
+                {"seller_id": seller_id, "fence": operation.fence},
+                {"$set": {"coverage_renewal": measurement}},
+                session=session,
+            )
+
+        await guarded_devoluciones_write(
+            db=db,
+            operation=operation,
+            seller_id=seller_id,
+            checkpoint={"phase": "certificate_batch_measurement"},
+            writer=record_measurement,
+        )
+    finally:
+        remaining = deadline - time.monotonic()
+        if remaining > 0:
+            async with asyncio.timeout(remaining):
+                await finish_devoluciones_operation(db=db, operation=operation, succeeded=True)
+        # On exhausted deadline, stop I/O. The existing 120s lease expires;
+        # never add an unbounded cleanup operation outside the batch budget.
+    summary["elapsed_seconds"] = time.monotonic() - started
+    return summary

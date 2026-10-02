@@ -129,6 +129,11 @@ def build_status_arg_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Emit the readiness envelope (status ready|degraded plus blocking models).",
     )
+    parser.add_argument(
+        "--devoluciones-coverage",
+        action="store_true",
+        help="Report independent DEVOLUCIONES certificates and renewal capacity.",
+    )
     return parser
 
 
@@ -156,6 +161,26 @@ def main(argv: Sequence[str], db: Any) -> str:
     """
     args = validate_status_argv(argv)
     now = datetime.now(UTC)
+    if args.devoluciones_coverage:
+        from zeler_platform_core.devoluciones_certificates import certificate_status
+
+        coverage = asyncio.run(certificate_status(db, str(args.seller_id).strip(), now))
+        report: dict[str, Any] = {"devoluciones_coverage": coverage}
+        if args.readiness:
+            ready = (
+                coverage["compatible"]
+                and coverage["invalid"] == 0
+                and coverage["capacity"]["status"] == "sufficient"
+                and bool(coverage["intervals"])
+                and all(row["readable"] for row in coverage["intervals"])
+            )
+            report.update(
+                {
+                    "status": "ready" if ready else "degraded",
+                    "blocking": [] if ready else ["devoluciones"],
+                }
+            )
+        return json.dumps(report, sort_keys=True)
     report = build_read_model_status_report(
         db=db,
         seller_id=str(args.seller_id).strip(),

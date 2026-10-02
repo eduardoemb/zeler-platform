@@ -147,3 +147,104 @@ async def test_replica_set_replays_prepared_windows_resumes_next_and_fences_comp
         )
     finally:
         client.close()
+
+
+@pytest.mark.asyncio
+async def test_compatible_acquisition_acknowledges_fence_and_invalidates_legacy_gap(
+    default_mongo_uri: str,
+) -> None:
+    from zeler_platform_core.devoluciones_certificates import CERTIFICATES
+    from zeler_platform_core.devoluciones_readiness import finish_devoluciones_operation
+
+    motor = pytest.importorskip("motor.motor_asyncio")
+    client = motor.AsyncIOMotorClient(default_mongo_uri, serverSelectionTimeoutMS=500)
+    db = client["zeler_platform_test_devoluciones_fencing"]
+    seller = "compatibility-" + uuid4().hex
+    try:
+        assert (await client.admin.command("hello"))["isWritablePrimary"] is True
+        first = await acquire_devoluciones_operation(
+            db=db,
+            seller_id=seller,
+            scope="devoluciones",
+            operation_id="first",
+            attempt_token=uuid4().hex,
+        )
+        key = {"seller_id": seller, "scope": "devoluciones"}
+        saved = await db.sheets_devoluciones_operations.find_one(key)
+        assert saved["coverage_ack_fence"] == first.fence
+        assert saved["coverage_mode"] == "legacy"
+        await finish_devoluciones_operation(db=db, operation=first, succeeded=True)
+        await db.sheets_devoluciones_operations.update_one(
+            key, {"$set": {"coverage_mode": "active", "coverage_epoch": 2}}
+        )
+        await db[CERTIFICATES].insert_one(
+            {
+                "_id": seller,
+                "seller_id": seller,
+                "state": "reconciled",
+                "revision": 1,
+                "coverage_epoch": 2,
+            }
+        )
+        # A legacy writer increments fence but preserves unknown acknowledgement fields.
+        await db.sheets_devoluciones_operations.update_one(key, {"$inc": {"fence": 1}})
+        next_owner = await acquire_devoluciones_operation(
+            db=db,
+            seller_id=seller,
+            scope="devoluciones",
+            operation_id="next",
+            attempt_token=uuid4().hex,
+            invalidate_readiness=False,
+        )
+        saved = await db.sheets_devoluciones_operations.find_one(key)
+        proof = await db[CERTIFICATES].find_one({"_id": seller})
+        assert saved["coverage_ack_fence"] == next_owner.fence
+        assert saved["coverage_epoch"] == 3
+        assert proof["state"] == "stale"
+        assert proof["needs_reacquisition"] is True
+        assert proof["revision"] == 2
+    finally:
+        await db.sheets_devoluciones_operations.delete_many({"seller_id": seller})
+        await db[CERTIFICATES].delete_many({"seller_id": seller})
+        client.close()
+
+
+@pytest.mark.asyncio
+async def test_renewal_acquisition_cannot_acknowledge_incompatible_writer(
+    default_mongo_uri: str,
+) -> None:
+    from zeler_platform_core.devoluciones_readiness import DevolucionesLeaseConflictError
+
+    motor = pytest.importorskip("motor.motor_asyncio")
+    client = motor.AsyncIOMotorClient(default_mongo_uri, tz_aware=True)
+    db = client["zeler_platform_test_devoluciones_fencing"]
+    seller = "renewal-" + uuid4().hex
+    try:
+        await db.sheets_devoluciones_operations.insert_one(
+            {
+                "_id": seller + ":devoluciones",
+                "seller_id": seller,
+                "scope": "devoluciones",
+                "state": "succeeded",
+                "fence": 2,
+                "coverage_ack_fence": 1,
+                "coverage_mode": "active",
+                "coverage_epoch": 1,
+            }
+        )
+        with pytest.raises(DevolucionesLeaseConflictError):
+            await acquire_devoluciones_operation(
+                db=db,
+                seller_id=seller,
+                scope="devoluciones",
+                operation_id="renewal",
+                attempt_token=uuid4().hex,
+                invalidate_readiness=False,
+                require_coverage_compatible=True,
+            )
+        assert (await db.sheets_devoluciones_operations.find_one({"seller_id": seller}))[
+            "coverage_ack_fence"
+        ] == 1
+    finally:
+        await db.sheets_devoluciones_operations.delete_many({"seller_id": seller})
+        client.close()

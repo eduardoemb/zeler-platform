@@ -1177,6 +1177,81 @@ ENTITY_SCHEMAS: dict[str, dict[str, Any]] = {
             **SCHEMA_VERSION,
         },
     },
+    "sheets_devoluciones_certificates": {
+        "additionalProperties": False,
+        "oneOf": [
+            {
+                "properties": {
+                    "kind": {"enum": ["quota_run", "joint_snapshot"]},
+                    "source_fingerprint": {"bsonType": "string", "minLength": 1},
+                }
+            },
+            {
+                "properties": {
+                    "kind": {"enum": ["legacy_joint_snapshot"]},
+                    "source_fingerprint": {"bsonType": "null"},
+                }
+            },
+        ],
+        "properties": {
+            "_id": {"bsonType": "string", "minLength": 1},
+            "acquired_at": {"bsonType": "date"},
+            "acquisition_fingerprint": {"bsonType": "string", "minLength": 1},
+            "certified_count": {"bsonType": ["int", "long"], "minimum": 0},
+            "coverage_epoch": {"bsonType": ["int", "long"], "minimum": 0},
+            "current_membership_hash": {"bsonType": "string", "minLength": 1},
+            "current_read_model_fingerprint": {"bsonType": "string", "minLength": 1},
+            "date_from": {"bsonType": "date"},
+            "date_to": {"bsonType": "date"},
+            "expected_count": {"bsonType": ["int", "long"], "minimum": 0},
+            "invalidation_reason": {
+                "enum": [
+                    None,
+                    "incompatible_writer",
+                    "claim_mutation",
+                    "order_mutation",
+                    "unknown_impact",
+                    "proof_drift",
+                    "explicit_invalidation",
+                ]
+            },
+            "kind": {"enum": ["quota_run", "joint_snapshot", "legacy_joint_snapshot"]},
+            "needs_reacquisition": {"bsonType": "bool"},
+            "next_check_at": {"bsonType": "date"},
+            "revision": {"bsonType": ["int", "long"], "minimum": 1},
+            "schema_version": {"enum": [1]},
+            "seller_id": {"bsonType": "string", "minLength": 1},
+            "source_fingerprint": {"bsonType": ["string", "null"]},
+            "source_identity": {"bsonType": "string", "minLength": 1},
+            "state": {"enum": ["reconciled", "stale", "failed"]},
+            "valid_until": {"bsonType": "date"},
+            "validated_at": {"bsonType": "date"},
+        },
+        "required": [
+            "_id",
+            "seller_id",
+            "source_identity",
+            "acquisition_fingerprint",
+            "current_membership_hash",
+            "current_read_model_fingerprint",
+            "date_from",
+            "date_to",
+            "acquired_at",
+            "validated_at",
+            "valid_until",
+            "next_check_at",
+            "expected_count",
+            "certified_count",
+            "coverage_epoch",
+            "kind",
+            "source_fingerprint",
+            "state",
+            "revision",
+            "invalidation_reason",
+            "needs_reacquisition",
+            "schema_version",
+        ],
+    },
     "sheets_devoluciones_operations": {
         "additionalProperties": False,
         "required": [
@@ -1200,6 +1275,25 @@ ENTITY_SCHEMAS: dict[str, dict[str, Any]] = {
             "operation_id": {"bsonType": "string"},
             "attempt_token": {"bsonType": "string"},
             "fence": {"bsonType": ["int", "long"], "minimum": 1},
+            "coverage_mode": {"enum": ["legacy", "active"]},
+            "coverage_renewal": {
+                "bsonType": "object",
+                "additionalProperties": False,
+                "required": [
+                    "observed_at",
+                    "attempted",
+                    "slowest_seconds",
+                    "observed_interval_seconds",
+                ],
+                "properties": {
+                    "observed_at": DATE,
+                    "attempted": {"bsonType": ["int", "long"], "minimum": 0},
+                    "slowest_seconds": {"bsonType": ["double", "int", "long"], "minimum": 0},
+                    "observed_interval_seconds": {"bsonType": ["double", "int", "long", "null"]},
+                },
+            },
+            "coverage_epoch": {"bsonType": ["int", "long"], "minimum": 0},
+            "coverage_ack_fence": {"bsonType": ["int", "long"], "minimum": 1},
             "state": {"enum": ["running", "succeeded", "failed", "released"]},
             "lease_until": DATE,
             "heartbeat_at": DATE,
@@ -1501,6 +1595,14 @@ ENTITY_SCHEMAS: dict[str, dict[str, Any]] = {
     },
 }
 
+ENTITY_SCHEMAS["sheets_devoluciones_certificates"]["$expr"] = {
+    "$and": [
+        {"$lt": ["$date_from", "$date_to"]},
+        {"$lte": ["$date_to", "$acquired_at"]},
+        {"$lte": ["$acquired_at", "$validated_at"]},
+    ]
+}
+
 CANONICAL_SCHEMA_FILES = {f"{collection}.json" for collection in ENTITY_SCHEMAS}
 
 
@@ -1518,6 +1620,7 @@ def _validator_payload(schema: dict[str, Any]) -> dict[str, Any]:
         "validationAction": "error",
         "validationLevel": "strict",
         "$jsonSchema": json_schema,
+        **({"$expr": schema["$expr"]} if "$expr" in schema else {}),
     }
 
 

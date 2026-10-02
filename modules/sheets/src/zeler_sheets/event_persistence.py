@@ -881,6 +881,20 @@ class SheetsEventPersistence:
                 sale_fee_synced_at=observed_at,
                 unavailable_fields=unavailable_fields,
             )
+            dependencies = []
+            prepared = []
+            if operation.coverage_mode == "active":
+                from zeler_sheets.devoluciones_reconciliation import prepare_certificate_transition
+
+                dependencies = [
+                    claim
+                    async for claim in self._db["claims"].find(
+                        {"seller_id": seller_id, "order_id": order_id}, **_session_kwargs(session)
+                    )
+                ]
+                prepared = await prepare_certificate_transition(
+                    self._db, operation, dependencies, session=session
+                )
             order_written = await _replace_resource_if_fresh(
                 self._db["orders"],
                 document,
@@ -890,6 +904,21 @@ class SheetsEventPersistence:
                 session=session,
             )
             if order_written:
+                if operation.coverage_mode == "active" and existing != document:
+                    from zeler_platform_core.devoluciones_certificates import (
+                        invalidate_claim_impact,
+                    )
+
+                    await invalidate_claim_impact(
+                        self._db, seller_id, dependencies, session=session, reason="order_mutation"
+                    )
+                    from zeler_sheets.devoluciones_reconciliation import (
+                        complete_certificate_transition,
+                    )
+
+                    await complete_certificate_transition(
+                        self._db, operation, prepared, session=session
+                    )
                 await self._refresh_order_line_sku_index(
                     document, seller_id=seller_id, session=session
                 )
@@ -905,6 +934,7 @@ class SheetsEventPersistence:
                 else None,
             },
             writer=write,
+            certificate_impact_handled=True,
             **_session_kwargs(session),
         )
 

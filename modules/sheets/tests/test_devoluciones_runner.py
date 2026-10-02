@@ -697,3 +697,106 @@ async def test_range_certification_refuses_a_moved_range(
     reason = await _runtime_range_certification(db=object(), run=_certification_run())
 
     assert reason == "settled_range_moved"
+
+
+@pytest.mark.asyncio
+async def test_certificate_batch_budget_includes_compatibility_io(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import asyncio
+
+    from zeler_platform_core import devoluciones_certificates
+    from zeler_sheets.devoluciones_runner import renew_due_certificates
+
+    async def slow_control(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        await asyncio.sleep(0.05)
+        return {}
+
+    monkeypatch.setattr(devoluciones_certificates, "coverage_control", slow_control)
+    result = await renew_due_certificates(object(), "seller", seconds=0.01)
+    assert result["reason"] == "budget_exhausted"
+    assert result["renewed"] is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("advance_fails", [False, True])
+@pytest.mark.parametrize("renew_fails", [False, True])
+async def test_due_authorized_windows_do_not_starve_active_certificates(
+    monkeypatch: pytest.MonkeyPatch, advance_fails: bool, renew_fails: bool
+) -> None:
+    from zeler_platform_core import devoluciones_certificates as certificates
+    from zeler_sheets import devoluciones_runner as module
+
+    calls: list[tuple[str, int]] = []
+    minute = 0
+
+    async def control(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        return {"coverage_mode": "active"}
+
+    async def renew(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        calls.append(("renew", minute))
+        if renew_fails:
+            raise RuntimeError("local proof failed")
+        return {"renewed": 1}
+
+    async def advance(**kwargs: Any) -> dict[str, int]:
+        calls.append(("advance", minute))
+        assert kwargs["run_id"] == "a" * 64
+        if advance_fails:
+            raise RuntimeError("authorized source failed")
+        return {"advanced": 1, "finalized": 0}
+
+    monkeypatch.setattr(certificates, "coverage_control", control)
+    monkeypatch.setattr(module, "renew_due_certificates", renew)
+    db = _Db([_run()])
+    for minute in (0, 15, 30, 45):
+
+        def cycle_clock(value: int = minute) -> datetime:
+            return NOW + timedelta(minutes=value)
+
+        if advance_fails:
+            with pytest.raises(RuntimeError, match="authorized source failed"):
+                await module.advance_due_devoluciones_run(
+                    db, SELLER, now=cycle_clock, advance=advance
+                )
+        else:
+            assert await module.advance_due_devoluciones_run(
+                db, SELLER, now=cycle_clock, advance=advance
+            )
+    assert calls == [(kind, minute) for minute in (0, 15, 30, 45) for kind in ("renew", "advance")]
+
+
+@pytest.mark.asyncio
+async def test_due_source_continues_after_bounded_compatibility_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import asyncio
+    import time
+
+    from zeler_platform_core import devoluciones_certificates
+
+    real_timeout = asyncio.timeout
+    budgets: list[float | None] = []
+    advanced: list[str] = []
+
+    def fast_timeout(delay: float | None) -> Any:
+        budgets.append(delay)
+        return real_timeout(0.01)
+
+    async def slow_control(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        await asyncio.sleep(1)
+        return {"coverage_mode": "active"}
+
+    async def advance(**kwargs: Any) -> dict[str, int]:
+        advanced.append(kwargs["run_id"])
+        return {"advanced": 1, "finalized": 0}
+
+    monkeypatch.setattr(asyncio, "timeout", fast_timeout)
+    monkeypatch.setattr(devoluciones_certificates, "coverage_control", slow_control)
+    started = time.monotonic()
+    assert await advance_due_devoluciones_run(
+        _Db([_run()]), SELLER, now=lambda: NOW, advance=advance
+    )
+    assert time.monotonic() - started < 0.5
+    assert budgets == [30]
+    assert advanced == ["a" * 64]
