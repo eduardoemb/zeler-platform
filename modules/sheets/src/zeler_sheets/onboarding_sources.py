@@ -27,7 +27,7 @@ from pydantic import ValidationError
 from pymongo.errors import DuplicateKeyError
 
 from zeler_platform_core.models import Message
-from zeler_sheets.formulas.pacing import recovery_fetch_resource
+from zeler_sheets.formulas.pacing import HistoryPolicyWaitError, recovery_fetch_resource
 
 FULL_OPERATIONS_COLLECTION = "sheets_full_operations"
 WITHDRAWAL_TYPES = frozenset(
@@ -238,6 +238,10 @@ async def collect_pack_messages(
                 requests,
                 blocked="access_denied" if code in {401, 403} else "source_retry_required",
             )
+        except HistoryPolicyWaitError:
+            requests -= 1
+            state["last_error"] = "policy_wait"
+            return _report(state, requests, blocked="policy_wait")
         except ValueError as error:
             if "budget exhausted" not in str(error):
                 raise

@@ -441,3 +441,184 @@ async def test_rate_limit_exceeded_returns_429(
     assert response.status_code == 429
     assert "Retry-After" in response.headers
     assert upstream.call_count == 0
+
+
+def _seed_history_credit(database: Any, execution_id: str) -> None:
+    database.sheets_history_backfill_plans.delete_many({})
+    database.sheets_history_backfill_plans.insert_one(
+        {
+            "_id": "123456789",
+            "seller_id": "123456789",
+            "state": "active",
+            "eligible": True,
+            "policy_version": "history-on-link-v1",
+            "sources": ["orders"],
+            "execution_id": execution_id,
+            "execution_consumed": 1,
+            "execution_attempt_limit": 1,
+            "execution_charged": {execution_id: {"orders": {"initial": 1}}},
+            "budget": {"orders": {"consumed": 1}},
+        }
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", [200, 401, 502])
+async def test_history_authenticated_proxy_traces_exactly_one_physical_attempt(
+    proxy_client: httpx.AsyncClient,
+    proxy_db: Any,
+    status: int,
+) -> None:
+    _, database = proxy_db
+    _seed_account(database)
+    database.module_registry.insert_one(
+        {
+            "_id": "sheets",
+            "version": "0.1.0",
+            "allowed_meli_scopes": ["GET /orders/*"],
+            "routing_keys": [],
+            "status": "enabled",
+            "schema_version": 1,
+        }
+    )
+    _seed_history_credit(database, "a" * 32)
+    trace = "h1-" + "a" * 32 + ":orders:initial"
+    with respx.mock(assert_all_called=True) as mock:
+        upstream = mock.get("https://api.mercadolibre.com/orders/1").mock(
+            return_value=httpx.Response(status, json={})
+        )
+        response = await proxy_client.get(
+            "/proxy/meli/orders/1",
+            headers={
+                **_auth_header(module_id="sheets"),
+                "X-Zeler-Proxy-Retry": "disabled",
+                "X-Zeler-History-Trace": trace,
+            },
+        )
+    assert response.status_code == status and upstream.call_count == 1
+    audit = database.audit_log.find_one({"trace_id": trace})
+    assert audit is not None and audit["upstream_status"] == status
+    plan = database.sheets_history_backfill_plans.find_one({"_id": "123456789"})
+    assert plan["execution_sent"] == 1
+    assert plan["execution_sent_by_source"] == {"a" * 32: {"orders": {"initial": 1}}}
+    with respx.mock(assert_all_called=False) as mock:
+        replay_upstream = mock.get("https://api.mercadolibre.com/orders/1")
+        replay = await proxy_client.get(
+            "/proxy/meli/orders/1",
+            headers={
+                **_auth_header(module_id="sheets"),
+                "X-Zeler-Proxy-Retry": "disabled",
+                "X-Zeler-History-Trace": trace,
+            },
+        )
+    assert replay.status_code == 412 and replay_upstream.call_count == 0
+    assert (
+        database.sheets_history_backfill_plans.find_one({"_id": "123456789"})["execution_sent"] == 1
+    )
+
+
+@pytest.mark.asyncio
+async def test_history_transport_failure_records_attempt_but_permission_denial_has_no_send(
+    proxy_client: httpx.AsyncClient,
+    proxy_db: Any,
+) -> None:
+    _, database = proxy_db
+    _seed_account(database)
+    database.module_registry.insert_one(
+        {
+            "_id": "sheets",
+            "version": "0.1.0",
+            "allowed_meli_scopes": ["GET /orders/*"],
+            "routing_keys": [],
+            "status": "enabled",
+            "schema_version": 1,
+        }
+    )
+    _seed_history_credit(database, "b" * 32)
+    trace = "h1-" + "b" * 32 + ":orders:initial"
+    headers = {
+        **_auth_header(module_id="sheets"),
+        "X-Zeler-Proxy-Retry": "disabled",
+        "X-Zeler-History-Trace": trace,
+    }
+    with respx.mock(assert_all_called=True) as mock:
+        upstream = mock.get("https://api.mercadolibre.com/orders/1").mock(
+            side_effect=httpx.ConnectError("synthetic transport failure")
+        )
+        with pytest.raises(httpx.ConnectError):
+            await proxy_client.get("/proxy/meli/orders/1", headers=headers)
+    assert upstream.call_count == 1
+    audit = database.audit_log.find_one({"trace_id": trace})
+    assert audit is not None and audit["upstream_status"] == 0
+    database.audit_log.delete_many({})
+    denied = await proxy_client.get(
+        "/proxy/meli/messages/packs/1/sellers/123456789",
+        headers={
+            **headers,
+            "X-Zeler-History-Trace": "h1-" + "c" * 32 + ":messages:maintenance",
+        },
+    )
+    assert denied.status_code == 403
+    assert database.audit_log.count_documents({}) == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"state": "paused"},
+        {"execution_until": datetime(2020, 1, 1, tzinfo=UTC)},
+        {"execution_utc_day": "2020-01-01"},
+        {"execution_consumed": 0},
+        {"execution_charged": {"d" * 32: {"orders": {"maintenance": 1}}}},
+        {"execution_charged": {"d" * 32: {"messages": {"initial": 1}}}},
+        {"execution_attempt_limit": 0},
+        {"execution_charged": {"e" * 32: {"orders": {"initial": 1}}}},
+        {"execution_charged": {"orders": {"initial": 50}}},
+    ],
+)
+async def test_history_late_policy_guard_denies_without_physical_send(
+    proxy_client: httpx.AsyncClient,
+    proxy_db: Any,
+    changes: dict[str, Any],
+) -> None:
+    _, database = proxy_db
+    _seed_account(database)
+    database.module_registry.insert_one(
+        {
+            "_id": "sheets",
+            "version": "0.1.0",
+            "allowed_meli_scopes": ["GET /orders/*"],
+            "routing_keys": [],
+            "status": "enabled",
+            "schema_version": 1,
+        }
+    )
+    # This fixture shares its disposable default DB between parameterized tests.
+    database.sheets_history_backfill_plans.delete_many({})
+    _seed_history_credit(database, "d" * 32)
+    database.sheets_history_backfill_plans.update_one({"_id": "123456789"}, {"$set": changes})
+    trace = "h1-" + "d" * 32 + ":orders:initial"
+    with respx.mock(assert_all_called=False) as mock:
+        upstream = mock.get("https://api.mercadolibre.com/orders/1").mock(
+            return_value=httpx.Response(200, json={})
+        )
+        response = await proxy_client.get(
+            "/proxy/meli/orders/1",
+            headers={
+                **_auth_header(module_id="sheets"),
+                "X-Zeler-Proxy-Retry": "disabled",
+                "X-Zeler-History-Trace": trace,
+            },
+        )
+    assert response.status_code == 412 and upstream.call_count == 0
+    assert response.headers["X-Zeler-Upstream-Attempts"] == "0"
+    assert response.headers["X-Zeler-History-Policy-Status"] == "wait"
+    audit = database.audit_log.find_one({"trace_id": trace})
+    assert audit is not None and audit["upstream_status"] == -1 and audit["status"] == 412
+    assert (
+        database.sheets_history_backfill_plans.find_one({"_id": "123456789"}).get(
+            "execution_sent", 0
+        )
+        == 0
+    )

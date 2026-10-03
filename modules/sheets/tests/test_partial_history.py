@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
@@ -28,9 +29,12 @@ ROOT = Path(__file__).resolve().parents[3]
 
 @pytest_asyncio.fixture
 async def db() -> Any:
-    # Deliberately independent of ambient MONGO_URI: disposable loopback rs0 only.
+    # Only explicitly verified loopback test targets are accepted.
+    uri = os.environ.get("MONGO_URI", "mongodb://127.0.0.1:27028/?directConnection=true")
+    assert uri.startswith(("mongodb://127.0.0.1:27028/", "mongodb://127.0.0.1:27030/"))
+    assert "directConnection=true" in uri
     client: Any = AsyncIOMotorClient(
-        "mongodb://127.0.0.1:27028/?replicaSet=rs0&directConnection=true",
+        uri,
         tz_aware=True,
         serverSelectionTimeoutMS=2000,
     )

@@ -9,13 +9,15 @@ from __future__ import annotations
 
 import asyncio
 from collections import deque
-from collections.abc import Awaitable, Callable, Iterator
-from contextlib import contextmanager
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
+from contextlib import asynccontextmanager, contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from math import ceil
 from typing import Any
+
+import httpx
 
 # The gateway allows 600 requests/minute per module and seller. Background
 # acquisition keeps about 30% of that so a user recalculation still finds room.
@@ -28,6 +30,24 @@ _quota_deadline: ContextVar[float | None] = ContextVar("recovery_quota_deadline"
 
 class LocalQuotaTimeoutError(Exception):
     """The local acquisition budget exhausted this job's available time."""
+
+
+class HistoryPolicyWaitError(LocalQuotaTimeoutError, ValueError):
+    """A held/expired/exhausted policy is backpressure, never a bad source row."""
+
+
+@asynccontextmanager
+async def history_policy_dispatch() -> AsyncIterator[None]:
+    """Only the authenticated gateway policy marker denotes operational defer."""
+    try:
+        yield
+    except httpx.HTTPStatusError as exc:
+        if (
+            exc.response.status_code == 412
+            and exc.response.headers.get("X-Zeler-History-Policy-Status") == "wait"
+        ):
+            raise HistoryPolicyWaitError("gateway history execution is held") from exc
+        raise
 
 
 @dataclass
@@ -206,6 +226,19 @@ class PacedMeliGateway:
 
     async def fetch_resource_once(self, **kwargs: Any) -> Any:
         return await self._call("fetch_resource_once", kwargs)
+
+
+async def admit_paced_dispatch(gateway: Any) -> Any:
+    """Reserve existing shared pacing immediately before a policy RPC.
+
+    Returning the underlying client avoids a second reservation. Policy callers
+    have already charged/revalidated durably; only synchronous execution-window
+    checks follow this await, so Mongo awaits cannot cluster RPC starts.
+    """
+    while isinstance(gateway, PacedMeliGateway):
+        await gateway._pacer.acquire(lane=gateway._lane)
+        gateway = gateway._inner
+    return gateway
 
 
 async def recovery_fetch_resource(

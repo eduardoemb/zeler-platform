@@ -23,7 +23,7 @@ from zeler_platform_core.devoluciones_readiness import (
 )
 from zeler_platform_core.models import SheetsHistoryAcquisition
 from zeler_sheets.event_persistence import SheetsEventPersistence
-from zeler_sheets.formulas.pacing import recovery_fetch_resource
+from zeler_sheets.formulas.pacing import HistoryPolicyWaitError, recovery_fetch_resource
 from zeler_sheets.history_acquisition import HistoryConflictError
 from zeler_sheets.item_projection import item_source_fingerprint
 from zeler_sheets.onboarding_sources import _timestamp
@@ -226,7 +226,7 @@ async def advance_partial_history(
                 code = f"http_{exc.response.status_code}"
             except (httpx.RequestError, TimeoutError):
                 code = "source_retry_required"
-            except HistoryConflictError:
+            except (HistoryConflictError, HistoryPolicyWaitError):
                 raise
             except (ValueError, TypeError, ValidationError):
                 code = "invalid_or_unavailable_record"

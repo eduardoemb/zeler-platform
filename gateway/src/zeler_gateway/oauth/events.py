@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from datetime import UTC, datetime
 from typing import Any, Protocol
 
@@ -17,6 +18,27 @@ class AmqpPublisher(Protocol):
     ) -> None: ...
 
 
+def _history_admission_allowed(seller_id: str) -> bool:
+    # Hold is intentionally independent of the worker flag. Unknown explicit
+    # hold/scope values fail closed for history without breaking OAuth/bootstrap.
+    hold = os.environ.get("ZELERDATA_HISTORY_ON_LINK_ADMISSION_HOLD", "false").strip().lower()
+    if hold not in {"", "false", "0", "no", "off"}:
+        return False
+    raw = os.environ.get("ZELERDATA_HISTORY_ON_LINK_ADMISSION_SELLERS")
+    if raw is None:
+        return True
+    sellers = frozenset(value.strip() for value in raw.split(","))
+    if not sellers or any(
+        not seller.isascii()
+        or not seller.isdecimal()
+        or len(seller) > 20
+        or str(int(seller)) != seller
+        for seller in sellers
+    ):
+        return False
+    return seller_id in sellers
+
+
 async def emit_accounts_linked(
     seller_id: str,
     platform_user_id: str,
@@ -28,7 +50,7 @@ async def emit_accounts_linked(
 ) -> None:
     now = (clock or (lambda: datetime.now(UTC)))()
     seller_id = str(seller_id)
-    if seller_id.isascii() and seller_id.isdecimal():
+    if seller_id.isascii() and seller_id.isdecimal() and _history_admission_allowed(seller_id):
         await admit_history_onboarding(mongo_db, seller_id, now=now)
     existing = await mongo_db["bootstrap_jobs"].find_one({"seller_id": seller_id})
     if (

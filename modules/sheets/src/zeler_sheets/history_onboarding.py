@@ -17,8 +17,20 @@ from uuid import uuid4
 from pymongo import ReturnDocument
 
 from zeler_platform_core.clients.meli_gateway_client import GatewayRateLimitError
-from zeler_platform_core.history_onboarding import PLAN_COLLECTION, POLICY_VERSION, SOURCES
-from zeler_sheets.formulas.pacing import PacedMeliGateway
+from zeler_platform_core.history_onboarding import (
+    PLAN_COLLECTION,
+    POLICY_VERSION,
+    SOURCES,
+    history_execution_allowed,
+    history_execution_query,
+    history_request_trace,
+)
+from zeler_sheets.formulas.pacing import (
+    HistoryPolicyWaitError,
+    PacedMeliGateway,
+    admit_paced_dispatch,
+    history_policy_dispatch,
+)
 from zeler_sheets.formulas.recovery import (
     FormulaRecoveryQueue,
     OrderHistoryRecoveryRequest,
@@ -108,6 +120,10 @@ class PlanBudgetGateway(PacedMeliGateway):
         self.lease_token, self.now = lease_token, now
         self._inner = inner
         self.incremental = False
+        self.trace_headers: dict[str, str] = {}
+        self._charged_plan: dict[str, Any] = {}
+        self._execution_filter: dict[str, Any] = {}
+        self._execution_credit: dict[str, int] = {}
 
     def check_path(self, path: str) -> None:
         parsed = urlsplit(path)
@@ -170,11 +186,21 @@ class PlanBudgetGateway(PacedMeliGateway):
 
     async def charge(self) -> None:
         if self.source not in SOURCES or not await seller_eligible(self.db, self.seller):
-            raise ValueError("account is not eligible for acquisition")
+            raise HistoryPolicyWaitError("account is not eligible for acquisition")
+        snapshot = await self.db[PLAN_COLLECTION].find_one({"_id": self.seller})
+        if snapshot is None:
+            raise HistoryPolicyWaitError("missing onboarding authority")
+        trace = history_request_trace(snapshot, self.source, incremental=self.incremental)
+        execution = snapshot.get("execution_id")
+        self._execution_filter = {"execution_id": execution}
+        phase = "maintenance" if self.incremental else "initial"
+        self._execution_credit = (
+            {f"execution_charged.{execution}.{self.source}.{phase}": 1} if trace else {}
+        )
         if self.incremental:
             await self._charge_incremental()
             return
-        result = await self.db[PLAN_COLLECTION].update_one(
+        result = await self.db[PLAN_COLLECTION].find_one_and_update(
             {
                 "_id": self.seller,
                 "seller_id": self.seller,
@@ -182,6 +208,8 @@ class PlanBudgetGateway(PacedMeliGateway):
                 "state": "active",
                 "eligible": True,
                 "sources": self.source,
+                **self._execution_filter,
+                **history_execution_query(self.now()),
                 **(
                     {"lease_token": self.lease_token, "lease_until": {"$gt": self.now()}}
                     if self.lease_token
@@ -199,10 +227,19 @@ class PlanBudgetGateway(PacedMeliGateway):
                     ]
                 },
             },
-            {"$inc": {f"budget.{self.source}.consumed": 1, "total_consumed": 1}},
+            {
+                "$inc": {
+                    f"budget.{self.source}.consumed": 1,
+                    "total_consumed": 1,
+                    "execution_consumed": 1,
+                    **self._execution_credit,
+                }
+            },
+            return_document=ReturnDocument.AFTER,
         )
-        if not result.matched_count:
-            raise ValueError("onboarding authority or budget exhausted")
+        if result is None:
+            raise HistoryPolicyWaitError("onboarding authority or budget exhausted")
+        self._set_trace(result)
 
     async def _charge_incremental(self) -> None:
         owned = {
@@ -212,6 +249,8 @@ class PlanBudgetGateway(PacedMeliGateway):
             "state": "active",
             "eligible": True,
             "sources": self.source,
+            **self._execution_filter,
+            **history_execution_query(self.now()),
             **(
                 {"lease_token": self.lease_token, "lease_until": {"$gt": self.now()}}
                 if self.lease_token
@@ -232,7 +271,7 @@ class PlanBudgetGateway(PacedMeliGateway):
                 }
             },
         )
-        result = await self.db[PLAN_COLLECTION].update_one(
+        result = await self.db[PLAN_COLLECTION].find_one_and_update(
             {
                 **owned,
                 "incremental_day": day,
@@ -248,10 +287,30 @@ class PlanBudgetGateway(PacedMeliGateway):
                     ]
                 },
             },
-            {"$inc": {"incremental_consumed": 1, f"incremental_source_consumed.{self.source}": 1}},
+            {
+                "$inc": {
+                    "incremental_consumed": 1,
+                    f"incremental_source_consumed.{self.source}": 1,
+                    "execution_consumed": 1,
+                    **self._execution_credit,
+                }
+            },
+            return_document=ReturnDocument.AFTER,
         )
-        if not result.matched_count:
-            raise ValueError("incremental policy authority or daily budget exhausted")
+        if result is None:
+            raise HistoryPolicyWaitError("incremental policy authority or daily budget exhausted")
+        self._set_trace(result)
+
+    def _set_trace(self, plan: dict[str, Any]) -> None:
+        self._charged_plan = plan
+        trace = history_request_trace(plan, self.source, incremental=self.incremental)
+        self.trace_headers = {"X-Zeler-History-Trace": trace} if trace else {}
+
+    def _validate_dispatch_window(self) -> None:
+        # No awaited Mongo work may follow pacing before starting the RPC. The
+        # gateway rechecks current persisted authority after broker/token awaits.
+        if not history_execution_allowed(self._charged_plan, now=self.now(), charged=True):
+            raise HistoryPolicyWaitError("history execution window ended after pacing")
 
     async def fetch_resource(self, **kwargs: Any) -> Any:
         seller_id, path = kwargs["seller_id"], kwargs["path"]
@@ -261,11 +320,15 @@ class PlanBudgetGateway(PacedMeliGateway):
         self.check_path(path)
         await self.check_dates(path)
         await self.charge()
-        method = getattr(self.inner, "fetch_resource_once", self.inner.fetch_resource)
-        if isinstance(self.inner, PacedMeliGateway):
-            return await method(seller_id=seller_id, path=path, request_timeout=request_timeout)
-        async with asyncio.timeout(request_timeout):
-            return await method(seller_id=seller_id, path=path)
+        physical = await admit_paced_dispatch(self.inner)
+        self._validate_dispatch_window()
+        method = getattr(physical, "fetch_resource_once", physical.fetch_resource)
+        async with history_policy_dispatch(), asyncio.timeout(request_timeout):
+            return await method(
+                seller_id=seller_id,
+                path=path,
+                **({"headers": self.trace_headers} if self.trace_headers else {}),
+            )
 
     async def request(self, **kwargs: Any) -> Any:
         if kwargs.get("method") != "GET" or str(kwargs.get("seller_id")) != self.seller:
@@ -273,13 +336,16 @@ class PlanBudgetGateway(PacedMeliGateway):
         self.check_path(kwargs["path"])
         await self.check_dates(kwargs["path"])
         await self.charge()
-        kwargs["headers"] = {**dict(kwargs.get("headers") or {}), "X-Zeler-Proxy-Retry": "disabled"}
+        physical = await admit_paced_dispatch(self.inner)
+        self._validate_dispatch_window()
+        kwargs["headers"] = {
+            **dict(kwargs.get("headers") or {}),
+            **self.trace_headers,
+            "X-Zeler-Proxy-Retry": "disabled",
+        }
         timeout = kwargs.pop("request_timeout", 10)
-        if isinstance(self.inner, PacedMeliGateway):
-            response = await self.inner.request(**kwargs, request_timeout=timeout)
-        else:
-            async with asyncio.timeout(timeout):
-                response = await self.inner.request(**kwargs)
+        async with history_policy_dispatch(), asyncio.timeout(timeout):
+            response = await physical.request(**kwargs)
         if response.headers.get("X-Zeler-Upstream-Attempts") != "1":
             raise ValueError("single physical attempt metadata is required")
         return response
@@ -326,6 +392,7 @@ class HistoryOnboardingWorker:
                 "policy_version": POLICY_VERSION,
                 "state": "active",
                 "eligible": True,
+                **history_execution_query(now),
                 **(
                     {"seller_id": {"$in": sorted(self.allowed_sellers)}}
                     if self.allowed_sellers is not None
@@ -347,6 +414,23 @@ class HistoryOnboardingWorker:
             if not await seller_eligible(self.db, seller):
                 await self.db[PLAN_COLLECTION].update_one(
                     owned, {"$set": {"onboarding_status": "temporarily_inaccessible"}}
+                )
+                return "processed"
+            sources = plan.get("sources", list(SOURCES))
+            if (
+                not isinstance(sources, list)
+                or not sources
+                or any(not isinstance(source, str) or source not in SOURCES for source in sources)
+                or len(set(sources)) != len(sources)
+            ):
+                await self.db[PLAN_COLLECTION].update_one(
+                    owned,
+                    {
+                        "$set": {
+                            "onboarding_status": "temporarily_inaccessible",
+                            "onboarding_reason": "source_policy_invalid",
+                        }
+                    },
                 )
                 return "processed"
             linked_at = plan.get("last_linked_at")
@@ -378,7 +462,7 @@ class HistoryOnboardingWorker:
             await self.db[PLAN_COLLECTION].update_one(
                 owned, {"$set": {"certificate_renewal": {**renewal, "updated_at": self.now()}}}
             )
-            source = SOURCES[plan.get("source_cursor", 0) % len(SOURCES)]
+            source = sources[plan.get("source_cursor", 0) % len(sources)]
             gateway = PlanBudgetGateway(
                 self.db, self.discovery, seller, source, lease_token=token, now=self.now
             )
@@ -392,6 +476,8 @@ class HistoryOnboardingWorker:
                     result = previous_source
                 else:
                     result = await self.advance_source(plan, source, gateway, detail)
+            except HistoryPolicyWaitError:
+                result = {**previous_source, "state": "pending", "reason": "policy_wait"}
             except RecoveryCapacityError:
                 result = {"state": "pending", "reason": "capacity"}
             except Exception as error:  # noqa: BLE001 - isolate each durable source lane
@@ -432,7 +518,8 @@ class HistoryOnboardingWorker:
                 },
             )
             stored = await self.db[PLAN_COLLECTION].find_one({"_id": seller})
-            entries = list((stored or {}).get("onboarding_sources", {}).values())
+            stored_sources = (stored or {}).get("onboarding_sources", {})
+            entries = [stored_sources[name] for name in sources if name in stored_sources]
             statuses = [entry.get("state") for entry in entries]
             observations = any(
                 value in {"ready_with_observations", "blocked", "failed"} for value in statuses
@@ -448,12 +535,12 @@ class HistoryOnboardingWorker:
             if observations:
                 status = "ready_with_observations" if useful else "running_with_observations"
             if (
-                len(statuses) == len(SOURCES)
+                len(statuses) == len(sources)
                 and not useful
                 and all(value in {"blocked", "failed"} for value in statuses)
             ):
                 status = "temporarily_inaccessible"
-            if len(statuses) == len(SOURCES) and all(value == "ready" for value in statuses):
+            if len(statuses) == len(sources) and all(value == "ready" for value in statuses):
                 status = "ready"
             await self.db[PLAN_COLLECTION].update_one(
                 owned, {"$set": {"onboarding_status": status, "updated_at": self.now()}}

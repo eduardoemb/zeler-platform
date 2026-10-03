@@ -31,6 +31,12 @@ from zeler_platform_core.devoluciones_readiness import (
 )
 from zeler_platform_core.devoluciones_runs import RUNS_COLLECTION
 from zeler_platform_core.devoluciones_runs import MongoRunWindowRepository as _OnboardingRepository
+from zeler_platform_core.history_onboarding import history_execution_allowed, history_request_trace
+from zeler_sheets.formulas.pacing import (
+    HistoryPolicyWaitError,
+    admit_paced_dispatch,
+    history_policy_dispatch,
+)
 
 logger = structlog.get_logger(__name__)
 
@@ -611,6 +617,10 @@ async def _validated_onboarding_plan(
     now: datetime | None = None,
 ) -> Mapping[str, Any]:
     persisted = await db[ONBOARDING_PLANS_COLLECTION].find_one({"_id": plan.get("_id")})
+    if isinstance(persisted, Mapping) and (
+        persisted.get("state") != "active" or persisted.get("eligible") is not True
+    ):
+        raise HistoryPolicyWaitError("onboarding execution is held or no longer eligible")
     identity_fields = ("seller_id", "policy_version", "sources", "authority")
     date_fields = ("date_from", "date_to", "cutoff")
     if (
@@ -630,6 +640,10 @@ async def _validated_onboarding_plan(
         or ONBOARDING_SOURCE not in persisted.get("sources", [])
     ):
         raise ValueError("onboarding policy authority is invalid or no longer eligible")
+    if not history_execution_allowed(persisted, now=now or datetime.now(UTC), charged=charged):
+        raise HistoryPolicyWaitError(
+            "onboarding execution window or global attempt limit exhausted"
+        )
     incremental = end is not None and _onboarding_utc(end) > _onboarding_utc(persisted["date_to"])
     if start is not None or end is not None:
         _onboarding_binding(persisted, start, end)
@@ -914,9 +928,24 @@ class OnboardingDevolucionesGateway:
         )
         if self.start is not None or self.end is not None:
             _onboarding_binding(persisted, self.start, self.end)
-        return cast(
-            "dict[str, Any]", await self.gateway.fetch_resource_once(seller_id=seller_id, path=path)
+        trace = history_request_trace(
+            persisted,
+            ONBOARDING_SOURCE,
+            incremental=self.end is not None
+            and _onboarding_utc(self.end) > _onboarding_utc(persisted["date_to"]),
         )
+        physical_gateway = await admit_paced_dispatch(self.gateway)
+        if not history_execution_allowed(persisted, now=self.now(), charged=True):
+            raise HistoryPolicyWaitError("history execution window ended after pacing")
+        async with history_policy_dispatch():
+            return cast(
+                "dict[str, Any]",
+                await physical_gateway.fetch_resource_once(
+                    seller_id=seller_id,
+                    path=path,
+                    **({"headers": {"X-Zeler-History-Trace": trace}} if trace else {}),
+                ),
+            )
 
     async def fetch_resource(self, *, seller_id: str, path: str) -> dict[str, Any]:
         return await self.fetch_resource_once(seller_id=seller_id, path=path)
@@ -997,6 +1026,8 @@ async def advance_onboarding_devoluciones(
                 source=source,
                 now=clock,
             )
+        except HistoryPolicyWaitError:
+            raise
         except SourceCallBudgetError:
             failure_reason = "physical_budget_exceeded"
             raise
@@ -1018,6 +1049,11 @@ async def advance_onboarding_devoluciones(
             source=execute,
             readback=lambda **kwargs: readback_devoluciones_quota_run(db=db, **kwargs),
         )
+    except HistoryPolicyWaitError:
+        await _finish_onboarding_operation(
+            db=db, operation=operation, succeeded=False, error_code="onboarding_policy_wait"
+        )
+        return unchanged | {"reason": "policy_wait"}
     except Exception:
         await _finish_onboarding_operation(
             db=db, operation=operation, succeeded=False, error_code="onboarding_advancement_failed"

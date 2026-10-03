@@ -1309,6 +1309,8 @@ async def advance_devoluciones_quota_run(
     readback: Callable[..., Awaitable[Mapping[str, Any]]] | None = None,
 ) -> dict[str, int]:
     """Advance one authorized deterministic window, never a whole range."""
+    from zeler_sheets.formulas.pacing import HistoryPolicyWaitError
+
     runs = db["sheets_devoluciones_runs"]
     run = await runs.find_one({"_id": run_id})
     current = now()
@@ -1371,6 +1373,8 @@ async def advance_devoluciones_quota_run(
             shell_deadline_seconds=DEVOLUCIONES_SHELL_DEADLINE_SECONDS,
             pacing_seconds=DEVOLUCIONES_RETURN_DETAIL_PACING_SECONDS,
         )
+    except HistoryPolicyWaitError:
+        raise
     except Exception:  # noqa: BLE001 - every source failure is terminal and markerless.
         proof = {}
 

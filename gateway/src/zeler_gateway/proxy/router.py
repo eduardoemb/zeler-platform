@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import time
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
@@ -12,6 +13,7 @@ import structlog
 from bson import Int64
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, Response
+from pymongo import ReturnDocument
 from pymongo.errors import PyMongoError
 
 from zeler_gateway.config import Settings
@@ -29,12 +31,24 @@ from zeler_platform_core.auth.jwt import (
     WrongAudienceError,
     verify_module_jwt,
 )
+from zeler_platform_core.history_onboarding import (
+    PLAN_COLLECTION,
+    POLICY_VERSION,
+    history_execution_allowed,
+    history_execution_query,
+)
 
 logger = structlog.get_logger(__name__)
 router = APIRouter(tags=["proxy"])
 
 MELI_API_BASE = "https://api.mercadolibre.com"
 REFRESH_RETRY_AFTER_SECONDS = 5
+
+
+class HistoryPolicyRejectedError(Exception):
+    """Authenticated historical request has no currently executable credit."""
+
+
 HOP_BY_HOP_HEADERS = {
     "connection",
     "keep-alive",
@@ -148,11 +162,46 @@ async def proxy_meli(request: Request, full_path: str) -> Response:
         account_id=str(claims.seller_id),
     )
 
-    upstream_response = await _forward_to_meli(
-        request=request,
-        full_path=full_path,
-        access_token=access_token,
-    )
+    request.state.history_module_id = claims.module_id
+    request.state.history_seller_id = str(claims.seller_id)
+    try:
+        upstream_response = await _forward_to_meli(
+            request=request,
+            full_path=full_path,
+            access_token=access_token,
+        )
+    except HistoryPolicyRejectedError:
+        await _write_audit_log(
+            request=request,
+            module_id=claims.module_id,
+            seller_id=claims.seller_id,
+            method=request.method,
+            path=upstream_path,
+            upstream_status=-1,
+            response_status=412,
+            duration_ms=int((time.perf_counter() - started) * 1000),
+        )
+        return _json_error(
+            412,
+            "history_policy_wait",
+            headers={
+                "X-Zeler-Upstream-Attempts": "0",
+                "X-Zeler-History-Policy-Status": "wait",
+            },
+        )
+    except httpx.RequestError:
+        if getattr(request.state, "history_upstream_attempts", 0) == 1:
+            await _write_audit_log(
+                request=request,
+                module_id=claims.module_id,
+                seller_id=claims.seller_id,
+                method=request.method,
+                path=upstream_path,
+                upstream_status=0,
+                response_status=500,
+                duration_ms=int((time.perf_counter() - started) * 1000),
+            )
+        raise
     duration_ms = int((time.perf_counter() - started) * 1000)
     await _write_audit_log(
         request=request,
@@ -192,6 +241,21 @@ async def proxy_meli(request: Request, full_path: str) -> Response:
     )
 
 
+def _history_trace(request: Request, module_id: str) -> str | None:
+    value = request.headers.get("X-Zeler-History-Trace", "")
+    if (
+        module_id in {"bootstrap", "sheets"}
+        and request.method == "GET"
+        and request.headers.get("X-Zeler-Proxy-Retry") == "disabled"
+        and re.fullmatch(
+            r"h1-[a-f0-9]{32}:(?:orders|questions|shipments|messages|claims_returns):(?:initial|maintenance)",
+            value,
+        )
+    ):
+        return value
+    return None
+
+
 async def _write_audit_log(
     *,
     request: Request,
@@ -201,6 +265,7 @@ async def _write_audit_log(
     path: str,
     upstream_status: int,
     duration_ms: int,
+    response_status: int | None = None,
 ) -> None:
     try:
         await request.app.state.mongo_db["audit_log"].insert_one(
@@ -210,10 +275,15 @@ async def _write_audit_log(
                 "seller_id": Int64(seller_id),
                 "method": method,
                 "path": path,
-                "status": upstream_status,
+                "status": upstream_status if response_status is None else response_status,
                 "upstream_status": upstream_status,
                 "duration_ms": duration_ms,
                 "schema_version": 1,
+                **(
+                    {"trace_id": _history_trace(request, module_id)}
+                    if _history_trace(request, module_id)
+                    else {}
+                ),
             }
         )
     except PyMongoError as exc:
@@ -306,11 +376,69 @@ async def _forward_to_meli(
             headers=headers,
         )
         if request.headers.get("X-Zeler-Proxy-Retry") == "disabled":
+            await _reserve_history_send(request, full_path)
             return await send_single_attempt(client, upstream_request)
         sleep_fn = getattr(request.app.state, "proxy_retry_sleep", None)
         if sleep_fn is None:
             return await send_with_retry(client, upstream_request)
         return await send_with_retry(client, upstream_request, sleep_fn=cast(Any, sleep_fn))
+
+
+async def _reserve_history_send(request: Request, full_path: str) -> None:
+    module = getattr(request.state, "history_module_id", "")
+    trace = _history_trace(request, module)
+    if trace is None:
+        return
+    execution, source, phase = trace[3:].split(":")
+    path = "/" + full_path.lstrip("/").split("?", 1)[0]
+    patterns = {
+        "orders": r"/orders/(?:search|[0-9]+)",
+        "questions": r"/questions/(?:search|[0-9]+)",
+        "shipments": r"/shipments/[0-9]+(?:/costs|/payments)?",
+        "messages": r"/messages/packs/[0-9]+/sellers/[0-9]+",
+        "claims_returns": (
+            r"/(?:orders/[0-9]+|post-purchase/v1/claims/(?:search|[0-9]+)|"
+            r"post-purchase/v2/claims/[0-9]+/returns)"
+        ),
+    }
+    if re.fullmatch(patterns[source], path) is None:
+        raise HistoryPolicyRejectedError()
+    credit = f"execution_charged.{execution}.{source}.{phase}"
+    sent = f"execution_sent_by_source.{execution}.{source}.{phase}"
+    query = {
+        "_id": request.state.history_seller_id,
+        "policy_version": POLICY_VERSION,
+        "execution_id": execution,
+        "state": "active",
+        "eligible": True,
+        "sources": source,
+        **history_execution_query(_proxy_wait_now(request)(), charged=True),
+    }
+    query["$and"].append(
+        {
+            "$expr": {
+                "$and": [
+                    {"$lt": [{"$ifNull": ["$execution_sent", 0]}, "$execution_consumed"]},
+                    {"$lt": [{"$ifNull": [f"${sent}", 0]}, {"$ifNull": [f"${credit}", 0]}]},
+                ]
+            }
+        }
+    )
+    result = await request.app.state.mongo_db[PLAN_COLLECTION].find_one_and_update(
+        query,
+        {"$inc": {"execution_sent": 1, sent: 1}},
+        return_document=ReturnDocument.AFTER,
+    )
+    if result is None or not history_execution_allowed(
+        result,
+        now=_proxy_wait_now(request)(),
+        charged=True,
+    ):
+        raise HistoryPolicyRejectedError()
+    # The persisted reservation is conservative across crashes/deadline crossings.
+    # Only this marker followed by send/audit demonstrates a transport invocation;
+    # it cannot prove the remote provider received the request.
+    request.state.history_upstream_attempts = 1
 
 
 def _http_client_factory(request: Request) -> HttpClientFactory:
@@ -324,7 +452,9 @@ def _upstream_headers(request: Request, *, access_token: str) -> dict[str, str]:
     headers = {
         key: value
         for key, value in request.headers.items()
-        if key.lower() not in HOP_BY_HOP_HEADERS and not key.lower().startswith("x-forwarded-")
+        if key.lower() not in HOP_BY_HOP_HEADERS
+        and not key.lower().startswith("x-forwarded-")
+        and key.lower() not in {"x-zeler-history-trace", "x-zeler-proxy-retry"}
     }
     headers["Authorization"] = f"Bearer {access_token}"
     return headers

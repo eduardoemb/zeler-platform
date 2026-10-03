@@ -38,12 +38,21 @@ class MeliGatewayClient:
         response = await self.request(method="GET", seller_id=seller_id, path=path)
         return response.json()  # type: ignore[no-any-return]
 
-    async def fetch_resource_once(self, *, seller_id: str, path: str) -> dict[str, Any]:
+    async def fetch_resource_once(
+        self, *, seller_id: str, path: str, headers: Mapping[str, str] | None = None
+    ) -> dict[str, Any]:
         response = await self.request(
             method="GET",
             seller_id=seller_id,
             path=path,
-            headers={"X-Zeler-Proxy-Retry": "disabled"},
+            headers={
+                **{
+                    key: value
+                    for key, value in (headers or {}).items()
+                    if key.lower() != "x-zeler-proxy-retry"
+                },
+                "X-Zeler-Proxy-Retry": "disabled",
+            },
         )
         if response.headers.get("X-Zeler-Upstream-Attempts") != "1":
             raise RuntimeError("focused gateway response is missing actual attempt metadata")

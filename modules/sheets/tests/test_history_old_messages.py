@@ -164,7 +164,8 @@ async def test_rotating_batches_bound_inventory_and_daily_quota_without_losing_c
     exhausted = await db.sheets_history_backfill_plans.find_one({"_id": "123"})
     assert (
         exhausted["onboarding_sources"]["messages"]["periodic_recovery"]["reason"]
-        == "daily_budget_exhausted"
+        # Quota denial is operational defer, not a failed source record.
+        == "policy_wait"
     )
     assert {
         key: value

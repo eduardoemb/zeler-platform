@@ -5,7 +5,7 @@ from __future__ import annotations
 from copy import deepcopy
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -332,3 +332,53 @@ async def test_standing_incremental_budget_is_independent_of_spent_initial_budge
         db, value, start=start, end=end, now=NOW + timedelta(days=1)
     )
     assert checked["incremental_source_consumed"]["claims_returns"] == 1000
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"execution_until": NOW},
+        {"execution_utc_day": "2026-10-01"},
+        {"execution_attempt_limit": 2500, "execution_consumed": 2500},
+    ],
+)
+async def test_policy_revalidation_respects_persisted_pilot_window_and_global_cap(
+    changes: Any,
+) -> None:
+    value = plan(**changes)
+    with pytest.raises(ValueError, match="execution"):
+        await runner._validated_onboarding_plan(Db(value), value, now=NOW)
+
+
+@pytest.mark.asyncio
+async def test_claims_revalidate_deadline_after_shared_pacing_before_http() -> None:
+    from zeler_sheets.formulas.pacing import PacedMeliGateway
+
+    clock = [NOW]
+    value = plan(execution_until=NOW + timedelta(seconds=1))
+    calls: list[str] = []
+    charges: list[bool] = []
+    grants: list[bool] = []
+
+    class Pacer:
+        async def acquire(self, **_: Any) -> bool:
+            grants.append(True)
+            clock[0] = NOW + timedelta(seconds=2)
+            return True
+
+    class Physical:
+        async def fetch_resource_once(self, **_: Any) -> dict[str, Any]:
+            calls.append("http")
+            return {}
+
+    async def charge() -> None:
+        charges.append(True)
+
+    gateway = PacedMeliGateway(inner=Physical(), pacer=cast(Any, Pacer()), lane="ranges")
+    client = runner.OnboardingDevolucionesGateway(
+        Db(value), value, gateway, charge=charge, now=lambda: clock[0]
+    )
+    with pytest.raises(ValueError, match="execution"):
+        await client.fetch_resource_once(seller_id="999", path="/post-purchase/v1/claims/1")
+    assert calls == [] and charges == [True] and grants == [True]

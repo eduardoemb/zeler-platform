@@ -87,7 +87,6 @@ def test_sheets_manifest_validates_owned_collections_and_readonly_scopes() -> No
         "GET /shipments/*",
         "GET /questions/*",
         "GET /messages/packs/*",
-        "GET /stock/fulfillment/operations/search",
     ]
     assert _scope_matches(
         method="GET", path="/products/CAT-PII-1", allowed_scopes=manifest.allowed_meli_scopes
@@ -147,7 +146,6 @@ async def test_sheets_startup_registers_manifest_and_health_ready() -> None:
             "GET /shipments/*",
             "GET /questions/*",
             "GET /messages/packs/*",
-            "GET /stock/fulfillment/operations/search",
         ],
         "routing_keys": [
             "items.*",

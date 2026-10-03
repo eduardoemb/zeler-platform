@@ -3,7 +3,7 @@
 Cierre local original: 2 de octubre de 2026; actualización Full: 3 de octubre UTC.
 Este informe acredita desarrollo local y pruebas
 aisladas, **no despliegue ni aceptación productiva**, y no convierte una fuente
-pendiente en completa. Fuente vigente publicada y verificada tras la corrección
+pendiente en completa. Última fuente publicada y verificada tras la corrección
 Full: C3 `aeefe993ad5c9a4ff4760c9b691ac11ad47b5a6d`; C1/C2 y su evidencia original se
 conservan como historial. Su ejecución e identidad se registran en el
 [recibo de publicación](zelerdata-historico-publicacion-20261002.md).
@@ -17,7 +17,7 @@ Referencia de aceptación:
 | --- | --- |
 | **Completado localmente** | Mensaje nuevo de orden antigua sin cambios: recuperación periódica real; tabla de 9,999 órdenes adquiridas + 1 pendiente mediante API autenticada normal; capacidad compartida de dos fuentes no vacías y certificados de 1,000 membresías. |
 | **Bloqueado por evidencia externa concreta** | Mapeo positivo RETIROS Full: no se acredita aún jerarquía retiro/bulto, cantidad originalmente solicitada ni fecha de solicitud. Investigación pública cerrada; descubrimiento posterior y [una reanudación autorizada](zelerdata-full-validacion-acotada.md#4-una-reanudación-preparada--siete-restantes-sin-ejecutar) detenidos por 429: 7/10 GET acumulados sin referencia; tres sin usar no autorizan continuar. |
-| **Pendiente de validación productiva** | Backup consistente/restore aislado, builds/deploy por autorizar, permisos/digests/readiness actuales, OAuth legítimo, carga real por fuente, dos cambios reales y fórmulas nativas. |
+| **Pendiente de aceptación productiva bajo goal autorizado** | Controles locales y ensayo real completo normal/deadline/guard pasados. Único C del goal falló antes del dump; respaldo consistente/restore inexistentes y no segundo C permitido. Full pytest sin cierre verde. Sheet privada owner-only creada con0 fórmulas; publicación/builds nuevos, deploy, OAuth, parcialAPI/nativa y dos cambios reales pendientes. |
 
 [Propuesta de publicación/piloto con respaldo y rollback](zelerdata-historico-publicacion-piloto-propuesta.md).
 Las tres categorías no se intercambian: una fuente bloqueada no impide los datos
@@ -37,8 +37,191 @@ Las tres categorías no se intercambian: una fuente bloqueada no impide los dato
 - **Retiros Full sigue pendiente de cerrar su contrato de fuente**. Se implementa
   adquisición auténtica de operaciones, pero no se convierten operaciones de
   stock en filas de RETIROS inventando identidades o cantidades solicitadas.
-- Falta validar el circuito real: autorización de build/despliegue,
-  backup consistente, OAuth, lectura nativa y dos actualizaciones productivas.
+- Goal autoriza completar el circuito real condicionado al ensayo de pausa y
+  respaldo consistente. No acredita ejecución: OAuth, lectura nativa/parcialAPI
+  y dos actualizaciones reales siguen pendientes de evidencia.
+
+## Preparación de aceptación del goal: OAuth, API normal y Sheets nativo
+
+**Estado actualizado:** controles locales congelados; nueva fuente aún sin SHA
+publicado ni builds/deploy/piloto. El último C comprobado falló; no ejecutar el piloto antes de cerrar
+respaldo/restore y controles de ejecución/admisión. No adaptar el complemento ni
+repetir la matriz general de53funciones: usar muestra de las fuentes del goal.
+
+### Controles locales y evidencias actuales; no aceptación productiva
+
+| Evidencia | Resultado y límite |
+| --- | --- |
+| Admisión/ejecución | Hold de admisión histórica en gateway, claim de vendedor y ejecución acotada con deadline, presupuesto físico persistido y pausa; conservar autoridad, cutoff/consumed/checkpoints. Forward recovery mantiene admisión cerrada/ejecución pausada y worker consciente de autoridad; no sustituirlo por legacy ni resetear datos. |
+| Contrato objetivo nuevo | **14 scopes = 13 baseline compatible + `GET /messages/packs/*`; ningún scope Full**, seis routing keys; fingerprint `453bf9eb6014d8055fe6cd372e98b1e2d0190a0241b519417fe5f5397e2c1525`. Manifest/seed/verificador deben coincidir con imagen nueva, no C3/15. SHA fuente pendiente de publicación verificada. Verificador14 no acredita compatibilidad C1 ni habilita rollback clásico. |
+| Checks locales comunicados | Lote74passed/27.76s:12cert×1000/dos workers/cuatro renovaciones/spacing estricto. Capacidad anual3passed/52.16s tras último patch. Finales Ruff/format/mypy651/direct-Meli/schema-export verdes; staged-gitleaks limpio. No sumar lotes ni afirmar rootgate general verde: fragmento2860 tuvo13fail/2838pass/9skip y se clasificó abajo. |
+| Transporte/pacing corregido localmente | RED previo: prueba compartida falló spacing(15.96s), porque awaitMongo entre pacing y RPC agrupaba envíos. Ahora fetch/request/claims: reserva/cobro durable + validación persistida → pacingúnico → guard síncrono UTCdeadline/día → RPC, **sin awaitMongo entre pacer/send**. Gateway mantiene guard persistido tardío tras broker/KMS. Si vence mientras espera: consumed1 conservador, HTTP0; no refund ni reset. |
+| Ensayo real de pausa normal | Ensayo fresh5: pausa de tres actores sin auto-restart, reanudación de tres y guard complete **pasados**. Helper congelado acepta finalizaciónAPI solo con logs complete del PID/generación; sin RPC stop pendientes. |
+| Ensayo real de recuperación | Run5 **completo pasado**, Docker29.4.1: normal + deadline + guard, job fence1/attempt1/lease y Rabbit unacked1→recuperación. No equivale a backup consistente ni restore. |
+| Único C del goal | Inicio21:09:57.466075 UTC; `command_failed` antes de dump/writers_stopped. Parser del helper en hostPython3.10 rechazó RFC3339Nano Docker; sentinelsAPI reales de cierre ordenado sí presentes. API/dispatcher recuperados; ningún segundo C permitido automáticamente. [Recibo exacto](zelerdata-historico-builds-runtime-20261003.md#único-c-del-goal-fallido-antes-del-dump). |
+| Fix local posterior | Parser de nanosegundos exactos/Python3.10: 37+6 pruebas verdes, helper SHA prefijo30ecbeb. HostPython3.10 verificado read-only alrededor de21:12: proofTRUE con timestamps auténticos, `fixed-parser-host310.jsonl`; estáticos finales verdes. Sin otro ensayo/corte. |
+| Readiness origen | Tras C, gateway/API/worker/dispatcher HTTP200 ready21:10:53–58 UTC; baseline13/seis keys y hashes exactos de siete clientes. Gateway/worker conservan identidad/StartedAt. Salud no acredita histórico ni fórmulas. |
+| Cierre/limpieza | Abandono autorizado: VM/disco temporales eliminados por identidad, listas filtradas vacías; evidencia copiada fuera antes. Sin archivos de negocio/GCS/restore; registros y guard recovery completos. Capacidad/colas finales en [recibo](zelerdata-historico-builds-runtime-20261003.md#único-c-del-goal-fallido-antes-del-dump). |
+| Sheet privada creada, inactiva | [Hoja TEMP nativa](https://docs.google.com/spreadsheets/d/1IzBEJ6fTs3-juTvWYv0P9dK_0gMpS5jo5y18KlsmitU/edit?ouid=110356598393864429185), ocho pestañas/0 fórmulas; propietario único coincide con perfilGoogle Zeler110356598393864429185. Alias del conector no sustituye identidad real verificada. Sin llamadas por customfunction; activar solo durante piloto. |
+
+La evidencia privada de creación es `private-sheet-preparation.json` del directorio
+operativo local `c-goal`; no almacenar credenciales ni datos productivos en este
+informe. El complemento no ganó `allow_partial`: su consumo sigue exclusivamente
+por API normal autenticada, separado de estas fórmulas existentes.
+
+**Clasificación final previa a publicación, sin suite general verde:** fragmento
+postOOM2860nodes:13failed/2838passed/9skipped en259.20s. Una regresión propia era
+verificador15 frente a manifest14; corregidos únicamente `infra/deploy/sheets_rollback.py`
+y `tests/test_deployment_preflight.py`, 35pruebas puras helper/provenance verdes0.24s.
+Los otros12fallos son **preexistentes verificados** sobre HEAD13972ec:12failed/2.20s,
+mismas funcionesAST y tres scripts byteidénticos, macOS `/bin/bash`3.2.57/BSDstat
+(`read -t0.01`, `stat -c`, array vacío/nounset). No hay Bash5 instalado ni pruebaLinux
+que los cierre; no ampliar este trabajo para corregirlos. Los ocho tests protegidos
+stockrs0 **8passed/2.20s**, MONGOambiental unset y ZELER_RS0_TEST_URI literal
+verificado propio27030/rs0; ya no quedan skipsMongo de ese guard. Rootgate sigue
+no verde por12baselineMac; quedan8skipsbroker y1Caddy, no pruebaLinux. Evidencia
+baseline privada en `cache/checks/shell-baseline-verification.json` y
+`shell-baseline-pytest-baseline.log`. Preservar fragmentos
+válidos sin repetirlos ni sumar lotes superpuestos.
+
+### Checklist ejecutable por operador; resultado aún pendiente
+
+| Evidencia requerida | Procedimiento y criterio; no basta200 |
+| --- | --- |
+| Disparador real | Sesión legítima de app + MercadoLibreHOPEMOB → callback aceptado → intención/plan durable conservando cutoff/consumed/checkpoints → adquisición/publicación → lector. No insertar plan para sustituir OAuth. |
+| Alcance real | Claim82453304, cinco fuentes/Full0, inicial800/150/250/300/500 y mantenimiento500(≤300/fuente), total≤2,500GET físicos/90min mismo díaUTC. Contar retries/intentos causados por fórmulas/recovery, separando tráfico habitual. |
+| Continuidad | Reanudar el mismo estado/leases/autoridad, sin duplicar receipts/jobs ni reabrir año; comparar hashes/counters antes/después y otros sellers intactos. |
+| Períodos independientes | DEVOLUCIONESjunio y otro período realmente cubierto/certificado siguen legibles independientemente; rango sano y pruebas anteriores no se sustituyen. |
+| Parcial API normal | Rango realmente pendiente: ORDENES opt-in booleantrue devuelve filas utilizables + avisoPARCIAL, coverageexactfalse/acquired_rows_only y pendiente conservado. Default y totales afectados permanecen cerrados; no fabricar9999/1 productivo. |
+| Nativo exacto | Una hoja nueva privada, wrappers ya instalados/autorizados; fórmula y effectiveValue real, sin errores/PROCESSING persistente. Período afectado muestra no disponible, no parcial nativo. |
+| Mantenimiento | Packs antiguos conocidos con orden sin cambio; dos eventos/cambios reales posteriores a cutoff: detección→persistencia→lector. Si faltan eventos, registrar pendiente, no dos ciclos vacíos ni transacciones ficticias. |
+| Cierre | Prueba de restauración/joins/lectores, estado seguro de admisión/ejecución, recursos temporales limpiados conforme al goal y evidencia privada preservada. Ninguno acreditado por health/repo/tests solamente. |
+
+### Intervención humana indispensable: disparador y Google propietario
+
+1. Cuando el operador confirme gates/presupuesto, abrir **https://app.zeler.ai/**
+   con la sesión propia legítima y pulsar **Connect MercadoLibre** del dashboard.
+   Completar consentimiento normal con la cuenta **HOPEMOB82453304** y volver al
+   producto. No confirmar otra cuenta, modificarquery/platform_user_id, usarforce,
+   copiar OAuthcodes/tokens ni revocar para hacer aparecer un botón.
+2. `/accounts` sirve para verificar HOPEMOBlinked; **Re-link solo aparece si revoked**.
+   Para activa, dashboard genera el enlace normal desde el userID autenticado.
+   Login/consent/2FA del proveedor, si aparecen, los realiza el usuario; no suplantar.
+3. El usuario eligió **Cuenta Zeler**; perfil real y permisos owner-only ya
+   comprobados para la hojaTEMP. Reutilizar esa conexión autenticada y ese Google
+   usuario; la conexiónDrive no demuestra AppsScript autorizado.
+4. En la hoja privada confirmar **ZelerData → Settings**, APIdefault
+   `https://sheets.zeler.ai`, token existente autorizado para HOPEMOB en
+   **UserProperties de ese Google usuario**. Si falta instalación/menú/token,
+   intervención del operador por la ruta existente de `/sheets/config`; no crear,
+   rotar/revocar credenciales ni publicar AppsScript/Marketplace como atajo.
+
+**Tres auth distintas:** MercadoLibrelink dispara histórico; FormulaAPI valida
+bearer de extensión/cuenta; OAuthGoogle del worker escribe Sheets por
+GoogleTokenStore. Leer fórmula o usar conexiónDrive no demuestra renovación del
+writer. `GET /oauth/google/authorize` **crea google_oauth_state y pideconsent**:
+no usar `seller_id=test`/curl como inspección read-only ni modificar OAuth del goal.
+
+### API normal: preparado para cliente legítimo; no ejecutado
+
+Endpoint `POST https://sheets.zeler.ai/sheets/formulas:execute`; usar **cliente
+ya autenticado con bearer de extensión** limitado a HOPEMOB, no module_admin ni
+minting bypass. El snippet recibe el cliente ya autorizado: no obtiene/imprime
+credenciales, no retries y devuelve solo resumen/hash, no compradores/cuerpos.
+Fechas deben ser rango realmente pendiente o sano identificado por el operador,
+no ampliar recuperación para fabricar prueba; toda adquisición inducida se mide.
+
+```python
+import hashlib
+import json
+import uuid
+
+
+def comprobar_parcial_api(client, cuenta, desde, hasta):
+    # client ya autenticado por flujo normal; jamás copiar OAuth ni loguear headers.
+    args = {"fecha_inicial": desde, "fecha_final": hasta, "estado": "todos"}
+    cases = [("default", "ZELERDATA_ORDENES", False),
+             ("parcial", "ZELERDATA_ORDENES", True),
+             ("total", "ZELERDATA_VENTASTOTALES", False)]
+    out = []
+    for name, formula, partial in cases:
+        payload = {"formula": formula, "cuenta": cuenta, "args": args,
+                   "request_id": str(uuid.uuid4())}
+        if partial:
+            payload["allow_partial"] = True  # boolean, no string ni _allow_partial
+        response = client.post("/sheets/formulas:execute", json=payload)
+        body = response.json()
+        values = body.get("values", [])
+        meta = body.get("meta", {})
+        notice = any(isinstance(row, list) and row and
+                     isinstance(row[0], str) and row[0].startswith("PARCIAL")
+                     for row in values)
+        out.append({"case": name, "http": response.status_code,
+                    "ok": body.get("ok"), "error": body.get("error", {}).get("code"),
+                    "orders_count": meta.get("orders_count"), "notice": notice,
+                    "coverage": meta.get("coverage"),
+                    "values_sha256": hashlib.sha256(json.dumps(
+                        values, sort_keys=True, default=str).encode()).hexdigest()})
+        if response.status_code in (401, 403, 429) or response.status_code >= 500:
+            break  # no retry ni expansión; conservar evidencia de fallo
+    return out
+```
+
+Resumen se conserva privado; publicar solo campos sanitizados aprobados de
+coverage(rango/exact/scope/motivo), nunca body/headers. No exigir9999filas real:
+ese caso ya está demostrado localmente en `test_partial_history_api.py`; producción
+necesita un parcial real útil. Exacttrue en rango sano no demuestra parcial;
+PROCESSING/DATA_UNAVAILABLE sin filas no satisface el opt-in. No insertar pendientes.
+
+### Hoja privada: herramientas disponibles, no sesión ni add-on comprobados
+
+No se encontró `gws`/`clasp` en PATH. Sí hay herramientas nativas de conexiónDrive:
+`get_profile`→`import_spreadsheet`(xlsx, `native_google_sheets`)→metadata/permisos→`batch_update_spreadsheet`
+con formulaValue→`get_spreadsheet_cells`(userEnteredValue/effectiveValue).
+Así se puede preparar/escribir/leer sin browser ni copiar OAuth; **no permite
+instalar/autorizar add-on ni demostrar que customfunction corre en ese usuario**.
+No crear otra UI, script vinculado, fórmula nueva ni versiónMarketplace.
+
+Preparación ya realizada: ArtifactTool generó el xlsx local inactivo; se importó
+**una** hojaTEMP nativa bajo Cuenta Zeler y se comprobaron permisos owner-only.
+Ocho tabs: Control y siete salidas independientes, sin fórmulas activas; fuera del
+placeholderA1 las salidas quedan vacías para no bloquear spill. Antes de activar,
+revalidar perfil/permisos y leer `sheetId` de metadata; no crear otra hoja.
+Escribir únicamente A1 de cada tab con updateCells/fields:userEnteredValue,
+`include_spreadsheet_in_response:false`; no tocar hojas preexistentes.
+
+```json
+{"updateCells":{"start":{"sheetId":123,"rowIndex":0,"columnIndex":0},
+ "rows":[{"values":[{"userEnteredValue":{"formulaValue":
+ "=ZELERDATA_ORDENES(\"HOPEMOB\",\"<DESDE_SANO>\",\"<HASTA_SANO>\",\"todos\",\"\",\"si\")"}}]}],
+ "fields":"userEnteredValue"}}
+```
+
+`123`/fechas son placeholders: reemplazar por tab recién creada y rango cubierto,
+respetando locale/separador real. Leer solo rangos acotados de la hojaTEMP y
+emitir counts/errores/hashes sanitizados; no PII. No interpretar write200 como
+recalc. Leer como máximo A1:D4 por cada una de las siete salidas: **28 filas en
+total**, no todos los resultados. Espera/relectura limitada por piloto; sin polling indefinido.
+
+| Tab / fórmula existente A1 | Qué demostrar |
+| --- | --- |
+| OrdenesSanas: `ZELERDATA_ORDENES("HOPEMOB",desde,hasta,"todos","","si")` | Filas reales y comisión/costoNA cuando falta; rango sano mantiene prueba. |
+| OrdenesPendientes y TotalPendiente: ORDENES(default)/`ZELERDATA_VENTASTOTALES("HOPEMOB",desde,hasta,"todos")` | No vendidas como exactas ni parcial nativo; DATA_UNAVAILABLE esperado en rango pendiente. |
+| Preguntas: `ZELERDATA_PREGUNTAS("HOPEMOB",desde,hasta,"00:00","23:59","si")` | Preguntas/respuestas realmente cubiertas. |
+| DevolucionesJunio y DevolucionesOtro: `ZELERDATA_DEVOLUCIONES("HOPEMOB",desde,hasta,"todos","si")` | Períodos independientes, junio preservado. |
+| CostoEnvio: `ZELERDATA_COSTOENVIOVENDEDOR("HOPEMOB",skuReal,itemReal)` | Costo vigente/NA verificable, no afirmar histórico anual por ese valor. |
+
+No hay wrapper nativo MENSAJES/RECLAMOS separado: no inventarlo. Mensajes/packs
+se validan con adquisición/publicación/lector existente, DEVOLUCIONES cubre su
+propia tabla de reclamos de devolución. `#NAME?`, TOKEN_MISSING/REVOKED,
+SELLER_FORBIDDEN o consent faltante se reportan como bloqueo real; no mockear ni
+pegar datos de API en celdas como supuesto resultado de customfunction.
+
+Referencias: [source add-on](../../modules/sheets/apps_script/sheetseller/README.md),
+[wrappers](../../modules/sheets/apps_script/sheetseller/Formulas.gs),
+[publicación Marketplace](zelerdata-marketplace-publication.md),
+[fórmulas](zelerdata-formulas.md),
+[API parcial local](../../modules/sheets/tests/test_partial_history_api.py).
 
 ## Qué se integra y qué no se promete
 
@@ -60,6 +243,14 @@ La política conserva vendedor, versión, corte, intervalo, fuentes y presupuest
 Cada intento remoto se cobra antes del envío. La adquisición comprueba identidad,
 pertenencia, elegibilidad y ámbito; una revocación no permite seguir usando el
 plan como una autorización independiente de la cuenta.
+
+Orden de transporte del fix actual: **reserva/cobro durable y validación persistida
+→ pacing único → guard síncrono de deadline/día UTC → RPC**, sin awaitMongo entre
+pacer y envío. El gateway conserva la comprobación persistida tardía después de
+broker/KMS. No pacear antes del cobro: puede agrupar RPC tras esperas de Mongo.
+Reserva expirada durante pacing conserva consumed1 pero hace HTTP0; no reembolsar
+ni reiniciar cuotas. [Lecciones L-029/L-030](../lessons/README.md) registran parserNano
+host y orden de transporte; tests locales no acreditan despliegue.
 
 La carga inicial conserva su presupuesto y corte originales. El mantenimiento
 usa una política diaria aparte; renovar esa cuota no reinicia jobs anuales.
@@ -193,7 +384,7 @@ ninguna referencia pública sustituye esa aceptación.
 
 ## Evidencia aislada y sus límites
 
-### Capacidad compartida de esta continuación
+### Capacidad compartida de la continuación histórica C3
 
 [Prueba representativa](../../modules/sheets/tests/test_history_onboarding_shared_capacity.py),
 **1 passed, 12.94 s**, Mongo rs0 real y validadores/índices canónicos. Dos
@@ -418,19 +609,22 @@ validador core existente; las guardas de runtime no son un validador Mongo nuevo
 Se reutilizan los esquemas de adquisiciones, recibos, rangos y certificados exactos.
 La exportación debe comprobarse sin afirmar que certifica colecciones dinámicas.
 
-El registro de Sheets necesita scopes de lectura para packs de mensajes y
-búsqueda de operaciones Full. **Seed y manifest deben coincidir**: aplicar solo
+El registro objetivo del nuevo goal necesita lectura de packs de mensajes,
+**sin búsqueda ni otro scope Full**. Seed y manifest deben coincidir: aplicar solo
 el seed no basta si el registro al iniciar la API vuelve a retirar los permisos.
 Verificar el fingerprint completo y clientes de descubrimiento/detalle por
 separado. No se amplían scopes de comunicación ni se conceden permisos reales
 por editar estos archivos localmente.
 
-El contrato canónico queda en **15 scopes**; se actualiza también su verificador
+El contrato **histórico C3** quedó en **15 scopes**; se actualizó también su verificador
 de rollback, no solo los fixtures. Fingerprint de registro completo:
 `bd13debfb57bba5a24d78fad93d371766cda8c6f288b70d93c9023788b09c16d`.
-Una imagen anterior de 13 scopes no acredita ese contrato. Antes de activar
-permisos/policy, conservar una imagen de rollback recuperable que respete los
-15 scopes y la frontera `policy_authority`; un tag o fingerprint antiguo no basta.
+Ese fingerprint15 no es el objetivo del nuevo goal: **14 = 13 + mensajes**, seis
+keys/sinFull, fingerprint `453bf9eb6014d8055fe6cd372e98b1e2d0190a0241b519417fe5f5397e2c1525`.
+El verificador canónico corregido no acredita compatibilidadC1 ni autoriza usar
+el rollback clásico. Antes de activar permisos/policy, comprobar el registro completo de
+la nueva fuente publicada y recuperación compatible con `policy_authority`;
+un tag, una imagen antigua de13 o el fingerprint histórico15 no basta.
 
 No hubo cambios al ejecutor bootstrap ni evidencia que obligue a reconstruir su
 imagen por una modificación de comportamiento; revisar dependencias finales en
@@ -441,7 +635,8 @@ la propuesta exacta, sin desplegar servicios ajenos por copiar el mismo workspac
 [Propuesta preparada](zelerdata-historico-publicacion-piloto-propuesta.md): separa
 publicación, probe Full, backup/restore, builds, despliegue y piloto; una cuenta,
 90 minutos/día UTC, máximos 2,000 GET iniciales + 500 de mantenimiento,
-**Full excluido con 0 GET** (investigación cerrada). El piloto general sigue propuesto, **no autorizado ni ejecutado**. El
+**Full excluido con 0 GET** (investigación cerrada). El piloto está **autorizado por
+el nuevo goal pero no ejecutado**, condicionado a gates de pausa/respaldo/deploy. El
 descubrimiento Full posterior tuvo alcance separado y siete GET consumidos;
 el usuario cerró esa investigación: no quedan consultas/retries programados;
 no convierte estos límites generales en autorización productiva.
@@ -456,22 +651,23 @@ es documental: opt-in final opcional, aviso visible y default exacto sin cambios
    ni mapeo supuesto. No presentar ese pendiente como implementación completa.
 2. Commit/push propios autorizados: comprobar su resultado en el recibo y usar
    el commit fuente exacto publicado en `main`; el checkout local no es autoridad
-   de build. Builds y despliegue conservan autorización separada.
+   de build. Builds afectados y despliegue seleccionado están autorizados por
+   el goal, pero la fuente nueva y sus resultados aún no se acreditan aquí.
 3. Preparar baseline sanitizado por fuente, junio/otros períodos sanos, salud y
    capacidad; identificar imágenes anteriores inmutables y rollback compatible.
-4. Autorizar backup consistente desde VM/VPC y restauración aislada. Proteger y
+4. Completar backup autorizado consistente desde VM/VPC y restauración aislada. Proteger y
    delimitar el respaldo, preservar OAuth/hechos posteriores y no restaurar toda
    la base a ciegas. El fixture local no sustituye este paso.
-5. Autorizar cambios mínimos de registro/índices requeridos, builds separados y
+5. Ejecutar cambios mínimos autorizados de registro/índices requeridos, builds separados y
    despliegue acotado. Una autorización no implica la otra. Activar el flag solo
    después de comprobar consumidores, permisos y compatibilidad.
-6. Autorizar piloto con vendedor, fuentes/fechas, máximo de consultas, concurrencia,
+6. Ejecutar piloto autorizado con vendedor, fuentes/fechas, máximo de consultas, concurrencia,
    pausas y criterios de parada concretos. OAuth/relink auténtico, sin force,
    tokens copiados ni limpieza para simular una cuenta vacía.
 7. Verificar digest en ejecución, readiness, progreso persistido y lectores por
    fuente. Observar capacidad/salud después del asentamiento y medir carga anual
    representativa con el pacing real, no extrapolar los tiempos sintéticos.
-8. Autorizar celdas/rangos de Sheets y verificar fórmulas nativas. Observar dos
+8. Activar solo celdas/rangos autorizados de la hojaTEMP y verificar fórmulas nativas. Observar dos
    ciclos con cambios reales posteriores al corte; ciclos vacíos y renovación
    local de pruebas no demuestran procesamiento incremental remoto.
 

@@ -5,16 +5,103 @@ fuente validada vigente `aeefe993ad5c9a4ff4760c9b691ac11ad47b5a6d` (C3),
 verificada contra el remoto.** C1/C2 permanecen como historial en el
 [recibo de publicación](zelerdata-historico-publicacion-20261002.md). El follow-up
 de este recibo/propuesta es documental, no una fuente nueva de imágenes.
-**Builds, despliegue, respaldo productivo y activación piloto siguen sin
-autorización ni ejecución.**
+**Etapas 8A/8B autorizadas y ejecutadas:** tres builds SUCCESS/procedencia C3
+verificada e inspección runtime read-only; [recibo de builds/baseline](zelerdata-historico-builds-runtime-20261003.md).
+**Goal vigente recibido el3octubre:** autoriza terminar el alcance de cinco
+fuentes, publicar cambios propios, builds solo afectados, despliegue seleccionado,
+una nueva ventana C tras ensayo aislado de pausa y pilotoHOPEMOB único limitado.
+Autoriza hoja privada para **fórmulas existentes** y modo parcial **solo API normal**;
+no adaptar add-on, nuevas fuentes ni Full. Autorización no es ejecución:
+**último C documentado abortó; no backup/restore/deploy/piloto nuevos acreditados**.
+Actualizaciones locales aún sin nuevo commit/push registrado. Checklist/preparación
+§§8–9 en el [informe](zelerdata-historico-al-vincular-implementacion.md#preparación-de-aceptación-del-goal-oauth-api-normal-y-sheets-nativo).
+
+**Actualización local del goal:** controles de admisión/ejecución congelados; destino
+futuro **14 scopes = baseline13 + mensajes, sin Full**, seis routing keys. C3/15 y
+sus tres builds se conservan como historial, no son destino de este nuevo rollout.
+SHA nuevo pendiente de publicación verificada. Ensayo real run5 **completo pasado**:
+normal/deadline/guard, leases/job fence y Rabbit en Docker29.4.1. Único C del goal
+iniciado21:09:57.466075 UTC **falló antes de dump/writers_stopped**: parser hostPython3.10
+rechazó RFC3339Nano (`command_failed`), aunque API cerró ordenadamente con sentinels
+reales. Recuperados API/dispatcher; gateway/worker intactos; las cuatro readiness
+HTTP20021:10:53–58 UTC/baseline13/siete clientes exactos. **No segundo C permitido**.
+Sin respaldo/restore consistente, deploy/piloto bloqueados. Fix parser local37+6
+verde/prefijo30ecbeb verificado read-only hostPython3.10 con timestamps auténticos
+alrededor de21:12. Último patchruntime/pacing validado: 74passed/27.76s incluye
+12cert×1000/dos workers/cuatro renovaciones/spacing estricto; estáticos651 finales
+verdes. Capacidad anual3passed/52.16s tras último patch. Rootgate general **no verde**:
+fragmento2860:13fail/2838pass/9skip259.20s; regresión propia verificador15→14
+corregida/35purepassed0.24s, otros12 verificados preexistentes en HEAD13972ec
+(Bash3.2.57/BSDstat, sin pruebaLinux/Bash5). Ocho rs0 protegidos **8passed2.20s**
+con MONGOunset/destino propio27030 verificado; guardMongo ya no skipped.
+Persisten8skipsbroker/1Caddy y12baselineMac; no rootgate general verde.
+No sumar lotes ni repetir prefijo válido. Publicación propia continúa
+independiente de este bloqueo. [Detalle](zelerdata-historico-builds-runtime-20261003.md#único-c-del-goal-fallido-antes-del-dump).
+Pacing corregido localmente: reserva/cobro durable/validación persistida antes
+de pacing único; después guard UTC síncrono y RPC sin awaitMongo intermedio.
+Guard persistido gateway tardío tras broker/KMS permanece. Vencimiento durante
+espera conserva consumed1/HTTP0, sin refund/reset; no confundir HTTP0 con cobro0.
+Ya se creó la hoja privada nativa bajo Cuenta Zeler, owner-only y
+ocho pestañas/0 fórmulas; permanece inactiva, no prueba aceptación Sheets.
+Abandono/limpieza autorizados ejecutados: VM190812944583158189 y
+disco9220450358313937325 eliminados, búsquedas por identidad vacías; evidencia
+copiada fuera antes. PrefixGCS exacto sin objetos, respaldos previos/retención
+intactos, sin deleteGCS. Guard completed/recoveryTRUE; origen disponible, baseline13
+y siete clientes exactos. No nuevo C ni despliegue/piloto.
 
 El descubrimiento Full sí se autorizó de forma separada y cerró con **7/10 GET
 acumulados, sin referencia auténtica de retiro y parada por 429**. El usuario
 cerró esa investigación: tres sin usar no autorizan continuar y no se propone
-ni programa otra consulta. Runtime observado: 14 scopes; contrato local: 15,
-**no declarado desplegado**. Contenedores/interpretes/SSH comprobados no prueban
-la procedencia o fuente de las imágenes actualmente ejecutadas; ese drift sigue
-requiriendo inspección separadamente autorizada.
+ni programa otra consulta. La reparación estrecha posterior **se completó**:
+2026-10-03 19:12:42.007120 →19:12:49.687008 UTC, única diferencia search verificada
+contra todo el manifest/registro, preimagen privada VM0600/hash y CAS de un único
+scope. matched1/modified1: **14→13 scopes/6 keys**, cada otro campo y seis clientes
+intactos. **Sin restart ni cambio de imágenes**; contrato local15 aún no desplegado.
+
+**19:13:22→27 UTC: Sheets API200 ready:true/healthy**, Mongo/Rabbit/
+registry_fingerprint_match OK y DLQready0/unacked0; gateway ready200 y worker200
+ready:true/componentes OK. Los tres restart0/OOMfalse, digests/starttimes sin
+cambio. Baseline13 compatible **confirmado**: C lo preservará y jamás restaurará14;
+preimagen14 forense, no backup baseline. No business/tokens/otros permisos escritos.
+
+Bloqueo GCP17:03:40 (hora registrada después del fallo) y checkpoint público
+17:04:59.014110 Sheets503/gateway200 quedan **históricos/superados**, no estado
+actual. Evidencia exacta/preimagen/hashes en el
+[recibo](zelerdata-historico-builds-runtime-20261003.md). Recuperar salud no es
+validar piloto o Sheets nativo; no nuevos builds/recursos, backup/restore, deploy,
+piloto ni consultas Full autorizados o ejecutados por esta reparación.
+Ingress público Sheets `/health`200 ready:true, dependencias OK, confirmado a
+19:14:19.109613 UTC (~90s tras CAS); confianza SSH/cuatro hashes fuente intactos,
+sin repetir suites. No prueba OAuth Sheets, fórmulas nativas ni aceptación piloto.
+
+**C previo19:56: capacidadCOS aislada y tar.gz selectivo/whitelist-manifest autorizados.**
+Mongo7 oficial listo loopback27018/rs0PRIMARY; Docker/datos/backup/tmp en ext4RW
+persistente, tmp01777 corregido, sinSA/externalIP/egress abierto. Destino antes de
+corte25,588,756,480bytes libres; tras aborto25,588,703,232, por encima del
+requerido8,793,228,538(piso5GiB+working3,424,519,418). Ya no bloquea capacidad.
+
+**Corte19:56:36.104233 UTC abortado por error de nuestro procedimiento de pausa,
+no bloqueo externo:** dispatcher TERM/manual stop; TERM al child
+uvicornAPI causó auto-restart Docker19:56:38.581673 (`sh -c`/no exec,
+`unless-stopped`), grace60s agotado. `cut_failed/grace_exhausted`,
+**valid_for_upload:false**. Dispatcher reanudado mismo contenedor19:57:38.268277
+(~62.164s); worker/gateway nunca pausados. API restart1, demás0, OOMfalse/imágenes
+intactas. HTTP200/componentes/consumidores a19:57:56→58 y19:59:42→44. Baseline13/6
+y siete clientes exactos; no scopes/config/policy/hardkill/purge. Cuatro jobsCloudRun
+us-central1 completos; SchedulerAPI deshabilitada, **no lista0** ni habilitación.
+
+**No dump/archive/manifiesto/GCSbackup/restore**; prefixGCS exacto sin objetos,
+backups previos/retención intactos/noholds. Watchdog completed:true, no nuevo corte
+automático. El tar.gz292,965,492bytes del directorio targetbackup es **imagen oficialMongo,
+no respaldo**; evidencia privada/cache y before/after capacidad/RAM en el recibo.
+En ese C previo no hubo restoreDB ni eliminación. El goal posterior autorizó
+abandono definitivo y **ya eliminó únicamente VM/disco temporales** con evidencia
+fuera; no restauró ni borró Mongo/GCS productivo.
+Antecedente del plan de pausa, supersedido por helper/ensayo local del goal:
+manual Docker stopTERM/timeout=-1 exactID bajo supervisión
+pendiente y childTERM verificado, sin hardkill/cambio restartpolicy; requiere
+validación operacional y decisión de nueva ventana limitada, **no ejecutarlo ahora**.
+[Detalle C](zelerdata-historico-builds-runtime-20261003.md#4-c-autorizado-corte-abortado-por-parada-manual-no-lograda-sin-respaldo).
 
 ## 1. Qué se puede autorizar por separado
 
@@ -22,11 +109,11 @@ requiriendo inspección separadamente autorizada.
 | --- | --- | --- |
 | Publicación — ejecutada/verificada | Trabajo propio de histórico al vincular y cierres locales, con tests/reportes y propuestas; Conventional Commits, sin atribución IA. | Builds, deploys, pruebas reales, archivos ajenos. |
 | Full — cerrado/pendiente | [Evidencia histórica](zelerdata-full-validacion-acotada.md): 7/10 GET, sin referencia, detenido por 429; RETIROS sigue no disponible sin mapeo. | Consultas restantes, retries, nueva búsqueda/programación, mapeo supuesto. |
-| Preparación runtime | Inspección actual, backup consistente y restauración aislada; índices/registro estrictamente seleccionados si se autorizan. | Limpieza, reparación por drift, restauración sobre producción. |
-| Builds | Una imagen por Cloud Build verificado de commit exacto publicado en `main`. | Deploys, checkout local subido, otros servicios. |
-| Despliegue | Gateway, Sheets API y Sheets worker con digests verificados, activación inicialmente apagada y rollback compatible. | Restart amplio, otras APIs/workers, bootstrap no afectado. |
-| Piloto | Una cuenta legítima, límites y duración indicados abajo, OAuth/relink sin force. | Otros vendedores, reinicios anuales, ampliación automática. |
-| Sheets nativo | Hoja/rangos de prueba expresamente seleccionados. | Publicar add-on, modificar hojas del usuario sin alcance. |
+| Inspección8B ejecutada; único C del goal fallido | Ensayo real completo pasó, C falló antes del dump por parserNano hostPython3.10; recuperación/salud verificadas, sin respaldo/restore ni segundo C permitido. | Repetir C automáticamente, reparación ajena por drift, restauración sobre producción. |
+| Builds — ejecutados 8A | Tres imágenes C3, SUCCESS y procedencia/digests verificados. | Deploys, checkout local subido, otros servicios. |
+| Despliegue — autorizado por goal, pendiente | Gateway, Sheets API/worker; solo tras respaldo y controles de admisión/autoridad/recuperación probados. | Restart amplio, otras APIs/workers, bootstrap no afectado. |
+| Piloto — autorizado por goal, pendiente | HOPEMOB82453304; única ventana90min/2,500GET, cinco fuentes/Full0; OAuth normal sin force. | Otros vendedores, reinicios anuales, ampliación automática. |
+| Sheets nativo — hoja preparada, aceptación pendiente | Cuenta Zeler confirmada; hoja nueva privada owner-only/0 fórmulas. Activación de fórmulas existentes solo durante piloto. | Publicar/adaptar add-on, modificar hojas del usuario sin alcance. |
 
 La autorización de publicación ya recibida no aprueba ninguna de las demás etapas. Si una etapa exige cambiar
 su alcance, se presenta la diferencia y se espera autorización; no repetir ni
@@ -64,8 +151,9 @@ Review opt-in permanece `disabled/unmanaged`; no se fabrica un recibo.
 
 ## 3. Destino, imágenes y compatibilidad
 
-Destino documentado, **a confirmar en inspección**: proyecto `zeler-platform-dev`,
-VM `platform-vm`, zona `us-central1-a`, Docker Compose. No fue inspeccionado aquí.
+Destino confirmado en la inspección histórica A/B: proyecto `zeler-platform-dev`,
+VM `platform-vm`, zona `us-central1-a`, Docker Compose. Baseline inspeccionado
+en A/B; el intento posterior de recuperación no alcanzó VM.
 
 | Propietario | Cambio | Imagen que debe compararse/construirse si se autoriza |
 | --- | --- | --- |
@@ -74,16 +162,22 @@ VM `platform-vm`, zona `us-central1-a`, Docker Compose. No fue inspeccionado aqu
 | Sheets worker | Autoridad, fuentes, recuperación periódica, renovación y scope de piloto. | `sheets-worker` |
 | Operaciones | Verificador `infra/deploy/sheets_rollback.py`; índices/seed. | Herramientas/contratos por rollout separado, no otra imagen por costumbre. |
 
-Publicada la fuente, falta verificar drift entre SHA autorizado de `main` y fuente de
-imágenes en ejecución. Si falta evidencia de runtime, no declarar actualizado.
+Drift de fuente/digests quedó verificado en A/B: las tres imágenes C3 construidas
+no están desplegadas. Salud posterior a la reparación confirmada: API/gateway/
+worker200; no hubo restart ni cambio de imágenes.
 Builds desde repositorio conectado, SHA completo presente en `main`, una imagen
 por build, `options.requestedVerifyOption: VERIFIED`; registrar build ID, fuente,
 SUCCESS y `repo@sha256:...`. **No builds Docker locales.**
 
-El manifest, seed y verificador locales exigen **15 scopes / 6 routing keys**;
+El contrato **histórico C3** exigía **15 scopes / 6 routing keys**;
 fingerprint completo:
 `bd13debfb57bba5a24d78fad93d371766cda8c6f288b70d93c9023788b09c16d`.
-Los 13 scopes de la etapa anterior descrita en deploy no prueban este contrato.
+El nuevo goal exige **14 scopes = 13 + `GET /messages/packs/*`**, seis keys y
+ningún scope Full, fingerprint
+`453bf9eb6014d8055fe6cd372e98b1e2d0190a0241b519417fe5f5397e2c1525`.
+Verificador canónico corregido14/6 no acredita compatibilidadC1 ni habilita rollback
+clásico. Verificar fingerprint/manifest/seed de la nueva fuente exacta,
+no usar este fingerprint histórico15 ni desplegar sus builds por costumbre.
 No añadir permisos de envío/marcado como leído ni scope de detalle Full por
 escribir una propuesta: el probe detiene una denegación.
 
@@ -120,11 +214,20 @@ sin autorización. El presupuesto del plan no cuenta llamadas de otro worker.
   No imprimir/exportar tokens. Si un snapshot contiene secretos ajenos al alcance,
   protegerlos y restaurar únicamente namespaces aprobados, nunca cuentas/tokens.
 - Crear desde contexto aprobado archivo protegido (`0600`) y destino privado
-  cifrado **a elegir y autorizar**, con acceso mínimo, hash y manifiesto sin datos
-  personales. Propuesta de retención: siete días tras aceptación/rollback, luego
+  cifrado **seleccionado/propuesto** en `gs://zeler-platform-backups/mongo/zelerdata-history-aeefe993-20261003T050702Z/`
+  (`history.archive.gz` y `manifest.json`), con acceso mínimo existente, hash y
+  manifiesto sin datos personales; no escritos. Propuesta de retención: siete días tras aceptación/rollback, luego
   borrado expresamente autorizado; no inventar un bucket ni configurar uno ahora.
-- Restaurar en rs0/base **aislada**, con destino distinto y sin app/product worker
-  conectado. Comprobar conteos, hashes canónicos, índices/validadores, joins,
+- Destino histórico **creado bajo C y eliminado al abandonar el goal**, sin restore: VM
+  `zelerdata-restore-aeefe993`, proyecto `zeler-platform-dev`/zona `us-central1-a`,
+  e2-standard-2/8 GiB, disco 30 GiB, sin IP externa; Mongo rs0 loopback 27018/base
+  `zelerdata_restore_aeefe993_20261003`, sin app/product worker conectado.
+  Creación/costos originales cubiertos por C; restore no ejecutado; capacidad
+  raízCOS fue superada por excepción target-only autorizada/Mongo validado;
+  el único C posterior falló por parserNano antes del dump y se abandonó.
+  No repetir C ni recrear destino automáticamente. Una nueva decisión de alcance
+  deberá resolver respaldo consistente y destino, no usar la VM eliminada.
+  Criterios conservados: conteos, hashes canónicos, índices/validadores, joins,
   certificados/lectores, y preservación en origen de un hecho posterior al corte.
   Un restore no se hace encima de producción para obtener esta evidencia.
 - Reanudar solo writers autorizados, comprobar backlog y salud/capacidad después.
@@ -142,7 +245,10 @@ esa autoridad puede ejecutar jobs por otro camino: **no es rollback compatible**
 
 Orden propuesto, sujeto a verificación de compatibilidad exacta:
 
-1. Registrar/atestiguar rollback compatible con 15 scopes y frontera de autoridad.
+1. Registrar/atestiguar recuperación compatible con el contrato objetivo14/sinFull
+   y frontera de autoridad. Antes de estado nuevo, fallback antiguo solo con ausencia
+   o aislamiento demostrado; después, hold de admisión/ejecución pausada y forward
+   recovery conservando jobs/datos/consumed/cutoff/checkpoints, no worker legacy.
 2. Aplicar solo índices/registro aprobados desde VM y comprobar dependencias,
    sin aplicar validadores como supuesto health check. Nuevas colecciones internas
    no tienen validador core nuevo; verificar los canónicos reutilizados.
@@ -154,7 +260,8 @@ Orden propuesto, sujeto a verificación de compatibilidad exacta:
    repetir salud y capacidad. No usar broad Compose restart.
 6. Configurar solo piloto/plan autorizado y habilitar flag en worker como abajo.
 
-Retirada: desactivar onboarding mediante cambio/restart acotado autorizado y
+Retirada: cerrar admisión histórica y pausar ejecución persistida del claim autorizado,
+sin resetear su presupuesto ni estado. Desactivar onboarding mediante cambio/restart acotado autorizado y
 esperar/graceful-stop de la unidad en ejecución; no borrar jobs/planes ni sus
 hechos. Después, restaurar únicamente imágenes compatibles y config aprobada.
 Si queda un job con lease, esperar vencimiento/protocolo, no forzar takeover.
@@ -249,8 +356,13 @@ container running, una muestra correcta o tests verdes en cobertura anual.
 
 ## 8. Autorizaciones concretas listas para completar
 
-Son permisos **independientes**. Ningún texto es una instrucción ejecutada.
-SHA fuente actual publicado y verificado: `aeefe993ad5c9a4ff4760c9b691ac11ad47b5a6d`.
+Son permisos **independientes**. A/B se aprobaron y ejecutaron, con evidencia
+en el [recibo](zelerdata-historico-builds-runtime-20261003.md); sus textos se
+conservan como alcance histórico, no permiso de nuevos builds/inspecciones.
+C fue autorizado, target/Mongo listos y un corte abortado sin dump/restore. El goal
+posterior autoriza D/E condicionados a gates, **no ejecutados**. Los textos siguientes
+conservan etapas previas; objetivo nuevo14/sinFull y fuente nueva aún sin SHA publicado.
+Último SHA fuente publicado verificado: `aeefe993ad5c9a4ff4760c9b691ac11ad47b5a6d`.
 El recibo conserva C1/C2 y sus 36 hashes originales como históricos, y registra
 la delta C3 de cuatro archivos validados; 32 permanecen iguales. Comprobar que
 C3 continúa presente en `origin/main`; el follow-up del recibo es solo documental. No usar `main`
@@ -258,6 +370,12 @@ movible, base anterior ni checkout local como sustituto. Rechazar una expansión
 no aprobada; los digests y el baseline se incorporan antes de pedir despliegue.
 
 ### A. Tres builds; no operación runtime
+
+**Ejecutado/verificado:** build IDs y tres digests inmutables de C3 en el
+[recibo](zelerdata-historico-builds-runtime-20261003.md#1-tres-imágenes-success-con-procedencia-verificada).
+No se descargaron ni desplegaron en VM; no construir otra imagen con este alcance.
+
+**Texto autorizado histórico:**
 
 > Autorizo exactamente tres Cloud Builds en `zeler-platform-dev`, región
 > `us-central1`, desde el repositorio conectado
@@ -275,6 +393,15 @@ no aprobada; los digests y el baseline se incorporan antes de pedir despliegue.
 
 ### B. Inspección read-only y drift; no backup ni repair
 
+**Ejecutado histórico A/B:** baseline/digests/capacidad y bucket existente documentados en el
+[recibo](zelerdata-historico-builds-runtime-20261003.md). API 503/fingerprintmismatch
+ya presente; no se reparó ni reinició. El dry-run no descargó imágenes.
+Gateway/ready 200 y worker/health 200 con componentes OK; no onboarding en
+worker. API503 quedó sin reparar **en B**; la autorización posterior acotada
+recuperó13/6 y salud200 sin restart, documentada al inicio/recibo.
+
+**Texto autorizado histórico:**
+
 > Autorizo una inspección de lectura de `platform-vm`, zona `us-central1-a`,
 > proyecto `zeler-platform-dev`, desde el contexto VM/VPC permitido: capacidad,
 > mount Mongo, memoria, Docker, salud/readiness/backlog y las identidades inmutables
@@ -284,39 +411,115 @@ no aprobada; los digests y el baseline se incorporan antes de pedir despliegue.
 > que descargue imágenes, backup, validator/index/registro, cleanup, restart,
 > reparación ni consulta de Mongo productivo desde el asistente local.
 
-La inspección define los **digests anteriores**, headroom y writers efectivos.
-Si no permite probar compatibilidad, no asumir rollback seguro ni runtime actual.
+La inspección identifica digests/fuentes anteriores/headroom. No existe
+rollback de versión compatible atestiguado: API/worker anteriores carecen de
+`policy_authority`; destino/Mongo listos bajo C, parada segura/corte pendiente.
+Recuperación13/salud confirmada; falta cerrar writers para C y alternativa de
+recuperación segura para D/E. El baseline histórico14/503 no se acepta como
+rollback de15; registrar un digest no prueba compatibilidad.
 
 ### C. Respaldo consistente y restore aislado; no restauración productiva
 
-Antes de presentar esta aprobación, completar: inventario exacto de namespaces
-relacionados de §4, writers Sheets a pausar y stop grace, ventana, destino privado
-cifrado existente con acceso mínimo, destino rs0/base aislada y plazo de retención.
-No autorizar un comodín `todos los servicios/colecciones` ni inventar un bucket.
+**C autorizado: ventana única abortada; backup/restore no ejecutados.**
+22 colecciones seleccionadas y writers/ausencias observados en el
+[recibo](zelerdata-historico-builds-runtime-20261003.md#inventario-mínimo-exacto-22-namespaces),
+no toda DB. Origen VM: `zeler_platform_prod`; 20 presentes/2 ausentes. No incluye
+OAuth, `meli_accounts`, tokens, identidades ni secretos. Bucket privado verificado
+`gs://zeler-platform-backups`, IAM sin públicos/cifrado Google-managed.
+Objeto y manifest exactos, no creados; destino restore **VM creada bajo C**,
+no cubierta por A/B. Gates/avance/bloqueo en el recibo.
+**Alcance C de la propuesta previa (no transcripción literal del usuario):**
 
-> Autorizo el respaldo de `<NAMESPACES_EXACTOS>` desde VM/VPC de `platform-vm`
-> mediante quiescencia de `<WRITERS_SHEETS_EXACTOS>` durante `<VENTANA>`; respetar
-> ACK/NACK, stop grace y conservar entregas Rabbit. Archivo protegido 0600 hacia
-> `<DESTINO_PRIVADO_CIFRADO>`, inventario/hash sanitizados y retención acordada
-> `<PLAZO>`. Autorizo restaurarlo únicamente en `<RS0_Y_BASE_AISLADOS>`, sin app ni
-> workers conectados, comprobando conteos, hashes, índices/validadores, joins y
-> lectores/certificados, sin tocar OAuth/identidades y preservando hechos del
-> origen posteriores al corte. Reanudar solo los writers aprobados y comprobar
-> salud/backlog/capacidad. Si no puede probarse consistencia o restauración,
-> detener y reportar. No autorizo restore sobre producción, purge, limpieza,
-> reparación de datos ni inicio del piloto.
+> Autorizo C exclusivamente para las 22 colecciones del inventario del recibo,
+> desde contexto VM/VPC de `platform-vm`, corte/ventana de 15 minutos. Delimitar
+> `sheets-worker`, `sheets-api` y `bootstrap-dispatcher`, impedir nuevos launches
+> y comprobar que todos los jobs bootstrap ya iniciados terminaron. Mantener
+> solamente admisión histórico linked/relinked del gateway detenida por control
+> scoped verificado, sin tocar/restaurar OAuth ni parar todo el gateway. Atender
+> stop grace explícito de 60s para los tres servicios seleccionados y timeout
+> externo ≥120s; no asumir default 10s seguro. Conservar ACK/NACK, leases, jobs y
+> entregas Rabbit; no purge/hardkill/stop amplio. Si no se prueban fuentes/actores,
+> hold scoped o quiescencia dentro de ventana, no iniciar dump ni autoampliar.
+> Archivo de tránsito 0600 hacia
+> `gs://zeler-platform-backups/mongo/zelerdata-history-aeefe993-20261003T050702Z/history.archive.gz`
+> y manifiesto sanitizado/hash/inventario en
+> `gs://zeler-platform-backups/mongo/zelerdata-history-aeefe993-20261003T050702Z/manifest.json`,
+> usando acceso mínimo existente, sin cambiar IAM ni ejecutar cron/prune.
+> Antes del dump, validar que herramientas y archivo seleccionan exclusivamente
+> esas 22 colecciones; no exportar toda la base ni secretos como paso intermedio.
 
-### D. Rollout: pedir después de conocer digests y rollback compatible
+Formato selectivo/whitelist-manifest **autorizados, aún sin backup**:22namespaces,
+20BSON+metadata, dos ausencias, JSONcorte sanitizado/manifiestoSHApositivo; tar.gz
+`history.archive.gz`, no Mongo native archive. Corte fallido `valid_for_upload:false`
+no se sube; validar contents/restore con lector correspondiente, no cron full dump/prune.
 
-**No listo para ejecutar hasta completar** los tres digests destino, identidades
-anteriores/rollback recuperables y atestiguadas, inventario exacto de índices/seed,
-config anterior y verificación de §5. Un permiso de build no cubre este texto.
+> Continuación del alcance de la propuesta previa (no transcripción literal):
+> Autorizo crear el destino aislado `zelerdata-restore-aeefe993`, proyecto
+> `zeler-platform-dev`, zona `us-central1-a`, `e2-standard-2`/8 GiB RAM,
+> disco 30 GiB, sin IP externa y acceso restringido. Los costos de esos recursos
+> desde creación hasta eliminación aprobada forman parte de C, no A/B.
+> Verificar aislamiento y pull/transfer de Mongo 7 por digest
+> `mongo@sha256:43fddee7e532a920f3dfdee9e8f4834398c155c26bcb92d790cc1cd3c630fc40`,
+> con capacidad previa, rs0 en loopback 27018 y base
+> `zelerdata_restore_aeefe993_20261003`; sin apps/product workers/OAuth conectados.
+> Restaurar únicamente ahí las colecciones aprobadas; comprobar conteos/hash,
+> índices/validadores/joins/certificados/lectores, ausencia registrada y hechos
+> posteriores intactos en origen. Retener objeto/manifest 7 días tras aceptación
+> o rollback; eliminación de objeto/VM/disco necesita permiso separado.
+> Con recuperación y salud13 ya confirmadas, capturar de nuevo el
+> baseline privado exacto de `module_registry._id="sheets"`, 13 scopes/6 keys,
+> antes del stop; conservarlo y comparar todos los campos/clientes tras reanudar.
+> Startup de API anterior registra13: no restituir14 ni ampliar a15 con C.
+> No autorizar por esta propuesta restauración automática del registro; cualquier
+> otra escritura necesaria o hold no verificado exige delimitar/aprobar el delta.
+> Reanudar solo writers autorizados y comprobar salud/backlog/capacidad contra
+> el baseline compatible13 verificado; nunca usar preimagen forense14 para
+> restituir registro. Sin gates propios de consistencia/aislamiento, no iniciar C. No autorizo restore sobre producción, OAuth/tokens en destino,
+> modificación de scopes, índices productivos, limpieza, rollout, piloto ni Full.
+
+Gates antes de ejecutar: atestiguar fuentes de todos los writers/bootstrap/jobs
+activos, destino/red/IAM aislados y herramientas/Mongo/capacidad. Gateway actual
+b835791 (73archivos/core verificados) no escribe22 ni admite nuevo histórico:
+con dispatcher detenido no hay admisión histórica que pausar; no crear control
+ni config nuevo para C. Hold del gateway C3 pertenece a D/E. Jobs Cloud Run
+bootstrap escriben orders/claims y derivados DEVOLUCIONES operations/freshness/
+invalidation de certificados; supervisor/pollers del worker se pausan completos. Fuentes/jobs observados verificadas en
+preparación; no equivalen a cutoff futuro. ExcepciónCOS/tar.gz ya autorizados;
+Mongo/capacidad listos. El corte abortó por grace/parada de API, sin dump/restore;
+repoll y stream de cero writers/pausas graceful siguen gates de otra ventana.
+No sustituirlos con un dump concurrente. Capturar Compose/config seleccionado
+por separado privado/cifrado (imágenes/deps/flags/scopes), **no exportar env ni
+secretos**. Si otra necesidad amplía colecciones/writers/recursos, pedir ese delta.
+
+### D. Rollout autorizado por goal; ejecutar solo después de gates
+
+**Plan anterior C3/15 supersedido por objetivo14/sinFull y controles locales**.
+Faltan fuente/digests nuevos y gates de ensayo/C/recuperación; no iniciar rollout.
+El texto anterior preservado abajo no es autorización para desplegar C3/15. Tres
+digests destino ya verificados en el [recibo](zelerdata-historico-builds-runtime-20261003.md#1-tres-imágenes-success-con-procedencia-verificada);
+los digests API/worker anteriores no sirven sobre estado nuevo por ausencia de
+`policy_authority`; 13/6 y salud compatibles ya confirmados, sin probar
+compatibilidad con nuevo estado. Atestiguar una alternativa recuperable antes de presentar
+D ejecutable; no llamar rollback de versión a las mismas imágenes nuevas.
+Inventario exacto de índices/seed, config anterior y verificación también deben
+quedar delimitados. El permiso A histórico ya se ejecutó; el nuevo goal sí cubre
+builds afectados desde la nueva fuente publicada exacta, no reconstrucciones ajenas.
+
+**Plantilla anterior C3/15 — histórico, no ejecutar ni usar como permiso vigente:**
 
 > Autorizo rollout acotado en `platform-vm` del commit
-> `aeefe993ad5c9a4ff4760c9b691ac11ad47b5a6d` a gateway=`<DIGEST_GATEWAY>`,
-> Sheets API=`<DIGEST_API>` y worker=`<DIGEST_WORKER>`, con onboarding apagado.
-> Aplicar únicamente `<INDICES_Y_REGISTRO_EXACTOS>` aprobados, 15 scopes/6 routing
-> keys y fingerprint `bd13debfb57bba5a24d78fad93d371766cda8c6f288b70d93c9023788b09c16d`.
+> `aeefe993ad5c9a4ff4760c9b691ac11ad47b5a6d` a gateway=`sha256:04fb6f2728b0344364db68eb726203132dd986c004a69d6c38c1376fdbcaad9b`,
+> Sheets API=`sha256:be5ecf91e729881c9016967b21c4ce720e40b4dc45fe9184fcece774216103d9` y
+> worker=`sha256:6959f6d9921eec8a29da66cb997935971e809775759668bffb2ba7808e4f13d8`,
+> cada uno en su repo Artifact Registry del recibo, con onboarding apagado.
+> Aplicar únicamente los cuatro archivos índice C3
+> `infra/mongo/indexes/sheets_history_backfill_plans.json`,
+> `infra/mongo/indexes/sheets_history_receipts.json`,
+> `infra/mongo/indexes/sheets_history_pending_records.json` y
+> `infra/mongo/indexes/sheets_full_operations.json`, preservando índices existentes,
+> registrando colecciones antes ausentes y rechazando conflictos sin repairs.
+> Registro seleccionado Sheets de 15 scopes/6 routing keys (manifest/seed C3), sin
+> afectar otros clientes ni aplicar validators como health check; fingerprint `bd13debfb57bba5a24d78fad93d371766cda8c6f288b70d93c9023788b09c16d`.
 > El rollback acordado `<DIGESTS_ROLLBACK_Y_CONFIG>` debe aceptar `policy_authority`,
 > cuotas/checkpoints y pruebas/datos persistidos, no solo arrancar. Respetar el
 > orden API/worker compatibles antes de admisión gateway y readiness de
@@ -326,10 +529,28 @@ config anterior y verificación de §5. Un permiso de build no cubre este texto.
 > este alcance; no bajar scopes, borrar jobs, broad restart, prune de volúmenes ni
 > restaurar toda Mongo. No autorizo activación piloto ni consultas Full.
 
-Un worker previo de 13 scopes o que no entiende `policy_authority` **no** es
-rollback compatible. Si no existe imagen compatible recuperable, preparar y
+Un worker previo que no entiende `policy_authority` **no** es rollback
+compatible sobre estado nuevo; tener 13 scopes no acredita ni descarta por sí
+solo el fallback condicional antes de crear ese estado. Si no existe imagen compatible recuperable, preparar y
 pedir autorización para esa alternativa exacta antes del rollout; no construir
 una cuarta imagen con el permiso A ni seleccionar un tag antiguo por conveniencia.
+La propuesta histórica de **dos builds C1** queda supersedida, no como próximo
+permiso necesario: C1 comparte onboarding con C3; la diferencia de cuatro archivos
+es Full, excluido del piloto. No es rollback general de esa funcionalidad.
+[Plan mínimo actualizado](zelerdata-historico-builds-runtime-20261003.md#alternativa-mínima-concreta-de-rollback-de-versión--propuesta-histórica-supersedida):
+antes del piloto, candidato conjunto de tres imágenes previas solo con ausencia
+demostrada de estado `policy_authority`/incompatible o lanes antiguas totalmente
+aisladas; baseline13 sano ya confirmado no sustituye esa prueba. El planner17c30 no tiene guard de autoridad:
+flag OFF no evita que vea planes nuevos. Gateway actual no admite histórico;
+el control de admisión gatewayC3 es gateD/E, no impedimentoC actual. Sin
+prueba de ausencia/aislamiento, forward incluso antes del piloto. Después, recuperación forward
+con worker consciente de autoridad, preservando datos/jobs/checkpoints; sin
+old worker, bajar a13, restore ciego ni borrar estado. Garantía postpiloto pendiente
+antes de ejecutar D/E; no nuevos builds, recursos o acciones aprobados aquí.
+Retirada del goal: hold de admisión histórica y ejecución persistida pausada,
+sin borrar/reasignar autoridad ni presupuesto; flag onboarding off/restart estrecho del worker,
+conservar los tres digests nuevos y jobs/hechos; **no es rollback de versión**
+ni revierte una regresión del código nuevo. Requiere operación aprobada, no A/B.
 
 ### E. Piloto: una cuenta; Full excluido
 
@@ -345,7 +566,7 @@ una cuarta imagen con el permiso A ni seleccionar un tag antiguo por convenienci
 > cobertura sana y dos ciclos con cambios reales existentes/consentidos; no
 > fabricar transacciones. Detener al límite/condiciones de §6 mediante cambio
 > acotado autorizado del worker; preservar jobs y evidencia, sin repairs.
-> Para Sheets nativo autorizo solo `<HOJA_TEMPORAL_Y_RANGOS>` y fórmulas actuales
+> Alcance de plantilla previa: `<HOJA_TEMPORAL_Y_RANGOS>` y fórmulas actuales
 > exactas; el opt-in parcial del complemento no está implementado ni incluido.
 
 **Full permanece bloqueado externamente, sin bloquear las otras cinco fuentes.**
@@ -357,6 +578,8 @@ etapa futura excluirá Full y requerirá su propio alcance, sin resets o scopes
 implícitos. No solicitar tokens ni declarar RETIROS/coverage disponibles.
 
 ## Referencias
+
+- [Builds verificados y baseline runtime actual](zelerdata-historico-builds-runtime-20261003.md).
 
 - [Informe y matriz local](zelerdata-historico-al-vincular-implementacion.md).
 - [Especificación](zelerdata-historico-al-vincular-especificacion.md), §§10–12.

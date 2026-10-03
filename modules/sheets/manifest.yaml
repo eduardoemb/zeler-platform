@@ -32,5 +32,4 @@ allowed_meli_scopes:
   - GET /shipments/*
   - GET /questions/*
   - GET /messages/packs/*
-  - GET /stock/fulfillment/operations/search
 health_endpoint: /health

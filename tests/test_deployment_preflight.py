@@ -14,6 +14,8 @@ from infra.deploy.preflight import (
     render_preflight_markdown,
 )
 from infra.deploy.sheets_rollback import (
+    CANONICAL_SHEETS_ROUTING_KEYS,
+    CANONICAL_SHEETS_SCOPES,
     PROHIBITED_OLD_API_DIGEST,
     RollbackSafetyError,
     canonical_sheets_registration_fingerprint,
@@ -928,6 +930,10 @@ def test_verified_slsa_v1_row_with_extra_intoto_still_fails_closed_on_wrong_auth
 
 def test_provenance_full_registration_fingerprint_tracks_canonical_manifest() -> None:
     manifest = validate_manifest(ROOT / "modules" / "sheets" / "manifest.yaml")
+    assert tuple(manifest.allowed_meli_scopes) == CANONICAL_SHEETS_SCOPES
+    assert tuple(manifest.routing_keys) == CANONICAL_SHEETS_ROUTING_KEYS
+    assert len(CANONICAL_SHEETS_SCOPES) == 14
+    assert "GET /stock/fulfillment/operations/search" not in CANONICAL_SHEETS_SCOPES
     assert canonical_sheets_registration_fingerprint() == module_registration_fingerprint(
         module_registration_document(manifest)
     )
@@ -1024,7 +1030,7 @@ def _runtime_probe() -> dict[str, Any]:
         "entrypoint_import": True,
         "module_id": "sheets",
         "registry_fingerprint": canonical_sheets_registration_fingerprint(),
-        "scope_count": 15,
+        "scope_count": 14,
         "routing_key_count": 6,
     }
 
@@ -1235,7 +1241,7 @@ fi
         "image_id": image_id,
         "source_commit": source_commit,
         "registry_fingerprint": canonical_sheets_registration_fingerprint(),
-        "scope_count": 15,
+        "scope_count": 14,
         "routing_key_count": 6,
     }
     env = {
@@ -1466,7 +1472,7 @@ def test_deploy_wrapper_validates_sanitized_immutable_rollback_evidence(
         "Sheets rollback attestation passed: exact registration contract verified."
         in completed.stdout
     )
-    assert proof["scope_count"] == 15
+    assert proof["scope_count"] == 14
     assert proof["routing_key_count"] == 6
     assert "12 scopes" not in completed.stdout
     assert "Artifact Registry and Cloud Build provenance: verified" in completed.stdout

@@ -85,6 +85,8 @@ repeat failures, and promote stable knowledge to its proper operational form.
 | L-026 | Gateway OAuth | Keep transient refresh failures eligible for retry | active |
 | L-027 | ZelerData | Verify delivery progress, not just consumer readiness | active |
 | L-028 | ZelerData | Preserve independent coverage when acquiring another interval | active |
+| L-029 | VM pause | Preserve Docker nanosecond proof on the actual host interpreter | active |
+| L-030 | ZelerData | Pace immediately before transport, after persisted charge | active |
 
 ## Cloud Build and VM deployment
 
@@ -467,3 +469,32 @@ repeat failures, and promote stable knowledge to its proper operational form.
   evidence in `openspec/changes/zelerdata-live-formula-repairs/`
   `apply-progress-broker-probes.md` and `apply-progress-gateway-ownership.md`.
 - status: promoted/reference
+
+### L-029 — Verify pause proof on the actual host interpreter
+- area: VM pause and recovery, Docker RFC3339Nano
+- proven path: Parse aware Docker timestamps as exact integer nanoseconds and
+  test the installed host Python, not only the application interpreter. Accept
+  API shell exit143 only with ordered shutdown/finished-PID evidence from the
+  same captured container generation; recover marked writers on any rejection.
+- failed path: Python3.11 rehearsal masked Python3.10 rejection of eight/nine
+  fractional digits. Truncating to microseconds can instead accept a sentinel
+  one nanosecond older than its generation. Either is unsafe pause evidence.
+- verification/source: `infra/operations/zelerdata_history_pause.py`,
+  `tests/test_zelerdata_history_pause.py`, and the sole failed/recovered C cut in
+  `docs/sheets/zelerdata-historico-builds-runtime-20261003.md`. A local parser fix
+  does not authorize repeating a bounded production cut.
+- status: active
+
+### L-030 — Pace at dispatch after persisted budget admission
+- area: ZelerData historical acquisition and shared request pacing
+- proven path: Charge the persisted policy first, pace immediately before RPC,
+  and recheck the charged UTC window without an intervening database await.
+  Keep the authenticated gateway's late persisted authority check. A reservation
+  that expires while pacing remains consumed but must produce zero HTTP calls.
+- failed path: Pace before Mongo admission; concurrent workers can complete
+  database waits together and cluster actual RPC starts despite paced grants.
+  Do not reset counters or relax spacing assertions to hide this ordering bug.
+- verification/source: `modules/sheets/tests/test_history_execution_controls.py`,
+  `modules/sheets/tests/test_devoluciones_onboarding.py`, and the strict shared
+  coordinator scenario in `modules/sheets/tests/test_history_onboarding_shared_capacity.py`.
+- status: active

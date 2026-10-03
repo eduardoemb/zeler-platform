@@ -16,7 +16,7 @@ from infra.mongo.apply_validators import apply_validators
 from motor.motor_asyncio import AsyncIOMotorClient
 
 from zeler_platform_core.models import SheetsHistoryAcquisition
-from zeler_sheets.formulas.pacing import LocalQuotaTimeoutError
+from zeler_sheets.formulas.pacing import HistoryPolicyWaitError, LocalQuotaTimeoutError
 from zeler_sheets.formulas.read_models import read_model_reconciliation_marker_covers
 from zeler_sheets.formulas.recovery import (
     FormulaRecoveryQueue,
@@ -744,8 +744,12 @@ async def test_hour_superset_keeps_exact_chunk_and_excludes_boundary_rows(harnes
 
 
 @pytest.mark.asyncio
-async def test_page_failure_resumes_same_offset_and_quota_does_not_charge(harness: Harness) -> None:
-    harness.gateway.failures["search"] = LocalQuotaTimeoutError()
+@pytest.mark.parametrize("hold", [LocalQuotaTimeoutError, HistoryPolicyWaitError])
+async def test_page_failure_resumes_same_offset_and_quota_does_not_charge(
+    harness: Harness,
+    hold: type[Exception],
+) -> None:
+    harness.gateway.failures["search"] = hold()
     harness.head = await harness.producer.step(harness.job, harness.head)
     queued = await harness.producer.worker.queue.collection.find_one({"_id": harness.job["_id"]})
     assert queued is not None and queued["attempts"] == 0

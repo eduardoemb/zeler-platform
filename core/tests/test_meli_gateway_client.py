@@ -159,3 +159,29 @@ async def test_request_supports_post_with_json_body_and_seller_jwt() -> None:
 
 def json_body(request: httpx.Request) -> dict[str, Any]:
     return cast(dict[str, Any], json.loads(request.content))
+
+
+@pytest.mark.asyncio
+async def test_history_headers_preserve_trace_but_cannot_enable_hidden_retry() -> None:
+    requests: list[httpx.Request] = []
+
+    def response(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, json={}, headers={"X-Zeler-Upstream-Attempts": "1"})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(response)) as http_client:
+        client = MeliGatewayClient(
+            "http://gateway:8080/proxy/meli",
+            cast(Any, StubMeliGatewayAuth("fixture-jwt")),
+            http_client=http_client,
+        )
+        await client.fetch_resource_once(
+            seller_id="82453304",
+            path="/orders/1",
+            headers={
+                "X-Zeler-History-Trace": "h1-" + "a" * 32 + ":orders:initial",
+                "X-Zeler-Proxy-Retry": "enabled",
+            },
+        )
+    assert requests[0].headers["x-zeler-proxy-retry"] == "disabled"
+    assert requests[0].headers["x-zeler-history-trace"].startswith("h1-")

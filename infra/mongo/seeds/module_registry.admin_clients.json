@@ -36,8 +36,7 @@
         "GET /post-purchase/v2/claims/*/returns",
         "GET /shipments/*",
         "GET /questions/*",
-        "GET /messages/packs/*",
-        "GET /stock/fulfillment/operations/search"
+        "GET /messages/packs/*"
       ],
       "routing_keys": [
         "items.*",

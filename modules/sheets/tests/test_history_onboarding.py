@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -17,9 +18,10 @@ from zeler_sheets.history_onboarding import HistoryOnboardingWorker, PlanBudgetG
 
 @pytest_asyncio.fixture
 async def db() -> AsyncIterator[Any]:
-    client: AsyncIOMotorClient[Any] = AsyncIOMotorClient(
-        "mongodb://127.0.0.1:27028/?directConnection=true", tz_aware=True
-    )
+    uri = os.environ.get("MONGO_URI", "mongodb://127.0.0.1:27028/?directConnection=true")
+    assert uri.startswith(("mongodb://127.0.0.1:27028/", "mongodb://127.0.0.1:27030/"))
+    assert "directConnection=true" in uri
+    client: AsyncIOMotorClient[Any] = AsyncIOMotorClient(uri, tz_aware=True)
     hello = await client.admin.command("hello")
     assert hello["isWritablePrimary"] and hello["setName"] == "rs0"
     database = client["zeler_onboarding_" + uuid4().hex]
@@ -332,7 +334,7 @@ def test_onboarding_sources_have_explicit_scopes_in_real_client_seed() -> None:
     )
     sheet = next(doc for doc in seed["documents"] if doc["_id"] == "sheets")
     assert "GET /messages/packs/*" in sheet["allowed_meli_scopes"]
-    assert "GET /stock/fulfillment/operations/search" in sheet["allowed_meli_scopes"]
+    assert "GET /stock/fulfillment/operations/search" not in sheet["allowed_meli_scopes"]
 
 
 @pytest.mark.asyncio
