@@ -4,8 +4,11 @@ Actualización: 3 de octubre de 2026 UTC. Estado: **RETIROS bloqueado por eviden
 de fuente concreta**; Full queda excluido del piloto y no bloquea las otras cinco
 fuentes. La única reanudación autorizada de siete selecciones **se ejecutó y se
 detuvo en la cuarta por 429**: cuatro GET adicionales, **siete acumulados** y tres
-sin usar. Ese saldo **no autoriza otra ejecución**. No se encontró referencia
-de retiro; no se cambiaron permisos ni se hicieron builds/despliegues.
+sin usar. El usuario **cerró la investigación Full**: ese saldo no autoriza otra
+ejecución y no se propone ni programa una consulta adicional. No se encontró
+referencia de retiro. Corrección local publicada en C3
+`aeefe993ad5c9a4ff4760c9b691ac11ad47b5a6d`, **sin builds/despliegues**;
+recibos C1/C2 y permiso runtime de 14 scopes preservados, contrato local de 15 scopes no desplegado.
 
 ## 1. Resultado de la investigación local
 
@@ -261,7 +264,8 @@ reanudación automática pendiente.
   sigue siendo los **3 GET anteriores**. No se consumió una nueva bolsa de diez.
 - No se obtuvieron referencias nuevas de retiro/bulto/cantidad/fecha. No hubo
   escrituras de negocio, permisos nuevos, reparación de tokens, commit/push,
-  builds ni despliegues. La corrección local existente permanece sin publicar.
+  builds ni despliegues. En ese momento la corrección local aún no estaba publicada; su publicación
+  posterior C3 se registra en el recibo, no implica despliegue.
 
 **Estado de ese intento: cerrado por bloqueo de acceso SSH; API no ejecutada.**
 Para otra ejecución primero debe verificarse el contexto SSH legítimo y su
@@ -366,14 +370,16 @@ No se consulta otra vez para comprobarlo ni se programa un retry.
 **Sin escrituras de negocio**; contabilidad/auditoría normal aceptada del proxy
 permanece. Sin scopes/rutas nuevas, refresh/cambio de cuenta, credenciales
 exportadas, cambios de confianza SSH, instalaciones, restart, commit/push, build
-o despliegue. El fix local de inventario sigue sin publicar/desplegar; recibos
-C1/C2 y contrato de rollback se conservan. Evidencia operativa sanitizada en los
+o despliegue en esa ejecución. El fix de inventario se publicó después como
+C3 `aeefe993ad5c9a4ff4760c9b691ac11ad47b5a6d`, sin desplegar;
+recibos C1/C2 y contrato de rollback se conservan. Evidencia operativa sanitizada en los
 logs privados del operador `zeler-full-prepare-20261003.log` y
 `zeler-full-seven-executed-20261003.log`; no son archivos de repositorio.
 
 **Estado actual: ejecución autorizada cerrada por 429, mapeo auténtico pendiente.**
-El saldo aritmético de tres GET **no es permiso para continuar**, no se prepara
-otra búsqueda ni se pide automáticamente ampliar cuota/ventana. Full permanece
+El usuario cerró Full: el saldo aritmético de tres GET **no es permiso para
+continuar**; no se prepara, propone ni programa otra búsqueda/retry ni una
+ampliación de cuota/ventana. Full permanece
 fuera del piloto; las otras cinco fuentes continúan independientes. La comprobación posterior de lectura, **04:43:02.086342 UTC**, confirmó
 exactamente **siete GET totales**, los cuatro nuevos statuses 200/200/200/429 a
 04:41:55.408, 04:41:56.163, 04:41:57.099 y 04:41:58.113 UTC, y registro de
@@ -382,7 +388,10 @@ ambos archivos knownhosts conservaron hashes; los cuatro archivos ejecutables
 validados del fix local también. No quedan comprobaciones VM pendientes para
 cerrar esta ejecución y el postcheck no la reabre.
 
-### Criterio de salida
+### Criterio de salida histórico — no reabre la investigación
+
+El usuario cerró Full; estos criterios se conservan como historia, no proponen
+consulta, programación ni continuación vigente.
 
 - Si aparece referencia: documentar qué campo/nivel representa realmente y
   proponer su contraste acotado. Ningún nombre `withdrawal_id`, cantidad de
@@ -398,7 +407,9 @@ cerrar esta ejecución y el postcheck no la reabre.
 
 ## 5. Propuesta original de mapeo con muestra conocida — histórica/separada
 
-**No es la autorización actual de descubrimiento.** La propuesta del 2 de octubre
+**Propuesta histórica conservada: no está activa ni autoriza descubrimiento.**
+El usuario cerró la investigación Full, sin consultas adicionales programadas.
+La propuesta del 2 de octubre
 se conserva para una fase posterior de contraste/mapeo, si existe una referencia
 conocida y se aprueba su alcance propio. **No autoriza diez llamadas nuevas**, no
 amplía los siete restantes de §4, ni exige al usuario conseguir el retiro como

@@ -3,8 +3,9 @@
 Cierre local original: 2 de octubre de 2026; actualización Full: 3 de octubre UTC.
 Este informe acredita desarrollo local y pruebas
 aisladas, **no despliegue ni aceptación productiva**, y no convierte una fuente
-pendiente en completa. Commit/push propios publicados después del cierre local: fuente
-`4216e18b62da289c1e67acd1ac8d6db4ba0c9217`. Su ejecución e identidad se registran en el
+pendiente en completa. Fuente vigente publicada y verificada tras la corrección
+Full: C3 `aeefe993ad5c9a4ff4760c9b691ac11ad47b5a6d`; C1/C2 y su evidencia original se
+conservan como historial. Su ejecución e identidad se registran en el
 [recibo de publicación](zelerdata-historico-publicacion-20261002.md).
 
 Referencia de aceptación:
@@ -439,18 +440,20 @@ la propuesta exacta, sin desplegar servicios ajenos por copiar el mismo workspac
 
 [Propuesta preparada](zelerdata-historico-publicacion-piloto-propuesta.md): separa
 publicación, probe Full, backup/restore, builds, despliegue y piloto; una cuenta,
-90 minutos/día UTC, máximos 2,000 GET iniciales + 500 de mantenimiento (Full aparte,
-≤10 GET). El piloto general sigue propuesto, **no autorizado ni ejecutado**. El
-descubrimiento Full posterior tiene alcance separado y tres GET consumidos;
+90 minutos/día UTC, máximos 2,000 GET iniciales + 500 de mantenimiento,
+**Full excluido con 0 GET** (investigación cerrada). El piloto general sigue propuesto, **no autorizado ni ejecutado**. El
+descubrimiento Full posterior tuvo alcance separado y siete GET consumidos;
+el usuario cerró esa investigación: no quedan consultas/retries programados;
 no convierte estos límites generales en autorización productiva.
-El SHA publicado se registra solo tras verificar el envío; no se fija un digest
+El SHA fuente C3 publicado/verificado se registra en el recibo; no se fija un digest
 sin build real. RETIROS Full permanece pendiente sin bloquear las otras fuentes.
 La [adaptación mínima del complemento](zelerdata-ordenes-parciales-complemento-propuesta.md)
 es documental: opt-in final opcional, aviso visible y default exacto sin cambios;
 **no implementada ni disponible en Sheets**.
 
-1. Cerrar el recurso/mapeo auténtico de RETIROS Full o acordar explícitamente una
-   adaptación compatible; no presentar el pendiente como implementación completa.
+1. Mantener RETIROS Full pendiente y excluido del piloto, sin bloquear las otras
+   cinco fuentes; investigación cerrada por el usuario, no consultas restantes
+   ni mapeo supuesto. No presentar ese pendiente como implementación completa.
 2. Commit/push propios autorizados: comprobar su resultado en el recibo y usar
    el commit fuente exacto publicado en `main`; el checkout local no es autoridad
    de build. Builds y despliegue conservan autorización separada.
@@ -482,10 +485,11 @@ el asistente local.
 ## Actualización Full — 3 de octubre de 2026 UTC
 
 Esta sección añade hechos posteriores al cierre local y a su publicación.
-**No modifica el recibo C1/C2 ni convierte las imágenes publicadas en imágenes
-desplegadas.** Fuente original `4216e18b62da289c1e67acd1ac8d6db4ba0c9217`;
-los nuevos cambios locales de inventario, pruebas y este informe **no tienen
-commit/push/build/deploy autorizados**. La corrección/pruebas fueron locales;
+**Conserva los hechos del recibo C1/C2 y no convierte código publicado en
+imágenes construidas/desplegadas.** Fuente original `4216e18b62da289c1e67acd1ac8d6db4ba0c9217`;
+La corrección de inventario, sus pruebas y los reportes propios fueron
+posteriormente autorizados y publicados como C3 `aeefe993ad5c9a4ff4760c9b691ac11ad47b5a6d`;
+no se construyó ni desplegó imagen por esa publicación. La corrección/pruebas fueron locales;
 la búsqueda real posterior se autorizó por separado y se detuvo tras cuatro GET
 adicionales por 429, sin activar el piloto. Las otras cinco fuentes permanecen
 sin bloqueo por el mapeo Full; Full sigue excluido de su piloto.
@@ -527,7 +531,7 @@ conservando avance útil ante paginación, cuota, fallo y reinicio. No usar
 candidatos ajenos, convertir vacío en "no aplica", ni inventar ID de retiro,
 cantidad solicitada o coverage. Este cambio local no solventa el mapeo RETIROS.
 
-**Corrección local implementada, todavía no publicada ni desplegada:**
+**Corrección local implementada y publicada en C3; no desplegada:**
 `collect_full_operations` selecciona publicaciones Full propias por páginas de
 32 más un registro de lookahead, obtiene inventarios de producto/variaciones,
 deduplica entre páginas y limita el conjunto a 4,096 identidades. Superar el límite
@@ -565,7 +569,7 @@ se corrigieron 9 líneas de semilla sintética sin debilitar assertions ni modif
 el comportamiento del collector, se repitieron 28 focused y la suite completa.
 Ese run fallido no se presenta como evidencia final verde. Las cifras 5,808+8
 anteriores acreditan el snapshot original publicado; 5,820+8 acredita este
-snapshot local nuevo **sin publicar/desplegar**. No hubo otra investigación general,
+snapshot corregido publicado en C3 **sin builds/despliegue**. No hubo otra investigación general,
 consulta remota ni ronda de perfección; se cerró la regresión de fixture del cambio.
 
 ### Reanudación única autorizada y ejecutada; cerrada por 429
@@ -605,7 +609,7 @@ sin usar no autoriza continuar**. Ninguna adquisición/reanudación automática
 queda aprobada por esta ejecución ya detenida.
 
 **Clasificación actual:** defecto de filtro/checkpoints corregido y validado
-localmente, sin publicar/desplegar; mapeo auténtico RETIROS bloqueado externamente;
+localmente y publicado en C3, sin desplegar; mapeo auténtico RETIROS bloqueado externamente;
 ejecución acotada cerrada por 429 sin referencia; validación productiva de
 backend, nativo Sheets y piloto sigue pendiente. Full continúa fuera del piloto
 y no bloquea las otras cinco fuentes. El complemento parcial sigue exclusivamente
@@ -615,6 +619,11 @@ propuesto, no disponible en Sheets. El postcheck read-only de **04:43:02.086342 
 Sin GET nuevos; hashes SSH config/ambos knownhosts y cuatro archivos ejecutables
 locales validados permanecieron iguales. Ejecución y verificación cerradas,
 sin más llamadas VM necesarias ni permiso pendiente de reanudación.
+El usuario cerró la investigación Full: no ejecutar ni programar los tres GET
+sin usar; no se propone otra consulta. Imágenes/fuente/digests actuales **no
+atestiguados**: SSH e imports correctos no prueban procedencia, por lo que se
+requiere inspección de drift aparte antes de un rollout. Runtime observado: 14
+scopes no acredita el contrato local de 15 desplegado.
 
 ## Git, conservación y reversibilidad
 

@@ -1,31 +1,85 @@
 # ZelerData: recibo de publicación y autorizaciones pendientes
 
-Fecha: 2 de octubre de 2026. **Implementación, pruebas y documentación propias publicadas en `main`.**
-No se ejecutaron builds, despliegues ni consultas API reales; parciales nativos en Sheets siguen sin implementar. Este recibo se completa en un commit posterior exclusivamente documental para no autorreferenciar su SHA.
+Actualización: 3 de octubre de 2026 UTC. **Implementación original C1/C2 y
+corrección propia C3 publicadas en `main`; fuente validada vigente:
+`aeefe993ad5c9a4ff4760c9b691ac11ad47b5a6d`.** No se hicieron builds ni despliegues.
+La búsqueda Full autorizada sí se ejecutó y cerró por 429 tras 7/10 GET, sin
+referencia auténtica; el usuario cerró la investigación y no se usarán ni
+programarán los tres restantes. Parciales nativos en Sheets siguen sin implementar.
+Este follow-up es exclusivamente documental: registra C3 ya publicado y evita
+atribuirse un SHA futuro propio; las imágenes propuestas usan C3, no este recibo.
 
-## Fuente validada y conservación
+## Fuente actual C3 validada/publicada y delta exacta
+
+- Commit **`aeefe993ad5c9a4ff4760c9b691ac11ad47b5a6d`**:
+  `fix(sheets): scope Full acquisition to owned inventories`.
+- Parent exacto C2: `55ef7ab0b1e879b998e1d657469572660396539f`.
+- Solo seis archivos propios: `onboarding_sources.py`, tres tests
+  (`test_onboarding_sources.py`, `test_full_onboarding_handler.py`,
+  `test_history_onboarding_shared_capacity.py`) y los dos reportes de histórico/
+  validación Full. Sin código ajeno, dumps, DB ni credenciales.
+- Root comprobó hashes de los cuatro blobs ejecutables staged y del commit
+  contra el snapshot congelado ya validado; push sin force, SHA remoto
+  `refs/heads/main` exactamente igual a C3 y checkout limpio al terminar ese push.
+- Validación existente, no repetida para publicar: **5,820 aprobadas, 0 fallos,
+  9 skips; 381.04 s**, más **8 rs0 protegidas aprobadas/0 skips** y **28 focused**.
+  Ruff, formato (643 archivos), mypy completo (643 archivos), direct-Meli lint y schema-export aprobados.
+  Los ocho skips de guard de suite se cubrieron con rs0 separado; restante Caddy
+  sin claves requeridas. Review sigue `disabled/unmanaged`.
+- Comparación de objetos C1→C3 confirmada: **32 de los 36 hashes originales
+  permanecen iguales; solo cuatro cambian** y coinciden con los valores nuevos
+  de esta tabla. La tabla original de 36 filas al final se conserva como evidencia
+  histórica de C1, no se reescribe para simular que C1 contenía el fix.
+
+| Archivo actualizado | SHA-256 validado de C3 |
+| --- | --- |
+| `modules/sheets/src/zeler_sheets/onboarding_sources.py` | `3ed6551f9bad782ac5e7fe6a28d18e55c1e2e187cada197ce471c52fa894dec6` |
+| `modules/sheets/tests/test_onboarding_sources.py` | `9224817d46d1f52a9f03bcacf3af44d2cd858f61edd425bdeff70ca127bc5f9e` |
+| `modules/sheets/tests/test_full_onboarding_handler.py` | `5c9beac81b4249dc71a275a6d3074a30a2d7ed00068390236145e768ad2a7b9a` |
+| `modules/sheets/tests/test_history_onboarding_shared_capacity.py` | `3526b4e5df20d95d0185dc7b9948f0043ad7fa0febe593158f1f77ff6dd5322e` |
+
+Un commit posterior de este follow-up documental conservará el código/config/tests
+de C3; root comprobará esa equivalencia y el SHA remoto después de publicarlo.
+No se escribe aquí su futuro SHA para evitar autorreferencia. **Fuente recomendada
+para los tres builds propuestos: C3 exacto**, sin referencia móvil ni checkout
+local subido. Publicar no demuestra drift resuelto ni procedencia desplegada.
+
+## Fuente original C1/C2 y conservación — evidencia histórica
 
 - Base ajena preservada: `124fd236fea600ead8c1436560a22b1909d7c3c8` (diagnóstico OAuth).
 - SHA fuente validado/publicado (`feat(sheets): add bounded history-on-link onboarding`):
   `4216e18b62da289c1e67acd1ac8d6db4ba0c9217`.
 - Envío: `124fd23..4216e18`, sin force. Después del push, `git ls-remote origin refs/heads/main` coincidió exactamente con HEAD; checkout limpio.
-- Este commit fuente permanece como ancestro de `main` tras el recibo documental. **Es la fuente exacta recomendada para los builds**, no la base anterior ni una referencia móvil.
+- Este commit fuente permanece como ancestro de `main` tras el recibo documental. **Fue la fuente recomendada para el snapshot original**; la fuente vigente de builds es C3 exacto, arriba, no C1 ni una referencia móvil.
 - Snapshot validado: 36 archivos de código/configuración/pruebas; SHA-256 del mapa JSON ordenado compacto:
   `9e424d1487d0a7334a90032aa59ad55d2ab6fbe7a70b50e036336000c9126c8e`.
 - Verificados los 36 blobs staged y los 36 blobs del commit contra los hashes por archivo siguientes; el follow-up documental conserva exactamente este código/configuración/tests. No se incluyen dumps, DB, credenciales ni trabajo ajeno.
 - Gates ya realizados sobre este snapshot: Linux **5,808 passed / 9 skipped** (402.77 s), más rs0 protegido **8 passed / 0 skipped** (2.10 s). Ruff, format (643 archivos), mypy completo (643 archivos), direct-Meli lint y schema-export: éxito. No se abre otra ronda general; documentación y equivalencia de fuente se verifican al publicar.
 - Detalle y limitaciones de los skips/entorno: [informe local](zelerdata-historico-al-vincular-implementacion.md). Review opt-in: `disabled/unmanaged`, no aprobación fabricada.
 
-## Pendientes explícitos
+## Pendientes explícitos y Full cerrado
 
-- **RETIROS Full:** mapeo positivo pendiente por jerarquía retiro/bulto, cantidad solicitada y fecha; no bloquea las otras cinco fuentes.
-- Búsqueda autorizada por UI, ≤5 minutos/un retiro: detenida en **34 segundos**, porque la sesión disponible mostró una cuenta de prueba, no el vendedor legítimo. No se abrió retiro, cambió cuenta/sesión, consultó API ni descargó archivo. No se obtuvieron IDs reales. Continuación: abrir Retiros Full ya autenticado en la cuenta correcta e identificar esa pestaña. No usar una vía alternativa para eludir este bloqueo.
-- [Probe Full](zelerdata-full-validacion-acotada.md), ≤10 GET, ≤7 días UTC, ≤3 minutos y sin reintentos: **no autorizado ni ejecutado**. La aprobación de búsqueda UI no lo incluye.
-- [Complemento parcial](zelerdata-ordenes-parciales-complemento-propuesta.md): solo propuesta del séptimo argumento opcional booleano, default falso, advertencia visible y totales exactos protegidos. **No implementado ni disponible en Sheets.**
+- **RETIROS Full:** jerarquía retiro/bulto, cantidad solicitada y fecha siguen sin
+  evidencia auténtica de mapeo; no bloquea las otras cinco fuentes. La corrección
+  de inventarios de C3 no convierte movimientos de stock en retiros.
+- Búsqueda UI inicial histórica: detenida en 34 s ante una cuenta de prueba, sin
+  abrir retiro ni cambiar sesión. No se propone volver al navegador.
+- [Descubrimiento técnico posterior](zelerdata-full-validacion-acotada.md):
+  HOPEMOB legítimo verificado dentro de VM, búsqueda read-only por gateway;
+  tres GET previos más cuatro de una ejecución autorizada = **7/10 acumulados**,
+  últimos 200/200/200 vacíos y 429/over_quota; postcheck audit confirma 7 GET y 14 scopes sin cambios.
+  No hubo referencia útil. Usuario cerró investigación Full: **no ejecutar ni
+  programar los tres sin usar**, no retry ni otra propuesta de consulta.
+- Runtime observado: 14 scopes por permiso search individual previamente
+  autorizado y respaldado. Contrato local de 15 scopes/6 keys **no declarado
+  desplegado**. Readiness de contenedor/imports no atestigua fuente/digest actual.
+- [Complemento parcial](zelerdata-ordenes-parciales-complemento-propuesta.md): solo
+  propuesta del séptimo argumento booleano, default falso, aviso visible y totales
+  protegidos. **No implementado ni disponible en Sheets.**
 
 ## Operación posterior, no autorizada
 
-Usar **`4216e18b62da289c1e67acd1ac8d6db4ba0c9217`** para las tres imágenes afectadas: `gateway`, `sheets-api`, `sheets-worker`. Fuente desplegada y digests actuales **no inspeccionados**; verificar drift, no asumir que el runtime contiene esta entrega. Se recomienda un nuevo Cloud Build por servicio afectado, sujeto a autorización separada y procedencia verificada. No se ha construido ni desplegado nada.
+Usar **`aeefe993ad5c9a4ff4760c9b691ac11ad47b5a6d`** para las tres imágenes afectadas: `gateway`, `sheets-api`, `sheets-worker`. Fuente desplegada, procedencia y digests actuales **no atestiguados**; verificar drift, no asumir que el runtime contiene esta entrega. Se recomienda un nuevo Cloud Build por servicio afectado, sujeto a autorización separada y procedencia verificada. No se ha construido ni desplegado nada.
 
 [Propuesta operativa](zelerdata-historico-publicacion-piloto-propuesta.md#8-autorizaciones-concretas-listas-para-completar):
 
@@ -35,9 +89,9 @@ Usar **`4216e18b62da289c1e67acd1ac8d6db4ba0c9217`** para las tres imágenes afec
 4. **D — rollout:** completar tres digests y rollback recuperable compatible con 15 scopes/6 keys y `policy_authority`; API/worker antes de admisión gateway, flag apagado. Sin borrar datos/jobs ni bajar scopes; ≥5 GiB raíz antes de cada pull.
 5. **E — piloto:** solo vendedor `82453304` legítimamente linked, hasta 2,000 GET iniciales + 500 mantenimiento, ≤90 minutos/un día UTC, Full excluido. Preservar corte/consumed/checkpoints y cobertura sana; dos ciclos con cambios reales. API parcial con aviso, no opt-in nativo Sheets.
 
-Backup/rollout/piloto aún requieren los campos del baseline, destinos y digests; no son permisos generales listos para ejecutar. Build y lectura VM pueden aprobarse por separado: el SHA publicado ya está incorporado a los textos A/B de la propuesta. Tras el segundo push se verificará SHA remoto = HEAD y equivalencia del código/configuración/tests; su identidad final se reporta fuera del propio commit para evitar autorreferencia.
+Backup/rollout/piloto aún requieren los campos del baseline, destinos y digests; no son permisos generales listos para ejecutar. Build y lectura VM pueden aprobarse por separado: el SHA publicado ya está incorporado a los textos A/B de la propuesta. Tras publicar el follow-up documental se verificará SHA remoto = HEAD y equivalencia de los 36 objetos código/configuración/tests respecto de C3; su identidad final se reporta fuera del propio commit para evitar autorreferencia.
 
-## Inventario SHA-256 validado
+## Inventario SHA-256 original C1 — 36 filas históricas
 
 | Archivo | SHA-256 |
 | --- | --- |

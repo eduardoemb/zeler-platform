@@ -1,23 +1,27 @@
 # ZelerData: propuesta de publicación y piloto acotado
 
-Fecha: 2 de octubre de 2026. **Trabajo propio publicado en `main`; fuente validada
-`4216e18b62da289c1e67acd1ac8d6db4ba0c9217`, verificada contra el remoto.
-Ejecución e identidad se registran en el
-[recibo de publicación](zelerdata-historico-publicacion-20261002.md).**
-El commit posterior del recibo es exclusivamente documental y no cambia esta
-fuente. **Builds, despliegue, consulta API real, backup productivo, permisos/índices
-y escrituras en Sheets siguen sin autorización ni ejecución.** La excepción
-autorizada fue buscar un retiro por UI en solo lectura, un retiro/≤5 minutos:
-se detuvo en 34 segundos ante una cuenta de prueba; no se abrió ningún retiro
-ni se obtuvo una referencia real. Para continuar hace falta la pestaña de
-Retiros Full de la cuenta legítima, sin cambiar/bypassear sesiones.
+Actualización: 3 de octubre de 2026 UTC. **Trabajo propio publicado en `main`;
+fuente validada vigente `aeefe993ad5c9a4ff4760c9b691ac11ad47b5a6d` (C3),
+verificada contra el remoto.** C1/C2 permanecen como historial en el
+[recibo de publicación](zelerdata-historico-publicacion-20261002.md). El follow-up
+de este recibo/propuesta es documental, no una fuente nueva de imágenes.
+**Builds, despliegue, respaldo productivo y activación piloto siguen sin
+autorización ni ejecución.**
+
+El descubrimiento Full sí se autorizó de forma separada y cerró con **7/10 GET
+acumulados, sin referencia auténtica de retiro y parada por 429**. El usuario
+cerró esa investigación: tres sin usar no autorizan continuar y no se propone
+ni programa otra consulta. Runtime observado: 14 scopes; contrato local: 15,
+**no declarado desplegado**. Contenedores/interpretes/SSH comprobados no prueban
+la procedencia o fuente de las imágenes actualmente ejecutadas; ese drift sigue
+requiriendo inspección separadamente autorizada.
 
 ## 1. Qué se puede autorizar por separado
 
 | Etapa | Alcance propuesto | No queda incluido |
 | --- | --- | --- |
-| Publicación — autorizada | Trabajo propio de histórico al vincular y cierres locales, con tests/reportes y propuestas; Conventional Commits, sin atribución IA. | Builds, deploys, pruebas reales, archivos ajenos. |
-| Evidencia Full | Muestra de [comprobación acotada](zelerdata-full-validacion-acotada.md): hasta 10 GET, retiro conocido y ≤7 días UTC. | Mapeo supuesto, permisos nuevos, facturación, año completo. |
+| Publicación — ejecutada/verificada | Trabajo propio de histórico al vincular y cierres locales, con tests/reportes y propuestas; Conventional Commits, sin atribución IA. | Builds, deploys, pruebas reales, archivos ajenos. |
+| Full — cerrado/pendiente | [Evidencia histórica](zelerdata-full-validacion-acotada.md): 7/10 GET, sin referencia, detenido por 429; RETIROS sigue no disponible sin mapeo. | Consultas restantes, retries, nueva búsqueda/programación, mapeo supuesto. |
 | Preparación runtime | Inspección actual, backup consistente y restauración aislada; índices/registro estrictamente seleccionados si se autorizan. | Limpieza, reparación por drift, restauración sobre producción. |
 | Builds | Una imagen por Cloud Build verificado de commit exacto publicado en `main`. | Deploys, checkout local subido, otros servicios. |
 | Despliegue | Gateway, Sheets API y Sheets worker con digests verificados, activación inicialmente apagada y rollback compatible. | Restart amplio, otras APIs/workers, bootstrap no afectado. |
@@ -28,14 +32,18 @@ La autorización de publicación ya recibida no aprueba ninguna de las demás et
 su alcance, se presenta la diferencia y se espera autorización; no repetir ni
 ampliar pruebas reales automáticamente.
 
-## 2. Publicación: contenido y prueba antes de enviar
+## 2. Publicación verificada: fuente actual y conservación
 
 Checkout seleccionado en `main`. Base observada al preparar: commit externo
 `124fd236fea600ead8c1436560a22b1909d7c3c8`, diagnóstico OAuth ajeno conservado.
 **No es el commit fuente de esta entrega**. Usar el SHA completo de la entrega
 publicada y verificada que registra el recibo de publicación, nunca esta base.
+C3 `aeefe993ad5c9a4ff4760c9b691ac11ad47b5a6d` añadió únicamente corrección Full,
+sus tres tests y dos reportes; los cuatro archivos ejecutables coinciden con
+la validación ya realizada (5,820+8 y 28 focused). No se repitió la suite para
+esta publicación; se comprobó equivalencia staged/commit/remoto y conservación.
 
-Contenido propio autorizado, conservando pruebas junto a su comportamiento:
+Contenido propio publicado, conservando pruebas junto a su comportamiento:
 
 1. **Histórico acotado y continuidad:** intención core/OAuth, coordinador, fuentes,
    parciales persistidos, convivencia con recovery, pacing, mantenimiento, packs
@@ -175,7 +183,7 @@ Para este piloto no dejarla ausente. Mantener pacing compartido existente (defau
 
 Antes de habilitar, obtener plan por OAuth auténtico con flag apagado y, bajo
 **autorización explícita desde VM**, restringir autoridad persistida a cinco fuentes
-(Full excluido hasta mapeo) y bajar límites remanentes. No reiniciar consumed,
+(Full excluido; investigación cerrada) y bajar límites remanentes. No reiniciar consumed,
 corte, jobs, snapshots ni otras cuentas. Si el plan ya agotó una cuota, no elevarla
 como "reset": declarar pendiente y pedir otro alcance.
 
@@ -186,7 +194,7 @@ como "reset": declarar pendiente y pedir otro alcance.
 | Envíos/costos dependientes | 250 |
 | Mensajes | 300 |
 | Reclamos/devoluciones | 500 |
-| Full | 0; probe aparte, máximo 10 GET sin publicación de coverage. |
+| Full | **0**; investigación cerrada, sin consultas/retries/programación. |
 | **Total inicial** | **2,000** |
 
 Mantenimiento: máximo **500 GET adicionales** durante el ensayo, ≤300 por fuente;
@@ -242,9 +250,10 @@ container running, una muestra correcta o tests verdes en cobertura anual.
 ## 8. Autorizaciones concretas listas para completar
 
 Son permisos **independientes**. Ningún texto es una instrucción ejecutada.
-SHA fuente ya publicado y verificado: `4216e18b62da289c1e67acd1ac8d6db4ba0c9217`.
-Comprobar que sus 36 archivos fuente siguen iguales a la validación y que el
-commit continúa presente en `origin/main`; el recibo posterior es solo documental. No usar `main`
+SHA fuente actual publicado y verificado: `aeefe993ad5c9a4ff4760c9b691ac11ad47b5a6d`.
+El recibo conserva C1/C2 y sus 36 hashes originales como históricos, y registra
+la delta C3 de cuatro archivos validados; 32 permanecen iguales. Comprobar que
+C3 continúa presente en `origin/main`; el follow-up del recibo es solo documental. No usar `main`
 movible, base anterior ni checkout local como sustituto. Rechazar una expansión
 no aprobada; los digests y el baseline se incorporan antes de pedir despliegue.
 
@@ -253,7 +262,7 @@ no aprobada; los digests y el baseline se incorporan antes de pedir despliegue.
 > Autorizo exactamente tres Cloud Builds en `zeler-platform-dev`, región
 > `us-central1`, desde el repositorio conectado
 > `projects/zeler-platform-dev/locations/us-central1/connections/zeler-platform-github/repositories/zeler-platform`,
-> al commit `4216e18b62da289c1e67acd1ac8d6db4ba0c9217` presente en `main`. Una imagen por build:
+> al commit `aeefe993ad5c9a4ff4760c9b691ac11ad47b5a6d` presente en `main`. Una imagen por build:
 > `gateway` (`gateway/Dockerfile`), `sheets-api`
 > (`modules/sheets/Dockerfile.api`) y `sheets-worker`
 > (`modules/sheets/Dockerfile.worker`), en el Artifact Registry existente
@@ -270,7 +279,7 @@ no aprobada; los digests y el baseline se incorporan antes de pedir despliegue.
 > proyecto `zeler-platform-dev`, desde el contexto VM/VPC permitido: capacidad,
 > mount Mongo, memoria, Docker, salud/readiness/backlog y las identidades inmutables
 > de gateway/Sheets API/worker en ejecución. Comparar fuente desplegada con
-> `4216e18b62da289c1e67acd1ac8d6db4ba0c9217` cuando haya procedencia verificable. Usar preflight
+> `aeefe993ad5c9a4ff4760c9b691ac11ad47b5a6d` cuando haya procedencia verificable. Usar preflight
 > `--dry-run` y salida sanitaria seleccionada. No autorizo downloads, atestiguación
 > que descargue imágenes, backup, validator/index/registro, cleanup, restart,
 > reparación ni consulta de Mongo productivo desde el asistente local.
@@ -304,7 +313,7 @@ anteriores/rollback recuperables y atestiguadas, inventario exacto de índices/s
 config anterior y verificación de §5. Un permiso de build no cubre este texto.
 
 > Autorizo rollout acotado en `platform-vm` del commit
-> `4216e18b62da289c1e67acd1ac8d6db4ba0c9217` a gateway=`<DIGEST_GATEWAY>`,
+> `aeefe993ad5c9a4ff4760c9b691ac11ad47b5a6d` a gateway=`<DIGEST_GATEWAY>`,
 > Sheets API=`<DIGEST_API>` y worker=`<DIGEST_WORKER>`, con onboarding apagado.
 > Aplicar únicamente `<INDICES_Y_REGISTRO_EXACTOS>` aprobados, 15 scopes/6 routing
 > keys y fingerprint `bd13debfb57bba5a24d78fad93d371766cda8c6f288b70d93c9023788b09c16d`.
@@ -340,12 +349,12 @@ una cuarta imagen con el permiso A ni seleccionar un tag antiguo por convenienci
 > exactas; el opt-in parcial del complemento no está implementado ni incluido.
 
 **Full permanece bloqueado externamente, sin bloquear las otras cinco fuentes.**
-Su autorización de hasta diez GET se pide por separado cuando se identifiquen
-en la sesión legítima o el operador aporte vendedor, inventario, referencia
-retiro/bulto, cantidades/fechas conocidas y
-ventana UTC de hasta siete días en [la propuesta Full](zelerdata-full-validacion-acotada.md).
-No solicitar tokens al usuario ni interpretar la entrega de esos datos como
-permiso de ejecución.
+Su investigación actual está cerrada por decisión del usuario: no pedir ni
+programar los tres GET sin usar, consulta adicional, UI/browser ni un nuevo
+mapeo/probe en esta entrega. [El registro Full](zelerdata-full-validacion-acotada.md)
+conserva las fases históricas, no permisos vigentes. El piloto autorizado en una
+etapa futura excluirá Full y requerirá su propio alcance, sin resets o scopes
+implícitos. No solicitar tokens ni declarar RETIROS/coverage disponibles.
 
 ## Referencias
 
