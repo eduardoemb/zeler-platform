@@ -15,7 +15,7 @@ from bson.decimal128 import Decimal128
 from fastapi import APIRouter, Request, Response
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, StrictBool
 from pymongo.errors import DuplicateKeyError, PyMongoError
 
 from zeler_platform_core.auth.jwt import verify_module_jwt
@@ -123,6 +123,8 @@ class ExtensionTokenAuthContext:
 
 
 class FormulaExecutePayload(BaseModel):
+    # API-only, explicit partial table opt-in. Native add-on defaults stay exact.
+    allow_partial: StrictBool = False
     formula: str
     cuenta: str | None = None
     args: dict[str, Any] = Field(default_factory=dict)
@@ -168,6 +170,8 @@ def build_router(
                     {"seller_id": seller_id, "progress": None, "cutoff": None, "updated_at": None}
                 )
             )
+        from zeler_sheets.history_onboarding import message_periodic_progress
+
         return JSONResponse(
             jsonable_encoder(
                 {
@@ -175,6 +179,19 @@ def build_router(
                     "cutoff": doc.get("cutoff"),
                     "progress": doc.get("progress"),
                     "updated_at": doc.get("updated_at"),
+                    **(
+                        {
+                            "onboarding_status": doc.get("onboarding_status"),
+                            "sources": doc.get("onboarding_sources", {}),
+                            "budget": doc.get("budget", {}),
+                            "requested_from": doc.get("date_from"),
+                            "requested_to": doc.get("date_to"),
+                            "exact_coverage": False,
+                            "message_periodic_recovery": message_periodic_progress(doc),
+                        }
+                        if doc.get("policy_version") or doc.get("onboarding_status")
+                        else {}
+                    ),
                 }
             )
         )
@@ -743,6 +760,13 @@ async def _execute_formula_payload(
             status_code=400,
         )
 
+    if payload.allow_partial and payload.formula != "ZELERDATA_ORDENES":
+        return _formula_error(
+            "BAD_ARGUMENT",
+            "allow_partial is supported only for the acquired-order table ZELERDATA_ORDENES",
+            status_code=400,
+        )
+
     request.state.formula_phase = "seller_context"
     context = FormulaExecutionContext(
         contract=contract,
@@ -750,7 +774,10 @@ async def _execute_formula_payload(
         seller_id=validation.seller_id,
         seller_nickname=validation.seller_nickname,
         token_id=validation.token_id,
-        args=payload.args,
+        # Override any forged internal argument: only the validated explicit
+        # API opt-in can request acquired rows without a coverage certificate.
+        args={key: value for key, value in payload.args.items() if key != "_allow_partial"}
+        | ({"_allow_partial": True} if payload.allow_partial else {}),
         request_id=payload.request_id,
         seller_timezone=await _seller_timezone(request, validation.seller_id),
     )

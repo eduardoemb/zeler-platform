@@ -64,6 +64,10 @@ def build_pilot_history_backfill(
                 upsert=True,
                 return_document=ReturnDocument.AFTER,
             )
+        if plan_doc is not None and plan_doc.get("policy_version") == "history-on-link-v1":
+            # The account-link coordinator owns new admission under this plan.
+            # Existing legacy work drains normally; never duplicate its year.
+            return False
         stored_cutoff = plan_doc.get("cutoff") if plan_doc is not None else None
         if not isinstance(stored_cutoff, datetime) or stored_cutoff.tzinfo is None:
             logger.warning("zelerdata.history_backfill_invalid_cutoff", seller_id=seller_id)

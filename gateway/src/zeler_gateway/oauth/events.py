@@ -5,6 +5,7 @@ from typing import Any, Protocol
 
 import structlog
 
+from zeler_platform_core.history_onboarding import admit_history_onboarding
 from zeler_platform_core.models.base import current_schema_version
 
 logger = structlog.get_logger(__name__)
@@ -27,6 +28,8 @@ async def emit_accounts_linked(
 ) -> None:
     now = (clock or (lambda: datetime.now(UTC)))()
     seller_id = str(seller_id)
+    if seller_id.isascii() and seller_id.isdecimal():
+        await admit_history_onboarding(mongo_db, seller_id, now=now)
     existing = await mongo_db["bootstrap_jobs"].find_one({"seller_id": seller_id})
     if (
         existing is not None

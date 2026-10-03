@@ -1,0 +1,16 @@
+[
+  {
+    "keys": {
+      "acquisition_id": 1, "seller_id": 1, "read_model": 1,
+      "generation": 1, "pass_number": 1, "resource_id": 1
+    },
+    "options": {"name": "uniq_sheets_history_pending_identity", "unique": true}
+  },
+  {
+    "keys": {
+      "acquisition_id": 1, "seller_id": 1, "read_model": 1,
+      "generation": 1, "pass_number": 1, "state": 1, "resource_id": 1
+    },
+    "options": {"name": "sheets_history_pending_retry"}
+  }
+]

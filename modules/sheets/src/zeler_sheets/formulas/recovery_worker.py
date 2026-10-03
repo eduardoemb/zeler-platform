@@ -911,7 +911,11 @@ class FormulaRecoveryWorker:
         )
         start = _utc(job["date_from"])
         end = _utc(job["date_to"])
-        if marker_before is not None and job["read_model"] != "orders":
+        if (
+            marker_before is not None
+            and job["read_model"] != "orders"
+            and not job.get("policy_authority")
+        ):
             prior_start = marker_before.get("date_from")
             prior_end = marker_before.get("reconciled_until")
             if read_model_reconciliation_marker_covers(
@@ -1201,6 +1205,9 @@ class FormulaRecoveryWorker:
         scroll: str | None = None
         removed_question_ids: list[str] = []
         listed_but_gone: set[str] = set()
+        bounded_incremental = bool(job.get("policy_authority"))
+        previous_created: datetime | None = None
+        old_boundary = False
         while True:
             params = {
                 "seller_id": seller_id,
@@ -1208,6 +1215,12 @@ class FormulaRecoveryWorker:
                 "limit": "50",
                 "search_type": "scan",
             }
+            if bounded_incremental:
+                # Official questions contract documents date_created DESC:
+                # https://developers.mercadolibre.com.mx/es_ar/gestiona-preguntas-respuestas
+                # Validate ordering; an ignored sort must fail closed rather
+                # than certify a tail from an arbitrary first page.
+                params.update(sort_fields="date_created", sort_types="DESC")
             if scroll is not None:
                 params["scroll_id"] = scroll
             page = await self.gateway.fetch_resource(
@@ -1232,6 +1245,11 @@ class FormulaRecoveryWorker:
                     raise ValueError("duplicate or invalid question identity")
                 seen.add(question_id)
                 created = _date(row.get("date_created"))
+                if bounded_incremental:
+                    if previous_created is not None and created > previous_created:
+                        raise ValueError("question source ignored descending sort")
+                    previous_created = created
+                    old_boundary = old_boundary or created < start
                 if start <= created < end:
                     try:
                         detail = await self.detail_gateway.fetch_resource(
@@ -1257,7 +1275,7 @@ class FormulaRecoveryWorker:
                     ):
                         raise ValueError("question answer unavailable")
                     resources.append(detail)
-            if len(seen) == total:
+            if len(seen) == total or bounded_incremental and old_boundary:
                 break
             if not rows or len(seen) > total:
                 raise ValueError("incomplete question search")
@@ -1347,7 +1365,11 @@ class FormulaRecoveryWorker:
             now=self.queue.now(),
         )
         if (
-            read_model == "orders"
+            (
+                read_model == "orders"
+                or read_model == "questions"
+                and bool(job.get("policy_authority"))
+            )
             and marker_before is not None
             and marker_before.get("state") == "reconciled"
         ):

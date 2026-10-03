@@ -165,12 +165,41 @@ class OrderQuestionFormulaHandlers:
         )
         status_filter = _status_filter(context.args.get("estado", "todos"))
         buyer_selection = _buyer_selection(context.args.get("compradores", ""))
-        orders = await self._find_orders(
-            context=context,
-            date_from=date_range.start,
-            date_to=date_range.end,
-            status=status_filter,
-        )
+        partial_coverage: dict[str, Any] = {}
+        try:
+            orders = await self._find_orders(
+                context=context,
+                date_from=date_range.start,
+                date_to=date_range.end,
+                status=status_filter,
+            )
+        except FormulaDataUnavailableError:
+            if context.args.get("_allow_partial") is not True:
+                raise
+            # Acquired canonical facts are useful for inspection, not proof of
+            # seller membership, exact period totals or unchanged freshness.
+            # Never relax the shared _find_orders guard used by aggregates.
+            orders = await self._repository.find_orders(
+                seller_id=context.seller_id,
+                date_from=date_range.start,
+                date_to=date_range.end,
+                status=status_filter,
+            )
+            partial_coverage = {
+                "coverage": {
+                    "exact": False,
+                    "scope": "acquired_rows_only",
+                    "date_from": date_range.start.isoformat(),
+                    "date_to": date_range.end.isoformat(),
+                    "reason": "requested_range_not_certified",
+                    "pending_count": None,
+                    "limitations": [
+                        "Missing or unenumerated orders may be absent.",
+                        "Rows are locally acquired facts, not an exact total "
+                        "or freshness certificate.",
+                    ],
+                }
+            }
         _require_buyer_filter_data(context, orders, buyer_selection, date_range)
         filtered_orders = _filter_orders_by_buyers(orders, buyer_selection.buyer_filter)
         sku_resolver = await _sku_resolver_for_orders(
@@ -202,7 +231,18 @@ class OrderQuestionFormulaHandlers:
             orders=filtered_orders,
         )
         headers = _order_line_headers(include_buyer_columns=buyer_selection.include_buyer_columns)
-        values: list[list[Any]] = _header_row(context.args.get("encabezados"), headers)
+        values: list[list[Any]] = []
+        if partial_coverage:
+            # This notice survives consumers that discard API meta (including
+            # tabular cells). It is opt-in only; legacy table shape is unchanged.
+            values.append(
+                [
+                    "PARCIAL: solo órdenes adquiridas; puede haber faltantes; "
+                    "no es un total exacto.",
+                    *["" for _ in headers[1:]],
+                ]
+            )
+        values.extend(_header_row(context.args.get("encabezados"), headers))
         header_rows = len(values)
         values.extend(
             _order_line_row(
@@ -222,6 +262,7 @@ class OrderQuestionFormulaHandlers:
             recovery=recovery,
             additional_recoveries=additional,
             meta={
+                **partial_coverage,
                 "orders_count": len(filtered_orders),
                 "status_filter": status_filter or "todos",
                 "buyer_filter_count": len(buyer_selection.buyer_filter),

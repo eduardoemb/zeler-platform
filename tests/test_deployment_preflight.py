@@ -1024,7 +1024,7 @@ def _runtime_probe() -> dict[str, Any]:
         "entrypoint_import": True,
         "module_id": "sheets",
         "registry_fingerprint": canonical_sheets_registration_fingerprint(),
-        "scope_count": 13,
+        "scope_count": 15,
         "routing_key_count": 6,
     }
 
@@ -1235,7 +1235,7 @@ fi
         "image_id": image_id,
         "source_commit": source_commit,
         "registry_fingerprint": canonical_sheets_registration_fingerprint(),
-        "scope_count": 13,
+        "scope_count": 15,
         "routing_key_count": 6,
     }
     env = {
@@ -1466,7 +1466,7 @@ def test_deploy_wrapper_validates_sanitized_immutable_rollback_evidence(
         "Sheets rollback attestation passed: exact registration contract verified."
         in completed.stdout
     )
-    assert proof["scope_count"] == 13
+    assert proof["scope_count"] == 15
     assert proof["routing_key_count"] == 6
     assert "12 scopes" not in completed.stdout
     assert "Artifact Registry and Cloud Build provenance: verified" in completed.stdout

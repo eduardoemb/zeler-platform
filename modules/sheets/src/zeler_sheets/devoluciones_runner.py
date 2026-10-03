@@ -1,22 +1,21 @@
-"""Advance an already-authorized DEVOLUCIONES run from the refresh loop.
+"""Advance policy- or operator-authorized DEVOLUCIONES runs from the refresh loop.
 
 The systemd timer used to own this trigger. Per Q2-b/Q7-a the same worker loop
 that keeps the other read models fresh also advances DEVOLUCIONES, so one loop
 owns operational freshness.
 
-This module never widens the authorization boundary. It only *advances* a run
-that an operator already authorized: the run must exist for this seller, be in
-an advanceable state, still be unexpired, and be past its own ``not_before``.
-Creating, re-authorizing, or extending a run stays an explicit operator action,
-and the underlying advancement keeps the existing lease, window, and readback
-guarantees.
+Operator runs retain their explicit pilot authorization boundary. Product
+onboarding admits independent bounded runs only under persisted account-link
+policy; it revalidates seller, eligibility, source, cutoff and durable budget.
+Both paths retain the existing fenced lease, exact window and joint readback
+guarantees. Automatic policy does not re-authorize terminal operator runs.
 """
 
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Mapping
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, cast
 
 import structlog
 
@@ -24,13 +23,22 @@ from zeler_platform_core.devoluciones_readiness import (
     DEVOLUCIONES_OPERATIONS_COLLECTION,
     DEVOLUCIONES_READ_MODEL,
 )
+from zeler_platform_core.devoluciones_readiness import (
+    acquire_devoluciones_operation as _acquire_onboarding_operation,
+)
+from zeler_platform_core.devoluciones_readiness import (
+    finish_devoluciones_operation as _finish_onboarding_operation,
+)
 from zeler_platform_core.devoluciones_runs import RUNS_COLLECTION
+from zeler_platform_core.devoluciones_runs import MongoRunWindowRepository as _OnboardingRepository
 
 logger = structlog.get_logger(__name__)
 
 __all__ = [
     "ADVANCEABLE_RUN_STATES",
     "advance_due_devoluciones_run",
+    "admit_onboarding_devoluciones",
+    "advance_onboarding_devoluciones",
     "renew_devoluciones_marker_if_proven",
 ]
 
@@ -124,7 +132,34 @@ async def _renew_active_before_advance(
 
 
 async def _runtime_advance(*, db: Any, run_id: str, now: Any = None) -> dict[str, int]:
-    """Bind the real maintenance CLI, which owns the lease and readback gates."""
+    """Keep operator CLI authority separate from automatic product policy."""
+    run = await db[RUNS_COLLECTION].find_one({"_id": run_id})
+    if isinstance(run, Mapping) and str(run.get("authorization_id", "")).startswith("onboarding:"):
+        from infra.operations.zelerdata_read_model_reconcile import (
+            create_runtime_historical_meli_gateways,
+        )
+
+        from zeler_sheets.history_onboarding import PlanBudgetGateway
+
+        plan_id = str(run["authorization_id"]).removeprefix("onboarding:")
+        plan = await db[ONBOARDING_PLANS_COLLECTION].find_one({"_id": plan_id})
+        if not isinstance(plan, Mapping):
+            raise ValueError("onboarding authority is absent")
+        raw_gateway = create_runtime_historical_meli_gateways().order_detail_gateway
+        budget_gateway = PlanBudgetGateway(
+            db, raw_gateway, str(run["seller_id"]), ONBOARDING_SOURCE
+        )
+        if _onboarding_utc(run["end"]) > _onboarding_utc(plan["date_to"]):
+            budget_gateway.incremental = True
+        outcome = await advance_onboarding_devoluciones(
+            db,
+            plan,
+            gateway=budget_gateway,
+            start=run["start"],
+            end=run["end"],
+            now=now,
+        )
+        return {"advanced": int(outcome["advanced"]), "finalized": int(outcome["finalized"])}
     from infra.operations.devoluciones_quota_advance import advance_authorized_quota_run
 
     return await advance_authorized_quota_run(db=db, run_id=run_id, now=now)
@@ -550,3 +585,447 @@ async def _renew_due_certificates(
         # never add an unbounded cleanup operation outside the batch budget.
     summary["elapsed_seconds"] = time.monotonic() - started
     return summary
+
+
+# Product policy authority is distinct from the pilot CLI's operator boundary.
+# Runs keep the original immutable binding/schema and exact readback gates.
+ONBOARDING_PLANS_COLLECTION = "sheets_history_backfill_plans"
+ONBOARDING_SOURCE = "claims_returns"
+ONBOARDING_POLICY = "history-on-link-v1"
+
+
+def _onboarding_utc(value: Any) -> datetime:
+    if not isinstance(value, datetime):
+        raise ValueError("onboarding plan bounds are invalid")
+    # Default BSON codecs decode dates as naive UTC; never interpret local TZ.
+    return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
+
+
+async def _validated_onboarding_plan(
+    db: Any,
+    plan: Mapping[str, Any],
+    *,
+    charged: bool = False,
+    start: datetime | None = None,
+    end: datetime | None = None,
+    now: datetime | None = None,
+) -> Mapping[str, Any]:
+    persisted = await db[ONBOARDING_PLANS_COLLECTION].find_one({"_id": plan.get("_id")})
+    identity_fields = ("seller_id", "policy_version", "sources", "authority")
+    date_fields = ("date_from", "date_to", "cutoff")
+    if (
+        not isinstance(persisted, Mapping)
+        or not str(persisted.get("seller_id") or "").strip()
+        or any(persisted.get(key) != plan.get(key) for key in identity_fields)
+        or any(
+            _onboarding_utc(persisted.get(key)) != _onboarding_utc(plan.get(key))
+            for key in date_fields
+        )
+        or persisted.get("state") != "active"
+        or persisted.get("eligible") is not True
+        or plan.get("state") != "active"
+        or plan.get("eligible") is not True
+        or persisted.get("policy_version") != ONBOARDING_POLICY
+        or persisted.get("authority", {}).get("kind") != "account_link_policy"
+        or ONBOARDING_SOURCE not in persisted.get("sources", [])
+    ):
+        raise ValueError("onboarding policy authority is invalid or no longer eligible")
+    incremental = end is not None and _onboarding_utc(end) > _onboarding_utc(persisted["date_to"])
+    if start is not None or end is not None:
+        _onboarding_binding(persisted, start, end)
+    budget = persisted.get("budget", {}).get(ONBOARDING_SOURCE, {}).get("physical_attempts")
+    consumed = persisted.get("budget", {}).get(ONBOARDING_SOURCE, {}).get("consumed", 0)
+    requested_budget = plan.get("budget", {}).get(ONBOARDING_SOURCE, {}).get("physical_attempts")
+    if (
+        type(budget) is not int
+        or type(consumed) is not int
+        or budget != requested_budget
+        or budget < 1
+        or consumed < 0
+        or consumed > budget
+        or (not incremental and not charged and consumed == budget)
+    ):
+        raise ValueError("onboarding source budget is exhausted or invalid")
+    if incremental:
+        policy = persisted.get("incremental_policy")
+        if not isinstance(policy, Mapping) or policy != plan.get("incremental_policy"):
+            raise ValueError("incremental budget policy is absent or has drifted")
+        today = _onboarding_utc(now or datetime.now(UTC)).date().isoformat()
+        same_day = persisted.get("incremental_day") == today
+        limits = (
+            (
+                policy.get("max_daily_total"),
+                persisted.get("incremental_consumed", 0) if same_day else 0,
+            ),
+            (
+                policy.get("max_daily_source"),
+                persisted.get("incremental_source_consumed", {}).get(ONBOARDING_SOURCE, 0)
+                if same_day
+                else 0,
+            ),
+        )
+        for maximum, spent in limits:
+            if (
+                type(maximum) is not int
+                or type(spent) is not int
+                or maximum < 1
+                or spent < 0
+                or spent > maximum
+                or (not charged and spent == maximum)
+            ):
+                raise ValueError("incremental daily budget is exhausted or invalid")
+    start, end, cutoff = (_onboarding_utc(persisted[key]) for key in date_fields)
+    if not start < end <= cutoff:
+        raise ValueError("onboarding range is outside the stable cutoff")
+    return persisted
+
+
+def _onboarding_binding(
+    plan: Mapping[str, Any], start: datetime | None, end: datetime | None
+) -> Any:
+    import hashlib
+    import json
+
+    from zeler_platform_core.devoluciones_runs import WINDOW_DAYS, RunBinding
+
+    lower, upper = _onboarding_utc(plan["date_from"]), _onboarding_utc(plan["date_to"])
+    start = _onboarding_utc(start) if start is not None else lower
+    end = (
+        _onboarding_utc(end) if end is not None else min(start + timedelta(days=WINDOW_DAYS), upper)
+    )
+    initial = lower <= start < end <= upper
+    if not initial:
+        scope = plan.get("incremental_scopes", {}).get(ONBOARDING_SOURCE)
+        if not isinstance(scope, Mapping) or scope.get("policy_version") != ONBOARDING_POLICY:
+            raise ValueError("onboarding unit is outside its authorized bounded range")
+        scope_start, scope_end = (
+            _onboarding_utc(scope.get("date_from")),
+            _onboarding_utc(scope.get("date_to")),
+        )
+        if (
+            not upper - timedelta(minutes=5) <= scope_start <= start < end <= scope_end
+            or scope_end - scope_start > timedelta(days=1)
+            or end - start > timedelta(days=1)
+        ):
+            raise ValueError("incremental unit is outside its authorized bounded range")
+    if end - start > timedelta(days=WINDOW_DAYS):
+        raise ValueError("onboarding unit is outside its authorized bounded range")
+    policy = json.dumps(
+        {
+            "policy": plan["policy_version"],
+            "seller": plan["seller_id"],
+            "lower": lower.isoformat(),
+            "upper": upper.isoformat(),
+            "budget": plan["budget"][ONBOARDING_SOURCE]["physical_attempts"]
+            if initial
+            else plan.get("incremental_policy"),
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return RunBinding(
+        authorization_id=f"onboarding:{plan['_id']}",
+        cohort_id=ONBOARDING_POLICY,
+        seller_id=str(plan["seller_id"]),
+        scope="devoluciones",
+        start=start,
+        end=end,
+        partition_version="v1",
+        release_fingerprints={"onboarding_policy": hashlib.sha256(policy.encode()).hexdigest()},
+    )
+
+
+async def _require_onboarding_certificate_mode(db: Any, seller_id: str, current: datetime) -> None:
+    """Only absence of coverage authority can initialize; legacy proof must migrate."""
+    from zeler_platform_core.devoluciones_certificates import CERTIFICATES, coverage_control
+
+    control = await coverage_control(db, seller_id)
+    if control.get("coverage_mode") == "active":
+        if control.get("coverage_ack_fence") != control.get("fence"):
+            raise ValueError("onboarding certificate writer is incompatible")
+        return
+    if control:
+        raise ValueError("onboarding requires legacy certificate migration")
+    client = getattr(db, "client", None)
+    if client is None:
+        raise ValueError("onboarding certificate initialization requires a transaction")
+    session = client.start_session()
+    if hasattr(session, "__await__"):
+        session = await session
+    async with session, session.start_transaction():
+        marker = await db[FRESHNESS_COLLECTION].find_one(
+            {"seller_id": seller_id, "read_model": "devoluciones"}, session=session
+        )
+        certificate = await db[CERTIFICATES].find_one({"seller_id": seller_id}, session=session)
+        # Bootstrap rows are facts, not coverage authority. Preserve them, but
+        # never promote them to certificates without joint source/readback.
+        if marker is not None or certificate is not None:
+            raise ValueError("onboarding requires legacy certificate migration")
+        await db[DEVOLUCIONES_OPERATIONS_COLLECTION].update_one(
+            {"_id": f"{seller_id}:devoluciones"},
+            {
+                "$setOnInsert": {
+                    "_id": f"{seller_id}:devoluciones",
+                    "seller_id": seller_id,
+                    "scope": "devoluciones",
+                    "operation_id": "onboarding_initialize",
+                    "attempt_token": "onboarding_initialize",
+                    "state": "released",
+                    "fence": 1,
+                    "coverage_ack_fence": 1,
+                    "coverage_epoch": 0,
+                    "coverage_mode": "active",
+                    "lease_until": current,
+                    "heartbeat_at": current,
+                    "started_at": current,
+                    "updated_at": current,
+                    "schema_version": 1,
+                }
+            },
+            upsert=True,
+            session=session,
+        )
+    # A concurrent writer must not silently turn a fresh-account initialization
+    # into automatic migration or overwrite an existing coverage fence.
+    control = await coverage_control(db, seller_id)
+    if control.get("coverage_mode") != "active" or control.get("coverage_ack_fence") != control.get(
+        "fence"
+    ):
+        raise ValueError("onboarding requires legacy certificate migration")
+
+
+async def admit_onboarding_devoluciones(
+    db: Any,
+    plan: Mapping[str, Any],
+    *,
+    start: datetime | None = None,
+    end: datetime | None = None,
+    now: Callable[[], datetime] | None = None,
+) -> str:
+    """Admit/reuse one <=10-day exact run from persisted account-link policy.
+
+    No environment authority file, manual monthly prompt, source request, or
+    certificate publication occurs here. Failed units remain failed; other
+    independent units can still complete and publish their own exact proofs.
+    """
+    from zeler_platform_core.devoluciones_readiness import (
+        new_devoluciones_attempt_token,
+        stable_devoluciones_operation_id,
+    )
+
+    clock = now or (lambda: datetime.now(UTC))
+    current = _onboarding_utc(clock())
+    persisted = await _validated_onboarding_plan(
+        db, plan, charged=True, start=start, end=end, now=current
+    )
+    binding = _onboarding_binding(persisted, start, end)
+    if binding.end > current:
+        raise ValueError("onboarding cannot acquire a future interval")
+    existing = await db[RUNS_COLLECTION].find_one({"_id": binding.run_id})
+    if existing is not None:
+        _require_onboarding_run_binding(existing, binding)
+        await _require_onboarding_certificate_mode(db, binding.seller_id, current)
+        return str(binding.run_id)
+    await _validated_onboarding_plan(db, plan, start=binding.start, end=binding.end, now=current)
+    await _require_onboarding_certificate_mode(db, binding.seller_id, current)
+    operation = await _acquire_onboarding_operation(
+        db=db,
+        seller_id=binding.seller_id,
+        scope="devoluciones",
+        operation_id=stable_devoluciones_operation_id("onboarding_admit", binding.run_id),
+        attempt_token=new_devoluciones_attempt_token(),
+        source_fingerprint=binding.run_id,
+        invalidate_readiness=False,
+        require_coverage_compatible=True,
+    )
+    try:
+        await _validated_onboarding_plan(
+            db, plan, start=binding.start, end=binding.end, now=current
+        )
+        if not await _OnboardingRepository(db).create(
+            binding, operation=operation, created_at=current
+        ):
+            raise RuntimeError("onboarding exact run admission failed")
+    except Exception:
+        await _finish_onboarding_operation(
+            db=db, operation=operation, succeeded=False, error_code="onboarding_admission_failed"
+        )
+        raise
+    await _finish_onboarding_operation(db=db, operation=operation, succeeded=True)
+    return str(binding.run_id)
+
+
+def _require_onboarding_run_binding(run: Mapping[str, Any], binding: Any) -> None:
+    if (
+        run.get("_id") != binding.run_id
+        or run.get("seller_id") != binding.seller_id
+        or run.get("scope") != binding.scope
+        or run.get("authorization_id") != binding.authorization_id
+        or run.get("cohort_id") != binding.cohort_id
+        or run.get("partition_version") != binding.partition_version
+        or run.get("release_fingerprints") != dict(binding.release_fingerprints)
+        or _onboarding_utc(run.get("start")) != binding.start
+        or _onboarding_utc(run.get("end")) != binding.end
+    ):
+        raise ValueError("onboarding run binding drift")
+
+
+class OnboardingDevolucionesGateway:
+    """Validate current authority before every single physical upstream attempt."""
+
+    def __init__(
+        self,
+        db: Any,
+        plan: Mapping[str, Any],
+        gateway: Any,
+        *,
+        charge: Callable[[], Awaitable[None]],
+        start: datetime | None = None,
+        end: datetime | None = None,
+        now: Callable[[], datetime] | None = None,
+    ) -> None:
+        self.db, self.plan, self.gateway, self.charge = db, plan, gateway, charge
+        self.start, self.end = start, end
+        self.now = now or (lambda: datetime.now(UTC))
+
+    async def fetch_resource_once(self, *, seller_id: str, path: str) -> dict[str, Any]:
+        import re
+
+        if (
+            seller_id != str(self.plan.get("seller_id"))
+            or re.fullmatch(
+                r"/(?:orders/[0-9]+|post-purchase/v1/claims/(?:search|[0-9]+)|"
+                r"post-purchase/v2/claims/[0-9]+/returns)(?:\?[^#]*)?",
+                path,
+            )
+            is None
+        ):
+            raise ValueError("onboarding request is outside source authority")
+        persisted = await _validated_onboarding_plan(
+            self.db, self.plan, start=self.start, end=self.end, now=self.now()
+        )
+        if self.start is not None or self.end is not None:
+            _onboarding_binding(persisted, self.start, self.end)
+        await self.charge()
+        # Charging is durable and may race with pause/revocation; reread before
+        # sending. An in-flight HTTP request cannot be retroactively unsent.
+        persisted = await _validated_onboarding_plan(
+            self.db, self.plan, charged=True, start=self.start, end=self.end, now=self.now()
+        )
+        if self.start is not None or self.end is not None:
+            _onboarding_binding(persisted, self.start, self.end)
+        return cast(
+            "dict[str, Any]", await self.gateway.fetch_resource_once(seller_id=seller_id, path=path)
+        )
+
+    async def fetch_resource(self, *, seller_id: str, path: str) -> dict[str, Any]:
+        return await self.fetch_resource_once(seller_id=seller_id, path=path)
+
+
+async def advance_onboarding_devoluciones(
+    db: Any,
+    plan: Mapping[str, Any],
+    *,
+    gateway: Any,
+    charge: Callable[[], Awaitable[None]] | None = None,
+    start: datetime | None = None,
+    end: datetime | None = None,
+    now: Callable[[], datetime] | None = None,
+) -> dict[str, Any]:
+    """Advance one exact bounded unit with real scopes, fences and physical quotas."""
+    from infra.operations.zelerdata_read_model_reconcile import (
+        advance_devoluciones_quota_run,
+        execute_devoluciones_quota_window,
+        readback_devoluciones_quota_run,
+    )
+
+    from zeler_platform_core.devoluciones_readiness import (
+        new_devoluciones_attempt_token,
+        stable_devoluciones_operation_id,
+    )
+    from zeler_sheets.devoluciones_reconciliation import GatewayDevolucionesSource
+
+    if charge is None:
+        charge = getattr(gateway, "charge", None)
+        gateway = getattr(gateway, "inner", gateway)
+    if not callable(charge):
+        raise ValueError("onboarding requires durable physical-attempt charging")
+    clock = now or (lambda: datetime.now(UTC))
+    run_id = await admit_onboarding_devoluciones(db, plan, start=start, end=end, now=clock)
+    run = await db[RUNS_COLLECTION].find_one({"_id": run_id})
+    if not isinstance(run, Mapping):
+        raise RuntimeError("admitted onboarding run is absent")
+    unchanged = {"run_id": run_id, "state": run["state"], "advanced": 0, "finalized": 0}
+    if run["state"] not in ADVANCEABLE_RUN_STATES:
+        return unchanged
+    current = _onboarding_utc(clock())
+    if current >= _onboarding_utc(run["expires_at"]):
+        await db[RUNS_COLLECTION].update_one(
+            {"_id": run_id, "state": run["state"]},
+            {"$set": {"state": "expired", "updated_at": current}},
+        )
+        return unchanged | {"state": "expired"}
+    if run.get("not_before") is not None and current < _onboarding_utc(run["not_before"]):
+        return unchanged
+    await _require_onboarding_certificate_mode(db, str(plan["seller_id"]), current)
+    await _renew_active_before_advance(db, str(plan["seller_id"]), clock)
+    operation = await _acquire_onboarding_operation(
+        db=db,
+        seller_id=str(plan["seller_id"]),
+        scope="devoluciones",
+        operation_id=stable_devoluciones_operation_id("onboarding_advance", run_id),
+        attempt_token=new_devoluciones_attempt_token(),
+        source_fingerprint=run_id,
+        invalidate_readiness=False,
+        require_coverage_compatible=True,
+    )
+    client = OnboardingDevolucionesGateway(
+        db, plan, gateway, charge=charge, start=run["start"], end=run["end"], now=clock
+    )
+    source = GatewayDevolucionesSource(client, single_attempt=True)
+    failure_reason: str | None = None
+
+    async def execute(*, window: Mapping[str, Any], **_: Any) -> dict[str, Any]:
+        from zeler_sheets.devoluciones_reconciliation import SourceCallBudgetError
+
+        nonlocal failure_reason
+        try:
+            return await execute_devoluciones_quota_window(
+                db=db,
+                window=window,
+                operation=operation,
+                source=source,
+                now=clock,
+            )
+        except SourceCallBudgetError:
+            failure_reason = "physical_budget_exceeded"
+            raise
+        except Exception:
+            failure_reason = "exact_source_proof_unavailable"
+            raise
+
+    try:
+        # Final readback is local and needs no additional source allowance.
+        # The gateway still refuses every new physical request when exhausted.
+        await _validated_onboarding_plan(
+            db, plan, charged=True, start=run["start"], end=run["end"], now=clock()
+        )
+        outcome = await advance_devoluciones_quota_run(
+            db=db,
+            run_id=run_id,
+            operation=operation,
+            now=clock,
+            source=execute,
+            readback=lambda **kwargs: readback_devoluciones_quota_run(db=db, **kwargs),
+        )
+    except Exception:
+        await _finish_onboarding_operation(
+            db=db, operation=operation, succeeded=False, error_code="onboarding_advancement_failed"
+        )
+        raise
+    await _finish_onboarding_operation(db=db, operation=operation, succeeded=True)
+    updated = await db[RUNS_COLLECTION].find_one({"_id": run_id})
+    result = {"run_id": run_id, "state": updated["state"] if updated else "failed", **outcome}
+    if failure_reason is not None:
+        result["reason"] = failure_reason
+    return result

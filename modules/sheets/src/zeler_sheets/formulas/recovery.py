@@ -385,6 +385,7 @@ class FormulaRecoveryQueue:
         allowed_sellers: frozenset[str] | None = None,
         max_active_jobs_per_seller: int = 20,
         reserved_inventory_slots: int = 0,
+        policy_authority: str | None = None,
     ) -> None:
         if type(max_active_jobs_per_seller) is not int or max_active_jobs_per_seller < 1:
             raise ValueError("recovery capacity must be a positive integer")
@@ -392,6 +393,7 @@ class FormulaRecoveryQueue:
             1, max_active_jobs_per_seller
         ):
             raise ValueError("inventory reservation must be zero or one within capacity")
+        self.policy_authority = policy_authority
         self.reserved_inventory_slots = reserved_inventory_slots
         self.collection = db["sheets_formula_recovery_jobs"]
         self.admission = db["sheets_formula_recovery_admission"]
@@ -474,6 +476,8 @@ class FormulaRecoveryQueue:
             "updated_at": now,
             "available_at": now,
         }
+        if self.policy_authority is not None:
+            initial["policy_authority"] = self.policy_authority
         if isinstance(request, (QuestionScanRecoveryRequest, OrderHistoryRecoveryRequest)):
             initial.update(
                 date_from=request.date_from,
@@ -568,6 +572,10 @@ class FormulaRecoveryQueue:
                         "item_ids": list(remaining),
                     }
             existing = await self.collection.find_one({"_id": admitted_key}, session=session)
+            if existing is not None and existing.get("policy_authority") != self.policy_authority:
+                # Coalesce another authority's unit without resetting, taking
+                # over or reopening it. Only its owning workers can execute it.
+                return
             if isinstance(request, (QuestionScanRecoveryRequest, OrderHistoryRecoveryRequest)):
                 request.validate_existing(existing)
             if existing is not None and (
@@ -728,6 +736,9 @@ class FormulaRecoveryQueue:
         self, *, lane: str | None = None, history: bool = False
     ) -> dict[str, Any] | None:
         lane_filter = {
+            "policy_authority": self.policy_authority
+            if self.policy_authority is not None
+            else {"$exists": False},
             **recovery_lane_filter(lane),
             "history_protocol_version": 1 if history else {"$exists": False},
         }

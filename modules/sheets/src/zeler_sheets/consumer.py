@@ -1474,12 +1474,18 @@ async def run() -> None:
         poller = active_poller
         component_status["sync_jobs_poller"] = lambda: active_poller.health_status
 
+    background_pacer = RecoveryRequestPacer(
+        requests_per_minute=recovery_requests_per_minute(
+            os.environ.get("ZELERDATA_RECOVERY_REQUESTS_PER_MINUTE")
+        )
+    )
     recovery_pollers: tuple[FormulaRecoverySupervisor, ...] = ()
     if _env_flag_enabled("ZELERDATA_FORMULA_RECOVERY_ENABLED"):
         recovery = await build_formula_recovery_poller(
             db=db,
             kms_client=kms_client,
             detail_gateway=handler._gateway_client,
+            pacer=background_pacer,
         )
         recovery_pollers = (recovery,)
         component_status["formula_recovery"] = lambda: recovery.health_status
@@ -1489,6 +1495,18 @@ async def run() -> None:
         refresh = await build_zelerdata_refresh_supervisor(db=db)
         refresh_supervisors = (refresh,)
         component_status["zelerdata_refresh"] = lambda: refresh.health_status
+
+    if _env_flag_enabled("ZELERDATA_HISTORY_ON_LINK_ENABLED"):
+        # Activation is a rollout decision. An optional explicit seller scope
+        # fences a bounded pilot; absent scope uses every eligible OAuth plan.
+        onboarding = await build_history_onboarding_poller(
+            db=db,
+            kms_client=kms_client,
+            detail_gateway=handler._gateway_client,
+            pacer=background_pacer,
+        )
+        recovery_pollers += (onboarding,)
+        component_status["history_onboarding"] = lambda: onboarding.health_status
 
     sidecar = WorkerHealthSidecar(
         runner,
@@ -1508,11 +1526,39 @@ async def run() -> None:
         mongo_client.close()
 
 
+async def build_history_onboarding_poller(
+    *, db: Any, kms_client: Any, detail_gateway: Any, pacer: RecoveryRequestPacer | None = None
+) -> FormulaRecoverySupervisor:
+    from zeler_sheets.history_onboarding import HistoryOnboardingWorker, history_onboarding_sellers
+
+    allowed_sellers = history_onboarding_sellers(
+        os.environ.get("ZELERDATA_HISTORY_ON_LINK_SELLERS")
+    )
+    pacer = pacer or RecoveryRequestPacer(
+        requests_per_minute=recovery_requests_per_minute(
+            os.environ.get("ZELERDATA_RECOVERY_REQUESTS_PER_MINUTE")
+        )
+    )
+    discovery = make_meli_gateway_client(
+        module_id="bootstrap",
+        kms_client=kms_client,
+        base_url=os.environ.get("GATEWAY_BASE_URL", DEFAULT_GATEWAY_BASE_URL),
+    )
+    worker = HistoryOnboardingWorker(
+        db,
+        PacedMeliGateway(inner=discovery, pacer=pacer, lane="ranges"),
+        PacedMeliGateway(inner=detail_gateway, pacer=pacer, lane="ranges"),
+        allowed_sellers=allowed_sellers,
+    )
+    return FormulaRecoverySupervisor((SyncJobsPollerSupervisor(worker, poll_interval=1),))
+
+
 async def build_formula_recovery_poller(
     *,
     db: Any,
     kms_client: Any,
     detail_gateway: Any,
+    pacer: RecoveryRequestPacer | None = None,
 ) -> FormulaRecoverySupervisor:
     """Build the formula recovery poller with a reserved acquisition budget.
 
@@ -1527,7 +1573,7 @@ async def build_formula_recovery_poller(
         allowed_sellers=allowed_sellers,
     )
     await recovery_queue.ensure_indexes()
-    pacer = RecoveryRequestPacer(
+    pacer = pacer or RecoveryRequestPacer(
         requests_per_minute=recovery_requests_per_minute(
             os.environ.get("ZELERDATA_RECOVERY_REQUESTS_PER_MINUTE")
         )

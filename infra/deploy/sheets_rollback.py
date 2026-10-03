@@ -26,6 +26,8 @@ CANONICAL_SHEETS_SCOPES = (
     "GET /post-purchase/v2/claims/*/returns",
     "GET /shipments/*",
     "GET /questions/*",
+    "GET /messages/packs/*",
+    "GET /stock/fulfillment/operations/search",
 )
 CANONICAL_SHEETS_ROUTING_KEYS = (
     "items.*",
@@ -59,7 +61,7 @@ _IMAGE_REF_PATTERN = re.compile(
     r"(?P<repository>[a-z0-9.-]+/[a-z0-9._/-]+)@sha256:(?P<digest>[0-9a-f]{64})"
 )
 _CANONICAL_FULL_REGISTRATION_FINGERPRINT = (
-    "98cd1f6c9eba470251fdfc5e120b635e4928f9defd28af7cfff0510a63f2c96a"
+    "bd13debfb57bba5a24d78fad93d371766cda8c6f288b70d93c9023788b09c16d"
 )
 
 

@@ -117,17 +117,45 @@ class FakeBootstrapJobsCollection:
         self.documents[str(query["_id"])] = replacement
 
 
+class FakeHistoryPlansCollection:
+    def __init__(self) -> None:
+        self.documents: dict[str, dict[str, Any]] = {}
+
+    async def find_one(self, query: dict[str, Any]) -> dict[str, Any] | None:
+        document = self.documents.get(str(query["_id"]))
+        return document if document and document.get("seller_id") == query["seller_id"] else None
+
+    async def update_one(
+        self, query: dict[str, Any], update: dict[str, Any], *, upsert: bool = False
+    ) -> None:
+        key = str(query["_id"])
+        if key not in self.documents:
+            if not upsert:
+                return
+            self.documents[key] = {"_id": key, **update.get("$setOnInsert", {})}
+        document = self.documents[key]
+        policy_filter = query.get("policy_version")
+        if isinstance(policy_filter, dict) and policy_filter.get("$exists") is False:
+            if "policy_version" in document:
+                return
+        elif policy_filter is not None and document.get("policy_version") != policy_filter:
+            return
+        document.update(update.get("$set", {}))
+
+
 class FakeOAuthDatabase:
     def __init__(self) -> None:
         self.oauth_state = FakeOAuthStateCollection()
         self.accounts = FakeAccountsCollection()
         self.bootstrap_jobs = FakeBootstrapJobsCollection()
+        self.history_plans = FakeHistoryPlansCollection()
 
     def __getitem__(self, collection_name: str) -> Any:
         return {
             "meli_oauth_state": self.oauth_state,
             "meli_accounts": self.accounts,
             "bootstrap_jobs": self.bootstrap_jobs,
+            "sheets_history_backfill_plans": self.history_plans,
         }[collection_name]
 
 
@@ -323,6 +351,10 @@ def test_successful_oauth_callback_publishes_through_lifespan_adapter(monkeypatc
             }
         ]
         assert database.bootstrap_jobs.documents["bootstrap-123-oauth"]["state"] == "pending"
+        plan = database.history_plans.documents["123"]
+        assert plan["authority"] == {"kind": "account_link_policy"}
+        assert plan["date_from"] == datetime(2025, 8, 10, 20, 30, tzinfo=UTC)
+        assert plan["cutoff"] == datetime(2026, 8, 10, 20, 30, tzinfo=UTC)
 
     assert rabbit.closed is True
 

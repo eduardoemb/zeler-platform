@@ -254,3 +254,39 @@ async def test_repeated_formula_http_requests_coalesce_pending_and_running_recov
         persisted = await queue.collection.find_one({"_id": claimed["_id"]})
         assert persisted is not None
         assert persisted["state"] == "running" and persisted["attempts"] == 1
+
+
+@pytest.mark.asyncio
+async def test_onboarding_progress_exposes_partiality_without_internal_checkpoint(
+    monkeypatch: pytest.MonkeyPatch, progress_db: Any
+) -> None:
+    await progress_db[PLAN_COLLECTION].insert_one(
+        {
+            "_id": SELLER,
+            "seller_id": SELLER,
+            "onboarding_status": "ready_with_observations",
+            "onboarding_sources": {
+                "orders": {
+                    "state": "ready_with_observations",
+                    "persisted": 9999,
+                    "pending_units": 1,
+                }
+            },
+            "budget": {"orders": {"consumed": 10000, "physical_attempts": 20000}},
+            "collector_checkpoints": {"messages": {"text": "must not expose"}},
+        }
+    )
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=_app(monkeypatch, progress_db)), base_url="http://test"
+    ) as client:
+        response = await client.get(
+            "/sheets/backfill/progress",
+            params={"seller_id": SELLER},
+            headers={"Authorization": "Bearer valid"},
+        )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["onboarding_status"] == "ready_with_observations"
+    assert body["sources"]["orders"]["persisted"] == 9999
+    assert body["sources"]["orders"]["pending_units"] == 1
+    assert "collector_checkpoints" not in body
