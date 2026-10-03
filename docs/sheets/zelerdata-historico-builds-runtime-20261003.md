@@ -2,8 +2,14 @@
 
 **ESTADO ACTUAL:** fuente d78 publicada/remoto confirmado y tres builds nuevos
 SUCCESS/procedencia verificada. No pull/deploy/piloto; runtime sigue en imágenes
-anteriores, baseline13. C único falló antes del respaldo/restore; targetVM/disco
-eliminados al abandonar. Nueva C propuesta requiere permiso aún no recibido.
+anteriores, baseline13. **Nueva C autorizada ejecutó un único corte22:06:27.367903
+UTC y falló por selector propio `unexpected_dump_member`**, no por pausa ni causa
+externa. Tres servicios reanudados22:08:03–04, salud inicial22:08:30–34;
+**asentamiento final22:11:24–28**, cuatro200ready/healthy/restart0/OOMfalse,
+13/6/siete hashes intactos, prefixGCS final sin objetos;
+sin archive/manifest válidos, uploadGCS/restore ni retry/nueva ventana. Limpieza
+del nuevo targetVM/disco **confirmada22:10:48.924702 UTC**, evidencia fuera
+preservada; sin objetosGCS creados/borrados.
 Este cierre documental se publica por separado; su identidad se consulta en Git
 y no cambia el código de la fuente d78.
 
@@ -43,15 +49,46 @@ Destinos concretos, **sin pull/deploy/piloto**:
 - `us-central1-docker.pkg.dev/zeler-platform-dev/zeler-platform/sheets-api@sha256:3f7ac7c066a09f3c1f5e15201853e89e424c71a9bafb7415e3de5eb898f31417`
 - `us-central1-docker.pkg.dev/zeler-platform-dev/zeler-platform/sheets-worker@sha256:79f5c6f40f5fd25f47ae572cc9f9a9fd56e4ab1438279467d9d2ad4ea5aeba7e`
 
-Sin backup/restore/GCSobjetos nuevos; único C fallido/recuperado y targetVM/disco
-eliminados con evidencia fuera. Mongo/perfil locales propios de pruebas también
+Sin backup/restore/GCSobjetos nuevos; C previos fallidos/recuperados y target previo
+eliminado con evidencia fuera. Nueva C y cleanup confirmado se distinguen abajo.
+Mongo/perfil locales propios de pruebas también
 detenidos/limpiados. Baseline productivo13/siete clientes exactos conservado; d78
 objetivo14 sinFull **aún no desplegado**, no acredita rollbackC1. Builds verifican
 procedencia, no aceptación; despliegue/piloto siguen bloqueados por respaldo ausente.
 
-### Runtime final fresco: imágenes anteriores sanas, sin activación
+### Nueva C autorizada: aborto por selector, origen recuperado
 
-Lectura sin cambios21:38:58→21:39:05 UTC, `runtime-final-readonly.jsonl`:
+Evidencia privada `c-new-20261003T214827Z`: índice `final-evidence-index.json`
+con30recibos fuera de la VM, SHA256
+`a049329a9222a0ce2ac99868ee84d558984c7c6b82385a435053475447a66290`.
+Mismos recursos recreados,
+VM6465909143569745603/disco6372025565115631299, aislamiento/persistencia
+verificados. Helper30ec ensayo **real** Docker29.4.1 normal/deadline/leases/Rabbit
+pasó antes del único corte nuevo; no corregir retrospectivamente el resultado.
+
+| Hecho | Evidencia actual; no respaldo completado |
+| --- | --- |
+| Corte único | 2026-10-03 22:06:27.367903 UTC; 20 colecciones presentes/22, ausentes `sheets_full_operations` y `sheets_history_pending_records`. Snapshots exactos iguales, TTL0 y stream0escrituras; órdenes9954/receipts29653/jobs4328. |
+| Fallo propio | `unexpected_dump_member`: mongodump100.16.0 produjo auxiliar `dump/zeler_platform_prod/prelude.json`,51bytes, claves `ServerVersion`/`ToolVersion`, no previsto por selector positivo. **No fue fallo de pausa ni límite externo**. |
+| Recuperación | Tres servicios reanudados22:08:03–04, antes de15min. API/gateway/worker/dispatcher200/ready22:08:30–34, restart0/OOMfalse; baseline13/seis keys y siete rawhashes exactos. Otros productos/imágenes/origen intactos. |
+| Colas | Events ready0/unacked0/consumer1, claims0/0/consumer1; eventsDLQ315 sin mutación, claimsDLQ0. No purge. |
+| No se completó | **Sin archive/manifiesto válidos, uploadGCS ni restore**; Mongo destino vacío. No retries ni otra ventana; no nuevos builds/deploy/piloto/Full, C no habilita D/E automáticamente. |
+| Destino/cleanup confirmado | Antes: libres19,025,022,976bytes/inodos1,586,390/RAMdisponible7,680,090,112bytes, Mongo vacío admin/config/local. UTC22:10:48.924702: únicamente VM6465909143569745603/disco6372025565115631299 ausentes; IDs/único attachment/autodelete verificados, evidencia fuera antes. Sin GCS creado/borrado. |
+| Salud final asentada | UTC22:11:24–28: API/gateway/worker/dispatcher200ready/healthy, restart0/OOMfalse/mismas imágenes;13scopes/seis keys/siete hashes idénticos. Events/claims ready0/unacked0/consumer1, eventsDLQ315 sin cambio/claimsDLQ0. |
+| Capacidad final origen | Raíz36,659,560,448bytes libres/inodos6,233,565; Mongo47,631,417,344bytes/inodos3,276,209; RAMdisponible1,824,172KiB; dry-run exit0. Lectura final prefixGCS acordado sin objetos. OperaciónC cerrada, sin más cloud ni cambios de código/helper. |
+
+**Próximo paso propuesto, no ejecutado:** corregir/probar offline selector positivo
+de41miembros, reconociendo/excluyendo **únicamente** prelude autenticado, nunca
+extras arbitrarios, con Tools100.16.0. Dump selectivo y cut-snapshot siguen privados
+en staging de origen `.zelerdata-c-new-20261003T214827Z`: son candidatos, **no respaldo
+aceptado**. Después, con autorización separada, valorar rescate comprobando BSON/
+metadata/hashes contra snapshot del corte y restore aislado, **sin volver a pausar
+producción**. Solo si esa evidencia no alcanza, delimitar/pedir otra ventana. No
+declarar corrección, rescate, restore o autorización completados; no ejecutar ahora.
+
+### Runtime histórico previo21:38: imágenes anteriores sanas, sin activación
+
+Lectura histórica previa a nueva C21:38:58→21:39:05 UTC, `runtime-final-readonly.jsonl`:
 gateway/API/worker/dispatcher HTTP200/ready/healthy, restart0/OOMfalse y digests
 anteriores exactos conservados. Baseline13/seis keys y hashes de siete clientes
 exactos, scopeFull ausente. Raíz36,672,339,968bytes libres/inodos6,233,566;
@@ -62,8 +99,8 @@ Events ready0/unacked0/consumer1; claims0/0/1, binding1; eventsDLQ315 preexisten
 sin purge, claimsDLQ0. En gateway/worker viejos todos los flags seleccionados
 `HISTORY_ON_LINK_ENABLED`, `ADMISSION_HOLD`, `ADMISSION_SELLERS` y
 `HISTORY_ON_LINK_SELLERS` estaban **unset**, sin modificación. No afirmar hold
-desplegado ni piloto activo. Estas medidas sustituyen solo el estado actual,
-no las observaciones históricas conservadas abajo.
+desplegado ni piloto activo. La recuperación22:08 de nueva C es el estado más
+reciente; estas mediciones previas se conservan como históricas.
 
 ## Goal vigente: autorización amplia, aceptación todavía pendiente
 
@@ -76,8 +113,9 @@ Hoja privada/fórmulas actuales y API normal parcial se verificarán por separad
 [checklist y preparación](zelerdata-historico-al-vincular-implementacion.md#preparación-de-aceptación-del-goal-oauth-api-normal-y-sheets-nativo).
 La limpieza del goal permite eliminar únicamente la VM/disco temporales después
 de restore validado o abandono definitivo, con identidad/evidencia preservadas;
-no GCS/productivo. Abandono autorizado y limpieza ya ejecutados: targetVM/disco
-eliminados por identidad con evidencia fuera, detalle abajo; sin borradoGCS.
+no GCS/productivo. Target previo eliminado por identidad con evidencia fuera;
+el recreado para nueva C fallida también eliminado bajo abandono autorizado,
+confirmado22:10:48.924702, detalle arriba.
 
 ### Actualización del goal; ensayo completo y C fallido, sin rollout
 

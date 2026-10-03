@@ -21,10 +21,16 @@ Sin pull/deploy/piloto. Este cierre documental se publica por separado; su ident
 y no cambia el código de la fuente d78. Checklist/preparación
 §§8–9 en el [informe](zelerdata-historico-al-vincular-implementacion.md#preparación-de-aceptación-del-goal-oauth-api-normal-y-sheets-nativo).
 **ESTADO ACTUAL:** este cierre documental no cambia código de fuente d78.
-Runtime final21:38:58→21:39:05 UTC conserva imágenes anteriores sanas, baseline13/6,
-siete clientes exactos/sinFull; flags seleccionados gateway/worker unset, no hold
-desplegado ni piloto activo. Capacidad y colas medidas en el recibo d78; dry-run
-sin pull. Nueva C propuesta requiere autorización aún no recibida.
+Runtime final asentado22:11:24–28 UTC conserva imágenes anteriores sanas/restart0/
+OOMfalse, baseline13/6 y siete hashes idénticos/sinFull; sin hold desplegado ni
+piloto activo. Eventos/claims0ready/0unacked/consumer1, DLQevents315 sin cambio/
+claimsDLQ0; capacidad/dry-run0 en recibo, lectura final prefixGCS sin objetos.
+**Nueva C autorizada falló** por `unexpected_dump_member` de
+Tools100.16.0, no por pausa/causa externa: único corte22:06:27.367903 UTC,
+tres reanudados22:08:03–04/cuatro ready20022:08:30–34/baseline13/7hashes exactos.
+Sin archive/manifest válidos/GCS/restore/retry/otra ventana. Cleanup solo nuevo
+target confirmado22:10:48.924702: VM6465909143569745603/disco6372025565115631299
+ausentes tras verificar IDs/attachment/autodelete; evidencia fuera, sin GCS creado/borrado; [detalle](zelerdata-historico-builds-runtime-20261003.md#nueva-c-autorizada-aborto-por-selector-origen-recuperado).
 
 **Actualización local del goal:** controles de admisión/ejecución congelados; destino
 futuro **14 scopes = baseline13 + mensajes, sin Full**, seis routing keys. C3/15 y
@@ -53,7 +59,7 @@ Guard persistido gateway tardío tras broker/KMS permanece. Vencimiento durante
 espera conserva consumed1/HTTP0, sin refund/reset; no confundir HTTP0 con cobro0.
 Ya se creó la hoja privada nativa bajo Cuenta Zeler, owner-only y
 ocho pestañas/0 fórmulas; permanece inactiva, no prueba aceptación Sheets.
-Abandono/limpieza autorizados ejecutados: VM190812944583158189 y
+**Histórico, previo a nueva C:** abandono/limpieza autorizados ejecutados: VM190812944583158189 y
 disco9220450358313937325 eliminados, búsquedas por identidad vacías; evidencia
 copiada fuera antes. PrefixGCS exacto sin objetos, respaldos previos/retención
 intactos, sin deleteGCS. Guard completed/recoveryTRUE; origen disponible, baseline13
@@ -119,7 +125,7 @@ validación operacional y decisión de nueva ventana limitada, **no ejecutarlo a
 | --- | --- | --- |
 | Publicación — ejecutada/verificada | Trabajo propio de histórico al vincular y cierres locales, con tests/reportes y propuestas; Conventional Commits, sin atribución IA. | Builds, deploys, pruebas reales, archivos ajenos. |
 | Full — cerrado/pendiente | [Evidencia histórica](zelerdata-full-validacion-acotada.md): 7/10 GET, sin referencia, detenido por 429; RETIROS sigue no disponible sin mapeo. | Consultas restantes, retries, nueva búsqueda/programación, mapeo supuesto. |
-| Inspección8B ejecutada; único C del goal fallido | Ensayo real completo pasó, C falló antes del dump por parserNano hostPython3.10; recuperación/salud verificadas, sin respaldo/restore ni segundo C permitido. | Repetir C automáticamente, reparación ajena por drift, restauración sobre producción. |
+| Inspección8B histórica; nueva C autorizada fallida | Ensayo real pasó, pausa/quiescencia/snapshots verificados; selector rechazó prelude Tools100.16.0. Recuperación/salud22:11 y cleanup confirmados, sin archive/manifest válidos/GCS/restore; offline/rescate primero, otra ventana solo si evidencia insuficiente y permiso nuevo. | Repetir C automáticamente, extras arbitrarios, reparación ajena por drift, restore productivo. |
 | Builds — ejecutados/verificados | Tres imágenes nuevas d78 SUCCESS/procedencia/digests verificados; loteC3 histórico separado. | Deploys, checkout local subido, otros servicios. |
 | Despliegue — autorizado por goal, pendiente | Gateway, Sheets API/worker; solo tras respaldo y controles de admisión/autoridad/recuperación probados. | Restart amplio, otras APIs/workers, bootstrap no afectado. |
 | Piloto — autorizado por goal, pendiente | HOPEMOB82453304; única ventana90min/2,500GET, cinco fuentes/Full0; OAuth normal sin force. | Otros vendedores, reinicios anuales, ampliación automática. |
@@ -513,22 +519,36 @@ No sustituirlos con un dump concurrente. Capturar Compose/config seleccionado
 por separado privado/cifrado (imágenes/deps/flags/scopes), **no exportar env ni
 secretos**. Si otra necesidad amplía colecciones/writers/recursos, pedir ese delta.
 
-#### Nueva C solicitada; no autorizada
+#### Nueva C autorizada y ejecutada; falló sin respaldo
 
 Causa propia parserNano corregida en helper SHA prefijo30ecbeb y comprobada con
-timestamps auténticos en hostPython3.10. Se solicita preparar/recrear **únicamente**
+timestamps auténticos en hostPython3.10. Se autorizó preparar/recrear **únicamente**
 `zelerdata-restore-aeefe993`, `zeler-platform-dev/us-central1-a`, e2-standard-2/8GiB,
 disco30GiB pd-balanced, sinSA/IPexterna; persistencia/aislamiento y excepciónCOS
 solo para ese destino, no producción. Verificar helper exacto nuevo/ensayo sin
 proveedores y Mongo7 por digest ya identificado; no ampliar recursos.
 
-Autorizar **un único corte ≤15min**, selección positiva22colecciones y solamente
+Se autorizó **un único corte ≤15min**, selección positiva22colecciones y solamente
 los dos objetos GCS de §8C (`history.archive.gz`/`manifest.json`), producidos/subidos
 solo con consistencia comprobada. Reanudar writers/verificar origen **antes** del
 restore aislado; validar restore/lectores y limpiar solo VM/disco, preservando GCS.
-Si falla, detener y recuperar, **sin retry ni segundo corte**. No ejecutar hasta
-autorización; excluye restore productivo, OAuth/tokens/secretos, IAM/otros permisos,
-modificar datos productivos de negocio, Full, builds nuevos, deploy y piloto.
+El corte22:06 falló al rechazar `dump/zeler_platform_prod/prelude.json`,51bytes,
+auxiliar ServerVersion/ToolVersion de mongodump100.16.0; snapshots/stream/TTL/pausa
+sí verificados. Recuperación antes de15min y salud200/13scopes/siete hashes exactos;
+sin archive/manifest válidos/GCS/restore ni retry/otra ventana. Cleanup nuevo target
+confirmado22:10:48.924702: VM6465909143569745603/disco6372025565115631299 ausentes,
+evidencia fuera antes; no GCS creado/borrado. Esta C no habilita D/E automáticamente. Excluyó restore productivo,
+OAuth/tokens/secretos, IAM/otros permisos, modificar datos productivos de negocio,
+Full, builds nuevos, deploy y piloto.
+
+**Siguiente paso propuesto, no ejecutado ni autorizado:** primero corregir/probar
+offline selector positivo41miembros/Tools100.16.0, excluyendo únicamente prelude
+autenticado, jamás extras arbitrarios. Dump selectivo y cut-snapshot siguen privados
+en staging `.zelerdata-c-new-20261003T214827Z`: candidatos, no respaldo aceptado.
+Después pedir autorización separada para valorar rescate, BSON/metadata/hashes contra
+snapshot del corte y restore aislado **sin nueva pausa productiva**. Solo si esa
+evidencia no alcanza, delimitar/pedir otra ventana. No declarar rescate validado
+ni autorizado; no ejecutar ni repetir C ahora.
 
 ### D. Rollout autorizado por goal; ejecutar solo después de gates
 
