@@ -1,11 +1,11 @@
 # ZelerData: propuesta de publicación y piloto acotado
 
 Actualización: 3 de octubre de 2026 UTC. **Trabajo propio publicado en `main`;
-fuente validada vigente `aeefe993ad5c9a4ff4760c9b691ac11ad47b5a6d` (C3),
+fuente actual `d78ff4e57915ca5e81a5eb6f1976ec65f111824b`,
 verificada contra el remoto.** C1/C2 permanecen como historial en el
 [recibo de publicación](zelerdata-historico-publicacion-20261002.md). El follow-up
 de este recibo/propuesta es documental, no una fuente nueva de imágenes.
-**Etapas 8A/8B autorizadas y ejecutadas:** tres builds SUCCESS/procedencia C3
+**Etapas 8A/8B históricas autorizadas y ejecutadas:** tres builds SUCCESS/procedencia C3
 verificada e inspección runtime read-only; [recibo de builds/baseline](zelerdata-historico-builds-runtime-20261003.md).
 **Goal vigente recibido el3octubre:** autoriza terminar el alcance de cinco
 fuentes, publicar cambios propios, builds solo afectados, despliegue seleccionado,
@@ -13,13 +13,23 @@ una nueva ventana C tras ensayo aislado de pausa y pilotoHOPEMOB único limitado
 Autoriza hoja privada para **fórmulas existentes** y modo parcial **solo API normal**;
 no adaptar add-on, nuevas fuentes ni Full. Autorización no es ejecución:
 **último C documentado abortó; no backup/restore/deploy/piloto nuevos acreditados**.
-Actualizaciones locales aún sin nuevo commit/push registrado. Checklist/preparación
+Fuente d78 publicada/remoto confirmado, tree `54d96092dce1358579989c45d973bd6969f1a4d7`
+idéntico al staged validado/worktree limpio al publicar. Exactamente tres builds
+nuevos SUCCESS/procedencia verificada y destinos concretos en el
+[recibo d78](zelerdata-historico-builds-runtime-20261003.md#publicación-d78-y-tres-builds-verificados).
+Sin pull/deploy/piloto. Este cierre documental se publica por separado; su identidad se consulta en Git
+y no cambia el código de la fuente d78. Checklist/preparación
 §§8–9 en el [informe](zelerdata-historico-al-vincular-implementacion.md#preparación-de-aceptación-del-goal-oauth-api-normal-y-sheets-nativo).
+**ESTADO ACTUAL:** este cierre documental no cambia código de fuente d78.
+Runtime final21:38:58→21:39:05 UTC conserva imágenes anteriores sanas, baseline13/6,
+siete clientes exactos/sinFull; flags seleccionados gateway/worker unset, no hold
+desplegado ni piloto activo. Capacidad y colas medidas en el recibo d78; dry-run
+sin pull. Nueva C propuesta requiere autorización aún no recibida.
 
 **Actualización local del goal:** controles de admisión/ejecución congelados; destino
 futuro **14 scopes = baseline13 + mensajes, sin Full**, seis routing keys. C3/15 y
 sus tres builds se conservan como historial, no son destino de este nuevo rollout.
-SHA nuevo pendiente de publicación verificada. Ensayo real run5 **completo pasado**:
+SHA d78 publicado/tres builds verificados, contrato14 sinFull no desplegado. Ensayo real run5 **completo pasado**:
 normal/deadline/guard, leases/job fence y Rabbit en Docker29.4.1. Único C del goal
 iniciado21:09:57.466075 UTC **falló antes de dump/writers_stopped**: parser hostPython3.10
 rechazó RFC3339Nano (`command_failed`), aunque API cerró ordenadamente con sentinels
@@ -110,7 +120,7 @@ validación operacional y decisión de nueva ventana limitada, **no ejecutarlo a
 | Publicación — ejecutada/verificada | Trabajo propio de histórico al vincular y cierres locales, con tests/reportes y propuestas; Conventional Commits, sin atribución IA. | Builds, deploys, pruebas reales, archivos ajenos. |
 | Full — cerrado/pendiente | [Evidencia histórica](zelerdata-full-validacion-acotada.md): 7/10 GET, sin referencia, detenido por 429; RETIROS sigue no disponible sin mapeo. | Consultas restantes, retries, nueva búsqueda/programación, mapeo supuesto. |
 | Inspección8B ejecutada; único C del goal fallido | Ensayo real completo pasó, C falló antes del dump por parserNano hostPython3.10; recuperación/salud verificadas, sin respaldo/restore ni segundo C permitido. | Repetir C automáticamente, reparación ajena por drift, restauración sobre producción. |
-| Builds — ejecutados 8A | Tres imágenes C3, SUCCESS y procedencia/digests verificados. | Deploys, checkout local subido, otros servicios. |
+| Builds — ejecutados/verificados | Tres imágenes nuevas d78 SUCCESS/procedencia/digests verificados; loteC3 histórico separado. | Deploys, checkout local subido, otros servicios. |
 | Despliegue — autorizado por goal, pendiente | Gateway, Sheets API/worker; solo tras respaldo y controles de admisión/autoridad/recuperación probados. | Restart amplio, otras APIs/workers, bootstrap no afectado. |
 | Piloto — autorizado por goal, pendiente | HOPEMOB82453304; única ventana90min/2,500GET, cinco fuentes/Full0; OAuth normal sin force. | Otros vendedores, reinicios anuales, ampliación automática. |
 | Sheets nativo — hoja preparada, aceptación pendiente | Cuenta Zeler confirmada; hoja nueva privada owner-only/0 fórmulas. Activación de fórmulas existentes solo durante piloto. | Publicar/adaptar add-on, modificar hojas del usuario sin alcance. |
@@ -120,6 +130,11 @@ su alcance, se presenta la diferencia y se espera autorización; no repetir ni
 ampliar pruebas reales automáticamente.
 
 ## 2. Publicación verificada: fuente actual y conservación
+
+**Actual:** d78 `d78ff4e57915ca5e81a5eb6f1976ec65f111824b`, tree
+`54d96092dce1358579989c45d973bd6969f1a4d7` idéntico al staged validado/remoto
+confirmado/worktree limpio al publicar. Tres builds actuales en el recibo d78;
+los antecedentes C1/C2/C3 siguientes conservan su propia evidencia histórica.
 
 Checkout seleccionado en `main`. Base observada al preparar: commit externo
 `124fd236fea600ead8c1436560a22b1909d7c3c8`, diagnóstico OAuth ajeno conservado.
@@ -361,8 +376,9 @@ en el [recibo](zelerdata-historico-builds-runtime-20261003.md); sus textos se
 conservan como alcance histórico, no permiso de nuevos builds/inspecciones.
 C fue autorizado, target/Mongo listos y un corte abortado sin dump/restore. El goal
 posterior autoriza D/E condicionados a gates, **no ejecutados**. Los textos siguientes
-conservan etapas previas; objetivo nuevo14/sinFull y fuente nueva aún sin SHA publicado.
-Último SHA fuente publicado verificado: `aeefe993ad5c9a4ff4760c9b691ac11ad47b5a6d`.
+conservan etapas previas; objetivo nuevo14/sinFull y fuente d78 ya publicada/builds
+verificados, sin deploy. Fuente actual: `d78ff4e57915ca5e81a5eb6f1976ec65f111824b`;
+C3 `aeefe993ad5c9a4ff4760c9b691ac11ad47b5a6d` permanece histórica.
 El recibo conserva C1/C2 y sus 36 hashes originales como históricos, y registra
 la delta C3 de cuatro archivos validados; 32 permanecen iguales. Comprobar que
 C3 continúa presente en `origin/main`; el follow-up del recibo es solo documental. No usar `main`
@@ -371,7 +387,12 @@ no aprobada; los digests y el baseline se incorporan antes de pedir despliegue.
 
 ### A. Tres builds; no operación runtime
 
-**Ejecutado/verificado:** build IDs y tres digests inmutables de C3 en el
+**Actual ejecutado/verificado:** exactamente tres builds d78 y refs/digests nuevos
+en el [recibo d78](zelerdata-historico-builds-runtime-20261003.md#publicación-d78-y-tres-builds-verificados).
+Destinos14/sinFull propuestos, **no pull/deploy/piloto**. No usar el texto C3
+histórico siguiente para construir/desplegar otra fuente ni como rollback.
+
+**Ejecutado/verificado histórico:** build IDs y tres digests inmutables de C3 en el
 [recibo](zelerdata-historico-builds-runtime-20261003.md#1-tres-imágenes-success-con-procedencia-verificada).
 No se descargaron ni desplegaron en VM; no construir otra imagen con este alcance.
 
@@ -485,18 +506,41 @@ ni config nuevo para C. Hold del gateway C3 pertenece a D/E. Jobs Cloud Run
 bootstrap escriben orders/claims y derivados DEVOLUCIONES operations/freshness/
 invalidation de certificados; supervisor/pollers del worker se pausan completos. Fuentes/jobs observados verificadas en
 preparación; no equivalen a cutoff futuro. ExcepciónCOS/tar.gz ya autorizados;
-Mongo/capacidad listos. El corte abortó por grace/parada de API, sin dump/restore;
+Mongo/capacidad **estuvieron listos en esa fase histórica**; targetVM/disco ya
+eliminados, no son un destino actual. El corte abortó por grace/parada de API, sin dump/restore;
 repoll y stream de cero writers/pausas graceful siguen gates de otra ventana.
 No sustituirlos con un dump concurrente. Capturar Compose/config seleccionado
 por separado privado/cifrado (imágenes/deps/flags/scopes), **no exportar env ni
 secretos**. Si otra necesidad amplía colecciones/writers/recursos, pedir ese delta.
 
+#### Nueva C solicitada; no autorizada
+
+Causa propia parserNano corregida en helper SHA prefijo30ecbeb y comprobada con
+timestamps auténticos en hostPython3.10. Se solicita preparar/recrear **únicamente**
+`zelerdata-restore-aeefe993`, `zeler-platform-dev/us-central1-a`, e2-standard-2/8GiB,
+disco30GiB pd-balanced, sinSA/IPexterna; persistencia/aislamiento y excepciónCOS
+solo para ese destino, no producción. Verificar helper exacto nuevo/ensayo sin
+proveedores y Mongo7 por digest ya identificado; no ampliar recursos.
+
+Autorizar **un único corte ≤15min**, selección positiva22colecciones y solamente
+los dos objetos GCS de §8C (`history.archive.gz`/`manifest.json`), producidos/subidos
+solo con consistencia comprobada. Reanudar writers/verificar origen **antes** del
+restore aislado; validar restore/lectores y limpiar solo VM/disco, preservando GCS.
+Si falla, detener y recuperar, **sin retry ni segundo corte**. No ejecutar hasta
+autorización; excluye restore productivo, OAuth/tokens/secretos, IAM/otros permisos,
+modificar datos productivos de negocio, Full, builds nuevos, deploy y piloto.
+
 ### D. Rollout autorizado por goal; ejecutar solo después de gates
 
 **Plan anterior C3/15 supersedido por objetivo14/sinFull y controles locales**.
-Faltan fuente/digests nuevos y gates de ensayo/C/recuperación; no iniciar rollout.
-El texto anterior preservado abajo no es autorización para desplegar C3/15. Tres
-digests destino ya verificados en el [recibo](zelerdata-historico-builds-runtime-20261003.md#1-tres-imágenes-success-con-procedencia-verificada);
+Fuente/digests d78 ya verificados: gateway `sha256:2f94fcac5e12d986fc91e824e753c2096a82fe6d711d4292518ced63e0d98bef`,
+API `sha256:3f7ac7c066a09f3c1f5e15201853e89e424c71a9bafb7415e3de5eb898f31417`,
+worker `sha256:79f5c6f40f5fd25f47ae572cc9f9a9fd56e4ab1438279467d9d2ad4ea5aeba7e`.
+Destinos ArtifactRegistry completos en el recibo d78, **propuestos, no pull/deploy**.
+Falta respaldo consistente/restore y garantía de recuperación; no iniciar rollout.
+El texto anterior preservado abajo no es autorización para desplegar C3/15. Los
+tres digests **C3 históricos del texto preservado, NO destino actual**, están
+verificados en el [recibo](zelerdata-historico-builds-runtime-20261003.md#1-tres-imágenes-success-con-procedencia-verificada);
 los digests API/worker anteriores no sirven sobre estado nuevo por ausencia de
 `policy_authority`; 13/6 y salud compatibles ya confirmados, sin probar
 compatibilidad con nuevo estado. Atestiguar una alternativa recuperable antes de presentar

@@ -1,12 +1,69 @@
 # ZelerData: builds verificados y baseline runtime — 3 de octubre de 2026
 
-**A y B autorizados y ejecutados:** tres Cloud Builds de la fuente exacta C3
+**ESTADO ACTUAL:** fuente d78 publicada/remoto confirmado y tres builds nuevos
+SUCCESS/procedencia verificada. No pull/deploy/piloto; runtime sigue en imágenes
+anteriores, baseline13. C único falló antes del respaldo/restore; targetVM/disco
+eliminados al abandonar. Nueva C propuesta requiere permiso aún no recibido.
+Este cierre documental se publica por separado; su identidad se consulta en Git
+y no cambia el código de la fuente d78.
+
+**A y B históricos, autorizados y ejecutados:** tres Cloud Builds de la fuente exacta C3
 `aeefe993ad5c9a4ff4760c9b691ac11ad47b5a6d` y una inspección read-only de
 `platform-vm`. **Durante A/B no se desplegó, descargó imagen en VM, hizo backup/restore,
 modificó registro/índices, reinició servicio ni activó piloto.**
-La reparación estrecha de registro posterior se detalla abajo. Este reporte y
-su actualización de propuesta permanecen locales. El goal posterior autoriza
-publicación propia verificada, todavía sin nuevo commit/push registrado aquí. Full está cerrado: no consumir ni programar los tres GET sin usar.
+La reparación estrecha de registro posterior se detalla abajo. El goal posterior
+autoriza publicación propia verificada: nueva fuente d78 y tres builds detallados
+abajo. La identidad del cierre documental separado se consulta en Git.
+Full está cerrado: no consumir ni programar los tres GET sin usar.
+
+### Publicación d78 y tres builds verificados
+
+Fuente publicada en `main` y remoto confirmado:
+**`d78ff4e57915ca5e81a5eb6f1976ec65f111824b`**; tree
+`54d96092dce1358579989c45d973bd6969f1a4d7` idéntico al staged validado, worktree
+limpio al publicar. Se ejecutaron **exactamente tres builds nuevos**, todos SUCCESS:
+repositorio conectado/revisión exactos, `requestedVerifyOption: VERIFIED`, sujetos,
+build/proyecto/fuente y digests verificados con `infra.deploy.provenance_check verify-image`.
+Evidencia privada `c-goal-20261003/builds-d78ff4e/verified-final.json`.
+Verificación UTC21:38:01.091356; SHA256 del recibo:
+`c9db4fad6dac77d389b61eba450c7a4bdc93ce6641fd9b4532ab55f47fc3fbef`.
+Índice privado de integridad de13recibos fueraVM: `final-evidence-index.json`,
+SHA256 `1072e067ffe1a0bd3985b72291baac34b3120db9dbe5542f7b449b1edb893092`;
+**no contiene un backup**, pues no se produjo archivo de respaldo.
+
+| Servicio | Build ID SUCCESS | Digest inmutable propuesto para despliegue; no ejecutado |
+| --- | --- | --- |
+| gateway | `c8a3be09-a1f9-4356-bdf6-8fc774505ffa` | `sha256:2f94fcac5e12d986fc91e824e753c2096a82fe6d711d4292518ced63e0d98bef` |
+| sheets-api | `99bb01b9-8254-4151-a559-74ba18bfc259` | `sha256:3f7ac7c066a09f3c1f5e15201853e89e424c71a9bafb7415e3de5eb898f31417` |
+| sheets-worker | `6be598c0-8c97-4a26-9823-31808e6264cb` | `sha256:79f5c6f40f5fd25f47ae572cc9f9a9fd56e4ab1438279467d9d2ad4ea5aeba7e` |
+
+Destinos concretos, **sin pull/deploy/piloto**:
+
+- `us-central1-docker.pkg.dev/zeler-platform-dev/zeler-platform/gateway@sha256:2f94fcac5e12d986fc91e824e753c2096a82fe6d711d4292518ced63e0d98bef`
+- `us-central1-docker.pkg.dev/zeler-platform-dev/zeler-platform/sheets-api@sha256:3f7ac7c066a09f3c1f5e15201853e89e424c71a9bafb7415e3de5eb898f31417`
+- `us-central1-docker.pkg.dev/zeler-platform-dev/zeler-platform/sheets-worker@sha256:79f5c6f40f5fd25f47ae572cc9f9a9fd56e4ab1438279467d9d2ad4ea5aeba7e`
+
+Sin backup/restore/GCSobjetos nuevos; único C fallido/recuperado y targetVM/disco
+eliminados con evidencia fuera. Mongo/perfil locales propios de pruebas también
+detenidos/limpiados. Baseline productivo13/siete clientes exactos conservado; d78
+objetivo14 sinFull **aún no desplegado**, no acredita rollbackC1. Builds verifican
+procedencia, no aceptación; despliegue/piloto siguen bloqueados por respaldo ausente.
+
+### Runtime final fresco: imágenes anteriores sanas, sin activación
+
+Lectura sin cambios21:38:58→21:39:05 UTC, `runtime-final-readonly.jsonl`:
+gateway/API/worker/dispatcher HTTP200/ready/healthy, restart0/OOMfalse y digests
+anteriores exactos conservados. Baseline13/seis keys y hashes de siete clientes
+exactos, scopeFull ausente. Raíz36,672,339,968bytes libres/inodos6,233,566;
+Mongo ext4RW47,803,547,648bytes/inodos3,276,267; RAM disponible1,576,032kB.
+Preflight dry-run piso5GiB exit0, **sin pull ni cleanup**.
+
+Events ready0/unacked0/consumer1; claims0/0/1, binding1; eventsDLQ315 preexistentes
+sin purge, claimsDLQ0. En gateway/worker viejos todos los flags seleccionados
+`HISTORY_ON_LINK_ENABLED`, `ADMISSION_HOLD`, `ADMISSION_SELLERS` y
+`HISTORY_ON_LINK_SELLERS` estaban **unset**, sin modificación. No afirmar hold
+desplegado ni piloto activo. Estas medidas sustituyen solo el estado actual,
+no las observaciones históricas conservadas abajo.
 
 ## Goal vigente: autorización amplia, aceptación todavía pendiente
 
@@ -30,8 +87,8 @@ autoridad/checkpoints/cuotas con admisión cerrada/ejecución pausada. Objetivo 
 **14 scopes = baseline13 + `GET /messages/packs/*`, seis keys y ningún scope Full**.
 Fingerprint objetivo `453bf9eb6014d8055fe6cd372e98b1e2d0190a0241b519417fe5f5397e2c1525`;
 verificador canónico corregido no acredita compatibilidadC1 ni permite rollback clásico.
-C3/15 y builds de §1 son históricos, no destino automático del nuevo goal. Fuente
-nueva sin SHA publicado; ningún build/deploy/piloto nuevo acreditado.
+C3/15 y builds de §1 son históricos, no destino automático del nuevo goal. Nueva
+fuente d78 publicada y tres builds verificados arriba; ningún deploy/piloto nuevo.
 
 Gateway36/coordinador59/core18/queue2 y lote99(incluye parcial10k) verdes;
 Ruff/format/mypy651, direct-Meli y schema-export finales **verdes tras patchruntime
@@ -55,8 +112,8 @@ y RPC agrupaba envíos. Fix local fetch/request/claims: **reserva/cobro durable 
 validación persistida → pacing único → guard síncrono UTCdeadline/día → RPC**, sin
 awaitMongo entre pacer/send. Gateway mantiene guard persistido tardío tras broker/KMS.
 Reserva vencida esperando conserva consumed1 conservador pero HTTP0, sin refund/reset;
-no afirmar cobro0. [Lecciones L-029/L-030](../lessons/README.md); ningún build/deploy
-nuevo acreditado por estos checks.
+no afirmar cobro0. [Lecciones L-029/L-030](../lessons/README.md); estos checks no
+acreditan los builds posteriores por sí solos ni un deploy.
 Ensayo real fresh5: pausa3 sin auto-restart/reanuda3/guard complete pasó; helper
 congelado acepta finalizaciónAPI solo por logs complete de PID/generación y no
 deja RPC stop pendientes. Run5 real **completo pasado**, Docker29.4.1: normal,
@@ -76,7 +133,7 @@ OAuth/add-on funcional ni parcialAPI: [checklist](zelerdata-historico-al-vincula
 | Inicio/código | 21:09:57.466075Z; **command_failed**, antes de dump y antes de writers_stopped. |
 | Causa propia | Parser de finalizaciónAPI del helper canónico bajo Python3.10 del host no acepta timestamps DockerRFC3339Nano (StartedAt8 dígitos/sentinels9). No fallo de salida graceful: logs reales21:10:02.451003870Z complete y21:10:02.451807973Z finished/PID7 presentes. |
 | Recuperación | API21:10:02.907969955Z y dispatcher21:10:03.322185068Z; gateway/worker conservan identidad y StartedAt. Cuatro HTTP200/ready21:10:53–58, baseline13/seis keys y hashes exactos de siete clientes; sin restituirFull. |
-| No ocurrió | Sin dump/archive/manifiesto/GCSbackup/restore ni nuevos builds/deploy/piloto. **No segundo C permitido** ni retry automático. |
+| No ocurrió durante C | Sin dump/archive/manifiesto/GCSbackup/restore ni builds/deploy/piloto por ese corte. Tres builds d78 se acreditaron después y por separado arriba. **No segundo C permitido** ni retry automático. |
 | Corrección local | Parser conserva precisiónNano exacta/Python3.10; 37+6 pruebas verdes, helper prefijoSHA30ecbeb. HostPython3.10 verificado read-only alrededor de21:12 con timestamps auténticos/proofTRUE (`fixed-parser-host310.jsonl`); rechecks estáticos finales verdes. Ningún otro ensayo/corte. |
 | Abandono/limpieza ejecutados | VMID190812944583158189 y diskID9220450358313937325 eliminados bajo autorización; filtros de instances/disks ambos[] en `cleanup-result.json`. Journals normal/deadline/guard real y capacidad copiados fuera antes. Sin borradosGCS ni otros recursos. |
 | Última medida target antes de limpieza | Libres18,066,452,480bytes; inodos1,585,304; RAM disponible6,983,139,328bytes. No destino aún activo ni restore ejecutado. |
@@ -483,8 +540,8 @@ Son compatibles por fuente local con el contrato de 15 scopes/6 keys/fingerprint
 `bd13debfb57bba5a24d78fad93d371766cda8c6f288b70d93c9023788b09c16d` y separación
 `policy_authority`, **no prueba de estabilidad productiva**. Deben verificarse
 tras cualquier despliegue autorizado, con onboarding inicialmente apagado. El
-goal actual requiere nueva fuente/builds de contrato14/sinFull; aún sin SHA/digests
-publicados. No aplicar el contrato15 ni reutilizar esos tres builds como destino actual.
+goal actual ya tiene fuente d78/tres builds de contrato14/sinFull, identificados
+arriba; no desplegados. No aplicar el contrato15 ni reutilizar builds C3 como destino actual.
 
 **Rollback de versión seguro no identificado/atestiguado.** Gateway anterior
 se conserva con identidad verificada, pero el conjunto previo no es compatible:

@@ -3,10 +3,17 @@
 Cierre local original: 2 de octubre de 2026; actualización Full: 3 de octubre UTC.
 Este informe acredita desarrollo local y pruebas
 aisladas, **no despliegue ni aceptación productiva**, y no convierte una fuente
-pendiente en completa. Última fuente publicada y verificada tras la corrección
-Full: C3 `aeefe993ad5c9a4ff4760c9b691ac11ad47b5a6d`; C1/C2 y su evidencia original se
+pendiente en completa. Fuente actual publicada/verificada:
+**`d78ff4e57915ca5e81a5eb6f1976ec65f111824b`**, tree
+`54d96092dce1358579989c45d973bd6969f1a4d7` idéntico al staged validado, remoto
+confirmado/worktree limpio al publicar. Tres builds nuevos SUCCESS/procedencia
+verificados, [recibo/destinos concretos](zelerdata-historico-builds-runtime-20261003.md#publicación-d78-y-tres-builds-verificados),
+**sin pull/deploy/piloto**. La fuente anterior de corrección
+Full C3 `aeefe993ad5c9a4ff4760c9b691ac11ad47b5a6d`, C1/C2 y su evidencia original se
 conservan como historial. Su ejecución e identidad se registran en el
 [recibo de publicación](zelerdata-historico-publicacion-20261002.md).
+Este cierre documental se publica por separado; su identidad se consulta en Git
+y no cambia el código de la fuente d78. Nueva C propuesta requiere permiso aún no recibido.
 
 Referencia de aceptación:
 [especificación](zelerdata-historico-al-vincular-especificacion.md).
@@ -17,7 +24,7 @@ Referencia de aceptación:
 | --- | --- |
 | **Completado localmente** | Mensaje nuevo de orden antigua sin cambios: recuperación periódica real; tabla de 9,999 órdenes adquiridas + 1 pendiente mediante API autenticada normal; capacidad compartida de dos fuentes no vacías y certificados de 1,000 membresías. |
 | **Bloqueado por evidencia externa concreta** | Mapeo positivo RETIROS Full: no se acredita aún jerarquía retiro/bulto, cantidad originalmente solicitada ni fecha de solicitud. Investigación pública cerrada; descubrimiento posterior y [una reanudación autorizada](zelerdata-full-validacion-acotada.md#4-una-reanudación-preparada--siete-restantes-sin-ejecutar) detenidos por 429: 7/10 GET acumulados sin referencia; tres sin usar no autorizan continuar. |
-| **Pendiente de aceptación productiva bajo goal autorizado** | Controles locales y ensayo real completo normal/deadline/guard pasados. Único C del goal falló antes del dump; respaldo consistente/restore inexistentes y no segundo C permitido. Full pytest sin cierre verde. Sheet privada owner-only creada con0 fórmulas; publicación/builds nuevos, deploy, OAuth, parcialAPI/nativa y dos cambios reales pendientes. |
+| **Pendiente de aceptación productiva bajo goal autorizado** | Controles locales y ensayo real completo normal/deadline/guard pasados. Único C del goal falló antes del dump; respaldo consistente/restore inexistentes y no segundo C permitido. Full pytest sin cierre verde. Sheet privada owner-only creada con0 fórmulas; d78 publicado/tres builds verificados, deploy, OAuth, parcialAPI/nativa y dos cambios reales pendientes. |
 
 [Propuesta de publicación/piloto con respaldo y rollback](zelerdata-historico-publicacion-piloto-propuesta.md).
 Las tres categorías no se intercambian: una fuente bloqueada no impide los datos
@@ -43,8 +50,9 @@ Las tres categorías no se intercambian: una fuente bloqueada no impide los dato
 
 ## Preparación de aceptación del goal: OAuth, API normal y Sheets nativo
 
-**Estado actualizado:** controles locales congelados; nueva fuente aún sin SHA
-publicado ni builds/deploy/piloto. El último C comprobado falló; no ejecutar el piloto antes de cerrar
+**Estado actualizado:** controles validados/publicados en d78 y tres builds
+verificados; sin pull/deploy/piloto. La identidad del cierre documental separado
+se consulta en Git y no cambia código d78. El último C comprobado falló; no ejecutar el piloto antes de cerrar
 respaldo/restore y controles de ejecución/admisión. No adaptar el complemento ni
 repetir la matriz general de53funciones: usar muestra de las fuentes del goal.
 
@@ -53,15 +61,15 @@ repetir la matriz general de53funciones: usar muestra de las fuentes del goal.
 | Evidencia | Resultado y límite |
 | --- | --- |
 | Admisión/ejecución | Hold de admisión histórica en gateway, claim de vendedor y ejecución acotada con deadline, presupuesto físico persistido y pausa; conservar autoridad, cutoff/consumed/checkpoints. Forward recovery mantiene admisión cerrada/ejecución pausada y worker consciente de autoridad; no sustituirlo por legacy ni resetear datos. |
-| Contrato objetivo nuevo | **14 scopes = 13 baseline compatible + `GET /messages/packs/*`; ningún scope Full**, seis routing keys; fingerprint `453bf9eb6014d8055fe6cd372e98b1e2d0190a0241b519417fe5f5397e2c1525`. Manifest/seed/verificador deben coincidir con imagen nueva, no C3/15. SHA fuente pendiente de publicación verificada. Verificador14 no acredita compatibilidad C1 ni habilita rollback clásico. |
+| Contrato objetivo nuevo | **14 scopes = 13 baseline compatible + `GET /messages/packs/*`; ningún scope Full**, seis routing keys; fingerprint `453bf9eb6014d8055fe6cd372e98b1e2d0190a0241b519417fe5f5397e2c1525`. Manifest/seed/verificador deben coincidir con imagen nueva, no C3/15. SHA fuente d78 publicado y tres builds verificados; sin despliegue. Verificador14 no acredita compatibilidad C1 ni habilita rollback clásico. |
 | Checks locales comunicados | Lote74passed/27.76s:12cert×1000/dos workers/cuatro renovaciones/spacing estricto. Capacidad anual3passed/52.16s tras último patch. Finales Ruff/format/mypy651/direct-Meli/schema-export verdes; staged-gitleaks limpio. No sumar lotes ni afirmar rootgate general verde: fragmento2860 tuvo13fail/2838pass/9skip y se clasificó abajo. |
 | Transporte/pacing corregido localmente | RED previo: prueba compartida falló spacing(15.96s), porque awaitMongo entre pacing y RPC agrupaba envíos. Ahora fetch/request/claims: reserva/cobro durable + validación persistida → pacingúnico → guard síncrono UTCdeadline/día → RPC, **sin awaitMongo entre pacer/send**. Gateway mantiene guard persistido tardío tras broker/KMS. Si vence mientras espera: consumed1 conservador, HTTP0; no refund ni reset. |
 | Ensayo real de pausa normal | Ensayo fresh5: pausa de tres actores sin auto-restart, reanudación de tres y guard complete **pasados**. Helper congelado acepta finalizaciónAPI solo con logs complete del PID/generación; sin RPC stop pendientes. |
 | Ensayo real de recuperación | Run5 **completo pasado**, Docker29.4.1: normal + deadline + guard, job fence1/attempt1/lease y Rabbit unacked1→recuperación. No equivale a backup consistente ni restore. |
 | Único C del goal | Inicio21:09:57.466075 UTC; `command_failed` antes de dump/writers_stopped. Parser del helper en hostPython3.10 rechazó RFC3339Nano Docker; sentinelsAPI reales de cierre ordenado sí presentes. API/dispatcher recuperados; ningún segundo C permitido automáticamente. [Recibo exacto](zelerdata-historico-builds-runtime-20261003.md#único-c-del-goal-fallido-antes-del-dump). |
 | Fix local posterior | Parser de nanosegundos exactos/Python3.10: 37+6 pruebas verdes, helper SHA prefijo30ecbeb. HostPython3.10 verificado read-only alrededor de21:12: proofTRUE con timestamps auténticos, `fixed-parser-host310.jsonl`; estáticos finales verdes. Sin otro ensayo/corte. |
-| Readiness origen | Tras C, gateway/API/worker/dispatcher HTTP200 ready21:10:53–58 UTC; baseline13/seis keys y hashes exactos de siete clientes. Gateway/worker conservan identidad/StartedAt. Salud no acredita histórico ni fórmulas. |
-| Cierre/limpieza | Abandono autorizado: VM/disco temporales eliminados por identidad, listas filtradas vacías; evidencia copiada fuera antes. Sin archivos de negocio/GCS/restore; registros y guard recovery completos. Capacidad/colas finales en [recibo](zelerdata-historico-builds-runtime-20261003.md#único-c-del-goal-fallido-antes-del-dump). |
+| Readiness origen final | Lectura21:38:58→21:39:05 UTC: gateway/API/worker/dispatcher HTTP200/ready/healthy/restart0/OOMfalse/digests anteriores intactos, baseline13/seis keys/siete clientes exactos/sinFull. Flags seleccionados gateway/worker unset; no hold desplegado ni piloto activo. Capacidad/colas y preflightdry-run sinpull en recibo. Salud no acredita histórico ni fórmulas. |
+| Cierre/limpieza | Abandono autorizado: VM/disco temporales eliminados por identidad/listas vacías/evidencia fuera antes; Mongo/perfil locales propios detenidos/limpiados. Sin archivos de negocio/GCS/restore; registros y guard recovery completos. Capacidad/colas finales en [recibo](zelerdata-historico-builds-runtime-20261003.md#runtime-final-fresco-imágenes-anteriores-sanas-sin-activación). |
 | Sheet privada creada, inactiva | [Hoja TEMP nativa](https://docs.google.com/spreadsheets/d/1IzBEJ6fTs3-juTvWYv0P9dK_0gMpS5jo5y18KlsmitU/edit?ouid=110356598393864429185), ocho pestañas/0 fórmulas; propietario único coincide con perfilGoogle Zeler110356598393864429185. Alias del conector no sustituye identidad real verificada. Sin llamadas por customfunction; activar solo durante piloto. |
 
 La evidencia privada de creación es `private-sheet-preparation.json` del directorio
@@ -652,7 +660,7 @@ es documental: opt-in final opcional, aviso visible y default exacto sin cambios
 2. Commit/push propios autorizados: comprobar su resultado en el recibo y usar
    el commit fuente exacto publicado en `main`; el checkout local no es autoridad
    de build. Builds afectados y despliegue seleccionado están autorizados por
-   el goal, pero la fuente nueva y sus resultados aún no se acreditan aquí.
+   el goal: d78 y tres builds verifican fuente/procedencia, no aceptación runtime.
 3. Preparar baseline sanitizado por fuente, junio/otros períodos sanos, salud y
    capacidad; identificar imágenes anteriores inmutables y rollback compatible.
 4. Completar backup autorizado consistente desde VM/VPC y restauración aislada. Proteger y
