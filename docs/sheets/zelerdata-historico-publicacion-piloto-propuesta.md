@@ -21,46 +21,51 @@ Sin pull/deploy/piloto. Este cierre documental se publica por separado; su ident
 y no cambia el código de la fuente d78. Checklist/preparación
 §§8–9 en el [informe](zelerdata-historico-al-vincular-implementacion.md#preparación-de-aceptación-del-goal-oauth-api-normal-y-sheets-nativo).
 **ESTADO ACTUAL:** este cierre documental no cambia código de fuente d78.
+Selector operativo del host corregido localmente: 38 pruebas enfocadas verdes.
+**Control general NO APROBADO/incompleto:** pytest terminó con exit 1, sin resumen completo, por Mongo local `127.0.0.1:27017` sin listener e interrupción (KeyboardInterrupt y KeyError de pytest_stash en teardown). No se inició Mongo ni se preparó otro entorno. Ruff y formato exit 0; mypy exit 0, 653 fuentes. Las 38 pruebas enfocadas y el smoke sintético de 41 miembros son válidos; no acreditan restore real. Los 12 fallos Bash/BSD anteriores son evidencia histórica, no un resultado repetido en esta ejecución.
+Este cierre documental se publica por separado; su identidad se consulta en Git y no cambia el código de los servicios de la fuente d78.
+[Rescate propuesto y única solicitud de auditoría](zelerdata-historico-rescate-candidatos-propuesta.md):
+no ejecución de rescate ni nuevas imágenes runtime.
 Runtime final asentado22:11:24–28 UTC conserva imágenes anteriores sanas/restart0/
-OOMfalse, baseline13/6 y siete hashes idénticos/sinFull; sin hold desplegado ni
-piloto activo. Eventos/claims0ready/0unacked/consumer1, DLQevents315 sin cambio/
+OOMfalse, baseline13/6 y siete hashes idénticos/sin Full; sin hold desplegado ni
+piloto activo. Eventos/claims0 ready/0 unacked/consumer1, DLQevents315 sin cambio/
 claimsDLQ0; capacidad/dry-run0 en recibo, lectura final prefixGCS sin objetos.
 **Nueva C autorizada falló** por `unexpected_dump_member` de
-Tools100.16.0, no por pausa/causa externa: único corte22:06:27.367903 UTC,
-tres reanudados22:08:03–04/cuatro ready20022:08:30–34/baseline13/7hashes exactos.
+Tools 100.16.0, no por pausa/causa externa: único corte22:06:27.367903 UTC,
+tres reanudados22:08:03–04/cuatro ready20022:08:30–34/baseline13/7 hashes exactos.
 Sin archive/manifest válidos/GCS/restore/retry/otra ventana. Cleanup solo nuevo
-target confirmado22:10:48.924702: VM6465909143569745603/disco6372025565115631299
+target confirmado22:10:48.924702: VM6465909143569745603/disco 6372025565115631299
 ausentes tras verificar IDs/attachment/autodelete; evidencia fuera, sin GCS creado/borrado; [detalle](zelerdata-historico-builds-runtime-20261003.md#nueva-c-autorizada-aborto-por-selector-origen-recuperado).
 
 **Actualización local del goal:** controles de admisión/ejecución congelados; destino
 futuro **14 scopes = baseline13 + mensajes, sin Full**, seis routing keys. C3/15 y
 sus tres builds se conservan como historial, no son destino de este nuevo rollout.
-SHA d78 publicado/tres builds verificados, contrato14 sinFull no desplegado. Ensayo real run5 **completo pasado**:
+SHA d78 publicado/tres builds verificados, contrato14 sin Full no desplegado. Ensayo real run5 **completo pasado**:
 normal/deadline/guard, leases/job fence y Rabbit en Docker29.4.1. Único C del goal
-iniciado21:09:57.466075 UTC **falló antes de dump/writers_stopped**: parser hostPython3.10
+iniciado21:09:57.466075 UTC **falló antes de dump/writers_stopped**: parser Python del host 3.10
 rechazó RFC3339Nano (`command_failed`), aunque API cerró ordenadamente con sentinels
 reales. Recuperados API/dispatcher; gateway/worker intactos; las cuatro readiness
-HTTP20021:10:53–58 UTC/baseline13/siete clientes exactos. **No segundo C permitido**.
+HTTP 20021:10:53–58 UTC/baseline13/siete clientes exactos. **No segundo C permitido**.
 Sin respaldo/restore consistente, deploy/piloto bloqueados. Fix parser local37+6
-verde/prefijo30ecbeb verificado read-only hostPython3.10 con timestamps auténticos
-alrededor de21:12. Último patchruntime/pacing validado: 74passed/27.76s incluye
-12cert×1000/dos workers/cuatro renovaciones/spacing estricto; estáticos651 finales
-verdes. Capacidad anual3passed/52.16s tras último patch. Rootgate general **no verde**:
-fragmento2860:13fail/2838pass/9skip259.20s; regresión propia verificador15→14
-corregida/35purepassed0.24s, otros12 verificados preexistentes en HEAD13972ec
-(Bash3.2.57/BSDstat, sin pruebaLinux/Bash5). Ocho rs0 protegidos **8passed2.20s**
+verde/prefijo30ecbeb verificado read-only Python del host 3.10 con timestamps auténticos
+alrededor de 21:12. **Checks históricos de d78, no repetidos en esta fase:** último patch runtime/pacing validado: 74 passed/27.76 s incluye
+12 cert×1000/dos workers/cuatro renovaciones/spacing estricto; estáticos651 finales
+verdes. Capacidad anual3 passed/52.16 s tras último patch. Rootgate general **no verde**:
+fragmento2860:13fail/2838pass/9 skip259.20 s; regresión propia verificador15→14
+corregida/35purepassed0.24 s, otros12 verificados preexistentes en HEAD13972ec
+(Bash3.2.57/BSDstat, sin pruebaLinux/Bash5). Ocho rs0 protegidos **8 passed2.20 s**
 con MONGOunset/destino propio27030 verificado; guardMongo ya no skipped.
-Persisten8skipsbroker/1Caddy y12baselineMac; no rootgate general verde.
+Persisten8 skipsbroker/1Caddy y12baselineMac; no control general del repositorio general verde.
 No sumar lotes ni repetir prefijo válido. Publicación propia continúa
 independiente de este bloqueo. [Detalle](zelerdata-historico-builds-runtime-20261003.md#único-c-del-goal-fallido-antes-del-dump).
 Pacing corregido localmente: reserva/cobro durable/validación persistida antes
 de pacing único; después guard UTC síncrono y RPC sin awaitMongo intermedio.
 Guard persistido gateway tardío tras broker/KMS permanece. Vencimiento durante
-espera conserva consumed1/HTTP0, sin refund/reset; no confundir HTTP0 con cobro0.
+espera conserva consumed1/HTTP 0, sin refund/reset; no confundir HTTP 0 con cobro0.
 Ya se creó la hoja privada nativa bajo Cuenta Zeler, owner-only y
 ocho pestañas/0 fórmulas; permanece inactiva, no prueba aceptación Sheets.
 **Histórico, previo a nueva C:** abandono/limpieza autorizados ejecutados: VM190812944583158189 y
-disco9220450358313937325 eliminados, búsquedas por identidad vacías; evidencia
+disco 9220450358313937325 eliminados, búsquedas por identidad vacías; evidencia
 copiada fuera antes. PrefixGCS exacto sin objetos, respaldos previos/retención
 intactos, sin deleteGCS. Guard completed/recoveryTRUE; origen disponible, baseline13
 y siete clientes exactos. No nuevo C ni despliegue/piloto.
@@ -78,7 +83,7 @@ intactos. **Sin restart ni cambio de imágenes**; contrato local15 aún no despl
 registry_fingerprint_match OK y DLQready0/unacked0; gateway ready200 y worker200
 ready:true/componentes OK. Los tres restart0/OOMfalse, digests/starttimes sin
 cambio. Baseline13 compatible **confirmado**: C lo preservará y jamás restaurará14;
-preimagen14 forense, no backup baseline. No business/tokens/otros permisos escritos.
+preimagen 14 forense, no backup baseline. No business/tokens/otros permisos escritos.
 
 Bloqueo GCP17:03:40 (hora registrada después del fallo) y checkpoint público
 17:04:59.014110 Sheets503/gateway200 quedan **históricos/superados**, no estado
@@ -87,29 +92,29 @@ actual. Evidencia exacta/preimagen/hashes en el
 validar piloto o Sheets nativo; no nuevos builds/recursos, backup/restore, deploy,
 piloto ni consultas Full autorizados o ejecutados por esta reparación.
 Ingress público Sheets `/health`200 ready:true, dependencias OK, confirmado a
-19:14:19.109613 UTC (~90s tras CAS); confianza SSH/cuatro hashes fuente intactos,
+19:14:19.109613 UTC (~90 s tras CAS); confianza SSH/cuatro hashes fuente intactos,
 sin repetir suites. No prueba OAuth Sheets, fórmulas nativas ni aceptación piloto.
 
 **C previo19:56: capacidadCOS aislada y tar.gz selectivo/whitelist-manifest autorizados.**
-Mongo7 oficial listo loopback27018/rs0PRIMARY; Docker/datos/backup/tmp en ext4RW
-persistente, tmp01777 corregido, sinSA/externalIP/egress abierto. Destino antes de
-corte25,588,756,480bytes libres; tras aborto25,588,703,232, por encima del
-requerido8,793,228,538(piso5GiB+working3,424,519,418). Ya no bloquea capacidad.
+Mongo 7 oficial listo loopback 27018/rs0PRIMARY; Docker/datos/backup/tmp en ext4RW
+persistente, tmp01777 corregido, sin cuenta de servicio/externalIP/tráfico saliente abierto. Destino antes de
+corte25,588,756,480 bytes libres; tras aborto25,588,703,232, por encima del
+requerido8,793,228,538(piso 5 GiB+working3,424,519,418). Ya no bloquea capacidad.
 
-**Corte19:56:36.104233 UTC abortado por error de nuestro procedimiento de pausa,
+**Corte 19:56:36.104233 UTC abortado por error de nuestro procedimiento de pausa,
 no bloqueo externo:** dispatcher TERM/manual stop; TERM al child
 uvicornAPI causó auto-restart Docker19:56:38.581673 (`sh -c`/no exec,
-`unless-stopped`), grace60s agotado. `cut_failed/grace_exhausted`,
+`unless-stopped`), grace60 s agotado. `cut_failed/grace_exhausted`,
 **valid_for_upload:false**. Dispatcher reanudado mismo contenedor19:57:38.268277
-(~62.164s); worker/gateway nunca pausados. API restart1, demás0, OOMfalse/imágenes
-intactas. HTTP200/componentes/consumidores a19:57:56→58 y19:59:42→44. Baseline13/6
+(~62.164 s); worker/gateway nunca pausados. API restart1, demás0, OOMfalse/imágenes
+intactas. HTTP 200/componentes/consumidores a19:57:56→58 y19:59:42→44. Baseline13/6
 y siete clientes exactos; no scopes/config/policy/hardkill/purge. Cuatro jobsCloudRun
 us-central1 completos; SchedulerAPI deshabilitada, **no lista0** ni habilitación.
 
-**No dump/archive/manifiesto/GCSbackup/restore**; prefixGCS exacto sin objetos,
+**No dump/archive/manifiesto/respaldo en GCS/restore**; prefixGCS exacto sin objetos,
 backups previos/retención intactos/noholds. Watchdog completed:true, no nuevo corte
-automático. El tar.gz292,965,492bytes del directorio targetbackup es **imagen oficialMongo,
-no respaldo**; evidencia privada/cache y before/after capacidad/RAM en el recibo.
+automático. El tar.gz292,965,492 bytes del directorio targetbackup es **imagen oficialMongo,
+no respaldo**; evidencia privada/cache y antes/después capacidad/RAM en el recibo.
 En ese C previo no hubo restoreDB ni eliminación. El goal posterior autorizó
 abandono definitivo y **ya eliminó únicamente VM/disco temporales** con evidencia
 fuera; no restauró ni borró Mongo/GCS productivo.
@@ -125,10 +130,10 @@ validación operacional y decisión de nueva ventana limitada, **no ejecutarlo a
 | --- | --- | --- |
 | Publicación — ejecutada/verificada | Trabajo propio de histórico al vincular y cierres locales, con tests/reportes y propuestas; Conventional Commits, sin atribución IA. | Builds, deploys, pruebas reales, archivos ajenos. |
 | Full — cerrado/pendiente | [Evidencia histórica](zelerdata-full-validacion-acotada.md): 7/10 GET, sin referencia, detenido por 429; RETIROS sigue no disponible sin mapeo. | Consultas restantes, retries, nueva búsqueda/programación, mapeo supuesto. |
-| Inspección8B histórica; nueva C autorizada fallida | Ensayo real pasó, pausa/quiescencia/snapshots verificados; selector rechazó prelude Tools100.16.0. Recuperación/salud22:11 y cleanup confirmados, sin archive/manifest válidos/GCS/restore; offline/rescate primero, otra ventana solo si evidencia insuficiente y permiso nuevo. | Repetir C automáticamente, extras arbitrarios, reparación ajena por drift, restore productivo. |
+| Inspección8B histórica; nueva C autorizada fallida | Ensayo real pasó, pausa/quiescencia/snapshots verificados; selector rechazó prelude Tools 100.16.0. Recuperación/salud22:11 y cleanup confirmados, sin archive/manifest válidos/GCS/restore; offline/rescate primero, otra ventana solo si evidencia insuficiente y permiso nuevo. | Repetir C automáticamente, extras arbitrarios, reparación ajena por drift, restore productivo. |
 | Builds — ejecutados/verificados | Tres imágenes nuevas d78 SUCCESS/procedencia/digests verificados; loteC3 histórico separado. | Deploys, checkout local subido, otros servicios. |
 | Despliegue — autorizado por goal, pendiente | Gateway, Sheets API/worker; solo tras respaldo y controles de admisión/autoridad/recuperación probados. | Restart amplio, otras APIs/workers, bootstrap no afectado. |
-| Piloto — autorizado por goal, pendiente | HOPEMOB82453304; única ventana90min/2,500GET, cinco fuentes/Full0; OAuth normal sin force. | Otros vendedores, reinicios anuales, ampliación automática. |
+| Piloto — autorizado por goal, pendiente | HOPEMOB82453304; única ventana90 min/2,500GET, cinco fuentes/Full0; OAuth normal sin force. | Otros vendedores, reinicios anuales, ampliación automática. |
 | Sheets nativo — hoja preparada, aceptación pendiente | Cuenta Zeler confirmada; hoja nueva privada owner-only/0 fórmulas. Activación de fórmulas existentes solo durante piloto. | Publicar/adaptar add-on, modificar hojas del usuario sin alcance. |
 
 La autorización de publicación ya recibida no aprueba ninguna de las demás etapas. Si una etapa exige cambiar
@@ -266,7 +271,7 @@ esa autoridad puede ejecutar jobs por otro camino: **no es rollback compatible**
 
 Orden propuesto, sujeto a verificación de compatibilidad exacta:
 
-1. Registrar/atestiguar recuperación compatible con el contrato objetivo14/sinFull
+1. Registrar/atestiguar recuperación compatible con el contrato objetivo14/sin Full
    y frontera de autoridad. Antes de estado nuevo, fallback antiguo solo con ausencia
    o aislamiento demostrado; después, hold de admisión/ejecución pausada y forward
    recovery conservando jobs/datos/consumed/cutoff/checkpoints, no worker legacy.
@@ -372,7 +377,7 @@ Pausar el coordinador no autoriza parar otros productos/workers.
   texto de mensajes, cuerpos, credenciales o cadenas de conexión.
 
 Resultado final clasificado por fuente: completado local, bloqueo externo preciso,
-validación productiva aprobada/no comprobada. No convertir 90 minutos, HTTP200,
+validación productiva aprobada/no comprobada. No convertir 90 minutos, HTTP 200,
 container running, una muestra correcta o tests verdes en cobertura anual.
 
 ## 8. Autorizaciones concretas listas para completar
@@ -382,7 +387,7 @@ en el [recibo](zelerdata-historico-builds-runtime-20261003.md); sus textos se
 conservan como alcance histórico, no permiso de nuevos builds/inspecciones.
 C fue autorizado, target/Mongo listos y un corte abortado sin dump/restore. El goal
 posterior autoriza D/E condicionados a gates, **no ejecutados**. Los textos siguientes
-conservan etapas previas; objetivo nuevo14/sinFull y fuente d78 ya publicada/builds
+conservan etapas previas; objetivo nuevo14/sin Full y fuente d78 ya publicada/builds
 verificados, sin deploy. Fuente actual: `d78ff4e57915ca5e81a5eb6f1976ec65f111824b`;
 C3 `aeefe993ad5c9a4ff4760c9b691ac11ad47b5a6d` permanece histórica.
 El recibo conserva C1/C2 y sus 36 hashes originales como históricos, y registra
@@ -395,7 +400,7 @@ no aprobada; los digests y el baseline se incorporan antes de pedir despliegue.
 
 **Actual ejecutado/verificado:** exactamente tres builds d78 y refs/digests nuevos
 en el [recibo d78](zelerdata-historico-builds-runtime-20261003.md#publicación-d78-y-tres-builds-verificados).
-Destinos14/sinFull propuestos, **no pull/deploy/piloto**. No usar el texto C3
+Destinos14/sin Full propuestos, **no pull/deploy/piloto**. No usar el texto C3
 histórico siguiente para construir/desplegar otra fuente ni como rollback.
 
 **Ejecutado/verificado histórico:** build IDs y tres digests inmutables de C3 en el
@@ -441,9 +446,9 @@ recuperó13/6 y salud200 sin restart, documentada al inicio/recibo.
 La inspección identifica digests/fuentes anteriores/headroom. No existe
 rollback de versión compatible atestiguado: API/worker anteriores carecen de
 `policy_authority`; destino/Mongo listos bajo C, parada segura/corte pendiente.
-Recuperación13/salud confirmada; falta cerrar writers para C y alternativa de
+Recuperación 13/salud confirmada; falta cerrar writers para C y alternativa de
 recuperación segura para D/E. El baseline histórico14/503 no se acepta como
-rollback de15; registrar un digest no prueba compatibilidad.
+rollback de 15; registrar un digest no prueba compatibilidad.
 
 ### C. Respaldo consistente y restore aislado; no restauración productiva
 
@@ -463,8 +468,8 @@ no cubierta por A/B. Gates/avance/bloqueo en el recibo.
 > y comprobar que todos los jobs bootstrap ya iniciados terminaron. Mantener
 > solamente admisión histórico linked/relinked del gateway detenida por control
 > scoped verificado, sin tocar/restaurar OAuth ni parar todo el gateway. Atender
-> stop grace explícito de 60s para los tres servicios seleccionados y timeout
-> externo ≥120s; no asumir default 10s seguro. Conservar ACK/NACK, leases, jobs y
+> stop grace explícito de 60 s para los tres servicios seleccionados y timeout
+> externo ≥120 s; no asumir default 10 s seguro. Conservar ACK/NACK, leases, jobs y
 > entregas Rabbit; no purge/hardkill/stop amplio. Si no se prueban fuentes/actores,
 > hold scoped o quiescencia dentro de ventana, no iniciar dump ni autoampliar.
 > Archivo de tránsito 0600 hacia
@@ -476,7 +481,7 @@ no cubierta por A/B. Gates/avance/bloqueo en el recibo.
 > esas 22 colecciones; no exportar toda la base ni secretos como paso intermedio.
 
 Formato selectivo/whitelist-manifest **autorizados, aún sin backup**:22namespaces,
-20BSON+metadata, dos ausencias, JSONcorte sanitizado/manifiestoSHApositivo; tar.gz
+20 BSON+metadata, dos ausencias, JSONcorte sanitizado/manifiestoSHApositivo; tar.gz
 `history.archive.gz`, no Mongo native archive. Corte fallido `valid_for_upload:false`
 no se sube; validar contents/restore con lector correspondiente, no cron full dump/prune.
 
@@ -506,7 +511,7 @@ no se sube; validar contents/restore con lector correspondiente, no cron full du
 
 Gates antes de ejecutar: atestiguar fuentes de todos los writers/bootstrap/jobs
 activos, destino/red/IAM aislados y herramientas/Mongo/capacidad. Gateway actual
-b835791 (73archivos/core verificados) no escribe22 ni admite nuevo histórico:
+b835791 (73 archivos/core verificados) no escribe22 ni admite nuevo histórico:
 con dispatcher detenido no hay admisión histórica que pausar; no crear control
 ni config nuevo para C. Hold del gateway C3 pertenece a D/E. Jobs Cloud Run
 bootstrap escriben orders/claims y derivados DEVOLUCIONES operations/freshness/
@@ -522,37 +527,41 @@ secretos**. Si otra necesidad amplía colecciones/writers/recursos, pedir ese de
 #### Nueva C autorizada y ejecutada; falló sin respaldo
 
 Causa propia parserNano corregida en helper SHA prefijo30ecbeb y comprobada con
-timestamps auténticos en hostPython3.10. Se autorizó preparar/recrear **únicamente**
-`zelerdata-restore-aeefe993`, `zeler-platform-dev/us-central1-a`, e2-standard-2/8GiB,
-disco30GiB pd-balanced, sinSA/IPexterna; persistencia/aislamiento y excepciónCOS
+timestamps auténticos en Python del host 3.10. Se autorizó preparar/recrear **únicamente**
+`zelerdata-restore-aeefe993`, `zeler-platform-dev/us-central1-a`, e2-standard-2/8 GiB,
+disco 30 GiB pd-balanced, sin cuenta de servicio ni IP externa; persistencia/aislamiento y excepciónCOS
 solo para ese destino, no producción. Verificar helper exacto nuevo/ensayo sin
-proveedores y Mongo7 por digest ya identificado; no ampliar recursos.
+proveedores y Mongo 7 por digest ya identificado; no ampliar recursos.
 
-Se autorizó **un único corte ≤15min**, selección positiva22colecciones y solamente
+Se autorizó **un único corte ≤15 min**, selección positiva22 colecciones y solamente
 los dos objetos GCS de §8C (`history.archive.gz`/`manifest.json`), producidos/subidos
 solo con consistencia comprobada. Reanudar writers/verificar origen **antes** del
 restore aislado; validar restore/lectores y limpiar solo VM/disco, preservando GCS.
-El corte22:06 falló al rechazar `dump/zeler_platform_prod/prelude.json`,51bytes,
-auxiliar ServerVersion/ToolVersion de mongodump100.16.0; snapshots/stream/TTL/pausa
-sí verificados. Recuperación antes de15min y salud200/13scopes/siete hashes exactos;
+El corte22:06 falló al rechazar `dump/zeler_platform_prod/prelude.json`,51 bytes,
+auxiliar ServerVersion/ToolVersion de mongodump 100.16.0; snapshots/stream/TTL/pausa
+sí verificados. Recuperación antes de 15 min y salud200/13 scopes/siete hashes exactos;
 sin archive/manifest válidos/GCS/restore ni retry/otra ventana. Cleanup nuevo target
-confirmado22:10:48.924702: VM6465909143569745603/disco6372025565115631299 ausentes,
+confirmado22:10:48.924702: VM6465909143569745603/disco 6372025565115631299 ausentes,
 evidencia fuera antes; no GCS creado/borrado. Esta C no habilita D/E automáticamente. Excluyó restore productivo,
 OAuth/tokens/secretos, IAM/otros permisos, modificar datos productivos de negocio,
 Full, builds nuevos, deploy y piloto.
 
-**Siguiente paso propuesto, no ejecutado ni autorizado:** primero corregir/probar
-offline selector positivo41miembros/Tools100.16.0, excluyendo únicamente prelude
-autenticado, jamás extras arbitrarios. Dump selectivo y cut-snapshot siguen privados
-en staging `.zelerdata-c-new-20261003T214827Z`: candidatos, no respaldo aceptado.
-Después pedir autorización separada para valorar rescate, BSON/metadata/hashes contra
-snapshot del corte y restore aislado **sin nueva pausa productiva**. Solo si esa
-evidencia no alcanza, delimitar/pedir otra ventana. No declarar rescate validado
-ni autorizado; no ejecutar ni repetir C ahora.
+**Corregir/probar offline ahora sí autorizado:** selector mínimo implementado
+localmente; RED auténtico 1 passed/1 failed en fixture con prelude → GREEN: 38 pruebas.
+Ruff/formato/mypy verdes, 653 fuentes. Pytest general incompleto por Mongo local ausente
+e interrupción, sin resumen completo ni gate aprobado. Sin ejecución real 3.10 del selector.
+La identidad de publicación se consulta en Git; fuentes runtime d78 intactas. Solo herramienta del host,
+no nuevos builds. No comandos nube/datos reales descargados. **Rescate no
+autorizado ni validado**:30 recibos privados verificados no son hashes deBSON,
+ni existe restoretarget actual. [Propuesta completa de candidatos](zelerdata-historico-rescate-candidatos-propuesta.md)
+con ruta/inventario/gaps y única solicitud siguiente: **auditoría solo lectura
+dentro de la VM≤5 min**, sin consultas a Mongo/download/pack/GCS/resources/pausas. Solo después
+valorar permiso separado para rescate/restore sin nueva pausa; otra ventana solo
+si evidencia insuficiente. No declarar respaldo ni objetivo global terminado.
 
 ### D. Rollout autorizado por goal; ejecutar solo después de gates
 
-**Plan anterior C3/15 supersedido por objetivo14/sinFull y controles locales**.
+**Plan anterior C3/15 supersedido por objetivo14/sin Full y controles locales**.
 Fuente/digests d78 ya verificados: gateway `sha256:2f94fcac5e12d986fc91e824e753c2096a82fe6d711d4292518ced63e0d98bef`,
 API `sha256:3f7ac7c066a09f3c1f5e15201853e89e424c71a9bafb7415e3de5eb898f31417`,
 worker `sha256:79f5c6f40f5fd25f47ae572cc9f9a9fd56e4ab1438279467d9d2ad4ea5aeba7e`.
