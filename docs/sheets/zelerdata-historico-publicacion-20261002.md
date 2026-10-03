@@ -1,15 +1,18 @@
 # ZelerData: recibo de publicación y autorizaciones pendientes
 
-Fecha: 2 de octubre de 2026. **Publicación autorizada; envío todavía pendiente al preparar este documento.**
-Este recibo inicial no declara commit/push ejecutados, builds, despliegue ni disponibilidad nativa de parciales en Sheets. El SHA fuente se completará únicamente tras comprobar el remoto.
+Fecha: 2 de octubre de 2026. **Implementación, pruebas y documentación propias publicadas en `main`.**
+No se ejecutaron builds, despliegues ni consultas API reales; parciales nativos en Sheets siguen sin implementar. Este recibo se completa en un commit posterior exclusivamente documental para no autorreferenciar su SHA.
 
 ## Fuente validada y conservación
 
 - Base ajena preservada: `124fd236fea600ead8c1436560a22b1909d7c3c8` (diagnóstico OAuth).
-- SHA fuente de la entrega: **pendiente del commit y verificación del push**.
+- SHA fuente validado/publicado (`feat(sheets): add bounded history-on-link onboarding`):
+  `4216e18b62da289c1e67acd1ac8d6db4ba0c9217`.
+- Envío: `124fd23..4216e18`, sin force. Después del push, `git ls-remote origin refs/heads/main` coincidió exactamente con HEAD; checkout limpio.
+- Este commit fuente permanece como ancestro de `main` tras el recibo documental. **Es la fuente exacta recomendada para los builds**, no la base anterior ni una referencia móvil.
 - Snapshot validado: 36 archivos de código/configuración/pruebas; SHA-256 del mapa JSON ordenado compacto:
   `9e424d1487d0a7334a90032aa59ad55d2ab6fbe7a70b50e036336000c9126c8e`.
-- Stage/commit/publicación se comprobarán contra los hashes por archivo siguientes. No se incluyen dumps, DB, credenciales ni trabajo ajeno.
+- Verificados los 36 blobs staged y los 36 blobs del commit contra los hashes por archivo siguientes; el follow-up documental conserva exactamente este código/configuración/tests. No se incluyen dumps, DB, credenciales ni trabajo ajeno.
 - Gates ya realizados sobre este snapshot: Linux **5,808 passed / 9 skipped** (402.77 s), más rs0 protegido **8 passed / 0 skipped** (2.10 s). Ruff, format (643 archivos), mypy completo (643 archivos), direct-Meli lint y schema-export: éxito. No se abre otra ronda general; documentación y equivalencia de fuente se verifican al publicar.
 - Detalle y limitaciones de los skips/entorno: [informe local](zelerdata-historico-al-vincular-implementacion.md). Review opt-in: `disabled/unmanaged`, no aprobación fabricada.
 
@@ -22,7 +25,7 @@ Este recibo inicial no declara commit/push ejecutados, builds, despliegue ni dis
 
 ## Operación posterior, no autorizada
 
-Usar el SHA fuente completo una vez publicado para las tres imágenes afectadas: `gateway`, `sheets-api`, `sheets-worker`. Fuente desplegada y digests actuales **no inspeccionados**; verificar drift, no asumir que el runtime contiene esta entrega. Se recomienda un nuevo Cloud Build por servicio afectado, sujeto a autorización separada y procedencia verificada. No se ha construido ni desplegado nada.
+Usar **`4216e18b62da289c1e67acd1ac8d6db4ba0c9217`** para las tres imágenes afectadas: `gateway`, `sheets-api`, `sheets-worker`. Fuente desplegada y digests actuales **no inspeccionados**; verificar drift, no asumir que el runtime contiene esta entrega. Se recomienda un nuevo Cloud Build por servicio afectado, sujeto a autorización separada y procedencia verificada. No se ha construido ni desplegado nada.
 
 [Propuesta operativa](zelerdata-historico-publicacion-piloto-propuesta.md#8-autorizaciones-concretas-listas-para-completar):
 
@@ -32,7 +35,7 @@ Usar el SHA fuente completo una vez publicado para las tres imágenes afectadas:
 4. **D — rollout:** completar tres digests y rollback recuperable compatible con 15 scopes/6 keys y `policy_authority`; API/worker antes de admisión gateway, flag apagado. Sin borrar datos/jobs ni bajar scopes; ≥5 GiB raíz antes de cada pull.
 5. **E — piloto:** solo vendedor `82453304` legítimamente linked, hasta 2,000 GET iniciales + 500 mantenimiento, ≤90 minutos/un día UTC, Full excluido. Preservar corte/consumed/checkpoints y cobertura sana; dos ciclos con cambios reales. API parcial con aviso, no opt-in nativo Sheets.
 
-Backup/rollout/piloto aún requieren los campos del baseline, destinos y digests; no son permisos generales listos para ejecutar. Build y lectura VM pueden aprobarse por separado tras sustituir el SHA publicado.
+Backup/rollout/piloto aún requieren los campos del baseline, destinos y digests; no son permisos generales listos para ejecutar. Build y lectura VM pueden aprobarse por separado: el SHA publicado ya está incorporado a los textos A/B de la propuesta. Tras el segundo push se verificará SHA remoto = HEAD y equivalencia del código/configuración/tests; su identidad final se reporta fuera del propio commit para evitar autorreferencia.
 
 ## Inventario SHA-256 validado
 

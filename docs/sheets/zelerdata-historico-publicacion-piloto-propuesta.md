@@ -1,10 +1,11 @@
 # ZelerData: propuesta de publicación y piloto acotado
 
-Fecha: 2 de octubre de 2026. **Commit y push del trabajo propio autorizados por el
-usuario; ejecución e identidad publicada se registran en el
+Fecha: 2 de octubre de 2026. **Trabajo propio publicado en `main`; fuente validada
+`4216e18b62da289c1e67acd1ac8d6db4ba0c9217`, verificada contra el remoto.
+Ejecución e identidad se registran en el
 [recibo de publicación](zelerdata-historico-publicacion-20261002.md).**
-Esta actualización no declara que el envío haya ocurrido ni fija su SHA antes de
-verificarlo. **Builds, despliegue, consulta API real, backup productivo, permisos/índices
+El commit posterior del recibo es exclusivamente documental y no cambia esta
+fuente. **Builds, despliegue, consulta API real, backup productivo, permisos/índices
 y escrituras en Sheets siguen sin autorización ni ejecución.** La excepción
 autorizada fue buscar un retiro por UI en solo lectura, un retiro/≤5 minutos:
 se detuvo en 34 segundos ante una cuenta de prueba; no se abrió ningún retiro
@@ -65,7 +66,7 @@ VM `platform-vm`, zona `us-central1-a`, Docker Compose. No fue inspeccionado aqu
 | Sheets worker | Autoridad, fuentes, recuperación periódica, renovación y scope de piloto. | `sheets-worker` |
 | Operaciones | Verificador `infra/deploy/sheets_rollback.py`; índices/seed. | Herramientas/contratos por rollout separado, no otra imagen por costumbre. |
 
-Después de publicar, verificar drift entre SHA autorizado de `main` y fuente de
+Publicada la fuente, falta verificar drift entre SHA autorizado de `main` y fuente de
 imágenes en ejecución. Si falta evidencia de runtime, no declarar actualizado.
 Builds desde repositorio conectado, SHA completo presente en `main`, una imagen
 por build, `options.requestedVerifyOption: VERIFIED`; registrar build ID, fuente,
@@ -241,8 +242,9 @@ container running, una muestra correcta o tests verdes en cobertura anual.
 ## 8. Autorizaciones concretas listas para completar
 
 Son permisos **independientes**. Ningún texto es una instrucción ejecutada.
-Rellenar `<SHA_PUBLICADO_VERIFICADO>` con los 40 caracteres del recibo y comprobar
-que coincide con la fuente local validada y con `origin/main`. No usar `main`
+SHA fuente ya publicado y verificado: `4216e18b62da289c1e67acd1ac8d6db4ba0c9217`.
+Comprobar que sus 36 archivos fuente siguen iguales a la validación y que el
+commit continúa presente en `origin/main`; el recibo posterior es solo documental. No usar `main`
 movible, base anterior ni checkout local como sustituto. Rechazar una expansión
 no aprobada; los digests y el baseline se incorporan antes de pedir despliegue.
 
@@ -251,7 +253,7 @@ no aprobada; los digests y el baseline se incorporan antes de pedir despliegue.
 > Autorizo exactamente tres Cloud Builds en `zeler-platform-dev`, región
 > `us-central1`, desde el repositorio conectado
 > `projects/zeler-platform-dev/locations/us-central1/connections/zeler-platform-github/repositories/zeler-platform`,
-> al commit `<SHA_PUBLICADO_VERIFICADO>` presente en `main`. Una imagen por build:
+> al commit `4216e18b62da289c1e67acd1ac8d6db4ba0c9217` presente en `main`. Una imagen por build:
 > `gateway` (`gateway/Dockerfile`), `sheets-api`
 > (`modules/sheets/Dockerfile.api`) y `sheets-worker`
 > (`modules/sheets/Dockerfile.worker`), en el Artifact Registry existente
@@ -268,7 +270,7 @@ no aprobada; los digests y el baseline se incorporan antes de pedir despliegue.
 > proyecto `zeler-platform-dev`, desde el contexto VM/VPC permitido: capacidad,
 > mount Mongo, memoria, Docker, salud/readiness/backlog y las identidades inmutables
 > de gateway/Sheets API/worker en ejecución. Comparar fuente desplegada con
-> `<SHA_PUBLICADO_VERIFICADO>` cuando haya procedencia verificable. Usar preflight
+> `4216e18b62da289c1e67acd1ac8d6db4ba0c9217` cuando haya procedencia verificable. Usar preflight
 > `--dry-run` y salida sanitaria seleccionada. No autorizo downloads, atestiguación
 > que descargue imágenes, backup, validator/index/registro, cleanup, restart,
 > reparación ni consulta de Mongo productivo desde el asistente local.
@@ -302,7 +304,7 @@ anteriores/rollback recuperables y atestiguadas, inventario exacto de índices/s
 config anterior y verificación de §5. Un permiso de build no cubre este texto.
 
 > Autorizo rollout acotado en `platform-vm` del commit
-> `<SHA_PUBLICADO_VERIFICADO>` a gateway=`<DIGEST_GATEWAY>`,
+> `4216e18b62da289c1e67acd1ac8d6db4ba0c9217` a gateway=`<DIGEST_GATEWAY>`,
 > Sheets API=`<DIGEST_API>` y worker=`<DIGEST_WORKER>`, con onboarding apagado.
 > Aplicar únicamente `<INDICES_Y_REGISTRO_EXACTOS>` aprobados, 15 scopes/6 routing
 > keys y fingerprint `bd13debfb57bba5a24d78fad93d371766cda8c6f288b70d93c9023788b09c16d`.

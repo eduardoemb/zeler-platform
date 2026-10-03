@@ -2,8 +2,8 @@
 
 Fecha: 2 de octubre de 2026. Este informe acredita desarrollo local y pruebas
 aisladas, **no despliegue ni aceptación productiva**, y no convierte una fuente
-pendiente en completa. Commit/push propios fueron autorizados después del cierre
-local; su ejecución e identidad se registran en el
+pendiente en completa. Commit/push propios publicados después del cierre local: fuente
+`4216e18b62da289c1e67acd1ac8d6db4ba0c9217`. Su ejecución e identidad se registran en el
 [recibo de publicación](zelerdata-historico-publicacion-20261002.md).
 
 Referencia de aceptación:
