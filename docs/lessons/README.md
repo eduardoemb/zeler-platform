@@ -84,6 +84,7 @@ repeat failures, and promote stable knowledge to its proper operational form.
 | L-025 | ZelerData | Compare economic tags as membership in formula readers | active |
 | L-026 | Gateway OAuth | Keep transient refresh failures eligible for retry | active |
 | L-027 | ZelerData | Verify delivery progress, not just consumer readiness | active |
+| L-028 | ZelerData | Preserve independent coverage when acquiring another interval | active |
 
 ## Cloud Build and VM deployment
 
@@ -257,7 +258,9 @@ repeat failures, and promote stable knowledge to its proper operational form.
 - proven path: After a complete question scan, fetch any locally stored
   identity absent from it by detail. Keep a valid 200 response; remove only a
   scoped 404 in the same transaction as refreshed rows, coverage and job
-  completion. Other responses leave the previous row and proof intact.
+  completion. Also resolve an identity enumerated by discovery whose detail is
+  now 404; do not let that stale listing abort every complete scan. Other
+  responses leave the previous row and proof intact.
 - failed path: Compare the new scan with persisted rows without resolving an
   absent old identity. One stored question no longer appeared in the pilot's
   complete scan and returned 404 by detail; two one-hour jobs each fetched
@@ -318,13 +321,34 @@ repeat failures, and promote stable knowledge to its proper operational form.
 - proven path: Require ACK/NACK or confirmed bounded retry for every HTTP error;
   preserve the original if retry publication fails. Verify the delay queue,
   binding and effective TTL before rollout, then measure backlog and completions.
+  Compare required queue semantics, allowing broker-added defaults such as
+  `x-queue-type=classic`; a benign extra argument does not justify another PUT.
 - failed path: Re-raise HTTP 412 inside its `except` block: sibling safety-net
   handlers do not catch it. Ten unacked deliveries filled prefetch while the
   connection stayed ready, even after OAuth recovered.
 - verification/source: `modules/sheets/tests/test_consumer_error_handling.py` —
-  10 RED then 32 GREEN; 56 GREEN with adjacent consumer tests. Local fix only;
-  production delay topology and rollout remain pending. Runtime evidence:
+  10 RED then 32 GREEN; 56 GREEN with adjacent consumer tests. Scoped delay
+  topology and corrected worker deployed on 2 October 2026. Runtime evidence:
   `docs/ops/platform-vm-recovery-20261002.md`.
+- status: active
+
+### L-028 — Preserve independent coverage when acquiring another interval
+- area: ZelerData DEVOLUCIONES readiness and period acquisition
+- proven path: Check the actual reader and current proof before publishing a new
+  interval. Preserve previously certified periods and their provenance; reject
+  queries across unacquired gaps. Stop a replacement that would remove valid
+  coverage and implement the cumulative contract before resuming acquisition.
+- failed path: Treat retained rows or completed runs as sufficient evidence that
+  both periods remain readable. The former single DEVOLUCIONES marker would
+  have made publishing August invalidate June availability even though June's
+  data and run survived.
+- verification/source: The reader check and bounded dry-run are recorded in
+  `docs/ops/platform-vm-recovery-20261002.md`. Cumulative multi-period behavior
+  was implemented in `17c30f4`; the subsequent
+  [rollout report](../ops/devoluciones-multiperiod-rollout-20261002.md) records
+  June migration/activation and two verified renewals, not August acquisition.
+  A renewed historical proof does not certify any missing interval between two
+  acquired periods.
 - status: active
 
 ### L-011 — Deliver stop signals to the worker and await Docker completion
