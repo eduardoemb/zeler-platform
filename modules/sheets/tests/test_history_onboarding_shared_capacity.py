@@ -114,6 +114,15 @@ async def _seed(db: Any, now: datetime) -> list[dict[str, Any]]:
         await db.meli_accounts.insert_one(
             {"_id": "account-" + seller, "seller_id": int(seller), "status": "active"}
         )
+        # Synthetic canonical item: Full searches require a seller-owned inventory.
+        await db.items.insert_one(
+            {
+                "_id": "MLM" + seller,
+                "seller_id": seller,
+                "inventory_id": "INVENTORY" + seller,
+                "shipping": {"logistic_type": "fulfillment"},
+            }
+        )
         await db[PLAN_COLLECTION].update_one(
             {"_id": seller},
             {

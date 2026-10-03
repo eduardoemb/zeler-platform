@@ -6,7 +6,7 @@ from urllib.parse import parse_qs, urlsplit
 
 import httpx
 import pytest
-from test_event_persistence import FakeDb
+from test_event_persistence import FakeCollection, FakeCursor, FakeDb
 
 from zeler_sheets.onboarding_sources import collect_full_operations, collect_pack_messages
 
@@ -111,7 +111,7 @@ async def test_messages_missing_record_does_not_block_valid_record_or_other_pack
 
 @pytest.mark.asyncio
 async def test_full_same_scroll_token_is_valid_and_operations_never_fabricate_retiros() -> None:
-    db = FakeDb()
+    db = owned_full_db()
 
     def operation(oid: int, kind: str) -> dict[str, Any]:
         return {
@@ -159,11 +159,66 @@ async def test_full_forbidden_is_not_no_applica_and_no_secret_in_report() -> Non
         "private secret", request=request, response=httpx.Response(403, request=request)
     )
     result = await collect_full_operations(
-        db=FakeDb(), gateway=Gateway([error]), seller_id="123", start=START, end=END
+        db=owned_full_db(), gateway=Gateway([error]), seller_id="123", start=START, end=END
     )
     assert result["blocked_reason"] == "access_denied"
     assert not result["discovery_complete"]
     assert "private secret" not in str(result)
+
+
+@pytest.mark.asyncio
+async def test_full_429_preserves_inventory_type_scroll_and_physical_budget() -> None:
+    db = owned_full_db(second=True)
+    request = httpx.Request("GET", "https://example.test/")
+    error = httpx.HTTPStatusError(
+        "private", request=request, response=httpx.Response(429, request=request)
+    )
+    raw = {
+        "id": 1,
+        "seller_id": 123,
+        "inventory_id": "INV1",
+        "type": "WITHDRAWAL_RESERVATION",
+        "date_created": "2026-06-04T10:00:00Z",
+    }
+    gateway = Gateway(
+        [
+            {"paging": {"scroll": "resume"}, "results": [raw]},
+            error,
+            {"paging": {"scroll": None}, "results": []},
+        ]
+    )
+    first = await collect_full_operations(
+        db=db,
+        gateway=gateway,
+        seller_id="123",
+        start=START,
+        end=END,
+        max_requests=5,
+        now=START,
+    )
+    assert first["requests"] == len(gateway.paths) == 2
+    assert len(gateway.pages) == 1  # No retry within this turn.
+    assert first["persisted"] == 1 and first["blocked_reason"] == "source_retry_required"
+    assert not first["discovery_complete"] and not first["coverage_complete"]
+    checkpoint = first["checkpoint"]
+    assert checkpoint["inventory_index"] == 0 and checkpoint["type_index"] == 0
+    assert checkpoint["scroll"] == "resume"
+    assert checkpoint["inventory_targets"][0]["inventory_id"] == "INV1"
+    second = await collect_full_operations(
+        db=db,
+        gateway=gateway,
+        seller_id="123",
+        start=START,
+        end=END,
+        checkpoint=checkpoint,
+        max_requests=1,
+        now=START,
+    )
+    assert second["requests"] == 1 and len(gateway.paths) == 3
+    assert parse_qs(urlsplit(gateway.paths[2]).query) == parse_qs(urlsplit(gateway.paths[1]).query)
+    assert second["persisted"] == 1 and second["checkpoint"]["type_index"] == 1
+    assert second["checkpoint"]["inventory_index"] == 0
+    assert not second["coverage_complete"]
 
 
 @pytest.mark.asyncio
@@ -234,7 +289,7 @@ async def test_successful_retry_eventually_certifies_message_discovery() -> None
 
 @pytest.mark.asyncio
 async def test_full_scroll_expiry_restarts_without_losing_or_duplicating_operations() -> None:
-    db = FakeDb()
+    db = owned_full_db()
     raw = {
         "id": 1,
         "seller_id": 123,
@@ -274,7 +329,7 @@ async def test_full_scroll_expiry_restarts_without_losing_or_duplicating_operati
 
 @pytest.mark.asyncio
 async def test_full_empty_result_is_not_proven_ineligible_and_preserves_legacy_rows() -> None:
-    db = FakeDb()
+    db = owned_full_db()
     legacy = {
         "_id": "123:ret:detail:inventory",
         "seller_id": "123",
@@ -283,10 +338,11 @@ async def test_full_empty_result_is_not_proven_ineligible_and_preserves_legacy_r
     db["sheets_full_withdrawals"].documents[legacy["_id"]] = dict(legacy)
     result = await collect_full_operations(
         db=db,
-        gateway=Gateway([{"paging": {"scroll": None}, "results": []}]),
+        gateway=Gateway([{"paging": {"scroll": None}, "results": []}] * 5),
         seller_id="123",
         start=START,
         end=END,
+        max_requests=5,
     )
     assert result["blocked_reason"] == "full_withdrawal_contract_incompatible"
     assert not result["coverage_complete"]
@@ -321,7 +377,7 @@ async def test_api_operations_do_not_unlock_real_retiros_reader() -> None:
         FormulaReadModelRepository,
     )
 
-    db = FakeDb()
+    db = owned_full_db()
     await collect_full_operations(
         db=db,
         gateway=Gateway(
@@ -388,7 +444,7 @@ async def test_full_search_is_bounded_to_documented_withdrawal_types() -> None:
 
     gateway = Gateway([{"paging": {"scroll": None}, "results": []}] * len(WITHDRAWAL_TYPES))
     result = await collect_full_operations(
-        db=FakeDb(),
+        db=owned_full_db(),
         gateway=gateway,
         seller_id="123",
         start=START,
@@ -397,3 +453,277 @@ async def test_full_search_is_bounded_to_documented_withdrawal_types() -> None:
     )
     assert result["discovery_complete"]
     assert {parse_qs(urlsplit(path).query)["type"][0] for path in gateway.paths} == WITHDRAWAL_TYPES
+
+
+class FullInventoryCollection(FakeCollection):
+    def find(
+        self, filter_spec: dict[str, Any], projection: dict[str, int] | None = None
+    ) -> FakeCursor:
+        del projection
+        return super().find(filter_spec)
+
+
+def owned_full_db(*, second: bool = False) -> FakeDb:
+    db = FakeDb()
+    db.collections["items"] = FullInventoryCollection()
+    db["items"].documents = {
+        "MLM1": {
+            "_id": "MLM1",
+            "seller_id": "123",
+            "inventory_id": "INV1",
+            "shipping": {"logistic_type": "fulfillment"},
+            "variations": [{"id": 1, "inventory_id": "INV1"}],
+        },
+        **(
+            {
+                "MLM2": {
+                    "_id": "MLM2",
+                    "seller_id": 123,
+                    "shipping": {"logistic_type": "fulfillment"},
+                    "variations": [{"id": 2, "inventory_id": "INV2"}],
+                }
+            }
+            if second
+            else {}
+        ),
+    }
+    return db
+
+
+@pytest.mark.asyncio
+async def test_full_requests_require_owned_inventory_and_resume_both_inventories() -> None:
+    db = owned_full_db(second=True)
+    gateway = Gateway([{"paging": {"scroll": None}, "results": []}] * 10)
+    first = await collect_full_operations(
+        db=db, gateway=gateway, seller_id="123", start=START, end=END, max_requests=3
+    )
+    assert first["requests"] == 3
+    assert all(parse_qs(urlsplit(p).query).get("inventory_id") == ["INV1"] for p in gateway.paths)
+    assert first["checkpoint"]["inventory_targets"] == [
+        {"item_id": "MLM1", "inventory_id": "INV1"},
+        {"item_id": "MLM2", "inventory_id": "INV2"},
+    ]
+    second = await collect_full_operations(
+        db=db,
+        gateway=gateway,
+        seller_id="123",
+        start=START,
+        end=END,
+        checkpoint=first["checkpoint"],
+        max_requests=7,
+    )
+    assert second["requests"] == 7
+    assert second["discovery_complete"]
+    assert not second["coverage_complete"]
+    assert [parse_qs(urlsplit(p).query)["inventory_id"][0] for p in gateway.paths] == [
+        "INV1"
+    ] * 5 + ["INV2"] * 5
+    assert second["checkpoint"]["start"] == START.isoformat()
+    assert second["checkpoint"]["end"] == END.isoformat()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("case", ["empty", "foreign", "not_full", "no_identity"])
+async def test_full_without_owned_inventory_never_calls_unfiltered_provider(case: str) -> None:
+    db = owned_full_db()
+    if case == "empty":
+        db["items"].documents.clear()
+    elif case == "foreign":
+        db["items"].documents["MLM1"]["seller_id"] = "999"
+    elif case == "not_full":
+        db["items"].documents["MLM1"]["shipping"]["logistic_type"] = "cross_docking"
+    else:
+        db["items"].documents["MLM1"].pop("inventory_id")
+        db["items"].documents["MLM1"]["variations"] = []
+    gateway = Gateway([])
+    result = await collect_full_operations(
+        db=db, gateway=gateway, seller_id="123", start=START, end=END
+    )
+    assert gateway.paths == []
+    assert result["requests"] == 0
+    assert result["blocked_reason"] == "full_inventory_unavailable"
+    assert not result["coverage_complete"]
+    assert not db["sheets_full_operations"].documents
+
+
+@pytest.mark.asyncio
+async def test_full_inventory_selection_pages_and_deduplicates_across_local_pages() -> None:
+    db = owned_full_db()
+    template = db["items"].documents.pop("MLM1")
+    for index in range(1, 34):
+        identity = f"MLM{index:03}"
+        db["items"].documents[identity] = {**template, "_id": identity}
+    db["items"].documents["MLM033"]["variations"] = [
+        {"inventory_id": "INV1"},
+        {"inventory_id": "INV2"},
+    ]
+    gateway = Gateway([{"paging": {"scroll": None}, "results": []}] * 10)
+    first = await collect_full_operations(
+        db=db, gateway=gateway, seller_id="123", start=START, end=END, max_requests=5
+    )
+    assert not first["discovery_complete"]
+    assert first["checkpoint"]["inventory_item_after"] == "MLM032"
+    assert first["checkpoint"]["inventory_seen"] == ["INV1"]
+    second = await collect_full_operations(
+        db=db,
+        gateway=gateway,
+        seller_id="123",
+        start=START,
+        end=END,
+        checkpoint=first["checkpoint"],
+        max_requests=5,
+    )
+    assert second["discovery_complete"]
+    assert second["checkpoint"]["inventory_seen"] == ["INV1", "INV2"]
+    assert [parse_qs(urlsplit(p).query)["inventory_id"][0] for p in gateway.paths] == [
+        "INV1"
+    ] * 5 + ["INV2"] * 5
+
+
+@pytest.mark.asyncio
+async def test_full_zero_request_page_preserves_cursor_without_claiming_acquisition_complete() -> (
+    None
+):
+    db = owned_full_db()
+    template = db["items"].documents.pop("MLM1")
+    for index in range(1, 34):
+        identity = f"MLM{index:03}"
+        db["items"].documents[identity] = {
+            **template,
+            "_id": identity,
+            "inventory_id": None,
+            "variations": [],
+        }
+    db["items"].documents["MLM033"]["inventory_id"] = "INV2"
+    gateway = Gateway([{"paging": {"scroll": None}, "results": []}])
+    first = await collect_full_operations(
+        db=db, gateway=gateway, seller_id="123", start=START, end=END
+    )
+    assert first["requests"] == 0
+    assert not first["discovery_complete"] and first["blocked_reason"] is None
+    assert first["checkpoint"]["inventory_item_after"] == "MLM032"
+    second = await collect_full_operations(
+        db=db,
+        gateway=gateway,
+        seller_id="123",
+        start=START,
+        end=END,
+        checkpoint=first["checkpoint"],
+    )
+    assert second["requests"] == 1
+    assert parse_qs(urlsplit(gateway.paths[0]).query)["inventory_id"] == ["INV2"]
+    assert not second["coverage_complete"]
+
+
+@pytest.mark.asyncio
+async def test_full_legacy_unfiltered_scroll_is_discarded_without_resetting_range_or_facts() -> (
+    None
+):
+    db = owned_full_db()
+    old = {
+        "seller_id": "123",
+        "source": "full_operations",
+        "start": START.isoformat(),
+        "end": END.isoformat(),
+        "type_index": 3,
+        "scroll": "old-unfiltered",
+        "scroll_observed_at": START.isoformat(),
+        "persisted": 7,
+        "discovery_complete": True,
+    }
+    gateway = Gateway([{"paging": {"scroll": None}, "results": []}])
+    result = await collect_full_operations(
+        db=db,
+        gateway=gateway,
+        seller_id="123",
+        start=START,
+        end=END,
+        checkpoint=old,
+        now=START,
+    )
+    params = parse_qs(urlsplit(gateway.paths[0]).query)
+    assert params["inventory_id"] == ["INV1"]
+    assert params["type"] == ["WITHDRAWAL_RESERVATION"] and "scroll" not in params
+    assert result["persisted"] == 7
+    assert result["checkpoint"]["start"] == old["start"]
+    assert result["checkpoint"]["end"] == old["end"]
+    assert not result["discovery_complete"]
+
+
+@pytest.mark.asyncio
+async def test_full_inventory_ownership_and_response_are_checked_on_resume() -> None:
+    db = owned_full_db(second=True)
+    raw = {
+        "id": 1,
+        "seller_id": 123,
+        "inventory_id": "NOT_REQUESTED",
+        "type": "WITHDRAWAL_RESERVATION",
+        "date_created": "2026-06-04T10:00:00Z",
+    }
+    gateway = Gateway(
+        [
+            {"paging": {"scroll": "same"}, "results": [raw]},
+            {"paging": {"scroll": None}, "results": []},
+        ]
+    )
+    first = await collect_full_operations(
+        db=db, gateway=gateway, seller_id="123", start=START, end=END
+    )
+    assert first["issue_count"] == 1 and first["persisted"] == 0
+    db["items"].documents["MLM1"]["seller_id"] = "999"
+    second = await collect_full_operations(
+        db=db,
+        gateway=gateway,
+        seller_id="123",
+        start=START,
+        end=END,
+        checkpoint=first["checkpoint"],
+    )
+    params = parse_qs(urlsplit(gateway.paths[1]).query)
+    assert params["inventory_id"] == ["INV2"] and "scroll" not in params
+    assert second["requests"] == 1 and second["issue_count"] == 2
+    assert not db["sheets_full_operations"].documents
+
+
+@pytest.mark.asyncio
+async def test_full_completed_inventory_checkpoint_is_idempotent() -> None:
+    db = owned_full_db()
+    gateway = Gateway([{"paging": {"scroll": None}, "results": []}] * 5)
+    first = await collect_full_operations(
+        db=db, gateway=gateway, seller_id="123", start=START, end=END, max_requests=5
+    )
+    second = await collect_full_operations(
+        db=db,
+        gateway=gateway,
+        seller_id="123",
+        start=START,
+        end=END,
+        checkpoint=first["checkpoint"],
+        max_requests=5,
+    )
+    assert second["requests"] == 0 and len(gateway.paths) == 5
+    assert second["discovery_complete"]
+    assert second["blocked_reason"] == "full_withdrawal_contract_incompatible"
+    assert not second["coverage_complete"]
+
+
+@pytest.mark.asyncio
+async def test_full_inventory_selection_bound_is_explicit_not_exact(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import zeler_sheets.onboarding_sources as sources
+
+    monkeypatch.setattr(sources, "_MAX_FULL_INVENTORIES", 2)
+    db = owned_full_db()
+    db["items"].documents["MLM1"]["variations"] = [
+        {"inventory_id": "INV2"},
+        {"inventory_id": "INV3"},
+    ]
+    gateway = Gateway([{"paging": {"scroll": None}, "results": []}] * 10)
+    result = await collect_full_operations(
+        db=db, gateway=gateway, seller_id="123", start=START, end=END, max_requests=10
+    )
+    assert result["checkpoint"]["inventory_seen"] == ["INV1", "INV2"]
+    assert result["pending"] == [{"code": "inventory_selection_limit", "id": None}]
+    assert result["issue_count"] == 1 and not result["coverage_complete"]
+    assert len(gateway.paths) == 10

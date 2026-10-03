@@ -104,6 +104,15 @@ class DocumentaryOperationGateway:
 async def test_collected_stock_operations_cannot_unlock_normal_retiros_handler(
     full_db: Any, candidate_reference: bool
 ) -> None:
+    await full_db.items.insert_one(
+        {
+            "_id": "MLM1",
+            "seller_id": SELLER,
+            "inventory_id": "INV1",
+            "shipping": {"logistic_type": "fulfillment"},
+            "variations": [],
+        }
+    )
     gateway = DocumentaryOperationGateway(candidate_reference=candidate_reference)
     result = await collect_full_operations(
         db=full_db,

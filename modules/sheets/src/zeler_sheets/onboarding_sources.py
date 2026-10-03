@@ -4,8 +4,10 @@ Official contracts checked 2026-10-02:
 https://developers.mercadolibre.com.mx/es_ar/mensajeria-post-venta
 https://developers.mercadolibre.com.mx/es_mx/envios-fulfillment
 
-Full search uses seller/date filters and a five-minute scroll (the same token can
-continue across pages), up to 1000 rows; date_to excludes that day. Its documented
+Full search requires inventory_id alongside seller/date filters; bounded owned
+canonical item selection supplies it without provider catalog lookups. A
+five-minute scroll (the same token can continue across pages) supports up to
+1000 rows; date_to excludes that day. Its documented
 operations do not supply legacy withdrawal/detail IDs or original requested
 quantity. Retain authentic operations, but never claim they satisfy RETIROS or
 overwrite legacy withdrawals. Operation retention is not documented by the
@@ -294,6 +296,122 @@ async def collect_pack_messages(
     return _report(state, requests)
 
 
+_FULL_ITEM_PAGE_SIZE = 32
+_MAX_FULL_INVENTORIES = 4096
+
+
+def _item_full_inventories(item: Mapping[str, Any], seller: str) -> list[str]:
+    shipping = item.get("shipping")
+    if (
+        str(item.get("seller_id")) != seller
+        or not isinstance(shipping, Mapping)
+        or shipping.get("logistic_type") != "fulfillment"
+    ):
+        return []
+    variations = item.get("variations")
+    resources = [item, *(variations if isinstance(variations, list) else [])]
+    return list(
+        dict.fromkeys(
+            identity
+            for resource in resources
+            if isinstance(resource, Mapping)
+            and (identity := _safe_identifier(resource.get("inventory_id"))) is not None
+        )
+    )
+
+
+def _full_inventory_checkpoint(state: dict[str, Any]) -> None:
+    if state.get("inventory_selection_version") != 1:
+        # Old checkpoints contain an unfiltered seller-only scroll. It has no
+        # inventory authority and must never be reused for a selected inventory.
+        state.update(
+            inventory_selection_version=1,
+            inventory_targets=[],
+            inventory_index=0,
+            inventory_seen=[],
+            inventory_scan_complete=False,
+            type_index=0,
+            discovery_complete=False,
+        )
+        for field in ("scroll", "scroll_observed_at", "inventory_item_after"):
+            state.pop(field, None)
+    targets, seen = state.get("inventory_targets"), state.get("inventory_seen")
+    index = state.get("inventory_index")
+    if (
+        not isinstance(targets, list)
+        or len(targets) > _MAX_FULL_INVENTORIES
+        or not isinstance(seen, list)
+        or len(seen) > _MAX_FULL_INVENTORIES
+        or type(index) is not int
+        or not 0 <= index <= len(targets)
+        or type(state.get("inventory_scan_complete")) is not bool
+    ):
+        raise ValueError("invalid Full inventory checkpoint")
+    for target in targets:
+        if not isinstance(target, dict) or set(target) != {"item_id", "inventory_id"}:
+            raise ValueError("invalid Full inventory target")
+        _identifier(target["item_id"])
+        _identifier(target["inventory_id"])
+    for identity in seen:
+        _identifier(identity)
+    if state.get("inventory_item_after") is not None:
+        _identifier(state["inventory_item_after"])
+
+
+async def _select_full_inventory_page(db: Any, state: dict[str, Any]) -> None:
+    # One bounded local page per turn, never a provider lookup/catalog rescan.
+    query: dict[str, Any] = {
+        "seller_id": {"$in": [state["seller_id"], int(state["seller_id"])]},
+        "shipping.logistic_type": "fulfillment",
+    }
+    if state.get("inventory_item_after"):
+        query["_id"] = {"$gt": state["inventory_item_after"]}
+    rows = (
+        await db["items"]
+        .find(
+            query,
+            {
+                "_id": 1,
+                "seller_id": 1,
+                "inventory_id": 1,
+                "variations.inventory_id": 1,
+                "shipping.logistic_type": 1,
+            },
+        )
+        .sort([("_id", 1)])
+        .to_list(length=_FULL_ITEM_PAGE_SIZE + 1)
+    )
+    state["inventory_scan_complete"] = len(rows) <= _FULL_ITEM_PAGE_SIZE
+    targets: list[dict[str, str]] = []
+    seen = set(state["inventory_seen"])
+    for item in rows[:_FULL_ITEM_PAGE_SIZE]:
+        item_id = _identifier(item.get("_id"))
+        state["inventory_item_after"] = item_id
+        for inventory in _item_full_inventories(item, state["seller_id"]):
+            if inventory in seen:
+                continue
+            if len(seen) == _MAX_FULL_INVENTORIES:
+                _pending(state, "inventory_selection_limit")
+                state["inventory_scan_complete"] = True
+                break
+            seen.add(inventory)
+            targets.append({"item_id": item_id, "inventory_id": inventory})
+    state.update(
+        inventory_targets=targets, inventory_index=0, inventory_seen=sorted(seen), type_index=0
+    )
+
+
+def _advance_full_inventory(state: dict[str, Any]) -> None:
+    state["inventory_index"] += 1
+    state["type_index"] = 0
+    state.pop("scroll", None)
+    state.pop("scroll_observed_at", None)
+    state["discovery_complete"] = (
+        state["inventory_index"] == len(state["inventory_targets"])
+        and state["inventory_scan_complete"]
+    )
+
+
 async def collect_full_operations(
     *,
     db: Any,
@@ -312,6 +430,28 @@ async def collect_full_operations(
     state = _state(seller_id, start, end, "full_operations", checkpoint)
     if state["type_index"] > len(_FULL_SEARCH_TYPES):
         raise ValueError("invalid Full type cursor")
+    _full_inventory_checkpoint(state)
+    if state["inventory_index"] == len(state["inventory_targets"]):
+        if not state["inventory_scan_complete"]:
+            await _select_full_inventory_page(db, state)
+        state["discovery_complete"] = (
+            state["inventory_index"] == len(state["inventory_targets"])
+            and state["inventory_scan_complete"]
+        )
+        if state["discovery_complete"] or not state["inventory_targets"]:
+            return _report(
+                state,
+                0,
+                blocked=(
+                    (
+                        "full_withdrawal_contract_incompatible"
+                        if state["inventory_seen"]
+                        else "full_inventory_unavailable"
+                    )
+                    if state["discovery_complete"]
+                    else None
+                ),
+            )
     clock = _timestamp(now or datetime.now(UTC))
     if state.get("scroll_observed_at") and clock - _timestamp(
         state["scroll_observed_at"]
@@ -320,9 +460,21 @@ async def collect_full_operations(
         state.pop("scroll", None)
         state.pop("scroll_observed_at", None)
     requests = 0
-    while not state["discovery_complete"] and requests < max_requests:
+    while state["inventory_index"] < len(state["inventory_targets"]) and requests < max_requests:
+        target = state["inventory_targets"][state["inventory_index"]]
+        item = await db["items"].find_one(
+            {
+                "_id": target["item_id"],
+                "seller_id": {"$in": [seller_id, int(seller_id)]},
+            }
+        )
+        if item is None or target["inventory_id"] not in _item_full_inventories(item, seller_id):
+            _pending(state, "inventory_no_longer_owned", target["inventory_id"])
+            _advance_full_inventory(state)
+            continue
         params = {
             "seller_id": seller_id,
+            "inventory_id": target["inventory_id"],
             "date_from": start.date().isoformat(),
             "date_to": (end if end.time() == datetime.min.time() else end + timedelta(days=1))
             .date()
@@ -363,7 +515,11 @@ async def collect_full_operations(
             return _report(state, requests, blocked="invalid_page")
         for raw in rows:
             try:
-                if not isinstance(raw, dict) or str(raw.get("seller_id")) != seller_id:
+                if (
+                    not isinstance(raw, dict)
+                    or str(raw.get("seller_id")) != seller_id
+                    or raw.get("inventory_id") != target["inventory_id"]
+                ):
                     raise ValueError("operation ownership mismatch")
                 kind = str(raw.get("type", "")).upper()
                 if kind not in WITHDRAWAL_TYPES:
@@ -398,5 +554,10 @@ async def collect_full_operations(
         if paging["scroll"] is None:
             state["type_index"] += 1
             state.pop("scroll_observed_at", None)
-        state["discovery_complete"] = state["type_index"] == len(_FULL_SEARCH_TYPES)
-    return _report(state, requests, blocked="full_withdrawal_contract_incompatible")
+        if state["type_index"] == len(_FULL_SEARCH_TYPES):
+            _advance_full_inventory(state)
+    return _report(
+        state,
+        requests,
+        blocked=("full_withdrawal_contract_incompatible" if state["discovery_complete"] else None),
+    )

@@ -1,16 +1,21 @@
 # RETIROS Full: contrato faltante y comprobación acotada
 
-Fecha: 2 de octubre de 2026. Estado: **bloqueado por evidencia de fuente concreta**,
-no por un fallo global de onboarding. Esta propuesta **no autoriza ni ejecuta**
-consultas autenticadas, cambios de permisos, escritura de datos ni producción.
+Actualización: 3 de octubre de 2026 UTC. Estado: **RETIROS bloqueado por evidencia
+de fuente concreta**; Full queda excluido del piloto y no bloquea las otras cinco
+fuentes. La única reanudación autorizada de siete selecciones **se ejecutó y se
+detuvo en la cuarta por 429**: cuatro GET adicionales, **siete acumulados** y tres
+sin usar. Ese saldo **no autoriza otra ejecución**. No se encontró referencia
+de retiro; no se cambiaron permisos ni se hicieron builds/despliegues.
 
 ## 1. Resultado de la investigación local
 
 Se inspeccionaron el adquiridor existente, el importador legacy, el esquema
 canónico y el handler normal `ZELERDATA_RETIROS`. La investigación externa se
 limitó a cuatro lotes de búsqueda en documentación oficial; los accesos directos
-a algunas páginas devolvieron 403. No hubo llamadas autenticadas a Mercado Libre.
-No se prolongará esta investigación sin una muestra concreta o un contrato nuevo.
+a algunas páginas devolvieron 403. En ese cierre local del 2 de octubre no hubo
+llamadas autenticadas a Mercado Libre. Las llamadas posteriores autorizadas (tres iniciales y cuatro
+de una reanudación) se describen abajo; no se prolonga investigación pública ni se repite automáticamente
+una petición fallida para buscar una cuota disponible.
 
 La [documentación mexicana de Full](https://developers.mercadolibre.com.mx/es_mx/envios-fulfillment),
 actualizada el 18/09/2026, distingue stock, operación, reserva, cancelación,
@@ -80,9 +85,327 @@ mypy enfocados aprobados. Es caracterización de la protección existente, no un
 mapeo nuevo ni una muestra API real; se comprobó primero la prueba existente de
 rango no reconciliado y no se alteró código ejecutable del producto.
 
-## 3. Autorización propuesta: una muestra real, máximo diez GET
+## 3. Evidencia posterior autorizada — 3 de octubre UTC
 
-### Datos mínimos que necesita el operador
+### Identidad, búsqueda local y permiso acotado
+
+El operador verificó HOPEMOB, vendedor `82453304`, linked activo, y consultó Mongo
+**exclusivamente dentro de la VM**. No encontró filas canónicas/legacy de retiros
+ni operaciones que aportaran referencias auténticas. Sí encontró inventarios
+Full de esa cuenta en `items` y sus variaciones:
+
+| Inventario auténtico observado | Publicación | Variación |
+| --- | --- | --- |
+| `IMWU47589` | `MLM2030082766` | `177603522045` |
+| `FQIO47832` | `MLM2030082766` | `177603522043` |
+| `SWMK39536` | `MLM2371963856` | — |
+
+Son candidatos legítimos para **descubrir** referencias, no prueba de que hubo
+retiro ni identidades de retiro/bulto. No se pide ahora al usuario un retiro
+conocido: ya existe una búsqueda técnica acotada preparada con estos candidatos.
+
+Con autorización específica se añadió al registro Sheets únicamente
+`GET /stock/fulfillment/operations/search`: **13 → 14 scopes**. Los otros campos
+permanecieron iguales. La configuración anterior está respaldada en la VM:
+
+- Archivo privado `/var/tmp/zelerdata-full-search-scope-before-20261003T0259.json`;
+  permiso `0600`.
+- SHA-256: `c7414dee18e54502552c03706b41b8bf58f09f20131a3c5ec25f27305f034d50`.
+
+El contrato local publicado de 15 scopes y su rollback **no se declaró desplegado**
+por habilitar ese permiso individual. No se añadieron scopes de detalle,
+inventario, mensajes o comunicación, ni se publicó imagen nueva.
+
+### Tres intentos físicos atestiguados, luego parada
+
+Cada llamada consumió un GET upstream (`X-Zeler-Upstream-Attempts: 1`), sin
+reintentos automáticos. Los resultados preservados son:
+
+| GET ya consumido | Selección | Resultado y límite |
+| --- | --- | --- |
+| 1 | Vendedor, reserva; sin inventario; `[2026-08-05, 2026-10-03)` UTC. | **400:** `inventory_id` requerido. Demuestra una omisión del adquiridor local publicado, no ausencia de retiros. |
+| 2 | `IMWU47589`, `WITHDRAWAL_RESERVATION`, misma ventana. | **200, cero resultados:** no se encontró referencia en esa selección; no prueba ausencia de retiros ni cobertura anual. |
+| 3 | `IMWU47589`, `WITHDRAWAL_DELIVERY`, misma ventana. | **429, over quota:** se detuvo inmediatamente. No se acredita qué cuota fue ni su período de renovación. |
+
+La ventana más antigua `[2026-06-07, 2026-08-05)` UTC **no fue consultada**.
+Al cerrar esa primera etapa se conservaban **tres de diez intentos consumidos**; no empieza una bolsa nueva de
+diez. Ninguna respuesta aportó todavía una referencia útil de retiro/bulto.
+Las lecturas HTTP no escribieron hechos de negocio; el gateway conserva su
+contabilidad/auditoría normal. No prometer "cero escrituras internas".
+
+### 429 y tiempo de espera: qué está y qué no está comprobado
+
+El cuerpo retenido contiene `error="over_quota"` y
+`message="Entity operation_kvs_ds_v2__fbm_seller_stock_operations is over quota"`;
+**no se conservaron los headers de la respuesta**. El código del filtro `_response_headers` de `gateway/src/zeler_gateway/proxy/router.py` no
+reenvía `Retry-After`. Por tanto no se puede afirmar que el upstream careciera
+de ese header ni deducir una espera concreta de su ausencia en el proxy.
+
+La inspección de lectura del código desplegado confirmó el filtro: reenvía
+`Content-Type`, `X-Zeler-Upstream-Attempts` y `X-Content-Missing`, **no**
+`Retry-After`; el audit tampoco guarda response headers/Retry-After. No hubo GET
+Mercado Libre en esa verificación. El plazo de espera no es recuperable de lo
+retenido; no se cambia el comportamiento del gateway en este trabajo. No se hace otra llamada Mercado Libre para comprobar si ya se liberó
+la cuota. **Tiempo de espera contractual conocido: ninguno acreditado.** Un
+backoff genérico del cliente no demuestra la ventana de renovación de esta
+respuesta; tampoco una fecha UTC nueva acredita una cuota diaria. La aprobación
+siguiente debe nombrar cuándo se permite iniciar y sigue deteniéndose ante 429;
+no es una autorización para esperar y reintentar indefinidamente.
+
+### Corrección local: filtro auténtico y checkpoint por inventario
+
+La omisión `inventory_id` requiere una corrección **local**, con inventarios
+seleccionados desde datos canónicos de ese vendedor, paginación/cursor persistido
+por inventario y conservación de páginas útiles al agotar cuota, fallar o
+reiniciar. Inventario de otra cuenta o ausencia de inventarios no autoriza ampliar
+alcance, inventar candidatos ni declarar Full no aplicable.
+
+La corrección local ya incorpora selección paginada de publicaciones Full
+propias (32+lookahead), inventarios de producto/variaciones deduplicados, límite
+4,096 pendiente/no exacto y revalidación de pertenencia antes de cada GET.
+Checkpoint inventario/tipo/scroll conserva avance; cursor legacy sin inventario
+se invalida sin descartar rango/hechos. TDD: 1 RED por filtro ausente, luego
+**28 focused aprobadas** (25 collector+2 lector real/Mongo fail-closed+1
+coordinador compartido con inventarios propios sembrados en fixture);
+Ruff/formato/mypy enfocados aprobados. Prueba 429 local conserva estado tras 2 GET
+y reanuda ese inventario/tipo/scroll con 1 GET, no ejecutado contra Mercado Libre.
+Gates generales finales: **5,820 aprobadas, 0 fallos**, más **8 rs0 protegidas
+aprobadas**; Ruff/formato/mypy completos, direct-Meli lint y schema-export
+aprobados. Los 9 skips de suite son 8 guards cubiertos separadamente y 1 Caddy sin
+claves requeridas. Snapshot de 4 archivos ejecutables congelados/hash revalidados;
+[informe de implementación](zelerdata-historico-al-vincular-implementacion.md)
+separa este fix local del snapshot original publicado y de la evidencia real.
+No es nuevo recurso de Mercado Libre, mapeo de RETIROS ni código desplegado.
+No se modifica registro/permiso productivo para probarlo.
+
+## 4. Una reanudación preparada — siete restantes, sin ejecutar
+
+**Título y plan históricos conservados para mantener el enlace:** al prepararse
+no estaban ejecutados. El resultado actual se registra abajo: reanudación
+posteriormente autorizada, cuatro de siete GET ejecutados, parada por 429,
+siete acumulados y **ninguna continuación automática autorizada**.
+
+**Ruta única:** `GET /stock/fulfillment/operations/search` mediante el gateway
+normal, JWT/autorización existentes y cuenta HOPEMOB linked verificada dentro
+del runtime VM permitido. No exportar tokens/credenciales ni usar navegador,
+cliente alternativo para evadir controles o Mongo productivo desde contexto local.
+
+Cuenta `82453304`; `limit=50` en todas las llamadas. Fechas congeladas UTC, inicio
+inclusivo y fin exclusivo. Solo los tres inventarios ya encontrados y dos tipos
+existentes. Orden fijo, **una sola pasada**:
+
+| GET restante | Inventario | Tipo | Ventana UTC |
+| --- | --- | --- | --- |
+| 1 | `IMWU47589` | `WITHDRAWAL_DELIVERY` | `[2026-08-05, 2026-10-03)` |
+| 2 | `FQIO47832` | `WITHDRAWAL_RESERVATION` | `[2026-08-05, 2026-10-03)` |
+| 3 | `FQIO47832` | `WITHDRAWAL_DELIVERY` | `[2026-08-05, 2026-10-03)` |
+| 4 | `SWMK39536` | `WITHDRAWAL_RESERVATION` | `[2026-08-05, 2026-10-03)` |
+| 5 | `SWMK39536` | `WITHDRAWAL_DELIVERY` | `[2026-08-05, 2026-10-03)` |
+| 6 | `IMWU47589` | `WITHDRAWAL_RESERVATION` | `[2026-06-07, 2026-08-05)` |
+| 7 | `IMWU47589` | `WITHDRAWAL_DELIVERY` | `[2026-06-07, 2026-08-05)` |
+
+La primera llamada es la selección antes fallida con 429, pero solo se ejecutaría
+**una vez bajo nueva aprobación expresa**, no como retry de la autorización anterior.
+No incluye scroll/paginación, detalle de operaciones, inventarios, items ni
+facturación. Aunque la respuesta proporcione rutas/IDs o scroll, no seguirlos con
+esta aprobación. No ampliar ventanas o realizar más llamadas para gastar sobrante.
+
+**Máximos:** siete GET físicos adicionales; **3 + 7 = 10 globales**. Deadline
+global de tres minutos y techo de una solicitud por segundo; timeout de 10 s por
+request. Deshabilitar/descontar reintentos implícitos y comprobar el atestado de
+intentos del gateway. Detener en la primera referencia potencialmente útil de
+retiro/bulto, primer429, otro HTTP fallido, timeout, respuesta inválida o cuenta
+inconsistente. No garantizar que estas siete selecciones localicen un retiro.
+
+**Sin escrituras de negocio ni scopes nuevos.** Contabilidad/auditoría normal del
+proxy permanece; no evadirla, borrar registros, reparar tokens ni cambiar cuotas.
+No certificar coverage ni persistir filas canónicas/retiros por este descubrimiento.
+La evidencia visible se limita a status/GET consumidos, inventario seleccionado,
+campos y semántica sanitizada; no cuerpos completos, compradores, direcciones,
+mensajes, headers sensibles, tokens ni códigos OAuth. Si aparece una referencia,
+conservar solo la evidencia mínima para proponer después su comprobación/mapeo.
+
+### Texto original de aprobación — histórico, no nueva concesión
+
+> Autorizo una sola reanudación de lectura desde el runtime aprobado para
+> HOPEMOB `82453304`, comenzando `<FECHA_Y_HORA_UTC_AUTORIZADAS>`, con las siete
+> selecciones de §4 en ese orden y `limit=50`. Hasta **siete GET upstream restantes**,
+> **diez acumulados incluidos los tres anteriores**, tres minutos y una solicitud
+> por segundo como máximos; sin paginación, retries, nuevas rutas ni scopes.
+> Detener al primer resultado que aporte referencia útil, 429, otro HTTP fallido,
+> timeout o inconsistencia. No autorizo escrituras de negocio, cambios de cuenta,
+> cuotas/permisos, builds, deploys ni ejecutar automático al liberarse la cuota.
+
+La entrega de ese texto, por sí sola, no era aprobación. La autorización
+posterior y el resultado de acceso se registran a continuación; no hay una
+reanudación automática pendiente.
+
+### Recibo de la ejecución autorizada — parada antes de acceder a la VM
+
+- Primera autorización recibida: inicio registrado **2026-10-03 04:24:41 UTC**,
+  deadline **04:27:41 UTC**. La solicitud de permiso del entorno se interrumpió;
+  esa ventana venció y no se prolongó automáticamente.
+- Nueva confirmación explícita «Adelante continua, autorizo»: inicio registrado
+  **04:28:43 UTC**, deadline **04:31:43 UTC**, manteniendo la misma secuencia y
+  los siete GET restantes. El script preparado comprobaría primero auditoría
+  previa, identidad, propiedad de los inventarios y permiso existente, antes de
+  cualquier GET; no gestionaría claves SSH ni credenciales.
+- El único intento SSH a `platform-vm`, proyecto `zeler-platform-dev`, zona
+  `us-central1-a`, terminó con **`Host key verification failed` / exit 255**,
+  antes de ejecutar el script en la VM. La parada se registró a **04:29:38 UTC**.
+  No se reintentó ni se aceptó/reemplazó una clave de host. Este error no prueba
+  que la clave haya cambiado: no se investigó su causa ni se eludió el control.
+- **GET Mercado Libre adicionales iniciados por esta ejecución: 0**. La
+  verificación remota de auditoría del intento interrumpido tampoco pudo
+  ejecutarse; no se presenta como comprobada. El último acumulado atestiguado
+  sigue siendo los **3 GET anteriores**. No se consumió una nueva bolsa de diez.
+- No se obtuvieron referencias nuevas de retiro/bulto/cantidad/fecha. No hubo
+  escrituras de negocio, permisos nuevos, reparación de tokens, commit/push,
+  builds ni despliegues. La corrección local existente permanece sin publicar.
+
+**Estado de ese intento: cerrado por bloqueo de acceso SSH; API no ejecutada.**
+Para otra ejecución primero debe verificarse el contexto SSH legítimo y su
+huella/configuración existente, sin aceptar claves nuevas automáticamente; el
+alcance y el saldo deben confirmarse antes de una nueva autorización acotada.
+No encadenar comprobaciones ni búsquedas con la autorización ya detenida.
+Full continúa fuera del piloto y no bloquea las otras cinco fuentes.
+
+### Diagnóstico IAP posterior autorizado — acceso recuperado, parada de diagnóstico
+
+El usuario autorizó diagnosticar el acceso legítimo con IAP y, solo después de
+recuperarlo, iniciar una ejecución Full de tres minutos. Esa nueva ventana debía
+comenzar al iniciar Full, no al comenzar el diagnóstico SSH.
+
+- La lectura de GCP confirmó `platform-vm` RUNNING, proyecto
+  `zeler-platform-dev`, zona `us-central1-a`, ID `7989018496556289195`.
+  Coincide con el alias ya configurado `compute.7989018496556289195` y su entrada
+  ED25519 previamente confiada en `google_compute_known_hosts`.
+- La invocación anterior `--plain` sin IAP no instaló las opciones Google de
+  identidad/knownhosts/alias; la implementación SDK lo confirma. Eso explica la
+  pérdida del contexto de confianza usado en el intento, **no una clave de host
+  cambiada**. La recuperación usó `gcloud compute ssh --tunnel-through-iap` y
+  opciones explícitas de la configuración existente: usuario/clave existentes,
+  `IdentitiesOnly=yes`, `UserKnownHostsFile`, `HostKeyAlias`,
+  `StrictHostKeyChecking=yes`, `UpdateHostKeys=no` y `BatchMode=yes`.
+- Se conservó `--plain` con esas opciones estrictas explícitas para evitar
+  registros/importaciones SSH en metadata u OSLogin. No se desactivó verificación,
+  aceptó otra clave ni modificó confianza. Los hashes de `~/.ssh/config`,
+  `known_hosts` y `google_compute_known_hosts` permanecieron iguales.
+- **IAP SSH funcionó** y se verificó el hostname `platform-vm`. A continuación,
+  el único comando de diagnóstico encontró `ModuleNotFoundError: No module named
+  'zeler_gateway'` al inspeccionar el proxy mediante `python` en el contenedor.
+  Se detuvo sin otro intento remoto; la parada se registró a
+  **2026-10-03 04:36:36 UTC**.
+- La inspección local posterior de `gateway/Dockerfile` muestra instalación con
+  `uv sync` en `/app/.venv` y arranque con `.venv/bin/uvicorn`; el comando usado
+  invocó `python`, no el intérprete de ese entorno. Es un defecto del comando de
+  diagnóstico, **no evidencia de que el servicio gateway esté caído**. La ruta
+  candidata a verificar en otro intento autorizado es `/app/.venv/bin/python`;
+  su presencia efectiva no se comprobó con otra consulta a la VM.
+
+**Estado de ese diagnóstico: acceso SSH recuperado sin cambiar confianza; ejecución detenida
+por el intérprete del comando de diagnóstico.** El script Full y su verificación
+Mongo de identidad/auditoría **no llegaron a iniciarse**. Por tanto no existe hora
+de inicio de ejecución Full ni una ventana API consumida: **0 GET adicionales
+iniciados**, último acumulado atestiguado **3/10**, ninguna referencia nueva.
+No hubo permisos/rutas nuevos, escrituras de negocio, cambios de credenciales,
+commit/push, builds o despliegues. El saldo no se presenta como auditado de nuevo.
+
+Ese diagnóstico se cerró sin encadenar intentos. La preparación y ejecución
+posteriores se hicieron con la **nueva autorización expresa** siguiente,
+conservando las selecciones y paradas originales. No se reutilizó un permiso
+agotado ni se repitió automáticamente una llamada después del 429.
+
+### Preparación posterior autorizada — diez minutos, solo lectura
+
+El usuario autorizó preparación con ajustes read-only de comandos dentro de la
+VM antes de iniciar Full, sin nuevas llamadas a Mercado Libre. Ventana:
+**2026-10-03 04:40:05 → 04:50:05 UTC**. Preparación verificada a
+**04:41:14.567475 UTC**, tras 69.567475 s de preparación, dentro del límite:
+
+- Gateway y worker correctos, ejecutándose con aplicación en `/app`.
+  **`/app/.venv/bin/python`** existe y los imports del servicio funcionan en
+  ambos contenedores. Se corrigió el comando, no se instaló nada ni reinició
+  un servicio. Camino desplegado single-attempt/header de intentos verificado.
+- Mongo dentro de VM: auditoría confirmó **exactamente tres GET anteriores**:
+  400 a 03:01:03.479, 200 a 03:03:53.802 y 429 a 03:03:54.933 UTC. El saldo máximo
+  inicial de la ejecución nueva era siete de diez, no diez nuevos.
+- HOPEMOB `82453304` único/activo y validez de token comprobada **sin refresh**;
+  14 scopes sin cambios, tres inventarios propios y variaciones confirmados.
+  No se imprimieron/exportaron credenciales ni cambió la identidad de cuenta.
+
+### Ejecución única Full autorizada — parada inmediata en 429
+
+**Inicio real:** `2026-10-03T04:41:54.498744Z`.
+**Deadline:** `2026-10-03T04:44:54.498744Z`.
+**Fin/parada:** `2026-10-03T04:41:58.125021Z` (3.626277 s transcurridos).
+Desde el runtime ya preparado, única ruta search existente, `limit=50`, selección
+congelada, sin scroll/paginación ni reintentos. Resultado de esa pasada:
+
+| Selección del plan | Inventario/tipo | Ventana UTC | Resultado |
+| --- | --- | --- | --- |
+| 1 | `IMWU47589`, `WITHDRAWAL_DELIVERY` | `[2026-08-05,2026-10-03)` | **200, 0 filas, sin scroll**. |
+| 2 | `FQIO47832`, `WITHDRAWAL_RESERVATION` | misma reciente | **200, 0 filas**. |
+| 3 | `FQIO47832`, `WITHDRAWAL_DELIVERY` | misma reciente | **200, 0 filas**. |
+| 4 | `SWMK39536`, `WITHDRAWAL_RESERVATION` | misma reciente | **429/over_quota**; parada inmediata. |
+| 5 | `SWMK39536`, `WITHDRAWAL_DELIVERY` | misma reciente | **No ejecutada**. |
+| 6–7 | `IMWU47589`, reserva y entrega | `[2026-06-07,2026-08-05)` | **No ejecutadas**; ventana antigua íntegramente sin consultar. |
+
+Los cuatro requests atestiguaron `X-Zeler-Upstream-Attempts: 1`, cada uno un intento
+físico, sin retry automático. **Cuatro adicionales + tres previos = siete
+acumulados de diez**; tres no utilizados. No se recibió referencia útil de
+retiro/bulto ni cantidad/fecha de solicitud. Un 200 vacío solo describe esa
+selección, no ausencia global de retiros ni cobertura completa.
+
+Último error: `over_quota`,
+`Entity operation_kvs_ds_v2__fbm_seller_stock_operations is over quota`.
+`Retry-After` no aparece en el proxy que no lo reenvía: no prueba ausencia
+upstream, cuota diaria, espera conocida ni que la cuota esté libre ahora.
+No se consulta otra vez para comprobarlo ni se programa un retry.
+
+**Sin escrituras de negocio**; contabilidad/auditoría normal aceptada del proxy
+permanece. Sin scopes/rutas nuevas, refresh/cambio de cuenta, credenciales
+exportadas, cambios de confianza SSH, instalaciones, restart, commit/push, build
+o despliegue. El fix local de inventario sigue sin publicar/desplegar; recibos
+C1/C2 y contrato de rollback se conservan. Evidencia operativa sanitizada en los
+logs privados del operador `zeler-full-prepare-20261003.log` y
+`zeler-full-seven-executed-20261003.log`; no son archivos de repositorio.
+
+**Estado actual: ejecución autorizada cerrada por 429, mapeo auténtico pendiente.**
+El saldo aritmético de tres GET **no es permiso para continuar**, no se prepara
+otra búsqueda ni se pide automáticamente ampliar cuota/ventana. Full permanece
+fuera del piloto; las otras cinco fuentes continúan independientes. La comprobación posterior de lectura, **04:43:02.086342 UTC**, confirmó
+exactamente **siete GET totales**, los cuatro nuevos statuses 200/200/200/429 a
+04:41:55.408, 04:41:56.163, 04:41:57.099 y 04:41:58.113 UTC, y registro de
+**14 scopes sin cambios**. Sin GET Mercado Libre nuevos. Configuración SSH y
+ambos archivos knownhosts conservaron hashes; los cuatro archivos ejecutables
+validados del fix local también. No quedan comprobaciones VM pendientes para
+cerrar esta ejecución y el postcheck no la reabre.
+
+### Criterio de salida
+
+- Si aparece referencia: documentar qué campo/nivel representa realmente y
+  proponer su contraste acotado. Ningún nombre `withdrawal_id`, cantidad de
+  movimiento ni fecha de operación prueba identidad principal/bulto, cantidad
+  solicitada o fecha de solicitud. Detalle/otra ruta necesita aprobación propia.
+- Si hay 429/error o no aparece referencia: conservar conteo y selección, marcar
+  bloqueo/muestra insuficiente y detener. No prolongar búsqueda ni inferir
+  "sin retiros", cuota diaria o cobertura completa por resultados vacíos.
+- Para un mapeo positivo posterior: evidencia auténtica de jerarquía/cantidad/fecha,
+  primero prueba fallida, adquisición→Mongo canónico→handler RETIROS con validador;
+  cancelación parcial, dedup, vendedor ajeno y legacy preservados. Hasta entonces
+  el lector sigue fail-closed y **Full queda fuera del piloto de las otras fuentes**.
+
+## 5. Propuesta original de mapeo con muestra conocida — histórica/separada
+
+**No es la autorización actual de descubrimiento.** La propuesta del 2 de octubre
+se conserva para una fase posterior de contraste/mapeo, si existe una referencia
+conocida y se aprueba su alcance propio. **No autoriza diez llamadas nuevas**, no
+amplía los siete restantes de §4, ni exige al usuario conseguir el retiro como
+requisito para que el agente ejecute la búsqueda técnica preparada. No se ejecuta
+junto con esa búsqueda; detalle/inventario/items siguen fuera de su permiso.
+
+### Datos de contraste para esa fase posterior, no para reanudar descubrimiento
 
 1. Un vendedor legítimamente vinculado que **sí tenga** un retiro conocido. Puede
    ser el piloto `82453304` si el operador confirma ese retiro; no se supone Full.
@@ -162,7 +485,7 @@ este documento para [vendedor], [inventario] y [fechas UTC], desde el contexto
 runtime acordado, máximo diez GET físicos de lectura. No autorizo cambios de
 permisos, escrituras, descargas históricas amplias, builds ni despliegues”.
 
-## 4. Ubicaciones relevantes
+## 6. Ubicaciones relevantes
 
 - `modules/sheets/src/zeler_sheets/onboarding_sources.py`: adquisición de operaciones.
 - `modules/sheets/src/zeler_sheets/source_gated_read_model_writers.py`: importación

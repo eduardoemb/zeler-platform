@@ -1,6 +1,7 @@
 # ZelerData: implementación local del histórico al vincular
 
-Fecha: 2 de octubre de 2026. Este informe acredita desarrollo local y pruebas
+Cierre local original: 2 de octubre de 2026; actualización Full: 3 de octubre UTC.
+Este informe acredita desarrollo local y pruebas
 aisladas, **no despliegue ni aceptación productiva**, y no convierte una fuente
 pendiente en completa. Commit/push propios publicados después del cierre local: fuente
 `4216e18b62da289c1e67acd1ac8d6db4ba0c9217`. Su ejecución e identidad se registran en el
@@ -14,7 +15,7 @@ Referencia de aceptación:
 | Clasificación | Resultado |
 | --- | --- |
 | **Completado localmente** | Mensaje nuevo de orden antigua sin cambios: recuperación periódica real; tabla de 9,999 órdenes adquiridas + 1 pendiente mediante API autenticada normal; capacidad compartida de dos fuentes no vacías y certificados de 1,000 membresías. |
-| **Bloqueado por evidencia externa concreta** | Mapeo positivo RETIROS Full: no se acredita aún jerarquía retiro/bulto, cantidad originalmente solicitada ni fecha de solicitud. Investigación pública cerrada; [muestra propuesta](zelerdata-full-validacion-acotada.md), ≤10 GET reales, no ejecutada. |
+| **Bloqueado por evidencia externa concreta** | Mapeo positivo RETIROS Full: no se acredita aún jerarquía retiro/bulto, cantidad originalmente solicitada ni fecha de solicitud. Investigación pública cerrada; descubrimiento posterior y [una reanudación autorizada](zelerdata-full-validacion-acotada.md#4-una-reanudación-preparada--siete-restantes-sin-ejecutar) detenidos por 429: 7/10 GET acumulados sin referencia; tres sin usar no autorizan continuar. |
 | **Pendiente de validación productiva** | Backup consistente/restore aislado, builds/deploy por autorizar, permisos/digests/readiness actuales, OAuth legítimo, carga real por fuente, dos cambios reales y fórmulas nativas. |
 
 [Propuesta de publicación/piloto con respaldo y rollback](zelerdata-historico-publicacion-piloto-propuesta.md).
@@ -439,7 +440,9 @@ la propuesta exacta, sin desplegar servicios ajenos por copiar el mismo workspac
 [Propuesta preparada](zelerdata-historico-publicacion-piloto-propuesta.md): separa
 publicación, probe Full, backup/restore, builds, despliegue y piloto; una cuenta,
 90 minutos/día UTC, máximos 2,000 GET iniciales + 500 de mantenimiento (Full aparte,
-≤10 GET). Son límites propuestos, **no autorización ni adquisición ejecutada**.
+≤10 GET). El piloto general sigue propuesto, **no autorizado ni ejecutado**. El
+descubrimiento Full posterior tiene alcance separado y tres GET consumidos;
+no convierte estos límites generales en autorización productiva.
 El SHA publicado se registra solo tras verificar el envío; no se fija un digest
 sin build real. RETIROS Full permanece pendiente sin bloquear las otras fuentes.
 La [adaptación mínima del complemento](zelerdata-ordenes-parciales-complemento-propuesta.md)
@@ -471,7 +474,147 @@ es documental: opt-in final opcional, aviso visible y default exacto sin cambios
 
 Seguir [runbook](../deploy.md) y la propuesta de piloto de la especificación:
 destino documentado `zeler-platform-dev`, `platform-vm`, `us-central1-a`, sujeto a
-confirmación actual. No hubo consulta local de Mongo productivo ni acceso al VM.
+confirmación actual. El cierre local original no consultó Mongo productivo ni accedió a la VM.
+Las lecturas VM y el permiso individual posteriormente autorizados se distinguen
+en la actualización Full siguiente; nunca se consultó Mongo productivo desde
+el asistente local.
+
+## Actualización Full — 3 de octubre de 2026 UTC
+
+Esta sección añade hechos posteriores al cierre local y a su publicación.
+**No modifica el recibo C1/C2 ni convierte las imágenes publicadas en imágenes
+desplegadas.** Fuente original `4216e18b62da289c1e67acd1ac8d6db4ba0c9217`;
+los nuevos cambios locales de inventario, pruebas y este informe **no tienen
+commit/push/build/deploy autorizados**. La corrección/pruebas fueron locales;
+la búsqueda real posterior se autorizó por separado y se detuvo tras cuatro GET
+adicionales por 429, sin activar el piloto. Las otras cinco fuentes permanecen
+sin bloqueo por el mapeo Full; Full sigue excluido de su piloto.
+
+### Evidencia real autorizada y alcance exacto
+
+- Se verificó HOPEMOB `82453304` linked activo desde VM. La lectura Mongo
+  acotada allí no encontró referencia de retiro; encontró tres inventarios Full
+  propios: `IMWU47589`/`FQIO47832` en `MLM2030082766`, variaciones
+  `177603522045`/`177603522043`, y `SWMK39536` en `MLM2371963856`.
+  Son inventarios, no retirados/bultos ni prueba de retiro existente.
+- Solo se habilitó `GET /stock/fulfillment/operations/search`: registro runtime
+  **13→14 scopes**, demás campos preservados. Respaldo VM privado 0600:
+  `/var/tmp/zelerdata-full-search-scope-before-20261003T0259.json`, SHA-256
+  `c7414dee18e54502552c03706b41b8bf58f09f20131a3c5ec25f27305f034d50`.
+  No se desplegó el contrato local de 15 scopes por esta modificación individual.
+- **Primera etapa: 3/10 GET upstream atestiguados**, sin retries: reserva sin inventario → 400
+  (`inventory_id` requerido); reserva `IMWU47589` → 200/cero resultados;
+  entrega del mismo inventario → 429/`over_quota`. Selección consultada:
+  `[2026-08-05,2026-10-03)` UTC. Se detuvo; la ventana
+  `[2026-06-07,2026-08-05)` UTC sigue sin consultar.
+- Cuerpo 429 retenido:
+  `Entity operation_kvs_ds_v2__fbm_seller_stock_operations is over quota`.
+  Solo `error`/`message`, no headers conservados. El filtro local
+  `_response_headers` de `gateway/src/zeler_gateway/proxy/router.py` no reenvía `Retry-After`; ausencia en el proxy no
+  acredita ausencia upstream. No hay plazo de espera contractual conocido ni
+  evidencia de cuota diaria. Inspección de código desplegado, solo lectura y sin
+  GET Mercado Libre: forwarder conserva `Content-Type`, intentos upstream y
+  content-missing, **no `Retry-After`**; audit no almacena headers/Retry-After.
+  Espera no recuperable con evidencia retenida. No se modifica el gateway ni
+  se prueba otra llamada para averiguar si ya liberó la cuota.
+
+### Corrección local requerida y frontera de la validación
+
+La respuesta 400 confirmó que el adquiridor publicado omitía `inventory_id`.
+Corregir ese contrato, no ampliar los permisos: seleccionar inventarios
+auténticos de `items`/variaciones del vendedor y mantener estado por inventario,
+conservando avance útil ante paginación, cuota, fallo y reinicio. No usar
+candidatos ajenos, convertir vacío en "no aplica", ni inventar ID de retiro,
+cantidad solicitada o coverage. Este cambio local no solventa el mapeo RETIROS.
+
+**Corrección local implementada, todavía no publicada ni desplegada:**
+`collect_full_operations` selecciona publicaciones Full propias por páginas de
+32 más un registro de lookahead, obtiene inventarios de producto/variaciones,
+deduplica entre páginas y limita el conjunto a 4,096 identidades. Superar el límite
+queda pendiente/no exacto, no se inventa cobertura. Cada GET lleva `inventory_id`
+y revalida que ese inventario todavía pertenece al vendedor. Checkpoint persiste
+inventario/tipo/scroll y rango congelado; el cursor legacy sin inventario se
+invalida conservando intervalo y hechos previamente persistidos.
+
+**TDD y prueba de reanudación:** primero RED (1 fallo porque faltaba el filtro),
+después **28/28 focused aprobadas**: 25 de collector, 2 con Mongo rs0 aislado y
+el dispatcher/lector RETIROS real fail-closed, y 1 del coordinador compartido.
+Esta última conserva assertions y añade únicamente inventario Full sintético
+propio de cada seller al fixture; sin candidato propio el collector correctamente
+no hace GET, por lo que el fixture anterior sin esa semilla no probaba el caso. Caso 429: dos GET consumidos en
+primer turno, parada y checkpoint útil conservado; reanudación usa exactamente
+inventario/tipo/scroll pendiente en un GET. Ruff/formato/mypy iniciales de los
+3 archivos del fix y `diff --check`: aprobados; el gate general siguiente incluye
+también el cuarto archivo de fixture corregido. Son pruebas locales con respuesta
+controlada, **no GET nuevos a Mercado Libre ni prueba positiva del mapeo**.
+
+**Gates finales de esta corrección local:** snapshot de 4 archivos ejecutables,
+hashes congelados y revalidados sin cambios al finalizar:
+
+| Control | Resultado final |
+| --- | --- |
+| Suite completa aislada Linux | **5,820 aprobadas, 0 fallos, 9 skips; 381.04 s**. |
+| rs0 protegido, sin `MONGO_URI` ambiental | **8 aprobadas, 0 skips**: cubre los 8 skips de guard de la suite; queda solo Caddy sin claves requeridas. |
+| `uv run ruff check .` | Aprobado. |
+| `uv run ruff format --check .` | Aprobado, 643 archivos. |
+| `uv run mypy .` | Aprobado completo, 643 archivos. |
+| direct-Meli lint y schema-export `--check` | Ambos aprobados. |
+
+Un primer run detectó únicamente el fixture compartido sin inventario propio;
+se corrigieron 9 líneas de semilla sintética sin debilitar assertions ni modificar
+el comportamiento del collector, se repitieron 28 focused y la suite completa.
+Ese run fallido no se presenta como evidencia final verde. Las cifras 5,808+8
+anteriores acreditan el snapshot original publicado; 5,820+8 acredita este
+snapshot local nuevo **sin publicar/desplegar**. No hubo otra investigación general,
+consulta remota ni ronda de perfección; se cerró la regresión de fixture del cambio.
+
+### Reanudación única autorizada y ejecutada; cerrada por 429
+
+El [plan histórico de siete restantes](zelerdata-full-validacion-acotada.md#4-una-reanudación-preparada--siete-restantes-sin-ejecutar)
+se conserva sin ampliar selecciones ni permisos. Tras intentos previos de acceso
+sin nuevos GET, el usuario autorizó una fase de preparación read-only de diez
+minutos, 04:40:05→ 04:50:05 UTC. A 04:41:14.567475 se verificaron dentro de la VM
+contenedores/app correctos, imports con `/app/.venv/bin/python` en gateway y
+worker, camino single-attempt, auditoría de exactamente tres GET previos,
+HOPEMOB único activo/token válido sin refresh, 14 scopes y tres inventarios propios.
+No se instaló nada, reinició servicio ni modificó confianza/credenciales.
+
+| Hito | UTC 2026-10-03 |
+| --- | --- |
+| Inicio real Full | **04:41:54.498744** |
+| Deadline global | **04:44:54.498744** |
+| Fin/parada | **04:41:58.125021**, 3.626277 s transcurridos. |
+
+Secuencia única contra search, limit=50, ventana reciente `[2026-08-05,2026-10-03)`:
+1) IMWU entrega → 200/cero filas/sin scroll; 2) FQIO reserva → 200/cero filas;
+3) FQIO entrega → 200/cero filas; 4) SWMK reserva → 429/`over_quota` y parada
+inmediata. Cada request atestigua un GET upstream, sin reintentos/paginación.
+**Cuatro nuevos + tres previos = siete acumulados de diez.** Selecciones 5–7 no
+se ejecutaron; la ventana antigua `[2026-06-07,2026-08-05)` quedó sin consultar.
+No hubo referencia de retiro/bulto ni cantidad/fecha de solicitud. Un 200 vacío
+no prueba ausencia global de retiros ni cobertura anual.
+
+**Espera contractual no acreditada:** el 429 repite
+`Entity operation_kvs_ds_v2__fbm_seller_stock_operations is over quota`.
+Proxy no reenvía `Retry-After`; ausencia en su respuesta no acredita ausencia
+upstream, reset diario o cuota liberada. No se vuelve a consultar ni se programa
+retry para averiguarlo. Escrituras de negocio: 0; se conservan auditoría/counters
+normales del gateway. Sin scopes nuevos, refresh, cambios de identidad/confianza,
+instalación/restart, commit/push/build/deploy. El saldo aritmético de **tres GET
+sin usar no autoriza continuar**. Ninguna adquisición/reanudación automática
+queda aprobada por esta ejecución ya detenida.
+
+**Clasificación actual:** defecto de filtro/checkpoints corregido y validado
+localmente, sin publicar/desplegar; mapeo auténtico RETIROS bloqueado externamente;
+ejecución acotada cerrada por 429 sin referencia; validación productiva de
+backend, nativo Sheets y piloto sigue pendiente. Full continúa fuera del piloto
+y no bloquea las otras cinco fuentes. El complemento parcial sigue exclusivamente
+propuesto, no disponible en Sheets. El postcheck read-only de **04:43:02.086342 UTC** confirmó auditoría de
+**siete GET totales** y cuatro nuevos statuses 200/200/200/429 a 04:41:55.408,
+04:41:56.163, 04:41:57.099 y 04:41:58.113 UTC; registro 14 scopes sin cambios.
+Sin GET nuevos; hashes SSH config/ambos knownhosts y cuatro archivos ejecutables
+locales validados permanecieron iguales. Ejecución y verificación cerradas,
+sin más llamadas VM necesarias ni permiso pendiente de reanudación.
 
 ## Git, conservación y reversibilidad
 
