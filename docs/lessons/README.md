@@ -87,6 +87,7 @@ repeat failures, and promote stable knowledge to its proper operational form.
 | L-028 | ZelerData | Preserve independent coverage when acquiring another interval | active |
 | L-029 | VM pause | Preserve Docker nanosecond proof on the actual host interpreter | active |
 | L-030 | ZelerData | Pace immediately before transport, after persisted charge | active |
+| L-031 | Isolated restore | Operator UID/tmp, actual CLI libc ABI and PRIMARY gate | active |
 
 ## Cloud Build and VM deployment
 
@@ -497,4 +498,20 @@ repeat failures, and promote stable knowledge to its proper operational form.
 - verification/source: `modules/sheets/tests/test_history_execution_controls.py`,
   `modules/sheets/tests/test_devoluciones_onboarding.py`, and the strict shared
   coordinator scenario in `modules/sheets/tests/test_history_onboarding_shared_capacity.py`.
+- status: active
+
+### L-031 — Check the actual operator UID and CLI ABI before isolated restore
+- area: Isolated Mongo restore, COS persistent mounts, Docker operator image
+- proven path: Exercise the official entrypoint's effective UID and temporary
+  bind permissions, then run the chosen CLI inside the actual operator image.
+  Client/daemon API negotiation does not prove libc compatibility. Require a fresh
+  owned data directory and PRIMARY before listing databases; code 94 is an
+  uninitialized replica set, not proof that the restore database is empty.
+- failed path: A root-owned 0700 tmp bind blocks Mongo UID999 before mongod starts;
+  a COS CLI can negotiate the daemon API on its host but fail DT_RELR inside an
+  older operator image. Neither failure demonstrates inconsistent candidates.
+- verification/source: Synthetic UID/command fixtures and actual target-only CLI
+  probes; sanitized receipts in
+  [candidate rescue report](../sheets/zelerdata-historico-rescate-candidatos-propuesta.md).
+  Preserve noexec on the host and use only the private executable container path.
 - status: active
