@@ -39,13 +39,16 @@ async def admit_history_onboarding(db: Any, seller_id: str, *, now: datetime) ->
             upsert=True,
         )
     existing = await plans.find_one({"_id": seller_id, "seller_id": seller_id})
-    if (
-        existing is None
-        or not isinstance(existing.get("cutoff"), datetime)
-        or existing["cutoff"].tzinfo is None
-    ):
+    if existing is None or not isinstance(existing.get("cutoff"), datetime):
         raise ValueError("existing history plan has invalid identity or cutoff")
-    cutoff = existing["cutoff"].astimezone(UTC)
+    stored_cutoff = existing["cutoff"]
+    # Default Mongo codecs return naive UTC; normalize only the calculation,
+    # never the persisted cutoff or the caller's shared client configuration.
+    cutoff = (
+        stored_cutoff.replace(tzinfo=UTC)
+        if stored_cutoff.tzinfo is None
+        else stored_cutoff.astimezone(UTC)
+    )
     # Upgrading a pre-existing planner never replaces its progress or its cutoff.
     await plans.update_one(
         {"_id": seller_id, "policy_version": {"$exists": False}},

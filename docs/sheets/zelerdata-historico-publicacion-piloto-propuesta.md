@@ -1,17 +1,45 @@
 # ZelerData: propuesta de publicación y piloto acotado
 
+## Estado vigente — cierre local del 4 de octubre de 2026 UTC
+
+**Calidad local y respaldo A–F PASS; rollout/piloto no ejecutados.** Cierre del
+rescate publicado previamente en `357e055d5a26dd71f46bd1009c7aa62d6717108a` y remoto
+confirmado. La fuente candidata actual añade cuatro archivos ejecutables a esa
+base: operador/tests y fix cutoff BSON core/test gateway; **ya no es idéntica a
+d78**, todavía debe publicarse a SHA exacto antes del build necesario.
+
+| Gate | Estado medido / siguiente paso |
+| --- | --- |
+| Calidad actual | Linux **5,981 passed/9 skipped/393.71s, exit0**, 02:56:23.139478→03:02:59.525633 UTC; protected separado **8 passed/2.09s**, cubre ocho skips Mongo. Caddy intencional es el noveno. Ruff/formato/mypy655 y direct-Meli PASS; no sumar lotes. |
+| BSON default real aislado | CLI CAS con `create_runtime_db()`/tz_awareFalse y admisión con constructor Motor gateway PASS; 29 OPS +17 gateway enfocadas. Sin OAuth/session/provider ni acción productiva. [Evidencia/controles](zelerdata-historico-control-piloto.md#5-evidencia-y-siguiente-gate). |
+| Imágenes | API/worker d78 verificadas/cacheadas, comportamiento sin delta; no reconstruir por OPS/docs. Gateway requiere **un nuevo build** desde el SHA publicado exacto por su admisión OAuth corregida; d78 antiguo no contiene el fix. Build/procedencia pendiente, ninguna imagen nueva desplegada. |
+| Runtime | Baseline cuatro servicios PASS03:07:00.996899→03:07:05.538659 UTC: HTTP200/dependencias OK/healthy/restart0/OOMfalse/digests anteriores, sin reparación/deploy. Fallo inicial era checker: gateway `/ready` devuelve `status="ready"`, no readybool; clasificado offline6fixtures/captura propia, histórico preservado. No incidente productivo demostrado; revalidar tras rollout. |
+| Piloto | HOPEMOB82453304 solamente, cinco fuentes/90min/2,500 físicos/Full0; índices/registro/rollout/activación productiva pendientes. Interlock legacy y autoridad persistida obligatorios, sin alterar otras cuentas. |
+
+Dos normalizaciones localizadas: cutoff BSON leído→UTC solo para cálculo y
+execution_until→UTC solo en comparación de caps. Conservan cutoff persistido,
+presupuesto/consumos/checkpoints/leases, deadline y CAS. Caller servido de admisión
+solo OAuth gateway; no cambiar globalmente tz_aware ni atribuir el fix a API/worker.
+Recibo final privado `zeler-pilot-gate-707d3daba082/verification-receipt.md`;
+snapshot fuente completo/RO y cuatro hashes ejecutables intactos. La limpieza
+local final eliminó solo fixtures propios, perfiles/contexto anteriores preservados.
+
+Las secciones históricas siguientes conservan evidencia por su fecha; no prueban
+estado actual ni sustituyen este cierre. Autorización sigue condicionada a gates.
+
 ## Autorización vigente — ampliación del 4 de octubre de 2026 UTC
 
 Rescate B–F y rollout/piloto ya autorizados **condicionados a auditoría, respaldo recuperable, calidad y recuperación compatible**; [alcance canónico y estado](zelerdata-historico-rescate-candidatos-propuesta.md#autorización-vigente--ampliación-del-4-de-octubre-de-2026-utc).
 **Auditoría corregida PASS: 41 miembros, exit 0**, única excepción expresa al no-retry; 2026-10-04 01:18:13.686340→01:18:37.608276 UTC, diez fixtures offline previos verdes. Estructura/conteos/metadata coincidentes; prelude 7.0.31/Tool100.16.0 excluido, sin Mongoqueries ni escrituras originales/Full.
 B/C y **D fiel único autorizado PASS** 02:07:49→02:09:31.183384 UTC: nueva base fiel_v1, datos/metadata/índices/validadores/joins exactos a B, forense/parcial previa preservados; expiraciones intactas. Reader legacy solo repositorio/fail-closed, no HTTP ni cobertura productiva. **E PASS/aceptación02:11:08.854479 UTC**: dos objetos GCS exactos/gen0/readbackSHA/temporaryholdtrue, conservar hasta al menos2026-10-11 mismahora; **F PASS02:12:00.719913 UTC**: solo VM2416531264420713648/disco8831012956187399344 eliminados por identidad/ausencia/evidencia fuera; respaldo/holds preservados. A–F completos, rollout/piloto/Full0; global pendiente. Primer D fallido queda histórico, no borrado ni nuevo corte. Auditoría original exit 1/16 miembros por options omitido conservada histórica, no corrupción probada ni nuevo corte.
-Origen sano tras cleanup02:12:30.632597→02:12:34.210086 UTC: API/gateway/worker/bootstrap200ready/healthy/restarts0/OOMfalse; fuentes runtime idénticas a d78, sin nuevos builds. Controles locales y respaldo/restore fiel completados; despliegue/piloto pendientes. Piloto autorizado: HOPEMOB82453304, cinco fuentes/90 min/2,500 GET físicos, **Full 0**, sin activación global.
-**Calidad local final verde:** full Linux 5,946 passed/9 skipped, 425.84 s, exit 0 (00:54:46.140710→01:01:54.421494 UTC); ocho broker integrados, ocho guards Mongo cubiertos por protected Linux 8 passed/2.08 s y un Caddy intencional. Ruff/formato/mypy verdes/653 fuentes, 1,053 hashes/modos intactos/OOM 0; no sumar lotes ni afirmar aceptación productiva. [Intentos históricos y evidencia](zelerdata-historico-rescate-candidatos-propuesta.md#autorización-vigente--ampliación-del-4-de-octubre-de-2026-utc).
-Limpieza local 01:05:11.228918 UTC: solo seis contenedores/seis volúmenes/perfil propios; perfiles anteriores Stopped/contexto colima preservados. Las restricciones de permisos/mediciones anteriores se conservan históricas; no revocan la ampliación ni acreditan resultados. Selector publicado `dbf84928167c1ea66113d9005440e201eeb1566e`, fuentes runtime d78 sin cambio.
+**Histórico02:12, no salud actual:** origen sano tras cleanup02:12:30.632597→02:12:34.210086 UTC: API/gateway/worker/bootstrap200ready/healthy/restarts0/OOMfalse; en ese instante fuentes runtime d78, sin nuevos builds. La candidata posterior incluye los fixes arriba; despliegue/piloto pendientes. Piloto autorizado: HOPEMOB82453304, cinco fuentes/90 min/2,500 GET físicos, **Full 0**, sin activación global.
+**Calidad histórica previa a los cuatro cambios, supersedida por el cierre vigente:** full Linux 5,946 passed/9 skipped, 425.84 s, exit 0 (00:54:46.140710→01:01:54.421494 UTC); ocho broker integrados, ocho guards Mongo cubiertos por protected Linux 8 passed/2.08 s y un Caddy intencional. Ruff/formato/mypy verdes/653 fuentes, 1,053 hashes/modos intactos/OOM 0; no sumar lotes ni afirmar aceptación productiva. [Intentos históricos y evidencia](zelerdata-historico-rescate-candidatos-propuesta.md#autorización-vigente--ampliación-del-4-de-octubre-de-2026-utc).
+Limpieza local histórica01:05:11.228918 UTC: solo seis contenedores/seis volúmenes/perfil propios; perfiles anteriores Stopped/contexto colima preservados. Las restricciones de permisos/mediciones anteriores se conservan históricas; no revocan la ampliación ni acreditan resultados. Selector publicado `dbf84928167c1ea66113d9005440e201eeb1566e`, runtime d78 sin cambio en esa fase anterior.
 
-Actualización: 3 de octubre de 2026 UTC. **Trabajo propio publicado en `main`;
-fuente actual `d78ff4e57915ca5e81a5eb6f1976ec65f111824b`,
-verificada contra el remoto.** C1/C2 permanecen como historial en el
+**Historial de publicación y cortes anteriores — 3 de octubre de 2026 UTC.**
+Trabajo propio publicado entonces en `main`;
+fuente de esa fase `d78ff4e57915ca5e81a5eb6f1976ec65f111824b`,
+verificada contra el remoto. C1/C2 permanecen como historial en el
 [recibo de publicación](zelerdata-historico-publicacion-20261002.md). El follow-up
 de este recibo/propuesta es documental, no una fuente nueva de imágenes.
 **Etapas 8A/8B históricas autorizadas y ejecutadas:** tres builds SUCCESS/procedencia C3
@@ -151,7 +179,7 @@ ampliar pruebas reales automáticamente.
 
 ## 2. Publicación verificada: fuente actual y conservación
 
-**Actual:** d78 `d78ff4e57915ca5e81a5eb6f1976ec65f111824b`, tree
+**Publicación histórica d78:** `d78ff4e57915ca5e81a5eb6f1976ec65f111824b`, tree
 `54d96092dce1358579989c45d973bd6969f1a4d7` idéntico al staged validado/remoto
 confirmado/worktree limpio al publicar. Tres builds actuales en el recibo d78;
 los antecedentes C1/C2/C3 siguientes conservan su propia evidencia histórica.
@@ -307,6 +335,11 @@ OAuth/identidades/hechos posteriores; autorización separada, fail-closed mientr
 
 ## 6. Piloto inicial: una cuenta, límites explícitos
 
+Operación persistida canónica: [runbook prepare/pause/activate](zelerdata-historico-control-piloto.md),
+dry-run predeterminado, recibo aplicado fijado por SHA y CAS del documento completo.
+No reemplaza los gates de rollout ni acredita piloto activo; el plan legacy exige
+OAuth auténtico antes de poder prepararse, sin admisión manual ni reset.
+
 **Candidato:** vendedor `82453304`, solo si legítimamente linked y operador acepta
 la cuenta. Relink normal, sin force, tokens copiados, limpieza para simular vacío
 ni reemplazo de cutoff/checkpoints. No asumir Full aplicable.
@@ -328,6 +361,17 @@ Antes de habilitar, obtener plan por OAuth auténtico con flag apagado y, bajo
 (Full excluido; investigación cerrada) y bajar límites remanentes. No reiniciar consumed,
 corte, jobs, snapshots ni otras cuentas. Si el plan ya agotó una cuota, no elevarla
 como "reset": declarar pendiente y pedir otro alcance.
+
+**Interlock legacy antes del piloto:** baseline real de la API y worker corroboró
+`ZELERDATA_FORMULA_RECOVERY_ENABLED=true` con cohorte única HOPEMOB82453304
+(cohorte82); worker también `ZELERDATA_REFRESH_ENABLED=true`/misma cohorte,
+API refresh no configurado. Cambiar únicamente recovery a **false API+worker**
+y refresh a **false worker**, conservando allowlists y todos los demás campos,
+configuración y cuentas. Son flags globales; si cambia la cohorte original, STOP:
+no suprimir actividad ajena ni inventar un control per-seller. Junto con histórico
+seller-only y límites persistidos, esto impide que lanes legacy agreguen tráfico
+no acotado al ensayo. Flags OFF no prueban quiescence: drenar/verificar trabajos
+en curso, sin borrar jobs ni tomar leases. No está aplicado por esta documentación.
 
 | Fuente | GET iniciales adicionales máximos |
 | --- | ---: |
@@ -391,13 +435,13 @@ container running, una muestra correcta o tests verdes en cobertura anual.
 
 ## 8. Autorizaciones concretas listas para completar
 
-Son permisos **independientes**. A/B se aprobaron y ejecutaron, con evidencia
+**Textos históricos de permisos; no estado vigente.** Son permisos **independientes**. A/B se aprobaron y ejecutaron, con evidencia
 en el [recibo](zelerdata-historico-builds-runtime-20261003.md); sus textos se
 conservan como alcance histórico, no permiso de nuevos builds/inspecciones.
 C fue autorizado, target/Mongo listos y un corte abortado sin dump/restore. El goal
 posterior autoriza D/E condicionados a gates, **no ejecutados**. Los textos siguientes
 conservan etapas previas; objetivo nuevo14/sin Full y fuente d78 ya publicada/builds
-verificados, sin deploy. Fuente actual: `d78ff4e57915ca5e81a5eb6f1976ec65f111824b`;
+verificados, sin deploy. Fuente entonces: `d78ff4e57915ca5e81a5eb6f1976ec65f111824b`;
 C3 `aeefe993ad5c9a4ff4760c9b691ac11ad47b5a6d` permanece histórica.
 El recibo conserva C1/C2 y sus 36 hashes originales como históricos, y registra
 la delta C3 de cuatro archivos validados; 32 permanecen iguales. Comprobar que
@@ -571,11 +615,16 @@ si evidencia insuficiente. No declarar respaldo ni objetivo global terminado.
 ### D. Rollout autorizado por goal; ejecutar solo después de gates
 
 **Plan anterior C3/15 supersedido por objetivo14/sin Full y controles locales**.
-Fuente/digests d78 ya verificados: gateway `sha256:2f94fcac5e12d986fc91e824e753c2096a82fe6d711d4292518ced63e0d98bef`,
+**Selección vigente:** respaldo A–F ya PASS. API/worker d78 verificados/cacheados
+siguen candidatos, sin delta de comportamiento; gateway requiere imagen del fix
+desde nueva publicación exacta/procedencia verificada, **aún pendiente**. No desplegar
+su digest d78 como si incluyera la admisión corregida. Identidades d78 preservadas:
+gateway anterior `sha256:2f94fcac5e12d986fc91e824e753c2096a82fe6d711d4292518ced63e0d98bef`,
 API `sha256:3f7ac7c066a09f3c1f5e15201853e89e424c71a9bafb7415e3de5eb898f31417`,
 worker `sha256:79f5c6f40f5fd25f47ae572cc9f9a9fd56e4ab1438279467d9d2ad4ea5aeba7e`.
-Destinos ArtifactRegistry completos en el recibo d78, **propuestos, no pull/deploy**.
-Falta respaldo consistente/restore y garantía de recuperación; no iniciar rollout.
+Destinos ArtifactRegistry completos en el recibo d78; pull verificado no es deploy.
+Faltan nuevo build gateway/procedencia y gates runtime/recuperación/índices/registro;
+no iniciar rollout por tener imágenes disponibles o respaldo aceptado.
 El texto anterior preservado abajo no es autorización para desplegar C3/15. Los
 tres digests **C3 históricos del texto preservado, NO destino actual**, están
 verificados en el [recibo](zelerdata-historico-builds-runtime-20261003.md#1-tres-imágenes-success-con-procedencia-verificada);
