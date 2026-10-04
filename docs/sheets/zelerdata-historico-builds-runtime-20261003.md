@@ -1,5 +1,15 @@
 # ZelerData: builds verificados y baseline runtime — 3 de octubre de 2026
 
+## Autorización vigente — ampliación del 4 de octubre de 2026 UTC
+
+Rescate B–F y rollout/piloto ya autorizados **condicionados a auditoría, respaldo recuperable, calidad y recuperación compatible**; [alcance canónico y estado](zelerdata-historico-rescate-candidatos-propuesta.md#autorización-vigente--ampliación-del-4-de-octubre-de-2026-utc).
+Auditoría original terminó exit 1 sin retry: 00:22:46.970145→00:22:58.447630 UTC; **16 miembros completados, incluido snapshot**, hasta BSON run_windows (8 registros).
+Selector/inventario y directorio/mount/bind comprobados realmente en Python del host 3.10; diagnóstico posterior exigía options vacío que Tools omite, no demuestra candidatos inservibles. Corrección privada con siete pruebas sintéticas verdes, sin reanudación ni prueba de contenido real.
+La alternativa de un corte ≤15 min **no tiene su condición cumplida**; no nuevo corte/destino. Posible único delta necesario: reanudación corregida de auditoría ≤5 min; no se ejecutó.
+Controles locales completados; respaldo/restore real/despliegue/piloto pendientes. Piloto autorizado: HOPEMOB82453304, cinco fuentes/90 min/2,500 GET físicos, **Full 0**, sin activación global.
+**Calidad local final verde:** full Linux 5,946 passed/9 skipped, 425.84 s, exit 0 (00:54:46.140710→01:01:54.421494 UTC); ocho broker integrados, ocho guards Mongo cubiertos por protected Linux 8 passed/2.08 s y un Caddy intencional. Ruff/formato/mypy verdes/653 fuentes, 1,053 hashes/modos intactos/OOM 0; no sumar lotes ni afirmar aceptación productiva. [Intentos históricos y evidencia](zelerdata-historico-rescate-candidatos-propuesta.md#autorización-vigente--ampliación-del-4-de-octubre-de-2026-utc).
+Limpieza local 01:05:11.228918 UTC: solo seis contenedores/seis volúmenes/perfil propios; perfiles anteriores Stopped/contexto colima preservados. Las restricciones de permisos/mediciones anteriores se conservan históricas; no revocan la ampliación ni acreditan resultados. Selector publicado `dbf84928167c1ea66113d9005440e201eeb1566e`, fuentes runtime d78 sin cambio.
+
 **ESTADO ACTUAL:** fuente d78 publicada/remoto confirmado y tres builds nuevos
 SUCCESS/procedencia verificada. No pull/deploy/piloto; runtime sigue en imágenes
 anteriores, baseline13. **Nueva C autorizada ejecutó un único corte22:06:27.367903
@@ -80,15 +90,15 @@ pasó antes del único corte nuevo; no corregir retrospectivamente el resultado.
 **Actualización local autorizada:** selector mínimo 41 miembros implementado en
 `infra/operations/zelerdata_history_archive.py`, biblioteca estándar/Python del host 3.10; RED auténtico
 1 passed/1 failed en fixture con prelude antes del fix y **GREEN: 38 pruebas**.
-**Control general NO APROBADO/incompleto:** pytest terminó con exit 1, sin resumen completo, por Mongo local `127.0.0.1:27017` sin listener e interrupción (KeyboardInterrupt y KeyError de pytest_stash en teardown). No se inició Mongo ni se preparó otro entorno. Ruff y formato exit 0; mypy exit 0, 653 fuentes. Las 38 pruebas enfocadas y el smoke sintético de 41 miembros son válidos; no acreditan restore real. Los 12 fallos Bash/BSD anteriores son evidencia histórica, no un resultado repetido en esta ejecución.
+**Control general anterior — histórico, sustituido por la ejecución del aviso vigente:** pytest terminó con exit 1, sin resumen completo, por Mongo local `127.0.0.1:27017` sin listener e interrupción (KeyboardInterrupt y KeyError de pytest_stash en teardown). No se inició Mongo ni se preparó otro entorno. Ruff y formato exit 0; mypy exit 0, 653 fuentes. Las 38 pruebas enfocadas y el smoke sintético de 41 miembros son válidos; no acreditan restore real. Los 12 fallos Bash/BSD anteriores son evidencia histórica, no un resultado repetido en esta ejecución.
 Este cierre documental se publica por separado; su identidad se consulta en Git y no cambia el código de los servicios de la fuente d78.
 Sintaxis/tipos 3.10 comprobados,
-no ejecución real del selector3.10. Solo herramienta operativa del host con biblioteca estándar, fuentes runtime de
+no ejecución real del selector 3.10 en aquel momento previo a la auditoría. Solo herramienta operativa del host con biblioteca estándar, fuentes runtime de
 servicios d78 intactas, no builds nuevos; no equivalencia global deinfra tras sumarhelper.
 No nube ni descargas de BSON reales: auditoría local verifica30 recibos/SHA del índice
 `a049329a9222a0ce2ac99868ee84d558984c7c6b82385a435053475447a66290`.
 Ubicación registrada `/var/lib/zeler-mongo/.zelerdata-c-new-20261003T214827Z`,
-**existencia actual no revalidada**, sin hash de baseline por BSON ni restore/contenido
+**existencia no revalidada en aquel momento anterior; la auditoría 00:22 confirmó directorio/mount/bind, no contenido completo**, sin hash de baseline por BSON ni restore/contenido
 comparado al corte; candidatos no backup. La [propuesta de rescate](zelerdata-historico-rescate-candidatos-propuesta.md)
 separa evidencia/gaps/operaciones y solicita **únicamente auditoría solo lectura
 dentro de la VM≤5 min**, no consultas a Mongo/download/pack/upload/recursos/pausas/restart.

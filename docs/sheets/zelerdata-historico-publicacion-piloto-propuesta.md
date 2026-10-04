@@ -1,5 +1,15 @@
 # ZelerData: propuesta de publicación y piloto acotado
 
+## Autorización vigente — ampliación del 4 de octubre de 2026 UTC
+
+Rescate B–F y rollout/piloto ya autorizados **condicionados a auditoría, respaldo recuperable, calidad y recuperación compatible**; [alcance canónico y estado](zelerdata-historico-rescate-candidatos-propuesta.md#autorización-vigente--ampliación-del-4-de-octubre-de-2026-utc).
+Auditoría original terminó exit 1 sin retry: 00:22:46.970145→00:22:58.447630 UTC; **16 miembros completados, incluido snapshot**, hasta BSON run_windows (8 registros).
+Selector/inventario y directorio/mount/bind comprobados realmente en Python del host 3.10; diagnóstico posterior exigía options vacío que Tools omite, no demuestra candidatos inservibles. Corrección privada con siete pruebas sintéticas verdes, sin reanudación ni prueba de contenido real.
+La alternativa de un corte ≤15 min **no tiene su condición cumplida**; no nuevo corte/destino. Posible único delta necesario: reanudación corregida de auditoría ≤5 min; no se ejecutó.
+Controles locales completados; respaldo/restore real/despliegue/piloto pendientes. Piloto autorizado: HOPEMOB82453304, cinco fuentes/90 min/2,500 GET físicos, **Full 0**, sin activación global.
+**Calidad local final verde:** full Linux 5,946 passed/9 skipped, 425.84 s, exit 0 (00:54:46.140710→01:01:54.421494 UTC); ocho broker integrados, ocho guards Mongo cubiertos por protected Linux 8 passed/2.08 s y un Caddy intencional. Ruff/formato/mypy verdes/653 fuentes, 1,053 hashes/modos intactos/OOM 0; no sumar lotes ni afirmar aceptación productiva. [Intentos históricos y evidencia](zelerdata-historico-rescate-candidatos-propuesta.md#autorización-vigente--ampliación-del-4-de-octubre-de-2026-utc).
+Limpieza local 01:05:11.228918 UTC: solo seis contenedores/seis volúmenes/perfil propios; perfiles anteriores Stopped/contexto colima preservados. Las restricciones de permisos/mediciones anteriores se conservan históricas; no revocan la ampliación ni acreditan resultados. Selector publicado `dbf84928167c1ea66113d9005440e201eeb1566e`, fuentes runtime d78 sin cambio.
+
 Actualización: 3 de octubre de 2026 UTC. **Trabajo propio publicado en `main`;
 fuente actual `d78ff4e57915ca5e81a5eb6f1976ec65f111824b`,
 verificada contra el remoto.** C1/C2 permanecen como historial en el
@@ -22,7 +32,7 @@ y no cambia el código de la fuente d78. Checklist/preparación
 §§8–9 en el [informe](zelerdata-historico-al-vincular-implementacion.md#preparación-de-aceptación-del-goal-oauth-api-normal-y-sheets-nativo).
 **ESTADO ACTUAL:** este cierre documental no cambia código de fuente d78.
 Selector operativo del host corregido localmente: 38 pruebas enfocadas verdes.
-**Control general NO APROBADO/incompleto:** pytest terminó con exit 1, sin resumen completo, por Mongo local `127.0.0.1:27017` sin listener e interrupción (KeyboardInterrupt y KeyError de pytest_stash en teardown). No se inició Mongo ni se preparó otro entorno. Ruff y formato exit 0; mypy exit 0, 653 fuentes. Las 38 pruebas enfocadas y el smoke sintético de 41 miembros son válidos; no acreditan restore real. Los 12 fallos Bash/BSD anteriores son evidencia histórica, no un resultado repetido en esta ejecución.
+**Control general anterior — histórico, sustituido por la ejecución del aviso vigente:** pytest terminó con exit 1, sin resumen completo, por Mongo local `127.0.0.1:27017` sin listener e interrupción (KeyboardInterrupt y KeyError de pytest_stash en teardown). No se inició Mongo ni se preparó otro entorno. Ruff y formato exit 0; mypy exit 0, 653 fuentes. Las 38 pruebas enfocadas y el smoke sintético de 41 miembros son válidos; no acreditan restore real. Los 12 fallos Bash/BSD anteriores son evidencia histórica, no un resultado repetido en esta ejecución.
 Este cierre documental se publica por separado; su identidad se consulta en Git y no cambia el código de los servicios de la fuente d78.
 [Rescate propuesto y única solicitud de auditoría](zelerdata-historico-rescate-candidatos-propuesta.md):
 no ejecución de rescate ni nuevas imágenes runtime.
