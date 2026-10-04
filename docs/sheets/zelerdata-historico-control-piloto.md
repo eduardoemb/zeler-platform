@@ -1,13 +1,15 @@
 # ZelerData: preparar, activar y pausar el piloto histórico
 
 Operador canónico: [`infra/operations/zelerdata_history_pilot.py`](../../infra/operations/zelerdata_history_pilot.py).
-**Este runbook no acredita despliegue ni piloto activo.** La preparación registra
-imágenes d78 verificadas y descargadas; el respaldo y su restauración aislada fiel
-son PASS, con cierre A–F publicado previamente en `357e055d5a26dd71f46bd1009c7aa62d6717108a`.
-**El gateway requiere una nueva imagen** por el fix de admisión BSON, desde el
-SHA exacto que se publique; API/worker conservan comportamiento d78 y sus imágenes
-ya verificadas/cacheadas, sin reconstruirlas por OPS/docs. La ejecución productiva
-sigue condicionada a los gates de la
+**Rollout cerrado aplicado y verificado; piloto NO activo**, 4 de octubre de 2026 UTC.
+Fuente `b867b27505b424871a92a59da459c45840cf8d8c` publicada/remoto exacto; gateway
+corregido construido/verificado y desplegado, API/worker d78 desplegados sin delta
+de comportamiento servido (mezcla deliberada). Cinco índices aditivos y registro14
+sin Full aplicados. El respaldo/restauración fiel A–F siguen PASS, publicados
+previamente en `357e055d5a26dd71f46bd1009c7aa62d6717108a`.
+HOLDtrue, historyOFF e interlock legacyOFF: ninguna preparación/activación de plan
+ni aceptación OAuth/API/Sheets productiva acreditada. La activación sigue
+condicionada a los gates de la
 [propuesta de publicación/piloto](zelerdata-historico-publicacion-piloto-propuesta.md).
 No confundir una imagen disponible, un recibo local o un flag con aceptación runtime.
 
@@ -22,8 +24,8 @@ la fuente validada/congelada y verifica su SHA; la transmite por **stdin** al
 Python3.11 de la API legítima, reutilizando `create_runtime_db` ya incluido. No
 copia credenciales ni instala módulos, modifica capas o solicita otro build.
 Los dos archivos fuente/tests de la unidad y sus hashes se conservan como evidencia.
-El build necesario del gateway es distinto de este envío de OPS por stdin: no
-atribuir disponibilidad de la admisión corregida a su imagen d78 antigua.
+El gateway desplegado ya contiene la admisión corregida; no atribuirla a su imagen
+d78 antigua ni confundir ese build con este envío de OPS por stdin.
 
 - [ ] Autorización vigente y vendedor HOPEMOB **82453304** legítimamente vinculado.
 - [ ] OAuth auténtico, sin force, token transferido ni admisión manual. Si el plan
@@ -53,6 +55,27 @@ atribuir disponibilidad de la admisión corregida a su imagen d78 antigua.
 No aplicar seeds generales, validadores, resets ni modificaciones de otras cuentas
 para cerrar un gate. El CLI no verifica OAuth, imágenes, jobs, capacidad ni flags:
 las confirmaciones afirman evidencia obtenida independientemente.
+
+### Estado cerrado y Compose persistente
+
+Aplicado/verificado: gateway HOLDtrue/seller82453304; worker historyOFF/seller82453304;
+recovery API/workerOFF y refresh workerOFF, allowlists HOPEMOB originales intactas.
+Registro **13 + único `GET /messages/packs/*` =14**, seis keys, cero scopes Full;
+otros seis clientes y demás campos preservados. Índices: cinco nuevos, dos existentes
+intactos, metadata anterior preservada, sin documentwrites/collMod/validadores.
+
+Toda futura operación Compose seleccionada debe incluir **ambos** archivos:
+
+```text
+base: /opt/zeler-platform/docker-compose.yml
+override: /var/lib/zeler-platform/.history-rollout-20261004T022714Z/interlocked-override-b867b27.yml
+override SHA256: b7b85d5628b5df6580c8c34544db5c4bb0350ec8cb3b04fcd43c5a6234919dd1
+```
+
+No operar solo la base: perdería los interlocks/pins persistentes. Preimagen privada
+del registro13 SHA `61a0e7641c2635c197b8d7cc63d3a22cf6d422389d9815b78eb461b1473853f8`
+preservada: **no restaurarla automáticamente bajo API14**. Recuperación forward,
+sin worker antiguo sobre `policy_authority`; no borrar jobs ni resetear estado.
 
 ## 2. Límites y conservación
 
@@ -202,8 +225,8 @@ cutoff BSON leído para cálculo; activación normaliza únicamente la comparaci
 de `execution_until`. Default BSON devuelve UTC naive. No cambiar cliente global,
 reescribir cutoff ni relajar caps, deadline, lease, counters o CAS. Caller servido
 de admisión: OAuth del gateway; API/worker usan helpers de ejecución sin delta de
-comportamiento. Hace falta **un build gateway** desde publicación exacta verificada;
-no tres builds por copiar `core`, ni rebuild por operador/docs.
+comportamiento. El único nuevo build gateway necesario ya terminó SUCCESS/VERIFIED
+y está desplegado; no hubo tres rebuilds por copiar `core` ni rebuild por OPS/docs.
 
 Separadamente, **Mongo real aislado con lector real default `tz_aware=False` PASS**:
 CLI usa `create_runtime_db()`, dry-run sin writes, prepare→activate→pause,
@@ -223,15 +246,36 @@ Contrato de las tres imágenes cacheadas comprobado sin red: 14 scopes
 Estos resultados no acreditan CAS contra Mongo productivo, prepare/activate
 productivo ni aceptación OAuth/API/Sheets. Intentos de full anteriores invalidados
 por fixture/prerrequisitos o cambio de fuente permanecen históricos, no gates.
-**Baseline runtime de cuatro servicios PASS**, 2026-10-04
-03:07:00.996899→03:07:05.538659 UTC: HTTP200/dependencias OK/healthy/restart0/OOMfalse,
-digests anteriores, sin reparación ni despliegue. El fallo de diagnóstico previo
+**Runtime cerrado asentado de cuatro servicios PASS**, 2026-10-04
+03:31:10.296437→03:31:16.126840 UTC: API/gateway/worker/bootstrap-dispatcher
+readiness200/dependencias OK/healthy/restart0/OOMfalse. Identidades desplegadas:
+
+| Servicio | Fuente / referencia inmutable |
+| --- | --- |
+| Gateway | b867b27 / `us-central1-docker.pkg.dev/zeler-platform-dev/zeler-platform/gateway@sha256:7054e427c15835608955cd23f694314aacccc798273cf2ac8e57b03f8c4a4b62` |
+| Sheets API | d78 / `us-central1-docker.pkg.dev/zeler-platform-dev/zeler-platform/sheets-api@sha256:3f7ac7c066a09f3c1f5e15201853e89e424c71a9bafb7415e3de5eb898f31417` |
+| Sheets worker | d78 / `us-central1-docker.pkg.dev/zeler-platform-dev/zeler-platform/sheets-worker@sha256:79f5c6f40f5fd25f47ae572cc9f9a9fd56e4ab1438279467d9d2ad4ea5aeba7e` |
+
+Gateway build `3a393853-4c2a-4044-81fd-050f0fc766a0` SUCCESS, VERIFIED/procedencia
+verificada, fuente completa b867b27505b424871a92a59da459c45840cf8d8c.
+Builds conservados: API `99bb01b9-8254-4151-a559-74ba18bfc259` y worker
+`6be598c0-8c97-4a26-9823-31808e6264cb`, ambos con fuente completa
+`d78ff4e57915ca5e81a5eb6f1976ec65f111824b`.
+Capacidad final: `/`35,065,282,560B/6,198,886 inodos;
+Mongo47,458,525,184B/3,276,153 inodos; MemAvailable1,941,520,384B.
+**Full0 consultas en esta fase; piloto inactivo.** Recibos privados
+`rollout-final-closed-four-services-health-capacity-terminal.json` y terminales
+worker/API-registro/gateway/índices preservados. El fallo de diagnóstico previo
 queda histórico: el checker esperaba `ready` booleano, pero `/ready` del gateway
 devuelve `status="ready"`; clasificado con seis fixtures offline y la captura propia.
 No hubo incidente productivo demostrado ni nuevas llamadas para clasificarlo.
-Esta salud de imágenes anteriores no prueba el rollout nuevo: publicar SHA exacto,
-build gateway/procedencia, índices seleccionados y rollout/piloto siguen pendientes;
-repetir los gates seleccionados después del despliegue autorizado.
+La salud del rollout cerrado no acredita aceptación del piloto. **Pendiente
+intervención humana:** OAuth legítimo Cuenta Zeler y complemento HOPEMOB; apertura
+controlada de HOLD cuando corresponda, sin force/copiar tokens ni admisión manual.
+Aún sin prepare/activate, fórmulas reales, partial API productiva ni dos cambios
+incrementales auténticos. El caso9,999+1 acredita solo prueba local del handler/API
+normal, **no parciales disponibles en Sheets**. No activar/consultar por defecto
+ni inventar evidencia humana; conservar pausa y límites hasta cerrar esos gates.
 
 Continuar con gates de [rollout/piloto](zelerdata-historico-publicacion-piloto-propuesta.md#5-despliegue-y-rollback-seleccionados)
 y evidenciar ventana/cobertura parcial real. Full permanece fuera de alcance.

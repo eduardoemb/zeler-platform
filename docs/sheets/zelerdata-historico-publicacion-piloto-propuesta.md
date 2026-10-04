@@ -1,20 +1,22 @@
 # ZelerData: propuesta de publicación y piloto acotado
 
-## Estado vigente — cierre local del 4 de octubre de 2026 UTC
+## Estado vigente — rollout cerrado del 4 de octubre de 2026 UTC
 
-**Calidad local y respaldo A–F PASS; rollout/piloto no ejecutados.** Cierre del
+**Calidad local y respaldo A–F PASS; rollout cerrado aplicado, piloto NO activo.** Cierre del
 rescate publicado previamente en `357e055d5a26dd71f46bd1009c7aa62d6717108a` y remoto
-confirmado. La fuente candidata actual añade cuatro archivos ejecutables a esa
-base: operador/tests y fix cutoff BSON core/test gateway; **ya no es idéntica a
-d78**, todavía debe publicarse a SHA exacto antes del build necesario.
+confirmado. Operador/tests y fix cutoff BSON core/test gateway publicados después
+en `b867b27505b424871a92a59da459c45840cf8d8c`, remoto exacto; tree
+`526d88d5dc6559f76a41cd6195f460f0e44ec880`. Gateway b867 +API/worker d78 es selección
+mixta deliberada: estos últimos no tienen delta de comportamiento servido.
 
 | Gate | Estado medido / siguiente paso |
 | --- | --- |
 | Calidad actual | Linux **5,981 passed/9 skipped/393.71s, exit0**, 02:56:23.139478→03:02:59.525633 UTC; protected separado **8 passed/2.09s**, cubre ocho skips Mongo. Caddy intencional es el noveno. Ruff/formato/mypy655 y direct-Meli PASS; no sumar lotes. |
 | BSON default real aislado | CLI CAS con `create_runtime_db()`/tz_awareFalse y admisión con constructor Motor gateway PASS; 29 OPS +17 gateway enfocadas. Sin OAuth/session/provider ni acción productiva. [Evidencia/controles](zelerdata-historico-control-piloto.md#5-evidencia-y-siguiente-gate). |
-| Imágenes | API/worker d78 verificadas/cacheadas, comportamiento sin delta; no reconstruir por OPS/docs. Gateway requiere **un nuevo build** desde el SHA publicado exacto por su admisión OAuth corregida; d78 antiguo no contiene el fix. Build/procedencia pendiente, ninguna imagen nueva desplegada. |
-| Runtime | Baseline cuatro servicios PASS03:07:00.996899→03:07:05.538659 UTC: HTTP200/dependencias OK/healthy/restart0/OOMfalse/digests anteriores, sin reparación/deploy. Fallo inicial era checker: gateway `/ready` devuelve `status="ready"`, no readybool; clasificado offline6fixtures/captura propia, histórico preservado. No incidente productivo demostrado; revalidar tras rollout. |
-| Piloto | HOPEMOB82453304 solamente, cinco fuentes/90min/2,500 físicos/Full0; índices/registro/rollout/activación productiva pendientes. Interlock legacy y autoridad persistida obligatorios, sin alterar otras cuentas. |
+| Imágenes | Único build gateway `3a393853-4c2a-4044-81fd-050f0fc766a0` SUCCESS/VERIFIED/procedencia b867, digest7054 desplegado; API3f7/worker79f d78 desplegados, sin reconstruir por OPS/docs. [Identidades completas](zelerdata-historico-control-piloto.md#5-evidencia-y-siguiente-gate). |
+| Índices/registro | Cinco índices aditivos aplicados una vez, dos existentes/metadata previa intactos, sin documentwrites/validadores. Registro13 +único `GET /messages/packs/*` =14, seis keys/sin Full; otros seis clientes exactos. |
+| Runtime cerrado | Cuatro readiness200/dependencias OK/healthy/restart0/OOMfalse03:31:10–16UTC. HOLDtrue/seller82453304; historyOFF; recovery API/workerOFF+refreshworkerOFF y allowlists originales HOPEMOB. Full0 consultas; servicios ajenos sin cambio. |
+| Piloto | **Inactivo**: faltan intervención humana OAuth Cuenta Zeler/add-on HOPEMOB, prepare/activate, fórmulas reales/partial API productiva y dos incrementales auténticos. Cinco fuentes/90min/2,500 físicos/Full0 no autorizan activación automática. Partial9,999+1 es local normalhandler/API, no Sheets disponible. |
 
 Dos normalizaciones localizadas: cutoff BSON leído→UTC solo para cálculo y
 execution_until→UTC solo en comparación de caps. Conservan cutoff persistido,
@@ -23,6 +25,19 @@ solo OAuth gateway; no cambiar globalmente tz_aware ni atribuir el fix a API/wor
 Recibo final privado `zeler-pilot-gate-707d3daba082/verification-receipt.md`;
 snapshot fuente completo/RO y cuatro hashes ejecutables intactos. La limpieza
 local final eliminó solo fixtures propios, perfiles/contexto anteriores preservados.
+
+Capacidad final: `/`35,065,282,560B/6,198,886 inodos; Mongo47,458,525,184B/
+3,276,153 inodos; RAM disponible1,941,520,384B. Recibos privados terminales
+`rollout-final-closed-four-services-health-capacity-terminal.json`, worker,
+API14-registro, gateway b867 e índices respaldan las etapas aplicadas.
+Futuras operaciones Compose: base `/opt/zeler-platform/docker-compose.yml` **más**
+override persistente `/var/lib/zeler-platform/.history-rollout-20261004T022714Z/interlocked-override-b867b27.yml`,
+SHA `b7b85d5628b5df6580c8c34544db5c4bb0350ec8cb3b04fcd43c5a6234919dd1`.
+Nunca operar solo base ni restaurar automáticamente preimagen13
+SHA `61a0e7641c2635c197b8d7cc63d3a22cf6d422389d9815b78eb461b1473853f8`
+con API14. Forward recovery preservando jobs/consumos/cutoff/proofs; ningún worker
+antiguo sobre `policy_authority`. Fallo diagnóstico previo clasificado: gateway
+statusready, no readybool; histórico preservado, no incidente productivo demostrado.
 
 Las secciones históricas siguientes conservan evidencia por su fecha; no prueban
 estado actual ni sustituyen este cierre. Autorización sigue condicionada a gates.
@@ -169,7 +184,7 @@ validación operacional y decisión de nueva ventana limitada, **no ejecutarlo a
 | Full — cerrado/pendiente | [Evidencia histórica](zelerdata-full-validacion-acotada.md): 7/10 GET, sin referencia, detenido por 429; RETIROS sigue no disponible sin mapeo. | Consultas restantes, retries, nueva búsqueda/programación, mapeo supuesto. |
 | Inspección8B histórica; nueva C autorizada fallida | Ensayo real pasó, pausa/quiescencia/snapshots verificados; selector rechazó prelude Tools 100.16.0. Recuperación/salud22:11 y cleanup confirmados, sin archive/manifest válidos/GCS/restore; offline/rescate primero, otra ventana solo si evidencia insuficiente y permiso nuevo. | Repetir C automáticamente, extras arbitrarios, reparación ajena por drift, restore productivo. |
 | Builds — ejecutados/verificados | Tres imágenes nuevas d78 SUCCESS/procedencia/digests verificados; loteC3 histórico separado. | Deploys, checkout local subido, otros servicios. |
-| Despliegue — autorizado por goal, pendiente | Gateway, Sheets API/worker; solo tras respaldo y controles de admisión/autoridad/recuperación probados. | Restart amplio, otras APIs/workers, bootstrap no afectado. |
+| Despliegue — cerrado aplicado | Gateway b867, Sheets API/worker d78; cinco índices y registro14/sin Full, HOLD y lanesOFF; cuatro servicios sanos03:31UTC. | Activación del piloto, restart amplio, otras APIs/workers; bootstrap no afectado. |
 | Piloto — autorizado por goal, pendiente | HOPEMOB82453304; única ventana90 min/2,500GET, cinco fuentes/Full0; OAuth normal sin force. | Otros vendedores, reinicios anuales, ampliación automática. |
 | Sheets nativo — hoja preparada, aceptación pendiente | Cuenta Zeler confirmada; hoja nueva privada owner-only/0 fórmulas. Activación de fórmulas existentes solo durante piloto. | Publicar/adaptar add-on, modificar hojas del usuario sin alcance. |
 
@@ -181,7 +196,8 @@ ampliar pruebas reales automáticamente.
 
 **Publicación histórica d78:** `d78ff4e57915ca5e81a5eb6f1976ec65f111824b`, tree
 `54d96092dce1358579989c45d973bd6969f1a4d7` idéntico al staged validado/remoto
-confirmado/worktree limpio al publicar. Tres builds actuales en el recibo d78;
+confirmado/worktree limpio al publicar. Lote histórico de tres builds en el recibo
+d78: su gateway está supersedido por b867 vigente arriba; API/worker conservados.
 los antecedentes C1/C2/C3 siguientes conservan su propia evidencia histórica.
 
 Checkout seleccionado en `main`. Base observada al preparar: commit externo
@@ -371,7 +387,8 @@ configuración y cuentas. Son flags globales; si cambia la cohorte original, STO
 no suprimir actividad ajena ni inventar un control per-seller. Junto con histórico
 seller-only y límites persistidos, esto impide que lanes legacy agreguen tráfico
 no acotado al ensayo. Flags OFF no prueban quiescence: drenar/verificar trabajos
-en curso, sin borrar jobs ni tomar leases. No está aplicado por esta documentación.
+en curso, sin borrar jobs ni tomar leases. **Interlock ya aplicado/verificado** en el
+rollout cerrado; esta documentación no realizó esas operaciones ni activa el piloto.
 
 | Fuente | GET iniciales adicionales máximos |
 | --- | ---: |
@@ -615,16 +632,17 @@ si evidencia insuficiente. No declarar respaldo ni objetivo global terminado.
 ### D. Rollout autorizado por goal; ejecutar solo después de gates
 
 **Plan anterior C3/15 supersedido por objetivo14/sin Full y controles locales**.
-**Selección vigente:** respaldo A–F ya PASS. API/worker d78 verificados/cacheados
-siguen candidatos, sin delta de comportamiento; gateway requiere imagen del fix
-desde nueva publicación exacta/procedencia verificada, **aún pendiente**. No desplegar
-su digest d78 como si incluyera la admisión corregida. Identidades d78 preservadas:
+**Selección vigente aplicada/cerrada:** respaldo A–F PASS, cinco índices/registro14
+aplicados; API/worker d78 desplegados sin delta servido y gateway b867/7054
+desplegado tras build/procedencia verificados. Piloto inactivo, HOLDtrue/historyOFF/
+legacyOFF. No desplegar gateway d78 como si incluyera la admisión corregida.
+Identidades d78 históricas preservadas:
 gateway anterior `sha256:2f94fcac5e12d986fc91e824e753c2096a82fe6d711d4292518ced63e0d98bef`,
 API `sha256:3f7ac7c066a09f3c1f5e15201853e89e424c71a9bafb7415e3de5eb898f31417`,
 worker `sha256:79f5c6f40f5fd25f47ae572cc9f9a9fd56e4ab1438279467d9d2ad4ea5aeba7e`.
-Destinos ArtifactRegistry completos en el recibo d78; pull verificado no es deploy.
-Faltan nuevo build gateway/procedencia y gates runtime/recuperación/índices/registro;
-no iniciar rollout por tener imágenes disponibles o respaldo aceptado.
+Destinos ArtifactRegistry completos en el recibo d78; aplicación actual y mezcla
+deliberada constan en el cierre vigente. No confundir rollout cerrado con piloto
+activo ni reiniciar antiguas imágenes/registro13 para fabricar rollback.
 El texto anterior preservado abajo no es autorización para desplegar C3/15. Los
 tres digests **C3 históricos del texto preservado, NO destino actual**, están
 verificados en el [recibo](zelerdata-historico-builds-runtime-20261003.md#1-tres-imágenes-success-con-procedencia-verificada);
