@@ -375,3 +375,15 @@ verificados tras push. Código y bits ejecutables ligados al snapshot probado;
 actualización posterior exclusivamente documental, identidad consultable por
 `git log` de este archivo. Builds0/despliegues0/piloto0; no repetir el intento
 AMQP consumido. La aceptación global de §1 sigue pendiente.
+
+### Reanudación posterior a «Realizalo»
+
+Dos imágenes nuevas necesarias desde main352f3bd6 construidas/verificadas,
+no desplegadas: worker build4a4c14a8/digest69d9da8d y gatewaybuild86be40be/
+digest866dca4e. Referencias completas/timestamps/procedencia/consumos en
+[integración](zelerdata-historico-integracion-20261005.md). API intacta.
+El fallo AMQP bloquea rollout/OAuth/piloto; no invalida builds independientes
+previstos en la autorización histórica cuando hay delta probado.
+Se solicitó solo nueva inspección estructural0red/0cambios de configuración
+worker,60s/5min, aún sin autorización ni ejecución. Lectura AMQP-REPEAT-1
+consumida/no reutilizable. No avanzar sin gates ni inferir cierre porbuildPASS.

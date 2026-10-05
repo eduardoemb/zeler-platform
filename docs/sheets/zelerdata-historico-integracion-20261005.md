@@ -1,5 +1,10 @@
 # ZelerData: integración directa del 5 de octubre de 2026
 
+> **Continuación posterior a «Realizalo»:** dos nuevas imágenes necesarias
+> SUCCESS/VERIFIED desde main352f3bd6, aún NO desplegadas. Inspección AMQP
+> estructural0red solicitada, pendiente de autorización; la lectura anterior
+> sigue consumida. Los resultados previos abajo conservan su fecha/alcance.
+
 **Aceptación pendiente; producción detenida.** Continuación local autorizada del
 [handoff](zelerdata-historico-handoff.md), sin SDD por decisión expresa del usuario.
 Ownership, presupuestos y registro único de operaciones:
@@ -125,3 +130,41 @@ incorporan esta integración. No API u otros rebuilds. Verificar procedencia/dig
 capacidad/rollback, dependencia y consumidores, y comportamiento afectado tras
 settling antes del piloto. Ningún build/deploy se ejecutó por detectar drift.
 **Aceptación pendiente. AMQP-REPEAT-1 agotada; no nueva autorización solicitada.**
+
+## Imágenes nuevas de la reanudación — no runtime
+
+Fuente única `352f3bd6f42c89929bb37006c04385a9492d3031` en repositorio conectado,
+903blobs no-Markdown iguales al snapshot probado. Una solicitud porimagen,
+`requestedVerifyOption: VERIFIED`, sinresubmit; verificador canónico de
+source/repo/subject/digest/build PASS para ambas.
+
+| Servicio | BuildID | Pin inmutable | CloudBuild inicio→fin |
+| --- | --- | --- | --- |
+| Sheets worker | `4a4c14a8-bb83-4aab-87f6-b1bb2be1389d` | `us-central1-docker.pkg.dev/zeler-platform-dev/zeler-platform/sheets-worker@sha256:69d9da8d5e57c93868844349c489b33d0bf743612e718616d282a7ff6fe64a79` | 2026-10-05T21:42:45.448501060Z→2026-10-05T21:43:46.958710Z |
+| gateway | `86be40be-95d9-4e56-b1b2-f2282c495e89` | `us-central1-docker.pkg.dev/zeler-platform-dev/zeler-platform/gateway@sha256:866dca4ecab51600f50e249d21ae3615e803bc803a8f27fdae1052371130e28a` | 2026-10-05T21:45:32.695976858Z→2026-10-05T21:46:23.762203Z |
+
+API no reconstruida. Dos solicitudes nuevas consumidas; no repetir builds
+cb63260 ni estos por documentación/polling de procedencia. VMpull0/deploy0/
+OAuth0/piloto0/Management0/Meli0 en esta reanudación. Los pins no prueban
+readiness/consumidores ni aceptación. Recibo privado `two-verified-builds-receipt.json`
+y ledger único en el documento paralelo.
+
+El despliegue seleccionado sigue pendiente de AMQP: worker primero/gateway
+después, base+overrideactual preservados, versión nueva exclusiva con estospins,
+HOLDtrue/guard82453304/historyOFF/recoveryOFF/refreshOFF y registro14sinFull.
+Revalidar capacidad/digests/consumidores/aislamiento/recuperación compatible antes
+de cualquier pull; ≥5GiBraíz porpull, sinprune/limpieza/resize implícitos.
+Recuperación forward compatible con los mismos pins/HOLD/paused/historyOFF si
+hay policy_authority; no workerlegacy ni gatewayold sinbudgetguard después de
+activar, no restores/quotaresets. AbrirOAuth/piloto solo con gates completos.
+
+**AMQP-CONFIG-INSPECT-1:** excepción únicamente solicitada, NO recibida/NO ejecutada.
+Inspección estructural de dos variables en el worker, 0red, 60s/5min, sin valores
+ni cambios; no autoriza posterior topología GET/publish/corrección. AMQP-REPEAT-1
+continúa agotada. No re-pedir los permisos condicionalesbuild/rollout/piloto.
+
+La preparación de la excepción estructural está entregada/congelada:72pruebas
+offlinePASS y calidad3fuentesPASS;4hashes/bindingcotejados porcoordinador.
+[Informe propio AMQP configuración](zelerdata-historico-amqp-config-informe.md).
+No es producción ni otra lectura. Autorización sigue pendiente,0intentos.
+No se reinicia el plazo del piloto ni se reutilizan excepciones históricas.

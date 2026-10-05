@@ -285,7 +285,7 @@ colas, limpieza, add-on o otras cuentas se deriva de esta asignación.
 | Integración de propuestas compartidas | Coordinador | Ambas entregas y ownership devuelto. | INTEGRADA/PUBLICADA: intención durable/ownership live/crédito work no fungible/WAIT conservador. CUOTAS-integración entregó y dejó de escribir; coordinador cerró fixes finales. Propuesta legacy TTL fuera del camino WAIT actual. |
 | Congelación y calidad del conjunto | Coordinador | Ambas entregas + cese de cambios + coherencia + Mongo local aislado verificado. | PASS con todos los escritores congelados: full6395PASS/20SKIP, rs019PASS, focused455PASS, ruff/formato/mypy665/direct/schemaPASS. Target local propio verificado y retirado; skips documentados, no aceptación. |
 | AMQP-REPEAT-1 | Coordinador | Autoridad recibida §5, reader/hash/fixturesGREEN y selección cerrada. | CONSUMIDO/FAIL configuración,0GET; STOP sin retry. |
-| Publicación/builds afectados | Coordinador | Calidad final, cambios propios delimitados y commit fuente exacto en main/remoto. | CÓDIGO PUBLICADO, remoto=HEAD limpio observado; builds0/STOP por gate AMQP. Solo gateway+worker afectados, no API/otros. |
+| Publicación/builds afectados | Coordinador | Calidad final, cambios propios delimitados y commit fuente exacto en main/remoto. | CÓDIGO PUBLICADO;2builds nuevos SUCCESS/VERIFIED source352f3bd6, worker+gateway únicamente. VMpull0/deploy0; gate AMQP bloquea rollout/OAuth/piloto, no builds independientes autorizados. No API/otros. |
 | Rollout seleccionado | Coordinador | Gates de topología/reparto/controles, procedencia, capacidad fresca y recuperación compatible. | BLOQUEADO POR GATES; autorización condicional vigente. |
 | OAuth/prepare/activate/piloto | Coordinador + humano para OAuth | Runtime/pins/guards servidos, presupuesto/día/deadline/recibo pinned y gates completos. | NO INICIADO en esta coordinación. |
 | Aceptación del objetivo | Coordinador | Fuente por fuente/rangos independientes, parcialAPI normal y dos incrementales auténticos dentro del plazo. | PENDIENTE; objetivo NO completado. |
@@ -537,3 +537,71 @@ sin autorreferencia. No se modifica ninguno de los informes entregados.
 **Próximo gate productivo: AMQP configuración/topología/entrega real; STOP.**
 Sin retry nuevo, build, despliegue, OAuth, piloto ni cierre de aceptación.
 No solicitar de nuevo permisos condicionales vigentes ni resetear plazos/consumos.
+
+### Reanudación de aceptación — 2026-10-05T21:42:13.093048+00:00
+
+Usuario **«Realizalo»**: reanudación de pendientes, no reducción de aceptación
+ni extensión de cuotas/plazos. main fuente exacto
+`352f3bd6f42c89929bb37006c04385a9492d3031`,903blobs no-Markdown aún iguales al snapshot probado.
+El permiso histórico625f5903§5/§6 y handoff§5 separan builds independientes
+de rollout/OAuth/piloto bloqueados por AMQP: se preparan dos solicitudes nuevas,
+**una por imagen** por el delta ejecutable integrado, no repetición de cb63260.
+Gateway y Sheets worker solamente; API/otras imágenes intactas. Connectedrepo,
+VERIFIED, timeout600s por build, sin resubmit, sin Docker local ni uploadcheckout.
+Sin pullVM/deploy mientras AMQP no pase.
+
+| ID previsto | Target | Límite | Estado inicial |
+| --- | --- | --- | --- |
+| `BUILD-sheets-worker-20261005T214213Z` | Sheets worker/source352f3bd6 | 1 solicitud/1imagen,600s | PREPARADO,0solicitudes |
+| `BUILD-gateway-20261005T214213Z` | gateway/source352f3bd6 | 1 solicitud/1imagen,600s | PREPARADO,0solicitudes |
+| AMQP-CONFIG-INSPECT-1 | único worker aprobado/VM existente | 1SSH/1exec,60s inspección/5min total,0red/0mutaciones | SOLICITADO, no recibido/no iniciado |
+
+La excepción nueva solicitada es únicamente presencia/validez estructural de
+`RABBITMQ_URL`/`RABBITMQ_MANAGEMENT_URL`, sin valores ni reparación. La anterior
+AMQP-REPEAT-1 queda agotada y no se reutiliza; esta inspección tampoco autoriza
+posterior GET de topología, conexiones, publish o cambio de configuración.
+Especialista AMQP prepara tool+tests/informe nuevos con lista cerrada propia;
+coordinador conserva ledger/Git/build/producción. No modifica informes originales.
+
+**Inicio `BUILD-sheets-worker-20261005T214213Z`:** 2026-10-05T21:42:43.852227+00:00; 1solicitud iniciada,
+source352f3bd6/connectedrepo/VERIFIED/1imagen. Sin resubmit; ID/resultado
+se registrarán tras respuesta del servicio. Meli0/Management0/VMpull0/deploy0.
+
+**Resultado `BUILD-sheets-worker-20261005T214213Z`:** SUCCESS/VERIFIED, buildID `4a4c14a8-bb83-4aab-87f6-b1bb2be1389d`,
+source `352f3bd6f42c89929bb37006c04385a9492d3031`/connectedrepo exactos y verificador canónicoPASS.
+Imagen `us-central1-docker.pkg.dev/zeler-platform-dev/zeler-platform/sheets-worker@sha256:69d9da8d5e57c93868844349c489b33d0bf743612e718616d282a7ff6fe64a79`. Tiempos CloudBuild 2026-10-05T21:42:45.448501060Z→2026-10-05T21:43:46.958710Z;
+1solicitud consumida/sinresubmit. No pullVM/deploy ni aceptación productiva.
+
+**Inicio `BUILD-gateway-20261005T214213Z`:** 2026-10-05T21:45:30.958707+00:00;1solicitud iniciada,
+source352f3bd6/connectedrepo/VERIFIED/1imagen. Sin resubmit, VMpull0/deploy0.
+
+**Resultado `BUILD-gateway-20261005T214213Z`:** SUCCESS/VERIFIED, buildID `86be40be-95d9-4e56-b1b2-f2282c495e89`,
+source `352f3bd6f42c89929bb37006c04385a9492d3031`/connectedrepo exactos y verificador canónicoPASS.
+Imagen `us-central1-docker.pkg.dev/zeler-platform-dev/zeler-platform/gateway@sha256:866dca4ecab51600f50e249d21ae3615e803bc803a8f27fdae1052371130e28a`. Tiempos CloudBuild 2026-10-05T21:45:32.695976858Z→2026-10-05T21:46:23.762203Z.
+Dos solicitudes nuevas consumidas, una porservicio, ceroresubmit; noAPIbuild.
+VMpull0/deploy0/OAuth0/piloto0/Management0/Meli0. Pins son preparación, no runtime.
+
+### Entrega AMQP configuración y congelación — 2026-10-05T21:55:42.013483+00:00
+
+AMQP confirmó **«ENTREGADO; NO SIGO MODIFICANDO»**. Ownership4paths
+devuelto,4hashesPASS y binding inspector final/embedding supervisor verificado.
+Lista exacta: privados `amqp-config-inspection-20261005/config_inspection.py`,
+`config_supervisor.py`, `test_config_inspection.py`, más
+[su informe propio](zelerdata-historico-amqp-config-informe.md).
+72unittestofflinePASS/0SKIP (45+27), ruff/formato/mypy3PASS. RED de recibo
+source/motivo contradictorio preservado; no red/puertos/Mongo/Docker/producción
+ni Git mutante por especialista. Originales intactos.
+
+Inspector SHA256 `1550e7cc75915a34c31e66c8e441b68091af65054c40ceb7cceb471a9a5760e4`;
+supervisor SHA256 `eb9489b8be679c6318c2356ad02a7cc4d7d20ab0c7bed777c4192b73588c110b`;
+informe recibido SHA256 `205aa494ebc057c38405f5eabfbfe72d099f88fc1e5cc8b2df4cfcf45d3ff045`.
+No cambiaron después del cese. AST3.9 acredita sintaxis, no runtimehost ni salud.
+
+Coordinador preparó límites del caller **130s+5s cleanup de su propio grupo de
+procesos local**, más supervisor150s: máximo285s incluso con inicio SSH tardío,
+dentro del techo300s. Sin retry. Este caller todavía NO se ejecutó.
+**AMQP-CONFIG-INSPECT-1 continúa SOLICITADO/NO recibido/0intentos.**
+No tomar opción preseleccionada como permiso. Una respuesta configuraciónválida
+no autoriza otra lecturaHTTP, ni cierra topología/entrega real.
+Todos los escritores detenidos; solo publicación documental del coordinador
+queda por cerrar. No nuevos checks generales/builds por este delta doc-only.
