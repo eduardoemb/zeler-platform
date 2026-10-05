@@ -7,6 +7,7 @@ No monthly prompts, annual rescans, destructive relink or coverage shortcuts.
 from __future__ import annotations
 
 import asyncio
+import re
 from collections.abc import Callable
 from contextlib import suppress
 from datetime import UTC, datetime, timedelta
@@ -25,6 +26,7 @@ from zeler_platform_core.history_onboarding import (
     history_execution_query,
     history_request_trace,
 )
+from zeler_platform_core.history_work_intent import HistoryWorkIntent, HistoryWorkWaitError
 from zeler_sheets.formulas.pacing import (
     HistoryPolicyWaitError,
     PacedMeliGateway,
@@ -114,12 +116,19 @@ class PlanBudgetGateway(PacedMeliGateway):
         source: str,
         *,
         lease_token: str | None = None,
+        work_intent: HistoryWorkIntent | None = None,
         now: Callable[[], datetime] = lambda: datetime.now(UTC),
     ) -> None:
         self.db, self.inner, self.seller, self.source = db, inner, seller, source
         self.lease_token, self.now = lease_token, now
         self._inner = inner
-        self.incremental = False
+        if work_intent is not None and (work_intent.source != source or source not in SOURCES[:-1]):
+            raise HistoryPolicyWaitError("work source does not match policy")
+        self.work_intent = work_intent
+        self.incremental = work_intent is not None
+        self._work_lock = asyncio.Lock()
+        self._work_nonce: str | None = None
+        self._work_receipt: dict[str, Any] | None = None
         self.trace_headers: dict[str, str] = {}
         self._charged_plan: dict[str, Any] = {}
         self._execution_filter: dict[str, Any] = {}
@@ -185,17 +194,30 @@ class PlanBudgetGateway(PacedMeliGateway):
                 raise ValueError("provider range lies outside persisted policy")
 
     async def charge(self) -> None:
+        if self.work_intent is not None:
+            if not self.incremental or self._work_receipt is None:
+                raise HistoryPolicyWaitError("work requires its maintenance receipt")
+            try:
+                await self.work_intent.assert_live(self.db, self.now())
+            except HistoryWorkWaitError:
+                raise HistoryPolicyWaitError("work ownership unavailable") from None
         if self.source not in SOURCES or not await seller_eligible(self.db, self.seller):
             raise HistoryPolicyWaitError("account is not eligible for acquisition")
         snapshot = await self.db[PLAN_COLLECTION].find_one({"_id": self.seller})
         if snapshot is None:
             raise HistoryPolicyWaitError("missing onboarding authority")
+        if self.work_intent is not None and not self._work_policy_available(snapshot):
+            raise HistoryPolicyWaitError("work policy or counters unavailable")
         trace = history_request_trace(snapshot, self.source, incremental=self.incremental)
+        if self.work_intent is not None and trace is None:
+            raise HistoryPolicyWaitError("work execution unavailable")
         execution = snapshot.get("execution_id")
         self._execution_filter = {"execution_id": execution}
         phase = "maintenance" if self.incremental else "initial"
         self._execution_credit = (
-            {f"execution_charged.{execution}.{self.source}.{phase}": 1} if trace else {}
+            {f"execution_charged.{execution}.{self.source}.{phase}": 1}
+            if trace and self.work_intent is None
+            else {}
         )
         if self.incremental:
             await self._charge_incremental()
@@ -241,7 +263,36 @@ class PlanBudgetGateway(PacedMeliGateway):
             raise HistoryPolicyWaitError("onboarding authority or budget exhausted")
         self._set_trace(result)
 
+    def _work_policy_available(self, snapshot: dict[str, Any]) -> bool:
+        """Bounded work never rolls over or repairs a prepared pilot's counters."""
+        day = self.now().astimezone(UTC).date().isoformat()
+        policy = snapshot.get("incremental_policy")
+        consumed = snapshot.get("incremental_source_consumed")
+        return bool(
+            isinstance(snapshot.get("execution_id"), str)
+            and re.fullmatch(r"[a-f0-9]{32}", snapshot["execution_id"]) is not None
+            and isinstance(snapshot.get("execution_until"), datetime)
+            and snapshot.get("execution_utc_day") == day
+            and snapshot.get("incremental_day") == day
+            and isinstance(policy, dict)
+            and isinstance(consumed, dict)
+            and ("execution_work" not in snapshot or isinstance(snapshot["execution_work"], dict))
+            and all(
+                type(value) is int and value >= 0
+                for value in (
+                    snapshot.get("execution_attempt_limit"),
+                    snapshot.get("execution_consumed"),
+                    snapshot.get("incremental_consumed"),
+                    consumed.get(self.source),
+                    policy.get("max_daily_total"),
+                    policy.get("max_daily_source"),
+                )
+            )
+            and history_execution_allowed(snapshot, now=self.now())
+        )
+
     async def _charge_incremental(self) -> None:
+        day = self.now().astimezone(UTC).date().isoformat()
         owned = {
             "_id": self.seller,
             "seller_id": self.seller,
@@ -257,20 +308,47 @@ class PlanBudgetGateway(PacedMeliGateway):
                 else {}
             ),
         }
-        day = self.now().astimezone(UTC).date().isoformat()
+        if self.work_intent is not None:
+            owned.update(
+                {
+                    "authority.kind": "account_link_policy",
+                    "execution_until": {"$gt": self.now()},
+                    "execution_utc_day": self.now().astimezone(UTC).date().isoformat(),
+                    "execution_attempt_limit": {"$type": ["int", "long"], "$gte": 0},
+                    "execution_consumed": {"$type": ["int", "long"], "$gte": 0},
+                    "incremental_day": day,
+                    "incremental_consumed": {"$type": ["int", "long"], "$gte": 0},
+                    f"incremental_source_consumed.{self.source}": {
+                        "$type": ["int", "long"],
+                        "$gte": 0,
+                    },
+                    "incremental_policy.max_daily_total": {"$type": ["int", "long"], "$gte": 0},
+                    "incremental_policy.max_daily_source": {"$type": ["int", "long"], "$gte": 0},
+                    f"execution_work.{self._work_nonce}": {"$exists": False},
+                }
+            )
+            owned["$and"].append(
+                {
+                    "$or": [
+                        {"execution_work": {"$exists": False}},
+                        {"execution_work": {"$type": "object"}},
+                    ]
+                }
+            )
         # Reset only the policy's DAILY incremental budget. Initial acquisition
         # budget/progress never resets; persisted standing policy authorizes
         # subsequent bounded maintenance without monthly prompts.
-        await self.db[PLAN_COLLECTION].update_one(
-            {**owned, "incremental_day": {"$ne": day}},
-            {
-                "$set": {
-                    "incremental_day": day,
-                    "incremental_consumed": 0,
-                    "incremental_source_consumed": dict.fromkeys(SOURCES, 0),
-                }
-            },
-        )
+        if self.work_intent is None:
+            await self.db[PLAN_COLLECTION].update_one(
+                {**owned, "incremental_day": {"$ne": day}},
+                {
+                    "$set": {
+                        "incremental_day": day,
+                        "incremental_consumed": 0,
+                        "incremental_source_consumed": dict.fromkeys(SOURCES, 0),
+                    }
+                },
+            )
         result = await self.db[PLAN_COLLECTION].find_one_and_update(
             {
                 **owned,
@@ -293,7 +371,12 @@ class PlanBudgetGateway(PacedMeliGateway):
                     f"incremental_source_consumed.{self.source}": 1,
                     "execution_consumed": 1,
                     **self._execution_credit,
-                }
+                },
+                **(
+                    {"$set": {f"execution_work.{self._work_nonce}": self._work_receipt}}
+                    if self.work_intent is not None
+                    else {}
+                ),
             },
             return_document=ReturnDocument.AFTER,
         )
@@ -305,6 +388,8 @@ class PlanBudgetGateway(PacedMeliGateway):
         self._charged_plan = plan
         trace = history_request_trace(plan, self.source, incremental=self.incremental)
         self.trace_headers = {"X-Zeler-History-Trace": trace} if trace else {}
+        if self.work_intent is not None and self._work_nonce is not None:
+            self.trace_headers["X-Zeler-History-Work"] = self._work_nonce
 
     def _validate_dispatch_window(self) -> None:
         # No awaited Mongo work may follow pacing before starting the RPC. The
@@ -313,15 +398,37 @@ class PlanBudgetGateway(PacedMeliGateway):
             raise HistoryPolicyWaitError("history execution window ended after pacing")
 
     async def fetch_resource(self, **kwargs: Any) -> Any:
+        if self.work_intent is not None:
+            # A delivery owns one wrapper, but its nested callers must also keep
+            # nonce/receipt/headers local to a physical attempt across pacing.
+            async with self._work_lock:
+                return await self._fetch_resource(**kwargs)
+        return await self._fetch_resource(**kwargs)
+
+    def _prepare_work_receipt(self, path: str) -> None:
+        if self.work_intent is not None:
+            self._work_nonce = uuid4().hex
+            self._work_receipt = {**self.work_intent.receipt(path), "credit": 1, "sent": 0}
+
+    async def _fetch_resource(self, **kwargs: Any) -> Any:
         seller_id, path = kwargs["seller_id"], kwargs["path"]
         request_timeout = kwargs.get("request_timeout", 10)
         if str(seller_id) != self.seller:
             raise ValueError("onboarding seller mismatch")
         self.check_path(path)
         await self.check_dates(path)
+        if self.work_intent is not None and not hasattr(self.inner, "fetch_resource_once"):
+            raise HistoryPolicyWaitError("single physical work attempt is required")
+        self._prepare_work_receipt(path)
         await self.charge()
         physical = await admit_paced_dispatch(self.inner)
         self._validate_dispatch_window()
+        if self.work_intent is not None and not callable(
+            getattr(physical, "fetch_resource_once", None)
+        ):
+            # A pacing facade may expose once even when its physical client does
+            # not. Keep the charged attempt, but never fall back to hidden retries.
+            raise HistoryPolicyWaitError("single physical work attempt is required")
         method = getattr(physical, "fetch_resource_once", physical.fetch_resource)
         async with history_policy_dispatch(), asyncio.timeout(request_timeout):
             return await method(
@@ -331,10 +438,17 @@ class PlanBudgetGateway(PacedMeliGateway):
             )
 
     async def request(self, **kwargs: Any) -> Any:
+        if self.work_intent is not None:
+            async with self._work_lock:
+                return await self._request(**kwargs)
+        return await self._request(**kwargs)
+
+    async def _request(self, **kwargs: Any) -> Any:
         if kwargs.get("method") != "GET" or str(kwargs.get("seller_id")) != self.seller:
             raise ValueError("onboarding request must be read-only for its seller")
         self.check_path(kwargs["path"])
         await self.check_dates(kwargs["path"])
+        self._prepare_work_receipt(kwargs["path"])
         await self.charge()
         physical = await admit_paced_dispatch(self.inner)
         self._validate_dispatch_window()

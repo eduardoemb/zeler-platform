@@ -88,6 +88,7 @@ repeat failures, and promote stable knowledge to its proper operational form.
 | L-029 | VM pause | Preserve Docker nanosecond proof on the actual host interpreter | active |
 | L-030 | ZelerData | Pace immediately before transport, after persisted charge | active |
 | L-031 | Isolated restore | Operator UID/tmp, actual CLI libc ABI and PRIMARY gate | active |
+| L-032 | ZelerData | Durable work authority and non-fungible physical credit | active |
 
 ## Cloud Build and VM deployment
 
@@ -514,4 +515,24 @@ repeat failures, and promote stable knowledge to its proper operational form.
   probes; sanitized receipts in
   [candidate rescue report](../sheets/zelerdata-historico-rescate-candidatos-propuesta.md).
   Preserve noexec on the host and use only the private executable container path.
+- status: active
+
+
+### L-032 — Bind work credit to durable purpose and late ownership
+- area: ZelerData pilot event/replay maintenance
+- proven path: Resolve source from the stored webhook's topic, normalized resource
+  and seller; preserve the publisher's actual idempotency key. Bind each prepaid
+  attempt to its work nonce. At gateway, transactionally touch live claim/job
+  ownership and reserve that nonce without renewing leases or resetting counters.
+  Revalidate the physical once interface after unwrapping pacing; defer WAIT with
+  confirmed publish before ACK and fenced job backoff.
+- failed path: Guess source from `/orders` or a free header; merge work credits
+  into fungible historical h1; read ownership without a conditional write in the
+  send transaction; fall back to a retrying client hidden by a pacing facade;
+  convert local policy WAIT to DLQ or terminal job failure.
+- verification/source: `core/tests/test_history_work_intent.py`,
+  `tests/integration/test_history_work_send_rs0.py`,
+  `modules/sheets/tests/test_history_work_intent.py` and
+  `gateway/tests/test_pilot_get_budget_consumers.py`. Local CAS/provider doubles
+  do not prove AMQP delivery, Sheets readback or production acceptance.
 - status: active

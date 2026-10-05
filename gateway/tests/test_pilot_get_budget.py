@@ -407,11 +407,19 @@ async def test_forward_opt_in_only_selected_authenticated_sheets_gets(
     req.app.state.proxy_http_client_factory = lambda: httpx.AsyncClient(
         transport=recording_transport(sent)
     )
-    response = await proxy._forward_to_meli(
-        request=req, full_path="items/MLA1", access_token=TEST_ACCESS
-    )
-    assert response.status_code == 200 and sent == ["/items/MLA1"]
-    assert len(plans.updates) == int(charged)
+    if charged:
+        # Seller auth alone no longer permits global-only unallocated traffic.
+        with pytest.raises(proxy.PilotGetBudgetWaitError):
+            await proxy._forward_to_meli(
+                request=req, full_path="items/MLA1", access_token=TEST_ACCESS
+            )
+        assert sent == [] and plans.updates == []
+    else:
+        response = await proxy._forward_to_meli(
+            request=req, full_path="items/MLA1", access_token=TEST_ACCESS
+        )
+        assert response.status_code == 200 and sent == ["/items/MLA1"]
+        assert plans.updates == []
 
 
 @pytest.mark.asyncio
@@ -452,7 +460,7 @@ async def test_selected_h1_is_not_charged_twice_and_invalid_trace_never_sends(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("during_backoff", ["paused", "expired", "day", "execution", "exhausted"])
-async def test_each_retry_rechecks_policy_after_backoff(
+async def test_global_cas_kernel_rechecks_policy_on_each_retry_after_backoff(
     monkeypatch: pytest.MonkeyPatch, during_backoff: str
 ) -> None:
     monkeypatch.setenv(ENV, SELLER)
@@ -478,13 +486,20 @@ async def test_each_retry_rechecks_policy_after_backoff(
             plans.row["execution_consumed"] = 2
 
     req.app.state.proxy_retry_sleep = backoff
-    with pytest.raises(proxy.PilotGetBudgetWaitError):
-        await proxy._forward_to_meli(request=req, full_path="orders/1", access_token=TEST_ACCESS)
+    # Low-level kernel regression, not permission for unallocated pilot traffic.
+    async with req.app.state.proxy_http_client_factory() as client:
+        with pytest.raises(proxy.PilotGetBudgetWaitError):
+            await send_with_retry(
+                client,
+                httpx.Request("GET", "https://offline.test/orders/1"),
+                before_attempt=lambda: proxy._reserve_pilot_get_send(req),
+                sleep_fn=backoff,
+            )
     assert sends == ["/orders/1"] and len(plans.updates) == 1
 
 
 @pytest.mark.asyncio
-async def test_physical_retries_and_transport_failures_remain_consumed(
+async def test_global_cas_kernel_retries_and_transport_failures_remain_consumed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv(ENV, SELLER)
@@ -503,8 +518,15 @@ async def test_physical_retries_and_transport_failures_remain_consumed(
     req.app.state.proxy_http_client_factory = lambda: httpx.AsyncClient(
         transport=httpx.MockTransport(fail_transport)
     )
-    with pytest.raises(httpx.ConnectError):
-        await proxy._forward_to_meli(request=req, full_path="orders/1", access_token=TEST_ACCESS)
+    # Keep conservative CAS/transport evidence without bypassing allocation gate.
+    async with req.app.state.proxy_http_client_factory() as client:
+        with pytest.raises(httpx.ConnectError):
+            await send_with_retry(
+                client,
+                httpx.Request("GET", "https://offline.test/orders/1"),
+                before_attempt=lambda: proxy._reserve_pilot_get_send(req),
+                sleep_fn=no_sleep,
+            )
     assert len(plans.updates) == 3
     assert (
         plans.row is not None

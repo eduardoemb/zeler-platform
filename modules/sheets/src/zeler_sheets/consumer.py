@@ -49,6 +49,11 @@ from zeler_platform_core.events.claim_gate import (
 )
 from zeler_platform_core.events.claims import EventClaimStore
 from zeler_platform_core.events.idempotency import IdempotencyStore as CoreIdempotencyStore
+from zeler_platform_core.history_onboarding import PLAN_COLLECTION
+from zeler_platform_core.history_work_intent import (
+    HistoryWorkWaitError,
+    resolve_history_work_intent,
+)
 from zeler_platform_core.observability.logging import configure_logging
 from zeler_platform_core.runtime.checks import amqp_probe_connection
 from zeler_platform_core.runtime.manifest import validate_manifest
@@ -65,6 +70,7 @@ from zeler_sheets.dlq_auto_archive import build_dlq_auto_archiver
 from zeler_sheets.event_persistence import SheetsEventPersistence, StatusObservationContentionError
 from zeler_sheets.event_stage_telemetry import EventStageTelemetry
 from zeler_sheets.formulas.pacing import (
+    HistoryPolicyWaitError,
     PacedMeliGateway,
     RecoveryRequestPacer,
     recovery_requests_per_minute,
@@ -544,6 +550,23 @@ class SheetsAmqpConsumerRunner:
                 await message.ack()
                 return
             await self._handler.handle(event)
+        except HistoryPolicyWaitError as exc:
+            # Policy backpressure is not a failed delivery or provider attempt.
+            # Preserve the source until the bounded delayed copy is confirmed.
+            _log_message_requeued(event, death_count, exc, retry_after=5)
+            try:
+                await self._publish_retry_delay(
+                    message.body,
+                    queue_name=queue_name,
+                    delay_ms=5000,
+                    headers=_retry_headers(message, attempt=death_count),
+                    mandatory=True,
+                )
+            except Exception:  # noqa: BLE001 - never lose an unconfirmed original.
+                await message.nack(requeue=True)
+                return
+            await message.ack()
+            return
         except GatewayRateLimitError as exc:
             if _pilot_wait_code(exc) is not None:
                 # Waiting for a prepared/available pilot execution is not a
@@ -1157,6 +1180,7 @@ class SheetsEventHandler:
         event: SheetsEvent,
         *,
         operation: DevolucionesOperationContext | None = None,
+        job_identity: dict[str, Any] | None = None,
     ) -> str:
         processing_key = (
             f"catalog:{event.seller_id}:{event.idempotency_key}"
@@ -1167,10 +1191,11 @@ class SheetsEventHandler:
         if handle is None:
             return "duplicate"
         try:
+            gateway = await self._gateway_for_event(event, handle, job_identity=job_identity)
             if event.event_type == "catalog_item_competition_status.updated":
                 await acquire_catalog_event(
                     db=self._db,
-                    gateway=self._gateway_client,
+                    gateway=gateway,
                     seller_id=str(event.seller_id),
                     resource=event.resource,
                     event_key=event.idempotency_key,
@@ -1228,7 +1253,7 @@ class SheetsEventHandler:
                                 operation=operation,
                                 source="devoluciones_relevant_order_event",
                             )
-                    resource = await self._gateway_client.fetch_resource(
+                    resource = await gateway.fetch_resource(
                         seller_id=event.seller_id,
                         path=fetch_path,
                     )
@@ -1246,7 +1271,7 @@ class SheetsEventHandler:
                             if claim_id != fetch_path.rsplit("/", 1)[-1]:
                                 raise ValueError("terminal cancellation claim identity mismatch")
                         else:
-                            source = GatewayDevolucionesSource(self._gateway_client)
+                            source = GatewayDevolucionesSource(gateway)
                             returns = await source.get_returns(
                                 seller_id=str(event.seller_id), claim_id=claim_id
                             )
@@ -1328,6 +1353,46 @@ class SheetsEventHandler:
             with suppress(Exception):
                 await handle.release()
             raise
+
+    async def _gateway_for_event(
+        self,
+        event: SheetsEvent,
+        handle: _ClaimHandle,
+        *,
+        job_identity: dict[str, Any] | None,
+    ) -> GatewayResourceClient:
+        # Production Motor always exposes the collection. Older unit doubles
+        # without a plan collection represent the ordinary, non-pilot path.
+        try:
+            plans = self._db[PLAN_COLLECTION]
+        except KeyError:
+            return self._gateway_client
+        plan = await plans.find_one({"_id": str(event.seller_id)})
+        if not isinstance(plan, dict) or "execution_id" not in plan:
+            return self._gateway_client
+        try:
+            intent = await resolve_history_work_intent(
+                self._db,
+                event_id=event.event_id,
+                seller_id=str(event.seller_id),
+                event_type=event.event_type,
+                resource=event.resource,
+                claim_identity=handle.history_identity,
+                job_identity=job_identity,
+                now=datetime.now(UTC),
+            )
+        except HistoryWorkWaitError:
+            raise HistoryPolicyWaitError("durable work authority unavailable") from None
+        from zeler_sheets.history_onboarding import PlanBudgetGateway
+
+        return PlanBudgetGateway(
+            self._db,
+            self._gateway_client,
+            str(event.seller_id),
+            intent.source,
+            work_intent=intent,
+            now=lambda: datetime.now(UTC),
+        )
 
     async def _complete_claim(self, handle: _ClaimHandle, processing_key: str) -> None:
         """Complete the claim and surface a lost lease without failing.

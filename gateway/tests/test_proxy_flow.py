@@ -453,6 +453,7 @@ def _seed_history_credit(database: Any, execution_id: str) -> None:
             "eligible": True,
             "policy_version": "history-on-link-v1",
             "sources": ["orders"],
+            "authority": {"kind": "account_link_policy"},
             "execution_id": execution_id,
             "execution_consumed": 1,
             "execution_attempt_limit": 1,

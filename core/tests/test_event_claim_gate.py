@@ -180,3 +180,19 @@ async def test_claim_gate_handle_reuses_the_claim_owner_token() -> None:
 
     assert store.completed == [(KEY, owner_token)]
     assert store.released == [(KEY, owner_token)]
+
+
+@pytest.mark.asyncio
+async def test_real_claim_exposes_owned_history_identity_but_legacy_cannot() -> None:
+    store = FakeEventClaimStore()
+    handle = await EventClaimGate(store, module_id=MODULE_ID, consumer_id=CONSUMER_ID).claim(KEY)
+    assert handle is not None
+    identity = handle.history_identity
+    assert identity == {
+        "processing_key": KEY,
+        "owner_token": store._tokens[KEY],
+        "module_id": MODULE_ID,
+        "consumer_id": CONSUMER_ID,
+    }
+    legacy = await LegacyEventGate(FakeAdapterStore()).claim(KEY)
+    assert legacy is not None and legacy.history_identity is None

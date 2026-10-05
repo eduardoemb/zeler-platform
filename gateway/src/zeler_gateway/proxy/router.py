@@ -37,6 +37,10 @@ from zeler_platform_core.history_onboarding import (
     history_execution_allowed,
     history_execution_query,
 )
+from zeler_platform_core.history_work_intent import (
+    HistoryWorkWaitError,
+    reserve_history_work_send,
+)
 
 logger = structlog.get_logger(__name__)
 router = APIRouter(tags=["proxy"])
@@ -405,9 +409,11 @@ async def _forward_to_meli(
         and getattr(request.state, "history_seller_id", "") in scope
     )
     trace = _history_trace(request, getattr(request.state, "history_module_id", ""))
-    if pilot_get and request.headers.get("X-Zeler-History-Trace") and trace is None:
-        # A malformed/misconfigured historical request must not be charged again
-        # as ordinary traffic or bypass its pre-reserved historical credit.
+    if pilot_get and trace is None:
+        # Authentication identifies the seller/module, not source or phase.
+        # Even /orders/* may be a claims dependency. Without an existing h1
+        # credit, do not substitute a global charge for the required allocation
+        # or invent attribution from a path/header. No charge and no transport.
         raise PilotGetBudgetWaitError("pilot_execution_unavailable")
 
     async def before_attempt() -> None:
@@ -470,11 +476,12 @@ def _pilot_plan_available(plan: Any, now: datetime) -> bool:
 
 
 async def _reserve_pilot_get_send(request: Request) -> None:
-    """Charge ordinary physical GETs without consuming historical source credits.
+    """Legacy global CAS kernel, not source/phase allocation or dispatch authority.
 
-    The authenticated caller/scope gate lives in _forward_to_meli. Reservations
-    survive crashes and failed sends; no resets, refunds, source invention or
-    subscription mutations. All retry attempts re-read and CAS at dispatch.
+    Live selected GETs without valid h1 attribution wait in _forward_to_meli
+    before reaching this kernel. Retain the global conservation regressions;
+    never reuse this charge alone to authorize unallocated provider traffic.
+    Reservations survive crashes; no resets, refunds or subscription mutations.
     """
     plans = request.app.state.mongo_db[PLAN_COLLECTION]
     seller = request.state.history_seller_id
@@ -545,17 +552,61 @@ async def _reserve_history_send(request: Request, full_path: str) -> None:
     }
     if re.fullmatch(patterns[source], path) is None:
         raise HistoryPolicyRejectedError()
+    if "X-Zeler-History-Work" in request.headers:
+        work_id = request.headers["X-Zeler-History-Work"]
+        if re.fullmatch(r"[a-f0-9]{32}", work_id) is None or module != "sheets":
+            raise HistoryPolicyRejectedError()
+        try:
+            result = await reserve_history_work_send(
+                request.app.state.mongo_db,
+                seller_id=request.state.history_seller_id,
+                execution=execution,
+                source=source,
+                phase=phase,
+                work_id=work_id,
+                path=path,
+                now=_proxy_wait_now(request)(),
+            )
+        except HistoryWorkWaitError:
+            raise HistoryPolicyRejectedError() from None
+        if not history_execution_allowed(result, now=_proxy_wait_now(request)(), charged=True):
+            raise HistoryPolicyRejectedError()
+        request.state.history_upstream_attempts = 1
+        return
     credit = f"execution_charged.{execution}.{source}.{phase}"
     sent = f"execution_sent_by_source.{execution}.{source}.{phase}"
+    now = _proxy_wait_now(request)()
     query = {
         "_id": request.state.history_seller_id,
+        "seller_id": request.state.history_seller_id,
         "policy_version": POLICY_VERSION,
+        "authority.kind": "account_link_policy",
         "execution_id": execution,
         "state": "active",
         "eligible": True,
         "sources": source,
-        **history_execution_query(_proxy_wait_now(request)(), charged=True),
+        "execution_consumed": {"$type": ["int", "long"], "$gte": 0},
+        credit: {"$type": ["int", "long"], "$gt": 0},
+        **history_execution_query(now, charged=True),
     }
+    scope = Settings().history_pilot_get_budget_sellers
+    if scope is not None and request.state.history_seller_id in scope:
+        # h1 discovery may authenticate as bootstrap, detail as sheets. Neither
+        # may use optional non-pilot controls to bypass the selected execution.
+        query.update(
+            execution_until={"$exists": True, "$gt": now},
+            execution_utc_day=now.astimezone(UTC).date().isoformat(),
+            execution_attempt_limit={"$type": ["int", "long"], "$gte": 0},
+        )
+    for counter in ("execution_sent", sent):
+        query["$and"].append(
+            {
+                "$or": [
+                    {counter: {"$exists": False}},
+                    {counter: {"$type": ["int", "long"], "$gte": 0}},
+                ]
+            }
+        )
     query["$and"].append(
         {
             "$expr": {
@@ -596,7 +647,8 @@ def _upstream_headers(request: Request, *, access_token: str) -> dict[str, str]:
         for key, value in request.headers.items()
         if key.lower() not in HOP_BY_HOP_HEADERS
         and not key.lower().startswith("x-forwarded-")
-        and key.lower() not in {"x-zeler-history-trace", "x-zeler-proxy-retry"}
+        and key.lower()
+        not in {"x-zeler-history-trace", "x-zeler-history-work", "x-zeler-proxy-retry"}
     }
     headers["Authorization"] = f"Bearer {access_token}"
     return headers

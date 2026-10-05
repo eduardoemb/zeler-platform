@@ -6,6 +6,9 @@ from pymongo import ReturnDocument
 from pymongo.errors import DuplicateKeyError
 
 from zeler_platform_core.clients.meli_gateway_client import GatewayRateLimitError
+from zeler_platform_core.history_onboarding import PLAN_COLLECTION
+from zeler_platform_core.history_work_intent import normalize_history_event
+from zeler_sheets.formulas.pacing import HistoryPolicyWaitError
 
 
 def _pilot_wait_code(error: GatewayRateLimitError) -> str | None:
@@ -43,6 +46,7 @@ class SyncJobsProcessor:
         contention_backoff: timedelta = timedelta(seconds=5),
         retention_window: timedelta = timedelta(days=45),
     ) -> None:
+        self._db = db
         self._jobs = db["sheets_sync_jobs"]
         self._events = db["webhook_events"]
         self._handler = handler
@@ -141,6 +145,20 @@ class SyncJobsProcessor:
             return "failed"
         try:
             await self._process_delta(job)
+        except HistoryPolicyWaitError:
+            await self._write(
+                job,
+                {
+                    "state": "pending",
+                    "available_at": self._clock() + self._contention_backoff,
+                    "lease_until": None,
+                    "append_started_at": None,
+                    "completed_at": None,
+                    "error_code": "pilot_execution_unavailable",
+                    "error_message": "Durable work authority wait; acquisition will resume",
+                },
+            )
+            return "pending"
         except GatewayRateLimitError as exc:
             code = _pilot_wait_code(exc)
             if code is None:
@@ -172,6 +190,13 @@ class SyncJobsProcessor:
         seller_values: list[Any] = (
             [seller_id, int(seller_id)] if seller_id.isdigit() else [seller_id]
         )
+        try:
+            plans = self._db[PLAN_COLLECTION]
+        except KeyError:
+            plan = None
+        else:
+            plan = await plans.find_one({"_id": seller_id})
+        pilot = isinstance(plan, dict) and "execution_id" in plan
         cursor = self._events.find(
             {
                 "user_id": {"$in": seller_values},
@@ -182,19 +207,39 @@ class SyncJobsProcessor:
             }
         ).sort([("received_at", 1), ("_id", 1)])
         events = await cursor.to_list(length=None)
-        supported = [event for event in events if _supported(event)]
+        # In a scoped pilot, unknown intent is preserved as WAIT, not silently
+        # acknowledged as unsupported work. Ordinary jobs retain their contract.
+        supported = events if pilot else [event for event in events if _supported(event)]
         if supported:
             await self._write(job, {"append_started_at": self._clock()})
         for event in supported:
             event_id = str(event["_id"])
+            normalized = normalize_history_event(event) if pilot else None
+            if pilot and normalized is None:
+                raise HistoryPolicyWaitError("replay source has no durable acquisition authority")
             await self._handler.handle(
                 SheetsEvent(
                     event_id=event_id,
-                    event_type=str(event.get("classification") or event["topic"]),
+                    event_type=(
+                        normalized[0]
+                        if normalized is not None
+                        else str(event.get("classification") or event["topic"])
+                    ),
                     seller_id=int(seller_id),
-                    resource=str(event["resource"]),
+                    resource=normalized[1] if normalized is not None else str(event["resource"]),
                     idempotency_key=f"sync-job:{job['_id']}:{event_id}",
-                )
+                ),
+                **(
+                    {
+                        "job_identity": {
+                            "_id": job["_id"],
+                            "attempt_token": job["attempt_token"],
+                            "fence": job["fence"],
+                        }
+                    }
+                    if pilot
+                    else {}
+                ),
             )
             await self._write(
                 job,

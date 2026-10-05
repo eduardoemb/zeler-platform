@@ -45,6 +45,9 @@ class ModuleIdempotencyStore(Protocol):
 class ClaimHandle(Protocol):
     """A claimed delivery: complete on terminal outcomes, release otherwise."""
 
+    @property
+    def history_identity(self) -> dict[str, str] | None: ...
+
     async def complete(self) -> bool: ...
 
     async def release(self) -> bool: ...
@@ -60,6 +63,10 @@ class _LegacyClaimHandle:
     def __init__(self, store: ModuleIdempotencyStore, key: str) -> None:
         self._store = store
         self._key = key
+
+    @property
+    def history_identity(self) -> None:
+        return None
 
     async def complete(self) -> bool:
         await self._store.mark_processed(self._key)
@@ -102,6 +109,15 @@ class _EventClaimHandle:
         self._module_id = module_id
         self._consumer_id = consumer_id
         self._owner_token = owner_token
+
+    @property
+    def history_identity(self) -> dict[str, str]:
+        return {
+            "processing_key": self._key,
+            "owner_token": self._owner_token,
+            "module_id": self._module_id,
+            "consumer_id": self._consumer_id,
+        }
 
     async def complete(self) -> bool:
         return await self._store.complete(

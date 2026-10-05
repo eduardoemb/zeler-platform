@@ -333,3 +333,32 @@ usuario deberá decidir cualquier alcance adicional.
 
 El siguiente agente debe entregar evidencia diferenciada por plano y saldos
 canónicos, no promesas basadas en salud, tests o buildSUCCESS solamente.
+
+## 9. Continuación del 5 de octubre — evidencia nueva, no cierre
+
+El usuario reanudó trabajo local/coordinación y eligió integrar **directamente,
+sin SDD**. Las entregas originales CUOTAS/AMQP se recibieron con cese de escritura;
+la asignación, relevo y nueva lista cerrada de integración están en
+[zelerdata-historico-paralelo.md](zelerdata-historico-paralelo.md).
+El [informe de integración](zelerdata-historico-integracion-20261005.md) separa
+contrato local, pruebas, publicación y gates productivos. No sustituye ni modifica
+los resultados históricos anteriores ni reinicia datos, cuotas o plazos.
+
+La única excepción AMQP recibida en esa conversación **ya se consumió**:
+AMQP-REPEAT-1,20:02:28–20:02:46UTC, exit2 `management_configuration_invalid`;
+reader iniciado, Management0GET/Meli0/mutaciones0, STOP antes de red. No segundo
+intento, endpoint/credenciales alternos o reparación. La causa404 y topología/
+publicación/TTL/entrega real siguen pendientes. **Producción está detenida**;
+no avanzar builds/despliegue/piloto por pruebas locales. Los demás permisos
+condicionales siguen vigentes en su alcance, no son autorización de otro retry.
+Full permanece excluido y la aceptación de §1 sigue pendiente.
+
+
+Calidad local final de esta continuación:6395PASS/20SKIP, protectedrs019PASS,
+focused455PASS; ruff/formato/mypyglobal665/direct/schemaPASS sobre snapshot
+congelado1072paths. Recursos de prueba propios retirados; previos preservados.
+Solo gateway/Sheetsworker se afectan funcionalmente: las imágenes servidas no
+incorporan estos cambios y no se construyeron/desplegaron en esta continuación.
+Recomendar imágenes nuevas exactas de main cuando gates/autoridad permitan
+continuar, sin rebuildAPI. Detalles de código/publicación/evidencia en el informe
+vinculado, no prueba de aceptación productiva.

@@ -5,7 +5,9 @@ Only MockTransport and in-memory control-plane doubles; no real RPC or broker.
 
 from __future__ import annotations
 
+import asyncio
 import json
+import socket
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import Any, cast
@@ -19,7 +21,17 @@ from zeler_platform_core.clients.meli_gateway_client import MeliGatewayClient
 from zeler_platform_core.events.claims import ClaimOutcome
 from zeler_platform_core.runtime.retry_delay import RETRY_ATTEMPT_HEADER
 from zeler_sheets.consumer import SHEETS_CLAIMS_QUEUE, SheetsAmqpConsumerRunner, SheetsEventHandler
+from zeler_sheets.formulas.pacing import HistoryPolicyWaitError
 from zeler_sheets.sync_jobs_processor import SyncJobsProcessor
+
+
+@pytest.fixture(autouse=True)
+def _forbid_network_connections(monkeypatch: pytest.MonkeyPatch) -> None:
+    def blocked(*args: Any, **kwargs: Any) -> None:
+        raise AssertionError("AMQP offline test attempted a socket connection")
+
+    monkeypatch.setattr(socket.socket, "connect", blocked)
+    monkeypatch.setattr(socket.socket, "connect_ex", blocked)
 
 
 class Message:
@@ -51,6 +63,101 @@ class Handler:
     async def handle(self, event: Any) -> str:
         await self.client.fetch_resource(seller_id=str(event.seller_id), path=event.resource)
         return "appended"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("queue_name", ["zeler.sheets.events", SHEETS_CLAIMS_QUEUE])
+@pytest.mark.parametrize("publication_fails", [False, True])
+async def test_local_history_policy_wait_confirms_before_ack_and_keeps_attempt(
+    queue_name: str, publication_fails: bool
+) -> None:
+    history: list[str] = []
+
+    class Waiting:
+        async def handle(self, event: Any) -> str:
+            raise HistoryPolicyWaitError("work ownership or policy unavailable")
+
+    class OrderedMessage(Message):
+        async def ack(self) -> None:
+            history.append("ack")
+            await super().ack()
+
+        async def nack(self, *, requeue: bool) -> None:
+            history.append("nack")
+            await super().nack(requeue=requeue)
+
+    async def publish(*args: Any, **kwargs: Any) -> None:
+        history.append("publish")
+        assert kwargs["mandatory"] is True
+        assert kwargs["headers"][RETRY_ATTEMPT_HEADER] == 3
+        if publication_fails:
+            raise RuntimeError("offline unconfirmed copy")
+
+    runner = SheetsAmqpConsumerRunner(rabbitmq_url="amqp://unit-test", handler=Waiting())
+    runner._publish_retry_delay = AsyncMock(side_effect=publish)  # type: ignore[method-assign]
+    message = OrderedMessage()
+    message.headers[RETRY_ATTEMPT_HEADER] = 3
+    original = message.body
+    await runner._handle_message(message, queue_name=queue_name)
+    assert message.body == original
+    if publication_fails:
+        assert history == ["publish", "nack"] and message.nacks == [True]
+        assert message.acks == 0
+    else:
+        assert history == ["publish", "ack"] and message.acks == 1
+        assert message.nacks == []
+
+
+@pytest.mark.asyncio
+async def test_local_history_policy_wait_leaves_sync_job_pending_and_fenced() -> None:
+    jobs = MagicMock()
+    jobs.update_one = AsyncMock(return_value=SimpleNamespace(matched_count=1))
+    jobs.update_many = AsyncMock(return_value=SimpleNamespace(modified_count=0))
+    events = MagicMock()
+    events.find.return_value.sort.return_value.to_list = AsyncMock(
+        return_value=[
+            {
+                "_id": "event",
+                "user_id": 82453304,
+                "received_at": datetime(2026, 10, 5, 12, tzinfo=UTC),
+                "classification": "questions.new",
+                "resource": "/questions/1",
+            }
+        ]
+    )
+    now = datetime(2026, 10, 5, 12, tzinfo=UTC)
+    selected = {
+        "_id": "job",
+        "seller_id": "82453304",
+        "requested_at": now - timedelta(minutes=1),
+        "delta_through_at": now,
+        "attempt_token": "fixture",
+        "attempt_count": 8,
+        "fence": 7,
+        "cursor_event_id": "previous",
+        "cursor_received_at": now - timedelta(seconds=30),
+    }
+    before = dict(selected)
+    processor = SyncJobsProcessor(
+        db={"sheets_sync_jobs": jobs, "webhook_events": events},
+        handler=SimpleNamespace(handle=AsyncMock(side_effect=HistoryPolicyWaitError("held"))),
+        activation_cutoff=now - timedelta(days=1),
+        clock=lambda: now,
+    )
+    processor.claim_next = AsyncMock(return_value=selected)  # type: ignore[method-assign]
+    assert await processor.process_once() == "pending"
+    assert selected == before
+    query, operation = jobs.update_one.await_args.args
+    assert query == {"_id": "job", "state": "running", "attempt_token": "fixture", "fence": 7}
+    values = operation["$set"]
+    assert values["state"] == "pending"
+    assert values["available_at"] > now
+    assert values["lease_until"] is None and values["append_started_at"] is None
+    assert (
+        not {"attempt_count", "attempt_token", "fence", "requested_at", "cursor_event_id"}
+        & values.keys()
+    )
+    assert not jobs.delete_one.called and not events.delete_one.called
 
 
 def client(http: httpx.AsyncClient) -> MeliGatewayClient:
@@ -528,3 +635,212 @@ async def test_controlled_publication_requires_real_confirmation_or_nacks(
             else runner.handle_message(message)
         )
     assert message.acks == 0 and message.nacks == [True]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("claims_queue", [False, True])
+@pytest.mark.parametrize("confirmed", [True, False, None, "exception"])
+async def test_wait_original_is_not_acked_while_publish_confirmation_is_pending(
+    claims_queue: bool, confirmed: Any
+) -> None:
+    """An awaitable barrier proves ordering, not merely final ACK counters."""
+    started = asyncio.Event()
+    release = asyncio.Event()
+    order: list[str] = []
+    message = Message()
+    message.headers = {RETRY_ATTEMPT_HEADER: 3, "idempotency_key": "stable"}
+
+    async def publish(*args: Any, **kwargs: Any) -> Any:
+        assert kwargs["mandatory"] is True
+        assert args[0].body == message.body
+        assert args[0].headers[RETRY_ATTEMPT_HEADER] == 3
+        order.append("publish_started")
+        started.set()
+        await release.wait()
+        order.append("confirmation_returned")
+        if confirmed == "exception":
+            raise RuntimeError("synthetic publication failure")
+        return confirmed
+
+    exchange = SimpleNamespace(publish=publish)
+    channel = SimpleNamespace(
+        default_exchange=exchange, declare_exchange=AsyncMock(return_value=exchange)
+    )
+
+    def response(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            429,
+            json={"error": "pilot_budget_exhausted"},
+            headers={"Retry-After": "5", "X-Zeler-Pilot-Get-Budget-Status": "wait"},
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(response)) as http:
+        runner = SheetsAmqpConsumerRunner(
+            rabbitmq_url="amqp://unit-test", handler=Handler(client(http))
+        )
+        runner._channel = channel
+        delivery = runner.handle_claims_message if claims_queue else runner.handle_message
+        task = asyncio.create_task(delivery(message))
+        try:
+            await asyncio.wait_for(started.wait(), timeout=1)
+            assert not task.done()
+            assert message.acks == 0 and message.nacks == []
+            assert order == ["publish_started"]
+            release.set()
+            await asyncio.wait_for(task, timeout=1)
+        finally:
+            release.set()
+            if not task.done():
+                task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+    assert order == ["publish_started", "confirmation_returned"]
+    assert message.acks == int(confirmed is True)
+    assert message.nacks == ([] if confirmed is True else [True])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("delay_seconds", [1, 5, 30, 35, 120, 600, 601])
+@pytest.mark.parametrize("attempt", [0, 1, 2, 3, 4])
+async def test_wait_wire_expiration_and_retry_bucket_preserve_attempt_identity(
+    delay_seconds: int, attempt: int
+) -> None:
+    """Event expiration uses timedelta; claims rely on queue TTL, not a message TTL."""
+    publish = AsyncMock(return_value=True)
+    exchange = SimpleNamespace(publish=publish)
+    channel = SimpleNamespace(
+        default_exchange=exchange, declare_exchange=AsyncMock(return_value=exchange)
+    )
+
+    def response(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            429,
+            json={"error": "pilot_execution_unavailable"},
+            headers={
+                "Retry-After": str(delay_seconds),
+                "X-Zeler-Pilot-Get-Budget-Status": "wait",
+                "X-Zeler-Upstream-Attempts": "0",
+            },
+        )
+
+    # The real client deliberately clamps Retry-After to 1..30 seconds. These
+    # cases characterize that contract, not an uncapped/provider-authored wait.
+    parsed_delay_seconds = min(30, max(1, delay_seconds))
+    expected_bucket = next(
+        (
+            name
+            for name, cap in [("1s", 1), ("5s", 5), ("30s", 30), ("2m", 120), ("10m", 600)]
+            if parsed_delay_seconds <= cap
+        ),
+        "10m",
+    )
+    async with httpx.AsyncClient(transport=httpx.MockTransport(response)) as http:
+        runner = SheetsAmqpConsumerRunner(
+            rabbitmq_url="amqp://unit-test", handler=Handler(client(http))
+        )
+        runner._channel = channel
+        for claims_queue in (False, True):
+            message = Message()
+            message.headers = {RETRY_ATTEMPT_HEADER: attempt, "idempotency_key": "stable"}
+            await (
+                runner.handle_claims_message(message)
+                if claims_queue
+                else runner.handle_message(message)
+            )
+            assert message.acks == 1 and message.nacks == []
+            assert publish.await_args is not None
+            sent = publish.await_args.args[0]
+            assert sent.body == message.body
+            assert sent.headers[RETRY_ATTEMPT_HEADER] == attempt
+            assert sent.headers["idempotency_key"] == "stable"
+            assert publish.await_args.kwargs["mandatory"] is True
+            assert int(sent.delivery_mode) == 2
+            if claims_queue:
+                assert sent.properties.expiration is None
+                assert publish.await_args.kwargs["routing_key"] == (
+                    SHEETS_CLAIMS_QUEUE + ".retry." + expected_bucket
+                )
+            else:
+                assert sent.properties.expiration == str(parsed_delay_seconds * 1000)
+                assert publish.await_args.kwargs["routing_key"] == "zeler.sheets.events.delay"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("retry_after", [1, 5, 120])
+async def test_repeated_scheduler_wait_preserves_progress_with_fenced_backoff(
+    retry_after: int,
+) -> None:
+    from zeler_platform_core.clients.meli_gateway_client import GatewayRateLimitError
+
+    now = datetime(2026, 10, 5, 12, tzinfo=UTC)
+    current: dict[str, Any] = {
+        "_id": "job",
+        "state": "running",
+        "seller_id": "82453304",
+        "requested_at": now - timedelta(minutes=1),
+        "delta_through_at": now,
+        "attempt_token": "owner",
+        "fence": 9,
+        "attempt_count": 12,
+        "cursor_event_id": "already-appended",
+        "cursor_received_at": now - timedelta(seconds=10),
+        "lease_until": now + timedelta(minutes=5),
+        "append_started_at": now,
+        "cutoff": now - timedelta(days=365),
+        "physical_consumed": 19,
+    }
+    preserved = {
+        key: current[key]
+        for key in (
+            "requested_at",
+            "delta_through_at",
+            "attempt_token",
+            "fence",
+            "attempt_count",
+            "cursor_event_id",
+            "cursor_received_at",
+            "cutoff",
+            "physical_consumed",
+        )
+    }
+    jobs = MagicMock()
+
+    async def write(query: dict[str, Any], document: dict[str, Any]) -> Any:
+        assert query == {
+            "_id": "job",
+            "state": "running",
+            "attempt_token": "owner",
+            "fence": 9,
+        }
+        assert "$inc" not in document and "$unset" not in document
+        current.update(document["$set"])
+        return SimpleNamespace(matched_count=1)
+
+    jobs.update_one = AsyncMock(side_effect=write)
+    processor = SyncJobsProcessor(
+        db={"sheets_sync_jobs": jobs, "webhook_events": MagicMock()},
+        handler=MagicMock(),
+        activation_cutoff=now - timedelta(days=1),
+        clock=lambda: now,
+    )
+    processor.recover_uncertain_appends = AsyncMock(return_value=0)  # type: ignore[method-assign]
+    processor.claim_next = AsyncMock(side_effect=lambda: current.copy())  # type: ignore[method-assign]
+    error = GatewayRateLimitError(
+        retry_after_seconds=retry_after,
+        response=httpx.Response(
+            429,
+            json={"error": "pilot_budget_exhausted"},
+            headers={"X-Zeler-Pilot-Get-Budget-Status": "wait"},
+        ),
+    )
+    processor._process_delta = AsyncMock(side_effect=error)  # type: ignore[method-assign]
+    for _ in range(7):
+        # Claiming itself is covered by the real-claim/replay test above. Here
+        # simulate the same fenced owner to isolate WAIT's update semantics.
+        current["state"] = "running"
+        assert await processor.process_once() == "pending"
+        assert current["available_at"] == now + timedelta(seconds=retry_after)
+        assert current["lease_until"] is None and current["append_started_at"] is None
+        assert current["completed_at"] is None
+        assert {key: current[key] for key in preserved} == preserved
+    assert jobs.update_one.await_count == 7
+    assert not jobs.delete_one.called
