@@ -106,3 +106,22 @@ requieren nuevas imágenes desde el main publicado exacto cuando se pueda
 continuar: buildsVERIFIED separados, pins/digests/recuperación/capacidad y runtime
 verificados; build/deploy no prueban aceptación anual/parcialAPI/nativa ni dos
 incrementales con cambios reales. Sin datos fabricados o extensión de plazos.
+
+## Publicación verificada — 2026-10-05T20:46:40.180910+00:00
+
+- Reader AMQP: `2c657015d5d64a6650811d378ebdae21cc0e6ed2`.
+- Integración directa: `9149d00b7d979fb4498a4c16ae6c3220172b566f`.
+- Push normal de24paths propios; SHA remoto=HEAD y árbol limpio observados.
+  Los903blobs no-Markdown y bits ejecutables Git son iguales al snapshot final2.
+  Cuatro archivos ajenos al delta mantienen permisos POSIX0600 locales y modo
+  Git100644 ya presente en el padre: Git no almacena esos bits rw; sin chmod.
+  Solo los tres documentos de resultados difieren, validados separadamente.
+- Actualización de estado posterior: doc-only, identidad consultable por `git log`;
+  no nueva fuente ejecutable ni nueva prueba runtime. Recibos privados conservados.
+
+Imágenes necesarias cuando gates/autoridad permitan: **gateway + Sheets worker**
+desde el commit exacto autorizado en main; las imágenes antiguas/builds cb63260 no
+incorporan esta integración. No API u otros rebuilds. Verificar procedencia/digest,
+capacidad/rollback, dependencia y consumidores, y comportamiento afectado tras
+settling antes del piloto. Ningún build/deploy se ejecutó por detectar drift.
+**Aceptación pendiente. AMQP-REPEAT-1 agotada; no nueva autorización solicitada.**

@@ -279,18 +279,19 @@ colas, limpieza, add-on o otras cuentas se deriva de esta asignación.
 
 | Entrega | Responsable | Dependencias | Estado actual |
 | --- | --- | --- | --- |
-| Ownership/ledger/documento | Coordinador | Handoff, checkout y permisos reales. | Preparado; sin commit/push en esta fase. |
-| Reparto local por fuente/fase | CUOTAS | Asignación2.1; propuestas para core y flujos normales/eventos compartidos. | ENTREGA RECIBIDA; cese explícito y7hashesPASS, sin nueva ejecución de tests por coordinador. Fix fail-closed local; habilitación funcional normal/eventos aún PENDIENTE. |
+| Ownership/ledger/documento | Coordinador | Handoff, checkout y permisos reales. | PUBLICADO con las unidades propias; ledger de intentos preservado. Estado de publicación abajo. |
+| Reparto local por fuente/fase | CUOTAS | Asignación2.1; propuestas para core y flujos normales/eventos compartidos. | ENTREGA RECIBIDA; cese explícito y7hashesPASS originales. Habilitación local normal/eventos integrada directamente y validada; no servida ni prueba productiva. Informe original preservado. |
 | Reader404 + protecciones diferidas offline | AMQP | Asignación2.2; originales preservados; RED/GREEN locales. | ENTREGA RECIBIDA;179PASSreportados,9hashestabla+consumer/schedulerPASS; sin producción. Causa404/entrega real pendientes. |
-| Integración de propuestas compartidas | Coordinador | Ambas entregas y ownership devuelto. | EN PREPARACIÓN; normales/eventos requieren intención confiable, sin atribución inventada. Propuesta legacy TTL fuera del camino WAIT actual, no reparación automática. |
-| Congelación y calidad del conjunto | Coordinador | Ambas entregas + cese de cambios + coherencia + Mongo local aislado verificado. | ESPECIALISTAS CONGELADOS; controles conjuntos pendientes. Docker default no disponible; no usar URI ambiente ni dar skips por PASS. |
+| Integración de propuestas compartidas | Coordinador | Ambas entregas y ownership devuelto. | INTEGRADA/PUBLICADA: intención durable/ownership live/crédito work no fungible/WAIT conservador. CUOTAS-integración entregó y dejó de escribir; coordinador cerró fixes finales. Propuesta legacy TTL fuera del camino WAIT actual. |
+| Congelación y calidad del conjunto | Coordinador | Ambas entregas + cese de cambios + coherencia + Mongo local aislado verificado. | PASS con todos los escritores congelados: full6395PASS/20SKIP, rs019PASS, focused455PASS, ruff/formato/mypy665/direct/schemaPASS. Target local propio verificado y retirado; skips documentados, no aceptación. |
 | AMQP-REPEAT-1 | Coordinador | Autoridad recibida §5, reader/hash/fixturesGREEN y selección cerrada. | CONSUMIDO/FAIL configuración,0GET; STOP sin retry. |
-| Publicación/builds afectados | Coordinador | Calidad final, cambios propios delimitados y commit fuente exacto en main/remoto. | PENDIENTE; sin rebuild de imágenes no afectadas. |
+| Publicación/builds afectados | Coordinador | Calidad final, cambios propios delimitados y commit fuente exacto en main/remoto. | CÓDIGO PUBLICADO, remoto=HEAD limpio observado; builds0/STOP por gate AMQP. Solo gateway+worker afectados, no API/otros. |
 | Rollout seleccionado | Coordinador | Gates de topología/reparto/controles, procedencia, capacidad fresca y recuperación compatible. | BLOQUEADO POR GATES; autorización condicional vigente. |
 | OAuth/prepare/activate/piloto | Coordinador + humano para OAuth | Runtime/pins/guards servidos, presupuesto/día/deadline/recibo pinned y gates completos. | NO INICIADO en esta coordinación. |
 | Aceptación del objetivo | Coordinador | Fuente por fuente/rangos independientes, parcialAPI normal y dos incrementales auténticos dentro del plazo. | PENDIENTE; objetivo NO completado. |
 
-Secuencia cuando lleguen las entregas:
+Secuencia original de coordinación (entregas, validación y publicación ya cerradas;
+AMQP-REPEAT-1 consumida, no ejecutar nuevamente los pasos completados):
 
 1. Conciliar contratos/cargo/WAIT/herramienta y propuestas; implementar únicamente
    en paths propios o ya entregados. No marcar AMQP runtime sano por fixtures ni
@@ -518,3 +519,21 @@ intactos. Publicación de dos unidades propias queda autorizada tras esos contro
 readerAMQP+tests/informe, luego core/gateway/worker+regresiones/documentos. Git
 solo coordinador, staging exacto, main existente, sin force o ramas/worktrees.
 AMQPexcepciónconsumida/STOP, builds/deploy/piloto y aceptación siguen pendientes.
+
+### Publicación de código y relevo — 2026-10-05T20:46:40.180910+00:00
+
+Dos unidades propias publicadas en `main`: reader/test/informe AMQP
+`2c657015d5d64a6650811d378ebdae21cc0e6ed2` e integración/tests/documentos
+`9149d00b7d979fb4498a4c16ae6c3220172b566f`. Remoto=HEAD y árbol limpio
+verificados tras push normal, sin force. Exactamente24paths propios;903blobs
+no-Markdown y bits ejecutables Git coinciden con el snapshot final2 probado.
+Los permisos POSIX0600 de cuatro archivos preexistentes se conservan localmente;
+Git solo representa su modo100644, idéntico al padre, no un cambio de código.
+El guard inicial de esa comparación se detuvo antes del push; evidencia preservada.
+
+Esta actualización es exclusivamente documental y no exige repetir suite/builds.
+Su identidad se consulta con `git log -1 --format=%H -- docs/sheets/zelerdata-historico-paralelo.md`
+sin autorreferencia. No se modifica ninguno de los informes entregados.
+**Próximo gate productivo: AMQP configuración/topología/entrega real; STOP.**
+Sin retry nuevo, build, despliegue, OAuth, piloto ni cierre de aceptación.
+No solicitar de nuevo permisos condicionales vigentes ni resetear plazos/consumos.

@@ -1,5 +1,10 @@
 # ZelerData: handoff del histórico al vincular
 
+> **Actualización de continuación:** trabajo local reanudado por el usuario,
+> integrado directamente sin SDD y publicado. Producción permanece STOP por la
+> única excepción AMQP consumida con fallo. Estado nuevo en §9; las secciones
+> previas conservan su evidencia fechada, no deben ejecutarse como pasos nuevos.
+
 **Punto de entrada único para retomar. Cierre documental del 5 de octubre de 2026
 UTC: objetivo global NO completado, sesión detenida por instrucción del usuario.**
 No continuar ahora con despliegues, diagnósticos productivos, builds, OAuth ni
@@ -362,3 +367,11 @@ incorporan estos cambios y no se construyeron/desplegaron en esta continuación.
 Recomendar imágenes nuevas exactas de main cuando gates/autoridad permitan
 continuar, sin rebuildAPI. Detalles de código/publicación/evidencia en el informe
 vinculado, no prueba de aceptación productiva.
+
+Código de esta continuación publicado: reader
+`2c657015d5d64a6650811d378ebdae21cc0e6ed2` e integración directa
+`9149d00b7d979fb4498a4c16ae6c3220172b566f`; remoto=HEAD/árbol limpio
+verificados tras push. Código y bits ejecutables ligados al snapshot probado;
+actualización posterior exclusivamente documental, identidad consultable por
+`git log` de este archivo. Builds0/despliegues0/piloto0; no repetir el intento
+AMQP consumido. La aceptación global de §1 sigue pendiente.
