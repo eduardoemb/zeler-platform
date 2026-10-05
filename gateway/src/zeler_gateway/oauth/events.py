@@ -52,7 +52,15 @@ async def emit_accounts_linked(
     seller_id = str(seller_id)
     if seller_id.isascii() and seller_id.isdecimal() and _history_admission_allowed(seller_id):
         await admit_history_onboarding(mongo_db, seller_id, now=now)
-    existing = await mongo_db["bootstrap_jobs"].find_one({"seller_id": seller_id})
+    existing = None
+    if not force:
+        existing = await mongo_db["bootstrap_jobs"].find_one(
+            {"seller_id": seller_id, "state": {"$in": ["pending", "running", "succeeded"]}}
+        )
+    if existing is None:
+        # Preserve the original retry/force created_at without letting terminal
+        # history hide an eligible record during an ordinary relink.
+        existing = await mongo_db["bootstrap_jobs"].find_one({"seller_id": seller_id})
     if (
         existing is not None
         and existing.get("state") in {"pending", "running", "succeeded"}
