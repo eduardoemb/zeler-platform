@@ -1,5 +1,7 @@
 # ZelerData: implementación local del histórico al vincular
 
+> **Entrada única de continuación:** [handoff del histórico](zelerdata-historico-handoff.md). El cierre vigente es documental; no reanudar operaciones productivas durante esta sesión.
+
 ## Estado vigente — preparación cerrada del 5 de octubre de 2026 UTC
 
 **Calidad local final PASS y un smoke nativo independiente PASS; despliegue del
