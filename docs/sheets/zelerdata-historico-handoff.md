@@ -1,15 +1,17 @@
 # ZelerData: handoff del histórico al vincular
 
 > **Actualización de continuación:** trabajo local reanudado por el usuario,
-> integrado directamente sin SDD y publicado. Producción permanece STOP por la
-> única excepción AMQP consumida con fallo. Estado nuevo en §9; las secciones
+> integrado directamente sin SDD y publicado; dos imágenes nuevas VERIFIED.
+> Inspección AMQP ampliada de solo lectura autorizada: STOP en retry1s HTTP404;
+> broker confirma ausencia pasiva, cleanup falló y reparación NO autorizada. Rollout/piloto
+> pendientes. Estado nuevo en §9; las secciones
 > previas conservan su evidencia fechada, no deben ejecutarse como pasos nuevos.
 
-**Punto de entrada único para retomar. Cierre documental del 5 de octubre de 2026
-UTC: objetivo global NO completado, sesión detenida por instrucción del usuario.**
-No continuar ahora con despliegues, diagnósticos productivos, builds, OAuth ni
-piloto. Las autorizaciones condicionales anteriores no anulan esta pausa. Este
-archivo registra evidencia pasada; ninguna observación implica salud actual.
+**Punto de entrada único para retomar; objetivo global NO completado.** La pausa
+del cierre inicial del 5 de octubre fue revocada por reanudación expresa; aplicar
+el estado vigente de §9 y del ledger, no estados previos de la cronología.
+No avanzar rollout/OAuth/piloto sin gates. Este archivo registra evidencia
+fechada; ninguna observación pasada implica salud actual.
 
 ## 1. Objetivo y alcance pendiente
 
@@ -387,3 +389,29 @@ previstos en la autorización histórica cuando hay delta probado.
 Se solicitó solo nueva inspección estructural0red/0cambios de configuración
 worker,60s/5min, aún sin autorización ni ejecución. Lectura AMQP-REPEAT-1
 consumida/no reutilizable. No avanzar sin gates ni inferir cierre porbuildPASS.
+
+### Inspección ampliada recibida y ejecutada
+
+El usuario autorizó la inspección AMQP necesaria, incluso ampliada. Solo lectura,
+no modificación del broker ni expansión de piloto. Tras preparación offline y
+STOP en cada fallo, se identificó userinfo Management igual a broker; normalizar
+en memoria sin cambiar destino permitió leer metadata. Gate Mongo instalado
+compatible PASS con hello/listCollections, sin documentos/aplicación de schemas.
+
+Ronda AMQP revisada: diez GET200 completos; request11 HTTP404 exacto en
+`zeler.sheets.claims.retry.1s`, STOP sin retry/fallback. Acumulado de este tramo:
+13 GET iniciados/13 respuestas/12 cuerpos completos, cero Meli/Full/mutaciones.
+Límites operator reales conservados; no-loss/ingress/admisión siguen sin prueba.
+La cola1s es requerida y no se autodeclara; HTTP404 solo no demuestra ausencia.
+Root ejecutó la comprobación pasiva única a23:44:15–21UTC: broker404/not_found,
+ausencia confirmada,1conexión/canal/RPC iniciados y completados,0Management/Meli/
+mutaciones. Cleanup tool_error/owned_transport_closedFalse → STOP sin repetir.
+El proceso transitorio terminó; no afirmar cierre limpio/server-side por eso.
+
+[Ledger y asignación](zelerdata-historico-paralelo.md),
+[integración actualizada](zelerdata-historico-integracion-20261005.md) y
+[reparación condicional NO autorizada](zelerdata-historico-amqp-reparacion-propuesta.md).
+Ausencia confirmada; aprobación solicitada solo para esa creación concreta,
+todavía NO recibida/NO ejecutada. No re-pedir autoridad
+condicional vigente. Sin pull/deploy/OAuth/piloto nuevo ni reset de cuotas,
+checkpoint/cutoff/díaUTC/plazos; aceptación §1 todavía pendiente.

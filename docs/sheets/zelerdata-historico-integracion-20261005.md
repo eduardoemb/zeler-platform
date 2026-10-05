@@ -1,9 +1,10 @@
 # ZelerData: integración directa del 5 de octubre de 2026
 
 > **Continuación posterior a «Realizalo»:** dos nuevas imágenes necesarias
-> SUCCESS/VERIFIED desde main352f3bd6, aún NO desplegadas. Inspección AMQP
-> estructural0red solicitada, pendiente de autorización; la lectura anterior
-> sigue consumida. Los resultados previos abajo conservan su fecha/alcance.
+> SUCCESS/VERIFIED desde main352f3bd6, aún NO desplegadas. La nueva inspección
+> AMQP de solo lectura ya fue autorizada y ejecutada con STOP: HTTP404 de retry1s.
+> El broker confirma ausencia exacta; cleanup falló, sin repetir. Ninguna reparación
+> ha sido autorizada. Los resultados previos abajo conservan su fecha/alcance.
 
 **Aceptación pendiente; producción detenida.** Continuación local autorizada del
 [handoff](zelerdata-historico-handoff.md), sin SDD por decisión expresa del usuario.
@@ -168,3 +169,38 @@ offlinePASS y calidad3fuentesPASS;4hashes/bindingcotejados porcoordinador.
 [Informe propio AMQP configuración](zelerdata-historico-amqp-config-informe.md).
 No es producción ni otra lectura. Autorización sigue pendiente,0intentos.
 No se reinicia el plazo del piloto ni se reutilizan excepciones históricas.
+
+## Inspección ampliada autorizada — estado actual
+
+El usuario autorizó «la inspeccion AMQP que necesitas, incluso si necesitas
+ampliarla». Alcance de solo lectura: no broker/config/credenciales/IAM/capacidad,
+datos o presupuestos de piloto. El [ledger único](zelerdata-historico-paralelo.md)
+conserva tiempos, recibos, consumos y STOP de cada operación.
+
+- Rechazo actual identificado: Management incluye userinfo legítimo, igual al
+  broker. La herramienta lo separa **solo en memoria**, sin cambiar target o
+  configuración, y usa BasicAuth de la misma cuenta. No atribuir por eso la causa
+  exacta del 404 histórico.
+- Mongo instalado: PRIMARY y metadata de las tres colecciones PASS; dos comandos
+  explícitos, cero lecturas de documentos/mutaciones. Plans sin validator;
+  claims/sync con validators compatibles exactos. Esto cubre el gate real que
+  las pruebas rs0 sin validators no acreditaban.
+- Operator limits efectivos conservados: expires2419200000, max-length10000,
+  max-length-bytes1073741824. La excepción estructural acepta solo ese tuple;
+  ingress/no-loss/pilot-admission permanecen false. No modificar policies.
+- Ronda revisada: diez GET200 completos (cinco colas+bindings); request11 HTTP404
+  sobre `zeler.sheets.claims.retry.1s` → STOP sin request12/retry/fallback. Total
+  del tramo ampliado:13 iniciados/13 respuestas/12 cuerpos completos de techo25.
+  Cero Meli/Full, conexiones AMQP o mutaciones hasta este punto.
+- El bucket1s es requerido por el primer retry y no se autodeclara al arrancar.
+  HTTP404 no bastaba para afirmar ausencia. Una conexión propia y un único
+  `queue.declare(passive=True)` recibieron broker404/not_found: ausencia confirmada
+  a23:44:15–21UTC. Conexión/canal/RPC1 iniciados y completados;0Management/Meli/
+  mutaciones. Cleanup tool_error/owned_transport_closedFalse, STOP sin repetir.
+  El proceso transitorio terminó; no afirmar cierre limpio/server-side por eso.
+
+Con `NOT_FOUND` confirmado, existe una [propuesta puntual](zelerdata-historico-amqp-reparacion-propuesta.md)
+para crear solo ese bucket compatible. **No autorizada/no ejecutada**; no usar
+`prestart` general, que también puede drenar/eliminar legacy. No volver a pedir
+los permisos condicionales de builds/despliegue/piloto. Ninguna evidencia nueva
+es aceptación anual/parcialAPI/nativa ni dos incrementales reales.

@@ -5,6 +5,48 @@ con archivos exclusivos; el coordinador integra y es el único operador de Git y
 producción. El usuario reanudó trabajo local y coordinación el 5 de octubre de
 2026. Los permisos productivos previos siguen condicionados; Full sigue excluido.
 
+## Estado vigente de la continuación AMQP
+
+El usuario autorizó la inspección necesaria, incluida su ampliación de solo
+lectura. La reparación del broker **no** está incluida. El historial de abajo
+conserva cada solicitud, consumo y STOP; sus estados anteriores no son el actual.
+
+| Entrega/gate | Responsable | Estado / dependencia |
+| --- | --- | --- |
+| Código integrado y controles generales | Coordinador; originales CUOTAS/AMQP congelados | Publicado y PASS; no repetir por documentación. |
+| Dos imágenes nuevas gateway/worker | Coordinador | SUCCESS/VERIFIED; no pull ni despliegue. API intacta. |
+| Compatibilidad Mongo instalada | CUOTAS prepara / coordinador inspecciona | PASS con metadata solamente; no documentos ni aplicación de validators. |
+| Estructura AMQP | AMQP prepara / coordinador inspecciona | STOP: request11 HTTP404 en retry1s; 13 GET Management acumulados del tramo ampliado. |
+| Existencia exacta de retry1s | AMQP prepara / coordinador opera | Broker404 confirma ausencia; cleanup tool_error, STOP y sin repetir. |
+| Reparación puntual condicional | Coordinador | Propuesta preparada; NO autorizada ni ejecutada. |
+| Rollout cerrado, OAuth y aceptación piloto | Coordinador / usuario legítimo | Pendientes de gates; permisos condicionales y presupuestos previos intactos. |
+
+### Nueva asignación exclusiva: comprobación pasiva
+
+Root privado: `$HOME/.codex/cache/zelerdata-integracion-20261005-8dafff186997`.
+AMQP es el único escritor de estos cuatro paths nuevos; no modifica entregas
+anteriores ni archivos compartidos:
+
+1. `ROOT/amqp-passive-check-20261005/passive_check.py`
+2. `ROOT/amqp-passive-check-20261005/passive_supervisor.py`
+3. `ROOT/amqp-passive-check-20261005/test_passive_check.py`
+4. `docs/sheets/zelerdata-historico-amqp-existencia-informe.md`
+
+Encargo: TDD offline con recursos aislados, recibo sanitizado y cierre del
+transporte adquirido antes del handshake. Una conexión AMQP no robusta, un canal
+y un único `queue.declare(passive=True)` sobre `zeler.sheets.claims.retry.1s`.
+Sin creación, consume/basic.get/ACK, publish/bind, otras colas, Management, Mongo
+o Meli. Usar únicamente la configuración legítima instalada, sin fallback.
+Conexión8s/RPC4s/cleanup5s/operación55s; remote120s/caller130s+cleanup5s y
+máximo300s total. Timeout/error → STOP sin retry; counts inciertos son null,
+no cero inventado. Solo el coordinador ejecuta producción después de hashes y
+ENTREGADO/cese. CUOTAS continúa congelado.
+
+La declaración pasiva verifica existencia, no prueba entrega ni crea la cola.
+Su conexión/RPC se registran separados de los 13 GET ya consumidos; no reinicia
+ningún presupuesto. [Propuesta de reparación](zelerdata-historico-amqp-reparacion-propuesta.md)
+condicionada a `NOT_FOUND` ya confirmado, todavía NO autorizada.
+
 ## 1. Punto de partida y preservación
 
 - Checkout verificado localmente a `2026-10-05T18:47:22Z`: `main`, HEAD
@@ -605,3 +647,180 @@ No tomar opción preseleccionada como permiso. Una respuesta configuraciónváli
 no autoriza otra lecturaHTTP, ni cierra topología/entrega real.
 Todos los escritores detenidos; solo publicación documental del coordinador
 queda por cerrar. No nuevos checks generales/builds por este delta doc-only.
+
+### Autorización AMQP recibida — 2026-10-05T22:02:00.522495+00:00
+
+Usuario: **«Sí te autorizo la inspeccion AMQP que necesitas, incluso si necesitas
+ampliarla»**. AMQP-CONFIG-INSPECT-1 queda AUTORIZADA:1SSH/1exec toolfrozen/
+60sinspect/5mintotal/0Management/AMQP/Meli/mutations. No se reutiliza oldrepeat1.
+La ampliación se limita a inspección necesaria de sololectura, con STOP de cada
+operación fallida y causa/tooling offline identificado antes de otro intento.
+Si se requiere lectura Management posterior, conservar10colas/3exchanges y
+≤23GET/60sread/5mintotal, sin endpoint/credencial fallback ni retry. Registrar
+ID/límite/consumo real antes/después. No es permiso de reparar/declarar/publish/
+ACK/configmutations/credrotación/IAM/recursos/Full/Meli o ampliar piloto.
+Los demás permisos condicionales vigentes no se vuelven a pedir.
+
+**Inicio AMQP-CONFIG-INSPECT-1:** 2026-10-05T22:02:50.859067+00:00,autoridad recibida/1operación,
+1SSH/1execmáximo/hashsupeb9489b8be67,0Management/AMQP/Meli/
+mutations,130scaller+cleanup5/remote150/300total, STOP sinretry.
+
+**Resultado AMQP-CONFIG-INSPECT-1:** 2026-10-05T22:02:50.859067+00:00→2026-10-05T22:02:57.207586+00:00,
+6.348s/SSHexit2/`management_explicit_invalid`/STOP. Identity/digest
+workerPASS e inspectoriniciado; brokerpresente/nonempty yManagementpresente/
+nonempty,sourceexplicit. No se imprimieron valores.0Management/AMQP/Meli/
+mutations.1operaciónconsumida/no retryigual; descarta faltaManagement, no prueba
+credenciales/conectividad/causa404. Recibo SHA256
+`38173791b822093c9e03488f4783a9a6592668653a71e711ed9bc9453b1a1d81`.
+
+Ampliación necesaria bajo autoridad recibida: preparar offline discriminación
+de regla estructural exacta con outputs fijos/booleanos y0red, no volvera ejecutar
+esta herramientaigual. Mantener ledger separado y STOP; ningún cambio deenv/
+servicios/colas niMeli. Como máximo una posterior lecturaManagement≤23GET/60s/
+5min, solo si destino/config legítimos demostrados y toolcorregido offlineGREEN;
+no fallback deURL/credenciales ni cadenas de probes fallidos. Rollout siguecerrado.
+
+**Inicio AMQP-SHAPE-INSPECT-1:** 2026-10-05T22:13:56.423078+00:00;ampliaciónreadonlynecesaria aprobada,
+1SSH/1exec shape56offline/hashe2835a65c4c0, workerold79f, Management0/AMQP0/
+Meli0/mutations0,60sinspect/300total,STOP/sinretry. Configagregado anterior
+no se repite; este tool distingue regla específica. MetadataCUOTASpreparación
+local separada4paths/fakes aislados; ningúnotro agenteopera producción.
+
+**Resultado AMQP-SHAPE-INSPECT-1:** 2026-10-05T22:13:56.423078+00:00→2026-10-05T22:14:01.076905+00:00,
+4.654s/exit2/`management_userinfo_forbidden`/STOP.0Management/
+AMQP/Meli/mutations;oldworkeridentity/digestPASS. Parse/port/host/transport
+permitidos, sinquery/fragment/apiDuplicate/dotsegment,placeholderfalse.
+CloudAMQPbrokertrue ycredencialesuserinfoigualesalbrokertrue (solo booleanos,
+ningúnvalor). Recibo SHA256 `b060cff219abb680cfb1e8afdfc3d286c8072dd086737e89fe47d03f5088d98f`.
+Este rechazo distinguecausaactual, no demuestraexactamente404histórico.
+
+Próxima preparación mínima: adaptar SOLO argumentos privados enmemoria del
+reader frozen, retirandouserinfo y conservandoauthority/path/transport exactos,
+usando BasicAuthbroker que yasecomparóigual. Revalidarformas antesHTTP enruntime,
+0envwrites/0configpersistente, nootroendpoint/credentialprobe. TDDoffline y
+callerfrozen antesúnicalecturaManagement≤23GET/60sread/5mintotal bajo ampliación
+recibida. Nada autorizaAMQPpub/declaración/ACK niMeli/Full. Registry14/datos/jobs/
+presupuestos/plazos intactos. Images352fVERIFIEDno requierenrebuildporOPSprivados.
+
+**Inicio AMQP-MGMT-READ-2:** 2026-10-05T22:35:08.879507+00:00;ampliación necesaria aprobada,1SSH/1exec,
+reader30offline+calidad3PASS/4hashesbindingPASS, normalizedsource4d391872cc8c,
+supervisorf4fc93d91690. SOLOuserinfoseparadoinmemoria/credigual/sametarget,
+canonoriginalintacto. ≤23ManagementGET/60sread/4sreq/64KiB/cleanup5/300total;
+0AMQPconnections/mutations/Meli/Full. STOPprimererror/noretry/nofallback;
+registrarconsumo real, noinferir23ejecutados deltecho. OtroswriterssoloCUOTAS
+correcciónannotations/focusedprivadoaislado, sinprod ni suitegeneral.
+
+**Resultado AMQP-MGMT-READ-2:** 2026-10-05T22:35:08.879507+00:00→2026-10-05T22:35:15.330999+00:00,
+6.451s/exit2/`queue_policy_requires_review`/STOP.1GET iniciado,
+1HTTP200 recibido,1cuerpo completo2315bytes;exacto `/api/queues/{vhost}/zeler.sheets.events`,
+sinhost/vhostreal. Normalizaciónuserinfo/sametargetPASS;cleanupErrornull.
+NingúnsegundoGET/retry/fallback.0Meli/AMQPconnections/mutations.
+Topología/confirmación/tiempos NO acreditados. Recibo SHA256
+`e5c8267d180ced67db8b89b5a42cd195008d684928353b7529da186be0428e5d`.
+
+Ampliación necesaria expresamente recibida delusuario: revisarla política real
+de ESA cola con UNGET/MISMOtarget, tooloffline antesproducción, outputkeys
+públicas/enum/números ysin nombres/valores sensibles. Namedpolicy/HA/lazy podrían
+ser benignos, NO asumirlo; lifecycle/TTL/DLX/maxlen/overflow/deliverylimit/unknown
+conservan gatecerrado. No aplicar/eliminarpolíticas. Si se demuestra benigno,
+preparar toolfull23GET con revisión explícita antesotraejecución; máximo25GET
+Management acumulados deltramo ampliado (1yausado+1policyreview+23seleccionados),
+no resetear consumoanterior. Las ventanas4srequest/60sread/64KiB/cleanup5/300total
+se conservan poroperación; Meli2500/90min/mismoUTC yFull0 NOse amplían.
+
+**Inicio SCHEMA-METADATA-1:** 2026-10-05T22:42:42.064733+00:00;preflightseguridadrolloutcondicionalvigente,
+1SSH/1APIexec old3f7/sourcef5f48d429c18/sup7abb8eeefa1c,
+35focused+ruff/format/mypy3PASS/4hashes. SolohelloPRIMARY+listCollections3names,
+≤2comandosexplícitos/sindocumentqueries/writes/getMore;0Management/Meli/AMQP.
+Lectura55s/remote120/caller130+groupcleanup5/300total; noapply/collMod/repair.
+Rs019PASS anteriorNOinstalavalidators; esta lectura obtienecompatibilidadreal.
+
+**Resultado SCHEMA-METADATA-1:** 2026-10-05T22:42:42.064733+00:00→2026-10-05T22:42:50.067184+00:00,
+8.002s/SSHexit0/PASS/PRIMARYtrue,APIold3f7identity+digesttrue.
+2comandosexplícitosiniciados/completados,cleanupclosed,0documentqueries/writes/
+Management/Meli/AMQP. Plans:collectionexistente sinvalidator,camposwork/work_sent
+compatibles inequívocamente. Claims+sync:validatorsSHA localespermisivosexactos
+(`f2358aba...`/`a8e49386...`), strict/errorpresente yhistory_dispatch_fenceallowed.
+Noapply/collMod/repair. GateMongoantespull cerradoPASS.
+Recibo SHA256 `83131d993581c72e6a33a1a3213ff26e5b15c870a083d067e742486bfe7fba43`.
+
+Calidadmetadatafinal35focused/ruff/formato/mypy3PASS,sourcef5f48d42/sup7abb8eee.
+Fallo146annotationsoriginal preservado ycorregido porownerantesexec; no se
+redujeronchecks ni se usaronbytesprevios. Rs019 demuestraCASsinvalidators;
+esta metadata actual esprueba separada decompatibilidadinstalada,no valida
+documentos existentes ni aceptación delpiloto.
+
+**Inicio AMQP-POLICY-INSPECT-1:** 2026-10-05T22:54:06.230713+00:00;UNGETmismo configuredtargetevents para
+review efectivo, fuentef793c6592486/supc691407e97a9,
+29offline+calidad3+4hashesbindingPASS/ownercesó. Autoridadampliarnecesaria,
+cap1GET4s/60sread/64KiB/cleanup5/300total; agregadolímite25(1previoyausado),
+0Meli/AMQP/mutations, nopolicychange/norelaxfullreader. STOP/sinretry.
+
+**Resultado AMQP-POLICY-INSPECT-1:** 2026-10-05T22:54:06.230713+00:00→2026-10-05T22:54:12.019462+00:00,
+5.788s/exit2/`policy_requires_review`,1GETHTTP200/1complete,
+0Meli/AMQPconnections/mutations. Policy+operatorpresentes,nombresnoimpresos;
+effective exact `expires=2419200000` (28d),`max-length=10000`,
+`max-length-bytes=1073741824` (1GiB),unknownkeys0. SinTTL/DLX/overflow/delivery
+limit enlos effectivecampos observados. ArgTTL/DLXesperadosPASS,classic,
+consumers1/ready0/unacked0. No afirma benignidadglobal ni delivery/timing.
+Recibo SHA256 `88e3a42c64a4335189130bef855ff7e203b99bc6639d79ab9c9c2c17e1b70867`.
+AgregadoManagementactual2GET deltramo ampliado,cap25,no23lecturaciegarepetida.
+
+STOPrespectado: sinmodificarpolicy/colas/config/capacidad; reader23 original
+conservadoconservador. Evaluar criteriomínimo deheadroom/expiry con docs primarias
+y alcance cerrado;2500GET no acotan número de mensajesentrantes. No pedir
+otra vezpermisoscondicionales de piloto/despliegue, pero tampoco usar inspección
+comoautorización de repairbroker. MongoactualcompatiblePASS/2imagesVERIFIED
+son pruebas separadas,no sustituyen este gate.
+
+**Inicio AMQP-REVIEWED-READ-1:** 2026-10-05T23:17:49.037532+00:00;1round23GET10queues/3exchanges bajoampliación
+cap25agregado(2yausados);source816e2c4511bf/sup460cb46d78f6,
+20offline+calidad3/4hashesfrozen/ownercesó. ExcepciónSOLOtupleoperator3valores/tipos
+exactos probados;policiesREALESguardadasenevidencia,nopolicyborrado ni fakeabsencia.
+Structuraltopo puedeverificarse,pilotadmission/noLoss/ingressflagsSIEMPREfalse,
+rolloutNOautorizadoporresultado.0Meli/AMQPconn/mutations,4s/60s/64KiB/cleanup5/
+300total,STOPprimererror/sinretry/fallback,noscopeextra.
+
+**Resultado AMQP-REVIEWED-READ-1:** 2026-10-05T23:17:49.037532+00:00→2026-10-05T23:17:55.394376+00:00,
+6.357s/exit2/`management_http_404` en request11 metadata
+`zeler.sheets.claims.retry.1s`, ruta `/api/queues/{vhost}/zeler.sheets.claims.retry.1s`.
+10GET anteriores200/completos (5colasmetadata+bindings),11iniciados/11headers/
+10bodiescompletos. STOPsinrequest12/retry/fallback;0Meli/AMQPconn/mutations,
+cleanupnull. AgregadoManagementdeltramo13GETiniciados/13responses/12completed
+de techo25;unused no se consume automáticamente.
+Policieseffectiveexacttuple preservadas,byte-ready0 exceptoeventsDLQ71411;
+noingress/loss/admissionproof. TopologíaglobalFALSE, no rollout/pilot.
+Recibo SHA256 `4ba45b9e3cf02a790d8c82bb386a8751624fe44325d4d0fdbde0ade87677c277`.
+
+No concluirausenciacola global/confundirHTTP404coninconsistenciadata. Examinar
+localmentecontrato1s delruntime vs expectativahelper antesdecidirrepair
+concreto; no declarar/crearcolasbajopermisoinspección. Preservarcampos/estado
+y límites previos, no mas rondas fallidas reetiquetadas.
+
+### Reparación condicional solicitada — 2026-10-05T23:36:34.604033+00:00
+
+Se solicitó únicamente crear retry1s si la comprobación pasiva confirma
+NOT_FOUND: una declaración/una conexión/≤5min y hasta13GET de verificación
+posterior. [Propuesta completa](zelerdata-historico-amqp-reparacion-propuesta.md).
+**NO recibida / NO ejecutada.** Opción preseleccionada no es aprobación.
+No re-solicitar permisos condicionalesbuild/rollout/piloto ni ampliar sus límites.
+
+**Inicio AMQP-PASSIVE-CHECK-1:** 2026-10-05T23:44:15.011176+00:00;ampliaciónreadonly recibida,
+1conexiónpropia/1canal/1Queue.DeclarepassiveTrue exactretry1s,
+fuentef66b2070/sup7cbbaf30/4hashes+embedding+16fakesRootPASS/ownercesó.
+Connect8/RPC4/cleanupTOTAL5/hard55exec65/remoto120/caller130+group5/300total;
+0Management/Meli/Full/mutations. STOP/sinretry/creación/consume/publish/otrascolas.
+Management13acumulados se preservan;esta conexión se registra aparte.
+
+**Resultado AMQP-PASSIVE-CHECK-1:** 2026-10-05T23:44:15.011176+00:00→2026-10-05T23:44:21.389565+00:00,
+6.378s/SSHexit2/STOP, broker404 `not_found`/existsFalse.
+1conexión/1canal/1RPCpasivo iniciados y completados, identidad/digestold79fPASS.
+0Management/Meli/Full/mutations deestaoperación;Managementacumulado13 intacto.
+Cleanup reportó `tool_error`, owned_transport_closedFalse: no acreditar cierre
+limpio por recibo. Pythontransitorio/SSH terminaron; eso no es confirmación
+server-side del cierre. Preservar error/STOP, no repetir pasivo ni reparar.
+Ausencia exacta confirmada por respuesta broker, no inferenciaHTTP404.
+Recibo SHA256 `1dd9998c235674c76691aeb84d88ca1e220a1b07647319c6280faf36d22c25a7`.
+Reparación condicional solicitada sigue NO recibida/NO ejecutada. Analizar
+cleanup solo offline antes de preparar una herramienta futura; no más pruebas
+contra producción para mejorar el recibo. No rollout/OAuth/piloto ni resetplazos.
