@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 from functools import lru_cache
-from typing import Literal, Self
+from typing import Annotated, Any, Literal, Self
 from urllib.parse import urlsplit
 
 from pydantic import Field, SecretStr, field_validator, model_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
 class Settings(BaseSettings):
@@ -18,6 +18,9 @@ class Settings(BaseSettings):
     otel_metrics_enabled: bool = Field(default=False, alias="OTEL_METRICS_ENABLED")
     gcp_project_id: str = Field(default="zeler-platform-dev", alias="GCP_PROJECT_ID")
     gateway_proxy_rate_limit: int = Field(default=600, alias="GATEWAY_PROXY_RATE_LIMIT")
+    history_pilot_get_budget_sellers: Annotated[frozenset[str] | None, NoDecode] = Field(
+        default=None, alias="ZELERDATA_HISTORY_PILOT_GET_BUDGET_SELLERS"
+    )
     mongo_uri: str = Field(
         default="mongodb://changeme_local_only:changeme_local_only@127.0.0.1:27017/zeler_platform_dev?replicaSet=rs0-dev&directConnection=true&authSource=admin",
         alias="MONGO_URI",
@@ -48,6 +51,32 @@ class Settings(BaseSettings):
     rabbitmq_events_exchange: str = Field(default="meli.events", alias="RABBITMQ_EVENTS_EXCHANGE")
     ready_mongo_timeout_s: float = Field(default=2.0, alias="READY_MONGO_TIMEOUT_S")
     ready_rabbitmq_timeout_s: float = Field(default=2.0, alias="READY_RABBITMQ_TIMEOUT_S")
+
+    @field_validator("history_pilot_get_budget_sellers", mode="before")
+    @classmethod
+    def _validate_pilot_get_budget_sellers(cls, value: Any) -> frozenset[str] | None:
+        if value is None:
+            return None
+        sellers = (
+            frozenset(part.strip() for part in value.split(","))
+            if isinstance(value, str)
+            else value
+        )
+        if (
+            not isinstance(sellers, frozenset)
+            or not sellers
+            or any(
+                not isinstance(seller, str)
+                or not seller.isascii()
+                or not seller.isdecimal()
+                or len(seller) > 20
+                or str(int(seller)) != seller
+                or int(seller) <= 0
+                for seller in sellers
+            )
+        ):
+            raise ValueError("pilot GET budget scope requires canonical positive numeric sellers")
+        return sellers
 
     @field_validator("meli_client_id", "meli_redirect_uri")
     @classmethod

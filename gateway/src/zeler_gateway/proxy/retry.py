@@ -35,12 +35,15 @@ async def send_with_retry(
     jitter: float = 0.25,
     retry_after_budget_s: float = 30.0,
     sleep_fn: Callable[[float], Awaitable[None]] = asyncio.sleep,
+    before_attempt: Callable[[], Awaitable[None]] | None = None,
 ) -> httpx.Response:
     attempts = max(1, max_attempts)
     retry_after_waited_s = 0.0
     last_error: httpx.TimeoutException | httpx.ConnectError | httpx.ReadError | None = None
 
     for attempt in range(1, attempts + 1):
+        if before_attempt is not None:
+            await before_attempt()
         try:
             response = await client.send(_clone_request(request))
         except RETRYABLE_EXCEPTIONS as exc:

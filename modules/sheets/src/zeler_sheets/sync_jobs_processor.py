@@ -5,6 +5,31 @@ from uuid import uuid4
 from pymongo import ReturnDocument
 from pymongo.errors import DuplicateKeyError
 
+from zeler_platform_core.clients.meli_gateway_client import GatewayRateLimitError
+
+
+def _pilot_wait_code(error: GatewayRateLimitError) -> str | None:
+    # Provider headers are not passed through by the gateway. Only its own
+    # controlled fence can opt into resumable waits; ordinary 429 stays failed.
+    if (
+        error.response.status_code != 429
+        or error.response.headers.get("X-Zeler-Pilot-Get-Budget-Status") != "wait"
+    ):
+        return None
+    try:
+        payload = error.response.json()
+    except ValueError:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    code = payload.get("error")
+    return (
+        code
+        if isinstance(code, str)
+        and code in {"pilot_execution_unavailable", "pilot_budget_exhausted"}
+        else None
+    )
+
 
 class SyncJobsProcessor:
     def __init__(
@@ -116,6 +141,24 @@ class SyncJobsProcessor:
             return "failed"
         try:
             await self._process_delta(job)
+        except GatewayRateLimitError as exc:
+            code = _pilot_wait_code(exc)
+            if code is None:
+                await self._finish(job, False, "sync_job_processing_failed", type(exc).__name__)
+                return "failed"
+            await self._write(
+                job,
+                {
+                    "state": "pending",
+                    "available_at": self._clock() + timedelta(seconds=exc.retry_after_seconds),
+                    "lease_until": None,
+                    "append_started_at": None,
+                    "completed_at": None,
+                    "error_code": code,
+                    "error_message": "Gateway pilot budget wait; acquisition will resume",
+                },
+            )
+            return "pending"
         except Exception as exc:  # noqa: BLE001 - handler errors must isolate one job
             await self._finish(job, False, "sync_job_processing_failed", type(exc).__name__)
             return "failed"

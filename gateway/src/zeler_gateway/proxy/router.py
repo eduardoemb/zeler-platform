@@ -49,6 +49,14 @@ class HistoryPolicyRejectedError(Exception):
     """Authenticated historical request has no currently executable credit."""
 
 
+class PilotGetBudgetWaitError(Exception):
+    """Temporary opt-in pilot fence; never an upstream provider response."""
+
+    def __init__(self, code: str) -> None:
+        self.code = code
+        super().__init__(code)
+
+
 HOP_BY_HOP_HEADERS = {
     "connection",
     "keep-alive",
@@ -169,6 +177,28 @@ async def proxy_meli(request: Request, full_path: str) -> Response:
             request=request,
             full_path=full_path,
             access_token=access_token,
+        )
+    except PilotGetBudgetWaitError as exc:
+        await _write_audit_log(
+            request=request,
+            module_id=claims.module_id,
+            seller_id=claims.seller_id,
+            method=request.method,
+            path=upstream_path,
+            upstream_status=-1,
+            response_status=429,
+            duration_ms=int((time.perf_counter() - started) * 1000),
+        )
+        return _json_error(
+            429,
+            exc.code,
+            headers={
+                "Retry-After": "5",
+                "X-Zeler-Pilot-Get-Budget-Status": "wait",
+                "X-Zeler-Upstream-Attempts": str(
+                    getattr(request.state, "pilot_upstream_attempts", 0)
+                ),
+            },
         )
     except HistoryPolicyRejectedError:
         await _write_audit_log(
@@ -367,6 +397,22 @@ async def _forward_to_meli(
     body = await request.body()
     headers = _upstream_headers(request, access_token=access_token)
     factory = _http_client_factory(request)
+    scope = settings.history_pilot_get_budget_sellers
+    pilot_get = (
+        request.method == "GET"
+        and getattr(request.state, "history_module_id", "") == "sheets"
+        and scope is not None
+        and getattr(request.state, "history_seller_id", "") in scope
+    )
+    trace = _history_trace(request, getattr(request.state, "history_module_id", ""))
+    if pilot_get and request.headers.get("X-Zeler-History-Trace") and trace is None:
+        # A malformed/misconfigured historical request must not be charged again
+        # as ordinary traffic or bypass its pre-reserved historical credit.
+        raise PilotGetBudgetWaitError("pilot_execution_unavailable")
+
+    async def before_attempt() -> None:
+        await _reserve_pilot_get_send(request)
+
     async with factory() as client:
         upstream_request = client.build_request(
             request.method,
@@ -376,12 +422,108 @@ async def _forward_to_meli(
             headers=headers,
         )
         if request.headers.get("X-Zeler-Proxy-Retry") == "disabled":
-            await _reserve_history_send(request, full_path)
+            if pilot_get and trace is None:
+                await before_attempt()
+            else:
+                await _reserve_history_send(request, full_path)
             return await send_single_attempt(client, upstream_request)
         sleep_fn = getattr(request.app.state, "proxy_retry_sleep", None)
+        retry_kwargs: dict[str, Any] = {}
+        if pilot_get:
+            retry_kwargs["before_attempt"] = before_attempt
         if sleep_fn is None:
-            return await send_with_retry(client, upstream_request)
-        return await send_with_retry(client, upstream_request, sleep_fn=cast(Any, sleep_fn))
+            return await send_with_retry(client, upstream_request, **retry_kwargs)
+        return await send_with_retry(
+            client,
+            upstream_request,
+            sleep_fn=cast(Any, sleep_fn),
+            **retry_kwargs,
+        )
+
+
+def _pilot_plan_available(plan: Any, now: datetime) -> bool:
+    return bool(
+        isinstance(plan, dict)
+        and plan.get("policy_version") == POLICY_VERSION
+        and isinstance(plan.get("authority"), dict)
+        and plan.get("authority", {}).get("kind") == "account_link_policy"
+        and plan.get("state") == "active"
+        and plan.get("eligible") is True
+        and isinstance(plan.get("execution_id"), str)
+        and re.fullmatch(r"[a-f0-9]{32}", plan["execution_id"])
+        and isinstance(plan.get("execution_until"), datetime)
+        and plan.get("execution_utc_day") == now.date().isoformat()
+        and type(plan.get("execution_attempt_limit")) is int
+        and plan["execution_attempt_limit"] >= 0
+        and type(plan.get("execution_consumed")) is int
+        and plan["execution_consumed"] >= 0
+        and type(plan.get("execution_sent", 0)) is int
+        and 0 <= plan.get("execution_sent", 0) <= plan["execution_consumed"]
+        and history_execution_allowed(
+            {
+                "execution_until": plan["execution_until"],
+                "execution_utc_day": plan["execution_utc_day"],
+            },
+            now=now,
+        )
+    )
+
+
+async def _reserve_pilot_get_send(request: Request) -> None:
+    """Charge ordinary physical GETs without consuming historical source credits.
+
+    The authenticated caller/scope gate lives in _forward_to_meli. Reservations
+    survive crashes and failed sends; no resets, refunds, source invention or
+    subscription mutations. All retry attempts re-read and CAS at dispatch.
+    """
+    plans = request.app.state.mongo_db[PLAN_COLLECTION]
+    seller = request.state.history_seller_id
+    now = _proxy_wait_now(request)()
+    plan = await plans.find_one({"_id": seller, "seller_id": seller})
+    if not _pilot_plan_available(plan, now):
+        raise PilotGetBudgetWaitError("pilot_execution_unavailable")
+    execution = plan["execution_id"]
+    previous_execution = getattr(request.state, "pilot_execution_id", execution)
+    if previous_execution != execution:
+        raise PilotGetBudgetWaitError("pilot_execution_unavailable")
+    request.state.pilot_execution_id = execution
+    if plan["execution_consumed"] >= plan["execution_attempt_limit"]:
+        raise PilotGetBudgetWaitError("pilot_budget_exhausted")
+    query = {
+        "_id": seller,
+        "seller_id": seller,
+        "policy_version": POLICY_VERSION,
+        "authority.kind": "account_link_policy",
+        "state": "active",
+        "eligible": True,
+        "execution_id": execution,
+        "execution_until": plan["execution_until"],
+        "execution_utc_day": plan["execution_utc_day"],
+        "execution_attempt_limit": plan["execution_attempt_limit"],
+        "execution_consumed": {"$type": ["int", "long"], "$gte": 0},
+        **history_execution_query(now),
+    }
+    query["$and"].append(
+        {
+            "$or": [
+                {"execution_sent": {"$exists": False}},
+                {"execution_sent": {"$type": ["int", "long"], "$gte": 0}},
+            ]
+        }
+    )
+    query["$and"].append(
+        {"$expr": {"$lte": [{"$ifNull": ["$execution_sent", 0]}, "$execution_consumed"]}}
+    )
+    result = await plans.find_one_and_update(
+        query,
+        {"$inc": {"execution_consumed": 1, "execution_sent": 1}},
+        return_document=ReturnDocument.AFTER,
+    )
+    if result is None or not history_execution_allowed(
+        result, now=_proxy_wait_now(request)(), charged=True
+    ):
+        raise PilotGetBudgetWaitError("pilot_execution_unavailable")
+    request.state.pilot_upstream_attempts = getattr(request.state, "pilot_upstream_attempts", 0) + 1
 
 
 async def _reserve_history_send(request: Request, full_path: str) -> None:

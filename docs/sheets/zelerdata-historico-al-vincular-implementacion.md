@@ -1,18 +1,77 @@
 # ZelerData: implementación local del histórico al vincular
 
+## Estado vigente — preparación cerrada del 5 de octubre de 2026 UTC
+
+**Calidad local final PASS y un smoke nativo independiente PASS; despliegue del
+nuevo guard, OAuth y piloto BLOQUEADOS por topología AMQP aún no acreditada.**
+La fuente ejecutable local está congelada/validada, todavía sin publicar. No hay
+nuevos builds, procedencia o despliegue acreditados en esta fase. La autorización
+permite continuar publicación local y preparación de builds necesarios; no
+convertir esos pasos independientes en permiso para abrir el piloto.
+
+El usuario copió los archivos de Apps Script y configuró su token privado en el
+menú existente de la [hoja de prueba](https://docs.google.com/spreadsheets/d/1IzBEJ6fTs3-juTvWYv0P9dK_0gMpS5jo5y18KlsmitU/edit).
+En `OrdenesSanas!A1` se ejecutó una fórmula existente, limitada a 4×4, con valores
+efectivos nativos y sin errores; otras seis fórmulas permanecen inactivas. Es un
+smoke Mongo-only con recoveryOFF, **no adquisición anual, certificados nuevos,
+OAuth de esta fase ni piloto activo**. Token de UserProperties intacto/no extraído;
+no adaptación/publicación nueva del complemento. Revisión visual no realizada:
+solo metadata de formato, no una aprobación visual.
+
+| Área | Evidencia y límite vigente |
+| --- | --- |
+| Runtime cerrado, observación 17:24–17:25 UTC | Cuatro servicios sanos/readiness OK/restart0/OOMfalse en esa lectura; gateway7054 de b867 y API3f7/worker79f de d78 siguen siendo las imágenes cerradas. HOLD=`true`, seller82453304; history/recovery API+worker/refresh worker=`false`, cohortes originales HOPEMOB. No se afirma una nueva ronda de salud ni guard nuevo servido. |
+| Registro y plan | **14 actuales = baseline13 + único `GET /messages/packs/*`, SIN Full**, seis routing keys y cinco índices aditivos ya aplicados. No confundir con antiguo14Full ni repetir índices/restaurar13 bajo API14. HOPEMOB conserva cutoff `2026-09-24T05:36:28Z` y progreso; no limpiar jobs ni resetear consumos/checkpoints/leases. |
+| Bootstrap Cloud Run, lectura 17:45–17:46 UTC | Job exacto `zeler-bootstrap`: 34 ejecuciones examinadas (<100, sin truncación), todas terminales/0 no terminales/GET Meli 0/sin mutación. Snapshot no prueba selector corregido servido ni OAuth abierto. Recibo `pilot-bootstrap-executions-readonly-20261005T174601Z-terminal.json`. |
+| Fix OAuth local | La selección seller-only podía escoger el primero de 12 failed históricos, aun existiendo 1 succeeded y redisparar bootstrap. Ahora sin force busca seller+state in pending/running/succeeded; fallback conserva retry/created_at, force conserva semántica y admisión histórica sigue antes del skip. **29 enfocadas PASS**, incorporadas a la fuente local final; no está servido aún. |
+| Guard físico local validado | Selector opt-in `ZELERDATA_HISTORY_PILOT_GET_BUDGET_SELLERS`, solo `82453304`/default OFF; CAS tardío consumo normal/envíos físicos antes de cada retry, sin apropiarse de autoridad/lease h1. Espera/control 429 antes se convertía en FAILED terminal (retenido, no reanudable); nuevo WAIT con pending/fence/backoff conserva attempt 0–4 durante más de 5 ciclos, mandatory-confirm antes de ACK y NACK ante fallo. Sin headers/estados nuevos, refund ni reset. Expiración wire 5s usa `timedelta` solo en el camino nuevo; no asumir 25s ni tiempos reales del publisher antiguo. **77 nuevas enfocadas y 134 adyacentes PASS**; 1 Mongo deselected solo en ese lote enfocado, baseline cubierto por global. |
+| Calidad general final | Linux **6,070 passed/9 skipped, pytest 396.55s, exit0**, UTC 17:55:42→18:02:21; protected separado **8 passed/2.16s**, cubre ocho guards Mongo; noveno skip Caddy intencional por required_keys ausentes. Ruff/formato/mypy 658/direct-Meli PASS. Snapshot FINAL2 completo: 1,059 paths/11 propios, hashes/modos ejecutables intactos. CAS 14 casos Mongo real/default tz_awareFalse +transporte mock cubre último crédito y mezcla h1; gateway CAS fuente intacta/no repetido en FINAL2. No sumar lotes ni convertir mocks en prueba provider/productiva. |
+| AMQP, única lectura 17:57 UTC | **Gate FAIL `management_http_404`**; primer error detuvo la lectura, sin retries ni mutaciones de colas y con GET Meli 0. El máximo seleccionado era 23 GET, no el número ejecutado. Endpoint fallido no quedó capturado: no afirmar cola ausente, fallo de autenticación ni causa clasificada. TTL/DLX/bindings actuales y publicación confirmada no acreditados; bloquea despliegue del nuevo guard, OAuth y piloto, no el smoke independiente o publicación/build-prep local. No nueva llamada automática. |
+| Próximas imágenes | Tras publicar la fuente exacta validada en main, solo gateway y worker requieren builds nuevos necesarios; API sin delta servido/no build automático. Sin SHA futuro, buildID/digest/procedencia nueva inventados. Despliegue continúa condicionado al gate AMQP y recuperación compatible. |
+
+**Límite del guard normal y gate previo a activar:** contabiliza la ejecución
+global, incluidos retries, pero no atribuye fuente ni fase al tráfico normal.
+No prueba por sí solo el reparto original de 2,000 iniciales/500 de mantenimiento
+ni ≤300 por fuente de mantenimiento para **todos** los GET. Antes de activar,
+acreditar también ese reparto incluyendo tráfico normal; conservar los límites
+originales, sin ampliar presupuesto, inventar atribuciones/fuentes ni activar
+para sustituir la evidencia faltante.
+
+Smoke nativo registrado a 18:05:09 UTC: `ARRAY_CONSTRAIN` sobre
+`ZELERDATA_ORDENES("HOPEMOB","2026-09-01","2026-09-02","todos","","si")`,
+con límites 4,4, produjo 4 filas/16 celdas efectivas en `A1:D4`, no datos pegados de
+API. Camino normal autenticado existente/Mongo-only, recoveryOFF verificado;
+auditoría, contadores y uso del token normales. No prueba cobertura anual ni
+sustituye aceptación de períodos certificados o dos incrementales auténticos.
+Recibo seguro `private-native-sheet-smoke-20261005-safe-receipt.json`, SHA
+`cb2c3ed59a7bd12081a4f251cf6e959a8ef34f41516fae5d83029c8a5c9a7053`.
+Calidad: `zeler-gates-20261005-609b781d04c0/final-quality-receipt.json`, SHA
+`eb912f49babc4855a5ca60859ad298ef03ab227753aa733d2ae49b8624601899`.
+Fallo AMQP retenido en `pilot-amqp-delay-readonly-20261005T175704Z-{stdout,start,end}`;
+una publicación confirmada o tiempos efectivos requieren evidencia aparte.
+
+Autoridad vigente `89357a31` y `625f5903`: fixes mínimos/builds necesarios/rollout
+cerrado seleccionado condicionados a gates; piloto solo HOPEMOB, cinco fuentes,
+**90 minutos/día UTC y 2,500 GET físicos incluyendo tráfico normal y reintentos;
+Full 0**. Rescate/restauración fiel A–F y rollout cerrado del 4 completados se
+preservan. No abrir OAuth ni activar adquisición/otras fórmulas mientras el gate
+AMQP siga bloqueado; no ampliar add-on/publicación o consultas Full.
+
+[Detalle de publicación, controles y siguientes gates](zelerdata-historico-publicacion-piloto-propuesta.md#estado-vigente--preparación-cerrada-del-5-de-octubre-de-2026-utc).
+
 ## Autorización vigente — ampliación del 4 de octubre de 2026 UTC
 
 Rescate B–F y rollout/piloto ya autorizados **condicionados a auditoría, respaldo recuperable, calidad y recuperación compatible**; [alcance canónico y estado](zelerdata-historico-rescate-candidatos-propuesta.md#autorización-vigente--ampliación-del-4-de-octubre-de-2026-utc).
 **Auditoría corregida PASS: 41 miembros, exit 0**, única excepción expresa al no-retry; 2026-10-04 01:18:13.686340→01:18:37.608276 UTC, diez fixtures offline previos verdes. Estructura/conteos/metadata coincidentes; prelude 7.0.31/Tool100.16.0 excluido, sin Mongoqueries ni escrituras originales/Full.
 B/C y **D fiel único autorizado PASS** 02:07:49→02:09:31.183384 UTC: nueva base fiel_v1, datos/metadata/índices/validadores/joins exactos a B, forense/parcial previa preservados; expiraciones intactas. Reader legacy solo repositorio/fail-closed, no HTTP ni cobertura productiva. **E PASS/aceptación02:11:08.854479 UTC**: dos objetos GCS exactos/gen0/readbackSHA/temporaryholdtrue, conservar hasta al menos2026-10-11 mismahora; **F PASS02:12:00.719913 UTC**: solo VM2416531264420713648/disco8831012956187399344 eliminados por identidad/ausencia/evidencia fuera; respaldo/holds preservados. A–F completos, rollout/piloto/Full0; global pendiente. Primer D fallido queda histórico, no borrado ni nuevo corte. Auditoría original exit 1/16 miembros por options omitido conservada histórica, no corrupción probada ni nuevo corte.
-Origen sano tras cleanup02:12:30.632597→02:12:34.210086 UTC: API/gateway/worker/bootstrap200ready/healthy/restarts0/OOMfalse; fuentes runtime idénticas a d78, sin nuevos builds. Controles locales y respaldo/restore fiel completados; despliegue/piloto pendientes. Piloto autorizado: HOPEMOB82453304, cinco fuentes/90 min/2,500 GET físicos, **Full 0**, sin activación global.
-**Calidad local final verde:** full Linux 5,946 passed/9 skipped, 425.84 s, exit 0 (00:54:46.140710→01:01:54.421494 UTC); ocho broker integrados, ocho guards Mongo cubiertos por protected Linux 8 passed/2.08 s y un Caddy intencional. Ruff/formato/mypy verdes/653 fuentes, 1,053 hashes/modos intactos/OOM 0; no sumar lotes ni afirmar aceptación productiva. [Intentos históricos y evidencia](zelerdata-historico-rescate-candidatos-propuesta.md#autorización-vigente--ampliación-del-4-de-octubre-de-2026-utc).
+**Histórico del 4 de octubre, previo al rollout cerrado:** origen sano tras cleanup02:12:30.632597→02:12:34.210086 UTC: API/gateway/worker/bootstrap200ready/healthy/restarts0/OOMfalse; fuentes runtime idénticas a d78, sin nuevos builds. Controles locales y respaldo/restore fiel completados; despliegue/piloto pendientes. Piloto autorizado: HOPEMOB82453304, cinco fuentes/90 min/2,500 GET físicos, **Full 0**, sin activación global.
+**Calidad histórica de esa fuente, no gate de los cambios del 5 de octubre:** full Linux 5,946 passed/9 skipped, 425.84 s, exit 0 (00:54:46.140710→01:01:54.421494 UTC); ocho broker integrados, ocho guards Mongo cubiertos por protected Linux 8 passed/2.08 s y un Caddy intencional. Ruff/formato/mypy verdes/653 fuentes, 1,053 hashes/modos intactos/OOM 0; no sumar lotes ni afirmar aceptación productiva. [Intentos históricos y evidencia](zelerdata-historico-rescate-candidatos-propuesta.md#autorización-vigente--ampliación-del-4-de-octubre-de-2026-utc).
 Limpieza local 01:05:11.228918 UTC: solo seis contenedores/seis volúmenes/perfil propios; perfiles anteriores Stopped/contexto colima preservados. Las restricciones de permisos/mediciones anteriores se conservan históricas; no revocan la ampliación ni acreditan resultados. Selector publicado `dbf84928167c1ea66113d9005440e201eeb1566e`, fuentes runtime d78 sin cambio.
 
-Cierre local original: 2 de octubre de 2026; actualización Full: 3 de octubre UTC.
+**Historial de implementación original y actualización Full (2–4 de octubre):** el estado vigente es la preparación cerrada del 5 de octubre arriba.
 Este informe acredita desarrollo local y pruebas
 aisladas, **no despliegue ni aceptación productiva**, y no convierte una fuente
-pendiente en completa. Fuente actual publicada/verificada:
+pendiente en completa. Fuente publicada/verificada en esa fase histórica:
 **`d78ff4e57915ca5e81a5eb6f1976ec65f111824b`**, tree
 `54d96092dce1358579989c45d973bd6969f1a4d7` idéntico al staged validado, remoto
 confirmado/worktree limpio al publicar. Tres builds nuevos SUCCESS/procedencia
@@ -34,7 +93,7 @@ Referencia de aceptación:
 | --- | --- |
 | **Completado localmente** | Mensaje nuevo de orden antigua sin cambios: recuperación periódica real; tabla de 9,999 órdenes adquiridas + 1 pendiente mediante API autenticada normal; capacidad compartida de dos fuentes no vacías y certificados de 1,000 membresías. |
 | **Bloqueado por evidencia externa concreta** | Mapeo positivo RETIROS Full: no se acredita aún jerarquía retiro/bulto, cantidad originalmente solicitada ni fecha de solicitud. Investigación pública cerrada; descubrimiento posterior y [una reanudación autorizada](zelerdata-full-validacion-acotada.md#4-una-reanudación-preparada--siete-restantes-sin-ejecutar) detenidos por 429: 7/10 GET acumulados sin referencia; tres sin usar no autorizan continuar. |
-| **Pendiente de aceptación productiva bajo goal autorizado** | Controles locales y ensayo real completo normal/deadline/guard pasados. C del goal previo falló antes del dump; nueva C autorizada falló por `unexpected_dump_member`, sin archive/manifest válidos/GCS/restore ni retry/otra ventana. Full pytest sin cierre verde. Sheet privada owner-only creada con0 fórmulas; d78 publicado/tres builds verificados, deploy, OAuth, parcialAPI/nativa y dos cambios reales pendientes. |
+| **Pendiente de aceptación productiva bajo goal autorizado** | Respaldo/restauración fiel A–F y rollout cerrado del 4 completados; nueva calidad local 6070PASS y smoke nativo independiente 4×4PASS, no aceptación del piloto. Gate AMQP management_http_404 bloquea guard nuevo/OAuth/piloto; causa no clasificada. Fuentes locales validadas aún sin publicación/builds nuevos/despliegue; OAuth auténtico, prepare/activate, parcialAPI y dos incrementales reales pendientes. |
 
 [Propuesta de publicación/piloto con respaldo y rollback](zelerdata-historico-publicacion-piloto-propuesta.md).
 Las tres categorías no se intercambian: una fuente bloqueada no impide los datos
@@ -60,7 +119,7 @@ Las tres categorías no se intercambian: una fuente bloqueada no impide los dato
 
 ## Preparación de aceptación del goal: OAuth, API normal y Sheets nativo
 
-**Estado adicional local:** selector mínimo implementado bajo autorización,
+**Preparación histórica del 3 de octubre; no estado vigente:** selector mínimo implementado bajo autorización,
 38 pruebas enfocadas verdes; [propuesta de rescate](zelerdata-historico-rescate-candidatos-propuesta.md)
 con única solicitud de auditoría de solo lectura. Sin nube ni rescate ejecutados;
 objetivo global pendiente.
@@ -68,13 +127,13 @@ objetivo global pendiente.
 **Control general anterior — histórico, sustituido por la ejecución del aviso vigente:** pytest terminó con exit 1, sin resumen completo, por Mongo local `127.0.0.1:27017` sin listener e interrupción (KeyboardInterrupt y KeyError de pytest_stash en teardown). No se inició Mongo ni se preparó otro entorno. Ruff y formato exit 0; mypy exit 0, 653 fuentes. Las 38 pruebas enfocadas y el smoke sintético de 41 miembros son válidos; no acreditan restore real. Los 12 fallos Bash/BSD anteriores son evidencia histórica, no un resultado repetido en esta ejecución.
 Este cierre documental se publica por separado; su identidad se consulta en Git y no cambia el código de los servicios de la fuente d78.
 
-**Estado actualizado:** controles validados/publicados en d78 y tres builds
+**Estado histórico anterior al rescate y rollout del 4 de octubre:** controles validados/publicados en d78 y tres builds
 verificados; sin pull/deploy/piloto. La identidad del cierre documental separado
 se consulta en Git y no cambia código d78. El último C comprobado falló; no ejecutar el piloto antes de cerrar
 respaldo/restore y controles de ejecución/admisión. No adaptar el complemento ni
 repetir la matriz general de 53funciones: usar muestra de las fuentes del goal.
 
-### Controles locales y evidencias actuales; no aceptación productiva
+### Controles locales y evidencias históricas de esa preparación; no aceptación productiva
 
 | Evidencia | Resultado y límite |
 | --- | --- |

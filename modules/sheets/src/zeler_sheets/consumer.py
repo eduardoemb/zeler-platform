@@ -9,7 +9,7 @@ import time
 from collections.abc import Awaitable, Callable, Mapping
 from contextlib import nullcontext, suppress
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Protocol, cast
 
@@ -114,7 +114,7 @@ from zeler_sheets.sheetseller_backfill import (
     run_item_detail_enrichment,
     run_sheetseller_backfill,
 )
-from zeler_sheets.sync_jobs_processor import SyncJobsProcessor
+from zeler_sheets.sync_jobs_processor import SyncJobsProcessor, _pilot_wait_code
 from zeler_sheets.zelerdata_freshness_alarm import (
     FreshnessAlarmReporter,
     evaluate_refresh_alarms,
@@ -545,6 +545,30 @@ class SheetsAmqpConsumerRunner:
                 return
             await self._handler.handle(event)
         except GatewayRateLimitError as exc:
+            if _pilot_wait_code(exc) is not None:
+                # Waiting for a prepared/available pilot execution is not a
+                # failed provider attempt. Keep the original retry count and
+                # identity while the human OAuth/prepare window remains open.
+                _log_message_requeued(
+                    event,
+                    death_count,
+                    exc,
+                    retry_after=exc.retry_after_seconds,
+                    status_code=exc.response.status_code,
+                )
+                try:
+                    await self._publish_retry_delay(
+                        message.body,
+                        queue_name=queue_name,
+                        delay_ms=exc.retry_after_seconds * 1000,
+                        headers=_retry_headers(message, attempt=death_count),
+                        mandatory=True,
+                    )
+                except Exception:  # noqa: BLE001 -- retain the original on unconfirmed/unroutable copy.
+                    await message.nack(requeue=True)
+                    return
+                await message.ack()
+                return
             _log_message_requeued(
                 event,
                 death_count + 1,
@@ -756,8 +780,28 @@ class SheetsAmqpConsumerRunner:
         queue_name: str,
         delay_ms: int,
         headers: dict[str, object],
+        mandatory: bool = False,
     ) -> None:
         if queue_name != SHEETS_CLAIMS_QUEUE:
+            if mandatory:
+                if self._channel is None:
+                    raise RuntimeError("controlled pilot retry requires an active channel")
+                exchange = await self._channel.declare_exchange(
+                    self.config.exchange_name, aio_pika.ExchangeType.TOPIC, durable=True
+                )
+                confirmed = await exchange.publish(
+                    aio_pika.Message(
+                        body=message_body,
+                        delivery_mode=aio_pika.DeliveryMode.PERSISTENT,
+                        expiration=timedelta(milliseconds=delay_ms),
+                        headers=cast(Any, headers),
+                    ),
+                    routing_key=f"{queue_name}.delay",
+                    mandatory=True,
+                )
+                if confirmed is False or confirmed is None:
+                    raise RuntimeError("controlled pilot retry publish was not confirmed")
+                return
             retry_delay_publisher = self._retry_delay_publisher
             if retry_delay_publisher is None:
                 raise RuntimeError("retry publisher requires an active channel")
@@ -780,7 +824,7 @@ class SheetsAmqpConsumerRunner:
             routing_key=retry_queue_name,
             mandatory=True,
         )
-        if confirmed is False:
+        if confirmed is False or (mandatory and confirmed is None):
             raise RuntimeError("claims retry publish was not confirmed")
 
     async def _account_is_paused(self, seller_id: int) -> bool:

@@ -1,6 +1,63 @@
 # ZelerData: propuesta de publicación y piloto acotado
 
-## Estado vigente — rollout cerrado del 4 de octubre de 2026 UTC
+## Estado vigente — preparación cerrada del 5 de octubre de 2026 UTC
+
+**Calidad local final PASS y un smoke nativo independiente PASS; despliegue del
+nuevo guard, OAuth y piloto BLOQUEADOS por topología AMQP aún no acreditada.**
+La fuente ejecutable local está congelada/validada, todavía sin publicar. No hay
+nuevos builds, procedencia o despliegue acreditados en esta fase. La autorización
+permite continuar publicación local y preparación de builds necesarios; no
+convertir esos pasos independientes en permiso para abrir el piloto.
+
+El usuario copió los archivos de Apps Script y configuró su token privado en el
+menú existente de la [hoja de prueba](https://docs.google.com/spreadsheets/d/1IzBEJ6fTs3-juTvWYv0P9dK_0gMpS5jo5y18KlsmitU/edit).
+En `OrdenesSanas!A1` se ejecutó una fórmula existente, limitada a 4×4, con valores
+efectivos nativos y sin errores; otras seis fórmulas permanecen inactivas. Es un
+smoke Mongo-only con recoveryOFF, **no adquisición anual, certificados nuevos,
+OAuth de esta fase ni piloto activo**. Token de UserProperties intacto/no extraído;
+no adaptación/publicación nueva del complemento. Revisión visual no realizada:
+solo metadata de formato, no una aprobación visual.
+
+| Área | Evidencia y límite vigente |
+| --- | --- |
+| Runtime cerrado, observación 17:24–17:25 UTC | Cuatro servicios sanos/readiness OK/restart0/OOMfalse en esa lectura; gateway7054 de b867 y API3f7/worker79f de d78 siguen siendo las imágenes cerradas. HOLD=`true`, seller82453304; history/recovery API+worker/refresh worker=`false`, cohortes originales HOPEMOB. No se afirma una nueva ronda de salud ni guard nuevo servido. |
+| Registro y plan | **14 actuales = baseline13 + único `GET /messages/packs/*`, SIN Full**, seis routing keys y cinco índices aditivos ya aplicados. No confundir con antiguo14Full ni repetir índices/restaurar13 bajo API14. HOPEMOB conserva cutoff `2026-09-24T05:36:28Z` y progreso; no limpiar jobs ni resetear consumos/checkpoints/leases. |
+| Bootstrap Cloud Run, lectura 17:45–17:46 UTC | Job exacto `zeler-bootstrap`: 34 ejecuciones examinadas (<100, sin truncación), todas terminales/0 no terminales/GET Meli 0/sin mutación. Snapshot no prueba selector corregido servido ni OAuth abierto. Recibo `pilot-bootstrap-executions-readonly-20261005T174601Z-terminal.json`. |
+| Fix OAuth local | La selección seller-only podía escoger el primero de 12 failed históricos, aun existiendo 1 succeeded y redisparar bootstrap. Ahora sin force busca seller+state in pending/running/succeeded; fallback conserva retry/created_at, force conserva semántica y admisión histórica sigue antes del skip. **29 enfocadas PASS**, incorporadas a la fuente local final; no está servido aún. |
+| Guard físico local validado | Selector opt-in `ZELERDATA_HISTORY_PILOT_GET_BUDGET_SELLERS`, solo `82453304`/default OFF; CAS tardío consumo normal/envíos físicos antes de cada retry, sin apropiarse de autoridad/lease h1. Espera/control 429 antes se convertía en FAILED terminal (retenido, no reanudable); nuevo WAIT con pending/fence/backoff conserva attempt 0–4 durante más de 5 ciclos, mandatory-confirm antes de ACK y NACK ante fallo. Sin headers/estados nuevos, refund ni reset. Expiración wire 5s usa `timedelta` solo en el camino nuevo; no asumir 25s ni tiempos reales del publisher antiguo. **77 nuevas enfocadas y 134 adyacentes PASS**; 1 Mongo deselected solo en ese lote enfocado, baseline cubierto por global. |
+| Calidad general final | Linux **6,070 passed/9 skipped, pytest 396.55s, exit0**, UTC 17:55:42→18:02:21; protected separado **8 passed/2.16s**, cubre ocho guards Mongo; noveno skip Caddy intencional por required_keys ausentes. Ruff/formato/mypy 658/direct-Meli PASS. Snapshot FINAL2 completo: 1,059 paths/11 propios, hashes/modos ejecutables intactos. CAS 14 casos Mongo real/default tz_awareFalse +transporte mock cubre último crédito y mezcla h1; gateway CAS fuente intacta/no repetido en FINAL2. No sumar lotes ni convertir mocks en prueba provider/productiva. |
+| AMQP, única lectura 17:57 UTC | **Gate FAIL `management_http_404`**; primer error detuvo la lectura, sin retries ni mutaciones de colas y con GET Meli 0. El máximo seleccionado era 23 GET, no el número ejecutado. Endpoint fallido no quedó capturado: no afirmar cola ausente, fallo de autenticación ni causa clasificada. TTL/DLX/bindings actuales y publicación confirmada no acreditados; bloquea despliegue del nuevo guard, OAuth y piloto, no el smoke independiente o publicación/build-prep local. No nueva llamada automática. |
+| Próximas imágenes | Tras publicar la fuente exacta validada en main, solo gateway y worker requieren builds nuevos necesarios; API sin delta servido/no build automático. Sin SHA futuro, buildID/digest/procedencia nueva inventados. Despliegue continúa condicionado al gate AMQP y recuperación compatible. |
+
+**Límite del guard normal y gate previo a activar:** contabiliza la ejecución
+global, incluidos retries, pero no atribuye fuente ni fase al tráfico normal.
+No prueba por sí solo el reparto original de 2,000 iniciales/500 de mantenimiento
+ni ≤300 por fuente de mantenimiento para **todos** los GET. Antes de activar,
+acreditar también ese reparto incluyendo tráfico normal; conservar los límites
+originales, sin ampliar presupuesto, inventar atribuciones/fuentes ni activar
+para sustituir la evidencia faltante.
+
+Smoke nativo registrado a 18:05:09 UTC: `ARRAY_CONSTRAIN` sobre
+`ZELERDATA_ORDENES("HOPEMOB","2026-09-01","2026-09-02","todos","","si")`,
+con límites 4,4, produjo 4 filas/16 celdas efectivas en `A1:D4`, no datos pegados de
+API. Camino normal autenticado existente/Mongo-only, recoveryOFF verificado;
+auditoría, contadores y uso del token normales. No prueba cobertura anual ni
+sustituye aceptación de períodos certificados o dos incrementales auténticos.
+Recibo seguro `private-native-sheet-smoke-20261005-safe-receipt.json`, SHA
+`cb2c3ed59a7bd12081a4f251cf6e959a8ef34f41516fae5d83029c8a5c9a7053`.
+Calidad: `zeler-gates-20261005-609b781d04c0/final-quality-receipt.json`, SHA
+`eb912f49babc4855a5ca60859ad298ef03ab227753aa733d2ae49b8624601899`.
+Fallo AMQP retenido en `pilot-amqp-delay-readonly-20261005T175704Z-{stdout,start,end}`;
+una publicación confirmada o tiempos efectivos requieren evidencia aparte.
+
+Autoridad vigente `89357a31` y `625f5903`: fixes mínimos/builds necesarios/rollout
+cerrado seleccionado condicionados a gates; piloto solo HOPEMOB, cinco fuentes,
+**90 minutos/día UTC y 2,500 GET físicos incluyendo tráfico normal y reintentos;
+Full 0**. Rescate/restauración fiel A–F y rollout cerrado del 4 completados se
+preservan. No abrir OAuth ni activar adquisición/otras fórmulas mientras el gate
+AMQP siga bloqueado; no ampliar add-on/publicación o consultas Full.
+
+## Estado histórico — rollout cerrado del 4 de octubre de 2026 UTC
 
 **Calidad local y respaldo A–F PASS; rollout cerrado aplicado, piloto NO activo.** Cierre del
 rescate publicado previamente en `357e055d5a26dd71f46bd1009c7aa62d6717108a` y remoto
@@ -11,7 +68,7 @@ mixta deliberada: estos últimos no tienen delta de comportamiento servido.
 
 | Gate | Estado medido / siguiente paso |
 | --- | --- |
-| Calidad actual | Linux **5,981 passed/9 skipped/393.71s, exit0**, 02:56:23.139478→03:02:59.525633 UTC; protected separado **8 passed/2.09s**, cubre ocho skips Mongo. Caddy intencional es el noveno. Ruff/formato/mypy655 y direct-Meli PASS; no sumar lotes. |
+| Calidad de esa fuente histórica | Linux **5,981 passed/9 skipped/393.71s, exit0**, 02:56:23.139478→03:02:59.525633 UTC; protected separado **8 passed/2.09s**, cubre ocho skips Mongo. Caddy intencional es el noveno. Ruff/formato/mypy655 y direct-Meli PASS; no sumar lotes. |
 | BSON default real aislado | CLI CAS con `create_runtime_db()`/tz_awareFalse y admisión con constructor Motor gateway PASS; 29 OPS +17 gateway enfocadas. Sin OAuth/session/provider ni acción productiva. [Evidencia/controles](zelerdata-historico-control-piloto.md#5-evidencia-y-siguiente-gate). |
 | Imágenes | Único build gateway `3a393853-4c2a-4044-81fd-050f0fc766a0` SUCCESS/VERIFIED/procedencia b867, digest7054 desplegado; API3f7/worker79f d78 desplegados, sin reconstruir por OPS/docs. [Identidades completas](zelerdata-historico-control-piloto.md#5-evidencia-y-siguiente-gate). |
 | Índices/registro | Cinco índices aditivos aplicados una vez, dos existentes/metadata previa intactos, sin documentwrites/validadores. Registro13 +único `GET /messages/packs/*` =14, seis keys/sin Full; otros seis clientes exactos. |
@@ -40,7 +97,7 @@ antiguo sobre `policy_authority`. Fallo diagnóstico previo clasificado: gateway
 statusready, no readybool; histórico preservado, no incidente productivo demostrado.
 
 Las secciones históricas siguientes conservan evidencia por su fecha; no prueban
-estado actual ni sustituyen este cierre. Autorización sigue condicionada a gates.
+estado actual ni sustituyen la actualización del 5 de octubre. Autorización sigue condicionada a gates.
 
 ## Autorización vigente — ampliación del 4 de octubre de 2026 UTC
 
