@@ -4,10 +4,15 @@
 
 **Calidad local final PASS y un smoke nativo independiente PASS; despliegue del
 nuevo guard, OAuth y piloto BLOQUEADOS por topología AMQP aún no acreditada.**
-La fuente ejecutable local está congelada/validada, todavía sin publicar. No hay
-nuevos builds, procedencia o despliegue acreditados en esta fase. La autorización
-permite continuar publicación local y preparación de builds necesarios; no
-convertir esos pasos independientes en permiso para abrir el piloto.
+Fuente validada **publicada realmente en main/remoto exacto**:
+`cb63260fcf9e628cfc6ca59783e85b86cfa7c9e2`, posterior al commit OAuth
+`e758938268ebe03399f21588da03886685e6ae28`; tree
+`de0eb6fc4e05db0ded5df6c583a8bb83d1c0203c`, 1,059 paths/bytes/modos exactos del
+candidato validado (documentación propia validada por separado). Únicamente dos
+builds reales desde esa fuente, gateway y worker, **SUCCESS/VERIFIED**, repositorio
+conectado/`requestedVerifyOption: VERIFIED` y verificador canónico PASS.
+**Sin pull a VM, despliegue nuevo, OAuth abierto ni piloto.** Publicación/builds no
+equivalen a esos resultados; API3f7 de d78 permanece sin reconstrucción automática.
 
 El usuario copió los archivos de Apps Script y configuró su token privado en el
 menú existente de la [hoja de prueba](https://docs.google.com/spreadsheets/d/1IzBEJ6fTs3-juTvWYv0P9dK_0gMpS5jo5y18KlsmitU/edit).
@@ -27,7 +32,7 @@ solo metadata de formato, no una aprobación visual.
 | Guard físico local validado | Selector opt-in `ZELERDATA_HISTORY_PILOT_GET_BUDGET_SELLERS`, solo `82453304`/default OFF; CAS tardío consumo normal/envíos físicos antes de cada retry, sin apropiarse de autoridad/lease h1. Espera/control 429 antes se convertía en FAILED terminal (retenido, no reanudable); nuevo WAIT con pending/fence/backoff conserva attempt 0–4 durante más de 5 ciclos, mandatory-confirm antes de ACK y NACK ante fallo. Sin headers/estados nuevos, refund ni reset. Expiración wire 5s usa `timedelta` solo en el camino nuevo; no asumir 25s ni tiempos reales del publisher antiguo. **77 nuevas enfocadas y 134 adyacentes PASS**; 1 Mongo deselected solo en ese lote enfocado, baseline cubierto por global. |
 | Calidad general final | Linux **6,070 passed/9 skipped, pytest 396.55s, exit0**, UTC 17:55:42→18:02:21; protected separado **8 passed/2.16s**, cubre ocho guards Mongo; noveno skip Caddy intencional por required_keys ausentes. Ruff/formato/mypy 658/direct-Meli PASS. Snapshot FINAL2 completo: 1,059 paths/11 propios, hashes/modos ejecutables intactos. CAS 14 casos Mongo real/default tz_awareFalse +transporte mock cubre último crédito y mezcla h1; gateway CAS fuente intacta/no repetido en FINAL2. No sumar lotes ni convertir mocks en prueba provider/productiva. |
 | AMQP, única lectura 17:57 UTC | **Gate FAIL `management_http_404`**; primer error detuvo la lectura, sin retries ni mutaciones de colas y con GET Meli 0. El máximo seleccionado era 23 GET, no el número ejecutado. Endpoint fallido no quedó capturado: no afirmar cola ausente, fallo de autenticación ni causa clasificada. TTL/DLX/bindings actuales y publicación confirmada no acreditados; bloquea despliegue del nuevo guard, OAuth y piloto, no el smoke independiente o publicación/build-prep local. No nueva llamada automática. |
-| Próximas imágenes | Tras publicar la fuente exacta validada en main, solo gateway y worker requieren builds nuevos necesarios; API sin delta servido/no build automático. Sin SHA futuro, buildID/digest/procedencia nueva inventados. Despliegue continúa condicionado al gate AMQP y recuperación compatible. |
+| Builds reales verificados; preparación solamente | Gateway `b47372a5-2425-446e-9e7f-9a93b99c9306` y worker `6a1a3451-6b17-4283-a6ca-ba1748377ebb`: SUCCESS/VERIFIED desde cb63260 exacto; referencias inmutables abajo. API3f7/d78 sin nuevo build; tres imágenes runtime cerradas antiguas conservadas. No pull/deploy/OAuth/piloto; gates AMQP y reparto siguen sin cerrar. |
 
 **Límite del guard normal y gate previo a activar:** contabiliza la ejecución
 global, incluidos retries, pero no atribuye fuente ni fase al tráfico normal.
@@ -56,6 +61,46 @@ cerrado seleccionado condicionados a gates; piloto solo HOPEMOB, cinco fuentes,
 Full 0**. Rescate/restauración fiel A–F y rollout cerrado del 4 completados se
 preservan. No abrir OAuth ni activar adquisición/otras fórmulas mientras el gate
 AMQP siga bloqueado; no ampliar add-on/publicación o consultas Full.
+
+### Builds verificados y siguiente runtime propuesto; no ejecutado
+
+Fuente de ambos builds: `cb63260fcf9e628cfc6ca59783e85b86cfa7c9e2`.
+Los tiempos son los físicos de Cloud Build del 5 de octubre UTC; la salida posterior
+del driver por polling de procedencia no representa otro build.
+
+| Servicio | BuildID / intervalo físico UTC | Referencia inmutable verificada |
+| --- | --- | --- |
+| Gateway nuevo, aún no servido | `b47372a5-2425-446e-9e7f-9a93b99c9306`; 18:12:47.801050166→18:13:40.133706 | `us-central1-docker.pkg.dev/zeler-platform-dev/zeler-platform/gateway@sha256:51cc3af99405ee45506de106e0e97422e0f39cffbabbe4a093be2ae719809b32` |
+| Worker nuevo, aún no servido | `6a1a3451-6b17-4283-a6ca-ba1748377ebb`; 18:12:47.721378013→18:14:07.516503 | `us-central1-docker.pkg.dev/zeler-platform-dev/zeler-platform/sheets-worker@sha256:215333453be50a6b55f31cbd0df6e7447952e8f624efdbfbe2732747740ef327` |
+| API conservada, fuente d78 | Sin solicitud nueva | `us-central1-docker.pkg.dev/zeler-platform-dev/zeler-platform/sheets-api@sha256:3f7ac7c066a09f3c1f5e15201853e89e424c71a9bafb7415e3de5eb898f31417` |
+
+Recibos verificados: gateway SHA
+`3925d6b035dee6243ab9180662c354360470d9ba1e113c87c15b873b8ae4bbeb`;
+worker SHA `b3a4e5b250513be86a3f9d78e8ac18c4b5968fbccc7d4e76c5abaed28fac20ad`.
+
+Destino propuesto: `platform-vm`, proyecto `zeler-platform-dev`, zona
+`us-central1-a`. Base actual `/opt/zeler-platform/docker-compose.yml` más override
+cerrado actual `/var/lib/zeler-platform/.history-rollout-20261004T022714Z/interlocked-override-b867b27.yml`,
+SHA `b7b85d5628b5df6580c8c34544db5c4bb0350ec8cb3b04fcd43c5a6234919dd1`.
+Preservar ese archivo; preparar una **versión nueva exclusiva** con las dos
+referencias verificadas y selector guard `82453304`, sin inventar una ruta ya
+creada/aplicada ni afirmar revalidación reciente de VM. Nunca usar base sola ni
+reaplicar índices/registro: 14=baseline13+messages/packs, sin Full.
+
+Después de cerrar gates y revalidar identidad/capacidad/render completo, rollout
+seleccionado **worker primero, gateway después**, manteniendo HOLD=`true`/seller82453304,
+guard solo `82453304` y history/recovery API+worker/refresh workerOFF; API intacta.
+AMQP404 y evidencia del reparto incluyendo tráfico normal siguen bloqueando
+apertura/activación y el despliegue del guard sigue bloqueado por topología
+AMQP no acreditada. Recuperación compatible **forward con los pins nuevos**, HOLD,
+plan pausado y historyOFF, preservando jobs/consumos/cutoff/checkpoints/leases:
+gateway antiguo sin budgetguard **no es rollback después de activar**; tampoco
+worker legacy sobre `policy_authority` ni restauración automática del registro13.
+
+Limpieza **local** final PASS: solo 4 contenedores/6 volúmenes nombrados + 1 configdb y
+perfil propios; perfiles/contexto anteriores y 32 evidencias preservados. No es
+limpieza VM ni otra inspección de producción. Fuente ejecutable/evidencias de
+calidad permanecen sin cambios; esta actualización es exclusivamente documental.
 
 ## Estado histórico — rollout cerrado del 4 de octubre de 2026 UTC
 
