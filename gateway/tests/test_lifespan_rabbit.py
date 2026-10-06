@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any
 
 import aio_pika
+from core.tests.test_history_onboarding_admission import matches, put
 from fastapi.testclient import TestClient
+from pymongo.results import UpdateResult
 
 import zeler_gateway.app as app_module
 from zeler_gateway.oauth import events as oauth_events
@@ -118,29 +121,35 @@ class FakeBootstrapJobsCollection:
 
 
 class FakeHistoryPlansCollection:
+    """Faithful CAS/result/dotted/$max semantics with the client's aware dates."""
+
     def __init__(self) -> None:
         self.documents: dict[str, dict[str, Any]] = {}
 
     async def find_one(self, query: dict[str, Any]) -> dict[str, Any] | None:
         document = self.documents.get(str(query["_id"]))
-        return document if document and document.get("seller_id") == query["seller_id"] else None
+        return copy.deepcopy(document) if document and matches(document, query) else None
 
     async def update_one(
         self, query: dict[str, Any], update: dict[str, Any], *, upsert: bool = False
-    ) -> None:
+    ) -> UpdateResult:
         key = str(query["_id"])
-        if key not in self.documents:
-            if not upsert:
-                return
-            self.documents[key] = {"_id": key, **update.get("$setOnInsert", {})}
-        document = self.documents[key]
-        policy_filter = query.get("policy_version")
-        if isinstance(policy_filter, dict) and policy_filter.get("$exists") is False:
-            if "policy_version" in document:
-                return
-        elif policy_filter is not None and document.get("policy_version") != policy_filter:
-            return
-        document.update(update.get("$set", {}))
+        inserted = key not in self.documents and upsert
+        if inserted:
+            self.documents[key] = {"_id": key, **copy.deepcopy(update.get("$setOnInsert", {}))}
+        document = self.documents.get(key)
+        if document is None or not (inserted or matches(document, query)):
+            return UpdateResult({"n": 0, "nModified": 0}, True)
+        before = copy.deepcopy(document)
+        for path, value in update.get("$set", {}).items():
+            put(document, path, value)
+        for path, value in update.get("$max", {}).items():
+            if path not in document or document[path] < value:
+                put(document, path, value)
+        result: dict[str, Any] = {"n": 1, "nModified": int(document != before)}
+        if inserted:
+            result["upserted"] = key
+        return UpdateResult(result, True)
 
 
 class FakeOAuthDatabase:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import calendar
+import copy
 import re
 from collections.abc import Mapping
 from contextlib import suppress
@@ -26,8 +27,116 @@ def calendar_history_start(cutoff: datetime) -> datetime:
     )
 
 
-async def admit_history_onboarding(db: Any, seller_id: str, *, now: datetime) -> None:
-    """Idempotent intent, preserving legacy progress, certificates and fixed cutoff."""
+def _utc_date(value: Any) -> datetime:
+    if not isinstance(value, datetime):
+        raise ValueError("existing history plan has invalid date")
+    return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
+
+
+def _nonnegative(value: Any) -> None:
+    if type(value) is not int or value < 0:
+        raise ValueError("existing history plan has invalid counter")
+
+
+def _validate_legacy(plan: Mapping[str, Any], cutoff: datetime, now: datetime) -> None:
+    """Unknown credit/lease cannot be converted into a fresh grant by admission."""
+    for field in (
+        "total_budget",
+        "total_consumed",
+        "source_cursor",
+        "execution_attempt_limit",
+        "execution_consumed",
+        "execution_sent",
+        "incremental_consumed",
+    ):
+        if field in plan:
+            _nonnegative(plan[field])
+    for field in ("budget", "incremental_policy", "incremental_source_consumed"):
+        if field in plan and not isinstance(plan[field], Mapping):
+            raise ValueError("existing history plan has invalid budget shape")
+    for entry in plan.get("budget", {}).values():
+        if not isinstance(entry, Mapping):
+            raise ValueError("existing history plan has invalid source budget")
+        for field in ("physical_attempts", "consumed"):
+            if field in entry:
+                _nonnegative(entry[field])
+        if entry.get("consumed", 0) > entry.get("physical_attempts", float("inf")):
+            raise ValueError("existing history plan exceeds source budget")
+    for value in plan.get("incremental_source_consumed", {}).values():
+        _nonnegative(value)
+    for field in ("max_daily_total", "max_daily_source"):
+        if field in plan.get("incremental_policy", {}):
+            _nonnegative(plan["incremental_policy"][field])
+    if plan.get("total_consumed", 0) > plan.get("total_budget", float("inf")):
+        raise ValueError("existing history plan exceeds total budget")
+    for field in ("execution_until", "admitted_at", "last_linked_at", "next_cycle_at"):
+        if field in plan:
+            _utc_date(plan[field])
+    if "eligible" in plan and type(plan["eligible"]) is not bool:
+        raise ValueError("existing history plan has invalid eligibility")
+    if "state" in plan and plan["state"] not in {"active", "paused"}:
+        raise ValueError("existing history plan has invalid state")
+    if "sources" in plan and (
+        not isinstance(plan["sources"], list)
+        or any(source not in SOURCES for source in plan["sources"])
+        or len(plan["sources"]) != len(set(plan["sources"]))
+    ):
+        raise ValueError("existing history plan has invalid sources")
+    if "date_to" in plan and _utc_date(plan["date_to"]) != cutoff:
+        raise ValueError("existing history plan has contradictory cutoff")
+    if (
+        "date_from" in plan
+        and not calendar_history_start(cutoff) <= _utc_date(plan["date_from"]) < cutoff
+    ):
+        raise ValueError("existing history plan has contradictory range")
+    if "authority" in plan and plan["authority"] != {"kind": "account_link_policy"}:
+        raise ValueError("existing history plan has unknown authority")
+    for field in (
+        "execution_charged",
+        "execution_sent_by_source",
+        "execution_work_sent_by_source",
+        "execution_work",
+    ):
+        if field in plan and (not isinstance(plan[field], Mapping) or plan[field]):
+            # A pre-policy receipt cannot be attributed safely by a new account-link seed.
+            raise ValueError("existing history plan has unattributed ledger")
+    if "lease_until" in plan:
+        if _utc_date(plan["lease_until"]) > now:
+            raise ValueError("existing history plan has active lease")
+    elif plan.get("lease_token") or plan.get("lease_owner"):
+        raise ValueError("existing history plan has lease without expiry")
+    if "lease" in plan:
+        lease = plan["lease"]
+        if not isinstance(lease, Mapping) or not lease or set(lease) - {"owner", "token", "until"}:
+            raise ValueError("existing history plan has unknown lease")
+        if "until" not in lease or _utc_date(lease["until"]) > now:
+            raise ValueError("existing history plan has active or invalid lease")
+
+
+def _missing_leaves(
+    existing: Mapping[str, Any], defaults: Mapping[str, Any], prefix: str = ""
+) -> dict[str, Any]:
+    patch: dict[str, Any] = {}
+    for key, value in defaults.items():
+        path = prefix + key
+        if key not in existing:
+            patch[path] = value
+        elif isinstance(value, Mapping):
+            if not isinstance(existing[key], Mapping):
+                raise ValueError("existing history plan has invalid seed shape")
+            patch.update(_missing_leaves(existing[key], value, path + "."))
+    return patch
+
+
+async def admit_history_onboarding(
+    db: Any, seller_id: str, *, now: datetime, pilot_seed: bool = False
+) -> None:
+    """Add missing policy leaves under a snapshot CAS; never refill legacy state.
+
+    Pilot counters are prospective only. Admission does not establish prior
+    physical balances or start an execution window; the scoped operator still
+    requires a verified baseline and a legitimate, never-reset prepare.
+    """
     if not seller_id.isascii() or not seller_id.isdecimal():
         raise ValueError("onboarding requires a canonical numeric seller")
     now = now.astimezone(UTC).replace(microsecond=0)
@@ -41,43 +150,90 @@ async def admit_history_onboarding(db: Any, seller_id: str, *, now: datetime) ->
     existing = await plans.find_one({"_id": seller_id, "seller_id": seller_id})
     if existing is None or not isinstance(existing.get("cutoff"), datetime):
         raise ValueError("existing history plan has invalid identity or cutoff")
-    stored_cutoff = existing["cutoff"]
-    # Default Mongo codecs return naive UTC; normalize only the calculation,
-    # never the persisted cutoff or the caller's shared client configuration.
-    cutoff = (
-        stored_cutoff.replace(tzinfo=UTC)
-        if stored_cutoff.tzinfo is None
-        else stored_cutoff.astimezone(UTC)
-    )
-    # Upgrading a pre-existing planner never replaces its progress or its cutoff.
+    cutoff = _utc_date(existing["cutoff"])
+    if "policy_version" not in existing:
+        _validate_legacy(existing, cutoff, now)
+        initial = dict(zip(SOURCES[:-1], (800, 150, 250, 300, 500), strict=True))
+        if pilot_seed and (
+            "full_withdrawals" in existing.get("sources", [])
+            or existing.get("state", "paused") != "paused"
+        ):
+            raise ValueError("pilot legacy scope must be paused without Full")
+        defaults = {
+            "policy_version": POLICY_VERSION,
+            "authority": {"kind": "account_link_policy"},
+            "state": "paused" if pilot_seed else "active",
+            "eligible": True,
+            "date_from": calendar_history_start(cutoff),
+            "date_to": cutoff,
+            "timezone": "UTC",
+            "sources": list(SOURCES[:-1] if pilot_seed else SOURCES),
+            "budget": {
+                source: {
+                    "physical_attempts": initial.get(source, 0) if pilot_seed else 20000,
+                    "consumed": 0,
+                }
+                for source in SOURCES
+            },
+            "incremental_policy": {
+                "max_daily_total": 500 if pilot_seed else 2000,
+                "max_daily_source": 300 if pilot_seed else 1000,
+            },
+            "total_budget": 2000 if pilot_seed else 100000,
+            "total_consumed": 0,
+            "onboarding_status": "pending",
+            "admitted_at": now,
+            "next_cycle_at": now,
+            "source_cursor": 0,
+            "last_linked_at": now,
+        }
+        patch = _missing_leaves(existing, defaults)
+        candidate = copy.deepcopy(existing)
+        for path, value in patch.items():
+            target = candidate
+            parts = path.split(".")
+            for part in parts[:-1]:
+                target = target[part]
+            target[parts[-1]] = value
+        _validate_legacy(candidate, cutoff, now)
+        result = await plans.update_one(
+            {
+                "_id": seller_id,
+                "seller_id": seller_id,
+                "$expr": {"$eq": ["$$ROOT", {"$literal": existing}]},
+            },
+            {"$set": patch},
+        )
+        if result.matched_count != 1:
+            winner = await plans.find_one({"_id": seller_id, "seller_id": seller_id})
+            if (
+                winner is None
+                or winner.get("policy_version") != POLICY_VERSION
+                or winner.get("cutoff") != existing["cutoff"]
+            ):
+                raise ValueError("history admission snapshot changed")
+            _validate_legacy(winner, cutoff, now)
+            if (
+                winner.get("authority") != defaults["authority"]
+                or _missing_leaves(winner, defaults)
+                or (
+                    pilot_seed
+                    and (
+                        winner.get("state") != "paused"
+                        or "full_withdrawals" in winner.get("sources", [])
+                    )
+                )
+            ):
+                raise ValueError("history admission winner has invalid policy")
+            # A concurrent identical admission may win; never retry the legacy grant.
+            existing = winner
+    elif existing["policy_version"] != POLICY_VERSION:
+        raise ValueError("existing history plan has unknown policy")
+    if "last_linked_at" in existing:
+        _utc_date(existing["last_linked_at"])
     await plans.update_one(
-        {"_id": seller_id, "policy_version": {"$exists": False}},
-        {
-            "$set": {
-                "policy_version": POLICY_VERSION,
-                "authority": {"kind": "account_link_policy"},
-                "state": "active",
-                "eligible": True,
-                "date_from": calendar_history_start(cutoff),
-                "date_to": cutoff,
-                "timezone": "UTC",
-                "sources": list(SOURCES),
-                "budget": {
-                    source: {"physical_attempts": 20000, "consumed": 0} for source in SOURCES
-                },
-                "incremental_policy": {"max_daily_total": 2000, "max_daily_source": 1000},
-                "total_budget": 100000,
-                "total_consumed": 0,
-                "onboarding_status": "pending",
-                "admitted_at": now,
-                "next_cycle_at": now,
-                "source_cursor": 0,
-                "last_linked_at": now,
-            }
-        },
-    )
-    await plans.update_one(
-        {"_id": seller_id, "policy_version": POLICY_VERSION}, {"$set": {"last_linked_at": now}}
+        {"_id": seller_id, "seller_id": seller_id, "policy_version": POLICY_VERSION},
+        {"$max": {"last_linked_at": now}},
     )
 
 

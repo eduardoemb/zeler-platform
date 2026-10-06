@@ -9,6 +9,7 @@ from typing import Any
 import pytest
 from gateway.tests.test_history_admission_controls import BSONHistoryPlans
 from gateway.tests.test_oauth_emit_accounts_linked import FakePublisher
+from pymongo.results import UpdateResult
 
 from zeler_gateway.oauth import events
 
@@ -53,9 +54,9 @@ class TracedPlans(BSONHistoryPlans):
 
     async def update_one(
         self, query: dict[str, Any], update: dict[str, Any], *, upsert: bool = False
-    ) -> None:
+    ) -> UpdateResult:
         self.trace.append("history_admission")
-        await super().update_one(query, update, upsert=upsert)
+        return await super().update_one(query, update, upsert=upsert)
 
 
 class HistoryDb:
@@ -68,7 +69,10 @@ class HistoryDb:
             "cutoff": CUTOFF,
             "progress": {"orders": {"completed": 9}},
             "checkpoints": {"retained": True},
-            "lease": {"owner": "retained-owner", "until": NOW + timedelta(minutes=3)},
+            "lease": {
+                "owner": "retained-owner",
+                "until": NOW + timedelta(minutes=-3 if legacy else 3),
+            },
         }
         if not legacy:
             plan.update(

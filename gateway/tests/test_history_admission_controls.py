@@ -7,7 +7,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
-from bson import BSON
+from core.tests.test_history_onboarding_admission import Plans
 from gateway.tests.test_oauth_emit_accounts_linked import FakeDb, FakePublisher
 
 from zeler_gateway.oauth import events
@@ -84,35 +84,11 @@ async def test_admission_scope_fences_nonpilot_without_disabling_oauth(
     assert len(publisher.messages) == 1
 
 
-class BSONHistoryPlans:
-    """Default gateway Motor codec: persisted BSON dates read as naive UTC."""
+class BSONHistoryPlans(Plans):
+    """Default BSON codec with faithful dotted writes, snapshot CAS and $max."""
 
     def __init__(self, document: dict[str, Any] | None = None) -> None:
-        self.document = BSON(BSON.encode(document)).decode() if document is not None else None
-
-    def matches(self, query: dict[str, Any]) -> bool:
-        if self.document is None:
-            return False
-        return all(
-            (key in self.document) == value["$exists"]
-            if isinstance(value, dict) and "$exists" in value
-            else self.document.get(key) == value
-            for key, value in query.items()
-        )
-
-    async def update_one(
-        self, query: dict[str, Any], update: dict[str, Any], *, upsert: bool = False
-    ) -> None:
-        if self.document is None and upsert:
-            self.document = {**query, **update["$setOnInsert"]}
-        elif self.matches(query):
-            assert self.document is not None
-            self.document.update(update.get("$set", {}))
-        if self.document is not None:
-            self.document = BSON(BSON.encode(self.document)).decode()
-
-    async def find_one(self, query: dict[str, Any]) -> dict[str, Any] | None:
-        return copy.deepcopy(self.document) if self.matches(query) else None
+        super().__init__(document)
 
 
 class BSONHistoryDb(FakeDb):
