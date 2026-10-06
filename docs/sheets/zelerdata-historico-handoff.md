@@ -1,18 +1,19 @@
 # ZelerData: handoff del histórico al vincular
 
-> **Actualización de continuación:** trabajo local reanudado por el usuario,
-> integrado directamente sin SDD y publicado; dos imágenes nuevas VERIFIED.
-> Inspección AMQP ampliada de solo lectura autorizada: STOP en retry1s HTTP404;
-> broker confirma ausencia pasiva y cleanup falló. Reparación retry1s autorizada el
-> 6 de octubre UTC: retry1s declarada/metadata+binding PASS, cleanup fallido
-> conservado. Cuatro buckets restantes declarados compatibles y once GET200 PASS.
-> Entrega real/admisión y rollout/piloto
-> pendientes. Estado nuevo en §9; las secciones
-> previas conservan su evidencia fechada, no deben ejecutarse como pasos nuevos.
+> **Estado vigente:** el goal sigue abierto. Los cinco buckets de reintento
+> están verificados estructuralmente. Dos probes temporales se detuvieron antes
+> de publicar por perfil de policy no coincidente. La observación posterior halló
+> el perfil real y una muestra recibió su nonce a8.03s; el cierreTLS falló,
+> así que no se declara PASS limpio. Todos sus recursos propios se
+> retiraron y los errores de cierre se conservan. La admisión legacy ya tiene
+> una corrección aditiva con TDD y gates finales (6421PASS/19protegidas),
+> todavía sin publicar/build/desplegar.
+> Consultar §10 y el ledger único; no ejecutar nuevamente los pasos históricos.
+
 
 **Punto de entrada único para retomar; objetivo global NO completado.** La pausa
 del cierre inicial del 5 de octubre fue revocada por reanudación expresa; aplicar
-el estado vigente de §9 y del ledger, no estados previos de la cronología.
+el estado vigente de §10 y del ledger, no estados previos de la cronología.
 No avanzar rollout/OAuth/piloto sin gates. Este archivo registra evidencia
 fechada; ninguna observación pasada implica salud actual.
 
@@ -472,3 +473,36 @@ capacidad fresca/identidades/rollback/consumidores/readiness y gates aplicables;
 las dos imágenes VERIFIED source352 existentes siguen listas,no servidas, sin
 rebuildAPI. Piloto conserva condiciones/saldoscanónicos/plazos: no fabricarlo ni
 extenderlo por cambioUTC. La aceptación global permanece pendiente.
+
+
+## 10. Continuación del goal: gates abiertos, sin reinicios
+
+**Snapshot 2026-10-06T02:33:25.426754+00:00. No aceptación global ni nueva ventana piloto.**
+Root continúa con autorización amplia para operaciones necesarias, cada una
+acotada y registrada antes de ejecutarse. No autoriza Full, resets de datos/
+quotas/checkpoints/cutoff/plazos, force OAuth ni eventos de negocio fabricados.
+[Ledger único](zelerdata-historico-paralelo.md) conserva fechas, consumos, hashes,
+propietarios y los STOP; lo siguiente es resumen, no otra autorización.
+
+| Entrega / plano | Evidencia de esta continuación | Gate pendiente |
+| --- | --- | --- |
+| Reintentos AMQP | Una inspección fresca23GET pasó metadata/topología; buckets1s/5s/30s/2m/10m presentes. EventsDLQ315 conservados. | No demuestra entrega, timing, no-loss ni worker WAIT. |
+| Demora temporal | Dos probes policy_invalid antes de publicar. Inspector posteriorPASS encontró exact3caps60s/1000/1GiB sinmessageTTLpolicy. Probe con ese perfil: publishconfirmado, vacío4.03s, nonce/DLXexpired8.03s/ACK/getempty y2DeleteOk; overallSTOPcleanupSSL. | La muestra transporta correctamente, pero no acredita cleanTCP, workerWAIT ni no-loss90min. No repetir para mejorar cierre. |
+| Estado canónico | Auditoría7reads STOP recoverycap1001. Plan legacy único con cutoff2026-09-24T05:36:28Z; registry14 exact/sinFull/6routing. Bootstrap1succeeded/checkpoints7 y12failed preservados. | Lectura posterior7PASS confirmó campos canónicos genuinamenteMISSING y ACTIVErecovery/sync0 solo filtro/momento,8runs+1operation preservados. No saldo histórico2500 ni aislamiento global; faltan controles reales de productores. |
+| Corrección de admisión | Core/Gateway locales: hojas ausentes + whole-doc CAS, leases/ledger corruptos fail closed, relink$max, pilot seed pausado por scope trusted. RED23+RED3;26GREEN,55adyacentes y3Mongo reales PASS. | Freeze905code y gates finales6421PASS/20SKIP+19protegidas/ruff/formato/mypy667/direct/schemaPASS; publicación propia pendiente. Counter nuevo0 es prospectivo, no prueba histórica ni prepare. |
+| Imágenes | Procedencia actual de worker69d9/gateway866d source352 existente PASS;0solicitudes nuevas. Solo Gateway usa la admisión cambiada; AST de helpers worker/API se conserva. | **Nuevo Gateway** desde commit exacto en main tras gates. Worker352 existente se reutiliza; no rebuild API. |
+| Runtime | Capacidad medida34.03GiB raíz/44.20GiB Mongo y0OOM/restarts en la inspección fechada; runtime aún antiguo7054/79f, API3f7. Caddy no tiene healthcheck Docker, no llamarlo unhealthy/healthy por ese campo. | Capacidad/proveniencia/render Compose completo/HOLD/rollback/readiness frescos antes del rollout elegido worker→Gateway; no restart amplio. |
+| Superficies | App autenticada: seller activo, sin iniciar OAuth. Hoja nativa16celdas efectivas/error0 leídas como baseline existente. | Baseline puede ser cache; no adquisición/recalculo fresco ni piloto. OAuth legítimo sin force y aceptación5fuentes/dos cambios reales siguen pendientes. |
+
+Detalles de la corrección: [propuesta legacy](zelerdata-historico-cuotas-legacy-propuesta.md)
+y [informe TDD](zelerdata-historico-cuotas-legacy-implementacion-informe.md).
+Los informes AMQP de [perfil propuesto](zelerdata-historico-amqp-probe-policy-propuesta.md)
+y [variante congelada](zelerdata-historico-amqp-probe-policy-informe.md) son evidencia
+local; el resultado real STOP del ledger manda sobre sus hipótesis.
+
+Próximo orden: observar hechos faltantes sin publicar → integrar entregas y
+congelar todos los escritores → gates finales en Linux aislado → publicar solo
+trabajo propio → Cloud Build Gateway afectado → rollout seleccionado con gates →
+OAuth/prepare/ejecución **solo con baselines y quiescencia acreditados** → aceptación
+original. Si hay identidad/day/deadline previos, se conservan; no nuevo UUID ni
+ventana artificial para superar un gate.

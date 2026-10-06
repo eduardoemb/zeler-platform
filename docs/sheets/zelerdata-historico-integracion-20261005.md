@@ -261,3 +261,34 @@ capacidad fresca/identidades/rollback/consumidores/readiness y gates aplicables;
 las dos imágenes VERIFIED source352 existentes siguen listas,no servidas, sin
 rebuildAPI. Piloto conserva condiciones/saldoscanónicos/plazos: no fabricarlo ni
 extenderlo por cambioUTC. La aceptación global permanece pendiente.
+
+## Continuación del goal — 6 de octubre, UTC
+
+**La aceptación global sigue pendiente.** El estado vigente está en
+[handoff §10](zelerdata-historico-handoff.md#10-continuación-del-goal-gates-abiertos-sin-reinicios)
+y los intentos/consumos únicos en [paralelo](zelerdata-historico-paralelo.md).
+Las secciones previas son snapshots históricos, no instrucciones para repetirlos.
+
+La corrección local nueva se limita a la admisión invocada por Gateway: seed
+aditivo de hojas ausentes, whole-document CAS, validación fail closed de leases/
+ledgers/counters, `last_linked_at` monotónico y piloto pausado seleccionado por
+scope trusted. Preserva cutoff y todos los campos existentes; no inicia ventana
+ni equipara cero prospectivo a saldo físico histórico. RED/GREEN documentados en
+[el informe CUOTAS](zelerdata-historico-cuotas-legacy-implementacion-informe.md).
+Solo Gateway necesita nueva imagen tras validación/publicación; helpers core de
+worker/API mantienen AST, por lo que se usa el worker352 ya VERIFIED y no se
+reconstruye la API.
+
+Los cinco buckets están presentes en metadata fresca; dos probes temporales
+se detuvieron antes de publicar por perfil no coincidente. Dos pares propios
+retirados, errores SSL de cierre conservados. El próximo inspector observa el
+perfil real con publisher/get/ACK imposibles; no cambia policies ni amplía el
+piloto. El audit del plan terminó en cap1001 y reveló legacy: se prepara lectura
+dirigida de presencia activa/forma y cuatro grupos nunca leídos, no otro scan
+del archivo histórico.
+
+Mientras ambos especialistas escriben herramientas privadas no se ejecuta la
+suite general. Root preparó un runner Linux independiente, Mongo rs0 y Rabbit
+locales autenticados, sin credenciales ambientales, solo imágenes por digest y
+volúmenes propios. Tras entrega/cese habrá congelación, gates completos y
+validación documental antes de cualquier publicación/build/rollout nuevo.

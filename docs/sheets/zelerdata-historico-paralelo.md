@@ -969,3 +969,468 @@ Incidente localreportado:GREEN-1.log se redirigió alROOTprivado porerror,
 SHA385a2ef4820a8867ee9edaa7426f06293d9a0a091368e88d2c1758080db6885e/2969B,
 birth6Oct00:43:11UTC;preservado desdeaviso,copia propia. Sinbaseline previo,
 no afirmarbytespreviospreservados.28previousdeliveryhashes/903source intactos.
+
+## Goal de terminación reanudado — 2026-10-06T00:55:29.193559+00:00
+
+Objetivo explícito del usuario: **«termina zelerdata, autorizo todo»**. Goal activo,
+sin presupuesto de tokens. Turno previo clasificado **PROGRESS**: cinco retries
+restaurados/lecturas verificadas y dos unidades documentales publicadas. No equivale
+a aceptación global. Checkoutmain0fc0c952 limpio confirmado al iniciar este goal.
+
+La autoridad amplia permite operaciones necesarias del cierre seleccionado,
+con scopes/límites definidos antes de cada llamada, sin volver a pedir permisos
+condicionales ya vigentes. Mantener Full excluido/registro14/routingkeys6,
+datos/jobs/cutoff/checkpoints/consumos/plazos existentes. No borrar negocio,
+resetear cuotas o bypassOAuth por «todo». Primero inspeccionar saldos/estado
+canónicos; no inventar2500 libres ni renovar un deadline vencido.
+
+### Encargos independientes exactos de auditoría
+
+| Especialista | Único archivo escritor | Encargo / dependencia / estado |
+| --- | --- | --- |
+| CUOTAS | `docs/sheets/zelerdata-historico-cuotas-aceptacion-informe.md` | Auditoría local de requisitos/gates/operador y propuesta de lectura de estado canónico sanitizado. No producción/código/shared. ASIGNADO. |
+| AMQP | `docs/sheets/zelerdata-historico-amqp-runtime-gates-informe.md` | Auditoría local de gates AMQP/rollout/procedimiento acotado para pruebas reales aisladas si faltan. No producción/código/shared. ASIGNADO. |
+
+Ambos: sin nuevos agentes/Git/build/testsuite/otras áreas. Leen contratos/runbooks
+pertinentes, conservan todos los informes/helper/logs anteriores y entregan matriz
+con evidencia directa requerida (no intención o testgreen genérico). Root único
+writer de documentos centrales/config/deps/lockfiles y único operador productivo.
+No editar archivos de especialistas antes de entrega/cese. Cualquier herramienta
+nueva recibirá lista de paths exclusiva después de evaluar estas propuestas.
+
+**Inicio RUNTIME-CAPACITY-HEALTH-1:** 2026-10-06T00:58:12.833323+00:00;nuevo goal broadnecessaryauthorization,
+READONLY preflightdry-run/hashinstalled+oldoverride,dfbytes/inodes/Mongomount/
+RAM/Dockerusage/selected6healthOOMrestartpins.0pull/restart/writes/Mongo/Meli.
+Remote90/caller120+owncleanup5/300total,STOPfirsterror/noretry/nocleanup.
+
+**Resultado RUNTIME-CAPACITY-HEALTH-1:** 2026-10-06T00:58:12.833323+00:00→2026-10-06T00:58:18.377492+00:00,
+5.544s/SSHexit1/STOPporGoTemplate `.State.Health` ausente enCaddy,
+causareconocidaporwhiteliststderr sinvolcarerrores/valores. No IAP/sudoauth/mismatch.
+Preflightsource06edd/oldoverrideb7b85PASS ydryrunPASS/root35688504KiBfree/
+6233537inodes;MongoMountedseparateext4free46349072KiB/3276153inodes.
+RAMtotal4007000KiB/avail907700KiB/swap0;DockerImages12active11size5.57GB,
+containers11allactive,volumes8active3,size38.36KiB. Gateway7054/API3f7/worker79f/
+Mongo43fd Runninghealthy/OOMfalse/restarts0;Caddy/bootstrapaúnsinhealthproof.
+0pull/writes/Mongo/Meli/cleanup/restart. No repetircollectorentero: validarfmt
+offline ylecturaspuntuales2componentes restantes con guardmissingHealth.
+Recibo SHA256 `83a6013efe28541113a5bd9bc1b9e3d7441b2351c9454ed0a9d3ab9ce7c5d368`.
+
+### Prueba de broker aislada seleccionada — 2026-10-06T01:04:22.477426+00:00
+
+Root recibe informe AMQPruntimegates SHA4110eda2...,sin modificaciones del agente.
+Acepta preparar la prueba temporal§4 bajo la autoridad del goal completo; aún
+NO ejecutada. Scope exacto:1conexión no robusta/1canal confirmado;2colas
+server-named exclusivas auto-delete/no durable/x-expires60000 (delayTTL30000,
+DLXdefaultdestino propio),2GETmetadata propios yguards efectivosantespublish;
+1publishmandatory nonce propio≤64B/wireexpiry5000 via timedelta,3basic.getmáximo
+soloDestino(temprano<5s/después8s/trasACK),1ACK soloownnonce+death-expired verificado,
+≤2delete propios if_empty/if_unused.0businesspublish/consume/ACK/colas/DB/Meli/Full.
+Connect8/channel4/decl4each/confirm4/work60/cleanupTOTAL5/hard80exec95remote150/
+caller130+group5/300total;STOPprimererror sinretry,cleanup soloowned. Nombres/body/
+nonce/headers ycredencialesnoimpresos. Cierre TCP yretirada decolas/proofsseparados;
+no fabricar cleanSSL ni handlerWAIT352/globaldurability/noLoss/admission.
+
+Management:27previos+fresh23≤50+ownmetadata2≤52;noreset viejo23desconocidoaparte.
+Nueva lectura fresh23 necesaria tras cambio broker/nuevogoal, mismafuente frozen,
+no retry ciego del404. DosGETprobe no se ejecutan si no pasan gates previos.
+
+**Nueva escritura exclusiva AMQP:**
+
+1. `ROOT/amqp-isolated-delay-probe-20261006/probe.py`
+2. `ROOT/amqp-isolated-delay-probe-20261006/probe_supervisor.py`
+3. `ROOT/amqp-isolated-delay-probe-20261006/test_probe.py`
+4. `docs/sheets/zelerdata-historico-amqp-probe-informe.md`
+
+ROOT privado ya definido. TDD≤24fakes/callbacks/MockTransport,0sockets/Docker/Mongo;
+calidad3/hashbinding/closedreceipts/cese antesRootprod. No agentes/Git/build/shared/
+previousdeliverychanges, no nuevo research innecesario. Root único operador.
+
+**Inicio RUNTIME-COMPONENTS-REST-1:** 2026-10-06T01:06:11.995972+00:00;SOLO2componentes pendientes+Dockerstats,
+old.HealthTemplateRED/newindexGuard2GoFixturesGREEN/noNetwork;no rerunfullcollector.
+Remote60/caller90+cleanup5/300,STOPfirsterror/noretry;0writes/pull/restart/Mongo/Meli.
+
+**Resultado RUNTIME-COMPONENTS-REST-1:** 2026-10-06T01:06:11.995972+00:00→2026-10-06T01:06:18.166707+00:00,
+6.171s/SSHexit0/PASS. Caddy8344running/OOMfalse/restart0 sinDockerhealthcheck
+(healthnull,noinferirhealthyHTTP);bootstrap9806running/healthy/OOMfalse/restart0.
+Memorysnapshotworker899.1MiB/API232MiB/gateway127MiB/Mongo609.9MiB/bootstrap58.2MiB;
+bootstrappicoCPU33.54% observado/noinferircausa.0writes/DB/Meli/pull/restarts.
+HealthmissingKeyrootcausereproducedRED andnewindexguard2fixturesGREENoffline.
+No rerun wholecollector. Recibo SHA256 `e1367f510031483bcb3cbecc652d0d934987f3100c67492e9490f270d0c7d561`.
+
+### Estado canónico antes de OAuth/prepare — asignación nueva 2026-10-06T01:14:45.200766+00:00
+
+Root recibió/cotejó auditoría CUOTAS SHA4e3d7e08...;cese confirmado. Riesgoslegacy/
+bootstrap se discriminan por lectura real, no asumirbugproductivo ni tocarplanes.
+Preparar lectura del informe§2:ONEAPIexecold3f7/DBlegítimaVM,PRIMARY+≤11comandos
+Mongo explícitos filtradosseller82,metadata limitada/proyectada,50sbody+cleanup5/
+hard70exec85remote130caller140+5/300.0writes/Meli/AMQP/usercredentialcopy/logdump.
+Cada aggregate devuelve UNdocumento resumen,batch1,cursorID0;no getMore.
+Limitcap+1 detectatruncation⇒unknown/notglobalabsence;maxTimeMS4000 porlectura.
+No snapshottransaccional afirmar;timestampsporgrupo+derivadetectada⇒STOPgates.
+
+**Escritura exclusiva CUOTAS:**
+
+1. `ROOT/pilot-state-audit-20261006/state_audit.py`
+2. `ROOT/pilot-state-audit-20261006/state_supervisor.py`
+3. `ROOT/pilot-state-audit-20261006/test_state_audit.py`
+4. `docs/sheets/zelerdata-historico-cuotas-estado-informe.md`
+
+ReusarAPI/runtimeDBfactory instaladas/hashbindingtypefix anterior, no cambiarla.
+TDD≤28fakesoffline/resources aislados+calidad3+closedreceipt/hashes/ENTREGADOcese.
+No agentes/prod/Git/build/previoushelper/report/sharededits. Rootprodagentúnico.
+No `execution_enabled` ficticio/inicio=until−90min;missingcounter no0inventado.
+Saldos aritméticos vs ejecutables y day/deadline/identity separar. Sin nuevos UUID,
+manualupgrade/upsert/flagbypass ni reset por goalamplio. Condiciones pendientes.
+
+**Inicio AMQP-GOAL-FRESH-1:** 2026-10-06T01:16:13.029383+00:00;nuevoestado trasrepair+nuevogoalauthority,
+freshwhole23GET10colasmetadata/bindings3exch,mismo target/auth/816e2c45/460cb46d.
+0AMQP/mutations/Meli;4s/60read/64KiB/cleanup5/hard80exec95remote150/root130+5/300.
+Known27prev+≤23=50;noresetoldunknownhistory,pilotadmissionflagsfalse/STOPprimererror.
+
+**Resultado AMQP-GOAL-FRESH-1:** 2026-10-06T01:16:13.029383+00:00→2026-10-06T01:16:18.703122+00:00,
+5.673s/SSHexit0/fresh10colas+bindings3exchTopoPASS,23GETstartedheaderscomplete,
+cleanupnull. Consumers1events/claims,0readyunacked enlive/delay/retries;
+eventsDLQ315ready/71411B preservados,otros0. Capsexactreal3tuple/idleexpiryproofFalse.
+KnownexpandedManagement50started50headers48bodiescompletos;noresetoldunknown.
+0AMQP/mutations/Meli/Full;publish/timing/ingress/noLoss/pilotadmissionFalse.
+Recibo SHA256 `b0bf08e40f62ef8576d87afc06d67d60ebd9a9eef255aedca570be2d9573a273`.
+
+### Asentamiento de metadata antes de prueba temporal
+
+Probe original4hashes/embedding+24fakesRootPASS congelados/no ejecución.
+APIinstalledbasic_get/ack signatures confirmadas,pero ningún guarantee de
+estadísticasHTTP inmediatamente despuésDeclareOk. Documentaciónprimaria
+RabbitMQManagement registra emisiónpor defecto cada5s;eso NO prueba valoractual.
+Preparar variantecon esperaFIJA6s ENTRE DeclareOk yprimerGET,sinprobesprevios,
+reintentos ni relajarcounts/policy/isolationshapes. Counts siguenexigidos0;
+si6sno basta⇒STOPsinpublish,noLoop. Work60/hard80/total300 y2GETunchanged.
+Originales intactos,nofailedproductionprobe ni otra ejecuciónpara pulido.
+
+**Nuevo escritor AMQP,solo4paths:**
+
+1. `ROOT/amqp-isolated-delay-probe-settled-20261006/probe_settled.py`
+2. `ROOT/amqp-isolated-delay-probe-settled-20261006/probe_supervisor.py`
+3. `ROOT/amqp-isolated-delay-probe-settled-20261006/test_probe_settled.py`
+4. `docs/sheets/zelerdata-historico-amqp-probe-asentado-informe.md`
+
+Wrapper fuenteprobe d49d...SHA-bound/ASTclosedoneinsertionfixedawaitsleep6,
+ninguna otra semántica. TDD≤12fakes,quality3,old36hashespreserved,ceseRootbeforeprod.
+No newagents/prod/Git/build/general/shared/othercasechanges. Primera llamada
+productiva aúnNOiniciada;scopeisolated2GET+tempmsgs original se conserva.
+
+**Inicio AMQP-ISOLATED-DELAY-PROBE-1:** 2026-10-06T01:32:05.444174+00:00;scopeRoot1:04/settle1:23/goalnecessaryauthority,
+source2a17d39d/supf14a7f72/4hashbinding+10settled+24originalRootfakesPASS/ownercesó.
+ONEownedconn/channelConfirmTrue,2servernamedexclusiveAutoD60000ms queues/
+DelayTTL30000/ownDestdefaultDLX;settle6→2ownMgmtpolicyguard→ONEownNoncePub
+mandatorywire5000→3ownDestGet/OWNACK1→≤2ownemptyunuseddelete. No business/
+foreignMsgs/colas/data/DB/Meli/Full;knownMgmt50+≤2=52. Work60cleanupTOTAL5/
+hard80exec95remote150caller130+group5/300;STOPprimererror/noretry/fallback.
+
+**Resultado AMQP-ISOLATED-DELAY-PROBE-1:** 2026-10-06T01:32:05.444174+00:00→2026-10-06T01:32:18.373397+00:00,
+12.929s/SSHexit2/policy_invalid/STOPbeforepublish. Conn/channel1/twoownqueues
+declared,1ownmetadataGETcompleted/HTTPresponse1;0pub/get/ACK/business/Meli/Mongo.
+BothownQueueDeleteconfirmed2 (ifempty/unused);resourceDeletionTrue.
+CleanupTCPssl_error/waitererror/localCloseRequestedTrue/remoteFalse,HTTPcleannone.
+No assertionbroker/timingpassed, no secondprobe/retry. KnownMgmt51headers51/
+49completeBodies;originaloldunknownpreserved. Endpointlabels only,qnames/nonce/body
+notprinted. Recibo SHA256 `0fcc63b5390e4ca38473e9e6c4b1335ded843b9adbae5e2fc82afb0a4bd8a705`.
+
+Nextnecessarydiagnosticundergoalauthority isREADONLYactualpolicydefinitions
+forconfiguredvhost, notrecreatingfailedprobe to learnfields. Scope2GET(/policies
+and/operator-policies),≤50entries/body64KiB/request4/read20/cleanup5/total300;
+noAMQP/resource/publish/Meli/DB/policywrite. Recognizeddefinitionnumeric/enums/
+matchclassification only,no policyname/rawpattern/host/vhost/URL/foreignpayload.
+Unknownkeycount/notrawkeyvalues,syntheticamq.gen22charsmatch explicitnotactualQName.
+Known51+≤2=53;notresetoldunusedbudgets.Missingmismatchcausepreserve/STOPnoFallback.
+
+**NewexclusiveAMQPpaths:**
+1. `ROOT/amqp-policy-definitions-20261006/policy_definitions.py`
+2. `ROOT/amqp-policy-definitions-20261006/policy_supervisor.py`
+3. `ROOT/amqp-policy-definitions-20261006/test_policy_definitions.py`
+4. `docs/sheets/zelerdata-historico-amqp-politicas-temporales-informe.md`
+
+TDD≤18fakes/Mock,no actualnetwork/DB/Docker/prod/otheragents;quality3/hashes/cese
+beforeRootcalls. Allpreviousdeliveredprobereaders/reportserrorspreserved.
+
+**Inicio GOAL-IMAGES-PROVENANCE-1:** 2026-10-06T01:39:27.166364+00:00;READONLYtrustedprojectnumber+2artifactprovenance+2builddescribe,
+source352/2existingexactpins,5metadataCLIreads≤25s each,whole180/STOPno retries.
+Localcanonicalverify-image outputsownnewmapfiles;0buildsubmit/download/deploy/VMmutation.
+
+**Resultado GOAL-IMAGES-PROVENANCE-1:** 2026-10-06T01:39:27.166364+00:00→2026-10-06T01:39:35.639209+00:00,
+8.473s/PASS/projectmetadata+2artifact+2build reads5;canonicalverify-image
+source352/connectedrepo/project/subject/build/DigestPASS ambos. Worker69d9/build4a4c14a8,
+gateway866d/build86be40be actualesretrievables;maps/metadata privatepreserved.
+0buildresubmit/download/deploy,oldservedworker79f/gw7054notconfusedwithbuilds.
+Recibo SHA256 `d9e6289a496df0c65da24046ef718bf2b7c15ae779634bf04bcf6de0224aff65`.
+
+### Verificación Mongo real aislada de expresiones — 2026-10-06T01:49:15.477419+00:00
+
+28fakes stateaudit no pruebanservidorMongo. RootcreaperfilColima NUEVO zeler-goal-audit-20261006-470b1fa4
+CPU2/RAM2GiB/disk10GiB/nohostmounts/noSSHagent/noactivate/noSSHconfig/templatefalse,
+paraMongo7oficialúnico/datosSINTÉTICOS/basepropia/loopbackpuertonuevo.
+Perfilesoriginalesdefault+zelerdata-tests-20261002STOPPEDverificados,sepreservan,
+contextactualcolimanosecambia. No Dockerbuild/GCP/prod/Meli/backupimport.
+CleanupsoloIDs/volúmenes/perfilpropiosdespués,noprune. Registropropio privado.
+
+**CUOTAS nueva integración enfocada (sin alterar entrega congelada):**
+
+1. `ROOT/local-state-pipeline-verify-20261006/test_state_pipeline_mongo.py`
+2. `docs/sheets/zelerdata-historico-cuotas-mongo-integracion-informe.md`
+
+WriterCUOTASsoloestos2paths. Recursosdeprueba NUEVOS deRoot,receipt privado con
+identidad/context/socketlocal/puertoloopback/basepropia;no usarenvironmentMONGO_URI
+ni factoryproductiva. Solo datosSINTÉTICOS localMongo7; no importbackup/datareal,
+no GCP/AMQP/HTTPprod/Git/build/suitegeneral. ≤4 escenarios reales: vacíos,
+currentpolicy+bootstrapprotegido+saldoscounters/ledger,legacyprogresspreservado,
+ycaps/deriva/invalidez si útil. Cadaaudit≤11reads/max4s;insertsfixture propiossolo
+basepermitida. Verificarresultado real de las expresiones/cursor0/noGetMore y
+salida noSecretRootMarker. Metadatafakes previosintactos; Sourceauditnoeditorial
+cambios silenciosos. Fallo⇒entregaREDreal+propuestaRoot/norealDBfallback.
+TargetRootreceipt esrequisito antes deejecutar;TDDharness canpreponline sinop.
+Rootúnicocrea/retira contenedor/volúmenes/perfil,Writerreport/hash/cese.
+
+**Inicio AMQP-POLICY-DEFINITIONS-1:** 2026-10-06T01:52:07.568392+00:00;readonlyDIFFERENTscopeafterprobeSTOP,
+266b039a/ea854650/4hashbinding+17RootfakesPASS/ownercesó.2policyListsGETonly
+configuredvhost/50TOTALrules/4req20read64KiB5cleanup/hard45exec60remote120/
+root130+5/300;0AMQP/resources/pub/MeliMongo,writes,noproberetry.51prev+≤2=53.
+
+**Resultado AMQP-POLICY-DEFINITIONS-1:** 2026-10-06T01:52:07.568392+00:00→2026-10-06T01:52:13.638279+00:00,
+6.070s/SSHexit2/policy_regex_unsupported/STOP;ONEpoliciesGET200complete,
+operatorGETNOejecutado (countnull).4policiesenlista,2resumidasantesSTOP.
+Row1queuesprio−10 expires2419200000/matchrepresentativeFalse;row2queuesprio−9
+{expires60000,max-length1000,message-ttl60000}/regexunsupported/matchnull.
+Names/patternsvhostnotprinted/noactualQNameguarantee.0AMQP/mutations/MeliMongo,
+HTTPcleanupnull. KnownMgmt52/52/50completedBodies. No retry/policychange/probe2.
+Recibo SHA256 `15d76e125be3f97c9c36ad30dff7424eba53e37d6b7a0cfe77cd3bd7167b5995`.
+
+ContinuarSOLOendpointoperator-policies queNOseleyó:1GETrestante delscope2.
+No repetir/policies. Diagnosticreader NOevalúa regex:nonevalidatedmatchnull,
+requiresReviewTrue/actualQueueVerifiedFalse/probeAuthorizedFalse;type/definition
+guards y50entries/64KiB/4req/20read/cleanup5 permanecen. Regexmatchnoesnecesario
+para obtenerdefinitions, no relajar un guard de aislamiento/publicación.
+
+**NewexclusiveAMQP4paths:**
+1. `ROOT/amqp-operator-policy-read-20261006/operator_policy.py`
+2. `ROOT/amqp-operator-policy-read-20261006/operator_supervisor.py`
+3. `ROOT/amqp-operator-policy-read-20261006/test_operator_policy.py`
+4. `docs/sheets/zelerdata-historico-amqp-operator-informe.md`
+
+≤10fakes/quality3/hash/cese,no sourcesprevias modificadas ni nueva prod/writes/
+resources/agents/Git/build. Known52+≤1=53, sin reiniciarconsumo.
+
+### RED real de auditoría canónica, corregir antes de prod — 2026-10-06T01:58:11.907708+00:00
+
+Mongo7local real:empty1PASS/nonempty3FAIL. Aggregate retorna exactamente1resumen
+pero cursorIDno0 con batchSize1; readerSTOPcursor_incomplete command2,0getMore/
+mutacionesauditor/leaks,fixtures4fingerprintsintactos. Serverexpresiones no vacías
+restantesaúnNOprobadas. Source4206 congelada NOseopera enproducción.
+Correcciónmínima propuesta:batchSize2 SOLOpara que servidor detecteEOF;pipeline
+sigue≤1docresultado,firstBatch≤1/cursorID0/noGetMoreobligatorios,11cmdlimitsintactos.
+No es ampliación de consultas/budgets ni prueba productiva fallida repetida.
+
+**CUOTAS nueva variante EOF,exact4writerpaths:**
+1. `ROOT/pilot-state-audit-eof-20261006/state_audit_eof.py`
+2. `ROOT/pilot-state-audit-eof-20261006/state_supervisor.py`
+3. `ROOT/pilot-state-audit-eof-20261006/test_state_audit_eof.py`
+4. `docs/sheets/zelerdata-historico-cuotas-estado-eof-informe.md`
+
+Original4delivery4206/6384/91b5/3dec/logs preserved. WrapperSHA-boundAST only
+batchSize1→2 parafixed10aggs;validateexactchange andallguards unchanged. ≤12fakes
+RED/GREENstandardquality3/embedding/cese, then SAME4realcases withinOWNtestDB
+fornonemptyexpressions/fingerprints/11reads/noGetMore. RootAPIprodattempt0.
+No agents/prod/Git/build/shared/deps/oldsourcechanges; no newcasepolish.
+
+**Inicio AMQP-OPERATOR-READ-1:** 2026-10-06T02:02:23.116148+00:00;ONLYremainingunattemptedoperatorGET,
+42df6bde/a0bf7105/4hash+9Rootfakes/ownercesó;1GET/50rules4req20read64KiB
+5cleanup45hard60exec120remote130caller+5/300;0AMQP/resources/pub/MeliMongo.
+No/policiesrepeat/regexeval/probe2;known52+≤1=53,STOPfirsterror.
+
+**Resultado AMQP-OPERATOR-READ-1:** 02:02:23.116148→02:02:27.081163UTC3.965s/SSHexit2.
+Callerusóflagincorrecto --inspect-policy-definitions;supervisorfrozen exige
+--inspect-operator-policy. Stdoutcerrado validadooffline:actionnull/readerStarted
+False/explicit_action_required,0Dockerexec/Management/AMQP/Meli/Mongo.
+Callerendoriginalmarca receiptinvalid ysepreserva;inspecciónofflineacreditaNOOP
+anteCLIguard, no consumo delGETpendiente ni repetición de diagnóstico broker.
+KnownMgmt permanece52;corregir SOLOcallerflag validadoantesúnicooperatorGETreal.
+Nohost/prodtoolsourcechange/nofallback/retryblind.
+
+**Inicio PILOT-CANONICAL-STATE-1:** 2026-10-06T02:05:11.729609+00:00;FIRSTprodauditAFTER4realMongo+12fakeRootPASS,
+3f86e232/3ab036a2/4hashbinding/cese,ONEAPIold3f7execlegitDB PRIMARYhello+
+10metadataaggsfiltered82,11explicitreads/50body4per5cleanup70hard85exec130remote
+140caller+5/300;0getMore/docwrites/reset/MeliAMQP. EOFbatch2response≤1/cursor0.
+No assumedbudget/enable/start;strictcountsunknown/STOPfirsterror/noretry/no OAuthyet.
+
+**Resultado PILOT-CANONICAL-STATE-1:** 2026-10-06T02:05:11.729609+00:00→2026-10-06T02:05:18.660729+00:00,
+6.931s/SSHexit2/known7reads7completed/PRIMARYtrue/API3f7identity+mountclear.
+Account82active/ownerbindingpresent/authmetadatafresh;registry14exact/noFull/6keys.
+PlanIDENTITYmatch butLEGACY policyMatchFalse/authorityFalse/stateunknown;existing
+cutoff2026-09-24T05:36:28Z,scopes/canonicalbudget/counters/executionID/day/until
+ABSENT/unknown⇒NO2500free/executable/cap/windowinference. Plan/ledgersubsetstable.
+Bootstrap13:1succeededcheckpoints7+12failed(11checkpoint6/one0),no leases observed;
+protectedexistingjobproven,currentOAuthselector mustpreserveit. Recoverycap1001
+reached⇒lowerbound>=1001/unknowninventory,observedcompletedlegacyrows notglobal
+absenceofactivejobs. STOPbefore sync/migration/runs/operations groups,no8thread.
+0getMore/auditorwrites/MeliAMQP/OAuth/prepare/reset;cleanupclosed.
+Recibo SHA256 `abd9250388a6b8ff2487944b97aeb22be121905ba038307eb5dde8100afeb4ff`.
+
+Nextlocalwork:corelegacymigration mustpreservecutoff+existingcounter/progress
+before normalOAuth;no manualplanupgrade. Targetedpresencequery forACTIVE recovery
+cancloseisolation withoutredoarchive1001 scan;remaining4unreadgroups separately
+scoped. Broadgoal permitsfixesnecessary,not deletingjobs/borrowingquotas.
+
+### Encargo local por legacy REAL, antes de modificación compartida
+
+CUOTAS únicowriter nuevo `docs/sheets/zelerdata-historico-cuotas-legacy-propuesta.md`.
+Exploración acotada/propuesta sinedicionescore/gateway/test/prod/Git/build/agents:
+admit_history_onboarding legacyupgrade debe preservar cutoffexistente ytodos
+campos/counters/progress/checkpoints/leases,calendarboundsderivados sinrenewwindow,
+idempotenciaconcurrente/CAS/attributionunknownfailclosed. Analizarseed/callback y
+regresiones exactas antes de asignartests/Rootwrites. ActualplanpolicyNone/cutoff
+Sep24 ybootstrapprotected1succeeded probados;12failed checkpointsnopuedenlimpiarse.
+No asumirrecoveryglobalinactive delsubset1001;proponer queryACTIVO dirigida+4unread
+groups(no archivefailedredo) con nuevoslímitesreadonly antes de prepararotrotool.
+Rootreservacore/contracts/model/config/deps/locks/centraldocs;Fieldassignmentnuevo
+se hará solo tras examinarla propuesta, no scopewriter de directorios.
+
+**Inicio AMQP-OPERATOR-READ-2:** 2026-10-06T02:08:15.749980+00:00;CORRECTCLIofflineFakeDispatchPASS,
+priorwrongflagNOOPreaderFalse/0HTTPverified. ONLYunattemptedoperatorGET1;
+source42df/supa0bf/oldbindingintact,known52+1≤53/0AMQPresourcesMeliMongo,
+120remote130caller+5/300STOPnoBrokerRetry/fallback/regexeval/policywrite.
+
+**Resultado AMQP-OPERATOR-READ-2:** 2026-10-06T02:08:15.749980+00:00→2026-10-06T02:08:20.728598+00:00,
+4.978s/SSHexit0/PASS/ONEoperatorGET200complete1/cleanupnull,no/policiesredo.
+ONEoperatorrule queuesprio0:{max-length10000,max-length-bytes1073741824},unknown0;
+regexNOTevaluated/matchnull/requiresReviewTrue/notactualpolicy/probeauthority.
+0AMQP/resources/pub/MeliMongo. KnownMgmt53headers53/51bodiescomplete.
+WrongCLIpreviousoperationNOOPpreservada,notchargedasGET. Recibo SHA256
+`f96bd7590e2b2b5ae552166ae47f5df65e3aba1bd717b3ac42ef2faae93421f6`.
+
+Rootneedsreview minimalSAFEtemporaryprofile distinctfrombusiness28d, based
+actualregularrow2{expires60000,maxlen1000,messageTTL60000}+operator1GiB;
+conditionalEFFECTIVEMETADATAexactmatch beforeANYpublisherstep, no assumepattern
+matchesrealQName fromsynthetic/unevaluatedregex. Neverchangeglobalpolicies or
+relaxTTL/DLX/ownership/zeroCounts/noForeignPayload. Probe1failed0pub/ownremoved
+remainsfailure; anynewattemptrequirescorrectedTDDfrozenlimitedprocedure,notblindrerun.
+AMQP newSOLEwriterproposal `docs/sheets/zelerdata-historico-amqp-probe-policy-propuesta.md`
+(readonlyassessmentnohelpercode/prod/Git/build/agents);Rootreviewscopedbeforeassign.
+
+### Asignación de corrección legacy aditiva (directa, sin SDD)
+
+Propuesta CUOTAS recibida SHA256 `95c399adfad7c9ac374f2efd995bdae82af2dd748b958aee6d664bb778a530d7`; propietario cesó. Se acepta el defecto probado y el seed prospectivo pausado, no saldo histórico inferido. La admisión no iniciará ejecución/day/deadline ni reasignará intentos legacy. Antes de prepare será obligatorio demostrar forma/ledgers y quiescencia; los desconocidos permanecen gate, no crédito.
+
+**Root único escritor compartido:** `core/src/zeler_platform_core/history_onboarding.py`, `gateway/src/zeler_gateway/oauth/events.py`, ajustes de compatibilidad a `gateway/tests/test_history_admission_controls.py`, documentos centrales. Settings/deps/locks/modelos se conservan sin cambio. Cambia solo admisión invocada por Gateway: los helpers usados por worker/API no cambian; reconstruir Gateway, no worker/API por mera inclusión del paquete core.
+
+**CUOTAS único escritor nuevo:**
+1. `core/tests/test_history_onboarding_admission.py` — REDs unitarios del contrato, fake BSON/dotted/CAS fiel, sin recurso externo.
+2. `gateway/tests/test_history_admission_pilot_seed.py` — REDs scope trusted/hold/piloto5 y selector bootstrap conservado.
+3. `docs/sheets/zelerdata-historico-cuotas-legacy-implementacion-informe.md` — RED/GREEN/hashes/cese.
+
+CUOTAS comienza solo RED, entrega fallo antes de que Root cambie comportamiento. Interface propuesta `admit_history_onboarding(..., pilot_seed=False)`; seed piloto pausado cinco fuentes, slots Full0, caps originales, no ejecución. CAS whole-doc, solo hojas ausentes, tipos estrictos, preserve null inválido mediante rechazo; lease live/malformed/CAS drift fail closed. Root acepta cambios antes de liberar GREEN. Nada de producción/Git/build/general suite/agentes/código compartido. Fakes sin recursos pueden correr junto a pruebas fake AMQP; Mongo real y suite quedan a cargo Root tras congelación. No editar estos archivos CUOTAS hasta entrega final y cese.
+
+**Root RED Mongo real de admisión:** nuevo path privado exclusivo Root `ROOT/local-state-pipeline-verify-20261006/test_admission_mongo.py`. Target ya creado/owned, verificado ID/label, solo2volúmenes propios y puerto loopback32768. Tres casos sintéticos RED: argumento pilot_seed inexistente2, last_linked retrocede1. Exclusivamente plans del DB `zeler_goal_state_1c48c4c3c0` se limpian antes/después, sin dropDB/URI ambiente. Código repo todavía sin cambios; log admission-real-red.log preservado. Suitegeneral no ejecutada, CUOTAS sigue solo fakes sin sockets.
+
+### Variante AMQP temporal condicional, no policy global
+
+Propuesta AMQP recibida/cese SHA256 `cc6dfe5ff88f7dcefb1633c1125ae81a21471ac849d6530dca598c6046205f0b`. Root acepta UN candidato exacto de metadata efectiva para CADA cola propia: expires60000/max-length1000/message-ttl60000/max-length-bytes1073741824 (ints estrictos, sin keys extra). Hipótesis segura, no match remoto inferido. Dos metadata GET propios prepublish deberán acreditar el candidato; mismatch STOP0publish sin alternativas/poll. Policies globales/business y todos los guards previos intactos; ambos nombres server-returned solo memoria, nunca log/hash de nombres.
+
+**AMQP único writer cuatro nuevos paths (originales congelados):**
+1. `ROOT/amqp-isolated-delay-probe-temporary-policy-20261006/probe_temporary_policy.py`
+2. `ROOT/amqp-isolated-delay-probe-temporary-policy-20261006/probe_supervisor.py`
+3. `ROOT/amqp-isolated-delay-probe-temporary-policy-20261006/test_probe_temporary_policy.py`
+4. `docs/sheets/zelerdata-historico-amqp-probe-policy-informe.md`
+
+Variante SHA-bound al settled2a17 y su base d49; cambio admisible cerrado únicamente validación/recibo de perfil temporal exacto, jamás reescribir metadata para simularlo. TDD RED nuevo perfil contra original, GREEN exact4, 0pub ante profile parcial/extra/bool/mismatch; regresiones de propiedad/args/TTL/DLX/counts/deadlines/timing/confirm/redacción/cleanup. ≤16fakes + checks enfocados3, hashes/embedding/cese. Fakes propios sin recursos: paralelos con CUOTAS sin sockets. No código compartido/Git/build/prod/general suite/agentes ni callbacks del otro especialista.
+
+Tras entrega Root verifica y, bajo el goal autorizado, operará **un solo intento corregido nuevo**:1ownedconn/1confirmchannel,2owncolas/settle6/2ownmetadataGET (known53+≤2=55),1nonce≤64B mandatory wire5000,3get propio/1ACK exactnonce/expired1,≤2delete propios ifempty/unused. Work60/cleanupTOTAL5/hard80/exec95/remote150/root130+grupo5/total300. STOP primero, sin fallback/poll/globalrepair/business/MeliMongo. Probe1 fallido y sus2delete/SSLclosefailure se preservan; éxito nuevo no borrará esa evidencia ni demostrará workerWAIT/noLoss/admisión.
+
+Root behavioral correction after CUOTAS RED23(19FAIL/4PASS) + realRED3: aditivo/CAS/pilotseed/scope. First unitGREEN23; realMongo3PASS(0.14s), ruff/mypy2PASS. Adjacent focused29 ran 9fail/20pass: old BSON fake returns None/does not support CAS/$max; old TracedPlans drops result and legacy fixture holds live lease (now deliberately blocked by leaseRED). Root additionally sole writer `gateway/tests/test_oauth_relink_bootstrap_history.py` (not assigned specialist), adjusts faithful result and uses expired legacy fixture for successful-upgrade contract; livelease WAIT already independent strictRED. No weaken lease guard/actualproduction lease changes. No general suite while writers active.
+
+CUOTAS legacy entrega final/cese: coretestab5274fe/GWtest10b8aa02/informe971f2170/receiptf0d6dbef. RED23(19fail4pass)+RED3 preservados; GREEN26/0skip/quality3PASS. Root fuentes compartidas congeladas, focused55PASS+real3PASS; no Full/admisión/runtime ni prepare ejecutados. Se recibieron y verificaron hashes antes de reencargo.
+
+### CUOTAS lectura nueva de presencia activa y grupos nunca leídos
+
+Solo nuevos paths exclusivos (originalaudit7reads/cap1001/logs inmutables):
+1. `ROOT/pilot-state-presence-20261006/state_presence.py`
+2. `ROOT/pilot-state-presence-20261006/state_supervisor.py`
+3. `ROOT/pilot-state-presence-20261006/test_state_presence.py`
+4. `ROOT/pilot-state-presence-20261006/test_presence_mongo.py`
+5. `docs/sheets/zelerdata-historico-cuotas-presencia-informe.md`
+
+Contrato de propuesta95c399ad: ONE API viejo3f7exec/runtime factory legítima/PRIMARY;7explicitcommands máximo:hello + plan-shape exactS/cap1, recovery ACTIVE sellerV/state pending,running/limit2, migration exactcohort/cap1, sync ACTIVE sellerV pending,running/limit2, runs sellerV cap100, ops sellerV cap100. Sin account/registry/bootstrap/fullarchive repeat. Se proyecta presencia/tipo cerrado para fields/ledgers/lease/counter conocidos: ausencia genuina ≠ null/malformed. Metadata/números/UTC y agregados server-safe; nada de tokens/nonce/QNames/IDs negocio/checkpoints raw. Cutoff realSep24 conservado. No grant ni saldo2500 ni enable/start.
+
+**Consulta ACTIVE es de presencia, no inventario:** 0 coincide ausencia solo filtro/momento; 1/2 coincide presencia; limit2 genera lowerbound y totalnull, no claim globalquiet ni getMore/página adicional. Puede leer grupos restantes independientes dentro7comandos, pero presencia/malformed mantiene gate de aislamiento false. Runs/ops cap101 y plan/cohort duplicate producen STOP; nunca ignorar truncación de inventario. Enum unknown no se transforma en0/quiet.
+
+TDD≤12fakes luego SAME4casos sintéticos nuevos reales con Mongo7owned anterior DBexact/loopback32768 tras identitylabelcheckRoot; fixturewrites SOLO seis colecciones anteriores, delete_many antes/después/NOdropDB/sin ambienteMONGO_URI. 1001completed+2ACTIVE fixture demuestra filtro dirigido sin redoarchivo; null/ledgerunknown/cap/readerror/foreignseller/redacción. Otros3collections/fingerprints sintéticos intactos (nueve físicas previas, plan/ledger duplicaban una). Root no usa Mongo mientras CUOTAS corre estos casos; AMQP solo fakes sin sockets. Writer no crea/borra contenedores ni hace producción/Git/build/shared/Gateway/core edits/agentes/suitegeneral. Quality focused/hashes/embedding/defaultNOOP/cese obligatorios; Root ejecuta producción después de independiente verificación.
+
+Deadline50body+cleanup5/hard70/exec85/remote130/caller140+5/total300;cadaaggmaxTimeMS4000/batch2/único resumen≤1/cursor0/noGetMore/64KiBoutput. O_EXCLdirs/newpaths; defaultNOOP, flagexact nueva documental, bindingAPIimage/identity/mounts/host>=3.9/currenttoolPy3.11. Preservar fuentes anteriores EOF3f86/sup3ab0 y todos failed/oprecibos.
+
+### Preparación local de controles finales (sin ejecutar suite aún)
+
+2026-10-06T02:24:16.842991+00:00 Root nueva infraestructura Colima `zeler-goal-gates-0e221d445eed`,4GiB/2CPU/20GiB/nohostmounts/activateFalse/SSHoff. Contextcolima y perfilespreviosStopped se conservan; target auditMongo separado intacto en uso exclusivo CUOTAS. Snapshot candidato1097paths/alltracked+14ownnew, tarSHA830c34832a9abd09b231b5f600b0186be30dca2d16cc59490c9bb0454968dc54, código Root congelado. Helpers privados siguen escritura; **no suite general**. Preparación únicamente3imágenes públicas por digest ya usados,≥5GiB measured before cada pull y after,1rs0+1Rabbit+runnerLinux--init/Node/git/Python3, ownedvolumes explícitos sin seedsprod. uv sync--frozen--all-packages en runner aislado permitido, no Dockerbuild/localconfig/lockschange. Snapshot read-only: documentos adicionales posteriores validarán por separado; los bytes/modos de todo código probado se conservarán hasta publicación.
+
+**Inicio AMQP-ISOLATED-DELAY-PROBE-2:** 2026-10-06T02:27:59.857658+00:00; cese/hash4/embedding/AST3.9/14RootfakesPASS. SOLO intento nuevo corregido con perfiltemporal exact4 real enAMBASmetadata antespub; source1a96/supc768/CLI--probe-isolated-delay. Known53+≤2=55;1ownedconn/1channel/2exclusivecolas/settle6/1nonce≤64B/expiry5000/3get/1ACK/≤2ownDeleteifemptyunused. Work60/cleanupTOTAL5/hard80/exec95/remote150/root130+grupo5/total300; STOPfirst/no fallback/poll/policychange/business/MeliMongo; originalprobe1SSLfailure0pub/delete2 preservado.
+
+**Resultado AMQP-ISOLATED-DELAY-PROBE-2:** 2026-10-06T02:27:59.857658+00:00→2026-10-06T02:28:14.688578+00:00;14.831s/SSHexit2/reciboVALIDADO/policy_invalid antesANYpublish. ONEownmetadataGET200/completo;known54headers54/bodies52, no55. Source1a96/supc768 no cambian. 0pub/get/ACK/MeliMongo/business;2ownqueues declaradas y2ownDeleteOk confirmadas/resourceDeletionTrue. TCPcleanupssl_error/waitererror/localcloseTrue/remoteFalse/HTTPcleanupnull, conservado. Perfilactual NO observado: fallo local incluye caps/flags de policy, no acredita qué campo discrepó ni rechazo remoto. BrokerpassedFalse/timingnull/NO retry. ReciboSHA46a27f1dea631417a8fbff25b4649949ab7dc951a1aff5296539342812eafe14.
+
+**Siguiente diagnóstico distinto propuesto:** observar SOLO perfiltemporal efectivo real de owncolas, sin publisher/get/ACK y sin intentar pasar un perfil supuesto. Los dos STOP prueban que no se debe ampliar otra whitelist hipotética ni cambiar policyglobal. Reader próximo emitirá exclusivamente cuatro claves operativas conocidas con int/null/presence/type y unknownkeycount(sin nombres), flags policy/operator bool, identity/args/count0 y siempre Reviewed/PublishAuthorizedFalse. No inferencia desde patterns/listados; scope Root previo/TDD/entrega/cese antes1operación. Nada de negocio/otrosqueues/MeliMongo ni repetición de toolfallido.
+
+**AMQP nueva asignación observacional cuatro paths:**
+1. `ROOT/amqp-temporary-profile-observation-20261006/profile_observation.py`
+2. `ROOT/amqp-temporary-profile-observation-20261006/profile_supervisor.py`
+3. `ROOT/amqp-temporary-profile-observation-20261006/test_profile_observation.py`
+4. `docs/sheets/zelerdata-historico-amqp-perfil-observado-informe.md`
+
+Modo nuevo `--inspect-isolated-temporary-policy`, defaultNOOP. No reutilizar main del probe para publicar; body observacional cerrado 1ownedconn/channel/2ownqueues mismos argsprivate/settle6/2ownmetadataGET/2ownemptyunusedDelete; **publish/get/ACK máximos0**. Identity/type/flags/args/count0 previos siguen obligatorios; solo definición de policy se OBSERVA, no se acepta para publisher ni se reescribe metadata. Cada rol cerrado destino/delay: flags bool de policy/operator, para cada4knownkeys presence/type enum/int≥0≤signed63 o null; unknownkeycount sin keys/values/URLs/pattern/QName/rawbody/hash. Si metadata identidad/args/count/type corrupción STOP; caps desconocidos tipan unknown y gateReviewed/PublishAuthorizedFalse siempre, no global/noLoss/admission. La muestra real será evidencia para revisar, no permiso automático de otro probe.
+
+TDD≤12fakes RED/GREEN observado vsperfilinferido, mismatched/extra/nonstrings/bool/canary redacted/zero pubsgetsacks/timeouts/ownedcleanup/defaultwrongNOOP; focusedquality3/hashembedding/AST3.9/preservar todos anteriores52+actualfail1/2/cese. Supervisor valida closed receipt y máximos0, no callbacks publisher siquiera. Solo Root opera 1diagnóstico trasverificación: known54+≤2=56, work30/cleanupTOTAL5/hard50/exec65/remote100/root110+grupo5/total300,4sHTTP64KiB; sin nueva lista/policies/foreignqueues/globalpolicywrites/prodGatepass. No builds/Git/shared/suite/general/agentes. Esta es lectura de hecho faltante distinta, no repetición de publicación fallida ni continuación automática hacia tercerprobe.
+
+**Inicio AMQP-TEMPORARY-PROFILE-OBS-1:** 2026-10-06T02:41:07.137056+00:00;AMQPcesó/4hashes10Rootfakes/embedding/AST3.9PASS. Reader08f2/sup9503/flag--inspect-isolated-temporary-policy; distinto inspectorHECHOS/noPublisherGraph, hardmaxpublish/get/ACK0,1conn2owncolas/settle6/2ownmetadataGET/2ownifemptyunusedDelete. Known54+≤2=56;observacionesknown4captypes/números/presence/unknownkeyCOUNTonly, policyNone/empty→Falselegítimo no aprobación. Work30cleanupTOTAL5hard50exec65remote100root110+grupo5total300,STOPfirst/no fallback/repeatprobe/list/globalpolicy/foreign/MeliMongo;Reviewed/PublishAuth/noLoss/admissionFalse siempre.
+
+**Resultado AMQP-TEMPORARY-PROFILE-OBS-1:** 2026-10-06T02:41:07.137056+00:00→2026-10-06T02:41:20.321950+00:00;13.184s/SSH0/VALIDATEDobservation_complete/2ownGET200completos. Known56/56headers/54bodies;2ownDeleteOk/resourceDeletionTrue/cleanupfamiliesnull/waitercompleted/localcloseTrue/remoteFalse(no remoteattestation). 0pub/get/ACK/business/MeliMongo. AMBASmetadataidentity/args/count0PASS,policy/operatorpresentTrue/string, definitionobject/unknownkeys0; EXACTactual3keys {expires:60000,max-length:1000,max-length-bytes:1073741824}. **message-ttl genuinamente MISSING**, no null ni60000. Hipótesis4 previa eraincorrecta; no inferir regla/pattern que lo causó. Reviewed/PublishAuth/broker/noLoss/admissionFalse. ReciboSHAe17922ff1c1679457dda71e7db74683ece1539dbb140d52fc7c3f157b0c6c234. No diag repetido para mejorar cierre: lectura distinta del hecho antes faltante.
+
+### AMQP: una prueba corregida basada en perfil realmente observado
+
+Root revisa recibo e17922ff y aprueba un candidato **medido**, no otra hipótesis:
+expires60000/max-length1000/max-length-bytes1073741824, EXACT3keys intestrictos;
+message-ttl ausente y ambasflags policy/operatorTrue, AMBAScolas previas alpub.
+DelayargumentTTL30000 ywireexpiry5000 siguenmínimo5s; Destination sinTTLpolicy es
+aceptable solo para1nonce≤64B,limit1000/1GiB,ownACK+conditionaldelete yexclusive
+60sinactivity como respaldo. No confirma pérdida/durabilidad/worker ni autoriza
+otra operación si falla. Global/businesspolicies untouched;2failurespreserved.
+
+**AMQP único writer cuatro paths nuevos, original1a96/c768 congelado:**
+1. `ROOT/amqp-isolated-delay-probe-observed-policy-20261006/probe_observed_policy.py`
+2. `ROOT/amqp-isolated-delay-probe-observed-policy-20261006/probe_supervisor.py`
+3. `ROOT/amqp-isolated-delay-probe-observed-policy-20261006/test_probe_observed_policy.py`
+4. `docs/sheets/zelerdata-historico-amqp-probe-perfil-real-informe.md`
+
+SHA-bound wrapper modifica SOLO literalCAPS4→3 ysupervisorbinding/CAPS3; bytecode
+metadata/body/clock/expiry/cleanup/ownership/typedconfirm exactos al1a96/d49/settled.
+≤6fakes RED actual3rechazado por1a96, GREEN exact3/old4/business/unknown/bool/flags
+antes0pub; mantiene regresiones genéricas por identidadbytecode. Quality3/AST3.9/
+embedding/hashes/cese. Noprod/Git/build/shared/oldedits/agents/suitegeneral.
+Root operará ONE nuevo intento solo tras entrega/independentchecks:known56+≤2=58,
+1ownedconn2q/settle6/1noncepub/3get/1ACK/2delete;work60cleanup5hard80exec95remote150
+root130+grupo5/300. STOPfirst/no blindretry/close-improvement. Este3profile fue
+observado realmente en ambascolas; no copiar policieslist ni patrón para inferirlo.
+Suitegeneral permanece detenida hasta cese deestewriter; código repo Root congelado.
+
+**Inicio PILOT-ACTIVE-PRESENCE-1:** 2026-10-06T02:47:59.100516+00:00;CUOTAScesó/5hashes/embedding/AST3.9/12fakes+4realMongoRoot16PASS0.90s. Reader8a776/sup062e/flag--inspect-pilot-state-presence exact;ONEAPIold3f7approvedVMVPC legitimateDBfactory PRIMARY+6aggs=7explicitreads. Shapeplan/missing≠null;ACTIVE recovery/sync limit2presencenoarchive; migrationcap1/runsops100. No account/registry/bootstrap reread/reset/leasechange/MeliAMQP/getMore. batch2firstBatch≤1/cursor0/maxTimeMS4000/64KiB;50work5cleanup70hard85exec130remote140caller+grupo5/300;STOPfirstnoRetry/fallback/zerosaldos/startinference.
+
+**Congelación conjunta 2026-10-06T02:52:23.617017+00:00:** AMQPúltimaentregac4ac/7635/d7e3/00cb +6RootfakesPASS;CUOTAS8a77/062e/4e4a/85a3/af13 +16Rootfakes+MongoPASS/cese. Ambosnotificados:sinmodificaciones/pruebas. Root3realCASposttyping3PASS0.18s. Todos905codepaths(bytes+modos)idénticosalsnapshot1097tar830c3483;Docsposterioresindependientes. Suitegeneral ahoraLIBERADA soloRoot/ownLinux(rs0+Rabbitfresh)/sincredencialesambiente; operacionesVM readonly/acotadas usanDB/puertos distintos.
+
+**Resultado PILOT-ACTIVE-PRESENCE-1:** 2026-10-06T02:47:59.100516+00:00→2026-10-06T02:48:05.440791+00:00;6.340s/SSH0/VALIDATEDPASS/PRIMARYtrue/7readsstarted=completed/cleanupclosed/0docwrites/getMore/MeliAMQP. Plan1canonicalidentity/cutoffSep24match; TODOS fields policy/authority/state/eligible/sources/budget/counters/day/deadline/executionID/ledgers/lease/bounds genuinamenteMISSING(validtypes), noNULL/invalid;progressOBJECT4 preservado. No2500histórico libre/arranque. RecoveryACTIVE0 ysyncACTIVE0 solo filtro pending/running sellerV/momento, totalglobalnull/isolationFalse. Cohort1 cutoff2026-08-11T04:01:19.890UTC. Runs8(7failed+1completed), todoslegacy/no liveleases; completadoobservadoJune1→11 nootra cobertura inferida. Operation1succeeded/legacy/coverage_modeactive/epoch0/fence3836/leaseexpired2026-10-06T00:39:41.066UTC; preserveallproofs/jobs. Otros4gruposnuncaantesleídosahoracubiertos, noarchive1001repeat. ReciboSHAa235be5c6c7fd2f2f18c7a30517df473a65d8dfec482a71c78e36747f0328ecb. Quiescencia aúnrequiere flags reales/producer gates, noestablishfromabsencealone.
+
+**Inicio AMQP-ISOLATED-DELAY-PROBE-3-ACTUAL:** 2026-10-06T02:56:24.074269+00:00;AMQPcesó/4hashes6Rootfakes/embedding/AST3.9PASS;SOURCEc4ac/sup7635/CLI--probe-isolated-delay. ONLYactualobserved3profile expires60000/maxlen1000/maxbytes1GiB+bothflagsTrue, 2realOWNmetadata exactprepub; noassumedTTLpolicy/newwhitelist/globalchanges. Known56+≤2=58;1ownedconn2q/settle6/1nonce≤64B mandatorywire5000/3get/1ACK/≤2ifemptyunusedDelete. Work60cleanupTOTAL5hard80exec95remote150root130+grupo5/300;STOPfirst/noRetry/closeimprovement/MeliMongo/business. Localfullsuite correENOTRO VM/DB/Rabbit; amboswriterscongelados ytodos905repocodehashesidénticos.
+
+**Resultado AMQP-ISOLATED-DELAY-PROBE-3-ACTUAL:** 2026-10-06T02:56:24.074269+00:00→2026-10-06T02:56:45.178524+00:00;21.104s/SSH2/VALIDATEDcleanup_failed. **Broker sample PASS**:AMBASmetadata exact3profile/identityargs/count0,2ownGET200complete;1noncepublishtypedconfirmed,earlygetempty4.034744s<5,lateownnonce8.032437s≤10/x-deathexpired1/origexpiry5000,1localACK+get3empty. Sourcec4ac/sup7635 intactos;known58/58headers/56bodies. 2ownDeleteOk0msgs/resourceDeletionTrue; cleanupTLSssl_error/waitererror/localcloseTrue/remoteFalse/HTTPcleanupnull, preservado. TransientDockerexec/SSHterminó, NO afirmar cierre remoto ni toolcleanPASS. 0business/MeliMongo; noLoss/ingress/durability/workerpath/admissionFalse. ReciboSHA975c2d7d0b66e5f3e0cc200b10fe650819d7fb524c8941f0a54a99d86dff3bcd. **No otroprobe para mejorarclose**. Resultado prueba únicamentela muestra de transporte enpar temporal, no rutaWAITworker niaceptación/piloto. Controles/localbuildpueden continuar independientes; evaluación de rolloutcerrado deberá nombrar evidencia aceptada y límites/errores, nunca convertirEXIT2 enPASSlimpio.
+
+**FULL-1 STOP local:** Linux full405.033s/exit1,1FAILED+6420PASS/20SKIP; snapshot intacto. Único fallo `gateway/tests/test_lifespan_rabbit.py::test_successful_oauth_callback_publishes_through_lifespan_adapter`: FakeHistoryPlansCollection devuelveNone y no representa whole-doc CAS/$max/dottedwrites (matched_countAttributeError); el comportamiento real pasó3Mongo. No rebajar CAS ni excluir prueba. Root nuevo único writer exacto `gateway/tests/test_lifespan_rabbit.py`, corrección mecánica del fake con UpdateResult/snapshotdeepcopy/matches/dotted/max fiel y BSONfechasaware preservadas; Root TDDRED queda en logfull, focusedGREEN antes nueva congelación/snapshot y rerun controles. Protected no inició por STOP; ambos especialistas permanecen congelados. Sin Git/build/deploy/OAuth/prepare/piloto.
+
+**Round2 recongelada 2026-10-06T03:09:50.289174+00:00:** Onlytest_lifespan_rabbit.py codechanged vsRound1; fakefaithfulsnapshots/$max/dotted/UpdateResult preservesaware dates, focused4PASS2.42s/mypy1PASS. Runtimecode/no deps/settings changes. Sourceall1101paths tarSHA40f2645a36aafc8e2acae0c47bdd22489f99773249110b6475f905f4e8b2bb01; all905codebytes/modes congelados; mismainfraownrs0/Rabbit/runnerLinux ycredencialesaisladas;SourceOriginal830/tar/failed1logs inmutables. Rerun gates exigidos yFULL tras corrección, protected luego. Sin otroswriters/build/prodmutation/OAuth/prepare.
+
+**Cleanup local propio:** después de CUOTAScese/Root16+3Mongo PASS, Root verificó label/id/2volúmenes y daemonexclusivo; stop15/rmcontainer270ce/rmexact2volúmenes (no prune)/delete SOLOprofilezeler-goal-audit-20261006-470b1fa4. Contextcolima y perfilesoriginalesStopped preservados. Log/recibos/fixtures/hashes en cache persistidos; ningún datos/VM/volumen productivo o ajeno. Profilegates4GiB0e221d445eed sigue activo y separado.
+
+**OAuth frontend, solo lectura CUOTAS:** ../zeler-app existente;7archivosrelevantes (informe mensaje, sinedición). Accounts genera URLOAuthnormal desde session.user.id sinforce pero CTArelink solo revoked/invalid_grant; cuenta824activa sinbotón. /sheets/config gestiona tokens delcomplemento, noML OAuth; force-dynamic noforceBootstrap. No revocar/token-copy/callbackdirecto. Código local no pruebaUIactual; Root inspeccionará flujo legítimo contextual antes de OAuth, después gateway/pins/gates. No frontendbuild/deploy/edit ni preguntas nuevas de permisos condicionales por esta lectura.
+
+**Gates finales Round2 PASS 2026-10-06T03:20:53.107965+00:00:** Full6421PASS/20SKIP405.84spytest(408.201envoltorio), protected19PASS4.64s(5.855envoltorio), focused55PASS0.41s;ruff/format/mypy667/direct-Meli/schemaPASS. All8exit0 yrecibos snapshotunchangedTrue; 905codebytes+modosactualesidénticosalsnapshot1101tar40f2645a36aafc8e2acae0c47bdd22489f99773249110b6475f905f4e8b2bb01. Full1failed1retained;no exclusión de prueba ni SourceRuntimechangeadicional. Mongo PRIMARYrs0/namedDBfresh/Rabbitfresh/NodegitPython3/subreaperLinux/sourceRO/ambientsecretsnone. Docsex posteriorescoherenciavalida independiente; Rootpublicaciónsoloownunitsiguiente yCloudBuildONLYGateway fromexactmain. Worker35269d9reusable/API3f7unchanged ASTproof; No deploy/OAuth/prepare/pilotoaún.
