@@ -301,6 +301,10 @@ def _resume(
     runtime_verified: bool,
     extension_raw: bytes | None = None,
     extension_pin: str | None = None,
+    original_paused: bytes | None = None,
+    original_pause_pin: str | None = None,
+    consumption_raw: bytes | None = None,
+    consumption_pin: str | None = None,
 ) -> dict[str, Any]:
     """Resume only the original fresh pilot; no new grant, range or clock.
 
@@ -319,7 +323,10 @@ def _resume(
         or re.fullmatch("[a-f0-9]{32}", execution) is None
         or original.get("execution_id") != execution
         or stopped.get("execution_id") != execution
-        or (extension_raw is None and stopped.get("resulting_plan_sha256") != _plan_hash(plan))
+        or (
+            (extension_raw is None or original_paused is not None)
+            and stopped.get("resulting_plan_sha256") != _plan_hash(plan)
+        )
         or plan.get("state") != "paused"
         or plan.get("eligible") is not True
         or plan.get("sources") != list(INITIAL)
@@ -334,7 +341,21 @@ def _resume(
         started + timedelta(minutes=90),
         started.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1),
     )
-    if extension_raw is not None:
+    if extension_raw is not None and original_paused is not None:
+        end = _extended_repause_end(
+            plan,
+            now,
+            started,
+            stopped,
+            prepare_pin,
+            original_paused,
+            original_pause_pin,
+            extension_raw,
+            extension_pin,
+            consumption_raw,
+            consumption_pin,
+        )
+    elif extension_raw is not None:
         end = _extended_resume_end(
             plan, now, started, stopped, prepare_pin, pause_pin, extension_raw, extension_pin
         )
@@ -538,6 +559,117 @@ def _extended_resume_end(
     return approved
 
 
+def _extended_repause_end(
+    plan: Mapping[str, Any],
+    now: datetime,
+    started: datetime,
+    stopped: Mapping[str, Any],
+    prepare_pin: str | None,
+    original_paused: bytes | None,
+    original_pause_pin: str | None,
+    extension_raw: bytes | None,
+    extension_pin: str | None,
+    consumption_raw: bytes | None,
+    consumption_pin: str | None,
+) -> datetime:
+    origin = _pinned_receipt(original_paused, original_pause_pin, "pause")
+    extension = _pinned_receipt(extension_raw, extension_pin, "extend-paused")
+    execution = plan.get("execution_id")
+    if (
+        origin.get("execution_id") != execution
+        or extension.get("execution_id") != execution
+        or extension.get("state") != "paused"
+        or extension.get("previous_plan_sha256") != origin.get("resulting_plan_sha256")
+        or extension.get("prepared_receipt_sha256") != prepare_pin
+        or extension.get("paused_receipt_sha256") != original_pause_pin
+        or stopped.get("resulting_plan_sha256") != _plan_hash(plan)
+        or not isinstance(extension.get("extension_authority_sha256"), str)
+        or re.fullmatch("[a-f0-9]{64}", extension["extension_authority_sha256"]) is None
+    ):
+        raise PilotControlError("extension_repause_lineage")
+    previous = _iso(extension.get("previous_until_utc"))
+    authorized = _iso(extension.get("extension_authorized_at_utc"))
+    extended_at = _iso(extension.get("observed_utc"))
+    stopped_at = _iso(stopped.get("observed_utc"))
+    approved = _iso(extension.get("execution_until_utc"))
+    duration = _integer(extension.get("extension_max_additional_seconds"))
+    if (
+        not 0 < duration <= 7200
+        or not started < previous <= started + timedelta(minutes=90)
+        or not _iso(origin.get("observed_utc"))
+        <= authorized
+        <= extended_at
+        <= stopped_at
+        <= now
+        < approved
+        or approved <= previous
+        or approved > authorized + timedelta(seconds=duration)
+        or approved != _utc(plan.get("execution_until"), bson_date=True)
+        or approved.date() != started.date()
+    ):
+        raise PilotControlError("extension_window_invalid")
+    current = _summary(plan, now)
+    if current["daily_rollover_pending"] or extension.get("daily_rollover_pending") is not False:
+        raise PilotControlError("extension_credit_unknown")
+    for field in ("initial_remaining", "maintenance_source_remaining"):
+        prior = extension.get(field)
+        if not isinstance(prior, Mapping) or set(prior) != set(INITIAL):
+            raise PilotControlError("extension_credit_unknown")
+        if any(_integer(current[field][source]) > _integer(prior[source]) for source in INITIAL):
+            raise PilotControlError("extension_credit_increased")
+    if _integer(current["maintenance_remaining"]) > _integer(
+        extension.get("maintenance_remaining")
+    ):
+        raise PilotControlError("extension_credit_increased")
+    # Absolute counters were not in the old extension receipt. Require genuine
+    # independently pinned paused readback instead of inventing starting credit.
+    if (
+        not isinstance(consumption_raw, bytes)
+        or len(consumption_raw) > 1048576
+        or not isinstance(consumption_pin, str)
+        or re.fullmatch("[a-f0-9]{64}", consumption_pin) is None
+        or receipt_sha256(consumption_raw) != consumption_pin
+    ):
+        raise PilotControlError("consumption_receipt_pin")
+    try:
+        observation = json.loads(consumption_raw)
+    except (ValueError, UnicodeError):
+        raise PilotControlError("consumption_receipt_invalid") from None
+    if not isinstance(observation, Mapping) or observation.get("status") != "pass":
+        raise PilotControlError("consumption_receipt_invalid")
+    reader = observation.get("reader")
+    if (
+        not isinstance(reader, Mapping)
+        or reader.get("status") != "pass"
+        or reader.get("no_refund_or_reset") is not True
+        or reader.get("cleanup") != "closed"
+        or not isinstance(reader.get("receipt"), Mapping)
+    ):
+        raise PilotControlError("consumption_receipt_invalid")
+    baseline = _pinned_receipt(
+        receipt_bytes(reader["receipt"]), reader.get("receipt_sha256"), "pause"
+    )
+    if (
+        baseline.get("execution_id") != execution
+        or baseline.get("resulting_plan_sha256") != _plan_hash(plan)
+        or not extended_at
+        <= _iso(baseline.get("observed_utc"))
+        <= _iso(observation.get("ended_utc"))
+        <= stopped_at
+    ):
+        raise PilotControlError("consumption_snapshot_invalid")
+    for field, source in (
+        ("execution_consumed", "charged"),
+        ("execution_sent", "sent"),
+        ("incremental_consumed", "maintenance"),
+    ):
+        if _integer(plan.get(field)) < _integer(reader.get(source)):
+            raise PilotControlError("consumption_counter_decreased")
+    if _integer(reader.get("sent")) > _integer(reader.get("charged")):
+        raise PilotControlError("consumption_receipt_invalid")
+    return approved
+
+
 async def control_pilot(
     db: Any,
     action: str,
@@ -554,6 +686,10 @@ async def control_pilot(
     extension_authority_sha256: str | None = None,
     extension_receipt: bytes | None = None,
     extension_receipt_sha256: str | None = None,
+    original_paused_receipt: bytes | None = None,
+    original_paused_receipt_sha256: str | None = None,
+    consumption_receipt: bytes | None = None,
+    consumption_receipt_sha256: str | None = None,
 ) -> dict[str, Any]:
     now = _utc(now)
     collection = db[PLAN_COLLECTION]
@@ -589,6 +725,10 @@ async def control_pilot(
             runtime_controls_verified,
             extension_receipt,
             extension_receipt_sha256,
+            original_paused_receipt,
+            original_paused_receipt_sha256,
+            consumption_receipt,
+            consumption_receipt_sha256,
         )
     elif action == "extend-paused":
         patch, lineage = _extend_paused(
@@ -653,6 +793,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--extension-authority-sha256")
     parser.add_argument("--extension-receipt-in", type=Path)
     parser.add_argument("--extension-receipt-sha256")
+    parser.add_argument("--original-paused-receipt-in", type=Path)
+    parser.add_argument("--original-paused-receipt-sha256")
+    parser.add_argument("--consumption-receipt-in", type=Path)
+    parser.add_argument("--consumption-receipt-sha256")
     parser.add_argument("--receipt-out", type=Path)
     return parser
 
@@ -677,7 +821,12 @@ async def _run(args: argparse.Namespace) -> dict[str, Any]:
             raise PilotControlError("receipt_path_invalid")
         paused_raw = args.paused_receipt_in.read_bytes()
     extension_inputs = {}
-    for field in ("extension_authority", "extension_receipt"):
+    for field in (
+        "extension_authority",
+        "extension_receipt",
+        "original_paused_receipt",
+        "consumption_receipt",
+    ):
         path = getattr(args, field + "_in")
         if path is not None:
             if path.is_symlink() or path.stat().st_size > 1048576:
@@ -707,6 +856,8 @@ async def _run(args: argparse.Namespace) -> dict[str, Any]:
             runtime_controls_verified=args.runtime_controls_verified,
             extension_authority_sha256=args.extension_authority_sha256,
             extension_receipt_sha256=args.extension_receipt_sha256,
+            original_paused_receipt_sha256=args.original_paused_receipt_sha256,
+            consumption_receipt_sha256=args.consumption_receipt_sha256,
             **extension_inputs,
         )
         if stream is not None:

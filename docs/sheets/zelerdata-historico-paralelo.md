@@ -1654,3 +1654,118 @@ readonly y hash del header real antes de publicar. Un event_id no sustituye esa
 identidad. Cero GET/publish/ACK de negocio hasta ese gate. La autorización de tiempo
 no reduce aceptación; fuente por fuente, parcial API normal y dos incrementales
 realmente cambiados siguen pendientes. Full excluido; objetivo NO completado.
+
+### Continuación 6 octubre — entregas auxiliares delimitadas (06:40 UTC)
+
+Turno anterior fue PROGRESO (prórroga aplicada/publicación/quality), no cierre de
+objetivo. Deadline **08:17:23 UTC** absoluto; no otra extensión automática.
+
+| Propietario único | Archivos exactos | Encargo/estado/dependencia |
+| --- | --- | --- |
+| AMQP | Privados `claims-one-recovery-20261006/recover_one.py`, `test_recover_one.py`, nuevos `eligibility_reader.py`, `test_eligibility_reader.py`; propio `docs/sheets/zelerdata-historico-amqp-claims-one-informe.md` | RED/GREEN de header hash + scope efectivo; lector normal readonly inyectado, cero producción. Root necesita hash de clave/markers/lease reales antes de relay. ASIGNADO. |
+| CUOTAS | Nuevos privados `source-progress-20261006/progress_reader.py`, `test_progress_reader.py`; propio nuevo `docs/sheets/zelerdata-historico-cuotas-progress-informe.md` | Lector readonly acotado de fuentes/calendarios/certificados y baseline de cambios reales, sin fechas sintéticas. Root ejecuta. ASIGNADO. |
+| Root | Ledger/docs centrales, config Compose/flags, supervisor/monitor, selección de log solo RAM, Git/producción | Ningún archivo especialista se edita hasta entrega+cese. Suite final previa cerrada; nuevas pruebas auxiliares solo fakes aislados, sin puertos/BD/red. |
+
+**Corrección previa a cualquier operación:** scope real de consumer es
+`zeler.sheets.events` (consumer.py:132 y wiring EventClaimGate; Core
+history_work_intent.py:27), **no** `sheets.events`. Fuente servida412 y HEAD sin delta
+en esos archivos. AMQP detectó el literal equivocado en el encargo; corregido
+antes de consultar markers/claims o broker. El alias corto habría causado falsa
+inferencia de ausencia. No se renombran namespaces ni se mutan markers.
+
+**AMQP entregado+cese:** helper hash
+`0b2b7b621c2d7323ceeb0975a1df593b60d14eb920aed519bc0b111720fa9c00`,
+lector `c60fe436c046111ecf4933ed2b3a925e4487346d3dab2bc2a59aa353f2ba6472`;
+16 fakes PASS/0 skips, ruff/formato/mypy4 PASS. Header real debe coincidir con hash
+canónico y scope `zeler.sheets.events` antes de cualquier publish/ACK.
+
+**CLAIMS-IDEMPOTENCY:** primer ensamblado detectó SyntaxError local `Trueor` tras
+un GET exitoso al log existente; 0 SSH/VM/Mongo/AMQP. STOP preservado, separación
+corregida y source completo compilado antes de otro acceso. Primera lectura VM
+real PASS **06:51:37 UTC**, 7.613 s, PRIMARY, codec tz-aware, cuatro queries readonly.
+Webhook canónico y tenant verificados; clave efectiva SHA
+`26e3452804f01cc57bc7b6a25ea0ad8e5afe1fa71184316b41f11fce7e0367bb`;
+marker completado activo=false, claim disponible=true. Se conserva gate atómico
+normal; esa lectura **no reserva ownership** y debe refrescarse antes de gates20s.
+Dos lecturas conocidas del mismo log; cero bodyGET/publish/ACK, cero Meli/writes;
+selector y clave crudos solamente RAM, no persistidos ni impresos.
+
+Root prepara únicamente one state-CAS resume + monitor2 con deadline exacto,
+recibos nuevos exclusivos y guard probado de error previo sobre copia (sin limpiar
+estado canónico). Arming privado flag-only verificado con fakes e igualdad de
+render; ningún image download ni cambio a API/Gateway. **Aún no ejecutados.**
+
+**SOURCE-PROGRESS-BASELINE-1:** PASS07:00:24UTC5.431s/PRIMARY9queries/cleanupclosed.
+Plan PAUSED69/67, Full0, calendario12 meses y checkpoints/hash retenidos. Orders12
+unidades completed; questions1pending, shipments2pending, claims37pending y
+messages error previo ValueError pendiente. Readability anual **no acreditada**
+por esos contadores. Un certificado June y freshness independientes observados;
+no validación conjunta vector/facts. Rango orders observado termina Oct4, por
+lo que API normal Sep25–Oct5 necesita responder su cobertura real, no una etiqueta.
+Baseline de campos de negocio posteriores al cutoff: subset BSON orders29,
+questions1, messages0; hashes privados, no IDs/texto, no ausencia global ni dos
+ciclos auténticos. EOF real validado, sin singleBatch forzado ni getMore.
+
+CUOTAS entregó normal API operador separado: 22 fakes PASS/sintaxis GS+CJS PASS,
+dosPOST max/true→false, endpoint exacto, redirectsOFF, token solo UserProperties.
+Docs Google actuales sí incluyen timeoutSeconds; recuerdo anterior corregido
+antes de ejecutar. Configurado9s por POST más guard20s entre requests, sin afirmar
+wall20 garantizado. Run wrapper registra solo receipt whitelist, sin valores de
+negocio ni secretos. Root añade solo archivo auxiliar al proyecto privado; cuatro
+originales/manifest/scopes/tokens/celdas intactos. Sin Marketplace/deploy/triggers.
+
+**API normal real PASS:** Root ONE RunV1 07:10:56→07:10:57UTC, source probado348b
+exact9958bytes/UI clipboard+WebCrypto. Dos POST reales: parcial HTTP200, 28 órdenes/
+28 filas útiles, noticePARCIAL/coverage.exact=false/acquired_rows_only/rango sin
+certificar; control exacto HTTP200 envelope DATA_UNAVAILABLE. No celdas, grants,
+tokens nuevos ni Marketplace. Captura privada `normal-api-proof-20261006/normal-api-pass.jpg`.
+Resumed firstframe posterior aún69/67 y preflightAPIrecoveryOFF: sin cargo seleccionado
+Meli durante esas dos lecturas; no afirmar cero global de otras cuentas.
+
+**Resume2 real:** state-only CAS07:13:39.810926UTC, misma ventana/presupuesto/saldos,
+recibo `13afb2b9e54fa634988ac4ccce3671e4f4beef458a2b1e36eca30341549fe6aa`.
+Monitor2 permaneció vivo por handleRoot y fue observado, sin reiniciar por timeout;
+history OFF, ordinaryclaimsmaintenance sumó3 cargos reales72/70.
+
+**Relay original una vez:** setup1 escogió API antigua sin Corehistory_work_intent;
+Root runtime importspec y orden del loader probaron fallo antesfactory/Mongo/GET,
+no inferido solo por recibo ausente. Selector corregido ONLYworker0df, API pin separado.
+Primer actual Worker relay07:22:18.570303UTC: 1get original241B, headerK26e correcto,
+body/properties exactos, 1publish mandatory confirmado y 1ACK local. Cleanup tool_error/
+waitererror => **STOP**, duplicate_possible=true; no remoteclose/ACKprotocolproof,
+no atomicmove/cleanPASS y **ninguna repetición de publicación**.
+
+Root pause de seguridad07:23:27.654508UTC (un CAS cambio real),75cargos/73envíos,
+maintenance19, Full0/until08:17:23 sin reset/refund. Monitor2 detectó PAUSED y emitió
+segunda pausa state-only idempotente07:23:31.485433 (registrar ambos intentos), mismo
+hash9dc6; cerrado121queries/SSHterminal0, no handle vivo restante.
+
+**Entrega real confirmada sin replay:** postManagement23GET PASS: claimsDLQ0/source0/
+retry50/all5retry0 y315eventsDLQ preservados. Lectura canónica exacta07:27:49UTC
+PRIMARY2queries/Codecaware: marker completado activo=true para MISMOeventhash4371,
+claveK26e y scopezeler.sheets.events. No es solo consumer-ready. Publicación/ACKlocal+
+cola0+marker normal completado prueban ese original; cierre ambiguo y no-loss global
+siguen sin certificado. KnownMgmt196; lecturas antiguas de consumo desconocido aparte.
+
+**Siguiente bloque de seguridad local:** resume extendido necesita soportar una
+pausa posterior real sin falsificar recibo inicial. CanonicalOPS es writerRoot;
+CUOTAS solo NUEVOS `tests/test_zelerdata_history_pilot_extension_repause.py` y
+`docs/sheets/zelerdata-historico-cuotas-repause-informe.md`, RED real+propuesta con
+originalpause3c9 separado/currentpauseA384+hash9dc6/consumptionreceipt real75/73/19.
+No nueva extensión, UUID, prepare, imágenes, reset ni edición de checkpoints.
+Fuente por fuente/rangos reales y dos incrementales cambiados aún pendientes;
+pilotoPAUSED/objetivo NO completo. No再pub del original ya completado.
+
+**Re-pausa implementada Root+validada:** currentpause wholehash siempre comprobado,
+originalpause3c9 para lineage/clock de ext3a2, consumo externo REAL
+`6c072b63ee0a622aca7aa690fac624687bbddd6c23f8a5ef42a3fd6919384ee1`
+(75/73/19, innerpause560a/hash9dc6) liga monotonicidad; saldo actual por fuente/día
+no mayor que ext inicial. Defaults None preservan rama legacy/primerresume.
+Un CAS exclusivamente state; no recibos viejos reescritos/otro deadline/UUID/prepare.
+
+Ambos especialistas+código Root congelados. FINAL1113 paths/tar
+`2fe41165e14ddc970d81fadc1e9b5afe278de6e291d7433bfb4d49d93b212031`,
+8gates exit0/snapshot íntegro: focused98PASS(1warning cacheRO),
+full**6504PASS/20SKIP** 07:34:27→07:41:09UTC/401.232s; protected19PASS/0SKIP5.899s;
+ruff/formato/mypy/direct-Meli/schemas PASS. No skipscomoaceptación. UnidadOPS-only,
+ninguna imagen nueva/pull/deploy para este delta.
