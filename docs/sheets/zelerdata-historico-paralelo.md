@@ -1632,3 +1632,25 @@ El hash del evento no autoriza marcar idempotency_eligible=true. Root verificó
 classifier y resolución canónica del webhook almacenado; aún falta lectura real
 readonly de esa identidad y markers/claim, y cotejo del header antes de publish.
 Sin GET de negocio, publish, ACK ni reproducción del original hasta ese gate.
+
+**PILOT-EXTEND-PAUSED-1 aplicado:** 06:38:03.962291 UTC, 8.562 s, SSH0,
+PRIMARY y **un CAS** con readback integral: mismo executionID, PAUSED,
+**69 cargos / 67 envíos**, nuevo límite absoluto **08:17:23 UTC / 02:17:23
+Monterrey**. Cambió únicamente `execution_until`; todos los demás campos exactos
+conservados. Deadline original `05:52:57.845 UTC` en lineage externo.
+Recibo aplicado SHA
+`3a2117639ad3255a303d61d6a843e2815e2eb8aca839cba2e7b5a2e8102bdd59`;
+plan resultante `98cbeb7e8fa7efe33bff67f89206b0a5e0aa45480ca435dfc1ed03e3764d1a7f`.
+Operador publicado `11000adce98c183c5061049f4512e64e58dab371`, remoto exacto y tree
+limpio antes de esta actualización MD. Pins gateway4f9/worker0df/API3f7 saludables,
+history/recovery/refresh OFF y gateway HOLD=true comprobados antes del CAS.
+No nuevos builds, downloads, recreates, UUIDs, prepare, crédito ni replays.
+Saldo aritmético no renovado: inicial orders800/questions147/shipments248/messages298/
+claims_returns451; mantenimiento487, dentro del total original2500.
+
+**Siguiente:** reanudar con recibo de extensión real pinado y monitor de fecha exacta;
+transferencia original claims condicionada a clave canónica de webhook/markers/claim
+readonly y hash del header real antes de publicar. Un event_id no sustituye esa
+identidad. Cero GET/publish/ACK de negocio hasta ese gate. La autorización de tiempo
+no reduce aceptación; fuente por fuente, parcial API normal y dos incrementales
+realmente cambiados siguen pendientes. Full excluido; objetivo NO completado.
