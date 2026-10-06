@@ -2200,3 +2200,66 @@ actuales completos verificados antes de esta anotación documental. Publicar sol
 OPS/test/informe y dos documentos centrales asignados. Ventana no aplicada aún;
 seguir con baseline/pausa genuinos, extensión deadline-only, wirepins nuevos y
 readmisión con archivo original exacto, misma identidad/contador/globalSeq.
+
+### Monitor puro — asignación única antes de reanudar transporte
+
+CUOTAS único escritor exacto de dos paths nuevos:
+`infra/operations/zelerdata_pilot_monitor_guard.py` (solo clasificación pura,
+sin I/O/DB/HTTP/mutación) y `tests/test_zelerdata_pilot_monitor_guard.py`
+(máximo12 fakes offline, TDD RED→GREEN, sockets prohibidos).
+Root conserva todos los conectores, control_pilot, Git, documentos centrales y
+operaciones productivas/resume/pause. AMQP sigue congelado; no tareas cruzadas,
+otros agentes, builds, suites generales ni recursos compartidos por especialista.
+Se congela tras entrega/cese antes de controles completos. Este guard no concede
+autoridad ni acredita cobertura: distingue error histórico estable, avance durable
+e incidente nuevo; controla Full0/cuotas/floors y plazo20:32:58Z sin reiniciar reloj.
+El plan permanece PAUSED81/79/24 con HISTORY ON hasta conectar el monitor propio.
+
+**Operaciones reales cinco horas:** EXTEND-PAUSED-1 PASS16:02:31.369904 UTC/
+12.898s/SSH0: dos pausas idempotentes genuinas y un CAS solo execution_until,
+techo20:32:58; counters81/79/24/Full0 intactos y planPAUSED,0Meli.
+Readmit1 STOP por configuración incompleta del driver (allowed_sellers y
+policy_authority ausentes): el guard canónico rechazó antes de transacción.
+STOP-STATE1 actual confirmó tres documentos wire idénticos, archivo/fence ausentes.
+Driver corregido conserva maxActive4 del factory, no amplía20; READMIT2 PASS
+16:09:51.905019 UTC/7.157s/SSH0: archive520d78a… exacto original head59dd807…/
+job60d1c…, newpass2/generation1/globalSeq3/jobattempt1pending. Plan solo fence1;
+hasta20:32/counters81/79/24 sin cambios,0GET. No retransmitió cursor vencido.
+
+POSTFENCE-PAUSE1 PASS16:12:36.215197 UTC/6.957s/SSH0: baseline/currentpause
+genuinos y preview de resume válido, **sin apply de resume**. Todos los recibos
+metadata copiados/verificados al host privado antes de recreate, no depender de
+worker/tmp perdido. HISTORY-FLAG-ENABLE1 PASS16:17:43.360156 UTC/94.666s/SSH0:
+solo flagfalse→true, doce layers reales, solo worker/sameimagea28/noDeps/noPull/
+downloads0; readiness3 inicial+60s/restarts0/OOMfalse, API/Gateway preservados.
+Rootfree33,294,315,520→33,329,840,128 bytes. PRIMARY planPAUSED81/79/24/fence1/Full0
+antes/después/settled; no proveedor. Overlay en directorio privado del host
+`/var/lib/zeler-platform/.history-five-hour-20261006T153258Z-9698cd2`.
+
+**Baseline de monitor readonly16:23:30.138006 UTC:** actual Qjobpending/head
+discover/pass2/rev4/seq3. Storedsource Q mantiene failed_units1 histórico; no
+confundirlo con nuevo fallo ni borrarlo manualmente. Messages no usa recoveryjobs:
+la consulta limitada encontró0 solo para ese selector, no ausencia global de trabajo.
+Su trabajo durable está en collector_checkpoints.messages y message_periodic_recovery
+dentro del plan. StoredValueError/cf1/nextAttempt04:33:23 permanece pendiente;
+timestamp refreshed no prueba error nuevo. Guard puro validará checkpoints/firma,
+STOP nuevo error/gap/counter/cap/ownership/429/timeout sin ocultar el histórico.
+La adquisición real aún no ha sido reanudada; aceptación original sigue pendiente.
+
+**Entrega guard congelada:** CUOTAS único escritor de dos archivos, cese confirmado;
+RED12 (módulo ausente), RED adicional2FAIL12PASS antes fix por-lane y False;
+GREEN14/0.29s, Ruff/formato/Mypy2 PASS. SourceSHA5a95e30b209937ffc40a6e661ca363d8a5b77bd364a6f37d4bb6cff566fba0d9;
+testSHAd3c1b00f172b4584411d54c9c21d851ad40aa211b7e2ff5b6049d1859a6ff238.
+Guard RAM-only sin I/O, no muta snapshots ni borra histórico. Cada lane de Messages
+controla incidencias por separado; False no equivale a documento ausente. Source
+errores antiguos siguen visibles mientras su firma permanece igual; incidente
+nuevo o cambio ambiguo STOP. Root valida conjunto antes de conectarlo al resume.
+
+**Guard finales completos PASS:**1133 paths/tar
+`5e5b9a41f888f5904c8456caa9f9ecb105ed75ae6dee01cd9b7786858fa9ec6a`;
+focused164/ruff/formato/mypy684/direct-Meli/schema PASS; full6648 PASS/20 SKIP,
+426.125s y protectores19 PASS/0 SKIP,5.874s. Todos los bytes/modos actuales
+coinciden antes de esta anotación documental. Root integra solo guard/test y
+dos documentos centrales; sin cambios a modelos, contratos servidos o imágenes.
+El conector productivo permanece exclusivo Root y cargará guard publicado pinado
+en su proceso aislado, nunca hotpatch del servicio. Plazo20:32:58Z sigue absoluto.

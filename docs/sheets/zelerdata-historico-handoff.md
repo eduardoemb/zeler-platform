@@ -1,14 +1,15 @@
 # ZelerData: handoff del histórico al vincular
 
-> **Última evidencia de entrega: 2026-10-06T11:05:19.674168Z; objetivo abierto.**
-> El worker con la corrección BANNED está desplegado **cerrado**, digest `a28cb5…`,
+> **Última evidencia operativa: 2026-10-06T16:17:43.360156Z; objetivo abierto.**
+> El worker con la corrección BANNED conserva digest `a28cb5…`,
 > fuente `5b9538b2415a9db9031b0125331478adf65b2cd4`; Gateway/API preservados.
-> Ocho controles finales PASS: 6608 pruebas/20 SKIP y 19 protectores/0 SKIP.
-> Plan PAUSED, HISTORY OFF, 81 cargos/79 envíos/24 mantenimiento, Full0.
+> Ocho controles finales PASS: 6634 pruebas/20 SKIP y 19 protectores/0 SKIP.
+> Plan PAUSED, HISTORY ON, 81 cargos/79 envíos/24 mantenimiento, Full0.
 > La ventana anterior08:17:23 UTC expiró. Nueva autorización humana recibida
 > 15:32:58 UTC: hasta cinco horas (techo20:32:58), misma ejecución/cuotas/cutoff,
-> pasada prospectiva Questions con checkpoint original preservado. El operador
-> requiere opt-in validado antes de aplicar esa ventana; piloto aún cerrado.
+> Ventana aplicada con opt-in validado, originales archivados y pasada prospectiva
+> Questions preparada. La adquisición sigue pausada,0GET hasta conectar monitor;
+> datos, identidad y consumos permanecen intactos.
 > Cobertura independiente de cinco fuentes/12 meses y dos
 > incrementales con cambios reales todavía no acreditadas. Esta evidencia fechada
 > no implica salud continua ni aceptación. Ver el [ledger único actualizado](zelerdata-historico-paralelo.md)
