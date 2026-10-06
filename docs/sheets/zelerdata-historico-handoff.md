@@ -603,3 +603,54 @@ sigue pendiente; readiness, órdenes12jobs reutilizados o cache16celdas no la su
 Freeze1104/tar`76db7abc2647614cd9c13512af4a96c5f3e7f2207959b915b587d29b1e71d10b`: **full6446PASS/20SKIP**, protected19PASS, enfocadas109PASS; Ruff/formato/mypy669/direct-Meli/schemaPASS. Ocho exit0 y snapshotantes/despuésintacto;907codebytes+modos delcheckout coinciden. Full402.282s/protected5.666s. Colisión inicial de importtests en focusedLinux conservada; solo fixture independiente corregida, sin excluir controles ni cambiar runtimecode. Ambos especialistas habían cesado antes de suite.
 
 Imagen afectada: **solo Sheets worker** por caller de mensajes; OPSresume via stdin, Gateway/API sin comportamiento servido afectado. Sourcebuild exactmain pendiente de publicar/verificar; no reconstruir imágenes no afectadas. El piloto siguePAUSED69/67/Full0 y hasta05:52:57.845UTC original; gates verdes no son despliegue, reanudación ni aceptación. Native reentrada mismafórmula16celdas no produjo rutaAPI observada en readlogacotado: no afirmar recálculo fresco.
+
+
+## 13. WriteConflict corregido; ventana original vencida sin reanudación
+
+**Snapshot 2026-10-06T06:01:00.511726+00:00; objetivo NO completado.**
+
+La nueva claimsDLQ1/241bytes se atribuyó sin replay: código Mongo112,
+WriteConflict/TransientTransactionError; stack del registro existente apuntó a
+`acquire_devoluciones_operation`/freshness.update_one, dentro del txn y **antes**
+del Gateway fetch. No era evidencia de HTTP500 ni schema121.
+
+Root aplicó retry **DB-only**, máximo3 intentos totales de esa transacción abortada;
+solo112+label y nuncaUnknownTransactionCommitResult. Firma/identidad/token y cuerpo
+single-txn intactos. RED3FAIL/4PASS→7new+11existingPASS; conjunto final:
+**6453PASS/20SKIP, protected19PASS, focused127PASS, Ruff/formato/mypy670/direct/schemaPASS**.
+Tar1107/all908code `5e19ae784a67311c43a8668362cae3d5ebded1bc07616bbe82eaeeb14aaa92d6`,
+sourceantes/despuésintacto; ambos especialistas cesaron antes de generales.
+
+Publicado `412360169adc90dd04cd853337bcb895decde464` enmain, solo5paths propios;
+ONECloudBuild `abd8a659-33d7-4521-9725-44c4af71c2e9` SUCCESS/VERIFIED/provenance
+canónica PASS, repo exacto. Worker **servido/asentado**:
+`us-central1-docker.pkg.dev/zeler-platform-dev/zeler-platform/sheets-worker@sha256:0df26cd905e49ae7e1d0185e967d1f0090491881aba237de86a3fa61a17610bc`.
+Onlyworker image delta/ONEpull+recreate,60settle2components/0restartsOOM,
+rootfree34375737344/Mongoseparate47457710080/RAM1888555008; Gateway4f90/API3f7
+sin nuevos builds/restarts. Nueva imagen sobre closed7filecomposición; ruta exacta
+pública Root en ledger/private`ACQUIRE112-DEPLOY-TARGET.json`. PriorCDccrollback
+soloPAUSED/closed compatible, no restore/reset/counter/lease manipulation.
+
+**Hasta05:52:57.845UTC original venció.** ReadonlyPRIMARY+oneplan a05:56:58.406655
+confirmó PAUSED/mismoID/mismo until,69charged/67sent/56initial+13maintenance,
+limit2500/5fuentes/Full0. No resume, relay delDLQ, nuevoUUID, reprepare, refund ni
+prórroga aplicada. Solicitud específica de una sola prórroga hasta06:30UTC está
+**pendiente, NO recibida**; la autorización general no cambia ese deadline.
+
+La herramienta de transferencia originalONE fue preparada/TDD6PASS, defaultNOOP,
+confirmación obligatoria antesACK, metadata/header/body originales, brokerambiguity
+STOP sin repetir. **No ejecutada**. Exige gates actuales/pinned y deadline original;
+no convertir flags o cierre local en proof remoto/atómico. Ver
+[informe AMQP](zelerdata-historico-amqp-claims-one-informe.md) y
+[propuesta/aplicación Core](zelerdata-historico-cuotas-transient-acquire-informe.md).
+
+**Imágenes afectadas:** Worker para este piloto corregido; APIlector y dispatcher
+no llaman el acquire. El **job ejecutor Bootstrap** sí lo usa y conserva el código
+anterior: verificar su drift y construir imagen actual antes de una ejecución
+futura necesaria. No reconstruir/desplegar dispatcher o iniciar/resetear los13jobs
+protegidos para simular cobertura.
+
+Pendiente aceptación original: cinco fuentes recuperables/certificados independientes,
+API ORDERSpartialnormal (no Sheets), recálculo nativo fresco y dos incrementales
+reales. Existing4×4cache/salud/6453tests/builds no sustituyen esos gates. Conservar
+claimsDLQoriginal1 yeventsDLQ315; no replay ciego ni extensión implícita.
