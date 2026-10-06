@@ -15,6 +15,8 @@ from zeler_sheets.history_acquisition import HistoryAcquisitionStore, HistoryLim
 from zeler_sheets.history_continuation import HistoryContinuation
 from zeler_sheets.history_question_publication import HistoryQuestionPublisher
 from zeler_sheets.history_questions import (
+    QuestionCursorClockError,
+    QuestionCursorExpiredError,
     QuestionManifestDriftError,
     QuestionScanStaging,
     initialize_question_scan,
@@ -51,13 +53,13 @@ class HistoryQuestionsWorker:
                     head = await initialize_question_scan(self.store, job, request)
                     if head.phase == "discover" or (
                         head.phase == "verify"
-                        and (head.page_sequence == 0 or head.next_cursor is not None)
+                        and (head.observed_until is None or head.next_cursor is not None)
                     ):
                         await self.staging.fetch_and_stage(job, head, self.worker.gateway)
                     elif head.phase == "hydrate":
                         await self.staging.begin_verification(job, head)
                     elif head.phase == "verify":
-                        if head.fetched_count < head.discovered_count:
+                        if not await self.staging.materialization_complete(job, head):
                             try:
                                 await self.staging.fetch_and_hydrate(
                                     job, head, self.worker.detail_gateway
@@ -75,6 +77,14 @@ class HistoryQuestionsWorker:
                             await self.publisher.finalize(job, head)
                     else:
                         raise ValueError("completed question acquisition cannot be reclaimed")
+        except QuestionCursorExpiredError:
+            await self.queue.finish(job, succeeded=False, failure_reason="source_cursor_expired")
+        except QuestionCursorClockError:
+            await self.queue.collection.update_one(
+                self.queue._owned(job, self.queue.now()),
+                {"$set": {"history_blocker": "cursor_clock_unverifiable"}},
+            )
+            await self.queue.finish(job, succeeded=False, failure_reason="source_incomplete")
         except LocalQuotaTimeoutError:
             await self.queue.defer_quota(job)
         except httpx.HTTPStatusError as error:

@@ -8,6 +8,7 @@ from typing import Any
 from urllib.parse import urlencode
 
 from zeler_platform_core.models import SheetsHistoryAcquisition, SheetsHistoryReceipt
+from zeler_sheets.event_persistence import _canonical_question_document
 from zeler_sheets.formulas.pacing import recovery_fetch_resource
 from zeler_sheets.formulas.recovery import QuestionScanRecoveryRequest
 from zeler_sheets.history_acquisition import HistoryAcquisitionStore, HistoryConflictError, _head
@@ -116,6 +117,7 @@ async def fetch_question_scan_page(
 class QuestionDetailObservation:
     payload: dict[str, Any]
     observed_at: datetime
+    source_version: str | None = None
 
 
 @dataclass(frozen=True)
@@ -157,6 +159,190 @@ class QuestionManifestDriftError(HistoryConflictError):
     """A traversal changed its membership or observed source payloads."""
 
 
+class QuestionCursorExpiredError(HistoryConflictError):
+    """A durable page observation no longer permits reusing its provider cursor."""
+
+
+class QuestionCursorClockError(HistoryConflictError):
+    """Missing/future observation cannot establish provider cursor age."""
+
+
+SCAN_VERSION = "questions.scan.v4.verified"
+OUTSIDE = "outside_requested_creation_interval"
+
+
+def _source_created(source: dict[str, Any]) -> datetime:
+    value = source.get("date_created")
+    if not isinstance(value, str):
+        raise HistoryConflictError("question creation observation unavailable")
+    try:
+        created = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as error:
+        raise HistoryConflictError("question creation observation invalid") from error
+    if created.tzinfo is None:
+        raise HistoryConflictError("question creation timezone unavailable")
+    return _question_created_millisecond(created)
+
+
+def _complete_scan_question(source: dict[str, Any], head: SheetsHistoryAcquisition) -> bool:
+    """Presence is required before canonical validation; never fabricate defaults."""
+    missing = False
+    status = source.get("status")
+    if status is None:
+        missing = True
+    elif not isinstance(status, str) or not status:
+        raise HistoryConflictError("question scan status invalid")
+    for value in (source.get("text"),):
+        if value is None or value == "":
+            missing = True
+        elif not isinstance(value, str):
+            raise HistoryConflictError("question scan text invalid")
+    for key, nested, alternatives in (
+        ("item_id", "item", ("id", "item_id")),
+        ("from_user_id", "from", ("id", "user_id")),
+    ):
+        value = source.get(key)
+        if value is None and nested in source:
+            container = source[nested]
+            if not isinstance(container, dict):
+                raise HistoryConflictError("question scan identity field invalid")
+            value = next((container[k] for k in alternatives if container.get(k) is not None), None)
+        if key == "from_user_id" and value is None:
+            value = source.get("user_id")
+        if value is None or value == "":
+            missing = True
+        elif isinstance(value, bool) or not isinstance(value, (str, int)):
+            raise HistoryConflictError("question scan identity field invalid")
+    if status == "ANSWERED":
+        answer = source.get("answer")
+        if answer is None:
+            missing = True
+        elif not isinstance(answer, dict):
+            raise HistoryConflictError("question scan answer invalid")
+        else:
+            text = answer.get("text")
+            answer_status = answer.get("status")
+            if answer_status is None:
+                missing = True
+            elif not isinstance(answer_status, str) or not answer_status:
+                raise HistoryConflictError("question scan answer status invalid")
+            date = (
+                answer.get("date_created") or answer.get("answered_at") or answer.get("created_at")
+            )
+            if text is None or text == "" or date is None:
+                missing = True
+            elif not isinstance(text, str) or not isinstance(date, str):
+                raise HistoryConflictError("question scan answer invalid")
+            else:
+                try:
+                    answered = datetime.fromisoformat(date.replace("Z", "+00:00"))
+                except ValueError as error:
+                    raise HistoryConflictError("question scan answer clock invalid") from error
+                if answered.tzinfo is None or answered.astimezone(UTC) < _source_created(source):
+                    raise HistoryConflictError("question scan answer clock invalid")
+    if missing:
+        return False
+    try:
+        _canonical_question_document(
+            source, seller_id=head.seller_id, observed_at=head.observed_until or head.updated_at
+        )
+    except (ValueError, TypeError) as error:
+        raise HistoryConflictError("question scan canonical fields invalid") from error
+    return True
+
+
+async def verified_question_members(
+    store: HistoryAcquisitionStore,
+    head: SheetsHistoryAcquisition,
+    *,
+    session: Any = None,
+) -> list[SheetsHistoryReceipt]:
+    """Two exhaustive concordant current passes, not an inherited partial manifest."""
+    if (
+        head.read_model != "questions"
+        or head.phase not in {"verify", "publish", "completed"}
+        or head.pass_number < 2
+        or head.next_cursor is not None
+        or head.observed_until is None
+        or head.observed_from is None
+        or head.source_total != head.discovered_count
+    ):
+        raise HistoryConflictError("question complete manifests unavailable")
+    scope = {
+        "acquisition_id": head.id,
+        "generation": head.generation,
+        "read_model": "questions",
+        "seller_id": head.seller_id,
+        "kind": "membership",
+    }
+    current = await store.receipts.find(
+        {**scope, "pass_number": head.pass_number}, session=session
+    ).to_list(length=10001)
+    previous = await store.receipts.find(
+        {**scope, "pass_number": head.pass_number - 1}, session=session
+    ).to_list(length=10001)
+    if (
+        len(current) != head.source_total
+        or len(previous) != head.source_total
+        or len(current) > 10000
+    ):
+        raise HistoryConflictError("question manifests are incomplete")
+    old: dict[str, SheetsHistoryReceipt] = {}
+    for raw in previous:
+        receipt = SheetsHistoryReceipt.model_validate(raw)
+        if receipt.resource_id in old:
+            raise HistoryConflictError("question previous manifest duplicated")
+        if (
+            receipt.source_payload is None
+            or item_source_fingerprint(receipt.source_payload) != receipt.source_hash
+        ):
+            raise HistoryConflictError("question previous manifest fingerprint invalid")
+        old[receipt.resource_id] = receipt
+    members: list[SheetsHistoryReceipt] = []
+    identities: set[str] = set()
+    for raw in current:
+        receipt = SheetsHistoryReceipt.model_validate(raw)
+        source = receipt.source_payload
+        if (
+            source is None
+            or item_source_fingerprint(source) != receipt.source_hash
+            or receipt.resource_id in identities
+            or receipt.resource_id not in old
+            or old[receipt.resource_id].source_hash != receipt.source_hash
+        ):
+            raise HistoryConflictError("question verified manifests disagree")
+        identity = str(source.get("id", ""))
+        if (
+            not identity.isascii()
+            or not identity.isdecimal()
+            or identity != receipt.resource_id
+            or str(source.get("seller_id")) != head.seller_id
+        ):
+            raise HistoryConflictError("question verified membership scope invalid")
+        if head.date_from <= _source_created(source) < head.date_to:
+            _complete_scan_question(source, head)
+        if (
+            not head.observed_from <= receipt.observed_at <= head.observed_until
+            or old[receipt.resource_id].observed_at > receipt.observed_at
+        ):
+            raise HistoryConflictError("question verified observation clock invalid")
+        identities.add(receipt.resource_id)
+        members.append(receipt)
+    if identities != set(old):
+        raise HistoryConflictError("question verified membership differs")
+    return sorted(members, key=lambda r: r.resource_id)
+
+
+async def question_target_members(
+    store: HistoryAcquisitionStore, head: SheetsHistoryAcquisition, *, session: Any = None
+) -> list[SheetsHistoryReceipt]:
+    return [
+        r
+        for r in await verified_question_members(store, head, session=session)
+        if head.date_from <= _source_created(r.source_payload or {}) < head.date_to
+    ]
+
+
 class QuestionScanStaging:
     def __init__(self, continuation: HistoryContinuation) -> None:
         self.continuation = continuation
@@ -172,10 +358,17 @@ class QuestionScanStaging:
     ) -> SheetsHistoryAcquisition:
         head = _head(expected)
         if head.phase not in {"discover", "verify"} or (
-            head.phase == "verify" and head.page_sequence and head.next_cursor is None
+            head.phase == "verify" and head.observed_until is not None and head.next_cursor is None
         ):
             raise ValueError("question traversal is finished or not active")
         cursor = head.next_cursor
+        if cursor is not None:
+            now = self.store.queue.now()
+            observed = head.observed_until
+            if observed is None or observed.tzinfo is None or now.tzinfo is None or observed > now:
+                raise QuestionCursorClockError("question cursor observation clock unavailable")
+            if (now - observed).total_seconds() >= 300:
+                raise QuestionCursorExpiredError("question source cursor expired")
         if cursor is not None and not isinstance(cursor, str):
             raise ValueError("question scan cursor is invalid")
         page = await fetch_question_scan_page(
@@ -226,31 +419,61 @@ class QuestionScanStaging:
             or not detail_ids <= member_ids
         ):
             raise HistoryConflictError("question detail membership is incomplete")
-        missing = sorted(member_ids - detail_ids)[:20]
+        verified = await verified_question_members(self.store, head)
+        exclusions = await self.store.receipts.find(
+            {**scope, "kind": "exclusion", "exclusion_reason": OUTSIDE}, session=None
+        ).to_list(length=10001)
+        excluded_ids = {r["resource_id"] for r in exclusions}
+        missing = [r for r in verified if r.resource_id not in detail_ids | excluded_ids][:20]
         if not missing:
             return head
-        observations = []
-        for identity in missing:
+        observations: list[QuestionDetailObservation] = []
+        outside: list[SheetsHistoryReceipt] = []
+        # Classify the entire pending batch before any fallback transport.
+        fallback: list[SheetsHistoryReceipt] = []
+        for member in missing:
+            source = member.source_payload or {}
+            if not head.date_from <= _source_created(source) < head.date_to:
+                outside.append(member)
+            elif _complete_scan_question(source, head):
+                observations.append(
+                    QuestionDetailObservation(source, member.observed_at, SCAN_VERSION)
+                )
+            else:
+                fallback.append(member)
+        for member in fallback:
             resource = await recovery_fetch_resource(
                 detail_gateway,
                 request_timeout=10,
                 seller_id=head.seller_id,
-                path=f"/questions/{identity}?api_version=4",
+                path=f"/questions/{member.resource_id}?api_version=4",
             )
             if not isinstance(resource, dict):
-                raise ValueError("question detail response must be an object")
+                raise HistoryConflictError("question detail response invalid")
+            if not _complete_scan_question(resource, head):
+                raise HistoryConflictError("question required fields remain unavailable")
             observations.append(QuestionDetailObservation(resource, self.store.queue.now()))
-        return await self.hydrate(job, head, observations)
+        return await self.hydrate(job, head, observations, outside=outside)
+
+    async def materialization_complete(
+        self, job: dict[str, Any], expected: SheetsHistoryAcquisition
+    ) -> bool:
+        head = _head(expected)
+        targets = await question_target_members(self.store, head)
+        return head.fetched_count == len(targets)
 
     async def hydrate(
         self,
         job: dict[str, Any],
         expected: SheetsHistoryAcquisition,
         observations: list[QuestionDetailObservation],
+        *,
+        outside: list[SheetsHistoryReceipt] | None = None,
     ) -> SheetsHistoryAcquisition:
         head = _head(expected)
         subscriptions = question_subscriptions(head)
-        if not 1 <= len(observations) <= 20:
+        outside = outside or []
+        if not 1 <= len(observations) + len(outside) <= 20:
             raise ValueError("question hydration requires one to twenty details")
 
         async def transaction(session: Any) -> SheetsHistoryAcquisition:
@@ -260,10 +483,55 @@ class QuestionScanStaging:
                 "generation": head.generation,
                 "pass_number": head.pass_number,
             }
-            receipts = []
+            receipts: list[SheetsHistoryReceipt] = []
+            if outside or any(o.source_version is not None for o in observations):
+                verified = {
+                    r.resource_id: r
+                    for r in await verified_question_members(self.store, head, session=session)
+                }
+            else:
+                verified = {}
+            for member in outside:
+                trusted = verified.get(member.resource_id)
+                if (
+                    trusted is None
+                    or trusted.model_dump() != member.model_dump()
+                    or head.date_from
+                    <= _source_created(trusted.source_payload or {})
+                    < head.date_to
+                ):
+                    raise HistoryConflictError("question exclusion is not verified outside scope")
+                receipts.append(
+                    SheetsHistoryReceipt(
+                        _id=f"{head.id}:{head.generation}:{head.pass_number}:exclusion:{member.resource_id}",
+                        acquisition_id=head.id,
+                        seller_id=head.seller_id,
+                        read_model="questions",
+                        generation=head.generation,
+                        pass_number=head.pass_number,
+                        page_sequence=head.page_sequence + 1,
+                        kind="exclusion",
+                        resource_id=member.resource_id,
+                        observed_at=member.observed_at,
+                        source_version=SCAN_VERSION,
+                        source_payload=member.source_payload,
+                        source_hash=member.source_hash,
+                        exclusion_reason=OUTSIDE,
+                    )
+                )
             seen: set[str] = set()
             for observation in observations:
                 payload = observation.payload
+                if observation.source_version is not None:
+                    trusted = verified.get(str(payload.get("id", "")))
+                    if (
+                        observation.source_version != SCAN_VERSION
+                        or trusted is None
+                        or trusted.source_payload != payload
+                        or trusted.observed_at != observation.observed_at
+                        or not _complete_scan_question(payload, head)
+                    ):
+                        raise HistoryConflictError("question scan provenance is not verified")
                 identity = str(payload.get("id", ""))
                 created = datetime.fromisoformat(
                     str(payload.get("date_created", "")).replace("Z", "+00:00")
@@ -328,6 +596,7 @@ class QuestionScanStaging:
                         kind="detail",
                         resource_id=identity,
                         observed_at=observation.observed_at,
+                        source_version=observation.source_version,
                         source_payload=payload,
                         source_hash=fingerprint,
                         payload=payload,
@@ -338,7 +607,7 @@ class QuestionScanStaging:
                 SheetsHistoryAcquisition.model_validate(
                     {
                         **head.model_dump(by_alias=True),
-                        "fetched_count": head.fetched_count + len(receipts),
+                        "fetched_count": head.fetched_count + len(observations),
                         "page_sequence": head.page_sequence + 1,
                         "checkpoint_revision": head.checkpoint_revision + 1,
                         "updated_at": self.store.queue.now(),
@@ -360,7 +629,10 @@ class QuestionScanStaging:
         """Hand off only a fully hydrated verified scan; this publishes no proof."""
         head = _head(expected)
         question_subscriptions(head)
-        if head.fetched_count != head.discovered_count or head.published_count:
+        if (
+            head.fetched_count != len(await question_target_members(self.store, head))
+            or head.published_count
+        ):
             raise HistoryConflictError("question publication requires every verified detail")
 
         async def transaction(session: Any) -> SheetsHistoryAcquisition:
@@ -380,7 +652,20 @@ class QuestionScanStaging:
                 raise HistoryConflictError("question publication receipt count changed")
             missing = await self.store.receipts.aggregate(
                 [
-                    {"$match": {**scope, "kind": "membership"}},
+                    {
+                        "$match": {
+                            **scope,
+                            "kind": "membership",
+                            "resource_id": {
+                                "$in": [
+                                    r.resource_id
+                                    for r in await question_target_members(
+                                        self.store, head, session=session
+                                    )
+                                ]
+                            },
+                        }
+                    },
                     {
                         "$lookup": {
                             "from": "sheets_history_receipts",
@@ -476,7 +761,7 @@ class QuestionScanStaging:
                         **head.model_dump(by_alias=True),
                         "phase": "verify",
                         "pass_number": head.pass_number + 1,
-                        "page_sequence": 0,
+                        "page_sequence": head.page_sequence,
                         "checkpoint_revision": head.checkpoint_revision + 1,
                         "discovered_count": 0,
                         "observed_from": None,
@@ -511,7 +796,11 @@ class QuestionScanStaging:
         if (
             head.read_model != "questions"
             or head.phase not in {"discover", "verify"}
-            or (head.phase == "verify" and head.page_sequence and head.next_cursor is None)
+            or (
+                head.phase == "verify"
+                and head.observed_until is not None
+                and head.next_cursor is None
+            )
         ):
             raise ValueError("question traversal is finished or not active")
         if (

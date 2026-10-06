@@ -1827,3 +1827,194 @@ binding actual, ausentes en este job terminal. **No se invocó ni reabrió el jo
 Falta una continuación prospectiva que preserve el checkpoint original inmutable
 y la autoridad/consumo; no sustituirla por un reset ni por más cuota. El trabajo
 local puede continuar después del plazo; producción permanece detenida.
+
+### Continuación local después de 08:17:23 UTC — preservación de cursor
+
+Turno anterior clasificado **PROGRESO**: evidencia nueva y ledger publicado
+`6240685612fd3479948477d43d2327d048b2aea4`, no aceptación reducida. La ventana ya
+expiró: ninguna llamada Meli, resume, readmisión productiva ni repetición del410.
+
+**QUESTIONS-CHECKPOINT-PIN-1** readonly PASS08:19:08.118992 UTC, 4 comandos
+PRIMARY/cleanup cerrado/SSH0/4.633 s. Último checkpoint04:32:12.830 UTC, edad13615 s;
+cursor presente/discover/página3. Plan PAUSED81/79/24/until08:17:23. Hash BSON completo
+del head `59dd807a046272b915817ea2867d045b9b85d6d539875ab1fd07f2dac1f727d2` y job
+`60d1c078d47a2b5d62281b0e9032dca627ae955526efb4218bbfb64561090980`; contenido solo RAM.
+No writes/provider/getMore/AMQP. Supera el TTL publicado; no prueba del cuerpo410.
+
+**Diseño directo seleccionado, sin activar producción:** nueva colección
+`sheets_history_checkpoint_versions` append-only, con BSON completo original
+head+job y SHA; archivo y nueva pasada deben ser una sola transacción cercada.
+Nunca fabricar membership receipts ni cabezas ficticias. El checkpoint original
+no se modifica; el head activo apunta a otra pasada con secuencia global que no
+retrocede. Identidad/rango/generación/cutoff/execution/plazos y crédito físico
+permanecen. Readmisión terminal será opt-in canónica y no `enqueue`/edición manual.
+Guard de cursor previo al transporte usará observación durable, no timestamp del
+job renovable. TTL desconocido/futuro/vencido no autoriza GET. Este diseño **no**
+extiende el plazo ni habilita replay; faltan implementación, TDD y controles.
+
+| Propietario único / fase | Archivos exactos | Entrega / dependencia / estado |
+| --- | --- | --- |
+| CUOTAS / fase1 | Nuevos `core/tests/test_sheets_history_checkpoint_version.py`, `docs/sheets/zelerdata-historico-cuotas-cursor-version-informe.md` | TDD RED del envelope y propuesta textual de Core/schema, sin editar los archivos Root. Fakes sin sockets/DB/puertos. ASIGNADO; Root implementa después de entrega+cese. |
+| Root / compartidos | Nuevo `core/src/zeler_platform_core/models/sheets_history_checkpoint.py`; `core/src/zeler_platform_core/cli/export_schemas.py`; nuevos `infra/mongo/schemas/sheets_history_checkpoint_versions.json`, `infra/mongo/indexes/sheets_history_checkpoint_versions.json`; este ledger | Modelo/validator/export/índice/propuesta operador. Único escritor Root; sin Git mutante/build/producción de especialistas. Pendiente de RED/propuesta. |
+| CUOTAS / fase2 aún NO asignada | Ningún archivo ejecutable adicional autorizado todavía | Tras Core GREEN, asignar exactamente helper Modules, integración y tests necesarios. No cambios anticipados ni workflow-loop general. |
+| AMQP | Ningún archivo nuevo | ENTREGADO/cese; original completado no se publica de nuevo. |
+
+No suite general mientras haya escritores. Las pruebas Mongo existentes requieren
+target aislado verificado; en fase1 solo fakes sin red. Cuotas físicas/attempts de
+transporte no equivalen al contador interno de fallos del job; no rediseñar el
+worker en un loop general para confundirlos. Readmisión conservará el contador
+original; el protocolo ordinario de progreso durable se evalúa por separado.
+
+**QUESTIONS-MEMBERSHIP-SHAPE-1** readonly PASS08:28:48.308858 UTC/PRIMARY5 comandos/
+cleanup cerrado/SSH0/5.028 s, mismos hashes head59dd/job60d1. Conteos reales:
+source_total210, discovered150, fetched0; las150 memberships observadas están en
+el rango original y contienen status/answer.text cuando ANSWERED. No inferir la
+forma de las60 aún no vistas ni certificar recorrido completo. El flujo actual
+añade210 GET individuales, incompatible con cap inicial150/used4: reparar solo
+el cursor no basta. Evaluar materialización desde payloads v4 de dos manifests
+completos concordantes, con procedencia explícita y fallback acotado solo por
+campos faltantes; no fabricar prueba de GET de detalle. La
+[referencia primaria de Questions v4](https://developers.mercadolibre.com.mx/en_us/listing-types-item-upgrades-tutorial/manage-questions-and-answers)
+indexada (actualización15/01/2026) documenta pregunta+respuesta en search.
+
+**FASE1 recibida+cese e integrada localmente:** 16 RED reales por módulo canónico
+ausente, después16 GREEN. Root añadió un RED semántico de export/índice inexistente
+(1 FAIL/16 PASS) e implementó el schema y versión única: **17 PASS**. Ruff/formato/
+mypy3/schema-export/diff-check PASS tras corregir formato local. Nuevo envelope
+Core conserva BSON exacto/extras/milisegundos, SHA y bindings; bytes excluidos de
+repr y errores sin inputs. Ni append-only, readmisión ni autorización productiva
+quedan demostrados por este modelo. Nueva colección/índice aún NO aplicados.
+
+| Propietario único / fase2 | Archivos exactos | Encargo / estado |
+| --- | --- | --- |
+| CUOTAS | Nuevo `modules/sheets/src/zeler_sheets/history_checkpoint_versions.py`; `modules/sheets/src/zeler_sheets/history_questions.py`; `modules/sheets/src/zeler_sheets/history_continuation.py`; `modules/sheets/src/zeler_sheets/history_question_worker.py`; `modules/sheets/src/zeler_sheets/formulas/recovery.py`; nuevos `modules/sheets/tests/test_history_question_readmission.py`, `modules/sheets/tests/test_history_question_scan_materialization.py`; nuevo `docs/sheets/zelerdata-historico-cuotas-cursor-continuacion-informe.md` | TDD estricto: snapshot+CAS transaccional, readmisión terminal opt-in con autoridad vigente, TTL previo al GET, pasada prospectiva/secuencia monotónica y materialización solo de manifests completos concordantes/procedencia v4. Sin producción/DB/red/build/Git/suite general. ASIGNADO; entregará GREEN+hashes+cese. |
+| Root | Modelo/export/schema/índice de fase1; nuevos operador y pruebas bajo `infra/operations/`/`tests/` aún sin asignar; docs centrales/Git/build/producción | Único escritor compartidos. Implementará el operador dry-run/apply condicionado después del contrato CUOTAS y controles. No editar Modules asignados antes de entrega+cese. |
+| AMQP | Sin cambios | Entrega original preservada; no replay ni agentes adicionales. |
+
+Pruebas fase2 enfocadas exclusivamente con fakes y sockets denegados; no abrir
+Mongo27028 existente. Integración Mongo y suite general serán Root, serializadas
+tras congelación y verificación del fixture aislado. Readmisión default NOOP;
+plan expired/paused actual nunca se convierte en autoridad por el fix. Dos nuevos
+manifests concordantes siguen obligatorios; oldpartial150 no prueba las210.
+
+**Ampliación exacta de ownership fase2:** CUOTAS es también único escritor de
+`modules/sheets/src/zeler_sheets/history_question_publication.py` (noveno path).
+Core ya permite fetched<=discovered al completar: no cambiar el modelo activo
+para inventar cobertura. Publicar/leer solo el subconjunto del rango original,
+conservando total global y ambos manifests completos; fuera-rango no provoca
+GET ni datos fuera del intervalo ni conteos falsos en el certificado.
+
+**Fence compartido definido por Root:** readmisión usa un verdadero write
+transaccional monotónico de metadata `history_readmission_revision` en el plan,
+inicialmente ausente→1; tipo inválido/overflow rechazan. No es crédito/consumo ni
+deadline ni se utiliza para reautorizar sends. Se valida el hash BSON completo
+del plan dentro de la misma transacción, y se cercan sus cambios concurrentes con
+ese `$inc`; no presentar `$set state=paused` no-op como prueba de serialización.
+Todo conflicto rollback archive/head/job/fence. Cada reintento Mongo revalida reloj
+y autoridad; no retry de proveedor. Root recibo post-apply deberá ligar el nuevo
+hash completo del plan y los mismos contadores antes de cualquier futura resume.
+
+**Fase1 Mongo real enfocada, aislada:** CHECKPOINT-VERSION-MONGO-CONTRACT-1
+PASS08:41:24.319065 UTC/container0. Perfil propio `zeler-goal-gates-0e221d445eed`,
+IDs/nombres/owner labels/volúmenes comprobados, PRIMARY rs0/27028 explícito,
+sin MONGO_URI ambiental. Nuevo DB sintético propio: insert/readback BSON byteigual;
+otra `_id` misma identidad rechazada E11000, snapshot no-binario y campo de crédito
+extra rechazados121. Original único intacto; DB propio eliminado con ownership
+comprobado y cliente cerrado. No probar append-only/Tx/autoridad con este resultado.
+Recurso exclusivo Root; CUOTAS solo fakes sin sockets, no suite general paralela.
+
+**Rollback a preparar antes de cualquier rollout:** schemas de head/receipt no
+cambiaron, archivo nuevo es aditivo. Antes de readmisión puede volver la imagen
+anterior sin tocar datos. Después de una pasada nueva, la imagen anterior no queda
+autorizada para ejecutar ese head con secuencia global: rollback únicamente cerrado
+(plan PAUSED, HISTORY OFF, HOLD true), conservando versiones, head nuevo, jobs y
+consumos; nunca devolver el puntero al checkpoint anterior para fingir reset seguro.
+
+**Precisión de formato de pins:** las lecturas anteriores `59dd…`/`60d1…`
+calculaban SHA de `BSON.encode` del documento decodificado completo; no garantizan
+bytes wire originales. El nuevo contrato exige `RawBSONDocument.raw` sin fallback
+de reconstrucción. `expected_plan_bson_sha256` tampoco es el hash JSON canónico
+`op.plan_sha256` anterior153a; el operador deberá obtener el pin wire fresco.
+
+**QUESTIONS-WIRE-BSON-PIN-1** STOP08:46:37.981866 UTC/4 comandos/cleanup cerrado/
+SSH2/5.395 s: plan PAUSED81/79/24/ventana expirada sí observado; no se obtuvieron
+pins wire, no comparación byteigual acreditada y **no se repitió**. Código primario
+del SDK local demuestra que `Database.command` no hereda codec_options del DB y
+usa DEFAULT_CODEC_OPTIONS salvo parámetro explícito, explicación compatible con
+el resultado. Colecciones Raw y .raw serán obligatorias en el helper/operador;
+no presentar pin reserializado como original exacto ni inferir un hash nuevo.
+
+**Fase2 RED real recibida, writer sigue activo:** 31 FAIL/1 PASS en32 fakes contra
+comportamiento previo (API readmisión ausente,20 GET de detalle por frame, TTL
+después de dispatch y verification page_sequence0). Dos errores anteriores de
+import fixture se preservaron/separaron, no contados como semánticos. CUOTAS
+implementa solo sus nueve paths; Root no edita esos archivos ni ejecuta suite
+general. Producción continúa pausada; ningún build/commit del feature incompleto.
+
+**Root operador, ownership exacto adicional:** nuevos
+`infra/operations/zelerdata_history_question_cursor.py` y
+`tests/test_zelerdata_history_question_cursor.py`, solo Root. Primero TDD del
+inspector de pins wire (colecciones Raw, PRIMARY+3 documentos, cero transporte),
+CLI default NOOP. Apply se integra únicamente después del contrato CUOTAS+cese,
+con permisos/recibos/ventana y controles reales; no ofrecer inspect como write
+ni precondiciones como autorización. Sin tocar los nueve paths de CUOTAS.
+
+**Entrega fase2 recibida+cese:** nueve SHA cotejados exactos;37 fakes PASS/8.11 s,
+ruff/formato/mypy8 PASS. Root integra a partir de este punto, no modifica el informe
+especialista. Ambos agentes quedaron sin escritores. Root toma explícitamente
+`modules/sheets/tests/test_history_questions.py` para expectativas antiguas de
+reset: deben probar STOP/guardar head+attempts+receipts y secuencia global monotónica.
+Primero validación enfocada real; suite general solo con código final congelado.
+
+**Root inspector:**10 RED estructurales→10 GREEN; después3 RED semánticos (scope/
+contadores desconocidos y falso PASS antes de close)→13 GREEN. Core17+Ops13 juntos
+30 PASS/ruff/formato/mypy2 PASS. Default NOOP sin factory; inspección requiere
+contexto aprobado y cuatro lecturas Raw exactas, pins sin rebuild/reencode,
+expired/future/livelease no grant; cierre fallido produce único STOP sanitizado.
+No ejecutado contra producción ni presenta apply como implementado.
+
+**Root controles enfocados reales:** primer snapshot1124/tar0e242:14 FAIL/102 PASS;
+13 expectativas antiguas de reset/secuencia/GET/fields y una carrera DDL de fixture
+fresco (namespace jobs inexistente bajo doce admissions). Root conserva ese RED:
+fixture precrea namespaces como bootstrap real, STOP conserva head/attempts/receipts,
+secuencia global3/2, fallback devuelve campos canónicos explícitos y scan completo
+no exige GET redundante. Sin reducir assertions/skips ni cambiar el enqueue por
+una carrera de inicialización ajena al test. Round2 snapshot1124/tar
+`7e60c1c17e7f18d2b4f8967a9f8d76454e60ee55027bd15788dd41370bd4894a`:
+**116 PASS**/14.74 s (15.86 s supervisor), bytes/modos intactos; no suite general aún.
+
+**Readmisión Mongo real aislada:** primer harness STOP TypeError por
+`all(async generator)` local, guard negativo/cleanup propio preservados; no fallo
+de proveedor ni repetición productiva. Nuevo harness corregido, DB sintético propio,
+QUESTION-READMISSION-MONGO-2 **PASS**: PRIMARY/validators+índice reales,
+bad pin rollback sin writes, archivo head+job wire byteigual, pass2/secuencia3/
+attempts1, mismo job pending y plan cambia exclusivamente metadata revision1.
+DB propio eliminado con ownership y cliente cerrado. Nada se aplicó en producción.
+
+**Congelación final:** ambos especialistas+código Root cesaron; la readmisión
+canónica mutante está en `FormulaRecoveryQueue.readmit_question_cursor`, DB-only y
+opt-in; el inspector Root permanece read-only. El coordinador preparará el driver
+acotado a esa API, con recibos/autoridad vigente y sin permisos implícitos, para la
+operación futura. No hace falta crear un endpoint/admin UI de write ni atribuir
+capacidad de apply al CLI inspector. Se ejecutarán ocho gates finales completos
+sobre snapshot nuevo, sin usar el antiguo6504 como prueba de estos cambios.
+
+**Primeros ocho gates finales:** snapshot1124/tar369675: focused116/ruff/formato/
+mypy679/direct-Meli/schema PASS; full **1 FAIL/6570 PASS/20 SKIP**/408.685 s,
+únicamente allowlist exacta de archivos schema que omitía la nueva colección.
+Root añadió el nombre a EXPECTED_FILES y ACTIVE_NON_PLACEHOLDER_SCHEMAS en
+`tests/test_mongo_schemas_placeholder.py`, sin relajar igualdad ni convertirlo en
+placeholder;31 enfocados PASS. Root actualizó únicamente los párrafos pertinentes
+del runbook deploy (14 sin Full, archivo/readmisión/STOP/procedencia/rollback
+cerrado). Re-congelación y repetición de los ocho controles completa obligatoria;
+no build/publicación productiva desde el run fallido.
+
+**Ocho gates finales PASS:**1124 paths/tar
+`0089523c530badf9c16c65a753d5a1cd3ca24f729180cebb65cabbee9beae1c9`, bytes/modos
+actuales cotejados exactos. Full **6571 PASS/20 SKIP**09:32:18.562399→09:39:10.470214
+UTC/411.908 s (pytest409.42 s); protegidos **19 PASS/0 SKIP**5.693 s; focused116 PASS;
+ruff/formato/mypy679/direct-Meli/schema PASS. Los skips no prueban aceptación.
+Solo apéndice documental posterior a estos controles; código/config/tests iguales.
+Unidad propia lista para publicación; impacto servido esperado exclusivamente
+Sheets worker histórico, no API/Gateway/frontend/AppsScript. La operación productiva
+continúa PAUSED81/79/24/Full0 y la ventana08:17:23 expiró; build no activa readmisión.

@@ -38,6 +38,7 @@ EXPECTED_FILES = {
     "repricer_reports.json",
     "repricer_monitoring_snapshots.json",
     # Sheets module-owned
+    "sheets_history_checkpoint_versions.json",
     "sheets_history_receipts.json",
     "sheets_history_acquisitions.json",
     "sheets_exports.json",
@@ -91,6 +92,7 @@ EXPECTED_FILES = {
     "competition_snapshots.json",
 }
 ACTIVE_NON_PLACEHOLDER_SCHEMAS = {
+    "sheets_history_checkpoint_versions.json",
     "sheets_history_order_ranges.json",
     "sheets_history_receipts.json",
     "sheets_history_acquisitions.json",

@@ -657,6 +657,30 @@ class FormulaRecoveryQueue:
             )
         return admitted_key
 
+    async def readmit_question_cursor(
+        self,
+        request: QuestionScanRecoveryRequest,
+        *,
+        opt_in: bool = False,
+        execution_id: str,
+        expected_plan_bson_sha256: str,
+        expected_head_sha256: str,
+        expected_job_sha256: str,
+    ) -> dict[str, Any]:
+        from zeler_sheets.history_checkpoint_versions import readmit_question_cursor
+
+        if not isinstance(request, QuestionScanRecoveryRequest):
+            raise ValueError("question readmission requires its fixed request")
+        return await readmit_question_cursor(
+            self,
+            request,
+            opt_in=opt_in,
+            execution_id=execution_id,
+            expected_plan_bson_sha256=expected_plan_bson_sha256,
+            expected_head_sha256=expected_head_sha256,
+            expected_job_sha256=expected_job_sha256,
+        )
+
     async def checkpoint_inventory(
         self,
         job: dict[str, Any],
@@ -872,6 +896,7 @@ class FormulaRecoveryQueue:
             "recovery_failed",
             "source_temporarily_unavailable",
             "source_rejected",
+            "source_cursor_expired",
             "source_incomplete",
             "storage_unavailable",
         }:

@@ -1,0 +1,14 @@
+[
+  {
+    "keys": {
+      "acquisition_id": 1,
+      "generation": 1,
+      "pass_number": 1,
+      "checkpoint_revision": 1
+    },
+    "options": {
+      "name": "uniq_sheets_history_checkpoint_version",
+      "unique": true
+    }
+  }
+]

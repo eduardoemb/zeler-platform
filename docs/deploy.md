@@ -117,9 +117,12 @@ docker compose version
 
 The quality acquisition rollout uses the exact read-only scopes
 `GET /item/*/performance` and `GET /user-product/*/performance`: Sheets
-registration has 13 scopes and six routing keys. The manifest, seed and rollback
-verifier must agree. Prepare a verified rollback API image with this registration contract before activating quality;
-an older image that restores 11 or 12 scopes is not a compatible rollback authority.
+registration originally used a 13-scope quality baseline. The current historical
+pilot preserves **14 scopes without Full and six routing keys**; consult its
+central ledger before operating. The manifest, seed and rollback verifier must
+agree. Prepare a verified rollback API image with the actual live registration
+contract before activating quality; an image omitting a live scope or adding
+Full is not a compatible rollback authority.
 The complete registration fingerprint is authoritative, not the counts alone.
 The preflight reports successful contract verification without hard-coded counts;
 the verified proof records the actual scope and routing-key counts. Keep the VM
@@ -196,6 +199,34 @@ reconciled interval marker before treating its coverage as live. An empty or
 failed scan is not historical coverage; retain a compatible worker rollback
 that understands protocol-versioned jobs and receipts. This flag does not
 activate shipments or items history.
+
+Question cursors are not durable across pauses: a known cursor with a last page
+observation at least five minutes old is stopped before transport; missing or
+future observation clocks also fail closed. Questions expiry/manifest drift
+preserves the head, receipts and retry attempt rather than restarting it.
+Explicit expiry readmission uses `FormulaRecoveryQueue.readmit_question_cursor`
+with three fresh **wire BSON** pins and a currently authorized paused execution.
+Apply only the additive `sheets_history_checkpoint_versions` validator/index
+before that operation, from the approved VM context. One snapshot/majority
+transaction archives the exact original head/job bytes and advances a prospective
+pass with unchanged identity, generation, range, physical quotas and deadline;
+global page sequence does not decrease. Plan revision metadata is a real
+transaction fence, not new credit. Default `enqueue` cannot reopen this job.
+
+Two complete matching v4 manifests may supply complete question facts directly,
+with `source_version=questions.scan.v4.verified`; this is not a claim that a
+`/questions/{id}` GET occurred. Only missing fields use bounded detail fallback.
+Global scan membership is retained while publication/certificates cover only the
+requested interval. Old partial manifests, rows, tests and health alone do not
+prove coverage or productive acceptance.
+
+The Root inspector `infra.operations.zelerdata_history_question_cursor` defaults
+to NOOP and is read-only when explicitly invoked. It does not apply readmission,
+extend time or authorize transport. See
+[`zelerdata-historico-paralelo.md`](sheets/zelerdata-historico-paralelo.md) for the
+single operational ledger. After a prospective pass, rollback to an older worker
+is closed-only (PAUSED, history disabled, admission held); preserve the new head,
+original versions, jobs and consumption instead of restoring an old checkpoint.
 
 Old-order modification reconciliation is a separate Sheets-worker flag:
 `ZELERDATA_ORDER_MODIFICATION_SCAN_ENABLED=true`. It requires formula recovery,

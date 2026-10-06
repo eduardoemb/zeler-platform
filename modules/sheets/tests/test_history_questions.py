@@ -67,6 +67,10 @@ async def queue(tmp_path: Path) -> AsyncIterator[FormulaRecoveryQueue]:
             (tmp_path / directory / filename).write_text((root / directory / filename).read_text())
     try:
         await asyncio.to_thread(apply_validators, uri, tmp_path / "schemas")
+        # Production bootstrap establishes namespaces before concurrent admission.
+        # Do not make this admission test race implicit collection creation.
+        for collection in ("sheets_formula_recovery_jobs", "sheets_formula_recovery_admission"):
+            await client[name].create_collection(collection)
         yield FormulaRecoveryQueue(client[name], now=lambda: NOW, max_active_jobs_per_seller=2)
     finally:
         await client.drop_database(name)
@@ -152,7 +156,7 @@ async def test_readmission_does_not_reopen_scan_manifest(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("reason", ["cursor_expired", "source_drift"])
-async def test_restart_preserves_receipts_and_rotates_manifest(
+async def test_restart_signal_stops_without_replacing_original_checkpoint(
     queue: FormulaRecoveryQueue, reason: str
 ) -> None:
     scan = request()
@@ -189,18 +193,17 @@ async def test_restart_preserves_receipts_and_rotates_manifest(
     claimed = await queue.claim(history=True)
     assert claimed is not None
     assert await initialize_question_scan(store, claimed, scan) == saved
-    restarted = await runner.release(claimed, saved, reason=reason)
-    assert restarted.pass_number == 2 and restarted.next_cursor is None
-    assert restarted.drift_restarts == 1 and restarted.discovered_count == 0
+    before_head = await store.heads.find_one({"_id": saved.id})
+    before_attempts = claimed["attempts"]
+    stopped = await runner.release(claimed, saved, reason=reason)
+    assert stopped == saved
+    assert await store.heads.find_one({"_id": saved.id}) == before_head
     assert await store.receipts.count_documents({"pass_number": 1}) == 1
-    assert restarted.date_from == START and restarted.date_to == NOW
-    for _ in range(3):
-        claimed = await queue.claim(history=True)
-        assert claimed is not None
-        restarted = await runner.release(claimed, restarted, reason=reason)
+    assert stopped.date_from == START and stopped.date_to == NOW
+    assert await queue.claim(history=True) is None
     final = await queue.collection.find_one({"_id": scan.key})
     assert final is not None and final["state"] == "failed"
-    assert restarted.drift_restarts == 3
+    assert final["attempts"] == before_attempts and stopped.drift_restarts == 0
 
 
 def question(identity: int, **changes: Any) -> dict[str, Any]:
@@ -250,7 +253,7 @@ async def test_normalized_scan_resumes_and_verifies_without_certification(
     head = await runner.page(
         await claim(queue), head, QuestionScanPage([question(2), question(1)], 2, None, True, NOW)
     )
-    assert head.phase == "verify" and head.next_cursor is None and head.page_sequence == 1
+    assert head.phase == "verify" and head.next_cursor is None and head.page_sequence == 3
     assert head.fetched_count == 0 and await runner.store.receipts.count_documents({}) == 4
     assert await runner.store.db.sheets_read_model_freshness.count_documents({}) == 0
 
@@ -316,7 +319,12 @@ async def test_verified_membership_fetches_only_missing_question_details(
             assert seller_id == "82453304"
             self.paths.append(path)
             identity = int(path.split("/")[-1].split("?")[0])
-            return rows[identity - 1]
+            return {
+                **rows[identity - 1],
+                "item_id": f"MLA{identity}",
+                "from_user_id": "101",
+                "text": f"Question {identity}",
+            }
 
     gateway = DetailGateway()
     head = await runner.fetch_and_hydrate(await claim(queue), head, gateway)
@@ -346,7 +354,12 @@ async def test_question_detail_acquisition_resumes_after_twenty_receipts(
             assert seller_id == "82453304"
             self.paths.append(path)
             identity = int(path.split("/")[-1].split("?")[0])
-            return rows[identity - 1]
+            return {
+                **rows[identity - 1],
+                "item_id": f"MLA{identity}",
+                "from_user_id": "101",
+                "text": f"Question {identity}",
+            }
 
     gateway = DetailGateway()
     head = await runner.fetch_and_hydrate(await claim(queue), head, gateway)
@@ -374,26 +387,35 @@ async def test_verification_detects_manifest_drift(
         job, head, QuestionScanPage([question(1), question(2)], 2, None, True, NOW)
     )
     head = await runner.begin_verification(await claim(queue), head)
+    before = head
     head = await runner.page(
         await claim(queue), head, QuestionScanPage(rows, total, None, True, NOW)
     )
-    assert head.phase == "discover" and head.drift_restarts == 1 and head.pass_number == 3
+    assert head == before
+    assert await queue.claim(history=True) is None
+    terminal = await queue.collection.find_one({"_id": head.job_id})
+    assert terminal is not None and terminal["state"] == "failed"
     assert await runner.store.receipts.count_documents({}) == 2
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("expired", [True, False])
-async def test_expiry_or_duplicate_restarts_without_discarding_receipts(
+async def test_expiry_or_duplicate_stops_without_discarding_checkpoint_or_receipts(
     queue: FormulaRecoveryQueue, expired: bool
 ) -> None:
     runner, job, head = await scan_state(queue)
     head = await runner.page(job, head, QuestionScanPage([question(1)], 2, "same", False, NOW))
     job = await claim(queue)
+    before = head
+    before_attempts = job["attempts"]
     if expired:
         head = await runner.cursor_expired(job, head)
     else:
         head = await runner.page(job, head, QuestionScanPage([question(1)], 2, None, True, NOW))
-    assert head.next_cursor is None and head.pass_number == 2 and head.drift_restarts == 1
+    assert head == before
+    terminal = await queue.collection.find_one({"_id": head.job_id})
+    assert terminal is not None and terminal["state"] == "failed"
+    assert terminal["attempts"] == before_attempts
     assert await runner.store.receipts.count_documents({}) == 1
 
 
@@ -405,7 +427,7 @@ async def test_empty_terminal_needs_second_observation_and_stays_nonterminal(
     head = await runner.page(job, head, QuestionScanPage([], 0, None, True, NOW))
     head = await runner.begin_verification(await claim(queue), head)
     head = await runner.page(await claim(queue), head, QuestionScanPage([], 0, None, True, NOW))
-    assert head.phase == "verify" and head.page_sequence == 1 and head.observed_until == NOW
+    assert head.phase == "verify" and head.page_sequence == 2 and head.observed_until == NOW
     with pytest.raises(ValueError, match="finished"):
         await runner.page(await claim(queue), head, QuestionScanPage([], 0, None, True, NOW))
 
@@ -709,7 +731,7 @@ async def test_question_history_worker_completes_shared_scan_and_publication(
     for _ in range(7):
         assert await worker.process_one()
     assert not await worker.process_one()
-    assert gateway.searches == 2 and gateway.details == 1
+    assert gateway.searches == 2 and gateway.details == 0
     assert (await history_queue.collection.find_one({"_id": request().key}))["state"] == "completed"
     assert await history_queue.collection.database.questions.count_documents({}) == 1
 

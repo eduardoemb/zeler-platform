@@ -19,6 +19,7 @@ from zeler_sheets.history_acquisition import (
 )
 from zeler_sheets.history_continuation import HistoryContinuation, _binding
 from zeler_sheets.history_publication import _withdraw
+from zeler_sheets.history_questions import question_target_members
 from zeler_sheets.item_projection import item_source_fingerprint
 
 
@@ -62,12 +63,16 @@ class HistoryQuestionPublisher:
                 "seller_id": head.seller_id,
                 "read_model": "questions",
             }
+            targets = await question_target_members(self.store, head, session=session)
             members = await (
                 self.store.receipts.find(
                     {
                         **scope,
                         "kind": "membership",
-                        "resource_id": {"$gt": head.publish_after or ""},
+                        "resource_id": {
+                            "$gt": head.publish_after or "",
+                            "$in": [r.resource_id for r in targets],
+                        },
                     },
                     session=session,
                 )
@@ -166,7 +171,6 @@ class HistoryQuestionPublisher:
             or head.source_total is None
             or observed_until is None
             or head.published_count != head.fetched_count
-            or head.fetched_count != head.source_total
         ):
             raise HistoryConflictError("question finalization requires every verified member")
 
@@ -183,6 +187,9 @@ class HistoryQuestionPublisher:
                 or any(claimed.get(key) != value for key, value in _binding(head).items())
             ):
                 raise HistoryConflictError("question finalization checkpoint changed")
+            targets = await question_target_members(self.store, head, session=session)
+            if head.fetched_count != len(targets):
+                raise HistoryConflictError("question target count differs from verified scan")
             scope = {
                 "seller_id": head.seller_id,
                 "date_created": {"$gte": head.date_from, "$lt": head.date_to},

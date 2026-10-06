@@ -301,6 +301,18 @@ class HistoryContinuation:
         async def transaction(session: Any) -> SheetsHistoryAcquisition:
             claimed = await self._current(job, expected, session)
             restart = reason in {"cursor_expired", "source_drift"}
+            if expected.read_model == "questions" and restart:
+                finished = await self.store.queue.finish(
+                    claimed,
+                    succeeded=False,
+                    failure_reason="source_cursor_expired"
+                    if reason == "cursor_expired"
+                    else "source_incomplete",
+                    session=session,
+                )
+                if not finished:
+                    raise HistoryConflictError("question stop lost owner")
+                return expected
             if reason == "failure" or (restart and expected.drift_restarts == 3):
                 finished = await self.store.queue.finish(
                     claimed,
