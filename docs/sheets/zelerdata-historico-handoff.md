@@ -7,13 +7,13 @@
 > así que no se declara PASS limpio. Todos sus recursos propios se
 > retiraron y los errores de cierre se conservan. La admisión legacy ya tiene
 > una corrección aditiva con TDD y gates finales (6421PASS/19protegidas),
-> todavía sin publicar/build/desplegar.
-> Consultar §10 y el ledger único; no ejecutar nuevamente los pasos históricos.
+> ya publicada y con Gateway nuevo VERIFIED, todavía sin desplegar/activar.
+> Consultar §11 y el ledger único; no ejecutar nuevamente los pasos históricos.
 
 
 **Punto de entrada único para retomar; objetivo global NO completado.** La pausa
 del cierre inicial del 5 de octubre fue revocada por reanudación expresa; aplicar
-el estado vigente de §10 y del ledger, no estados previos de la cronología.
+el estado vigente de §11 y del ledger, no estados previos de la cronología.
 No avanzar rollout/OAuth/piloto sin gates. Este archivo registra evidencia
 fechada; ninguna observación pasada implica salud actual.
 
@@ -506,3 +506,39 @@ trabajo propio → Cloud Build Gateway afectado → rollout seleccionado con gat
 OAuth/prepare/ejecución **solo con baselines y quiescencia acreditados** → aceptación
 original. Si hay identidad/day/deadline previos, se conservan; no nuevo UUID ni
 ventana artificial para superar un gate.
+
+
+## 11. Publicación y única imagen nueva verificada
+
+**2026-10-06T03:28:49.943072+00:00 — preparación concluida, producto aún no aceptado.**
+
+- Código propio: `1c367664569e2f908298047a6bdc508bf304ab8f`.
+- Evidencia/documentación: `a10e31496c408f9ab321196fc5ad27f2cc6a10b8`;
+  main/remoto exactos y tree limpio observados antes del build. Solo26paths propios.
+- Candidato1101paths/tar40f2645a, todos905codebytes/modos preservados hasta commit.
+  Full6421PASS/20SKIP, protected19PASS, focused55PASS, ruff/formato/mypy667/
+  direct-Meli/schemaPASS. Primerfull1FAIL porfakeNone/CAS se conserva; se corrigió
+  solo `test_lifespan_rabbit.py`, sin debilitar el guard, y pasó el rerun completo.
+- **Un solo Gateway**: build `121b3b08-3d3f-4b12-b40c-2a4f2ba7d590`,
+  SUCCESS/VERIFIED, sourcea10e exacto del repositorio conectado, verificador canónico
+  artifact/build/project/source/repo/digestPASS.
+  `us-central1-docker.pkg.dev/zeler-platform-dev/zeler-platform/gateway@sha256:4f90ba7c48fd2258f35cb4b80a2ab3d8eb93d30786ce761d32a6b6a3475e8268`.
+- Worker69d9/source352 ya VERIFIED se reutiliza; API3f7 no se reconstruye.
+  Los helpers/constants core usados por ellos conservan AST.
+- **0descargas VM,0despliegues,0OAuth,0prepare/piloto de esta continuación** al
+  registrar este snapshot. Runtime observado aún7054/79f/3f7: no confundirlo con
+  la imagen construida. Se requieren controles/render/capacidad frescos y un
+  rollout cerrado worker→Gateway antes de activar nada.
+
+Broker: muestra propia con perfil real confirmó nonce8.03s y retiro de2colas,
+pero terminó STOPcleanupSSL. Se admite solamente como evidencia de esa muestra;
+no cleanTCP, no pérdida90min ni rutaWAIT del worker. No repetir para mejorarclose.
+La admisión del piloto requiere evaluación proporcional explícita de riesgos/
+controles y aceptación original, no basta la salud ni este build.
+
+OAuth: lectura del frontend encontró CTA oculto para cuentas activas y sin entrada
+ML desde SheetsConfig; no se modificó frontend ni se revocó/copió token alguno.
+Root deberá verificar el entrypoint normal desde el contexto autenticado real,
+sin force, reasignación manual ni callback sintético. El plan legacy mantiene
+cutoff/progress; campos canónicos genuinamente ausentes permiten únicamente seed
+prospectivo pausado dentro de ese OAuth, no saldo histórico ni ventana renovada.
