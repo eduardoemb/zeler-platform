@@ -5,11 +5,12 @@ con archivos exclusivos; el coordinador integra y es el único operador de Git y
 producción. El usuario reanudó trabajo local y coordinación el 5 de octubre de
 2026. Los permisos productivos previos siguen condicionados; Full sigue excluido.
 
-> **Estado más reciente (2026-10-06T19:37:22Z):** piloto PAUSED/HISTORY OFF,
-> worker1681 desplegado, 368 cargos/365 envíos, Full0; Shipments inicial agotado.
-> STOP Mon5 por fallo de fuente con 429 remotos; sin proveedor adicional.
-> La tabla AMQP siguiente es histórica. Ver el ledger Mon5 al final y
-> [handoff §14](zelerdata-historico-handoff.md#14-mon5-worker-desplegado-fallo-remoto-y-cierre-seguro).
+> **Estado más reciente (2026-10-06T20:32:52Z):** piloto PAUSED/HISTORY OFF,
+> workerbe4/sourceed2715a desplegado, 368 cargos/365 envíos, Full0;
+> Shipments inicial agotado. Plazo original20:32:58 transcurrido sin resume.
+> Excepción pull consumida; prórroga20:42:58 sólo rollout cerrado, no proveedor.
+> Tablas anteriores son históricas; ver ledger al final y
+> [handoff §16](zelerdata-historico-handoff.md#16-rollout-cerrado-del-fix429-excepción-consumida-y-plazo-conservado).
 
 ## Estado histórico de la continuación AMQP
 
@@ -2703,3 +2704,56 @@ before/after universal. No inferir dos cambios de los28sends. Muestra nativa y
 API parcial28 anteriores siguenPASS; anual cincofuentes y2genuine siguenpendientes.
 No reentrada nativa, eventos sintéticos, baseline reconstruida, replay ni nueva
 consulta de proveedor. Continúa selección worker cerrado del apartado anterior.
+
+### Exploración readonly adicional: granularidad Shipments (20:28 UTC)
+
+Root encontró en código que onboarding crea lotes de100 shipment IDs; el worker
+hace relación, detalle y costo (tres solicitudes por ID) y publica sólo al final
+del lote. Un lote completo puede necesitar300 solicitudes, más que el cap inicial
+250 preservado. Esto demuestra riesgo de perder progreso del lote al agotar cuota;
+no demuestra aún que sea la causa única de los4pending/0completed de Mon5.
+
+CUOTAS recibe sólo lectura de cuatro paths exactos:
+`modules/sheets/src/zeler_sheets/history_onboarding.py`,
+`modules/sheets/src/zeler_sheets/formulas/recovery_worker.py`,
+`modules/sheets/src/zeler_sheets/formulas/recovery.py`,
+`modules/sheets/src/zeler_sheets/event_persistence.py`.
+Entrega propuesta delimitada de avance durable por identidad/unidad y conservación
+de la autoridad, counters, leases, bindings y snapshots. Sin editar, pruebas, DB,
+red, producción, agentes, Git/build ni artefactos nuevos. Si requiere schema/Core
+u otro path, propuesta sin editarlo; Root mantiene propiedad de compartidos.
+No reusar IDs ya consumidos como nuevos créditos, reconstruir payloads perdidos,
+resetear job/cuota ni reetiquetar inicial como maintenance. Sólo más cuota no
+corrige la granularidad. AMQP permanece congelado; el rollout cerrado no amplía
+la adquisición. All8 anteriores cubren el fix429, no certifican esta hipótesis.
+
+
+### Ledger final de build/rollout cerrado (UTC)
+
+| Intento / autoridad | Resultado | Consumo / preservación |
+| --- | --- | --- |
+| WORKER-PILOT429-STOP-BUILD1 | SUCCESS/VERIFIED4dec4719-200f-4bac-ba70-0aeb416949c6, sourceed2715a, digestbe4; canonical20:16:34 | Una submission; GW/API no rebuild |
+| WORKER-PILOT429-STOP-DEPLOY1 | STOP20:19:28/133.400s/SSH2/TimeoutExpired pull120; no recreate | Una descarga iniciada, completion incierto entonces; contador0 no demuestra0 intentos |
+| PULL-RESULT-READ1 / DAEMON-LOG-META1 | PASS20:20:41/10.073s y20:21:51/4.280s; targetmissing/old1681ready/planSHA42a intacto;3selectedcancelled | Sólo lecturas,0nuevo pull/Meli/Mongo mutante; no ausencia global/authcause |
+| Excepción pull240 recibida | UsuarioSí; guardlocal rejects20:23:57 antesSTART/SSH | Cero segundo intento en ese rechazo; no prórroga automática |
+| Prórroga cerrada explícita | UsuarioSí10min hasta20:42:58 únicamenterollout; pilotuntil20:32:58 intacto | No cuota/Full/sourceGET ampliados |
+| WORKER-PILOT429-PULL-EXCEPTION1 | PASS20:27:33/112.394s/SSH0, descarga completa1 + primera recreación,23layers/one-image | Excepción consumida; be4 servido, GWc905/API3f7/rollback1681; H1/recoveryrefreshOFF;0provider/resume |
+| FINAL-HEALTH-CAPACITY1 | NameError en global antesbody; JSONrecibo ausente, originalpreservado; ROOTprefixRED/GREEN prueba0queries | No inferir0 por mera falta de recibo; código/stderr acreditan fase |
+| FINAL-HEALTH-CAPACITY2 | PASS20:32:52/11.034s/SSH0;3servicios healthy/restart0/OOMfalse, PRIMARY/planSHA42a/PAUSED368/365/Full0/23layers | MontajeMongoexacto; raíz31,382,970,368/Mongo47,447,777,280/RAMavail1,811,509,248;0mutaciones/pull/proveedor |
+
+Todos los procesos anteriores terminaron; no repetir excepción ni reconstruir
+imágenes por este reporte. Imagen ejecutable actualbe4/sourceed2715a coincide con
+la unidad validada; anotaciones documentales posteriores no afectan runtime.
+Registry14/Full excluido/datos/jobs/checkpoints no se mutaron. Su último readback
+es el previo registrado; no inventar una nueva lectura integral de registro/jobs.
+El piloto permanecióPAUSED al transcurrir20:32:58. Más diez minutos cerrados no
+son adquisición, nuevo EID o reinicio. Anual5fuentes/2genuine siguenNO aceptados.
+
+CUOTAS readonlyShipments ENTREGADO/cese: propuesta mantienejobkey/lista100,
+checkpointporidentidad+persist/CASmisma txn _owned(owner/state/lease)/seller/key/
+lista/oldoffset. Campos independientes útiles pueden persistirse, pero costo
+transitorio no concluyeunidad ni autoriza fresco/cero inventado. Model/schema
+Rootdebeverificar; propuestaNO implementada, no nuevosfiles/tests/sourceGET.
+No recuperaroffset/payloaddesde250cargos o documentos actuales, nofragmentación
+retroactiva/relabelmaintenance. Ese déficit también queda pendiente, sin olvidar
+los otros gates de aceptación originales.

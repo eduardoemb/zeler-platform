@@ -1,16 +1,15 @@
 # ZelerData: handoff del histórico al vincular
 
-> **Última evidencia operativa: 2026-10-06T19:37:22.486967Z; objetivo abierto.**
-> Gateway `c905f4…`/source bc93, worker `1681e6…`/source c5378c9, API3f7 preservada.
-> PAUSED, HISTORY OFF; 368 cargos/365 envíos, 340 iniciales/28 mantenimiento,
-> Full=0. Mismos datos, cutoff, cuotas, EID y techo 20:32:58 UTC; sin refund/reset.
-> Questions p3/gen1/rev6/globalSeq4 sin nueva adquisición; p2/50 archivado intacto.
-> Corrección capacity desplegada; controles 6702 PASS/20 SKIP +19 protectores PASS.
-> Mon5 encontró dos 429 remotos y cuatro 404 RETURNS; hubo retry interno antes de
-> la pausa externa. Shipments inicial 250/250 agotado; Claims tres unidades fallidas.
-> No continuar proveedor ni ampliar Shipments; fail-fast local validado, aún sin rollout.
-> Cinco fuentes/12 meses legibles y dos incrementales genuinos pendientes;
+> **Última evidencia operativa: 2026-10-06T20:32:52.806288Z; objetivo abierto.**
+> Gateway `c905f4…`/source bc93, worker `be4fc0…`/source ed2715a, API3f7 preservada.
+> Fix429 publicado, build VERIFIED y rollout cerrado PASS; 23 capas Compose.
+> PAUSED, HISTORY/recovery/refresh OFF; 368 cargos/365 envíos,
+> 340 iniciales/28 mantenimiento, Full=0. Plan completo SHA42a3… preservado.
+> Plazo del piloto original20:32:58 UTC ya transcurrido; no fue prorrogado.
+> Prórroga adicional20:42:58 sólo rollout cerrado, no adquisición ni más cuota.
+> Shipments inicial250/250 agotado; Claims3 fallidas; Qp3 sin adquisición nueva.
 > OAuth, muestra nativa y API parcial previas PASS dentro de sus alcances.
+> Anual legible cinco fuentes y dos incrementales genuinos siguen NO acreditados.
 > Ver [ledger único](zelerdata-historico-paralelo.md); no repetir pasos históricos.
 
 
@@ -747,8 +746,65 @@ Esto cubre **429**, no todos los 5xx/timeouts; solicitudes ya en vuelo no se des
 | Muestra nativa en Sheet privada | PASS previo06:09:50 UTC: Apps Script completado0.667s, encabezados+3órdenes en4×4; no certificar cinco fuentes desde ella |
 | Fuente por fuente: histórico recuperable anual, cobertura/readers independientes | NO acreditado: Qp3 sin adquisición, Claims3unidades fallidas, Ship250/250 con4pendientes; readyobs no es certificado |
 | Dos ciclos incrementales con cambios empresariales reales posteriores al cutoff | NO acreditado:28sends no prueban cambio; dos passes del mismo scan son un ciclo, no dos. Faltan versiones/baselines reales y readback enlazado |
-| Parada inmediata429 sin retries internos | Mon5 incumplió; fix local PASS, aún no prueba del nuevo comportamiento productivo |
+| Parada inmediata429 sin retries internos | Mon5 incumplió; fix local PASS/imagen servida, sin nuevo ensayo con proveedor por STOP |
 
 No reentrar la fórmula ni repetir llamadas para reconstruir pruebas que ya están
 logradas. Evidencia pasada mantiene su alcance fechado, no prueba salud actual.
 Goal permanece abierto con los dos gates de aceptación principales anteriores.
+
+
+## 16. Rollout cerrado del fix429, excepción consumida y plazo conservado
+
+- Código publicado: `ed2715a1897f24c746cd2d97f79c14c31a072f1f`. Build único
+  `4dec4719-200f-4bac-ba70-0aeb416949c6`, SUCCESS/VERIFIED, repositorio conectado,
+  procedencia canónica verificada20:16:34.936016 UTC. Imagen worker
+  `us-central1-docker.pkg.dev/zeler-platform-dev/zeler-platform/sheets-worker@sha256:be4fc0c55e98c6c1979175e3285fec0bc16741d8e4f970a1e139ccaeb2298612`.
+  Gateway/API no reconstruidos ni sustituidos.
+- Primer rollout STOP20:19:28.810593 UTC/133.400s/SSH2: timeout del pull120s,
+  antes de recrear. Hubo **una descarga iniciada**, no cero: el contador `downloads0`
+  se incrementaba sólo tras el retorno exitoso. Inspección readonly20:20:41 PASS:
+  target ausente, worker1681 sano/PAUSED, ninguna llamada nueva al proveedor.
+  Metadata daemon acotada:3 registros seleccionados cancelados; no causa global
+  de red/auth inferida ni logs/payloads crudos publicados.
+- Usuario autorizó una única repetición pull240s/primera recreación cerrada; guard
+  temporal local rechazó antes de START/SSH. Esa autorización aún no consumida.
+  Luego autorizó10min adicionales hasta20:42:58 UTC **sólo para rollout cerrado**.
+  No se cambió `execution_until` del piloto ni sus presupuestos/checkpoints.
+- Excepción efectivamente ejecutada: PASS20:27:33.484874 UTC/112.394s/SSH0,
+  un pull completado y primera recreación;23 capas, delta exclusivo de imagen.
+  HISTORY/recovery/refresh OFF, gatewayc905/API3f7 intactos. Worker readiness2
+  inicial y +60s, gateway dependencies2, healthy/restarts0/OOMfalse; grace60,
+  outer120. Rollback1681/sourcec5378c9 local/retrievable conservado, sin cleanup.
+  Tres vistas del plan completo iguales SHA
+  `42a3dd0321d7520fe18ed8c35cf7bc1ddc77b02d371b905cd43ba4caa01216aa`:
+  PAUSED368/365/340/28/fence2/Full0/hasta20:32:58. **0 nuevo Meli/0 resume**.
+- Salud/capacidad final readonly PASS20:32:52.806288 UTC/11.034s/SSH0:
+  actualworkerbe4/GWc905/API3f7 sanos,23 capas, montaje Mongo exacto, PRIMARY y
+  mismo hash del plan; rollback1681 existe. Raíz31,382,970,368 bytes libres/
+  6,139,643 inodos; Mongo47,447,777,280 bytes/3,276,150 inodos; RAM disponible
+  1,811,509,248 de4,103,168,000 bytes. Docker22imágenes10.79GB/11containers;
+  sin limpieza de imágenes/volúmenes. El primer observador de esta fase tuvo un
+  NameError antes del cuerpo: stderr+orden de declaraciones y RED/GREEN offline
+  prueban cero Docker/Mongo/Meli en ese intento; originales conservados.
+
+La imagen servida coincide con el commit ejecutable autorizado. Anotaciones
+posteriores de estos documentos no requieren rebuild. La salud/imagen correcta
+no demuestran un nuevo 429 productivo, histórico anual ni cambios incrementales.
+El plazo de adquisición transcurrió20:32:58 sin resume; no usar la prórroga cerrada
+ni el saldo global aritmético para reanudar proveedor.
+
+### Bloqueo adicional identificado: granularidad de Shipments
+
+El código crea lotes de100 IDs, hace relación+detalle+costo por identidad y
+publica sólo al terminar. **100×3=300 solicitudes supera el cap250**; un agotamiento
+puede dejar recursos adquiridos sólo en RAM. Compatible con0completed/4pending,
+no causa runtime única acreditada. CUOTAS entregó propuesta readonly, no fix:
+conservar IDs/key originales, checkpoint estricto por identidad y persistencia
++CAS del cursor en una transacción bajo owner/state/lease/binding. Root debe
+verificar modelo/schema antes de escribir. No seed del cursor desde contadores,
+fechas o documentos actuales; no keys nuevas, refund, phase relabel ni más GET.
+La solución futura no recupera por sí misma los payloads perdidos ni crédito250.
+
+**Aceptación global sigue abierta:** anual legible cinco fuentes y dos ciclos con
+cambios empresariales reales. Muestra nativa/API parcial/OAuth previos preservados;
+ni este despliegue ni las6,725 pruebas reemplazan los gates faltantes.
