@@ -1553,3 +1553,82 @@ Suitegeneral permanece detenida hasta cese deestewriter; código repo Root conge
 **Originalwindowexpired observedclock05:52:59UTC:** no resume/relayexecuted, prórroga authorizationpending/notreceived; no newdeadline/UUID/prepare/refund. **Resultado VM-ACQUIRE112-WORKER-DEPLOY-1:** 05:53:22.234682UTC/115.51sSSH0/PASS/ONEpull+workerup/fullONLYimageDelta/new0df26/source4123601/canonicalbinding/initial+60settleReady2/0restartOOM/GWclosed4f90/API3f7 unchanged/historyrecoveryrefreshOFF. rootfreepre35111440384/post34375737344,inodes6207384;Mongoseparate47457710080/inodes3276153/RAM1888555008 total4103168000swap0;priorCDccclosedPAUSEDrollbackretained. **Inicio PILOT-ORIGINAL-EXPIRY-1:** 2026-10-06T05:56:52.994098+00:00;readonlyPRIMARY+oneexactSplan projection selectedclock/IDbool/counters/Full/sources, max2reads4seach/60hard85exec130remote160SSH/noothercollection/mutations/MeliMQ, confirm expiredoriginaluntil+retainedbalancesinsteadassumption. STOP/no retry.
 
 **Resultado PILOT-ORIGINAL-EXPIRY-1:** 05:56:58.960247UTC/6.077sSSH0/PASSPRIMARY2reads/cleanupclosed; exactsameEID/statePAUSED/until05:52:57.845expired/limit2500/69consumed67sent/total56incremental13/source5noFull/fullused0. No automaticextension/refund/reprepare/relay; requestprórroga específica pendingnotreceived. Rootupdatedhandoff§13/control; QA6453 andruntimeworker0df proven, goalacceptance stillNOTdone.
+
+**Inicio NATIVE-EQUIVALENT-HEADER-1:** 2026-10-06T06:09:40.064718+00:00;independentauthorisedMongo-onlyread sameLaloprivateSheetOrdenesSanasA1/16cells, ONLYencabezadosliteral si→SI (_headers_requested.strip.casefold verifiesTrueboth), sellerHOPEMOB/Sep1→2/todos/buyerempty/ARRAY_CONSTRAIN4x4 unchanged/inactive6untouched; no Token/OAuth/Scope/networkMeli/acquisitionbudget/day/deadline change. Googleofficialcustomfunctionguide sayseditfunctiontriggerrecalc/deterministicargs, no NOW/RAND/extraarg/tempempty/cachefake. ActualUIoriginalfmlaverified beforeoneedit;≤1nativecall/STOP onerror/newgrant, nextboundedAPIlogcorrelation+visualread neededNOTassumefresh. OriginalEID69/67/expireduntilPAUSED remains; specificprórrogapendingnotreceived.
+
+**NATIVEHEADER1 UIresult:** ONEsi→SI commit/displaysguardando then4x4 effectivevisual/no errors/header+3rows at100% preserved; other6tabs untouched. ThisUI isnotalonefreshproof; **Inicio NATIVE-HEADER-LOG-READ-1:** 2026-10-06T06:11:53.273850+00:00;selectedAPI3f7ONLYDockerlogs afterexactoneheaderEdit/max200rows131072bytes/15s parseRAM/printONLYroutecounts+HTTPstatus(no payload/buyerID/token), hard60/noDB/Meli/MQ/mutations; no retry/fallback.
+
+### 6 octubre — prórroga explícita sin reinicio (06:17:23 UTC)
+
+- Usuario autorizó primero el límite 06:30 UTC y después una prórroga adicional
+  de hasta dos horas si era necesaria. Se elige el límite absoluto conservador
+  **08:17:23 UTC / 02:17:23 Monterrey**, dos horas desde la recepción de la
+  segunda autorización; no desde la aplicación futura.
+- Única ejecución: `868b413e20184befb7e8358e0051924f`. Deadline original
+  `05:52:57.845 UTC` se conserva como lineage. Última lectura: PAUSED,
+  69 intentos cobrados / 67 enviados. Total 2500 y caps originales intactos;
+  sin UUID nuevo, prepare nuevo, refunds, resets o Full.
+- Autorización recibida; extensión **aún no aplicada**. Root reserva
+  `infra/operations/zelerdata_history_pilot.py`, monitor y ledger.
+- CUOTAS: único escritor de
+  `tests/test_zelerdata_history_pilot_extension.py` y
+  `docs/sheets/zelerdata-historico-cuotas-extension-informe.md`; propone contrato
+  mínimo de extensión con RED real; no edita OPS compartido ni producción.
+- AMQP: único escritor de helper privado `claims-one-recovery-20261006/recover_one.py`,
+  su `test_recover_one.py` y
+  `docs/sheets/zelerdata-historico-amqp-claims-one-informe.md`; adaptación RED/GREEN
+  únicamente a autoridad de plazo explícita, sin ejecutar transferencia.
+- Ambas pruebas enfocadas usan solo fakes sin red/BD/puertos. Congelar ambos
+  escritores antes de controles conjuntos. Aceptación final sigue pendiente.
+
+#### Evidencia nativa independiente — sin nuevas fórmulas ni grants
+
+Lectura UI de Settings confirma `https://sheets.zeler.ai` y token guardado
+(solo booleano; no lectura/copia/modificación de credencial). El historial del
+proyecto Apps Script asociado muestra `zelerdata_ordenes`, función personalizada,
+**Completada el 6 octubre a las 00:09:50 Monterrey / 06:09:50 UTC**, 0.667 s.
+Corresponde al único cambio semánticamente equivalente `si` → `SI` empezado a
+06:09:40 UTC; la hoja mostró encabezados más tres órdenes en el 4×4 original.
+También existen ejecuciones completas a 06:08:49 y 06:08:50 UTC. No se requieren
+más reentradas. La cola/log API acotada sin coincidencias no probaba ausencia de
+recalculo. Esta evidencia es readback nativo fresco, **no** certificación de
+cinco fuentes ni dos cambios incrementales reales.
+
+#### Entregas congeladas y control final de la prórroga
+
+- CUOTAS ENTREGADO; NO SIGO MODIFICANDO: 23 fakes PASS/0 skips,
+  ruff/formato/mypy enfocados PASS. Test
+  `d445d9820bed4119dfd37c788e6a3fe0e3eb47243ff987330482a20eb8d18d04`;
+  informe `573ef89b3042d277d026025df2c077f795294490eab1e173d2d7cd404492b4cf`.
+- AMQP ENTREGADO; NO SIGO MODIFICANDO: 8 fakes PASS, checks enfocados PASS.
+  Helper `29ed4bc46851a29b17708cdc733b9f9bff45b7f1d7ed3bd9f9b24d8ca160fdce`;
+  test `801e532bf53379f94e7673cc2964c9c8054972ccedaf52fdb98d508b01fc89d4`;
+  informe `ce648519bc1e957bfaa61c328e0be36a634c50e612b15dd478e1c242c9071191`.
+  Originales respaldados/pinados antes de editar; sin transferencia real.
+- Root integra `extend-paused` y resume con recibo aplicado; plan patch solo
+  `execution_until`, lineage externo en recibo exclusivo, sin modelo/schema nuevo.
+  Rama legacy sin extensión conserva límite original. Autoridad recibida
+  SHA `f71b683854e4c002933ed38df09a7356063280e6f71e56a91f7593ea4ffd1679`.
+- Ambos escritores y código Root congelados antes de gates conjuntos. Exploración
+  posterior AMQP es solo lectura de elegibilidad, sin código ni pruebas.
+  Target general: perfil Linux local propio, Mongo PRIMARY/broker aislados,
+  datos desechables nuevos, sin credenciales ambientales ni conexión productiva.
+  No suites generales mientras se escribía código; controles ahora pendientes.
+
+**Gates finales prórroga:** snapshot completo 1109 paths, tar
+`129c954bc256382aaf43171d940a6b915a5e20cc4bec6e5b2e80902ef641f51a`,
+bytes/modos exactos antes/después en target propio aislado. Ocho gates exit0:
+focused **70 PASS** (1 warning de caché por source RO, sin fallo; preservado),
+ruff/formato, mypy **671 archivos**, direct-Meli, schemas, full **6476 PASS /
+20 SKIP** (410.206 s supervisados; pytest407.53 s), protected **19 PASS /
+0 SKIP** (5.819 s). Suite 06:29:38→06:36:28 UTC. No skips como aceptación.
+Código actual completo coincide con snapshot validado; actualización de evidencia
+MD posterior se valida separadamente. Sin cambios runtime de producto:
+**no nuevos builds, pulls ni imágenes** para este operador OPS.
+
+Elegibilidad AMQP sigue bloqueada hasta comprobar clave efectiva: publisher usa
+`classified.idempotency_key` en header, distinto de `event_id`/`message_id`.
+El hash del evento no autoriza marcar idempotency_eligible=true. Root verificó
+classifier y resolución canónica del webhook almacenado; aún falta lectura real
+readonly de esa identidad y markers/claim, y cotejo del header antes de publish.
+Sin GET de negocio, publish, ACK ni reproducción del original hasta ese gate.
