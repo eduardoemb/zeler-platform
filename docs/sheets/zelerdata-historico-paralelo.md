@@ -2018,3 +2018,61 @@ Solo apéndice documental posterior a estos controles; código/config/tests igua
 Unidad propia lista para publicación; impacto servido esperado exclusivamente
 Sheets worker histórico, no API/Gateway/frontend/AppsScript. La operación productiva
 continúa PAUSED81/79/24/Full0 y la ventana08:17:23 expiró; build no activa readmisión.
+
+**Publicación y build comprobados:** main/remoto
+`c1da1ee389d14cf8719f07c0179289eb3a2c61ba` iguales/árbol limpio. Build único worker
+`1cb205ef-d78c-4d07-acd2-0a1626224d39` SUCCESS09:41:48.739960 UTC, connectedrepo
+exacto/VERIFIED y verificador de procedencia PASS. Imagen inmutable
+`us-central1-docker.pkg.dev/zeler-platform-dev/zeler-platform/sheets-worker@sha256:de632a0a8fff5f1adf1a4dded7a24fd40b48c2a914fcc0fbef7815f99608a28c`.
+Sin pull/deploy/validator productivo/readmisión ni nuevo tiempo. API/Gateway no
+reconstruidos. Rollback previsto worker0df cerrado, conservando head/versiones.
+
+**Encargo CUOTAS delimitado siguiente, OPS-only:** propietario único de nuevos
+`tests/test_zelerdata_history_pilot_extension_chain.py` y
+`docs/sheets/zelerdata-historico-cuotas-extension-cadena-informe.md`.
+RED/propuesta para cadena de prórrogas reales pinadas; no editar canonical OPS
+`infra/operations/zelerdata_history_pilot.py` (Root), informes originales ni otro
+archivo. El helper actual solo admite primer previous_until<=prepare+90min; no
+fabricar otro prepare/UUID ni relajar el límite. Ambos recibos padre (extensión
+aplicada anterior) y pausa actual+counters deben ligar la nueva excepción humana.
+Sin producción/red/DB/build/Git/agentes/suite general, fakes con sockets denegados.
+Este encargo no concede otra ventana; pruebas/coherencia y autorización concreta
+siguen siendo gates independientes. No requiere reconstruir de632a por código OPS.
+
+**Rollout cerrado real:** primer pull120s STOP09:55:07 sin recreate; Root no lo
+reinició por timeout. Target ausente/oldworker sano y proceso específico ausente+
+fila daemon cancelada atestados; segundo intento operacional del mismo digest,
+no diagnóstico Meli/AMQP, PASS10:01:27.690485 UTC/103.617s/SSH0. Solo worker de632a,
+HISTORY OFF, dos readiness components OK inicial+60s; API/Gateway intactos.
+PRIMARY plan before/after/settled PAUSED81/79/24/Full0. Rootfree antespull34,401,124,352,
+después33,852,870,656, settled33,863,200,768 bytes. Sin limpieza/otras imágenes.
+
+**Nueva colección aplicada de forma separada:** inspección constató ausencia;
+QUESTION-ARCHIVE-SCHEMA-APPLY-1 creó únicamente `sheets_history_checkpoint_versions`
+con validator estricto+índice único publicados. POSTCHECK1 actual confirmó exactos,
+sin reparar/escribir otros namespaces ni counters/deadline/jobs. PRIMARY/closed/SSH0.
+
+**Primera inspección canónica wire real10:06:04.150596 UTC:** cuatro reads exactos
+en worker de632a, reader0/SSH0. Head59dd y job60d1 **ahora** atestados wire originales
+y coinciden con viejos reencode; planwire
+`24fa4694e0d2c6808f4589c44743a574226a136e081b73ffe109c1554768d19b`, no JSON153a.
+Qremaining146,81/79/24, cursorage20031s; único blocker ventana expirada. Loader
+anterior cortó el primer q dentro de una función no llamada: NameError global
+antes del tool/factory, no réplica de diagnóstico. Corrección local precedió a
+esta primera invocación real. Inspector no aplica ni autoriza tráfico.
+
+**Cadena OPS Root local:** entrega CUOTAS24 RED→24 GREEN; Root2 RED para re-pausa
+posterior a fence de readmisión→26 GREEN, cinco familias previas124 PASS. Parámetros
+aditivos previous_extension/PIN y extension_paused/PIN distinguen pausa original,
+PRE del nuevo step y POST genuina; baseline actual pinado y cero crédito. Primera
+extensión/re-pausa legacy defaultsNone intactos. Fakes10:00/12:00 NO son permisos.
+Sin apply productivo de prórroga ni readmisión; próximos ocho gates bajo congelación.
+
+**Cadena finales completos PASS:**1127 paths/tar
+`e96dfecbbe8a480f222320e7cd674b08c77b1d5896e1fe0e919cb49b6c8e7d7b`, actualbytes/modos
+exactos. Full6597 PASS/20 SKIP10:07:50.938736→10:14:44.664683 UTC/413.726s;
+protectores19 PASS/0 SKIP5.716s,focused124/ruff/formato/mypy680/direct-Meli/schema PASS.
+Followup OPS-only, sin reconstruir worker de632a (source runtime c1). Root publica
+solo5paths (OPS/test/ownreport/proposal/ledger) con controles y cese. Todavía falta
+respuesta humana para nueva ventana+pasada prospectiva; ningún fake fixture la
+sustituye. No volver a pedir las14 autorizaciones condicionales ya vigentes.
