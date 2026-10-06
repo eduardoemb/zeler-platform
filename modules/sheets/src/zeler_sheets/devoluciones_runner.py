@@ -14,9 +14,11 @@ guarantees. Automatic policy does not re-authorize terminal operator runs.
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Mapping
+from contextlib import suppress
 from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 
+import httpx
 import structlog
 
 from zeler_platform_core.devoluciones_readiness import (
@@ -938,14 +940,27 @@ class OnboardingDevolucionesGateway:
         if not history_execution_allowed(persisted, now=self.now(), charged=True):
             raise HistoryPolicyWaitError("history execution window ended after pacing")
         async with history_policy_dispatch():
-            return cast(
-                "dict[str, Any]",
-                await physical_gateway.fetch_resource_once(
-                    seller_id=seller_id,
-                    path=path,
-                    **({"headers": {"X-Zeler-History-Trace": trace}} if trace else {}),
-                ),
-            )
+            from zeler_platform_core.clients.meli_gateway_client import GatewayRateLimitError
+            from zeler_sheets.history_pilot_stop import stop_pilot_429
+
+            try:
+                return cast(
+                    "dict[str, Any]",
+                    await physical_gateway.fetch_resource_once(
+                        seller_id=seller_id,
+                        path=path,
+                        **({"headers": {"X-Zeler-History-Trace": trace}} if trace else {}),
+                    ),
+                )
+            except (GatewayRateLimitError, httpx.HTTPStatusError) as error:
+                await stop_pilot_429(
+                    self.db,
+                    captured=self.plan,
+                    validated=persisted,
+                    response=error.response,
+                    now=self.now(),
+                )
+                raise
 
     async def fetch_resource(self, *, seller_id: str, path: str) -> dict[str, Any]:
         return await self.fetch_resource_once(seller_id=seller_id, path=path)
@@ -976,6 +991,7 @@ async def advance_onboarding_devoluciones(
         GatewayDevolucionesSource,
         _private_focused_devoluciones_diagnostic,
     )
+    from zeler_sheets.history_pilot_stop import HistoryPilotStopError
 
     if charge is None:
         charge = getattr(gateway, "charge", None)
@@ -1029,6 +1045,8 @@ async def advance_onboarding_devoluciones(
                 source=source,
                 now=clock,
             )
+        except HistoryPilotStopError as stopped:
+            raise HistoryPolicyWaitError(stopped.reason) from None
         except HistoryPolicyWaitError:
             raise
         except SourceCallBudgetError:
@@ -1038,13 +1056,11 @@ async def advance_onboarding_devoluciones(
             failure_reason = "exact_source_proof_unavailable"
             # Preserve the original source failure even if logging is unavailable.
             # Only the existing closed, typed diagnostic crosses this boundary.
-            try:
+            with suppress(Exception):
                 logger.warning(
                     "sheets.devoluciones_onboarding_source_proof_unavailable",
                     **_private_focused_devoluciones_diagnostic(error),
                 )
-            except Exception:  # noqa: BLE001 - best-effort observability must not replace the cause.
-                pass
             raise
 
     try:

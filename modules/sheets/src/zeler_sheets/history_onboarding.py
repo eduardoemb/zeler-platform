@@ -15,6 +15,7 @@ from typing import Any
 from urllib.parse import parse_qs, urlsplit
 from uuid import uuid4
 
+import httpx
 from pymongo import ReturnDocument
 
 from zeler_platform_core.clients.meli_gateway_client import GatewayRateLimitError
@@ -430,6 +431,9 @@ class PlanBudgetGateway(PacedMeliGateway):
             self._work_receipt = {**self.work_intent.receipt(path), "credit": 1, "sent": 0}
 
     async def _fetch_resource(self, **kwargs: Any) -> Any:
+        from zeler_platform_core.clients.meli_gateway_client import GatewayRateLimitError
+        from zeler_sheets.history_pilot_stop import HistoryPilotStopError, stop_pilot_429
+
         seller_id, path = kwargs["seller_id"], kwargs["path"]
         request_timeout = kwargs.get("request_timeout", 10)
         if str(seller_id) != self.seller:
@@ -449,12 +453,26 @@ class PlanBudgetGateway(PacedMeliGateway):
             # not. Keep the charged attempt, but never fall back to hidden retries.
             raise HistoryPolicyWaitError("single physical work attempt is required")
         method = getattr(physical, "fetch_resource_once", physical.fetch_resource)
+        captured = dict(self._charged_plan)
         async with history_policy_dispatch(), asyncio.timeout(request_timeout):
-            return await method(
-                seller_id=seller_id,
-                path=path,
-                **({"headers": self.trace_headers} if self.trace_headers else {}),
-            )
+            try:
+                return await method(
+                    seller_id=seller_id,
+                    path=path,
+                    **({"headers": self.trace_headers} if self.trace_headers else {}),
+                )
+            except (GatewayRateLimitError, httpx.HTTPStatusError) as error:
+                try:
+                    await stop_pilot_429(
+                        self.db,
+                        captured=captured,
+                        validated=captured,
+                        response=error.response,
+                        now=self.now(),
+                    )
+                except HistoryPilotStopError as stopped:
+                    raise HistoryPolicyWaitError(stopped.reason) from None
+                raise
 
     async def request(self, **kwargs: Any) -> Any:
         if self.work_intent is not None:
@@ -463,6 +481,9 @@ class PlanBudgetGateway(PacedMeliGateway):
         return await self._request(**kwargs)
 
     async def _request(self, **kwargs: Any) -> Any:
+        from zeler_platform_core.clients.meli_gateway_client import GatewayRateLimitError
+        from zeler_sheets.history_pilot_stop import HistoryPilotStopError, stop_pilot_429
+
         if kwargs.get("method") != "GET" or str(kwargs.get("seller_id")) != self.seller:
             raise ValueError("onboarding request must be read-only for its seller")
         self.check_path(kwargs["path"])
@@ -477,8 +498,31 @@ class PlanBudgetGateway(PacedMeliGateway):
             "X-Zeler-Proxy-Retry": "disabled",
         }
         timeout = kwargs.pop("request_timeout", 10)
+        captured = dict(self._charged_plan)
         async with history_policy_dispatch(), asyncio.timeout(timeout):
-            response = await physical.request(**kwargs)
+            try:
+                response = await physical.request(**kwargs)
+                await stop_pilot_429(
+                    self.db,
+                    captured=captured,
+                    validated=captured,
+                    response=response,
+                    now=self.now(),
+                )
+            except (GatewayRateLimitError, httpx.HTTPStatusError) as error:
+                try:
+                    await stop_pilot_429(
+                        self.db,
+                        captured=captured,
+                        validated=captured,
+                        response=error.response,
+                        now=self.now(),
+                    )
+                except HistoryPilotStopError as stopped:
+                    raise HistoryPolicyWaitError(stopped.reason) from None
+                raise
+            except HistoryPilotStopError as stopped:
+                raise HistoryPolicyWaitError(stopped.reason) from None
         if response.headers.get("X-Zeler-Upstream-Attempts") != "1":
             raise ValueError("single physical attempt metadata is required")
         return response

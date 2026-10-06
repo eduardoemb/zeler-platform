@@ -89,6 +89,7 @@ repeat failures, and promote stable knowledge to its proper operational form.
 | L-030 | ZelerData | Pace immediately before transport, after persisted charge | active |
 | L-031 | Isolated restore | Operator UID/tmp, actual CLI libc ABI and PRIMARY gate | active |
 | L-032 | ZelerData | Durable work authority and non-fungible physical credit | active |
+| L-033 | ZelerData | Abort bounded 429 before collector retries | active |
 
 ## Cloud Build and VM deployment
 
@@ -535,4 +536,18 @@ repeat failures, and promote stable knowledge to its proper operational form.
   `modules/sheets/tests/test_history_work_intent.py` and
   `gateway/tests/test_pilot_get_budget_consumers.py`. Local CAS/provider doubles
   do not prove AMQP delivery, Sheets readback or production acceptance.
+- status: active
+
+
+### L-033 — Abort bounded pilot 429 before collector retries
+- area: ZelerData bounded historical acquisition
+- proven path: Bind the response to the dispatch's validated persisted EID; CAS
+  only that execution to paused, retaining charges. A typed abort must cross
+  RETURNS' no-retry branch, then become policy WAIT before failure classification.
+  Keep remote upstream1, local0 and unknown metadata distinct; ordinary unchanged.
+- failed path: Rely only on an outer polling monitor or raise ordinary WAIT inside
+  a collector that wraps/retries it. Two scan passes or refreshed timestamps do
+  not prove two genuinely changed incremental cycles.
+- verification/source: `modules/sheets/tests/test_history_pilot_rate_limit_stop.py`,
+  `modules/sheets/tests/test_history_pilot_returns_rate_limit_stop.py`; Mon5 ledger.
 - status: active

@@ -2667,3 +2667,39 @@ Los intentos, tiempos, recibos y salidas sanitizadas originales se conservan en
 el root privado `rollout-preflight-20261006`, sin reemplazar fallos por mocks.
 Presupuesto/plazo/EID/cutoff no reiniciados. No nuevos GET del proveedor después
 del 429 reconocido. Preparar un arreglo local no autoriza reanudar el piloto.
+
+### Rollout cerrado seleccionado para la corrección 429
+
+Después de entrega/cese, integración y ocho controles finales congelados, el
+coordinador selecciona una sola imagen afectada: **sheets-worker**. Build desde
+el commit exacto publicado en main/repositorio conectado, VERIFIED y procedencia
+canónica/digest inmutable; no rebuild gateway/API ni Docker build local.
+El despliegue conserva HISTORY/recovery/refresh OFF, plan PAUSED368/365/340/28,
+Full0, mismo EID/cuotas/cutoff/20:32:58 y demás servicios/configuración. Añadir sólo
+un overlay de imagen worker a las22 capas existentes; ningún enable/resume.
+Rollback compatible: worker1681/sourcec5378c9 actualmente servido y recuperable,
+con registro14/schemas/topología/counters intactos. Sin cleanup ni nuevos volúmenes.
+Antes de un pull: identidad exacta, capacidades raíz/inodos/Mongo/RAM, raíz>=5GiB,
+preflight dry-run de digest; un pull y recheck. Sólo up worker/no-deps/pull-never,
+stop grace60/outer120>, digest/health/consumer readiness inicial y +60s, gateway/API
+preservados y hash completo del plan en tres vistas. Error/timeout/inconsistencia
+STOP sin repetir; construir no autoriza reanudar proveedor después de Mon5.
+
+
+### Entrega stop429 y controles finales (20:12 UTC)
+
+CUOTAS ENTREGADO/cese, sólo6paths asignados y SHA comprobados Root. RED18FAIL1PASS
+1.22s →GREEN124PASS0.92s (23new+101regresiones fake), Ruff/formato/mypy5targetsPASS.
+Root congela1,144paths/tar27d4323c545f1e86455b5df78834f70b5c5aebec9d406e6464195a530c40da5e.
+Ocho controlesPASS:447focused/6,725full20SKIP (426.570s)/19protected0SKIP (5.760s),
+Ruff/formato/mypy692/direct-Meli/schema; snapshotbytes+modos exactos antes/después.
+Recibos privados `goal-pilot429-final-20261006`; no suite mientras escritor activo.
+Sólo anotación documental posterior, sin nuevas fuentes/counters/producción.
+
+Auditoría readonly CUOTAS: `execution_work` acredita purpose/envío, no cambio de
+negocio. Receipts modifications guardan dos passes de UN ciclo; hash del payload
+puede cambiar sólo por timestamps. EventPersistence sobrescribe currentdoc sin
+before/after universal. No inferir dos cambios de los28sends. Muestra nativa y
+API parcial28 anteriores siguenPASS; anual cincofuentes y2genuine siguenpendientes.
+No reentrada nativa, eventos sintéticos, baseline reconstruida, replay ni nueva
+consulta de proveedor. Continúa selección worker cerrado del apartado anterior.

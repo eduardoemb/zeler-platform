@@ -8,8 +8,9 @@
 > Corrección capacity desplegada; controles 6702 PASS/20 SKIP +19 protectores PASS.
 > Mon5 encontró dos 429 remotos y cuatro 404 RETURNS; hubo retry interno antes de
 > la pausa externa. Shipments inicial 250/250 agotado; Claims tres unidades fallidas.
-> No continuar proveedor ni ampliar Shipments; fail-fast local aún en elaboración.
-> Cinco fuentes/12 meses, lectores/nativo y dos incrementales genuinos pendientes.
+> No continuar proveedor ni ampliar Shipments; fail-fast local validado, aún sin rollout.
+> Cinco fuentes/12 meses legibles y dos incrementales genuinos pendientes;
+> OAuth, muestra nativa y API parcial previas PASS dentro de sus alcances.
 > Ver [ledger único](zelerdata-historico-paralelo.md); no repetir pasos históricos.
 
 
@@ -710,5 +711,44 @@ corrección local fail-fast de piloto429 y sus pruebas/informe, delimitados en
 el ledger. No altera ordinary retries, cuotas, origen90, datos, deadlines o Full.
 La cuota Shipments agotada no equivale a cobertura ni autoriza ampliación;
 `allow_partial` aprobado sigue siendo sólo ORDENES. Faltan pruebas independientes
-de histórico requerido por las cinco fuentes, lectura API/Sheet y dos incrementos
-con cambios reales. Objetivo NO completado; no usar tests/deploy para certificarlo.
+de histórico anual legible por las cinco fuentes y dos incrementos con cambios
+reales. La muestra nativa y API parcial previas siguen PASS (véase §15); no
+ampliar su alcance a certificación anual. Objetivo NO completado.
+
+
+## 15. Corrección local del retry429 y auditoría de aceptación
+
+CUOTAS entregó y cesó modificaciones. Seis archivos exclusivos verificados por
+hash; helper de producto y ambos wrappers detienen la ejecución legitimada antes
+del retry del collector. CAS sólo state PAUSED del EID/seller/controles capturados;
+sin refund/reset. `remote_429` requiere metadata upstream1; local0 y metadata
+incierta abortan conservadoramente sin fingir prueba remota. Ordinary sin piloto
+conserva retries. RETURNS atraviesa la rama `SourceCallBudgetError` y después
+convierte a WAIT, sin ventana failed ni `physical_budget_exceeded` artificial.
+Esto cubre **429**, no todos los 5xx/timeouts; solicitudes ya en vuelo no se deshacen.
+
+- TDD: 18 FAIL/1 PASS antes del cambio →124 PASS (23 nuevas/101 regresiones fake).
+- Controles Root con todos los escritores congelados: **447 enfocadas PASS;
+  6,725 generales PASS/20 SKIP; 19 protectores PASS/0 SKIP**. Ruff, formato,
+  mypy692, direct-Meli y schemas PASS. Ocho recibos completos, recursos Colima
+  propios y Mongo de prueba PRIMARY aislado, sin credenciales ambientales.
+- Snapshot1,144 paths, SHA
+  `27d4323c545f1e86455b5df78834f70b5c5aebec9d406e6464195a530c40da5e`;
+  bytes/modos iguales antes/después. Sólo anotaciones de documentos centrales y
+  lesson posteriores al freeze; ningún cambio ejecutable tras estos controles.
+- Única imagen afectada: worker (consumer/onboarding/returns). Gateway/API readers
+  no cambiaron; build/despliegue se registrarán separados, sin enable/resume.
+
+| Requisito original | Evidencia conservada / resultado |
+| --- | --- |
+| OAuth humano normal HOPEMOB, sin force ni tokens copiados | PASS previo (§12), cuenta conectada legítimamente; no nueva sesión afirmada |
+| Full excluido; cuotas/EID/cutoff/checkpoints/datos y registro14 preservados | Operaciones sin reset, quiescencia19:37 y plan Full0; no permisos ampliados |
+| API normal parcial ORDENES y guard de otras fórmulas | PASS previo:28 órdenes adquiridas; no habilita parcial para otras fuentes ni Sheets |
+| Muestra nativa en Sheet privada | PASS previo06:09:50 UTC: Apps Script completado0.667s, encabezados+3órdenes en4×4; no certificar cinco fuentes desde ella |
+| Fuente por fuente: histórico recuperable anual, cobertura/readers independientes | NO acreditado: Qp3 sin adquisición, Claims3unidades fallidas, Ship250/250 con4pendientes; readyobs no es certificado |
+| Dos ciclos incrementales con cambios empresariales reales posteriores al cutoff | NO acreditado:28sends no prueban cambio; dos passes del mismo scan son un ciclo, no dos. Faltan versiones/baselines reales y readback enlazado |
+| Parada inmediata429 sin retries internos | Mon5 incumplió; fix local PASS, aún no prueba del nuevo comportamiento productivo |
+
+No reentrar la fórmula ni repetir llamadas para reconstruir pruebas que ya están
+logradas. Evidencia pasada mantiene su alcance fechado, no prueba salud actual.
+Goal permanece abierto con los dos gates de aceptación principales anteriores.
