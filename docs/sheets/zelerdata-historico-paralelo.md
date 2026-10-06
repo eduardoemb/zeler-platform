@@ -2076,3 +2076,43 @@ Followup OPS-only, sin reconstruir worker de632a (source runtime c1). Root publi
 solo5paths (OPS/test/ownreport/proposal/ledger) con controles y cese. Todavía falta
 respuesta humana para nueva ventana+pasada prospectiva; ningún fake fixture la
 sustituye. No volver a pedir las14 autorizaciones condicionales ya vigentes.
+
+### Corrección localizada antes de reanudar — texto BANNED publicado vacío
+
+Root survey readonly PRIMARY3reads/0Meli:150 observados,148 completos,2 missing,
+0invalid/0outside;60 no observados no se infieren. Shape FIRSTACTUAL confirmó que
+ambos missing son BANNED con text presente vacío, item/buyer presentes, answer=None.
+La referencia primaria de Meli documenta esa redacción; no es dato faltante para
+recuperar con otro GET. Core Question/QuestionAnswer y validator questions ya
+permiten string vacío; no modificar contratos/esquemas ni rellenar texto inventado.
+
+CUOTAS único escritor exacto: `modules/sheets/src/zeler_sheets/history_questions.py`,
+nuevo `modules/sheets/tests/test_history_question_banned_source.py`, nuevo propio
+`docs/sheets/zelerdata-historico-cuotas-banned-informe.md`. TDD enfocado para texto
+vacío explícito solo con status BANNED de pregunta/respuesta; missing None o vacío
+no-BANNED conserva fallback/rechazo. Verificar persistencia/reader sin fingir texto
+original recuperado ni detailGET. Sin Core/validator/otros módulos/producción/red/
+DB/Git/build/general/agentes. Root conserva documentos centrales. Prórroga pendiente
+sin respuesta humana; HISTORY OFF/PAUSED81/79/24 y demás presupuestos intactos.
+
+**Entrega congelada:** CUOTAS declaró «ENTREGADO; NO SIGO MODIFICANDO».
+Root comprobó los tres SHA-256 contra la entrega: source97d464, test889011,
+informe86ae5e. Dos condiciones y ningún contrato/schema compartido modificado.
+RED4FAIL/7PASS → GREEN11PASS; ruff/formato/mypy2 enfocados PASS por especialista.
+Root integra source, test, informe y este ledger como una sola unidad. AMQP sigue
+congelado. A continuación controles completos en recursos locales propios;
+los resultados enfocados no sustituyen aceptación ni autorizan reanudar el piloto.
+
+**Controles finales BANNED PASS:**1129 paths congelados, tar
+`dd8c6630d3a5264e29daa36e559814444b411199045901db0ec90c8686eb0aa4`;
+142 enfocados, ruff/formato/mypy681/direct-Meli/schema PASS. Primera suite general
+se detuvo localmente por falta de progreso tras2840 PASS/869.506s (SIGINT solo al
+PID propio, exit2 y recibo preservados; causa intermitente no establecida).
+Repetición del mismo source con DB propia nueva y trazas:6608 PASS/20 SKIP,
+410.279s; protectores19 PASS/0 SKIP,5.727s, terminan10:58:15.783391 UTC.
+Root verificó los1129 bytes/modos actuales iguales al snapshot antes de esta
+anotación documental. Ocho controles completos; ningún skip cuenta como aceptación.
+Unidad publicable: solo los cuatro paths declarados. Rebuild necesario únicamente
+para sheets-worker; rollback cerrado al de632a existente, manteniendo HISTORY OFF,
+HOLD=true/PAUSED81/79/24, datos/head/archive y presupuestos intactos. Build y rollout
+cerrado no son autorización temporal para una nueva pasada ni prueba de cobertura.

@@ -193,7 +193,7 @@ def _complete_scan_question(source: dict[str, Any], head: SheetsHistoryAcquisiti
     elif not isinstance(status, str) or not status:
         raise HistoryConflictError("question scan status invalid")
     for value in (source.get("text"),):
-        if value is None or value == "":
+        if value is None or (value == "" and status != "BANNED"):
             missing = True
         elif not isinstance(value, str):
             raise HistoryConflictError("question scan text invalid")
@@ -229,7 +229,7 @@ def _complete_scan_question(source: dict[str, Any], head: SheetsHistoryAcquisiti
             date = (
                 answer.get("date_created") or answer.get("answered_at") or answer.get("created_at")
             )
-            if text is None or text == "" or date is None:
+            if text is None or (text == "" and answer_status != "BANNED") or date is None:
                 missing = True
             elif not isinstance(text, str) or not isinstance(date, str):
                 raise HistoryConflictError("question scan answer invalid")
