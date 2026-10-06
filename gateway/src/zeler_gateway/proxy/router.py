@@ -550,7 +550,14 @@ async def _reserve_history_send(request: Request, full_path: str) -> None:
             r"post-purchase/v2/claims/[0-9]+/returns)"
         ),
     }
-    if re.fullmatch(patterns[source], path) is None:
+    # Historical shipping acquisition first proves the seller/order relation.
+    # This is prepaid h1 only: durable work/event authority retains its own paths.
+    shipment_relationship = (
+        source == "shipments"
+        and "X-Zeler-History-Work" not in request.headers
+        and re.fullmatch(r"/shipments/[0-9]+/orders", path) is not None
+    )
+    if re.fullmatch(patterns[source], path) is None and not shipment_relationship:
         raise HistoryPolicyRejectedError()
     if "X-Zeler-History-Work" in request.headers:
         work_id = request.headers["X-Zeler-History-Work"]

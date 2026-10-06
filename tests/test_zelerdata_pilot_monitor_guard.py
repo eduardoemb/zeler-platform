@@ -251,3 +251,133 @@ def test_false_checkpoint_document_is_not_an_empty_missing_section() -> None:
     before = copy.deepcopy(plan)
     assert run(plan, job, head, baseline)["status"] == "STOP"
     assert plan == before
+
+
+def authenticated() -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any]]:
+    plan, job, head, _ = snapshots()
+    plan.update(
+        execution_consumed=83, execution_sent=80, total_consumed=58, incremental_consumed=25
+    )
+    plan["budget"]["orders"]["consumed"] = 44
+    plan["incremental_source_consumed"]["orders"] = 14
+    baseline: dict[str, Any] = copy.deepcopy({"plan": plan, "qjob": job, "qhead": head})
+    baseline["plan"]["state"] = "paused"
+    baseline.update(
+        origin_authenticated=True,
+        origin_receipt_sha256="a" * 64,
+        quiescence_receipt_sha256="b" * 64,
+        previous={
+            **copy.deepcopy({"plan": plan, "qjob": job, "qhead": head}),
+            "observed_at": NOW - timedelta(seconds=5),
+        },
+        debt_first_seen=None,
+    )
+    return plan, job, head, baseline
+
+
+def debt(plan: dict[str, Any]) -> None:
+    plan["execution_consumed"] += 1
+    plan["total_consumed"] += 1
+    plan["budget"]["orders"]["consumed"] += 1
+
+
+def pending_snapshot(plan: dict[str, Any], baseline: dict[str, Any]) -> None:
+    baseline["previous"]["plan"] = copy.deepcopy(plan)
+    baseline["previous"]["observed_at"] = NOW
+    baseline["debt_first_seen"] = NOW
+
+
+def test_authenticated_origin_debt_lifecycle_does_not_absorb_or_refund() -> None:
+    plan, job, head, baseline = authenticated()
+    original = copy.deepcopy(baseline["plan"])
+    assert run(plan, job, head, baseline)["status"] == "RUNNING"
+    debt(plan)
+    result = run(plan, job, head, baseline)
+    assert result["status"] == "DEBT_UNPROVEN"
+    assert result["debt_first_seen"] == NOW.isoformat()
+    pending_snapshot(plan, baseline)
+    assert run(plan, job, head, baseline, NOW + timedelta(seconds=5))["status"] == "DEBT_UNPROVEN"
+    baseline["previous"]["observed_at"] = NOW + timedelta(seconds=5)
+    assert run(plan, job, head, baseline, NOW + timedelta(seconds=6))["reason"] == "debt_tick_limit"
+    plan["execution_sent"] += 1
+    result = run(plan, job, head, baseline, NOW + timedelta(seconds=7))
+    assert result["status"] == "RUNNING" and result["debt_first_seen"] is None
+    assert baseline["plan"] == original and plan["execution_consumed"] == 84
+
+
+def test_authenticated_origin_missing_origin_pin_stops() -> None:
+    plan, job, head, baseline = authenticated()
+    del baseline["origin_receipt_sha256"]
+    assert run(plan, job, head, baseline)["reason"] == "origin_authentication_invalid"
+
+
+def test_authenticated_origin_missing_quiescence_pin_stops() -> None:
+    plan, job, head, baseline = authenticated()
+    del baseline["quiescence_receipt_sha256"]
+    assert run(plan, job, head, baseline)["reason"] == "origin_authentication_invalid"
+
+
+def test_false_origin_authentication_never_self_authorizes_gap_three() -> None:
+    plan, job, head, baseline = authenticated()
+    baseline["origin_authenticated"] = False
+    assert run(plan, job, head, baseline)["reason"] == "origin_authentication_invalid"
+
+
+def test_debt_persisting_ten_seconds_stops() -> None:
+    plan, job, head, baseline = authenticated()
+    debt(plan)
+    pending_snapshot(plan, baseline)
+    assert run(plan, job, head, baseline, NOW + timedelta(seconds=10))["reason"] == "debt_timeout"
+
+
+def test_second_additional_debt_stops_immediately() -> None:
+    plan, job, head, baseline = authenticated()
+    debt(plan)
+    debt(plan)
+    assert run(plan, job, head, baseline)["reason"] == "debt_growth"
+
+
+def test_debt_below_quiescent_origin_is_not_assumed_a_late_success() -> None:
+    plan, job, head, baseline = authenticated()
+    plan["execution_sent"] += 1
+    assert run(plan, job, head, baseline)["reason"] == "debt_origin_drift"
+
+
+def test_future_debt_clock_stops() -> None:
+    plan, job, head, baseline = authenticated()
+    debt(plan)
+    baseline["debt_first_seen"] = NOW + timedelta(seconds=1)
+    assert run(plan, job, head, baseline)["reason"] == "debt_clock_invalid"
+
+
+def test_restarting_debt_clock_after_previous_pending_snapshot_stops() -> None:
+    plan, job, head, baseline = authenticated()
+    debt(plan)
+    pending_snapshot(plan, baseline)
+    baseline["debt_first_seen"] = NOW + timedelta(seconds=5)
+    assert (
+        run(plan, job, head, baseline, NOW + timedelta(seconds=5))["reason"] == "debt_clock_invalid"
+    )
+
+
+def test_missing_clock_after_first_pending_snapshot_stops() -> None:
+    plan, job, head, baseline = authenticated()
+    debt(plan)
+    pending_snapshot(plan, baseline)
+    baseline["debt_first_seen"] = None
+    assert (
+        run(plan, job, head, baseline, NOW + timedelta(seconds=5))["reason"] == "debt_clock_missing"
+    )
+
+
+def test_authenticated_mode_keeps_original_consumption_floor() -> None:
+    plan, job, head, baseline = authenticated()
+    plan["execution_consumed"] -= 1
+    assert run(plan, job, head, baseline)["status"] == "STOP"
+
+
+def test_new_error_stops_even_during_unproven_debt_grace() -> None:
+    plan, job, head, baseline = authenticated()
+    debt(plan)
+    plan["onboarding_sources"]["messages"]["consecutive_failures"] = 2
+    assert run(plan, job, head, baseline)["reason"] == "fresh_source_failure"

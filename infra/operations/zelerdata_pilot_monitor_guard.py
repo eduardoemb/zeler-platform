@@ -8,6 +8,7 @@ successful snapshots for monotonic comparisons. Running jobs require a projected
 
 from __future__ import annotations
 
+import re
 from datetime import UTC, datetime
 from typing import Any
 
@@ -27,6 +28,13 @@ def classify(
     ``baseline`` contains ``plan``, ``qjob`` and ``qhead`` RAM snapshots. Sequential
     reads are not an isolated snapshot: mismatched bindings fail closed. Historical
     errors remain visible; a ready state alone does not prove calendar coverage.
+
+    Additive mode keeps the original snapshots, ``origin_authenticated=True``,
+    ``origin_receipt_sha256``, ``quiescence_receipt_sha256``, ``previous`` snapshots
+    with ``observed_at`` and ``debt_first_seen``. Root MUST authenticate the receipt
+    pins and bind the original/quiescence facts first: flags/hashes are NOT proof.
+    ``previous.observed_at`` equals the exact ``now`` passed for that snapshot.
+    Persist the returned first-seen clock externally; never roll/absorb the origin.
     """
 
     class StopError(ValueError):
@@ -113,11 +121,115 @@ def classify(
         return all(current[key] == previous[key] for key in keys)
 
     try:
-        old_plan, old_job, old_head = baseline["plan"], baseline["qjob"], baseline["qhead"]
+        origin_plan, origin_job, origin_head = baseline["plan"], baseline["qjob"], baseline["qhead"]
+        additive = any(
+            field in baseline
+            for field in (
+                "origin_authenticated",
+                "origin_receipt_sha256",
+                "quiescence_receipt_sha256",
+                "previous",
+                "debt_first_seen",
+            )
+        )
+        old_plan, old_job, old_head = origin_plan, origin_job, origin_head
+        previous_observed: datetime | None = None
+        debt_first_seen: datetime | None = None
+        if additive:
+            require(
+                baseline.get("origin_authenticated") is True
+                and all(
+                    isinstance(baseline.get(field), str)
+                    and re.fullmatch(r"[a-f0-9]{64}", baseline[field]) is not None
+                    for field in ("origin_receipt_sha256", "quiescence_receipt_sha256")
+                ),
+                "origin_authentication_invalid",
+            )
+            require(
+                origin_plan["state"] == "paused"
+                and origin_plan["eligible"] is True
+                and tuple(
+                    count(origin_plan[field])
+                    for field in (
+                        "execution_consumed",
+                        "execution_sent",
+                        "total_consumed",
+                        "incremental_consumed",
+                    )
+                )
+                == (83, 80, 58, 25),
+                "origin_policy_invalid",
+            )
+            previous_snapshot = section(baseline, "previous")
+            old_plan, old_job, old_head = (
+                previous_snapshot["plan"],
+                previous_snapshot["qjob"],
+                previous_snapshot["qhead"],
+            )
+            previous_observed = utc(previous_snapshot["observed_at"])
         now = utc(now)
         received = datetime(2026, 10, 6, 15, 32, 58, tzinfo=UTC)
         deadline = datetime(2026, 10, 6, 20, 32, 58, tzinfo=UTC)
         require(received <= now < deadline, "clock_stop")
+        if additive:
+            require(
+                previous_observed is not None and received <= previous_observed <= now,
+                "debt_clock_invalid",
+            )
+            require(
+                same(
+                    plan,
+                    origin_plan,
+                    (
+                        "_id",
+                        "seller_id",
+                        "execution_id",
+                        "execution_until",
+                        "execution_utc_day",
+                        "incremental_day",
+                        "date_from",
+                        "date_to",
+                        "cutoff",
+                        "policy_version",
+                        "authority",
+                        "sources",
+                        "total_budget",
+                        "execution_attempt_limit",
+                        "incremental_policy",
+                    ),
+                ),
+                "scope_drift",
+            )
+            require(
+                same(
+                    qjob,
+                    origin_job,
+                    (
+                        "_id",
+                        "seller_id",
+                        "read_model",
+                        "history_plan_id",
+                        "history_acquisition_id",
+                        "date_from",
+                        "date_to",
+                        "policy_authority",
+                    ),
+                )
+                and same(
+                    qhead,
+                    origin_head,
+                    (
+                        "_id",
+                        "job_id",
+                        "seller_id",
+                        "read_model",
+                        "plan_id",
+                        "date_from",
+                        "date_to",
+                    ),
+                ),
+                "binding_loss",
+            )
         require(plan["state"] == "active" and plan["eligible"] is True, "inactive")
         require(utc(plan["execution_until"]) == deadline, "deadline_drift")
         require(
@@ -171,6 +283,15 @@ def classify(
             require(
                 count(previous["consumed"]) <= count(budget["consumed"]) <= cap, "refund_or_cap"
             )
+            if additive:
+                require(
+                    count(origin_plan["budget"][source]["physical_attempts"]) == cap
+                    and count(origin_plan["budget"][source]["consumed"])
+                    <= count(budget["consumed"])
+                    and count(origin_plan["incremental_source_consumed"][source])
+                    <= count(plan["incremental_source_consumed"][source]),
+                    "refund_or_cap",
+                )
             require(
                 count(old_plan["incremental_source_consumed"][source])
                 <= count(plan["incremental_source_consumed"][source])
@@ -185,12 +306,55 @@ def classify(
         )
         charged, sent = count(plan["execution_consumed"]), count(plan["execution_sent"])
         initial, maintenance = count(plan["total_consumed"]), count(plan["incremental_consumed"])
-        require(max(81, count(old_plan["execution_consumed"])) <= charged < 2500, "charged_stop")
-        require(max(79, count(old_plan["execution_sent"])) <= sent <= charged, "refund_or_cap")
-        require(charged - sent <= 2, "send_gap")
         require(
-            max(57, count(old_plan["total_consumed"])) <= initial <= 2000
-            and max(24, count(old_plan["incremental_consumed"])) <= maintenance <= 500,
+            max(81, count(origin_plan["execution_consumed"]), count(old_plan["execution_consumed"]))
+            <= charged
+            < 2500,
+            "charged_stop",
+        )
+        require(
+            max(79, count(origin_plan["execution_sent"]), count(old_plan["execution_sent"]))
+            <= sent
+            <= charged,
+            "refund_or_cap",
+        )
+        gap = charged - sent
+        if not additive:
+            require(gap <= 2, "send_gap")
+        else:
+            require(gap >= 3, "debt_origin_drift")
+            require(gap <= 4, "debt_growth")
+            previous_gap = count(old_plan["execution_consumed"]) - count(old_plan["execution_sent"])
+            require(previous_gap in (3, 4), "debt_origin_drift")
+            if gap == 4:
+                supplied = baseline.get("debt_first_seen")
+                require(supplied is not None or previous_gap == 3, "debt_clock_missing")
+                debt_first_seen = now if supplied is None else utc(supplied)
+                require(received <= debt_first_seen <= now, "debt_clock_invalid")
+                if previous_gap == 4:
+                    require(
+                        previous_observed is not None and debt_first_seen <= previous_observed,
+                        "debt_clock_invalid",
+                    )
+                else:
+                    require(
+                        previous_observed is not None and previous_observed <= debt_first_seen,
+                        "debt_clock_invalid",
+                    )
+                require((now - debt_first_seen).total_seconds() < 10, "debt_timeout")
+                if previous_gap == 4:
+                    require(debt_first_seen == previous_observed, "debt_tick_limit")
+        require(
+            max(57, count(origin_plan["total_consumed"]), count(old_plan["total_consumed"]))
+            <= initial
+            <= 2000
+            and max(
+                24,
+                count(origin_plan["incremental_consumed"]),
+                count(old_plan["incremental_consumed"]),
+            )
+            <= maintenance
+            <= 500,
             "refund_or_cap",
         )
         require(
@@ -340,12 +504,21 @@ def classify(
                 if improved
                 else "OBSERVING"
             )
-        return {
+        result: dict[str, Any] = {
             "status": "RUNNING",
             "questions": qjob["state"],
             "sources": labels,
             "snapshot_proven": False,
         }
+        if additive:
+            result["debt_first_seen"] = None
+            if debt_first_seen is not None:
+                result.update(
+                    status="DEBT_UNPROVEN",
+                    debt_first_seen=debt_first_seen.isoformat(),
+                    debt_age_seconds=(now - debt_first_seen).total_seconds(),
+                )
+        return result
     except StopError as error:
         return {"status": "STOP", "reason": str(error), "snapshot_proven": False}
     except (KeyError, TypeError, ValueError, AttributeError, OverflowError):

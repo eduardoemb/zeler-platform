@@ -2263,3 +2263,105 @@ coinciden antes de esta anotación documental. Root integra solo guard/test y
 dos documentos centrales; sin cambios a modelos, contratos servidos o imágenes.
 El conector productivo permanece exclusivo Root y cargará guard publicado pinado
 en su proceso aislado, nunca hotpatch del servicio. Plazo20:32:58Z sigue absoluto.
+
+### Corrección del monitor — deuda no probada, no refund
+
+MONITOR1 reanudó16:59:50.613457 UTC (receipt0ff66ce3…) y pausó16:59:55.699027:
+83 cargos/80 reservas de envío, inicial58/mantenimiento25, gap3; Q siguepending.
+Es STOP real del guard, no prueba automática de fallo proveedor/inflight. El cobro
+precede pacing y reserva. Actualestado readonly17:04:53 PRIMARYPAUSED83/80 confirmó
+deuda por shipments.initial3/sent0 (antes2), sin incremento de sourceErrors.
+Logs acotados403/gRPC corresponden a exporter batch_write_spans IAM, no KMS/tokens.
+No reembolso, reenviado de cursor ni reset. Root obtiene quiescencia cerrada del
+worker seleccionado antes de pin nuevo baseline. Hasta20:32 permanece fijo.
+
+CUOTAS reasume escritura exclusiva SOLO guard/test anteriores. Mantener14casos
+actuales y añadir hasta12fakes RED→GREEN. API aditiva: origen auténtico fijo
+83/80/58/25/deuda3 más snapshots previos; requiere PIN de pausa/origen y quiescencia
+verificados por Root. Nuevo gap4 devuelve DEBT_UNPROVEN, no éxito/fallo proveedor;
+observación máximo2ticks/edad<10s, first_seen fijo, nunca absorbido en baseline móvil.
+Persistencia/growth/nuevo error/clock reiniciado/credit drift STOP; no tolerancia
+genérica ni otra autoridad. Legacy sin opt-in conserva comportamiento. Sin I/O/
+DB/prod/Git/build/suite general/otros agentes; Root sigue único operador/escritor
+central. Congelar tras entrega/cese y controles completos antes de otra ejecución.
+
+
+**Quiescencia real cerrada:** FIVE-HOUR-DEBT-CLOSED-QUIESCENCE-1 PASS
+17:19:29.729173 UTC/87.706s/SSH0; solo flag HISTORY true→false, trece layers,
+worker seleccionado sameimagea28/noPull/noDeps/downloads0. Docker confirmó el
+worker anterior eliminado o sin ejecución. Readiness2 inicial+60s, healthy,
+restarts0/OOMfalse; Gateway4f90/API3f7 preservados. PRIMARY PAUSED83/80,
+inicial58/mantenimiento25/fence1/Full0/hasta20:32:58 antes/después/settled.
+Rootfree33,365,962,752→33,375,277,056. Recibo SHA
+706d6b78fd98d032208708d6d1aafa8a009983fccece3f8a8875253aaa5e1c3d.
+No crédito devuelto ni deuda declarada cancelada.
+
+**Segunda entrega guard congelada y validada:** CUOTAS cese, 14originales
+byte-exact más12fakes; RED11FAIL15PASS, GREEN26 PASS. Guard SHA
+5f2f76aaf4d58da71d870589a14f731ddfc49120781be1426f99f910bd100f6b;
+test SHA5f2323d90f2dc37053f80824a5b7c48a2ca3e5945e9d6359648cdf53e89341bd.
+Root ocho controles completos PASS17:36:36 UTC:1133paths/tar
+f3fccd121df84fa70fec9958c8ffd5569698a7fdcbb4150ca04ad0996e48ca90;
+176focused, Ruff/formato/mypy684/direct-Meli/schema PASS; full6660 PASS/20 SKIP
+429.175s, protected19 PASS/0 SKIP6.393s. Bytes/modos completos coinciden antes
+esta anotación. Guard puro no afecta imagen; una corrección de gateway detectada
+abajo requiere nuevos controles del conjunto antes de publicación/resume.
+
+### Relación de envíos — encargo acotado y STOP previo a reanudar
+
+Auditoría real del primer monitor, no GET nuevo: 16:59:51.588 UTC,
+GET /shipments/[numeric]/orders con trace h1 shipments.initial, sheets;
+status412/upstream_status-1, antes de pausa16:59:55.699. La ruta no coincide con
+allowpattern h1, que solo acepta detalle/costs/payments. 16:59:51.684 otro GET
+detalle shipment200. No inferir éxito del /orders desde ese200 ni fallo proveedor
+desde412 local. Lecturas acotadas PRIMARY sin mutaciones; registros/cargos intactos.
+
+Asignación exacta nueva tras cerrar controles anteriores:
+- CUOTAS único escritor de gateway/tests/test_history_shipments_relationship_attribution.py
+  (nuevo, máximo10 casos offline RED→GREEN, no sockets/DB/puertos).
+- Root único escritor de gateway/src/zeler_gateway/proxy/router.py:
+  corrección mecánica de admisión h1 SIN X-Zeler-History-Work, únicamente
+  /shipments/[0-9]+/orders. Core/contratos de eventos/workrefs no se amplían.
+- Root conserva centrales, Git, configuración, deps/locks, builds y producción.
+  AMQP congelado; sin otros agentes ni tareas cruzadas. No suite general hasta
+  entrega+cese del nuevo test. Dependencia: RED real → cambio Root → GREEN/cese →
+  ocho controles nuevos → publicación → únicamente imagen gateway afectada.
+El registro14 ya permite GET /shipments/* por fnmatchcase; sin permiso agregado.
+Piloto continúa PAUSED83/80/HISTORYOFF, mismo20:32:58; no reanudar hasta cerrar gate.
+
+**Límite preciso de admisión:** h1 shipment numérico/orders solo sin
+X-Zeler-History-Work; los recibos durables mantienen el rechazo anterior. No
+modificar Core PATHS: también normaliza eventos y no es un allowlist h1 aislado.
+La lectura propuesta no implica proveedor/cobertura ni autoriza más pilotos.
+
+
+**Entrega relación congelada:** RED behavior2FAIL8PASS0.59s antes del patch,
+GREEN10PASS0.65s; Ruff/formato/mypy1 PASS, cese CUOTAS. Un error previo de fixture
+(seed documents/no modules) quedó separado del RED conductual. Root conserva
+único writer router SHA47150615de80ba24a73293af30292a940ece87d23c93ce5a38cbacbb374295de;
+test SHAa8944fa0a6c8296525d40287dfa3409981e4618f2a6f9b1e2a5023d460b5bf6e.
+Dos fases positivas3competidores→1CAS/Mocksend,2rechazos; ocho casos negativos
+incluyen workref rechazado antesresolver. No proveedor, scopes14/6rutas/Full0 intactos.
+
+**Conjunto final PASS17:48:42.970807 UTC:**1134paths/tar
+9c2d10a92cef11114bfadefbc01137dd7e453b71cdf8e006ddcffd21027cd78e;
+308focused, Ruff/formato/mypy685/direct-Meli/schema PASS; full6670 PASS/20 SKIP
+416.940s, protectores19 PASS/0 SKIP5.891s. Todos los bytes/modos actuales coinciden
+antes de añadir exclusivamente esta documentación de resultado. No reducir gates.
+
+**Despliegue seleccionado condicionado a build/provenance PASS:** únicamente
+gateway desde la unidad final publicada en main, digest por fijar después de
+Cloud Build único/VERIFIED/repositorio conectado/source exacto. Worker a28 y API3f7
+no se reconstruyen ni cambian. Mantener HISTORYOFF/planPAUSED83/80 y gateway HOLD;
+ninguna migración/registro/topología/datos/counters/cuotas/cleanup. Preflight capacidad
+y digestbinding selected, root>=5GiB antes de un único pull y medir después;
+Compose13capas más un overlay que cambia solo imagen gateway. Confirmar digest,
+readiness dependencias inicial+60s/restarts0/OOMfalse, worker/API y plan intactos.
+Rollback compatible cerrado: actual gateway4f90/imagenID capturado antes de cambio,
+sourcea10e314/build121b3b08-3d3f-4b12-b40c-2a4f2ba7d590/provenance canónica previa;
+preservado local/retrievable sin limpieza. Si falla, STOP e inspección, sin replay;
+rollback solo gateway al digest anterior con planPAUSED/HISTORYOFF/HOLD. El arreglo
+no altera esquema de audit ni campos de consumo; Core/eventos/workrefs permanecen.
+Después de despliegue PASS obtener nuevos pause/consumption genuinos83/80,
+rehabilitar solo HISTORY y ejecutar el monitor propio con origen/deuda/PINs fijos.
+La ventana20:32:58 no se reinicia y no acredita cobertura ni incrementales reales.

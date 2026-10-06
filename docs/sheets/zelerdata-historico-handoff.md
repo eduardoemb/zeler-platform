@@ -1,19 +1,19 @@
 # ZelerData: handoff del histórico al vincular
 
-> **Última evidencia operativa: 2026-10-06T16:17:43.360156Z; objetivo abierto.**
-> El worker con la corrección BANNED conserva digest `a28cb5…`,
-> fuente `5b9538b2415a9db9031b0125331478adf65b2cd4`; Gateway/API preservados.
-> Ocho controles finales PASS: 6634 pruebas/20 SKIP y 19 protectores/0 SKIP.
-> Plan PAUSED, HISTORY ON, 81 cargos/79 envíos/24 mantenimiento, Full0.
-> La ventana anterior08:17:23 UTC expiró. Nueva autorización humana recibida
-> 15:32:58 UTC: hasta cinco horas (techo20:32:58), misma ejecución/cuotas/cutoff,
-> Ventana aplicada con opt-in validado, originales archivados y pasada prospectiva
-> Questions preparada. La adquisición sigue pausada,0GET hasta conectar monitor;
-> datos, identidad y consumos permanecen intactos.
-> Cobertura independiente de cinco fuentes/12 meses y dos
-> incrementales con cambios reales todavía no acreditadas. Esta evidencia fechada
-> no implica salud continua ni aceptación. Ver el [ledger único actualizado](zelerdata-historico-paralelo.md)
-> para identidades completas, límites y recibos; no repetir los pasos históricos.
+> **Última evidencia operativa: 2026-10-06T17:19:29.729173Z; objetivo abierto.**
+> Worker sameimage `a28cb5…`, fuente `5b9538b2415a9db9031b0125331478adf65b2cd4`;
+> Gateway4f90/API3f7 preservados. Plan PAUSED, HISTORY OFF, 83 cargos/80 reservas,
+> inicial58/mantenimiento25, Full0. La reserva no acredita transporte/entrega.
+> Conjunto guard+relación h1 validado con ocho controles: 6670 PASS/20 SKIP,
+> 19 protectores/0 SKIP, sin imagen afectada. Un rechazo local h1 para
+> `/shipments/{id}/orders` anterior a la pausa fue localizado; su arreglo acotado
+> está implementado/probado, aún no desplegado, e impide reanudar. No ampliar registro14 ni contratos de eventos.
+> Autorización15:32:58 UTC hasta cinco horas: techo20:32:58, mismos
+> ejecución/cuotas/cutoff/datos. No iniciar otro reloj ni devolver cargos.
+> Cobertura independiente de cinco fuentes/12 meses y dos incrementales
+> con cambios reales aún pendientes; pruebas y salud no sustituyen aceptación.
+> Ver [ledger único](zelerdata-historico-paralelo.md) para entregas e intentos.
+
 
 
 **Punto de entrada único para retomar; objetivo global NO completado.** La pausa
